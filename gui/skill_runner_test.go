@@ -2414,12 +2414,12 @@ func TestNormalizeSkillRunVars_CanonicalizesKeyShape(t *testing.T) {
 	}
 }
 
-func TestApplySkillRunInputInference_FillsRequiredCityFromInput(t *testing.T) {
+func TestApplySkillRunInputInference_DoesNotGuessRequiredCityFromInput(t *testing.T) {
 	vars := normalizeSkillRunVars(map[string]interface{}{"input": "成都"})
 	skill := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
 	cskill.ApplyRunInputInference(skill, vars, map[string]interface{}{"input": "成都"})
-	if vars["city"] != "成都" {
-		t.Fatalf("city = %q, want inferred 成都", vars["city"])
+	if vars["city"] != "" {
+		t.Fatalf("city = %q, want empty without named argument", vars["city"])
 	}
 }
 

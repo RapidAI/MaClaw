@@ -96,6 +96,10 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	limits := computeAgentLoopIterationLimits(ctx, configStart.MaxIterations, opts.MinIterations)
 	log.Printf("[AgentLoop] start loop=%s kind=%d maxIter=%d effectiveMax=%d minIterations=%d configCap=%d grace=%d user=%q task=%q",
 		ctx.ID, ctx.Kind, configStart.MaxIterations, limits.EffectiveMax, opts.MinIterations, config.MaxAgentIterationsCap, limits.ChatFinalizeGrace, opts.UserID, truncateRunes(opts.UserText, 80))
+	if ctx.Runtime.Execution.Layer != "" {
+		log.Printf("[exec-router] request_id=%q user=%q layer=%s task=%s prompt=%s confidence=%.2f reason=%q tool_budget=%d iteration_budget=%d",
+			ctx.Runtime.RequestID, opts.UserID, ctx.Runtime.Execution.Layer, ctx.Runtime.Execution.TaskType, ctx.Runtime.Execution.PromptProfile, ctx.Runtime.Execution.Confidence, ctx.Runtime.Execution.Reason, ctx.Runtime.Execution.ToolBudget, ctx.Runtime.Execution.IterationBudget)
+	}
 
 	gateConfig, workflowOff, orchestratorActive := h.prepareAgentLoopCodingGate(opts.UserID, opts.UserText, ctx, opts.MilestoneTracker)
 	skipCodingGate := shouldSkipCodingGate(ctx, gateConfig)

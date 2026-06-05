@@ -609,9 +609,35 @@ type llmStreamMetrics struct {
 	MaxTokenGapNanos      int64
 }
 
+// transactionalTokenBuffer manages streaming text tokens during an LLM call.
+//
+// Design: When the LLM produces both text and tool_calls in the same response,
+// the text is often just a trivial preamble ("好的，让我搜索一下"). We want to
+// suppress such filler so the user doesn't see flickering short text between
+// tool executions. However, some models (DeepSeek, GLM 5.1) produce substantive
+// reasoning text before tool calls — the user needs to see this to understand
+// what the agent is doing and whether it's heading in the right direction.
+//
+// Strategy:
+//   - Tokens are buffered until total accumulated length reaches a threshold.
+//   - Once the threshold is crossed, all buffered tokens are flushed and
+//     subsequent tokens pass through immediately (streaming mode).
+//   - On Flush(): any remaining buffered tokens are forwarded.
+//   - On Discard(): if still in buffered mode (below threshold), tokens are
+//     dropped (trivial preamble). If already in streaming mode, nothing to
+//     discard — tokens were already sent.
+//
+// This ensures:
+//   - Short filler text ("好的") before tool calls → user never sees it.
+//   - Substantive reasoning text → user sees it in real-time.
+//   - Final text-only responses → always visible (Flush is called).
+const tokenBufferFlushThreshold = 40 // runes; ~20 CJK chars or ~40 ASCII chars
+
 type transactionalTokenBuffer struct {
-	onToken llm.TokenCallback
-	deltas  []string
+	onToken   llm.TokenCallback
+	deltas    []string
+	runeCount int
+	streaming bool // true once threshold crossed — tokens pass through directly
 }
 
 func newTransactionalTokenBuffer(onToken llm.TokenCallback) *transactionalTokenBuffer {
@@ -625,18 +651,45 @@ func (b *transactionalTokenBuffer) Write(delta string) {
 	if delta == "" {
 		return
 	}
+	// Reasoning tokens (prefixed with \x01) always pass through immediately —
+	// the user should always see the model's thinking process. They don't count
+	// toward the content threshold that controls preamble suppression.
+	if len(delta) > 0 && delta[0] == '\x01' {
+		b.onToken(delta)
+		return
+	}
+	if b.streaming {
+		// Already past threshold — pass through immediately.
+		b.onToken(delta)
+		return
+	}
 	b.deltas = append(b.deltas, delta)
+	b.runeCount += len([]rune(delta))
+	if b.runeCount >= tokenBufferFlushThreshold {
+		// Threshold crossed — flush all buffered tokens and switch to streaming.
+		b.streaming = true
+		for _, d := range b.deltas {
+			b.onToken(d)
+		}
+		b.deltas = nil
+	}
 }
 
 func (b *transactionalTokenBuffer) Flush() {
+	// Forward any remaining buffered tokens (below threshold).
 	for _, delta := range b.deltas {
 		b.onToken(delta)
 	}
 	b.deltas = nil
+	b.streaming = true
 }
 
 func (b *transactionalTokenBuffer) Discard() {
-	b.deltas = nil
+	// Only discard if we haven't already streamed tokens to the frontend.
+	// If streaming=true, tokens were already sent — nothing to take back.
+	if !b.streaming {
+		b.deltas = nil
+	}
 }
 
 func responseHasToolCalls(resp *llm.Response) bool {

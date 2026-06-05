@@ -187,6 +187,47 @@ func DefaultDefinitions() []IntentDefinition {
 			ToolNames: []string{},
 		},
 		{
+			Label:  LabelLiveData,
+			Domain: "Live external data",
+			TreeText: "The user asks for current or recently changing external data that must be fetched from an external source, not answered from memory. " +
+				"Examples include weather, exchange rates, stock or crypto prices, sports scores, flight or train status, delivery tracking, current news, live rankings, and other real-time public facts. " +
+				"Do not use this label for deterministic local clock questions; use current_time for those.",
+			EmbedTexts: []string{
+				"What's the weather in Beijing today?",
+				"Show me the current weather forecast for Shanghai.",
+				"What's the USD to CNY exchange rate now?",
+				"Check the latest stock price for Apple.",
+				"Who won the game today?",
+				"Track this flight status.",
+				"Find the latest news about this company.",
+				"\u5317\u4eac\u5929\u6c14",
+				"\u67e5\u4e00\u4e0b\u4eca\u5929\u4e0a\u6d77\u7684\u5929\u6c14",
+				"\u7f8e\u5143\u5bf9\u4eba\u6c11\u5e01\u6c47\u7387",
+				"\u67e5\u6700\u65b0\u80a1\u4ef7",
+				"\u67e5\u822a\u73ed\u72b6\u6001",
+			},
+			ToolNames: []string{"web_search"},
+		},
+		{
+			Label:  LabelCurrentTime,
+			Domain: "Deterministic lookup",
+			TreeText: "The user asks for the current local date, time, weekday, or calendar facts that can be answered by a deterministic clock tool. " +
+				"Do not use this label for weather, exchange rates, prices, stocks, flights, delivery tracking, or other live external data.",
+			EmbedTexts: []string{
+				"What time is it now?",
+				"What is today's date?",
+				"What day of the week is today?",
+				"Tell me the current local time.",
+				"Show current date and time.",
+				"current time and date",
+				"\u73b0\u5728\u51e0\u70b9",
+				"\u4eca\u5929\u662f\u51e0\u53f7",
+				"\u4eca\u5929\u5468\u51e0",
+				"\u5f53\u524d\u65e5\u671f\u65f6\u95f4",
+			},
+			ToolNames: []string{"current_datetime"},
+		},
+		{
 			Label:  LabelDocumentDelivery,
 			Domain: "内容处理 (Content)",
 			TreeText: "用户要打开、发送、导出文件/文档。" +

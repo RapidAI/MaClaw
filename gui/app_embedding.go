@@ -30,15 +30,16 @@ var embeddingModelDefaultURL = embedding.DefaultModelDownloadURL
 var embeddingDownloadMu sync.Mutex
 
 // initEarlyClassifier creates the shared classifier instances during app
-// startup. Until embeddings or LLM routing are wired in, they return
-// conservative unknown/ambiguous results instead of using keyword fallbacks.
+// startup. Until the LLM route is configured, they return conservative
+// unknown/ambiguous results instead of using keyword fallbacks.
 //
-// L2 (embedding) and L3 (LLM) are wired in later by activateEmbedderAsync
-// via SetEmbedder/SetLLMFunc on the same instance. The UIC's Classify()
-// method automatically uses whatever layers are available at call time:
-//   - Before semantic classifiers are ready: conservative unknown
-//   - After embedding loads: embedding classification
-//   - After LLM is wired: embedding + LLM fusion
+// L3 (LLM) is wired immediately because it does not depend on vector search.
+// L2 (embedding) is wired later by activateEmbedderAsync via SetEmbedder on the
+// same instance. The UIC's Classify() method automatically uses whatever layers
+// are available at call time:
+//   - Before LLM config is ready: conservative unknown
+//   - After LLM is wired: tree-only semantic classification
+//   - After embedding loads: embedding + LLM fusion
 //
 // Thread-safe: uses sync.Once to guarantee the UIC is created exactly once,
 // regardless of whether initEarlyClassifier or activateEmbedderAsync runs first.
@@ -47,6 +48,7 @@ func (a *App) initEarlyClassifier() {
 		// Create UIC with noop embedder; no local keyword fallback is enabled.
 		uic := intent.New(intent.Config{
 			Embedder:   embedding.NoopEmbedder{},
+			LLMFunc:    a.buildUICLLMFunc(),
 			LLMTimeout: 30 * time.Second,
 		})
 		a.unifiedClassifier = uic
@@ -66,7 +68,7 @@ func (a *App) initEarlyClassifier() {
 		}
 		setUnifiedClassifierForIM(uic)
 
-		log.Println("[classifier] early init complete: semantic classifiers pending async wiring")
+		log.Println("[classifier] early init complete: UIC L3 wired, L2 pending async embedding")
 	})
 }
 

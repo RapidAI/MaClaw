@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -22,6 +23,12 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	allTools := h.getTools()
 	baseTools := h.routeTools(userText, allTools)
 	tools := baseTools
+	profile := ExecutionProfile{}
+	requestID := ""
+	if ctx != nil {
+		profile = ctx.Runtime.Execution
+		requestID = ctx.Runtime.RequestID
+	}
 
 	var browserSessionPinned bool
 	if h.toolRouter != nil {
@@ -35,6 +42,12 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		} else {
 			tools = filterToolsForSkillPreference(baseTools)
 		}
+	}
+	beforeProfileFilter := len(tools)
+	tools = filterToolsForExecutionProfile(tools, profile)
+	if profile.IsLight() {
+		log.Printf("[exec-profile] layer=%s task=%s request_id=%q user=%q confidence=%.2f reason=%q tool_budget=%d iteration_budget=%d routed_before=%d routed_after=%d tools=%q",
+			profile.Layer, profile.TaskType, requestID, userID, profile.Confidence, profile.Reason, profile.ToolBudget, profile.IterationBudget, beforeProfileFilter, len(tools), executionProfileToolNames(tools))
 	}
 
 	browserBeforeWF := len(browserDiagExtractNames(tools))
@@ -55,10 +68,12 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	}
 	BrowserDiagCP2_WorkflowFilter(browserBeforeWF, tools, workflowFilterPolicy.String(), workflowFilterSkipped)
 
+	toolsForLLM := stripExecutionContractMetadataForLLM(tools)
+	baseToolsForLLM := stripExecutionContractMetadataForLLM(baseTools)
 	return agentLoopToolSet{
-		Tools:            tools,
-		BaseTools:        baseTools,
-		ToolsTokenBudget: estimateToolsTokens(tools),
+		Tools:            toolsForLLM,
+		BaseTools:        baseToolsForLLM,
+		ToolsTokenBudget: estimateToolsTokens(toolsForLLM),
 		PreparationTime:  time.Since(startedAt),
 		WorkflowDecision: workflowFilterPolicy,
 		BrowserBeforeWF:  browserBeforeWF,

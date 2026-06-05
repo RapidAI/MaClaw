@@ -177,6 +177,13 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 		Status:      RegToolAvailable,
 		InputSchema: map[string]interface{}{},
 		Source:      "non_code",
+		ExecutionContract: map[string]interface{}{
+			"capabilities":            []interface{}{"time"},
+			"deterministic":           true,
+			"supports_direct":         true,
+			"requires_agent_planning": false,
+			"avg_latency_ms":          5,
+		},
 		Handler: func(args map[string]interface{}) string {
 			now := time.Now()
 			weekdayCN := [...]string{"日", "一", "二", "三", "四", "五", "六"}

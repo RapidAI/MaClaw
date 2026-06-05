@@ -13,6 +13,7 @@ const (
 	LabelNonCoding        IntentLabel = "non_coding"
 	LabelBrowser          IntentLabel = "browser"
 	LabelSearch           IntentLabel = "search"
+	LabelLiveData         IntentLabel = "live_data"
 	LabelDocumentDelivery IntentLabel = "document_delivery"
 	LabelBusinessData     IntentLabel = "business_data"
 	LabelBugFix           IntentLabel = "bug_fix"
@@ -20,6 +21,7 @@ const (
 	LabelMaintenance      IntentLabel = "maintenance"
 	LabelOffice           IntentLabel = "office"
 	LabelKnowledgeWrite   IntentLabel = "knowledge_write"
+	LabelCurrentTime      IntentLabel = "current_time"
 	LabelWorkflowTask     IntentLabel = "workflow_task"
 	LabelAmbiguous        IntentLabel = "ambiguous"
 	LabelUnknown          IntentLabel = "unknown"
@@ -33,6 +35,7 @@ func AllLabels() []IntentLabel {
 		LabelNonCoding,
 		LabelBrowser,
 		LabelSearch,
+		LabelLiveData,
 		LabelDocumentDelivery,
 		LabelBusinessData,
 		LabelBugFix,
@@ -40,6 +43,7 @@ func AllLabels() []IntentLabel {
 		LabelMaintenance,
 		LabelOffice,
 		LabelKnowledgeWrite,
+		LabelCurrentTime,
 		LabelWorkflowTask,
 		LabelAmbiguous,
 		LabelUnknown,

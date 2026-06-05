@@ -4917,6 +4917,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	normalizeCurrentModel(&config.Kilo)
 	sanitizeCodingToolSelection(&config)
 	normalizeConfigTimeouts(&config)
+	normalizeProjectNames(&config)
 	config.LLMPromptCache = config.LLMPromptCache.WithDefaults()
 	if err := migrateLLMPromptCacheDirIfNeeded(corelib.DefaultLLMPromptCacheConfig(), config.LLMPromptCache); err != nil {
 		log.Printf("[config] LoadConfig:llm_cache_migrate_failed err=%v", err)
@@ -4935,6 +4936,24 @@ func normalizeConfigTimeouts(config *corelib.AppConfig) {
 	for i := range config.MaclawLLMProviders {
 		config.MaclawLLMProviders[i].TimeoutSec = corelib.NormalizeAgentTimeoutSec(config.MaclawLLMProviders[i].TimeoutSec)
 	}
+}
+
+// normalizeProjectNames ensures every project has a non-empty Name.
+// Projects created by older code paths or tests may have an empty Name field.
+func normalizeProjectNames(config *corelib.AppConfig) {
+	changed := false
+	for i := range config.Projects {
+		if strings.TrimSpace(config.Projects[i].Name) == "" {
+			// Derive name from the last component of the path.
+			name := filepath.Base(config.Projects[i].Path)
+			if name == "" || name == "." || name == "/" || name == "\\" {
+				name = "Project"
+			}
+			config.Projects[i].Name = name
+			changed = true
+		}
+	}
+	_ = changed // normalization is in-place; caller persists if needed
 }
 
 // getProviderModel gets the model for a specific provider name from a tool config

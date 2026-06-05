@@ -91,6 +91,11 @@ func TestBuildToolAffinityFromDefinitions(t *testing.T) {
 			}
 		}
 	}
+
+	liveDataTools := mapping[LabelLiveData]
+	if len(liveDataTools) != 1 || liveDataTools[0] != "web_search" {
+		t.Errorf("live_data label should map to web_search; got %#v", liveDataTools)
+	}
 }
 
 func TestBusinessDataDefinitionRoutesToMISData(t *testing.T) {
@@ -184,6 +189,18 @@ func TestFullDefinitions_ToolAffinityRoundTrip(t *testing.T) {
 	if len(origBrowser) != len(defsBrowser) {
 		t.Errorf("Browser tool count mismatch: original=%d, fromDefs=%d",
 			len(origBrowser), len(defsBrowser))
+	}
+
+	origTime := original.ToolsFor(LabelCurrentTime)
+	defsTime := fromDefs.ToolsFor(LabelCurrentTime)
+	if len(origTime) != 1 || len(defsTime) != 1 || origTime[0] != "current_datetime" || defsTime[0] != "current_datetime" {
+		t.Errorf("CurrentTime tools mismatch: original=%v, fromDefs=%v", origTime, defsTime)
+	}
+
+	origLiveData := original.ToolsFor(LabelLiveData)
+	defsLiveData := fromDefs.ToolsFor(LabelLiveData)
+	if len(origLiveData) != 1 || len(defsLiveData) != 1 || origLiveData[0] != "web_search" || defsLiveData[0] != "web_search" {
+		t.Errorf("LiveData tools mismatch: original=%v, fromDefs=%v", origLiveData, defsLiveData)
 	}
 }
 

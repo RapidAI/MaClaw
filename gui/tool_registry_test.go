@@ -196,6 +196,24 @@ func TestRegisterBuiltinToolsManageSkillMaintenancePlanSchema(t *testing.T) {
 	}
 }
 
+func TestRegisterBuiltinToolsAttachLightExecutionContracts(t *testing.T) {
+	r := NewToolRegistry()
+	registerBuiltinTools(r, &IMMessageHandler{})
+	for _, name := range []string{"manage_skill", "web_search", "web_fetch", "async_wait", "call_mcp_tool"} {
+		tool, ok := r.Get(name)
+		if !ok {
+			t.Fatalf("%s tool is not registered", name)
+		}
+		if len(tool.ExecutionContract) == 0 {
+			t.Fatalf("%s missing execution contract", name)
+		}
+		contract := executionContractFromMetadata(name, tool.ExecutionContract)
+		if !contract.Explicit || contract.RequiresAgentPlanning {
+			t.Fatalf("%s contract = %+v, want explicit non-planning", name, contract)
+		}
+	}
+}
+
 func TestRegisterBuiltinToolsWorkflowDocMetadataDescriptions(t *testing.T) {
 	r := NewToolRegistry()
 	registerBuiltinTools(r, &IMMessageHandler{})

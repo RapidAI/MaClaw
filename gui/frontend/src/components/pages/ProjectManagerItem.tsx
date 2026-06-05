@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { useRef, type Dispatch, type SetStateAction } from 'react';
 import { SelectProjectDir, PatchConfigFields } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 
@@ -18,18 +18,62 @@ export const ProjectManagerItem = ({
     project,
     selectedProjectForLaunch,
     setSelectedProjectForLaunch,
-}: ProjectManagerItemProps) => (
+}: ProjectManagerItemProps) => {
+    const nameDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pendingNameRef = useRef<string>(project.name || '');
+
+    const hasFlushedRef = useRef(false);
+
+    const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const newName = e.target.value;
+        pendingNameRef.current = newName;
+        hasFlushedRef.current = false;
+
+        // Immediately update UI state
+        const newList = config.projects.map((p: any) => p.id === project.id ? { ...p, name: newName } : p);
+        setConfig(new main.AppConfig({ ...config, projects: newList }));
+
+        // Debounce the persist call to avoid saving on every keystroke
+        if (nameDebounceRef.current) clearTimeout(nameDebounceRef.current);
+        nameDebounceRef.current = setTimeout(() => {
+            hasFlushedRef.current = true;
+            PatchConfigFields({ projects: config.projects.map((p: any) => p.id === project.id ? { ...p, name: pendingNameRef.current } : p) })
+                .catch((err) => console.error('Failed to save project name:', err));
+        }, 500);
+    };
+
+    const flushNameSave = () => {
+        if (nameDebounceRef.current) {
+            clearTimeout(nameDebounceRef.current);
+            nameDebounceRef.current = null;
+        }
+        if (hasFlushedRef.current) return;
+        if (pendingNameRef.current === (project.name || '')) return;
+        hasFlushedRef.current = true;
+        PatchConfigFields({ projects: config.projects.map((p: any) => p.id === project.id ? { ...p, name: pendingNameRef.current } : p) })
+            .catch((err) => console.error('Failed to save project name:', err));
+    };
+
+    const handleNameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            flushNameSave();
+            (e.target as HTMLInputElement).blur();
+        }
+    };
+
+    return (
     <div key={project.id} className="project-manager-item">
         <input
             type="text"
             className="form-input"
             data-field="project-item-name"
             data-id={project.id}
-            value={project.name}
-            onChange={(e) => {
-                const newList = config.projects.map((p: any) => p.id === project.id ? { ...p, name: e.target.value } : p);
-                setConfig(new main.AppConfig({ ...config, projects: newList }));
-            }}
+            value={project.name || ''}
+            onChange={handleNameChange}
+            onKeyDown={handleNameKeyDown}
+            onBlur={flushNameSave}
+            placeholder="Project"
             style={{ fontWeight: 'bold', border: 'none', padding: 0, fontSize: '0.9rem', width: '112px', flexShrink: 0, lineHeight: 1.1 }}
             spellCheck={false}
             autoComplete="off"
@@ -67,4 +111,5 @@ export const ProjectManagerItem = ({
             </button>
         </div>
     </div>
-);
+    );
+};

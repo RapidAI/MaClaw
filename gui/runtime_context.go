@@ -60,6 +60,7 @@ type RuntimeContext struct {
 	PolicyOwnerID   string
 	LockKey         string
 	WorkflowOwnerID string
+	Execution       ExecutionProfile
 }
 
 func runtimeContextFromIMMessage(msg IMUserMessage) RuntimeContext {
@@ -82,6 +83,7 @@ func runtimeContextFromIMMessage(msg IMUserMessage) RuntimeContext {
 		PolicyOwnerID:   strings.TrimSpace(msg.UserID),
 		LockKey:         sessionKey + ":" + actor.ActorID,
 		WorkflowOwnerID: strings.TrimSpace(msg.UserID),
+		Execution:       fullExecutionProfile("unclassified"),
 	}
 }
 

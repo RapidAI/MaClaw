@@ -54,6 +54,109 @@ func TestSkillRunParameterContractSynthesizesAgentViewFields(t *testing.T) {
 	}
 }
 
+func TestSkillRunUnconsumedArgsRejectsIgnoredRuntimeArgs(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Name: "weather",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "python weather.py realtime --lat 39.9 --lng 116.4",
+			},
+		}},
+	}
+	runArgs := map[string]interface{}{"args": map[string]interface{}{"city": "天津"}}
+	vars := normalizeSkillRunVars(runArgs)
+	params, missing := skillRunParameterContract(skill, vars, runArgs)
+	if len(missing) != 0 {
+		t.Fatalf("missing = %#v, want none", missing)
+	}
+	unknown := skillRunUnconsumedArgs(skill, params, vars, runArgs)
+	if len(unknown) != 1 || unknown[0] != "city" {
+		t.Fatalf("unknown = %#v, want [city]", unknown)
+	}
+}
+
+func TestSkillRunUnconsumedArgsAllowsTemplateAndAliasArgs(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Name: "writer",
+		Params: []corelib.NLSkillParam{{
+			Name:    "input",
+			Aliases: []string{"text"},
+		}},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "python write.py --input {{input}} --format {{output_format}}",
+			},
+		}},
+	}
+	runArgs := map[string]interface{}{"args": map[string]interface{}{"text": "hello", "output_format": "md"}}
+	vars := normalizeSkillRunVars(runArgs)
+	params, _ := skillRunParameterContract(skill, vars, runArgs)
+	if unknown := skillRunUnconsumedArgs(skill, params, vars, runArgs); len(unknown) != 0 {
+		t.Fatalf("unknown = %#v, want none", unknown)
+	}
+}
+
+func TestSkillRunUnconsumedArgsAllowsRunnerCarrierArgs(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Name: "infer-city",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "python weather.py --city {{city}}",
+			},
+		}},
+		RequiredArgs: []string{"city"},
+	}
+	runArgs := map[string]interface{}{"args": map[string]interface{}{"user_prompt": "city: 天津"}}
+	vars := normalizeSkillRunVars(runArgs)
+	params, _ := skillRunParameterContract(skill, vars, runArgs)
+	if unknown := skillRunUnconsumedArgs(skill, params, vars, runArgs); len(unknown) != 0 {
+		t.Fatalf("unknown = %#v, want none", unknown)
+	}
+}
+
+func TestSkillRunUnconsumedArgsUsesRunnerBindingAliases(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Name: "convert",
+		Params: []corelib.NLSkillParam{{
+			Name:     "input",
+			Required: true,
+		}},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "python convert.py --input {{input}}",
+			},
+		}},
+	}
+	runArgs := map[string]interface{}{"args": map[string]interface{}{"file": "report.md"}}
+	vars := normalizeSkillRunVars(runArgs)
+	params, _ := skillRunParameterContract(skill, vars, runArgs)
+	if unknown := skillRunUnconsumedArgs(skill, params, vars, runArgs); len(unknown) != 0 {
+		t.Fatalf("unknown = %#v, want none", unknown)
+	}
+}
+
+func TestSkillRunUnconsumedArgsUsesCanonicalKeys(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Name: "convert",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "python convert.py --input {{input_file}}",
+			},
+		}},
+	}
+	runArgs := map[string]interface{}{"args": map[string]interface{}{"Input-File": "report.md"}}
+	vars := normalizeSkillRunVars(runArgs)
+	params, _ := skillRunParameterContract(skill, vars, runArgs)
+	if unknown := skillRunUnconsumedArgs(skill, params, vars, runArgs); len(unknown) != 0 {
+		t.Fatalf("unknown = %#v, want none", unknown)
+	}
+}
+
 func TestSkillAgentViewFieldsPreserveRunArgsAsHiddenContext(t *testing.T) {
 	params := []corelib.NLSkillParam{{Name: "input", Required: true}}
 	fields := skillAgentViewFields(params, []string{"input"}, map[string]interface{}{"operation": "generate"})

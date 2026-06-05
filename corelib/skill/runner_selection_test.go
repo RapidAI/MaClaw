@@ -416,7 +416,7 @@ func TestResolveStepUsesCapturedAliasForPlaceholder(t *testing.T) {
 	}
 }
 
-func TestPrepareRunnerExecutionInfersInputAndCompletesParams(t *testing.T) {
+func TestPrepareRunnerExecutionCompletesParamsFromExplicitArgs(t *testing.T) {
 	entry := &corelib.NLSkillEntry{
 		Name:         "weather",
 		RequiredArgs: []string{"city"},
@@ -425,9 +425,9 @@ func TestPrepareRunnerExecutionInfersInputAndCompletesParams(t *testing.T) {
 			Params: map[string]interface{}{"command": "echo {{city}}"},
 		}},
 	}
-	vars := NormalizeRunVars(map[string]interface{}{"input": "weather in Chengdu"})
+	vars := NormalizeRunVars(map[string]interface{}{"city": "Chengdu"})
 
-	prep, err := PrepareRunnerExecution(entry, vars, map[string]interface{}{"input": "weather in Chengdu"}, nil, RunnerBackendTUI)
+	prep, err := PrepareRunnerExecution(entry, vars, map[string]interface{}{"city": "Chengdu"}, nil, RunnerBackendTUI)
 	if err != nil {
 		t.Fatalf("PrepareRunnerExecution() error = %v", err)
 	}

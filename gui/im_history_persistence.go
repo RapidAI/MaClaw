@@ -167,7 +167,24 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	if resp != nil {
 		requestID = strings.TrimSpace(resp.RequestID)
 	}
+	if requestID == "" {
+		requestID = h.activePostConversationRequestID(userID)
+	}
 	h.schedulePostConversationProcessingWithRequestID(userID, requestID, trimmed)
+}
+
+func (h *IMMessageHandler) activePostConversationRequestID(userID string) string {
+	if h == nil {
+		return ""
+	}
+	if ctx := h.getSessionLoopCtx(userID); ctx != nil {
+		return strings.TrimSpace(ctx.Runtime.RequestID)
+	}
+	ctx, _, ok := h.legacyLoopSnapshotForUser(userID)
+	if ok && ctx != nil {
+		return strings.TrimSpace(ctx.Runtime.RequestID)
+	}
+	return ""
 }
 
 func (h *IMMessageHandler) schedulePostConversationProcessing(userID string, history []agent.ConversationEntry) {

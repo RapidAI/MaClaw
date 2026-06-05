@@ -499,6 +499,9 @@ func (h *IMMessageHandler) checkSkillRunMissingParams(name string, args map[stri
 	// aliases (e.g. "text" → "input", "query" → "input").
 	cskill.ApplyRunInputInference(target, vars, runArgs)
 	params, missing := skillRunParameterContract(target, vars, runArgs)
+	if unknown := skillRunUnconsumedArgs(target, params, vars, runArgs); len(unknown) > 0 {
+		return skillRunUnconsumedArgsMessage(name, unknown, params, target)
+	}
 	if len(missing) == 0 {
 		return ""
 	}
@@ -525,6 +528,40 @@ func (h *IMMessageHandler) checkSkillRunMissingParams(name string, args map[stri
 		b.WriteString(fmt.Sprintf("\n## Skill 描述\n%s\n", desc))
 	}
 	b.WriteString("\n[action: provide_args]")
+	return b.String()
+}
+
+func skillRunUnconsumedArgsMessage(name string, unknown []string, params []corelib.NLSkillParam, target *corelib.NLSkillEntry) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Skill 启动失败：Skill「%s」未声明或消费这些运行参数。\n", name))
+	b.WriteString("\n## 未消费参数\n")
+	for _, key := range unknown {
+		b.WriteString(fmt.Sprintf("- %s\n", key))
+	}
+	b.WriteString("\n## 原因\n")
+	b.WriteString("为了避免参数被静默忽略导致错误结果，运行时要求传入参数必须出现在 Skill 参数契约、别名、required_args 或步骤模板占位符中。\n")
+	if len(params) > 0 {
+		b.WriteString("\n## 该 Skill 可消费参数\n")
+		for _, p := range params {
+			name := strings.TrimSpace(p.Name)
+			if name == "" {
+				continue
+			}
+			b.WriteString("- " + name)
+			if len(p.Aliases) > 0 {
+				b.WriteString(" (aliases: " + strings.Join(p.Aliases, ", ") + ")")
+			}
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString("\n该 Skill 当前没有声明任何可消费运行参数。\n")
+	}
+	if target != nil && strings.TrimSpace(target.Description) != "" {
+		b.WriteString("\n## Skill 描述\n")
+		b.WriteString(strings.TrimSpace(target.Description))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n[action: contract_mismatch]")
 	return b.String()
 }
 

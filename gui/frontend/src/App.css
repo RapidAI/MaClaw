@@ -4940,7 +4940,7 @@ body {
 
 /* Model Switcher */
 .model-switcher {
-    --model-switcher-row-height: 50px;
+    --model-switcher-row-height: 42px;
     --model-switcher-visible-rows: 6;
     --model-switcher-gap: 8px;
     display: grid;
@@ -4957,8 +4957,8 @@ body {
 .model-btn {
     flex: 1;
     width: 100%;
-    min-height: 50px;
-    padding: 8px 8px;
+    min-height: var(--model-switcher-row-height);
+    padding: 6px 8px;
     position: relative;
     overflow: visible;
     border: 1px solid var(--theme-border);

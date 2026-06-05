@@ -22,9 +22,15 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 
 func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history []agent.ConversationEntry, loopCtx *LoopContext, workflowAgentLoop bool, askUserContext, pendingUserReplyContext, capabilityGapContext string) string {
 	promptBuildStart := time.Now()
+	profile := ExecutionProfile{}
+	if loopCtx != nil {
+		profile = loopCtx.Runtime.Execution
+	}
 
 	var systemPrompt string
-	if h.memoryStore != nil {
+	if profile.IsLight() {
+		systemPrompt = buildLightIMSystemPrompt(msg, profile)
+	} else if h.memoryStore != nil {
 		systemPrompt = h.buildSystemPromptWithMemory(msg.Text, len(history) == 0, loopCtx)
 	} else {
 		systemPrompt = h.buildSystemPromptBaseWithExperienceContext(false, lifecycle.EventContext{}, loopCtx, msg.Text)
@@ -32,7 +38,9 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	basePromptElapsed := time.Since(promptBuildStart)
 
 	resumeStart := time.Now()
-	systemPrompt += h.buildResumeTraceContextWithLang(msg.UserID, msg.Text, msg.Lang)
+	if !profile.IsLight() {
+		systemPrompt += h.buildResumeTraceContextWithLang(msg.UserID, msg.Text, msg.Lang)
+	}
 	resumeElapsed := time.Since(resumeStart)
 
 	if workflowAgentLoop && h.getWorkflowEngine() != nil {
@@ -56,11 +64,13 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 		systemPrompt += "\n\n" + capabilityGapContext
 	}
 
-	platformKind := normalizeIMMessagePlatformKind(msg.Platform)
-	if platformKind.IsDesktop() {
-		systemPrompt += desktopWorkflowDocOverride()
-	} else if platformKind.IsKnown() || msg.Platform != "" {
-		systemPrompt += imWorkflowDocDeliveryRule()
+	if !profile.IsLight() {
+		platformKind := normalizeIMMessagePlatformKind(msg.Platform)
+		if platformKind.IsDesktop() {
+			systemPrompt += desktopWorkflowDocOverride()
+		} else if platformKind.IsKnown() || msg.Platform != "" {
+			systemPrompt += imWorkflowDocDeliveryRule()
+		}
 	}
 
 	totalPromptBuild := time.Since(promptBuildStart)
@@ -68,8 +78,26 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 		log.Printf("[buildIMEntrySystemPrompt] slow: base_prompt=%v resume_trace=%v total=%v prompt_len=%d user=%s",
 			basePromptElapsed, resumeElapsed, totalPromptBuild, len(systemPrompt), msg.UserID)
 	}
-	imPerfLog("system_prompt", promptBuildStart, imRequestID(msg), msg.UserID, "base_prompt", basePromptElapsed, "resume_trace", resumeElapsed, "prompt_len", len(systemPrompt), "history_len", len(history), "workflow", workflowAgentLoop)
+	imPerfLog("system_prompt", promptBuildStart, imRequestID(msg), msg.UserID, "base_prompt", basePromptElapsed, "resume_trace", resumeElapsed, "prompt_len", len(systemPrompt), "history_len", len(history), "workflow", workflowAgentLoop, "prompt_profile", profile.PromptProfile)
 	return systemPrompt
+}
+
+func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile) string {
+	now := time.Now()
+	var b strings.Builder
+	b.WriteString("You are MaClaw. Handle this as a low-complexity lookup task.\n")
+	b.WriteString("Use the smallest sufficient action. Prefer one relevant tool call when live data is needed, then answer immediately.\n")
+	b.WriteString("Do not inspect local files, run shell commands, manage projects, start group discussions, change memory, or create tasks for this profile.\n")
+	b.WriteString("If the user request turns out to require code, files, project context, multi-step planning, or missing parameters, say briefly that the full agent path is needed instead of improvising.\n")
+	b.WriteString("Answer in the user's language. Keep the final answer concise and practical.\n")
+	b.WriteString(fmt.Sprintf("Current local time: %s\n", now.Format("2006-01-02 15:04:05 -0700")))
+	b.WriteString(fmt.Sprintf("Execution profile: layer=%s task=%s confidence=%.2f reason=%s\n", profile.Layer, profile.TaskType, profile.Confidence, profile.Reason))
+	if strings.TrimSpace(msg.Text) != "" {
+		b.WriteString("User request:\n")
+		b.WriteString(strings.TrimSpace(msg.Text))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMessage ...string) string {

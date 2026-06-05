@@ -17,6 +17,34 @@ func TestDynamicToolBuilder_BuildAll(t *testing.T) {
 	}
 }
 
+func TestDynamicToolBuilder_AttachesExecutionContract(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(RegisteredTool{
+		Name:        "fast_clock",
+		Description: "fast clock",
+		Category:    ToolCategoryNonCode,
+		Status:      RegToolAvailable,
+		ExecutionContract: map[string]interface{}{
+			"capabilities":            []interface{}{"time"},
+			"deterministic":           true,
+			"supports_direct":         true,
+			"requires_agent_planning": false,
+		},
+	})
+	b := NewDynamicToolBuilder(r)
+	defs := b.BuildAll()
+	if len(defs) != 1 {
+		t.Fatalf("BuildAll len = %d, want 1", len(defs))
+	}
+	contract, ok := defs[0]["x_execution_contract"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing execution contract: %#v", defs[0])
+	}
+	if contract["supports_direct"] != true || contract["requires_agent_planning"] != false {
+		t.Fatalf("execution contract = %#v", contract)
+	}
+}
+
 func TestDynamicToolBuilder_Build_UnderThreshold(t *testing.T) {
 	r := NewToolRegistry()
 	for i := 0; i < 15; i++ {

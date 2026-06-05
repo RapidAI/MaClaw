@@ -71,7 +71,7 @@ func TestToTaskIntent_LowConfidenceExecutableLabelsBecomeAmbiguous(t *testing.T)
 }
 
 func TestToTaskIntent_NonCodingLabels(t *testing.T) {
-	for _, label := range []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelOffice} {
+	for _, label := range []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelOffice, LabelCurrentTime, LabelLiveData} {
 		r := &ClassificationResult{
 			Primary:    label,
 			Confidence: 0.88,
@@ -169,7 +169,7 @@ func TestToGateIntent_Maintenance(t *testing.T) {
 }
 
 func TestToGateIntent_NonCodingLabels(t *testing.T) {
-	for _, label := range []IntentLabel{LabelNonCoding, LabelSearch, LabelDocumentDelivery, LabelOffice, LabelBrowser} {
+	for _, label := range []IntentLabel{LabelNonCoding, LabelSearch, LabelDocumentDelivery, LabelOffice, LabelBrowser, LabelCurrentTime, LabelLiveData} {
 		r := &ClassificationResult{
 			Primary:    label,
 			Confidence: 0.80,
@@ -220,7 +220,7 @@ func TestIsCodingLike(t *testing.T) {
 		}
 	}
 
-	nonCodingLabels := []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelOffice, LabelSSH, LabelContinuation, LabelAmbiguous, LabelUnknown}
+	nonCodingLabels := []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelOffice, LabelCurrentTime, LabelLiveData, LabelSSH, LabelContinuation, LabelAmbiguous, LabelUnknown}
 	for _, label := range nonCodingLabels {
 		r := &ClassificationResult{Primary: label}
 		if r.IsCodingLike() {
@@ -230,7 +230,7 @@ func TestIsCodingLike(t *testing.T) {
 }
 
 func TestIsNonCodingLike(t *testing.T) {
-	nonCodingLabels := []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelOffice}
+	nonCodingLabels := []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelOffice, LabelCurrentTime, LabelLiveData}
 	for _, label := range nonCodingLabels {
 		r := &ClassificationResult{Primary: label}
 		if !r.IsNonCodingLike() {

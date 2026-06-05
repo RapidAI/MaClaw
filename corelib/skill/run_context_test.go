@@ -164,7 +164,7 @@ func TestApplyRunInputInferenceFillsRequiredArgFromNamedPrompt(t *testing.T) {
 	}
 }
 
-func TestApplyRunInputInferenceAcceptsRawKeyShapes(t *testing.T) {
+func TestApplyRunInputInferencePromotesRawKeyShapeAliases(t *testing.T) {
 	vars := map[string]string{"User Prompt": "weather in Chengdu", "Source File": "report.md"}
 	entry := &corelib.NLSkillEntry{
 		RequiredArgs: []string{"city", "input_file"},
@@ -176,29 +176,29 @@ func TestApplyRunInputInferenceAcceptsRawKeyShapes(t *testing.T) {
 
 	ApplyRunInputInference(entry, vars, nil)
 
-	if vars["city"] != "Chengdu" || vars["input_file"] != "report.md" {
-		t.Fatalf("vars = %#v, want raw key shapes inferred into canonical vars", vars)
+	if vars["city"] != "" || vars["input_file"] != "report.md" {
+		t.Fatalf("vars = %#v, want raw aliases promoted without natural-language guessing", vars)
 	}
 }
-func TestApplyRunInputInferenceCleansNaturalCityPrompt(t *testing.T) {
+func TestApplyRunInputInferenceDoesNotGuessNaturalCityPrompt(t *testing.T) {
 	vars := NormalizeRunVars(map[string]interface{}{"user_prompt": "weather in Chengdu"})
 	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
 
 	ApplyRunInputInference(entry, vars, map[string]interface{}{"user_prompt": "weather in Chengdu"})
 
-	if vars["city"] != "Chengdu" {
-		t.Fatalf("city = %q, want Chengdu", vars["city"])
+	if vars["city"] != "" {
+		t.Fatalf("city = %q, want empty without named argument", vars["city"])
 	}
 }
 
-func TestApplyRunInputInferenceCleansNaturalCityPromptWithoutPreposition(t *testing.T) {
+func TestApplyRunInputInferenceDoesNotGuessNaturalCityPromptWithoutPreposition(t *testing.T) {
 	vars := NormalizeRunVars(map[string]interface{}{"user_prompt": "weather Chengdu"})
 	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
 
 	ApplyRunInputInference(entry, vars, map[string]interface{}{"user_prompt": "weather Chengdu"})
 
-	if vars["city"] != "Chengdu" {
-		t.Fatalf("city = %q, want Chengdu", vars["city"])
+	if vars["city"] != "" {
+		t.Fatalf("city = %q, want empty without named argument", vars["city"])
 	}
 }
 
@@ -215,51 +215,51 @@ func TestApplyRunInputInferenceDoesNotTreatWeatherIntentAsCity(t *testing.T) {
 	}
 }
 
-func TestApplyRunInputInferenceExtractsChineseCityPrompt(t *testing.T) {
+func TestApplyRunInputInferenceDoesNotGuessChineseCityPrompt(t *testing.T) {
 	prompt := "\u8bf7\u67e5\u8be2\u6210\u90fd\u5929\u6c14"
 	vars := NormalizeRunVars(map[string]interface{}{"user_prompt": prompt})
 	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
 
 	ApplyRunInputInference(entry, vars, map[string]interface{}{"user_prompt": prompt})
 
-	if vars["city"] != "\u6210\u90fd" {
-		t.Fatalf("city = %q, want Chengdu in Chinese", vars["city"])
+	if vars["city"] != "" {
+		t.Fatalf("city = %q, want empty without named argument", vars["city"])
 	}
 }
 
-func TestApplyRunInputInferenceExtractsChineseWeatherPrefixCity(t *testing.T) {
+func TestApplyRunInputInferenceDoesNotGuessChineseWeatherPrefixCity(t *testing.T) {
 	prompt := "\u5929\u6c14 \u6210\u90fd"
 	vars := NormalizeRunVars(map[string]interface{}{"user_prompt": prompt})
 	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
 
 	ApplyRunInputInference(entry, vars, map[string]interface{}{"user_prompt": prompt})
 
-	if vars["city"] != "\u6210\u90fd" {
-		t.Fatalf("city = %q, want Chengdu in Chinese", vars["city"])
+	if vars["city"] != "" {
+		t.Fatalf("city = %q, want empty without named argument", vars["city"])
 	}
 }
 
-func TestApplyRunInputInferenceCleansChineseCityDateSuffix(t *testing.T) {
+func TestApplyRunInputInferenceDoesNotGuessChineseCityDateSuffix(t *testing.T) {
 	prompt := "\u67e5\u4e00\u4e0b\u6210\u90fd\u660e\u5929\u5929\u6c14"
 	vars := NormalizeRunVars(map[string]interface{}{"user_prompt": prompt})
 	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
 
 	ApplyRunInputInference(entry, vars, map[string]interface{}{"user_prompt": prompt})
 
-	if vars["city"] != "\u6210\u90fd" {
-		t.Fatalf("city = %q, want Chengdu without date suffix", vars["city"])
+	if vars["city"] != "" {
+		t.Fatalf("city = %q, want empty without named argument", vars["city"])
 	}
 }
 
-func TestApplyRunInputInferenceCleansChineseCityDatePrefix(t *testing.T) {
+func TestApplyRunInputInferenceDoesNotGuessChineseCityDatePrefix(t *testing.T) {
 	prompt := "\u67e5\u4e00\u4e0b\u660e\u5929\u6210\u90fd\u5929\u6c14"
 	vars := NormalizeRunVars(map[string]interface{}{"user_prompt": prompt})
 	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
 
 	ApplyRunInputInference(entry, vars, map[string]interface{}{"user_prompt": prompt})
 
-	if vars["city"] != "\u6210\u90fd" {
-		t.Fatalf("city = %q, want Chengdu without date prefix", vars["city"])
+	if vars["city"] != "" {
+		t.Fatalf("city = %q, want empty without named argument", vars["city"])
 	}
 }
 
@@ -275,8 +275,8 @@ func TestApplyRunInputInferenceExtractsChineseNamedCity(t *testing.T) {
 	}
 }
 
-func TestApplyRunInputInferenceUsesParamAliasesAndDescriptions(t *testing.T) {
-	vars := NormalizeRunVars(map[string]interface{}{"user_prompt": "translate this text to English"})
+func TestApplyRunInputInferenceUsesNamedParamAliases(t *testing.T) {
+	vars := NormalizeRunVars(map[string]interface{}{"user_prompt": "to_lang: English"})
 	entry := &corelib.NLSkillEntry{
 		Params: []corelib.NLSkillParam{{
 			Name:        "target_language",
@@ -286,7 +286,7 @@ func TestApplyRunInputInferenceUsesParamAliasesAndDescriptions(t *testing.T) {
 		}},
 	}
 
-	ApplyRunInputInference(entry, vars, map[string]interface{}{"user_prompt": "translate this text to English"})
+	ApplyRunInputInference(entry, vars, map[string]interface{}{"user_prompt": "to_lang: English"})
 
 	if vars["target_language"] != "English" {
 		t.Fatalf("target_language = %q, want English", vars["target_language"])
@@ -344,15 +344,15 @@ func TestApplyRunInputInferenceUsesScalarLegacyArgsAsCandidate(t *testing.T) {
 	}
 }
 
-func TestApplyRunInputInferenceFallsBackForContentParamFromPrompt(t *testing.T) {
+func TestApplyRunInputInferenceDoesNotGuessContentParamFromPrompt(t *testing.T) {
 	runArgs := map[string]interface{}{"user_prompt": "draw a deployment flowchart"}
 	vars := NormalizeRunVars(runArgs)
 	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"content"}}
 
 	ApplyRunInputInference(entry, vars, runArgs)
 
-	if vars["content"] != "draw a deployment flowchart" {
-		t.Fatalf("content = %q, want prompt inferred as content", vars["content"])
+	if vars["content"] != "" {
+		t.Fatalf("content = %q, want empty without named argument", vars["content"])
 	}
 }
 func TestApplyRunInputInferenceDoesNotWriteEmptyInferences(t *testing.T) {

@@ -58,8 +58,8 @@ python "{baseDir}/weather.py" weekly --city "{{city}}"
 		t.Fatalf("weather diagnostics = %#v, want non-blocking mojibake warning", weatherDiagnostics)
 	}
 	weather.Params = CompleteParamsForRunner(weather.Params, weather.Steps, weather.RequiredArgs)
-	weatherVars := NormalizeRunVars(map[string]interface{}{"input": "Chengdu"})
-	ApplyRunInputInference(weather, weatherVars, map[string]interface{}{"input": "Chengdu"})
+	weatherVars := NormalizeRunVars(map[string]interface{}{"city": "Chengdu"})
+	ApplyRunInputInference(weather, weatherVars, map[string]interface{}{"city": "Chengdu"})
 	if missing := MissingRunRequiredArgs(weather.RequiredArgs, weather.Params, weatherVars); len(missing) != 0 {
 		t.Fatalf("weather missing required args = %#v, vars=%#v", missing, weatherVars)
 	}

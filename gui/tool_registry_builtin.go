@@ -26,16 +26,17 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			return
 		}
 		registry.Register(RegisteredTool{
-			Name:        name,
-			Description: desc,
-			Category:    cat,
-			Tags:        tags,
-			Priority:    0,
-			Status:      RegToolAvailable,
-			InputSchema: props(schema),
-			Required:    required,
-			Source:      "builtin",
-			Handler:     handler,
+			Name:              name,
+			Description:       desc,
+			Category:          cat,
+			Tags:              tags,
+			Priority:          0,
+			Status:            RegToolAvailable,
+			InputSchema:       props(schema),
+			Required:          required,
+			Source:            "builtin",
+			ExecutionContract: defaultExplicitExecutionContractMetadata(name),
+			Handler:           handler,
 		})
 	}
 
@@ -44,16 +45,17 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			return
 		}
 		registry.Register(RegisteredTool{
-			Name:        name,
-			Description: desc,
-			Category:    cat,
-			Tags:        tags,
-			Priority:    0,
-			Status:      RegToolAvailable,
-			InputSchema: props(schema),
-			Required:    required,
-			Source:      "builtin",
-			HandlerProg: handler,
+			Name:              name,
+			Description:       desc,
+			Category:          cat,
+			Tags:              tags,
+			Priority:          0,
+			Status:            RegToolAvailable,
+			InputSchema:       props(schema),
+			Required:          required,
+			Source:            "builtin",
+			ExecutionContract: defaultExplicitExecutionContractMetadata(name),
+			HandlerProg:       handler,
 		})
 	}
 

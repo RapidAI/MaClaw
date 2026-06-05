@@ -25,14 +25,14 @@ func NewDynamicToolBuilder(registry *ToolRegistry) *DynamicToolBuilder {
 // BuildAll returns tool definitions for every available tool (no filtering).
 func (b *DynamicToolBuilder) BuildAll() []map[string]interface{} {
 	b.syncRegistry()
-	return b.inner.BuildAll()
+	return b.attachExecutionContracts(b.inner.BuildAll())
 }
 
 // Build returns tool definitions, applying context-aware filtering when
 // the number of available tools exceeds the threshold.
 func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} {
 	b.syncRegistry()
-	return b.inner.Build(userMessage)
+	return b.attachExecutionContracts(b.inner.Build(userMessage))
 }
 
 // SetEmbedder delegates to corelib/tool.DynamicToolBuilder.SetEmbedder.
@@ -72,6 +72,28 @@ func (b *DynamicToolBuilder) syncRegistry() {
 	b.inner.SetRegistry(coreReg)
 }
 
+func (b *DynamicToolBuilder) attachExecutionContracts(defs []map[string]interface{}) []map[string]interface{} {
+	if b == nil || b.registry == nil || len(defs) == 0 {
+		return defs
+	}
+	contracts := make(map[string]map[string]interface{})
+	for _, gt := range b.registry.List() {
+		if len(gt.ExecutionContract) > 0 {
+			contracts[gt.Name] = gt.ExecutionContract
+		}
+	}
+	if len(contracts) == 0 {
+		return defs
+	}
+	for _, def := range defs {
+		name := extractToolName(def)
+		if contract := contracts[name]; len(contract) > 0 {
+			def["x_execution_contract"] = contract
+		}
+	}
+	return defs
+}
+
 // guiRegistryToCorelib converts a gui ToolRegistry into a corelib tool.Registry.
 func guiRegistryToCorelib(guiReg *ToolRegistry) *tool.Registry {
 	reg := tool.NewRegistry()
@@ -98,12 +120,16 @@ func guiRegistryToCorelib(guiReg *ToolRegistry) *tool.Registry {
 // registeredToolToDef converts a gui RegisteredTool to an OpenAI function
 // calling definition. Delegates to corelib/tool.RegisteredToolToDef.
 func registeredToolToDef(t RegisteredTool) map[string]interface{} {
-	return tool.RegisteredToolToDef(tool.RegisteredTool{
+	def := tool.RegisteredToolToDef(tool.RegisteredTool{
 		Name:        t.Name,
 		Description: t.Description,
 		InputSchema: t.InputSchema,
 		Required:    t.Required,
 	})
+	if len(t.ExecutionContract) > 0 {
+		def["x_execution_contract"] = t.ExecutionContract
+	}
+	return def
 }
 
 // groupKeywords and detectGroupTags are now delegated to corelib.

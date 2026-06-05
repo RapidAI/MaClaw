@@ -201,6 +201,49 @@ func skillRunParameterContract(skill *corelib.NLSkillEntry, vars map[string]stri
 	return params, missing
 }
 
+func skillRunUnconsumedArgs(skill *corelib.NLSkillEntry, params []corelib.NLSkillParam, vars map[string]string, runArgs map[string]interface{}) []string {
+	if skill == nil || len(vars) == 0 || len(runArgs) == 0 {
+		return nil
+	}
+	selectedSteps, err := cskill.ResolveSelectedStepLabels(skill, runArgs)
+	if err != nil {
+		selectedSteps = nil
+	}
+	executionSteps := cskill.SelectedExecutableSteps(skill.Steps, selectedSteps)
+	if len(executionSteps) == 0 {
+		executionSteps = skill.Steps
+	}
+	allowed := cskill.ParameterBindingKeySet(params)
+	for _, key := range skill.RequiredArgs {
+		if key := cskill.CanonicalRunVarKey(key); key != "" {
+			allowed[key] = true
+		}
+	}
+	for _, step := range executionSteps {
+		for _, value := range step.Params {
+			for _, key := range cskill.ExtractPlaceholderKeys(fmt.Sprint(value)) {
+				if normalized := cskill.CanonicalRunVarKey(key); normalized != "" {
+					allowed[normalized] = true
+				}
+			}
+		}
+	}
+	unknownSet := map[string]bool{}
+	for key := range vars {
+		normalized := cskill.CanonicalRunVarKey(key)
+		if normalized == "" || allowed[normalized] || cskill.IsUndeclaredRunCarrierKey(key) {
+			continue
+		}
+		unknownSet[key] = true
+	}
+	unknown := make([]string, 0, len(unknownSet))
+	for key := range unknownSet {
+		unknown = append(unknown, key)
+	}
+	sort.Strings(unknown)
+	return unknown
+}
+
 func skillNeedsOperationChoice(skill *corelib.NLSkillEntry, runArgs map[string]interface{}) bool {
 	if skill == nil || !strings.EqualFold(skill.Mode, "api_workflow") {
 		return false

@@ -131,6 +131,27 @@ func isUndeclaredRunCarrierKey(key string) bool {
 	}
 }
 
+// IsUndeclaredRunCarrierKey reports generic runner input carriers that may be
+// used for inference even when not declared as concrete skill parameters.
+func IsUndeclaredRunCarrierKey(key string) bool {
+	return isUndeclaredRunCarrierKey(key)
+}
+
+// ParameterBindingKeySet returns every canonical input key BindParams may
+// consume for the given schema, including common aliases.
+func ParameterBindingKeySet(params []corelib.NLSkillParam) map[string]bool {
+	primaryNames := schemaPrimaryParamNames(params)
+	result := make(map[string]bool)
+	for _, p := range params {
+		for _, name := range paramBindingNamesForSchema(p, primaryNames) {
+			if name != "" {
+				result[name] = true
+			}
+		}
+	}
+	return result
+}
+
 func canonicalParamNames(names []string) []string {
 	seen := map[string]bool{}
 	var result []string

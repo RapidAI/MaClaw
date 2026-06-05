@@ -29,19 +29,20 @@ type ToolHandler func(args map[string]interface{}) string
 type ToolHandlerWithProgress func(args map[string]interface{}, onProgress tool.ProgressCallback) string
 
 type RegisteredTool struct {
-	Name        string                  `json:"name"`
-	Description string                  `json:"description"`
-	Category    ToolCategory            `json:"category"`
-	Tags        []string                `json:"tags"`
-	Priority    int                     `json:"priority"`
-	Status      RegToolStatus           `json:"status"`
-	InputSchema map[string]interface{}  `json:"input_schema"`
-	Required    []string                `json:"required"`
-	Source      string                  `json:"source"`
-	Body        string                  `json:"body,omitempty"`
-	BodySummary string                  `json:"body_summary,omitempty"`
-	Handler     ToolHandler             `json:"-"`
-	HandlerProg ToolHandlerWithProgress `json:"-"`
+	Name              string                  `json:"name"`
+	Description       string                  `json:"description"`
+	Category          ToolCategory            `json:"category"`
+	Tags              []string                `json:"tags"`
+	Priority          int                     `json:"priority"`
+	Status            RegToolStatus           `json:"status"`
+	InputSchema       map[string]interface{}  `json:"input_schema"`
+	Required          []string                `json:"required"`
+	Source            string                  `json:"source"`
+	ExecutionContract map[string]interface{}  `json:"x_execution_contract,omitempty"`
+	Body              string                  `json:"body,omitempty"`
+	BodySummary       string                  `json:"body_summary,omitempty"`
+	Handler           ToolHandler             `json:"-"`
+	HandlerProg       ToolHandlerWithProgress `json:"-"`
 }
 
 type ToolRegistry struct {

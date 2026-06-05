@@ -13,12 +13,14 @@ func NewToolAffinityRegistry() *ToolAffinityRegistry {
 		mapping: map[IntentLabel][]string{
 			LabelSSH:              {"ssh"},
 			LabelSearch:           {"web_search"},
+			LabelLiveData:         {"web_search"},
 			LabelDocumentDelivery: {"send_file", "open", "craft_tool"},
 			LabelBusinessData:     {"mis_data"},
 			LabelBrowser: {
 				"browser",
 			},
-			LabelOffice: {"office"},
+			LabelOffice:      {"office"},
+			LabelCurrentTime: {"current_datetime"},
 			LabelKnowledgeWrite: {
 				"knowledge_save_text",
 				"knowledge_save_url", "knowledge_save_urls",

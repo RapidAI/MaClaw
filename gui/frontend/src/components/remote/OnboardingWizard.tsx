@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { colors, radius } from "./styles";
 import { QRCodeSVG } from "qrcode.react";
 import {
@@ -688,7 +689,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     })();
     const srOnlyStyle = { position: "absolute", width: 1, height: 1, padding: 0, margin: -1, overflow: "hidden", clip: "rect(0, 0, 0, 0)", whiteSpace: "nowrap", border: 0 } as const;
 
-    return (
+    return createPortal(
         <div style={{
             position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
             background: "rgba(0,0,0,0.3)", backdropFilter: "blur(3px)",
@@ -1391,6 +1392,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     </div>
                 </div>
             )}
-        </div>
+        </div>,
+        document.body,
     );
 }

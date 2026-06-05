@@ -193,6 +193,12 @@ func canonicalRunVarKey(key string) string {
 	return strings.Trim(b.String(), "_")
 }
 
+// CanonicalRunVarKey exposes the runner's canonical parameter-key normalizer so
+// callers that validate skill arguments do not drift from BindParams.
+func CanonicalRunVarKey(key string) string {
+	return canonicalRunVarKey(key)
+}
+
 func isRunControlKey(key string) bool {
 	key = canonicalRunVarKey(key)
 	if IsManageSkillRunnerControlKey(key) {
@@ -645,11 +651,6 @@ func inferRunParamValue(param corelib.NLSkillParam, candidates []string) string 
 			}
 		}
 	}
-	for _, candidate := range candidates {
-		if value := fallbackRunParamValue(param, candidate); value != "" {
-			return value
-		}
-	}
 	return ""
 }
 
@@ -717,39 +718,6 @@ func normalizeRunParamToken(value string) string {
 	return replacer.Replace(value)
 }
 
-func fallbackRunParamValue(param corelib.NLSkillParam, text string) string {
-	arg := strings.ToLower(strings.TrimSpace(param.Name))
-	switch runParamKind(param) {
-	case "city":
-		return extractCityRunArg(text)
-	case "target_language":
-		if value := extractTargetLanguageRunArg(text); value != "" {
-			return value
-		}
-	case "source_language":
-		if value := extractSourceLanguageRunArg(text); value != "" {
-			return value
-		}
-	}
-	return fallbackScalarRunArgValue(arg, text)
-}
-
-func legacyRunArgKind(arg string) string {
-	arg = strings.ToLower(strings.TrimSpace(arg))
-	switch normalizeRunParamToken(arg) {
-	case "city", "location", "place", "area", "weathercity":
-		return "city"
-	case "targetlanguage", "targetlang", "tolang", "language", "lang":
-		return "target_language"
-	case "sourcelanguage", "sourcelang", "fromlang":
-		return "source_language"
-	case "format", "fmt", "outputformat":
-		return "format"
-	default:
-		return ""
-	}
-}
-
 func extractNamedRunArg(text, arg string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -777,155 +745,6 @@ func cleanInferredRunArgValue(value string) string {
 		}
 	}
 	return value
-}
-
-func fallbackRunArgValue(arg, text string) string {
-	switch legacyRunArgKind(arg) {
-	case "city":
-		return extractCityRunArg(text)
-	case "target_language":
-		if value := extractTargetLanguageRunArg(text); value != "" {
-			return value
-		}
-	case "source_language":
-		if value := extractSourceLanguageRunArg(text); value != "" {
-			return value
-		}
-	}
-	return fallbackScalarRunArgValue(arg, text)
-}
-
-func fallbackScalarRunArgValue(arg, text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" || strings.HasPrefix(text, "{") {
-		return ""
-	}
-	switch arg {
-	case "city", "location", "place", "area", "text", "content", "message", "prompt", "description", "task", "query", "url", "path", "file", "input":
-		return text
-	default:
-		return ""
-	}
-}
-
-func extractCityRunArg(text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" || strings.HasPrefix(text, "{") {
-		return ""
-	}
-	for _, pattern := range []string{
-		`(?i)\b(?:weather|forecast)\s+(?:in|for|at)\s+([a-z][a-z .'-]{0,40})`,
-		`(?i)\b(?:weather|forecast)\s+([a-z][a-z .'-]{0,40})`,
-		`(?i)\b(?:in|for|at)\s+([a-z][a-z .'-]{0,40})\s+(?:weather|forecast)\b`,
-	} {
-		if re, err := regexp.Compile(pattern); err == nil {
-			if m := re.FindStringSubmatch(text); len(m) > 1 {
-				return cleanCityRunArgValue(m[1])
-			}
-		}
-	}
-	trimmed := stripRunIntentPrefix(text)
-	for _, pattern := range []string{
-		"^(?:\u5929\u6c14|\u6c14\u6e29|\u9884\u62a5)\\s*([\\p{Han}A-Za-z][\\p{Han}A-Za-z .'-]{0,40})$",
-		"^(.+?)(?:\u7684)?(?:\u5929\u6c14|\u6c14\u6e29|\u9884\u62a5)(?:\u600e\u4e48\u6837|\u5982\u4f55|\u4fe1\u606f)?$",
-		`^(.+?)(?:\s+)?(?:weather|forecast)$`,
-	} {
-		if re, err := regexp.Compile(pattern); err == nil {
-			if m := re.FindStringSubmatch(trimmed); len(m) > 1 {
-				return cleanCityRunArgValue(m[1])
-			}
-		}
-	}
-	if !strings.ContainsAny(trimmed, " ,.;\uff0c\u3002\uff1b\uff1f\uff01?") && len([]rune(trimmed)) <= 32 {
-		return cleanCityRunArgValue(trimmed)
-	}
-	return ""
-}
-
-func stripRunIntentPrefix(text string) string {
-	text = strings.TrimSpace(text)
-	for {
-		before := text
-		for _, prefix := range []string{"\u8bf7\u5e2e\u6211", "\u5e2e\u6211", "\u9ebb\u70e6", "\u8bf7", "\u67e5\u8be2\u4e00\u4e0b", "\u67e5\u4e00\u4e0b", "\u67e5\u8be2", "\u67e5\u770b", "\u83b7\u53d6", "\u7ed9\u6211", "\u67e5", "please", "look up", "show me", "tell me"} {
-			if strings.HasPrefix(strings.ToLower(text), prefix) {
-				text = strings.TrimSpace(text[len(prefix):])
-			}
-		}
-		if text == before {
-			return text
-		}
-	}
-}
-
-func cleanCityRunArgValue(value string) string {
-	value = cleanInferredRunArgValue(value)
-	value = strings.TrimSpace(strings.TrimSuffix(value, "\u7684"))
-	for _, prefix := range []string{"\u4eca\u5929", "\u660e\u5929", "\u540e\u5929"} {
-		value = strings.TrimSpace(strings.TrimPrefix(value, prefix))
-	}
-	for _, marker := range []string{" today", " tomorrow", " please", " \u4eca\u5929", " \u660e\u5929", " \u540e\u5929", "\u4eca\u5929", "\u660e\u5929", "\u540e\u5929"} {
-		if idx := strings.Index(strings.ToLower(value), marker); idx > 0 {
-			value = strings.TrimSpace(value[:idx])
-		}
-	}
-	value = strings.Trim(value, " ,.;\uff0c\u3002\uff1b\uff1f\uff01?")
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "weather", "forecast", "current weather", "weather forecast", "today", "tomorrow", "\u5929\u6c14", "\u6c14\u6e29", "\u9884\u62a5", "\u4eca\u5929", "\u660e\u5929", "\u540e\u5929":
-		return ""
-	default:
-		return value
-	}
-}
-
-func extractTargetLanguageRunArg(text string) string {
-	return extractLanguageRunArg(text, []string{
-		`(?i)\b(?:translate|translation).*?\bto\s+([a-z][a-z -]{1,30})`,
-		"(?:\u7ffb\u8bd1|\u8f49\u8b6f|\u7ffb\u8b6f)(?:\u6210|\u4e3a|\u70ba|\u5230)?\\s*([\\p{Han}A-Za-z][\\p{Han}A-Za-z -]{0,20})",
-	})
-}
-
-func extractSourceLanguageRunArg(text string) string {
-	return extractLanguageRunArg(text, []string{
-		`(?i)\bfrom\s+([a-z][a-z -]{1,30})\b.*?\b(?:to|translate)\b`,
-		"(?:\u4ece|\u7531)\\s*([\\p{Han}A-Za-z][\\p{Han}A-Za-z -]{0,20})(?:\u7ffb\u8bd1|\u8f49\u8b6f|\u7ffb\u8b6f|\u8bd1|\u8b6f)",
-	})
-}
-
-func extractLanguageRunArg(text string, patterns []string) string {
-	text = strings.TrimSpace(text)
-	if text == "" || strings.HasPrefix(text, "{") {
-		return ""
-	}
-	for _, pattern := range patterns {
-		if re, err := regexp.Compile(pattern); err == nil {
-			if m := re.FindStringSubmatch(text); len(m) > 1 {
-				return normalizeLanguageRunArg(cleanInferredRunArgValue(m[1]))
-			}
-		}
-	}
-	return ""
-}
-
-func normalizeLanguageRunArg(value string) string {
-	value = strings.Trim(value, " ,.;\uff0c\u3002\uff1b\uff1f\uff01?")
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "\u82f1\u6587", "\u82f1\u8bed", "\u82f1\u8a9e", "english", "en", "en-us", "en_us":
-		return "English"
-	case "\u4e2d\u6587", "\u6c49\u8bed", "\u6f22\u8a9e", "\u7b80\u4f53\u4e2d\u6587", "\u7c21\u9ad4\u4e2d\u6587", "chinese", "zh", "zh-cn", "zh_cn":
-		return "Chinese"
-	case "\u65e5\u6587", "\u65e5\u8bed", "\u65e5\u8a9e", "japanese", "ja", "jp":
-		return "Japanese"
-	case "\u97e9\u6587", "\u97e9\u8bed", "\u97d3\u8a9e", "korean", "ko":
-		return "Korean"
-	case "\u6cd5\u6587", "\u6cd5\u8bed", "\u6cd5\u8a9e", "french", "fr":
-		return "French"
-	case "\u5fb7\u6587", "\u5fb7\u8bed", "\u5fb7\u8a9e", "german", "de":
-		return "German"
-	case "\u897f\u73ed\u7259\u8bed", "\u897f\u73ed\u7259\u8a9e", "spanish", "es":
-		return "Spanish"
-	default:
-		return strings.TrimSpace(value)
-	}
 }
 
 func MergeRequiredEnvParam(params map[string]interface{}, required []string) {

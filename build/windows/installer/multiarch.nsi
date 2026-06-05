@@ -124,15 +124,15 @@ LangString AppStillRunning ${LANG_SPANISH} "No se pudo detener ${INFO_PRODUCTNAM
 LangString AppStillRunning ${LANG_RUSSIAN} "Не удалось остановить ${INFO_PRODUCTNAME}. Закройте его вручную и запустите установщик снова."
 
 # Localized strings for uninstall user data dialog
-LangString DeleteUserData ${LANG_ENGLISH} "Do you want to delete user data (.cceasy and part of .maclaw)?$\n$\nThis will remove AI tools, configurations and cache.$\nNote: .maclaw/data, .maclaw/models and memories.json will be preserved."
-LangString DeleteUserData ${LANG_SIMPCHINESE} "是否删除用户数据（.cceasy 和部分 .maclaw 内容）？$\n$\n这将删除 AI 工具、配置和缓存。$\n注意：.maclaw/data、.maclaw/models 和 memories.json 将被保留。"
-LangString DeleteUserData ${LANG_TRADCHINESE} "是否刪除使用者資料（.cceasy 和部分 .maclaw 內容）？$\n$\n這將刪除 AI 工具、設定和快取。$\n注意：.maclaw/data、.maclaw/models 和 memories.json 將被保留。"
-LangString DeleteUserData ${LANG_JAPANESE} "ユーザーデータ（.cceasy と .maclaw の一部）を削除しますか？$\n$\nAIツール、設定、キャッシュが削除されます。$\n注意：.maclaw/data、.maclaw/models、memories.json は保持されます。"
-LangString DeleteUserData ${LANG_KOREAN} "사용자 데이터(.cceasy 및 .maclaw 일부)를 삭제하시겠습니까?$\n$\nAI 도구, 설정 및 캐시가 삭제됩니다.$\n참고: .maclaw/data, .maclaw/models 및 memories.json은 보존됩니다."
-LangString DeleteUserData ${LANG_FRENCH} "Voulez-vous supprimer les données utilisateur (.cceasy et une partie de .maclaw) ?$\n$\nCela supprimera les outils IA, configurations et cache.$\nNote : .maclaw/data, .maclaw/models et memories.json seront conservés."
-LangString DeleteUserData ${LANG_GERMAN} "Möchten Sie die Benutzerdaten (.cceasy und einen Teil von .maclaw) löschen?$\n$\nDies entfernt KI-Tools, Konfigurationen und Cache.$\nHinweis: .maclaw/data, .maclaw/models und memories.json werden beibehalten."
-LangString DeleteUserData ${LANG_SPANISH} "¿Desea eliminar los datos de usuario (.cceasy y parte de .maclaw)?$\n$\nEsto eliminará herramientas IA, configuraciones y caché.$\nNota: .maclaw/data, .maclaw/models y memories.json se conservarán."
-LangString DeleteUserData ${LANG_RUSSIAN} "Удалить пользовательские данные (.cceasy и часть .maclaw)?$\n$\nБудут удалены ИИ-инструменты, настройки и кэш.$\nПримечание: .maclaw/data, .maclaw/models и memories.json будут сохранены."
+LangString DeleteUserData ${LANG_ENGLISH} "Do you want to delete user data (.cceasy and part of .maclaw)?$\n$\nThis will remove AI tools and cache.$\nNote: .maclaw/data, .maclaw/models, config.json and memories.json will be preserved."
+LangString DeleteUserData ${LANG_SIMPCHINESE} "是否删除用户数据（.cceasy 和部分 .maclaw 内容）？$\n$\n这将删除 AI 工具和缓存。$\n注意：.maclaw/data、.maclaw/models、config.json 和 memories.json 将被保留。"
+LangString DeleteUserData ${LANG_TRADCHINESE} "是否刪除使用者資料（.cceasy 和部分 .maclaw 內容）？$\n$\n這將刪除 AI 工具和快取。$\n注意：.maclaw/data、.maclaw/models、config.json 和 memories.json 將被保留。"
+LangString DeleteUserData ${LANG_JAPANESE} "ユーザーデータ（.cceasy と .maclaw の一部）を削除しますか？$\n$\nAIツールとキャッシュが削除されます。$\n注意：.maclaw/data、.maclaw/models、config.json、memories.json は保持されます。"
+LangString DeleteUserData ${LANG_KOREAN} "사용자 데이터(.cceasy 및 .maclaw 일부)를 삭제하시겠습니까?$\n$\nAI 도구 및 캐시가 삭제됩니다.$\n참고: .maclaw/data, .maclaw/models, config.json 및 memories.json은 보존됩니다."
+LangString DeleteUserData ${LANG_FRENCH} "Voulez-vous supprimer les données utilisateur (.cceasy et une partie de .maclaw) ?$\n$\nCela supprimera les outils IA et le cache.$\nNote : .maclaw/data, .maclaw/models, config.json et memories.json seront conservés."
+LangString DeleteUserData ${LANG_GERMAN} "Möchten Sie die Benutzerdaten (.cceasy und einen Teil von .maclaw) löschen?$\n$\nDies entfernt KI-Tools und Cache.$\nHinweis: .maclaw/data, .maclaw/models, config.json und memories.json werden beibehalten."
+LangString DeleteUserData ${LANG_SPANISH} "¿Desea eliminar los datos de usuario (.cceasy y parte de .maclaw)?$\n$\nEsto eliminará herramientas IA y caché.$\nNota: .maclaw/data, .maclaw/models, config.json y memories.json se conservarán."
+LangString DeleteUserData ${LANG_RUSSIAN} "Удалить пользовательские данные (.cceasy и часть .maclaw)?$\n$\nБудут удалены ИИ-инструменты и кэш.$\nПримечание: .maclaw/data, .maclaw/models, config.json и memories.json будут сохранены."
 
 Name "${INFO_PRODUCTNAME}"
 OutFile "..\..\..\dist\${INFO_PROJECTNAME}-Setup.exe"
@@ -290,6 +290,9 @@ Section "uninstall"
     DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${AUTOSTART_REG_NAME}"
 
     # Ask user if they want to delete user data
+    # In silent mode (/S), skip user data deletion — silent uninstall is typically
+    # triggered by the installer during upgrade, where we must preserve user data.
+    IfSilent skipUserData
     MessageBox MB_YESNO|MB_ICONQUESTION "$(DeleteUserData)" IDYES deleteUserData IDNO skipUserData
     
     deleteUserData:
@@ -299,9 +302,9 @@ Section "uninstall"
     DetailPrint "Deleting user data directories..."
     nsExec::ExecToLog 'cmd /c rd /s /q "$PROFILE\.cceasy"'
 
-    # Preserve .maclaw/data, .maclaw/models and memories.json while cleaning other .maclaw content
-    DetailPrint "Cleaning .maclaw while preserving data, models and memories.json..."
-    nsExec::ExecToLog 'cmd /c if exist "$PROFILE\.maclaw" (for /d %D in ("$PROFILE\.maclaw\*") do @if /I not "%~nxD"=="data" if /I not "%~nxD"=="models" rd /s /q "%D" & for %F in ("$PROFILE\.maclaw\*") do @if /I not "%~nxF"=="memories.json" del /f /q "%F")'
+    # Preserve .maclaw/data, .maclaw/models, config.json and memories.json while cleaning other .maclaw content
+    DetailPrint "Cleaning .maclaw while preserving data, models, config.json and memories.json..."
+    nsExec::ExecToLog 'cmd /c if exist "$PROFILE\.maclaw" (for /d %D in ("$PROFILE\.maclaw\*") do @if /I not "%~nxD"=="data" if /I not "%~nxD"=="models" rd /s /q "%D" & for %F in ("$PROFILE\.maclaw\*") do @if /I not "%~nxF"=="memories.json" if /I not "%~nxF"=="config.json" del /f /q "%F")'
 
     skipUserData:
 SectionEnd
