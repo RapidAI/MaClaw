@@ -32,7 +32,7 @@ func (h *IMMessageHandler) prepareAgentLoopCodingGate(userID, userText string, c
 	}
 	gateConfig := codingToolGateConfig{}
 	if loopKind == LoopKindBackground {
-		gateConfig = codingToolGateConfig{reason: "gate inactive: background loop"}
+		gateConfig = backgroundCodingToolGateConfig()
 	} else if ctx != nil && ctx.Runtime.SemanticIntent != nil {
 		result := gateIntentResultFromSemanticResult(*ctx.Runtime.SemanticIntent)
 		skip := result.Intent == GateIntentContinuation

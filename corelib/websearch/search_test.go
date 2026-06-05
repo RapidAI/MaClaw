@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -84,15 +86,127 @@ func TestSearchWithProvider_FallbackOnMissingKey(t *testing.T) {
 	}
 }
 
-func TestSearchWithProvider_ProviderErrorDoesNotFallback(t *testing.T) {
+func TestSearchWithProvider_ProviderErrorFallsBackToDirectSearch(t *testing.T) {
+	legacyURL := defaultLegacySearchURL
+	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><a class="result__a" href="https://example.com/direct-fallback">Direct Fallback</a><a class="result__snippet">direct fallback snippet</a></body></html>`))
+	}))
+	defaultLegacySearchURL = legacyServer.URL
+	defer func() {
+		defaultLegacySearchURL = legacyURL
+		legacyServer.Close()
+	}()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad key", http.StatusUnauthorized)
 	}))
 	defer server.Close()
 
-	_, err := SearchWithProvider("golang", 5, corelib.WebSearchProvider{Type: "serper", Key: "bad", BaseURL: server.URL})
+	results, err := SearchWithProvider("golang", 5, corelib.WebSearchProvider{Type: "serper", Key: "bad", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("SearchWithProvider() error = %v", err)
+	}
+	if len(results) != 1 || results[0].Title != "Direct Fallback" {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+}
+
+func TestSearchWithProvider_DuckDuckGoHTTP202FallsBackToDirectSearch(t *testing.T) {
+	legacyURL := defaultLegacySearchURL
+	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><a class="result__a" href="https://example.com/ddg-direct">DDG Direct</a><a class="result__snippet">ddg direct snippet</a></body></html>`))
+	}))
+	defaultLegacySearchURL = legacyServer.URL
+	defer func() {
+		defaultLegacySearchURL = legacyURL
+		legacyServer.Close()
+	}()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "accepted but not ready", http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	results, err := SearchWithProvider("golang", 5, corelib.WebSearchProvider{Type: "duckduckgo", BaseURL: server.URL})
+	if err == nil {
+		if len(results) != 1 || results[0].Title != "DDG Direct" {
+			t.Fatalf("unexpected results: %+v", results)
+		}
+		return
+	}
+	t.Fatalf("SearchWithProvider() error = %v", err)
+}
+
+func TestFallbackDirectSearchRespectsParentContextAfterProviderError(t *testing.T) {
+	legacyURL := defaultLegacySearchURL
+	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><a class="result__a" href="https://example.com/canceled-context">Canceled Context</a><a class="result__snippet">canceled context snippet</a></body></html>`))
+	}))
+	defaultLegacySearchURL = legacyServer.URL
+	defer func() {
+		defaultLegacySearchURL = legacyURL
+		legacyServer.Close()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := fallbackDirectSearch(ctx, "golang", 5, corelib.WebSearchProvider{Type: "serper"}, context.Canceled, nil)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("err = %v, want context canceled", err)
+	}
+}
+
+func TestSearchWithProvider_ProviderTimeoutStillFallsBackWithinGlobalBudget(t *testing.T) {
+	legacyURL := defaultLegacySearchURL
+	oldSearchTimeout := searchTimeout
+	oldProviderSearchTimeout := providerSearchTimeout
+	oldFallbackSearchTimeout := fallbackSearchTimeout
+
+	searchTimeout = 250 * time.Millisecond
+	providerSearchTimeout = 20 * time.Millisecond
+	fallbackSearchTimeout = 150 * time.Millisecond
+
+	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><a class="result__a" href="https://example.com/timeout-direct">Timeout Direct</a><a class="result__snippet">timeout direct snippet</a></body></html>`))
+	}))
+	defaultLegacySearchURL = legacyServer.URL
+	defer func() {
+		defaultLegacySearchURL = legacyURL
+		searchTimeout = oldSearchTimeout
+		providerSearchTimeout = oldProviderSearchTimeout
+		fallbackSearchTimeout = oldFallbackSearchTimeout
+		legacyServer.Close()
+	}()
+
+	providerCanceled := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		select {
+		case providerCanceled <- struct{}{}:
+		default:
+		}
+	}))
+	defer server.Close()
+
+	results, err := SearchWithProvider("golang", 5, corelib.WebSearchProvider{Type: "serper", Key: "slow", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("SearchWithProvider() error = %v", err)
+	}
+	select {
+	case <-providerCanceled:
+	default:
+		t.Fatal("provider request was not canceled before fallback")
+	}
+	if len(results) != 1 || results[0].Title != "Timeout Direct" {
+		t.Fatalf("unexpected results: %+v", results)
 	}
 }
 

@@ -5,7 +5,7 @@ const capabilityIconAfterPunctuationPattern = new RegExp(`([\\uff1a:;\\uff1b])\\
 const capabilityIconMidSentencePattern = new RegExp(`([^\\n\\s])\\s+(${digitalEmployeeCapabilityIconPattern}\\s*)`, "gu");
 const markdownSensitiveSpanPattern = /(!?\[[^\]\n]+\]\([^)\n]+\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^\s*\n][^*\n]*\*)|(https?:\/\/[^\s<>()]+)|([A-Za-z]:\\[^\n\r\s*?"<>|]+)/g;
 const compactPipeTableSeparatorPattern = /(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)/g;
-const bareHeadingMarkerBeforeTextPattern = /(^|\n)(#{1,6})[ \t\r]*\n(?=[^\n\s])/g;
+const bareHeadingMarkerBeforeTextPattern = /(^|\n)(#{1,6})[ \t\r]*\n\n?(?=[^\n\s])/g;
 const compactHeadingMarkerPattern = /([^#\n\s])\s*(#{2,6})(?=[^\s#\d.,;:!?，。；：！？、)\]）}])/gu;
 
 function hasMultipleCapabilityIcons(text: string): boolean {
@@ -72,7 +72,7 @@ export function normalizeInlineListMarkers(content: string): string {
             .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{2,6})(?=[^#\s])/g, "$1\n$2 ")
             .replace(compactHeadingMarkerPattern, "$1\n$2 ")
             .replace(/([^#\n\s])\s*(#{2,6})(?=[\p{Emoji_Presentation}\p{So}])/gu, "$1\n$2 ")
-            .replace(/(^|\n)(#{3,6})(?=[^#\s])/g, "$1$2 ")
+            .replace(/(^|\n)(#{2,6})(?=[^#\s])/g, "$1$2 ")
             .replace(/([\uff1a:])\s*(-\s+)/g, "$1\n$2")
             .replace(/([^\n\s])(- (?:[\p{Emoji_Presentation}\p{So}]|[*]{2}|\p{L}))/gu, "$1\n$2")
             .replace(/([^\n\s])(\d+[.)]\s+)/g, "$1\n$2")

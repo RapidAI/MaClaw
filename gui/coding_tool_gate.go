@@ -176,6 +176,13 @@ func newCodingToolGateConfig(userText string, loopKind LoopKind) codingToolGateC
 	return newCodingToolGateConfigWithClassifier(userText, loopKind, nil, nil, "")
 }
 
+func backgroundCodingToolGateConfig() codingToolGateConfig {
+	return codingToolGateConfig{
+		intent: intentUnknown,
+		reason: "gate inactive: background loop",
+	}
+}
+
 // newCodingToolGateConfigWithClassifier is like newCodingToolGateConfig but
 // accepts an optional GateIntentClassifier for semantic classification and
 // a userID for conversation context lookup.
@@ -191,9 +198,7 @@ func newCodingToolGateConfig(userText string, loopKind LoopKind) codingToolGateC
 func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, gic *GateIntentClassifier, uic *intent.UnifiedIntentClassifier, userID string) codingToolGateConfig {
 	// Background loop always bypasses the gate, regardless of classification.
 	if loopKind == LoopKindBackground {
-		return codingToolGateConfig{
-			reason: "gate inactive: background loop",
-		}
+		return backgroundCodingToolGateConfig()
 	}
 
 	// Try semantic classification first when classifier is available.

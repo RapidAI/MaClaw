@@ -2441,12 +2441,13 @@ function App() {
     const handleAddNewProject = async () => {
         if (!config) return;
 
+        const existingProjects = config.projects || [];
         let baseName = "Project";
         let newName = "";
         let i = 1;
         while (true) {
             newName = `${baseName} ${i}`;
-            if (!config.projects.some((p: any) => p.name === newName)) break;
+            if (!existingProjects.some((p: any) => p.name === newName)) break;
             i++;
         }
 
@@ -2459,7 +2460,7 @@ function App() {
             yolo_mode: false
         };
 
-        const newProjects = [...config.projects, newProject];
+        const newProjects = [...existingProjects, newProject];
         const newConfig = new main.AppConfig({ ...config, projects: newProjects });
         setConfig(newConfig);
         void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save new project:', err));

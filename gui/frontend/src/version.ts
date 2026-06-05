@@ -1,2 +1,2 @@
-﻿export const buildNumber = '10878';
-export const appVersion = '6.2.0.10878';
+﻿export const buildNumber = '10880';
+export const appVersion = '6.2.0.10880';

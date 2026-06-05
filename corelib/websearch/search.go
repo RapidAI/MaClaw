@@ -23,6 +23,12 @@ const (
 
 var defaultLegacySearchURL = "https://html.duckduckgo.com/html/"
 
+var (
+	searchTimeout         = 15 * time.Second
+	providerSearchTimeout = 6 * time.Second
+	fallbackSearchTimeout = 8 * time.Second
+)
+
 // SearchResult represents a single search result.
 type SearchResult struct {
 	Title   string `json:"title"`
@@ -44,8 +50,10 @@ func Search(query string, maxResults int) ([]SearchResult, error) {
 	return results, nil
 }
 
-// SearchWithProvider performs a provider-aware search and falls back to Search
-// when the selected provider is unavailable due to missing credentials.
+// SearchWithProvider performs a provider-aware search and falls back to direct
+// HTML search when the selected provider is unavailable or fails. Search API
+// outages should degrade to ordinary web access instead of making live-data
+// tasks report that search is unavailable.
 func SearchWithProvider(query string, maxResults int, provider corelib.WebSearchProvider) ([]SearchResult, error) {
 	query, maxResults, ctx, cancel, err := prepareSearch(query, maxResults)
 	if err != nil {
@@ -54,27 +62,35 @@ func SearchWithProvider(query string, maxResults int, provider corelib.WebSearch
 	defer cancel()
 
 	provider = normalizeProvider(provider)
+	providerCtx, providerCancel := context.WithTimeout(ctx, providerSearchTimeout)
+	defer providerCancel()
+
+	var results []SearchResult
 	switch provider.Type {
 	case "brave":
 		if provider.Key == "" {
 			return searchDirectLegacy(ctx, query, maxResults)
 		}
-		return searchBrave(ctx, provider, query, maxResults)
+		results, err = searchBrave(providerCtx, provider, query, maxResults)
 	case "serper":
 		if provider.Key == "" {
 			return searchDirectLegacy(ctx, query, maxResults)
 		}
-		return searchSerper(ctx, provider, query, maxResults)
+		results, err = searchSerper(providerCtx, provider, query, maxResults)
 	case "tinyfish":
 		if provider.Key == "" {
 			return searchDirectLegacy(ctx, query, maxResults)
 		}
-		return searchTinyFish(ctx, provider, query, maxResults)
+		results, err = searchTinyFish(providerCtx, provider, query, maxResults)
 	case "duckduckgo":
-		return searchDuckDuckGo(ctx, provider, query, maxResults)
+		results, err = searchDuckDuckGo(providerCtx, provider, query, maxResults)
 	default:
 		return searchDirectLegacy(ctx, query, maxResults)
 	}
+	if err == nil && len(results) > 0 {
+		return results, nil
+	}
+	return fallbackDirectSearch(ctx, query, maxResults, provider, err, results)
 }
 
 func prepareSearch(query string, maxResults int) (string, int, context.Context, context.CancelFunc, error) {
@@ -88,7 +104,7 @@ func prepareSearch(query string, maxResults int) (string, int, context.Context, 
 	if maxResults > 20 {
 		maxResults = 20
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), searchTimeout)
 	return query, maxResults, ctx, cancel, nil
 }
 
@@ -129,6 +145,39 @@ func searchDuckDuckGo(ctx context.Context, provider corelib.WebSearchProvider, q
 		return nil, err
 	}
 	return parseDDGResults(string(body), maxResults), nil
+}
+
+func fallbackDirectSearch(ctx context.Context, query string, maxResults int, provider corelib.WebSearchProvider, providerErr error, providerResults []SearchResult) ([]SearchResult, error) {
+	fallbackCtx, cancel := context.WithTimeout(ctx, fallbackSearchTimeout)
+	defer cancel()
+
+	results, fallbackErr := searchDirectLegacy(fallbackCtx, query, maxResults)
+	if fallbackErr == nil && len(results) > 0 {
+		return results, nil
+	}
+	if providerErr != nil {
+		if fallbackErr != nil {
+			return nil, fmt.Errorf("%s provider failed: %w; direct fallback failed: %v", providerNameForError(provider), providerErr, fallbackErr)
+		}
+		return nil, fmt.Errorf("%s provider failed: %w; direct fallback returned no results", providerNameForError(provider), providerErr)
+	}
+	if len(providerResults) == 0 {
+		if fallbackErr != nil {
+			return nil, fmt.Errorf("%s provider returned no results; direct fallback failed: %w", providerNameForError(provider), fallbackErr)
+		}
+		return nil, fmt.Errorf("%s provider and direct fallback returned no results", providerNameForError(provider))
+	}
+	return providerResults, nil
+}
+
+func providerNameForError(provider corelib.WebSearchProvider) string {
+	if provider.Type != "" {
+		return provider.Type
+	}
+	if provider.Name != "" {
+		return provider.Name
+	}
+	return "search"
 }
 
 func searchBrave(ctx context.Context, provider corelib.WebSearchProvider, query string, maxResults int) ([]SearchResult, error) {
