@@ -160,3 +160,11 @@ build/deploy-ha/manual-test/
 # Unrelated third-party reference project
 xpay-code/
 
+# UI screenshots dumped in root
+datasrv-ui-*.png
+*-ui-*.png
+
+# Race detector output files
+race*.log*
+race_out*.txt
+

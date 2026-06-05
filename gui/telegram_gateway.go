@@ -605,6 +605,9 @@ func (a *App) GetTelegramStatus() string {
 
 func (a *App) RestartTelegram() string {
 	a.ensureTelegramGateway()
+	if a.telegramGateway == nil {
+		return gatewayConnectionStatusDisconnected.String()
+	}
 	return a.telegramGateway.Status()
 }
 

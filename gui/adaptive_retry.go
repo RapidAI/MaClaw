@@ -82,6 +82,31 @@ func NewAdaptiveRetry(recorder *TrajectoryRecorder) *AdaptiveRetry {
 	}
 }
 
+// NewAdaptiveRetryForLoop creates a fresh per-loop instance that inherits only
+// immutable configuration from a handler-level template. The new instance has
+// empty failure tracking state, so concurrent agent loops (different tabs) do
+// not share failure counts, disabled tools, or retry decisions.
+//
+// The recorder is always passed in separately because it is created per-loop by
+// prepareAgentLoopRecorderBundle (which calls h.trajectoryRecorderFactory()).
+// The template is used solely to propagate maxFailures overrides.
+func NewAdaptiveRetryForLoop(template *AdaptiveRetry, recorder *TrajectoryRecorder) *AdaptiveRetry {
+	ar := NewAdaptiveRetry(recorder)
+	if template != nil && template.maxFailures > 0 {
+		ar.maxFailures = template.maxFailures
+	}
+	return ar
+}
+
+// MaxFailures returns the configured maximum failure count before a tool is
+// disabled. Used by NewAdaptiveRetryForLoop to propagate config overrides.
+func (r *AdaptiveRetry) MaxFailures() int {
+	if r == nil {
+		return defaultMaxFailures
+	}
+	return r.maxFailures
+}
+
 func (r *AdaptiveRetry) ensureState() {
 	if r.failureCounts == nil {
 		r.failureCounts = make(map[string]int)

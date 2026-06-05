@@ -24,7 +24,7 @@ type PolicyEngine struct {
 // NewPolicyEngine creates a PolicyEngine initialised with the default policy rules.
 func NewPolicyEngine() *PolicyEngine {
 	return &PolicyEngine{
-		mode:    "standard",
+		mode:    "relaxed",
 		rules:   DefaultPolicyRules(),
 		reCache: make(map[string]*regexp.Regexp),
 	}
@@ -61,7 +61,7 @@ func normalizePolicyEngineMode(mode string) string {
 	case "permissive":
 		return "relaxed"
 	default:
-		return "standard"
+		return "relaxed"
 	}
 }
 
@@ -78,7 +78,7 @@ func (e *PolicyEngine) Mode() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if strings.TrimSpace(e.mode) == "" {
-		return "standard"
+		return "relaxed"
 	}
 	return e.mode
 }
@@ -157,11 +157,11 @@ func (e *PolicyEngine) Rules() []security.PolicyRule {
 	return out
 }
 
-// DefaultPolicyRules returns the built-in policy rule set (standard mode).
+// DefaultPolicyRules returns the built-in policy rule set (relaxed mode).
 // Standard: critical/high ask, medium audit, low allow. Dangerous command
 // patterns are recorded through risk/audit paths instead of being denied here.
 func DefaultPolicyRules() []security.PolicyRule {
-	return PolicyRulesForMode("standard")
+	return PolicyRulesForMode("relaxed")
 }
 
 // PolicyRulesForMode returns the policy rules for the given security mode.
@@ -177,12 +177,21 @@ func PolicyRulesForMode(mode string) []security.PolicyRule {
 	// Strict mode is the only built-in mode that hard-blocks dangerous command
 	// patterns. Softer modes rely on risk assessment, confirmation, and audit so
 	// skills remain usable when installers or scripts contain powerful commands.
-	// NOTE: \bsudo\b uses word boundaries to avoid matching "pseudo", "sudoku", etc.
+	//
+	// The denyDangerous rule fires only after RiskAssessor has already classified
+	// the call as critical. Patterns here are an additional ArgsPattern filter:
+	//   - DROP TABLE: SQL destructive — dangerousKeywords still flags this as critical
+	//   - sudo su / sudo -i: privilege escalation — Assess() flags \bsudo\b as critical
+	//     unless a safe context guard matches; su/-i are not in safe contexts
+	//
+	// NOTE: "rm -rf" was intentionally removed from ArgsPattern. Assess() no longer
+	// raises rm-rf to critical (moved to ScanThreatPatterns/AssessSkill), so the
+	// old broad match was unreachable dead code.
 	denyDangerous := security.PolicyRule{
 		Name:        "deny-dangerous-keywords",
 		Priority:    10,
 		ToolPattern: "*",
-		ArgsPattern: "(?i)(rm\\s+-rf|DROP\\s+TABLE|\\bsudo\\b)",
+		ArgsPattern: `(?i)(DROP\s+TABLE|\bsudo\s+(su\b|-i\b))`,
 		RiskLevels:  []security.RiskLevel{security.RiskCritical},
 		Action:      security.PolicyDeny,
 	}

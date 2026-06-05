@@ -9,7 +9,11 @@ type agentLoopRecorderBundle struct {
 	Cleanup              func()
 }
 
-func (h *IMMessageHandler) prepareAgentLoopRecorderBundle(adaptiveRetry *AdaptiveRetry) agentLoopRecorderBundle {
+// prepareAgentLoopRecorderBundle creates a per-loop recorder and an isolated
+// AdaptiveRetry instance. The template parameter carries only immutable config
+// (maxFailures override); mutable state (failureCounts, disabledTools, etc.)
+// is always fresh so concurrent tabs never share retry decisions.
+func (h *IMMessageHandler) prepareAgentLoopRecorderBundle(template *AdaptiveRetry) agentLoopRecorderBundle {
 	var recorder *TrajectoryRecorder
 	if h.trajectoryRecorderFactory != nil {
 		recorder = h.trajectoryRecorderFactory()
@@ -17,13 +21,20 @@ func (h *IMMessageHandler) prepareAgentLoopRecorderBundle(adaptiveRetry *Adaptiv
 	cleanup := func() {}
 	if recorder != nil {
 		cleanup = recorder.Flush
-		if adaptiveRetry == nil {
-			adaptiveRetry = NewAdaptiveRetry(recorder)
-		}
 	}
-	if adaptiveRetry != nil {
-		adaptiveRetry.SetMemoryStore(h.memoryStore)
+	// Always create a fresh AdaptiveRetry for this loop. The template is only
+	// consulted for maxFailures; all mutable tracking state is brand-new.
+	// This mirrors how DriftDetector is instantiated: handler field = config
+	// template, loop-local instance = live state.
+	//
+	// Use h.adaptiveRetry as the config template (maxFailures override), but
+	// fall back to the caller-supplied template if non-nil (used in tests).
+	configTemplate := h.adaptiveRetry
+	if configTemplate == nil {
+		configTemplate = template
 	}
+	adaptiveRetry := NewAdaptiveRetryForLoop(configTemplate, recorder)
+	adaptiveRetry.SetMemoryStore(h.memoryStore)
 	loopRecorder := newAgentLoopRecorder(recorder)
 	return agentLoopRecorderBundle{
 		Recorder:             recorder,

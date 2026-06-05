@@ -61,6 +61,11 @@ type Store struct {
 	// --- Multi-hop inference engine ---
 	inferenceEngine *InferenceEngine // rule-based multi-hop fact reasoning
 
+	// lastRebuildDone is closed when the most recent background index rebuild
+	// (from replaceEntriesAndRebuildAsync) completes. Used by WaitRebuild and
+	// Stop to drain in-flight goroutines before closing the backend.
+	lastRebuildDone chan struct{}
+
 	// --- Async semantic dedup ---
 	// pendingDedup holds (newEntryID, candidateEntryID) pairs that need
 	// LLM-based precise dedup judgment. Written by SaveWithContext (under
@@ -1595,6 +1600,10 @@ func stripDeletedRelations(entry Entry, deleteSet map[string]struct{}) (Entry, b
 
 // rebuildDerivedIndexesLocked rebuilds every index derived from s.entries.
 // Caller MUST hold s.mu write lock, or be in Store construction before sharing.
+// For incremental updates (single entry insert/delete), prefer the targeted
+// addEntry/IndexEntry paths on individual sub-indexes. For the async batch sync
+// path, use replaceEntriesAndRebuildAsync which releases s.mu before the
+// expensive rebuild work.
 func (s *Store) rebuildDerivedIndexesLocked(syncGraphLinks bool) bool {
 	s.bm25.rebuild(s.entries)
 	s.vecIndex.rebuild(s.entries)
@@ -1621,12 +1630,75 @@ func (s *Store) rebuildDerivedIndexesLocked(syncGraphLinks bool) bool {
 	return graphLinksChanged
 }
 
+// rebuildDerivedIndexesOutsideLock rebuilds every sub-index that carries its
+// own internal mutex using the provided snapshot of entries. This must NOT be
+// called while s.mu is held — each sub-index serialises access internally, so
+// holding the store-level write lock would create unnecessary contention.
+//
+// Called as a goroutine from replaceEntriesAndRebuildAsync after the batch
+// sync applies its changes to s.entries under s.mu. The brief window between
+// the lock release and the goroutine finishing means readers see the new
+// entries immediately but slightly-stale index scores; this is acceptable
+// because the same race window existed before (all rebuilds happened under
+// the write lock anyway, blocking readers for just as long).
+func (s *Store) rebuildDerivedIndexesOutsideLock(snapshot []Entry, syncGraphLinks bool) {
+	s.bm25.rebuild(snapshot)
+	s.vecIndex.rebuild(snapshot)
+	s.graph.rebuild(snapshot)
+
+	// syncGraphLinksLocked reads s.graph (just rebuilt from snapshot) and
+	// writes RelatedIDs/RelatedEdges back onto s.entries. We must restrict
+	// the write to entries that were in the snapshot: s.entries may have
+	// grown since (concurrent Save + autoLink) and those newer entries have
+	// their own correct graph links that must not be clobbered.
+	//
+	// syncGraphLinksLocked internally builds a map[string]struct{} from its
+	// variadic ids argument. We build the slice here outside s.mu so the
+	// allocation cost is not paid while holding the write lock.
+	if syncGraphLinks {
+		snapshotIDs := make([]string, 0, len(snapshot))
+		for i := range snapshot {
+			if id := snapshot[i].ID; id != "" {
+				snapshotIDs = append(snapshotIDs, id)
+			}
+		}
+		s.mu.Lock()
+		s.syncGraphLinksLocked(snapshotIDs...)
+		s.mu.Unlock()
+	}
+
+	if s.tmt != nil {
+		s.tmt.Rebuild(snapshot)
+	}
+	if s.entityIndex != nil {
+		s.entityIndex.Rebuild(snapshot)
+	}
+	if s.projIndex != nil {
+		s.projIndex.Rebuild(snapshot)
+	}
+	if s.semanticGraph != nil {
+		s.semanticGraph.Rebuild(snapshot)
+		// NewInferenceEngine is pure allocation — no Store lock needed here.
+		engine := NewInferenceEngine(s.semanticGraph, nil)
+		s.mu.Lock()
+		s.inferenceEngine = engine
+		s.rebuildThemeLayerLocked()
+		s.mu.Unlock()
+	} else {
+		// rebuildThemeLayerLocked only sets a dirty flag; it is very fast.
+		s.mu.Lock()
+		s.rebuildThemeLayerLocked()
+		s.mu.Unlock()
+	}
+}
+
 // rebuildThemeLayerLocked keeps the xMemory-style theme layer in sync with the
 // authoritative store entries. Caller MUST hold s.mu write lock, or be in Store
+// construction before sharing.
+//
 // rebuildThemeLayerLocked marks the theme layer as needing a rebuild.
 // The actual rebuild happens lazily via ThemeManager.EnsureUpToDate()
 // when themes are queried (adaptive recall, memory tool, diversity rerank).
-// Caller MUST hold s.mu write lock, or be in Store construction before sharing.
 func (s *Store) rebuildThemeLayerLocked() {
 	if s.themeManager == nil {
 		return
@@ -2781,6 +2853,22 @@ func (s *Store) Stop() {
 			s.mu.Unlock()
 		}
 
+		// Wait for any in-flight async index rebuild goroutine to complete.
+		// replaceEntriesAndRebuildAsync launches a goroutine that accesses
+		// s.entries and calls s.mu.Lock internally. We must drain it before
+		// closing the backend, otherwise the goroutine's s.mu.Lock acquire or
+		// s.entries read would race with the backend close.
+		//
+		// We cannot use WaitRebuild() here because it short-circuits on
+		// s.stopCh (already closed above). Instead we wait directly on the
+		// done channel without the stopCh escape.
+		s.mu.RLock()
+		rebuildDone := s.lastRebuildDone
+		s.mu.RUnlock()
+		if rebuildDone != nil {
+			<-rebuildDone
+		}
+
 		if s.archive != nil {
 			s.archive.Stop()
 		}
@@ -3011,6 +3099,58 @@ func (s *Store) RestoreEntriesSnapshot(entries []Entry) error {
 func (s *Store) replaceEntriesAndRebuildLocked(entries []Entry, syncGraphLinks bool) {
 	s.entries = entries
 	s.rebuildDerivedIndexesLocked(syncGraphLinks)
+}
+
+// replaceEntriesAndRebuildAsync is the non-blocking variant used by syncOnce.
+// It updates s.entries immediately (under s.mu, held by the caller), then
+// rebuilds every derived index in a background goroutine. This reduces the
+// s.mu write-lock hold time from O(rebuild) to O(n copy), eliminating the
+// 5-8 second contention window that starved concurrent RecallDynamic/Save.
+//
+// Only one rebuild goroutine runs at a time: if a previous rebuild is still
+// in progress when a new sync batch arrives, the new goroutine waits for the
+// old one to finish before starting its own rebuild. This prevents concurrent
+// rebuilds from racing on syncGraphLinksLocked.
+func (s *Store) replaceEntriesAndRebuildAsync(entries []Entry, syncGraphLinks bool) {
+	s.entries = entries
+	snapshot := append([]Entry(nil), entries...)
+
+	// Capture the previous done channel (may be nil on first call or already
+	// closed from a previous rebuild). The new goroutine waits on it so that
+	// at most one rebuild is active at any time, preventing concurrent calls
+	// to syncGraphLinksLocked from corrupting s.entries.
+	prevDone := s.lastRebuildDone
+	done := make(chan struct{})
+	s.lastRebuildDone = done
+	go func() {
+		// Drain the previous rebuild first. Under a 3-second sync interval
+		// this path is only taken when a rebuild takes longer than the interval.
+		if prevDone != nil {
+			select {
+			case <-prevDone:
+			case <-s.stopCh:
+				close(done)
+				return
+			}
+		}
+		s.rebuildDerivedIndexesOutsideLock(snapshot, syncGraphLinks)
+		close(done)
+	}()
+}
+
+// WaitRebuild blocks until the most recent background index rebuild triggered
+// by replaceEntriesAndRebuildAsync completes. Used in tests and by code paths
+// that need consistent index state immediately after a sync operation.
+func (s *Store) WaitRebuild() {
+	s.mu.RLock()
+	done := s.lastRebuildDone
+	s.mu.RUnlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-s.stopCh:
+		}
+	}
 }
 
 func normalizeRestoredSnapshot(entries []Entry) []Entry {

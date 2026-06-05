@@ -33,7 +33,11 @@ type RiskAssessor struct{}
 // NOTE: "sudo" was moved to dangerousCmdPatternsGUI for context-aware matching.
 // As a plain substring, "sudo" matches "pseudo", "sudoku", and documentation
 // text like "Run without sudo". The regex version uses word boundaries.
-var dangerousKeywords = []string{"rm -rf", "DROP TABLE"}
+//
+// NOTE: "rm -rf" was moved to corelib/security threatPatternCategories.destructive
+// with a path-aware Guard. Only root/system-path targets escalate to critical.
+// User-directory cleanup (rm -rf ~/old_build/) stays at medium.
+var dangerousKeywords = []string{"DROP TABLE"}
 
 // dangerousFormatPatterns are patterns where "format" IS dangerous (disk formatting).
 var dangerousFormatPatterns = []string{"format c:", "format d:", "format e:", "format f:", "diskpart", "mkfs"}
@@ -105,6 +109,18 @@ func (a *RiskAssessor) Assess(ctx RiskContext) security.RiskAssessment {
 			level = security.RiskCritical
 			factors = append(factors, fmt.Sprintf("dangerous format pattern %q found in arguments", pat))
 		}
+	}
+
+	// Rule 1c: Structural threat patterns (destructive, traversal, privilege escalation, etc.).
+	// Uses the "live-safe" subset — categories like injection/exfiltration/network/supply_chain
+	// are excluded because they produce false positives when the user explicitly asks the
+	// agent to run scp, ssh tunnels, pip --pre, etc. Those categories still apply in
+	// skill installation scanning (AssessSkill).
+	for _, tm := range security.ScanLiveThreatPatterns(argStr) {
+		if security.RiskLevelOrder[level] < security.RiskLevelOrder[security.RiskHigh] {
+			level = security.RiskHigh
+		}
+		factors = append(factors, fmt.Sprintf("threat pattern [%s]: %q matched", tm.Category, tm.Pattern))
 	}
 
 	// Rule 2: Write/execute tools → at least medium.
@@ -255,9 +271,13 @@ func (a *RiskAssessor) AssessSkill(skill *corelib.NLSkillEntry, trustLevel strin
 			hasHardSecuritySignal = true
 		}
 
-		// Scan step commands/params against threat pattern categories
+		// Scan step commands/params against threat pattern categories not already
+		// covered by Assess() above. Assess() internally runs ScanLiveThreatPatterns
+		// (destructive, traversal, obfuscation, mining, execution); here we scan
+		// the remaining categories (exfiltration, injection, network, supply_chain,
+		// persistence, credential_exposure, privilege_escalation).
 		argStr := flattenArgs(step.Params)
-		threatMatches := security.ScanThreatPatterns(argStr)
+		threatMatches := security.ScanSkillOnlyThreatPatterns(argStr)
 		for _, tm := range threatMatches {
 			if security.RiskLevelOrder[maxRisk] < security.RiskLevelOrder[security.RiskHigh] {
 				maxRisk = security.RiskHigh

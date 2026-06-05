@@ -5735,3 +5735,61 @@ saveTabState(..., { history: mergeChatMessages(baseHistory, newMessages) });
 - buffer queue 排队多个城市天气查询，每个请求完成后只显示最终结果，不出现"思考中"幽灵
 - 116 个 AIAssistantPanel 测试全部通过
 - 157 个 useAIAssistant 测试全部通过
+
+
+### 101. 安全策略默认改为 relaxed——减少普通用户的确认弹框打断
+
+**来源**：用户反馈 standard 模式下任何 `rm`、`sudo` 命令都弹确认框，个人使用场景下太频繁。
+
+**根因**：`standard` 模式对 high/critical 风险统一触发 `PolicyAsk`（弹确认框）。`rm -rf`（无论目标路径）、`sudo`（无论后接什么命令）都被升级到 critical，每次都弹框。普通用户在本机本用户目录下操作，这些是日常命令，不应每次都拦截。
+
+**修复（三层改进）**：
+
+#### 1. 默认安全模式从 `standard` 改为 `relaxed`
+
+`relaxed` 模式的规则：所有风险等级均 allow（审计记录但不弹框）。这适合本机个人使用——安全检测仍然运行并记录审计日志，但不中断工作流。
+
+**变更点**：
+- `corelib/security/policy_engine.go`：`NewPolicyEngine()` 和 `normalizePolicyEngineMode()` 默认值从 `"standard"` 改为 `"relaxed"`
+- `gui/policy_engine.go`：同步修改
+- `tui/views/config.go`：`normalizeImplicitDefaults()` 从 `applySecurityProfile("standard")` 改为 `applySecurityProfile("relaxed")`
+- `tui/views/config_fields.go`：`currentSecurityProfile()` 空值默认返回 `"relaxed"`；`securityProfilePresets` 新增 `relaxed` 预设（在 standard 之前，让用户在 UI 中看到推荐选项在第一位）
+
+用户仍可在设置中选择 standard（弹确认框）或 strict（危险命令直接拒绝）。
+
+#### 2. `rm -rf` 改为路径感知匹配
+
+从 `dangerousKeywords`（纯子串，无上下文）移到 `threatPatternCategories.destructive`（正则 + Guard）：
+
+- Pattern: `rm\s+-r[f]?\s+/` — 匹配 `rm -rf /...` 和 `rm -r /...`
+- Guard: `rm\s+-r[f]?\s+(/home/|/root/|/tmp/|/var/tmp/|~/|\$HOME/)` — 用户目录操作视为安全上下文
+
+效果：
+- `rm -rf /usr/local/` → critical（系统路径，无 guard 匹配）
+- `rm -rf ~/old_build/` → 不命中 destructive 模式（guard 匹配抑制）→ medium（bash 工具的基础风险）
+- `rm -rf ./node_modules/` → 不命中（非绝对路径 `/` 开头）→ medium
+
+#### 3. `sudo` 安全上下文大幅扩充
+
+从 7 个安全上下文扩充到 23 个，覆盖日常系统管理命令：
+- 新增：`mkdir`、`cp`、`mv`、`ln`、`tar`、`cat`、`tee`、`kill`、`killall`、`journalctl`、`service ... start/stop`、`snap install`、`dpkg`、`rpm`、`ufw`、`certbot`、`chmod`（数字模式）
+- 增强：`chown`（不再要求 `$` 后缀）、`systemctl`（增加 stop/enable/disable）、`apt`（增加 remove）
+
+安全上下文命中后降为 high（standard 模式下仍会弹框，但 relaxed 模式直接放行）。
+
+**安全档位说明（修改后）**：
+
+| 档位 | PolicyMode | 行为 | 适用场景 |
+|------|-----------|------|---------|
+| 轻松模式（默认）| `relaxed` | 只审计不拦截 | 本机个人使用 |
+| 标准模式 | `standard` | high/critical 弹确认框 | 共享机器/企业环境 |
+| 严格模式 | `strict` | dangerous 直接拒绝，medium 也弹框 | 高安全环境 |
+| 开发者模式 | `developer` | 完全放行 | 安全研究人员 |
+
+**验收标准**：
+- 新安装默认 relaxed：`rm -rf ./build/` 不弹框
+- 用户切到 standard 后：`rm -rf /` 仍弹框（critical），`rm -rf ~/trash/` 不弹框（medium→audit）
+- `sudo apt install python3` 在 standard 模式下不弹框（safe context → high → ask，但 relaxed 下直接放行）
+- 所有 25 个 corelib/security 测试通过
+- 所有 5 个 TUI config security 测试通过
+- GUI / TUI / corelib 编译通过

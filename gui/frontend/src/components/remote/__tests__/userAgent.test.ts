@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    commitCustomAgentValue,
     customAgentSeedForProvider,
     editableCustomAgentValue,
     effectiveAgentType,
     isKnownUserAgent,
-    nextCustomAgentValue,
 } from '../userAgent';
 import type { LLMProvider } from '../LLMConfigPanelShared';
 
@@ -18,21 +18,87 @@ const provider = (patch: Partial<LLMProvider>): LLMProvider => ({
 });
 
 describe('userAgent helpers', () => {
-    it('defaults CodeGen SSO to tigerclaw and treats it as known', () => {
-        const codegen = provider({ name: 'CodeGen', auth_type: 'sso' });
+    describe('effectiveAgentType', () => {
+        it('defaults to openclaw when no agent_type is set', () => {
+            expect(effectiveAgentType(provider({}))).toBe('openclaw');
+            expect(effectiveAgentType(undefined)).toBe('openclaw');
+        });
 
-        expect(effectiveAgentType(codegen)).toBe('tigerclaw');
-        expect(isKnownUserAgent('tigerclaw')).toBe(true);
-        expect(editableCustomAgentValue(codegen)).toBe('custom-client');
+        it('returns trimmed agent_type when set', () => {
+            expect(effectiveAgentType(provider({ agent_type: '  my-agent  ' }))).toBe('my-agent');
+        });
+
+        it('returns tigerclaw for CodeGen SSO provider', () => {
+            expect(effectiveAgentType(provider({ name: 'CodeGen', auth_type: 'sso' }))).toBe('tigerclaw');
+        });
     });
 
-    it('preserves custom input while avoiding blank custom values', () => {
-        const custom = provider({ agent_type: '  my-agent  ' });
+    describe('isKnownUserAgent', () => {
+        it('recognises all known agents', () => {
+            expect(isKnownUserAgent('openclaw')).toBe(true);
+            expect(isKnownUserAgent('tigerclaw')).toBe(true);
+            expect(isKnownUserAgent('claude-code/2.0.0')).toBe(true);
+        });
 
-        expect(effectiveAgentType(custom)).toBe('my-agent');
-        expect(editableCustomAgentValue(custom)).toBe('  my-agent  ');
-        expect(customAgentSeedForProvider(custom)).toBe('my-agent');
-        expect(nextCustomAgentValue(custom, '')).toBe('my-agent');
-        expect(nextCustomAgentValue(custom, 'next-agent')).toBe('next-agent');
+        it('rejects unknown values', () => {
+            expect(isKnownUserAgent('')).toBe(false);
+            expect(isKnownUserAgent('custom-client')).toBe(false);
+            expect(isKnownUserAgent('my-agent')).toBe(false);
+        });
+    });
+
+    describe('editableCustomAgentValue', () => {
+        it('returns empty string when agent_type is empty (no flicker on full deletion)', () => {
+            expect(editableCustomAgentValue(provider({ agent_type: '' }))).toBe('');
+        });
+
+        it('preserves raw value including leading/trailing spaces', () => {
+            expect(editableCustomAgentValue(provider({ agent_type: '  my-agent  ' }))).toBe('  my-agent  ');
+        });
+
+        it('seeds when agent_type is a known value (user just clicked Custom button)', () => {
+            expect(editableCustomAgentValue(provider({ agent_type: 'openclaw' }))).toBe('custom-client');
+            expect(editableCustomAgentValue(provider({ agent_type: 'tigerclaw' }))).toBe('custom-client');
+        });
+
+        it('seeds to default when agent_type is absent', () => {
+            expect(editableCustomAgentValue(provider({}))).toBe('openclaw');
+            expect(editableCustomAgentValue(undefined)).toBe('openclaw');
+        });
+
+        it('seeds to tigerclaw-derived seed for CodeGen SSO provider', () => {
+            // CodeGen SSO: effectiveAgentType → 'tigerclaw' (known) → seed → 'custom-client'
+            const codegen = provider({ name: 'CodeGen', auth_type: 'sso' });
+            expect(editableCustomAgentValue(codegen)).toBe('custom-client');
+        });
+    });
+
+    describe('commitCustomAgentValue', () => {
+        it('trims non-empty values', () => {
+            const p = provider({ agent_type: 'my-agent' });
+            expect(commitCustomAgentValue(p, 'my-agent')).toBe('my-agent');
+            expect(commitCustomAgentValue(p, '  trimmed  ')).toBe('trimmed');
+        });
+
+        it('falls back to customAgentSeedForProvider when value is blank', () => {
+            const custom = provider({ agent_type: '  my-agent  ' });
+            expect(commitCustomAgentValue(custom, '')).toBe('my-agent');
+            expect(commitCustomAgentValue(custom, '   ')).toBe('my-agent');
+        });
+
+        it('seeds to default when provider has no custom agent and value is blank', () => {
+            expect(commitCustomAgentValue(provider({}), '')).toBe('openclaw');
+        });
+    });
+
+    describe('customAgentSeedForProvider', () => {
+        it('returns existing custom value when already a custom agent', () => {
+            expect(customAgentSeedForProvider(provider({ agent_type: 'my-agent' }))).toBe('my-agent');
+        });
+
+        it('returns "custom-client" when current effective agent is a known value', () => {
+            expect(customAgentSeedForProvider(provider({ agent_type: 'openclaw' }))).toBe('custom-client');
+            expect(customAgentSeedForProvider(provider({}))).toBe('custom-client');
+        });
     });
 });

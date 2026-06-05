@@ -598,6 +598,9 @@ func (a *App) GetQQBotStatus() string {
 // RestartQQBot restarts the QQ Bot gateway with current config (Wails binding).
 func (a *App) RestartQQBot() string {
 	a.ensureQQBotGateway()
+	if a.qqBotGateway == nil {
+		return gatewayConnectionStatusDisconnected.String()
+	}
 	return a.qqBotGateway.Status()
 }
 

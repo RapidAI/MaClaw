@@ -22,11 +22,16 @@ export const customAgentSeedForProvider = (provider?: LLMProvider | null) => {
 
 export const editableCustomAgentValue = (provider?: LLMProvider | null) => {
     const raw = provider?.agent_type ?? "";
+    // Keep raw value (including empty string) so the controlled input reflects
+    // exactly what's stored and allows full deletion without flickering.
+    // Only fall back to the seed when agent_type is completely absent (undefined/null).
+    if (provider?.agent_type == null) return customAgentSeedForProvider(provider);
     const trimmed = raw.trim();
-    if (trimmed && !isKnownUserAgent(trimmed)) return raw;
-    return customAgentSeedForProvider(provider);
+    if (trimmed && isKnownUserAgent(trimmed)) return customAgentSeedForProvider(provider);
+    return raw;
 };
 
-export const nextCustomAgentValue = (provider: LLMProvider | null | undefined, value: string) => {
-    return value.trim() ? value : customAgentSeedForProvider(provider);
+/** Called on blur / save — fills in the seed if the field was left empty. */
+export const commitCustomAgentValue = (provider: LLMProvider | null | undefined, value: string) => {
+    return value.trim() ? value.trim() : customAgentSeedForProvider(provider);
 };

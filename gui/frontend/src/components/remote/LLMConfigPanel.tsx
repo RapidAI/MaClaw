@@ -21,7 +21,7 @@ import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { useDialog } from "../CustomDialog";
-import { KNOWN_USER_AGENTS, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, nextCustomAgentValue } from "./userAgent";
+import { KNOWN_USER_AGENTS, commitCustomAgentValue, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent } from "./userAgent";
 
 interface Props {
     lang?: string;
@@ -788,51 +788,51 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                 {/* User-Agent selection */}
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>User-Agent</label>
-                                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                                        {KNOWN_USER_AGENTS.map(ua => {
-                                            const currentAgent = effectiveAgentType(dlgProvider);
-                                            const active = currentAgent === ua;
-                                            return (
-                                                <button key={ua} onClick={() => dlgUpdateField("agent_type", ua)} style={{
-                                                    fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
-                                                    background: active ? colors.primaryLight : colors.surface,
-                                                    color: active ? colors.primaryDark : colors.text,
-                                                    border: `1px solid ${active ? colors.primary : colors.border}`,
-                                                    borderRadius: 4, transition: "all 0.15s",
-                                                }}>
-                                                    {ua}
-                                                </button>
-                                            );
-                                        })}
-                                        {(() => {
-                                            const currentAgent = effectiveAgentType(dlgProvider);
-                                            const active = !isKnownUserAgent(currentAgent);
-                                            return (
-                                                <button onClick={() => dlgUpdateField("agent_type", active ? currentAgent : customAgentSeedForProvider(dlgProvider))} style={{
-                                                    fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
-                                                    background: active ? colors.primaryLight : colors.surface,
-                                                    color: active ? colors.primaryDark : colors.text,
-                                                    border: `1px solid ${active ? colors.primary : colors.border}`,
-                                                    borderRadius: 4, transition: "all 0.15s",
-                                                }}>
+                                    {(() => {
+                                        const currentAgent = effectiveAgentType(dlgProvider);
+                                        const isCustom = !isKnownUserAgent(currentAgent);
+                                        return (<>
+                                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                                                {KNOWN_USER_AGENTS.map(ua => (
+                                                    <button key={ua} onClick={() => dlgUpdateField("agent_type", ua)} style={{
+                                                        fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
+                                                        background: currentAgent === ua ? colors.primaryLight : colors.surface,
+                                                        color: currentAgent === ua ? colors.primaryDark : colors.text,
+                                                        border: `1px solid ${currentAgent === ua ? colors.primary : colors.border}`,
+                                                        borderRadius: 4, transition: "all 0.15s", flexShrink: 0,
+                                                    }}>
+                                                        {ua}
+                                                    </button>
+                                                ))}
+                                                <button
+                                                    onClick={() => dlgUpdateField("agent_type", isCustom ? currentAgent : customAgentSeedForProvider(dlgProvider))}
+                                                    style={{
+                                                        fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
+                                                        background: isCustom ? colors.primaryLight : colors.surface,
+                                                        color: isCustom ? colors.primaryDark : colors.text,
+                                                        border: `1px solid ${isCustom ? colors.primary : colors.border}`,
+                                                        borderRadius: 4, transition: "all 0.15s", flexShrink: 0,
+                                                    }}>
                                                     {t("Custom", "\u81ea\u5b9a\u4e49", "\u81ea\u8a02")}
                                                 </button>
-                                            );
-                                        })()}
-                                    </div>
-                                    {!isKnownUserAgent(effectiveAgentType(dlgProvider)) && (
-                                        <input style={{ ...inputStyle, marginTop: 8 }} value={editableCustomAgentValue(dlgProvider)}
-                                            onChange={e => dlgUpdateField("agent_type", nextCustomAgentValue(dlgProvider, e.target.value))}
-                                            placeholder={t("Custom User-Agent", "\u81ea\u5b9a\u4e49 User-Agent", "\u81ea\u8a02 User-Agent")}
-                                            autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
-                                    )}
-                                    <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
-                                        {effectiveAgentType(dlgProvider) === "claude-code/2.0.0"
-                                            ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi)", "\u9002\u7528\u4e8e\u9700\u8981 Claude Coding Plan \u8eab\u4efd\u7684\u670d\u52a1\u5546\uff08\u5982 Kimi\uff09")
-                                            : !isKnownUserAgent(effectiveAgentType(dlgProvider))
-                                                ? t("Uses the custom client identity you enter.", "\u4f7f\u7528\u4f60\u8f93\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u4efd\u3002", "\u4f7f\u7528\u4f60\u8f38\u5165\u7684\u81ea\u8a02\u5ba2\u6236\u7aef\u8eab\u5206\u3002")
-                                                : t("Most providers use OpenClaw identity (e.g. Zhipu Lobster)", "\u5927\u591a\u6570\u670d\u52a1\u5546\u4f7f\u7528 OpenClaw \u8eab\u4efd\uff08\u5982\u667a\u8c31\u9f99\u867e\uff09")}
-                                    </p>
+                                                {isCustom && (
+                                                    <input style={{ ...inputStyle, flex: 1, minWidth: 120, margin: 0 }}
+                                                        value={editableCustomAgentValue(dlgProvider)}
+                                                        onChange={e => dlgUpdateField("agent_type", e.target.value)}
+                                                        onBlur={e => dlgUpdateField("agent_type", commitCustomAgentValue(dlgProvider, e.target.value))}
+                                                        placeholder={t("Custom User-Agent", "\u81ea\u5b9a\u4e49 User-Agent", "\u81ea\u8a02 User-Agent")}
+                                                        autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
+                                                )}
+                                            </div>
+                                            <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
+                                                {currentAgent === "claude-code/2.0.0"
+                                                    ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi)", "\u9002\u7528\u4e8e\u9700\u8981 Claude Coding Plan \u8eab\u4efd\u7684\u670d\u52a1\u5546\uff08\u5982 Kimi\uff09")
+                                                    : isCustom
+                                                        ? t("Uses the custom client identity you enter.", "\u4f7f\u7528\u4f60\u8f93\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u4efd\u3002", "\u4f7f\u7528\u4f60\u8f38\u5165\u7684\u81ea\u8a02\u5ba2\u6236\u7aef\u8eab\u5206\u3002")
+                                                        : t("Most providers use OpenClaw identity (e.g. Zhipu Lobster)", "\u5927\u591a\u6570\u670d\u52a1\u5546\u4f7f\u7528 OpenClaw \u8eab\u4efd\uff08\u5982\u667a\u8c31\u9f99\u867e\uff09")}
+                                            </p>
+                                        </>);
+                                    })()}
                                 </div>
 
                                 {/* Custom: editable name */}

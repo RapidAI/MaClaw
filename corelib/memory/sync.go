@@ -112,7 +112,22 @@ func (s *Store) syncOnce() {
 
 	s.mu.Lock()
 	merged, added, deleted := s.applyRemoteSyncBatchLocked(modified, deletedIDs)
+	// Capture the rebuild-done channel before releasing the lock so we can
+	// wait for the async index rebuild below (outside s.mu).
+	rebuildDone := s.lastRebuildDone
 	s.mu.Unlock()
+
+	// Wait for the background index rebuild to finish before returning.
+	// syncOnce runs in its own goroutine (syncLoop ticker); blocking here is
+	// harmless and ensures that callers (e.g. tests, WaitRebuild) that check
+	// indexes immediately after a sync see a consistent state.
+	if rebuildDone != nil {
+		select {
+		case <-rebuildDone:
+		case <-s.stopCh:
+			return
+		}
+	}
 
 	// Update watermark from the backend's max version (covers deletions).
 	// Done outside the lock since MaxVersion() is a DB read that may block.
@@ -188,7 +203,7 @@ func (s *Store) applyRemoteSyncBatchLocked(modified []Entry, deletedIDs []string
 	}
 
 	if merged > 0 || added > 0 || deleted > 0 {
-		s.replaceEntriesAndRebuildLocked(entries, true)
+		s.replaceEntriesAndRebuildAsync(entries, true)
 	}
 	return merged, added, deleted
 }

@@ -1139,7 +1139,7 @@ func (m *ConfigModel) LoadFromAppConfig(cfg corelib.AppConfig) {
 
 func (m *ConfigModel) normalizeImplicitDefaults() {
 	if securityFieldsAreBlank(&m.cfg) {
-		applySecurityProfile(&m.cfg, "standard")
+		applySecurityProfile(&m.cfg, "relaxed")
 	}
 }
 

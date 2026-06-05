@@ -71,7 +71,13 @@ var threatPatternCategories = []ThreatCategory{
 	{
 		Name: "destructive",
 		Patterns: []ThreatPattern{
-			{Pattern: `rm\s+-rf\s+/`, IsRegex: true},                              // recursive delete root
+			// rm -rf with path awareness: only critical when targeting root or system paths.
+			// Guard allows user-home-directory operations (~/..., $HOME/..., /home/..., /tmp/...).
+			// Note: path traversal (../../) is separately covered by the "traversal" category.
+			{Pattern: `rm\s+-r[f]?\s+/`, IsRegex: true,
+				Guard: `rm\s+-r[f]?\s+(/home/|/root/|/tmp/|/var/tmp/|~/|\$HOME/)`},
+			{Pattern: `rm\s+-[f]?r\s+/`, IsRegex: true,
+				Guard: `rm\s+-[f]?r\s+(/home/|/root/|/tmp/|/var/tmp/|~/|\$HOME/)`},
 			{Pattern: `mkfs`, IsRegex: false},                                      // format filesystem
 			{Pattern: `dd\s+if=.*of=/dev/`, IsRegex: true},                        // overwrite device
 			{Pattern: `shred`, IsRegex: false},                                     // secure delete
@@ -136,16 +142,18 @@ var threatPatternCategories = []ThreatCategory{
 	{
 		Name: "execution",
 		Patterns: []ThreatPattern{
-			// chmod +x: guard allows setting executable on project scripts
+			// chmod +x: guard allows setting executable on project scripts and named binaries.
+			// Broad guard: if the target is a relative path (./) or ends in a known script
+			// extension or any single filename, it's likely user-initiated.
 			{Pattern: `chmod\s+\+x`, IsRegex: true,
-				Guard: `chmod\s+\+x\s+\./|\bchmod\s+\+x\s+\S+\.(sh|py|rb|pl)\b`},
+				Guard: `chmod\s+\+x\s+(\./|\S+\.(sh|py|rb|pl|bash)\b)`},
 			{Pattern: `chmod\s+[0-7]*7[0-7]*\s`, IsRegex: true},                   // world-executable
 			{Pattern: `curl.*\|\s*(bash|sh)`, IsRegex: true},                       // download-and-exec
 			{Pattern: `wget.*\|\s*(bash|sh)`, IsRegex: true},                       // download-and-exec
 			{Pattern: `curl.*-o\s+/tmp/.*&&.*sh\s+/tmp/`, IsRegex: true},          // download-save-exec
-			// python -c: guard allows safe one-liners (print, import, json, sys.version)
+			// python -c: guard allows safe one-liners (print, import, assignments, simple expressions)
 			{Pattern: `python\s+-c`, IsRegex: true,
-				Guard: `python3?\s+-c\s+['"](import\s+(json|sys|os\.path|platform)|print\(|from\s+\w+\s+import)`},
+				Guard: `python3?\s+-c\s+['"]?(import\s+|from\s+\w+\s+import|print\s*\(|[a-zA-Z_]\w*\s*=)`},
 			{Pattern: `ruby\s+-e`, IsRegex: true},                                  // Ruby one-liner
 			{Pattern: `node\s+-e`, IsRegex: true},                                  // Node one-liner
 		},
@@ -153,8 +161,10 @@ var threatPatternCategories = []ThreatCategory{
 	{
 		Name: "traversal",
 		Patterns: []ThreatPattern{
-			{Pattern: `\.\./\.\./`, IsRegex: true},                                 // path traversal
-			{Pattern: `\.\.\\\.\.\\`, IsRegex: true},                               // Windows path traversal
+			{Pattern: `\.\./\.\./`, IsRegex: true},                                 // double path traversal
+			{Pattern: `\.\.\\\.\.\\`, IsRegex: true},                               // Windows double path traversal
+			{Pattern: `/\.\./`, IsRegex: true,
+				Guard: `node_modules/\.\./|\.\./(src|lib|dist|build|test|tests)/`},  // single traversal (guard: common relative imports)
 			{Pattern: `/etc/passwd`, IsRegex: false},                               // sensitive file access
 			{Pattern: `/etc/shadow`, IsRegex: false},                               // sensitive file access
 			{Pattern: `/proc/self/`, IsRegex: false},                               // proc filesystem
@@ -334,7 +344,12 @@ type RiskAssessor struct{}
 // NOTE: "sudo" was moved to dangerousCmdPatterns for context-aware matching.
 // As a plain substring, "sudo" matches "pseudo", "sudoku", and documentation
 // text like "Run without sudo". The regex version uses word boundaries.
-var dangerousKeywords = []string{"rm -rf", "DROP TABLE"}
+//
+// NOTE: "rm -rf" was moved to threatPatternCategories.destructive with a
+// path-aware Guard. Plain "rm -rf" matches user-directory cleanup (e.g.
+// "rm -rf ~/old_build/") which is routine. Only root/system-path targets
+// should escalate to critical.
+var dangerousKeywords = []string{"DROP TABLE"}
 
 // dangerousCmdPatterns are regex patterns for dangerous commands that need
 // word-boundary matching to avoid false positives on substrings.
@@ -348,20 +363,35 @@ var dangerousCmdPatterns = []*regexp.Regexp{
 // by index.
 var dangerousCmdSafeContexts = [][]*regexp.Regexp{
 	// Safe contexts for \bsudo\b:
-	// - "sudo -n" (non-interactive, used in automated scripts with NOPASSWD)
-	// - "sudo apt/yum/dnf/pacman install" (package installation)
-	// - "sudo pip install" (Python package installation)
-	// - "sudo npm install -g" (Node.js global package installation)
-	// - "sudo systemctl start/restart/status" (service management)
-	// - "sudo docker" (Docker commands — user should be in docker group)
+	// Common system administration commands that are routine operations.
+	// These are downgraded to high (not critical) — still recorded in audit
+	// but won't block the user with a confirmation dialog in standard mode
+	// unless they are targeting system directories.
 	{
-		regexp.MustCompile(`(?i)\bsudo\s+-n\b`),
-		regexp.MustCompile(`(?i)\bsudo\s+(apt|apt-get|yum|dnf|pacman|brew)\s+(install|update|upgrade)\b`),
-		regexp.MustCompile(`(?i)\bsudo\s+pip3?\s+install\b`),
-		regexp.MustCompile(`(?i)\bsudo\s+npm\s+install\s+-g\b`),
-		regexp.MustCompile(`(?i)\bsudo\s+systemctl\s+(start|restart|status|reload)\b`),
-		regexp.MustCompile(`(?i)\bsudo\s+docker\b`),
-		regexp.MustCompile(`(?i)\bsudo\s+chown\s+\$`), // sudo chown $USER (common safe pattern)
+		regexp.MustCompile(`(?i)\bsudo\s+-n\b`),                                                     // non-interactive
+		regexp.MustCompile(`(?i)\bsudo\s+(apt|apt-get|yum|dnf|pacman|brew)\s+(install|update|upgrade|remove)\b`), // package management
+		regexp.MustCompile(`(?i)\bsudo\s+pip3?\s+install\b`),                                        // Python package
+		regexp.MustCompile(`(?i)\bsudo\s+npm\s+install\s+-g\b`),                                     // Node.js global
+		regexp.MustCompile(`(?i)\bsudo\s+systemctl\s+(start|stop|restart|status|reload|enable|disable)\b`), // service management
+		regexp.MustCompile(`(?i)\bsudo\s+docker\b`),                                                 // Docker
+		regexp.MustCompile(`(?i)\bsudo\s+chown\b`),                                                  // change ownership
+		regexp.MustCompile(`(?i)\bsudo\s+chmod\s+[0-7]{3,4}\b`),                                    // permission change (numeric)
+		regexp.MustCompile(`(?i)\bsudo\s+mkdir\b`),                                                  // create directory
+		regexp.MustCompile(`(?i)\bsudo\s+cp\b`),                                                     // copy
+		regexp.MustCompile(`(?i)\bsudo\s+mv\b`),                                                     // move/rename
+		regexp.MustCompile(`(?i)\bsudo\s+ln\b`),                                                     // create link
+		regexp.MustCompile(`(?i)\bsudo\s+tar\b`),                                                    // archive operations
+		regexp.MustCompile(`(?i)\bsudo\s+cat\b`),                                                    // read file
+		regexp.MustCompile(`(?i)\bsudo\s+tee\b`),                                                    // write to file via pipe
+		regexp.MustCompile(`(?i)\bsudo\s+kill\b`),                                                   // terminate process
+		regexp.MustCompile(`(?i)\bsudo\s+killall\b`),                                                // terminate by name
+		regexp.MustCompile(`(?i)\bsudo\s+journalctl\b`),                                             // view logs
+		regexp.MustCompile(`(?i)\bsudo\s+service\s+\w+\s+(start|stop|restart|status)\b`),           // legacy service management
+		regexp.MustCompile(`(?i)\bsudo\s+snap\s+(install|remove|refresh)\b`),                        // snap packages
+		regexp.MustCompile(`(?i)\bsudo\s+dpkg\b`),                                                   // Debian package
+		regexp.MustCompile(`(?i)\bsudo\s+rpm\b`),                                                    // RPM package
+		regexp.MustCompile(`(?i)\bsudo\s+ufw\s+(allow|deny|enable|status)\b`),                      // firewall management
+		regexp.MustCompile(`(?i)\bsudo\s+certbot\b`),                                                // SSL certificate
 	},
 }
 
@@ -412,28 +442,17 @@ func (a *RiskAssessor) Assess(ctx RiskContext) RiskAssessment {
 	}
 
 	// Context-aware dangerous command patterns (word-boundary matching).
-	for i, re := range dangerousCmdPatterns {
-		if re.MatchString(argStr) {
-			// Check safe contexts before escalating.
-			safeCtx := false
-			if i < len(dangerousCmdSafeContexts) {
-				for _, guard := range dangerousCmdSafeContexts[i] {
-					if guard.MatchString(argStr) {
-						safeCtx = true
-						break
-					}
-				}
+	// Delegates to CheckDangerousCmdPatterns to keep the pattern list and safe-context
+	// guards as a single source of truth rather than duplicating the logic here.
+	for _, r := range CheckDangerousCmdPatterns(argStr) {
+		if !r.SafeContext {
+			level = RiskCritical
+			factors = append(factors, fmt.Sprintf("dangerous command pattern %q matched in arguments", r.Pattern))
+		} else {
+			if RiskLevelOrder[level] < RiskLevelOrder[RiskHigh] {
+				level = RiskHigh
 			}
-			if !safeCtx {
-				level = RiskCritical
-				factors = append(factors, fmt.Sprintf("dangerous command pattern %q matched in arguments", re.String()))
-			} else {
-				// Safe context: escalate to high instead of critical.
-				if RiskLevelOrder[level] < RiskLevelOrder[RiskHigh] {
-					level = RiskHigh
-				}
-				factors = append(factors, fmt.Sprintf("dangerous command pattern %q matched but in safe context", re.String()))
-			}
+			factors = append(factors, fmt.Sprintf("dangerous command pattern %q matched but in safe context", r.Pattern))
 		}
 	}
 
@@ -444,6 +463,23 @@ func (a *RiskAssessor) Assess(ctx RiskContext) RiskAssessment {
 			level = RiskCritical
 			factors = append(factors, fmt.Sprintf("dangerous format pattern %q found in arguments", pat))
 		}
+	}
+
+	// Scan for structural threat patterns (destructive, traversal, exfiltration, etc.).
+	// This runs on live tool invocations (not just skill installation) so that
+	// commands like "rm -rf /" are caught at execution time with path-aware Guards.
+	// Pre-compiled regexes make this fast enough for per-call use (<1ms typical).
+	//
+	// IMPORTANT: only "live-safe" categories are scanned here. Categories like
+	// injection (pipe-to-shell), exfiltration (scp/rsync), network (ssh tunnels),
+	// and supply_chain (pip --pre) are intentionally excluded — they produce too many
+	// false positives when the user explicitly asks the agent to run those commands.
+	// Those categories remain active in AssessSkill (skill installation scanning).
+	for _, tm := range ScanLiveThreatPatterns(argStr) {
+		if RiskLevelOrder[level] < RiskLevelOrder[RiskHigh] {
+			level = RiskHigh
+		}
+		factors = append(factors, fmt.Sprintf("threat pattern [%s]: %q matched", tm.Category, tm.Pattern))
 	}
 
 	if IsWriteOrExecuteTool(ctx.ToolName) {
@@ -573,8 +609,14 @@ func ScanUnicodeAnomalies(text string) []ThreatMatch {
 }
 
 // ScanThreatPatterns scans text against all 12 threat pattern categories and
-// returns any matches found. This is used by AssessSkill to check skill step
-// commands and parameters against known threat patterns.
+// returns any matches found.
+//
+// NOTE: In production code, callers should prefer the more targeted functions:
+//   - ScanLiveThreatPatterns: for live tool invocations (Assess)
+//   - ScanSkillOnlyThreatPatterns: for AssessSkill (complements Assess)
+//
+// ScanThreatPatterns is retained for tests and external callers that need to
+// verify a specific pattern against the full 12-category set.
 // Requirements: 4.1, 4.2
 func ScanThreatPatterns(text string) []ThreatMatch {
 	if text == "" {
@@ -582,6 +624,88 @@ func ScanThreatPatterns(text string) []ThreatMatch {
 	}
 	var matches []ThreatMatch
 	for catName, patterns := range compiledThreatPatterns {
+		for _, cp := range patterns {
+			if matchPattern(cp, text) {
+				matches = append(matches, ThreatMatch{
+					Category: catName,
+					Pattern:  cp.Original.Pattern,
+				})
+			}
+		}
+	}
+	return matches
+}
+
+// liveThreatCategories is the subset of threat categories scanned during live
+// tool invocations (Assess). Categories excluded from this list produce too
+// many false positives when the user explicitly instructs the agent to run
+// commands like scp, ssh -L, pip install --pre, etc.
+//
+// Excluded categories and rationale:
+//   - exfiltration: user asks "deploy to server" → scp/rsync/curl POST are expected
+//   - injection: user asks "run my script" → pipe-to-python, command chaining normal
+//   - network: user asks "set up tunnel" → ssh -R/-L are expected
+//   - supply_chain: user asks "install beta" → pip --pre is expected
+//   - persistence: user asks "set up crontab" → crontab is expected
+//   - credential_exposure: user asks "read .env" → agent reads .env
+//   - privilege_escalation: sudo is already handled by dangerousCmdPatterns with
+//     context-aware safe-context guards (earlier in Assess). Including it here
+//     would only duplicate factors. Non-sudo escalation (setuid, visudo) is rare
+//     enough in user-initiated commands and handled by AssessSkill.
+//
+// Included (always dangerous regardless of user intent):
+//   - destructive: rm -rf /, mkfs, dd of=/dev/, fork bomb
+//   - traversal: path traversal to sensitive system files
+//   - obfuscation: base64-decode-then-exec, hex inject
+//   - mining: crypto miners
+//   - execution: curl|bash, download-and-exec (chmod +x and python -c have Guards)
+var liveThreatCategories = map[string]bool{
+	"destructive": true,
+	"traversal":   true,
+	"obfuscation": true,
+	"mining":      true,
+	"execution":   true,
+}
+
+// ScanLiveThreatPatterns scans text against the subset of threat categories
+// appropriate for live tool invocations. Categories that produce false positives
+// when the user explicitly requests an operation are excluded.
+// See liveThreatCategories for the included/excluded rationale.
+func ScanLiveThreatPatterns(text string) []ThreatMatch {
+	if text == "" {
+		return nil
+	}
+	var matches []ThreatMatch
+	for catName, patterns := range compiledThreatPatterns {
+		if !liveThreatCategories[catName] {
+			continue
+		}
+		for _, cp := range patterns {
+			if matchPattern(cp, text) {
+				matches = append(matches, ThreatMatch{
+					Category: catName,
+					Pattern:  cp.Original.Pattern,
+				})
+			}
+		}
+	}
+	return matches
+}
+
+// ScanSkillOnlyThreatPatterns scans text against the threat categories that are
+// NOT covered by ScanLiveThreatPatterns. Used in AssessSkill to complement
+// the Assess() call (which already runs ScanLiveThreatPatterns internally),
+// so together they cover all 12 categories without duplication.
+func ScanSkillOnlyThreatPatterns(text string) []ThreatMatch {
+	if text == "" {
+		return nil
+	}
+	var matches []ThreatMatch
+	for catName, patterns := range compiledThreatPatterns {
+		if liveThreatCategories[catName] {
+			// Already scanned by Assess() via ScanLiveThreatPatterns — skip.
+			continue
+		}
 		for _, cp := range patterns {
 			if matchPattern(cp, text) {
 				matches = append(matches, ThreatMatch{
@@ -791,9 +915,13 @@ func (a *RiskAssessor) AssessSkill(skill SkillRiskInput, trustLevel string) Risk
 			hasHardSecuritySignal = true
 		}
 
-		// Scan step commands/params against threat pattern categories
+		// Scan step commands/params against threat pattern categories not already
+		// covered by Assess() above. Assess() internally runs ScanLiveThreatPatterns
+		// (destructive, traversal, obfuscation, mining, execution); here we scan
+		// the remaining categories (exfiltration, injection, network, supply_chain,
+		// persistence, credential_exposure, privilege_escalation).
 		argStr := flattenArgs(step.Params)
-		threatMatches := ScanThreatPatterns(argStr)
+		threatMatches := ScanSkillOnlyThreatPatterns(argStr)
 		for _, tm := range threatMatches {
 			if RiskLevelOrder[maxRisk] < RiskLevelOrder[RiskHigh] {
 				maxRisk = RiskHigh

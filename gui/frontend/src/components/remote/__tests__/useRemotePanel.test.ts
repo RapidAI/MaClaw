@@ -561,9 +561,10 @@ describe('useRemotePanel provider sync', () => {
     it('keeps saveRemoteConfigField callers covered by the atomic whitelist', () => {
         const srcDir = join(process.cwd(), 'src');
         const useRemotePanelSource = readFileSync(join(srcDir, 'components/remote/useRemotePanel.ts'), 'utf8');
+        const whitelistStart = useRemotePanelSource.indexOf('const atomicPatchFields');
         const whitelistSource = useRemotePanelSource.slice(
-            useRemotePanelSource.indexOf('const atomicPatchFields'),
-            useRemotePanelSource.indexOf('if (patchKeys.length'),
+            whitelistStart,
+            whitelistStart + useRemotePanelSource.slice(whitelistStart).indexOf(']);'),
         );
         const whitelist = new Set([...whitelistSource.matchAll(/'([a-z0-9_]+)'/g)].map((match) => match[1]));
         const files: string[] = [];

@@ -117,7 +117,7 @@ var (
 	imChannelProfileOpts = []string{"off", "weixin", "telegram", "qq", "lansenger"}
 	proxyPortOpts        = []string{"7890", "8080", "1080", "3128"}
 	proxyProfileOpts     = []string{"off", "local_http_7890", "local_http_8080", "local_socks5_1080", "custom"}
-	securityProfileOpts  = []string{"standard", "strict", "offline", "developer", "custom"}
+	securityProfileOpts  = []string{"relaxed", "standard", "strict", "offline", "developer", "custom"}
 )
 
 type llmProviderPreset struct {
@@ -695,6 +695,7 @@ type securityProfilePreset struct {
 }
 
 var securityProfilePresets = []securityProfilePreset{
+	{Name: "relaxed", PolicyMode: "relaxed", SandboxMode: "none", NetworkLevel: "full", YoloModeAllowed: true, SmartRouteEnabled: true, FileOutboundEnabled: true, ImageOutboundEnabled: true},
 	{Name: "standard", PolicyMode: "standard", SandboxMode: "none", NetworkLevel: "full", YoloModeAllowed: true, SmartRouteEnabled: true, FileOutboundEnabled: true, ImageOutboundEnabled: true},
 	{Name: "strict", PolicyMode: "strict", SandboxMode: "os", NetworkLevel: "intranet", YoloModeAllowed: false, SmartRouteEnabled: false, FileOutboundEnabled: false, ImageOutboundEnabled: false},
 	{Name: "offline", PolicyMode: "strict", SandboxMode: "os", NetworkLevel: "none", YoloModeAllowed: false, SmartRouteEnabled: false, FileOutboundEnabled: false, ImageOutboundEnabled: false},
@@ -703,7 +704,7 @@ var securityProfilePresets = []securityProfilePreset{
 
 func currentSecurityProfile(c *corelib.AppConfig) string {
 	if c == nil || securityFieldsAreBlank(c) {
-		return "standard"
+		return "relaxed"
 	}
 	for _, preset := range securityProfilePresets {
 		if securityProfileMatches(c, preset) {
@@ -1046,13 +1047,13 @@ var allConfigFields = []ConfigFieldDef{
 	// ---- Tab 4: Security ----
 	{
 		Key: "security_profile", Tab: CfgTabSecurity, Section: "security",
-		DescKey: i18n.MsgTUIConfigDescSecurityProfile, Options: securityProfileOpts, Default: "standard",
+		DescKey: i18n.MsgTUIConfigDescSecurityProfile, Options: securityProfileOpts, Default: "relaxed",
 		Get: func(c *corelib.AppConfig) string { return currentSecurityProfile(c) },
 		Set: func(c *corelib.AppConfig, v string) { applySecurityProfile(c, v) },
 	},
 	{
 		Key: "security_policy_mode", Tab: CfgTabSecurity, Section: "security",
-		DescKey: i18n.MsgTUIConfigDescSecurityMode, Options: []string{"none", "standard", "relaxed", "strict", "developer"}, Default: "standard",
+		DescKey: i18n.MsgTUIConfigDescSecurityMode, Options: []string{"none", "relaxed", "standard", "strict", "developer"}, Default: "relaxed",
 		Get: func(c *corelib.AppConfig) string { return c.SecurityPolicyMode },
 		Set: func(c *corelib.AppConfig, v string) {
 			if v == "permissive" {

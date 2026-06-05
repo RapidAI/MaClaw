@@ -35,11 +35,16 @@ type agentLoopRuntimeState struct {
 
 func (h *IMMessageHandler) prepareAgentLoopHarnessState(userID, userText string) agentLoopHarnessState {
 	state := agentLoopHarnessState{}
+
+	// GoalAnchor: always create a fresh instance per loop, keyed to *this*
+	// loop's userText. The handler field h.goalAnchor acts only as a config
+	// template supplying anchorInterval; we never share the live instance
+	// across tabs. This mirrors the DriftDetector pattern.
+	anchorInterval := 5
 	if h.goalAnchor != nil {
-		state.GoalAnchor = h.goalAnchor
-	} else {
-		state.GoalAnchor = NewGoalAnchor(userText, 5)
+		anchorInterval = h.goalAnchor.AnchorInterval()
 	}
+	state.GoalAnchor = NewGoalAnchor(userText, anchorInterval)
 
 	if v, ok := h.sessionDriftReplanCount.Load(userID); ok {
 		state.PriorReplanCount = v.(int)
@@ -50,12 +55,21 @@ func (h *IMMessageHandler) prepareAgentLoopHarnessState(userID, userText string)
 		state.DriftDetector = NewDriftDetectorWithHistory(0, 0, state.PriorReplanCount)
 	}
 
-	if h.harnessProgressTracker != nil {
-		state.ProgressTracker = h.harnessProgressTracker
-	}
-	if h.adaptiveRetry != nil {
-		state.AdaptiveRetry = h.adaptiveRetry
-	}
+	// HarnessProgressTracker: not shared. The handler field would require
+	// identical checklist items across all sessions which is meaningless.
+	// Production code never calls SetHarnessProgressTracker; nil is correct.
+	// Tests that need a tracker construct one directly and pass it via opts.
+	state.ProgressTracker = nil
+
+	// AdaptiveRetry: the handler field h.adaptiveRetry is purely a config
+	// template (carries maxFailures override). A fresh instance with empty
+	// mutable state is created per loop inside prepareAgentLoopRecorderBundle,
+	// which has access to the per-loop recorder. We pass the template through
+	// agentLoopStartOptions so the bundle can read maxFailures from it.
+	// Do NOT assign h.adaptiveRetry to state.AdaptiveRetry here; that would
+	// share the template's nil/zero maps across concurrent tabs.
+	state.AdaptiveRetry = nil // populated by prepareAgentLoopRecorderBundle via opts
+
 	return state
 }
 

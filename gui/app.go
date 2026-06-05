@@ -170,6 +170,7 @@ type App struct {
 	weixinGateway                     *weixinGatewayManager
 	lansengerGateway                  *lansengerGatewayManager
 	thirdPartyGateway                 *thirdPartyGatewayManager
+	imGatewaySyncMu                   sync.Mutex
 	passthroughRegistry               *PassthroughRegistry
 	iworkerGoalWatch                  *IWorkerGoalWatchService
 	iworkerGoalWatchMu                sync.Mutex
@@ -1408,20 +1409,8 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	// That extra preload is not required for correctness and causes a large
 	// idle memory jump right after first login.
 
-	// Start QQ Bot gateway if configured (runs on client side).
-	a.ensureQQBotGateway()
-
-	// Start Telegram gateway if configured (runs on client side).
-	a.ensureTelegramGateway()
-
-	// Start WeChat gateway if configured (runs on client side).
-	a.ensureWeixinGateway()
-
-	// Start Lansenger gateway if configured (runs on client side).
-	a.ensureLansengerGateway()
-
-	// Start third-party local HTTP gateway if configured.
-	a.ensureThirdPartyGateway()
+	// Start configured client-side IM gateways.
+	a.syncIMGatewaysFromConfig()
 
 	return hubClient
 }
@@ -1518,11 +1507,7 @@ func (a *App) asyncHubConnect() {
 	}()
 
 	// Start IM gateways after successful Hub connection.
-	a.ensureQQBotGateway()
-	a.ensureTelegramGateway()
-	a.ensureWeixinGateway()
-	a.ensureLansengerGateway()
-	a.ensureThirdPartyGateway()
+	a.syncIMGatewaysFromConfig()
 }
 
 // buildHubClientIMHandlerConfigurator returns the configureIMHandler closure used by
@@ -1679,6 +1664,17 @@ func (a *App) IsToolBeingInstalled(toolName string) bool {
 	return a.isToolLocked(toolName)
 }
 
+func (a *App) syncIMGatewaysFromConfig() {
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+
+	a.ensureQQBotGateway()
+	a.ensureTelegramGateway()
+	a.ensureWeixinGateway()
+	a.ensureLansengerGateway()
+	a.ensureThirdPartyGateway()
+}
+
 // startup is called when the app starts. The context is saved
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
@@ -1750,11 +1746,7 @@ func (a *App) startup(ctx context.Context) {
 		// only start here when Hub credentials are absent (pure local mode).
 		if config.RemoteMachineID == "" || config.RemoteMachineToken == "" || config.RemoteHubURL == "" {
 			go func() {
-				a.ensureQQBotGateway()
-				a.ensureTelegramGateway()
-				a.ensureWeixinGateway()
-				a.ensureLansengerGateway()
-				a.ensureThirdPartyGateway()
+				a.syncIMGatewaysFromConfig()
 			}()
 		}
 		// CodeGen SSO token validation on startup (qianxin brand only).
@@ -2532,26 +2524,9 @@ func (a *App) startConfigWatcher() {
 						a.refreshPowerOptimizationStateFromConfig(config)
 						a.refreshWorkstationMode(config)
 						a.emitEvent("config-updated", config)
-						// Re-sync QQ Bot gateway on config change
-						if a.qqBotGateway != nil {
-							a.qqBotGateway.SyncFromConfig()
-						}
-						// Re-sync Telegram gateway on config change
-						if a.telegramGateway != nil {
-							a.telegramGateway.SyncFromConfig()
-						}
-						// Re-sync WeChat gateway on config change
-						if a.weixinGateway != nil {
-							a.weixinGateway.SyncFromConfig()
-						}
-						// Re-sync Lansenger gateway on config change
-						if a.lansengerGateway != nil {
-							a.lansengerGateway.SyncFromConfig()
-						}
-						// Re-sync third-party gateway on config change
-						if a.thirdPartyGateway != nil {
-							a.thirdPartyGateway.SyncFromConfig()
-						}
+						// Re-sync IM gateways on config change, including gateways
+						// newly enabled by direct config edits.
+						a.syncIMGatewaysFromConfig()
 					}
 				}
 			case err, ok := <-a.watcher.Errors:
@@ -5411,6 +5386,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	current := cfg
 	proxyChanged := false
 	policyModeChanged := false
+	imGatewayChanged := false
 	petChanged := false
 
 	for key, value := range patch {
@@ -5620,6 +5596,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.QQBotEnabled = v
+			imGatewayChanged = true
 		case "qqbot_app_id":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -5627,6 +5604,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.QQBotAppID = strings.TrimSpace(v)
+			imGatewayChanged = true
 		case "qqbot_app_secret":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -5634,6 +5612,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.QQBotAppSecret = v
+			imGatewayChanged = true
 		case "telegram_bot_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -5641,6 +5620,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.TelegramBotEnabled = v
+			imGatewayChanged = true
 		case "telegram_bot_token":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -5648,6 +5628,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.TelegramBotToken = strings.TrimSpace(v)
+			imGatewayChanged = true
 		case "lansenger_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -5655,6 +5636,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerEnabled = v
+			imGatewayChanged = true
 		case "lansenger_app_id":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -5662,6 +5644,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerAppID = strings.TrimSpace(v)
+			imGatewayChanged = true
 		case "lansenger_app_secret":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -5669,6 +5652,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerAppSecret = v
+			imGatewayChanged = true
 		case "lansenger_gateway_url":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -5676,6 +5660,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerGatewayURL = strings.TrimSpace(v)
+			imGatewayChanged = true
 		case "lansenger_wss_url":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -5683,6 +5668,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerWSSURL = strings.TrimSpace(v)
+			imGatewayChanged = true
 		case "thirdparty_gateway_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -5690,6 +5676,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.ThirdPartyGatewayEnabled = v
+			imGatewayChanged = true
 		case "thirdparty_gateway_token":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -5697,6 +5684,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.ThirdPartyGatewayToken = strings.TrimSpace(v)
+			imGatewayChanged = true
 		case "thirdparty_gateway_host":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -5704,6 +5692,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.ThirdPartyGatewayHost = strings.TrimSpace(v)
+			imGatewayChanged = true
 		case "thirdparty_gateway_port":
 			v, err := intField(key, value)
 			if err != nil {
@@ -5715,6 +5704,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, fmt.Errorf("thirdparty_gateway_port must be between 1 and 65535")
 			}
 			cfg.ThirdPartyGatewayPort = v
+			imGatewayChanged = true
 		case "default_proxy_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -6241,6 +6231,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	}
 	if OnConfigChanged != nil {
 		go OnConfigChanged(cfg)
+	}
+	if imGatewayChanged && a.ctx != nil {
+		go a.syncIMGatewaysFromConfig()
 	}
 	if floatingChanged {
 		go func(cfg corelib.AppConfig) {

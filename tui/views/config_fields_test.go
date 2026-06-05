@@ -1091,15 +1091,58 @@ func TestConfigFields_LoadFromAppConfigMaterializesStandardSecurityDefaults(t *t
 	m := NewConfigModel("zh")
 	m.LoadFromAppConfig(corelib.AppConfig{})
 
-	if m.cfg.SecurityPolicyMode != "standard" || m.cfg.SandboxMode != "none" || m.cfg.NetworkLevel != "full" {
-		t.Fatalf("implicit standard security defaults not materialized: %#v", m.cfg)
+	if m.cfg.SecurityPolicyMode != "relaxed" || m.cfg.SandboxMode != "none" || m.cfg.NetworkLevel != "full" {
+		t.Fatalf("implicit relaxed security defaults not materialized: %#v", m.cfg)
 	}
 	if !m.cfg.YoloModeAllowed || !m.cfg.SmartRouteEnabled || !m.cfg.FileOutboundEnabled || !m.cfg.ImageOutboundEnabled {
-		t.Fatalf("implicit standard security booleans not materialized: %#v", m.cfg)
+		t.Fatalf("implicit relaxed security booleans not materialized: %#v", m.cfg)
 	}
 	_, _, profile := findConfigEntryForTest(t, m, "security_profile")
-	if profile.Value != "standard" {
-		t.Fatalf("security_profile = %q, want standard", profile.Value)
+	if profile.Value != "relaxed" {
+		t.Fatalf("security_profile = %q, want relaxed", profile.Value)
+	}
+}
+
+func TestConfigFields_SecurityProfileSelectorRelaxedIsFirstOption(t *testing.T) {
+	m := NewConfigModel("zh")
+	m.activeTab = CfgTabSecurity
+	m.LoadFromAppConfig(corelib.AppConfig{})
+	_, _, entry := findConfigEntryForTest(t, m, "security_profile")
+	if len(entry.Options) == 0 {
+		t.Fatal("security_profile options must not be empty")
+	}
+	if entry.Options[0] != "relaxed" {
+		t.Fatalf("security_profile first option = %q, want %q; full options: %v",
+			entry.Options[0], "relaxed", entry.Options)
+	}
+	// Ensure all core presets are present.
+	wantOptions := []string{"relaxed", "standard", "strict", "offline", "developer", "custom"}
+	for _, want := range wantOptions {
+		found := false
+		for _, opt := range entry.Options {
+			if opt == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("security_profile options missing %q; got: %v", want, entry.Options)
+		}
+	}
+}
+
+func TestConfigFields_SecurityProfileAppliesRelaxedPreset(t *testing.T) {
+	cfg := corelib.AppConfig{}
+	ApplyConfigValue(&cfg, "security_profile", "relaxed")
+	if cfg.SecurityPolicyMode != "relaxed" || cfg.SandboxMode != "none" || cfg.NetworkLevel != "full" {
+		t.Fatalf("relaxed security profile not applied: %#v", cfg)
+	}
+	if !cfg.YoloModeAllowed || !cfg.SmartRouteEnabled || !cfg.FileOutboundEnabled || !cfg.ImageOutboundEnabled {
+		t.Fatalf("relaxed security profile should enable outbound flags: %#v", cfg)
+	}
+	got, _ := LoadConfigValue(&cfg, "security_profile")
+	if got != "relaxed" {
+		t.Fatalf("security_profile = %q, want relaxed", got)
 	}
 }
 

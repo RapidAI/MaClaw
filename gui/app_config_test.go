@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -635,18 +637,96 @@ func TestPatchConfigFieldsRejectsUnsupportedFields(t *testing.T) {
 }
 
 func TestPatchConfigFieldsCoversRemotePanelAtomicWhitelist(t *testing.T) {
+	guiDir := testGUIDir(t)
+	backendFields := testPatchConfigBackendFields(t, guiDir)
+	frontendSource, err := os.ReadFile(filepath.Join(guiDir, "frontend", "src", "components", "remote", "useRemotePanel.ts"))
+	if err != nil {
+		t.Fatalf("read useRemotePanel.ts: %v", err)
+	}
+	frontendText := string(frontendSource)
+	whitelistStart := strings.Index(frontendText, "const atomicPatchFields")
+	if whitelistStart < 0 {
+		t.Fatalf("atomicPatchFields source bounds not found")
+	}
+	whitelistEndOffset := strings.Index(frontendText[whitelistStart:], "]);")
+	if whitelistEndOffset < 0 {
+		t.Fatalf("atomicPatchFields source bounds not found")
+	}
+	whitelistEnd := whitelistStart + whitelistEndOffset
+	fieldRE := regexp.MustCompile(`'([a-z0-9_]+)'`)
+	var missing []string
+	for _, match := range fieldRE.FindAllStringSubmatch(frontendText[whitelistStart:whitelistEnd], -1) {
+		if !backendFields[match[1]] {
+			missing = append(missing, match[1])
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("atomicPatchFields missing backend PatchConfigFields cases: %v", missing)
+	}
+}
+
+func TestPatchConfigFieldsCoversFrontendLiteralCallers(t *testing.T) {
+	guiDir := testGUIDir(t)
+	backendFields := testPatchConfigBackendFields(t, guiDir)
+	srcDir := filepath.Join(guiDir, "frontend", "src")
+	missing := map[string][]string{}
+	err := filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "__tests__" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".ts" && filepath.Ext(path) != ".tsx" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, key := range testFrontendPatchConfigLiteralKeys(string(data)) {
+			if !backendFields[key] {
+				rel, _ := filepath.Rel(guiDir, path)
+				missing[key] = append(missing[key], rel)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk frontend src: %v", err)
+	}
+	if len(missing) > 0 {
+		keys := make([]string, 0, len(missing))
+		for key := range missing {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		var parts []string
+		for _, key := range keys {
+			sort.Strings(missing[key])
+			parts = append(parts, key+" in "+strings.Join(missing[key], ","))
+		}
+		t.Fatalf("frontend PatchConfigFields literal callers missing backend cases: %v", parts)
+	}
+}
+
+func testGUIDir(t *testing.T) string {
+	t.Helper()
 	_, currentFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	guiDir := filepath.Dir(currentFile)
+	return filepath.Dir(currentFile)
+}
+
+func testPatchConfigBackendFields(t *testing.T, guiDir string) map[string]bool {
+	t.Helper()
 	appSource, err := os.ReadFile(filepath.Join(guiDir, "app.go"))
 	if err != nil {
 		t.Fatalf("read app.go: %v", err)
-	}
-	frontendSource, err := os.ReadFile(filepath.Join(guiDir, "frontend", "src", "components", "remote", "useRemotePanel.ts"))
-	if err != nil {
-		t.Fatalf("read useRemotePanel.ts: %v", err)
 	}
 	appText := string(appSource)
 	patchStart := strings.Index(appText, "func (a *App) PatchConfigFields")
@@ -659,21 +739,205 @@ func TestPatchConfigFieldsCoversRemotePanelAtomicWhitelist(t *testing.T) {
 	for _, match := range caseRE.FindAllStringSubmatch(appText[patchStart:patchEnd], -1) {
 		backendFields[match[1]] = true
 	}
-	frontendText := string(frontendSource)
-	whitelistStart := strings.Index(frontendText, "const atomicPatchFields")
-	whitelistEnd := strings.Index(frontendText, "if (patchKeys.length")
-	if whitelistStart < 0 || whitelistEnd <= whitelistStart {
-		t.Fatalf("atomicPatchFields source bounds not found")
+	return backendFields
+}
+
+func testFrontendPatchConfigLiteralKeys(source string) []string {
+	var keys []string
+	for searchFrom := 0; searchFrom < len(source); {
+		idx := strings.Index(source[searchFrom:], "PatchConfigFields")
+		if idx < 0 {
+			break
+		}
+		idx += searchFrom
+		open := idx + len("PatchConfigFields")
+		for open < len(source) && (source[open] == ' ' || source[open] == '\t' || source[open] == '\r' || source[open] == '\n') {
+			open++
+		}
+		if open >= len(source) || source[open] != '(' {
+			searchFrom = open
+			continue
+		}
+		pos := open + 1
+		for pos < len(source) && (source[pos] == ' ' || source[pos] == '\t' || source[pos] == '\r' || source[pos] == '\n') {
+			pos++
+		}
+		if pos >= len(source) || source[pos] != '{' {
+			searchFrom = pos
+			continue
+		}
+		end := testFindMatchingObjectBrace(source, pos)
+		if end < 0 {
+			searchFrom = pos + 1
+			continue
+		}
+		keys = append(keys, testTopLevelObjectKeys(source[pos:end+1])...)
+		searchFrom = end + 1
 	}
-	fieldRE := regexp.MustCompile(`'([a-z0-9_]+)'`)
-	var missing []string
-	for _, match := range fieldRE.FindAllStringSubmatch(frontendText[whitelistStart:whitelistEnd], -1) {
-		if !backendFields[match[1]] {
-			missing = append(missing, match[1])
+	return keys
+}
+
+func testFindMatchingObjectBrace(source string, start int) int {
+	depth := 0
+	quote := byte(0)
+	escaped := false
+	lineComment := false
+	blockComment := false
+	for i := start; i < len(source); i++ {
+		ch := source[i]
+		if lineComment {
+			if ch == '\n' {
+				lineComment = false
+			}
+			continue
+		}
+		if blockComment {
+			if ch == '*' && i+1 < len(source) && source[i+1] == '/' {
+				blockComment = false
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(source) && source[i+1] == '/' {
+			lineComment = true
+			i++
+			continue
+		}
+		if ch == '/' && i+1 < len(source) && source[i+1] == '*' {
+			blockComment = true
+			i++
+			continue
+		}
+		if ch == '\'' || ch == '"' || ch == '`' {
+			quote = ch
+			continue
+		}
+		if ch == '{' {
+			depth++
+			continue
+		}
+		if ch == '}' {
+			depth--
+			if depth == 0 {
+				return i
+			}
 		}
 	}
-	if len(missing) > 0 {
-		t.Fatalf("atomicPatchFields missing backend PatchConfigFields cases: %v", missing)
+	return -1
+}
+
+func testTopLevelObjectKeys(objectSource string) []string {
+	seen := map[string]bool{}
+	var keys []string
+	depth := 0
+	quote := byte(0)
+	escaped := false
+	lineComment := false
+	blockComment := false
+	for i := 0; i < len(objectSource); i++ {
+		ch := objectSource[i]
+		if lineComment {
+			if ch == '\n' {
+				lineComment = false
+			}
+			continue
+		}
+		if blockComment {
+			if ch == '*' && i+1 < len(objectSource) && objectSource[i+1] == '/' {
+				blockComment = false
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(objectSource) && objectSource[i+1] == '/' {
+			lineComment = true
+			i++
+			continue
+		}
+		if ch == '/' && i+1 < len(objectSource) && objectSource[i+1] == '*' {
+			blockComment = true
+			i++
+			continue
+		}
+		if ch == '\'' || ch == '"' || ch == '`' {
+			quote = ch
+			continue
+		}
+		if ch == '{' {
+			depth++
+			continue
+		}
+		if ch == '}' {
+			depth--
+			continue
+		}
+		if depth != 1 || !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_') {
+			continue
+		}
+		start := i
+		for i+1 < len(objectSource) {
+			next := objectSource[i+1]
+			if !((next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || (next >= '0' && next <= '9') || next == '_') {
+				break
+			}
+			i++
+		}
+		key := objectSource[start : i+1]
+		j := i + 1
+		for j < len(objectSource) && (objectSource[j] == ' ' || objectSource[j] == '\t' || objectSource[j] == '\r' || objectSource[j] == '\n') {
+			j++
+		}
+		if j < len(objectSource) && objectSource[j] == ':' && !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func TestRestartUnconfiguredIMGatewaysReturnsDisconnected(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if got := app.RestartQQBot(); got != gatewayConnectionStatusDisconnected.String() {
+		t.Fatalf("RestartQQBot() = %q, want disconnected", got)
+	}
+	if got := app.RestartTelegram(); got != gatewayConnectionStatusDisconnected.String() {
+		t.Fatalf("RestartTelegram() = %q, want disconnected", got)
+	}
+	if got := app.RestartWeixin(); got != gatewayConnectionStatusDisconnected.String() {
+		t.Fatalf("RestartWeixin() = %q, want disconnected", got)
 	}
 }
 

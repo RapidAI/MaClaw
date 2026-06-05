@@ -81,3 +81,8 @@ func (g *GoalAnchor) BuildAnchorContent(progressSummary string) string {
 func (g *GoalAnchor) OriginalGoal() string {
 	return g.originalGoal
 }
+
+// AnchorInterval 返回锚定间隔，用于从配置模板派生新实例。
+func (g *GoalAnchor) AnchorInterval() int {
+	return g.anchorInterval
+}

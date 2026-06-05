@@ -1209,6 +1209,9 @@ func (a *App) GetWeixinStatus() string {
 
 func (a *App) RestartWeixin() string {
 	a.ensureWeixinGateway()
+	if a.weixinGateway == nil {
+		return gatewayConnectionStatusDisconnected.String()
+	}
 	return a.weixinGateway.Status()
 }
 
