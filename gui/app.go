@@ -5502,6 +5502,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.RemoteMobile = strings.TrimSpace(v)
+		case "onboarding_done":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.OnboardingDone = v
 		case "default_launch_mode":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -5599,6 +5606,115 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.MaclawRoleDescription = strings.TrimSpace(v)
+		case "im_progress_nudge_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.IMProgressNudgeEnabled = &v
+		case "qqbot_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.QQBotEnabled = v
+		case "qqbot_app_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.QQBotAppID = strings.TrimSpace(v)
+		case "qqbot_app_secret":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.QQBotAppSecret = v
+		case "telegram_bot_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.TelegramBotEnabled = v
+		case "telegram_bot_token":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.TelegramBotToken = strings.TrimSpace(v)
+		case "lansenger_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerEnabled = v
+		case "lansenger_app_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerAppID = strings.TrimSpace(v)
+		case "lansenger_app_secret":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerAppSecret = v
+		case "lansenger_gateway_url":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerGatewayURL = strings.TrimSpace(v)
+		case "lansenger_wss_url":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerWSSURL = strings.TrimSpace(v)
+		case "thirdparty_gateway_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ThirdPartyGatewayEnabled = v
+		case "thirdparty_gateway_token":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ThirdPartyGatewayToken = strings.TrimSpace(v)
+		case "thirdparty_gateway_host":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ThirdPartyGatewayHost = strings.TrimSpace(v)
+		case "thirdparty_gateway_port":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			if v < 1 || v > 65535 {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, fmt.Errorf("thirdparty_gateway_port must be between 1 and 65535")
+			}
+			cfg.ThirdPartyGatewayPort = v
 		case "default_proxy_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -485,6 +487,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 		"remote_hubcenter_url":         " http://127.0.0.1:9388 ",
 		"remote_email":                 " owner@example.com ",
 		"remote_mobile":                " 13800138000 ",
+		"onboarding_done":              true,
 		"default_launch_mode":          "remote",
 		"security_policy_mode":         "strict",
 		"sandbox_mode":                 "os",
@@ -498,6 +501,21 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 		"skill_sources_allowed":        []interface{}{"skillhub"},
 		"maclaw_role_name":             " reviewer ",
 		"maclaw_role_description":      " checks code ",
+		"im_progress_nudge_enabled":    false,
+		"qqbot_enabled":                true,
+		"qqbot_app_id":                 " qq-app ",
+		"qqbot_app_secret":             "qq-secret ",
+		"telegram_bot_enabled":         true,
+		"telegram_bot_token":           " tg-token ",
+		"lansenger_enabled":            true,
+		"lansenger_app_id":             " lx-app ",
+		"lansenger_app_secret":         "lx-secret ",
+		"lansenger_gateway_url":        " https://apigw.example.com ",
+		"lansenger_wss_url":            " wss://ws.example.com ",
+		"thirdparty_gateway_enabled":   true,
+		"thirdparty_gateway_token":     " gateway-token ",
+		"thirdparty_gateway_host":      " 0.0.0.0 ",
+		"thirdparty_gateway_port":      float64(18888),
 		"ui_zoom_factor":               float64(3.5),
 		"chat_font_size":               float64(99),
 		"env_check_interval":           float64(14),
@@ -564,7 +582,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if patched.Language != "zh-Hans" || patched.ActiveTool != "codex" || patched.CurrentProject != "p2" || len(patched.Projects) != 2 || len(patched.FavoriteEmployees) != 2 || patched.FavoriteEmployeeNames["ve1"] != "Reviewer" {
 		t.Fatalf("navigation/project/favorite fields not applied: %#v", patched)
 	}
-	if !patched.RemoteEnabled || patched.RemoteHubURL != "https://hub.example.com/" || patched.RemoteHubCenterURL != "http://127.0.0.1:9388" || patched.RemoteEmail != "owner@example.com" || patched.RemoteMobile != "13800138000" || patched.DefaultLaunchMode != "remote" || patched.Codex.CurrentModel != "Original" {
+	if !patched.RemoteEnabled || patched.RemoteHubURL != "https://hub.example.com/" || patched.RemoteHubCenterURL != "http://127.0.0.1:9388" || patched.RemoteEmail != "owner@example.com" || patched.RemoteMobile != "13800138000" || !patched.OnboardingDone || patched.DefaultLaunchMode != "remote" || patched.Codex.CurrentModel != "Original" {
 		t.Fatalf("remote/provider fields not applied: %#v", patched)
 	}
 	if patched.SecurityPolicyMode != "strict" || patched.SandboxMode != "os" || patched.NetworkLevel != "allowlist" || len(patched.NetworkAllowlist) != 1 || patched.YoloModeAllowed || !patched.SmartRouteEnabled || !patched.GossipEnabled || patched.FileOutboundEnabled || patched.ImageOutboundEnabled || len(patched.SkillSourcesAllowed) != 1 {
@@ -572,6 +590,15 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	}
 	if patched.MaclawRoleName != "reviewer" || patched.MaclawRoleDescription != "checks code" {
 		t.Fatalf("maclaw role fields not applied: %#v", patched)
+	}
+	if patched.IMProgressNudgeEnabled == nil || *patched.IMProgressNudgeEnabled || !patched.QQBotEnabled || patched.QQBotAppID != "qq-app" || patched.QQBotAppSecret != "qq-secret " || !patched.TelegramBotEnabled || patched.TelegramBotToken != "tg-token" {
+		t.Fatalf("IM bot fields not applied: %#v", patched)
+	}
+	if !patched.LansengerEnabled || patched.LansengerAppID != "lx-app" || patched.LansengerAppSecret != "lx-secret " || patched.LansengerGatewayURL != "https://apigw.example.com" || patched.LansengerWSSURL != "wss://ws.example.com" {
+		t.Fatalf("Lansenger fields not applied: %#v", patched)
+	}
+	if !patched.ThirdPartyGatewayEnabled || patched.ThirdPartyGatewayToken != "gateway-token" || patched.ThirdPartyGatewayHost != "0.0.0.0" || patched.ThirdPartyGatewayPort != 18888 {
+		t.Fatalf("third-party gateway fields not applied: %#v", patched)
 	}
 	if patched.UIZoomFactor != 2.0 || patched.ChatFontSize != 24 || patched.EnvCheckInterval != 14 || patched.LastEnvCheckTime != "2026-06-05T12:00:00Z" || patched.VectorSearchEnabled || patched.ScreenParsingEnabled == nil || *patched.ScreenParsingEnabled || patched.ASREnabled || patched.TTSEnabled || patched.TTSVoiceID != "zm_yunxi" || patched.MaclawAgentMaxIterations != 30 || patched.SubAgentConcurrency != corelib.MaxSubAgentConcurrency || !patched.TrialReflectEnabled {
 		t.Fatalf("ui/vector/agent fields not applied with normalization: %#v", patched)
@@ -604,6 +631,49 @@ func TestPatchConfigFieldsRejectsUnsupportedFields(t *testing.T) {
 	app := &App{testHomeDir: tmpHome}
 	if _, err := app.PatchConfigFields(map[string]interface{}{"unknown_field": "bad"}); err == nil {
 		t.Fatal("PatchConfigFields(unknown_field) error = nil, want unsupported field error")
+	}
+}
+
+func TestPatchConfigFieldsCoversRemotePanelAtomicWhitelist(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	guiDir := filepath.Dir(currentFile)
+	appSource, err := os.ReadFile(filepath.Join(guiDir, "app.go"))
+	if err != nil {
+		t.Fatalf("read app.go: %v", err)
+	}
+	frontendSource, err := os.ReadFile(filepath.Join(guiDir, "frontend", "src", "components", "remote", "useRemotePanel.ts"))
+	if err != nil {
+		t.Fatalf("read useRemotePanel.ts: %v", err)
+	}
+	appText := string(appSource)
+	patchStart := strings.Index(appText, "func (a *App) PatchConfigFields")
+	patchEnd := strings.Index(appText, "// PatchConfig performs")
+	if patchStart < 0 || patchEnd <= patchStart {
+		t.Fatalf("PatchConfigFields source bounds not found")
+	}
+	caseRE := regexp.MustCompile(`case "([a-z0-9_]+)"`)
+	backendFields := map[string]bool{}
+	for _, match := range caseRE.FindAllStringSubmatch(appText[patchStart:patchEnd], -1) {
+		backendFields[match[1]] = true
+	}
+	frontendText := string(frontendSource)
+	whitelistStart := strings.Index(frontendText, "const atomicPatchFields")
+	whitelistEnd := strings.Index(frontendText, "if (patchKeys.length")
+	if whitelistStart < 0 || whitelistEnd <= whitelistStart {
+		t.Fatalf("atomicPatchFields source bounds not found")
+	}
+	fieldRE := regexp.MustCompile(`'([a-z0-9_]+)'`)
+	var missing []string
+	for _, match := range fieldRE.FindAllStringSubmatch(frontendText[whitelistStart:whitelistEnd], -1) {
+		if !backendFields[match[1]] {
+			missing = append(missing, match[1])
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("atomicPatchFields missing backend PatchConfigFields cases: %v", missing)
 	}
 }
 

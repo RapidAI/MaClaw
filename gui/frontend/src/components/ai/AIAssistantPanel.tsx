@@ -342,12 +342,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             : projectTabMessages;
         const activeProjectRound = findProjectRoundForTab(activeTab.id, activeTab.projectPath);
         if (!sending || !activeProjectRound) return mergedProjectMessages;
-        const newMessages = messages.slice(activeProjectRound.baseline).filter((message: ChatMessage) => messageBelongsToSessionOrLegacy(message, activeSessionKey));
-        if (newMessages.length === 0) return mergedProjectMessages;
-        const existingIds = new Set(mergedProjectMessages.map((m: ChatMessage) => m.id));
-        const unique = newMessages.filter((m: ChatMessage) => !existingIds.has(m.id));
-        if (unique.length === 0) return mergedProjectMessages;
-        return [...mergedProjectMessages, ...unique];
+        // During an active round, also include messages that arrived since the
+        // round's baseline and belong to this session but may not carry an
+        // explicit sessionKey (messageBelongsToSessionOrLegacy accepts both).
+        // Use mergeChatMessages so that messages already present in
+        // mergedProjectMessages are *replaced* rather than appended again.
+        const roundMessages = messages.slice(activeProjectRound.baseline).filter((message: ChatMessage) => messageBelongsToSessionOrLegacy(message, activeSessionKey));
+        if (roundMessages.length === 0) return mergedProjectMessages;
+        return mergeChatMessages(mergedProjectMessages, roundMessages);
     }, [activeSessionKey, activeTab.id, activeTab.projectPath, findProjectRoundForTab, isProjectTabActive, messages, projectTabMessages, projectTabRouteVersion, sending]);
     const prevSendingRef = useRef(sending);
     useEffect(() => {
@@ -373,22 +375,31 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     ? messages.slice(round.baseline).filter((message: ChatMessage) => messageBelongsToSessionOrLegacy(message, roundSessionKey))
                     : [];
                 if (newMessages.length > 0 && round.tabId) {
-                    const appendUnique = (history: unknown[] | undefined) => {
-                        const existingHistory = (Array.isArray(history) ? history : []) as ChatMessage[];
-                        const existingIds = new Set(existingHistory.map((m: ChatMessage) => m.id));
-                        const unique = newMessages.filter((m: ChatMessage) => !existingIds.has(m.id));
-                        return unique.length === 0 ? existingHistory : [...existingHistory, ...unique];
-                    };
+                    // Use mergeChatMessages (not appendUnique) so that messages
+                    // whose IDs are already present in the stored history are
+                    // *replaced* with the latest version from `messages`.
+                    // appendUnique (old code) only added new IDs and silently
+                    // dropped updated versions (e.g. a streaming placeholder
+                    // that already had its ID written by the live-sync effect
+                    // but still held empty content would never get the final
+                    // response text, leaving a ghost "思考中..." placeholder
+                    // alongside the actual response).
                     if (isProjectTabActive && activeTab.id === round.tabId) {
-                        setProjectTabMessages(prev => appendUnique(prev));
+                        setProjectTabMessages(prev => mergeChatMessages(prev, newMessages));
                     }
                     const existingState = getTabState(round.tabId);
+                    // For the active tab, existingState?.history is the persisted
+                    // snapshot; projectTabMessages is the live React state. Use
+                    // the live state as the base when saving so the persisted copy
+                    // does not lag behind what the user is currently seeing.
+                    // For inactive tabs we have no in-memory live state, so use
+                    // the persisted snapshot directly.
                     const baseHistory = isProjectTabActive && activeTab.id === round.tabId
-                        ? mergeChatMessages(existingState?.history, projectTabMessages)
+                        ? projectTabMessages
                         : existingState?.history;
                     saveTabState(round.tabId, {
                         ...existingState,
-                        history: appendUnique(baseHistory),
+                        history: mergeChatMessages(baseHistory, newMessages),
                     });
                     for (const m of newMessages) {
                         projectTabMsgIdsRef.current.add(m.id);

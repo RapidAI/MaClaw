@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { main } from '../../../../wailsjs/go/models';
 
 const runtimeHandlers = new Map<string, (payload?: unknown) => void>();
@@ -379,6 +381,84 @@ describe('useRemotePanel provider sync', () => {
         expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ screen_dim_timeout_min: 7 }));
     });
 
+    it('patches onboarding completion through the atomic endpoint', async () => {
+        const setConfig = vi.fn();
+        const config = buildConfig({ onboarding_done: false });
+
+        const { result } = renderHook(() => useRemotePanel({
+            config,
+            setConfig,
+            setToolStatuses: vi.fn(),
+            getSelectedProjectForRemote: () => '/workspace',
+            selectedProjectForLaunch: 'p1',
+            navTab: 'settings',
+            translate: (key: string) => key,
+            formatText: (key: string, values?: Record<string, string>) => values ? `${key}:${JSON.stringify(values)}` : key,
+            localizeText: (en: string) => en,
+            showToastMessage: vi.fn(),
+            onDemandInstallingTool: '',
+            setOnDemandInstallingTool: vi.fn(),
+        }));
+
+        await act(async () => {
+            await result.current.saveRemoteConfigField({ onboarding_done: true } as any);
+        });
+
+        expect(patchConfigFieldsMock).toHaveBeenCalledWith({ onboarding_done: true });
+        expect(saveConfigMock).not.toHaveBeenCalled();
+        expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ onboarding_done: true }));
+    });
+
+    it('patches IM settings through the atomic endpoint', async () => {
+        const setConfig = vi.fn();
+        const config = buildConfig({
+            im_progress_nudge_enabled: true,
+            qqbot_enabled: false,
+            thirdparty_gateway_port: 18777,
+        });
+
+        const { result } = renderHook(() => useRemotePanel({
+            config,
+            setConfig,
+            setToolStatuses: vi.fn(),
+            getSelectedProjectForRemote: () => '/workspace',
+            selectedProjectForLaunch: 'p1',
+            navTab: 'settings',
+            translate: (key: string) => key,
+            formatText: (key: string, values?: Record<string, string>) => values ? `${key}:${JSON.stringify(values)}` : key,
+            localizeText: (en: string) => en,
+            showToastMessage: vi.fn(),
+            onDemandInstallingTool: '',
+            setOnDemandInstallingTool: vi.fn(),
+        }));
+
+        const patch = {
+            im_progress_nudge_enabled: false,
+            qqbot_enabled: true,
+            qqbot_app_id: 'qq-app',
+            qqbot_app_secret: 'qq-secret',
+            telegram_bot_enabled: true,
+            telegram_bot_token: 'tg-token',
+            lansenger_enabled: true,
+            lansenger_app_id: 'lx-app',
+            lansenger_app_secret: 'lx-secret',
+            lansenger_gateway_url: 'https://apigw.example.com',
+            lansenger_wss_url: 'wss://ws.example.com',
+            thirdparty_gateway_enabled: true,
+            thirdparty_gateway_token: 'gateway-token',
+            thirdparty_gateway_host: '127.0.0.1',
+            thirdparty_gateway_port: 18888,
+        };
+
+        await act(async () => {
+            await result.current.saveRemoteConfigField(patch as any);
+        });
+
+        expect(patchConfigFieldsMock).toHaveBeenCalledWith(patch);
+        expect(saveConfigMock).not.toHaveBeenCalled();
+        expect(setConfig).toHaveBeenCalledWith(expect.objectContaining(patch));
+    });
+
     it('leaves default launch mode untouched when no pending mode exists', async () => {
         loadConfigMock.mockResolvedValue(buildConfig({
             default_launch_mode: 'local',
@@ -476,5 +556,37 @@ describe('useRemotePanel provider sync', () => {
 
         expect(patchConfigFieldsMock).toHaveBeenCalledWith({ default_launch_mode: 'local', remote_enabled: true });
         expect(saveConfigMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps saveRemoteConfigField callers covered by the atomic whitelist', () => {
+        const srcDir = join(process.cwd(), 'src');
+        const useRemotePanelSource = readFileSync(join(srcDir, 'components/remote/useRemotePanel.ts'), 'utf8');
+        const whitelistSource = useRemotePanelSource.slice(
+            useRemotePanelSource.indexOf('const atomicPatchFields'),
+            useRemotePanelSource.indexOf('if (patchKeys.length'),
+        );
+        const whitelist = new Set([...whitelistSource.matchAll(/'([a-z0-9_]+)'/g)].map((match) => match[1]));
+        const files: string[] = [];
+        const walk = (dir: string) => {
+            for (const entry of readdirSync(dir, { withFileTypes: true })) {
+                const fullPath = join(dir, entry.name);
+                if (entry.isDirectory()) walk(fullPath);
+                else if (/\.(ts|tsx)$/.test(entry.name)) files.push(fullPath);
+            }
+        };
+        walk(srcDir);
+        const keys = new Set<string>();
+        for (const file of files) {
+            const source = readFileSync(file, 'utf8');
+            for (const match of source.matchAll(/saveRemoteConfigField\(\{\s*([a-zA-Z0-9_]+)/g)) {
+                keys.add(match[1]);
+            }
+            if (source.includes('saveRemoteConfigField(patch)')) {
+                keys.add('thirdparty_gateway_enabled');
+                keys.add('thirdparty_gateway_token');
+            }
+        }
+        const missing = [...keys].filter((key) => !whitelist.has(key)).sort();
+        expect(missing).toEqual([]);
     });
 });

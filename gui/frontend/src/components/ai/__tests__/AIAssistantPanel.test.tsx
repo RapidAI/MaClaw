@@ -1342,6 +1342,88 @@ describe('AIAssistantPanel property tests', () => {
         resolveProjectSend(true);
     });
 
+    it('replaces streaming placeholder with final content when round completes (no ghost 思考中)', async () => {
+        // Regression test for appendUnique bug: when the live-sync effect writes
+        // an empty assistant placeholder into projectTabMessages during streaming,
+        // the wasSending→!sending effect must *replace* it (via mergeChatMessages)
+        // with the final-content version from `messages`, not skip it (appendUnique
+        // skipped IDs already present, leaving a ghost empty placeholder alongside
+        // the real response — manifesting as "思考中..." + response text together).
+        let resolveSend!: (value: boolean) => void;
+        const sendMessage = vi.fn((_: string, options?: any) => {
+            if (options?.project_path) {
+                return new Promise<boolean>((resolve) => { resolveSend = resolve; });
+            }
+            return Promise.resolve(true);
+        });
+        const emptyPlaceholder = makeMsg({ role: 'assistant', content: '', requestId: 'req-taipei' });
+        const finalAssistant = makeMsg({ ...emptyPlaceholder, content: '台北天气已记下，下次直接回复' });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/taipei-weather',
+                taskTitle: '台北天气',
+                initialMessage: '台北天气',
+                autoSend: true,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender, getByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('台北天气', expect.objectContaining({
+            project_path: 'D:/tasks/taipei-weather',
+        })));
+        const projectTabId = (((sendMessage as any).mock.calls[0]?.[1]) as any)?.tabId as string;
+        fireEvent.click(getByTestId(`ai-tab-${projectTabId}`));
+
+        // Phase 1: streaming — empty placeholder written to messages
+        const userMsg = makeMsg({ role: 'user', content: '台北天气', sessionKey: 'desktop-user:D:/tasks/taipei-weather' });
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [userMsg, { ...emptyPlaceholder, sessionKey: 'desktop-user:D:/tasks/taipei-weather' }],
+            sending: true, streaming: true,
+            sendingSessionKey: 'desktop-user:D:/tasks/taipei-weather',
+            streamingSessionKey: 'desktop-user:D:/tasks/taipei-weather',
+            busySessionKeys: ['desktop-user:D:/tasks/taipei-weather'],
+            streamingSessionKeys: ['desktop-user:D:/tasks/taipei-weather'],
+        }} />);
+
+        // Phase 2: final content arrives in messages, sending transitions to false
+        resolveSend(true);
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [
+                { ...userMsg, sessionKey: 'desktop-user:D:/tasks/taipei-weather' },
+                { ...finalAssistant, sessionKey: 'desktop-user:D:/tasks/taipei-weather' },
+            ],
+            sending: false, streaming: false,
+            sendingSessionKey: '',
+            streamingSessionKey: '',
+            busySessionKeys: [],
+            streamingSessionKeys: [],
+        }} />);
+
+        // The panel must show EXACTLY ONE assistant message with the final content,
+        // not a ghost empty placeholder + a separate final-content message.
+        await waitFor(() => {
+            expect(document.body.textContent || '').toContain('台北天气已记下');
+        });
+        const outputEl = document.querySelector('[data-testid="ai-output-container"]');
+        const outputText = outputEl?.textContent || '';
+        // Final content appears
+        expect(outputText).toContain('台北天气已记下');
+        // The placeholder's empty content must NOT coexist with the final text.
+        // If the bug were present, the empty placeholder would still be rendered
+        // and the aiAssistantMarkdown component would inject the "正在思考..."
+        // italic span directly in the text stream. Detect this by counting how
+        // many times the final-content substring appears — it should be exactly
+        // one, not duplicated via a second assistant entry carrying the response.
+        const matches = (outputText.match(/台北天气已记下/g) || []).length;
+        expect(matches).toBe(1);
+    });
+
     it('keeps project guide reference echo inside the active project tab', async () => {
         localStorage.removeItem('ai_assistant_buffer_queue');
         const guideLaunchReference = vi.fn().mockResolvedValue(true);

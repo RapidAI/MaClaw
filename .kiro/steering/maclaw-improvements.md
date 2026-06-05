@@ -5693,3 +5693,45 @@ Guards 防止误杀合法 session 交互：
 - `force=true` → 跳过门禁
 - 6 个 corelib 预检测试 + 2 个 GUI 门禁测试通过；corelib/skill 全量测试通过；GUI/TUI/corelib 编译通过、`go vet` 通过
 - 注：`TestToolValidateSkillAutoFixScansAndRollsBackRiskyWriteback`（TUI `TestManageSkillRunHydratesMarkdownMetadata`）为预先存在的失败，与本次改动无关
+
+
+### 100. 多 Agent Tab 并发时结果不显示——`appendUnique` 丢弃已更新消息版本
+
+**来源**：用户在 project tab（如"北京天气"）使用 buffer queue 依次发送多个城市天气查询，每次请求完成后显示 `▶ 🌙 思考中...`（空 placeholder）和最终响应文本**同时**出现，导致结果看似没有正确显示。
+
+**根因**：`AIAssistantPanel.tsx` 中 `wasSending && !sending` effect 里有一个 `appendUnique` 内联函数，其语义是"只添加 history 里没有的新 ID，跳过已有 ID 的消息"。这导致了以下竞态：
+
+1. 流式响应开始 → `appendTokenToDetachedRound` / live-sync effect（第 302 行）把**空内容的** assistant placeholder 写入 `projectTabMessages`（ID 已注册）
+2. LLM 完成 → `finalizeRoundMessage` 把**最终内容**写入共享 `messages` 里的同一条消息（相同 ID，content 更新）
+3. `sending` 变为 false → `wasSending && !sending` effect 执行 `appendUnique`
+4. `appendUnique` 发现 placeholder 的 ID 已在 `projectTabMessages` 中 → **跳过**，不更新
+5. `projectTabMessages` 里保留的是空内容的旧版本
+6. `displayMessages` 通过 `mergeChatMessages(projectTabMessages, liveProjectMessages)` 合并时，空 placeholder 和最终内容都出现（因为 React state 更新的异步性导致两个版本可能同时可见）
+
+**修复**：将 `wasSending && !sending` effect 里的两处 `appendUnique` 调用替换为 `mergeChatMessages`：
+
+```typescript
+// 修复前（有 bug）
+const appendUnique = (history) => {
+    const existingIds = new Set(history.map(m => m.id));
+    const unique = newMessages.filter(m => !existingIds.has(m.id));
+    return unique.length === 0 ? existingHistory : [...existingHistory, ...unique];
+};
+setProjectTabMessages(prev => appendUnique(prev));
+saveTabState(..., { history: appendUnique(baseHistory) });
+
+// 修复后（正确）
+setProjectTabMessages(prev => mergeChatMessages(prev, newMessages));
+saveTabState(..., { history: mergeChatMessages(baseHistory, newMessages) });
+```
+
+`mergeChatMessages` 已经是系统内所有其他消息合并路径（busySessionKeys effect、live-sync effect、displayMessages）使用的统一函数，语义是"相同 ID 的消息，后面的 group wins"——确保 `newMessages` 里的最终内容版本正确替换 `projectTabMessages` 里的空 placeholder。
+
+**修改文件**：`gui/frontend/src/components/ai/AIAssistantPanel.tsx`
+
+**测试**：新增回归测试 `replaces streaming placeholder with final content when round completes (no ghost 思考中)`，验证请求完成后 UI 里只有一条最终内容的 assistant 消息，不出现空 placeholder 幽灵。
+
+**验收标准**：
+- buffer queue 排队多个城市天气查询，每个请求完成后只显示最终结果，不出现"思考中"幽灵
+- 116 个 AIAssistantPanel 测试全部通过
+- 157 个 useAIAssistant 测试全部通过
