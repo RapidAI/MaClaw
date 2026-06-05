@@ -117,14 +117,14 @@ func executionProfileFromSemanticIntent(result *intent.ClassificationResult, con
 		}
 	}
 	switch result.Primary {
-	case intent.LabelSearch, intent.LabelLiveData, intent.LabelNonCoding:
+	case intent.LabelLiveData:
 		return ExecutionProfile{
 			Layer:                string(executionLayerLight),
 			TaskType:             string(result.Primary),
 			PromptProfile:        "light",
 			Confidence:           result.Confidence,
 			Reason:               "semantic low-complexity intent",
-			RequiredCapabilities: []string{"skill", "web", "time"},
+			RequiredCapabilities: []string{"current_data", "web", "time"},
 			ToolBudget:           8,
 			IterationBudget:      3,
 		}
@@ -180,7 +180,7 @@ func filterToolsForExecutionProfile(tools []map[string]interface{}, profile Exec
 	seen := make(map[string]bool, budget)
 	for _, def := range tools {
 		contract := executionContractForTool(def)
-		if !contract.Explicit || !contractAllowedForLight(contract) || seen[contract.Name] {
+		if !contract.Explicit || !contractAllowedForLight(contract) || !contractMatchesExecutionProfile(contract, profile) || seen[contract.Name] {
 			continue
 		}
 		filtered = append(filtered, def)
@@ -312,6 +312,28 @@ func contractAllowedForLight(contract ToolExecutionContract) bool {
 	for _, cap := range contract.Capabilities {
 		switch strings.TrimSpace(cap) {
 		case "skill", "web", "current_data", "fetch", "mcp", "external_tool", "async_status", "time", "status":
+			return true
+		}
+	}
+	return false
+}
+
+func contractMatchesExecutionProfile(contract ToolExecutionContract, profile ExecutionProfile) bool {
+	if len(profile.RequiredCapabilities) == 0 {
+		return true
+	}
+	required := make(map[string]bool, len(profile.RequiredCapabilities))
+	for _, cap := range profile.RequiredCapabilities {
+		cap = strings.TrimSpace(cap)
+		if cap != "" {
+			required[cap] = true
+		}
+	}
+	if len(required) == 0 {
+		return true
+	}
+	for _, cap := range contract.Capabilities {
+		if required[strings.TrimSpace(cap)] {
 			return true
 		}
 	}

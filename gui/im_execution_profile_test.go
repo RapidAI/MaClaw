@@ -9,10 +9,10 @@ import (
 
 func TestClassifyIMExecutionProfileSemanticLookupUsesLight(t *testing.T) {
 	semantic := &intent.ClassificationResult{
-		Primary:    intent.LabelSearch,
+		Primary:    intent.LabelLiveData,
 		Confidence: 0.86,
 		Layer:      3,
-		Reason:     "semantic search intent",
+		Reason:     "semantic live data intent",
 	}
 	profile := classifyIMExecutionProfileWithSemantic(IMUserMessage{Text: "\u5170\u5dde\u5929\u6c14"}, false, false, semantic)
 	if !profile.IsLight() {
@@ -27,6 +27,32 @@ func TestClassifyIMExecutionProfileWithoutSemanticStaysFull(t *testing.T) {
 	profile := classifyIMExecutionProfile(IMUserMessage{Text: "\u5170\u5dde\u5929\u6c14"}, false, false)
 	if profile.IsLight() || profile.IsDirect() {
 		t.Fatalf("profile without semantic classifier = %+v, want full", profile)
+	}
+}
+
+func TestClassifyIMExecutionProfileGenericSearchStaysFull(t *testing.T) {
+	semantic := &intent.ClassificationResult{
+		Primary:    intent.LabelSearch,
+		Confidence: 0.90,
+		Layer:      3,
+		Reason:     "semantic broad search intent",
+	}
+	profile := classifyIMExecutionProfileWithSemantic(IMUserMessage{Text: "\u641c\u7d22\u6700\u65b0AI\u8bba\u6587"}, false, false, semantic)
+	if profile.IsLight() || profile.IsDirect() {
+		t.Fatalf("generic search profile = %+v, want full", profile)
+	}
+}
+
+func TestClassifyIMExecutionProfileGenericNonCodingStaysFull(t *testing.T) {
+	semantic := &intent.ClassificationResult{
+		Primary:    intent.LabelNonCoding,
+		Confidence: 0.90,
+		Layer:      3,
+		Reason:     "semantic broad non-coding intent",
+	}
+	profile := classifyIMExecutionProfileWithSemantic(IMUserMessage{Text: "\u7ffb\u8bd1\u8fd9\u6bb5\u6587\u6863"}, false, false, semantic)
+	if profile.IsLight() || profile.IsDirect() {
+		t.Fatalf("generic non_coding profile = %+v, want full", profile)
 	}
 }
 
@@ -171,7 +197,7 @@ func TestFilterToolsForExecutionProfileLightKeepsOnlyLowCostTools(t *testing.T) 
 			def["x_execution_contract"] = contract
 		}
 	}
-	profile := ExecutionProfile{Layer: string(executionLayerLight), ToolBudget: 8}
+	profile := ExecutionProfile{Layer: string(executionLayerLight), RequiredCapabilities: []string{"skill", "web", "async_status"}, ToolBudget: 8}
 	filtered := filterToolsForExecutionProfile(tools, profile)
 	names := map[string]bool{}
 	for _, def := range filtered {
@@ -183,6 +209,36 @@ func TestFilterToolsForExecutionProfileLightKeepsOnlyLowCostTools(t *testing.T) 
 		}
 	}
 	for _, blocked := range []string{"bash", "read_file", "group_discussion"} {
+		if names[blocked] {
+			t.Fatalf("filtered tools should not include %s: %v", blocked, executionProfileToolNames(filtered))
+		}
+	}
+}
+
+func TestFilterToolsForExecutionProfileLightRequiresCapabilityMatch(t *testing.T) {
+	tools := []map[string]interface{}{
+		toolDef("manage_skill", "manage skills", nil, nil),
+		toolDef("web_search", "search web", nil, nil),
+		toolDef("current_datetime", "clock", nil, nil),
+		toolDef("async_wait", "wait", nil, nil),
+	}
+	for _, def := range tools {
+		if contract := defaultExplicitExecutionContractMetadata(extractToolName(def)); len(contract) > 0 {
+			def["x_execution_contract"] = contract
+		}
+	}
+	profile := ExecutionProfile{Layer: string(executionLayerLight), RequiredCapabilities: []string{"current_data", "web", "time"}, ToolBudget: 8}
+	filtered := filterToolsForExecutionProfile(tools, profile)
+	names := map[string]bool{}
+	for _, def := range filtered {
+		names[extractToolName(def)] = true
+	}
+	for _, want := range []string{"web_search", "current_datetime"} {
+		if !names[want] {
+			t.Fatalf("filtered tools missing %s: %v", want, executionProfileToolNames(filtered))
+		}
+	}
+	for _, blocked := range []string{"manage_skill", "async_wait"} {
 		if names[blocked] {
 			t.Fatalf("filtered tools should not include %s: %v", blocked, executionProfileToolNames(filtered))
 		}

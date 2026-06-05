@@ -71,7 +71,7 @@ export const ProgrammingToolsSettingsPanel = ({ config, setConfig, lang }: Progr
 
             <div className="programming-tools-settings__visibility-card">
                 <div className="programming-tools-settings__section-title">
-                    {textForLang(lang, 'Visible Coding Tools', 'Visible Coding Tools', 'Visible Coding Tools')}
+                    {textForLang(lang, 'Visible Coding Tools', '可见的编程工具', '可見的程式工具')}
                 </div>
                 <div className="programming-tools-settings__visibility-grid">
                     {visibleToolOptions.map((tool) => {

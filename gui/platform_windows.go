@@ -1588,6 +1588,23 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	a.log("Using binary at: " + binaryPath)
 
 	projectDir = filepath.Clean(projectDir)
+
+	// Validate projectDir exists before launching. A stale or test-generated
+	// path will cause cmd /c start /d "..." to fail with ERROR_DIRECTORY.
+	if info, err := os.Stat(projectDir); err != nil || !info.IsDir() {
+		a.log(fmt.Sprintf("platformLaunch: projectDir %q does not exist or is not a directory, falling back to GetCurrentProjectPath()", projectDir))
+		fallback := a.GetCurrentProjectPath()
+		if fallback != "" {
+			projectDir = filepath.Clean(fallback)
+		}
+		// Final check: if still invalid, use user home
+		if info2, err2 := os.Stat(projectDir); err2 != nil || !info2.IsDir() {
+			home, _ := os.UserHomeDir()
+			projectDir = home
+			a.log(fmt.Sprintf("platformLaunch: fallback also invalid, using home dir: %s", projectDir))
+		}
+	}
+
 	binaryPath = filepath.Clean(binaryPath)
 
 	cmdArgs := ""

@@ -19,45 +19,31 @@ export const ProjectManagerItem = ({
     selectedProjectForLaunch,
     setSelectedProjectForLaunch,
 }: ProjectManagerItemProps) => {
-    const nameDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const pendingNameRef = useRef<string>(project.name || '');
-
-    const hasFlushedRef = useRef(false);
+    // The input has a clear "commit" signal: blur or Enter.
+    // No debounce — it only introduces stale-closure and IME race conditions
+    // for zero user-visible benefit (the input is short-lived and commit-on-blur).
+    const dirtyRef = useRef(false);
 
     const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const newName = e.target.value;
-        pendingNameRef.current = newName;
-        hasFlushedRef.current = false;
-
-        // Immediately update UI state
+        dirtyRef.current = true;
         const newList = config.projects.map((p: any) => p.id === project.id ? { ...p, name: newName } : p);
         setConfig(new main.AppConfig({ ...config, projects: newList }));
-
-        // Debounce the persist call to avoid saving on every keystroke
-        if (nameDebounceRef.current) clearTimeout(nameDebounceRef.current);
-        nameDebounceRef.current = setTimeout(() => {
-            hasFlushedRef.current = true;
-            PatchConfigFields({ projects: config.projects.map((p: any) => p.id === project.id ? { ...p, name: pendingNameRef.current } : p) })
-                .catch((err) => console.error('Failed to save project name:', err));
-        }, 500);
     };
 
-    const flushNameSave = () => {
-        if (nameDebounceRef.current) {
-            clearTimeout(nameDebounceRef.current);
-            nameDebounceRef.current = null;
-        }
-        if (hasFlushedRef.current) return;
-        if (pendingNameRef.current === (project.name || '')) return;
-        hasFlushedRef.current = true;
-        PatchConfigFields({ projects: config.projects.map((p: any) => p.id === project.id ? { ...p, name: pendingNameRef.current } : p) })
+    const commitName = () => {
+        if (!dirtyRef.current) return;
+        dirtyRef.current = false;
+        // config.projects already contains the up-to-date name (set by handleNameChange).
+        // Persist the current state directly — no transformation needed.
+        PatchConfigFields({ projects: config.projects })
             .catch((err) => console.error('Failed to save project name:', err));
     };
 
     const handleNameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === 'Enter') {
             e.preventDefault();
-            flushNameSave();
+            commitName();
             (e.target as HTMLInputElement).blur();
         }
     };
@@ -72,7 +58,7 @@ export const ProjectManagerItem = ({
             value={project.name || ''}
             onChange={handleNameChange}
             onKeyDown={handleNameKeyDown}
-            onBlur={flushNameSave}
+            onBlur={commitName}
             placeholder="Project"
             style={{ fontWeight: 'bold', border: 'none', padding: 0, fontSize: '0.9rem', width: '112px', flexShrink: 0, lineHeight: 1.1 }}
             spellCheck={false}

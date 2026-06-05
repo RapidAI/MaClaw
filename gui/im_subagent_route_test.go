@@ -22,6 +22,9 @@ func attachCodeProjectToRouteHandler(t *testing.T, h *IMMessageHandler) string {
 	if h.app == nil {
 		h.app = &App{testHomeDir: t.TempDir()}
 	}
+	if h.app.testHomeDir == "" {
+		h.app.testHomeDir = t.TempDir()
+	}
 	if err := h.app.SaveConfig(corelib.AppConfig{
 		CurrentProject: "route-test",
 		Projects:       []corelib.ProjectConfig{{Id: "route-test", Path: project}},

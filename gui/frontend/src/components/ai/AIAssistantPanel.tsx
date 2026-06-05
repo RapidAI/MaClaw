@@ -1187,7 +1187,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [cancelPending, cancelSession, draftInputValue, inputValue, resetHistoryBrowsing, resizeInput, updateInputValue]);
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
-    const renderedOtherMessages = useMemo(() => otherMessages.map((msg: ChatMessage, idx: number) => renderMessage(msg, executeAction, t, idx === lastAssistantIdx, savedFileLabel, lang)), [otherMessages, executeAction, t, lastAssistantIdx, savedFileLabel, lang]);
+    const renderedOtherMessages = useMemo(() => otherMessages.map((msg: ChatMessage, idx: number) => renderMessage(msg, executeAction, t, idx === lastAssistantIdx, savedFileLabel, lang, activeSessionIsStreaming)), [otherMessages, executeAction, t, lastAssistantIdx, savedFileLabel, lang, activeSessionIsStreaming]);
     const chatProgressMessages = useMemo(
         () => activeSessionHasWork ? displayProgressMessages.filter((msg: ChatMessage) => !isToolProgressMessage(msg)) : displayProgressMessages,
         [activeSessionHasWork, displayProgressMessages],

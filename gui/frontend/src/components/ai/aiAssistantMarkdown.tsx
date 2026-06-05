@@ -739,7 +739,7 @@ function openFileInFolder(event: React.MouseEvent, filePath: string) {
 
 /* Render a single ChatMessage */
 
-export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean, savedFileLabel: string, lang = "en"): React.ReactNode {
+export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean, savedFileLabel: string, lang = "en", isStreaming = false): React.ReactNode {
     switch (msg.role) {
         case "user":
             return (
@@ -769,15 +769,20 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                         </span>
                     )}
                     {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, openFileInFolder, t)}
-                    {/* Reasoning/thinking content from reasoning models — shown as collapsed gray text */}
-                    {msg.reasoning && (
-                        <details style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
-                            <summary style={{ cursor: "pointer", opacity: 0.7 }}>💭 思考中...</summary>
-                            <div style={{ padding: "4px 8px", whiteSpace: "pre-wrap", opacity: 0.6, maxHeight: "200px", overflow: "auto" }}>
-                                {msg.reasoning.length > 500 ? msg.reasoning.slice(-500) : msg.reasoning}
-                            </div>
-                        </details>
-                    )}
+                    {/* Reasoning/thinking content from reasoning models —
+                        expanded while streaming (no final content yet), collapsed once result arrives.
+                        key changes when open-state flips so React remounts and the browser respects the new open value. */}
+                    {msg.reasoning && (() => {
+                        const shouldOpen = isLastAssistant && isStreaming && !msg.content;
+                        return (
+                            <details key={shouldOpen ? "reasoning-open" : "reasoning-closed"} open={shouldOpen || undefined} style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
+                                <summary style={{ cursor: "pointer", opacity: 0.7 }}>💭 {lang === "en" ? "Thinking..." : "思考中..."}</summary>
+                                <div style={{ padding: "4px 8px", whiteSpace: "pre-wrap", opacity: 0.6, maxHeight: "200px", overflow: "auto" }}>
+                                    {msg.reasoning.length > 500 ? msg.reasoning.slice(-500) : msg.reasoning}
+                                </div>
+                            </details>
+                        );
+                    })()}
                     {renderContentWithCodeBlocks(formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang), t)}
                     {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t, lang)}
                     {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
