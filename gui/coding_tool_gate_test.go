@@ -149,6 +149,46 @@ func TestCodingGate_DegradedUICUsesOrdinaryAgentPath(t *testing.T) {
 	}
 }
 
+func TestCodingGate_ReusesRuntimeSemanticIntent(t *testing.T) {
+	ctx := NewLoopContext("chat", 300, nil)
+	ctx.Runtime.SemanticIntent = &intent.ClassificationResult{
+		Primary:    intent.LabelLiveData,
+		Confidence: 0.95,
+		Layer:      2,
+		Reason:     "test semantic live data",
+	}
+	h := &IMMessageHandler{}
+	cfg, _, _ := h.prepareAgentLoopCodingGate("user", "weather", ctx, nil)
+	if cfg.active {
+		t.Fatalf("live_data semantic intent must not activate coding gate")
+	}
+	if cfg.intent != intentNonCoding {
+		t.Fatalf("gate intent = %v, want non_coding", cfg.intent)
+	}
+	if !strings.Contains(cfg.reason, "non_coding") {
+		t.Fatalf("expected reused semantic gate reason, got %q", cfg.reason)
+	}
+}
+
+func TestCodingGate_BackgroundBypassesReusedSemanticIntent(t *testing.T) {
+	ctx := NewLoopContext("background", 300, nil)
+	ctx.Kind = LoopKindBackground
+	ctx.Runtime.SemanticIntent = &intent.ClassificationResult{
+		Primary:          intent.LabelCoding,
+		Confidence:       0.99,
+		Layer:            3,
+		CreationOriented: true,
+	}
+	h := &IMMessageHandler{}
+	cfg, _, _ := h.prepareAgentLoopCodingGate("user", "build app", ctx, nil)
+	if cfg.active || cfg.intent != intentUnknown {
+		t.Fatalf("background loop should bypass semantic gate, got %#v", cfg)
+	}
+	if !strings.Contains(cfg.reason, "background") {
+		t.Fatalf("expected background reason, got %q", cfg.reason)
+	}
+}
+
 func TestCodingGate_ApplyPartitionsTools(t *testing.T) {
 	calls := []llm.ToolCall{
 		toolCallNamed("create_session"),

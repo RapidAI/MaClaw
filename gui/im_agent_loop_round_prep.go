@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -107,12 +108,19 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	if injectedText != "" {
 		tools, toolsTokenBudget = h.augmentToolsFromInjection(injectedText, tools, opts.BaseTools, opts.GateConfig.active)
 	}
+	forceLightFinalizeWithoutTools := shouldForceLightFinalizeWithoutTools(ctx, opts.Iteration, effectiveMax, opts.ChatFinalizeGrace)
+	if forceLightFinalizeWithoutTools {
+		tools = nil
+		toolsTokenBudget = 0
+		log.Printf("[exec-profile] light finalize without tools request_id=%q loop=%q iteration=%d effectiveMax=%d grace=%d",
+			ctx.Runtime.RequestID, ctx.ID, opts.Iteration, effectiveMax, opts.ChatFinalizeGrace)
+	}
 
 	prepStartedAt := time.Now()
 	conversation = autoCompressConversation(conversation, opts.Config, opts.HTTPClient)
 
 	effectiveTokenLimit := calibratedAgentLoopTokenLimit(opts.Config, conversation, opts.LastInputTokens, opts.LastOutputTokens)
-	conversation = trimConversation(conversation, effectiveTokenLimit, opts.ToolsTokenBudget, nil)
+	conversation = trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, nil)
 
 	phase := derefAgentLoopPhase(opts.Phase)
 	conversation, systemMessagesStart := h.injectAgentLoopHarnessPrompts(
@@ -149,6 +157,10 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	tools = orchestratorStep.Tools
 	conversation = orchestratorStep.Conversation
 	directModeToolsFiltered = orchestratorStep.DirectModeToolsFiltered
+	if forceLightFinalizeWithoutTools {
+		tools = nil
+		toolsTokenBudget = 0
+	}
 
 	if opts.RecordSystemMessages != nil {
 		opts.RecordSystemMessages(systemMessagesStart, conversation)
@@ -167,6 +179,13 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		DirectModeToolsFiltered: directModeToolsFiltered,
 		PrepElapsed:             time.Since(prepStartedAt),
 	}
+}
+
+func shouldForceLightFinalizeWithoutTools(ctx *LoopContext, iteration int, effectiveMax int, chatFinalizeGrace int) bool {
+	if ctx == nil || !ctx.Runtime.Execution.IsLight() || chatFinalizeGrace <= 0 {
+		return false
+	}
+	return effectiveMax > 0 && iteration >= effectiveMax
 }
 
 func extendEffectiveMaxForPendingGuideReference(iteration, effectiveMax int, hasPendingGuideReference bool) int {

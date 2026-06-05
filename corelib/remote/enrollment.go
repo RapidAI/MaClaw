@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -147,7 +148,7 @@ func (c *EnrollmentClient) ResolveHubs(ctx context.Context, email string, hubCen
 		}
 
 		var result HubCenterResolveResult
-		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+		decodeErr := DecodeHTTPJSONResponse(resp, &result, "hub center resolve")
 		resp.Body.Close()
 		if decodeErr != nil {
 			lastErr = fmt.Errorf("decode response from %s: %w", u, decodeErr)
@@ -260,23 +261,38 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	defer resp.Body.Close()
 
 	// --- Step 6: Parse response ---
-	var enrollResp EnrollResult
-	if err := json.NewDecoder(resp.Body).Decode(&enrollResp); err != nil {
-		return nil, fmt.Errorf("decode enroll response: %w", err)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read enroll response: %w", err)
 	}
 
+	// Handle non-2xx responses first. Hub/proxy may return HTML or plain text
+	// error pages (e.g. Nginx 502 "The server is temporarily unavailable")
+	// that cannot be JSON-decoded.
 	if resp.StatusCode >= 300 {
-		if enrollResp.Code != "" {
-			msg := enrollResp.Code + ": " + enrollResp.Message
-			if enrollResp.ExpiresAt != "" {
-				msg += " expires_at:" + enrollResp.ExpiresAt
+		// Try JSON first for structured error messages from the Hub itself.
+		var errResp EnrollResult
+		if DecodeJSONResponseBody(respBody, &errResp) == nil {
+			if errResp.Code != "" {
+				msg := errResp.Code + ": " + errResp.Message
+				if errResp.ExpiresAt != "" {
+					msg += " expires_at:" + errResp.ExpiresAt
+				}
+				return nil, fmt.Errorf("%s", msg)
 			}
-			return nil, fmt.Errorf("%s", msg)
+			if errResp.Message != "" {
+				return nil, fmt.Errorf("%s", errResp.Message)
+			}
 		}
-		if enrollResp.Message != "" {
-			return nil, fmt.Errorf("%s", enrollResp.Message)
-		}
-		return nil, fmt.Errorf("remote registration failed: %s", resp.Status)
+		// Non-JSON error: return user-friendly message instead of raw parse error.
+		log.Printf("[enrollment] enroll HTTP %d non-JSON response: %s", resp.StatusCode, responsePreview(respBody))
+		return nil, fmt.Errorf("registration service is temporarily unavailable (HTTP %d); please retry later", resp.StatusCode)
+	}
+
+	var enrollResp EnrollResult
+	if err := DecodeJSONResponseBody(respBody, &enrollResp); err != nil {
+		log.Printf("[enrollment] enroll 2xx but non-JSON response: %s", responsePreview(respBody))
+		return nil, fmt.Errorf("registration service returned an unexpected response format; please retry later")
 	}
 
 	// Fill resolved metadata.

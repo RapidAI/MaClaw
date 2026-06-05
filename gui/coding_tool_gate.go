@@ -207,10 +207,9 @@ func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, g
 	}
 
 	// Fallback: GIC is nil (test code or edge case without App).
-	// Try UIC directly via the package-level pointer.
-	if uic == nil {
-		uic = unifiedClassifierPtr.Load()
-	}
+	// Use only the UIC explicitly supplied by the caller. Avoid package-level
+	// classifier state here: it can leak across tests/sessions and can trigger
+	// hidden LLM classification from an "unclassified" gate path.
 	if uic != nil {
 		uicResult := uic.Classify(intent.MessageContext{Text: userText})
 		gateIntent, confidence, _, layer, reason := uicResult.ToGateIntent()

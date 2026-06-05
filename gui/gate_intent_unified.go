@@ -7,6 +7,10 @@ func classifyUnifiedGateIntent(uic *intent.UnifiedIntentClassifier, text, userID
 		return GateIntentResult{}, false
 	}
 	uicResult := uic.Classify(intent.MessageContext{Text: text, UserID: userID})
+	return gateIntentResultFromSemanticResult(uicResult), true
+}
+
+func gateIntentResultFromSemanticResult(uicResult intent.ClassificationResult) GateIntentResult {
 	gateIntent, confidence, gap, layer, reason := uicResult.ToGateIntent()
 	return GateIntentResult{
 		Intent:     GateIntent(gateIntent),
@@ -15,7 +19,7 @@ func classifyUnifiedGateIntent(uic *intent.UnifiedIntentClassifier, text, userID
 		Layer:      layer,
 		Reason:     reason,
 		Degraded:   uicResult.Degraded,
-	}, true
+	}
 }
 
 func isTrustedSemanticGateResult(result GateIntentResult) bool {

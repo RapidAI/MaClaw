@@ -770,15 +770,15 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     )}
                     {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, openFileInFolder, t)}
                     {/* Reasoning/thinking content from reasoning models —
-                        expanded while streaming (no final content yet), collapsed once result arrives.
+                        expanded while streaming (agent still working), collapsed once streaming ends (final result ready).
                         key changes when open-state flips so React remounts and the browser respects the new open value. */}
                     {msg.reasoning && (() => {
-                        const shouldOpen = isLastAssistant && isStreaming && !msg.content;
+                        const shouldOpen = isLastAssistant && isStreaming;
                         return (
                             <details key={shouldOpen ? "reasoning-open" : "reasoning-closed"} open={shouldOpen || undefined} style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
                                 <summary style={{ cursor: "pointer", opacity: 0.7 }}>💭 {lang === "en" ? "Thinking..." : "思考中..."}</summary>
-                                <div style={{ padding: "4px 8px", whiteSpace: "pre-wrap", opacity: 0.6, maxHeight: "200px", overflow: "auto" }}>
-                                    {msg.reasoning.length > 500 ? msg.reasoning.slice(-500) : msg.reasoning}
+                                <div style={{ padding: "4px 8px", opacity: 0.6, maxHeight: "200px", overflow: "auto" }}>
+                                    {renderContentWithCodeBlocks(msg.reasoning.length > 500 ? msg.reasoning.slice(-500) : msg.reasoning, t)}
                                 </div>
                             </details>
                         );

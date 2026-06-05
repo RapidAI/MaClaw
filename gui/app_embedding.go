@@ -516,6 +516,10 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		}
 	}()
 
+	if emb == nil || embedding.IsNoop(emb) {
+		return
+	}
+
 	if !a.vectorSearchConfiguredEnabled() {
 		emb.Close()
 		return
@@ -528,6 +532,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		emb.Close()
 		return
 	}
+	emb, reusedIntentEmbedder := a.claimEmbeddingForFullActivation(emb)
 
 	a.logMemorySnapshot("activateEmbedderAsync:start")
 	t0 := time.Now()
@@ -568,7 +573,9 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	// Guarantee: classifierOnce.Do ensures the UIC exists before we reach here,
 	// even if this goroutine races ahead of the main startup sequence.
 	a.initEarlyClassifier() // idempotent via sync.Once
-	a.unifiedClassifier.SetEmbedder(emb)
+	if !reusedIntentEmbedder {
+		a.unifiedClassifier.SetEmbedder(emb)
+	}
 	a.unifiedClassifier.SetLLMFunc(a.buildUICLLMFunc())
 	// Ensure toolRouter has the UIC reference. initEarlyClassifier may have
 	// skipped this wiring if toolRouter was nil at that time (e.g., startup
@@ -603,6 +610,56 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 
 	a.logMemorySnapshot("activateEmbedderAsync:done")
 	fmt.Printf("[embedding] async activation complete in %v\n", time.Since(t0))
+}
+
+func (a *App) claimEmbeddingForFullActivation(emb embedding.Embedder) (embedding.Embedder, bool) {
+	a.embeddingMu.Lock()
+	defer a.embeddingMu.Unlock()
+	if a.intentEmbedder != nil && !embedding.IsNoop(a.intentEmbedder) {
+		if emb != nil {
+			emb.Close()
+		}
+		a.intentEmbeddingActive.Store(true)
+		return a.intentEmbedder, true
+	}
+	a.intentEmbedder = emb
+	a.intentEmbeddingActive.Store(true)
+	return emb, false
+}
+
+// activateIntentClassifierEmbedderAsync wires a local embedder only into the
+// intent classifiers. This keeps short-message routing fast even when the user
+// has disabled memory/tool vector search.
+func (a *App) activateIntentClassifierEmbedderAsync(emb embedding.Embedder) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[embedding] activateIntentClassifierEmbedderAsync panic: %v\n", r)
+		}
+	}()
+	if emb == nil || embedding.IsNoop(emb) {
+		return
+	}
+	if a.embeddingActivated.Load() || !a.intentEmbeddingActive.CompareAndSwap(false, true) {
+		emb.Close()
+		return
+	}
+	a.embeddingMu.Lock()
+	if a.intentEmbedder != nil && !embedding.IsNoop(a.intentEmbedder) {
+		a.embeddingMu.Unlock()
+		emb.Close()
+		return
+	}
+	a.intentEmbedder = emb
+	a.embeddingMu.Unlock()
+	t0 := time.Now()
+	a.initEarlyClassifier()
+	a.unifiedClassifier.SetEmbedder(emb)
+	a.unifiedClassifier.SetLLMFunc(a.buildUICLLMFunc())
+	if a.toolRouter != nil {
+		a.toolRouter.SetUnifiedClassifier(a.unifiedClassifier)
+	}
+	log.Println("[embedding] UnifiedIntentClassifier upgraded: L2 embedding + L3 LLM available for intent routing")
+	fmt.Printf("[embedding] intent-only activation complete in %v\n", time.Since(t0))
 }
 
 // buildIntentLLMFunc creates a LLMClassifyFunc callback that uses the app's

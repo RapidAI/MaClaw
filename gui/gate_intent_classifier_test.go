@@ -65,9 +65,9 @@ func TestShouldAcceptGateResult(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "degraded new_project high confidence accepted",
+			name: "degraded new_project high confidence rejected",
 			in:   GateIntentResult{Intent: GateIntentNewProject, Confidence: 0.95, Degraded: true},
-			want: true,
+			want: false,
 		},
 		{
 			name: "degraded new_project low confidence rejected",

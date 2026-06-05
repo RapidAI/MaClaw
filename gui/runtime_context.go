@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/intent"
+)
 
 type RuntimeSourceRef struct {
 	Channel  string `json:"channel,omitempty"`
@@ -61,6 +65,7 @@ type RuntimeContext struct {
 	LockKey         string
 	WorkflowOwnerID string
 	Execution       ExecutionProfile
+	SemanticIntent  *intent.ClassificationResult `json:"-"`
 }
 
 func runtimeContextFromIMMessage(msg IMUserMessage) RuntimeContext {

@@ -258,8 +258,10 @@ func shouldAcceptGateResult(result GateIntentResult) bool {
 			// This saves 3s of LLM call for the common case (simple operations).
 			return result.Confidence >= 0.50
 		case GateIntentNewProject:
-			// New project intent needs higher confidence when degraded.
-			return result.Confidence >= 0.75
+			// New-project gating starts a restrictive workflow. In degraded mode
+			// (one semantic channel failed), do not activate it; let the ordinary
+			// agent path continue and rely on tool-level guards.
+			return false
 		case GateIntentUnknown:
 			// Unknown in degraded mode: UIC couldn't determine intent (embedding
 			// ambiguous + tree timed out). The gate's job is to catch CLEAR coding

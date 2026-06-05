@@ -60,7 +60,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		opts.AskUserContext != "" || opts.PendingUserReplyContext != "",
 	)
 	loopCtx.WorkflowAgentLoop = opts.WorkflowAgentLoop
-	loopCtx.Runtime.Execution = h.classifyIMExecutionProfile(msg, opts.WorkflowAgentLoop, opts.AskUserContext != "" || opts.PendingUserReplyContext != "")
+	executionProfile, semanticIntent := h.classifyIMExecutionProfileAndSemantic(msg, opts.WorkflowAgentLoop, opts.AskUserContext != "" || opts.PendingUserReplyContext != "")
+	loopCtx.Runtime.Execution = executionProfile
+	loopCtx.Runtime.SemanticIntent = semanticIntent
 	loopCtxElapsed := time.Since(loopCtxStart)
 
 	if resp, handled := h.tryDirectExecutionProfile(msg, loopCtx, history); handled {

@@ -2,6 +2,7 @@ package corelib
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -132,6 +133,90 @@ func TestAppConfigSecurityBoolDefaults(t *testing.T) {
 	}
 	if disabled.YoloModeAllowed || disabled.SmartRouteEnabled || disabled.GossipEnabled || disabled.FileOutboundEnabled || disabled.ImageOutboundEnabled {
 		t.Fatalf("explicit false security booleans should be preserved: %+v", disabled)
+	}
+}
+
+// TestAppConfigDefaultTrueBoolRoundTrip is a mechanical guarantee that every
+// bool field with a default-true semantic correctly survives a JSON round-trip
+// for both true and false values. It uses reflection to auto-discover all
+// default-true fields from AppConfigDefaults() — no manual list to maintain.
+func TestAppConfigDefaultTrueBoolRoundTrip(t *testing.T) {
+	// Auto-discover all bool fields that are true in AppConfigDefaults().
+	defaults := AppConfigDefaults()
+	rv := reflect.ValueOf(defaults)
+	rt := rv.Type()
+
+	var defaultTrueBools []string
+	for i := 0; i < rt.NumField(); i++ {
+		field := rt.Field(i)
+		if field.Type.Kind() != reflect.Bool {
+			continue
+		}
+		if !rv.Field(i).Bool() {
+			continue
+		}
+		tag := field.Tag.Get("json")
+		jsonKey := strings.Split(tag, ",")[0]
+		if jsonKey == "" || jsonKey == "-" {
+			continue
+		}
+		defaultTrueBools = append(defaultTrueBools, jsonKey)
+	}
+	if len(defaultTrueBools) == 0 {
+		t.Fatal("no default-true bool fields found — AppConfigDefaults() is broken or struct changed")
+	}
+
+	for _, field := range defaultTrueBools {
+		t.Run(field+"=true_roundtrip", func(t *testing.T) {
+			jsonData := `{"` + field + `":true}`
+			var cfg AppConfig
+			if err := json.Unmarshal([]byte(jsonData), &cfg); err != nil {
+				t.Fatalf("Unmarshal(%s) error: %v", jsonData, err)
+			}
+			data, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+			var cfg2 AppConfig
+			if err := json.Unmarshal(data, &cfg2); err != nil {
+				t.Fatalf("Unmarshal(round-trip) error: %v", err)
+			}
+			data2, _ := json.Marshal(cfg2)
+			if !strings.Contains(string(data2), `"`+field+`":true`) {
+				t.Errorf("field %q lost its true value after round-trip.\nFirst marshal: %s\nSecond marshal: %s", field, string(data), string(data2))
+			}
+		})
+
+		t.Run(field+"=false_roundtrip", func(t *testing.T) {
+			jsonData := `{"` + field + `":false}`
+			var cfg AppConfig
+			if err := json.Unmarshal([]byte(jsonData), &cfg); err != nil {
+				t.Fatalf("Unmarshal(%s) error: %v", jsonData, err)
+			}
+			data, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+			var cfg2 AppConfig
+			if err := json.Unmarshal(data, &cfg2); err != nil {
+				t.Fatalf("Unmarshal(round-trip) error: %v", err)
+			}
+			data2, _ := json.Marshal(cfg2)
+			if strings.Contains(string(data2), `"`+field+`":true`) {
+				t.Errorf("field %q flipped from false to true after round-trip.\nFirst marshal: %s\nSecond marshal: %s", field, string(data), string(data2))
+			}
+		})
+
+		t.Run(field+"=absent_defaults_true", func(t *testing.T) {
+			var cfg AppConfig
+			if err := json.Unmarshal([]byte(`{}`), &cfg); err != nil {
+				t.Fatalf("Unmarshal({}) error: %v", err)
+			}
+			data, _ := json.Marshal(cfg)
+			if !strings.Contains(string(data), `"`+field+`":true`) {
+				t.Errorf("field %q should default to true when absent, got marshal: %s", field, string(data))
+			}
+		})
 	}
 }
 

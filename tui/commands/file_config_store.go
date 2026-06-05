@@ -22,19 +22,19 @@ func NewFileConfigStore(dataDir string) *FileConfigStore {
 
 // LoadConfig loads config from disk.
 func (s *FileConfigStore) LoadConfig() (corelib.AppConfig, error) {
-	var cfg corelib.AppConfig
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cfg, nil
+			return corelib.AppConfigDefaults(), nil
 		}
-		return cfg, fmt.Errorf("read config: %w", err)
+		return corelib.AppConfig{}, fmt.Errorf("read config: %w", err)
 	}
 	if len(data) == 0 {
-		return cfg, nil
+		return corelib.AppConfigDefaults(), nil
 	}
+	var cfg corelib.AppConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("parse config: %w", err)
+		return corelib.AppConfig{}, fmt.Errorf("parse config: %w", err)
 	}
 	return cfg, nil
 }

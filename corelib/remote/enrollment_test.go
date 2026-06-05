@@ -143,6 +143,54 @@ func TestEnroll_WithExistingHubURL(t *testing.T) {
 	}
 }
 
+func TestEnroll_AcceptsBOMPrefixedJSON(t *testing.T) {
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/start" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+		_, _ = w.Write([]byte(`{"status":"approved","email":"bom@example.com","machine_id":"m-bom","machine_token":"t-bom"}`))
+	}))
+	defer hub.Close()
+
+	client := &EnrollmentClient{HTTPClient: hub.Client()}
+	result, err := client.Enroll(context.Background(), EnrollConfig{
+		Email:  "bom@example.com",
+		HubURL: hub.URL,
+	})
+	if err != nil {
+		t.Fatalf("Enroll failed: %v", err)
+	}
+	if result.MachineID != "m-bom" {
+		t.Fatalf("MachineID = %q, want m-bom", result.MachineID)
+	}
+}
+
+func TestEnroll_NonJSONErrorResponseIsUserFriendly(t *testing.T) {
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("<!doctype html><title>Bad Gateway</title><p>proxy failed</p>"))
+	}))
+	defer hub.Close()
+
+	client := &EnrollmentClient{HTTPClient: hub.Client()}
+	_, err := client.Enroll(context.Background(), EnrollConfig{
+		Email:  "html@example.com",
+		HubURL: hub.URL,
+	})
+	if err == nil {
+		t.Fatal("expected non-json response error")
+	}
+	msg := err.Error()
+	// The error should be user-friendly with the HTTP status code, not raw JSON parse error.
+	if !strings.Contains(msg, "HTTP 502") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestEnroll_MissingEmail(t *testing.T) {
 	client := NewEnrollmentClient()
 	_, err := client.Enroll(context.Background(), EnrollConfig{})

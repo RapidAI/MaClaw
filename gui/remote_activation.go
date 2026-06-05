@@ -85,7 +85,7 @@ func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, er
 	defer resp.Body.Close()
 
 	var result RemoteProbeResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "hub probe"); err != nil {
 		return RemoteProbeResult{}, err
 	}
 	if resp.StatusCode >= 300 {

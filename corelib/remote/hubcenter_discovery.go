@@ -2,7 +2,6 @@ package remote
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -83,7 +82,7 @@ func FetchHubCenterDiscovery(ctx context.Context, client *http.Client, baseURL s
 		return nil, fmt.Errorf("hubcenter discovery failed with status %d", resp.StatusCode)
 	}
 	var view HubCenterDiscoveryView
-	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
+	if err := DecodeHTTPJSONResponse(resp, &view, "hubcenter discovery"); err != nil {
 		return nil, err
 	}
 	view.URLs = NormalizeHubCenterURLs(view.URLs)

@@ -26,7 +26,22 @@ func (h *IMMessageHandler) prepareAgentLoopCodingGate(userID, userText string, c
 		gic = h.getGateIntentClassifier()
 	}
 	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
-	gateConfig := newCodingToolGateConfigWithClassifier(userText, ctx.Kind, gic, h.getUnifiedClassifier(), policyOwnerID)
+	loopKind := LoopKindNormal
+	if ctx != nil {
+		loopKind = ctx.Kind
+	}
+	gateConfig := codingToolGateConfig{}
+	if loopKind == LoopKindBackground {
+		gateConfig = codingToolGateConfig{reason: "gate inactive: background loop"}
+	} else if ctx != nil && ctx.Runtime.SemanticIntent != nil {
+		result := gateIntentResultFromSemanticResult(*ctx.Runtime.SemanticIntent)
+		skip := result.Intent == GateIntentContinuation
+		gateConfig = mapGateIntentToConfig(result, skip)
+		log.Printf("[coding-gate] reused semantic intent intent=%s conf=%.2f layer=%d degraded=%v",
+			result.Intent, result.Confidence, result.Layer, result.Degraded)
+	} else {
+		gateConfig = newCodingToolGateConfigWithClassifier(userText, loopKind, gic, h.getUnifiedClassifier(), policyOwnerID)
+	}
 	workflowOff := h.app != nil && h.app.workflowDisabled.Load()
 	if workflowOff {
 		gateConfig.active = false

@@ -21,12 +21,29 @@ func TestClassifyIMExecutionProfileSemanticLookupUsesLight(t *testing.T) {
 	if profile.ToolBudget <= 0 || profile.IterationBudget <= 0 {
 		t.Fatalf("light profile should set budgets: %+v", profile)
 	}
+	if profile.IterationBudget != 2 {
+		t.Fatalf("live_data iteration budget = %d, want 2", profile.IterationBudget)
+	}
 }
 
 func TestClassifyIMExecutionProfileWithoutSemanticStaysFull(t *testing.T) {
 	profile := classifyIMExecutionProfile(IMUserMessage{Text: "\u5170\u5dde\u5929\u6c14"}, false, false)
 	if profile.IsLight() || profile.IsDirect() {
 		t.Fatalf("profile without semantic classifier = %+v, want full", profile)
+	}
+}
+
+func TestHandlerClassifyIMExecutionProfileSkipsSemanticForStructuralFull(t *testing.T) {
+	h := &IMMessageHandler{}
+	msg := IMUserMessage{
+		Text: "\u8bf7\u57fa\u4e8e\u8fd9\u4e2a\u9879\u76ee\u7684\u65e5\u5fd7\u548c\u4ee3\u7801\u7ed9\u51fa\u5b8c\u6574\u4f18\u5316\u65b9\u6848",
+	}
+	profile, semantic := h.classifyIMExecutionProfileAndSemantic(msg, false, false)
+	if profile.Layer != string(executionLayerFull) {
+		t.Fatalf("profile = %+v, want full", profile)
+	}
+	if semantic != nil {
+		t.Fatalf("structural full profile should not run semantic classifier, got %+v", semantic)
 	}
 }
 
@@ -183,6 +200,27 @@ func TestHandlerClassifyIMExecutionProfileUsesUnifiedIntentToolAffinity(t *testi
 	}
 }
 
+func TestExecutionProfileSemanticResultReusedByCodingGate(t *testing.T) {
+	calls := 0
+	uic := intent.New(intent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		calls++
+		return `{"top":[{"skill":"live_data","score":0.95}]} `, nil
+	}})
+	h := &IMMessageHandler{unifiedClassifier: uic}
+	msg := IMUserMessage{Text: "\u5929\u6c14", UserID: "user-1"}
+	profile, semantic := h.classifyIMExecutionProfileAndSemantic(msg, false, false)
+	if semantic == nil {
+		t.Fatalf("expected semantic result")
+	}
+	ctx := NewLoopContext("chat", 300, nil)
+	ctx.Runtime.Execution = profile
+	ctx.Runtime.SemanticIntent = semantic
+	h.prepareAgentLoopCodingGate(msg.UserID, msg.Text, ctx, nil)
+	if calls != 1 {
+		t.Fatalf("UIC calls = %d, want 1", calls)
+	}
+}
+
 func TestFilterToolsForExecutionProfileLightKeepsOnlyLowCostTools(t *testing.T) {
 	tools := []map[string]interface{}{
 		toolDef("manage_skill", "manage skills", nil, nil),
@@ -227,7 +265,7 @@ func TestFilterToolsForExecutionProfileLightRequiresCapabilityMatch(t *testing.T
 			def["x_execution_contract"] = contract
 		}
 	}
-	profile := ExecutionProfile{Layer: string(executionLayerLight), RequiredCapabilities: []string{"current_data", "web", "time"}, ToolBudget: 8}
+	profile := ExecutionProfile{Layer: string(executionLayerLight), RequiredCapabilities: []string{"current_data", "time"}, ToolBudget: 8}
 	filtered := filterToolsForExecutionProfile(tools, profile)
 	names := map[string]bool{}
 	for _, def := range filtered {
@@ -238,7 +276,7 @@ func TestFilterToolsForExecutionProfileLightRequiresCapabilityMatch(t *testing.T
 			t.Fatalf("filtered tools missing %s: %v", want, executionProfileToolNames(filtered))
 		}
 	}
-	for _, blocked := range []string{"manage_skill", "async_wait"} {
+	for _, blocked := range []string{"manage_skill", "web_fetch", "async_wait"} {
 		if names[blocked] {
 			t.Fatalf("filtered tools should not include %s: %v", blocked, executionProfileToolNames(filtered))
 		}
@@ -301,6 +339,21 @@ func TestComputeAgentLoopIterationLimitsUsesLightBudget(t *testing.T) {
 	limits := computeAgentLoopIterationLimits(ctx, 300, 0)
 	if limits.EffectiveMax != 3 || limits.ChatFinalizeGrace != 1 {
 		t.Fatalf("limits = %+v, want effectiveMax=3 grace=1", limits)
+	}
+}
+
+func TestLightFinalizeRoundRunsWithoutTools(t *testing.T) {
+	ctx := NewLoopContext("chat", 300, nil)
+	ctx.Runtime.Execution = ExecutionProfile{Layer: string(executionLayerLight), IterationBudget: 2}
+	if shouldForceLightFinalizeWithoutTools(ctx, 1, 2, 1) {
+		t.Fatalf("iteration before light budget should keep tools")
+	}
+	if !shouldForceLightFinalizeWithoutTools(ctx, 2, 2, 1) {
+		t.Fatalf("light finalize grace round should remove tools")
+	}
+	ctx.Runtime.Execution = ExecutionProfile{Layer: string(executionLayerFull)}
+	if shouldForceLightFinalizeWithoutTools(ctx, 2, 2, 1) {
+		t.Fatalf("full profile should keep normal finalize behavior")
 	}
 }
 

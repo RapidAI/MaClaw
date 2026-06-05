@@ -697,62 +697,46 @@ func (c AppConfig) MarshalJSON() ([]byte, error) {
 }
 
 func (c *AppConfig) UnmarshalJSON(data []byte) error {
-	type appConfigAlias AppConfig
-	type rawAppConfig struct {
-		appConfigAlias
-		ShowAssistantEntry   *bool                  `json:"show_assistant_entry"`
-		YoloModeAllowed      *bool                  `json:"yolo_mode_allowed"`
-		SmartRouteEnabled    *bool                  `json:"smart_route_enabled"`
-		GossipEnabled        *bool                  `json:"gossip_enabled"`
-		GossipAutoPublish    *bool                  `json:"gossip_auto_publish"`
-		FileOutboundEnabled  *bool                  `json:"file_outbound_enabled"`
-		ImageOutboundEnabled *bool                  `json:"image_outbound_enabled"`
-		GroupDiscussion      *GroupDiscussionConfig `json:"group_discussion,omitempty"`
-		LLMPromptCache       *LLMPromptCacheConfig  `json:"llm_prompt_cache,omitempty"`
-	}
+	// Set defaults first, then let json.Unmarshal overwrite with actual values.
+	// Fields present in JSON override defaults; absent fields keep defaults.
+	// No *bool tricks, no rawConfig map checks, no dual-layer logic.
+	*c = AppConfigDefaults()
 
-	var raw rawAppConfig
-	if err := json.Unmarshal(data, &raw); err != nil {
+	type alias AppConfig
+	if err := json.Unmarshal(data, (*alias)(c)); err != nil {
 		return err
 	}
-	*c = AppConfig(raw.appConfigAlias)
+
+	// Post-unmarshal normalization (not default-value logic, just clamping/validation).
 	c.SubAgentConcurrency = NormalizeSubAgentConcurrency(c.SubAgentConcurrency)
-	if raw.ShowAssistantEntry == nil {
-		c.ShowAssistantEntry = true
-	} else {
-		c.ShowAssistantEntry = *raw.ShowAssistantEntry
-	}
-	if raw.YoloModeAllowed == nil {
-		c.YoloModeAllowed = true
-	}
-	if raw.SmartRouteEnabled == nil {
-		c.SmartRouteEnabled = true
-	}
-	if raw.GossipEnabled == nil {
-		c.GossipEnabled = true
-	}
-	if raw.GossipAutoPublish == nil {
-		c.GossipAutoPublish = true
-	}
-	if raw.FileOutboundEnabled == nil {
-		c.FileOutboundEnabled = true
-	}
-	if raw.ImageOutboundEnabled == nil {
-		c.ImageOutboundEnabled = true
-	}
-	if raw.GroupDiscussion == nil {
-		c.GroupDiscussion = defaultGroupDiscussionConfig()
-	} else {
-		c.GroupDiscussion = *raw.GroupDiscussion
-		c.applyGroupDiscussionFieldDefaults()
-	}
-	if raw.LLMPromptCache == nil {
-		c.LLMPromptCache = DefaultLLMPromptCacheConfig()
-	} else {
-		c.LLMPromptCache = raw.LLMPromptCache.WithDefaults()
-	}
+	c.applyGroupDiscussionFieldDefaults()
+	c.LLMPromptCache = c.LLMPromptCache.WithDefaults()
 	c.CapabilityMarketPolicy = c.CapabilityMarketPolicy.WithDefaults()
 	return nil
+}
+
+// AppConfigDefaults returns an AppConfig with all default-true booleans and
+// struct defaults pre-filled. This is the single source of truth for field
+// defaults — no other code path needs to repeat these values.
+func AppConfigDefaults() AppConfig {
+	return AppConfig{
+		ShowAssistantEntry:     true,
+		ShowKilo:               true,
+		PowerOptimization:      true,
+		YoloModeAllowed:        true,
+		SmartRouteEnabled:      true,
+		GossipEnabled:          true,
+		GossipAutoPublish:      true,
+		FileOutboundEnabled:    true,
+		ImageOutboundEnabled:   true,
+		VectorSearchEnabled:    true,
+		ASREnabled:             true,
+		TTSEnabled:             true,
+		ScreenParsingEnabled:   boolPtrValue(true),
+		IMProgressNudgeEnabled: boolPtrValue(true),
+		GroupDiscussion:        defaultGroupDiscussionConfig(),
+		LLMPromptCache:         DefaultLLMPromptCacheConfig(),
+	}
 }
 
 func defaultGroupDiscussionConfig() GroupDiscussionConfig {

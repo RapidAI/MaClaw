@@ -53,6 +53,12 @@ type App struct {
 	CurrentLanguage string
 	watcher         *fsnotify.Watcher
 
+	// configLastInternalWrite records the time of the most recent internal
+	// config file write (SaveConfig/PatchConfigFields/patchConfig). The
+	// fsnotify watcher uses this to suppress redundant config-updated events
+	// triggered by our own writes (debounce window: 500ms).
+	configLastInternalWrite atomic.Int64
+
 	// Managers to reduce struct complexity
 	managers                        *AppManagers
 	testHomeDir                     string // For testing purposes
@@ -99,6 +105,9 @@ type App struct {
 	unifiedClassifier     *intent.UnifiedIntentClassifier // UIC: shared three-layer intent classifier
 	classifierOnce        sync.Once                       // guards single creation of unifiedClassifier + gateIntentClassifier
 	embeddingActivated    atomic.Bool                     // ensures activateEmbedderAsync runs at most once
+	intentEmbeddingActive atomic.Bool                     // ensures UIC-only embedding activation runs at most once
+	embeddingMu           sync.Mutex
+	intentEmbedder        embedding.Embedder // local model held for UIC and reused when vector search is enabled
 	usageTracker          *tool.UsageTracker
 	experienceEvents      *lifecycle.EventTrail
 	experienceSink        lifecycle.EventSink
@@ -575,17 +584,22 @@ func (a *App) ensureMemoryStore() {
 		// cache is also pre-warmed so the first routeTools() call is fast.
 		go func() {
 			cfg, err := a.LoadConfig()
-			if err != nil || !cfg.VectorSearchEnabled {
+			if err != nil {
 				return
 			}
-			a.logMemorySnapshot("ensureMemoryStore:vector-search-enable")
+			a.logMemorySnapshot("ensureMemoryStore:embedding-load")
 			modelPath := embedding.DefaultModelPath()
 			emb := embedding.NewDefaultEmbedder(modelPath)
 			if embedding.IsNoop(emb) {
 				return // model not found, skip
 			}
-			a.activateEmbedderAsync(emb)
-			log.Println("[ensureMemoryStore] embedding model loaded in background")
+			if cfg.VectorSearchEnabled {
+				a.activateEmbedderAsync(emb)
+				log.Println("[ensureMemoryStore] embedding model loaded in background")
+				return
+			}
+			a.activateIntentClassifierEmbedderAsync(emb)
+			log.Println("[ensureMemoryStore] intent embedding model loaded in background")
 		}()
 		a.logMemorySnapshot("ensureMemoryStore:ready")
 	}
@@ -2508,17 +2522,12 @@ func (a *App) startConfigWatcher() {
 					a.configMu.Lock()
 					a.invalidateConfigCacheLocked()
 					a.configMu.Unlock()
+					// Skip events triggered by our own writes (debounce 500ms).
+					if time.Now().UnixMilli()-a.configLastInternalWrite.Load() < 500 {
+						continue
+					}
 					a.log(a.tr("Config file modified: ") + event.Name)
-					// Reload config and emit event
-					// We use a debounce-like approach or just reload.
-					// Since Wails events are async, it should be fine.
-					// However, writing the config (SaveConfig) also triggers a write event.
-					// We should probably check if the change was internal or external,
-					// but that's hard. For now, simply reloading might be okay,
-					// but it could cause a loop if we are not careful.
-					// Actually, if we just emit 'config-updated', the frontend updates.
-					// But if the frontend updates, it might save...
-					// Let's assume for now this is for external edits.
+					// External edit detected — reload and notify frontend.
 					config, err := a.LoadConfig()
 					if err == nil {
 						a.refreshPowerOptimizationStateFromConfig(config)
@@ -4414,79 +4423,10 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		}
 		return defaultConfig, err
 	}
-	config := corelib.AppConfig{
-		ShowCodex:              true,
-		ShowOpenCode:           true,
-		ShowCodeBuddy:          true,
-		ShowIFlow:              true,
-		ShowKilo:               true,
-		PowerOptimization:      true,
-		CheckUpdateOnStartup:   true,
-		RemoteHubCenterURL:     defaultRemoteHubCenterURL,
-		RemoteHeartbeatSec:     10,
-		SmartRouteEnabled:      true,
-		IMProgressNudgeEnabled: boolPtr(true),
-	}
+	var config corelib.AppConfig
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return config, err
-	}
-
-	// Check if this is an old config without the new show_* fields
-	// If show_kilo is not present in JSON, default it to true
-	var rawConfig map[string]interface{}
-	json.Unmarshal(data, &rawConfig)
-	hasShowKilo := false
-	if _, ok := rawConfig["show_kilo"]; ok {
-		hasShowKilo = true
-	}
-	hasPowerOptimization := false
-	if _, ok := rawConfig["power_optimization"]; ok {
-		hasPowerOptimization = true
-	}
-	hasGossipAutoPublish := false
-	if _, ok := rawConfig["gossip_auto_publish"]; ok {
-		hasGossipAutoPublish = true
-	}
-	hasYoloModeAllowed := false
-	if _, ok := rawConfig["yolo_mode_allowed"]; ok {
-		hasYoloModeAllowed = true
-	}
-	hasSmartRouteEnabled := false
-	if _, ok := rawConfig["smart_route_enabled"]; ok {
-		hasSmartRouteEnabled = true
-	}
-	hasGossipEnabled := false
-	if _, ok := rawConfig["gossip_enabled"]; ok {
-		hasGossipEnabled = true
-	}
-	hasFileOutboundEnabled := false
-	if _, ok := rawConfig["file_outbound_enabled"]; ok {
-		hasFileOutboundEnabled = true
-	}
-	hasImageOutboundEnabled := false
-	if _, ok := rawConfig["image_outbound_enabled"]; ok {
-		hasImageOutboundEnabled = true
-	}
-	hasVectorSearchEnabled := false
-	if _, ok := rawConfig["vector_search_enabled"]; ok {
-		hasVectorSearchEnabled = true
-	}
-	hasASREnabled := false
-	if _, ok := rawConfig["asr_enabled"]; ok {
-		hasASREnabled = true
-	}
-	hasTTSEnabled := false
-	if _, ok := rawConfig["tts_enabled"]; ok {
-		hasTTSEnabled = true
-	}
-	hasScreenParsingEnabled := false
-	if _, ok := rawConfig["screen_parsing_enabled"]; ok {
-		hasScreenParsingEnabled = true
-	}
-	hasIMProgressNudgeEnabled := false
-	if _, ok := rawConfig["im_progress_nudge_enabled"]; ok {
-		hasIMProgressNudgeEnabled = true
 	}
 
 	err = json.Unmarshal(data, &config)
@@ -4494,46 +4434,8 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		return config, err
 	}
 
-	// Set default values for new fields if not present in old configs
-	if !hasShowKilo {
-		config.ShowKilo = true
-	}
-	if !hasPowerOptimization {
-		config.PowerOptimization = true
-	}
-	if !hasGossipAutoPublish {
-		config.GossipAutoPublish = true
-	}
-	if !hasYoloModeAllowed {
-		config.YoloModeAllowed = true
-	}
-	if !hasSmartRouteEnabled {
-		config.SmartRouteEnabled = true
-	}
-	if !hasGossipEnabled {
-		config.GossipEnabled = true
-	}
-	if !hasFileOutboundEnabled {
-		config.FileOutboundEnabled = true
-	}
-	if !hasImageOutboundEnabled {
-		config.ImageOutboundEnabled = true
-	}
-	if !hasVectorSearchEnabled {
-		config.VectorSearchEnabled = true
-	}
-	if !hasASREnabled {
-		config.ASREnabled = true
-	}
-	if !hasTTSEnabled {
-		config.TTSEnabled = true
-	}
-	if !hasScreenParsingEnabled {
-		config.ScreenParsingEnabled = boolPtr(true)
-	}
-	if !hasIMProgressNudgeEnabled {
-		config.IMProgressNudgeEnabled = boolPtr(true)
-	}
+	// All bool/struct defaults are handled by AppConfig.UnmarshalJSON via
+	// appConfigDefaults(). Only non-bool post-unmarshal fixups remain here.
 	if config.NetworkLevel == "" {
 		config.NetworkLevel = "full"
 	}
@@ -6431,7 +6333,11 @@ func (a *App) patchConfig(patchFn func(cfg *corelib.AppConfig), allowHubManagedS
 }
 
 func (a *App) saveToPath(path string, config corelib.AppConfig) error {
-	return configfile.AtomicWriteJSON(path, config)
+	err := configfile.AtomicWriteJSON(path, config)
+	if err == nil {
+		a.configLastInternalWrite.Store(time.Now().UnixMilli())
+	}
+	return err
 }
 
 type UpdateResult struct {
@@ -6603,7 +6509,7 @@ func (a *App) buildUpdateResult(currentVersion string, release latestReleaseInfo
 }
 
 // CheckUpdateBeta checks for beta/pre-release versions from the beta channel manifests.
-// Called when user opts in to "尝鲜测试版" (beta test version).
+// Called when user opts in to "灏濋矞娴嬭瘯鐗? (beta test version).
 func (a *App) CheckUpdateBeta(currentVersion string) (UpdateResult, error) {
 	release, source, err := a.fetchBetaReleaseFast()
 	if err != nil {

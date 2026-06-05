@@ -53,6 +53,14 @@ func classifyIMExecutionProfile(msg IMUserMessage, workflowAgentLoop, isAskUserR
 }
 
 func (h *IMMessageHandler) classifyIMExecutionProfile(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool) ExecutionProfile {
+	profile, _ := h.classifyIMExecutionProfileAndSemantic(msg, workflowAgentLoop, isAskUserResponse)
+	return profile
+}
+
+func (h *IMMessageHandler) classifyIMExecutionProfileAndSemantic(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool) (ExecutionProfile, *intent.ClassificationResult) {
+	if profile, forced := structuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse); forced {
+		return profile, nil
+	}
 	var semantic *intent.ClassificationResult
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		result := uic.Classify(intent.MessageContext{
@@ -61,7 +69,8 @@ func (h *IMMessageHandler) classifyIMExecutionProfile(msg IMUserMessage, workflo
 		})
 		semantic = &result
 	}
-	return classifyIMExecutionProfileWithSemanticAndContracts(msg, workflowAgentLoop, isAskUserResponse, semantic, h.executionContractForRegisteredToolName)
+	profile := classifyIMExecutionProfileWithSemanticAndContracts(msg, workflowAgentLoop, isAskUserResponse, semantic, h.executionContractForRegisteredToolName)
+	return profile, semantic
 }
 
 func classifyIMExecutionProfileWithSemantic(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool, semantic *intent.ClassificationResult) ExecutionProfile {
@@ -69,24 +78,31 @@ func classifyIMExecutionProfileWithSemantic(msg IMUserMessage, workflowAgentLoop
 }
 
 func classifyIMExecutionProfileWithSemanticAndContracts(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool, semantic *intent.ClassificationResult, contractForTool func(string) ToolExecutionContract) ExecutionProfile {
+	if profile, forced := structuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse); forced {
+		return profile
+	}
+	return executionProfileFromSemanticIntent(semantic, contractForTool)
+}
+
+func structuralFullExecutionProfile(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool) (ExecutionProfile, bool) {
 	text := strings.TrimSpace(msg.Text)
 	switch {
 	case text == "":
-		return fullExecutionProfile("empty message")
+		return fullExecutionProfile("empty message"), true
 	case workflowAgentLoop:
-		return fullExecutionProfile("workflow agent loop")
+		return fullExecutionProfile("workflow agent loop"), true
 	case isAskUserResponse:
-		return fullExecutionProfile("ask_user continuation")
+		return fullExecutionProfile("ask_user continuation"), true
 	case msg.IsBackground:
-		return fullExecutionProfile("background task")
+		return fullExecutionProfile("background task"), true
 	case len(msg.Attachments) > 0:
-		return fullExecutionProfile("attachments present")
+		return fullExecutionProfile("attachments present"), true
 	case hasStructuralFullExecutionSignal(text):
-		return fullExecutionProfile("structural execution signal")
+		return fullExecutionProfile("structural execution signal"), true
 	case utf8.RuneCountInString(text) > 40:
-		return fullExecutionProfile("message too long for light profile")
+		return fullExecutionProfile("message too long for light profile"), true
 	default:
-		return executionProfileFromSemanticIntent(semantic, contractForTool)
+		return ExecutionProfile{}, false
 	}
 }
 
@@ -124,9 +140,9 @@ func executionProfileFromSemanticIntent(result *intent.ClassificationResult, con
 			PromptProfile:        "light",
 			Confidence:           result.Confidence,
 			Reason:               "semantic low-complexity intent",
-			RequiredCapabilities: []string{"current_data", "web", "time"},
+			RequiredCapabilities: []string{"current_data", "time"},
 			ToolBudget:           8,
-			IterationBudget:      3,
+			IterationBudget:      2,
 		}
 	default:
 		return fullExecutionProfile("semantic intent requires full agent")
