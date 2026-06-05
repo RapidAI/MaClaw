@@ -167,10 +167,11 @@ func PolicyRulesForMode(mode string) []PolicyRule {
 	//     unless a safe context guard matches; su/-i are not in safe contexts
 	//
 	// NOTE: "rm -rf" was intentionally removed from ArgsPattern here because
-	// Assess() no longer raises rm-rf to critical (it was moved to ScanThreatPatterns
-	// in AssessSkill, which is a separate skill-installation scan). Any critical
-	// classification from rm-rf would have to come from a different rule, and
-	// the ArgsPattern match against all rm-rf is now unreachable dead code.
+	// Assess() no longer raises rm-rf to critical (it was moved to the destructive
+	// threat category scanned via ScanLiveThreatPatterns, which only escalates to
+	// high, not critical). So rm-rf can only reach denyDangerous if it were
+	// already critical from another rule — which won't happen. Any rm-rf /system
+	// targeting is caught at high → PolicyAsk level in standard mode.
 	denyDangerous := PolicyRule{
 		Name:        "deny-dangerous-keywords",
 		Priority:    10,

@@ -32,6 +32,8 @@ export const editableCustomAgentValue = (provider?: LLMProvider | null) => {
 };
 
 /** Called on blur / save — fills in the seed if the field was left empty. */
+export const nextCustomAgentValue = (_provider: LLMProvider | null | undefined, value: string) => value;
+
 export const commitCustomAgentValue = (provider: LLMProvider | null | undefined, value: string) => {
     return value.trim() ? value.trim() : customAgentSeedForProvider(provider);
 };

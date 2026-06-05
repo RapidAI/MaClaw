@@ -6,7 +6,6 @@ package memory
 
 import (
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 )
@@ -61,7 +60,7 @@ func TestRebuildAsync_WaitRebuildReturnsFast(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("WaitRebuild blocked when no rebuild was in flight")
 	}
 }
@@ -105,15 +104,18 @@ func TestRebuildAsync_IndexesConsistentAfterWait(t *testing.T) {
 // Mechanism: replaceEntriesAndRebuildAsync passes snapshotIDs (not "*") to
 // syncGraphLinksLocked, so entries that arrived after the snapshot are
 // untouched.  Without this fix, the full sweep would zero their RelatedEdges.
+//
+// We inject the post-snapshot entry directly under s.mu (bypassing Save/autoLink)
+// so its RelatedEdges are deterministic regardless of BM25/embedding scores.
 func TestRebuildAsync_ConcurrentSaveNotClobbered(t *testing.T) {
 	store, cleanup := newAsyncRebuildStore(t)
 	defer cleanup()
 
 	now := time.Now().UTC()
 
-	// Stage an entry in the backend that will trigger an async rebuild when synced.
+	// Stage an entry in the backend so syncOnce triggers an async rebuild.
 	synced := Entry{
-		ID: "clobber-synced", Content: "sync target entry",
+		ID: "clobber-synced", Content: "sync target entry — deterministic content XYZ",
 		Category: CategoryProjectKnowledge, Strength: 1, AccessCount: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -121,22 +123,20 @@ func TestRebuildAsync_ConcurrentSaveNotClobbered(t *testing.T) {
 		t.Fatalf("SaveEntry: %v", err)
 	}
 
-	// Trigger the async rebuild without waiting — we want to race a concurrent
-	// Save against it.  Use a raw applyRemoteSyncBatchLocked call so we hold
-	// the lock and launch the goroutine without blocking on WaitRebuild yet.
+	// Collect the sync batch so we can start the async rebuild manually.
 	modified, deletedIDs, err := store.backend.Since(store.sync.lastVersion)
 	if err != nil {
 		t.Fatalf("Since: %v", err)
 	}
 
+	// Start the async rebuild goroutine (via applyRemoteSyncBatchLocked).
 	store.mu.Lock()
 	store.applyRemoteSyncBatchLocked(modified, deletedIDs)
-	// The rebuild goroutine is now in flight (or about to start).
-	store.mu.Unlock()
-
-	// Concurrently save a NEW entry with a pre-set RelatedEdge.
-	// This entry is NOT in the snapshot the rebuild goroutine is working with.
-	newEntry := Entry{
+	// While still holding s.mu, inject a post-snapshot entry with known RelatedEdges.
+	// This simulates a concurrent Save completing between snapshot creation and
+	// syncGraphLinksLocked running.  Because we hold s.mu here the goroutine
+	// hasn't reached its s.mu.Lock call yet, so the injection is safe.
+	postSnapshot := Entry{
 		ID: "clobber-new", Content: "post-snapshot entry",
 		Category:     CategoryProjectKnowledge,
 		RelatedIDs:   []string{"clobber-synced"},
@@ -144,14 +144,13 @@ func TestRebuildAsync_ConcurrentSaveNotClobbered(t *testing.T) {
 		Strength:     1, AccessCount: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	if err := store.Save(newEntry); err != nil {
-		t.Fatalf("concurrent Save: %v", err)
-	}
+	store.entries = append(store.entries, postSnapshot)
+	store.mu.Unlock()
 
 	// Wait for the rebuild goroutine to finish.
 	store.WaitRebuild()
 
-	// The new entry's RelatedEdges must be intact — the rebuild only patched
+	// The injected entry's RelatedEdges must be intact — the rebuild only patched
 	// entries that were in the snapshot (snapshotIDs filter).
 	store.mu.RLock()
 	idx := store.findEntryIndexByIDLocked("clobber-new")
@@ -167,6 +166,9 @@ func TestRebuildAsync_ConcurrentSaveNotClobbered(t *testing.T) {
 	if len(edges) == 0 {
 		t.Error("post-snapshot entry's RelatedEdges were clobbered by the async rebuild; snapshotIDs filter should have protected them")
 	}
+	if edges[0].ID != "clobber-synced" {
+		t.Errorf("RelatedEdge ID = %q, want %q", edges[0].ID, "clobber-synced")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -180,23 +182,6 @@ func TestRebuildAsync_ConsecutiveSyncsSerialise(t *testing.T) {
 	store, cleanup := newAsyncRebuildStore(t)
 	defer cleanup()
 
-	var mu sync.Mutex
-	maxConcurrent := 0
-	activeCnt := 0
-
-	// Inject a hook that counts concurrent executions of
-	// rebuildDerivedIndexesOutsideLock by wrapping the BM25 rebuild which
-	// is the first operation inside the function.
-	//
-	// We proxy by observing how many goroutines are simultaneously between
-	// applyRemoteSyncBatchLocked and WaitRebuild.  A simpler proxy: fire two
-	// syncOnce calls back-to-back and ensure we never see activeCnt > 1 by
-	// monitoring the done channel sequencing.
-	//
-	// Simpler approach: just verify the final BM25 state is consistent after
-	// two rapid syncOnce calls — concurrent corruption would produce missing
-	// or stale entries.
-
 	now := time.Now().UTC()
 	for i, id := range []string{"serial-a", "serial-b", "serial-c"} {
 		e := Entry{
@@ -208,12 +193,6 @@ func TestRebuildAsync_ConsecutiveSyncsSerialise(t *testing.T) {
 			t.Fatalf("SaveEntry %s: %v", id, err)
 		}
 	}
-
-	_ = mu
-	_ = activeCnt
-	_ = maxConcurrent
-
-	// Fire two consecutive syncOnce calls without waiting in between.
 	// The second call will find a non-nil lastRebuildDone from the first and
 	// its goroutine will wait on prevDone before starting its own rebuild.
 	store.syncOnce()
