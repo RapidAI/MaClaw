@@ -68,6 +68,7 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 		log.Printf("[buildIMEntrySystemPrompt] slow: base_prompt=%v resume_trace=%v total=%v prompt_len=%d user=%s",
 			basePromptElapsed, resumeElapsed, totalPromptBuild, len(systemPrompt), msg.UserID)
 	}
+	imPerfLog("system_prompt", promptBuildStart, imRequestID(msg), msg.UserID, "base_prompt", basePromptElapsed, "resume_trace", resumeElapsed, "prompt_len", len(systemPrompt), "history_len", len(history), "workflow", workflowAgentLoop)
 	return systemPrompt
 }
 
@@ -446,6 +447,7 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 	primaryRecallElapsed := time.Since(recallStart)
 	if !ok {
 		log.Printf("[proactive_recall] skipped slow recall user=%q userMsg=%d chars projectPath=%q strictProject=%v budget=%s elapsed=%v", userID, len(msg), projectPath, strictProject, imProactiveRecallBudget, primaryRecallElapsed)
+		log.Printf("[perf] stage=proactive_recall user=%q elapsed=%s project=%q strict_project=%v recalled=%d status=%q budget=%s", userID, primaryRecallElapsed.Round(time.Millisecond), projectPath, strictProject, 0, "timeout", imProactiveRecallBudget)
 		return
 	}
 	log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, strictProject=%v, recalled=%d entries took=%v", len(msg), projectPath, strictProject, len(relevant), primaryRecallElapsed)
@@ -458,6 +460,7 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 	if totalRecallElapsed > 200*time.Millisecond {
 		log.Printf("[proactive_recall] total_elapsed=%v (primary_recall=%v)", totalRecallElapsed, primaryRecallElapsed)
 	}
+	log.Printf("[perf] stage=proactive_recall user=%q elapsed=%s project=%q strict_project=%v recalled=%d prompt_context_len=%d", userID, totalRecallElapsed.Round(time.Millisecond), projectPath, strictProject, len(relevant), len(promptContext))
 }
 
 const imProactiveRecallBudget = 2 * time.Second

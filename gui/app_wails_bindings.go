@@ -1695,6 +1695,7 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		msgLang = a.CurrentLanguage
 	}
 	msg := IMUserMessage{
+		RequestID:                   requestID,
 		UserID:                      userID,
 		Platform:                    desktopPlatform,
 		Text:                        text,

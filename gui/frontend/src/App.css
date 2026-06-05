@@ -1443,12 +1443,13 @@ body {
     width: 100%;
     min-width: 0;
     align-self: stretch;
+    flex-wrap: nowrap;
 }
 
 .coding-launch-project-picker {
     width: 100%;
     display: grid;
-    grid-template-columns: max-content minmax(160px, 1fr) minmax(150px, 190px) 36px;
+    grid-template-columns: max-content minmax(120px, 1fr) minmax(100px, 140px) 36px;
     align-items: center;
     gap: 8px;
 }
@@ -1490,7 +1491,7 @@ body {
     display: flex;
     align-items: center;
     gap: 6px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
 }
 
 .coding-launch-options {
@@ -1630,7 +1631,7 @@ body {
 }
 
 .coding-launch-project-main {
-    flex: 1 1 430px;
+    flex: 1 1 320px;
     min-width: 0;
 }
 
@@ -1736,6 +1737,7 @@ body {
     background: var(--theme-primary);
     color: var(--theme-on-primary);
     box-shadow: 0 12px 24px color-mix(in srgb, var(--theme-primary) 24%, transparent);
+    flex-shrink: 0;
 }
 
 .coding-launch-button {
@@ -1769,7 +1771,7 @@ body {
     }
 
     .coding-launch-project-main {
-        flex-basis: 100%;
+        flex-basis: 200px;
     }
 
     .coding-launch-project-picker {
@@ -4942,7 +4944,7 @@ body {
     --model-switcher-visible-rows: 6;
     --model-switcher-gap: 8px;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     grid-auto-rows: minmax(var(--model-switcher-row-height), auto);
     gap: var(--model-switcher-gap);
     min-height: calc((var(--model-switcher-row-height) * var(--model-switcher-visible-rows)) + (var(--model-switcher-gap) * (var(--model-switcher-visible-rows) - 1)));

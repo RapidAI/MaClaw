@@ -3105,6 +3105,22 @@ ${instruction}`;
                                     </span>
                                 </div>
                                 <div className="coding-launch-options">
+                                <label className="coding-launch-check">
+                                    <input
+                                        type="checkbox"
+                                        checked={launchPanelProject?.admin_mode || false}
+                                        onChange={(e) => {
+                                            updateResolvedLaunchProject((project) => {
+                                                const updated = { ...project, admin_mode: e.target.checked };
+                                                if (!isWindows && e.target.checked) {
+                                                    updated.yolo_mode = false;
+                                                }
+                                                return updated;
+                                            });
+                                        }}
+                                    />
+                                    <span>{isWindows ? t("adminModeLabel") : t("rootModeLabel")}</span>
+                                </label>
                                 {activeTool !== 'kilo' && (
                                     <label className="coding-launch-check">
                                         <input
@@ -3238,22 +3254,6 @@ ${instruction}`;
                                         </span>
                                     </label>
                                 )}
-                                <label className="coding-launch-check">
-                                    <input
-                                        type="checkbox"
-                                        checked={launchPanelProject?.admin_mode || false}
-                                        onChange={(e) => {
-                                            updateResolvedLaunchProject((project) => {
-                                                const updated = { ...project, admin_mode: e.target.checked };
-                                                if (!isWindows && e.target.checked) {
-                                                    updated.yolo_mode = false;
-                                                }
-                                                return updated;
-                                            });
-                                        }}
-                                    />
-                                    <span>{isWindows ? t("adminModeLabel") : t("rootModeLabel")}</span>
-                                </label>
                                 <div className="coding-launch-project-main">
                                     <div className="coding-launch-project-picker">
                                         <span className="coding-launch-project-label">{t("project")}</span>

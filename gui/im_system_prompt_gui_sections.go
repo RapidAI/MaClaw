@@ -288,4 +288,5 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 	if totalElapsed > 200*time.Millisecond {
 		log.Printf("[appendGUIEpilogue] slow: memory=%v knowledge=%v total=%v", memoryElapsed, knowledgeElapsed, totalElapsed)
 	}
+	log.Printf("[perf] stage=gui_epilogue user=%q elapsed=%s memory=%s knowledge=%s prompt_len=%d msg_len=%d", userID, totalElapsed.Round(time.Millisecond), memoryElapsed.Round(time.Millisecond), knowledgeElapsed.Round(time.Millisecond), b.Len(), len([]rune(msg)))
 }

@@ -1532,10 +1532,10 @@ func (a *App) ensureCodeGenConfiguredModelAvailable() error {
 	}
 
 	openaiTarget := codeGenToolTarget(*codegenProvider, "responses")
-	openaiTarget.ModelName = firstModel
+	openaiTarget.ModelName = codegenProviderName
 	openaiTarget.ModelId = firstModel
 	anthropicTarget := codeGenToolTarget(*codegenProvider, "anthropic")
-	anthropicTarget.ModelName = firstModel
+	anthropicTarget.ModelName = codegenProviderName
 	anthropicTarget.ModelId = firstModel
 
 	if ensureCodeGenToolModelAvailable(&cfg.Claude, anthropicTarget, available) {
@@ -1712,7 +1712,7 @@ func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
 
 	openaiURL := result.BaseURL
 	anthropicURL := codegenAnthropicBaseURL(openaiURL)
-	modelName := codeGenToolModelName(result.ModelID)
+	modelName := codeGenToolModelName()
 
 	// Claude Code 使用 anthropic 协议端点
 	claudeModel := corelib.ModelConfig{
@@ -1757,23 +1757,25 @@ func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
 	}
 }
 
-func codeGenToolModelName(modelID string) string {
-	modelID = strings.TrimSpace(modelID)
-	if modelID != "" {
-		return modelID
-	}
+func codeGenToolModelName() string {
+	// ModelName 在前端按钮网格中作为显示名称使用，始终显示服务商名称 "CodeGen"。
+	// 实际模型 ID（如 "qax-codegen/Auto"、"auto"）存储在 ModelId 字段中。
 	return codegenProviderName
 }
 
 func codeGenToolTarget(provider corelib.MaclawLLMProvider, wireAPI string) corelib.ModelConfig {
-	modelName := codeGenToolModelName(provider.Model)
+	modelName := codeGenToolModelName()
+	modelID := strings.TrimSpace(provider.Model)
+	if modelID == "" {
+		modelID = codegenProviderName
+	}
 	modelURL := provider.URL
 	if wireAPI == "anthropic" {
 		modelURL = codegenAnthropicBaseURL(provider.URL)
 	}
 	return corelib.ModelConfig{
 		ModelName: modelName,
-		ModelId:   modelName,
+		ModelId:   modelID,
 		ModelUrl:  modelURL,
 		ApiKey:    provider.Key,
 		WireApi:   wireAPI,
@@ -1986,12 +1988,12 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 		}
 
 		if claudeTargetModel != "" {
-			if cfg.Claude.CurrentModel != claudeTargetModel {
-				cfg.Claude.CurrentModel = claudeTargetModel
+			if cfg.Claude.CurrentModel != codegenProviderName {
+				cfg.Claude.CurrentModel = codegenProviderName
 				changed = true
 			}
 			claudeTargetEntry := corelib.ModelConfig{
-				ModelName: claudeTargetModel,
+				ModelName: codegenProviderName,
 				ModelId:   claudeTargetModel,
 				ModelUrl:  codegenAnthropicBaseURL(codegenURL),
 				ApiKey:    codegenKey,
@@ -2002,7 +2004,7 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 				changed = true
 			}
 			for i := range cfg.Claude.Models {
-				if cfg.Claude.Models[i].ModelName == claudeTargetModel {
+				if cfg.Claude.Models[i].ModelName == codegenProviderName {
 					claudeEntry = &cfg.Claude.Models[i]
 					break
 				}
@@ -2011,7 +2013,7 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 
 		if maclawModel != "" {
 			openaiTargetEntry := corelib.ModelConfig{
-				ModelName: maclawModel,
+				ModelName: codegenProviderName,
 				ModelId:   maclawModel,
 				ModelUrl:  codegenURL,
 				ApiKey:    codegenKey,

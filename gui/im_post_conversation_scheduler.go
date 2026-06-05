@@ -13,6 +13,7 @@ import (
 
 type postConversationTask struct {
 	UserID           string
+	RequestID        string
 	History          []agent.ConversationEntry
 	DeferredMessages []memory.ConversationMessage
 	EnqueuedAt       time.Time
@@ -37,7 +38,7 @@ func newPostConversationScheduler(h *IMMessageHandler) *postConversationSchedule
 	s := &postConversationScheduler{h: h}
 	s.runTask = func(ctx context.Context, task postConversationTask) {
 		if h != nil {
-			h.runPostConversationProcessing(ctx, task.UserID, task.History, task.DeferredMessages)
+			h.runPostConversationProcessing(ctx, task.UserID, task.RequestID, task.History, task.DeferredMessages)
 		}
 	}
 	return s
@@ -55,11 +56,11 @@ func (s *postConversationScheduler) Enqueue(task postConversationTask) {
 	worker.cancelActive("replace")
 	select {
 	case worker.queue <- task:
-		log.Printf("[post-conversation-scheduler] enqueue user=%s history_len=%d deferred=%d", task.UserID, len(task.History), len(task.DeferredMessages))
+		log.Printf("[post-conversation-scheduler] enqueue user=%s request_id=%q history_len=%d deferred=%d", task.UserID, task.RequestID, len(task.History), len(task.DeferredMessages))
 	default:
 		select {
 		case dropped := <-worker.queue:
-			log.Printf("[post-conversation-scheduler] replace_pending user=%s dropped_history_len=%d new_history_len=%d", task.UserID, len(dropped.History), len(task.History))
+			log.Printf("[post-conversation-scheduler] replace_pending user=%s request_id=%q dropped_request_id=%q dropped_history_len=%d new_history_len=%d", task.UserID, task.RequestID, dropped.RequestID, len(dropped.History), len(task.History))
 		default:
 		}
 		worker.queue <- task
@@ -133,9 +134,9 @@ func (w *postConversationOwnerWorker) run() {
 		w.activeMu.Unlock()
 
 		waited := time.Since(task.EnqueuedAt)
-		log.Printf("[post-conversation-scheduler] start user=%s wait=%s history_len=%d deferred=%d", task.UserID, waited.Round(time.Millisecond), len(task.History), len(task.DeferredMessages))
+		log.Printf("[post-conversation-scheduler] start user=%s request_id=%q wait=%s history_len=%d deferred=%d", task.UserID, task.RequestID, waited.Round(time.Millisecond), len(task.History), len(task.DeferredMessages))
 		if app := w.scheduler.h.app; app != nil && !app.waitForForegroundAgentIdle(ctx, "post-conversation", task.UserID) {
-			log.Printf("[post-conversation-scheduler] skip user=%s reason=foreground_wait_cancelled", task.UserID)
+			log.Printf("[post-conversation-scheduler] skip user=%s request_id=%q reason=foreground_wait_cancelled", task.UserID, task.RequestID)
 		} else if w.scheduler.runTask != nil {
 			w.scheduler.runTask(ctx, task)
 		}
@@ -145,7 +146,7 @@ func (w *postConversationOwnerWorker) run() {
 		w.activeMu.Unlock()
 		wasCancelled := ctx.Err() != nil
 		cancel()
-		log.Printf("[post-conversation-scheduler] finish user=%s cancelled=%v total=%s", task.UserID, wasCancelled, time.Since(task.EnqueuedAt).Round(time.Millisecond))
+		log.Printf("[post-conversation-scheduler] finish user=%s request_id=%q cancelled=%v total=%s", task.UserID, task.RequestID, wasCancelled, time.Since(task.EnqueuedAt).Round(time.Millisecond))
 	}
 }
 
@@ -169,7 +170,7 @@ func (w *postConversationOwnerWorker) dropPending(reason string) bool {
 	for {
 		select {
 		case task := <-w.queue:
-			log.Printf("[post-conversation-scheduler] drop_pending user=%s reason=%s history_len=%d", task.UserID, strings.TrimSpace(reason), len(task.History))
+			log.Printf("[post-conversation-scheduler] drop_pending user=%s request_id=%q reason=%s history_len=%d", task.UserID, task.RequestID, strings.TrimSpace(reason), len(task.History))
 			dropped = true
 		default:
 			return dropped

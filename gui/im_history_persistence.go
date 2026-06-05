@@ -163,15 +163,23 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		}
 	}
 
-	h.schedulePostConversationProcessing(userID, trimmed)
+	requestID := ""
+	if resp != nil {
+		requestID = strings.TrimSpace(resp.RequestID)
+	}
+	h.schedulePostConversationProcessingWithRequestID(userID, requestID, trimmed)
 }
 
 func (h *IMMessageHandler) schedulePostConversationProcessing(userID string, history []agent.ConversationEntry) {
+	h.schedulePostConversationProcessingWithRequestID(userID, "", history)
+}
+
+func (h *IMMessageHandler) schedulePostConversationProcessingWithRequestID(userID, requestID string, history []agent.ConversationEntry) {
 	if h == nil {
 		return
 	}
 	if h.app != nil && strings.TrimSpace(h.app.testHomeDir) != "" {
-		log.Printf("[post-conversation] skip async post-processing in test mode user=%s history_len=%d", userID, len(history))
+		log.Printf("[post-conversation] skip async post-processing in test mode user=%s request_id=%q history_len=%d", userID, requestID, len(history))
 		return
 	}
 	var deferredMessages []memory.ConversationMessage
@@ -183,6 +191,7 @@ func (h *IMMessageHandler) schedulePostConversationProcessing(userID string, his
 	historySnapshot := append([]agent.ConversationEntry(nil), history...)
 	h.ensurePostConversationScheduler().Enqueue(postConversationTask{
 		UserID:           userID,
+		RequestID:        strings.TrimSpace(requestID),
 		History:          historySnapshot,
 		DeferredMessages: deferredMessages,
 	})
@@ -198,20 +207,21 @@ func (h *IMMessageHandler) ensurePostConversationScheduler() *postConversationSc
 	return h.postConversationScheduler
 }
 
-func (h *IMMessageHandler) runPostConversationProcessing(bgCtx context.Context, userID string, history []agent.ConversationEntry, deferredMessages []memory.ConversationMessage) {
+func (h *IMMessageHandler) runPostConversationProcessing(bgCtx context.Context, userID, requestID string, history []agent.ConversationEntry, deferredMessages []memory.ConversationMessage) {
 	startedAt := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[post-conversation] panic user=%s panic=%v", userID, r)
+			log.Printf("[post-conversation] panic user=%s request_id=%q panic=%v", userID, requestID, r)
 		}
-		log.Printf("[post-conversation] done user=%s duration=%s cancelled=%v history_len=%d", userID, time.Since(startedAt).Round(time.Millisecond), bgCtx.Err() != nil, len(history))
+		log.Printf("[post-conversation] done user=%s request_id=%q duration=%s cancelled=%v history_len=%d", userID, requestID, time.Since(startedAt).Round(time.Millisecond), bgCtx.Err() != nil, len(history))
+		imPerfLog("post_conversation", startedAt, requestID, userID, "cancelled", bgCtx.Err() != nil, "history_len", len(history), "deferred", len(deferredMessages))
 	}()
-	log.Printf("[post-conversation] start user=%s history_len=%d", userID, len(history))
+	log.Printf("[post-conversation] start user=%s request_id=%q history_len=%d", userID, requestID, len(history))
 
 	// Persist transcript to FTS5 session search store (non-blocking).
 	stageStartedAt := time.Now()
 	h.persistSessionTranscriptAsync(userID, history)
-	log.Printf("[post-conversation] stage=transcript user=%s duration=%s cancelled=%v", userID, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
+	log.Printf("[post-conversation] stage=transcript user=%s request_id=%q duration=%s cancelled=%v", userID, requestID, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
 	if h.app != nil && !h.app.waitForForegroundAgentIdle(bgCtx, "post-conversation-llm", userID) {
 		return
 	}
@@ -223,7 +233,7 @@ func (h *IMMessageHandler) runPostConversationProcessing(bgCtx context.Context, 
 		ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
 		merged := h.memoryStore.ProcessPendingDedup(ctx)
 		cancel()
-		log.Printf("[post-conversation] stage=semantic_dedup user=%s merged=%d duration=%s cancelled=%v", userID, merged, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
+		log.Printf("[post-conversation] stage=semantic_dedup user=%s request_id=%q merged=%d duration=%s cancelled=%v", userID, requestID, merged, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
 		if merged > 0 {
 			log.Printf("[semantic_dedup] processed pending pairs after agent loop: merged %d entries", merged)
 		}
@@ -233,7 +243,7 @@ func (h *IMMessageHandler) runPostConversationProcessing(bgCtx context.Context, 
 	// answer is delivered to the user.
 	stageStartedAt = time.Now()
 	h.sedimentTaskEntry(userID, history)
-	log.Printf("[post-conversation] stage=sediment user=%s duration=%s cancelled=%v", userID, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
+	log.Printf("[post-conversation] stage=sediment user=%s request_id=%q duration=%s cancelled=%v", userID, requestID, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
 	if h.app != nil && !h.app.waitForForegroundAgentIdle(bgCtx, "online-extraction", userID) {
 		return
 	}
@@ -242,13 +252,13 @@ func (h *IMMessageHandler) runPostConversationProcessing(bgCtx context.Context, 
 	// user sends a new foreground message for the same owner.
 	stageStartedAt = time.Now()
 	h.triggerOnlineExtractionWithContext(bgCtx, userID, history)
-	log.Printf("[post-conversation] stage=online_extraction user=%s duration=%s cancelled=%v", userID, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
+	log.Printf("[post-conversation] stage=online_extraction user=%s request_id=%q duration=%s cancelled=%v", userID, requestID, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
 
 	if len(deferredMessages) > 0 && bgCtx.Err() == nil && h.sessionStartExtractor != nil {
 		stageStartedAt = time.Now()
-		extractCtx := llm.WithRequestTrace(bgCtx, llm.RequestTrace{Caller: "session-start-extraction", OwnerID: userID})
+		extractCtx := llm.WithRequestTrace(bgCtx, llm.RequestTrace{Caller: "session-start-extraction", OwnerID: userID, RequestID: requestID})
 		h.sessionStartExtractor.MaybeExtract(extractCtx, userID, deferredMessages)
-		log.Printf("[post-conversation] stage=session_start_extraction user=%s messages=%d duration=%s cancelled=%v", userID, len(deferredMessages), time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
+		log.Printf("[post-conversation] stage=session_start_extraction user=%s request_id=%q messages=%d duration=%s cancelled=%v", userID, requestID, len(deferredMessages), time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
 	}
 }
 

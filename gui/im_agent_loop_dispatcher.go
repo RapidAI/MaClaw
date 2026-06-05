@@ -24,7 +24,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if result != nil && result.Error != "" {
 			status = "error"
 		}
+		if result != nil && result.RequestID == "" {
+			result.RequestID = requestID
+		}
 		log.Printf("[agent-loop] end owner=%q request_id=%q loop=%q status=%s elapsed=%s", userID, requestID, loopID, status, time.Since(startedAt).Round(time.Millisecond))
+		imPerfLog("agent_loop", startedAt, requestID, userID, "status", status, "loop", loopID, "platform", platform, "text_len", len([]rune(userText)), "prompt_len", len(systemPrompt), "history_len", len(history))
 		if r := recover(); r != nil {
 			result = &IMAgentResponse{Error: fmt.Sprintf("Agent loop panicked: %v", r)}
 			log.Printf("[agent-loop] panic owner=%q request_id=%q loop=%q panic=%v elapsed=%s", userID, requestID, loopID, r, time.Since(startedAt).Round(time.Millisecond))

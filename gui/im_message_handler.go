@@ -30,6 +30,14 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 
 func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLoopCtx *LoopContext, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) (result *IMAgentResponse) {
 	msgReceivedAt := time.Now()
+	requestID := imRequestID(msg)
+	defer func() {
+		status := "success"
+		if result != nil && result.Error != "" {
+			status = "error"
+		}
+		imPerfLog("im_message_total", msgReceivedAt, requestID, msg.UserID, "status", status, "text_len", len([]rune(msg.Text)), "platform", msg.Platform)
+	}()
 	lifecycle := h.beginIMMessageLifecycle(msg, &result)
 	defer lifecycle.Cleanup()
 	trimmed := lifecycle.Trimmed
@@ -98,6 +106,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		log.Printf("[handleIMMessage] slow pre-execution: preflight=%v serialization=%v entry_context=%v user=%s",
 			preflightDone, serializationDone-preflightDone, entryContextDone-serializationDone, msg.UserID)
 	}
+	imPerfLog("im_pre_execution", msgReceivedAt, requestID, msg.UserID, "preflight", preflightDone, "serialization", serializationDone-preflightDone, "entry_context", entryContextDone-serializationDone)
 	unfinishedSlot = entryContext.UnfinishedSlot
 	freshTask = entryContext.FreshTask
 	workflowAgentLoop := entryContext.WorkflowAgentLoop

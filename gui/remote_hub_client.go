@@ -1211,6 +1211,7 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 	}
 
 	requestID := msg.RequestID
+	payload.RequestID = requestID
 	go func() {
 		// Create a progress callback that sends intermediate updates to Hub.
 		// Hub will relay these to the user via IM and reset the response timeout.

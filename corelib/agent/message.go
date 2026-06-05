@@ -8,6 +8,7 @@ import "context"
 // This is the corelib equivalent of gui.IMUserMessage. The gui package
 // defines IMUserMessage as an alias or wrapper around this type.
 type UserMessage struct {
+	RequestID   string `json:"request_id,omitempty"`
 	UserID      string `json:"user_id"`
 	Platform    string `json:"platform"`               // "desktop", "feishu", "wechat", "qq", "telegram", "tui"
 	MessageType string `json:"message_type,omitempty"` // "text", "voice", "image", "file", "audio", "video"

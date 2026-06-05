@@ -342,13 +342,13 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 	if got := saved.MaclawLLMProviders[0].Model; got != "maclaw-model" {
 		t.Fatalf("MaClaw provider model = %q, want %q", got, "maclaw-model")
 	}
-	if got := saved.Claude.CurrentModel; got != "claude-model" {
-		t.Fatalf("Claude CurrentModel = %q, want %q", got, "claude-model")
+	if got := saved.Claude.CurrentModel; got != codegenProviderName {
+		t.Fatalf("Claude CurrentModel = %q, want %q", got, codegenProviderName)
 	}
 
 	var claudeCodeGen *corelib.ModelConfig
 	for i := range saved.Claude.Models {
-		if saved.Claude.Models[i].ModelName == "claude-model" {
+		if saved.Claude.Models[i].ModelName == codegenProviderName {
 			claudeCodeGen = &saved.Claude.Models[i]
 			break
 		}
@@ -365,7 +365,7 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 
 	var codexCodeGen *corelib.ModelConfig
 	for i := range saved.Codex.Models {
-		if saved.Codex.Models[i].ModelName == "maclaw-model" {
+		if saved.Codex.Models[i].ModelName == codegenProviderName {
 			codexCodeGen = &saved.Codex.Models[i]
 			break
 		}
@@ -449,23 +449,23 @@ func TestInjectCodeGenModelIntoToolConfigsUsesFirstModelAsToolModelName(t *testi
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if got := saved.Claude.CurrentModel; got != "first-usable-model" {
-		t.Fatalf("Claude CurrentModel = %q, want %q", got, "first-usable-model")
+	if got := saved.Claude.CurrentModel; got != codegenProviderName {
+		t.Fatalf("Claude CurrentModel = %q, want %q", got, codegenProviderName)
 	}
-	if got := saved.Claude.Models[0].ModelName; got != "first-usable-model" {
-		t.Fatalf("Claude model_name = %q, want %q", got, "first-usable-model")
+	if got := saved.Claude.Models[0].ModelName; got != codegenProviderName {
+		t.Fatalf("Claude model_name = %q, want %q", got, codegenProviderName)
 	}
 	if got := saved.Claude.Models[0].ModelId; got != "first-usable-model" {
 		t.Fatalf("Claude model_id = %q, want %q", got, "first-usable-model")
 	}
-	if got := saved.Codex.CurrentModel; got != "first-usable-model" {
-		t.Fatalf("Codex CurrentModel = %q, want %q", got, "first-usable-model")
+	if got := saved.Codex.CurrentModel; got != codegenProviderName {
+		t.Fatalf("Codex CurrentModel = %q, want %q", got, codegenProviderName)
 	}
 	if got := saved.Codex.Models[0].ModelName; got != "Original" {
 		t.Fatalf("Codex first model_name = %q, want %q", got, "Original")
 	}
-	if got := saved.Codex.Models[1].ModelName; got != "first-usable-model" {
-		t.Fatalf("Codex model_name = %q, want %q", got, "first-usable-model")
+	if got := saved.Codex.Models[1].ModelName; got != codegenProviderName {
+		t.Fatalf("Codex model_name = %q, want %q", got, codegenProviderName)
 	}
 	if got := saved.Codex.Models[1].ModelId; got != "first-usable-model" {
 		t.Fatalf("Codex model_id = %q, want %q", got, "first-usable-model")
@@ -520,17 +520,26 @@ func TestSaveCodeGenModelChoiceRenamesExistingCodeGenModelEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if got := saved.Codex.CurrentModel; got != "second-model" {
-		t.Fatalf("Codex CurrentModel = %q, want %q", got, "second-model")
+	if got := saved.Codex.CurrentModel; got != codegenProviderName {
+		t.Fatalf("Codex CurrentModel = %q, want %q", got, codegenProviderName)
 	}
-	if got := saved.Codex.Models[0].ModelName; got != "second-model" {
-		t.Fatalf("Codex model_name = %q, want %q", got, "second-model")
+	// Find the CodeGen entry (default "Original" and other builtin models may also be present)
+	var codexCodeGen *corelib.ModelConfig
+	codegenCount := 0
+	for i := range saved.Codex.Models {
+		if saved.Codex.Models[i].ModelName == codegenProviderName {
+			codexCodeGen = &saved.Codex.Models[i]
+			codegenCount++
+		}
 	}
-	if got := saved.Codex.Models[0].ModelId; got != "second-model" {
-		t.Fatalf("Codex model_id = %q, want %q", got, "second-model")
+	if codexCodeGen == nil {
+		t.Fatalf("Codex CodeGen entry not found in %+v", saved.Codex.Models)
 	}
-	if len(saved.Codex.Models) != 1 {
-		t.Fatalf("Codex CodeGen entries should be deduplicated, got %+v", saved.Codex.Models)
+	if codexCodeGen.ModelId != "second-model" {
+		t.Fatalf("Codex model_id = %q, want %q", codexCodeGen.ModelId, "second-model")
+	}
+	if codegenCount != 1 {
+		t.Fatalf("Codex CodeGen entries should be deduplicated to 1, got %d in %+v", codegenCount, saved.Codex.Models)
 	}
 }
 
@@ -995,11 +1004,11 @@ func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if got := saved.Claude.CurrentModel; got != "claude-model" {
-		t.Fatalf("Claude CurrentModel = %q, want %q", got, "claude-model")
+	if got := saved.Claude.CurrentModel; got != codegenProviderName {
+		t.Fatalf("Claude CurrentModel = %q, want %q", got, codegenProviderName)
 	}
-	if got := saved.Codex.CurrentModel; got != "maclaw-model" {
-		t.Fatalf("Codex CurrentModel = %q, want %q", got, "maclaw-model")
+	if got := saved.Codex.CurrentModel; got != codegenProviderName {
+		t.Fatalf("Codex CurrentModel = %q, want %q", got, codegenProviderName)
 	}
 
 	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")

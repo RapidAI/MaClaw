@@ -70,8 +70,12 @@ func runtimeContextFromIMMessage(msg IMUserMessage) RuntimeContext {
 		conversationID = "anonymous"
 	}
 	sessionKey := runtimeSessionKey(source, conversationID, actor.ActorID)
+	requestID := strings.TrimSpace(msg.RequestID)
+	if requestID == "" {
+		requestID = "req-" + generateID()
+	}
 	return RuntimeContext{
-		RequestID:       "req-" + generateID(),
+		RequestID:       requestID,
 		Source:          source,
 		Actor:           actor,
 		Conversation:    RuntimeConversationRef{ConversationID: conversationID, SessionKey: sessionKey},
