@@ -35,7 +35,7 @@
 
 启动 MaClaw 时，会自动检查您的系统环境：
 *   **依赖检测**：检测 Node.js 及其他必要运行时。
-*   **工具安装**：自动检测并安装/更新 `claude-code`、`codex`、`gemini-cli`、`opencode`、`codebuddy`、`qodercli` 等工具到最新版本。
+*   **工具安装**：自动检测并安装/更新 `claude-code`、`codex`、`opencode`、`codebuddy`、`qodercli` 等工具到最新版本。
 *   **启动窗口**：显示进度窗口，展示环境准备状态。
 
 ## 2. 三态编程模式
@@ -45,7 +45,7 @@ MaClaw 提供三种互补的编程模式，满足不同开发场景：
 ### 2.1 本地 AI 编程
 AI CLI 工具在本机直接运行，完整访问文件系统与开发环境。
 
-1.  在侧边栏选择目标 AI 工具（Claude、Codex、Gemini 等）。
+1.  在侧边栏选择目标 AI 工具（Claude、Codex、OpenCode 等）。
 2.  在 "Vibe Coding" 区域选择项目。
 3.  点击 **"Launch"**，弹出预配置终端窗口并自动运行。
 
@@ -167,7 +167,6 @@ MaClaw 独创的浏览器运行监管系统，为自动化测试与业务流程�
 侧边栏提供快速切换：
 *   **Claude**：配置和启动 Anthropic Claude Code
 *   **Codex**：配置和启动 OpenAI Codex CLI
-*   **Gemini**：配置和启动 Google Gemini CLI
 *   **OpenCode**：配置和启动 OpenCode AI 辅助工具
 *   **CodeBuddy**：配置和启动 CodeBuddy 编程助手
 *   **Qoder**：配置和启动 Qoder CLI 编程助手

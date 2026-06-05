@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -86,25 +85,13 @@ func DiscoverTargets(cdpHTTP string) ([]TargetInfo, error) {
 		return nil, fmt.Errorf("read targets: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("discover targets: unexpected HTTP %s body=%q", resp.Status, truncateCDPBody(body, 220))
+		return nil, fmt.Errorf("discover targets: unexpected HTTP %s body_len=%d", resp.Status, len(body))
 	}
 	var targets []TargetInfo
 	if err := json.Unmarshal(body, &targets); err != nil {
-		return nil, fmt.Errorf("parse targets: %w body=%q", err, truncateCDPBody(body, 220))
+		return nil, fmt.Errorf("parse targets: %w body_len=%d", err, len(body))
 	}
 	return targets, nil
-}
-
-func truncateCDPBody(body []byte, limit int) string {
-	text := strings.TrimSpace(string(body))
-	if text == "" {
-		return ""
-	}
-	text = strings.Join(strings.Fields(text), " ")
-	if limit <= 0 || len(text) <= limit {
-		return text
-	}
-	return text[:limit] + "…"
 }
 
 // TargetInfo describes a browser target (page, worker, etc.).
@@ -248,6 +235,7 @@ func (c *CDPClient) Close() error {
 		close(c.stopPing)
 	}
 	c.closeErr = c.conn.Close()
+	log.Printf("[browser] CDP websocket close err=%v", c.closeErr)
 	close(c.closed)
 	return c.closeErr
 }

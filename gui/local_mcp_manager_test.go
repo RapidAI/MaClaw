@@ -134,6 +134,169 @@ func TestLocalMCPManagerResolveServerIDAmbiguousName(t *testing.T) {
 	}
 }
 
+func TestLocalMCPManagerResolveServerIDFindsConfiguredServerBeforeStart(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("configured-only", false, false)}
+	cfg.LocalMCPServers[0].Name = "configured-name"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	manager := NewLocalMCPManager(NewMCPRegistry(app))
+	defer manager.StopAll()
+
+	if got, err := manager.ResolveServerID("configured-only"); err != nil || got != "configured-only" {
+		t.Fatalf("ResolveServerID(id) = %q, %v", got, err)
+	}
+	if got, err := manager.ResolveServerID("configured-name"); err != nil || got != "configured-only" {
+		t.Fatalf("ResolveServerID(name) = %q, %v", got, err)
+	}
+}
+
+func TestAppResolveMCPServerRefInitializesLocalManagerForConfiguredServer(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("configured-local", false, false)}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	resolved, isLocal, err := app.resolveMCPServerRef("configured-local")
+	if err != nil || !isLocal || resolved != "configured-local" {
+		t.Fatalf("resolveMCPServerRef() = (%q, %v, %v), want configured local", resolved, isLocal, err)
+	}
+	if app.localMCPManager == nil {
+		t.Fatalf("resolveMCPServerRef should initialize local MCP manager")
+	}
+	app.localMCPManager.StopAll()
+}
+
+func TestLocalMCPManagerCallToolForOwnerUsesDedicatedClients(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("owner-scoped", false, false)}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	manager := NewLocalMCPManager(NewMCPRegistry(app))
+	defer manager.StopAll()
+
+	if _, err := manager.CallToolForOwner("agent-a", "owner-scoped", "ping", nil); err != nil {
+		t.Fatalf("CallToolForOwner(agent-a) error = %v", err)
+	}
+	if _, err := manager.CallToolForOwner("agent-b", "owner-scoped", "ping", nil); err != nil {
+		t.Fatalf("CallToolForOwner(agent-b) error = %v", err)
+	}
+
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	byOwner := manager.ownerClients["owner-scoped"]
+	if len(byOwner) != 2 || byOwner["agent-a"] == nil || byOwner["agent-b"] == nil || byOwner["agent-a"] == byOwner["agent-b"] {
+		t.Fatalf("owner clients not isolated: %#v", byOwner)
+	}
+}
+
+func TestLocalMCPManagerSyncStopsOwnerClientsWhenServerDisabled(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("disable-owner", false, false)}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	manager := NewLocalMCPManager(NewMCPRegistry(app))
+	defer manager.StopAll()
+	if _, err := manager.CallToolForOwner("agent-a", "disable-owner", "ping", nil); err != nil {
+		t.Fatalf("CallToolForOwner() error = %v", err)
+	}
+
+	cfg.LocalMCPServers[0].Disabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig(disabled) error = %v", err)
+	}
+	manager.SyncFromConfig()
+
+	manager.mu.RLock()
+	_, stillPresent := manager.ownerClients["disable-owner"]["agent-a"]
+	manager.mu.RUnlock()
+	if stillPresent {
+		t.Fatalf("disabled server owner client still present")
+	}
+	if _, err := manager.CallToolForOwner("agent-a", "disable-owner", "ping", nil); err == nil {
+		t.Fatalf("CallToolForOwner should reject disabled server")
+	}
+}
+
+func TestLocalMCPManagerStopOwnerOnlyStopsThatOwnersClients(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []corelib.LocalMCPServerEntry{newHelperLocalMCPServerEntry("stop-owner", false, false)}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	manager := NewLocalMCPManager(NewMCPRegistry(app))
+	defer manager.StopAll()
+	if _, err := manager.CallToolForOwner("agent-a", "stop-owner", "ping", nil); err != nil {
+		t.Fatalf("CallToolForOwner(agent-a) error = %v", err)
+	}
+	if _, err := manager.CallToolForOwner("agent-b", "stop-owner", "ping", nil); err != nil {
+		t.Fatalf("CallToolForOwner(agent-b) error = %v", err)
+	}
+
+	manager.StopOwner("agent-a")
+
+	manager.mu.RLock()
+	_, agentA := manager.ownerClients["stop-owner"]["agent-a"]
+	agentBClient := manager.ownerClients["stop-owner"]["agent-b"]
+	manager.mu.RUnlock()
+	if agentA || agentBClient == nil || !agentBClient.IsRunning() {
+		t.Fatalf("StopOwner removed wrong clients: agentA=%v agentB=%#v", agentA, agentBClient)
+	}
+}
+
 func TestAutoStartLocalMCPServersStartsServersMarkedAutoStart(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

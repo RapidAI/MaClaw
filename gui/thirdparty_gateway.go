@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
@@ -1093,8 +1094,9 @@ func (a *App) SetThirdPartyGatewayLocalMode(enabled bool) error {
 	if !enabled && cfg.RemoteMachineID == "" {
 		return fmt.Errorf("please register to Hub before enabling Hub mode")
 	}
-	cfg.SetThirdPartyGatewayLocal(enabled)
-	if err := a.SaveConfig(cfg); err != nil {
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.SetThirdPartyGatewayLocal(enabled)
+	}); err != nil {
 		return err
 	}
 	if a.thirdPartyGateway != nil {

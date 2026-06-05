@@ -10,8 +10,13 @@ import (
 type SessionMode string
 
 const (
-	// SessionModeAuto tries to connect to the user's running Chrome first,
-	// then falls back to launching Chrome with the user's real profile.
+	// SessionModePersistent launches a managed Chrome with a dedicated persistent
+	// MaClaw profile. It keeps cookies/session data across runs without touching
+	// the user's daily Chrome profile, so it is the default automation mode.
+	SessionModePersistent SessionMode = "persistent"
+
+	// SessionModeAuto is a legacy alias. Stable automation normalizes it to
+	// SessionModePersistent instead of touching the user's daily Chrome profile.
 	SessionModeAuto SessionMode = "auto"
 
 	// SessionModeConnectUser only connects to the user's running Chrome.
@@ -82,11 +87,11 @@ func UserChromeGuideMessage() string {
 // If that fails, launches Chrome with the user's REAL profile (preserving cookies,
 // passwords, extensions) and remote debugging enabled.
 //
-// This is the default connection strategy (SessionModeAuto):
-//   1. ConnectUserChrome() — connect to running instance
-//   2. Launch with user's real user-data-dir + --remote-debugging-port
-//   3. If user-data-dir is locked (Chrome already running without debug),
-//      return error with guidance
+// This is the legacy user-profile connection strategy (SessionModeAuto):
+//  1. ConnectUserChrome() — connect to running instance
+//  2. Launch with user's real user-data-dir + --remote-debugging-port
+//  3. If user-data-dir is locked (Chrome already running without debug),
+//     return error with guidance
 func DiscoverOrLaunchUserProfile() (string, error) {
 	// Step 1: Try connecting to already-running Chrome.
 	if addr, err := ConnectUserChrome(); err == nil {
@@ -140,7 +145,5 @@ func isUserChromeSession(sess *BrowserAgentSession) bool {
 	if sess == nil {
 		return false
 	}
-	// In auto mode, if we didn't use the isolated debug profile dir, it's the user's Chrome.
-	// Simple heuristic: check if the addr was NOT from our managed debug profile.
-	return sess.Mode != SessionModeIsolated
+	return browserAgentModeUsesUserChrome(sess.Mode)
 }

@@ -8,59 +8,62 @@ import (
 
 func makeBuiltinDefs() []map[string]interface{} {
 	return []map[string]interface{}{
-		toolDef("list_sessions", "列出会话", nil, nil),
-		toolDef("create_session", "创建会话",
-			map[string]interface{}{"tool": map[string]string{"type": "string"}}, []string{"tool"}),
-		toolDef("send_input", "发送输入", nil, nil),
-		toolDef("get_session_output", "获取输出", nil, nil),
-		toolDef("get_session_events", "获取事件", nil, nil),
-		toolDef("interrupt_session", "中断会话", nil, nil),
-		toolDef("kill_session", "终止会话", nil, nil),
-		toolDef("screenshot", "截屏", nil, nil),
-		toolDef("list_mcp_tools", "列出MCP工具", nil, nil),
-		toolDef("call_mcp_tool", "调用MCP工具", nil, nil),
-		toolDef("list_skills", "列出Skills", nil, nil),
-		toolDef("search_skill_hub", "搜索SkillHub", nil, nil),
-		toolDef("install_skill_hub", "安装Hub Skill", nil, nil),
+		toolDef("list_sessions", "list sessions", nil, nil),
+		toolDef("create_session", "create session", map[string]interface{}{"tool": map[string]string{"type": "string"}}, []string{"tool"}),
+		toolDef("send_input", "send input", nil, nil),
+		toolDef("get_session_output", "get session output", nil, nil),
+		toolDef("get_session_events", "get session events", nil, nil),
+		toolDef("interrupt_session", "interrupt session", nil, nil),
+		toolDef("kill_session", "kill session", nil, nil),
+		toolDef("screenshot", "screenshot", nil, nil),
+		toolDef("list_mcp_tools", "list MCP tools", nil, nil),
+		toolDef("call_mcp_tool", "call MCP tool", nil, nil),
+		toolDef("list_skills", "list skills", nil, nil),
+		toolDef("search_skill_hub", "search SkillHub", nil, nil),
+		toolDef("install_skill_hub", "install hub skill", nil, nil),
 		toolDef("run_skill", "run skill", nil, nil),
 		toolDef("manage_skill", "manage skills", nil, nil),
 		toolDef("task", "task manager", nil, nil),
-		toolDef("parallel_execute", "按 SubAgent 并发数执行多个工具", nil, nil),
-		toolDef("recommend_tool", "推荐工具", nil, nil),
-		toolDef("bash", "执行shell命令", nil, nil),
-		toolDef("read_file", "读取文件", nil, nil),
-		toolDef("write_file", "写入文件", nil, nil),
-		toolDef("edit_file", "编辑文件", nil, nil),
-		toolDef("list_directory", "列出目录", nil, nil),
-		toolDef("send_file", "发送文件", nil, nil),
-		toolDef("open", "打开文件或网址", nil, nil),
-		toolDef("craft_tool", "自动生成脚本", nil, nil),
-		toolDef("memory", "管理长期记忆", nil, nil),
-		toolDef("send_and_observe", "发送并观察输出", nil, nil),
-		toolDef("control_session", "控制会话", nil, nil),
-		toolDef("manage_config", "管理配置", nil, nil),
-		toolDef("web_search", "搜索网页", nil, nil),
-		toolDef("web_fetch", "获取网页内容", nil, nil),
-		toolDef("set_nickname", "设置昵称", nil, nil),
-		toolDef("browser_session_start", "启动浏览器会话", nil, nil),
-		toolDef("browser_observe", "观察浏览器页面", nil, nil),
-		toolDef("browser_navigate", "浏览器跳转", nil, nil),
-		toolDef("browser_click", "浏览器点击", nil, nil),
-		toolDef("discover_tool", "发现工具", nil, nil),
-		toolDef("generate_pdf", "生成PDF文档（仅编程流程）", nil, nil),
-		toolDef("async_wait", "异步等待", nil, nil),
+		toolDef("parallel_execute", "parallel execute", nil, nil),
+		toolDef("recommend_tool", "recommend tool", nil, nil),
+		toolDef("bash", "execute shell command", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+		toolDef("open", "open file or URL", nil, nil),
+		toolDef("craft_tool", "generate script", nil, nil),
+		toolDef("memory", "manage memory", nil, nil),
+		toolDef("send_and_observe", "send and observe", nil, nil),
+		toolDef("control_session", "control session", nil, nil),
+		toolDef("manage_config", "manage config", nil, nil),
+		toolDef("web_search", "web search", nil, nil),
+		toolDef("web_fetch", "web fetch", nil, nil),
+		toolDef("set_nickname", "set nickname", nil, nil),
+		toolDef("browser", "stable merged browser tool", nil, nil),
+		toolDef("browser_session_start", "browser session start", nil, nil),
+		toolDef("browser_observe", "browser observe", nil, nil),
+		toolDef("browser_navigate", "browser navigate", nil, nil),
+		toolDef("browser_click", "browser click", nil, nil),
+		toolDef("discover_tool", "discover tool", nil, nil),
+		toolDef("generate_pdf", "generate PDF", nil, nil),
+		toolDef("async_wait", "async wait", nil, nil),
 	}
 }
-
-func TestMakeBuiltinDefsIncludesBrowserSessionCoreTools(t *testing.T) {
+func TestToolDefinitionGeneratorHidesInternalBrowserTools(t *testing.T) {
 	builtins := makeBuiltinDefs()
-	names := make(map[string]bool, len(builtins))
-	for _, def := range builtins {
+	gen := NewToolDefinitionGenerator(nil, builtins)
+	names := make(map[string]bool)
+	for _, def := range append(gen.Generate(), gen.GenerateDeferred()...) {
 		names[extractToolName(def)] = true
 	}
+	if !names["browser"] {
+		t.Fatal("merged browser tool must stay visible")
+	}
 	for _, name := range []string{"browser_session_start", "browser_observe", "browser_navigate", "browser_click"} {
-		if !names[name] {
-			t.Fatalf("expected builtin def %q", name)
+		if names[name] {
+			t.Fatalf("internal browser dispatch tool %q leaked into generated definitions", name)
 		}
 	}
 }
@@ -70,8 +73,22 @@ func TestToolDefinitionGenerator_NoRegistry(t *testing.T) {
 	gen := NewToolDefinitionGenerator(nil, builtins)
 	result := gen.Generate()
 
-	if len(result) != len(builtins) {
-		t.Errorf("expected %d tools, got %d", len(builtins), len(result))
+	want := len(filterAgentVisibleBuiltinToolDefs(builtins))
+	if len(result) != want {
+		t.Errorf("expected %d tools, got %d", want, len(result))
+	}
+}
+
+func TestToolDefinitionGenerator_FiltersDisabledExternalCodingSessionTools(t *testing.T) {
+	builtins := makeBuiltinDefs()
+	gen := NewToolDefinitionGenerator(nil, builtins)
+	gen.SetDeferredTools([]string{"create_session", "send_and_observe", "control_session"})
+
+	for _, def := range append(gen.Generate(), gen.GenerateDeferred()...) {
+		name := extractToolName(def)
+		if isDisabledExternalCodingSessionTool(name) {
+			t.Fatalf("disabled tool %q leaked from generator", name)
+		}
 	}
 }
 
@@ -80,7 +97,8 @@ func TestToolDefinitionGenerator_BuiltinsPreserved(t *testing.T) {
 	gen := NewToolDefinitionGenerator(nil, builtins)
 	result := gen.Generate()
 
-	for i, def := range builtins {
+	filteredBuiltins := filterAgentVisibleBuiltinToolDefs(builtins)
+	for i, def := range filteredBuiltins {
 		expectedName := extractToolName(def)
 		actualName := extractToolName(result[i])
 		if expectedName != actualName {
@@ -244,7 +262,7 @@ func TestLooksLikePropertiesMap(t *testing.T) {
 func TestToolDefinitionGenerator_NameConflictWithBuiltin(t *testing.T) {
 	// Test that dynamic tools conflicting with builtin names get prefixed.
 	builtins := []map[string]interface{}{
-		toolDef("screenshot", "截屏", nil, nil),
+		toolDef("screenshot", "screenshot", nil, nil),
 	}
 
 	// We can't easily create a real MCPRegistry with HTTP servers for unit tests,
@@ -281,7 +299,7 @@ func TestToolDefinitionGenerator_DynamicNameConflictBetweenServers(t *testing.T)
 
 	// Server A registers "search"
 	dynamicNames["search"] = "serverA"
-	// Server B also registers "search" — mark as conflicting
+	// Server B also registers "search"; mark as conflicting
 	dynamicNames["search"] = "" // empty means conflict
 
 	builtinNames := map[string]bool{}

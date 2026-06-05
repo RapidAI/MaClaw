@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 type llmRetryErrorKind int
@@ -76,6 +78,10 @@ func isRetryableLLMError(err error) bool {
 func isLLMHTTPStatusError(err error, status int) bool {
 	if err == nil {
 		return false
+	}
+	var httpErr *llm.HTTPStatusError
+	if errors.As(err, &httpErr) && httpErr != nil {
+		return httpErr.StatusCode == status
 	}
 	return strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", status))
 }

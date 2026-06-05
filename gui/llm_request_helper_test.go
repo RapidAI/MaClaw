@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -98,5 +99,25 @@ func TestDoSimpleOpenAIRequest_ParseErrorPassthrough(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "HTTP 500") {
 		t.Fatalf("expected parse error passthrough, got %v", err)
+	}
+}
+
+func TestDumpLLMContextDoesNotPersistRequestBody(t *testing.T) {
+	tempDir := t.TempDir()
+	requestBody := []byte(`{"messages":[{"content":"Browser: SECRET_REQUEST_BODY"}]}`)
+	err := dumpLLMContext(http.StatusInternalServerError, "llm request failed", requestBody, tempDir)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	errText := err.Error()
+	if strings.Contains(errText, "SECRET_REQUEST_BODY") || strings.Contains(errText, "llm_context_") {
+		t.Fatalf("error leaked sensitive data or dump path: %q", errText)
+	}
+	entries, readErr := os.ReadDir(tempDir)
+	if readErr != nil {
+		t.Fatalf("ReadDir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no dump files, got %d", len(entries))
 	}
 }

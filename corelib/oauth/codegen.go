@@ -50,6 +50,14 @@ const (
 	CodeGenTokenEndpoint = "https://codegen.qianxin-inc.cn/api/v1/auth/sso/token"
 )
 
+func setCodeGenClientNameHeader(req *http.Request) {
+	corelib.SetCodeGenClientNameHeaderIfNeeded(req)
+}
+
+func setCodeGenClientNameHeaderWithName(req *http.Request, clientName string) {
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, clientName)
+}
+
 // CodeGenOAuthConfig 返回 CodeGen SSO 的 OAuth 配置。
 func CodeGenOAuthConfig() Config {
 	return Config{
@@ -193,7 +201,13 @@ func codeGenModelsFromEntries(entries []codeGenModelEntry) []CodeGenModel {
 
 // FetchCodeGenModels returns the usable CodeGen models in the server-defined order.
 func FetchCodeGenModels(token string) ([]CodeGenModel, string, error) {
-	entries, baseURL, err := fetchCodeGenModels(token)
+	return FetchCodeGenModelsWithClientName(token, corelib.CodeGenClientName)
+}
+
+// FetchCodeGenModelsWithClientName returns usable CodeGen models while sending
+// the caller-selected CodeGen client name header.
+func FetchCodeGenModelsWithClientName(token, clientName string) ([]CodeGenModel, string, error) {
+	entries, baseURL, err := fetchCodeGenModelsWithClientName(token, clientName)
 	if err != nil {
 		return nil, "", err
 	}
@@ -308,6 +322,10 @@ func NeedsRefreshCodeGen(provider corelib.MaclawLLMProvider) bool {
 // ValidateCodeGenToken 用当前 token 调用 /models 端点验证有效性。
 // 返回 true 表示 token 仍然有效。
 func ValidateCodeGenToken(token string) bool {
+	return ValidateCodeGenTokenWithClientName(token, corelib.CodeGenClientName)
+}
+
+func ValidateCodeGenTokenWithClientName(token, clientName string) bool {
 	if token == "" {
 		return false
 	}
@@ -316,9 +334,9 @@ func ValidateCodeGenToken(token string) bool {
 		return false
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	setCodeGenClientNameHeaderWithName(req, clientName)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := codeGenHTTPClient.Do(req)
 	if err != nil {
 		return false
 	}
@@ -380,6 +398,10 @@ type codeGenRefreshResponse struct {
 // RefreshCodeGenToken 使用 refresh_token 刷新 CodeGen SSO token。
 // 返回新的 token、过期时间和（可选的）新 refresh_token。
 func RefreshCodeGenToken(refreshToken string) (*TokenResult, error) {
+	return RefreshCodeGenTokenWithClientName(refreshToken, corelib.CodeGenClientName)
+}
+
+func RefreshCodeGenTokenWithClientName(refreshToken, clientName string) (*TokenResult, error) {
 	if refreshToken == "" {
 		return nil, fmt.Errorf("codegen refresh: refresh_token 为空")
 	}
@@ -397,6 +419,7 @@ func RefreshCodeGenToken(refreshToken string) (*TokenResult, error) {
 		return nil, fmt.Errorf("codegen refresh: 创建请求失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setCodeGenClientNameHeaderWithName(req, clientName)
 
 	resp, err := codeGenHTTPClient.Do(req)
 	if err != nil {
@@ -875,11 +898,16 @@ func ExtractSSOQRCodeURL() (qrURL string, sessionClient *http.Client, ssoPageURL
 
 // fetchCodeGenModels 使用 access_token 调用 /api/v1/models 获取模型列表。
 func fetchCodeGenModels(token string) (models []codeGenModelEntry, baseURL string, err error) {
+	return fetchCodeGenModelsWithClientName(token, corelib.CodeGenClientName)
+}
+
+func fetchCodeGenModelsWithClientName(token, clientName string) (models []codeGenModelEntry, baseURL string, err error) {
 	req, err := http.NewRequest("GET", CodeGenModelsEndpoint, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	setCodeGenClientNameHeaderWithName(req, clientName)
 
 	resp, err := codeGenHTTPClient.Do(req)
 	if err != nil {

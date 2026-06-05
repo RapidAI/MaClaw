@@ -46,37 +46,63 @@ func classifyResponsesAPIHTTPError(statusCode int, body []byte, endpoint, model,
 		}
 		return fmt.Sprintf("%s 拒绝访问 (HTTP 403)", providerDisplay)
 	default:
-		return fmt.Sprintf("%s Responses API 错误 (HTTP %d): %s [url=%s model=%s]", providerDisplay, statusCode, truncateLLMBody(body, 512), endpoint, model)
+		return fmt.Sprintf("%s Responses API 错误 (HTTP %d) [url=%s model=%s]", providerDisplay, statusCode, endpoint, model)
 	}
 }
 
 // doResponsesAPILLMRequest sends a non-streaming request using the Responses API
 // and returns the parsed response. Follows the same pattern as doOpenAILLMRequest.
 func (h *IMMessageHandler) doResponsesAPILLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
-	req, data, endpoint, err := llm.NewResponsesAPIRequest(context.Background(), cfg, messages, llm.ResponsesAPIRequestOptions{
+	return h.doResponsesAPILLMRequestWithContext(context.Background(), cfg, messages, tools, httpClient)
+}
+
+func (h *IMMessageHandler) doResponsesAPILLMRequestWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
+	ctx = llm.WithRequestTraceIfMissing(ctx, "im_responses")
+	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
+	if acquireErr != nil {
+		return nil, acquireErr
+	}
+	defer lease.Release()
+	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	lease.SetCancel(scheduledCancel)
+	defer scheduledCancel()
+
+	req, data, endpoint, err := llm.NewResponsesAPIRequest(scheduledCtx, cfg, messages, llm.ResponsesAPIRequestOptions{
 		Stream: false,
 		Tools:  tools,
 	})
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[LLM] POST %s model=%s wire_api=responses", endpoint, cfg.Model)
+	traceFields := llm.RequestTraceLogFields(req.Context())
+	log.Printf("[LLM] POST %s model=%s wire_api=responses %s", endpoint, cfg.Model, traceFields)
 
+	startedAt := time.Now()
 	resp, err := httpClient.Do(req)
+	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
+		log.Printf("[LLM] done %s model=%s wire_api=responses status=error elapsed=%s err=%v %s", endpoint, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		log.Printf("[LLM] done %s model=%s wire_api=responses status=%d elapsed=%s body_len=%d %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 		if resp.StatusCode == http.StatusInternalServerError {
-			return nil, dumpLLMContext(resp.StatusCode, classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName), data, h.app.GetTempDir())
+			err := dumpLLMContext(resp.StatusCode, classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName), data, h.getTempDir())
+			globalLLMScheduler.ObserveResult(trace, err)
+			return nil, err
 		}
-		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName))
+		err := fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName))
+		globalLLMScheduler.ObserveResult(trace, err)
+		return nil, err
 	}
 
-	return llm.ParseNonStreamResponsesAPIResponse(resp)
+	parsed, parseErr := llm.ParseNonStreamResponsesAPIResponse(resp)
+	globalLLMScheduler.ObserveResult(trace, parseErr)
+	log.Printf("[LLM] done %s model=%s wire_api=responses status=%d elapsed=%s parse_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
+	return parsed, parseErr
 }
 
 func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
@@ -102,7 +128,7 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	if metrics != nil {
 		metrics.RequestBuildNanos += time.Since(requestBuildStartedAt).Nanoseconds()
 	}
-	log.Printf("[LLM Stream] POST %s model=%s wire_api=responses", endpoint, cfg.Model)
+	log.Printf("[LLM Stream] POST %s model=%s wire_api=responses %s", endpoint, cfg.Model, llm.RequestTraceLogFields(reqCtx))
 
 	httpDoStartedAt := time.Now()
 	resp, err := httpClient.Do(req)
@@ -119,7 +145,7 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	// -----------------------------------------------------------------------
 	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("HTTP 404: %s (endpoint=%s, model=%s, wire_api=responses)", string(body), endpoint, cfg.Model)
+		return nil, fmt.Errorf("HTTP 404 (endpoint=%s, model=%s, wire_api=responses, body_len=%d)", endpoint, cfg.Model, len(body))
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -294,6 +320,8 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			if eventUsage := llm.ExtractResponsesAPIUsageFromEventPayload([]byte(payload)); eventUsage != nil {
 				usage = eventUsage
 			}
+			log.Printf("[LLM Stream Responses] response.completed received; closing SSE stream without waiting for trailing DONE")
+			goto postLoop
 
 		case responsesEventFailed:
 			var failed struct {

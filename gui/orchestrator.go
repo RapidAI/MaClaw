@@ -211,7 +211,7 @@ func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
 }
 
 func queuedExecuteUnsupportedToolError(toolName string) string {
-	const remoteTools = "claude, codex, opencode, gemini, cursor, codebuddy, iflow, or kilo"
+	const remoteTools = "claude, codex, opencode, codebuddy, iflow, or kilo"
 	switch classifyAgentToolKind(toolName) {
 	case agentToolKindBash, agentToolKindReadFile, agentToolKindWriteFile, agentToolKindEditFile, agentToolKindListDirectory,
 		agentToolKindCraftTool, agentToolKindGeneratePDF, agentToolKindOffice:

@@ -7,6 +7,7 @@ import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIden
 import { addParticipantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
+import { normalizeProjectSessionPath } from "./aiAssistantPanelSessionUtils";
 
 /**
  * Generate a deterministic hex hash from a string using a simple
@@ -41,6 +42,11 @@ export interface CreateGroupTabOptions {
     role?: string;
     participantNames?: Record<string, string>;
     groupTitle?: string;
+}
+
+export interface CreateProjectTabOptions {
+    onSessionReady?: (tab: AITab) => void;
+    prepareMode?: "restore-context" | "new-agent";
 }
 
 /** Tab index entry shape returned by the backend LoadProjectTabIndex binding. */
@@ -169,7 +175,7 @@ export interface UseAITabManagerResult {
     /** Create a new group chat tab */
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     /** Create a new project tab. Returns the tab or null if limit reached. */
-    createProjectTab: (projectPath: string, taskTitle: string) => AITab | null;
+    createProjectTab: (projectPath: string, taskTitle: string, options?: CreateProjectTabOptions) => AITab | null;
     /** Close a tab by ID */
     closeTab: (tabId: string) => void;
     /** Clear a VE/group conversation explicitly, resetting cached and visible state. */
@@ -227,13 +233,17 @@ function loadPersistedProjectTabs(): AITab[] {
         if (!Array.isArray(parsed)) return [];
         return parsed
             .filter(t => t.id && t.projectPath)
-            .map(t => ({
-                id: t.id,
-                type: "project" as AITabType,
-                title: sanitizeProjectTabTitle(t.title || t.projectPath, t.projectPath),
-                projectPath: t.projectPath,
-                closable: true,
-            }));
+            .map(t => {
+                const projectPath = normalizeProjectSessionPath(t.projectPath);
+                return {
+                    id: t.id,
+                    type: "project" as AITabType,
+                    title: sanitizeProjectTabTitle(t.title || projectPath, projectPath),
+                    projectPath,
+                    closable: true,
+                };
+            })
+            .filter(t => !!t.projectPath);
     } catch {
         return [];
     }
@@ -271,6 +281,8 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
 
     // Use a ref to track the current state synchronously for createVETab/createGroupTab
     const tabStateRef = useRef<AIAssistantPanelTabState>(createInitialTabState(maxVETabs));
+    const restoredProjectPathsRef = useRef<Set<string>>(new Set());
+    const pendingProjectTabCloseByIDRef = useRef<Map<string, Promise<void>>>(new Map());
 
     const [tabState, setTabState] = useState<AIAssistantPanelTabState>(() => {
         // Restore persisted project tabs from localStorage on mount (synchronous).
@@ -278,6 +290,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // Limit to 5 tabs to prevent tab bar overflow on startup.
         const initial = createInitialTabState(maxVETabs);
         const restored = loadPersistedProjectTabs();
+        restoredProjectPathsRef.current = new Set(restored.map(t => normalizeProjectSessionPath(t.projectPath)).filter(Boolean));
         if (restored.length > 0) {
             initial.tabs = [...initial.tabs, ...restored.slice(0, 5)];
         }
@@ -294,43 +307,74 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     useEffect(() => {
         let cancelled = false;
         Promise.resolve().then(() => LoadProjectTabIndex()).then((entries: BackendTabIndexEntry[]) => {
-            if (cancelled || !entries || !Array.isArray(entries) || entries.length === 0) return;
+            if (cancelled || !entries || !Array.isArray(entries)) return;
+
+            const backendActiveProjectPaths = new Set(
+                entries
+                    .filter(entry => entry && !entry.archived && !!entry.projectPath)
+                    .map(entry => normalizeProjectSessionPath(entry.projectPath as string))
+            );
 
             setTabState(prev => {
-                // Merge backend tabs with existing tabs (localStorage may have already restored some).
-                const existingIds = new Set(prev.tabs.map(t => t.id));
-                const existingPaths = new Set(
-                    prev.tabs.filter(t => t.type === "project" && t.projectPath).map(t => t.projectPath)
+                const reconciledTabs = prev.tabs.filter(t =>
+                    t.type !== "project"
+                    || !t.projectPath
+                    || backendActiveProjectPaths.has(normalizeProjectSessionPath(t.projectPath))
+                    || !restoredProjectPathsRef.current.has(normalizeProjectSessionPath(t.projectPath))
                 );
+
+                // Merge backend tabs with existing tabs (localStorage may have already restored some).
+                const existingIds = new Set(reconciledTabs.map(t => t.id));
+                const existingPaths = new Set(
+                    reconciledTabs.filter(t => t.type === "project" && t.projectPath).map(t => normalizeProjectSessionPath(t.projectPath))
+                );
+                const backendTitlesByPath = new Map<string, string>();
+                const backendTitlesById = new Map<string, string>();
+                for (const entry of entries) {
+                    if (!entry || entry.archived || !entry.projectPath) continue;
+                    const normalizedPath = normalizeProjectSessionPath(entry.projectPath);
+                    const title = sanitizeProjectTabTitle(entry.title || normalizedPath, normalizedPath);
+                    backendTitlesByPath.set(normalizedPath, title);
+                    if (entry.id) backendTitlesById.set(entry.id, title);
+                }
+                let titleChanged = false;
+                const updatedReconciledTabs = reconciledTabs.map(tab => {
+                    if (tab.type !== "project" || !tab.projectPath) return tab;
+                    const backendTitle = backendTitlesByPath.get(normalizeProjectSessionPath(tab.projectPath)) || backendTitlesById.get(tab.id) || "";
+                    if (!backendTitle || backendTitle === tab.title) return tab;
+                    titleChanged = true;
+                    return { ...tab, title: backendTitle };
+                });
 
                 const newTabs: AITab[] = [];
                 for (const entry of entries) {
                     if (!entry.id || !entry.projectPath) continue;
+                    const normalizedPath = normalizeProjectSessionPath(entry.projectPath);
+                    if (!normalizedPath) continue;
                     if (entry.archived) continue; // Don't restore archived tabs
                     // Skip if already present (by ID or projectPath)
-                    if (existingIds.has(entry.id) || existingPaths.has(entry.projectPath)) continue;
+                    if (existingIds.has(entry.id) || existingPaths.has(normalizedPath)) continue;
 
                     newTabs.push({
                         id: entry.id,
                         type: "project" as AITabType,
-                        title: sanitizeProjectTabTitle(entry.title || entry.projectPath, entry.projectPath),
-                        projectPath: entry.projectPath,
+                        title: sanitizeProjectTabTitle(entry.title || normalizedPath, normalizedPath),
+                        projectPath: normalizedPath,
                         closable: true,
                     });
                 }
 
-                if (newTabs.length === 0) return prev;
-
                 // Respect max tab limit: at most 5 project tabs total on startup.
                 const MAX_RESTORED_PROJECT_TABS = 5;
-                const projectCount = prev.tabs.filter(t => t.type === "project").length;
+                const projectCount = updatedReconciledTabs.filter(t => t.type === "project").length;
                 const available = MAX_RESTORED_PROJECT_TABS - projectCount;
                 const toAdd = newTabs.slice(0, Math.max(0, available));
-                if (toAdd.length === 0) return prev;
+                if (toAdd.length === 0 && reconciledTabs.length === prev.tabs.length && !titleChanged) return prev;
 
                 const next = {
                     ...prev,
-                    tabs: [...prev.tabs, ...toAdd],
+                    tabs: [...updatedReconciledTabs, ...toAdd],
+                    activeTabId: updatedReconciledTabs.some(t => t.id === prev.activeTabId) ? prev.activeTabId : "local",
                 };
                 tabStateRef.current = next;
                 persistProjectTabs(next.tabs);
@@ -365,12 +409,12 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             if (ids.length === 0 || !status) return;
 
             updateTabState(prev => {
-                const hasMatch = prev.tabs.some(t => (t.type === "ve" || t.type === "group") && ids.some(id => sameTabParticipantId(t.veId, id)) && t.onlineStatus !== status);
+                const hasMatch = prev.tabs.some(t => (t.type === "ve" || (t.type === "group" && !!t.veId)) && ids.some(id => sameTabParticipantId(t.veId, id)) && t.onlineStatus !== status);
                 if (!hasMatch) return prev;
                 return {
                     ...prev,
                     tabs: prev.tabs.map(t =>
-                        (t.type === "ve" || t.type === "group") && ids.some(id => sameTabParticipantId(t.veId, id)) ? { ...t, onlineStatus: status } : t
+                        (t.type === "ve" || (t.type === "group" && !!t.veId)) && ids.some(id => sameTabParticipantId(t.veId, id)) ? { ...t, onlineStatus: status } : t
                     ),
                 };
             });
@@ -500,7 +544,6 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             avatarDataURL: safeAvatar,
             closable: true,
         };
-
         const cachedState = tabStatesRef.current.get(newTab.id);
         tabStatesRef.current.set(newTab.id, {
             history: [],
@@ -569,11 +612,13 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return newTab;
     }, [updateTabState]);
 
-    const createProjectTab = useCallback((projectPath: string, taskTitle: string): AITab | null => {
+    const createProjectTab = useCallback((projectPath: string, taskTitle: string, options?: CreateProjectTabOptions): AITab | null => {
+        projectPath = normalizeProjectSessionPath(projectPath);
+        if (!projectPath) return null;
         const prev = tabStateRef.current;
 
         // Check for duplicate: if a tab with same projectPath exists, activate it
-        const existing = prev.tabs.find(t => t.type === "project" && t.projectPath === projectPath);
+        const existing = prev.tabs.find(t => t.type === "project" && normalizeProjectSessionPath(t.projectPath) === projectPath);
         if (existing) {
             updateTabState(() => ({ ...prev, activeTabId: existing.id }));
             return existing;
@@ -597,6 +642,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             projectPath,
             closable: true,
         };
+        restoredProjectPathsRef.current.delete(projectPath);
 
         // Initialize tab state
         tabStatesRef.current.set(tabId, {
@@ -612,7 +658,14 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // create a project tab (recent task click, fork, pending open) go
         // through this function, so the backend always knows about the tab.
         // Fire-and-forget: session may already exist (idempotent on backend).
-        CreateProjectTabSession(tabId, projectPath).catch(() => {});
+        // If this deterministic tab id was closed moments ago, serialize the
+        // create after close so a late close cannot archive a reopened task.
+        const pendingClose = pendingProjectTabCloseByIDRef.current.get(tabId);
+        const register = () => CreateProjectTabSession(tabId, projectPath)
+            .then(() => options?.onSessionReady?.(newTab))
+            .catch(() => {});
+        if (pendingClose) pendingClose.finally(register);
+        else void register();
 
         // Add tab and auto-activate
         updateTabState(() => ({
@@ -631,7 +684,16 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
 
             // For project tabs, call backend to persist session state.
             if (tab.type === "project") {
-                Promise.resolve().then(() => CloseProjectTabSession(tabId)).catch(() => {});
+                const closePromise = Promise.resolve()
+                    .then(() => CloseProjectTabSession(tabId))
+                    .catch(() => {})
+                    .then(() => undefined);
+                pendingProjectTabCloseByIDRef.current.set(tabId, closePromise);
+                closePromise.finally(() => {
+                    if (pendingProjectTabCloseByIDRef.current.get(tabId) === closePromise) {
+                        pendingProjectTabCloseByIDRef.current.delete(tabId);
+                    }
+                });
             }
 
             const newTabs = prev.tabs.filter(t => t.id !== tabId);
@@ -687,7 +749,8 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     }, []);
 
     const hasProjectTab = useCallback((projectPath: string): boolean => {
-        return tabStateRef.current.tabs.some(t => t.type === "project" && t.projectPath === projectPath);
+        const normalizedPath = normalizeProjectSessionPath(projectPath);
+        return tabStateRef.current.tabs.some(t => t.type === "project" && normalizeProjectSessionPath(t.projectPath) === normalizedPath);
     }, []);
 
     /** Get the current tab list from the ref (always fresh, no stale closure). */

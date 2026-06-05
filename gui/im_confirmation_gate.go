@@ -11,6 +11,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 const (
@@ -75,8 +76,8 @@ func (h *IMMessageHandler) classifyConfirmationIntent(userID, text string, pendi
 	}
 
 	userMessage := fmt.Sprintf("[Context]\n%s\n\n[User reply]\n%s", ctx, text)
-
-	result, err := h.LLMClassify(context.Background(), LLMClassifyRequest{
+	llmCtx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "confirmation-intent", OwnerID: userID})
+	result, err := h.LLMClassify(llmCtx, LLMClassifyRequest{
 		SystemPrompt: `You are a user intent classifier for a task execution confirmation dialog.
 
 The user was shown a task plan and asked to confirm, cancel, or revise it. You will receive:
@@ -103,8 +104,8 @@ When in doubt between "confirm" and "modify", prefer "confirm" if the response i
 	}
 
 	intent := normalizeConfirmationIntent(result.Text)
-	log.Printf("[confirmation-intent] user=%s text=%q -> intent=%q (latency=%.1fs)",
-		userID, truncateForLogGUI(text, 30), intent, result.Latency.Seconds())
+	log.Printf("[confirmation-intent] user=%s text_len=%d -> intent=%q (latency=%.1fs)",
+		userID, len([]rune(text)), intent, result.Latency.Seconds())
 	return intent
 }
 
@@ -117,7 +118,7 @@ func (h *IMMessageHandler) handleExecutionConfirmationGate(freshTask bool, msg I
 		return nil, false
 	}
 
-	intent := h.classifyTaskIntentForExecution(trimmed, msg.Attachments, httpClient)
+	intent := h.classifyTaskIntentForExecution(msg.UserID, trimmed, msg.Attachments, httpClient)
 	if !shouldRequireExecutionConfirmationForIntent(msg, nil, intent) {
 		return nil, false
 	}

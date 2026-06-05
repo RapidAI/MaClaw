@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { SelectProjectDir, SaveConfig } from '../../../wailsjs/go/main/App';
+import { SelectProjectDir, PatchConfigFields } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 
 type ProjectManagerItemProps = {
@@ -45,7 +45,7 @@ export const ProjectManagerItem = ({
                         const newList = config.projects.map((p: any) => p.id === project.id ? { ...p, path: dir } : p);
                         const newConfig = new main.AppConfig({ ...config, projects: newList });
                         setConfig(newConfig);
-                        SaveConfig(newConfig);
+                        PatchConfigFields({ projects: newList }).catch((err) => console.error('Failed to save project path:', err));
                     }
                 });
             }}>{t('change')}</button>
@@ -59,7 +59,7 @@ export const ProjectManagerItem = ({
                         if (config.current_project === project.id) newConfig.current_project = newList[0].id;
                         if (selectedProjectForLaunch === project.id) setSelectedProjectForLaunch(newConfig.current_project);
                         setConfig(newConfig);
-                        SaveConfig(newConfig);
+                        PatchConfigFields({ projects: newList, current_project: newConfig.current_project }).catch((err) => console.error('Failed to delete project:', err));
                     }
                 }}
             >

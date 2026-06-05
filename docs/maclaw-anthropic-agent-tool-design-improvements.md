@@ -82,7 +82,7 @@ toolDef("task", "管理任务（create/update/complete/list/delegate）。用于
 
 **实现要点**：
 - 任务状态存储在 `corelib/task/store.go`，内存态 + 可选持久化
-- 编程会话（claude/codex/gemini）完成时，自动更新关联 task 状态（通过 session event 监听）
+- 编程会话（claude/codex/opencode）完成时，自动更新关联 task 状态（通过 session event 监听）
 - Swarm orchestrator 可以通过 task 工具查看所有子 Agent 的任务进度
 - 替代当前 `send_and_observe` 的"盯着看"模式：创建 task → 委派给会话 → 会话完成时自动回调 → 模型收到 task 完成通知
 

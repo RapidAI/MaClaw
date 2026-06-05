@@ -1,11 +1,19 @@
 package httpapi
 
 import (
+	"archive/zip"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +31,9 @@ import (
 const capabilityMarketPolicySettingKey = "capability_market_policy"
 
 var errCapabilityRefAmbiguous = errors.New("capability_ref matches multiple capabilities")
+
+const enterpriseSkillUploadMaxBytes = 10 << 20
+const enterpriseSkillPackageExportMaxBytes = 1 << 20
 
 func MarketplacePageHandler(product string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -185,6 +196,196 @@ func AdminCapabilityUpsertHandler(svc *capability.Service) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, item)
 	}
+}
+
+type enterpriseSkillPackageMeta struct {
+	SkillID     string
+	Name        string
+	Description string
+	Version     string
+	Manifest    string
+	Files       map[string]string
+	Steps       []corelib.NLSkillStep
+	Triggers    []string
+}
+
+func CapabilitySkillSubmitHandler(svc *capability.Service, identity viewerAuthenticator, dataDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateMarketplaceViewer(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, enterpriseSkillUploadMaxBytes+1)
+		if err := r.ParseMultipartForm(enterpriseSkillUploadMaxBytes); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_UPLOAD", "invalid multipart skill upload")
+			return
+		}
+		if r.MultipartForm != nil {
+			defer r.MultipartForm.RemoveAll()
+		}
+		file, header, err := r.FormFile("zip")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "MISSING_ZIP", "zip file is required")
+			return
+		}
+		defer file.Close()
+		if header != nil && header.Size > enterpriseSkillUploadMaxBytes {
+			writeError(w, http.StatusRequestEntityTooLarge, "UPLOAD_TOO_LARGE", "skill package is too large")
+			return
+		}
+		root := enterpriseSkillPackageRoot(dataDir, principal.TenantID)
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			writeError(w, http.StatusInternalServerError, "UPLOAD_STORE_FAILED", err.Error())
+			return
+		}
+		tmp, err := os.CreateTemp(root, "upload-*.zip")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "UPLOAD_STORE_FAILED", err.Error())
+			return
+		}
+		h := sha256.New()
+		written, copyErr := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(file, enterpriseSkillUploadMaxBytes+1))
+		closeErr := tmp.Close()
+		if copyErr != nil || closeErr != nil {
+			_ = os.Remove(tmp.Name())
+			writeError(w, http.StatusInternalServerError, "UPLOAD_STORE_FAILED", firstNonEmpty(errorString(copyErr), errorString(closeErr)))
+			return
+		}
+		if written > enterpriseSkillUploadMaxBytes {
+			_ = os.Remove(tmp.Name())
+			writeError(w, http.StatusRequestEntityTooLarge, "UPLOAD_TOO_LARGE", "skill package is too large")
+			return
+		}
+		checksum := hex.EncodeToString(h.Sum(nil))
+		meta, err := readEnterpriseSkillPackageMeta(tmp.Name())
+		if err != nil {
+			_ = os.Remove(tmp.Name())
+			writeError(w, http.StatusBadRequest, "INVALID_SKILL_PACKAGE", err.Error())
+			return
+		}
+		finalName := safeEnterpriseSkillPackageName(meta.SkillID, checksum) + ".zip"
+		finalPath := filepath.Join(root, finalName)
+		if err := moveEnterpriseSkillPackageIntoPlace(tmp.Name(), finalPath, checksum); err != nil {
+			_ = os.Remove(tmp.Name())
+			writeError(w, http.StatusInternalServerError, "UPLOAD_STORE_FAILED", err.Error())
+			return
+		}
+		ctx := capability.WithTenant(r.Context(), principal.TenantID)
+		versionKey := corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":" + meta.SkillID + "@" + checksum[:12]
+		metadata := map[string]any{"skill_id": meta.SkillID, "hub_skill_id": meta.SkillID, "hub_url": enterpriseHubPublicBaseURL(r), "publisher_email": principal.Email, "uploaded_by": principal.UserID, "package_file": finalName}
+		item, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+			CapabilityType:    corelib.CapabilityTypeSkill,
+			Publisher:         firstNonEmpty(principal.Email, principal.UserID, "enterprise"),
+			CapabilityID:      meta.SkillID,
+			GlobalKey:         corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":" + meta.SkillID,
+			DisplayName:       meta.Name,
+			Description:       meta.Description,
+			Source:            corelib.CapabilitySourceEnterpriseHub,
+			ManagedBy:         "user_upload",
+			Status:            "approved",
+			MetadataJSON:      jsonObjectString(metadata),
+			Version:           firstNonEmpty(meta.Version, checksum[:12]),
+			VersionKey:        versionKey,
+			PackageURL:        "/api/v1/skills/" + url.PathEscape(meta.SkillID) + "/download",
+			PackageChecksum:   checksum,
+			ManifestJSON:      firstNonEmpty(meta.Manifest, jsonObjectString(map[string]any{"name": meta.Name, "description": meta.Description, "type": corelib.CapabilityTypeSkill})),
+			TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw-skill-market", "skill_id": meta.SkillID}),
+			SetCurrentVersion: true,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CAPABILITY_SAVE_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"submission_id": item.CurrentVersionKey, "capability_id": item.ID, "version_key": item.CurrentVersionKey})
+	}
+}
+
+func CapabilitySkillDownloadHandler(svc *capability.Service, identity viewerAuthenticator, dataDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateMarketplaceViewer(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		skillID := strings.TrimSpace(r.PathValue("id"))
+		if skillID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_SKILL_ID", "skill id is required")
+			return
+		}
+		packageFiles, err := enterpriseSkillPackageCandidatesForDownload(svc, r.Context(), principal.TenantID, skillID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "SKILL_NOT_FOUND", "skill package not found")
+			return
+		}
+		var meta *enterpriseSkillPackageMeta
+		var readErr error
+		for _, packageFile := range packageFiles {
+			path, err := enterpriseSkillPackagePath(dataDir, principal.TenantID, packageFile)
+			if err != nil {
+				continue
+			}
+			candidate, err := readEnterpriseSkillPackageMeta(path)
+			if err != nil {
+				readErr = err
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(candidate.SkillID), skillID) {
+				meta = candidate
+				break
+			}
+		}
+		if meta == nil {
+			if readErr != nil {
+				writeError(w, http.StatusInternalServerError, "SKILL_PACKAGE_READ_FAILED", readErr.Error())
+				return
+			}
+			writeError(w, http.StatusNotFound, "SKILL_NOT_FOUND", "skill package not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": meta.SkillID, "name": meta.Name, "description": meta.Description, "version": meta.Version, "trust_level": "trusted", "triggers": meta.Triggers, "steps": meta.Steps, "files": meta.Files})
+	}
+}
+
+func enterpriseSkillPackageCandidatesForDownload(svc *capability.Service, ctx context.Context, tenantID, skillID string) ([]string, error) {
+	if svc == nil {
+		return nil, os.ErrNotExist
+	}
+	items, err := svc.List(capability.WithTenant(ctx, tenantID), corelib.CapabilityTypeSkill)
+	if err != nil {
+		return nil, err
+	}
+	packageFiles := []string{}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.CapabilityID), strings.TrimSpace(skillID)) && item.Source == corelib.CapabilitySourceEnterpriseHub && item.Status == "approved" {
+			metadata := mapFromRawJSON(json.RawMessage(item.MetadataJSON))
+			packageFile := strings.TrimSpace(stringFromMap(metadata, "package_file"))
+			if packageFile == "" {
+				continue
+			}
+			packageFiles = append(packageFiles, packageFile)
+		}
+	}
+	if len(packageFiles) == 0 {
+		return nil, os.ErrNotExist
+	}
+	return packageFiles, nil
+}
+
+func enterpriseSkillPackagePath(dataDir, tenantID, packageFile string) (string, error) {
+	packageFile = strings.TrimSpace(packageFile)
+	if packageFile == "" || filepath.Base(packageFile) != packageFile || filepath.Ext(packageFile) != ".zip" {
+		return "", os.ErrNotExist
+	}
+	root := enterpriseSkillPackageRoot(dataDir, tenantID)
+	path := filepath.Join(root, packageFile)
+	if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(root)+string(os.PathSeparator)) {
+		return "", os.ErrNotExist
+	}
+	if _, err := os.Stat(path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 type adminMCPMarketplaceUpsertRequest struct {
@@ -2485,6 +2686,216 @@ func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"action": decision.Action, "reason": decision.Reason, "request_id": requestID})
 	}
+}
+
+func enterpriseSkillPackageRoot(dataDir, tenantID string) string {
+	tenantID = firstNonEmpty(tenantID, store.DefaultTenantID)
+	return filepath.Join(dataDir, "capability-skill-packages", safeEnterpriseSkillFileName(tenantID, shortEnterpriseSkillDigest(tenantID)))
+}
+
+func safeEnterpriseSkillPackageName(skillID, checksum string) string {
+	return safeEnterpriseSkillFileName(skillID, shortEnterpriseSkillDigest(skillID), checksum)
+}
+
+func moveEnterpriseSkillPackageIntoPlace(tmpPath, finalPath, expectedChecksum string) error {
+	if err := os.Rename(tmpPath, finalPath); err == nil {
+		return nil
+	}
+	if _, statErr := os.Stat(finalPath); statErr == nil {
+		if checksum, err := fileSHA256Hex(finalPath); err == nil && strings.EqualFold(checksum, strings.TrimSpace(expectedChecksum)) {
+			return os.Remove(tmpPath)
+		}
+		if err := os.Remove(finalPath); err != nil {
+			return err
+		}
+		return os.Rename(tmpPath, finalPath)
+	}
+	return os.Rename(tmpPath, finalPath)
+}
+
+func fileSHA256Hex(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func safeEnterpriseSkillFileName(parts ...string) string {
+	text := strings.ToLower(strings.Join(parts, "-"))
+	var b strings.Builder
+	for _, r := range text {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		} else if r == ' ' || r == '/' || r == '\\' || r == ':' {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-._")
+	if out == "" {
+		return "skill"
+	}
+	return out
+}
+
+func shortEnterpriseSkillDigest(value string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(value)))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta, error) {
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	meta := &enterpriseSkillPackageMeta{Files: map[string]string{}, Version: "1.0.0"}
+	exportedBytes := 0
+	foundDefinition := false
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() || f.FileInfo().Mode()&os.ModeSymlink != 0 || !enterpriseSkillZipPathAllowed(f.Name) {
+			continue
+		}
+		name := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(f.Name)), "./")
+		base := strings.ToLower(filepath.Base(name))
+		isManifest := base == "skill_package_manifest.json"
+		isDefinition := base == "skill.yaml" || base == "skill.yml"
+		isExportable := enterpriseSkillFileExtensionExportable(name)
+		if !isManifest && !isDefinition && !isExportable {
+			continue
+		}
+		maxBytes := maxSingleEnterpriseSkillFileBytes(name)
+		if f.UncompressedSize64 > uint64(maxBytes) {
+			return nil, fmt.Errorf("skill package file %s exceeds %d bytes", name, maxBytes)
+		}
+		data, err := readEnterpriseSkillZipFile(f, maxBytes)
+		if err != nil {
+			return nil, fmt.Errorf("read skill package file %s: %w", name, err)
+		}
+		switch base {
+		case "skill_package_manifest.json":
+			meta.Manifest = string(data)
+		case "skill.yaml", "skill.yml":
+			sf, err := coreskill.ParseSkillDefinitionFile(data, "yaml")
+			if err != nil {
+				return nil, fmt.Errorf("invalid %s: %w", name, err)
+			}
+			if sf == nil {
+				return nil, fmt.Errorf("invalid %s", name)
+			}
+			if strings.TrimSpace(sf.Name) == "" {
+				return nil, fmt.Errorf("%s must declare name", name)
+			}
+			foundDefinition = true
+			meta.Name = strings.TrimSpace(sf.Name)
+			meta.SkillID = strings.TrimSpace(sf.Name)
+			meta.Description = firstNonEmpty(meta.Description, sf.Description)
+			meta.Triggers = append([]string(nil), sf.Triggers...)
+			for _, step := range sf.Steps {
+				onError := step.OnError
+				if onError == "" && step.ContinueOnErr {
+					onError = "continue"
+				}
+				meta.Steps = append(meta.Steps, corelib.NLSkillStep{Action: step.Action, Params: step.Params, OnError: onError, Name: step.Name, Condition: step.Condition})
+			}
+		}
+		if enterpriseSkillFileExportable(name, len(data)) {
+			exportedBytes += len(data)
+			if exportedBytes > enterpriseSkillPackageExportMaxBytes {
+				return nil, fmt.Errorf("skill package exportable files exceed %d bytes", enterpriseSkillPackageExportMaxBytes)
+			}
+			meta.Files[name] = base64.StdEncoding.EncodeToString(data)
+		}
+	}
+	if !foundDefinition {
+		return nil, errors.New("skill package must contain a valid skill.yaml or skill.yml")
+	}
+	if strings.TrimSpace(meta.Name) == "" {
+		meta.Name = meta.SkillID
+	}
+	if len(meta.Files) == 0 {
+		return nil, errors.New("skill package has no exportable skill files")
+	}
+	return meta, nil
+}
+
+func enterpriseSkillZipPathAllowed(name string) bool {
+	name = filepath.ToSlash(strings.TrimSpace(name))
+	clean := filepath.Clean(name)
+	clean = filepath.ToSlash(clean)
+	return name != "" && clean != "." && !strings.HasPrefix(clean, "../") && !strings.HasPrefix(clean, "/") && !strings.Contains(clean, ":")
+}
+
+func readEnterpriseSkillZipFile(f *zip.File, max int64) ([]byte, error) {
+	if max <= 0 {
+		max = 256 << 10
+	}
+	r, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	data, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("file too large")
+	}
+	return data, nil
+}
+
+func maxSingleEnterpriseSkillFileBytes(name string) int64 {
+	if strings.EqualFold(filepath.Base(name), "skill_package_manifest.json") {
+		return 1 << 20
+	}
+	return 256 << 10
+}
+
+func enterpriseSkillFileExtensionExportable(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".sh", ".py", ".js", ".yaml", ".yml", ".json", ".txt", ".md":
+		return true
+	default:
+		return false
+	}
+}
+
+func enterpriseSkillFileExportable(name string, size int) bool {
+	if size <= 0 || size > 256<<10 {
+		return false
+	}
+	return enterpriseSkillFileExtensionExportable(name)
+}
+
+func enterpriseHubPublicBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]); forwarded != "" {
+		scheme = forwarded
+	}
+	host := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Host"), ",")[0])
+	if host == "" {
+		host = strings.TrimSpace(r.Host)
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func AdminCapabilityMarketPolicyGetHandler(settings store.SystemSettingsRepository) http.HandlerFunc {

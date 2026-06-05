@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -852,7 +853,8 @@ func (a *App) groupDiscussionGenerateContribution(cfg corelib.AppConfig, invite 
 		map[string]string{"role": "user", "content": buildGroupDiscussionContributionInput(profile, cfg, invite)},
 	}
 	client := &http.Client{Timeout: 45 * time.Second}
-	resp, err := doSimpleLLMRequest(context.Background(), llmCfg, messages, client, 45*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "group-discussion-contribution", OwnerID: groupDiscussionOwnerID(invite.SessionID), RequestID: invite.RequestID})
+	resp, err := doSimpleLLMRequest(ctx, llmCfg, messages, client, 45*time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -885,6 +887,14 @@ func firstNonEmptyGroupString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func groupDiscussionOwnerID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "group-discussion:unknown"
+	}
+	return "group-discussion:" + id
 }
 
 const groupDiscussionContributionPrompt = `You are a MaClaw expert invited into a current-Hub group discussion.
@@ -1015,7 +1025,8 @@ func (a *App) groupDiscussionGenerateResultSummary(detail a2a.HubDiscussionDetai
 		map[string]string{"role": "system", "content": groupDiscussionResultSummaryPrompt},
 		map[string]string{"role": "user", "content": input},
 	}
-	resp, err := doSimpleLLMRequest(context.Background(), llmCfg, messages, client, 45*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "group-discussion-summary", OwnerID: groupDiscussionOwnerID(detail.Discussion.ID), RequestID: detail.Discussion.ID})
+	resp, err := doSimpleLLMRequest(ctx, llmCfg, messages, client, 45*time.Second)
 	if err != nil {
 		return GroupDiscussionSummarizeResult{}, err
 	}
@@ -1473,7 +1484,8 @@ func (a *App) groupDiscussionGenerateLayeredResultSummary(detail a2a.HubDiscussi
 			map[string]string{"role": "system", "content": groupDiscussionShardSummaryPrompt},
 			map[string]string{"role": "user", "content": buildGroupDiscussionShardSummaryInput(detail, shard)},
 		}
-		resp, err := doSimpleLLMRequest(context.Background(), llmCfg, messages, client, 45*time.Second)
+		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "group-discussion-shard-summary", OwnerID: groupDiscussionOwnerID(detail.Discussion.ID), RequestID: detail.Discussion.ID})
+		resp, err := doSimpleLLMRequest(ctx, llmCfg, messages, client, 45*time.Second)
 		var result GroupDiscussionSummarizeResult
 		if err == nil {
 			result, err = decodeGroupDiscussionResultSummary(resp.Content)
@@ -1487,7 +1499,8 @@ func (a *App) groupDiscussionGenerateLayeredResultSummary(detail a2a.HubDiscussi
 		map[string]string{"role": "system", "content": groupDiscussionLayeredReducePrompt},
 		map[string]string{"role": "user", "content": buildGroupDiscussionLayeredReduceInput(detail, shardResults)},
 	}
-	resp, err := doSimpleLLMRequest(context.Background(), llmCfg, messages, client, 45*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "group-discussion-layered-reduce", OwnerID: groupDiscussionOwnerID(detail.Discussion.ID), RequestID: detail.Discussion.ID})
+	resp, err := doSimpleLLMRequest(ctx, llmCfg, messages, client, 45*time.Second)
 	if err != nil {
 		return GroupDiscussionSummarizeResult{}, err
 	}

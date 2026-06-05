@@ -46,7 +46,7 @@ func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) er
 	if app.policyEngine != nil && app.policyEngine.IsDeveloperMode() {
 		return nil
 	}
-	if app.securityPolicyMode() == "relaxed" {
+	if app.securityPolicyMode() == "none" || app.securityPolicyMode() == "relaxed" {
 		return nil
 	}
 	if strings.TrimSpace(skill.SkillDir) == "" {

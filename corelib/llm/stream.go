@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -35,18 +36,21 @@ func DoOpenAIRequestStream(
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[LLM-stream] POST %s model=%s", endpoint, cfg.Model)
+	traceFields := RequestTraceLogFields(ctx)
+	log.Printf("[LLM-stream] POST %s model=%s %s", endpoint, cfg.Model, traceFields)
 
+	startedAt := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[LLM-stream] done %s model=%s status=error elapsed=%s err=%v %s", endpoint, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		sanitized := sanitizeHTMLBody(body, 300)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, sanitized)
+		log.Printf("[LLM-stream] done %s model=%s status=%d elapsed=%s body_len=%d %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+		return nil, fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(body))
 	}
 
 	// Peek at the first bytes to detect SSE vs JSON without buffering the
@@ -57,23 +61,28 @@ func DoOpenAIRequestStream(
 	trimmed := strings.TrimLeft(string(peeked), " \t\r\n")
 
 	if strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, "event:") {
-		// True SSE stream — parse incrementally, calling onToken per chunk.
-		return parseSSEStream(peekReader, onToken)
+		// True SSE stream  - parse incrementally, calling onToken per chunk.
+		result, parseErr := parseSSEStream(peekReader, onToken)
+		log.Printf("[LLM-stream] done %s model=%s status=%d elapsed=%s parse_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
+		return result, parseErr
 	}
 
 	// Fallback: server returned plain JSON despite stream=true.
 	// Read the full body and parse as non-stream response.
 	body, err := io.ReadAll(io.LimitReader(peekReader, 512*1024))
 	if err != nil {
+		log.Printf("[LLM-stream] done %s model=%s status=%d elapsed=%s read_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	result, err := ParseNonStreamOpenAIResponseBody(body)
 	if err != nil {
+		log.Printf("[LLM-stream] done %s model=%s status=%d elapsed=%s body_len=%d parse_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
 		return nil, err
 	}
 	if onToken != nil && len(result.Choices) > 0 && result.Choices[0].Message.Content != "" {
 		onToken(result.Choices[0].Message.Content)
 	}
+	log.Printf("[LLM-stream] done %s model=%s status=%d elapsed=%s body_len=%d fallback=json %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 	return result, nil
 }
 
@@ -100,17 +109,22 @@ func DoAnthropicRequestStream(
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
 	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
+	traceFields := RequestTraceLogFields(ctx)
+	log.Printf("[LLM-stream] POST %s model=%s protocol=anthropic %s", endpoint, cfg.Model, traceFields)
+	startedAt := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[LLM-stream] done %s model=%s protocol=anthropic status=error elapsed=%s err=%v %s", endpoint, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		sanitized := sanitizeHTMLBody(body, 300)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, sanitized)
+		log.Printf("[LLM-stream] done %s model=%s protocol=anthropic status=%d elapsed=%s body_len=%d %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+		return nil, fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(body))
 	}
 
 	// Peek at the first bytes to detect SSE vs JSON.
@@ -119,22 +133,27 @@ func DoAnthropicRequestStream(
 	trimmed := strings.TrimLeft(string(peeked), " \t\r\n")
 
 	if strings.HasPrefix(trimmed, "event:") || strings.HasPrefix(trimmed, "data:") {
-		// True SSE stream — parse incrementally.
-		return parseAnthropicSSEStream(peekReader, onToken)
+		// True SSE stream  - parse incrementally.
+		result, parseErr := parseAnthropicSSEStream(peekReader, onToken)
+		log.Printf("[LLM-stream] done %s model=%s protocol=anthropic status=%d elapsed=%s parse_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
+		return result, parseErr
 	}
 
 	// Fallback: server returned plain JSON despite stream=true.
 	body, err := io.ReadAll(io.LimitReader(peekReader, 512*1024))
 	if err != nil {
+		log.Printf("[LLM-stream] done %s model=%s protocol=anthropic status=%d elapsed=%s read_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	result, err := parseAnthropicResponseBody(body)
 	if err != nil {
+		log.Printf("[LLM-stream] done %s model=%s protocol=anthropic status=%d elapsed=%s body_len=%d parse_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
 		return nil, err
 	}
 	if onToken != nil && len(result.Choices) > 0 && result.Choices[0].Message.Content != "" {
 		onToken(result.Choices[0].Message.Content)
 	}
+	log.Printf("[LLM-stream] done %s model=%s protocol=anthropic status=%d elapsed=%s body_len=%d fallback=json %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 	return result, nil
 }
 

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -194,8 +195,15 @@ func isTrivialTag(tag string) bool {
 // embeddings use centroid attachment; entries without embeddings can still
 // contribute to lightweight tag-derived themes.
 func (tm *ThemeManager) Rebuild(entries []Entry, llm LLMChatCaller) []ThemeNode {
+	return tm.RebuildContext(context.Background(), entries, llm)
+}
+
+func (tm *ThemeManager) RebuildContext(ctx context.Context, entries []Entry, llm LLMChatCaller) []ThemeNode {
 	if tm == nil {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	now := time.Now()
 	entryByID := make(map[string]Entry, len(entries))
@@ -259,7 +267,7 @@ func (tm *ThemeManager) Rebuild(entries []Entry, llm LLMChatCaller) []ThemeNode 
 		themes[i].DerivedKind = "theme"
 		boundary := InferMemoryBoundary(themeEntries(themes[i].EntryIDs, entryByID))
 		themes[i].Boundary = &boundary
-		themes[i].Summary = tm.summarizeTheme(themes[i], entryByID, llm)
+		themes[i].Summary = tm.summarizeTheme(ctx, themes[i], entryByID, llm)
 	}
 	recomputeThemeNeighbors(themes, tm.neighborK)
 
@@ -426,7 +434,7 @@ func (tm *ThemeManager) buildFallbackTagThemes(entries []Entry, entryByID map[st
 	return themes
 }
 
-func (tm *ThemeManager) summarizeTheme(theme ThemeNode, entryByID map[string]Entry, llm LLMChatCaller) string {
+func (tm *ThemeManager) summarizeTheme(ctx context.Context, theme ThemeNode, entryByID map[string]Entry, llm LLMChatCaller) string {
 	if llm != nil && llm.IsConfigured() && len(theme.EntryIDs) >= 3 {
 		var sb strings.Builder
 		limit := len(theme.EntryIDs)
@@ -446,7 +454,7 @@ func (tm *ThemeManager) summarizeTheme(theme ThemeNode, entryByID map[string]Ent
 		}
 		if strings.TrimSpace(sb.String()) != "" {
 			prompt := fmt.Sprintf("Summarize these related memory entries into one concise theme title or sentence. Return only the summary.\n\n%s", sb.String())
-			resp, err := llm.ChatCall([]map[string]string{{"role": "user", "content": prompt}})
+			resp, err := chatCallWithContext(ctx, llm, []map[string]string{{"role": "user", "content": prompt}})
 			if err == nil && strings.TrimSpace(resp) != "" {
 				return strings.TrimSpace(resp)
 			}

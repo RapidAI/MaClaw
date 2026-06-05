@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -37,13 +39,21 @@ func CodexConfigPath() string {
 // 2. Atomic dual-file write with rollback
 // 3. base_url goes into [model_providers.xxx] section, not top-level
 func WriteCodexConfig(apiKey, baseURL, modelID, providerName, wireApi string) error {
-	return WriteCodexConfigAt(filepath.Dir(CodexAuthPath()), apiKey, baseURL, modelID, providerName, wireApi)
+	return WriteCodexConfigWithClientName(apiKey, baseURL, modelID, providerName, wireApi, corelib.CodeGenClientName)
+}
+
+func WriteCodexConfigWithClientName(apiKey, baseURL, modelID, providerName, wireApi, clientName string) error {
+	return WriteCodexConfigAtWithClientName(filepath.Dir(CodexAuthPath()), apiKey, baseURL, modelID, providerName, wireApi, clientName)
 }
 
 // WriteCodexConfigAt writes auth.json and config.toml under codexDir using the
 // same conservative switching path as WriteCodexConfig. It exists for
 // project-scoped Codex config directories.
 func WriteCodexConfigAt(codexDir, apiKey, baseURL, modelID, providerName, wireApi string) error {
+	return WriteCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, providerName, wireApi, corelib.CodeGenClientName)
+}
+
+func WriteCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, providerName, wireApi, clientName string) error {
 	if err := ensureCodexProcessesStopped(); err != nil {
 		return err
 	}
@@ -72,7 +82,7 @@ func WriteCodexConfigAt(codexDir, apiKey, baseURL, modelID, providerName, wireAp
 	}
 
 	// Step 2: Build config.toml with incremental editing
-	configToml, err := buildCodexConfigToml(configPath, baseURL, modelID, providerName, wireApi)
+	configToml, err := buildCodexConfigTomlWithClientName(configPath, baseURL, modelID, providerName, wireApi, clientName)
 	if err != nil {
 		// Rollback auth.json
 		rollbackFile(authPath, oldAuth)
@@ -96,6 +106,10 @@ func WriteCodexConfigAt(codexDir, apiKey, baseURL, modelID, providerName, wireAp
 // buildCodexConfigToml reads existing config.toml and incrementally updates
 // only the provider-specific fields, preserving MCP servers, profiles, etc.
 func buildCodexConfigToml(configPath, baseURL, modelID, providerName, wireApi string) (string, error) {
+	return buildCodexConfigTomlWithClientName(configPath, baseURL, modelID, providerName, wireApi, corelib.CodeGenClientName)
+}
+
+func buildCodexConfigTomlWithClientName(configPath, baseURL, modelID, providerName, wireApi, clientName string) (string, error) {
 	providerName = CodexProviderKey(providerName)
 	if providerName == "" {
 		providerName = "custom"
@@ -113,19 +127,25 @@ func buildCodexConfigToml(configPath, baseURL, modelID, providerName, wireApi st
 
 	if strings.TrimSpace(existingStr) == "" {
 		// No existing config, generate fresh
-		return generateFreshCodexToml(providerName, modelID, baseURL, wireApi), nil
+		return generateFreshCodexToml(providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName)), nil
 	}
 
 	// Incremental edit: update only provider-related fields
 	// We use line-based editing to preserve comments and formatting
 	lines := strings.Split(existingStr, "\n")
-	result := incrementalUpdateCodexToml(lines, providerName, modelID, baseURL, wireApi)
+	result := incrementalUpdateCodexToml(lines, providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName))
 	return result, nil
 }
 
 // BuildCodexConfigTomlContent returns a fresh Codex config.toml using the same
 // provider normalization and defaults as WriteCodexConfigAt.
 func BuildCodexConfigTomlContent(baseURL, modelID, providerName, wireApi string) string {
+	return BuildCodexConfigTomlContentWithClientName(baseURL, modelID, providerName, wireApi, corelib.CodeGenClientName)
+}
+
+// BuildCodexConfigTomlContentWithClientName returns a fresh Codex config.toml
+// and uses clientName for CodeGen's X-Codegen-Client-Name header.
+func BuildCodexConfigTomlContentWithClientName(baseURL, modelID, providerName, wireApi, clientName string) string {
 	providerName = CodexProviderKey(providerName)
 	if providerName == "" {
 		providerName = "custom"
@@ -136,12 +156,19 @@ func BuildCodexConfigTomlContent(baseURL, modelID, providerName, wireApi string)
 	if wireApi == "" {
 		wireApi = "responses"
 	}
-	return generateFreshCodexToml(providerName, modelID, baseURL, wireApi)
+	return generateFreshCodexToml(providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName))
+}
+
+func codexProviderHTTPHeaders(baseURL, clientName string) map[string]string {
+	if !corelib.IsCodeGenURL(baseURL) {
+		return nil
+	}
+	return map[string]string{corelib.CodeGenClientNameHeader: corelib.NormalizeCodeGenClientName(clientName)}
 }
 
 // incrementalUpdateCodexToml updates provider fields in existing TOML while
 // preserving MCP servers, profiles, comments, and other user config.
-func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, wireApi string) string {
+func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, wireApi string, httpHeaders map[string]string) string {
 	var result []string
 	updatedModelProvider := false
 	updatedModel := false
@@ -162,7 +189,10 @@ func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, 
 		if baseURL != "" {
 			expected["base_url"] = fmt.Sprintf("base_url = %s", tomlString(baseURL))
 		}
-		order := []string{"name", "base_url", "wire_api", "supports_websockets"}
+		if len(httpHeaders) > 0 {
+			expected["http_headers"] = fmt.Sprintf("http_headers = %s", tomlInlineStringMap(httpHeaders))
+		}
+		order := []string{"name", "base_url", "wire_api", "http_headers", "supports_websockets"}
 		for _, key := range order {
 			line, ok := expected[key]
 			if ok && !targetKeys[key] {
@@ -230,6 +260,14 @@ func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, 
 				result = append(result, fmt.Sprintf("wire_api = %s", tomlString(wireApi)))
 				targetKeys[key] = true
 				continue
+			case "http_headers":
+				if len(httpHeaders) > 0 {
+					result = append(result, mergeHTTPHeaderLine(line, httpHeaders))
+				} else if line, keep := stripCodeGenHTTPHeaderLine(line); keep {
+					result = append(result, line)
+				}
+				targetKeys[key] = true
+				continue
 			case "supports_websockets":
 				result = append(result, "supports_websockets = false")
 				targetKeys[key] = true
@@ -282,6 +320,9 @@ func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, 
 			result = append(result, fmt.Sprintf("base_url = %s", tomlString(baseURL)))
 		}
 		result = append(result, fmt.Sprintf("wire_api = %s", tomlString(wireApi)))
+		if len(httpHeaders) > 0 {
+			result = append(result, fmt.Sprintf("http_headers = %s", tomlInlineStringMap(httpHeaders)))
+		}
 		result = append(result, "supports_websockets = false")
 	}
 
@@ -301,7 +342,7 @@ func isInsideSection(lines []string) bool {
 	return false
 }
 
-func generateFreshCodexToml(providerName, modelID, baseURL, wireApi string) string {
+func generateFreshCodexToml(providerName, modelID, baseURL, wireApi string, httpHeaders map[string]string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "model_provider = %s\n", tomlString(providerName))
 	fmt.Fprintf(&sb, "model = %s\n", tomlString(modelID))
@@ -313,8 +354,231 @@ func generateFreshCodexToml(providerName, modelID, baseURL, wireApi string) stri
 		fmt.Fprintf(&sb, "base_url = %s\n", tomlString(baseURL))
 	}
 	fmt.Fprintf(&sb, "wire_api = %s\n", tomlString(wireApi))
+	if len(httpHeaders) > 0 {
+		fmt.Fprintf(&sb, "http_headers = %s\n", tomlInlineStringMap(httpHeaders))
+	}
 	sb.WriteString("supports_websockets = false\n")
 	return sb.String()
+}
+
+func tomlInlineStringMap(values map[string]string) string {
+	if len(values) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s = %s", tomlString(key), tomlString(values[key])))
+	}
+	return "{ " + strings.Join(parts, ", ") + " }"
+}
+
+func stripCodeGenHTTPHeaderLine(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.Contains(strings.ToLower(trimmed), strings.ToLower(corelib.CodeGenClientNameHeader)) {
+		return line, true
+	}
+	_, rawValue, ok := strings.Cut(trimmed, "=")
+	if !ok {
+		return "", false
+	}
+	mapValue, suffix := splitTomlValueComment(rawValue)
+	headers, ok := parseTomlInlineStringMap(mapValue)
+	if !ok {
+		return "", false
+	}
+	for key := range headers {
+		if strings.EqualFold(key, corelib.CodeGenClientNameHeader) {
+			delete(headers, key)
+		}
+	}
+	if len(headers) == 0 {
+		return "", false
+	}
+	indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+	return indent + "http_headers = " + tomlInlineStringMap(headers) + suffix, true
+}
+
+func mergeHTTPHeaderLine(line string, managed map[string]string) string {
+	trimmed := strings.TrimSpace(line)
+	_, rawValue, ok := strings.Cut(trimmed, "=")
+	if !ok {
+		return "http_headers = " + tomlInlineStringMap(managed)
+	}
+	mapValue, suffix := splitTomlValueComment(rawValue)
+	headers, ok := parseTomlInlineStringMap(mapValue)
+	if !ok {
+		return "http_headers = " + tomlInlineStringMap(managed) + suffix
+	}
+	for key, value := range managed {
+		for existing := range headers {
+			if strings.EqualFold(existing, key) && existing != key {
+				delete(headers, existing)
+			}
+		}
+		headers[key] = value
+	}
+	indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+	return indent + "http_headers = " + tomlInlineStringMap(headers) + suffix
+}
+
+func splitTomlValueComment(raw string) (string, string) {
+	inDoubleString := false
+	inSingleString := false
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case '"':
+			if inSingleString {
+				continue
+			}
+			backslashes := 0
+			for j := i - 1; j >= 0 && raw[j] == '\\'; j-- {
+				backslashes++
+			}
+			if backslashes%2 == 0 {
+				inDoubleString = !inDoubleString
+			}
+		case '\'':
+			if !inDoubleString {
+				inSingleString = !inSingleString
+			}
+		case '#':
+			if !inDoubleString && !inSingleString {
+				value := strings.TrimSpace(raw[:i])
+				comment := raw[i:]
+				if value != "" {
+					return value, " " + comment
+				}
+				return value, comment
+			}
+		}
+	}
+	return strings.TrimSpace(raw), ""
+}
+
+func parseTomlInlineStringMap(raw string) (map[string]string, bool) {
+	text := strings.TrimSpace(raw)
+	if !strings.HasPrefix(text, "{") {
+		return nil, false
+	}
+	inner, ok := readTomlInlineTableBody(text)
+	if !ok {
+		return nil, false
+	}
+	text = strings.TrimSpace(inner)
+	values := map[string]string{}
+	if text == "" {
+		return values, true
+	}
+	for text != "" {
+		key, rest, ok := readTomlKey(text)
+		if !ok {
+			return nil, false
+		}
+		rest = strings.TrimSpace(rest)
+		if !strings.HasPrefix(rest, "=") {
+			return nil, false
+		}
+		value, rest, ok := readTomlString(strings.TrimSpace(strings.TrimPrefix(rest, "=")))
+		if !ok {
+			return nil, false
+		}
+		values[key] = value
+		rest = strings.TrimSpace(rest)
+		if rest == "" {
+			break
+		}
+		if !strings.HasPrefix(rest, ",") {
+			return nil, false
+		}
+		text = strings.TrimSpace(strings.TrimPrefix(rest, ","))
+	}
+	return values, true
+}
+
+func readTomlInlineTableBody(raw string) (string, bool) {
+	text := strings.TrimSpace(raw)
+	if !strings.HasPrefix(text, "{") {
+		return "", false
+	}
+	inDoubleString := false
+	inSingleString := false
+	for i := 1; i < len(text); i++ {
+		switch text[i] {
+		case '"':
+			if inSingleString {
+				continue
+			}
+			backslashes := 0
+			for j := i - 1; j >= 0 && text[j] == '\\'; j-- {
+				backslashes++
+			}
+			if backslashes%2 == 0 {
+				inDoubleString = !inDoubleString
+			}
+		case '\'':
+			if !inDoubleString {
+				inSingleString = !inSingleString
+			}
+		case '}':
+			if !inDoubleString && !inSingleString {
+				return text[1:i], strings.TrimSpace(text[i+1:]) == ""
+			}
+		}
+	}
+	return "", false
+}
+
+func readTomlKey(raw string) (string, string, bool) {
+	text := strings.TrimSpace(raw)
+	if strings.HasPrefix(text, "\"") || strings.HasPrefix(text, "'") {
+		return readTomlString(text)
+	}
+	for i := 0; i < len(text); i++ {
+		r := text[i]
+		if r == '=' || r == ' ' || r == '\t' {
+			key := strings.TrimSpace(text[:i])
+			return key, text[i:], key != ""
+		}
+	}
+	return "", "", false
+}
+
+func readTomlString(raw string) (string, string, bool) {
+	text := strings.TrimSpace(raw)
+	if strings.HasPrefix(text, "'") {
+		for i := 1; i < len(text); i++ {
+			if text[i] == '\'' {
+				return text[1:i], text[i+1:], true
+			}
+		}
+		return "", "", false
+	}
+	if !strings.HasPrefix(text, "\"") {
+		return "", "", false
+	}
+	for i := 1; i < len(text); i++ {
+		if text[i] != '"' {
+			continue
+		}
+		backslashes := 0
+		for j := i - 1; j >= 0 && text[j] == '\\'; j-- {
+			backslashes++
+		}
+		if backslashes%2 != 0 {
+			continue
+		}
+		value, err := strconv.Unquote(text[:i+1])
+		if err != nil {
+			return "", "", false
+		}
+		return value, text[i+1:], true
+	}
+	return "", "", false
 }
 
 func tomlString(value string) string {

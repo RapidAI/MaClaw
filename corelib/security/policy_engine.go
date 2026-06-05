@@ -53,7 +53,7 @@ func (e *PolicyEngine) SetMode(mode string) {
 
 func normalizePolicyEngineMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "developer", "relaxed", "standard", "strict":
+	case "none", "developer", "relaxed", "standard", "strict":
 		return strings.ToLower(strings.TrimSpace(mode))
 	case "permissive":
 		return "relaxed"
@@ -148,6 +148,7 @@ func (e *PolicyEngine) Mode() string {
 //
 // Supported modes:
 //
+//	none:      risk guardrail decisions disabled; independent security controls still apply.
 //	developer: allow all operations; callers may still audit observations.
 //	relaxed:   allow all risk levels so skills can install and run.
 //	standard:  low allow, medium audit, high/critical ask when a UI is available.
@@ -169,6 +170,13 @@ func PolicyRulesForMode(mode string) []PolicyRule {
 
 	var rules []PolicyRule
 	switch mode {
+	case "none":
+		rules = []PolicyRule{
+			{Name: "guardrails-off-allow-critical", Priority: 10, ToolPattern: "*", RiskLevels: []RiskLevel{RiskCritical}, Action: PolicyAllow},
+			{Name: "guardrails-off-allow-high", Priority: 20, ToolPattern: "*", RiskLevels: []RiskLevel{RiskHigh}, Action: PolicyAllow},
+			{Name: "guardrails-off-allow-medium", Priority: 30, ToolPattern: "*", RiskLevels: []RiskLevel{RiskMedium}, Action: PolicyAllow},
+			{Name: "guardrails-off-allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []RiskLevel{RiskLow}, Action: PolicyAllow},
+		}
 	case "developer":
 		rules = []PolicyRule{
 			{Name: "allow-critical", Priority: 10, ToolPattern: "*", RiskLevels: []RiskLevel{RiskCritical}, Action: PolicyAllow},

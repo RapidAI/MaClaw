@@ -37,7 +37,7 @@ var (
 	languagePatterns = regexp.MustCompile(`(?i)\b(golang|go\s+(?:code|program|project|module)|python|javascript|typescript|rust|java|c\+\+|cpp|ruby|swift|kotlin|scala|haskell|elixir|clojure|php|perl|lua|dart|zig|ocaml|erlang|r\b|c#|csharp|objective-c|shell|bash)\b`)
 
 	// Tool preferences
-	toolPatterns = regexp.MustCompile(`(?i)\b(vim|neovim|nvim|emacs|vscode|vs\s*code|visual\s*studio\s*code|intellij|goland|pycharm|webstorm|sublime|atom|docker|kubernetes|k8s|terraform|ansible|git|github|gitlab|jenkins|circleci|webpack|vite|tmux|zsh|fish|iterm|warp|cursor|copilot)\b`)
+	toolPatterns = regexp.MustCompile(`(?i)\b(vim|neovim|nvim|emacs|vscode|vs\s*code|visual\s*studio\s*code|intellij|goland|pycharm|webstorm|sublime|atom|docker|kubernetes|k8s|terraform|ansible|git|github|gitlab|jenkins|circleci|webpack|vite|tmux|zsh|fish|iterm|warp|copilot)\b`)
 
 	// Expertise indicators
 	expertisePatterns = []*regexp.Regexp{

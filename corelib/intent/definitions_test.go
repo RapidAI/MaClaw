@@ -70,9 +70,9 @@ func TestBuildToolAffinityFromDefinitions(t *testing.T) {
 		t.Error("SSH label should map to 'ssh' tool")
 	}
 
-	// Browser should map to the default browser automation tools.
+	// Browser should map to the single stable browser automation surface.
 	browserTools := mapping[LabelBrowser]
-	for _, want := range []string{"browser", "gui_record_start", "gui_record_stop"} {
+	for _, want := range []string{"browser"} {
 		found := false
 		for _, name := range browserTools {
 			if name == want {
@@ -82,6 +82,13 @@ func TestBuildToolAffinityFromDefinitions(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("browser label should map to %q; got %#v", want, browserTools)
+		}
+	}
+	for _, removed := range []string{"gui_record_start", "gui_record_stop"} {
+		for _, name := range browserTools {
+			if name == removed {
+				t.Errorf("browser label should not map to legacy recorder tool %q; got %#v", removed, browserTools)
+			}
 		}
 	}
 }

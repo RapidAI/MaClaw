@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // AuxiliaryConfig holds the configuration for a lightweight LLM used for
@@ -84,6 +86,7 @@ func (c *AuxiliaryCaller) ChatCall(messages []map[string]string) (string, error)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.Config.Key)
+	corelib.SetCodeGenClientNameHeaderIfNeeded(req)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -93,7 +96,7 @@ func (c *AuxiliaryCaller) ChatCall(messages []map[string]string) (string, error)
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(respBody))
 	}
 
 	var result struct {

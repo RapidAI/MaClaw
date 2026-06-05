@@ -23,8 +23,8 @@ func (s *LocalPTYExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, err
 		return nil, fmt.Errorf("local pty session is not available")
 	}
 
-	log.Printf("[pty-lifecycle] ▶ Starting PTY process: cmd=%q, args=%v, cwd=%q, cols=%d, rows=%d",
-		cmd.Command, cmd.Args, cmd.Cwd, cmd.Cols, cmd.Rows)
+	log.Printf("[pty-lifecycle] ▶ Starting PTY process: cmd=%q, args_summary=%s, cwd=%q, cols=%d, rows=%d",
+		cmd.Command, summarizeLaunchArgs(cmd.Args), cmd.Cwd, cmd.Cols, cmd.Rows)
 
 	pid, err := pty.Start(cmd)
 	if err != nil {

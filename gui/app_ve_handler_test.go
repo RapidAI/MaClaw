@@ -13,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"pgregory.net/rapid"
 )
@@ -75,6 +76,27 @@ func TestBuildVEFileAttachmentMessageRejectsOversizedFile(t *testing.T) {
 	_, err = (&App{}).buildVEFileAttachmentMessage("session-1", path, "", "")
 	if err == nil || !strings.Contains(err.Error(), "50 MB") {
 		t.Fatalf("expected 50 MB limit error, got %v", err)
+	}
+}
+
+func TestVEAgentCallbacksLLMRequestContextCarriesOwnerTrace(t *testing.T) {
+	cb := &veAgentCallbacks{
+		ctx:       context.Background(),
+		ownerID:   "digital-employee:session-1",
+		requestID: "msg-1",
+		loopID:    "ve-agent:session-1",
+	}
+	ctx, finish, err := cb.LLMRequestContext(3)
+	if err != nil {
+		t.Fatalf("LLMRequestContext: %v", err)
+	}
+	defer finish(nil)
+	trace, ok := llm.RequestTraceFromContext(ctx)
+	if !ok {
+		t.Fatal("missing request trace")
+	}
+	if trace.Caller != "ve-agent-loop" || trace.OwnerID != "digital-employee:session-1" || trace.RequestID != "msg-1" || trace.LoopID != "ve-agent:session-1" || trace.Iteration != 3 {
+		t.Fatalf("unexpected trace: %+v", trace)
 	}
 }
 

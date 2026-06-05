@@ -27,6 +27,15 @@ func TestSQLiteStoreDatasetFieldRecordFlow(t *testing.T) {
 	if ready.SchemaVersion != currentSchemaVersion || ready.Engine != "sqlite" {
 		t.Fatalf("unexpected readiness: %#v", ready)
 	}
+	for _, version := range []int{1, currentSchemaVersion} {
+		var count int
+		if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&count); err != nil {
+			t.Fatalf("schema migration marker %d: %v", version, err)
+		}
+		if count != 1 {
+			t.Fatalf("schema migration marker %d count=%d, want 1", version, count)
+		}
+	}
 
 	ds, err := svc.CreateDataset(context.Background(), p, CreateDatasetInput{Domain: "finance", Name: "expenses", Title: "Expenses"})
 	if err != nil {
@@ -1652,6 +1661,81 @@ func TestSQLiteStoreMigrationV20PersistsAdminLoginLockoutColumns(t *testing.T) {
 	}
 	if user.LoginFailureCount != 2 || user.LoginLockedUntil.IsZero() {
 		t.Fatalf("login lockout columns not scanned after v20 migration: %#v", user)
+	}
+}
+
+func TestSQLiteStoreMigrationV21PromotesExistingAdminToGlobal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES(20, '2026-05-07T09:00:00Z')`,
+		`CREATE TABLE admin_users(
+			id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL,
+			username TEXT NOT NULL,
+			display_name TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL,
+			password_hash TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			last_login_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			login_failure_count INTEGER NOT NULL DEFAULT 0,
+			login_locked_until TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, username),
+			UNIQUE(id)
+		)`,
+		`CREATE TABLE admin_sessions(
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			username TEXT NOT NULL,
+			role TEXT NOT NULL,
+			token_hash TEXT NOT NULL UNIQUE,
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`INSERT INTO admin_users(id, tenant_id, username, display_name, role, password_hash, enabled, created_at, updated_at) VALUES('admin_root', 'default', 'admin', 'Admin', 'data_admin', 'hash', 1, '2026-05-07T09:00:00Z', '2026-05-07T09:00:00Z')`,
+		`INSERT INTO admin_users(id, tenant_id, username, display_name, role, password_hash, enabled, created_at, updated_at) VALUES('admin_later', 'tenant-a', 'tenant-admin', 'Tenant Admin', 'data_admin', 'hash', 1, '2026-05-07T10:00:00Z', '2026-05-07T10:00:00Z')`,
+		`INSERT INTO admin_sessions(id, tenant_id, user_id, username, role, token_hash, expires_at, created_at) VALUES('sess_root', 'default', 'admin_root', 'admin', 'data_admin', 'hash-session-root', '2026-05-08T09:00:00Z', '2026-05-07T09:01:00Z')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			_ = db.Close()
+			t.Fatalf("seed v20 schema: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	root, err := store.FindAdminUser(context.Background(), "default", "admin")
+	if err != nil {
+		t.Fatalf("FindAdminUser root: %v", err)
+	}
+	if root.AdminScope != "global" {
+		t.Fatalf("migrated first data_admin scope=%q, want global", root.AdminScope)
+	}
+	later, err := store.FindAdminUser(context.Background(), "tenant-a", "tenant-admin")
+	if err != nil {
+		t.Fatalf("FindAdminUser tenant: %v", err)
+	}
+	if later.AdminScope != "tenant" {
+		t.Fatalf("migrated later data_admin scope=%q, want tenant", later.AdminScope)
+	}
+	sessions, err := store.ListAdminSessions(context.Background(), "all", time.Date(2026, 5, 7, 9, 30, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("ListAdminSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].AdminScope != "global" {
+		t.Fatalf("migrated admin session should keep global scope: %#v", sessions)
 	}
 }
 

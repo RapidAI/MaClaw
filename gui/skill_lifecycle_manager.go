@@ -18,22 +18,25 @@ import (
 )
 
 const skillUploadLeaseTimeout = 30 * time.Minute
+const skillUploadQueueProcessInterval = 10 * time.Minute
+const skillUploadQueueProcessLimit = 3
 
 type SkillUploadQueueItem struct {
-	ID             string            `json:"id"`
-	SkillName      string            `json:"skill_name"`
-	SkillDir       string            `json:"skill_dir,omitempty"`
-	LocalHash      string            `json:"local_hash,omitempty"`
-	Reason         string            `json:"reason,omitempty"`
-	Status         skillUploadStatus `json:"status"`
-	Attempts       int               `json:"attempts"`
-	LastError      string            `json:"last_error,omitempty"`
-	NextAttemptAt  string            `json:"next_attempt_at,omitempty"`
-	CreatedAt      string            `json:"created_at"`
-	UpdatedAt      string            `json:"updated_at"`
-	SubmissionID   string            `json:"submission_id,omitempty"`
-	QualityScore   int               `json:"quality_score,omitempty"`
-	RequireRuntime bool              `json:"require_runtime_proof"`
+	ID              string            `json:"id"`
+	SkillName       string            `json:"skill_name"`
+	SkillDir        string            `json:"skill_dir,omitempty"`
+	LocalHash       string            `json:"local_hash,omitempty"`
+	Reason          string            `json:"reason,omitempty"`
+	Status          skillUploadStatus `json:"status"`
+	Attempts        int               `json:"attempts"`
+	LastError       string            `json:"last_error,omitempty"`
+	NextAttemptAt   string            `json:"next_attempt_at,omitempty"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	SubmissionID    string            `json:"submission_id,omitempty"`
+	UploadedTargets map[string]string `json:"uploaded_targets,omitempty"`
+	QualityScore    int               `json:"quality_score,omitempty"`
+	RequireRuntime  bool              `json:"require_runtime_proof"`
 }
 
 type skillUploadQueueFile struct {
@@ -41,9 +44,14 @@ type skillUploadQueueFile struct {
 }
 
 type SkillLifecycleManager struct {
-	app       *App
-	queuePath string
-	mu        sync.Mutex
+	app          *App
+	queuePath    string
+	mu           sync.Mutex
+	processMu    sync.Mutex
+	workerMu     sync.Mutex
+	workerStop   chan struct{}
+	workerDone   chan struct{}
+	workerCancel context.CancelFunc
 }
 
 type skillUploadBlockedError struct {
@@ -58,6 +66,111 @@ func NewSkillLifecycleManager(app *App) *SkillLifecycleManager {
 		app:       app,
 		queuePath: filepath.Join(app.GetDataDir(), "skill_upload_queue.json"),
 	}
+}
+
+func (m *SkillLifecycleManager) StartBackgroundProcessing(ctx context.Context, interval time.Duration) {
+	if m == nil || m.app == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = skillUploadQueueProcessInterval
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	m.workerMu.Lock()
+	if m.workerStop != nil {
+		cancel()
+		m.workerMu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	m.workerStop = stop
+	m.workerDone = done
+	m.workerCancel = cancel
+	m.workerMu.Unlock()
+	go func() {
+		defer close(done)
+		m.processUploadQueueInBackground(workerCtx, "startup")
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				m.processUploadQueueInBackground(workerCtx, "interval")
+			case <-workerCtx.Done():
+				return
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+func (m *SkillLifecycleManager) StopBackgroundProcessing() {
+	if m == nil {
+		return
+	}
+	m.workerMu.Lock()
+	stop := m.workerStop
+	done := m.workerDone
+	cancel := m.workerCancel
+	m.workerStop = nil
+	m.workerDone = nil
+	m.workerCancel = nil
+	m.workerMu.Unlock()
+	if stop == nil {
+		return
+	}
+	if cancel != nil {
+		cancel()
+	}
+	close(stop)
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			log.Printf("[skill-lifecycle] upload queue worker did not stop within timeout")
+		}
+	}
+}
+
+func (m *SkillLifecycleManager) processUploadQueueInBackground(ctx context.Context, reason string) {
+	if err := m.ProcessPendingUploads(ctx, skillUploadQueueProcessLimit); err != nil {
+		log.Printf("[skill-lifecycle] background upload queue process failed reason=%s: %v", reason, err)
+	}
+}
+
+func (m *SkillLifecycleManager) HasRunnableUploadItems(now time.Time) (bool, error) {
+	if m == nil {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	q, err := m.loadQueueLocked()
+	if err != nil {
+		return false, err
+	}
+	for _, item := range q.Items {
+		switch item.Status {
+		case skillUploadStatusPending:
+			if uploadQueueItemDue(item, now) {
+				return true, nil
+			}
+		case skillUploadStatusFailed:
+			if uploadQueueItemDue(item, now) {
+				return true, nil
+			}
+		case skillUploadStatusUploading:
+			updatedAt, err := time.Parse(time.RFC3339, item.UpdatedAt)
+			if err != nil || now.Sub(updatedAt) >= skillUploadLeaseTimeout {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func (m *SkillLifecycleManager) NormalizeInstalled(entry *corelib.NLSkillEntry) *corelib.NLSkillEntry {
@@ -141,6 +254,10 @@ func (m *SkillLifecycleManager) EnqueueUpload(ctx context.Context, skillName, sk
 }
 
 func (m *SkillLifecycleManager) UploadNow(ctx context.Context, skillName, reason string, requireRuntimeProof bool) (string, error) {
+	return m.UploadNowWithCompletedTargets(ctx, skillName, reason, requireRuntimeProof, nil)
+}
+
+func (m *SkillLifecycleManager) UploadNowWithCompletedTargets(ctx context.Context, skillName, reason string, requireRuntimeProof bool, completedTargets map[string]string) (string, error) {
 	if m == nil || m.app == nil {
 		return "", fmt.Errorf("skill lifecycle manager not initialized")
 	}
@@ -185,11 +302,7 @@ func (m *SkillLifecycleManager) UploadNow(ctx context.Context, skillName, reason
 	if email == "" {
 		return "", fmt.Errorf("remote_email is not configured")
 	}
-	if _, _, err := m.app.resolveHubCenterBaseURL(ctx, hubHTTPClient); err != nil {
-		return "", fmt.Errorf("hubcenter not configured or reachable: %w", err)
-	}
-
-	submissionID, err := m.app.skillMarketClient.SubmitSkill(ctx, zipPath, email)
+	submissionID, err := m.app.skillMarketClient.SubmitSkillToConfiguredTargetsWithCompleted(ctx, zipPath, email, completedTargets)
 	if err != nil {
 		return "", fmt.Errorf("submit skill: %w", err)
 	}
@@ -208,12 +321,16 @@ func (m *SkillLifecycleManager) UploadNow(ctx context.Context, skillName, reason
 
 func (m *SkillLifecycleManager) uploadQueueItem(ctx context.Context, item SkillUploadQueueItem) (string, error) {
 	if strings.TrimSpace(item.SkillDir) == "" {
-		return m.UploadNow(ctx, item.SkillName, item.Reason, item.RequireRuntime)
+		return m.UploadNowWithCompletedTargets(ctx, item.SkillName, item.Reason, item.RequireRuntime, item.UploadedTargets)
 	}
-	return m.UploadDirNow(ctx, item.SkillName, item.SkillDir, item.Reason, item.RequireRuntime)
+	return m.UploadDirNowWithCompletedTargets(ctx, item.SkillName, item.SkillDir, item.Reason, item.RequireRuntime, item.UploadedTargets)
 }
 
 func (m *SkillLifecycleManager) UploadDirNow(ctx context.Context, skillName, skillDir, reason string, requireRuntimeProof bool) (string, error) {
+	return m.UploadDirNowWithCompletedTargets(ctx, skillName, skillDir, reason, requireRuntimeProof, nil)
+}
+
+func (m *SkillLifecycleManager) UploadDirNowWithCompletedTargets(ctx context.Context, skillName, skillDir, reason string, requireRuntimeProof bool, completedTargets map[string]string) (string, error) {
 	if m == nil || m.app == nil {
 		return "", fmt.Errorf("skill lifecycle manager not initialized")
 	}
@@ -221,7 +338,6 @@ func (m *SkillLifecycleManager) UploadDirNow(ctx context.Context, skillName, ski
 	if skillDir == "" {
 		return "", fmt.Errorf("skill directory is empty")
 	}
-	m.app.ensureInteractionInfra()
 	m.app.ensureSkillMarketClient()
 	if m.app.skillMarketClient == nil {
 		return "", fmt.Errorf("skill market client not initialized")
@@ -257,10 +373,6 @@ func (m *SkillLifecycleManager) UploadDirNow(ctx context.Context, skillName, ski
 	if email == "" {
 		return "", fmt.Errorf("remote_email is not configured")
 	}
-	if _, _, err := m.app.resolveHubCenterBaseURL(ctx, hubHTTPClient); err != nil {
-		return "", fmt.Errorf("hubcenter not configured or reachable: %w", err)
-	}
-
 	tmpDir, err := os.MkdirTemp("", "skill-package-*")
 	if err != nil {
 		return "", err
@@ -293,7 +405,7 @@ func (m *SkillLifecycleManager) UploadDirNow(ctx context.Context, skillName, ski
 	}
 	defer os.Remove(zipPath)
 
-	submissionID, err := m.app.skillMarketClient.SubmitSkill(ctx, zipPath, email)
+	submissionID, err := m.app.skillMarketClient.SubmitSkillToConfiguredTargetsWithCompleted(ctx, zipPath, email, completedTargets)
 	if err != nil {
 		return "", fmt.Errorf("submit skill: %w", err)
 	}
@@ -321,8 +433,13 @@ func (m *SkillLifecycleManager) processPendingUploads(ctx context.Context, limit
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	m.processMu.Lock()
+	defer m.processMu.Unlock()
 	processed := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if limit > 0 && processed >= limit {
 			return nil
 		}
@@ -682,10 +799,8 @@ func (m *SkillLifecycleManager) nextPendingItemMatching(now time.Time, skillName
 		} else if status != skillUploadStatusPending && status != skillUploadStatusFailed {
 			continue
 		}
-		if !forceNamedRetry && strings.TrimSpace(q.Items[i].NextAttemptAt) != "" {
-			if t, err := time.Parse(time.RFC3339, q.Items[i].NextAttemptAt); err == nil && now.Before(t) {
-				continue
-			}
+		if !forceNamedRetry && !uploadQueueItemDue(q.Items[i], now) {
+			continue
 		}
 		q.Items[i].Status = skillUploadStatusUploading
 		q.Items[i].UpdatedAt = now.Format(time.RFC3339)
@@ -698,6 +813,14 @@ func (m *SkillLifecycleManager) nextPendingItemMatching(now time.Time, skillName
 	return SkillUploadQueueItem{}, false, nil
 }
 
+func uploadQueueItemDue(item SkillUploadQueueItem, now time.Time) bool {
+	if strings.TrimSpace(item.NextAttemptAt) == "" {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339, item.NextAttemptAt)
+	return err != nil || !now.Before(t)
+}
+
 func (m *SkillLifecycleManager) markUploadFailed(id string, uploadErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -708,6 +831,7 @@ func (m *SkillLifecycleManager) markUploadFailed(id string, uploadErr error) {
 	}
 	now := time.Now()
 	var blocked *skillUploadBlockedError
+	var partial *skillSubmitPartialError
 	for i := range q.Items {
 		if q.Items[i].ID != id {
 			continue
@@ -719,6 +843,14 @@ func (m *SkillLifecycleManager) markUploadFailed(id string, uploadErr error) {
 			q.Items[i].NextAttemptAt = ""
 			q.Items[i].UpdatedAt = now.Format(time.RFC3339)
 			break
+		}
+		if errors.As(uploadErr, &partial) && len(partial.Completed) > 0 {
+			if q.Items[i].UploadedTargets == nil {
+				q.Items[i].UploadedTargets = map[string]string{}
+			}
+			for target, submissionID := range normalizedSkillSubmitTargetResults(partial.Completed) {
+				q.Items[i].UploadedTargets[target] = submissionID
+			}
 		}
 		q.Items[i].Attempts++
 		q.Items[i].Status = skillUploadStatusFailed
@@ -747,6 +879,10 @@ func (m *SkillLifecycleManager) markUploaded(id, submissionID string) {
 		}
 		q.Items[i].Status = skillUploadStatusUploaded
 		q.Items[i].SubmissionID = submissionID
+		q.Items[i].UploadedTargets = map[string]string{}
+		for target, targetSubmissionID := range m.parseUploadedTargetResults(submissionID) {
+			q.Items[i].UploadedTargets[target] = targetSubmissionID
+		}
 		q.Items[i].LastError = ""
 		q.Items[i].NextAttemptAt = ""
 		q.Items[i].UpdatedAt = now
@@ -755,6 +891,25 @@ func (m *SkillLifecycleManager) markUploaded(id, submissionID string) {
 	if err := m.saveQueueLocked(q); err != nil {
 		log.Printf("[skill-lifecycle] save queue after upload failed: %v", err)
 	}
+}
+
+func (m *SkillLifecycleManager) parseUploadedTargetResults(submissionID string) map[string]string {
+	if strings.Contains(submissionID, "=") || strings.Contains(submissionID, ";") {
+		return parseSkillSubmitTargetResults(submissionID)
+	}
+	if m == nil || m.app == nil {
+		return parseSkillSubmitTargetResults(submissionID)
+	}
+	cfg, err := m.app.LoadConfig()
+	if err != nil {
+		return parseSkillSubmitTargetResults(submissionID)
+	}
+	hasEnterpriseHub := strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) != ""
+	targets := cfg.CapabilityMarketPolicy.UploadTargets(hasEnterpriseHub)
+	if len(targets) == 1 && strings.TrimSpace(submissionID) != "" {
+		return map[string]string{targets[0]: strings.TrimSpace(submissionID)}
+	}
+	return parseSkillSubmitTargetResults(submissionID)
 }
 
 func (m *SkillLifecycleManager) saveOrReplace(item SkillUploadQueueItem) error {

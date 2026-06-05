@@ -867,7 +867,7 @@ func doRemoteMCPRoundTrip(client *http.Client, entry corelib.MCPServerEntry, ses
 	sid := resp.Header.Get("Mcp-Session-Id")
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, sid, fmt.Errorf("MCP HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, sid, fmt.Errorf("MCP HTTP %d: body_len=%d", resp.StatusCode, len(body))
 	}
 	parsed, err := corelib.ParseMCPResponse(resp.Body, resp.Header.Get("Content-Type"), 256*1024)
 	if err != nil {

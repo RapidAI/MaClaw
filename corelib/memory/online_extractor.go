@@ -269,7 +269,7 @@ Reference timestamp: ` + refTimeStr
 		userPrompt = "CURRENT MESSAGES:\n" + msgText.String()
 	}
 
-	resp, err := llmCaller.ChatCall([]map[string]string{
+	resp, err := chatCallWithContext(ctx, llmCaller, []map[string]string{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": userPrompt},
 	})
@@ -537,7 +537,7 @@ Reply with ONLY a JSON object:
 
 	userPrompt := fmt.Sprintf("NEW FACT:\n%s\n\nEXISTING MEMORIES:\n%s", newFact, existingBuf.String())
 
-	resp, err := llmCaller.ChatCall([]map[string]string{
+	resp, err := chatCallWithContext(ctx, llmCaller, []map[string]string{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": userPrompt},
 	})

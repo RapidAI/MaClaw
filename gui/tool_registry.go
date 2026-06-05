@@ -1,10 +1,11 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 type ToolCategory string
@@ -56,6 +57,9 @@ func NewToolRegistry() *ToolRegistry {
 func (r *ToolRegistry) Register(tool RegisteredTool) error {
 	if tool.Name == "" {
 		return fmt.Errorf("tool name cannot be empty")
+	}
+	if isDisabledExternalCodingSessionTool(tool.Name) {
+		return nil
 	}
 	if tool.Status == "" {
 		tool.Status = RegToolAvailable

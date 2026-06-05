@@ -286,10 +286,19 @@ func (pi *ProjectIndex) Search(query string, limit int) []ProjectRecord {
 		score float64
 	}
 	var results []scored
+	includeArchived := queryWantsArchived(queryLower)
 
 	for _, rec := range pi.records {
 		if !rec.HasOutput {
 			continue
+		}
+		if p, ok := pi.prefs[rec.ProjectPath]; ok {
+			if p.Hidden {
+				continue
+			}
+			if p.Archived && !includeArchived {
+				continue
+			}
 		}
 		clone := pi.outputRecordCloneLocked(rec)
 		score := pi.scoreRecord(&clone, queryLower, queryTokens)
@@ -310,6 +319,10 @@ func (pi *ProjectIndex) Search(query string, limit int) []ProjectRecord {
 		out = append(out, results[i].rec)
 	}
 	return out
+}
+
+func queryWantsArchived(queryLower string) bool {
+	return strings.Contains(queryLower, "archive") || strings.Contains(queryLower, "归档") || strings.Contains(queryLower, "歸檔")
 }
 
 // ListRecent returns the N most recently active projects.
@@ -338,7 +351,7 @@ func (pi *ProjectIndex) Get(projectPath string) *ProjectRecord {
 	if rec, ok := pi.records[key]; ok {
 		clone := *rec
 		// Populate Archived from prefs.
-		if p, ok := pi.prefs[rec.ProjectPath]; ok && p.Archived {
+		if p, ok := pi.prefs[projectPrefKey(rec.ProjectPath)]; ok && p.Archived {
 			clone.Archived = true
 		}
 		return &clone
@@ -363,7 +376,7 @@ func (pi *ProjectIndex) SetCustomName(projectPath, name string) {
 func (pi *ProjectIndex) CustomName(projectPath string) string {
 	pi.mu.RLock()
 	defer pi.mu.RUnlock()
-	if p, ok := pi.prefs[projectPath]; ok {
+	if p, ok := pi.prefs[projectPrefKey(projectPath)]; ok {
 		return p.Name
 	}
 	return ""
@@ -373,10 +386,11 @@ func (pi *ProjectIndex) CustomName(projectPath string) string {
 func (pi *ProjectIndex) GetDisplayName(projectPath string) string {
 	pi.mu.RLock()
 	defer pi.mu.RUnlock()
-	if p, ok := pi.prefs[projectPath]; ok && p.Name != "" {
+	key := projectPrefKey(projectPath)
+	if p, ok := pi.prefs[key]; ok && p.Name != "" {
 		return p.Name
 	}
-	if rec, ok := pi.records[projectPath]; ok {
+	if rec, ok := pi.records[key]; ok {
 		return rec.Name
 	}
 	return ""
@@ -396,7 +410,7 @@ func (pi *ProjectIndex) SetPinned(projectPath string, pinned bool) {
 func (pi *ProjectIndex) IsPinned(projectPath string) bool {
 	pi.mu.RLock()
 	defer pi.mu.RUnlock()
-	if p, ok := pi.prefs[projectPath]; ok {
+	if p, ok := pi.prefs[projectPrefKey(projectPath)]; ok {
 		return p.Pinned
 	}
 	return false
@@ -416,7 +430,7 @@ func (pi *ProjectIndex) SetHidden(projectPath string, hidden bool) {
 func (pi *ProjectIndex) IsHidden(projectPath string) bool {
 	pi.mu.RLock()
 	defer pi.mu.RUnlock()
-	if p, ok := pi.prefs[projectPath]; ok {
+	if p, ok := pi.prefs[projectPrefKey(projectPath)]; ok {
 		return p.Hidden
 	}
 	return false
@@ -438,7 +452,7 @@ func (pi *ProjectIndex) SetArchived(projectPath string, archived bool) {
 func (pi *ProjectIndex) IsArchived(projectPath string) bool {
 	pi.mu.RLock()
 	defer pi.mu.RUnlock()
-	if p, ok := pi.prefs[projectPath]; ok {
+	if p, ok := pi.prefs[projectPrefKey(projectPath)]; ok {
 		return p.Archived
 	}
 	return false
@@ -447,6 +461,7 @@ func (pi *ProjectIndex) IsArchived(projectPath string) bool {
 // getOrCreatePrefLocked returns the pref for a path, creating if needed.
 // Caller must hold pi.mu.Lock.
 func (pi *ProjectIndex) getOrCreatePrefLocked(projectPath string) *TaskPref {
+	projectPath = projectPrefKey(projectPath)
 	p, ok := pi.prefs[projectPath]
 	if !ok {
 		p = &TaskPref{}
@@ -458,11 +473,42 @@ func (pi *ProjectIndex) getOrCreatePrefLocked(projectPath string) *TaskPref {
 // cleanupPrefLocked removes the pref entry if all fields are zero-value,
 // keeping the JSON file clean.
 func (pi *ProjectIndex) cleanupPrefLocked(projectPath string) {
+	projectPath = projectPrefKey(projectPath)
 	if p, ok := pi.prefs[projectPath]; ok {
 		if p.Name == "" && !p.Pinned && !p.Hidden && !p.Archived {
 			delete(pi.prefs, projectPath)
 		}
 	}
+}
+
+func projectPrefKey(projectPath string) string {
+	return normalizeProjectPath(toForwardSlash(strings.TrimSpace(projectPath)))
+}
+
+func normalizeTaskPrefs(input map[string]*TaskPref) map[string]*TaskPref {
+	out := make(map[string]*TaskPref, len(input))
+	for path, pref := range input {
+		if pref == nil {
+			continue
+		}
+		key := projectPrefKey(path)
+		if key == "" {
+			continue
+		}
+		merged := out[key]
+		if merged == nil {
+			copyPref := *pref
+			out[key] = &copyPref
+			continue
+		}
+		if merged.Name == "" {
+			merged.Name = pref.Name
+		}
+		merged.Pinned = merged.Pinned || pref.Pinned
+		merged.Hidden = merged.Hidden || pref.Hidden
+		merged.Archived = merged.Archived || pref.Archived
+	}
+	return out
 }
 
 type persistedPrefs struct {
@@ -481,7 +527,7 @@ func (pi *ProjectIndex) loadPrefs() {
 	}
 	var pp persistedPrefs
 	if json.Unmarshal(data, &pp) == nil && pp.Prefs != nil {
-		pi.prefs = pp.Prefs
+		pi.prefs = normalizeTaskPrefs(pp.Prefs)
 	}
 }
 
@@ -501,7 +547,7 @@ func (pi *ProjectIndex) migrateFromTaskNames() {
 		return
 	}
 	for path, name := range names {
-		pi.prefs[path] = &TaskPref{Name: name}
+		pi.prefs[projectPrefKey(path)] = &TaskPref{Name: name}
 	}
 	pi.savePrefs()
 	// Remove old file after successful migration.
@@ -580,9 +626,9 @@ func (pi *ProjectIndex) scoreRecord(rec *ProjectRecord, queryLower string, query
 	pathLower := strings.ToLower(rec.ProjectPath)
 	previewLower := strings.ToLower(rec.Preview)
 
-	// Archive keyword matching: "归档" or "archived" finds archived tasks.
+	// Archive keyword matching: English and Chinese terms find archived tasks.
 	if p, ok := pi.prefs[rec.ProjectPath]; ok && p.Archived {
-		if strings.Contains(queryLower, "归档") || strings.Contains(queryLower, "褰掓。") || strings.Contains(queryLower, "archived") {
+		if queryWantsArchived(queryLower) {
 			score += 10.0
 		}
 	}

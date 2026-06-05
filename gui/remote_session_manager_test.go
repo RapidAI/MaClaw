@@ -19,6 +19,26 @@ func TestRemoteSDKBusyIdleTimeoutIsConservative(t *testing.T) {
 	}
 }
 
+func TestRemoteSessionManagerHasActiveSessionsForProjectIsScoped(t *testing.T) {
+	manager := &RemoteSessionManager{sessions: map[string]*RemoteSession{
+		"other": {ID: "other", ProjectPath: `D:\tasks\other`, Status: SessionRunning},
+		"done":  {ID: "done", ProjectPath: `D:\tasks\current`, Status: SessionExited},
+	}}
+
+	if !manager.HasActiveSessions() {
+		t.Fatal("expected global active session")
+	}
+	if manager.HasActiveSessionsForProject(`D:\tasks\current`) {
+		t.Fatal("inactive session in current project must not count as active")
+	}
+	if !manager.HasActiveSessionsForProject(`D:\tasks\other`) {
+		t.Fatal("active session in matching project should be detected")
+	}
+	if manager.HasActiveSessionsForProject("") {
+		t.Fatal("projectless local AI request must not inherit active project sessions")
+	}
+}
+
 func TestBuildGuideLaunchInjectionMarksReferenceOnly(t *testing.T) {
 	got := buildGuideLaunchInjection(" saved context ")
 	if !strings.Contains(got, "saved context") || !strings.Contains(got, "引导发射参考") {
@@ -72,8 +92,8 @@ func TestActiveAIAssistantLoopUserIDIgnoresNonDesktopUsers(t *testing.T) {
 	}
 
 	h.lastUserID = desktopUserID + ":D:/work/project"
-	if got := activeAIAssistantLoopUserID(h); got != h.lastUserID {
-		t.Fatalf("activeAIAssistantLoopUserID() = %q, want project userID", got)
+	if got := activeAIAssistantLoopUserID(h); got != desktopUserID {
+		t.Fatalf("legacy activeAIAssistantLoopUserID() = %q, want desktop fallback", got)
 	}
 }
 
@@ -104,6 +124,20 @@ func TestCancelAIAssistantSessionTargetsDesktopLoop(t *testing.T) {
 	}
 	if !desktopLoop.IsCancelled() {
 		t.Fatal("desktop AI cancel should cancel active desktop loop")
+	}
+}
+
+func TestCancelAIAssistantSessionWithoutUserIDDoesNotCancelProjectLoop(t *testing.T) {
+	projectUserID := desktopUserID + ":D:/work/project"
+	projectLoop := NewLoopContext("project", 3, nil)
+	h := &IMMessageHandler{lastUserID: projectUserID, currentLoopCtx: projectLoop}
+	h.setSessionLoopCtx(projectUserID, projectLoop)
+
+	if _, err := cancelAIAssistantSessionForHandler(h, ""); err == nil {
+		t.Fatal("legacy desktop cancel without session id should target local desktop, not project tab")
+	}
+	if projectLoop.IsCancelled() {
+		t.Fatal("legacy desktop cancel leaked into project tab loop")
 	}
 }
 
@@ -912,21 +946,6 @@ func TestRemoteSessionManagerDefaultProviderFactorySupportsKilo(t *testing.T) {
 	}
 }
 
-func TestRemoteSessionManagerDefaultProviderFactorySupportsGemini(t *testing.T) {
-	manager := NewRemoteSessionManager(&App{})
-
-	provider, err := manager.providerFactory("gemini")
-	if err != nil {
-		t.Fatalf("providerFactory(gemini) error = %v", err)
-	}
-	if provider.ProviderName() != "gemini" {
-		t.Fatalf("provider.ProviderName() = %q, want %q", provider.ProviderName(), "gemini")
-	}
-	if provider.ExecutionMode() != ExecModeGeminiACP {
-		t.Fatalf("provider.ExecutionMode() = %q, want %q", provider.ExecutionMode(), ExecModeGeminiACP)
-	}
-}
-
 func TestRemoteSessionManagerDefaultProviderFactorySupportsClaudeSDK(t *testing.T) {
 	manager := NewRemoteSessionManager(&App{})
 
@@ -936,21 +955,6 @@ func TestRemoteSessionManagerDefaultProviderFactorySupportsClaudeSDK(t *testing.
 	}
 	if provider.ProviderName() != "claude" {
 		t.Fatalf("provider.ProviderName() = %q, want %q", provider.ProviderName(), "claude")
-	}
-	if provider.ExecutionMode() != ExecModeSDK {
-		t.Fatalf("provider.ExecutionMode() = %q, want %q", provider.ExecutionMode(), ExecModeSDK)
-	}
-}
-
-func TestRemoteSessionManagerDefaultProviderFactorySupportsCursor(t *testing.T) {
-	manager := NewRemoteSessionManager(&App{})
-
-	provider, err := manager.providerFactory("cursor")
-	if err != nil {
-		t.Fatalf("providerFactory(cursor) error = %v", err)
-	}
-	if provider.ProviderName() != "cursor" {
-		t.Fatalf("provider.ProviderName() = %q, want %q", provider.ProviderName(), "cursor")
 	}
 	if provider.ExecutionMode() != ExecModeSDK {
 		t.Fatalf("provider.ExecutionMode() = %q, want %q", provider.ExecutionMode(), ExecModeSDK)
@@ -1226,6 +1230,14 @@ func TestBuildRecoverableSessionPayload(t *testing.T) {
 	}
 	if len(payload.Actions) == 0 || payload.Actions[0].Command != "__resume_session__ sess-1" {
 		t.Fatalf("Actions = %#v, want resume-session action", payload.Actions)
+	}
+
+	zhPayload := buildRecoverableSessionPayloadWithLang(session, "zh-Hans")
+	if zhPayload == nil || len(zhPayload.Actions) != 2 {
+		t.Fatalf("zhPayload actions = %#v, want two localized actions", zhPayload)
+	}
+	if zhPayload.Actions[0].Label != "恢复会话" || zhPayload.Actions[1].Label != "忽略会话" {
+		t.Fatalf("zhPayload actions not localized: %#v", zhPayload.Actions)
 	}
 }
 

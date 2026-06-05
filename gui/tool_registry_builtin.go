@@ -22,6 +22,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	}
 
 	reg := func(name, desc string, cat ToolCategory, tags []string, schema map[string]interface{}, required []string, handler ToolHandler) {
+		if isDisabledExternalCodingSessionTool(name) {
+			return
+		}
 		registry.Register(RegisteredTool{
 			Name:        name,
 			Description: desc,
@@ -37,6 +40,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	}
 
 	regP := func(name, desc string, cat ToolCategory, tags []string, schema map[string]interface{}, required []string, handler ToolHandlerWithProgress) {
+		if isDisabledExternalCodingSessionTool(name) {
+			return
+		}
 		registry.Register(RegisteredTool{
 			Name:        name,
 			Description: desc,
@@ -57,17 +63,6 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		nil, nil,
 		func(args map[string]interface{}) string { return h.toolListSessions() })
 
-	reg("create_session", "创建远程编程会话。仅用于明确的代码修改/编程任务。服务器运维、SSH 登录、日志排查请使用 ssh；如果用户需求模糊，建议先澄清再创建。创建后编程工具会等待输入，需用 send_and_observe 发送编程指令。",
-		ToolCategoryBuiltin, []string{"session", "create", "launch"},
-		map[string]interface{}{
-			"tool":              map[string]string{"type": "string", "description": "工具名称，如 claude, codex, cursor, gemini, opencode"},
-			"project_path":      map[string]string{"type": "string", "description": "项目路径（可选）"},
-			"project_id":        map[string]string{"type": "string", "description": "预设项目 ID（可选，与 project_path 二选一）"},
-			"provider":          map[string]string{"type": "string", "description": "服务商名称（可选，如 Original, DeepSeek, 百度千帆）。不指定则使用桌面端当前选中的服务商"},
-			"resume_session_id": map[string]string{"type": "string", "description": "续接会话 ID（可选）。用于恢复之前的结构化编程会话；Claude 会优先映射到 --resume 以续接完整对话历史"},
-		}, []string{"tool"},
-		func(args map[string]interface{}) string { return h.toolCreateSession(args) })
-
 	reg("project_manage", "项目管理（创建/列出/删除/切换项目）",
 		ToolCategoryBuiltin, []string{"project", "list", "create", "delete", "switch"},
 		map[string]interface{}{
@@ -81,7 +76,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("list_providers", "List configured providers for a coding tool.",
 		ToolCategoryBuiltin, []string{"provider", "list", "model"},
 		map[string]interface{}{
-			"tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, gemini"},
+			"tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, opencode"},
 		}, []string{"tool"},
 		func(args map[string]interface{}) string { return h.toolListProviders(args) })
 
@@ -121,25 +116,6 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"session_id": map[string]string{"type": "string", "description": "Session ID."},
 		}, []string{"session_id"},
 		func(args map[string]interface{}) string { return h.toolKillSession(args) })
-
-	// --- Merged tools (optimized for fewer LLM round-trips) ---
-
-	reg("send_and_observe", "Send text to a session and wait for observed output.",
-		ToolCategoryBuiltin, []string{"session", "input", "send", "output", "observe"},
-		map[string]interface{}{
-			"session_id":      map[string]string{"type": "string", "description": "会话 ID"},
-			"text":            map[string]string{"type": "string", "description": "要发送的文本"},
-			"timeout_seconds": map[string]string{"type": "number", "description": "Optional output wait timeout in seconds."},
-		}, []string{"session_id", "text"},
-		func(args map[string]interface{}) string { return h.toolSendAndObserve(args) })
-
-	reg("control_session", "Control a session: interrupt or kill.",
-		ToolCategoryBuiltin, []string{"session", "interrupt", "kill", "stop", "cancel", "control"},
-		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "Session ID."},
-			"action":     map[string]string{"type": "string", "description": "操作类型: interrupt（发送 Ctrl+C）或 kill（终止会话）"},
-		}, []string{"session_id", "action"},
-		func(args map[string]interface{}) string { return h.toolControlSession(args) })
 
 	reg("screenshot", "Capture a screenshot and send it to the user.",
 		ToolCategoryBuiltin, []string{"session", "screenshot", "capture"},

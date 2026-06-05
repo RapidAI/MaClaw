@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestDiscoverTargetsIncludesHTTPStatusAndBody(t *testing.T) {
+func TestDiscoverTargetsIncludesHTTPStatusAndBodyLength(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte("not cdp"))
@@ -19,12 +19,12 @@ func TestDiscoverTargetsIncludesHTTPStatusAndBody(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "404") || !strings.Contains(msg, "not cdp") {
+	if !strings.Contains(msg, "404") || !strings.Contains(msg, "body_len=7") || strings.Contains(msg, "not cdp") {
 		t.Fatalf("DiscoverTargets error = %q", msg)
 	}
 }
 
-func TestDiscoverTargetsIncludesBodyOnParseError(t *testing.T) {
+func TestDiscoverTargetsIncludesBodyLengthOnParseError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("<html>bad json</html>"))
@@ -36,7 +36,7 @@ func TestDiscoverTargetsIncludesBodyOnParseError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "parse targets") || !strings.Contains(msg, "bad json") {
+	if !strings.Contains(msg, "parse targets") || !strings.Contains(msg, "body_len=21") || strings.Contains(msg, "bad json") {
 		t.Fatalf("DiscoverTargets error = %q", msg)
 	}
 }

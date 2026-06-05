@@ -64,7 +64,7 @@ func (a *App) ListRemoteLaunchProjects() ([]RemoteLaunchProject, error) {
 }
 
 func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (RemoteSessionView, error) {
-	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(req.LaunchSource), "create_session", map[string]interface{}{"tool": req.Tool, "project_id": req.ProjectID, "project_path": req.ProjectPath, "provider": req.Provider, "launch_source": string(req.LaunchSource)}); err != nil {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(req.LaunchSource), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": req.Tool, "project_id": req.ProjectID, "project_path": req.ProjectPath, "provider": req.Provider, "launch_source": string(req.LaunchSource)}); err != nil {
 		return RemoteSessionView{}, err
 	}
 	cfg, err := a.LoadConfig()
@@ -83,6 +83,9 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 	tool := normalizeRemoteToolName(req.Tool)
 	if !remoteToolSupported(tool) {
 		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", tool)
+	}
+	if err := a.ensureRemoteLaunchToolInstalled(tool, req.LaunchSource); err != nil {
+		return RemoteSessionView{}, err
 	}
 	if a.remoteSessions == nil {
 		a.ensureRemoteInfra()

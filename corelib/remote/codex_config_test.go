@@ -57,3 +57,32 @@ func TestBuildCodexConfigTomlNilModelUsesDefaults(t *testing.T) {
 		t.Fatalf("nil model defaults not applied:\n%s", content)
 	}
 }
+
+func TestBuildCodexConfigTomlIncludesCustomCodeGenClientName(t *testing.T) {
+	content := BuildCodexConfigToml(&corelib.ModelConfig{
+		ModelName: "CodeGen",
+		ModelId:   "codegen-model",
+		ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+		WireApi:   "responses",
+		AgentType: "custom-agent",
+	})
+	if !strings.Contains(content, `http_headers = { "X-Codegen-Client-Name" = "custom-agent" }`) {
+		t.Fatalf("custom CodeGen client header missing:\n%s", content)
+	}
+}
+
+func TestBuildCodexConfigTomlNormalizesLegacyOpenClawClientName(t *testing.T) {
+	content := BuildCodexConfigToml(&corelib.ModelConfig{
+		ModelName: "CodeGen",
+		ModelId:   "codegen-model",
+		ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+		WireApi:   "responses",
+		AgentType: "openclaw",
+	})
+	if strings.Contains(content, `"X-Codegen-Client-Name" = "openclaw"`) {
+		t.Fatalf("legacy openclaw client leaked into config:\n%s", content)
+	}
+	if !strings.Contains(content, `"X-Codegen-Client-Name" = "tigerclaw"`) {
+		t.Fatalf("normalized tigerclaw header missing:\n%s", content)
+	}
+}

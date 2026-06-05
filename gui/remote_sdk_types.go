@@ -32,8 +32,8 @@ type SDKMessage struct {
 }
 
 type SDKAssistantPayload struct {
-	Role    string             `json:"role,omitempty"`
-	Content []SDKContentBlock  `json:"content,omitempty"`
+	Role    string            `json:"role,omitempty"`
+	Content []SDKContentBlock `json:"content,omitempty"`
 }
 
 type SDKContentBlock struct {
@@ -136,17 +136,17 @@ type SDKControlResponse struct {
 }
 
 type SDKControlResponseBody struct {
-	Subtype   string                  `json:"subtype"` // "success" or "error"
-	RequestID string                  `json:"request_id"`
-	Error     string                  `json:"error,omitempty"`
-	Response  *SDKPermissionResult    `json:"response,omitempty"`
+	Subtype   string               `json:"subtype"` // "success" or "error"
+	RequestID string               `json:"request_id"`
+	Error     string               `json:"error,omitempty"`
+	Response  *SDKPermissionResult `json:"response,omitempty"`
 }
 
 // SDKPermissionResult is the nested permission result inside a control response.
 type SDKPermissionResult struct {
-	Behavior     string                 `json:"behavior"`                // "allow", "deny"
+	Behavior     string                 `json:"behavior"` // "allow", "deny"
 	UpdatedInput map[string]interface{} `json:"updatedInput,omitempty"`
-	Message      string                 `json:"message,omitempty"`       // for deny
+	Message      string                 `json:"message,omitempty"` // for deny
 }
 
 // SDKControlCancelRequest is sent FROM Claude Code to cancel a pending request.
@@ -164,10 +164,10 @@ type SDKControlCancelRequest struct {
 // when using --input-format stream-json. Omitting them causes parse errors
 // in some versions.
 type SDKUserInput struct {
-	Type              string         `json:"type"`                 // "user"
-	Message           SDKUserMessage `json:"message"`
-	SessionID         string         `json:"session_id"`           // "default" for main conversation
-	ParentToolUseID   *string        `json:"parent_tool_use_id"`   // null for normal user messages
+	Type            string         `json:"type"` // "user"
+	Message         SDKUserMessage `json:"message"`
+	SessionID       string         `json:"session_id"`         // "default" for main conversation
+	ParentToolUseID *string        `json:"parent_tool_use_id"` // null for normal user messages
 }
 
 type SDKUserMessage struct {
@@ -257,9 +257,9 @@ func (m *SDKUserMessage) UnmarshalJSON(data []byte) error {
 
 // SDKInterruptRequest is sent TO Claude Code to interrupt current processing.
 type SDKInterruptRequest struct {
-	Type      string                `json:"type"` // "control_request"
-	RequestID string                `json:"request_id"`
-	Request   SDKInterruptBody      `json:"request"`
+	Type      string           `json:"type"` // "control_request"
+	RequestID string           `json:"request_id"`
+	Request   SDKInterruptBody `json:"request"`
 }
 
 type SDKInterruptBody struct {
@@ -288,7 +288,4 @@ const (
 
 	// ExecModeKiloSDK launches Kilo via HTTP server + SSE event stream (kilo serve).
 	ExecModeKiloSDK ExecutionMode = "kilo-sdk"
-
-	// ExecModeGeminiACP launches Gemini CLI via --experimental-acp (JSON-RPC on stdin/stdout).
-	ExecModeGeminiACP ExecutionMode = "gemini-acp"
 )

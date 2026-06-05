@@ -1,13 +1,19 @@
 package httpapi
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,11 +48,14 @@ func TestAdminCapabilityMarketPolicyDefaults(t *testing.T) {
 	if resp.Policy.EffectiveEnterpriseOnlySearch() {
 		t.Fatalf("enterprise_only_search should default to false")
 	}
+	if resp.Policy.EffectivePreferredUploadTarget() != corelib.CapabilitySourceHubCenter {
+		t.Fatalf("preferred_upload_target=%q, want hubcenter", resp.Policy.EffectivePreferredUploadTarget())
+	}
 }
 
 func TestAdminCapabilityMarketPolicyUpdatePersistsDefaults(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
-	body := []byte(`{"policy":{"enterprise_only_search":true,"view_mode":"enterprise_only"}}`)
+	body := []byte(`{"policy":{"enterprise_only_search":true,"view_mode":"enterprise_only","preferred_upload_target":"enterprise_hub"}}`)
 	req := httptest.NewRequest(http.MethodPut, "/api/admin/capability-market/policy", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 
@@ -71,6 +80,9 @@ func TestAdminCapabilityMarketPolicyUpdatePersistsDefaults(t *testing.T) {
 	}
 	if saved.ViewMode != "enterprise_only" {
 		t.Fatalf("view_mode=%q", saved.ViewMode)
+	}
+	if saved.EffectivePreferredUploadTarget() != corelib.CapabilitySourceEnterpriseHub {
+		t.Fatalf("preferred_upload_target=%q", saved.EffectivePreferredUploadTarget())
 	}
 }
 
@@ -345,6 +357,418 @@ func (f fakeMarketplaceViewerAuth) AuthenticateViewer(ctx context.Context, rawTo
 		return nil, auth.ErrInvalidUserCredentials
 	}
 	return &auth.ViewerPrincipal{TenantID: f.tenantID, UserID: firstNonEmpty(f.userID, "user-1"), Email: firstNonEmpty(f.email, "user@example.com")}, nil
+}
+
+func TestCapabilitySkillSubmitAndDownloadAreTenantScoped(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	dataDir := t.TempDir()
+	body, contentType := makeEnterpriseSkillUploadBody(t, map[string]string{
+		"skill.yaml": "name: tenant-skill\ndescription: tenant upload\ntriggers:\n  - tenant\nsteps:\n  - action: bash\n    params:\n      command: echo ok\n",
+		"README.md":  "tenant docs",
+	})
+
+	submitReq := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+	submitReq.Host = "enterprise.example"
+	submitReq.Header.Set("Authorization", "Bearer viewer-token")
+	submitReq.Header.Set("Content-Type", contentType)
+	submitReq.Header.Set("X-Forwarded-Proto", "https")
+	submitRec := httptest.NewRecorder()
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "user-a", email: "dev@example.com"}, dataDir)(submitRec, submitReq)
+	if submitRec.Code != http.StatusOK {
+		t.Fatalf("submit status=%d body=%s", submitRec.Code, submitRec.Body.String())
+	}
+
+	items, err := svc.List(capability.WithTenant(context.Background(), "tenant_a"), corelib.CapabilityTypeSkill)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("tenant_a capabilities=%+v err=%v", items, err)
+	}
+	if items[0].CapabilityID != "tenant-skill" || items[0].Source != corelib.CapabilitySourceEnterpriseHub || items[0].Status != "approved" {
+		t.Fatalf("unexpected capability: %+v", items[0])
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(items[0].MetadataJSON), &metadata); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if metadata["hub_url"] != "https://enterprise.example" || metadata["uploaded_by"] != "user-a" {
+		t.Fatalf("metadata=%+v", metadata)
+	}
+
+	unauthReq := httptest.NewRequest(http.MethodGet, "/api/v1/skills/tenant-skill/download", nil)
+	unauthReq.SetPathValue("id", "tenant-skill")
+	unauthRec := httptest.NewRecorder()
+	CapabilitySkillDownloadHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, dataDir)(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing auth download status=%d body=%s", unauthRec.Code, unauthRec.Body.String())
+	}
+
+	wrongTenantReq := httptest.NewRequest(http.MethodGet, "/api/v1/skills/tenant-skill/download", nil)
+	wrongTenantReq.SetPathValue("id", "tenant-skill")
+	wrongTenantReq.Header.Set("Authorization", "Bearer viewer-token")
+	wrongTenantRec := httptest.NewRecorder()
+	CapabilitySkillDownloadHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_b"}, dataDir)(wrongTenantRec, wrongTenantReq)
+	if wrongTenantRec.Code != http.StatusNotFound {
+		t.Fatalf("wrong tenant download status=%d body=%s", wrongTenantRec.Code, wrongTenantRec.Body.String())
+	}
+
+	downloadReq := httptest.NewRequest(http.MethodGet, "/api/v1/skills/tenant-skill/download", nil)
+	downloadReq.SetPathValue("id", "tenant-skill")
+	downloadReq.Header.Set("Authorization", "Bearer viewer-token")
+	downloadRec := httptest.NewRecorder()
+	CapabilitySkillDownloadHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, dataDir)(downloadRec, downloadReq)
+	if downloadRec.Code != http.StatusOK {
+		t.Fatalf("download status=%d body=%s", downloadRec.Code, downloadRec.Body.String())
+	}
+	var downloaded struct {
+		ID    string            `json:"id"`
+		Files map[string]string `json:"files"`
+	}
+	if err := json.Unmarshal(downloadRec.Body.Bytes(), &downloaded); err != nil {
+		t.Fatalf("decode download: %v", err)
+	}
+	if downloaded.ID != "tenant-skill" || downloaded.Files["skill.yaml"] == "" || downloaded.Files["README.md"] == "" {
+		t.Fatalf("downloaded=%+v", downloaded)
+	}
+	writeEnterpriseSkillPackageZip(t, enterpriseSkillPackageRoot(dataDir, "tenant_a"), safeEnterpriseSkillFileName("tenant-skill", shortEnterpriseSkillDigest("tenant-skill"))+"-stray.zip", map[string]string{
+		"skill.yaml": "name: tenant-skill\ndescription: stray\n",
+		"README.md":  "stray docs",
+	})
+	strayRec := httptest.NewRecorder()
+	CapabilitySkillDownloadHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, dataDir)(strayRec, downloadReq)
+	if strayRec.Code != http.StatusOK {
+		t.Fatalf("download after stray package status=%d body=%s", strayRec.Code, strayRec.Body.String())
+	}
+	var afterStray struct {
+		Files map[string]string `json:"files"`
+	}
+	if err := json.Unmarshal(strayRec.Body.Bytes(), &afterStray); err != nil {
+		t.Fatalf("decode stray download: %v", err)
+	}
+	readme, err := base64.StdEncoding.DecodeString(afterStray.Files["README.md"])
+	if err != nil || string(readme) != "tenant docs" {
+		t.Fatalf("download used wrong package readme=%q err=%v", string(readme), err)
+	}
+	_, err = svc.UpsertCapability(capability.WithTenant(context.Background(), "tenant_a"), capability.UpsertCapabilityInput{
+		CapabilityType: corelib.CapabilityTypeSkill,
+		Publisher:      "legacy",
+		CapabilityID:   "tenant-skill",
+		GlobalKey:      corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":legacy:tenant-skill",
+		DisplayName:    "Legacy Tenant Skill",
+		Description:    "legacy duplicate without package file",
+		Source:         corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:      "legacy",
+		Status:         "approved",
+		MetadataJSON:   `{"skill_id":"tenant-skill"}`,
+	})
+	if err != nil {
+		t.Fatalf("create legacy duplicate: %v", err)
+	}
+	legacyRec := httptest.NewRecorder()
+	CapabilitySkillDownloadHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, dataDir)(legacyRec, downloadReq)
+	if legacyRec.Code != http.StatusOK {
+		t.Fatalf("download with legacy duplicate status=%d body=%s", legacyRec.Code, legacyRec.Body.String())
+	}
+	writeEnterpriseSkillPackageZip(t, enterpriseSkillPackageRoot(dataDir, "tenant_a"), "other.zip", map[string]string{
+		"skill.yaml": "name: other-skill\ndescription: wrong package\n",
+		"README.md":  "wrong docs",
+	})
+	badPackageMetadata := map[string]any{"skill_id": "tenant-skill", "package_file": "other.zip"}
+	_, err = svc.UpsertCapability(capability.WithTenant(context.Background(), "tenant_a"), capability.UpsertCapabilityInput{
+		CapabilityType: corelib.CapabilityTypeSkill,
+		Publisher:      "legacy",
+		CapabilityID:   "tenant-skill",
+		GlobalKey:      corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":legacy-bad-package:tenant-skill",
+		DisplayName:    "Legacy Bad Package Tenant Skill",
+		Description:    "legacy duplicate with wrong package file",
+		Source:         corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:      "legacy",
+		Status:         "approved",
+		MetadataJSON:   jsonObjectString(badPackageMetadata),
+	})
+	if err != nil {
+		t.Fatalf("create bad package duplicate: %v", err)
+	}
+	badDuplicateRec := httptest.NewRecorder()
+	CapabilitySkillDownloadHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, dataDir)(badDuplicateRec, downloadReq)
+	if badDuplicateRec.Code != http.StatusOK {
+		t.Fatalf("download with bad package duplicate status=%d body=%s", badDuplicateRec.Code, badDuplicateRec.Body.String())
+	}
+	var afterBadDuplicate struct {
+		Files map[string]string `json:"files"`
+	}
+	if err := json.Unmarshal(badDuplicateRec.Body.Bytes(), &afterBadDuplicate); err != nil {
+		t.Fatalf("decode bad duplicate download: %v", err)
+	}
+	readme, err = base64.StdEncoding.DecodeString(afterBadDuplicate.Files["README.md"])
+	if err != nil || string(readme) != "tenant docs" {
+		t.Fatalf("download with bad duplicate used wrong package readme=%q err=%v", string(readme), err)
+	}
+	metadata["package_file"] = "other.zip"
+	_, err = svc.UpsertCapability(capability.WithTenant(context.Background(), "tenant_a"), capability.UpsertCapabilityInput{
+		ID:             items[0].ID,
+		CapabilityType: corelib.CapabilityTypeSkill,
+		Publisher:      items[0].Publisher,
+		CapabilityID:   items[0].CapabilityID,
+		DisplayName:    items[0].DisplayName,
+		Description:    items[0].Description,
+		Source:         corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:      items[0].ManagedBy,
+		Status:         "approved",
+		MetadataJSON:   jsonObjectString(metadata),
+	})
+	if err != nil {
+		t.Fatalf("point package to wrong skill: %v", err)
+	}
+	mismatchRec := httptest.NewRecorder()
+	CapabilitySkillDownloadHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, dataDir)(mismatchRec, downloadReq)
+	if mismatchRec.Code != http.StatusNotFound {
+		t.Fatalf("mismatched package download status=%d body=%s", mismatchRec.Code, mismatchRec.Body.String())
+	}
+	if err := json.Unmarshal([]byte(items[0].MetadataJSON), &metadata); err != nil {
+		t.Fatalf("restore metadata: %v", err)
+	}
+
+	_, err = svc.UpsertCapability(capability.WithTenant(context.Background(), "tenant_a"), capability.UpsertCapabilityInput{
+		ID:             items[0].ID,
+		CapabilityType: corelib.CapabilityTypeSkill,
+		Publisher:      items[0].Publisher,
+		CapabilityID:   items[0].CapabilityID,
+		DisplayName:    items[0].DisplayName,
+		Description:    items[0].Description,
+		Source:         corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:      items[0].ManagedBy,
+		Status:         "draft",
+		MetadataJSON:   jsonObjectString(metadata),
+	})
+	if err != nil {
+		t.Fatalf("mark draft: %v", err)
+	}
+	draftRec := httptest.NewRecorder()
+	CapabilitySkillDownloadHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, dataDir)(draftRec, downloadReq)
+	if draftRec.Code != http.StatusNotFound {
+		t.Fatalf("draft capability download status=%d body=%s", draftRec.Code, draftRec.Body.String())
+	}
+}
+
+func TestCapabilitySkillSubmitUpsertsSameSkillAcrossUploaders(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	dataDir := t.TempDir()
+
+	body1, contentType1 := makeEnterpriseSkillUploadBody(t, map[string]string{
+		"skill.yaml": "name: shared-skill\ndescription: first upload\n",
+		"README.md":  "first docs",
+	})
+	req1 := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body1)
+	req1.Header.Set("Authorization", "Bearer viewer-token")
+	req1.Header.Set("Content-Type", contentType1)
+	rec1 := httptest.NewRecorder()
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "user-a", email: "a@example.com"}, dataDir)(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first submit status=%d body=%s", rec1.Code, rec1.Body.String())
+	}
+
+	body2, contentType2 := makeEnterpriseSkillUploadBody(t, map[string]string{
+		"skill.yaml": "name: shared-skill\ndescription: second upload\n",
+		"README.md":  "second docs",
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body2)
+	req2.Header.Set("Authorization", "Bearer viewer-token")
+	req2.Header.Set("Content-Type", contentType2)
+	rec2 := httptest.NewRecorder()
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "user-b", email: "b@example.com"}, dataDir)(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second submit status=%d body=%s", rec2.Code, rec2.Body.String())
+	}
+
+	items, err := svc.List(capability.WithTenant(context.Background(), "tenant_a"), corelib.CapabilityTypeSkill)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("capabilities=%+v err=%v", items, err)
+	}
+	if items[0].Description != "second upload" || items[0].Publisher != "b@example.com" {
+		t.Fatalf("capability not updated by second submit: %+v", items[0])
+	}
+	if items[0].GlobalKey != corelib.CapabilitySourceEnterpriseHub+":"+corelib.CapabilityTypeSkill+":shared-skill" {
+		t.Fatalf("global_key=%q", items[0].GlobalKey)
+	}
+}
+
+func TestCapabilitySkillSubmitIsIdempotentForSamePackage(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	dataDir := t.TempDir()
+	files := map[string]string{
+		"skill.yaml": "name: repeat-skill\ndescription: repeat upload\n",
+		"README.md":  "repeat docs",
+	}
+
+	for i := 0; i < 2; i++ {
+		body, contentType := makeEnterpriseSkillUploadBody(t, files)
+		req := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+		req.Header.Set("Authorization", "Bearer viewer-token")
+		req.Header.Set("Content-Type", contentType)
+		rec := httptest.NewRecorder()
+		CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "user-a", email: "a@example.com"}, dataDir)(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("submit %d status=%d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+
+	items, err := svc.List(capability.WithTenant(context.Background(), "tenant_a"), corelib.CapabilityTypeSkill)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("capabilities=%+v err=%v", items, err)
+	}
+	metadata := mapFromRawJSON(json.RawMessage(items[0].MetadataJSON))
+	packageFile := strings.TrimSpace(stringFromMap(metadata, "package_file"))
+	if packageFile == "" {
+		t.Fatalf("metadata missing package_file: %+v", metadata)
+	}
+	if _, err := enterpriseSkillPackagePath(dataDir, "tenant_a", packageFile); err != nil {
+		t.Fatalf("package missing after repeat upload: %v", err)
+	}
+}
+
+func TestMoveEnterpriseSkillPackageIntoPlaceReplacesWrongExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "skill.zip")
+	tmpPath := filepath.Join(dir, "upload.zip")
+	if err := os.WriteFile(finalPath, []byte("wrong package"), 0o644); err != nil {
+		t.Fatalf("write final: %v", err)
+	}
+	if err := os.WriteFile(tmpPath, []byte("right package"), 0o644); err != nil {
+		t.Fatalf("write tmp: %v", err)
+	}
+	checksum, err := fileSHA256Hex(tmpPath)
+	if err != nil {
+		t.Fatalf("checksum tmp: %v", err)
+	}
+
+	if err := moveEnterpriseSkillPackageIntoPlace(tmpPath, finalPath, checksum); err != nil {
+		t.Fatalf("moveEnterpriseSkillPackageIntoPlace() error = %v", err)
+	}
+	data, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatalf("read final: %v", err)
+	}
+	if string(data) != "right package" {
+		t.Fatalf("final data = %q", string(data))
+	}
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Fatalf("tmp should be gone, stat err=%v", err)
+	}
+}
+
+func TestCapabilitySkillSubmitRejectsOversizedExportPayload(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	files := map[string]string{"skill.yaml": "name: bulky-skill\ndescription: bulky\n"}
+	for i := 0; i < 5; i++ {
+		files["docs/part"+strconv.Itoa(i)+".txt"] = strings.Repeat("x", 220<<10)
+	}
+	body, contentType := makeEnterpriseSkillUploadBody(t, files)
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, t.TempDir())(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCapabilitySkillSubmitRequiresValidSkillDefinition(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	body, contentType := makeEnterpriseSkillUploadBody(t, map[string]string{
+		"README.md": "docs only is not a skill package",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, t.TempDir())(rec, req)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "skill.yaml") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCapabilitySkillSubmitRejectsSkillDefinitionWithoutName(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	body, contentType := makeEnterpriseSkillUploadBody(t, map[string]string{
+		"skill.yaml": "description: missing name\nsteps:\n  - action: bash\n    params:\n      command: echo ok\n",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, t.TempDir())(rec, req)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "must declare name") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func makeEnterpriseSkillUploadBody(t *testing.T, files map[string]string) (*bytes.Buffer, string) {
+	t.Helper()
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	for name, content := range files {
+		fw, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("create zip entry %s: %v", name, err)
+		}
+		if _, err := fw.Write([]byte(content)); err != nil {
+			t.Fatalf("write zip entry %s: %v", name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("zip", "skill.zip")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := fw.Write(zipBuf.Bytes()); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+	return &body, mw.FormDataContentType()
+}
+
+func writeEnterpriseSkillPackageZip(t *testing.T, dir, name string, files map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", dir, err)
+	}
+	f, err := os.Create(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatalf("create stray package: %v", err)
+	}
+	defer f.Close()
+	zw := zip.NewWriter(f)
+	for path, content := range files {
+		fw, err := zw.Create(path)
+		if err != nil {
+			t.Fatalf("create zip entry %s: %v", path, err)
+		}
+		if _, err := fw.Write([]byte(content)); err != nil {
+			t.Fatalf("write zip entry %s: %v", path, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close stray package: %v", err)
+	}
 }
 
 func TestCapabilityInstallIntentUsesAuthenticatedTenantOverHeader(t *testing.T) {

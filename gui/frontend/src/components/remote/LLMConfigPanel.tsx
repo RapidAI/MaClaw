@@ -21,6 +21,7 @@ import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { useDialog } from "../CustomDialog";
+import { KNOWN_USER_AGENTS, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, nextCustomAgentValue } from "./userAgent";
 
 interface Props {
     lang?: string;
@@ -44,7 +45,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [dlgHubSelected, setDlgHubSelected] = useState(false); // true when "MaClaw 官方" is selected in dialog
     const [dlgSaving, setDlgSaving] = useState(false);
     const [dlgTestResult, setDlgTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
-    const [dlgToast, setDlgToast] = useState<{ ok: boolean; text: string } | null>(null);
+    const [dlgToast, setDlgToast] = useState<{ ok: boolean; title: string; detail?: string } | null>(null);
     const [dlgDirty, setDlgDirty] = useState(false);
     const [dlgTested, setDlgTested] = useState(false); // true after successful test; allows save-only on subsequent saves
     const [oauthBusy, setOauthBusy] = useState(false);
@@ -213,12 +214,16 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             setDlgToast(null);
             return;
         }
-        const text = dlgHubSelected
-            ? (dlgTestResult.ok ? `✓ ${dlgTestResult.msg}` : `! ${dlgTestResult.msg}`)
-            : (dlgTestResult.ok
-                ? `✓ ${t("Connection OK, saved", "连接成功，已保存")}\n${dlgTestResult.msg}`
-                : `! ${t("Connection failed, not saved", "连接失败，未保存")}\n${dlgTestResult.msg}`);
-        setDlgToast({ ok: dlgTestResult.ok, text });
+        const raw = String(dlgTestResult.msg || "").trim();
+        const saved = t("Saved", "\u5df2\u4fdd\u5b58");
+        const isSavedOnly = raw === saved || raw === "Saved" || raw === "\u5df2\u4fdd\u5b58";
+        const title = dlgHubSelected
+            ? raw
+            : dlgTestResult.ok
+                ? (isSavedOnly ? saved : t("Connection OK, saved", "\u8fde\u63a5\u6210\u529f\uff0c\u5df2\u4fdd\u5b58"))
+                : t("Connection failed, not saved", "\u8fde\u63a5\u5931\u8d25\uff0c\u672a\u4fdd\u5b58");
+        const detail = dlgHubSelected || (dlgTestResult.ok && isSavedOnly) ? "" : raw;
+        setDlgToast({ ok: dlgTestResult.ok, title, detail });
         const timeout = window.setTimeout(() => setDlgToast(null), dlgTestResult.ok ? 7000 : 10000);
         return () => window.clearTimeout(timeout);
     }, [dlgHubSelected, dlgTestResult, t]);
@@ -262,7 +267,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setProviderModelsError(null);
         setProviderModels([]);
         try {
-            const models = await FetchProviderModels(dlgProvider.url, dlgProvider.key, dlgProvider.protocol || "openai");
+            const models = await FetchProviderModels(dlgProvider.url, dlgProvider.key, dlgProvider.protocol || "openai", effectiveAgentType(dlgProvider));
             setProviderModels(models || []);
             if (!models || models.length === 0) {
                 setProviderModelsError(t("No models returned", "服务商返回了空的模型列表"));
@@ -286,7 +291,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setDlgDirty(true);
         setDlgTestResult(null);
         // Reset tested flag when core connection fields change so re-test is required
-        if (["url", "key", "model", "protocol"].includes(field)) {
+        if (["url", "key", "model", "protocol", "agent_type"].includes(field)) {
             setDlgTested(false);
         }
     }, [dlgSelectedIdx]);
@@ -415,7 +420,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 return;
             }
 
-            const testResult = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw", wire_api: sp.wire_api || "" });
+            const testResult = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: effectiveAgentType(sp), wire_api: sp.wire_api || "" });
             const saveName = sp.name;
             const nextProviders = dlgProviders.map((provider, index) => index === dlgSelectedIdx
                 ? { ...provider, supports_vision: testResult.supports_vision }
@@ -462,17 +467,24 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     return (
         <div className="llm-config-panel">
             {dlgToast && (
-                <div role="status" aria-live="polite" style={{
-                    position: "fixed", top: 24, left: "50%", transform: "translateX(-50%)",
-                    zIndex: 10000, width: "min(92vw, 560px)", padding: "10px 14px",
-                    borderRadius: 8, fontSize: "0.76rem", lineHeight: 1.5,
-                    whiteSpace: "pre-wrap", wordBreak: "break-word", textAlign: "center",
-                    boxShadow: "0 12px 32px rgba(15,23,42,0.18)", pointerEvents: "none",
-                    background: dlgToast.ok ? "#ecfdf5" : "#fef2f2",
-                    border: `1px solid ${dlgToast.ok ? "rgba(34,197,94,0.35)" : "rgba(239,68,68,0.35)"}`,
-                    color: dlgToast.ok ? colors.success : colors.danger,
+                <div role={dlgToast.ok ? "status" : "alert"} aria-live="polite" style={{
+                    position: "fixed", top: 42, left: "50%", transform: "translateX(-50%)",
+                    zIndex: 10000, width: "min(92vw, 380px)", padding: "8px 12px",
+                    borderRadius: 6, fontSize: "0.74rem", lineHeight: 1.45,
+                    boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
+                    background: colors.surface,
+                    border: `1px solid ${colors.border}`,
+                    borderLeft: `3px solid ${dlgToast.ok ? colors.success : colors.danger}`,
+                    color: colors.text,
                 }}>
-                    {dlgToast.text}
+                    <div style={{ fontWeight: 700, color: dlgToast.ok ? colors.success : colors.danger }}>
+                        {dlgToast.ok ? "✓" : "!"} {dlgToast.title}
+                    </div>
+                    {dlgToast.detail && (
+                        <div style={{ marginTop: 3, color: colors.textSecondary, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                            {dlgToast.detail}
+                        </div>
+                    )}
                 </div>
             )}
             <div className="llm-config-panel__intro">
@@ -776,9 +788,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                 {/* User-Agent selection */}
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>User-Agent</label>
-                                    <div style={{ display: "flex", gap: 6 }}>
-                                        {(["openclaw", "claude-code/2.0.0"] as const).map(ua => {
-                                            const active = (dlgProvider.agent_type || "openclaw") === ua;
+                                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                        {KNOWN_USER_AGENTS.map(ua => {
+                                            const currentAgent = effectiveAgentType(dlgProvider);
+                                            const active = currentAgent === ua;
                                             return (
                                                 <button key={ua} onClick={() => dlgUpdateField("agent_type", ua)} style={{
                                                     fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
@@ -791,11 +804,34 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                 </button>
                                             );
                                         })}
+                                        {(() => {
+                                            const currentAgent = effectiveAgentType(dlgProvider);
+                                            const active = !isKnownUserAgent(currentAgent);
+                                            return (
+                                                <button onClick={() => dlgUpdateField("agent_type", active ? currentAgent : customAgentSeedForProvider(dlgProvider))} style={{
+                                                    fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
+                                                    background: active ? colors.primaryLight : colors.surface,
+                                                    color: active ? colors.primaryDark : colors.text,
+                                                    border: `1px solid ${active ? colors.primary : colors.border}`,
+                                                    borderRadius: 4, transition: "all 0.15s",
+                                                }}>
+                                                    {t("Custom", "\u81ea\u5b9a\u4e49", "\u81ea\u8a02")}
+                                                </button>
+                                            );
+                                        })()}
                                     </div>
+                                    {!isKnownUserAgent(effectiveAgentType(dlgProvider)) && (
+                                        <input style={{ ...inputStyle, marginTop: 8 }} value={editableCustomAgentValue(dlgProvider)}
+                                            onChange={e => dlgUpdateField("agent_type", nextCustomAgentValue(dlgProvider, e.target.value))}
+                                            placeholder={t("Custom User-Agent", "\u81ea\u5b9a\u4e49 User-Agent", "\u81ea\u8a02 User-Agent")}
+                                            autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
+                                    )}
                                     <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
-                                        {(dlgProvider.agent_type || "openclaw") === "claude-code/2.0.0"
-                                            ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi)", "适用于需要 Claude Coding Plan 身份的服务商（如 Kimi）")
-                                            : t("Most providers use OpenClaw identity (e.g. Zhipu Lobster)", "大多数服务商使用 OpenClaw 身份（如智谱龙虾）")}
+                                        {effectiveAgentType(dlgProvider) === "claude-code/2.0.0"
+                                            ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi)", "\u9002\u7528\u4e8e\u9700\u8981 Claude Coding Plan \u8eab\u4efd\u7684\u670d\u52a1\u5546\uff08\u5982 Kimi\uff09")
+                                            : !isKnownUserAgent(effectiveAgentType(dlgProvider))
+                                                ? t("Uses the custom client identity you enter.", "\u4f7f\u7528\u4f60\u8f93\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u4efd\u3002", "\u4f7f\u7528\u4f60\u8f38\u5165\u7684\u81ea\u8a02\u5ba2\u6236\u7aef\u8eab\u5206\u3002")
+                                                : t("Most providers use OpenClaw identity (e.g. Zhipu Lobster)", "\u5927\u591a\u6570\u670d\u52a1\u5546\u4f7f\u7528 OpenClaw \u8eab\u4efd\uff08\u5982\u667a\u8c31\u9f99\u867e\uff09")}
                                     </p>
                                 </div>
 
@@ -842,19 +878,19 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
                                                 {providerModels.length > 0
                                                     ? t("(select model)", "（选择模型）")
-                                                    : t("(click List to browse)", "（可点击 List 浏览）")}
+                                                    : t("(click Fetch to browse)", "（可点击“获取”浏览）", "（可點擊「獲取」瀏覽）")}
                                             </span>
                                         ) : dlgProvider.is_custom ? (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
                                                 {providerModels.length > 0
                                                     ? t("(select model)", "（选择模型）")
-                                                    : t("(click List to browse)", "（可点击 List 浏览）")}
+                                                    : t("(click Fetch to browse)", "（可点击“获取”浏览）", "（可點擊「獲取」瀏覽）")}
                                             </span>
                                         ) : (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
                                                 {providerModels.length > 0
                                                     ? t("(select model)", "（选择模型）")
-                                                    : t("(preset, click List to browse)", "（预设，可点击 List 浏览可用模型）")}
+                                                    : t("(preset, click Fetch to browse)", "（预设，可点击“获取”浏览可用模型）", "（預設，可點擊「獲取」瀏覽可用模型）")}
                                             </span>
                                         )}
                                     </label>
@@ -890,7 +926,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                         {providerModelsFetching
                                                             ? t("Loading...", "加载中...")
                                                             : providerModels.length === 0
-                                                                ? t("Click List to fetch models first", "请先点击 List 获取模型")
+                                                                ? t("Click Fetch to load models first", "请先点击“获取”加载模型", "請先點擊「獲取」載入模型")
                                                                 : t("Select a model", "请选择模型")}
                                                     </option>
                                                     {!providerModels.some(m => m.id === dlgProvider.model) && dlgProvider.model && (
@@ -900,7 +936,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                         <option key={m.id} value={m.id}>{m.name !== m.id ? `${m.name} (${m.id})` : m.id}</option>
                                                     ))}
                                                 </select>
-                                                {/* List button — visible when URL and Key are available */}
+                                                {/* Fetch button — visible when URL and Key are available */}
                                                 {dlgProvider.url && dlgProvider.key && (
                                                     <button
                                                         onClick={handleFetchProviderModels}
@@ -914,7 +950,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                         }}
                                                         title={t("Fetch available models from provider", "从服务商获取可用模型列表")}
                                                     >
-                                                        {providerModelsFetching ? t("Loading...", "加载中...") : "List"}
+                                                        {providerModelsFetching ? t("Loading...", "加载中...") : t("Fetch", "获取", "獲取")}
                                                     </button>
                                                 )}
                                             </div>

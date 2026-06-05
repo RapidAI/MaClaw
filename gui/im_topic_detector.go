@@ -316,8 +316,17 @@ func (d *topicSwitchDetector) confirmWithLLM(contextText, newMessage string) Top
 
 	ctx, cancel := context.WithTimeout(context.Background(), d.llmTimeout)
 	defer cancel()
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "topic-switch"})
+	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
+	if acquireErr != nil {
+		return TopicSame
+	}
+	defer lease.Release()
+	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	lease.SetCancel(scheduledCancel)
+	defer scheduledCancel()
 
-	req, _, _, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
+	req, _, _, err := llm.NewOpenAIChatRequest(scheduledCtx, cfg, messages, llm.OpenAIChatRequestOptions{
 		Stream: false,
 		ExtraBody: map[string]interface{}{
 			"max_tokens": 10,
@@ -328,12 +337,14 @@ func (d *topicSwitchDetector) confirmWithLLM(contextText, newMessage string) Top
 	}
 
 	resp, err := client.Do(req)
+	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
 		return TopicSame
 	}
 	defer resp.Body.Close()
 
 	parsed, err := llm.ParseNonStreamOpenAIResponse(resp)
+	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil || len(parsed.Choices) == 0 {
 		return TopicSame
 	}

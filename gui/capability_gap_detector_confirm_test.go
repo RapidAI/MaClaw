@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -123,6 +124,29 @@ func TestSetCapabilityGapDetector_CallbackReturnsFalseWithoutPlatform(t *testing
 	result := d.confirmCallback("test-skill", "risk details")
 	if result {
 		t.Fatal("expected false when no platform context is available (fail-closed)")
+	}
+}
+
+func TestSetCapabilityGapDetector_CallbackDoesNotInheritGlobalLoop(t *testing.T) {
+	t.Parallel()
+	h := &IMMessageHandler{
+		app:            &App{},
+		currentLoopCtx: &LoopContext{Platform: desktopPlatform, Runtime: RuntimeContext{RequestID: "req-other", PolicyOwnerID: "desktop-user:other"}},
+	}
+	d := &CapabilityGapDetector{}
+	h.SetCapabilityGapDetector(d)
+
+	if d.confirmCallback("test-skill", "risk details") {
+		t.Fatal("capability gap confirmation must not inherit another tab's global loop context")
+	}
+}
+
+func TestCapabilityGapRuntimeContextRoundTrip(t *testing.T) {
+	t.Parallel()
+	ctx := withCapabilityGapRuntimeContext(context.Background(), " desktop ", " owner-1 ")
+	platform, ownerID := capabilityGapRuntimeFromContext(ctx)
+	if platform != "desktop" || ownerID != "owner-1" {
+		t.Fatalf("runtime context = (%q, %q), want (desktop, owner-1)", platform, ownerID)
 	}
 }
 

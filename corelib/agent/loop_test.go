@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -69,6 +71,52 @@ func (m *mockCallbacks) OnToolCall(name string)   { m.toolEvents = append(m.tool
 func (m *mockCallbacks) OnToolResult(name string) {}
 func (m *mockCallbacks) ShouldStop() bool         { return m.stopped }
 
+type contextProviderCallbacks struct {
+	*mockCallbacks
+	started  int32
+	finished int32
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func (m *contextProviderCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
+	if iteration != 0 {
+		return nil, nil, fmt.Errorf("unexpected iteration %d", iteration)
+	}
+	atomic.AddInt32(&m.started, 1)
+	return context.WithValue(context.Background(), "loop-test-context", "ok"), func(error) {
+		atomic.AddInt32(&m.finished, 1)
+	}, nil
+}
+
+func TestRunLoop_UsesHostLLMRequestContext(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.Context().Value("loop-test-context"); got != "ok" {
+			return nil, fmt.Errorf("request context marker = %#v, want ok", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"done"}}]}`)),
+		}, nil
+	})}
+
+	cb := &contextProviderCallbacks{mockCallbacks: &mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}}
+	result := RunLoop(cb, "hi", nil, client)
+	if result.Error != "" || strings.TrimSpace(result.Text) != "done" {
+		t.Fatalf("RunLoop result = %+v, want done without error", result)
+	}
+	if atomic.LoadInt32(&cb.started) != 1 || atomic.LoadInt32(&cb.finished) != 1 {
+		t.Fatalf("context lifecycle started=%d finished=%d, want 1/1", cb.started, cb.finished)
+	}
+}
+
 func TestRunLoop_NoToolCalls_ReturnsFinalText(t *testing.T) {
 	// Mock LLM server that returns a simple text response (no tool calls).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +162,68 @@ func TestRunLoop_NoToolCalls_ReturnsFinalText(t *testing.T) {
 	}
 	if cb.tokens[0] != "Hello! How can I help?" {
 		t.Fatalf("OnToken delta mismatch: %q", cb.tokens[0])
+	}
+}
+
+func TestRunLoop_StripsRolePrefixFromFinalTextAndReasoning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"role":              "assistant",
+						"content":           "Answer kept.\n\nBrowser: duplicated browser instruction",
+						"reasoning_content": "thinking kept\nBrowser: hidden browser instruction",
+					},
+					"finish_reason": "stop",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   1,
+		sysPrompt: "You are a helpful assistant.",
+	}
+
+	result := RunLoop(cb, "test", nil, nil)
+	if result.Text != "Answer kept." {
+		t.Fatalf("Text = %q, want sanitized answer", result.Text)
+	}
+	if strings.Contains(result.Text, "Browser:") {
+		t.Fatalf("role prefix leaked in final text: %q", result.Text)
+	}
+}
+
+func TestRunLoop_StripsRolePrefixFromStreamingTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"Answer kept.\n"},"finish_reason":""}]}`+"\n\n")
+		_, _ = fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"Browser: duplicated browser instruction"},"finish_reason":"stop"}]}`+"\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   1,
+		sysPrompt: "You are a helpful assistant.",
+	}
+
+	result := RunLoop(cb, "test", nil, nil)
+	if result.Text != "Answer kept." {
+		t.Fatalf("Text = %q, want sanitized answer", result.Text)
+	}
+	streamed := strings.Join(cb.tokens, "")
+	if strings.Contains(streamed, "Browser:") {
+		t.Fatalf("role prefix leaked in streaming tokens: %q", streamed)
+	}
+	if strings.TrimSpace(streamed) != "Answer kept." {
+		t.Fatalf("streamed = %q, want sanitized answer", streamed)
 	}
 }
 

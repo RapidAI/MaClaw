@@ -93,6 +93,10 @@ func (a *App) isSecurityDeveloperMode() bool {
 	return a != nil && a.policyEngine != nil && a.policyEngine.IsDeveloperMode()
 }
 
+func (a *App) isRiskGuardrailOffMode() bool {
+	return a != nil && a.securityPolicyMode() == "none"
+}
+
 func (a *App) securityPolicyMode() string {
 	if a != nil && a.policyEngine != nil {
 		return a.policyEngine.Mode()
@@ -141,6 +145,9 @@ func (a *App) skillInstallFinalAuditAction(report *cskill.ScanReport) security.P
 
 func (a *App) skillInstallFinalAuditActionForSource(report *cskill.ScanReport, source string) security.PolicyAction {
 	if report == nil {
+		return security.PolicyAllow
+	}
+	if a != nil && a.isRiskGuardrailOffMode() {
 		return security.PolicyAllow
 	}
 	if skillInstallAuditOnlyMarketplaceSource(source) && !report.IsSafe() {
@@ -347,6 +354,27 @@ func (a *App) admitManualSkillInstall(ctx context.Context, entry *corelib.NLSkil
 	if entry == nil {
 		return fmt.Errorf("skill entry is required")
 	}
+	if isShellBrowserAutomationSkillEntry(*entry) {
+		return browserAutomationSkillRejectedError(entry.Name)
+	}
+	if a.isRiskGuardrailOffMode() {
+		status := "Risk guardrails are off; installation allowed."
+		level := security.RiskLow
+		summary := "no scan report recorded"
+		if report != nil {
+			level = report.FinalLevel
+			summary = report.Summary
+		}
+		a.emitSkillInstallProgress(entry.Name, "scan-complete", status, report)
+		a.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillInstall,
+			"manual_skill_install",
+			level,
+			security.PolicyAllow,
+			fmt.Sprintf("risk guardrails off allowed skill %s after pre-install scan: %s", entry.Name, summary),
+		)
+		return nil
+	}
 	if a.isSecurityDeveloperMode() {
 		status := "Developer mode enabled; security scan will not block installation."
 		phase := "scan-complete"
@@ -469,6 +497,12 @@ func (a *App) scanAndAdmitSkillBeforeRegister(ctx context.Context, entry *coreli
 	name := strings.TrimSpace(entry.Name)
 	if name == "" {
 		name = "skill"
+	}
+	if a.isRiskGuardrailOffMode() {
+		if err := a.admitManualSkillInstall(ctx, entry, source, nil); err != nil {
+			return nil, err
+		}
+		return nil, nil
 	}
 	a.emitSkillInstallProgress(name, "scan-start", "Starting pre-install security scan.", nil)
 	scanner := cskill.NewSecurityScanner(nil)

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"log"
 	"strings"
 	"testing"
 )
@@ -29,6 +31,30 @@ func TestGateIntentClassify_NoLocalKeywordFallback(t *testing.T) {
 				t.Fatalf("reason should not mention keyword fallback: %q", result.Reason)
 			}
 		})
+	}
+}
+
+func TestGateIntentClassifyLogDoesNotExposeInputText(t *testing.T) {
+	gic := NewGateIntentClassifier(nil)
+	var buf bytes.Buffer
+	origWriter := log.Writer()
+	origFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(origWriter)
+		log.SetFlags(origFlags)
+	})
+
+	gic.Classify("Browser: SECRET_BROWSER_TEXT", "test-user")
+	logged := buf.String()
+	for _, leaked := range []string{"SECRET_BROWSER_TEXT", "Browser:"} {
+		if strings.Contains(logged, leaked) {
+			t.Fatalf("gate classifier log leaked %q: %s", leaked, logged)
+		}
+	}
+	if !strings.Contains(logged, "text_len=") {
+		t.Fatalf("gate classifier log should include text length metadata: %s", logged)
 	}
 }
 

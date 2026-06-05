@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -75,6 +78,583 @@ func TestSkillRunnerStartRunDoesNotInheritWorkflowPolicy(t *testing.T) {
 	status := waitSkillRunDoneForTest(t, runner, runID)
 	if status.Status != skillRunStatusSuccess {
 		t.Fatalf("skill status = %s, want success; status=%#v", status.Status, status)
+	}
+}
+
+func TestSkillRunnerStartRunDoesNotWaitForExecutorMutationLock(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	app.testHomeDir = tempHome
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "lock-free-start-skill",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo lock-free"},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	app.skillExecutor.mu.Lock()
+	type startResult struct {
+		runID string
+		err   error
+	}
+	done := make(chan startResult, 1)
+	go func() {
+		runID, err := runner.StartRunForOwner("desktop-user:project-a", "lock-free-start-skill", nil)
+		done <- startResult{runID: runID, err: err}
+	}()
+
+	var res startResult
+	select {
+	case res = <-done:
+	case <-time.After(300 * time.Millisecond):
+		app.skillExecutor.mu.Unlock()
+		t.Fatal("StartRunForOwner waited on SkillExecutor.mu; this serializes independent agent starts behind skill stats writes")
+	}
+	app.skillExecutor.mu.Unlock()
+	if res.err != nil {
+		t.Fatalf("StartRunForOwner() error = %v", res.err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, res.runID)
+	if status.Status != skillRunStatusSuccess {
+		t.Fatalf("skill status = %s, want success; error=%s", status.Status, status.Error)
+	}
+}
+
+func TestSkillRunnerUsesIsolatedWorkspaceForSkillDir(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	skillDir := filepath.Join(tempHome, "skill-src")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "seed.txt"), []byte("seed"), 0o644); err != nil {
+		t.Fatalf("WriteFile seed: %v", err)
+	}
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	app.testHomeDir = tempHome
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:     "workspace-writer",
+		Status:   "active",
+		SkillDir: skillDir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"working_dir": skillDir,
+				"command":     fmt.Sprintf("echo hello > run-output.txt && echo abs > %q", filepath.ToSlash(filepath.Join(skillDir, "cmd-output.txt"))),
+			},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRunForOwner("desktop-user:project-a", "workspace-writer", nil)
+	if err != nil {
+		t.Fatalf("StartRunForOwner() error = %v", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != skillRunStatusSuccess {
+		t.Fatalf("run status = %s error=%s", status.Status, status.Error)
+	}
+	if status.OwnerID != "desktop-user:project-a" {
+		t.Fatalf("owner id = %q, want project owner", status.OwnerID)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "run-output.txt")); !os.IsNotExist(err) {
+		t.Fatalf("run wrote into installed skill dir, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "cmd-output.txt")); !os.IsNotExist(err) {
+		t.Fatalf("run command path wrote into installed skill dir, stat err = %v", err)
+	}
+}
+
+func TestSkillExecutorUsesIsolatedWorkspaceForSkillDir(t *testing.T) {
+	skillDir := filepath.Join(t.TempDir(), "skill-src")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:     "sync-workspace-writer",
+		Status:   "active",
+		SkillDir: skillDir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"working_dir": skillDir,
+				"command":     fmt.Sprintf("echo sync > sync-output.txt && echo abs > %q", filepath.ToSlash(filepath.Join(skillDir, "sync-cmd-output.txt"))),
+			},
+		}},
+	}
+	exec := NewSkillExecutor(&App{}, nil, nil)
+
+	result := exec.executeSkillStepsDetailed(entry, nil)
+	if result.Err != nil {
+		t.Fatalf("executeSkillStepsDetailed() error = %v output=%s", result.Err, result.Output)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "sync-output.txt")); !os.IsNotExist(err) {
+		t.Fatalf("sync run wrote into installed skill dir, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "sync-cmd-output.txt")); !os.IsNotExist(err) {
+		t.Fatalf("sync command path wrote into installed skill dir, stat err = %v", err)
+	}
+}
+
+func TestSkillExecutorLogsOwnerForSyncSkillRun(t *testing.T) {
+	skillDir := filepath.Join(t.TempDir(), "owner-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:     "sync-owner-log",
+		Status:   "active",
+		SkillDir: skillDir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"working_dir": skillDir,
+				"command":     "echo owner-log",
+			},
+		}},
+	}
+	var logs bytes.Buffer
+	originalWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(originalWriter) })
+
+	exec := NewSkillExecutor(&App{}, nil, nil)
+	result := exec.executeSkillStepsDetailed(entry, map[string]interface{}{"_skill_owner_id": "desktop-user:D:/tasks/owner"})
+	if result.Err != nil {
+		t.Fatalf("executeSkillStepsDetailed() error = %v output=%s", result.Err, result.Output)
+	}
+	if !strings.Contains(logs.String(), `owner="desktop-user:D:/tasks/owner"`) {
+		t.Fatalf("sync skill logs do not include owner id; logs=%s", logs.String())
+	}
+}
+
+func TestPrepareSkillRunWorkspaceIncludesRuntimeArtifacts(t *testing.T) {
+	skillDir := filepath.Join(t.TempDir(), "skill-src")
+	nodeModules := filepath.Join(skillDir, "node_modules", "demo")
+	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
+		t.Fatalf("MkdirAll node_modules: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nodeModules, "index.js"), []byte("module.exports = 1"), 0o644); err != nil {
+		t.Fatalf("WriteFile runtime artifact: %v", err)
+	}
+
+	workspace, cleanup, err := prepareSkillRunWorkspace("run-runtime", "runtime-skill", skillDir)
+	if err != nil {
+		t.Fatalf("prepareSkillRunWorkspace() error = %v", err)
+	}
+	defer cleanup()
+	if _, err := os.Stat(filepath.Join(workspace, "node_modules", "demo", "index.js")); err != nil {
+		t.Fatalf("runtime artifact missing from workspace: %v", err)
+	}
+}
+
+func TestRemapSkillRunStepToWorkspaceRemapsNestedParams(t *testing.T) {
+	source := filepath.Clean(filepath.Join(t.TempDir(), "skill-src"))
+	workspace := filepath.Clean(filepath.Join(t.TempDir(), "skill-workspace"))
+	step := corelib.NLSkillStep{
+		Action: "call_mcp_tool",
+		Params: map[string]interface{}{
+			"command": "python " + filepath.Join(source, "run.py"),
+			"arguments": map[string]interface{}{
+				"path": filepath.Join(source, "input.txt"),
+				"items": []interface{}{
+					filepath.ToSlash(filepath.Join(source, "a.txt")),
+					map[string]interface{}{"nested": filepath.Join(source, "b.txt")},
+				},
+			},
+			"env": map[string]string{"SKILL_DIR": source},
+		},
+	}
+
+	remapped := remapSkillRunStepToWorkspace(step, source, workspace)
+	command, _ := remapped.Params["command"].(string)
+	if strings.Contains(command, source) || !strings.Contains(command, workspace) {
+		t.Fatalf("command remap = %q, want workspace path", command)
+	}
+	args := remapped.Params["arguments"].(map[string]interface{})
+	path, _ := args["path"].(string)
+	if strings.Contains(path, source) || !strings.Contains(path, workspace) {
+		t.Fatalf("nested path remap = %q, want workspace path", path)
+	}
+	items := args["items"].([]interface{})
+	first, _ := items[0].(string)
+	if strings.Contains(first, filepath.ToSlash(source)) || !strings.Contains(first, filepath.ToSlash(workspace)) {
+		t.Fatalf("list path remap = %q, want slash workspace path", first)
+	}
+	env := remapped.Params["env"].(map[string]string)
+	if env["SKILL_DIR"] != workspace {
+		t.Fatalf("env remap = %q, want %q", env["SKILL_DIR"], workspace)
+	}
+	originalCommand, _ := step.Params["command"].(string)
+	if !strings.Contains(originalCommand, source) {
+		t.Fatalf("original params mutated: %q", originalCommand)
+	}
+}
+
+func TestShouldRetainSkillRunWorkspaceStatusForWorkspaceArtifact(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := filepath.Join(workspace, "out.pdf")
+	if err := os.WriteFile(artifact, []byte("pdf"), 0o644); err != nil {
+		t.Fatalf("WriteFile artifact: %v", err)
+	}
+	status := SkillRunStatus{
+		RunID:  "run-artifact",
+		Skill:  "artifact-skill",
+		Status: skillRunStatusSuccess,
+		Steps: []StepResult{{
+			Index:  0,
+			Action: "bash",
+			Status: skillStepStatusSuccess,
+			Output: "artifact: " + artifact,
+		}},
+	}
+	if !shouldRetainSkillRunWorkspaceStatus(status, workspace) {
+		t.Fatal("workspace artifact should retain run workspace")
+	}
+	status.ExpectedOutput = filepath.Join(t.TempDir(), "expected.pdf")
+	if !shouldRetainSkillRunWorkspaceStatus(status, workspace) {
+		t.Fatal("workspace artifact output should retain workspace even when expected output points elsewhere")
+	}
+	status.Steps[0].Output = "artifact: " + filepath.Join(t.TempDir(), "out.pdf")
+	if shouldRetainSkillRunWorkspaceStatus(status, workspace) {
+		t.Fatal("artifact outside workspace should not retain run workspace")
+	}
+}
+
+func TestSkillRunnerRejectsShellBrowserAutomationSkill(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	app.testHomeDir = tempHome
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:        "zhihu-poster",
+		Status:      "active",
+		RequiresGUI: true,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": `python post.py article --title "{{title}}" --file "{{file}}" --screenshot`},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	_, err = runner.StartRun("zhihu-poster", map[string]interface{}{"title": "t", "file": "a.md"})
+	if err == nil || !strings.Contains(err.Error(), "stable browser tool/session mechanism") {
+		t.Fatalf("StartRun error = %v, want stable browser rejection", err)
+	}
+}
+
+func TestSkillExecutorRejectsShellBrowserAutomationSubSkill(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	app.testHomeDir = tempHome
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:             "browser-wrapper",
+		Status:           "active",
+		RequiresToolsets: []string{"browser"},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "python automate_browser.py"},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	exec := NewSkillExecutor(app, nil, nil)
+
+	result := exec.executeSkillByNameDetailed("browser-wrapper", nil)
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "stable browser tool/session mechanism") {
+		t.Fatalf("executeSkillByNameDetailed error = %v, want stable browser rejection", result.Err)
+	}
+}
+
+func TestSkillExecutorRejectsShellBrowserAutomationDirectExecution(t *testing.T) {
+	exec := NewSkillExecutor(&App{}, nil, nil)
+	result := exec.executeSkillStepsDetailed(&corelib.NLSkillEntry{
+		Name:        "direct-browser-script",
+		RequiresGUI: true,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "python -m playwright connect_over_cdp http://127.0.0.1:3888"},
+		}},
+	}, nil)
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "stable browser tool/session mechanism") {
+		t.Fatalf("executeSkillStepsDetailed error = %v, want stable browser rejection", result.Err)
+	}
+}
+
+func TestSkillExecutorRejectsShellBrowserAutomationHiddenInSkillDirScript(t *testing.T) {
+	skillDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(skillDir, "post.py"), []byte("from playwright.async_api import async_playwright\nasync def main():\n    browser = await p.chromium.connect_over_cdp('http://127.0.0.1:3888')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile post.py: %v", err)
+	}
+	exec := NewSkillExecutor(&App{}, nil, nil)
+	result := exec.executeSkillStepsDetailed(&corelib.NLSkillEntry{
+		Name:        "script-hidden-browser",
+		RequiresGUI: true,
+		SkillDir:    skillDir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "python post.py"},
+		}},
+	}, nil)
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "stable browser tool/session mechanism") {
+		t.Fatalf("executeSkillStepsDetailed error = %v, want stable browser rejection", result.Err)
+	}
+}
+
+func TestSkillExecutorRejectsShellBrowserAutomationWithoutGUIFlag(t *testing.T) {
+	skillDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(skillDir, "post.py"), []byte("await page.screenshot(path='out.png')\nawait browser.close()\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile post.py: %v", err)
+	}
+	exec := NewSkillExecutor(&App{}, nil, nil)
+	result := exec.executeSkillStepsDetailed(&corelib.NLSkillEntry{
+		Name:     "missing-gui-browser-script",
+		SkillDir: skillDir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "python post.py"},
+		}},
+	}, nil)
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "stable browser tool/session mechanism") {
+		t.Fatalf("executeSkillStepsDetailed error = %v, want stable browser rejection", result.Err)
+	}
+}
+
+func TestSkillExecutorRejectsBrowserAutomationCommandWithoutGUIFlag(t *testing.T) {
+	exec := NewSkillExecutor(&App{}, nil, nil)
+	result := exec.executeSkillStepsDetailed(&corelib.NLSkillEntry{
+		Name: "missing-gui-browser-command",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "node run-playwright.js --screenshot"},
+		}},
+	}, nil)
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "stable browser tool/session mechanism") {
+		t.Fatalf("executeSkillStepsDetailed error = %v, want stable browser rejection", result.Err)
+	}
+}
+
+func TestSkillExecutorAllowsNonAutomationBrowserText(t *testing.T) {
+	entry := corelib.NLSkillEntry{
+		Name:        "browser-doc-note",
+		Description: "mentions browser in docs but does not automate it",
+		RequiresGUI: true,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo browser docs only"},
+		}},
+	}
+	if isShellBrowserAutomationSkillEntry(entry) {
+		t.Fatalf("isShellBrowserAutomationSkillEntry(%+v) = true, want false for non-automation browser text", entry)
+	}
+}
+
+func TestSkillExecutorRejectsShellBrowserAutomationDirectPipelineExecution(t *testing.T) {
+	exec := NewSkillExecutor(&App{}, nil, nil)
+	result := exec.executePipelineSkillDetailed(&corelib.NLSkillEntry{
+		Name:             "pipeline-browser-wrapper",
+		RequiresToolsets: []string{"browser"},
+		Pipeline: []corelib.SkillPipelineStep{{
+			Skill: "child",
+		}},
+	}, nil, nil)
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "stable browser tool/session mechanism") {
+		t.Fatalf("executePipelineSkillDetailed error = %v, want stable browser rejection", result.Err)
+	}
+}
+
+func TestSkillExecutorAsRegisteredToolsFiltersShellBrowserAutomation(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	app.testHomeDir = tempHome
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{
+			Name:        "zhihu-poster",
+			Status:      "active",
+			RequiresGUI: true,
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{"command": "python post.py --screenshot"},
+			}},
+		},
+		{Name: "normal", Status: "active", Description: "safe skill"},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	exec := NewSkillExecutor(app, nil, nil)
+
+	tools := exec.AsRegisteredTools()
+	if len(tools) != 1 || tools[0].Name != "normal" {
+		t.Fatalf("AsRegisteredTools() = %+v, want only normal", tools)
+	}
+}
+
+func TestSkillExecutorRegisterRejectsShellBrowserAutomation(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	app.testHomeDir = tempHome
+	exec := NewSkillExecutor(app, nil, nil)
+
+	err := exec.Register(corelib.NLSkillEntry{
+		Name:        "new-browser-script",
+		Status:      "active",
+		RequiresGUI: true,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "python -m playwright connect_over_cdp http://127.0.0.1:3888"},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "stable browser tool/session mechanism") {
+		t.Fatalf("Register() error = %v, want stable browser rejection", err)
+	}
+}
+
+func TestManagedCapabilityReplacementRejectsShellBrowserAutomation(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	app.testHomeDir = tempHome
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name:   "managed-safe",
+		Status: "active",
+		Capability: &corelib.SkillCapabilityRef{
+			CapabilityID: "cap-browser",
+		},
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo ok"}}},
+	}); err != nil {
+		t.Fatalf("Register(existing) error = %v", err)
+	}
+
+	err := app.registerOrReplaceManagedCapabilitySkill(corelib.NLSkillEntry{
+		Name:   "managed-browser",
+		Status: "active",
+		Capability: &corelib.SkillCapabilityRef{
+			CapabilityID: "cap-browser",
+		},
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "python -m playwright connect_over_cdp http://127.0.0.1:3888"}}},
+	}, &corelib.NLSkillEntry{Name: "managed-safe", Capability: &corelib.SkillCapabilityRef{CapabilityID: "cap-browser"}})
+	if err == nil || !strings.Contains(err.Error(), "stable browser tool/session mechanism") {
+		t.Fatalf("registerOrReplaceManagedCapabilitySkill() error = %v, want stable browser rejection", err)
+	}
+}
+
+func TestSkillInstallAdmissionRejectsShellBrowserAutomationEvenWithGuardrailsOff(t *testing.T) {
+	app := &App{policyEngine: NewPolicyEngineWithMode("none")}
+	err := app.admitManualSkillInstall(context.Background(), &corelib.NLSkillEntry{
+		Name:        "install-browser-script",
+		Status:      "active",
+		RequiresGUI: true,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "python post.py --screenshot"},
+		}},
+	}, "manual skill create", nil)
+	if err == nil || !strings.Contains(err.Error(), "stable browser tool/session mechanism") {
+		t.Fatalf("admitManualSkillInstall() error = %v, want stable browser rejection", err)
+	}
+}
+
+func TestSkillRunnerPersistRepairResultRejectsShellBrowserAutomation(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	skillDir := filepath.Join(t.TempDir(), "repair-browser")
+	exec := NewSkillExecutor(&App{testHomeDir: tempHome}, nil, nil)
+	if err := exec.Register(corelib.NLSkillEntry{
+		Name:   "repair-browser",
+		Status: "active",
+		Source: "manual",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo safe"},
+		}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	runner := NewSkillRunner(exec)
+
+	err := runner.persistRepairResult(&corelib.NLSkillEntry{
+		Name:     "repair-browser",
+		Status:   "active",
+		SkillDir: skillDir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "python -m playwright connect_over_cdp http://127.0.0.1:3888"},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "stable browser tool/session mechanism") {
+		t.Fatalf("persistRepairResult() error = %v, want stable browser rejection", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(skillDir, "skill.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("persistRepairResult() wrote rejected skill.yaml, stat err = %v", statErr)
+	}
+	defs := exec.List()
+	if len(defs) != 1 || len(defs[0].Steps) != 1 || browserSkillStringParam(defs[0].Steps[0].Params, "command") != "echo safe" {
+		t.Fatalf("persistRepairResult() mutated config despite rejection: %+v", defs)
 	}
 }
 

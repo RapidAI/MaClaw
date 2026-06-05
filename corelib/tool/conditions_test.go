@@ -56,7 +56,7 @@ func TestEvaluateToolConditions_RequiresToolsets_PartiallyAvailable(t *testing.T
 	// "coding" toolset requires multiple tools.
 	cond := ToolConditions{RequiresToolsets: []string{"coding"}}
 	// Only provide some of the coding tools.
-	available := map[string]bool{"create_session": true, "send_and_observe": true}
+	available := map[string]bool{"list_sessions": true, "get_session_output": true}
 	if EvaluateToolConditions(cond, available) {
 		t.Error("expected false when required toolset is only partially available")
 	}
@@ -131,7 +131,7 @@ func TestEvaluateToolConditions_CombinedToolsAndToolsets(t *testing.T) {
 	}
 
 	// ssh available, coding toolset not fully available → both conditions met.
-	available := map[string]bool{"ssh": true, "create_session": true}
+	available := map[string]bool{"ssh": true, "list_sessions": true}
 	if !EvaluateToolConditions(cond, available) {
 		t.Error("expected true when requires_tools met and fallback_for_toolsets met")
 	}

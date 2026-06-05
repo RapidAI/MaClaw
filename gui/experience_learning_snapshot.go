@@ -610,7 +610,7 @@ func experienceToolRecoverySummaryFromMemoryEntry(entry memory.Entry) Experience
 	summary := ExperienceToolRecoverySummary{
 		TraceID:              "memory:" + firstNonEmptyExperienceString(entry.ID, shortGroupDiscussionHash(entry.Content)),
 		Title:                firstNonEmptyExperienceString(entry.Title, memoryTraceTitle(entry), "Tool recovery evidence"),
-		ToolName:             experienceTagValue(entry.Tags, "tool:"),
+		ToolName:             normalizeExperienceBrowserToolName(experienceTagValue(entry.Tags, "tool:")),
 		Category:             experienceTagValue(entry.Tags, "category:"),
 		Action:               experienceTagValue(entry.Tags, "action:"),
 		ProviderName:         firstNonEmptyExperienceString(experienceContentField(entry.Content, "Provider"), experienceTagValue(entry.Tags, "provider:")),
@@ -627,7 +627,7 @@ func experienceToolRecoverySummaryFromMemoryEntry(entry memory.Entry) Experience
 		Tags:                 append([]string(nil), entry.Tags...),
 	}
 	if summary.ToolName == "" {
-		summary.ToolName = strings.TrimSpace(entry.Title)
+		summary.ToolName = normalizeExperienceBrowserToolName(entry.Title)
 	}
 	return summary
 }
@@ -636,7 +636,7 @@ func experienceToolRecoverySummaryFromTraceDetail(detail ExperienceTraceDetail) 
 	summary := ExperienceToolRecoverySummary{
 		TraceID:              detail.ID,
 		Title:                detail.Title,
-		ToolName:             experienceTagValue(detail.Tags, "tool:"),
+		ToolName:             normalizeExperienceBrowserToolName(experienceTagValue(detail.Tags, "tool:")),
 		Category:             experienceTagValue(detail.Tags, "category:"),
 		Action:               experienceTagValue(detail.Tags, "action:"),
 		ProviderName:         firstNonEmptyExperienceString(experienceContentField(detail.Detail, "Provider"), experienceTagValue(detail.Tags, "provider:")),
@@ -653,7 +653,7 @@ func experienceToolRecoverySummaryFromTraceDetail(detail ExperienceTraceDetail) 
 		Tags:                 append([]string(nil), detail.Tags...),
 	}
 	if summary.ToolName == "" {
-		summary.ToolName = strings.TrimSpace(detail.Title)
+		summary.ToolName = normalizeExperienceBrowserToolName(detail.Title)
 	}
 	return summary
 }
@@ -1010,19 +1010,30 @@ func traceDetailFromRoutingHint(hint coretool.ToolRoutingHint) ExperienceTraceDe
 }
 
 func traceDetailFromSkillNudge(nudge coretool.ToolSkillNudgeCandidate) ExperienceTraceDetail {
-	id := "skill_nudge:" + firstNonEmptyExperienceString(nudge.ContextKey, nudge.SuggestedName, strings.Join(nudge.ToolSequence, ":"))
+	sequence := normalizeExperienceBrowserToolSequence(nudge.ToolSequence)
+	id := "skill_nudge:" + firstNonEmptyExperienceString(nudge.ContextKey, nudge.SuggestedName, strings.Join(sequence, ":"))
+	kind := experienceTraceKindSkillNudgeCandidate.String()
+	impact := "Review candidate only; no skill is created, installed, or run automatically."
+	reviewRequired := true
+	reviewAction := "Inspect the repeated tool sequence and create or update a skill only after confirming it is safe and reusable."
+	if experienceIsMergedBrowserOnlySequence(sequence) {
+		kind = experienceTraceKindToolMemory.String()
+		impact = "Legacy browser automation sequence is context only; use the built-in browser tool instead of creating or updating a browser skill."
+		reviewRequired = false
+		reviewAction = ""
+	}
 	return ExperienceTraceDetail{
 		ID:             id,
-		Kind:           experienceTraceKindSkillNudgeCandidate.String(),
+		Kind:           kind,
 		Title:          firstNonEmptyExperienceString(nudge.SuggestedName, nudge.ContextKey, "Skill candidate"),
 		Summary:        strings.TrimSpace(nudge.Description),
-		Detail:         joinExperienceDetailLines("Task type: "+nudge.TaskType, "Tokens: "+strings.Join(nudge.QueryTokens, ", "), "Sequence: "+strings.Join(nudge.ToolSequence, " -> ")),
+		Detail:         joinExperienceDetailLines("Task type: "+nudge.TaskType, "Tokens: "+strings.Join(nudge.QueryTokens, ", "), "Sequence: "+strings.Join(sequence, " -> ")),
 		SourceType:     string(experienceTraceSourceToolUsage),
 		Evidence:       nudge.Evidence,
 		Confidence:     nudge.Confidence,
-		Impact:         "Review candidate only; no skill is created, installed, or run automatically.",
-		ReviewRequired: true,
-		ReviewAction:   "Inspect the repeated tool sequence and create or update a skill only after confirming it is safe and reusable.",
+		Impact:         impact,
+		ReviewRequired: reviewRequired,
+		ReviewAction:   reviewAction,
 	}
 }
 
@@ -1119,11 +1130,17 @@ func traceDetailFromMemoryEntry(entry memory.Entry) (ExperienceTraceDetail, bool
 			impact = "Reviewed A2A rollback signal; it remains source evidence and no rollback execution was authorized automatically."
 		}
 	case hasTag(entry.Tags, experienceTraceKindSkillNudgeCandidate.String()):
-		kind = string(experienceTraceKindSkillNudgeReview)
-		impact = "Repeated tool sequence suggests a reusable skill candidate; review it before creating or updating any skill."
-		reviewRequired = !reviewResolved
-		if reviewResolved {
-			impact = "Reviewed tool self-evolution candidate; it remains source evidence and no skill was created automatically."
+		if experienceIsMergedBrowserOnlySequence(experienceSkillDraftSequence(entry.Content, entry.Tags)) {
+			kind = string(experienceTraceKindToolMemory)
+			impact = "Legacy browser automation skill nudge is context only; use the built-in browser tool instead of creating or updating a browser skill."
+			reviewRequired = false
+		} else {
+			kind = string(experienceTraceKindSkillNudgeReview)
+			impact = "Repeated tool sequence suggests a reusable skill candidate; review it before creating or updating any skill."
+			reviewRequired = !reviewResolved
+			if reviewResolved {
+				impact = "Reviewed tool self-evolution candidate; it remains source evidence and no skill was created automatically."
+			}
 		}
 	case hasTag(entry.Tags, experienceTraceKindToolRecoveryPattern.String()) && (hasTag(entry.Tags, experienceReviewRequiredTag) || reviewResolved):
 		kind = string(experienceTraceKindToolRecoveryPattern)

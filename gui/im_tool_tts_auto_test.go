@@ -80,6 +80,12 @@ func TestShouldEmitDesktopTTSPlaybackAllowsDesktopContexts(t *testing.T) {
 	}
 }
 
+func TestTTSAcceptsRuntimeOwnerForPlatformIsolation(t *testing.T) {
+	if !toolAcceptsRuntimePolicyOwnerArg("tts") {
+		t.Fatal("tts must accept runtime owner so platform selection stays tab-scoped")
+	}
+}
+
 func TestIsVoiceInputMessageUsesStructuralModality(t *testing.T) {
 	if !isVoiceInputMessage(IMUserMessage{MessageType: "voice"}) {
 		t.Fatal("voice message type was not recognized")

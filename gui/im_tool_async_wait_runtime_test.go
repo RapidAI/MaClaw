@@ -22,8 +22,8 @@ func TestRuntimeLoopContextForOwnerDoesNotUseOtherCurrentLoop(t *testing.T) {
 	if got := h.runtimeLoopContextForOwner("missing:owner"); got != nil {
 		t.Fatalf("runtimeLoopContextForOwner(missing) = %p, want nil", got)
 	}
-	if got := h.runtimeLoopContextForOwner(""); got != desktopCtx {
-		t.Fatalf("runtimeLoopContextForOwner(legacy) = %p, want current ctx %p", got, desktopCtx)
+	if got := h.runtimeLoopContextForOwner(""); got != nil {
+		t.Fatalf("runtimeLoopContextForOwner(empty) = %p, want nil isolation boundary", got)
 	}
 }
 

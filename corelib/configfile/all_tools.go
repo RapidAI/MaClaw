@@ -1,12 +1,15 @@
 package configfile
 
+import "github.com/RapidAI/CodeClaw/corelib"
+
 // ToolConfigParams contains the parameters needed to write all tool configs.
 type ToolConfigParams struct {
-	Token             string // API token / key
-	BaseURL           string // CodeGen API base URL (openai 协议)
-	AnthropicBaseURL  string // anthropic 协议兼容端点（Claude/TigerClaw Code 使用）；为空时使用 BaseURL
-	ModelID           string // 默认模型 ID
-	ProviderName      string // 服务商名称（用于 OpenCode/Codex 的 provider ID）
+	Token            string // API token / key
+	BaseURL          string // CodeGen API base URL (openai 协议)
+	AnthropicBaseURL string // anthropic 协议兼容端点（Claude/TigerClaw Code 使用）；为空时使用 BaseURL
+	ModelID          string // 默认模型 ID
+	ProviderName     string // 服务商名称（用于 OpenCode/Codex 的 provider ID）
+	ClientName       string // CodeGen client identity for tools that support custom headers
 }
 
 // effectiveAnthropicBaseURL returns AnthropicBaseURL if set, otherwise BaseURL.
@@ -15,6 +18,13 @@ func (p ToolConfigParams) effectiveAnthropicBaseURL() string {
 		return p.AnthropicBaseURL
 	}
 	return p.BaseURL
+}
+
+func (p ToolConfigParams) effectiveCodeGenClientName() string {
+	if corelib.IsCodeGenURL(p.BaseURL) {
+		return corelib.NormalizeCodeGenClientName(p.ClientName)
+	}
+	return p.ClientName
 }
 
 // ToolConfigError records a single tool config write failure.
@@ -56,12 +66,8 @@ func DefaultToolWriters(params ToolConfigParams) []ToolWriter {
 		{
 			Name: "Codex",
 			Fn: func() error {
-				return WriteCodexConfig(params.Token, params.BaseURL, params.ModelID, params.ProviderName, "responses")
+				return WriteCodexConfigWithClientName(params.Token, params.BaseURL, params.ModelID, params.ProviderName, "responses", params.effectiveCodeGenClientName())
 			},
-		},
-		{
-			Name: "Gemini",
-			Fn:   func() error { return WriteGeminiConfig(params.Token, params.BaseURL, params.ModelID) },
 		},
 		{
 			Name: "IFlow",

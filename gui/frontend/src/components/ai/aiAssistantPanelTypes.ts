@@ -4,6 +4,7 @@ export type { GroupDiscussionPanelControl, GroupDiscussionPanelStatus } from "./
 import type { GroupDiscussionPanelControl } from "./groupDiscussionTypes";
 import type { PendingHistoryDiscussionOpen, PendingProjectTabOpen } from "./usePendingAssistantTabOpen";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
+import type { AssistantUpdatePayload } from "./AssistantUpdateNotice";
 
 /**
  * State fields provided by useAIAssistant hook.
@@ -14,7 +15,11 @@ export interface AIAssistantPanelHookState {
     messages: ChatMessage[];
     progressMessages: ChatMessage[];
     sending: boolean;
+    sendingSessionKey?: string;
+    busySessionKeys?: string[];
     streaming: boolean;
+    streamingSessionKey?: string;
+    streamingSessionKeys?: string[];
     visualBusy: boolean;
     ready: boolean;
     initStatus: AIAssistantInitStatus;
@@ -36,11 +41,6 @@ export interface AIAssistantPanelAppState {
     showTraceEntry?: boolean;
 }
 
-/**
- * Combined state props for AIAssistantPanel.
- * Backward-compatible: all hook fields become optional here so tests can
- * provide partial state without casting.
- */
 export interface AIAssistantPanelStateProps extends Partial<AIAssistantPanelHookState>, AIAssistantPanelAppState {
     messages: ChatMessage[];
     sending: boolean;
@@ -71,20 +71,12 @@ export interface AIAssistantPanelHookActions {
     dismissAgentView: (viewId: string | undefined, data?: Record<string, unknown>) => void | Promise<void>;
 }
 
-/**
- * Action callbacks provided by the App shell (not the hook).
- */
 export interface AIAssistantPanelAppActions {
     onOpenOnboarding?: () => void;
     onOpenTutorial?: () => void;
     onTaskPrefsChanged?: () => void;
 }
 
-/**
- * Combined action props for AIAssistantPanel.
- * Backward-compatible: all hook actions become optional here so tests can
- * provide partial actions without casting.
- */
 export interface AIAssistantPanelActionProps extends Partial<AIAssistantPanelHookActions>, AIAssistantPanelAppActions {}
 
 export interface AIAssistantPanelWindowProps {
@@ -114,6 +106,9 @@ export interface AIAssistantPanelProps {
     onPendingHistoryDiscussionOpenHandled?: () => void;
     pendingProjectTabOpen?: PendingProjectTabOpen | null;
     onPendingProjectTabOpenHandled?: () => void;
+    appUpdateAvailable?: AssistantUpdatePayload | null;
+    onOpenAppUpdate?: () => void;
+    onDismissAppUpdate?: (latestVersion: string) => void;
 }
 
 export type AIAssistantPanelCompatProps = AIAssistantPanelProps & AIAssistantPanelStateProps & AIAssistantPanelActionProps & AIAssistantPanelWindowProps;

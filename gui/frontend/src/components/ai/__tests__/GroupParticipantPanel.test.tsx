@@ -196,6 +196,67 @@ describe("GroupParticipantPanel", () => {
         expect(listVirtualEmployeesMock).not.toHaveBeenCalled();
     });
 
+    it("keeps a supplied participant avatar if later props omit it and refresh fails", async () => {
+        const avatar = "data:image/png;base64,iVBORw0KGgo=";
+        listVirtualEmployeesMock.mockRejectedValueOnce(new Error("temporary unavailable"));
+
+        const { rerender } = render(
+            <GroupParticipantPanel
+                participants={[{ id: "ve-1", name: "Agent 1", online: true, avatarDataURL: avatar }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        expect(screen.getByTestId("participant-avatar-ve-1").getAttribute("src")).toBe(avatar);
+
+        rerender(
+            <GroupParticipantPanel
+                participants={[{ id: "ve-1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        await waitFor(() => expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(1));
+        expect(screen.getByTestId("participant-avatar-ve-1").getAttribute("src")).toBe(avatar);
+    });
+
+    it("caches supplied avatars even when another participant needs backend refresh", async () => {
+        const avatar = "data:image/png;base64,iVBORw0KGgo=";
+        listVirtualEmployeesMock
+            .mockResolvedValueOnce([])
+            .mockRejectedValueOnce(new Error("temporary unavailable"));
+
+        const { rerender } = render(
+            <GroupParticipantPanel
+                participants={[
+                    { id: "ve-1", name: "Agent 1", online: true, avatarDataURL: avatar },
+                    { id: "ve-2", name: "Agent 2", online: true },
+                ]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        await waitFor(() => expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(1));
+        expect(screen.getByTestId("participant-avatar-ve-1").getAttribute("src")).toBe(avatar);
+
+        rerender(
+            <GroupParticipantPanel
+                participants={[
+                    { id: "ve-1", name: "Agent 1", online: true },
+                    { id: "ve-2", name: "Agent 2", online: true },
+                ]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        await waitFor(() => expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(2));
+        expect(screen.getByTestId("participant-avatar-ve-1").getAttribute("src")).toBe(avatar);
+    });
+
     it("skips avatar refresh work while mounted in a hidden tab", async () => {
         listVirtualEmployeesMock.mockResolvedValue([
             { id: "ve-profile-1", machine_id: "machine-1", name: "Agent 1", online_status: "online", avatar_data_url: "data:image/png;base64,iVBORw0KGgo=" },
@@ -243,6 +304,127 @@ describe("GroupParticipantPanel", () => {
         await Promise.resolve();
         expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(1);
         expect(screen.getByTestId("participant-avatar-machine-1").getAttribute("src")).toBe(avatar);
+    });
+
+    it("keeps already resolved avatars when a later refresh fails", async () => {
+        const avatar = "data:image/png;base64,iVBORw0KGgo=";
+        listVirtualEmployeesMock
+            .mockResolvedValueOnce([
+                { id: "ve-profile-1", machine_id: "machine-1", name: "Agent 1", online_status: "online", avatar_data_url: avatar },
+            ])
+            .mockRejectedValueOnce(new Error("temporary unavailable"));
+
+        const { rerender } = render(
+            <GroupParticipantPanel
+                participants={[{ id: "machine-1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        await screen.findByTestId("participant-avatar-machine-1");
+
+        rerender(
+            <GroupParticipantPanel
+                participants={[
+                    { id: "machine-1", name: "Agent 1", online: true },
+                    { id: "machine-2", name: "Agent 2", online: true },
+                ]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        await waitFor(() => expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(2));
+        expect(screen.getByTestId("participant-avatar-machine-1").getAttribute("src")).toBe(avatar);
+    });
+
+    it("keeps already resolved avatars when a later refresh returns partial data", async () => {
+        const avatar1 = "data:image/png;base64,iVBORw0KGgo=";
+        const avatar2 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ";
+        listVirtualEmployeesMock
+            .mockResolvedValueOnce([
+                { id: "ve-profile-1", machine_id: "machine-1", name: "Agent 1", online_status: "online", avatar_data_url: avatar1 },
+            ])
+            .mockResolvedValueOnce([
+                { id: "ve-profile-2", machine_id: "machine-2", name: "Agent 2", online_status: "online", avatar_data_url: avatar2 },
+            ]);
+
+        const { rerender } = render(
+            <GroupParticipantPanel
+                participants={[{ id: "machine-1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        await screen.findByTestId("participant-avatar-machine-1");
+
+        rerender(
+            <GroupParticipantPanel
+                participants={[
+                    { id: "machine-1", name: "Agent 1", online: true },
+                    { id: "machine-2", name: "Agent 2", online: true },
+                ]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        await waitFor(() => expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(2));
+        expect(screen.getByTestId("participant-avatar-machine-1").getAttribute("src")).toBe(avatar1);
+        expect(screen.getByTestId("participant-avatar-machine-2").getAttribute("src")).toBe(avatar2);
+    });
+
+    it("drops cached avatars for participants that leave the panel", async () => {
+        const avatar1 = "data:image/png;base64,iVBORw0KGgo=";
+        const avatar2 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ";
+        listVirtualEmployeesMock
+            .mockResolvedValueOnce([
+                { id: "ve-profile-1", machine_id: "machine-1", name: "Agent 1", online_status: "online", avatar_data_url: avatar1 },
+                { id: "ve-profile-2", machine_id: "machine-2", name: "Agent 2", online_status: "online", avatar_data_url: avatar2 },
+            ])
+            .mockResolvedValueOnce([
+                { id: "ve-profile-1", machine_id: "machine-1", name: "Agent 1", online_status: "online", avatar_data_url: avatar1 },
+            ])
+            .mockRejectedValueOnce(new Error("temporary unavailable"));
+
+        const { rerender } = render(
+            <GroupParticipantPanel
+                participants={[
+                    { id: "machine-1", name: "Agent 1", online: true },
+                    { id: "machine-2", name: "Agent 2", online: true },
+                ]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        await screen.findByTestId("participant-avatar-machine-2");
+
+        rerender(
+            <GroupParticipantPanel
+                participants={[{ id: "machine-1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+        await waitFor(() => expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(2));
+
+        rerender(
+            <GroupParticipantPanel
+                participants={[
+                    { id: "machine-1", name: "Agent 1", online: true },
+                    { id: "machine-2", name: "Agent 2", online: true },
+                ]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        await waitFor(() => expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(3));
+        expect(screen.getByTestId("participant-avatar-machine-1").getAttribute("src")).toBe(avatar1);
+        expect(screen.queryByTestId("participant-avatar-machine-2")).toBeNull();
     });
 
     it("does not resubscribe status events when only participant display metadata changes", () => {

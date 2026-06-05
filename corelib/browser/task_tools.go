@@ -4,10 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+var browserSessionTaskSupervisors = struct {
+	mu    sync.Mutex
+	items map[string]*BrowserTaskSupervisor
+}{items: map[string]*BrowserTaskSupervisor{}}
 
 // RegisterTaskTools registers browser task supervisor tools into the registry.
 // loopMgr may be nil; when non-nil, browser_task_status can query background tasks.
@@ -15,38 +21,51 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 	tools := []tool.RegisteredTool{
 		{
 			Name:        "browser_task_run",
-			Description: "执行浏览器自动化任务。接受操作步骤序列和成功标准，逐步执行并验证。支持自动重试。",
+			Description: "Run stable browser automation steps. Requires session_id; eval/click_at are disabled. Type steps may target the focused editable element after a click.",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "automation", "task", "浏览器", "自动化", "任务", "网页"},
+			Tags:        []string{"browser", "automation", "task"},
 			Priority:    5,
-			Required:    []string{"steps"},
+			Required:    []string{"session_id", "steps"},
 			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
 				"steps": map[string]interface{}{
 					"type":        "string",
-					"description": `操作步骤 JSON 数组，每个步骤: {"action":"navigate|click|type|wait|eval|scroll|select","params":{"url":"...","selector":"...","text":"..."}}`,
+					"description": `Action steps JSON array. Each step: {"action":"navigate|click|type|wait|scroll|select","params":{"url":"...","ref":"@e1","selector":"...","text":"...","content_format":"plain|markdown"}}. Type can omit ref/selector to write into the currently focused editable element after a click. For rich editors/article publishing, type steps may set content_format=markdown. eval/click_at are disabled.`,
 				},
 				"success_criteria": map[string]interface{}{
 					"type":        "string",
-					"description": `成功标准 JSON 数组（可选），每个标准: {"type":"dom_exists|dom_text|url_contains|url_matches|ocr_contains","selector":"...","pattern":"..."}`,
+					"description": `Optional success criteria JSON array. Each criterion: {"type":"dom_exists|dom_text|url_contains|url_matches|network_request|console_no_error","selector":"...","pattern":"..."}`,
 				},
 				"description": map[string]interface{}{
 					"type":        "string",
-					"description": "任务描述（可选）",
+					"description": "optional task description",
 				},
 				"max_retries": map[string]interface{}{
 					"type":        "integer",
-					"description": "最大重试次数（默认 3）",
+					"description": "maximum retry count, default 3",
+				},
+				"content_format": map[string]interface{}{
+					"type":        "string",
+					"description": "Optional default for type steps: plain (default) or markdown. Per-step params.content_format overrides this.",
 				},
 			},
 			Handler: func(args map[string]interface{}) string {
-				stepsJSON, _ := args["steps"].(string)
-				if stepsJSON == "" {
-					return "缺少 steps 参数"
+				execSupervisor, err := taskSupervisorForArgs(supervisor, args)
+				if err != nil {
+					return fmt.Sprintf("browser session unavailable: %v", err)
+				}
+				stepsJSON, err := browserJSONArg(args, "steps")
+				if err != nil {
+					return fmt.Sprintf("steps JSON parse failed: %v", err)
+				}
+				if strings.TrimSpace(stepsJSON) == "" {
+					return "missing steps"
 				}
 				var steps []StepSpec
 				if err := json.Unmarshal([]byte(stepsJSON), &steps); err != nil {
-					return fmt.Sprintf("steps JSON 解析失败: %v", err)
+					return fmt.Sprintf("steps JSON parse failed: %v", err)
 				}
+				applyDefaultContentFormatToTypeSteps(steps, strVal(args, "content_format"))
 
 				spec := TaskSpec{
 					Steps:       steps,
@@ -54,15 +73,17 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 					MaxRetries:  intVal(args, "max_retries", 3),
 				}
 
-				if criteriaJSON, ok := args["success_criteria"].(string); ok && criteriaJSON != "" {
+				if criteriaJSON, err := browserJSONArg(args, "success_criteria"); err != nil {
+					return fmt.Sprintf("success_criteria JSON parse failed: %v", err)
+				} else if strings.TrimSpace(criteriaJSON) != "" {
 					var criteria []CriterionSpec
 					if err := json.Unmarshal([]byte(criteriaJSON), &criteria); err != nil {
-						return fmt.Sprintf("success_criteria JSON 解析失败: %v", err)
+						return fmt.Sprintf("success_criteria JSON parse failed: %v", err)
 					}
 					spec.SuccessCriteria = criteria
 				}
 
-				state, err := supervisor.Execute(spec)
+				state, err := execSupervisor.Execute(spec)
 				if err != nil {
 					errResp := map[string]interface{}{
 						"status": "failed",
@@ -90,31 +111,35 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 		},
 		{
 			Name:        "browser_task_status",
-			Description: "查询浏览器任务的当前状态和进度。支持查询后台回放任务。",
+			Description: "Query browser task status. Requires session_id.",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "task", "status", "浏览器", "任务", "状态", "回放", "进度"},
+			Tags:        []string{"browser", "task", "status"},
 			Priority:    4,
+			Required:    []string{"session_id"},
 			InputSchema: map[string]interface{}{
-				"task_id": map[string]interface{}{"type": "string", "description": "任务 ID（留空则列出所有浏览器后台任务）"},
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+				"task_id":    map[string]interface{}{"type": "string", "description": "optional task id"},
 			},
 			Handler: func(args map[string]interface{}) string {
 				taskID, _ := args["task_id"].(string)
+				statusSupervisor, err := taskSupervisorForArgs(supervisor, args)
+				if err != nil {
+					return fmt.Sprintf("browser session unavailable: %v", err)
+				}
 
-				// If task_id provided, try supervisor first
-				if taskID != "" {
-					state, ok := supervisor.GetState(taskID)
+				if taskID != "" && statusSupervisor != nil {
+					state, ok := statusSupervisor.GetState(taskID)
 					if ok {
 						result, _ := json.Marshal(state)
 						return string(result)
 					}
 				}
 
-				// Try BackgroundLoopManager for background replay tasks
 				if loopMgr != nil {
 					if taskID != "" {
 						ctx := loopMgr.Get(taskID)
 						if ctx == nil {
-							return fmt.Sprintf("任务 %s 不存在或已完成", taskID)
+							return fmt.Sprintf("task %s not found", taskID)
 						}
 						result, _ := json.Marshal(map[string]interface{}{
 							"task_id":     ctx.ID,
@@ -126,7 +151,6 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 						})
 						return string(result)
 					}
-					// List all browser background tasks
 					views := loopMgr.ListViews()
 					var browserViews []agent.BackgroundLoopView
 					for _, v := range views {
@@ -135,43 +159,51 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 						}
 					}
 					if len(browserViews) == 0 {
-						return "当前没有浏览器后台任务"
+						return "no browser background tasks"
 					}
 					result, _ := json.Marshal(browserViews)
 					return string(result)
 				}
 
 				if taskID != "" {
-					return fmt.Sprintf("任务 %s 不存在", taskID)
+					return fmt.Sprintf("task %s not found", taskID)
 				}
-				return "当前没有浏览器后台任务"
+				return "no browser background tasks"
 			},
 		},
 		{
 			Name:        "browser_task_verify",
-			Description: "对当前浏览器页面执行成功标准验证。可用于检查页面是否处于预期状态。",
+			Description: "Verify current page against success criteria. Requires session_id.",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "verify", "test", "浏览器", "验证", "检查", "网页"},
+			Tags:        []string{"browser", "verify", "test"},
 			Priority:    5,
-			Required:    []string{"criteria"},
+			Required:    []string{"session_id", "criteria"},
 			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
 				"criteria": map[string]interface{}{
 					"type":        "string",
-					"description": `验证标准 JSON 数组: [{"type":"dom_exists|dom_text|url_contains|url_matches|ocr_contains","selector":"...","pattern":"..."}]`,
+					"description": `Success criteria JSON array: [{"type":"dom_exists|dom_text|url_contains|url_matches|network_request|console_no_error","selector":"...","pattern":"..."}]`,
 				},
 			},
 			Handler: func(args map[string]interface{}) string {
-				criteriaJSON, _ := args["criteria"].(string)
-				if criteriaJSON == "" {
-					return "缺少 criteria 参数"
+				verifySupervisor, err := taskSupervisorForArgs(supervisor, args)
+				if err != nil {
+					return fmt.Sprintf("browser session unavailable: %v", err)
+				}
+				criteriaJSON, err := browserJSONArg(args, "criteria")
+				if err != nil {
+					return fmt.Sprintf("criteria JSON parse failed: %v", err)
+				}
+				if strings.TrimSpace(criteriaJSON) == "" {
+					return "missing criteria"
 				}
 				var criteria []CriterionSpec
 				if err := json.Unmarshal([]byte(criteriaJSON), &criteria); err != nil {
-					return fmt.Sprintf("criteria JSON 解析失败: %v", err)
+					return fmt.Sprintf("criteria JSON parse failed: %v", err)
 				}
-				result, err := supervisor.Verify(criteria)
+				result, err := verifySupervisor.Verify(criteria)
 				if err != nil {
-					return fmt.Sprintf("验证失败: %v", err)
+					return fmt.Sprintf("verification failed: %v", err)
 				}
 				out, _ := json.Marshal(result)
 				return string(out)
@@ -186,42 +218,74 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 	}
 }
 
-// RegisterOCRTool registers the browser_ocr tool. Call after OCR provider is ready.
+// RegisterOCRTool intentionally does not register browser_ocr in the stable
+// browser mechanism. OCR captures pixels and reintroduces the screenshot path;
+// browser automation should use DOM refs, extraction, URL, network, and console
+// criteria instead.
 func RegisterOCRTool(registry *tool.Registry, ocr OCRProvider, sessionFn func() (*Session, error)) {
-	registry.Register(tool.RegisteredTool{
-		Name:        "browser_ocr",
-		Description: "对当前浏览器页面截图执行 OCR 文字识别。返回识别到的文本区域列表（含坐标和置信度）。首次调用会自动安装 RapidOCR。",
-		Category:    tool.CategoryBuiltin,
-		Tags:        []string{"browser", "ocr", "text", "recognition", "浏览器", "文字识别", "网页"},
-		Priority:    5,
-		Status:      tool.StatusAvailable,
-		Source:      "builtin:browser-ocr",
-		InputSchema: map[string]interface{}{
-			"full_page": map[string]interface{}{"type": "boolean", "description": "是否截取整个页面（默认 false）"},
-		},
-		Handler: func(args map[string]interface{}) string {
-			sess, err := sessionFn()
-			if err != nil {
-				return fmt.Sprintf("浏览器未连接: %v", err)
-			}
-			if ocr == nil || !ocr.IsAvailable() {
-				return "OCR 不可用（未安装 python3 或 rapidocr-onnxruntime）"
-			}
-			fullPage, _ := args["full_page"].(bool)
-			imgB64, err := sess.Screenshot(fullPage)
-			if err != nil {
-				return fmt.Sprintf("截图失败: %v", err)
-			}
-			results, err := ocr.Recognize(imgB64)
-			if err != nil {
-				return fmt.Sprintf("OCR 识别失败: %v", err)
-			}
-			if len(results) == 0 {
-				return "未识别到任何文本"
-			}
-			return FormatOCRForLLM(results)
-		},
-	})
+}
+
+func browserJSONArg(args map[string]interface{}, key string) (string, error) {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return "", nil
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text), nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func taskSupervisorForArgs(base *BrowserTaskSupervisor, args map[string]interface{}) (*BrowserTaskSupervisor, error) {
+	if base == nil {
+		return nil, fmt.Errorf("browser task supervisor is nil")
+	}
+	sessionID := strings.TrimSpace(strArg(args, "session_id", ""))
+	if sessionID == "" {
+		return nil, fmt.Errorf("missing session_id")
+	}
+	agentSession, ok, err := agentSessionFromArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return base, nil
+	}
+	browserSessionTaskSupervisors.mu.Lock()
+	defer browserSessionTaskSupervisors.mu.Unlock()
+	if existing := browserSessionTaskSupervisors.items[agentSession.ID]; existing != nil {
+		return existing, nil
+	}
+	ocr := OCRProvider(nil)
+	if base.verifier != nil {
+		ocr = base.verifier.ocr
+	}
+	supervisor := NewBrowserTaskSupervisor(nil, nil, ocr, func() (*Session, error) {
+		fresh, err := GetAgentSession(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		return fresh.session, nil
+	}, base.logger)
+	supervisor.agentSessionFn = func() (*BrowserAgentSession, error) {
+		return GetAgentSession(sessionID)
+	}
+	browserSessionTaskSupervisors.items[agentSession.ID] = supervisor
+	return supervisor, nil
+}
+
+func forgetBrowserSessionTaskSupervisor(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	browserSessionTaskSupervisors.mu.Lock()
+	delete(browserSessionTaskSupervisors.items, sessionID)
+	browserSessionTaskSupervisors.mu.Unlock()
 }
 
 func strVal(args map[string]interface{}, key string) string {
@@ -249,149 +313,26 @@ func RegisterRecorderTools(registry *tool.Registry, recorder *BrowserRecorder, r
 	loopMgr *agent.BackgroundLoopManager, activityStore ActivityUpdater, statusC chan agent.StatusEvent, logger func(string)) {
 	tools := []tool.RegisteredTool{
 		{
-			Name:        "browser_record_start",
-			Description: "开始录制浏览器操作。录制期间，所有 browser_* 工具的操作会被自动记录。",
-			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "record", "浏览器", "录制"},
-			Priority:    4,
-			InputSchema: map[string]interface{}{},
-			Handler: func(args map[string]interface{}) string {
-				if err := recorder.Start(); err != nil {
-					return fmt.Sprintf("录制启动失败: %v", err)
-				}
-				return "录制已开始。执行浏览器操作后，调用 browser_record_stop 保存。"
-			},
-		},
-		{
-			Name:        "browser_record_stop",
-			Description: "停止录制并保存操作流程。保存到 ~/.maclaw/browser_flows/<name>.json。",
-			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "record", "浏览器", "录制", "保存"},
-			Priority:    4,
-			Required:    []string{"name"},
-			InputSchema: map[string]interface{}{
-				"name":        map[string]interface{}{"type": "string", "description": "流程名称（用于保存文件名）"},
-				"description": map[string]interface{}{"type": "string", "description": "流程描述（可选）"},
-			},
-			Handler: func(args map[string]interface{}) string {
-				name, _ := args["name"].(string)
-				if name == "" {
-					return "缺少 name 参数"
-				}
-				desc, _ := args["description"].(string)
-				flow, err := recorder.Stop(name, desc)
-				if err != nil {
-					return fmt.Sprintf("保存失败: %v", err)
-				}
-				return fmt.Sprintf("录制已保存: %s（%d 个步骤）", flow.Name, len(flow.Steps))
-			},
-		},
-		{
-			Name:        "browser_task_replay",
-			Description: "回放录制的浏览器操作流程。支持参数覆盖（如替换用户名密码）。提交后在后台异步执行，立即返回任务 ID。",
-			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "replay", "automation", "浏览器", "回放", "自动化", "网页"},
-			Priority:    5,
-			Required:    []string{"name"},
-			InputSchema: map[string]interface{}{
-				"name": map[string]interface{}{"type": "string", "description": "流程名称"},
-				"overrides": map[string]interface{}{
-					"type":        "string",
-					"description": `参数覆盖 JSON（可选），如 {"username":"admin","password":"123"}`,
-				},
-			},
-			Handler: func(args map[string]interface{}) string {
-				name, _ := args["name"].(string)
-				if name == "" {
-					return "缺少 name 参数"
-				}
-				flow, err := recorder.LoadFlow(name)
-				if err != nil {
-					return fmt.Sprintf("加载流程失败: %v", err)
-				}
-
-				var overrides map[string]string
-				if ovJSON, ok := args["overrides"].(string); ok && ovJSON != "" {
-					if err := json.Unmarshal([]byte(ovJSON), &overrides); err != nil {
-						return fmt.Sprintf("overrides JSON 解析失败: %v", err)
-					}
-				}
-
-				// If BackgroundLoopManager is available, run async
-				if loopMgr != nil {
-					desc := fmt.Sprintf("回放: %s", flow.Name)
-					loopCtx, waitCh := loopMgr.SpawnOrQueue(agent.SlotKindBrowser, "", desc, 1)
-					if loopCtx != nil {
-						// Slot available — run in background
-						bgLoopMgr := &bgLoopManagerAdapter{mgr: loopMgr}
-						go RunReplayInBackground(loopCtx, flow, overrides, replayer, activityStore, statusC, bgLoopMgr, logger)
-						result, _ := json.Marshal(map[string]interface{}{
-							"status":  "submitted",
-							"task_id": loopCtx.ID,
-							"message": fmt.Sprintf("回放 [%s] 已提交后台执行", flow.Name),
-						})
-						return string(result)
-					}
-					// Slot full — queued
-					queuePos := loopMgr.QueueLength(agent.SlotKindBrowser)
-					go func() {
-						ctx := <-waitCh
-						bgLoopMgr := &bgLoopManagerAdapter{mgr: loopMgr}
-						RunReplayInBackground(ctx, flow, overrides, replayer, activityStore, statusC, bgLoopMgr, logger)
-					}()
-					result, _ := json.Marshal(map[string]interface{}{
-						"status":         "queued",
-						"queue_position": queuePos,
-						"message":        fmt.Sprintf("浏览器 slot 已满，回放 [%s] 已排队（位置 %d）", flow.Name, queuePos),
-					})
-					return string(result)
-				}
-
-				// Fallback: synchronous execution (no BackgroundLoopManager)
-				state, err := replayer.Replay(flow, overrides)
-				if err != nil {
-					errResp := map[string]interface{}{
-						"status": "failed",
-						"error":  err.Error(),
-					}
-					if state != nil {
-						errResp["status"] = string(state.Status)
-						errResp["step"] = state.CurrentStep
-						errResp["total"] = state.TotalSteps
-						errResp["retries"] = state.RetryCount
-					}
-					result, _ := json.Marshal(errResp)
-					return string(result)
-				}
-				result, _ := json.Marshal(map[string]interface{}{
-					"status": string(state.Status),
-					"step":   state.CurrentStep,
-					"total":  state.TotalSteps,
-				})
-				return string(result)
-			},
-		},
-		{
 			Name:        "browser_list_flows",
-			Description: "列出所有已录制的浏览器操作流程。",
+			Description: "List recorded browser flows.",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "flows", "list", "浏览器", "流程", "列表"},
+			Tags:        []string{"browser", "flows", "list"},
 			Priority:    3,
 			InputSchema: map[string]interface{}{},
 			Handler: func(args map[string]interface{}) string {
 				flows, err := recorder.ListFlows()
 				if err != nil {
-					return fmt.Sprintf("列出流程失败: %v", err)
+					return fmt.Sprintf("list flows failed: %v", err)
 				}
 				if len(flows) == 0 {
-					return "没有已录制的流程"
+					return "no recorded browser flows"
 				}
 				var lines []string
 				for _, f := range flows {
-					lines = append(lines, fmt.Sprintf("- %s: %s (%d 步, 录制于 %s)",
+					lines = append(lines, fmt.Sprintf("- %s: %s (%d steps, recorded at %s)",
 						f.Name, f.Description, len(f.Steps), f.RecordedAt.Format("2006-01-02 15:04")))
 				}
-				return fmt.Sprintf("已录制的流程（%d 个）:\n%s", len(flows), strings.Join(lines, "\n"))
+				return fmt.Sprintf("recorded browser flows (%d):\n%s", len(flows), strings.Join(lines, "\n"))
 			},
 		},
 	}
@@ -400,6 +341,23 @@ func RegisterRecorderTools(registry *tool.Registry, recorder *BrowserRecorder, r
 		t.Status = tool.StatusAvailable
 		t.Source = "builtin:browser-record"
 		registry.Register(t)
+	}
+}
+
+func applyDefaultContentFormatToTypeSteps(steps []StepSpec, defaultFormat string) {
+	if normalizeBrowserContentFormat(defaultFormat) != BrowserContentFormatMarkdown {
+		return
+	}
+	for i := range steps {
+		if !strings.EqualFold(strings.TrimSpace(steps[i].Action), "type") {
+			continue
+		}
+		if steps[i].Params == nil {
+			steps[i].Params = map[string]string{}
+		}
+		if strings.TrimSpace(steps[i].Params["content_format"]) == "" {
+			steps[i].Params["content_format"] = BrowserContentFormatMarkdown
+		}
 	}
 }
 

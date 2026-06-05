@@ -5,9 +5,9 @@ package tool
 // fallback_for_toolsets conditions.
 var ToolsetGroups = map[string][]string{
 	"coding": {
-		"create_session", "send_and_observe", "list_sessions",
+		"list_sessions",
 		"get_session_output", "send_input", "interrupt_session",
-		"kill_session", "control_session", "get_session_events",
+		"kill_session", "get_session_events",
 	},
 	"browser": allBrowserToolNames,
 	"ssh":     {"ssh"},

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"net/http"
 	"strings"
@@ -73,7 +74,8 @@ func (r *LLMSecurityReview) callLLM(riskCtx RiskContext, assessment security.Ris
 		map[string]string{"role": "user", "content": prompt},
 	}
 
-	result, err := doSimpleLLMRequest(context.Background(), r.llmConfig, messages, r.client, 30*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "security-review"})
+	result, err := doSimpleLLMRequest(ctx, r.llmConfig, messages, r.client, 30*time.Second)
 	if err != nil {
 		return "", "", err
 	}

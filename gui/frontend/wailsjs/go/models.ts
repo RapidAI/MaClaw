@@ -248,6 +248,7 @@ export namespace main {
 	    model_url: string;
 	    api_key: string;
 	    wire_api: string;
+	    agent_type: string;
 	    is_custom: boolean;
 
 	    static createFrom(source: any = {}) {
@@ -261,6 +262,7 @@ export namespace main {
 	        this.model_url = source["model_url"];
 	        this.api_key = source["api_key"];
 	        this.wire_api = source["wire_api"];
+	        this.agent_type = source["agent_type"];
 	        this.is_custom = source["is_custom"];
 	    }
 	}
@@ -336,27 +338,23 @@ export namespace main {
 	}
 	export class AppConfig {
 	    claude: ToolConfig;
-	    gemini: ToolConfig;
 	    codex: ToolConfig;
 	    opencode: ToolConfig;
 	    codebuddy: ToolConfig;
 	    qoder: ToolConfig;
 	    iflow: ToolConfig;
 	    kilo: ToolConfig;
-	    cursor: ToolConfig;
 	    projects: ProjectConfig[];
 	    current_project: string;
 	    active_tool: string;
 	    hide_startup_popup: boolean;
 	    hide_maclaw_llm_popup: boolean;
-	    show_gemini: boolean;
 	    show_codex: boolean;
 	    show_opencode: boolean;
 	    show_codebuddy: boolean;
 	    show_qoder: boolean;
 	    show_iflow: boolean;
 	    show_kilo: boolean;
-	    show_cursor: boolean;
 	    language: string;
 	    power_optimization: boolean;
 	    screen_dim_timeout_min: number;
@@ -506,27 +504,23 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.claude = this.convertValues(source["claude"], ToolConfig);
-	        this.gemini = this.convertValues(source["gemini"], ToolConfig);
 	        this.codex = this.convertValues(source["codex"], ToolConfig);
 	        this.opencode = this.convertValues(source["opencode"], ToolConfig);
 	        this.codebuddy = this.convertValues(source["codebuddy"], ToolConfig);
 	        this.qoder = this.convertValues(source["qoder"], ToolConfig);
 	        this.iflow = this.convertValues(source["iflow"], ToolConfig);
 	        this.kilo = this.convertValues(source["kilo"], ToolConfig);
-	        this.cursor = this.convertValues(source["cursor"], ToolConfig);
 	        this.projects = this.convertValues(source["projects"], ProjectConfig);
 	        this.current_project = source["current_project"];
 	        this.active_tool = source["active_tool"];
 	        this.hide_startup_popup = source["hide_startup_popup"];
 	        this.hide_maclaw_llm_popup = source["hide_maclaw_llm_popup"];
-	        this.show_gemini = source["show_gemini"];
 	        this.show_codex = source["show_codex"];
 	        this.show_opencode = source["show_opencode"];
 	        this.show_codebuddy = source["show_codebuddy"];
 	        this.show_qoder = source["show_qoder"];
 	        this.show_iflow = source["show_iflow"];
 	        this.show_kilo = source["show_kilo"];
-	        this.show_cursor = source["show_cursor"];
 	        this.language = source["language"];
 	        this.power_optimization = source["power_optimization"];
 	        this.screen_dim_timeout_min = source["screen_dim_timeout_min"];

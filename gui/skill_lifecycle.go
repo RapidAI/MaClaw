@@ -248,6 +248,9 @@ func prepareSkillDirForMarket(skillDir string, autoFix bool, appOpt ...*App) ([]
 		return changes, nil, err
 	}
 	app := firstSkillLifecycleApp(appOpt...)
+	if app != nil && app.isRiskGuardrailOffMode() {
+		return changes, report, nil
+	}
 	if scanReport, scanErr := scanSkillDirForWriteback(skillDir); scanErr != nil {
 		if app != nil && !app.skillInstallMissingScanShouldBlock() {
 			return changes, report, nil
@@ -269,6 +272,9 @@ func firstSkillLifecycleApp(appOpt ...*App) *App {
 }
 
 func scanSkillDirForOutboundPackage(skillDir string, appOpt ...*App) error {
+	if app := firstSkillLifecycleApp(appOpt...); app != nil && app.isRiskGuardrailOffMode() {
+		return nil
+	}
 	entry, err := loadImportedSkillEntry(skillDir)
 	if err != nil {
 		return fmt.Errorf("reload skill for outbound security scan: %w", err)

@@ -243,9 +243,9 @@ func TestBuildExperienceTraceDetailsKeepsSkillNextActionBeforeLimit(t *testing.T
 	t.Cleanup(store.Stop)
 	if err := store.Save(memory.Entry{
 		Title:      "Skill candidate",
-		Content:    "Skill nudge candidate browser_flow; sequence browser_observe -> browser_click",
+		Content:    "Skill nudge candidate refactor_flow; sequence rg -> apply_patch -> go_test",
 		Category:   memory.CategoryProjectKnowledge,
-		Tags:       []string{"skill_nudge_candidate", "browser_flow", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
+		Tags:       []string{"skill_nudge_candidate", "refactor_flow", "rg", "apply_patch", "go_test", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
 		SourceType: "tool_usage",
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -277,9 +277,9 @@ func TestBuildExperienceTraceDetailsKeepsFollowUpAuditBeforeLimit(t *testing.T) 
 	t.Cleanup(store.Stop)
 	if err := store.Save(memory.Entry{
 		Title:      "Skill candidate",
-		Content:    "Skill nudge candidate browser_flow; sequence browser_observe -> browser_click",
+		Content:    "Skill nudge candidate refactor_flow; sequence rg -> apply_patch -> go_test",
 		Category:   memory.CategoryProjectKnowledge,
-		Tags:       []string{"skill_nudge_candidate", "browser_flow", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
+		Tags:       []string{"skill_nudge_candidate", "refactor_flow", "rg", "apply_patch", "go_test", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
 		SourceType: "tool_usage",
 	}); err != nil {
 		t.Fatalf("Save: %v", err)

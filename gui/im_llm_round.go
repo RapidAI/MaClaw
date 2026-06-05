@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -29,6 +30,7 @@ type agentLoopLLMRoundOptions struct {
 	UserID              string
 	History             []agent.ConversationEntry
 	UserText            string
+	Iteration           int
 	InFlightLifecycle   *imInFlightLifecycle
 }
 
@@ -121,6 +123,7 @@ func (h *IMMessageHandler) dispatchAgentLoopLLMRound(opts agentLoopLLMDispatchOp
 		UserID:              opts.UserID,
 		History:             opts.History,
 		UserText:            opts.UserText,
+		Iteration:           opts.Iteration,
 		InFlightLifecycle:   opts.InFlightLifecycle,
 	})
 	result.Response = llmRound.Response
@@ -150,7 +153,20 @@ func (h *IMMessageHandler) executeAgentLoopLLMRound(opts agentLoopLLMRoundOption
 	}
 
 	streamMetrics := &llmStreamMetrics{}
-	resp, err := h.doLLMRequestStream(opts.RequestContext, opts.Config, opts.Conversation, opts.Tools, opts.HTTPClient, opts.OnToken, streamMetrics)
+	requestID := ""
+	loopID := ""
+	if opts.Context != nil {
+		requestID = opts.Context.Runtime.RequestID
+		loopID = opts.Context.ID
+	}
+	reqCtx := llm.WithRequestTrace(opts.RequestContext, llm.RequestTrace{
+		Caller:    agentLoopLLMCallerFromContext(opts.RequestContext),
+		OwnerID:   opts.UserID,
+		RequestID: requestID,
+		LoopID:    loopID,
+		Iteration: opts.Iteration,
+	})
+	resp, err := h.doLLMRequestStream(reqCtx, opts.Config, opts.Conversation, opts.Tools, opts.HTTPClient, opts.OnToken, streamMetrics)
 	if !opts.FirstRequestMarked || opts.FirstRequestMetrics.RequestBuildElapsed == 0 {
 		opts.FirstRequestMetrics.AddStreamMetrics(streamMetrics)
 	}
@@ -165,7 +181,7 @@ func (h *IMMessageHandler) executeAgentLoopLLMRound(opts agentLoopLLMRoundOption
 		opts.StreamDoneCallback()
 	}
 	if err != nil {
-		retryResult := h.retryAgentLoopLLMRequestAfterError(opts.Context, opts.RequestContext, opts.Config, opts.Conversation, opts.Tools, opts.HTTPClient, opts.OnToken, opts.OnProgress, opts.StreamDoneCallback, opts.AdaptiveRetry, opts.FirstRequestMetrics, opts.FirstRequestMarked, resp, err, result.FirstResponseAt)
+		retryResult := h.retryAgentLoopLLMRequestAfterError(opts.Context, reqCtx, opts.Config, opts.Conversation, opts.Tools, opts.HTTPClient, opts.OnToken, opts.OnProgress, opts.StreamDoneCallback, opts.AdaptiveRetry, opts.FirstRequestMetrics, opts.FirstRequestMarked, resp, err, result.FirstResponseAt)
 		resp = retryResult.Response
 		err = retryResult.Err
 		result.FirstResponseAt = retryResult.FirstResponseAt
@@ -186,7 +202,7 @@ func (h *IMMessageHandler) executeAgentLoopLLMRound(opts agentLoopLLMRoundOption
 		}
 	}
 
-	guardResult := h.guardAgentLoopLLMResponse(opts.Context, opts.RequestContext, opts.Config, result.Conversation, opts.Tools, opts.HTTPClient, opts.OnToken, opts.StreamDoneCallback, resp, err, opts.UserID, opts.History, opts.UserText, opts.InFlightLifecycle)
+	guardResult := h.guardAgentLoopLLMResponse(opts.Context, reqCtx, opts.Config, result.Conversation, opts.Tools, opts.HTTPClient, opts.OnToken, opts.StreamDoneCallback, resp, err, opts.UserID, opts.History, opts.UserText, opts.InFlightLifecycle)
 	result.Response = guardResult.Response
 	result.Err = guardResult.Err
 	result.Conversation = guardResult.Conversation
@@ -195,4 +211,11 @@ func (h *IMMessageHandler) executeAgentLoopLLMRound(opts agentLoopLLMRoundOption
 	}
 	result.Exit = guardResult.Exit
 	return result
+}
+
+func agentLoopLLMCallerFromContext(ctx context.Context) string {
+	if trace, ok := llm.RequestTraceFromContext(ctx); ok && strings.TrimSpace(trace.Caller) != "" {
+		return strings.TrimSpace(trace.Caller)
+	}
+	return "agent_loop"
 }

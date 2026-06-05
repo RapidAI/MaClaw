@@ -117,16 +117,16 @@ func (t *UsageTracker) RecordExperience(exp ToolExperience) {
 		ts = time.Now()
 	}
 	r := UsageRecord{
-		ToolName:     strings.TrimSpace(exp.ToolName),
+		ToolName:     normalizeUsageToolName(exp.ToolName),
 		QueryTokens:  tokens,
 		Timestamp:    ts,
 		Success:      exp.Success,
 		FollowUp:     strings.TrimSpace(exp.FollowUp),
 		TaskType:     strings.TrimSpace(exp.TaskType),
-		ToolSequence: normalizeUsageStringSlice(exp.ToolSequence, 8),
+		ToolSequence: normalizeUsageToolSequence(exp.ToolSequence, 8),
 		ErrorClass:   strings.TrimSpace(exp.ErrorClass),
 		RetryCount:   exp.RetryCount,
-		RecoveryTool: strings.TrimSpace(exp.RecoveryTool),
+		RecoveryTool: normalizeUsageToolName(exp.RecoveryTool),
 		FinalOutcome: strings.TrimSpace(exp.FinalOutcome),
 	}
 	t.mu.Lock()
@@ -226,10 +226,54 @@ func normalizeUsageStringSlice(values []string, limit int) []string {
 	return out
 }
 
+func normalizeUsageToolName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if isLegacyBrowserAutomationToolName(name) {
+		return "browser"
+	}
+	return name
+}
+
+func normalizeUsageToolSequence(values []string, limit int) []string {
+	if limit <= 0 {
+		limit = len(values)
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		toolName := normalizeUsageToolName(value)
+		if toolName == "" {
+			continue
+		}
+		key := strings.ToLower(toolName)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, toolName)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func isLegacyBrowserAutomationToolName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "browser" {
+		return true
+	}
+	return strings.HasPrefix(name, "browser_")
+}
+
 // OutcomeScore returns a [0,1] quality score for a tool based on recent outcomes.
 // Considers success rate, retry frequency, and abandon rate over the last 7 days.
 // A tool with high success and low retry/abandon rates scores close to 1.0.
 func (t *UsageTracker) OutcomeScore(toolName string) float64 {
+	toolName = normalizeUsageToolName(toolName)
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	score, _ := t.outcomeScoreWithCount(toolName, nil)
@@ -249,6 +293,7 @@ func (t *UsageTracker) OutcomeScore(toolName string) float64 {
 // Inspired by Memento-Skills' behavioral utility routing: the value of a tool
 // depends on the task context, not just its global success rate.
 func (t *UsageTracker) ContextOutcomeScore(toolName string, queryTokens []string) float64 {
+	toolName = normalizeUsageToolName(toolName)
 	if len(queryTokens) == 0 {
 		return t.OutcomeScore(toolName)
 	}
@@ -289,6 +334,7 @@ const contextOutcomeMinRecords = 3
 // When querySet is nil, all records for the tool are considered (global score).
 // Returns (score, totalRecords). Caller must hold t.mu.RLock.
 func (t *UsageTracker) outcomeScoreWithCount(toolName string, querySet map[string]bool) (float64, int) {
+	toolName = normalizeUsageToolName(toolName)
 	cutoff := time.Now().AddDate(0, 0, -7)
 	var total, successes, retries, abandons int
 
@@ -336,6 +382,7 @@ func (t *UsageTracker) outcomeScoreWithCount(toolName string, querySet map[strin
 // similarity and recency, and the final utility is shrunk by evidence volume so
 // one lucky call cannot dominate routing.
 func (t *UsageTracker) ExperienceScore(toolName string, queryTokens []string) float64 {
+	toolName = normalizeUsageToolName(toolName)
 	if len(queryTokens) == 0 {
 		return 0
 	}
@@ -457,6 +504,11 @@ func (t *UsageTracker) load() error {
 	var records []UsageRecord
 	if err := json.Unmarshal(data, &records); err != nil {
 		return fmt.Errorf("usage_tracker: parse: %w", err)
+	}
+	for i := range records {
+		records[i].ToolName = normalizeUsageToolName(records[i].ToolName)
+		records[i].RecoveryTool = normalizeUsageToolName(records[i].RecoveryTool)
+		records[i].ToolSequence = normalizeUsageToolSequence(records[i].ToolSequence, 8)
 	}
 	t.mu.Lock()
 	t.records = records
@@ -589,7 +641,8 @@ func (t *UsageTracker) DistillRoutingHints(windowDays int, minRecords int) []Too
 
 	t.mu.RLock()
 	for _, record := range t.records {
-		if record.Timestamp.Before(cutoff) || strings.TrimSpace(record.ToolName) == "" {
+		toolName := normalizeUsageToolName(record.ToolName)
+		if record.Timestamp.Before(cutoff) || toolName == "" {
 			continue
 		}
 		if !usageRecordDecisive(record) {
@@ -610,10 +663,10 @@ func (t *UsageTracker) DistillRoutingHints(windowDays int, minRecords int) []Too
 				ctx.tokens[tok]++
 			}
 		}
-		stats, ok := ctx.tools[record.ToolName]
+		stats, ok := ctx.tools[toolName]
 		if !ok {
 			stats = &perTool{}
-			ctx.tools[record.ToolName] = stats
+			ctx.tools[toolName] = stats
 		}
 		stats.total++
 		if usageRecordSucceeded(record) {
@@ -621,8 +674,8 @@ func (t *UsageTracker) DistillRoutingHints(windowDays int, minRecords int) []Too
 		} else {
 			stats.failures++
 		}
-		if record.RecoveryTool != "" {
-			ctx.recovery[record.RecoveryTool]++
+		if recoveryTool := normalizeUsageToolName(record.RecoveryTool); recoveryTool != "" {
+			ctx.recovery[recoveryTool]++
 		}
 	}
 	t.mu.RUnlock()
@@ -717,7 +770,7 @@ func (t *UsageTracker) DistillSkillNudgeCandidates(windowDays int, minRecords in
 		if key == "" {
 			continue
 		}
-		sequence := normalizeUsageStringSlice(record.ToolSequence, 8)
+		sequence := normalizeUsageToolSequence(record.ToolSequence, 8)
 		if len(sequence) < 2 {
 			continue
 		}
@@ -807,9 +860,12 @@ func (t *UsageTracker) DistillRecoveryPatterns(windowDays int, minRecords int) [
 		if record.Timestamp.Before(cutoff) {
 			continue
 		}
-		failedTool := strings.TrimSpace(record.ToolName)
-		recoveryTool := strings.TrimSpace(record.RecoveryTool)
+		failedTool := normalizeUsageToolName(record.ToolName)
+		recoveryTool := normalizeUsageToolName(record.RecoveryTool)
 		if failedTool == "" || recoveryTool == "" {
+			continue
+		}
+		if strings.EqualFold(failedTool, recoveryTool) {
 			continue
 		}
 		key, taskType := usageRoutingContextKey(record)
@@ -832,7 +888,7 @@ func (t *UsageTracker) DistillRecoveryPatterns(windowDays int, minRecords int) [
 				acc.tokens[tok]++
 			}
 		}
-		sequence := normalizeUsageStringSlice(record.ToolSequence, 8)
+		sequence := normalizeUsageToolSequence(record.ToolSequence, 8)
 		if len(sequence) > len(acc.sequence) {
 			acc.sequence = sequence
 		}
@@ -984,7 +1040,7 @@ func (t *UsageTracker) RoutingHintAdjustment(toolName string, queryTokens []stri
 }
 
 func (t *UsageTracker) ExplainRoutingHintAdjustment(toolName string, queryTokens []string) RoutingHintAdjustmentExplanation {
-	toolName = strings.TrimSpace(toolName)
+	toolName = normalizeUsageToolName(toolName)
 	queryTokens = normalizeUsageQueryTokens(queryTokens)
 	explanation := RoutingHintAdjustmentExplanation{
 		ToolName:    toolName,
@@ -1114,6 +1170,7 @@ func topUsageStrings(counts map[string]int, limit int) []string {
 // counts. excludeTool is excluded from results (pass "" to include all).
 // Caller must NOT hold t.mu - this method acquires the lock internally.
 func (t *UsageTracker) contextToolStats(queryTokens []string, excludeTool string) map[string]*toolCtxAccum {
+	excludeTool = normalizeUsageToolName(excludeTool)
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 

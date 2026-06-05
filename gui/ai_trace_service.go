@@ -165,8 +165,8 @@ func (s *AITraceService) AppendEvent(runID string, event TraceEvent) TraceEvent 
 	if event.CreatedAt == 0 {
 		event.CreatedAt = now
 	}
-	event.Title = truncateTraceText(event.Title, 160)
-	event.Summary = truncateTraceText(event.Summary, 400)
+	event.Title = truncateTraceText(sanitizeTraceStoredText(event.Title), 160)
+	event.Summary = truncateTraceText(sanitizeTraceStoredText(event.Summary), 400)
 	event.RelatedFile = truncateTraceText(event.RelatedFile, 260)
 	event.Command = truncateTraceText(event.Command, 260)
 	for i := range event.ToolOutcomes {
@@ -208,8 +208,8 @@ func (s *AITraceService) AppendEvidence(runID string, record EvidenceRecord) Evi
 	if record.CreatedAt == 0 {
 		record.CreatedAt = now
 	}
-	record.Summary = truncateTraceText(record.Summary, 200)
-	record.ContentSnippet = truncateTraceText(record.ContentSnippet, 600)
+	record.Summary = truncateTraceText(sanitizeTraceStoredText(record.Summary), 200)
+	record.ContentSnippet = truncateTraceText(sanitizeTraceStoredText(record.ContentSnippet), 600)
 	record.RelatedFile = truncateTraceText(record.RelatedFile, 260)
 	record.Command = truncateTraceText(record.Command, 260)
 	items := append(s.evidence[runID], record)
@@ -240,10 +240,18 @@ func (s *AITraceService) ReplaceRun(runID string, events []TraceEvent, evidence 
 		return
 	}
 	if events != nil {
+		for i := range events {
+			events[i].Title = truncateTraceText(sanitizeTraceStoredText(events[i].Title), 160)
+			events[i].Summary = truncateTraceText(sanitizeTraceStoredText(events[i].Summary), 400)
+		}
 		s.events[runID] = append([]TraceEvent(nil), events...)
 		run.EventCount = len(events)
 	}
 	if evidence != nil {
+		for i := range evidence {
+			evidence[i].Summary = truncateTraceText(sanitizeTraceStoredText(evidence[i].Summary), 200)
+			evidence[i].ContentSnippet = truncateTraceText(sanitizeTraceStoredText(evidence[i].ContentSnippet), 600)
+		}
 		s.evidence[runID] = append([]EvidenceRecord(nil), evidence...)
 		run.EvidenceCount = len(evidence)
 	}
@@ -489,7 +497,7 @@ func traceToolNamesFromText(text string) []string {
 	lower := strings.ToLower(text)
 	tools := make([]string, 0, 3)
 	seen := map[string]struct{}{}
-	for _, name := range []string{"bash", "create_session", "read_file", "write_file", "edit_file", "search_code", "grep", "glob"} {
+	for _, name := range []string{"bash", "read_file", "write_file", "edit_file", "search_code", "grep", "glob"} {
 		if !strings.Contains(lower, name) {
 			continue
 		}
@@ -544,4 +552,19 @@ func truncateTraceText(text string, limit int) string {
 		return text[:limit]
 	}
 	return text[:limit-3] + "..."
+}
+
+func sanitizeTraceStoredText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if !strings.Contains(text, "Browser") && !strings.Contains(text, "Tool") {
+		return text
+	}
+	loc := rolePrefixReasoningRe.FindStringIndex(text)
+	if loc == nil {
+		return text
+	}
+	return strings.TrimSpace(text[:loc[0]])
 }

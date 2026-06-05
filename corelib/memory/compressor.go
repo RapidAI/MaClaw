@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -24,6 +25,101 @@ type LLMChatCaller interface {
 	ChatCall(messages []map[string]string) (string, error)
 	// IsConfigured reports whether the LLM backend is ready.
 	IsConfigured() bool
+}
+
+// ContextualLLMChatCaller is implemented by LLM adapters that can honor caller
+// cancellation and deadlines. Background memory work should prefer it so a new
+// foreground agent turn can abort stale post-processing promptly.
+type ContextualLLMChatCaller interface {
+	LLMChatCaller
+	ChatCallContext(ctx context.Context, messages []map[string]string) (string, error)
+}
+
+var ErrLLMCallBudgetExhausted = errors.New("memory LLM call budget exhausted")
+
+type llmCallBudgetContextKey struct{}
+
+type LLMCallBudget struct {
+	mu        sync.Mutex
+	remaining int
+	used      int
+	exhausted bool
+}
+
+func NewLLMCallBudget(maxCalls int) *LLMCallBudget {
+	if maxCalls < 0 {
+		maxCalls = 0
+	}
+	return &LLMCallBudget{remaining: maxCalls}
+}
+
+func WithLLMCallBudget(ctx context.Context, budget *LLMCallBudget) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if budget == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, llmCallBudgetContextKey{}, budget)
+}
+
+func LLMCallBudgetFromContext(ctx context.Context) (*LLMCallBudget, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	budget, ok := ctx.Value(llmCallBudgetContextKey{}).(*LLMCallBudget)
+	return budget, ok && budget != nil
+}
+
+func (b *LLMCallBudget) TryConsume() bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.remaining <= 0 {
+		b.exhausted = true
+		return false
+	}
+	b.remaining--
+	b.used++
+	return true
+}
+
+func (b *LLMCallBudget) Snapshot() (used, remaining int, exhausted bool) {
+	if b == nil {
+		return 0, 0, false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.used, b.remaining, b.exhausted
+}
+
+func (b *LLMCallBudget) Depleted() bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.remaining <= 0
+}
+
+func chatCallWithContext(ctx context.Context, llm LLMChatCaller, messages []map[string]string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+	if budget, ok := LLMCallBudgetFromContext(ctx); ok && !budget.TryConsume() {
+		return "", ErrLLMCallBudgetExhausted
+	}
+	if contextual, ok := llm.(ContextualLLMChatCaller); ok {
+		return contextual.ChatCallContext(ctx, messages)
+	}
+	return llm.ChatCall(messages)
 }
 
 // LLMConfigRefresher optionally refreshes the LLM config. Implementations
@@ -274,7 +370,7 @@ Bad: "服务器→api.rapidai.tech→OmniRoute→Docker; 模型→GLM-5.1; 端�
 
 	userPrompt := fmt.Sprintf("[%s] %s", cat, content)
 
-	resp, err := mc.llm.ChatCall([]map[string]string{
+	resp, err := chatCallWithContext(ctx, mc.llm, []map[string]string{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": userPrompt},
 	})
@@ -503,7 +599,7 @@ Rules:
 		{"role": "user", "content": userPrompt},
 	}
 
-	resp, err := mc.llm.ChatCall(messages)
+	resp, err := chatCallWithContext(ctx, mc.llm, messages)
 	if err != nil {
 		return 0, err
 	}
@@ -750,7 +846,7 @@ func (mc *Compressor) compressEntry(ctx context.Context, entry Entry) (string, e
 		{"role": "user", "content": userPrompt},
 	}
 
-	result, err := mc.llm.ChatCall(messages)
+	result, err := chatCallWithContext(ctx, mc.llm, messages)
 	if err != nil {
 		return "", err
 	}

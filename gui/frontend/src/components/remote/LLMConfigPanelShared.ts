@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import { colors } from "./styles";
+import { localizeHubServiceReason } from "../../utils/hubServiceI18n";
 
 export interface LLMProvider {
     name: string;
@@ -127,7 +128,7 @@ export function hubOfficialStatus(status: HubLLMServiceStatus | null, lang: stri
     if (expired) {
         return { kind: "expired" as const, label: t("Grant expired", "\u6388\u6743\u5df2\u8fc7\u671f", "\u6388\u6b0a\u5df2\u904e\u671f"), detail: t("Official authorization has expired. You can redeem a new grant or switch to another provider.", "\u5b98\u65b9\u6388\u6743\u5df2\u8fc7\u671f\u3002\u53ef\u4ee5\u5151\u6362\u65b0\u7684\u6388\u6743\uff0c\u6216\u5207\u6362\u5230\u5176\u5b83\u670d\u52a1\u5546\u3002", "\u5b98\u65b9\u6388\u6b0a\u5df2\u904e\u671f\u3002\u53ef\u4ee5\u514c\u63db\u65b0\u7684\u6388\u6b0a\uff0c\u6216\u5207\u63db\u5230\u5176\u4ed6\u670d\u52d9\u5546\u3002") };
     }
-    return { kind: "inactive" as const, label: t("Unavailable", "\u4e0d\u53ef\u7528"), detail: (status?.inactive_reasons || []).join("; ") };
+    return { kind: "inactive" as const, label: t("Unavailable", "\u4e0d\u53ef\u7528"), detail: (status?.inactive_reasons || []).map(reason => localizeHubServiceReason(reason, lang)).filter(Boolean).join("; ") };
 }
 
 

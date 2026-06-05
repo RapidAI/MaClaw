@@ -20,6 +20,8 @@ const baseCredits: SidebarHubCredits = {
 function renderStatus(credits: SidebarHubCredits, options: { showHubCreditAction?: boolean; isHubService?: boolean } = {}) {
     const openServiceRedeemPage = vi.fn();
     const openHubCreditsPage = vi.fn();
+    const openLLMSettingsPage = vi.fn();
+    const openHubCardStorePage = vi.fn();
     render(
         <SidebarSystemStatus
             lang="zh-Hans"
@@ -41,12 +43,38 @@ function renderStatus(credits: SidebarHubCredits, options: { showHubCreditAction
             showHubCreditAction={options.showHubCreditAction ?? false}
             openHubCreditsPage={openHubCreditsPage}
             openServiceRedeemPage={openServiceRedeemPage}
+            openLLMSettingsPage={openLLMSettingsPage}
+            openHubCardStorePage={openHubCardStorePage}
         />,
     );
-    return { openServiceRedeemPage, openHubCreditsPage };
+    return { openServiceRedeemPage, openHubCreditsPage, openLLMSettingsPage, openHubCardStorePage };
 }
 
 describe('SidebarSystemStatus Hub credits', () => {
+    it('opens service redeem from official provider name and card store from cart', () => {
+        const { openServiceRedeemPage, openHubCardStorePage, openLLMSettingsPage } = renderStatus(baseCredits);
+
+        fireEvent.click(screen.getByRole('button', { name: /MaClaw\u5b98\u65b9/ }));
+        fireEvent.click(screen.getByRole('button', { name: /\u6253\u5f00 MaClaw \u670d\u52a1\u5361\u5546\u5e97/ }));
+
+        expect(screen.getByRole('button', { name: /MaClaw\u5b98\u65b9/ }).getAttribute('title')).toContain('MaClaw\u5b98\u65b9');
+        expect(screen.getByRole('button', { name: /MaClaw\u5b98\u65b9/ }).getAttribute('title')).toContain('\u67e5\u770b\u6216\u5151\u6362');
+        expect(openServiceRedeemPage).toHaveBeenCalledTimes(1);
+        expect(openHubCardStorePage).toHaveBeenCalledTimes(1);
+        expect(openLLMSettingsPage).not.toHaveBeenCalled();
+    });
+
+    it('opens LLM settings from non-official provider name without showing cart', () => {
+        const { openServiceRedeemPage, openHubCardStorePage, openLLMSettingsPage } = renderStatus(baseCredits, { isHubService: false });
+
+        fireEvent.click(screen.getByRole('button', { name: /\u79c1\u6709\u670d\u52a1\u5546/ }));
+
+        expect(screen.queryByRole('button', { name: /MaClaw \u670d\u52a1\u5361\u5546\u5e97/ })).toBeNull();
+        expect(openLLMSettingsPage).toHaveBeenCalledTimes(1);
+        expect(openServiceRedeemPage).not.toHaveBeenCalled();
+        expect(openHubCardStorePage).not.toHaveBeenCalled();
+    });
+
     it('shows period limit state with recovery time instead of remaining credits', () => {
         renderStatus({ ...baseCredits, status: 'period_limited', retryAfterSeconds: 3600 });
 
@@ -164,6 +192,34 @@ describe('SidebarSystemStatus Hub credits', () => {
         const cacheTitles = screen.getAllByTitle(/Cache hit: 40%/);
         expect(cacheTitles[0].getAttribute('title')).toContain('Read 40');
         expect(cacheTitles[0].getAttribute('title')).toContain('Write 30');
+    });
+
+    it('hides cache rate for MaClaw official service', () => {
+        render(
+            <SidebarSystemStatus
+                lang="zh-Hans"
+                maclawLLMOnline
+                remoteActivationStatus={{ activated: true }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw\u5b98\u65b9', isHubService: true, input: 100, output: 20, total: 120, cachedInput: 100, cacheWrite: 0, requests: 3, cachedRequests: 3 }}
+                sidebarHubCredits={baseCredits}
+                formatSidebarTokens={(value) => `${value}`}
+                formatSidebarHubExpiry={() => '05/06/26'}
+                formatSidebarHubTotalCredits={(value) => String(value?.total ?? 0)}
+                formatSidebarHubUsedCredits={(value) => String(value?.used ?? 0)}
+                formatSidebarCredit={(value) => String(value)}
+                unlimitedHubCreditText="\u65e0\u9650"
+                noHubAuthorizationText="\u65e0"
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+            />,
+        );
+
+        expect(screen.queryByText(/\u7f13\u5b58/)).toBeNull();
+        expect(screen.getByText('120')).toBeTruthy();
     });
 
     it('shows zero cache hit rate when local cache is enabled before first hit', () => {

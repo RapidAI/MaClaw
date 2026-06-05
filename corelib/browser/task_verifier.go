@@ -13,7 +13,8 @@ type TaskVerifier struct {
 	sessionFn func() (*Session, error)
 }
 
-// NewTaskVerifier creates a verifier. ocr may be nil (ocr_contains will fail gracefully).
+// NewTaskVerifier creates a verifier. OCR-backed criteria are disabled in the
+// stable browser path because they depend on screenshots.
 func NewTaskVerifier(ocr OCRProvider, sessionFn func() (*Session, error)) *TaskVerifier {
 	return &TaskVerifier{ocr: ocr, sessionFn: sessionFn}
 }
@@ -47,7 +48,7 @@ func (v *TaskVerifier) checkOne(sess *Session, c CriterionSpec) CriterionResult 
 	case "url_matches":
 		return v.checkURLMatches(sess, c)
 	case "ocr_contains":
-		return v.checkOCRContains(sess, c)
+		return CriterionResult{Criterion: c, Passed: false, Error: "ocr_contains is disabled in the stable browser path; use dom_text/url/network/console criteria"}
 	case "frame_url_contains":
 		return v.checkFrameURLContains(sess, c)
 	case "network_request":
@@ -107,33 +108,6 @@ func (v *TaskVerifier) checkURLMatches(sess *Session, c CriterionSpec) Criterion
 		Error: fmt.Sprintf("URL does not match %q", c.Pattern)}
 }
 
-func (v *TaskVerifier) checkOCRContains(sess *Session, c CriterionSpec) CriterionResult {
-	if v.ocr == nil || !v.ocr.IsAvailable() {
-		return CriterionResult{Criterion: c, Passed: false, Error: "OCR not available"}
-	}
-	imgB64, err := sess.Screenshot(false)
-	if err != nil {
-		return CriterionResult{Criterion: c, Passed: false, Error: fmt.Sprintf("screenshot: %v", err)}
-	}
-	results, err := v.ocr.Recognize(imgB64)
-	if err != nil {
-		return CriterionResult{Criterion: c, Passed: false, Error: fmt.Sprintf("OCR: %v", err)}
-	}
-	for _, r := range results {
-		if strings.Contains(r.Text, c.Pattern) {
-			return CriterionResult{Criterion: c, Passed: true, Actual: r.Text}
-		}
-	}
-	// Build summary of what OCR found
-	var found []string
-	for _, r := range results {
-		found = append(found, r.Text)
-	}
-	return CriterionResult{Criterion: c, Passed: false,
-		Actual: truncate(strings.Join(found, " | "), 300),
-		Error:  fmt.Sprintf("OCR text does not contain %q", c.Pattern)}
-}
-
 func (v *TaskVerifier) checkFrameURLContains(sess *Session, c CriterionSpec) CriterionResult {
 	frames := sess.FrameSnapshots()
 	frameIDFilter := strings.TrimSpace(c.FrameID)
@@ -172,24 +146,7 @@ func (v *TaskVerifier) WaitForStable(timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
-	deadline := time.Now().Add(timeout)
-	stableSince := time.Time{}
-	for time.Now().Before(deadline) {
-		result, err := sess.Eval(`document.readyState`)
-		ready := err == nil && result == "complete"
-		networkQuiet := len(sess.lastNetworkLines()) <= 1
-		if ready && networkQuiet {
-			if stableSince.IsZero() {
-				stableSince = time.Now()
-			} else if time.Since(stableSince) >= time.Second {
-				return nil
-			}
-		} else {
-			stableSince = time.Time{}
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return fmt.Errorf("page not stable within %v", timeout)
+	return sess.WaitForStable(timeout, 300*time.Millisecond)
 }
 
 func truncate(s string, maxLen int) string {

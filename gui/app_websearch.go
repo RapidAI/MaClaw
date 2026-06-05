@@ -77,31 +77,29 @@ func resolveWebSearchCurrent(providers []corelib.WebSearchProvider, current stri
 
 func (a *App) GetWebSearchProviders() struct {
 	Providers []corelib.WebSearchProvider `json:"providers"`
-	Current   string              `json:"current"`
+	Current   string                      `json:"current"`
 } {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		providers := defaultWebSearchProviders()
 		return struct {
 			Providers []corelib.WebSearchProvider `json:"providers"`
-			Current   string              `json:"current"`
+			Current   string                      `json:"current"`
 		}{Providers: providers, Current: resolveWebSearchCurrent(providers, "duckduckgo")}
 	}
 	providers := mergeDefaultWebSearchProviders(cfg.WebSearchProviders)
 	current := resolveWebSearchCurrent(providers, cfg.WebSearchCurrentProvider)
 	return struct {
 		Providers []corelib.WebSearchProvider `json:"providers"`
-		Current   string              `json:"current"`
+		Current   string                      `json:"current"`
 	}{Providers: providers, Current: current}
 }
 
 func (a *App) SaveWebSearchProviders(providers []corelib.WebSearchProvider, current string) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
 	providers = mergeDefaultWebSearchProviders(providers)
-	cfg.WebSearchProviders = providers
-	cfg.WebSearchCurrentProvider = resolveWebSearchCurrent(providers, current)
-	return a.SaveConfig(cfg)
+	resolvedCurrent := resolveWebSearchCurrent(providers, current)
+	return a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.WebSearchProviders = providers
+		cfg.WebSearchCurrentProvider = resolvedCurrent
+	})
 }

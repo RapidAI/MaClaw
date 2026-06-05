@@ -11,7 +11,6 @@ const (
 	agentToolKindEditFile
 	agentToolKindWriteFile
 	agentToolKindListDirectory
-	agentToolKindCreateSession
 	agentToolKindGeneratePDF
 	agentToolKindOffice
 	agentToolKindCraftTool
@@ -41,8 +40,6 @@ func classifyAgentToolKind(name string) agentToolKind {
 		return agentToolKindWriteFile
 	case "list_directory":
 		return agentToolKindListDirectory
-	case "create_session":
-		return agentToolKindCreateSession
 	case "generate_pdf":
 		return agentToolKindGeneratePDF
 	case "office":
@@ -102,7 +99,7 @@ func (k agentToolKind) IsSkillProgressTool() bool {
 
 func (k agentToolKind) IsBlockedBySkillPreference() bool {
 	switch k {
-	case agentToolKindCraftTool, agentToolKindBash, agentToolKindCreateSession:
+	case agentToolKindCraftTool, agentToolKindBash:
 		return true
 	default:
 		return false
@@ -132,8 +129,6 @@ func (k agentToolKind) TraceCategory(execResult toolExecutionResult) traceEviden
 		return traceEvidenceCategoryError
 	}
 	switch k {
-	case agentToolKindCreateSession:
-		return traceEvidenceCategoryResult
 	case agentToolKindWriteFile, agentToolKindGeneratePDF, agentToolKindOffice:
 		return traceEvidenceCategoryFile
 	default:

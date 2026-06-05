@@ -32,11 +32,11 @@ import (
 type rolePrefixStreamFilter struct {
 	downstream llm.TokenCallback
 
-	lineBuf     strings.Builder
-	halted      bool
+	lineBuf         strings.Builder
+	halted          bool
 	suppressedRunes int
-	inCodeBlock bool
-	seenContent bool
+	inCodeBlock     bool
+	seenContent     bool
 }
 
 // rolePrefixLineRe matches a role prefix at the start of a line.
@@ -44,6 +44,12 @@ type rolePrefixStreamFilter struct {
 // (>, -, *, digits), and an optional space before the colon.
 // Also matches fullwidth colon (：U+FF1A).
 var rolePrefixLineRe = regexp.MustCompile(`^[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|：)`)
+
+// rolePrefixReasoningRe matches the same role-prefix pattern anywhere in a
+// multi-line reasoning buffer. Reasoning is hidden/internal, so once a role
+// prefix appears we keep only content before it instead of trying to preserve
+// text after the prefix.
+var rolePrefixReasoningRe = regexp.MustCompile(`(?m)^[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|：)`)
 
 // midLineRolePrefixRe matches a role prefix that appears after a \n
 // inside the line buffer. This catches the case where a single streaming
@@ -66,9 +72,9 @@ func (f *rolePrefixStreamFilter) Write(delta string) {
 		return
 	}
 
-	if strings.Contains(delta, "Browser") {
-		log.Printf("[stream-roleprefix] TRACE Write: delta contains Browser: halted=%v seenContent=%v len=%d delta=%q",
-			f.halted, f.seenContent, len(delta), rpfTruncateForLog(delta, 80))
+	if strings.Contains(delta, "Browser") || strings.Contains(delta, "Tool") {
+		log.Printf("[stream-roleprefix] prefix keyword observed in delta: halted=%v seenContent=%v bytes=%d runes=%d",
+			f.halted, f.seenContent, len(delta), utf8.RuneCountInString(delta))
 	}
 
 	for len(delta) > 0 {
@@ -96,22 +102,22 @@ func (f *rolePrefixStreamFilter) Write(delta string) {
 			f.inCodeBlock = !f.inCodeBlock
 		}
 
-		if strings.Contains(line, "Browser") {
-			log.Printf("[stream-roleprefix] TRACE: line contains Browser: inCodeBlock=%v seenContent=%v regexMatch=%v line=%q",
-				f.inCodeBlock, f.seenContent, rolePrefixLineRe.MatchString(line), rpfTruncateForLog(line, 120))
+		if strings.Contains(line, "Browser") || strings.Contains(line, "Tool") {
+			log.Printf("[stream-roleprefix] prefix keyword observed in line: inCodeBlock=%v seenContent=%v regexMatch=%v bytes=%d runes=%d",
+				f.inCodeBlock, f.seenContent, rolePrefixLineRe.MatchString(line), len(line), utf8.RuneCountInString(line))
 		}
 
 		if !f.inCodeBlock && rolePrefixLineRe.MatchString(line) {
 			if f.seenContent {
 				f.halted = true
 				f.suppressedRunes += utf8.RuneCountInString(line) + utf8.RuneCountInString(delta)
-				log.Printf("[stream-roleprefix] Case 2 halt: seenContent=true line=%q suppressed=%d", rpfTruncateForLog(line, 80), f.suppressedRunes)
+				log.Printf("[stream-roleprefix] Case 2 halt: seenContent=true suppressed=%d", f.suppressedRunes)
 				return
 			}
 			loc := rolePrefixLineRe.FindStringIndex(line)
 			if loc != nil {
 				stripped := line[loc[1]:]
-				log.Printf("[stream-roleprefix] Case 1 strip: prefix=%q stripped=%q", line[:loc[1]], rpfTruncateForLog(stripped, 80))
+				log.Printf("[stream-roleprefix] Case 1 strip: prefixBytes=%d strippedRunes=%d", loc[1], utf8.RuneCountInString(stripped))
 				if strings.TrimSpace(stripped) != "" {
 					f.downstream(stripped)
 					f.seenContent = true
@@ -136,23 +142,23 @@ func (f *rolePrefixStreamFilter) Flush() {
 		return
 	}
 
-	if strings.Contains(remaining, "Browser") {
-		log.Printf("[stream-roleprefix] TRACE Flush: remaining contains Browser: inCodeBlock=%v seenContent=%v regexMatch=%v remaining=%q",
-			f.inCodeBlock, f.seenContent, rolePrefixLineRe.MatchString(remaining), rpfTruncateForLog(remaining, 120))
+	if strings.Contains(remaining, "Browser") || strings.Contains(remaining, "Tool") {
+		log.Printf("[stream-roleprefix] prefix keyword observed at flush: inCodeBlock=%v seenContent=%v regexMatch=%v bytes=%d runes=%d",
+			f.inCodeBlock, f.seenContent, rolePrefixLineRe.MatchString(remaining), len(remaining), utf8.RuneCountInString(remaining))
 	}
 
 	if !f.inCodeBlock && rolePrefixLineRe.MatchString(remaining) {
 		if f.seenContent {
 			f.halted = true
 			f.suppressedRunes += utf8.RuneCountInString(remaining)
-			log.Printf("[stream-roleprefix] Flush Case 2 halt: line=%q suppressed=%d", rpfTruncateForLog(remaining, 80), f.suppressedRunes)
+			log.Printf("[stream-roleprefix] Flush Case 2 halt: suppressed=%d", f.suppressedRunes)
 			f.lineBuf.Reset()
 			return
 		}
 		loc := rolePrefixLineRe.FindStringIndex(remaining)
 		if loc != nil {
 			stripped := remaining[loc[1]:]
-			log.Printf("[stream-roleprefix] Flush Case 1 strip: prefix=%q stripped=%q", remaining[:loc[1]], rpfTruncateForLog(stripped, 80))
+			log.Printf("[stream-roleprefix] Flush Case 1 strip: prefixBytes=%d strippedRunes=%d", loc[1], utf8.RuneCountInString(stripped))
 			if strings.TrimSpace(stripped) != "" {
 				f.downstream(stripped)
 			}
@@ -182,7 +188,7 @@ func (f *rolePrefixStreamFilter) Flush() {
 	f.lineBuf.Reset()
 }
 
-func (f *rolePrefixStreamFilter) Halted() bool        { return f.halted }
+func (f *rolePrefixStreamFilter) Halted() bool         { return f.halted }
 func (f *rolePrefixStreamFilter) SuppressedRunes() int { return f.suppressedRunes }
 
 // checkMidLinePrefix scans the line buffer for a \n followed by a role
@@ -208,10 +214,16 @@ func (f *rolePrefixStreamFilter) checkMidLinePrefix() {
 	log.Printf("[stream-roleprefix] checkMidLinePrefix halt: prefix found at offset %d in lineBuf", loc[0])
 }
 
-func rpfTruncateForLog(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return strings.TrimSpace(s)
+func stripRolePrefixReasoningForDisplay(s string) string {
+	if s == "" {
+		return s
 	}
-	return strings.TrimSpace(string(runes[:maxRunes])) + "..."
+	if !strings.Contains(s, "Browser") && !strings.Contains(s, "Tool") {
+		return s
+	}
+	loc := rolePrefixReasoningRe.FindStringIndex(s)
+	if loc == nil {
+		return s
+	}
+	return strings.TrimRight(s[:loc[0]], " \t\r\n")
 }

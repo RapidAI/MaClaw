@@ -31,6 +31,26 @@ func TestCollectRuntimeStatusForOwnerDoesNotExposeOtherCurrentLoop(t *testing.T)
 	}
 }
 
+func TestCollectRuntimeStatusWithoutOwnerDoesNotExposeLegacyCurrentLoop(t *testing.T) {
+	h := &IMMessageHandler{}
+	ctx := NewLoopContext("desktop", 1, nil)
+	h.setSessionLoopCtx(desktopUserID, ctx)
+	state := h.getSessionLoop(desktopUserID)
+	state.stateMu.Lock()
+	state.userText = "desktop secret task"
+	state.stateMu.Unlock()
+	h.globalLoopMu.Lock()
+	h.currentLoopCtx = ctx
+	h.lastUserText = "desktop secret task"
+	h.lastUserID = desktopUserID
+	h.globalLoopMu.Unlock()
+
+	got := h.collectRuntimeStatus()
+	if got.MainAgentRunning || got.MainAgentTask != "" {
+		t.Fatalf("ownerless status inherited legacy loop: %+v", got)
+	}
+}
+
 func TestToolAgentStatusUsesHiddenRuntimeOwner(t *testing.T) {
 	h := &IMMessageHandler{}
 	desktopCtx := NewLoopContext("desktop", 1, nil)

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // ---------------------------------------------------------------------------
@@ -85,6 +87,7 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 	if req.Tag == "" {
 		req.Tag = "llm-classify"
 	}
+	ctx = llm.WithRequestTraceIfMissing(ctx, req.Tag)
 
 	cfg := h.getMaclawLLMConfig()
 	// When PreferLightweight is set, try to use a non-reasoning model for
@@ -115,13 +118,9 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 		Timeout: time.Duration(req.TimeoutSec) * time.Second,
 	}
 
-	// Create a timeout context.
-	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(req.TimeoutSec)*time.Second)
-	defer cancel()
-
 	startedAt := time.Now()
 	metrics := &llmStreamMetrics{}
-	resp, err := h.doLLMRequestStream(timeoutCtx, cfg, messages, tools, client, nil, metrics)
+	resp, err := h.doLLMRequestStream(ctx, cfg, messages, tools, client, nil, metrics)
 	latency := time.Since(startedAt)
 
 	if err != nil {
@@ -140,8 +139,8 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 		outputTokens = resp.Usage.CompletionTokens
 	}
 
-	log.Printf("[%s] result=%q input=%d output=%d latency=%.1fs",
-		req.Tag, truncateForLogGUI(text, 60), inputTokens, outputTokens, latency.Seconds())
+	log.Printf("[%s] result_len=%d input=%d output=%d latency=%.1fs",
+		req.Tag, len([]rune(text)), inputTokens, outputTokens, latency.Seconds())
 
 	return &LLMClassifyResult{
 		Text:         text,

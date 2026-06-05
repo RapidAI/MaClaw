@@ -291,9 +291,9 @@ func TestBuildExperienceTraceFollowUpDraftsApprovedSkillNudge(t *testing.T) {
 	t.Cleanup(store.Stop)
 	if err := store.Save(memory.Entry{
 		Title:      "Skill candidate",
-		Content:    "Skill nudge candidate browser_flow; sequence browser_observe -> browser_click",
+		Content:    "Skill nudge candidate refactor_flow; sequence rg -> apply_patch -> go_test",
 		Category:   memory.CategoryProjectKnowledge,
-		Tags:       []string{"skill_nudge_candidate", "browser_flow", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
+		Tags:       []string{"skill_nudge_candidate", "refactor_flow", "rg", "apply_patch", "go_test", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
 		SourceType: "tool_usage",
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -315,7 +315,7 @@ func TestBuildExperienceTraceFollowUpDraftsApprovedSkillNudge(t *testing.T) {
 	}
 }
 
-func TestBuildExperienceSkillDraftFromApprovedSkillNudge(t *testing.T) {
+func TestBuildExperienceSkillDraftRejectsLegacyBrowserSkillNudge(t *testing.T) {
 	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -334,23 +334,8 @@ func TestBuildExperienceSkillDraftFromApprovedSkillNudge(t *testing.T) {
 	entry := mustFindExperienceReviewEntry(t, store, "skill_nudge_candidate")
 	app := &App{memoryStore: store}
 
-	draft, err := app.BuildExperienceSkillDraft("memory:" + entry.ID)
-	if err != nil {
-		t.Fatalf("BuildExperienceSkillDraft: %v", err)
-	}
-	if draft.SuggestedName != "browser_flow" || draft.SourceURL != "tool_usage://skill/browser_flow" {
-		t.Fatalf("unexpected skill draft metadata: %#v", draft)
-	}
-	assertExperienceRecommendedFocusContext(t, draft.RecommendedFocusContext, "memory:"+entry.ID, "Skill candidate", "skill nudge")
-	assertExperienceInspectionRecommendedToolCall(t, draft.RecommendedToolCall, "memory:"+entry.ID)
-	if strings.Join(draft.ToolSequence, " -> ") != "browser_observe -> browser_click -> browser_verify" {
-		t.Fatalf("unexpected sequence: %#v", draft.ToolSequence)
-	}
-	if len(draft.QueryTokens) != 2 || draft.QueryTokens[0] != "browser" || draft.NonExecutingBoundary == "" {
-		t.Fatalf("unexpected draft evidence: %#v", draft)
-	}
-	if !strings.Contains(draft.DraftMarkdown, "Skill Draft: browser_flow") || !strings.Contains(draft.DraftMarkdown, "does not create files, install or update skills") {
-		t.Fatalf("unexpected skill draft markdown:\n%s", draft.DraftMarkdown)
+	if _, err := app.BuildExperienceSkillDraft("memory:" + entry.ID); err == nil || !strings.Contains(err.Error(), "not a skill nudge review") {
+		t.Fatalf("expected legacy browser skill nudge rejection, got %v", err)
 	}
 }
 
@@ -362,10 +347,10 @@ func TestExperienceLearningToolBuildsSkillDraftFromUsageNudgeWithoutTrace(t *tes
 	now := time.Now()
 	for i := 0; i < 4; i++ {
 		tracker.RecordExperience(coretool.ToolExperience{
-			ToolName:     "browser_verify",
-			QueryTokens:  []string{"browser", "checkout"},
-			TaskType:     "browser_automation",
-			ToolSequence: []string{"browser_observe", "browser_click", "browser_verify"},
+			ToolName:     "apply_patch",
+			QueryTokens:  []string{"refactor", "checkout"},
+			TaskType:     "code_refactor",
+			ToolSequence: []string{"rg", "apply_patch", "go_test"},
 			Success:      true,
 			FinalOutcome: "completed",
 			Timestamp:    now,
@@ -375,7 +360,7 @@ func TestExperienceLearningToolBuildsSkillDraftFromUsageNudgeWithoutTrace(t *tes
 	handler := &IMMessageHandler{app: &App{usageTracker: tracker}}
 	raw := handler.toolExperienceLearning(map[string]interface{}{
 		"action": "build_skill_draft",
-		"query":  "browser",
+		"query":  "refactor",
 		"limit":  5,
 	})
 
@@ -393,7 +378,7 @@ func TestExperienceLearningToolBuildsSkillDraftFromUsageNudgeWithoutTrace(t *tes
 	if payload.SkillDraft.TraceID != "" || payload.SkillDraft.Kind != experienceDraftKindSkill {
 		t.Fatalf("expected usage-sourced skill draft without trace id: %#v", payload.SkillDraft)
 	}
-	if payload.SkillDraft.TaskType != "browser_automation" || len(payload.SkillDraft.ToolSequence) != 3 || payload.SkillDraft.ToolSequence[0] != "browser_observe" {
+	if payload.SkillDraft.TaskType != "code_refactor" || len(payload.SkillDraft.ToolSequence) != 3 || payload.SkillDraft.ToolSequence[0] != "rg" {
 		t.Fatalf("unexpected usage skill draft metadata: %#v", payload.SkillDraft)
 	}
 	if !strings.Contains(payload.SkillDraft.DraftMarkdown, "UsageTracker.DistillSkillNudgeCandidates") || !strings.Contains(payload.SkillDraft.NonExecutingBoundary, "read-only usage-sequence skill draft only") {
@@ -412,9 +397,9 @@ func TestBuildExperienceSkillDraftRejectsNonApprovedSkillNudge(t *testing.T) {
 	t.Cleanup(store.Stop)
 	if err := store.Save(memory.Entry{
 		Title:      "Skill candidate",
-		Content:    "Skill nudge candidate browser_flow; sequence browser_observe -> browser_click",
+		Content:    "Skill nudge candidate refactor_flow; sequence rg -> apply_patch -> go_test",
 		Category:   memory.CategoryProjectKnowledge,
-		Tags:       []string{"skill_nudge_candidate", "browser_flow", experienceReviewRequiredTag},
+		Tags:       []string{"skill_nudge_candidate", "refactor_flow", "rg", "apply_patch", "go_test", experienceReviewRequiredTag},
 		SourceType: "tool_usage",
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -870,9 +855,9 @@ func TestRecordExperienceTraceFollowUpDeferredKeepsNextAction(t *testing.T) {
 	t.Cleanup(store.Stop)
 	if err := store.Save(memory.Entry{
 		Title:      "Skill candidate",
-		Content:    "Skill nudge candidate browser_flow; sequence browser_observe -> browser_click",
+		Content:    "Skill nudge candidate refactor_flow; sequence rg -> apply_patch -> go_test",
 		Category:   memory.CategoryProjectKnowledge,
-		Tags:       []string{"skill_nudge_candidate", "browser_flow", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
+		Tags:       []string{"skill_nudge_candidate", "refactor_flow", "rg", "apply_patch", "go_test", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
 		SourceType: "tool_usage",
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -988,9 +973,9 @@ func TestExperienceLearningToolBuildsNonExecutingFollowUp(t *testing.T) {
 	t.Cleanup(store.Stop)
 	if err := store.Save(memory.Entry{
 		Title:      "Skill candidate",
-		Content:    "Skill nudge candidate browser_flow; sequence browser_observe -> browser_click",
+		Content:    "Skill nudge candidate refactor_flow; sequence rg -> apply_patch -> go_test",
 		Category:   memory.CategoryProjectKnowledge,
-		Tags:       []string{"skill_nudge_candidate", "browser_flow", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
+		Tags:       []string{"skill_nudge_candidate", "refactor_flow", "rg", "apply_patch", "go_test", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
 		SourceType: "tool_usage",
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -1024,10 +1009,9 @@ func TestExperienceLearningToolBuildsNonExecutingSkillDraft(t *testing.T) {
 	handler := &IMMessageHandler{app: &App{memoryStore: store}}
 
 	result := handler.toolExperienceLearning(map[string]interface{}{"action": "build_skill_draft", "trace_id": "memory:" + entry.ID})
-	if !strings.Contains(result, `"ok":true`) || !strings.Contains(result, `"suggested_name":"browser_flow"`) || !strings.Contains(result, "read-only skill draft only") || !strings.Contains(result, "recommended_focus_context") {
-		t.Fatalf("unexpected experience_learning skill draft result: %s", result)
+	if !strings.Contains(result, `"ok":false`) || !strings.Contains(result, "not a skill nudge review") {
+		t.Fatalf("legacy browser skill draft should be rejected: %s", result)
 	}
-	assertExperienceLearningToolTopLevelHandoff(t, result, "trace_details")
 }
 
 func TestExperienceLearningToolBuildsNonExecutingRollbackDraft(t *testing.T) {
@@ -1131,9 +1115,9 @@ func TestExperienceLearningToolTraceDetailsFiltersGovernanceQueues(t *testing.T)
 	}
 	if err := store.Save(memory.Entry{
 		Title:      "Skill candidate",
-		Content:    "Skill nudge candidate browser_flow; sequence browser_observe -> browser_click",
+		Content:    "Skill nudge candidate refactor_flow; sequence rg -> apply_patch -> go_test",
 		Category:   memory.CategoryProjectKnowledge,
-		Tags:       []string{"skill_nudge_candidate", "browser_flow", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
+		Tags:       []string{"skill_nudge_candidate", "refactor_flow", "rg", "apply_patch", "go_test", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
 		SourceType: "tool_usage",
 	}); err != nil {
 		t.Fatalf("Save skill: %v", err)
@@ -1149,15 +1133,11 @@ func TestExperienceLearningToolTraceDetailsFiltersGovernanceQueues(t *testing.T)
 	}
 
 	actionResult := parseExperienceTraceDetailsToolResult(t, handler.toolExperienceLearning(map[string]interface{}{"action": "trace_details", "filter": "actions", "action_kind": "draft_skill_manually", "q": "browser"}))
-	if !actionResult.OK || actionResult.Count != 1 || actionResult.TraceDetails[0].Kind != "skill_nudge_review" || actionResult.TraceDetails[0].NextActionKind != "draft_skill_manually" {
-		t.Fatalf("action trace details should include approved skill draft: %#v", actionResult)
+	if !actionResult.OK || actionResult.Count != 0 || len(actionResult.TraceDetails) != 0 {
+		t.Fatalf("legacy browser skill nudges should not queue skill drafts: %#v", actionResult)
 	}
-	recommendedCall, ok := actionResult.RecommendedToolCall["args"].(map[string]interface{})
-	if !ok ||
-		actionResult.RecommendedToolCall["tool"] != "experience_learning" ||
-		recommendedCall["action"] != "build_skill_draft" ||
-		recommendedCall["trace_id"] != actionResult.TraceDetails[0].ID {
-		t.Fatalf("trace_details should expose safe draft recommended tool call: %#v", actionResult.RecommendedToolCall)
+	if actionResult.RecommendedToolCall != nil {
+		t.Fatalf("empty legacy browser skill draft queue should not expose draft handoff: %#v", actionResult.RecommendedToolCall)
 	}
 	if !strings.Contains(actionResult.NonExecutingBoundary, "read-only trace detail inspection") {
 		t.Fatalf("trace_details should expose top-level non-executing boundary: %q", actionResult.NonExecutingBoundary)
@@ -1181,9 +1161,9 @@ func TestExperienceLearningToolQueuesReturnsBoundedGovernanceDetails(t *testing.
 	}
 	if err := store.Save(memory.Entry{
 		Title:      "Skill candidate",
-		Content:    "Skill nudge candidate browser_flow; sequence browser_observe -> browser_click",
+		Content:    "Skill nudge candidate refactor_flow; sequence rg -> apply_patch -> go_test",
 		Category:   memory.CategoryProjectKnowledge,
-		Tags:       []string{"skill_nudge_candidate", "browser_flow", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
+		Tags:       []string{"skill_nudge_candidate", "refactor_flow", "rg", "apply_patch", "go_test", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
 		SourceType: "tool_usage",
 	}); err != nil {
 		t.Fatalf("Save skill: %v", err)
@@ -1236,9 +1216,9 @@ func TestExperienceLearningToolRecordsFollowUpAuditOnly(t *testing.T) {
 	t.Cleanup(store.Stop)
 	if err := store.Save(memory.Entry{
 		Title:      "Skill candidate",
-		Content:    "Skill nudge candidate browser_flow; sequence browser_observe -> browser_click",
+		Content:    "Skill nudge candidate refactor_flow; sequence rg -> apply_patch -> go_test",
 		Category:   memory.CategoryProjectKnowledge,
-		Tags:       []string{"skill_nudge_candidate", "browser_flow", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
+		Tags:       []string{"skill_nudge_candidate", "refactor_flow", "rg", "apply_patch", "go_test", experienceReviewStatusTagPrefix + experienceReviewOutcomeApproved, experienceReviewResolvedTag, "skill_nudge_reviewed"},
 		SourceType: "tool_usage",
 	}); err != nil {
 		t.Fatalf("Save: %v", err)

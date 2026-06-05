@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // startTestServer starts a proxy on :0 and waits for it to be ready.
@@ -185,6 +187,17 @@ func TestConvertOpenAIToAnthropic_ToolCalls(t *testing.T) {
 	}
 }
 
+func TestSetCodeGenUpstreamHeadersNormalizeLegacyClientName(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "https://codegen.qianxin-inc.cn/api/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setCodeGenUpstreamHeaders(req, "openclaw")
+	if got := req.Header.Get(corelib.CodeGenClientNameHeader); got != corelib.CodeGenClientName {
+		t.Fatalf("%s = %q, want %q", corelib.CodeGenClientNameHeader, got, corelib.CodeGenClientName)
+	}
+}
+
 func TestNonStreamProxyRoundTrip(t *testing.T) {
 	// Mock upstream OpenAI server — verifies auth header format
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -192,6 +205,9 @@ func TestNonStreamProxyRoundTrip(t *testing.T) {
 		auth := r.Header.Get("Authorization")
 		if auth != "Bearer test-key" {
 			t.Errorf("upstream Authorization = %q, want %q", auth, "Bearer test-key")
+		}
+		if got := r.Header.Get(corelib.CodeGenClientNameHeader); got != "custom-agent" {
+			t.Errorf("upstream %s = %q, want %q", corelib.CodeGenClientNameHeader, got, "custom-agent")
 		}
 
 		body, _ := io.ReadAll(r.Body)
@@ -220,7 +236,7 @@ func TestNonStreamProxyRoundTrip(t *testing.T) {
 
 	srv, cancel := startTestServer(t)
 	defer cancel()
-	srv.SetUpstream(upstream.URL, "fallback-key")
+	srv.SetUpstreamWithClientName(upstream.URL, "fallback-key", "custom-agent")
 
 	// Send Anthropic-format request with x-api-key header (like Claude Code does)
 	anthReq := `{

@@ -338,8 +338,32 @@ func TestUsageTracker_RecordExperiencePersistsRichFields(t *testing.T) {
 	if len(record.QueryTokens) != 5 {
 		t.Fatalf("QueryTokens length = %d, want capped at 5", len(record.QueryTokens))
 	}
-	if len(record.ToolSequence) != 2 {
-		t.Fatalf("ToolSequence = %v, want deduplicated sequence", record.ToolSequence)
+	if record.ToolName != "browser" || len(record.ToolSequence) != 1 || record.ToolSequence[0] != "browser" {
+		t.Fatalf("browser tool normalization failed: %+v", record)
+	}
+}
+
+func TestUsageTracker_NormalizesAllBrowserPrefixedToolNames(t *testing.T) {
+	tracker, _ := NewUsageTracker("")
+	tracker.RecordExperience(ToolExperience{
+		ToolName:     "browser_open",
+		QueryTokens:  []string{"browser"},
+		ToolSequence: []string{"browser_search", "browser_open"},
+		RecoveryTool: "browser_observe",
+		Success:      false,
+	})
+
+	tracker.mu.RLock()
+	defer tracker.mu.RUnlock()
+	if len(tracker.records) != 1 {
+		t.Fatalf("records = %d, want 1", len(tracker.records))
+	}
+	record := tracker.records[0]
+	if record.ToolName != "browser" || record.RecoveryTool != "browser" {
+		t.Fatalf("browser aliases not normalized: %+v", record)
+	}
+	if len(record.ToolSequence) != 1 || record.ToolSequence[0] != "browser" {
+		t.Fatalf("browser sequence not collapsed: %+v", record.ToolSequence)
 	}
 }
 
@@ -361,14 +385,14 @@ func TestUsageTracker_DistillRoutingHints(t *testing.T) {
 	if hint.TaskType != "browser_automation" || hint.Evidence != 7 || hint.Confidence <= 0 {
 		t.Fatalf("unexpected hint metadata: %+v", hint)
 	}
-	if len(hint.PreferTools) != 1 || hint.PreferTools[0] != "browser_observe" {
-		t.Fatalf("PreferTools = %v, want browser_observe", hint.PreferTools)
+	if len(hint.PreferTools) != 0 {
+		t.Fatalf("PreferTools = %v, want no split legacy browser preference", hint.PreferTools)
 	}
-	if len(hint.AvoidTools) != 1 || hint.AvoidTools[0] != "browser_click" {
-		t.Fatalf("AvoidTools = %v, want browser_click", hint.AvoidTools)
+	if len(hint.AvoidTools) != 0 {
+		t.Fatalf("AvoidTools = %v, want no split legacy browser avoid", hint.AvoidTools)
 	}
-	if len(hint.RecoveryTools) != 1 || hint.RecoveryTools[0] != "browser_observe" {
-		t.Fatalf("RecoveryTools = %v, want browser_observe", hint.RecoveryTools)
+	if len(hint.RecoveryTools) != 1 || hint.RecoveryTools[0] != "browser" {
+		t.Fatalf("RecoveryTools = %v, want browser", hint.RecoveryTools)
 	}
 }
 
@@ -383,15 +407,15 @@ func TestUsageTracker_RoutingHintAdjustment(t *testing.T) {
 	}
 
 	prefer := tracker.RoutingHintAdjustment("browser_observe", []string{"browser", "button"})
-	avoid := tracker.RoutingHintAdjustment("browser_click", []string{"browser", "button"})
+	merged := tracker.RoutingHintAdjustment("browser_click", []string{"browser", "button"})
 	if prefer <= 0 {
 		t.Fatalf("browser_observe adjustment = %.4f, want positive", prefer)
 	}
-	if avoid >= 0 {
-		t.Fatalf("browser_click adjustment = %.4f, want negative", avoid)
+	if merged != prefer {
+		t.Fatalf("legacy browser tool adjustment = %.4f, want same as merged %.4f", merged, prefer)
 	}
-	if prefer > maxRoutingHintAdjustment || avoid < -maxRoutingHintAdjustment {
-		t.Fatalf("adjustments out of bounds: prefer %.4f avoid %.4f", prefer, avoid)
+	if prefer > maxRoutingHintAdjustment || merged > maxRoutingHintAdjustment {
+		t.Fatalf("adjustments out of bounds: prefer %.4f merged %.4f", prefer, merged)
 	}
 	if unrelated := tracker.RoutingHintAdjustment("browser_observe", []string{"spreadsheet"}); unrelated != 0 {
 		t.Fatalf("unrelated adjustment = %.4f, want 0", unrelated)
@@ -424,15 +448,8 @@ func TestUsageTracker_DistillSkillNudgeCandidates(t *testing.T) {
 	tracker.RecordExperience(ToolExperience{ToolName: "bash", QueryTokens: []string{"browser"}, ToolSequence: []string{"bash"}, Success: true, Timestamp: now})
 
 	candidates := tracker.DistillSkillNudgeCandidates(14, 3)
-	if len(candidates) != 1 {
-		t.Fatalf("candidates = %+v, want one", candidates)
-	}
-	c := candidates[0]
-	if c.TaskType != "browser_automation" || c.Evidence != 5 || c.SuccessRate != 0.8 || c.Confidence <= 0 {
-		t.Fatalf("unexpected candidate metadata: %+v", c)
-	}
-	if len(c.ToolSequence) != 3 || c.ToolSequence[0] != "browser_observe" || c.SuggestedName == "" {
-		t.Fatalf("unexpected candidate sequence/name: %+v", c)
+	if len(candidates) != 0 {
+		t.Fatalf("candidates = %+v, want none after merged browser normalization", candidates)
 	}
 }
 
@@ -464,14 +481,7 @@ func TestUsageTracker_DistillRecoveryPatterns(t *testing.T) {
 	})
 
 	patterns := tracker.DistillRecoveryPatterns(14, 3)
-	if len(patterns) != 1 {
-		t.Fatalf("patterns = %+v, want one", patterns)
-	}
-	p := patterns[0]
-	if p.FailedTool != "browser_click" || p.RecoveryTool != "browser_observe" || p.ErrorClass != "element_missing" {
-		t.Fatalf("unexpected recovery pattern identity: %+v", p)
-	}
-	if p.Evidence != 5 || p.SuccessRate != 0.8 || p.Confidence <= 0 || len(p.ToolSequence) < 2 {
-		t.Fatalf("unexpected recovery pattern metadata: %+v", p)
+	if len(patterns) != 0 {
+		t.Fatalf("patterns = %+v, want none for same merged browser tool", patterns)
 	}
 }

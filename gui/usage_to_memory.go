@@ -177,18 +177,21 @@ func usageMemoryIdentityTagCount(tags []string) int {
 }
 
 func formatToolRoutingHintMemory(hint tool.ToolRoutingHint) string {
+	preferTools := normalizeExperienceBrowserToolSequence(hint.PreferTools)
+	avoidTools := normalizeExperienceBrowserToolSequence(hint.AvoidTools)
+	recoveryTools := normalizeExperienceBrowserToolSequence(hint.RecoveryTools)
 	parts := []string{fmt.Sprintf("Tool routing hint for %s", firstNonEmptyUsageString(hint.ContextKey, "unknown context"))}
 	if len(hint.QueryTokens) > 0 {
 		parts = append(parts, "tokens ["+strings.Join(hint.QueryTokens, ", ")+"]")
 	}
-	if len(hint.PreferTools) > 0 {
-		parts = append(parts, "prefer "+strings.Join(hint.PreferTools, ", "))
+	if len(preferTools) > 0 {
+		parts = append(parts, "prefer "+strings.Join(preferTools, ", "))
 	}
-	if len(hint.AvoidTools) > 0 {
-		parts = append(parts, "avoid "+strings.Join(hint.AvoidTools, ", "))
+	if len(avoidTools) > 0 {
+		parts = append(parts, "avoid "+strings.Join(avoidTools, ", "))
 	}
-	if len(hint.RecoveryTools) > 0 {
-		parts = append(parts, "recovery tools "+strings.Join(hint.RecoveryTools, ", "))
+	if len(recoveryTools) > 0 {
+		parts = append(parts, "recovery tools "+strings.Join(recoveryTools, ", "))
 	}
 	parts = append(parts, fmt.Sprintf("evidence %d, confidence %.2f", hint.Evidence, hint.Confidence))
 	if strings.TrimSpace(hint.Description) != "" {
@@ -199,9 +202,10 @@ func formatToolRoutingHintMemory(hint tool.ToolRoutingHint) string {
 
 func formatToolSkillNudgeMemory(nudge tool.ToolSkillNudgeCandidate) string {
 	name := firstNonEmptyUsageString(nudge.SuggestedName, "unnamed skill candidate")
+	sequence := normalizeExperienceBrowserToolSequence(nudge.ToolSequence)
 	parts := []string{fmt.Sprintf("Skill nudge candidate %s", name)}
-	if len(nudge.ToolSequence) > 0 {
-		parts = append(parts, "sequence "+strings.Join(nudge.ToolSequence, " -> "))
+	if len(sequence) > 0 {
+		parts = append(parts, "sequence "+strings.Join(sequence, " -> "))
 	}
 	if len(nudge.QueryTokens) > 0 {
 		parts = append(parts, "tokens ["+strings.Join(nudge.QueryTokens, ", ")+"]")
@@ -214,15 +218,18 @@ func formatToolSkillNudgeMemory(nudge tool.ToolSkillNudgeCandidate) string {
 }
 
 func formatToolRecoveryPatternMemory(pattern tool.ToolRecoveryPattern) string {
+	failedTool := normalizeExperienceBrowserToolName(pattern.FailedTool)
+	recoveryTool := normalizeExperienceBrowserToolName(pattern.RecoveryTool)
+	sequence := normalizeExperienceBrowserToolSequence(pattern.ToolSequence)
 	parts := []string{fmt.Sprintf("Tool recovery pattern for %s", firstNonEmptyUsageString(pattern.ContextKey, "unknown context"))}
-	if pattern.FailedTool != "" && pattern.RecoveryTool != "" {
-		parts = append(parts, fmt.Sprintf("recover %s with %s", pattern.FailedTool, pattern.RecoveryTool))
+	if failedTool != "" && recoveryTool != "" {
+		parts = append(parts, fmt.Sprintf("recover %s with %s", failedTool, recoveryTool))
 	}
 	if pattern.ErrorClass != "" {
 		parts = append(parts, "error class "+pattern.ErrorClass)
 	}
-	if len(pattern.ToolSequence) > 0 {
-		parts = append(parts, "sequence "+strings.Join(pattern.ToolSequence, " -> "))
+	if len(sequence) > 0 {
+		parts = append(parts, "sequence "+strings.Join(sequence, " -> "))
 	}
 	if len(pattern.QueryTokens) > 0 {
 		parts = append(parts, "tokens ["+strings.Join(pattern.QueryTokens, ", ")+"]")
@@ -263,7 +270,7 @@ func normalizeUsageMemoryTags(tags []string) []string {
 	seen := make(map[string]bool, len(tags))
 	result := make([]string, 0, len(tags))
 	for _, tag := range tags {
-		tag = strings.TrimSpace(tag)
+		tag = normalizeUsageMemoryBrowserTag(tag)
 		if tag == "" || seen[tag] {
 			continue
 		}
@@ -271,6 +278,18 @@ func normalizeUsageMemoryTags(tags []string) []string {
 		result = append(result, tag)
 	}
 	return result
+}
+
+func normalizeUsageMemoryBrowserTag(tag string) string {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return ""
+	}
+	lower := strings.ToLower(tag)
+	if lower == "browser" || strings.HasPrefix(lower, "browser_") {
+		return "browser"
+	}
+	return tag
 }
 func mergeTags(existing, additional []string) []string {
 	seen := make(map[string]bool, len(existing))

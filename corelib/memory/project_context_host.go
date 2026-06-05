@@ -1,5 +1,7 @@
 package memory
 
+import "sort"
+
 // ProjectContextForHostData groups the memory entries and scene metadata a host
 // needs when opening or summarizing a project-scoped tab. It centralizes the
 // strict project recall queries so GUI/TUI/server hosts do not duplicate them.
@@ -18,8 +20,32 @@ func (s *Store) ProjectContextForHost(projectPath string, sceneLimit int) Projec
 	if s == nil || projectPath == "" {
 		return data
 	}
-	data.TaskArtifacts = s.RecallDynamicStrict("task artifact progress", CategoryTaskArtifact, projectPath)
-	data.ProjectKnowledge = s.RecallDynamicStrict("project knowledge", CategoryProjectKnowledge, projectPath)
+	projectLower := semanticNormalizeProjectPath(projectPath)
+	if projectLower == "" {
+		return data
+	}
+
+	s.mu.RLock()
+	entries := append([]Entry(nil), s.entries...)
+	s.mu.RUnlock()
+
+	projectSceneEntries := make([]Entry, 0, 16)
+	for _, entry := range entries {
+		if recallDynamicEntryAllowedStrict(entry, CategoryTaskArtifact, projectLower, "") {
+			data.TaskArtifacts = append(data.TaskArtifacts, entry)
+		}
+		if recallDynamicEntryAllowedStrict(entry, CategoryProjectKnowledge, projectLower, "") {
+			data.ProjectKnowledge = append(data.ProjectKnowledge, entry)
+		}
+		if projectContextSceneEntryAllowed(entry, projectLower) {
+			projectSceneEntries = append(projectSceneEntries, entry)
+		}
+	}
+	sortProjectContextEntries(data.TaskArtifacts)
+	sortProjectContextEntries(data.ProjectKnowledge)
+	data.TaskArtifacts = limitProjectContextEntries(data.TaskArtifacts, 8)
+	data.ProjectKnowledge = limitProjectContextEntries(data.ProjectKnowledge, 8)
+
 	seen := make(map[string]bool, len(data.TaskArtifacts)+len(data.ProjectKnowledge))
 	for _, entry := range data.TaskArtifacts {
 		if !seen[entry.ID] {
@@ -36,14 +62,44 @@ func (s *Store) ProjectContextForHost(projectPath string, sceneLimit int) Projec
 	if sceneLimit <= 0 {
 		sceneLimit = 20
 	}
-	for _, scene := range s.SceneIndex(sceneLimit) {
-		if scene.ProjectPath == projectPath {
+	for _, scene := range BuildSceneIndex(projectSceneEntries, sceneLimit) {
+		if semanticProjectPathMatches(scene.ProjectPath, projectLower) {
 			data.Scene = scene
 			data.HasScene = true
 			break
 		}
 	}
 	return data
+}
+
+func sortProjectContextEntries(entries []Entry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if !entries[i].UpdatedAt.Equal(entries[j].UpdatedAt) {
+			return entries[i].UpdatedAt.After(entries[j].UpdatedAt)
+		}
+		return entries[i].ID < entries[j].ID
+	})
+}
+
+func limitProjectContextEntries(entries []Entry, limit int) []Entry {
+	if limit <= 0 || len(entries) <= limit {
+		return entries
+	}
+	return append([]Entry(nil), entries[:limit]...)
+}
+
+func projectContextSceneEntryAllowed(entry Entry, projectLower string) bool {
+	if projectLower == "" || !entry.IsActive() {
+		return false
+	}
+	if !projectCategories[entry.Category] && !projectCategories[MapToCanonical(entry.Category)] {
+		return false
+	}
+	if !recallBoundaryAllowed(entry, projectLower, "") {
+		return false
+	}
+	projectPath := semanticNormalizeProjectPath(inferProjectPath(&entry))
+	return semanticProjectPathMatches(projectPath, projectLower)
 }
 
 // SceneForProjectForHost returns the scene navigation record for one project.

@@ -5,9 +5,7 @@ import "strings"
 var remoteCodingToolTokenUsageProviderPrefixes = [...]string{
 	"codex:",
 	"claude:",
-	"gemini:",
 	"opencode:",
-	"cursor:",
 	"codebuddy:",
 	"iflow:",
 	"kilo:",

@@ -50,6 +50,10 @@ $env:MACLAW_DATA_SQLITE_PATH = "D:\data\maclaw\data.db"
 go run ./cmd/maclaw-data-srv
 ```
 
+By default, DataSrv listens on `127.0.0.1:18180`. Override the loopback listen
+address with `MACLAW_DATA_HTTP_ADDR`, for example `127.0.0.1:18182` during
+local side-by-side testing. Plain HTTP startup rejects non-loopback addresses.
+
 On Windows, the same `maclaw-data-srv.exe` can run either as a normal command
 line process or as an NT service. When the binary is launched by the Windows
 Service Control Manager, stop and shutdown controls are mapped to the same
@@ -96,6 +100,12 @@ Phase 2 administrator management APIs are available after signing in with a
 - `GET /api/v1/data/admin/sessions`
 - `PATCH /api/v1/data/admin/sessions/{sessionId}`
 - `DELETE /api/v1/data/admin/sessions/{sessionId}`
+- `GET /api/v1/data/admin/tenants`
+- `POST /api/v1/data/admin/tenants/sync`
+- `GET /api/v1/data/admin/hub-registration`
+- `POST /api/v1/data/admin/hub-registration`
+- `POST /api/v1/data/admin/hub-registration/register`
+- `POST /api/v1/data/admin/hub-registration/sync-tenants`
 
 `POST /api/v1/data/admin/accounts` creates additional local administrator
 accounts. `PATCH` can update display name, role, and enabled state. Disabling an
@@ -103,6 +113,19 @@ administrator revokes that account's active sessions, and the service refuses to
 disable the last enabled administrator. Session APIs list active local
 administrator sessions, mark the current bearer-token session, adjust session
 expiry up to 168 hours, and revoke one session at a time.
+
+Administrator accounts have an `admin_scope` of `global` or `tenant`. The first
+administrator created by setup is global. Global administrators can register
+DataSrv with Hub, pull Hub tenants, create tenant administrators, and list all
+administrator accounts/sessions by default. Tenant administrators are limited to
+their own tenant and cannot create or promote global administrators.
+
+Hub registration stores the Hub base URL, platform identity, generated RSA key
+pair, callback secret, and optional virtual mail domain. After a global
+administrator saves the settings and calls the register endpoint, DataSrv signs
+platform requests to Hub and can pull the Hub tenant registry. The login screen
+can refresh tenant choices through `POST /api/v1/setup/tenants/sync`; that
+public endpoint is rate-limited and only works after Hub registration is active.
 
 Offline administrator recovery commands do not require `MACLAW_DATA_TOKEN` and
 do not start the HTTP service. The target SQLite database file must already

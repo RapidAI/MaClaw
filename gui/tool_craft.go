@@ -999,10 +999,13 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 				return nil, err
 			}
 		}
-		scanner := cskill.NewSecurityScanner(nil)
-		report := scanner.ScanInstallStaged(context.Background(), &candidate, scanDir, func(status string) {
-			app.emitSkillInstallProgress(candidate.Name, "scanning", status, nil)
-		})
+		var report *cskill.ScanReport
+		if app == nil || !app.isRiskGuardrailOffMode() {
+			scanner := cskill.NewSecurityScanner(nil)
+			report = scanner.ScanInstallStaged(context.Background(), &candidate, scanDir, func(status string) {
+				app.emitSkillInstallProgress(candidate.Name, "scanning", status, nil)
+			})
+		}
 		if err := app.admitManualSkillInstall(context.Background(), &candidate, "crafted skill", report); err != nil {
 			return report, err
 		}
@@ -1049,6 +1052,17 @@ func scanCraftedScriptBeforeExecution(ctx context.Context, app *App, task, scrip
 		Steps:       []corelib.NLSkillStep{{Action: "script_prescan"}},
 		Source:      "crafted",
 		TrustLevel:  "agent-created",
+	}
+	if app != nil && app.isRiskGuardrailOffMode() {
+		app.emitSkillInstallProgress(skillName, "scan-complete", "Risk guardrails are off; generated script allowed.", nil)
+		app.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillInstall,
+			"craft_tool_prescan",
+			security.RiskLow,
+			security.PolicyAllow,
+			fmt.Sprintf("risk guardrails off allowed crafted script before execution for skill %s", skillName),
+		)
+		return nil, nil
 	}
 	if app != nil {
 		app.emitSkillInstallProgress(skillName, "scan-start", "Security scanning generated script before execution.", nil)

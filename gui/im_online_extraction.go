@@ -194,14 +194,12 @@ func (h *IMMessageHandler) triggerOnlineExtractionWithContext(bgCtx context.Cont
 
 	summary := extractConversationSummary(history)
 
-	go func() {
-		ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
-		defer cancel()
+	ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
+	defer cancel()
 
-		result := oe.ExtractAndIntegrate(ctx, messages, summary, time.Now(), userID)
-		if result.Added > 0 || result.Updated > 0 || result.Deleted > 0 {
-			log.Printf("[online_extraction] user=%s extracted=%d added=%d updated=%d deleted=%d noop=%d errors=%d",
-				userID, result.ExtractedFacts, result.Added, result.Updated, result.Deleted, result.Noops, result.Errors)
-		}
-	}()
+	result := oe.ExtractAndIntegrate(ctx, messages, summary, time.Now(), userID)
+	if result.Added > 0 || result.Updated > 0 || result.Deleted > 0 || result.Errors > 0 || ctx.Err() != nil {
+		log.Printf("[online_extraction] user=%s extracted=%d added=%d updated=%d deleted=%d noop=%d errors=%d cancelled=%v",
+			userID, result.ExtractedFacts, result.Added, result.Updated, result.Deleted, result.Noops, result.Errors, ctx.Err() != nil)
+	}
 }

@@ -60,15 +60,6 @@ func (a *CompletionAnalyzer) Analyze(lines []string, tool string, sdkResult *SDK
 	for _, line := range tail {
 		lower := strings.ToLower(line)
 
-		if marker := classifyGeminiACPTurnCompleteMarker(line); marker != sessionCompletionMarkerUnknown {
-			if marker == sessionCompletionMarkerCompleted {
-				completionCount++
-			} else if marker == sessionCompletionMarkerIncomplete {
-				incompletionCount++
-			}
-			continue
-		}
-
 		for _, sig := range completionSignals {
 			if strings.Contains(lower, sig) {
 				completionCount++

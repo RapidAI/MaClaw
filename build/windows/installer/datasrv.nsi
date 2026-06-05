@@ -57,6 +57,8 @@ ManifestDPIAware true
 
 LangString AlreadyInstalled ${LANG_ENGLISH} "${INFO_PRODUCTNAME} is already installed. Do you want to uninstall it first?"
 LangString AlreadyInstalled ${LANG_SIMPCHINESE} "${INFO_PRODUCTNAME} is already installed. Uninstall it first?"
+LangString UpgradingExisting ${LANG_ENGLISH} "Existing ${INFO_PRODUCTNAME} installation detected. Stopping service and replacing old program files..."
+LangString UpgradingExisting ${LANG_SIMPCHINESE} "Detected old ${INFO_PRODUCTNAME}. Stopping service and replacing old program files..."
 
 Name "${INFO_PRODUCTNAME}"
 OutFile "..\..\..\dist\maclaw-data-srv-Setup.exe"
@@ -78,13 +80,27 @@ Function .onInit
 
     ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString"
     StrCmp $R0 "" notInstalled
-    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AlreadyInstalled)" IDYES uninstall
-    Abort
-
-    uninstall:
-    ExecWait '"$R0" /S _?=$INSTDIR'
+    ReadRegStr $R1 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "InstallLocation"
+    StrCmp $R1 "" 0 setExistingInstallDir
+    Goto existingInstallDirReady
+    setExistingInstallDir:
+        StrCpy $INSTDIR $R1
+    existingInstallDirReady:
+    ReadRegStr $R1 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "QuietUninstallString"
+    StrCmp $R1 "" 0 haveQuietUninstall
+        StrCpy $R1 "$R0 /S"
+    haveQuietUninstall:
+    DetailPrint "$(UpgradingExisting)"
+    ExecWait 'sc.exe stop "${SERVICE_NAME}"'
+    Sleep 3000
+    ExecWait 'sc.exe delete "${SERVICE_NAME}"'
+    Sleep 1000
+    ExecWait '$R1 _?=$INSTDIR'
+    Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    Delete "$INSTDIR\README.md"
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"
+    DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}"
 
     notInstalled:
 FunctionEnd
@@ -117,7 +133,7 @@ Section
     Sleep 2000
     ExecWait 'sc.exe delete "${SERVICE_NAME}"'
     Sleep 1000
-    ExecWait 'sc.exe create ${SERVICE_NAME} binPath= "$INSTDIR\${PRODUCT_EXECUTABLE}" start= auto DisplayName= "${INFO_PRODUCTNAME}"' $R1
+    ExecWait 'sc.exe create "${SERVICE_NAME}" binPath= "$INSTDIR\${PRODUCT_EXECUTABLE}" start= auto DisplayName= "${INFO_PRODUCTNAME}"' $R1
     ${If} $R1 != 0
         MessageBox MB_OK|MB_ICONSTOP "Failed to create ${SERVICE_NAME} Windows service. sc.exe exited with code $R1."
         Abort
@@ -133,6 +149,8 @@ Section
 
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "DisplayName" "${INFO_PRODUCTNAME}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "QuietUninstallString" "$\"$INSTDIR\uninstall.exe$\" /S"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "InstallLocation" "$INSTDIR"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "DisplayIcon" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "Publisher" "${INFO_COMPANYNAME}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "DisplayVersion" "${INFO_PRODUCTVERSION}"
@@ -143,7 +161,6 @@ Section "uninstall"
 
     ExecWait 'sc.exe stop "${SERVICE_NAME}"'
     ExecWait 'sc.exe delete "${SERVICE_NAME}"'
-    ExecWait "taskkill /IM ${PRODUCT_EXECUTABLE}"
 
     Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
     Delete "$INSTDIR\README.md"

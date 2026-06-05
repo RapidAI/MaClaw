@@ -349,11 +349,15 @@ func (a *tuiModeApp) saveConfig(msg views.ConfigSaveMsg) tea.Cmd {
 		if blocked, reason := clientsecurity.RejectHubManagedSecurityConfigChange(current, msg.Key); blocked {
 			return views.ConfigSaveFailedMsg{Key: msg.Key, Error: reason}
 		}
-		cfg := msg.Config
 		if !msg.HasConfig {
-			cfg = current
-			views.ApplyConfigValue(&cfg, msg.Key, msg.Value)
+			if err := a.app.PatchConfig(func(cfg *corelib.AppConfig) {
+				views.ApplyConfigValue(cfg, msg.Key, msg.Value)
+			}); err != nil {
+				return views.ConfigSaveFailedMsg{Key: msg.Key, Error: err.Error()}
+			}
+			return views.ConfigSavedMsg{Key: msg.Key, Value: msg.Value}
 		}
+		cfg := msg.Config
 		clientsecurity.PreserveHubManagedSecurityConfig(current, &cfg)
 		if err := a.app.SaveConfig(cfg); err != nil {
 			return views.ConfigSaveFailedMsg{Key: msg.Key, Error: err.Error()}

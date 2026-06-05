@@ -1,6 +1,9 @@
 package main
 
-import "log"
+import (
+	"log"
+	"strings"
+)
 
 type imInFlightLifecycle struct {
 	handler          *IMMessageHandler
@@ -19,7 +22,11 @@ func (l *imInFlightLifecycle) SetOnce() {
 		return
 	}
 	l.markerSet = true
-	projectPath := l.handler.getCurrentProjectPath()
+	projectPath := projectPathFromUserID(l.userID)
+	if projectPath == "" && strings.TrimSpace(l.userID) != desktopUserID {
+		projectPath = l.handler.getCurrentProjectPath()
+	}
+	log.Printf("[InFlightTask] set user=%q project=%q text_len=%d", l.userID, projectPath, len([]rune(l.userText)))
 	l.handler.memory.SetInFlightTask(l.userID, truncateRunes(l.userText, 200), projectPath)
 	if err := l.handler.memory.FlushNow(); err != nil {
 		log.Printf("[InFlightTask] flush failed: %v", err)
@@ -37,6 +44,7 @@ func (l *imInFlightLifecycle) Cleanup() {
 	if l == nil || l.handler == nil || !l.markerSet || l.preserveOnFinish {
 		return
 	}
+	log.Printf("[InFlightTask] clear user=%q", l.userID)
 	l.handler.clearInFlightTask(l.userID)
 	_ = l.handler.memory.FlushNow()
 }

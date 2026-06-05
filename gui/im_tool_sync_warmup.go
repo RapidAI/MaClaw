@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // WarmupTools pre-builds and caches the tool definitions so the first user
@@ -40,6 +42,7 @@ func (h *IMMessageHandler) WarmupHTTPConn() {
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)

@@ -1,6 +1,10 @@
 import { main } from "../../../wailsjs/go/models";
 
-export type RemoteToolName = "claude" | "gemini" | "codex" | "opencode" | "cursor" | "iflow" | "kilo";
+export const REMOTE_TOOL_NAMES = ["claude", "codex", "opencode", "codebuddy", "iflow", "kilo"] as const;
+
+export type BuiltinRemoteToolName = typeof REMOTE_TOOL_NAMES[number];
+
+export type RemoteToolName = BuiltinRemoteToolName | (string & {});
 
 export interface ImportantEventView {
     event_id?: string;

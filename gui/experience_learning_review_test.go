@@ -233,9 +233,9 @@ func TestReviewExperienceTraceApprovesSkillNudgeMemory(t *testing.T) {
 	t.Cleanup(store.Stop)
 	if err := store.Save(memory.Entry{
 		Title:      "Skill candidate",
-		Content:    "Skill nudge candidate browser_flow; sequence browser_observe -> browser_click",
+		Content:    "Skill nudge candidate refactor_flow; sequence rg -> apply_patch -> go_test",
 		Category:   memory.CategoryProjectKnowledge,
-		Tags:       []string{"skill_nudge_candidate", "browser", "browser_flow", experienceReviewRequiredTag},
+		Tags:       []string{"skill_nudge_candidate", "refactor_flow", "rg", "apply_patch", "go_test", experienceReviewRequiredTag},
 		SourceType: "tool_usage",
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -294,9 +294,9 @@ func TestReviewExperienceTraceUsesLatestAuditWhenReviewedAgain(t *testing.T) {
 	t.Cleanup(store.Stop)
 	if err := store.Save(memory.Entry{
 		Title:      "Skill candidate",
-		Content:    "Skill nudge candidate browser_flow; sequence browser_observe -> browser_click",
+		Content:    "Skill nudge candidate refactor_flow; sequence rg -> apply_patch -> go_test",
 		Category:   memory.CategoryProjectKnowledge,
-		Tags:       []string{"skill_nudge_candidate", "browser", "browser_flow", experienceReviewRequiredTag},
+		Tags:       []string{"skill_nudge_candidate", "refactor_flow", "rg", "apply_patch", "go_test", experienceReviewRequiredTag},
 		SourceType: "tool_usage",
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -376,8 +376,8 @@ func TestReviewStateResetsWhenSkillNudgeMemoryChanges(t *testing.T) {
 	}
 	t.Cleanup(store.Stop)
 	bridge := NewUsagePatternBridge(nil, store)
-	tags := []string{"skill_nudge_candidate", "browser", "browser_flow", "browser_observe", experienceReviewRequiredTag}
-	created, changed := bridge.upsertUsageMemory("Skill nudge candidate browser_flow; sequence browser_observe", tags)
+	tags := []string{"skill_nudge_candidate", "refactor_flow", "rg", "apply_patch", "go_test", experienceReviewRequiredTag}
+	created, changed := bridge.upsertUsageMemory("Skill nudge candidate refactor_flow; sequence rg -> apply_patch", tags)
 	if !created || changed {
 		t.Fatalf("first upsert created/changed = %v/%v", created, changed)
 	}
@@ -387,7 +387,7 @@ func TestReviewStateResetsWhenSkillNudgeMemoryChanges(t *testing.T) {
 		t.Fatalf("ReviewExperienceTrace: %v", err)
 	}
 
-	created, changed = bridge.upsertUsageMemory("Skill nudge candidate browser_flow; sequence browser_observe -> browser_click", tags)
+	created, changed = bridge.upsertUsageMemory("Skill nudge candidate refactor_flow; sequence rg -> apply_patch -> go_test", tags)
 	if created || !changed {
 		t.Fatalf("second upsert created/changed = %v/%v", created, changed)
 	}

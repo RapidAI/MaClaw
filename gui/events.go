@@ -26,4 +26,12 @@ const (
 	// listen to one of the two.
 	// Frontend listener: App.tsx useEffect → refreshRecentProjects()
 	EventTasksChanged = "tasks:changed"
+
+	// EventProjectTaskClosed is emitted when a task is removed or archived and
+	// any matching isolated project tab should be closed.
+	EventProjectTaskClosed = "project-task:closed"
+
+	// EventAppUpdateAvailable is emitted after the delayed startup update check
+	// finds a newer application release.
+	EventAppUpdateAvailable = "app-update-available"
 )

@@ -242,10 +242,11 @@ func BuildCodexConfigToml(m *corelib.ModelConfig) string {
 	if m == nil {
 		return configfile.BuildCodexConfigTomlContent("", "", "custom", "responses")
 	}
-	return configfile.BuildCodexConfigTomlContent(
+	return configfile.BuildCodexConfigTomlContentWithClientName(
 		strings.TrimSpace(m.ModelUrl),
 		strings.TrimSpace(m.ModelId),
 		strings.TrimSpace(m.ModelName),
 		strings.TrimSpace(m.WireApi),
+		strings.TrimSpace(m.AgentType),
 	)
 }

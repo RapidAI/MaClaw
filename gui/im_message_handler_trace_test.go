@@ -1864,6 +1864,118 @@ func TestHandleIMMessage_NewTaskAfterIncompleteRunClearsOldContext(t *testing.T)
 	}
 }
 
+func TestHandleIMMessage_StartNewTaskUIActionReplaysOriginalTask(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var (
+		mu       sync.Mutex
+		requests []loopTraceRequest
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req loopTraceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"fresh done\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":2,\"total_tokens\":10}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	userID := "desktop-user"
+	h.memory.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "old Daily Paper task"},
+		{Role: "assistant", Content: "old Daily Paper progress"},
+	})
+	h.memory.UpsertUnfinishedSlot(userID, &agent.UnfinishedTaskSlot{
+		SlotID:       "slot-stale",
+		UserID:       userID,
+		Status:       "pending_resume",
+		LastTask:     "old Daily Paper task",
+		Summary:      "old Daily Paper progress",
+		ResumePrompt: "old resume prompt",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	})
+	h.memory.BindUnfinishedSlot(userID, "slot-stale")
+	freshTaskText := "new knowledge import task"
+	h.pendingSlotUserText.Store(userID, &pendingSlotText{Text: freshTaskText, Timestamp: time.Now()})
+
+	resp := h.HandleIMMessage(IMUserMessage{
+		UserID:        userID,
+		Platform:      "desktop",
+		Text:          "Dismiss previous unfinished task",
+		StartNewTask:  true,
+		DismissSlotID: "slot-stale",
+		UIAction:      true,
+	})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if resp.Text != "fresh done" {
+		t.Fatalf("resp.Text = %q", resp.Text)
+	}
+	if slot := h.memory.GetUnfinishedSlot(userID); slot != nil {
+		t.Fatalf("unfinished slot = %#v, want nil after StartNewTask", slot)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) == 0 {
+		t.Fatal("expected at least one LLM request")
+	}
+	foundFreshTask := false
+	for _, msg := range requests[0].Messages {
+		content, _ := msg["content"].(string)
+		if strings.Contains(content, freshTaskText) {
+			foundFreshTask = true
+		}
+		if strings.Contains(content, "Dismiss previous unfinished task") {
+			t.Fatalf("UI action placeholder leaked into fresh task request: %#v", requests[0].Messages)
+		}
+		if strings.Contains(content, "Daily Paper") || strings.Contains(content, "old resume prompt") {
+			t.Fatalf("old unfinished context leaked into fresh task request: %#v", requests[0].Messages)
+		}
+	}
+	if !foundFreshTask {
+		t.Fatalf("fresh task text %q not found in LLM request: %#v", freshTaskText, requests[0].Messages)
+	}
+}
+
 func TestHandleIMMessage_DismissRecoverableSessionSuppressesResumeContext(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -1897,12 +2009,15 @@ func TestHandleIMMessage_DismissRecoverableSessionSuppressesResumeContext(t *tes
 	h := NewIMMessageHandler(app, manager)
 	defer h.memory.Stop()
 
-	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "忽略这个恢复会话", DismissRecoverableSessionID: "sess-dismiss"})
+	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "忽略这个恢复会话", Lang: "zh-Hans", DismissRecoverableSessionID: "sess-dismiss"})
 	if resp == nil {
 		t.Fatal("expected response")
 	}
 	if resp.Error != "" {
 		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if !strings.Contains(resp.Text, "已忽略可恢复会话") {
+		t.Fatalf("expected localized dismiss response, got: %q", resp.Text)
 	}
 	session.mu.RLock()
 	defer session.mu.RUnlock()
@@ -1944,14 +2059,14 @@ func TestHandleIMMessage_ResumeRecoverableSessionDisabled(t *testing.T) {
 	h := NewIMMessageHandler(app, manager)
 	defer h.memory.Stop()
 
-	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "继续恢复会话", ResumeRecoverableSessionID: "sess-resume"})
+	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "继续恢复会话", Lang: "zh-Hans", ResumeRecoverableSessionID: "sess-resume"})
 	if resp == nil {
 		t.Fatal("expected response")
 	}
 	if resp.Error != "" {
 		t.Fatalf("resp.Error = %q", resp.Error)
 	}
-	if !strings.Contains(resp.Text, "disabled") || !strings.Contains(resp.Text, "CodingSubAgent") {
+	if !strings.Contains(resp.Text, "已禁用外部编码会话恢复") || !strings.Contains(resp.Text, "CodingSubAgent") {
 		t.Fatalf("expected disabled CodingSubAgent guidance, got: %q", resp.Text)
 	}
 	session.mu.RLock()

@@ -10,13 +10,13 @@ interface TestConfig {
     workstation_mode?: boolean;
 }
 
-const saveConfigMock = vi.fn().mockResolvedValue(undefined);
+const patchConfigFieldsMock = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
-    SaveConfig: (...args: unknown[]) => saveConfigMock(...args),
+    PatchConfigFields: (...args: unknown[]) => patchConfigFieldsMock(...args),
 }));
 
-import { SaveConfig } from '../../../wailsjs/go/main/App';
+import { PatchConfigFields } from '../../../wailsjs/go/main/App';
 
 describe('Desktop Pet Entry Toggle Behavior', () => {
     describe('Toggle updates config', () => {
@@ -63,16 +63,15 @@ describe('Desktop Pet Entry Toggle Behavior', () => {
         });
     });
 
-    describe('SaveConfig integration', () => {
-        it('calls SaveConfig with updated config', async () => {
+    describe('PatchConfigFields integration', () => {
+        it('patches only pet_enabled', async () => {
             vi.clearAllMocks();
 
-            const config: TestConfig = { pet_enabled: true };
-            const newConfig: TestConfig = { ...config, pet_enabled: false };
+            const patch = { pet_enabled: false };
 
-            await SaveConfig(newConfig as unknown as never);
+            await PatchConfigFields(patch);
 
-            expect(saveConfigMock).toHaveBeenCalledWith(newConfig);
+            expect(patchConfigFieldsMock).toHaveBeenCalledWith(patch);
         });
     });
 });
@@ -85,10 +84,10 @@ describe('Edge cases', () => {
         const toggle1: TestConfig = { ...config, pet_enabled: false };
         const toggle2: TestConfig = { ...toggle1, pet_enabled: true };
 
-        await SaveConfig(toggle1 as unknown as never);
-        await SaveConfig(toggle2 as unknown as never);
+        await PatchConfigFields(toggle1 as unknown as Record<string, unknown>);
+        await PatchConfigFields(toggle2 as unknown as Record<string, unknown>);
 
-        expect(saveConfigMock).toHaveBeenCalledTimes(2);
-        expect(saveConfigMock).toHaveBeenLastCalledWith(toggle2);
+        expect(patchConfigFieldsMock).toHaveBeenCalledTimes(2);
+        expect(patchConfigFieldsMock).toHaveBeenLastCalledWith(toggle2);
     });
 });

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
 
@@ -167,12 +168,27 @@ type sessionStartLLMCaller struct {
 }
 
 func (c *sessionStartLLMCaller) ChatCall(messages []map[string]string) (string, error) {
+	return c.ChatCallContext(context.Background(), messages)
+}
+
+func (c *sessionStartLLMCaller) ChatCallContext(ctx context.Context, messages []map[string]string) (string, error) {
+	ctx = llm.WithRequestTraceIfMissing(ctx, "session-start-extraction")
+	if c == nil || c.app == nil {
+		return "", context.Canceled
+	}
+	ownerID := ""
+	if trace, ok := llm.RequestTraceFromContext(ctx); ok {
+		ownerID = trace.OwnerID
+	}
+	if !c.app.waitForForegroundAgentIdle(ctx, "session-start-extraction", ownerID) {
+		return "", ctx.Err()
+	}
 	cfg := c.app.GetMaclawLLMConfig()
 	iface := make([]interface{}, len(messages))
 	for i, m := range messages {
 		iface[i] = m
 	}
-	result, err := doSimpleLLMRequest(context.Background(), cfg, iface, &http.Client{Timeout: 30 * time.Second}, 30*time.Second)
+	result, err := doSimpleLLMRequest(ctx, cfg, iface, &http.Client{Timeout: 30 * time.Second}, 30*time.Second)
 	if err != nil {
 		return "", err
 	}

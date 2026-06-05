@@ -15,10 +15,10 @@ import {
     ListRemoteToolMetadata,
     ListValidProviders,
     LoadConfig,
+    PatchConfigFields,
     ProbeRemoteHub,
     ReconnectRemoteHub,
     RunRemoteToolSmoke,
-    SaveConfig,
     SendRemoteSessionInput,
     InterruptRemoteSession as InterruptRemoteSessionAPI,
     KillRemoteSession as KillRemoteSessionAPI,
@@ -56,6 +56,20 @@ type Translate = (key: string) => string;
 type FormatText = (key: string, values?: Record<string, string>) => string;
 type LocalizeText = (en: string, zhHans: string, zhHant: string) => string;
 type ShowToast = (message: string, duration?: number) => void;
+
+
+const removedRemoteToolNames = new Set(["cursor", "gemini"]);
+
+const isRemovedRemoteToolName = (tool?: string | null): boolean => (
+    removedRemoteToolNames.has((tool || "").trim().toLowerCase())
+);
+
+
+const normalizeRemoteToolName = (tool?: string | null): RemoteToolName => {
+    const normalized = (tool || "").trim().toLowerCase();
+    if (!normalized || isRemovedRemoteToolName(normalized)) return "claude";
+    return normalized as RemoteToolName;
+};
 
 type UseRemotePanelParams = {
     config: main.AppConfig | null;
@@ -126,7 +140,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     const remoteToolMetaByName = useMemo(() => buildRemoteToolMetaByName(remoteToolMetadata), [remoteToolMetadata]);
     const visibleRemoteTools = useMemo(() => buildVisibleRemoteTools(remoteToolMetadata), [remoteToolMetadata]);
     const selectedRemoteToolInfo = remoteToolMetaByName[selectedRemoteTool];
-    const selectedRemoteToolCanStart = selectedRemoteToolInfo?.can_start !== false;
+    const selectedRemoteToolCanStart = selectedRemoteToolInfo ? selectedRemoteToolInfo.can_start !== false : remoteToolMetadata.length === 0;
     const selectedRemoteToolUnavailableReason = selectedRemoteToolInfo?.unavailable_reason || localizeText("cannot start", "无法启动", "無法啟動");
 
     const getRemoteToolLabel = (tool: string): string => buildRemoteToolLabel(tool, remoteToolMetaByName);
@@ -194,7 +208,17 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             },
         });
         setConfig(newConfig);
-        void SaveConfig(newConfig).catch((err) => {
+        const patch: Record<string, any> = {
+            tool_current_model: { tool: selectedRemoteTool, model: normalizedProvider },
+        };
+        if (pendingLaunchMode) {
+            patch.default_launch_mode = pendingLaunchMode;
+        }
+        void PatchConfigFields(patch).then((saved) => {
+            const confirmed = new main.AppConfig(saved);
+            setConfig(confirmed);
+            window.dispatchEvent(new CustomEvent("maclaw-config-changed", { detail: confirmed }));
+        }).catch((err) => {
             console.error("Failed to sync remote provider selection:", err);
             showToastMessage(formatText("remoteSaveFailed", { error: String(err) }), 4000);
         });
@@ -518,33 +542,56 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     };
 
 const saveRemoteConfigField = async (patch: Partial<main.AppConfig>) => {
-        // Always reload config from backend before merging to avoid overwriting
-        // concurrent backend changes (e.g. SSO login sets maclaw_llm_current_provider
-        // but the frontend config state is stale).
-        let base: main.AppConfig;
-        try {
-            base = await LoadConfig();
-        } catch {
-            if (!config) return;
-            base = config;
+        const patchKeys = Object.keys(patch as Record<string, unknown>);
+        const atomicPatchFields = new Set([
+            'remote_enabled',
+            'remote_hub_url',
+            'remote_hubcenter_url',
+            'remote_email',
+            'remote_mobile',
+            'default_launch_mode',
+            'remote_heartbeat_sec',
+            'screen_dim_timeout_min',
+            'agent_response_timeout_sec',
+            'maclaw_llm_timeout_sec',
+            'audio_input_device_id',
+            'audio_output_device_id',
+            'workstation_mode',
+            'security_policy_mode',
+            'sandbox_mode',
+            'network_level',
+            'network_allowlist',
+            'yolo_mode_allowed',
+            'smart_route_enabled',
+            'gossip_enabled',
+            'file_outbound_enabled',
+            'image_outbound_enabled',
+            'skill_sources_allowed',
+            'maclaw_role_name',
+            'maclaw_role_description',
+        ]);
+        if (patchKeys.length > 0 && patchKeys.every((key) => atomicPatchFields.has(key))) {
+            const pendingLaunchMode = getPendingDefaultLaunchMode?.() || null;
+            const patchWithLaunchMode = pendingLaunchMode && !patchKeys.includes('default_launch_mode')
+                ? { ...patch, default_launch_mode: pendingLaunchMode }
+                : patch;
+            const next = new main.AppConfig({ ...(config || {}), ...patchWithLaunchMode });
+            setConfig(next);
+            try {
+                const saved = await PatchConfigFields(patchWithLaunchMode as Record<string, any>);
+                const confirmed = new main.AppConfig(saved);
+                setConfig(confirmed);
+                window.dispatchEvent(new CustomEvent("maclaw-config-changed", { detail: confirmed }));
+            } catch (err) {
+                console.error("Failed to patch remote config:", err);
+                if (config) setConfig(config);
+                showToastMessage(formatText("remoteSaveFailed", { error: String(err) }), 4000);
+            }
+            return;
         }
-        const pendingLaunchMode = getPendingDefaultLaunchMode?.() || null;
-        const launchModePatch = pendingLaunchMode
-            ? { default_launch_mode: pendingLaunchMode }
-            : {};
-        const newConfig = new main.AppConfig({
-            ...base,
-            ...patch,
-            ...launchModePatch,
-        });
-        setConfig(newConfig);
-        try {
-            await SaveConfig(newConfig);
-            window.dispatchEvent(new CustomEvent("maclaw-config-changed", { detail: newConfig }));
-        } catch (err) {
-            console.error("Failed to save remote config:", err);
-            showToastMessage(formatText("remoteSaveFailed", { error: String(err) }), 4000);
-        }
+
+        console.error("Unsupported remote config patch fields:", patchKeys);
+        showToastMessage(formatText("remoteSaveFailed", { error: `unsupported fields: ${patchKeys.join(', ')}` }), 4000);
     };
 
     const sendRemoteInput = async (sessionID: string): Promise<boolean> => {
@@ -622,9 +669,9 @@ const saveRemoteConfigField = async (patch: Partial<main.AppConfig>) => {
             .then((list) => {
                 const tools = list || [];
                 setRemoteToolMetadata(tools);
-                const nextVisibleTools = tools.filter((tool) => tool.visible !== false);
-                if (nextVisibleTools.length > 0 && !nextVisibleTools.some((tool) => tool.name === selectedRemoteTool)) {
-                    setSelectedRemoteTool(nextVisibleTools[0].name as RemoteToolName);
+                const nextVisibleTools = tools.filter((tool) => tool.visible !== false && !isRemovedRemoteToolName(tool.name));
+                if (nextVisibleTools.length > 0 && !nextVisibleTools.some((tool) => normalizeRemoteToolName(tool.name) === selectedRemoteTool)) {
+                    setSelectedRemoteTool(normalizeRemoteToolName(nextVisibleTools[0].name));
                 }
             })
             .catch((err) => console.error("Failed to load remote tool metadata:", err));
@@ -636,9 +683,9 @@ const saveRemoteConfigField = async (patch: Partial<main.AppConfig>) => {
             .then((list) => {
                 const tools = list || [];
                 setRemoteToolMetadata(tools);
-                const nextVisibleTools = tools.filter((tool) => tool.visible !== false);
-                if (nextVisibleTools.length > 0 && !nextVisibleTools.some((tool) => tool.name === selectedRemoteTool)) {
-                    setSelectedRemoteTool(nextVisibleTools[0].name as RemoteToolName);
+                const nextVisibleTools = tools.filter((tool) => tool.visible !== false && !isRemovedRemoteToolName(tool.name));
+                if (nextVisibleTools.length > 0 && !nextVisibleTools.some((tool) => normalizeRemoteToolName(tool.name) === selectedRemoteTool)) {
+                    setSelectedRemoteTool(normalizeRemoteToolName(nextVisibleTools[0].name));
                 }
             })
             .catch((err) => console.error("Failed to load remote tool metadata:", err));
@@ -757,7 +804,7 @@ const saveRemoteConfigField = async (patch: Partial<main.AppConfig>) => {
 
     useEffect(() => {
         if (!config) return;
-        const normalizedTool = (config.active_tool || selectedRemoteTool || "claude") as RemoteToolName;
+        const normalizedTool = normalizeRemoteToolName(config.active_tool || selectedRemoteTool);
         if (normalizedTool === selectedRemoteTool) return;
         setSelectedRemoteTool(normalizedTool);
     }, [config?.active_tool, selectedRemoteTool]);

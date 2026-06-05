@@ -25,7 +25,7 @@ func (h *IMMessageHandler) enrichSendAndObserveTextForTask(sessionID, text strin
 	taskPrompt := taskOrch.BuildTaskPromptForTaskRun(task, handle.RunID)
 	if taskPrompt != "" {
 		text = mergeTaskPromptWithSendObserveText(taskPrompt, text)
-		log.Printf("[task-orchestrator] enriched send_and_observe for task %d: %s", task.Index+1, task.Title)
+		log.Printf("[task-orchestrator] enriched legacy session follow-up for task %d: %s", task.Index+1, task.Title)
 	}
 	taskOrch.MarkTaskStatusForRun(task, handle.RunID, TaskExecInProgress, "")
 	return text
@@ -40,7 +40,7 @@ func (h *IMMessageHandler) activeTaskOrchestratorForSendObserve() *TaskExecution
 		return nil
 	}
 	if allowed, reason := h.workflowAllowsSubAgentExecutionForOwner(ownerID); !allowed {
-		log.Printf("[task-orchestrator] skipped send_and_observe enrichment by workflow policy user=%s reason=%s", ownerID, reason)
+		log.Printf("[task-orchestrator] skipped legacy session follow-up enrichment by workflow policy user=%s reason=%s", ownerID, reason)
 		h.deactivateTaskOrchestratorForWorkflowPolicyBlock(ownerID, reason)
 		return nil
 	}

@@ -14,11 +14,26 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 const maxToolArgumentsBytes = 180 * 1024
+
+// HTTPStatusError carries an LLM HTTP error body for structured callers while
+// keeping Error() body-free so logs and UI messages do not echo sensitive data.
+type HTTPStatusError struct {
+	StatusCode int
+	Body       []byte
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e == nil {
+		return "HTTP error"
+	}
+	return fmt.Sprintf("HTTP %d: body_len=%d", e.StatusCode, len(e.Body))
+}
 
 // OpenAIChatRequestOptions controls how an OpenAI-compatible chat/completions
 // request is built.
@@ -59,7 +74,7 @@ func buildOpenAIChatRequestBody(
 	if corelib.NeedsSystemMerge(cfg) {
 		messages = corelib.MergeSystemIntoUser(messages)
 	}
-	messages = normalizeMiniMaxToolCallMessages(cfg, messages)
+	messages = sanitizeInvalidToolCallArguments(messages)
 	messages = sanitizeOrphanedToolCalls(messages)
 
 	reqBody := map[string]interface{}{
@@ -123,14 +138,11 @@ func NewOpenAIChatRequest(
 	if cfg.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	return req, data, endpoint, nil
 }
 
-func normalizeMiniMaxToolCallMessages(cfg corelib.MaclawLLMConfig, messages []interface{}) []interface{} {
-	if !strings.Contains(cfg.URL, "minimaxi.com") {
-		return messages
-	}
-
+func sanitizeInvalidToolCallArguments(messages []interface{}) []interface{} {
 	normalized := make([]interface{}, 0, len(messages))
 	for _, m := range messages {
 		mm, ok := m.(map[string]interface{})
@@ -143,7 +155,7 @@ func normalizeMiniMaxToolCallMessages(cfg corelib.MaclawLLMConfig, messages []in
 			normalized = append(normalized, m)
 			continue
 		}
-		patchedToolCalls, changed := normalizeMiniMaxToolCalls(mm["tool_calls"])
+		patchedToolCalls, changed := sanitizeToolCallInvalidArguments(mm["tool_calls"])
 		if !changed {
 			normalized = append(normalized, m)
 			continue
@@ -159,7 +171,7 @@ func normalizeMiniMaxToolCallMessages(cfg corelib.MaclawLLMConfig, messages []in
 	return normalized
 }
 
-func normalizeMiniMaxToolCalls(raw interface{}) (interface{}, bool) {
+func sanitizeToolCallInvalidArguments(raw interface{}) (interface{}, bool) {
 	switch toolCalls := raw.(type) {
 	case []ToolCall:
 		if len(toolCalls) == 0 {
@@ -191,25 +203,30 @@ func normalizeMiniMaxToolCalls(raw interface{}) (interface{}, bool) {
 				patchedCalls = append(patchedCalls, call)
 				continue
 			}
-			fn, _ := callMap["function"].(map[string]interface{})
-			args, _ := fn["arguments"].(string)
-			trimmed := strings.TrimSpace(args)
-			if trimmed != "" && json.Valid([]byte(trimmed)) {
+			patchedCall, patched := sanitizeToolCallMapInvalidArguments(callMap)
+			if !patched {
 				patchedCalls = append(patchedCalls, call)
 				continue
 			}
-			patchedCall := make(map[string]interface{}, len(callMap))
-			for k, v := range callMap {
-				patchedCall[k] = v
-			}
-			patchedFn := make(map[string]interface{}, len(fn))
-			for k, v := range fn {
-				patchedFn[k] = v
-			}
-			patchedFn["arguments"] = "{}"
-			patchedCall["function"] = patchedFn
 			patchedCalls = append(patchedCalls, patchedCall)
 			changed = true
+		}
+		if !changed {
+			return raw, false
+		}
+		return patchedCalls, true
+	case []map[string]interface{}:
+		if len(toolCalls) == 0 {
+			return raw, false
+		}
+		patchedCalls := make([]map[string]interface{}, len(toolCalls))
+		changed := false
+		for i, call := range toolCalls {
+			patchedCall, patched := sanitizeToolCallMapInvalidArguments(call)
+			patchedCalls[i] = patchedCall
+			if patched {
+				changed = true
+			}
 		}
 		if !changed {
 			return raw, false
@@ -218,6 +235,29 @@ func normalizeMiniMaxToolCalls(raw interface{}) (interface{}, bool) {
 	default:
 		return raw, false
 	}
+}
+
+func sanitizeToolCallMapInvalidArguments(callMap map[string]interface{}) (map[string]interface{}, bool) {
+	fn, ok := callMap["function"].(map[string]interface{})
+	if !ok {
+		return callMap, false
+	}
+	args, _ := fn["arguments"].(string)
+	trimmed := strings.TrimSpace(args)
+	if trimmed != "" && json.Valid([]byte(trimmed)) {
+		return callMap, false
+	}
+	patchedCall := make(map[string]interface{}, len(callMap))
+	for k, v := range callMap {
+		patchedCall[k] = v
+	}
+	patchedFn := make(map[string]interface{}, len(fn))
+	for k, v := range fn {
+		patchedFn[k] = v
+	}
+	patchedFn["arguments"] = "{}"
+	patchedCall["function"] = patchedFn
+	return patchedCall, true
 }
 
 // sanitizeOrphanedToolCalls detects assistant messages with tool_calls that
@@ -231,7 +271,7 @@ func normalizeMiniMaxToolCalls(raw interface{}) (interface{}, bool) {
 // This is a compat/migration layer for persisted conversation histories that
 // were corrupted by a bug in trimHistoryWithSummary (missing group-align on
 // the second-pass recentStart calculation). The root cause is fixed in
-// gui/im_conversation_trim.go — new compactions will not produce orphans.
+// gui/im_conversation_trim.go  - new compactions will not produce orphans.
 // This function handles pre-existing corrupted data gracefully.
 func sanitizeOrphanedToolCalls(messages []interface{}) []interface{} {
 	if len(messages) == 0 {
@@ -241,7 +281,7 @@ func sanitizeOrphanedToolCalls(messages []interface{}) []interface{} {
 	// Scan for assistant messages with tool_calls and verify each has
 	// corresponding tool messages immediately following.
 	// Only flag as orphaned if there IS a following message that isn't a tool
-	// message — if the assistant(tool_calls) is the last message, the API
+	// message  - if the assistant(tool_calls) is the last message, the API
 	// expects tool results to come in the next request (normal flow).
 	needsFix := false
 	for i, m := range messages {
@@ -264,7 +304,7 @@ func sanitizeOrphanedToolCalls(messages []interface{}) []interface{} {
 			}
 			j++
 		}
-		// If we reached the end of messages, this is the last group — not orphaned.
+		// If we reached the end of messages, this is the last group  - not orphaned.
 		if j >= len(messages) {
 			continue
 		}
@@ -495,21 +535,21 @@ func DoOpenAIRequestRaw(
 	if err != nil {
 		return nil, nil, err
 	}
-	log.Printf("[LLM] POST %s model=%s protocol=%s", endpoint, cfg.Model, cfg.Protocol)
+	traceFields := RequestTraceLogFields(ctx)
+	log.Printf("[LLM] POST %s model=%s protocol=%s %s", endpoint, cfg.Model, cfg.Protocol, traceFields)
 
+	startedAt := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[LLM] done %s model=%s protocol=%s status=error elapsed=%s err=%v %s", endpoint, cfg.Model, cfg.Protocol, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, nil, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	log.Printf("[LLM] done %s model=%s protocol=%s status=%d elapsed=%s body_len=%d %s", endpoint, cfg.Model, cfg.Protocol, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
-		}
-		return nil, body, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+		return nil, body, &HTTPStatusError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	result, err := ParseNonStreamOpenAIResponseBody(body)

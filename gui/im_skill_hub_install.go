@@ -333,9 +333,12 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 	// Developer mode records scan findings but never blocks installation.
 	var installScanReport *cskill.ScanReport
 	{
-		scanner := NewSkillSecurityScanner(h.app, nil)
-		scanReport := scanner.ScanInstallStaged(ctx, skill, skill.SkillDir, sendStatus)
-		installScanReport = scanReport
+		var scanReport *cskill.ScanReport
+		if h.app == nil || !h.app.isRiskGuardrailOffMode() {
+			scanner := NewSkillSecurityScanner(h.app, nil)
+			scanReport = scanner.ScanInstallStaged(ctx, skill, skill.SkillDir, sendStatus)
+			installScanReport = scanReport
+		}
 
 		if h.app != nil && h.app.skillInstallScanShouldBlockForSource(scanReport, source) {
 			cskill.CleanupStaging(stagingDir)

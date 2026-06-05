@@ -399,12 +399,7 @@ func (a *App) RunEnvironmentCheckCLI() {
 		fmt.Println("Git: Not installed (optional)")
 	}
 
-	// Update config
-	if cfg, err := a.LoadConfig(); err == nil {
-		cfg.EnvCheckDone = true
-		cfg.PauseEnvCheck = true
-		a.SaveConfig(cfg)
-	}
+	_, _ = a.PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})
 
 	fmt.Println("\n-Base environment setup completed!")
 	fmt.Println("AI tools will be installed in background when the application starts.")
@@ -594,18 +589,8 @@ func (a *App) CheckEnvironment(force bool) {
 
 		a.log(a.tr("-Base environment check complete."))
 
-		// Update config to mark base env check done
-		if cfg, err := a.LoadConfig(); err == nil {
-			needsSave := false
-			if !cfg.EnvCheckDone {
-				cfg.EnvCheckDone = true
-				cfg.PauseEnvCheck = true
-				needsSave = true
-			}
-			if needsSave {
-				a.SaveConfig(cfg)
-			}
-		}
+		// Update config to mark base env check done without rewriting a stale full snapshot.
+		_, _ = a.PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})
 
 		a.emitEvent("env-check-done")
 
@@ -663,7 +648,7 @@ func (a *App) installToolsInBackground() {
 	}
 
 	tm := NewToolManager(a)
-	tools := []string{"kilo", "claude", "gemini", "codex", "opencode", "codebuddy", "iflow"}
+	tools := []string{"kilo", "claude", "codex", "opencode", "codebuddy", "iflow"}
 	home, _ := os.UserHomeDir()
 	expectedPrefix := filepath.Join(home, ".maclaw", "data", "tools")
 
@@ -730,67 +715,7 @@ func (a *App) installToolsInBackground() {
 
 // InstallToolOnDemand installs a specific tool when user clicks on it
 func (a *App) InstallToolOnDemand(toolName string) error {
-	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": "install tool " + strings.TrimSpace(toolName), "tool": strings.TrimSpace(toolName)}); err != nil {
-		return err
-	}
-	// Try to acquire lock for this tool
-	if !a.tryLockTool(toolName) {
-		a.log(a.tr("On-demand installation: %s is already being installed in background, waiting...", toolName))
-		// Wait for background installation to complete
-		for i := 0; i < 60; i++ { // Wait up to 60 seconds
-			time.Sleep(1 * time.Second)
-			if !a.isToolLocked(toolName) {
-				break
-			}
-		}
-		// Check if tool is now installed
-		tm := NewToolManager(a)
-		status := tm.GetToolStatus(toolName)
-		if status.Installed {
-			a.log(a.tr("On-demand installation: %s was installed by background process.", toolName))
-			return nil
-		}
-		// Try to acquire lock again
-		if !a.tryLockTool(toolName) {
-			return fmt.Errorf("tool %s is still being installed", toolName)
-		}
-	}
-	defer a.unlockTool(toolName)
-
-	tm := NewToolManager(a)
-	status := tm.GetToolStatus(toolName)
-
-	if status.Installed {
-		needsUpdate, _, err := tm.NeedsUpdate(toolName, status.Version)
-		if err != nil {
-			a.log(a.tr("On-demand installation: Warning: failed to check updates for %s: %v", toolName, err))
-			return nil
-		}
-		if !needsUpdate {
-			return nil
-		}
-		a.log(a.tr("On-demand installation: Updating %s...", toolName))
-		if err := tm.UpdateTool(toolName); err != nil {
-			a.log(a.tr("On-demand installation: ERROR: Failed to update %s: %v", toolName, err))
-			return err
-		}
-		a.log(a.tr("On-demand installation: %s updated successfully.", toolName))
-		a.emitEvent("tool-updated", toolName)
-		return nil
-	}
-
-	a.log(a.tr("On-demand installation: Installing %s...", toolName))
-	if err := tm.InstallTool(toolName); err != nil {
-		a.log(a.tr("On-demand installation: ERROR: Failed to install %s: %v", toolName, err))
-		return err
-	}
-
-	// Update PATH to include newly installed tool
-	a.updatePathForNode()
-
-	a.log(a.tr("On-demand installation: %s installed successfully.", toolName))
-	a.emitEvent("tool-installed", toolName)
-	return nil
+	return a.installToolOnDemandForOwner(a.defaultManualPolicyOwnerID(), toolName)
 }
 
 func (a *App) installNodeJSCLI() error {
@@ -1675,8 +1600,6 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		switch binaryName {
 		case "claude":
 			flag = "--dangerously-skip-permissions"
-		case "gemini":
-			flag = "--yolo"
 		case "codex":
 			flag = codexYoloModeFlag
 		case "codebuddy":

@@ -25,11 +25,8 @@ func TestCoreToolNames_AllRegistered(t *testing.T) {
 	// available in TUI. Each entry must have a comment explaining why.
 	guiOnly := map[string]bool{
 		"list_sessions":      true, // requires RemoteSessionManager (Wails)
-		"create_session":     true, // requires RemoteSessionManager (Wails)
-		"send_and_observe":   true, // requires RemoteSessionManager (Wails)
 		"get_session_output": true, // requires RemoteSessionManager (Wails)
 		"get_session_events": true, // requires RemoteSessionManager (Wails)
-		"control_session":    true, // requires RemoteSessionManager (Wails)
 		"call_mcp_tool":      true, // requires MCPRegistry (Wails)
 		"set_nickname":       true, // requires GUI user model
 		"discover_tool":      true, // requires GUI ToolRegistry + deferred tools

@@ -49,6 +49,7 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /version", s.handleVersion)
 	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPI)
 	s.mux.HandleFunc("GET /api/v1/setup/status", s.handleSetupStatus)
+	s.mux.HandleFunc("POST /api/v1/setup/tenants/sync", s.withRateLimit(s.handleSetupSyncTenants))
 	s.mux.HandleFunc("POST /api/v1/setup/admin", s.withRateLimit(s.handleInitializeAdmin))
 	s.mux.HandleFunc("POST /api/v1/login", s.withRateLimit(s.handleLogin))
 	s.mux.HandleFunc("GET /api/v1/data/capabilities", s.withAuth(s.handleCapabilities))
@@ -58,6 +59,12 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/data/admin/sessions", s.withAuth(s.handleListAdminSessions))
 	s.mux.HandleFunc("PATCH /api/v1/data/admin/sessions/{sessionId}", s.withAuth(s.handleUpdateAdminSession))
 	s.mux.HandleFunc("DELETE /api/v1/data/admin/sessions/{sessionId}", s.withAuth(s.handleRevokeAdminSession))
+	s.mux.HandleFunc("GET /api/v1/data/admin/tenants", s.withAuth(s.handleListDataTenants))
+	s.mux.HandleFunc("POST /api/v1/data/admin/tenants/sync", s.withAuth(s.handleSyncHubTenants))
+	s.mux.HandleFunc("GET /api/v1/data/admin/hub-registration", s.withAuth(s.handleGetHubRegistration))
+	s.mux.HandleFunc("POST /api/v1/data/admin/hub-registration", s.withAuth(s.handleSaveHubRegistration))
+	s.mux.HandleFunc("POST /api/v1/data/admin/hub-registration/register", s.withAuth(s.handleRegisterHub))
+	s.mux.HandleFunc("POST /api/v1/data/admin/hub-registration/sync-tenants", s.withAuth(s.handleSyncTenantsFromHub))
 	s.mux.HandleFunc("GET /api/v1/data/access/presets", s.withAuth(s.handleListAccessPolicyPresets))
 	s.mux.HandleFunc("GET /api/v1/data/access/review", s.withAuth(s.handleReviewAccess))
 	s.mux.HandleFunc("GET /api/v1/data/access/remediation-plan", s.withAuth(s.handlePlanAccessRemediation))
@@ -214,6 +221,11 @@ func (s *HTTPServer) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, http.StatusOK, out, err)
 }
 
+func (s *HTTPServer) handleSetupSyncTenants(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.SyncTenantsFromHubPublic(r.Context())
+	writeResult(w, http.StatusOK, out, err)
+}
+
 func (s *HTTPServer) handleInitializeAdmin(w http.ResponseWriter, r *http.Request) {
 	var in InitializeAdminInput
 	if !decodeJSON(w, r, &in) {
@@ -229,6 +241,92 @@ func (s *HTTPServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := s.svc.Login(r.Context(), in)
+	writeResult(w, http.StatusOK, out, err)
+}
+
+func (s *HTTPServer) handleListDataTenants(w http.ResponseWriter, r *http.Request, p Principal) {
+	out, err := s.svc.ListDataTenants(r.Context(), p)
+	writeResult(w, http.StatusOK, map[string]any{"items": out}, err)
+}
+
+func (s *HTTPServer) handleSyncHubTenants(w http.ResponseWriter, r *http.Request, p Principal) {
+	var in SyncHubTenantsInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.SyncHubTenants(r.Context(), p, in)
+	writeResult(w, http.StatusOK, out, err)
+}
+
+func (s *HTTPServer) handleGetHubRegistration(w http.ResponseWriter, r *http.Request, p Principal) {
+	out, err := s.svc.GetHubRegistrationStatus(r.Context(), p)
+	writeResult(w, http.StatusOK, out, err)
+}
+
+func (s *HTTPServer) handleSaveHubRegistration(w http.ResponseWriter, r *http.Request, p Principal) {
+	in, ok := s.decodeSaveHubRegistrationInput(w, r, p)
+	if !ok {
+		return
+	}
+	out, err := s.svc.SaveHubRegistration(r.Context(), p, in)
+	writeResult(w, http.StatusOK, out, err)
+}
+
+type saveHubRegistrationPatch struct {
+	HubBaseURL        *string `json:"hub_base_url"`
+	PlatformID        *string `json:"platform_id"`
+	PlatformName      *string `json:"platform_name"`
+	CallbackBaseURL   *string `json:"callback_base_url"`
+	VirtualMailDomain *string `json:"virtual_mail_domain"`
+}
+
+func (s *HTTPServer) decodeSaveHubRegistrationInput(w http.ResponseWriter, r *http.Request, p Principal) (SaveHubRegistrationInput, bool) {
+	if !principalIsGlobalAdmin(p) {
+		writeResult(w, http.StatusOK, nil, ErrForbidden)
+		return SaveHubRegistrationInput{}, false
+	}
+	var patch saveHubRegistrationPatch
+	if !decodeJSON(w, r, &patch) {
+		return SaveHubRegistrationInput{}, false
+	}
+	status, err := s.svc.GetHubRegistrationStatus(r.Context(), p)
+	if err != nil {
+		writeResult(w, http.StatusOK, nil, err)
+		return SaveHubRegistrationInput{}, false
+	}
+	current := status.Status
+	in := SaveHubRegistrationInput{
+		HubBaseURL:        current.HubBaseURL,
+		PlatformID:        current.PlatformID,
+		PlatformName:      current.PlatformName,
+		CallbackBaseURL:   current.CallbackBaseURL,
+		VirtualMailDomain: current.VirtualMailDomain,
+	}
+	if patch.HubBaseURL != nil {
+		in.HubBaseURL = *patch.HubBaseURL
+	}
+	if patch.PlatformID != nil {
+		in.PlatformID = *patch.PlatformID
+	}
+	if patch.PlatformName != nil {
+		in.PlatformName = *patch.PlatformName
+	}
+	if patch.CallbackBaseURL != nil {
+		in.CallbackBaseURL = *patch.CallbackBaseURL
+	}
+	if patch.VirtualMailDomain != nil {
+		in.VirtualMailDomain = *patch.VirtualMailDomain
+	}
+	return in, true
+}
+
+func (s *HTTPServer) handleRegisterHub(w http.ResponseWriter, r *http.Request, p Principal) {
+	out, err := s.svc.RegisterHub(r.Context(), p)
+	writeResult(w, http.StatusOK, out, err)
+}
+
+func (s *HTTPServer) handleSyncTenantsFromHub(w http.ResponseWriter, r *http.Request, p Principal) {
+	out, err := s.svc.SyncTenantsFromHub(r.Context(), p)
 	writeResult(w, http.StatusOK, out, err)
 }
 
@@ -1626,7 +1724,11 @@ func (s *HTTPServer) withAuth(next func(http.ResponseWriter, *http.Request, Prin
 				return
 			}
 		}
-		if !ok && (s.token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) != 1) {
+		matchedServiceToken := false
+		if !ok && s.token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) == 1 {
+			matchedServiceToken = true
+		}
+		if !ok && !matchedServiceToken {
 			writeUnauthorized(w)
 			return
 		}
@@ -1643,6 +1745,12 @@ func (s *HTTPServer) withAuth(next func(http.ResponseWriter, *http.Request, Prin
 			role = "data_user"
 		}
 		p := Principal{TenantID: tenantID, UserID: userID, Role: role}
+		if matchedServiceToken {
+			adminScope := strings.ToLower(strings.TrimSpace(r.Header.Get("X-MaClaw-Admin-Scope")))
+			if adminScope == "global" || adminScope == "tenant" {
+				p.AdminScope = adminScope
+			}
+		}
 		if policy != nil {
 			p.APIKeyID = policy.ID
 			p.Policy = policy

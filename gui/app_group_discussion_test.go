@@ -4,12 +4,22 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 )
+
+func TestGroupDiscussionOwnerIDIsStableAndNamespaced(t *testing.T) {
+	if got := groupDiscussionOwnerID(" discussion-1 "); got != "group-discussion:discussion-1" {
+		t.Fatalf("unexpected owner id: %q", got)
+	}
+	if got := groupDiscussionOwnerID(" "); !strings.HasPrefix(got, "group-discussion:") {
+		t.Fatalf("unexpected empty owner fallback: %q", got)
+	}
+}
 
 func TestGroupDiscussionListMineFallsBackToLocalCacheWhenDisabled(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}

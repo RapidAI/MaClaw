@@ -36,6 +36,18 @@ func TestToolRegistry_RegisterEmptyName(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_RegisterRejectsExternalCodingSessionTools(t *testing.T) {
+	r := NewToolRegistry()
+	for _, name := range []string{"create_session", "send_and_observe", "control_session"} {
+		if err := r.Register(RegisteredTool{Name: name, Status: RegToolAvailable}); err != nil {
+			t.Fatalf("Register(%s): %v", name, err)
+		}
+		if _, ok := r.Get(name); ok {
+			t.Fatalf("%s should not be registered", name)
+		}
+	}
+}
+
 func TestToolRegistry_Unregister(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(RegisteredTool{Name: "x", Category: ToolCategoryBuiltin})
@@ -134,6 +146,17 @@ func TestRegisterBuiltinToolsIncludesMISDataWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(action["description"], "list_agent_transactions") {
 		t.Fatalf("action schema should mention list_agent_transactions, got %q", action["description"])
+	}
+}
+
+func TestRegisterBuiltinToolsOmitsExternalCodingSessionTools(t *testing.T) {
+	r := NewToolRegistry()
+	registerBuiltinTools(r, &IMMessageHandler{})
+
+	for _, name := range []string{"create_session", "send_and_observe", "control_session"} {
+		if _, ok := r.Get(name); ok {
+			t.Fatalf("%s should not be registered", name)
+		}
 	}
 }
 

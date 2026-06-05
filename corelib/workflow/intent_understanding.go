@@ -160,8 +160,8 @@ func (m *IntentUnderstandingManager) HandleInput(userID, text string) (reply str
 	// JSON parse failure means the clarification model drifted from the
 	// structured contract.
 	if !parseOK {
-		log.Printf("[IntentUnderstanding] parse failed for user %s, preserving session. raw=%s",
-			userID, truncateForLog(raw, 200))
+		log.Printf("[IntentUnderstanding] parse failed for user %s, preserving session. raw_len=%d",
+			userID, len([]rune(raw)))
 
 		fallbackReply := buildIntentParseFailureReply(raw)
 

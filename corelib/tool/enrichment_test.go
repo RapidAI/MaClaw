@@ -3,6 +3,7 @@ package tool
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -144,6 +145,20 @@ func TestBuiltinEnrichments_Coverage(t *testing.T) {
 	}
 }
 
+func TestExternalCodingSessionToolsAbsentFromPromptEnrichment(t *testing.T) {
+	for _, name := range []string{"create_session", "send_and_observe", "control_session"} {
+		if CoreToolNames[name] {
+			t.Fatalf("%s should not be a core routed tool", name)
+		}
+		if _, ok := BuiltinBodies[name]; ok {
+			t.Fatalf("%s should not have builtin prompt body", name)
+		}
+		if _, ok := BuiltinEnrichments[name]; ok {
+			t.Fatalf("%s should not have builtin search enrichment", name)
+		}
+	}
+}
+
 // Ensure the file on disk is valid JSON after save.
 func TestEnrichmentStore_SaveFormat(t *testing.T) {
 	dir := t.TempDir()
@@ -164,24 +179,41 @@ func TestEnrichmentStore_SaveFormat(t *testing.T) {
 	}
 }
 
-func TestBrowserSessionBuiltinMetadataExists(t *testing.T) {
-	for _, name := range []string{
-		"browser_session_start",
-		"browser_observe",
-		"browser_navigate",
-		"browser_click",
-		"browser_type",
-		"browser_wait",
-		"browser_refresh",
-		"browser_back",
-		"browser_extract",
-	} {
-		if _, ok := BuiltinBodies[name]; !ok {
-			t.Fatalf("expected builtin body for %q", name)
+func TestBrowserBuiltinMetadataUsesMergedToolOnly(t *testing.T) {
+	if _, ok := BuiltinBodies["browser"]; !ok {
+		t.Fatal("expected builtin body for merged browser tool")
+	}
+	body := BuiltinBodies["browser"]
+	for _, want := range []string{"focused element", "content_format=markdown", "No screenshot fallback"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("browser builtin body missing %q: %s", want, body)
 		}
-		queries, ok := BuiltinEnrichments[name]
-		if !ok || len(queries) == 0 {
-			t.Fatalf("expected builtin enrichments for %q", name)
+	}
+	queries, ok := BuiltinEnrichments["browser"]
+	if !ok || len(queries) == 0 {
+		t.Fatal("expected builtin enrichments for merged browser tool")
+	}
+
+	store := &EnrichmentStore{enrichments: map[string]*ToolEnrichment{}}
+	for _, name := range []string{"browser_session_start", "browser_observe", "browser_navigate", "browser_click"} {
+		if store.Has(name) {
+			t.Fatalf("internal browser dispatch tool %q must not be enriched", name)
+		}
+		text := store.GetSearchText(RegisteredTool{Name: name, Description: "", Tags: []string{"browser"}})
+		if strings.Contains(text, "stable refs") || strings.Contains(text, "use browser action") {
+			t.Fatalf("internal browser dispatch tool %q got browser enrichment text: %q", name, text)
+		}
+
+		reg := NewRegistry()
+		if err := reg.Register(RegisteredTool{Name: name, Description: "internal dispatch"}); err != nil {
+			t.Fatalf("register internal browser dispatch tool %q: %v", name, err)
+		}
+		registered, ok := reg.Get(name)
+		if !ok {
+			t.Fatalf("expected registered internal browser dispatch tool %q", name)
+		}
+		if registered.Body != "" || registered.BodySummary != "" {
+			t.Fatalf("internal browser dispatch tool %q must not get prompt body: %#v", name, registered)
 		}
 	}
 }

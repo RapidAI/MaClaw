@@ -299,13 +299,9 @@ func doTokenExchange(cfg Config, subjectToken, subjectTokenType string) (string,
 	return result.AccessToken, nil
 }
 
-// truncateBody returns the body as a string, truncated to maxLen with "..." suffix.
+// truncateBody returns metadata only; OAuth error bodies can include tokens or codes.
 func truncateBody(body []byte, maxLen int) string {
-	s := string(body)
-	if len(s) > maxLen {
-		return s[:maxLen] + "..."
-	}
-	return s
+	return fmt.Sprintf("body_len=%d", len(body))
 }
 
 // RunOAuthFlow 执行完整的 OAuth PKCE 流程（使用默认超时）。

@@ -264,11 +264,20 @@ type IMMessageHandler struct {
 	// []memory.ConversationMessage.
 	deferredSessionExtraction sync.Map
 
-	// backgroundLLMCancel cancels any running background LLM calls (online
-	// extraction, session-start extraction, semantic dedup) when a new agent
-	// loop starts. This ensures background work yields API bandwidth to the
-	// main path.
+	// backgroundLLMCancel is the legacy single-session fallback. New agent
+	// loops use backgroundLLMCancelByUser so one tab never cancels another tab's
+	// background extraction work.
+	backgroundLLMMu     sync.Mutex
 	backgroundLLMCancel context.CancelFunc
+	// Keyed by userID, value is context.CancelFunc for owner-scoped background
+	// LLM work (online extraction, session-start extraction, semantic dedup).
+	backgroundLLMCancelByUser sync.Map
+
+	// postConversationScheduler runs non-visible post-loop work outside the
+	// foreground response path. It is owner-scoped: same owner serializes and can
+	// be canceled/replaced, different owners run independently.
+	postConversationSchedulerMu sync.Mutex
+	postConversationScheduler   *postConversationScheduler
 
 	// Optional test hooks for pending-reply intent classification. Production
 	// uses LLMClassify; tests inject deterministic classifiers without keyword
@@ -524,10 +533,8 @@ func (h *IMMessageHandler) SetToolDefGenerator(gen *ToolDefinitionGenerator) {
 func (h *IMMessageHandler) SetCapabilityGapDetector(detector *CapabilityGapDetector) {
 	h.capabilityGapDetector = detector
 	if detector != nil {
-		detector.SetConfirmCallback(func(skillName, riskDetails string) bool {
-			// Determine the platform from the active loop context.
-			platform := h.currentRuntimePlatform()
-			userID := h.currentRuntimePolicyOwnerID()
+		detector.SetConfirmCallbackWithContext(func(ctx context.Context, skillName, riskDetails string) bool {
+			platform, userID := capabilityGapRuntimeFromContext(ctx)
 			// Extract factors from riskDetails for the shared confirmation function.
 			// The riskDetails string is pre-formatted by the detector; pass it as a
 			// single-element factors slice so buildCriticalRiskPrompt includes it.
@@ -732,6 +739,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 	// Agent coding now runs through the internal CodingSubAgent. External
 	// coding-session tools stay out of the agent tool list in every UI mode.
 	tools = filterCodingTools(tools)
+	tools = filterDisabledExternalCodingSessionToolDefs(tools)
 
 	return tools
 }

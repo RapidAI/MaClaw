@@ -40,7 +40,7 @@ func TestCheckStepActionSupport_GUIMCPActionSupported(t *testing.T) {
 }
 
 func TestCheckStepActionSupport_GUIExternalSessionActionsDisabled(t *testing.T) {
-	for _, action := range []string{"create_session", "send_input", "send_and_observe"} {
+	for _, action := range []string{"create_session", "send_input", "send_and_observe", "control_session"} {
 		support := CheckStepActionSupport(RunnerBackendGUI, action)
 		if support.Supported {
 			t.Fatalf("%s should not be supported by GUI", action)

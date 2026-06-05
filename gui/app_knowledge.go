@@ -16,6 +16,7 @@ import (
 
 	corelib "github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 type KnowledgeImportJob struct {
@@ -155,6 +156,7 @@ func (c *knowledgeCardLLMCaller) ChatCallContext(ctx context.Context, messages [
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = llm.WithRequestTraceIfMissing(ctx, "knowledge-card")
 	resp, err := doSimpleLLMRequest(ctx, c.cfg, ifaces, client, timeout)
 	if err != nil {
 		return "", err

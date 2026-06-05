@@ -249,6 +249,20 @@ func TestDirectToolExecutionDoesNotInheritLastUserWorkflowPolicy(t *testing.T) {
 	}
 }
 
+func TestWorkflowPolicyUserIDEmptyOwnerDoesNotGuessGlobalState(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "last-user-policy-owner"
+	if _, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	handler.lastUserID = userID
+	handler.currentLoopCtx = &LoopContext{Runtime: RuntimeContext{RequestID: "req-other", PolicyOwnerID: userID}}
+
+	if got := handler.workflowPolicyUserID(""); got != "" {
+		t.Fatalf("workflowPolicyUserID(empty) = %q, want empty isolation boundary", got)
+	}
+}
+
 func TestAgentLoopToolExecutionDoesNotInheritSingleActiveWorkflowPolicy(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "single-active-agent-loop-policy-user"

@@ -14,14 +14,19 @@ func TestCodingGate_BlocklistAndAllowlist(t *testing.T) {
 	expectedCoding := []string{
 		"create_session", "bash", "write_file", "edit_file", "edit_lines",
 		"craft_tool", "send_and_observe", "control_session",
-		"browser", "browser_task_run", "browser_task_replay", "browser_task_verify", "browser_task_status",
-		"browser_record_start", "browser_record_stop", "browser_list_flows", "browser_ocr",
+		"browser",
 		"gui_record_start", "gui_record_stop", "gui_observe", "gui_verify",
 	}
 	for _, name := range expectedCoding {
 		if !isCodingTool(name) {
 			t.Fatalf("expected %s to be blocked", name)
 		}
+	}
+	if !isCodingTool("browser_navigate") || !isCodingTool(" browser_click ") {
+		t.Fatal("all legacy browser_* tool names must be blocked by prefix")
+	}
+	if !isCodingTool("browser_task_replay") || !isCodingTool("browser_record_start") {
+		t.Fatal("disabled legacy browser_* tool names must be blocked by prefix")
 	}
 	if len(codingToolBlocklist) != len(expectedCoding) {
 		t.Fatalf("coding tool blocklist size = %d, want %d", len(codingToolBlocklist), len(expectedCoding))

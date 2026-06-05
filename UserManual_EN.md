@@ -35,7 +35,7 @@ When you launch MaClaw for the first time, a guided wizard walks you through set
 
 When MaClaw starts, it automatically checks your system environment:
 *   **Dependency Check**: Detects Node.js and other required runtimes.
-*   **Tool Installation**: Automatically detects and installs or updates `claude-code`, `codex`, `gemini-cli`, `opencode`, `codebuddy`, and `qodercli` to their latest versions.
+*   **Tool Installation**: Automatically detects and installs or updates `claude-code`, `codex`, `opencode`, `codebuddy`, and `qodercli` to their latest versions.
 *   **Startup Window**: A progress window displays the environment preparation status.
 
 ## 2. Three-State Programming Model
@@ -45,7 +45,7 @@ MaClaw provides three complementary programming modes for different development 
 ### 2.1 Local AI Programming
 AI CLI tools run directly on your machine with full filesystem and dev environment access.
 
-1.  Select the target AI tool from the sidebar (Claude, Codex, Gemini, etc.).
+1.  Select the target AI tool from the sidebar (Claude, Codex, OpenCode, etc.).
 2.  Select a project in the "Vibe Coding" area.
 3.  Click **"Launch"** — a pre-configured terminal window opens and runs automatically.
 
@@ -167,7 +167,6 @@ MaClaw's unique browser monitoring system provides core support for automated te
 The sidebar provides quick switching:
 *   **Claude**: Configure and launch Anthropic Claude Code
 *   **Codex**: Configure and launch OpenAI Codex CLI
-*   **Gemini**: Configure and launch Google Gemini CLI
 *   **OpenCode**: Configure and launch OpenCode AI assistant
 *   **CodeBuddy**: Configure and launch CodeBuddy programming assistant
 *   **Qoder**: Configure and launch Qoder CLI programming assistant

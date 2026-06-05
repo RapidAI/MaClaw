@@ -25,10 +25,23 @@ type ToolDefinitionGenerator struct {
 func NewToolDefinitionGenerator(registry *MCPRegistry, builtinDefs []map[string]interface{}) *ToolDefinitionGenerator {
 	return &ToolDefinitionGenerator{
 		registry:          registry,
-		builtinDefs:       builtinDefs,
+		builtinDefs:       filterAgentVisibleBuiltinToolDefs(builtinDefs),
 		deferredTools:     make(map[string]bool),
 		activatedDeferred: make(map[string]bool),
 	}
+}
+
+func filterAgentVisibleBuiltinToolDefs(defs []map[string]interface{}) []map[string]interface{} {
+	filtered := filterDisabledExternalCodingSessionToolDefs(defs)
+	out := make([]map[string]interface{}, 0, len(filtered))
+	for _, def := range filtered {
+		name := extractToolName(def)
+		if shouldHideToolFromDiscovery(name) {
+			continue
+		}
+		out = append(out, def)
+	}
+	return out
 }
 
 // SetDeferredTools marks tool names that should be excluded from Generate()
@@ -38,6 +51,9 @@ func (g *ToolDefinitionGenerator) SetDeferredTools(names []string) {
 	defer g.deferredMu.Unlock()
 	g.deferredTools = make(map[string]bool, len(names))
 	for _, n := range names {
+		if isDisabledExternalCodingSessionTool(n) || shouldHideToolFromDiscovery(n) {
+			continue
+		}
 		g.deferredTools[n] = true
 	}
 	for name := range g.activatedDeferred {
@@ -122,6 +138,9 @@ func (g *ToolDefinitionGenerator) GenerateDeferred() []map[string]interface{} {
 	var result []map[string]interface{}
 	for _, def := range g.builtinDefs {
 		name := extractToolName(def)
+		if isDisabledExternalCodingSessionTool(name) {
+			continue
+		}
 		if name != "" && deferred[name] {
 			result = append(result, def)
 		}
@@ -143,6 +162,9 @@ func (g *ToolDefinitionGenerator) Generate() []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(g.builtinDefs))
 	for _, def := range g.builtinDefs {
 		name := extractToolName(def)
+		if isDisabledExternalCodingSessionTool(name) {
+			continue
+		}
 		if name != "" && deferred[name] && !activated[name] {
 			continue
 		}
@@ -153,6 +175,9 @@ func (g *ToolDefinitionGenerator) Generate() []map[string]interface{} {
 	builtinNames := make(map[string]bool, len(g.builtinDefs))
 	for _, def := range g.builtinDefs {
 		if name := extractToolName(def); name != "" {
+			if isDisabledExternalCodingSessionTool(name) {
+				continue
+			}
 			builtinNames[name] = true
 		}
 	}
@@ -202,6 +227,9 @@ func (g *ToolDefinitionGenerator) Generate() []map[string]interface{} {
 	// Generate definitions for each dynamic tool.
 	for _, p := range pending {
 		name := p.tool.Name
+		if isDisabledExternalCodingSessionTool(name) || shouldHideToolFromDiscovery(name) {
+			continue
+		}
 		needsPrefix := builtinNames[name]
 		if !needsPrefix {
 			if ownerID := dynamicNames[name]; ownerID == "" {

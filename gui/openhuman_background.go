@@ -17,6 +17,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/memory/tree"
 )
@@ -111,7 +112,8 @@ func (a *App) llmSummarizeForTree(content string) (string, error) {
 		map[string]string{"role": "system", "content": "你是一个知识摘要助手。请将以下内容压缩为简洁的摘要（≤500字），保留关键事实、决策和数据。"},
 		map[string]string{"role": "user", "content": content},
 	}
-	resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, a.managers.HTTPClient(), 30*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "memory-tree-background"})
+	resp, err := doSimpleLLMRequest(ctx, cfg, messages, a.managers.HTTPClient(), 30*time.Second)
 	if err != nil {
 		return "", err
 	}

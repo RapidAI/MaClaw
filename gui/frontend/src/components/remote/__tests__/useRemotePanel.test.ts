@@ -21,6 +21,7 @@ const probeRemoteHubMock = vi.fn();
 const verifyRemoteActivationMock = vi.fn();
 const reconnectRemoteHubMock = vi.fn();
 const clearRemoteActivationMock = vi.fn();
+const patchConfigFieldsMock = vi.fn();
 const saveConfigMock = vi.fn();
 const checkToolsStatusMock = vi.fn();
 const installToolOnDemandMock = vi.fn();
@@ -44,6 +45,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ListRemoteToolMetadata: (...args: unknown[]) => listRemoteToolMetadataMock(...args),
     ListValidProviders: (...args: unknown[]) => listValidProvidersMock(...args),
     ProbeRemoteHub: (...args: unknown[]) => probeRemoteHubMock(...args),
+    PatchConfigFields: (...args: unknown[]) => patchConfigFieldsMock(...args),
     ReconnectRemoteHub: (...args: unknown[]) => reconnectRemoteHubMock(...args),
     RunRemoteToolSmoke: (...args: unknown[]) => runRemoteToolSmokeMock(...args),
     SaveConfig: (...args: unknown[]) => saveConfigMock(...args),
@@ -117,6 +119,7 @@ describe('useRemotePanel provider sync', () => {
         verifyRemoteActivationMock.mockResolvedValue(true);
         reconnectRemoteHubMock.mockResolvedValue(undefined);
         clearRemoteActivationMock.mockResolvedValue(undefined);
+        patchConfigFieldsMock.mockImplementation(async (patch: Record<string, unknown>) => buildConfig(patch));
         saveConfigMock.mockResolvedValue(undefined);
         checkToolsStatusMock.mockResolvedValue([]);
         installToolOnDemandMock.mockResolvedValue(undefined);
@@ -188,12 +191,85 @@ describe('useRemotePanel provider sync', () => {
         });
 
         await waitFor(() => {
-            expect(saveConfigMock).toHaveBeenCalled();
+            expect(patchConfigFieldsMock).toHaveBeenCalledWith({ tool_current_model: { tool: 'codex', model: 'Original' } });
             expect(setConfig).toHaveBeenCalled();
         });
+    });
 
-        const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
-        expect(savedConfig.codex.current_model).toBe('Original');
+    it('normalizes removed active tools before selecting remote tool', async () => {
+        const { result } = renderHook(() => useRemotePanel({
+            config: buildConfig({ active_tool: 'cursor' }),
+            setConfig: vi.fn(),
+            setToolStatuses: vi.fn(),
+            getSelectedProjectForRemote: () => '/workspace',
+            selectedProjectForLaunch: 'p1',
+            navTab: 'settings',
+            translate: (key: string) => key,
+            formatText: (key: string, values?: Record<string, string>) => values ? `${key}:${JSON.stringify(values)}` : key,
+            localizeText: (en: string) => en,
+            showToastMessage: vi.fn(),
+            onDemandInstallingTool: '',
+            setOnDemandInstallingTool: vi.fn(),
+        }));
+
+        await waitFor(() => {
+            expect(result.current.selectedRemoteTool).toBe('claude');
+        });
+    });
+
+    it('filters removed tools from remote metadata before rendering tool choices', async () => {
+        listRemoteToolMetadataMock.mockResolvedValue([
+            { name: 'cursor', display_name: 'Removed Tool', visible: true },
+            { name: 'codebuddy', display_name: 'CodeBuddy', visible: true },
+            { name: 'custom-oem', display_name: 'Custom OEM', visible: true },
+            { name: 'Claude', display_name: 'Claude Code', visible: true },
+        ]);
+
+        const { result } = renderHook(() => useRemotePanel({
+            config: buildConfig(),
+            setConfig: vi.fn(),
+            setToolStatuses: vi.fn(),
+            getSelectedProjectForRemote: () => '/workspace',
+            selectedProjectForLaunch: 'p1',
+            navTab: 'settings',
+            translate: (key: string) => key,
+            formatText: (key: string, values?: Record<string, string>) => values ? `${key}:${JSON.stringify(values)}` : key,
+            localizeText: (en: string) => en,
+            showToastMessage: vi.fn(),
+            onDemandInstallingTool: '',
+            setOnDemandInstallingTool: vi.fn(),
+        }));
+
+        await waitFor(() => {
+            expect(result.current.visibleRemoteTools.map((tool) => tool.name)).toEqual(['codebuddy', 'custom-oem', 'claude']);
+        });
+    });
+
+    it('does not offer auto-install for custom remote tools that cannot start', async () => {
+        listRemoteToolMetadataMock.mockResolvedValue([
+            { name: 'custom-oem', display_name: 'Custom OEM', visible: true, installed: false, can_start: false, unavailable_reason: 'tool is not installed' },
+        ]);
+
+        const { result } = renderHook(() => useRemotePanel({
+            config: buildConfig({ active_tool: 'custom-oem' }),
+            setConfig: vi.fn(),
+            setToolStatuses: vi.fn(),
+            getSelectedProjectForRemote: () => '/workspace',
+            selectedProjectForLaunch: 'p1',
+            navTab: 'settings',
+            translate: (key: string) => key,
+            formatText: (key: string, values?: Record<string, string>) => values ? `${key}:${JSON.stringify(values)}` : key,
+            localizeText: (en: string) => en,
+            showToastMessage: vi.fn(),
+            onDemandInstallingTool: '',
+            setOnDemandInstallingTool: vi.fn(),
+        }));
+
+        await waitFor(() => {
+            expect(result.current.selectedRemoteTool).toBe('custom-oem');
+            expect(result.current.selectedRemoteToolCanStart).toBe(false);
+            expect(result.current.remoteSuggestedAction).toBeNull();
+        });
     });
 
     it('preserves pending default launch mode when saving selected provider', async () => {
@@ -232,13 +308,11 @@ describe('useRemotePanel provider sync', () => {
         });
 
         await waitFor(() => {
-            expect(saveConfigMock).toHaveBeenCalled();
+            expect(patchConfigFieldsMock).toHaveBeenCalledWith({
+                tool_current_model: { tool: 'codex', model: 'Original' },
+                default_launch_mode: 'remote',
+            });
         });
-
-        const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
-        expect(savedConfig.codex.current_model).toBe('Original');
-        expect(savedConfig.default_launch_mode).toBe('remote');
-        expect(savedConfig.remote_enabled).toBe(false);
     });
 
     it('preserves pending default launch mode when saving another remote field', async () => {
@@ -273,10 +347,36 @@ describe('useRemotePanel provider sync', () => {
             await result.current.saveRemoteConfigField({ remote_email: 'new@example.com' });
         });
 
-        const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
-        expect(savedConfig.remote_email).toBe('new@example.com');
-        expect(savedConfig.default_launch_mode).toBe('remote');
-        expect(savedConfig.remote_enabled).toBe(false);
+        expect(patchConfigFieldsMock).toHaveBeenCalledWith({ remote_email: 'new@example.com', default_launch_mode: 'remote' });
+        expect(saveConfigMock).not.toHaveBeenCalled();
+    });
+
+    it('patches system scalar fields without saving stale full config', async () => {
+        const setConfig = vi.fn();
+        const config = buildConfig({ screen_dim_timeout_min: 3 });
+
+        const { result } = renderHook(() => useRemotePanel({
+            config,
+            setConfig,
+            setToolStatuses: vi.fn(),
+            getSelectedProjectForRemote: () => '/workspace',
+            selectedProjectForLaunch: 'p1',
+            navTab: 'settings',
+            translate: (key: string) => key,
+            formatText: (key: string, values?: Record<string, string>) => values ? `${key}:${JSON.stringify(values)}` : key,
+            localizeText: (en: string) => en,
+            showToastMessage: vi.fn(),
+            onDemandInstallingTool: '',
+            setOnDemandInstallingTool: vi.fn(),
+        }));
+
+        await act(async () => {
+            await result.current.saveRemoteConfigField({ screen_dim_timeout_min: 7 } as any);
+        });
+
+        expect(patchConfigFieldsMock).toHaveBeenCalledWith({ screen_dim_timeout_min: 7 });
+        expect(saveConfigMock).not.toHaveBeenCalledWith(expect.objectContaining({ screen_dim_timeout_min: 7 }));
+        expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ screen_dim_timeout_min: 7 }));
     });
 
     it('leaves default launch mode untouched when no pending mode exists', async () => {
@@ -310,10 +410,8 @@ describe('useRemotePanel provider sync', () => {
             await result.current.saveRemoteConfigField({ remote_email: 'new@example.com' });
         });
 
-        const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
-        expect(savedConfig.remote_email).toBe('new@example.com');
-        expect(savedConfig.default_launch_mode).toBe('local');
-        expect(savedConfig.remote_enabled).toBe(false);
+        expect(patchConfigFieldsMock).toHaveBeenCalledWith({ remote_email: 'new@example.com' });
+        expect(saveConfigMock).not.toHaveBeenCalled();
     });
 
     it('does not change default_launch_mode when saving remote_enabled directly', async () => {
@@ -344,9 +442,8 @@ describe('useRemotePanel provider sync', () => {
             await result.current.saveRemoteConfigField({ remote_enabled: true });
         });
 
-        const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
-        expect(savedConfig.remote_enabled).toBe(true);
-        expect(savedConfig.default_launch_mode).toBe('local');
+        expect(patchConfigFieldsMock).toHaveBeenCalledWith({ remote_enabled: true });
+        expect(saveConfigMock).not.toHaveBeenCalled();
     });
 
     it('preserves explicitly supplied launch mode and remote enabled independently', async () => {
@@ -377,8 +474,7 @@ describe('useRemotePanel provider sync', () => {
             await result.current.saveRemoteConfigField({ default_launch_mode: 'local', remote_enabled: true });
         });
 
-        const savedConfig = saveConfigMock.mock.calls.at(-1)?.[0] as main.AppConfig;
-        expect(savedConfig.default_launch_mode).toBe('local');
-        expect(savedConfig.remote_enabled).toBe(true);
+        expect(patchConfigFieldsMock).toHaveBeenCalledWith({ default_launch_mode: 'local', remote_enabled: true });
+        expect(saveConfigMock).not.toHaveBeenCalled();
     });
 });

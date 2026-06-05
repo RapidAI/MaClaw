@@ -50,7 +50,7 @@ func (r *BrowserRecorder) Start() error {
 	info, _ := sess.Info()
 	r.startURL = ""
 	if info != nil {
-		r.startURL = info.URL
+		r.startURL = SafeURLForLog(info.URL)
 	}
 
 	r.recording = true
@@ -63,7 +63,7 @@ func (r *BrowserRecorder) Start() error {
 
 // RecordStep manually adds a step to the recording.
 // This is called by the agent or tool handlers when they perform browser actions.
-func (r *BrowserRecorder) RecordStep(action, selector, text, url string, coords [2]int) {
+func (r *BrowserRecorder) RecordStep(action, selector, text, url string, coords [2]int, contentFormat ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -74,16 +74,22 @@ func (r *BrowserRecorder) RecordStep(action, selector, text, url string, coords 
 	step := RecordedStep{
 		Action:    action,
 		Selector:  selector,
-		Text:      text,
-		URL:       url,
+		URL:       SafeURLForLog(url),
 		Coords:    coords,
 		Timestamp: time.Since(r.startTime),
+	}
+	if strings.TrimSpace(text) != "" {
+		step.TextLen = len([]rune(text))
+		step.Redacted = true
+	}
+	if strings.EqualFold(action, "type") && len(contentFormat) > 0 {
+		step.ContentFormat = normalizeBrowserContentFormat(contentFormat[0])
 	}
 
 	// Capture snapshot
 	if sess, err := r.sessionFn(); err == nil {
 		if info, err := sess.Info(); err == nil && info != nil {
-			step.Snapshot = &RecordedSnapshot{URL: info.URL, Title: info.Title}
+			step.Snapshot = &RecordedSnapshot{URL: SafeURLForLog(info.URL), Title: ""}
 		}
 	}
 

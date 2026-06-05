@@ -39,12 +39,7 @@ const browserObserveScript = `(function () {
       const testId = el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-qa');
       if (testId) parts.push('[data-testid="' + String(testId).replace(/"/g, '\\"') + '"]');
     }
-    const text = shortText(el.innerText || el.textContent || '', 40);
-    if (text && text.length <= 30 && /^(a|button|summary)$/i.test(tag)) {
-      parts.push(':nth-of-type(' + nthIndex(el) + ')');
-    } else {
-      parts.push(':nth-of-type(' + nthIndex(el) + ')');
-    }
+    parts.push(':nth-of-type(' + nthIndex(el) + ')');
     return parts.join('');
   }
   const refs = [];
@@ -90,7 +85,7 @@ const browserObserveScript = `(function () {
 })()`
 
 // Observe captures a structured browser snapshot with refs and summaries.
-func (s *BrowserAgentSession) Observe(includeScreenshot bool) (*BrowserObservation, error) {
+func (s *BrowserAgentSession) Observe(_ bool) (*BrowserObservation, error) {
 	if s == nil {
 		return nil, fmt.Errorf("browser session is nil")
 	}
@@ -126,12 +121,6 @@ func (s *BrowserAgentSession) Observe(includeScreenshot bool) (*BrowserObservati
 			payload.Refs[i].FrameID = "main"
 		}
 	}
-	screenshot := ""
-	if includeScreenshot {
-		if img, shotErr := s.session.Screenshot(false); shotErr == nil {
-			screenshot = img
-		}
-	}
 	consoleSummary := strings.Join(s.recentConsole, "\n")
 	networkSummary := strings.Join(s.recentNetwork, "\n")
 	snapshot := BrowserSnapshot{
@@ -150,10 +139,10 @@ func (s *BrowserAgentSession) Observe(includeScreenshot bool) (*BrowserObservati
 		PageTextHasMore: payload.PageTextHasMore,
 		ConsoleSummary:  consoleSummary,
 		NetworkSummary:  networkSummary,
-		Screenshot:      screenshot,
+		Screenshot:      "",
 	}
 	s.addSnapshot(snapshot)
-	display := fmt.Sprintf("观察到页面 %s (%s)，可交互元素 %d 个。", firstNonEmpty(payload.Title, payload.URL), payload.URL, len(payload.Refs))
+	display := fmt.Sprintf("observed page %s (%s), interactive elements: %d", firstNonEmpty(payload.Title, payload.URL), payload.URL, len(payload.Refs))
 	obs := &BrowserObservation{
 		Snapshot: snapshot,
 		PageState: map[string]interface{}{
@@ -169,7 +158,6 @@ func (s *BrowserAgentSession) Observe(includeScreenshot bool) (*BrowserObservati
 			"tab_id":             snapshot.TargetID,
 			"frame_tree":         snapshot.FrameTree,
 			"refs":               snapshot.Refs,
-			"screenshot":         snapshot.Screenshot,
 			"console_summary":    snapshot.ConsoleSummary,
 			"network_summary":    snapshot.NetworkSummary,
 			"page_state":         map[string]interface{}{"ready_state": snapshot.ReadyState},

@@ -27,7 +27,7 @@ func TestToolSelector_Recommend_PythonTask(t *testing.T) {
 
 func TestToolSelector_Recommend_ReactTask(t *testing.T) {
 	s := NewToolSelector()
-	name, _ := s.Recommend("build a react component with typescript", []string{"cursor", "claude"})
+	name, _ := s.Recommend("build a react component with typescript", []string{"claude"})
 	// Both support react+typescript
 	if name == "" {
 		t.Error("expected a recommendation")
@@ -46,14 +46,6 @@ func TestToolSelector_Recommend_InstalledBonus(t *testing.T) {
 	}
 	if name2 != "codex" {
 		t.Errorf("expected codex with installed bonus, got %s", name2)
-	}
-}
-
-func TestToolSelector_Recommend_FlutterTask(t *testing.T) {
-	s := NewToolSelector()
-	name, _ := s.Recommend("create a flutter app for android", []string{"gemini"})
-	if name != "gemini" {
-		t.Errorf("expected gemini for flutter task, got %s", name)
 	}
 }
 

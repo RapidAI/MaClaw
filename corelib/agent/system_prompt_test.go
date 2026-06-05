@@ -17,8 +17,10 @@ func TestBuildSystemPromptCodingWorkflowUsesInternalPath(t *testing.T) {
 		},
 	}, "fix a bug", true)
 
-	if strings.Contains(prompt, "create_session") || strings.Contains(prompt, "send_and_observe") {
-		t.Fatalf("core coding prompt should not route AI coding through external session tools: %s", prompt)
+	for _, name := range []string{"create_session", "send_and_observe", "control_session"} {
+		if strings.Contains(prompt, name) {
+			t.Fatalf("core coding prompt should not route AI coding through external session tool %q: %s", name, prompt)
+		}
 	}
 	if !strings.Contains(prompt, "CodingSubAgent") {
 		t.Fatalf("core coding prompt should mention the internal coding path")

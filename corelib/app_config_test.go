@@ -135,6 +135,24 @@ func TestAppConfigSecurityBoolDefaults(t *testing.T) {
 	}
 }
 
+func TestAppConfigGossipAutoPublishDefault(t *testing.T) {
+	var cfg AppConfig
+	if err := json.Unmarshal([]byte(`{}`), &cfg); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if !cfg.GossipAutoPublish {
+		t.Fatal("missing gossip_auto_publish should default true")
+	}
+
+	var disabled AppConfig
+	if err := json.Unmarshal([]byte(`{"gossip_auto_publish":false}`), &disabled); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if disabled.GossipAutoPublish {
+		t.Fatal("explicit false gossip_auto_publish should be preserved")
+	}
+}
+
 func TestNormalizeAgentTimeoutSec(t *testing.T) {
 	tests := []struct {
 		name string
@@ -337,6 +355,12 @@ func TestCapabilityMarketPolicyDefaults(t *testing.T) {
 	if policy.ViewMode != "merged" {
 		t.Fatalf("ViewMode = %q, want merged", policy.ViewMode)
 	}
+	if policy.EffectivePreferredUploadTarget() != CapabilitySourceHubCenter {
+		t.Fatalf("preferred upload target = %q, want hubcenter", policy.EffectivePreferredUploadTarget())
+	}
+	if got := policy.UploadTargets(true); strings.Join(got, ",") != "hubcenter,enterprise_hub" {
+		t.Fatalf("default upload targets = %#v", got)
+	}
 	if policy.ManagedDeployment.RetryIntervalMinutes != 60 {
 		t.Fatalf("RetryIntervalMinutes = %d, want 60", policy.ManagedDeployment.RetryIntervalMinutes)
 	}
@@ -354,6 +378,19 @@ func TestCapabilityMarketPolicyDefaults(t *testing.T) {
 	}
 	if got := policy.ResourceTypes["mcp"].DefaultSources; len(got) != 1 || got[0] != "enterprise_hub" {
 		t.Fatalf("mcp default sources = %#v", got)
+	}
+}
+
+func TestCapabilityMarketPolicyPreferredUploadTarget(t *testing.T) {
+	policy := CapabilityMarketPolicy{PreferredUploadTarget: "enterprise"}.WithDefaults()
+	if policy.EffectivePreferredUploadTarget() != CapabilitySourceEnterpriseHub {
+		t.Fatalf("preferred upload target = %q, want enterprise_hub", policy.EffectivePreferredUploadTarget())
+	}
+	if got := policy.UploadTargets(true); len(got) != 1 || got[0] != CapabilitySourceEnterpriseHub {
+		t.Fatalf("enterprise upload targets = %#v", got)
+	}
+	if got := policy.UploadTargets(false); len(got) != 0 {
+		t.Fatalf("enterprise upload without hub = %#v, want empty", got)
 	}
 }
 

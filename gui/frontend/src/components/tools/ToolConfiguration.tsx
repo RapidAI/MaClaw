@@ -43,7 +43,7 @@ export const ToolConfiguration = ({
         if (name.includes("deepseek")) return { bg: '#f59e0b', label: t("premium") };
         if (name.includes("xiaomi")) return { bg: '#f59e0b', label: t("bigSpender") };
         if (model.is_custom) return { bg: '#9ca3af', label: t("customized") };
-        if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "chatfire", "coderelay"].some(p => name.includes(p)))
+        if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "coderelay"].some(p => name.includes(p)))
             return { bg: '#14b8a6', label: t("forward") };
         return null;
     };

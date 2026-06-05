@@ -702,7 +702,7 @@ func validateAPIStatus(label string, data []byte) error {
 		return nil
 	}
 	if apiStatusValue(status.Ret) != 0 || apiStatusValue(status.Errcode) != 0 || apiStatusCodeError(status.Code) {
-		return fmt.Errorf("weixin: %s API error ret=%d errcode=%d code=%d errmsg=%q resp=%s", label, apiStatusValue(status.Ret), apiStatusValue(status.Errcode), apiStatusValue(status.Code), firstNonEmpty(status.ErrMsg, status.Message), compactAPIResponseLog(trimmed))
+		return fmt.Errorf("weixin: %s API error ret=%d errcode=%d code=%d errmsg=%q resp_len=%d", label, apiStatusValue(status.Ret), apiStatusValue(status.Errcode), apiStatusValue(status.Code), firstNonEmpty(status.ErrMsg, status.Message), len(trimmed))
 	}
 	return nil
 }
@@ -1015,8 +1015,8 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 
 			// Lock is busy — notify user (rate-limited: only if no recent notification).
 			if incoming.Text != "" {
-				log.Printf("[weixin/gw] message queued for user=%s (lock busy), text=%s",
-					fromUserID, truncateLog(incoming.Text, 50))
+				log.Printf("[weixin/gw] message queued for user=%s (lock busy), text_len=%d",
+					fromUserID, len([]rune(incoming.Text)))
 				ctxToken := incoming.ContextToken
 				if ctxToken == "" {
 					ctxToken = g.ctxTokens.Get(fromUserID)
@@ -1419,7 +1419,7 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 	if err := validateAPIStatus("sendmessage", data); err != nil {
 		return err
 	}
-	wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "OK media=%s sendmessage_resp=%s", msg.MediaType, compactAPIResponseLog(data))
+	wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "OK media=%s sendmessage_resp_len=%d", msg.MediaType, len(data))
 	return nil
 }
 
@@ -2198,23 +2198,23 @@ func (g *Gateway) uploadToCDN(ctx context.Context, plaintext []byte, toUserID st
 	}
 	var uploadResp getUploadURLResp
 	if err := json.Unmarshal(data, &uploadResp); err != nil {
-		wl.Log("gw.upload", "OUT", toUserID, "ERR getuploadurl decode media_type=%s resp=%s err=%v", uploadMediaTypeName(mediaType), compactAPIResponseLog(data), err)
+		wl.Log("gw.upload", "OUT", toUserID, "ERR getuploadurl decode media_type=%s resp_len=%d err=%v", uploadMediaTypeName(mediaType), len(data), err)
 		return nil, fmt.Errorf("getUploadUrl decode: %w", err)
 	}
 	if uploadResp.Ret != 0 {
-		wl.Log("gw.upload", "OUT", toUserID, "ERR getuploadurl API media_type=%s ret=%d errmsg=%q resp=%s", uploadMediaTypeName(mediaType), uploadResp.Ret, uploadResp.ErrMsg, compactAPIResponseLog(data))
-		return nil, fmt.Errorf("getUploadUrl API error: ret=%d errmsg=%q resp=%s", uploadResp.Ret, uploadResp.ErrMsg, string(data))
+		wl.Log("gw.upload", "OUT", toUserID, "ERR getuploadurl API media_type=%s ret=%d errmsg=%q resp_len=%d", uploadMediaTypeName(mediaType), uploadResp.Ret, uploadResp.ErrMsg, len(data))
+		return nil, fmt.Errorf("getUploadUrl API error: ret=%d errmsg=%q resp_len=%d", uploadResp.Ret, uploadResp.ErrMsg, len(data))
 	}
 	if uploadResp.UploadParam == "" && uploadResp.UploadFullURL == "" {
-		wl.Log("gw.upload", "OUT", toUserID, "ERR getuploadurl empty upload URL media_type=%s resp=%s", uploadMediaTypeName(mediaType), compactAPIResponseLog(data))
-		return nil, fmt.Errorf("getUploadUrl returned no upload_param and no upload_full_url, ret=%d errmsg=%q resp=%s",
-			uploadResp.Ret, uploadResp.ErrMsg, string(data))
+		wl.Log("gw.upload", "OUT", toUserID, "ERR getuploadurl empty upload URL media_type=%s resp_len=%d", uploadMediaTypeName(mediaType), len(data))
+		return nil, fmt.Errorf("getUploadUrl returned no upload_param and no upload_full_url, ret=%d errmsg=%q resp_len=%d",
+			uploadResp.Ret, uploadResp.ErrMsg, len(data))
 	}
 	uploadParamForDebug := uploadResp.UploadParam
 	if uploadParamForDebug == "" && uploadResp.UploadFullURL != "" {
 		uploadParamForDebug = extractEncryptedQueryParam(uploadResp.UploadFullURL)
 	}
-	wl.Log("gw.upload", "OUT", toUserID, "OK getuploadurl media_type=%s has_full_url=%v upload_param_len=%d thumb_upload_param_len=%d resp=%s", uploadMediaTypeName(mediaType), uploadResp.UploadFullURL != "", len(uploadParamForDebug), len(uploadResp.ThumbUploadParam), compactAPIResponseLog(data))
+	wl.Log("gw.upload", "OUT", toUserID, "OK getuploadurl media_type=%s has_full_url=%v upload_param_len=%d thumb_upload_param_len=%d resp_len=%d", uploadMediaTypeName(mediaType), uploadResp.UploadFullURL != "", len(uploadParamForDebug), len(uploadResp.ThumbUploadParam), len(data))
 
 	// Step 2: Encrypt and upload to CDN
 	ciphertext, err := encryptAESECB(plaintext, aesKey)

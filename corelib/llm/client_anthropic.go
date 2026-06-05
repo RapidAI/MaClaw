@@ -78,8 +78,9 @@ func DoAnthropicRequest(
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
 	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
-	log.Printf("[LLM] POST %s model=%s protocol=anthropic", endpoint, cfg.Model)
+	log.Printf("[LLM] POST %s model=%s protocol=anthropic %s", endpoint, cfg.Model, RequestTraceLogFields(ctx))
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -89,11 +90,7 @@ func DoAnthropicRequest(
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
-		}
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+		return nil, fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(body))
 	}
 
 	// Parse Anthropic response format.

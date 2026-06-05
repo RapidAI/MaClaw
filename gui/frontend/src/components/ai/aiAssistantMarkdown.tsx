@@ -1,63 +1,15 @@
 import React from "react";
 import { OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
-import type { ChatAction, ChatConfirmation, ChatMessage, ChatUnfinishedSlot } from "./useAIAssistant";
+import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
 import { localizeText } from "./aiAssistantI18n";
+import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
+import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 
-export interface Theme {
-    text: string;
-    textMuted: string;
-    codeBg: string;
-    codeText: string;
-    codeBlockBg: string;
-    codeBlockBorder: string;
-    codeBlockLang: string;
-    borderLeft: string;
-    responseBorderLeft: string;
-    headingColor: string;
-    linkColor: string;
-    pathColor: string;
-    promptColor: string;
-    userColor: string;
-    divider: string;
-    fieldBg: string;
-    fieldBorder: string;
-    fieldLabel: string;
-    errorText: string;
-    errorBg: string;
-    errorBorder: string;
-    boldColor: string;
-    italicColor: string;
-    bulletColor: string;
-    quoteBorder: string;
-    quoteText: string;
-    btnColor: string;
-    btnBorder: string;
-    inputBarBorder: string;
-}
-
-const baseInputBtnStyle: React.CSSProperties = {
-    background: "transparent",
-    border: "1px solid",
-    borderRadius: "8px",
-    padding: 0,
-    fontSize: "14px",
-    fontFamily: "'Segoe UI Symbol', 'Segoe UI', sans-serif",
-    cursor: "pointer",
-    lineHeight: 1,
-    minHeight: "34px",
-    minWidth: "36px",
-    width: "36px",
-    height: "34px",
-    flexShrink: 0,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    transition: "transform 120ms ease, box-shadow 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease",
-};
+export type { Theme } from "./aiAssistantPanelTheme";
 /* Themed inline markdown rendering */
 const pathQuoteCharsPattern = /[`'"\u2018\u2019\u201c\u201d]/;
 const pathLeadingWrappingPattern = /^[`'"\u2018\u2019\u201c\u201d]+/;
@@ -487,6 +439,12 @@ function formatActionLabel(action: ChatAction, lang: string): string {
     if (/^__dismiss_unfinished__\s+\S+$/.test(action.command) || action.command === "__start_new_task__") {
         return localizeText(lang, "Start new task", "\u5f00\u59cb\u65b0\u4efb\u52a1", "\u958b\u59cb\u65b0\u4efb\u52d9");
     }
+    if (/^__resume_session__\s+\S+$/.test(action.command)) {
+        return localizeText(lang, "Resume session", "\u6062\u590d\u4f1a\u8bdd", "\u6062\u5fa9\u6703\u8a71");
+    }
+    if (/^__dismiss_recoverable_session__\s+\S+$/.test(action.command)) {
+        return localizeText(lang, "Dismiss session", "\u5ffd\u7565\u4f1a\u8bdd", "\u5ffd\u7565\u6703\u8a71");
+    }
     if (/^__confirm_execution__\s+\S+$/.test(action.command) && (!normalizedLabel || normalizedLabel === 'confirm and start')) {
         return localizeText(lang, "Confirm and start", "\u786e\u8ba4\u5e76\u5f00\u59cb", "\u78ba\u8a8d\u4e26\u958b\u59cb");
     }
@@ -588,22 +546,53 @@ function formatConfirmationTaskType(taskType: string, lang: string): string {
 }
 
 function formatUnfinishedSlotStatus(status: string, lang: string) {
-    const normalized = status.replace(/_/g, " ");
-    if (!lang.startsWith("zh")) return `Status: ${normalized}`;
+    const key = status.trim().toLowerCase();
+    const normalized = key.replace(/_/g, " ");
+    if (!lang.trim().toLowerCase().startsWith("zh")) return `Status: ${normalized}`;
     const labels: Record<string, string> = {
-        pending_resume: "\u5f85\u7ee7\u7eed",
-        resumed: "\u5df2\u6062\u590d",
-        dismissed: "\u5df2\u5ffd\u7565",
+        pending_resume: localizeText(lang, "Pending resume", "\u5f85\u7ee7\u7eed", "\u5f85\u7e7c\u7e8c"),
+        interrupted: localizeText(lang, "Interrupted", "\u5df2\u4e2d\u65ad", "\u5df2\u4e2d\u65b7"),
+        max_rounds_reached: localizeText(lang, "Max rounds reached", "\u8fbe\u5230\u6700\u5927\u8f6e\u6b21", "\u9054\u5230\u6700\u5927\u8f2a\u6b21"),
+        resumed: localizeText(lang, "Resumed", "\u5df2\u6062\u590d", "\u5df2\u6062\u5fa9"),
+        dismissed: localizeText(lang, "Dismissed", "\u5df2\u5ffd\u7565", "\u5df2\u5ffd\u7565"),
+        completed: localizeText(lang, "Completed", "\u5df2\u5b8c\u6210", "\u5df2\u5b8c\u6210"),
+        failed: localizeText(lang, "Failed", "\u5df2\u5931\u8d25", "\u5df2\u5931\u6557"),
+        cancelled: localizeText(lang, "Cancelled", "\u5df2\u53d6\u6d88", "\u5df2\u53d6\u6d88"),
+        canceled: localizeText(lang, "Cancelled", "\u5df2\u53d6\u6d88", "\u5df2\u53d6\u6d88"),
     };
-    return `\u72b6\u6001\uff1a${labels[status] || normalized}`;
+    return `\u72b6\u6001\uff1a${labels[key] || localizeText(lang, "Unknown", "\u672a\u77e5", "\u672a\u77e5")}`;
+}
+
+function formatUnfinishedSlotSummary(summary: string, lang: string): string {
+    const normalized = summary.trim();
+    if (/^Previous task stopped making progress and was moved to recovery\.?$/i.test(normalized)) {
+        return localizeText(
+            lang,
+            "Previous task stopped making progress and was moved to recovery.",
+            "\u4e0a\u6b21\u4efb\u52a1\u505c\u6b62\u63a8\u8fdb\uff0c\u5df2\u79fb\u5165\u6062\u590d\u72b6\u6001\u3002",
+            "\u4e0a\u6b21\u4efb\u52d9\u505c\u6b62\u63a8\u9032\uff0c\u5df2\u79fb\u5165\u6062\u5fa9\u72c0\u614b\u3002",
+        );
+    }
+    if (/^The previous task stopped before completion\.?$/i.test(normalized)) {
+        return localizeText(
+            lang,
+            "The previous task stopped before completion.",
+            "\u4e0a\u6b21\u4efb\u52a1\u5c1a\u672a\u5b8c\u6210\u5c31\u5df2\u505c\u6b62\u3002",
+            "\u4e0a\u6b21\u4efb\u52d9\u5c1a\u672a\u5b8c\u6210\u5c31\u5df2\u505c\u6b62\u3002",
+        );
+    }
+    return summary;
 }
 
 function formatUnfinishedSlotNotice(content: string, slot: ChatUnfinishedSlot | undefined, lang: string): string {
     if (!slot) return content;
     const normalized = content.trim();
-    const isUnfinishedNotice = /^Detected an unfinished task:/i.test(normalized) || /^\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1/.test(normalized);
+    const isUnfinishedNotice = /^Detected an unfinished task:/i.test(normalized)
+        || /^\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1/.test(normalized)
+        || /^\u5075\u6e2c\u5230\u672a\u5b8c\u6210\u4efb\u52d9/.test(normalized);
     if (!isUnfinishedNotice) return content;
-    const title = (slot.title || slot.summary || slot.projectPath || localizeText(lang, "Previous unfinished task", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9")).trim();
+    const rawTitle = (slot.title || slot.summary || slot.projectPath || localizeText(lang, "Previous unfinished task", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9")).trim();
+    const title = (slot.title ? rawTitle : formatUnfinishedSlotSummary(rawTitle, lang)).replace(/[.\u3002]+$/u, "");
     return localizeText(
         lang,
         `Detected an unfinished task: ${title}. Choose resume to continue it.`,
@@ -645,7 +634,7 @@ function renderUnfinishedSlotCard(
             )}
             {slot.summary && (
                 <div data-testid="unfinished-slot-summary" style={{ color: t.text, whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
-                    {renderContentWithCodeBlocks(slot.summary, t)}
+                    {renderContentWithCodeBlocks(formatUnfinishedSlotSummary(slot.summary, lang), t)}
                 </div>
             )}
             {slot.projectPath && (
@@ -657,6 +646,84 @@ function renderUnfinishedSlotCard(
                         title={slot.projectPath}
                     >
                         {"\u{1F4C1}"} {slot.projectPath}
+                    </a>
+                </div>
+            )}
+            {actions.length > 0 && renderActions(actions, executeAction, t, lang)}
+        </div>
+    );
+}
+
+function formatSessionStatus(status: string, lang: string): string {
+    const key = status.trim().toLowerCase();
+    const normalized = key.replace(/_/g, " ");
+    const labels: Record<string, string> = {
+        starting: localizeText(lang, "Starting", "\u542f\u52a8\u4e2d", "\u555f\u52d5\u4e2d"),
+        running: localizeText(lang, "Running", "\u8fd0\u884c\u4e2d", "\u57f7\u884c\u4e2d"),
+        busy: localizeText(lang, "Busy", "\u5fd9\u788c", "\u5fd9\u788c"),
+        waiting_input: localizeText(lang, "Waiting for input", "\u7b49\u5f85\u8f93\u5165", "\u7b49\u5f85\u8f38\u5165"),
+        exited: localizeText(lang, "Exited", "\u5df2\u9000\u51fa", "\u5df2\u9000\u51fa"),
+        error: localizeText(lang, "Error", "\u51fa\u9519", "\u51fa\u932f"),
+        stopped: localizeText(lang, "Stopped", "\u5df2\u505c\u6b62", "\u5df2\u505c\u6b62"),
+        completed: localizeText(lang, "Completed", "\u5df2\u5b8c\u6210", "\u5df2\u5b8c\u6210"),
+        failed: localizeText(lang, "Failed", "\u5df2\u5931\u8d25", "\u5df2\u5931\u6557"),
+        cancelled: localizeText(lang, "Cancelled", "\u5df2\u53d6\u6d88", "\u5df2\u53d6\u6d88"),
+        canceled: localizeText(lang, "Cancelled", "\u5df2\u53d6\u6d88", "\u5df2\u53d6\u6d88"),
+    };
+    if (!lang.trim().toLowerCase().startsWith("zh")) return normalized;
+    return labels[key] || localizeText(lang, "Unknown", "\u672a\u77e5", "\u672a\u77e5");
+}
+
+function labelSeparator(lang: string): string {
+    return lang.trim().toLowerCase().startsWith("zh") ? "\uff1a" : ": ";
+}
+
+function renderRecoverableSessionCard(
+    session: ChatRecoverableSession,
+    executeAction: (command: string) => void,
+    t: Theme,
+    lang: string,
+): React.ReactNode {
+    const actions = session.actions || [];
+    const progress = session.summary || session.lastProgress;
+    return (
+        <div
+            data-testid="recoverable-session-card"
+            style={{
+                marginTop: "8px",
+                padding: "10px 12px",
+                borderRadius: "8px",
+                border: `1px solid ${t.inputBarBorder}`,
+                background: "linear-gradient(135deg, rgba(14,165,233,0.08), rgba(14,165,233,0.03))",
+            }}
+        >
+            <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
+                {localizeText(lang, "Recoverable session", "\u53ef\u6062\u590d\u4f1a\u8bdd", "\u53ef\u6062\u5fa9\u6703\u8a71")}
+            </div>
+            {session.status && (
+                <div data-testid="recoverable-session-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
+                    {localizeText(lang, "Status", "\u72b6\u6001", "\u72c0\u614b")}{labelSeparator(lang)}{formatSessionStatus(session.status, lang)}
+                </div>
+            )}
+            {session.title && (
+                <div data-testid="recoverable-session-title" style={{ color: t.text, fontWeight: 600, marginBottom: "4px" }}>
+                    {session.title}
+                </div>
+            )}
+            {progress && (
+                <div data-testid="recoverable-session-summary" style={{ color: t.text, whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
+                    {renderContentWithCodeBlocks(formatUnfinishedSlotSummary(progress, lang), t)}
+                </div>
+            )}
+            {session.projectPath && (
+                <div data-testid="recoverable-session-project" style={{ color: t.pathColor, marginTop: "6px", wordBreak: "break-all" }}>
+                    <a
+                        href="#"
+                        onClick={(event) => openFileInFolder(event, session.projectPath!)}
+                        style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer", wordBreak: "break-all" }}
+                        title={session.projectPath}
+                    >
+                        {"\u{1F4C1}"} {session.projectPath}
                     </a>
                 </div>
             )}
@@ -701,35 +768,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                             {lang === "en" ? "Thinking..." : "\u6b63\u5728\u601d\u8003..."}
                         </span>
                     )}
-                    {screenshotBase64 && (
-                        <div style={{ margin: "4px 0 6px 0" }}>
-                            {msg.localFilePath ? (
-                                <a href="#" onClick={(event) => openFileInFolder(event, msg.localFilePath!)}
-                                   style={{ display: "inline-block", cursor: "pointer" }}
-                                   title={msg.localFilePath}>
-                                    <img
-                                        src={`data:image/png;base64,${screenshotBase64}`}
-                                        alt="screenshot"
-                                        style={{
-                                            maxWidth: "180px", maxHeight: "120px",
-                                            borderRadius: "4px", border: `1px solid ${t.borderLeft}`,
-                                            objectFit: "contain",
-                                        }}
-                                    />
-                                </a>
-                            ) : (
-                                <img
-                                    src={`data:image/png;base64,${screenshotBase64}`}
-                                    alt="screenshot"
-                                    style={{
-                                        maxWidth: "180px", maxHeight: "120px",
-                                        borderRadius: "4px", border: `1px solid ${t.borderLeft}`,
-                                        objectFit: "contain",
-                                    }}
-                                />
-                            )}
-                        </div>
-                    )}
+                    {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, openFileInFolder, t)}
                     {/* Reasoning/thinking content from reasoning models — shown as collapsed gray text */}
                     {msg.reasoning && (
                         <details style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
@@ -742,20 +781,10 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     {renderContentWithCodeBlocks(formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang), t)}
                     {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t, lang)}
                     {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
-                    {savedPaths.length > 0 && (
-                        <div style={{ margin: "4px 0" }}>
-                            {savedPaths.map((fp, i) => (
-                                <div key={i} style={{ padding: "2px 0" }}>
-                                    <a href="#"
-                                       onClick={(event) => openFileInFolder(event, fp)}
-                                       style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer", wordBreak: "break-all" }}
-                                       title={fp}>
-                                        {"\u{1F4C4}"} {savedFileLabel}: {"\u{1F4C1}"} {fp}
-                                    </a>
-                                </div>
-                            ))}
-                        </div>
-                    )}
+                    {msg.recoverableSession && renderRecoverableSessionCard(msg.recoverableSession, executeAction, t, lang)}
+                    {savedPaths.length > 0 && <div style={{ margin: "4px 0" }}>{savedPaths.map((fp, i) => (
+                        <div key={i} style={{ padding: "2px 0" }}><a href="#" onClick={(event) => openFileInFolder(event, fp)} style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer", wordBreak: "break-all" }} title={fp}>{"\u{1F4C4}"} {savedFileLabel}: {"\u{1F4C1}"} {fp}</a></div>
+                    ))}</div>}
                     {msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
                     {!msg.confirmation && msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t, lang)}
                 </div>
@@ -766,40 +795,17 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                 const codingAgentProgress = renderCodingAgentProgressStatus(msg, t, lang);
                 if (codingAgentProgress) return codingAgentProgress;
             }
-            return (
-                <div key={msg.id} style={{ color: t.textMuted, fontSize: "11px", padding: "2px 0", fontStyle: "italic" }}>
-                    {msg.content}
-                </div>
-            );
+            return <div key={msg.id} style={{ color: t.textMuted, fontSize: "11px", padding: "2px 0", fontStyle: "italic" }}>{msg.content}</div>;
         case "system":
             return (
-                <div key={msg.id} style={{
-                    padding: "8px 12px",
-                    margin: "4px 0",
-                    borderRadius: "6px",
-                    background: t.fieldBg,
-                    borderLeft: `3px solid ${t.promptColor}`,
-                    color: t.text,
-                    fontSize: "12px",
-                    lineHeight: "1.6",
-                }}>
+                <div key={msg.id} style={{ padding: "8px 12px", margin: "4px 0", borderRadius: "6px", background: t.fieldBg, borderLeft: `3px solid ${t.promptColor}`, color: t.text, fontSize: "12px", lineHeight: "1.6" }}>
                     {msg.kind === 'trace' && msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
                     {renderContentWithCodeBlocks(msg.content, t)}
                 </div>
             );
         case "error":
             return (
-                <div key={msg.id} style={{
-                    color: t.errorText,
-                    background: t.errorBg,
-                    borderLeft: `2px solid ${t.errorBorder}`,
-                    padding: "4px 8px",
-                    margin: "2px 0",
-                    borderRadius: "2px",
-                    fontSize: "12px",
-                }}>
-                        {">"} {msg.content}
-                </div>
+                <div key={msg.id} style={{ color: t.errorText, background: t.errorBg, borderLeft: `2px solid ${t.errorBorder}`, padding: "4px 8px", margin: "2px 0", borderRadius: "2px", fontSize: "12px" }}>{">"} {msg.content}</div>
             );
         default:
             return null;

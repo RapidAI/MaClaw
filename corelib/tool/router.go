@@ -44,13 +44,10 @@ func SetLogDetailEnabled(enabled bool) {
 
 // CoreToolNames are always included regardless of the user message.
 var CoreToolNames = map[string]bool{
-	"list_sessions": true, "create_session": true,
-	"send_and_observe": true, "get_session_output": true, "get_session_events": true,
-	"control_session": true,
-	"bash":            true, "read_file": true, "FileRead": true, "ripgrep": true, "Glob": true, "write_file": true, "edit_file": true, "list_directory": true,
+	"list_sessions": true, "get_session_output": true, "get_session_events": true,
+	"bash": true, "read_file": true, "FileRead": true, "ripgrep": true, "Glob": true, "write_file": true, "edit_file": true, "list_directory": true,
 	"call_mcp_tool":    true,
 	"manage_skill":     true,
-	"screenshot":       true,
 	"memory":           true,
 	"web_fetch":        true,
 	"set_nickname":     true,
@@ -69,20 +66,11 @@ type conditionalKeepRule struct {
 	noMemoryPin bool
 }
 
-// allBrowserToolNames is the complete list of browser automation tools used
-// by browser conditional keep rules. The core browser actions are merged into
-// a single "browser" tool (see unified_tool.go).
-// Task/recorder/OCR/GUI tools remain as individual tools.
+// allBrowserToolNames is the browser automation surface exposed to routing.
+// Browser actions, tasks, OCR, and flow helpers are all reached through the
+// merged "browser" tool; individual browser_* handlers stay internal.
 var allBrowserToolNames = []string{
-	// Unified browser tool (replaces 22 individual browser_* tools).
 	"browser",
-	// Browser task/record/replay tools (low-frequency, kept individual).
-	"browser_task_run", "browser_task_replay", "browser_task_verify", "browser_task_status",
-	"browser_record_start", "browser_record_stop", "browser_list_flows",
-	// OCR tool.
-	"browser_ocr",
-	// GUI automation recording tools.
-	"gui_record_start", "gui_record_stop",
 }
 
 // NoEagerPinToolNames returns a copy of the noEagerPinTools set as a slice.
@@ -123,15 +111,12 @@ var conditionalKeepRules = []conditionalKeepRule{
 // When the coding LLM is not configured (simple mode), these tools should be
 // filtered out since they would be non-functional.
 var CodingSessionToolNames = map[string]bool{
-	"create_session":     true,
 	"list_sessions":      true,
 	"send_input":         true,
 	"get_session_output": true,
 	"get_session_events": true,
 	"interrupt_session":  true,
 	"kill_session":       true,
-	"send_and_observe":   true,
-	"control_session":    true,
 	"list_providers":     true,
 	"parallel_execute":   true,
 	"recommend_tool":     true,
@@ -142,14 +127,15 @@ var CodingSessionToolNames = map[string]bool{
 
 // IsCodingSessionTool returns true if the tool requires a coding LLM session.
 func IsCodingSessionTool(name string) bool {
-	return CodingSessionToolNames[name]
+	return IsDisabledExternalCodingSessionTool(name) || CodingSessionToolNames[name]
 }
 
 // FilterCodingTools removes coding session tools from the tool list.
 func FilterCodingTools(tools []map[string]interface{}) []map[string]interface{} {
 	filtered := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
-		if !CodingSessionToolNames[ExtractToolName(t)] {
+		name := ExtractToolName(t)
+		if !IsDisabledExternalCodingSessionTool(name) && !CodingSessionToolNames[name] {
 			filtered = append(filtered, t)
 		}
 	}
@@ -175,6 +161,7 @@ var BuiltinToolNames = map[string]bool{
 	"get_config": true, "update_config": true, "batch_update_config": true,
 	"list_config_schema": true, "export_config": true, "import_config": true,
 	"set_max_iterations":    true,
+	"screenshot":            true,
 	"create_scheduled_task": true, "list_scheduled_tasks": true,
 	"delete_scheduled_task": true, "update_scheduled_task": true,
 	"search_and_install_skill": true,
@@ -186,12 +173,9 @@ var BuiltinToolNames = map[string]bool{
 	"session_search":           true,
 	"office":                   true,
 	"mis_data":                 true,
-	// Browser automation: unified "browser" tool + individual task/recorder tools.
-	"browser":          true,
-	"browser_task_run": true, "browser_task_replay": true,
-	"browser_task_verify": true, "browser_task_status": true,
-	"browser_record_start": true, "browser_record_stop": true, "browser_list_flows": true,
-	"browser_ocr": true,
+	// Browser automation: unified "browser" tool only. Individual browser_*
+	// handlers are internal dispatch targets and should not be routed directly.
+	"browser": true,
 	// Knowledge tools (registered via CoreToolDeps.ExtraHandlers).
 	"knowledge_search":           true,
 	"knowledge_context_pack":     true,
@@ -805,7 +789,7 @@ func coreRoutePriority(name string, condKeep, sessionTools map[string]bool) int 
 	switch name {
 	case "task", "async_wait", "compress_context", "memory":
 		return 3
-	case "list_sessions", "create_session", "send_and_observe", "get_session_output", "get_session_events", "control_session":
+	case "list_sessions", "get_session_output", "get_session_events":
 		return 4
 	case "screenshot", "web_fetch", "set_nickname", "tts":
 		return 5
@@ -946,6 +930,11 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 			}
 		}
 	}
+	browserPublishAffordance := intent.BrowserPublicationAffordance(userMessage)
+	if browserPublishAffordance {
+		condKeep["browser"] = true
+		delete(condFilterOut, "browser")
+	}
 
 	if condKeep["ssh"] {
 		// SSH is a first-class builtin execution surface. When it is selected,
@@ -961,6 +950,31 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		// session-pinned, without hiding skill/discovery tools for a possible
 		// topic change in the same conversation.
 		suppressedTools["call_mcp_tool"] = true
+	}
+	browserSessionActive := condKeep["browser"] || r.sessionTools["browser"]
+	if browserSessionActive {
+		// Browser tasks must use the stable merged browser surface. Hide generic
+		// desktop screenshot, shell, skill/discovery, MCP, and git fallbacks so the
+		// model cannot drift into screen scraping, taskkill, raw authenticated HTTP
+		// calls, skill reruns, or source-control actions instead of page actions.
+		suppressedTools["bash"] = true
+		suppressedTools["screenshot"] = true
+		suppressedTools["call_mcp_tool"] = true
+		suppressedTools["manage_skill"] = true
+		suppressedTools["discover_tool"] = true
+		suppressedTools["search_and_install_skill"] = true
+		suppressedTools["git_commit"] = true
+		suppressedTools["git_push"] = true
+		suppressedTools["passthrough_task"] = true
+		suppressedTools["list_mcp_tools"] = true
+	}
+	explicitScreenshotRequest := isExplicitScreenshotRequest(userMessage)
+	if !explicitScreenshotRequest {
+		suppressedTools["screenshot"] = true
+	}
+	if !isExplicitGitRequest(userMessage) {
+		suppressedTools["git_commit"] = true
+		suppressedTools["git_push"] = true
 	}
 
 	// --- Browser diagnostic: log how browser tools entered condKeep ---
@@ -1267,9 +1281,49 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 
-	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, rankedRoutingHintAdjustments, selectedNames, rerankerResult, skillScore, matchedSkills)
+	suppressedNames := make([]string, 0, len(suppressedTools))
+	for name, suppressed := range suppressedTools {
+		if suppressed {
+			suppressedNames = append(suppressedNames, name)
+		}
+	}
+	sort.Strings(suppressedNames)
+
+	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, rankedRoutingHintAdjustments, selectedNames, suppressedNames, browserPublishAffordance, explicitScreenshotRequest, rerankerResult, skillScore, matchedSkills)
 
 	return result
+}
+
+func isExplicitScreenshotRequest(userMessage string) bool {
+	msg := strings.ToLower(strings.TrimSpace(userMessage))
+	if msg == "" {
+		return false
+	}
+	if strings.Contains(msg, "screenshot") || strings.Contains(msg, "screen shot") {
+		return true
+	}
+	for _, marker := range []string{"截图", "截屏", "屏幕截图", "桌面截图", "截个图", "截一下图"} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isExplicitGitRequest(userMessage string) bool {
+	msg := strings.ToLower(strings.TrimSpace(userMessage))
+	if msg == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"git", "commit", "push", "pull request", "branch", "repository",
+		"\u4ee3\u7801", "\u4ed3\u5e93", "\u63d0\u4ea4\u4ee3\u7801", "\u63a8\u9001", "\u5206\u652f", "\u5408\u5e76\u8bf7\u6c42",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 var knowledgeWriteToolList = []string{
@@ -1380,6 +1434,9 @@ func writeRouteLog(
 	rankedScores []float64,
 	rankedRoutingHintAdjustments []float64,
 	selectedNames []string,
+	suppressedNames []string,
+	browserPublishAffordance bool,
+	explicitScreenshotRequest bool,
 	rerankerResult []string,
 	skillMatchScore float64,
 	matchedSkills []string,
@@ -1417,6 +1474,10 @@ func writeRouteLog(
 	fmt.Fprintf(f, "Total tools: %d | Core: %d | Candidates: %d | Hybrid: %v\n",
 		totalTools, coreCount, candidateCount, hybridActive)
 	fmt.Fprintf(f, "Body-aware: %v\n", bodyAware)
+	fmt.Fprintf(f, "Execution affordances: browser_publish=%v explicit_screenshot=%v\n", browserPublishAffordance, explicitScreenshotRequest)
+	if len(suppressedNames) > 0 {
+		fmt.Fprintf(f, "Suppressed tools (%d): %v\n", len(suppressedNames), suppressedNames)
+	}
 
 	// Top-20 candidates by score
 	n := 20

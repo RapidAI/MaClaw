@@ -248,11 +248,11 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
             name: isLocalParticipant(tab, pid)
                 ? "" // GroupParticipantPanel uses isLocal flag for display name
                 : readableParticipantName(participantNameForIdentity(tab.participantNames, pid) || (participantIdentityMatches(pid, tab.veId || "") ? primaryVEName : ""), pid, index, lang),
-            online: true,
+            online: participantIdentityMatches(pid, tab.veId || "") ? tab.onlineStatus !== "offline" : true,
             isLocal: isLocalParticipant(tab, pid),
             avatarDataURL: participantIdentityMatches(pid, tab.veId || "") ? tab.avatarDataURL : undefined,
         })),
-        [tab.participants, tab.veId, tab.title, tab.participantNames, tab.localParticipantIds, tab.avatarDataURL, lang, primaryVEName]
+        [tab.participants, tab.veId, tab.title, tab.participantNames, tab.localParticipantIds, tab.avatarDataURL, tab.onlineStatus, lang, primaryVEName]
     );
 
     // Participants for @mention popover: all participants are mentionable.

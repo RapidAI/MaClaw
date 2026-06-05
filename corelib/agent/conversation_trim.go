@@ -551,7 +551,7 @@ func TruncateToolResultForTool(toolName, s string) string {
 	budget := limit - sepLen
 
 	switch toolName {
-	case "get_session_output", "send_and_observe", "bash":
+	case "get_session_output", "bash":
 		// Terminal output: tail is more important (recent lines)
 		headLen := budget / 4
 		tailLen := budget - headLen

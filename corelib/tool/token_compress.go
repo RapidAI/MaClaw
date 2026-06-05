@@ -32,18 +32,17 @@ const (
 // PerToolResultCap defines per-tool token budget caps.
 // After compression, results exceeding this cap are hard-truncated.
 var PerToolResultCap = map[string]int{
-	"web_fetch":        4000,
-	"web_search":       2500,
-	"bash":             4000,
-	"read_file":        5000,
-	"ssh":              3500,
-	"list_directory":   1500,
-	"screenshot":       600,
-	"manage_skill":     2500,
+	"web_fetch":          4000,
+	"web_search":         2500,
+	"bash":               4000,
+	"read_file":          5000,
+	"ssh":                3500,
+	"list_directory":     1500,
+	"screenshot":         600,
+	"manage_skill":       2500,
 	"get_session_output": 4000,
-	"send_and_observe": 4000,
-	"memory":           1500,
-	"browser":          3000,
+	"memory":             1500,
+	"browser":            3000,
 }
 
 // DefaultResultCap is used when a tool has no specific cap defined.
@@ -141,15 +140,15 @@ func ClassifyContent(s string) ContentType {
 // --- HTML Compression ---
 
 var (
-	htmlTagRe       = regexp.MustCompile(`<[^>]+>`)
-	htmlStyleRe     = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
-	htmlScriptRe    = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
-	htmlCommentRe   = regexp.MustCompile(`<!--[\s\S]*?-->`)
-	htmlNavRe       = regexp.MustCompile(`(?is)<nav[^>]*>.*?</nav>`)
-	htmlFooterRe    = regexp.MustCompile(`(?is)<footer[^>]*>.*?</footer>`)
-	htmlHeaderRe    = regexp.MustCompile(`(?is)<header[^>]*>.*?</header>`)
-	multiSpaceRe    = regexp.MustCompile(`\s{2,}`)
-	multiNewlineRe  = regexp.MustCompile(`\n{3,}`)
+	htmlTagRe      = regexp.MustCompile(`<[^>]+>`)
+	htmlStyleRe    = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
+	htmlScriptRe   = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
+	htmlCommentRe  = regexp.MustCompile(`<!--[\s\S]*?-->`)
+	htmlNavRe      = regexp.MustCompile(`(?is)<nav[^>]*>.*?</nav>`)
+	htmlFooterRe   = regexp.MustCompile(`(?is)<footer[^>]*>.*?</footer>`)
+	htmlHeaderRe   = regexp.MustCompile(`(?is)<header[^>]*>.*?</header>`)
+	multiSpaceRe   = regexp.MustCompile(`\s{2,}`)
+	multiNewlineRe = regexp.MustCompile(`\n{3,}`)
 )
 
 func compressHTML(s string) string {
@@ -417,5 +416,3 @@ func isProgressLine(line string) bool {
 		strings.Contains(line, "⠋") || strings.Contains(line, "⠙") ||
 		strings.Contains(line, "⠹") || strings.Contains(line, "⠸")
 }
-
-

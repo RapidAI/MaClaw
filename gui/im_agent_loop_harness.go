@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
 
@@ -60,6 +61,16 @@ func (h *IMMessageHandler) prepareAgentLoopHarnessState(userID, userText string)
 
 func (h *IMMessageHandler) beginAgentLoopRuntimeState(ctx *LoopContext, userID, userText string, onProgress func(string), onStreamDone StreamDoneCallback, telemetry *agentLoopTelemetry) agentLoopRuntimeState {
 	requestCtx, cancelRequestCtx := ctx.Context()
+	caller := "agent_loop"
+	if ctx != nil && ctx.Kind == LoopKindBackground {
+		caller = "background_agent_loop"
+	}
+	requestCtx = llm.WithRequestTrace(requestCtx, llm.RequestTrace{
+		Caller:    caller,
+		OwnerID:   userID,
+		RequestID: ctx.Runtime.RequestID,
+		LoopID:    ctx.ID,
+	})
 	harnessState := h.prepareAgentLoopHarnessState(userID, userText)
 	sendProgress := agentLoopProgressSender(onProgress)
 	milestoneTracker, cleanupMilestoneTracker := h.startAgentLoopMilestoneTracker(userID, userText, sendProgress)

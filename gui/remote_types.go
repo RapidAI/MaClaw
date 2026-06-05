@@ -265,7 +265,7 @@ type RemoteSession struct {
 	StallState        StallState      // current stall state, updated by StallDetector
 	CompletionLevel   CompletionLevel // latest completion analysis result
 	LastNudgeCount    int             // nudge count from the most recent stall episode
-	AutoContinueCount int             // times Agent auto-continued within a live session (e.g. gemini-acp cancelled)
+	AutoContinueCount int             // times Agent auto-continued within a live session
 	ThinkingState     ThinkingState   // current thinking state (idle/active)
 	ThinkingSince     time.Time       // when the current thinking state started
 
@@ -342,11 +342,11 @@ type SessionResumeContext struct {
 	LastOutput     string   `json:"last_output"`     // tail of output before exit
 	ResumeCount    int      `json:"resume_count"`    // how many times we've resumed
 	ProjectPath    string   `json:"project_path"`    // project path for new session
-	Tool           string   `json:"tool"`            // tool name (claude, gemini, etc.)
+	Tool           string   `json:"tool"`            // tool name (claude, codex, etc.)
 	ExitReason     string   `json:"exit_reason"`     // "token_limit", "api_error", "unknown"
 
 	// ResumeSessionID is the provider-native session/thread id that can be
-	// passed back via create_session(..., resume_session_id=...) to continue
+	// passed back as a resume session id to continue
 	// the exact structured conversation history when the provider supports it.
 	ResumeSessionID string `json:"resume_session_id,omitempty"`
 
@@ -357,7 +357,7 @@ type SessionResumeContext struct {
 
 // isStructuredSession returns true for sessions that use a structured
 // protocol (SDK JSON, ACP JSON-RPC, etc.) rather than a raw PTY.
-// These tools (Claude Code, Gemini CLI, Codex, iFlow) are known to exit
+// These tools (Claude Code, Codex, iFlow) are known to exit
 // with code 1 as their normal termination — this should NOT be treated
 // as a failure.
 func (s *RemoteSession) isStructuredSession() bool {
@@ -365,7 +365,7 @@ func (s *RemoteSession) isStructuredSession() bool {
 		return false
 	}
 	switch s.Exec.(type) {
-	case *SDKExecutionHandle, *GeminiACPExecutionHandle, *CodexSDKExecutionHandle, *IFlowSDKExecutionHandle:
+	case *SDKExecutionHandle, *CodexSDKExecutionHandle, *IFlowSDKExecutionHandle:
 		return true
 	}
 	return false

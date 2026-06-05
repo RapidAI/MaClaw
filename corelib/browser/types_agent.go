@@ -134,6 +134,7 @@ type BrowserTraceEvent struct {
 // BrowserAgentState is a read-only projection of a browser agent session.
 type BrowserAgentState struct {
 	ID             string
+	OwnerID        string
 	Addr           string
 	TargetID       string
 	CreatedAt      time.Time
@@ -164,14 +165,17 @@ type BrowserAgentState struct {
 type BrowserAgentSession struct {
 	mu        sync.RWMutex
 	ID        string
+	OwnerID   string
 	Addr      string
 	TargetID  string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	Policy    BrowserPolicy
 
-	// Mode records how this session was connected (auto/connect_user/isolated).
+	// Mode records how this session was connected (persistent/connect_user/isolated).
 	Mode SessionMode
+	// ManagedUserDataDir records the profile directory for managed browser modes.
+	ManagedUserDataDir string
 	// LastActivityAt tracks the last tool operation time (for inactivity timeout).
 	LastActivityAt time.Time
 	// timedOut is set by the inactivity timer before calling StopAgentSession,
@@ -189,6 +193,7 @@ type BrowserAgentSession struct {
 	recentConsoleEntries []BrowserConsoleEvent
 	recentNetworkEntries []BrowserNetworkEvent
 	activityLog          []string
+	recentSubmitClicks   map[string]time.Time
 
 	snapshots      map[string]*BrowserSnapshot
 	lastSnapshotID string

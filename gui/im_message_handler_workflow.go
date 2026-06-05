@@ -728,8 +728,8 @@ func (h *IMMessageHandler) handlePostStartWorkflow(
 	// runAgentLoop consumes it via LoadAndDelete when workflowAgentLoop=true.
 	if originalRequest := extractOriginalRequest(state, text); originalRequest != "" {
 		h.workflowOriginalRequest.Store(userID, originalRequest)
-		log.Printf("[WorkflowInterception] stashed original request for user=%s: %q (current text=%q)",
-			userID, truncateRunes(originalRequest, 80), truncateRunes(text, 30))
+		log.Printf("[WorkflowInterception] stashed original request for user=%s original_len=%d current_len=%d",
+			userID, len([]rune(originalRequest)), len([]rune(text)))
 	}
 
 	log.Printf("[WorkflowInterception] StartWorkflow succeeded, re-routing to handleActiveWorkflow for user=%s type=%s phase=%s",
@@ -762,14 +762,14 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform str
 	formDirectRun := activeFormGate && isWorkflowFormDirectRunCommand(text)
 	if activeFormGate && !formDirectRun && !isWorkflowCancelText(text) && normalizeIMMessagePlatformKind(platform).IsDesktop() {
 		h.workflowAgentLoopMarker.Delete(userID)
-		log.Printf("[WorkflowInterception] bypassing pending desktop workflow form for chat input: user=%s text=%q", userID, truncateRunes(text, 60))
+		log.Printf("[WorkflowInterception] bypassing pending desktop workflow form for chat input: user=%s text_len=%d", userID, len([]rune(text)))
 		return nil
 	}
 	if !workflowLoopPending && !formDirectRun && h.shouldBypassWorkflowForIntent(userID, text, activeFormGate) && !engine.IsAwaitingReview(userID) {
 		if engine.GetActiveWorkflow(userID) != nil {
 			h.stashedPhasePrompt.Delete(userID)
 			h.workflowAgentLoopMarker.Delete(userID)
-			log.Printf("[WorkflowInterception] bypassing active workflow by UIC intent: user=%s text=%q", userID, truncateRunes(text, 80))
+			log.Printf("[WorkflowInterception] bypassing active workflow by UIC intent: user=%s text_len=%d", userID, len([]rune(text)))
 		} else if understanding := engine.GetUnderstanding(); understanding != nil && understanding.HasActiveSession(userID) {
 			// UIC determined this message is NOT a workflow task, but there's an
 			// active understanding session that would trap it. Cancel the session
@@ -777,9 +777,9 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform str
 			// This prevents the IUM LLM (which has no tools) from receiving messages
 			// it cannot handle (e.g., file paths, operational commands).
 			understanding.CancelSession(userID)
-			log.Printf("[WorkflowInterception] bypassing active understanding session by UIC intent: user=%s text=%q", userID, truncateRunes(text, 80))
+			log.Printf("[WorkflowInterception] bypassing active understanding session by UIC intent: user=%s text_len=%d", userID, len([]rune(text)))
 		} else {
-			log.Printf("[WorkflowInterception] bypassing workflow start by UIC intent: user=%s text=%q", userID, truncateRunes(text, 80))
+			log.Printf("[WorkflowInterception] bypassing workflow start by UIC intent: user=%s text_len=%d", userID, len([]rune(text)))
 		}
 		return nil
 	}
@@ -818,8 +818,8 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform str
 				hasConcreteType := isConcreteWorkflowType(result.WorkflowType)
 				if !(hasConcreteType && isConfident) {
 					understanding.CancelSession(userID)
-					log.Printf("[WorkflowInterception] escaping understanding session (UIC not confident, rounds=%d): user=%s intent=%s conf=%.2f wf=%s threshold=%.2f text=%q",
-						len(sess.Rounds), userID, result.Primary, result.Confidence, result.WorkflowType, threshold, truncateRunes(text, 80))
+					log.Printf("[WorkflowInterception] escaping understanding session (UIC not confident, rounds=%d): user=%s intent=%s conf=%.2f wf=%s threshold=%.2f text_len=%d",
+						len(sess.Rounds), userID, result.Primary, result.Confidence, result.WorkflowType, threshold, len([]rune(text)))
 					return nil
 				}
 			}
@@ -892,8 +892,8 @@ func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string, cl
 	trimmedText := strings.TrimSpace(text)
 	runeCount := utf8.RuneCountInString(trimmedText)
 	if runeCount < shortMessageThreshold && !classifyShortMessages {
-		log.Printf("[WorkflowInterception] UIC fusion skipped: short message (%d runes < %d threshold), text=%q",
-			runeCount, shortMessageThreshold, trimmedText)
+		log.Printf("[WorkflowInterception] UIC fusion skipped: short message (%d runes < %d threshold)",
+			runeCount, shortMessageThreshold)
 		return false
 	}
 
@@ -1046,7 +1046,7 @@ func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine,
 			log.Printf("[WorkflowEngine] SkipPhaseForm direct-run failed: user=%s err=%v", userID, err)
 			return &IMAgentResponse{Text: fmt.Sprintf(avTr("Workflow form state could not be saved: %v", "工作流表单状态保存失败：%v"), err)}
 		}
-		log.Printf("[WorkflowEngine] skipped pending workflow form by direct-run command: user=%s text=%q", userID, truncateRunes(text, 40))
+		log.Printf("[WorkflowEngine] skipped pending workflow form by direct-run command: user=%s text_len=%d", userID, len([]rune(text)))
 	}
 
 	// Cross-type task detection via UIC.
@@ -1303,12 +1303,12 @@ func (h *IMMessageHandler) handleWorkflowReview(engine *workflow.WorkflowEngine,
 	}
 
 	if detectWorkflowReviewBlockedExecutionIntent(text) {
-		log.Printf("[workflow-review] user=%s text=%q intent=%q source=execution-block", userID, truncateForLogGUI(text, 30), workflow.ReviewIntentOther)
+		log.Printf("[workflow-review] user=%s text_len=%d intent=%q source=execution-block", userID, len([]rune(text)), workflow.ReviewIntentOther)
 		return h.workflowReviewExecutionBlockedResponse(engine, userID)
 	}
 
 	if reviewIntent, ok := detectWorkflowReviewIntentFast(text); ok {
-		log.Printf("[workflow-review] user=%s text=%q intent=%q source=fast-path", userID, truncateForLogGUI(text, 30), reviewIntent)
+		log.Printf("[workflow-review] user=%s text_len=%d intent=%q source=fast-path", userID, len([]rune(text)), reviewIntent)
 		return h.applyWorkflowReviewIntent(engine, userID, reviewIntent, text, platform)
 	}
 
@@ -1350,8 +1350,8 @@ When in doubt between "confirm" and "other", prefer "confirm" - the conversation
 	}
 
 	reviewIntent := normalizeWorkflowReviewIntent(classifyResult.Text)
-	log.Printf("[workflow-review] user=%s text=%q intent=%q raw=%q (input=%d output=%d latency=%.1fs)",
-		userID, truncateForLogGUI(text, 30), reviewIntent, strings.TrimSpace(classifyResult.Text), classifyResult.InputTokens, classifyResult.OutputTokens, classifyResult.Latency.Seconds())
+	log.Printf("[workflow-review] user=%s text_len=%d intent=%q raw_len=%d (input=%d output=%d latency=%.1fs)",
+		userID, len([]rune(text)), reviewIntent, len([]rune(strings.TrimSpace(classifyResult.Text))), classifyResult.InputTokens, classifyResult.OutputTokens, classifyResult.Latency.Seconds())
 
 	return h.applyWorkflowReviewIntent(engine, userID, reviewIntent, text, platform)
 }
@@ -1670,9 +1670,9 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 
 			if isNonWorkflowIntent && uicResult.Confidence >= threshold {
 				log.Printf("[WorkflowInterception] UIC rejected workflow for user %s: "+
-					"intent=%s conf=%.2f layer=%d threshold=%.2f - text=%q",
+					"intent=%s conf=%.2f layer=%d threshold=%.2f text_len=%d",
 					userID, uicResult.Primary, uicResult.Confidence, uicResult.Layer, threshold,
-					truncateRunes(text, 80))
+					len([]rune(text)))
 				return nil
 			}
 		}
@@ -1681,9 +1681,9 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 		// used to directly start a workflow -> it falls through to IUM below.
 		if isConcreteWorkflowType(uicResult.WorkflowType) {
 			log.Printf("[WorkflowInterception] UIC recommends workflow_type=%s for user %s "+
-				"(intent=%s conf=%.2f layer=%d) -> delegating to IUM for confirmation. text=%q",
+				"(intent=%s conf=%.2f layer=%d) -> delegating to IUM for confirmation. text_len=%d",
 				uicResult.WorkflowType, userID, uicResult.Primary, uicResult.Confidence,
-				uicResult.Layer, truncateRunes(text, 80))
+				uicResult.Layer, len([]rune(text)))
 		} else {
 			// UIC not confident enough or ambiguous.
 			log.Printf("[WorkflowInterception] UIC fusion: intent=%s conf=%.2f layer=%d wf=%s - "+
@@ -1717,8 +1717,8 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 			return nil
 		}
 
-		log.Printf("[WorkflowInterception] IUM first-round ready for user %s: category=%s conf=%.2f text=%q",
-			userID, result.Intent.Category, result.Intent.Confidence, truncateRunes(text, 80))
+		log.Printf("[WorkflowInterception] IUM first-round ready for user %s: category=%s conf=%.2f text_len=%d",
+			userID, result.Intent.Category, result.Intent.Confidence, len([]rune(text)))
 
 		if resp := h.confirmWorkflowStart(userID, text, *result.Intent, result.Reply); resp != nil {
 			return resp

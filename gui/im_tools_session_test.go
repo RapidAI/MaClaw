@@ -95,7 +95,7 @@ func TestScreenshotCooldownIsScopedByRuntimeOwner(t *testing.T) {
 	}
 }
 
-func TestScreenshotCooldownOwnerlessRuntimeDoesNotUseLegacyCooldown(t *testing.T) {
+func TestScreenshotCooldownOwnerlessDoesNotUseCurrentRuntimeScope(t *testing.T) {
 	now := time.Now()
 	h := &IMMessageHandler{
 		lastScreenshotAt: now,
@@ -103,28 +103,33 @@ func TestScreenshotCooldownOwnerlessRuntimeDoesNotUseLegacyCooldown(t *testing.T
 	}
 
 	key, scoped := h.screenshotCooldownScope("", false)
-	if !scoped || !strings.Contains(key, "req-ownerless-screenshot") {
-		t.Fatalf("ownerless explicit runtime should use request-scoped cooldown, key=%q scoped=%v", key, scoped)
+	if scoped || key != "" {
+		t.Fatalf("ownerless screenshot cooldown should not inherit current runtime, key=%q scoped=%v", key, scoped)
 	}
-	if got := screenshotCooldownMessage(h.lastScreenshotAtForScope(key, scoped), now.Add(time.Second)); got != "" {
-		t.Fatalf("ownerless runtime inherited legacy screenshot cooldown: %q", got)
+	if got := screenshotCooldownMessage(h.lastScreenshotAtForScope(key, scoped), now.Add(time.Second)); got == "" {
+		t.Fatal("ownerless screenshot cooldown should use legacy unscoped cooldown only")
 	}
 }
 
 func TestToolScreenshotRejectsUserSuppliedImagePathPrompt(t *testing.T) {
 	t.Parallel()
 
-	h := &IMMessageHandler{
-		lastUserText: strings.Join([]string{
-			"what is in this image?",
-			"",
-			filePathPromptPrefix,
-			`C:\Users\ma139\Pictures\Screenshots\screen-2026-03-14.png`,
-			"selected local image path; do not call screenshot again",
-		}, "\n"),
-	}
+	ownerID := "weixin:user-image"
+	h := &IMMessageHandler{}
+	ctx := NewLoopContext("weixin", 1, nil)
+	h.setSessionLoopCtx(ownerID, ctx)
+	state := h.getSessionLoop(ownerID)
+	state.stateMu.Lock()
+	state.userText = strings.Join([]string{
+		"what is in this image?",
+		"",
+		filePathPromptPrefix,
+		`C:\Users\ma139\Pictures\Screenshots\screen-2026-03-14.png`,
+		"selected local image path; do not call screenshot again",
+	}, "\n")
+	state.stateMu.Unlock()
 
-	got := h.toolScreenshot(nil)
+	got := h.toolScreenshot(map[string]interface{}{registeredToolPolicyOwnerIDField: ownerID})
 	if !strings.Contains(got, "不要调用 screenshot") {
 		t.Fatalf("expected screenshot guard message, got %q", got)
 	}

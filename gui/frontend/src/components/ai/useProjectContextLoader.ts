@@ -27,51 +27,70 @@ export interface ProjectContextMessage {
 }
 
 /**
- * Format a ProjectContextSummary into a human-readable system message.
+ * Format a ProjectContextSummary into a compact user-facing system message.
+ * Raw paths and evidence references are kept in structured fields for agent use,
+ * but are intentionally not rendered into the chat transcript.
  */
-function looksLikeLocalPath(value?: string): boolean {
-    return !!value && (/^[A-Za-z]:[\\/]/.test(value) || value.startsWith("/") || value.startsWith("~/"));
+function looksLikeTechnicalSource(value: string): boolean {
+    const text = value.trim();
+    return /^[A-Za-z]:[\\/]/.test(text)
+        || /^[-*]?\s*`?[A-Za-z]:[\\/]/.test(text)
+        || /^[-*]?\s*`?(\/|~\/)/.test(text)
+        || text.includes(".maclaw")
+        || text.includes("read_file")
+        || text.startsWith("Source task:")
+        || text === "Forked from recent task.";
 }
 
-function formatSourceRef(sourceURL?: string, sourceHint?: string): string {
-    if (!sourceURL) return "";
-    const hintText = sourceHint || (looksLikeLocalPath(sourceURL) ? "full: read_file" : "");
-    const hint = hintText ? `; ${hintText}` : "";
-    return ` - \`${sourceURL}\`${hint}`;
+function simplifyProjectProgress(value?: string): string {
+    if (!value) return "";
+    const lines = value.replace(/\r\n/g, "\n").split("\n");
+    const kept: string[] = [];
+    let skippingTechnicalSection = false;
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+            if (kept.length > 0 && kept[kept.length - 1] !== "") kept.push("");
+            continue;
+        }
+        if (/^\*\*(关键产出物|最近产物来源|Key artifacts|Recent artifact sources)[:：]?\*\*/i.test(trimmed)) {
+            skippingTechnicalSection = true;
+            continue;
+        }
+        if (/^\*\*.+\*\*/.test(trimmed)) {
+            skippingTechnicalSection = false;
+        }
+        if (skippingTechnicalSection || looksLikeTechnicalSource(trimmed)) continue;
+        kept.push(trimmed);
+    }
+
+    const compact = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    if (compact.length <= 520) return compact;
+    return `${compact.slice(0, 520).trimEnd()}...`;
 }
 
 function formatProjectContextMessage(summary: main.ProjectContextSummary): string {
     const parts: string[] = [];
+    const projectName = summary.project_name || "当前任务";
+    const progress = simplifyProjectProgress(summary.recent_progress);
+    const hasHiddenEvidence = (summary.key_artifacts?.length || 0) > 0 || (summary.recent_artifacts?.length || 0) > 0;
 
-    parts.push(`📁 **项目: ${summary.project_name}**`);
+    parts.push(`已恢复任务上下文：${projectName}`);
 
-    if (summary.recent_progress) {
+    if (progress) {
         parts.push("");
-        parts.push("**最近进展:**");
-        parts.push(summary.recent_progress);
-    }
-
-    if (summary.key_artifacts && summary.key_artifacts.length > 0) {
-        parts.push("");
-        parts.push("**关键产出物:**");
-        for (const artifact of summary.key_artifacts) {
-            parts.push(`- \`${artifact}\``);
-        }
-    }
-
-    if (summary.recent_artifacts && summary.recent_artifacts.length > 0) {
-        parts.push("");
-        parts.push("**最近产物来源:**");
-        for (const artifact of summary.recent_artifacts) {
-            const label = artifact.title || artifact.preview || artifact.source_url || "artifact";
-            const source = formatSourceRef(artifact.source_url, artifact.source_hint);
-            parts.push(`- ${label}${source}`);
-        }
+        parts.push(`最近进展：${progress}`);
     }
 
     if (summary.active_workflow) {
         parts.push("");
-        parts.push(`**活跃工作流:** ${summary.active_workflow}`);
+        parts.push(`当前流程：${summary.active_workflow}`);
+    }
+
+    if (hasHiddenEvidence) {
+        parts.push("");
+        parts.push("相关产物和来源已载入，AI 会参考。可以直接继续问。");
     }
 
     return parts.join("\n");
@@ -84,7 +103,7 @@ function createPlaceholderMessage(projectName: string): ProjectContextMessage {
     return {
         id: `project-context-loading-${Date.now()}`,
         role: "system",
-        content: `⏳ 正在加载项目「${projectName}」的上下文...`,
+        content: `正在恢复任务上下文：${projectName}...`,
         timestamp: Date.now(),
         isProjectContext: true,
     };
@@ -110,7 +129,7 @@ function createFailedMessage(projectName: string): ProjectContextMessage {
     return {
         id: `project-context-failed-${Date.now()}`,
         role: "system",
-        content: `📁 **项目: ${projectName}**\n\n_项目上下文加载失败，你可以直接开始对话。_`,
+        content: `已打开任务：${projectName}\n\n上下文暂未恢复，可以直接继续问。`,
         timestamp: Date.now(),
         isProjectContext: true,
     };
@@ -165,6 +184,7 @@ export interface UseProjectContextLoaderResult {
     loadProjectContext: (
         projectPath: string,
         onMessage: (msg: ProjectContextMessage) => void,
+        onSettled?: () => void,
     ) => void;
 }
 
@@ -184,14 +204,22 @@ export function useProjectContextLoader(): UseProjectContextLoaderResult {
     const loadProjectContext = useCallback((
         projectPath: string,
         onMessage: (msg: ProjectContextMessage) => void,
+        onSettled?: () => void,
     ) => {
         // Avoid duplicate loads for the same project path
         if (loadedPathsRef.current.has(projectPath)) {
+            queueMicrotask(() => onSettled?.());
             return;
         }
         loadedPathsRef.current.add(projectPath);
 
         const projectName = projectPath.split(/[/\\]/).pop() || projectPath;
+        let settled = false;
+        const settleOnce = () => {
+            if (settled) return;
+            settled = true;
+            onSettled?.();
+        };
 
         // Attempt to load with timeout
         loadWithTimeout(projectPath).then(async (summary) => {
@@ -200,25 +228,25 @@ export function useProjectContextLoader(): UseProjectContextLoaderResult {
             if (summary) {
                 // Success within timeout - inject the context message
                 onMessage(createContextMessage(summary));
+                settleOnce();
                 return;
             }
 
-            // Timeout or error - show placeholder and retry
+            // Timeout or error - show placeholder and release the tab. Retries
+            // continue in the background so a slow context recall cannot keep
+            // the input area stuck in restore mode.
             onMessage(createPlaceholderMessage(projectName));
+            settleOnce();
 
             // Retry loop
             for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
                 await sleep(RETRY_DELAY_MS);
                 if (!mountedRef.current) return;
-                try {
-                    const retryResult = await LoadProjectContext(projectPath);
-                    if (!mountedRef.current) return;
-                    if (retryResult) {
-                        onMessage(createContextMessage(retryResult));
-                        return;
-                    }
-                } catch {
-                    // Continue to next retry
+                const retryResult = await loadWithTimeout(projectPath);
+                if (!mountedRef.current) return;
+                if (retryResult) {
+                    onMessage(createContextMessage(retryResult));
+                    return;
                 }
             }
 

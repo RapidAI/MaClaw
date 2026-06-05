@@ -87,7 +87,7 @@ func (h *IMMessageHandler) runtimeTaskTextForOwner(ownerID string) string {
 
 func (h *IMMessageHandler) currentRuntimeTaskTextOrLegacy() (string, string) {
 	ownerID, explicitRuntime := h.currentRuntimePolicyOwnerState()
-	if explicitRuntime && strings.TrimSpace(ownerID) == "" {
+	if !explicitRuntime || strings.TrimSpace(ownerID) == "" {
 		return "", ""
 	}
 	return h.runtimeTaskTextForOwner(ownerID), ownerID
@@ -142,7 +142,7 @@ func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 		return false
 	}
 	h.accumulateInjection(userID, "[用户补充] "+text)
-	log.Printf("[inject-supplementary] user=%s text=%s", userID, truncateForLog(text, 60))
+	log.Printf("[inject-supplementary] user=%s text_len=%d", userID, len([]rune(text)))
 	return true
 }
 
@@ -156,7 +156,7 @@ func (h *IMMessageHandler) InjectGuideReference(userID, text string) bool {
 		return false
 	}
 	h.accumulateInjection(userID, injection)
-	log.Printf("[inject-guide-reference] user=%s text=%s", userID, truncateForLog(text, 60))
+	log.Printf("[inject-guide-reference] user=%s text_len=%d", userID, len([]rune(text)))
 	return true
 }
 
@@ -294,6 +294,18 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 }
 
 func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userText, platform string) func() {
+	requestID := ""
+	loopID := ""
+	if ctx != nil {
+		requestID = ctx.Runtime.RequestID
+		loopID = ctx.ID
+	}
+	cleanupForegroundQoS := func() {}
+	if h != nil && h.app != nil && isForegroundAgentLoopRuntime(ctx) {
+		cleanupForegroundQoS = h.app.beginForegroundAgentLoop(userID, requestID, loopID)
+	} else if ctx != nil && ctx.Kind == LoopKindBackground {
+		log.Printf("[agent-qos] foreground_skip_background owner=%q request_id=%q loop=%q slot=%s", userID, requestID, loopID, ctx.SlotKind.String())
+	}
 	// Write to per-session state (primary, race-free).
 	state := h.getSessionLoop(userID)
 	state.stateMu.Lock()
@@ -318,6 +330,7 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 		h.appendTraceEvent(ctx, "loop.started", "info", "Agent loop started", h.runtimeTraceSummary(ctx, userText), "", "")
 	}
 	return func() {
+		cleanupForegroundQoS()
 		h.clearNonGuidePendingInjection(userID)
 		// Clear per-session state.
 		state.stateMu.Lock()
@@ -337,6 +350,10 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 		h.globalLoopMu.Unlock()
 		ctx.Done()
 	}
+}
+
+func isForegroundAgentLoopRuntime(ctx *LoopContext) bool {
+	return ctx == nil || ctx.Kind != LoopKindBackground
 }
 
 func (h *IMMessageHandler) clearNonGuidePendingInjection(userID string) {

@@ -375,7 +375,7 @@ func (c *capabilityMarketClient) doJSON(req *http.Request, dest any) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var body map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&body)
-		return fmt.Errorf("hub marketplace request failed: status=%d body=%v", resp.StatusCode, body)
+		return fmt.Errorf("hub marketplace request failed: status=%d body_fields=%d", resp.StatusCode, len(body))
 	}
 	if dest == nil {
 		return nil

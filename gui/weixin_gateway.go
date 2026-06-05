@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
@@ -347,7 +348,7 @@ func (m *weixinGatewayManager) forwardToHub(msg weixin.IncomingMessage) {
 		m.handleLocalMessage(msg)
 	} else {
 		wl.Log("mgr.forward", "OUT", msg.FromUserID, "OK sent to hub, has_ctx_token=%v", msg.ContextToken != "")
-		log.Printf("[weixin-mgr] forwardToHub OK: user=%s text=%q", msg.FromUserID, truncateForLog(msg.Text, 30))
+		log.Printf("[weixin-mgr] forwardToHub OK: user=%s text_len=%d", msg.FromUserID, len([]rune(msg.Text)))
 	}
 }
 
@@ -1236,8 +1237,9 @@ func (a *App) SetWeixinLocalMode(enabled bool) error {
 	if !enabled && cfg.RemoteMachineID == "" {
 		return fmt.Errorf("please register this machine to Hub before enabling multi-machine mode")
 	}
-	cfg.SetWeixinLocal(enabled)
-	if err := a.SaveConfig(cfg); err != nil {
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.SetWeixinLocal(enabled)
+	}); err != nil {
 		return err
 	}
 	log.Printf("[weixin-mgr] SetWeixinLocalMode: enabled=%v (local_mode after save: %v)", enabled, cfg.IsWeixinLocalMode())
@@ -1263,6 +1265,25 @@ func (a *App) SetWeixinLocalMode(enabled bool) error {
 		}
 	}
 	return nil
+}
+
+func (a *App) saveWeixinLoginConfig(result *weixin.QRLoginResult) error {
+	if result == nil {
+		return fmt.Errorf("weixin login result is nil")
+	}
+	return a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.WeixinEnabled = true
+		cfg.WeixinToken = result.BotToken
+		cfg.WeixinAccountID = result.AccountID
+		if result.BaseURL != "" {
+			cfg.WeixinBaseURL = result.BaseURL
+		}
+		if cfg.WeixinLocalMode == nil {
+			local := true
+			cfg.WeixinLocalMode = &local
+			log.Printf("[weixin-mgr] first-time binding: auto-setting local mode")
+		}
+	})
 }
 
 // StartWeixinQRLogin initiates a QR code login flow.
@@ -1337,7 +1358,7 @@ func (a *App) PollWeixinQRStatus(qrcodeToken string) map[string]string {
 			cfg.WeixinLocalMode = &local
 			log.Printf("[weixin-mgr] first-time binding: auto-setting local mode")
 		}
-		if err := a.SaveConfig(cfg); err != nil {
+		if err := a.saveWeixinLoginConfig(result); err != nil {
 			resp["error"] = "登录成功但保存配置失败 " + err.Error()
 			return resp
 		}
@@ -1383,7 +1404,7 @@ func (a *App) WaitWeixinQRLogin(qrcodeToken string) map[string]string {
 		cfg.WeixinLocalMode = &local
 		log.Printf("[weixin-mgr] first-time binding: auto-setting local mode")
 	}
-	if err := a.SaveConfig(cfg); err != nil {
+	if err := a.saveWeixinLoginConfig(result); err != nil {
 		return map[string]string{
 			"status": "connected",
 			"error":  "登录成功但保存配置失败 " + err.Error(),

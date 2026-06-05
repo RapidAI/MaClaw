@@ -54,8 +54,26 @@ type agentLoopToolExecutionOptions struct {
 	AdaptiveRetry    *AdaptiveRetry
 }
 
-func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionOptions) toolExecutionResult {
+func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionOptions) (result toolExecutionResult) {
 	tc := opts.ToolCall
+	toolStartedAt := time.Now()
+	requestID := ""
+	loopID := ""
+	if opts.Context != nil {
+		requestID = opts.Context.Runtime.RequestID
+		loopID = opts.Context.ID
+	}
+	defer func() {
+		log.Printf("[agent-loop tool] done owner=%q request_id=%q loop=%q iteration=%d tool=%q outcome=%s failure=%s duration=%s result_len=%d",
+			opts.UserID, requestID, loopID, opts.Iteration, strings.TrimSpace(tc.Function.Name), result.Outcome.String(), string(result.FailureKind), time.Since(toolStartedAt).Round(time.Millisecond), len([]rune(result.Text)))
+	}()
+	if rewrittenName, rewrittenArgs, rewritten := rewriteInternalBrowserToolCallJSON(tc.Function.Name, tc.Function.Arguments); rewritten {
+		tc.Function.Name = rewrittenName
+		tc.Function.Arguments = rewrittenArgs
+	}
+	if reason := rejectUnstableBrowserToolCallJSON(tc.Function.Name, tc.Function.Arguments); reason != "" {
+		return toolExecutionResult{Text: "[system rejected] " + reason, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
 	policyUserID := h.workflowPolicyOwnerID(opts.UserID, opts.Context)
 	skipWorkflowGate := opts.SkipWorkflowGate
 	if skipWorkflowGate {
@@ -66,7 +84,6 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		}
 	}
 
-	var result toolExecutionResult
 	if !skipWorkflowGate && !h.isWorkflowToolAllowedForOwner(policyUserID, tc.Function.Name) {
 		text := workflowPolicyToolRejectedText(tc.Function.Name)
 		result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
@@ -185,9 +202,6 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	if h == nil {
 		return toolExecutionResult{Text: "[system rejected] CodingSubAgent host is unavailable.", ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailureExecutionPanic}, true
 	}
-	if allowed, reason := h.allowCodingWorkflowDelegate(request, opts); !allowed {
-		return toolExecutionResult{Text: "[system rejected] delegate_task(coding_workflow) is only allowed for semantically confirmed coding work. " + reason, ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}, true
-	}
 	projectPath := firstCodingDelegateProjectPathArg(args)
 	if projectPath == "" {
 		projectPath = extractCodingDelegateProjectPath(request)
@@ -200,6 +214,9 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	}
 	if projectPath == "" {
 		projectPath = "."
+	}
+	if allowed, reason := h.allowCodingWorkflowDelegate(request, opts, projectPath); !allowed {
+		return toolExecutionResult{Text: "[system rejected] delegate_task(coding_workflow) is only allowed for semantically confirmed coding work. " + reason, ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}, true
 	}
 
 	httpClient := (*http.Client)(nil)
@@ -265,7 +282,7 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	return toolExecutionResult{Text: text, ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailureHandlerReported}, true
 }
 
-func (h *IMMessageHandler) allowCodingWorkflowDelegate(request string, opts agentLoopToolExecutionOptions) (bool, string) {
+func (h *IMMessageHandler) allowCodingWorkflowDelegate(request string, opts agentLoopToolExecutionOptions, projectPath string) (bool, string) {
 	text := strings.TrimSpace(opts.UserText)
 	if text == "" {
 		text = strings.TrimSpace(request)
@@ -279,6 +296,16 @@ func (h *IMMessageHandler) allowCodingWorkflowDelegate(request string, opts agen
 	}
 	if !isSemanticCodingWorkflowDelegateResult(result) {
 		return false, fmt.Sprintf("classified as %s (confidence %.2f, layer %d): %s", result.Intent, result.Confidence, result.Layer, result.Reason)
+	}
+	interactionContinuation := opts.Context != nil && opts.Context.IsAskUserResponse && result.Intent == GateIntentBugFix
+	if reason := h.codingSubAgentAdmissionBlockReason(codingSubAgentAdmissionInput{
+		Text:                        text,
+		OwnerID:                     opts.UserID,
+		ProjectPath:                 projectPath,
+		InteractionContinuation:     interactionContinuation,
+		RequireExistingCodeEvidence: result.Intent == GateIntentBugFix,
+	}); reason != "" {
+		return false, reason + "."
 	}
 	return true, ""
 }
@@ -386,6 +413,71 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 	return true, ""
 }
 
+func rewriteInternalBrowserToolCall(name string, args map[string]interface{}) (string, map[string]interface{}, bool) {
+	name = strings.TrimSpace(name)
+	if name == "browser" || !strings.HasPrefix(name, "browser_") {
+		return name, args, false
+	}
+	action := strings.TrimPrefix(name, "browser_")
+	if action == "" {
+		return name, args, false
+	}
+	rewritten := make(map[string]interface{}, len(args)+1)
+	for k, v := range args {
+		rewritten[k] = v
+	}
+	rewritten["action"] = action
+	return "browser", rewritten, true
+}
+
+func rewriteInternalBrowserToolCallJSON(name, argsJSON string) (string, string, bool) {
+	name = strings.TrimSpace(name)
+	if name == "browser" || !strings.HasPrefix(name, "browser_") {
+		return name, argsJSON, false
+	}
+	var args map[string]interface{}
+	if strings.TrimSpace(argsJSON) != "" {
+		if err := json.Unmarshal([]byte(coretool.CleanToolArguments(argsJSON)), &args); err != nil {
+			return name, argsJSON, false
+		}
+	}
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	rewrittenName, rewrittenArgs, rewritten := rewriteInternalBrowserToolCall(name, args)
+	if !rewritten {
+		return name, argsJSON, false
+	}
+	encoded, err := json.Marshal(rewrittenArgs)
+	if err != nil {
+		return name, argsJSON, false
+	}
+	return rewrittenName, string(encoded), true
+}
+
+func rejectUnstableBrowserToolCallJSON(name, argsJSON string) string {
+	name = strings.TrimSpace(name)
+	if name != "browser" && !strings.HasPrefix(name, "browser_") {
+		return ""
+	}
+	action := normalizeBrowserToolAction(strings.TrimPrefix(name, "browser_"))
+	if name == "browser" {
+		var args map[string]interface{}
+		if strings.TrimSpace(argsJSON) != "" {
+			if err := json.Unmarshal([]byte(coretool.CleanToolArguments(argsJSON)), &args); err != nil {
+				return ""
+			}
+		}
+		if raw, ok := args["action"].(string); ok {
+			action = normalizeBrowserToolAction(raw)
+		}
+	}
+	if browserActionUnsupportedInMerged(action) {
+		return fmt.Sprintf("browser action %s is disabled in the stable browser mechanism; use session_start plus observe/click/type/wait/extract/task_run", action)
+	}
+	return ""
+}
+
 func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress coretool.ProgressCallback) string {
 	return h.executeToolDetailed(name, argsJSON, onProgress).Text
 }
@@ -409,6 +501,12 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntime(policyUserID, runtimeP
 func (h *IMMessageHandler) executeToolDetailedWithRuntimeState(policyUserID string, hasRuntimeOwner bool, runtimePlatform, name, argsJSON, userText string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
 	name = strings.TrimSpace(name)
 	kind := classifyAgentToolKind(name)
+	if reason := rejectUnstableBrowserToolCallJSON(name, argsJSON); reason != "" {
+		return toolExecutionResult{Text: "[system rejected] " + reason, ToolName: name, ToolKind: kind, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+	if isDisabledExternalCodingSessionTool(name) {
+		return toolExecutionResult{Text: disabledExternalCodingSessionToolText(name), ToolName: name, ToolKind: kind, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			result = toolExecutionResult{
@@ -442,6 +540,11 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeState(policyUserID stri
 	if args == nil {
 		args = map[string]interface{}{}
 	}
+	if rewrittenName, rewrittenArgs, rewritten := rewriteInternalBrowserToolCall(name, args); rewritten {
+		name = rewrittenName
+		args = rewrittenArgs
+		kind = classifyAgentToolKind(name)
+	}
 	policyUserID = strings.TrimSpace(policyUserID)
 	if policyUserID != "" {
 		if !h.isWorkflowToolAllowedForOwner(policyUserID, name) {
@@ -452,7 +555,11 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeState(policyUserID stri
 			return toolExecutionResult{Text: "[system rejected] " + reason, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 		}
 	}
-	if hasRuntimeOwner && toolAcceptsRuntimePolicyOwnerArg(name) {
+	acceptsRuntimeOwner := toolAcceptsRuntimePolicyOwnerArg(name)
+	if acceptsRuntimeOwner {
+		log.Printf("[tool-runtime] tool=%q owner=%q explicit_runtime=%v platform=%q", name, policyUserID, hasRuntimeOwner, strings.TrimSpace(runtimePlatform))
+	}
+	if hasRuntimeOwner && acceptsRuntimeOwner {
 		args[registeredToolPolicyOwnerIDField] = policyUserID
 	}
 	if platform := strings.TrimSpace(runtimePlatform); platform != "" && toolAcceptsRuntimePlatformArg(name) {
@@ -583,28 +690,33 @@ func (h *IMMessageHandler) toolArgsOrCurrentRuntimePolicyOwnerState(args map[str
 }
 
 func (h *IMMessageHandler) currentRuntimePlatform() string {
-	if h == nil {
-		return ""
+	return ""
+}
+
+func (h *IMMessageHandler) runtimePlatformForOwnerOrCurrent(ownerID string, explicitRuntime bool) string {
+	if loopCtx := h.runtimeLoopContextForOwner(ownerID); loopCtx != nil {
+		if platform := runtimePlatformFromLoopContext(loopCtx); platform != "" {
+			return platform
+		}
 	}
-	h.globalLoopMu.RLock()
-	ctx := h.currentLoopCtx
-	h.globalLoopMu.RUnlock()
-	if ctx == nil {
-		return ""
-	}
-	return strings.TrimSpace(ctx.Platform)
+	return ""
 }
 
 func (h *IMMessageHandler) consumeRuntimePlatformFromToolArgsOrCurrent(args map[string]interface{}) string {
 	if platform := consumeRuntimePlatformFromToolArgs(args); platform != "" {
 		return platform
 	}
-	return h.currentRuntimePlatform()
+	return ""
 }
 
 func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 	switch strings.TrimSpace(name) {
-	case "bash", "manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill", "memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations", "group_discussion", "screenshot":
+	case "bash",
+		"read_file", "write_file", "edit_file", "edit_lines", "list_directory", "send_file",
+		"manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill",
+		"memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations",
+		"group_discussion", "screenshot", "call_mcp_tool",
+		"browser", "browser_session_start", "browser_connect", "tts":
 		return true
 	default:
 		return false
@@ -651,23 +763,12 @@ func (h *IMMessageHandler) workflowPolicyOwnerID(userID string, ctx *LoopContext
 
 func (h *IMMessageHandler) workflowPolicyUserID(userID string) string {
 	userID = strings.TrimSpace(userID)
-	if h == nil {
-		return userID
-	}
-	engine := h.getWorkflowEngine()
-	if engine == nil {
-		return userID
-	}
 	if userID != "" {
 		return userID
 	}
-	lastUserID := h.legacyLastUserID()
-	if lastUserID != "" && engine.GetActiveWorkflow(lastUserID) != nil {
-		return lastUserID
-	}
-	if engine.GetActiveWorkflow(desktopUserID) != nil {
-		return desktopUserID
-	}
+	// Empty owner means caller did not provide an isolation boundary. Do not
+	// guess from lastUserID, currentLoopCtx, or single active desktop workflow:
+	// all three can point at another tab under concurrent recent-task agents.
 	return ""
 }
 
@@ -846,6 +947,9 @@ func (h *IMMessageHandler) preCheckMCPToolArgsForAgentLoop(args map[string]inter
 	toolName := strings.TrimSpace(nonEmptyStringFromAny(args["tool_name"]))
 	if serverRef == "" || toolName == "" {
 		return nil
+	}
+	if isDisabledExternalCodingSessionTool(toolName) {
+		return &toolExecutionResult{Text: disabledExternalCodingSessionToolText(toolName), ToolName: "call_mcp_tool", ToolKind: classifyAgentToolKind("call_mcp_tool"), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
 	toolArgs, parseErr := mcpToolArgumentsFromAny(args["arguments"])
 	if parseErr != nil {

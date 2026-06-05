@@ -80,9 +80,9 @@ func NewRemoteSessionManager(app *App) *RemoteSessionManager {
 		s.LastNudgeCount = nudgeCount
 		switch state {
 		case StallStateSuspected:
-			s.Summary.SuggestedAction = "编程工具输出暂停，系统正在尝试恢复"
+			s.Summary.SuggestedAction = "Coding tool output paused; system is trying to recover"
 		case StallStateStuck:
-			s.Summary.SuggestedAction = "编程工具可能已卡住，建议发送具体指令或终止会话"
+			s.Summary.SuggestedAction = "缂栫▼宸ュ叿鍙兘宸插崱浣忥紝寤鸿鍙戦€佸叿浣撴寚浠ゆ垨缁堟浼氳瘽"
 			// Auto-degrade from busy to waiting_input so the user can send
 			// new instructions or kill the session. Without this, the session
 			// stays busy forever and blocks all interaction.
@@ -324,8 +324,6 @@ func executionStrategyForMode(mode ExecutionMode) ExecutionStrategy {
 		return NewOpenCodeSDKExecutionStrategy()
 	case ExecModeKiloSDK:
 		return NewKiloSDKExecutionStrategy()
-	case ExecModeGeminiACP:
-		return NewGeminiACPExecutionStrategy()
 	default:
 		// Fallback: SDK mode is the most common protocol.
 		return NewSDKExecutionStrategy()
@@ -339,12 +337,12 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 	spec.SessionID = sessionID
 	spec.LaunchSource = normalizeRemoteLaunchSource(spec.LaunchSource)
 
-	log.Printf("[session-lifecycle] ▶ Creating session %s: tool=%s, project=%q, source=%s, model=%s, time=%s",
+	log.Printf("[session-lifecycle] 鈻?Creating session %s: tool=%s, project=%q, source=%s, model=%s, time=%s",
 		sessionID, spec.Tool, spec.ProjectPath, spec.LaunchSource, spec.ModelID, now.Format(time.RFC3339))
 
 	workspace, err := m.workspacePreparer.Prepare(sessionID, spec)
 	if err != nil {
-		log.Printf("[session-lifecycle] ✖ Session %s workspace preparation failed: %v", sessionID, err)
+		log.Printf("[session-lifecycle] 鉁?Session %s workspace preparation failed: %v", sessionID, err)
 		session := m.newFailedSession(sessionID, spec, nil, now, err)
 		m.storeSession(session)
 		m.syncFailedSession(session)
@@ -362,7 +360,7 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 
 	provider, err := m.providerFactory(spec.Tool)
 	if err != nil {
-		log.Printf("[session-lifecycle] ✖ Session %s provider factory failed for tool=%s: %v", sessionID, spec.Tool, err)
+		log.Printf("[session-lifecycle] 鉁?Session %s provider factory failed for tool=%s: %v", sessionID, spec.Tool, err)
 		session := m.newFailedSession(sessionID, spec, nil, now, err)
 		m.storeSession(session)
 		m.syncFailedSession(session)
@@ -391,21 +389,21 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 		spec.AdminMode = false
 		adminDowngraded = true
 		if m.app != nil {
-			m.app.log(fmt.Sprintf("[remote-admin] session=%s: AdminMode downgraded — process is not elevated and remote launch cannot show UAC prompt", sessionID))
+			m.app.log(fmt.Sprintf("[remote-admin] session=%s: AdminMode downgraded 鈥?process is not elevated and remote launch cannot show UAC prompt", sessionID))
 		}
 	}
 
 	log.Printf("[session-lifecycle] session=%s: building command for tool=%s", sessionID, spec.Tool)
 	cmd, err := provider.BuildCommand(spec)
 	if err != nil {
-		log.Printf("[session-lifecycle] ✖ Session %s BuildCommand failed: %v", sessionID, err)
+		log.Printf("[session-lifecycle] 鉁?Session %s BuildCommand failed: %v", sessionID, err)
 		configRestore() // restore immediately on failure
 		session := m.newFailedSession(sessionID, spec, provider, now, err)
 		m.storeSession(session)
 		m.syncFailedSession(session)
 		return session, err
 	}
-	log.Printf("[session-lifecycle] session=%s: command built, binary=%q, args=%v", sessionID, cmd.Command, cmd.Args)
+	log.Printf("[session-lifecycle] session=%s: command built, binary=%q, args_summary=%s", sessionID, cmd.Command, summarizeLaunchArgs(cmd.Args))
 
 	// Choose execution strategy based on provider mode.
 	// executionFactory can be overridden in tests to inject a fake strategy.
@@ -430,7 +428,7 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 	log.Printf("[session-lifecycle] session=%s: starting execution strategy", sessionID)
 	execHandle, err := strategy.Start(cmd)
 	if err != nil {
-		log.Printf("[session-lifecycle] ✖ Session %s execution start failed: %v", sessionID, err)
+		log.Printf("[session-lifecycle] 鉁?Session %s execution start failed: %v", sessionID, err)
 		configRestore()
 		session := m.newFailedSession(sessionID, spec, provider, now, err)
 		m.storeSession(session)
@@ -521,23 +519,17 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 	// SDK sessions get a dedicated output loop that handles structured messages.
 	// iFlow/OpenCode/Kilo emit pre-formatted text on Output(), so the generic
 	// runOutputLoop (which reads from Output() and feeds the pipeline) works.
-	// Gemini ACP emits pre-formatted text but also needs session state tracking.
 	if _, isSDK := session.Exec.(*SDKExecutionHandle); isSDK {
 		go m.runSDKOutputLoop(session)
 	} else if _, isCodex := session.Exec.(*CodexSDKExecutionHandle); isCodex {
 		go m.runCodexSDKOutputLoop(session)
-	} else if acpHandle, isACP := session.Exec.(*GeminiACPExecutionHandle); isACP {
-		// Wire the session's permission handler into the ACP handle so
-		// permission requests from Gemini CLI are routed through it.
-		acpHandle.Permissions = session.Permissions
-		go m.runGeminiACPOutputLoop(session)
 	} else {
 		go m.runOutputLoop(session)
 	}
 	go m.runExitLoop(session)
 
 	elapsed := time.Since(now)
-	log.Printf("[session-lifecycle] ✔ Session %s created successfully: tool=%s, pid=%d, project=%q, elapsed=%s",
+	log.Printf("[session-lifecycle] 鉁?Session %s created successfully: tool=%s, pid=%d, project=%q, elapsed=%s",
 		sessionID, spec.Tool, execHandle.PID(), originalProjectPath, elapsed)
 
 	return session, nil
@@ -633,7 +625,7 @@ func (m *RemoteSessionManager) CreateAIBackgroundSession(title, projectPath stri
 			Status:          SessionBusy.String(),
 			Severity:        "info",
 			CurrentTask:     trimmedTitle,
-			ProgressSummary: "后台 AI 任务已创建",
+			ProgressSummary: "AI background task created",
 			UpdatedAt:       now.Unix(),
 		},
 		Preview: SessionPreview{
@@ -822,6 +814,29 @@ func (m *RemoteSessionManager) HasActiveSessions() bool {
 	return false
 }
 
+func (m *RemoteSessionManager) HasActiveSessionsForProject(projectPath string) bool {
+	if m == nil {
+		return false
+	}
+	wantProject := strings.TrimSpace(projectPath)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, s := range m.sessions {
+		if s == nil {
+			continue
+		}
+		s.mu.RLock()
+		active := isActiveRemoteSessionStatus(s.Status)
+		sessionProject := strings.TrimSpace(s.ProjectPath)
+		s.mu.RUnlock()
+		if active && sessionProject == wantProject {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *RemoteSessionManager) WriteInput(sessionID, text string) error {
 	s, ok := m.Get(sessionID)
 	if !ok {
@@ -838,26 +853,14 @@ func (m *RemoteSessionManager) WriteInput(sessionID, text string) error {
 		return m.writeSDKInput(s, sessionID, text, "structured")
 	}
 
-	// SDK handles accept JSON messages — skip PTY line-ending normalization.
+	// SDK handles accept JSON messages 鈥?skip PTY line-ending normalization.
 	if _, isSDK := s.Exec.(*SDKExecutionHandle); isSDK {
 		return m.writeSDKInput(s, sessionID, text, "sdk")
 	}
 
-	// Codex SDK sessions — write prompt text directly, echo to output.
+	// Codex SDK sessions 鈥?write prompt text directly, echo to output.
 	if _, isCodex := s.Exec.(*CodexSDKExecutionHandle); isCodex {
 		return m.writeSDKInput(s, sessionID, text, "codex")
-	}
-
-	// Gemini ACP sessions — Write() handles echo internally via outputCh,
-	// so we only need to skip PTY normalization and call Write directly.
-	if _, isACP := s.Exec.(*GeminiACPExecutionHandle); isACP {
-		m.app.log(fmt.Sprintf("[remote-write-gemini-acp] session=%s, len=%d, text=%q",
-			sessionID, len(text), text))
-		err := s.Exec.Write([]byte(text))
-		if err != nil {
-			m.app.log(fmt.Sprintf("[remote-write-gemini-acp] FAILED session=%s: %v", sessionID, err))
-		}
-		return err
 	}
 
 	// ConPTY on Windows requires "\r\n" (or "\r") to simulate pressing Enter.
@@ -867,8 +870,8 @@ func (m *RemoteSessionManager) WriteInput(sessionID, text string) error {
 	// ending the client sends.
 	normalized := strings.ReplaceAll(text, "\r\n", "\n")
 	normalized = strings.ReplaceAll(normalized, "\n", "\r\n")
-	m.app.log(fmt.Sprintf("[remote-write] session=%s, raw_len=%d, normalized_len=%d, normalized=%q, raw_output_count=%d",
-		sessionID, len(text), len(normalized), normalized, len(s.RawOutputLines)))
+	m.app.log(fmt.Sprintf("[remote-write] session=%s, raw_len=%d, normalized_len=%d, raw_output_count=%d",
+		sessionID, len([]rune(text)), len([]rune(normalized)), len(s.RawOutputLines)))
 	err := s.Exec.Write([]byte(normalized))
 	if err != nil {
 		m.app.log(fmt.Sprintf("[remote-write] FAILED session=%s: %v", sessionID, err))
@@ -881,8 +884,8 @@ func (m *RemoteSessionManager) WriteInput(sessionID, text string) error {
 // writeSDKInput writes text to an SDK-mode session (Claude or Codex) and
 // echoes the user input into the raw output and preview for display.
 func (m *RemoteSessionManager) writeSDKInput(s *RemoteSession, sessionID, text, tag string) error {
-	m.app.log(fmt.Sprintf("[remote-write-%s] session=%s, len=%d, text=%q",
-		tag, sessionID, len(text), text))
+	m.app.log(fmt.Sprintf("[remote-write-%s] session=%s, input_len=%d",
+		tag, sessionID, len([]rune(text))))
 
 	trimmed := strings.TrimSpace(text)
 
@@ -894,7 +897,7 @@ func (m *RemoteSessionManager) writeSDKInput(s *RemoteSession, sessionID, text, 
 	// Reject new user messages while the session is busy (LLM thinking or
 	// tool executing). Sending messages during an active turn can corrupt
 	// the Claude Code SDK's internal state, causing it to stop responding.
-	// AskUserQuestion answers are exempt — they are tool_result messages
+	// AskUserQuestion answers are exempt 鈥?they are tool_result messages
 	// that Claude Code expects while busy.
 	//
 	// Codex exec sessions are exempt from the busy check: Codex reads the
@@ -905,7 +908,7 @@ func (m *RemoteSessionManager) writeSDKInput(s *RemoteSession, sessionID, text, 
 	_, isCodexSession := s.Exec.(*CodexSDKExecutionHandle)
 	if pending == nil && currentStatus == SessionBusy && !isCodexSession {
 		m.app.log(fmt.Sprintf("[remote-write-%s] REJECTED session=%s: session is busy, cannot send new user message", tag, sessionID))
-		return fmt.Errorf("会话正忙，请等待当前操作完成后再发送新消息 (session is busy)")
+		return fmt.Errorf("浼氳瘽姝ｅ繖锛岃绛夊緟褰撳墠鎿嶄綔瀹屾垚鍚庡啀鍙戦€佹柊娑堟伅 (session is busy)")
 	}
 
 	markWaitingInputSubmitted := func(currentTask string) {
@@ -963,7 +966,7 @@ func (m *RemoteSessionManager) writeSDKInput(s *RemoteSession, sessionID, text, 
 func (m *RemoteSessionManager) echoUserInput(s *RemoteSession, sessionID, text string) {
 	displayText := strings.TrimSpace(text)
 	if displayText != "" {
-		echoLine := fmt.Sprintf("❯ %s", displayText)
+		echoLine := fmt.Sprintf("鉂?%s", displayText)
 		s.mu.Lock()
 		s.RawOutputLines = append(s.RawOutputLines, "", echoLine, "")
 		s.Preview.PreviewLines = append(s.Preview.PreviewLines, "", echoLine, "")
@@ -1043,7 +1046,7 @@ func (m *RemoteSessionManager) WriteImageInput(sessionID string, img ImageTransf
 	}
 
 	// Echo image send into the raw output and preview so it appears in the terminal view.
-	echoLine := fmt.Sprintf("❯ 📷 [Image: %s]", img.MediaType)
+	echoLine := fmt.Sprintf("鉂?馃摲 [Image: %s]", img.MediaType)
 	s.mu.Lock()
 	s.RawOutputLines = append(s.RawOutputLines, "", echoLine, "")
 	s.Preview.PreviewLines = append(s.Preview.PreviewLines, "", echoLine, "")
@@ -1159,7 +1162,7 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 		s.mu.Lock()
 		if len(rawLines) > 0 {
 			if rawResult.IsScreenRefresh && len(rawLines) >= 5 {
-				// TUI screen redraw detected — replace the buffer so we
+				// TUI screen redraw detected 鈥?replace the buffer so we
 				// don't accumulate stale screen frames.
 				// Guard: only replace when the new chunk has >= 5 lines,
 				// avoiding spurious clears from stray cursor-home sequences.
@@ -1331,7 +1334,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 					return
 				case t := <-ticker.C:
 					elapsed := int(t.Sub(start).Seconds())
-					line := fmt.Sprintf("⏳ %s running... (%ds)", name, elapsed)
+					line := fmt.Sprintf("鈴?%s running... (%ds)", name, elapsed)
 					s.mu.Lock()
 					s.RawOutputLines = append(s.RawOutputLines, line)
 					if len(s.RawOutputLines) > 2000 {
@@ -1400,8 +1403,8 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 		}
 		afterCount := len(s.RawOutputLines)
 		if afterCount < beforeCount {
-			m.app.log(fmt.Sprintf("[sdk-stream-WARNING] session=%s raw_lines DECREASED: %d -> %d, text=%q",
-				s.ID, beforeCount, afterCount, text))
+			m.app.log(fmt.Sprintf("[sdk-stream-WARNING] session=%s raw_lines DECREASED: %d -> %d, text_len=%d",
+				s.ID, beforeCount, afterCount, len([]rune(text))))
 		}
 	}
 
@@ -1461,14 +1464,14 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 
 			text := string(chunk)
 
-			// New streaming output arrived — stop the busy ticker since
+			// New streaming output arrived 鈥?stop the busy ticker since
 			// the terminal is no longer blank.
 			stopBusyTicker()
 
-			// Always reset the stall timer — any output (even nudge echoes)
+			// Always reset the stall timer 鈥?any output (even nudge echoes)
 			// proves the tool is alive.
 			m.stallDetector.ResetTimer(s.ID, len(text) > 0)
-			// Reset the busy idle timer too — streaming output means the
+			// Reset the busy idle timer too 鈥?streaming output means the
 			// tool is actively working, not stuck.
 			if busyIdleTimerCh != nil {
 				if !busyIdleTimer.Stop() {
@@ -1479,12 +1482,11 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				}
 				busyIdleTimer.Reset(busyIdleTimeout)
 			}
-			// Resume stall monitoring if it was paused during thinking —
-			// streaming output means the LLM has finished thinking and is
+			// Resume stall monitoring if it was paused during thinking 鈥?			// streaming output means the LLM has finished thinking and is
 			// now producing content, so stall detection should be active.
 			m.stallDetector.ResumeMonitoring(s.ID)
 
-			// Filter nudge echoes — when the stall detector sends a nudge,
+			// Filter nudge echoes 鈥?when the stall detector sends a nudge,
 			// the tool may echo it back. Strip those lines to avoid clutter.
 			text = m.filterNudgeEchoLines(s.ID, text)
 			if text == "" {
@@ -1496,12 +1498,12 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			appendStreamText(text)
 			s.mu.Unlock()
 
-			// Accumulate text for preview pipeline — only send complete
+			// Accumulate text for preview pipeline 鈥?only send complete
 			// lines (containing \n) to avoid fragmenting words/characters
 			// into separate preview lines that get joined with spaces.
 			previewAccum += text
 			if !strings.Contains(text, "\n") {
-				// No complete line yet — skip pipeline processing.
+				// No complete line yet 鈥?skip pipeline processing.
 				// Update timestamp and notify UI of raw line changes.
 				s.mu.Lock()
 				s.UpdatedAt = time.Now()
@@ -1568,8 +1570,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 					sessionStarted = true
 					initTimer.Stop()    // Cancel the deadlock-breaker timer
 					initTimeoutCh = nil // Prevent select from spinning on fired timer
-					// SDK init means the tool is ready for user input —
-					// transition directly to waiting_input so maclaw
+					// SDK init means the tool is ready for user input 鈥?					// transition directly to waiting_input so maclaw
 					// (and the mobile PWA) see the session as interactive
 					// immediately, instead of lingering in "running/starting".
 					s.Status = SessionWaitingInput
@@ -1599,7 +1600,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 							evt := buildSDKToolUseEvent(s, block)
 							s.Events = appendRecentEvents(s.Events, evt, maxRecentImportantEvents)
 							eventsToSync = append(eventsToSync, evt)
-							// Track block.ID → EventID for coalescer completion
+							// Track block.ID 鈫?EventID for coalescer completion
 							if block.ID != "" {
 								toolUseToEventID[block.ID] = evt.EventID
 							}
@@ -1669,7 +1670,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 						})
 					}
 					// Notify coalescer that tool calls completed, enabling
-					// merged "tool X ✓" events for fast tool calls.
+					// merged "tool X 鉁? events for fast tool calls.
 					for _, block := range msg.Message.Content {
 						if block.Type == "tool_result" && block.ToolUseID != "" {
 							if eid, ok := toolUseToEventID[block.ToolUseID]; ok {
@@ -1724,12 +1725,12 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			// Emit code file events for the code preview panel.
 			m.emitCodeFileEvents(s, eventsToSync)
 
-			// Stall detector integration (outside s.mu lock — StallDetector has its own lock)
+			// Stall detector integration (outside s.mu lock 鈥?StallDetector has its own lock)
 			switch msg.Type {
 			case "assistant":
 				updateThinking(true)
 				m.stallDetector.StartMonitoring(s.ID, s.Exec, s.Tool)
-				// Pause stall detection during thinking phase — the LLM may
+				// Pause stall detection during thinking phase 鈥?the LLM may
 				// take minutes to respond via slow API proxies, and no
 				// streaming output is expected during thinking. Without this
 				// pause, the stall detector fires an interrupt that kills
@@ -1741,7 +1742,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				if lastToolName != "" {
 					startBusyTicker(lastToolName)
 				}
-				// Arm the busy idle timer — if no result message arrives
+				// Arm the busy idle timer 鈥?if no result message arrives
 				// within busyIdleTimeout, auto-degrade to waiting_input.
 				if !busyIdleTimer.Stop() {
 					select {
@@ -1752,9 +1753,9 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				busyIdleTimer.Reset(busyIdleTimeout)
 				busyIdleTimerCh = busyIdleTimer.C
 			case "user":
-				// Tool result arrived — stop the busy progress ticker.
+				// Tool result arrived 鈥?stop the busy progress ticker.
 				stopBusyTicker()
-				// Reset the busy idle timer — tool_result means the session
+				// Reset the busy idle timer 鈥?tool_result means the session
 				// is actively processing (tool completed, next step coming).
 				if busyIdleTimerCh != nil {
 					if !busyIdleTimer.Stop() {
@@ -1770,7 +1771,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				// updateThinking is a no-op here but kept for symmetry.
 				stopBusyTicker()
 				m.stallDetector.StopMonitoring(s.ID)
-				// Disarm the busy idle timer — result received normally.
+				// Disarm the busy idle timer 鈥?result received normally.
 				if !busyIdleTimer.Stop() {
 					select {
 					case <-busyIdleTimer.C:
@@ -1800,7 +1801,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			comp := s.Permissions.HandleRequest(permReq)
 
 			approved := comp.Decision == PermissionApproved || comp.Decision == PermissionApprovedForSession
-			m.app.log(fmt.Sprintf("[sdk-control] session=%s, request_id=%s, tool=%s — decision=%s",
+			m.app.log(fmt.Sprintf("[sdk-control] session=%s, request_id=%s, tool=%s 鈥?decision=%s",
 				s.ID, req.RequestID, req.Request.ToolName, comp.Decision))
 			_ = sdkHandle.RespondToControlRequest(req.RequestID, approved, req.Request.Input)
 
@@ -1820,7 +1821,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				s.Status = SessionWaitingInput
 				s.Summary.Status = SessionWaitingInput.String()
 				s.Summary.WaitingForUser = true
-				s.Summary.SuggestedAction = "编程工具长时间无响应，已自动解锁。可发送新指令或终止会话"
+				s.Summary.SuggestedAction = "Coding tool has been idle for a long time; session unlocked. Send a new instruction or stop the session."
 				s.Summary.UpdatedAt = time.Now().Unix()
 				snap := s.Summary
 				s.mu.Unlock()
@@ -1887,7 +1888,7 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 		text := string(chunk)
 
 		// Mark session as running on first output. Codex is one-shot
-		// (codex exec) — it runs the task and exits, so "running" is
+		// (codex exec) 鈥?it runs the task and exits, so "running" is
 		// the correct state (it doesn't wait for user input).
 		if !sessionStarted {
 			sessionStarted = true
@@ -1905,7 +1906,7 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 			m.updateTraceFromSummary(s, snap)
 		}
 
-		// Detect Codex waiting for stdin input — this means the process
+		// Detect Codex waiting for stdin input 鈥?this means the process
 		// is ready to receive a prompt, NOT that it's busy working.
 		// Without this, the summary reducer's "reading" keyword match
 		// would set the status to SessionBusy, blocking WriteInput.
@@ -1914,7 +1915,7 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 			s.Status = SessionWaitingInput
 			s.Summary.Status = SessionWaitingInput.String()
 			s.Summary.WaitingForUser = true
-			s.Summary.CurrentTask = "Codex ready — waiting for prompt"
+			s.Summary.CurrentTask = "Codex ready 鈥?waiting for prompt"
 			s.Summary.SuggestedAction = "Send the task instruction to start working"
 			s.Summary.UpdatedAt = time.Now().Unix()
 			snap := s.Summary
@@ -1931,7 +1932,7 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 			gotRealOutput = true
 		}
 
-		// Codex emits complete lines — split and append directly.
+		// Codex emits complete lines 鈥?split and append directly.
 		lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 		s.mu.Lock()
 		appendRawOutputLines(s, lines)
@@ -1987,166 +1988,16 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 		m.app.emitRemoteStateChanged()
 	}
 
-	// `codex exec` is one-shot — the process exits after the output channel
+	// `codex exec` is one-shot 鈥?the process exits after the output channel
 	// closes.  The exit loop (runExitLoop) handles the final status transition,
 	// so we don't set SessionWaitingInput here.
-}
-
-// runGeminiACPOutputLoop handles output for Gemini ACP sessions.
-// Gemini ACP emits pre-formatted text on Output() (no ANSI), so the
-// pipeline works like the generic loop.  Additionally, this loop tracks
-// session state transitions based on ACP-specific markers emitted by
-// the GeminiACPExecutionHandle.
-func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
-	defer func() {
-		if r := recover(); r != nil {
-			m.app.log(fmt.Sprintf("[gemini-acp-output-panic] session=%s recovered: %v", s.ID, r))
-		}
-	}()
-	acpHandle, ok := s.Exec.(*GeminiACPExecutionHandle)
-	if !ok {
-		m.runOutputLoop(s)
-		return
-	}
-
-	pipeline := m.pipelineFactory()
-	output := acpHandle.Output()
-	sessionStarted := false
-
-	for chunk := range output {
-		text := string(chunk)
-
-		// Mark session as ready on first output. The ACP handshake
-		// (initialize + session/new) completes inside Start(), so the
-		// first output line means the tool is ready for user input.
-		if !sessionStarted {
-			sessionStarted = true
-			s.mu.Lock()
-			s.Status = SessionWaitingInput
-			s.Summary.Status = SessionWaitingInput.String()
-			s.Summary.WaitingForUser = true
-			s.Summary.Severity = "info"
-			s.Summary.CurrentTask = "Gemini ACP session started"
-			s.Summary.SuggestedAction = "Send the first instruction to start working"
-			s.Summary.UpdatedAt = time.Now().Unix()
-			snap := s.Summary
-			s.mu.Unlock()
-			if m.hubClient != nil {
-				_ = m.hubClient.SendSessionSummary(snap)
-			}
-			m.updateTraceFromSummary(s, snap)
-		}
-
-		// Detect state transitions from ACP markers.
-		trimmedText := strings.TrimSpace(text)
-		if strings.HasPrefix(trimmedText, "❯ ") {
-			// User input echo — session is now busy processing
-			s.mu.Lock()
-			s.Status = SessionBusy
-			s.Summary.Status = SessionBusy.String()
-			s.Summary.WaitingForUser = false
-			s.Summary.UpdatedAt = time.Now().Unix()
-			snap := s.Summary
-			s.mu.Unlock()
-			if m.hubClient != nil {
-				_ = m.hubClient.SendSessionSummary(snap)
-			}
-			m.updateTraceFromSummary(s, snap)
-			m.stallDetector.StartMonitoring(s.ID, s.Exec, s.Tool)
-		} else if isGeminiACPTurnCompleteLine(trimmedText) {
-			// Prompt completed — session is waiting for next input
-			s.mu.Lock()
-			s.Status = SessionWaitingInput
-			s.Summary.Status = SessionWaitingInput.String()
-			s.Summary.WaitingForUser = true
-			s.Summary.UpdatedAt = time.Now().Unix()
-			// Analyze completion level (pure function, safe under s.mu)
-			level := m.completionAnalyzer.Analyze(s.RawOutputLines, s.Tool, nil)
-			s.CompletionLevel = level
-			if level == CompletionIncomplete {
-				s.AutoContinueCount++
-			}
-			snap := s.Summary
-			s.mu.Unlock()
-			if m.hubClient != nil {
-				_ = m.hubClient.SendSessionSummary(snap)
-			}
-			m.updateTraceFromSummary(s, snap)
-			m.stallDetector.StopMonitoring(s.ID)
-		} else if classifyRemoteSessionOutputMarker(trimmedText) == remoteSessionOutputMarkerGeminiPromptError {
-			// Prompt failed — session is waiting for next input
-			s.mu.Lock()
-			s.Status = SessionWaitingInput
-			s.Summary.Status = SessionWaitingInput.String()
-			s.Summary.WaitingForUser = true
-			s.Summary.Severity = "warn"
-			s.Summary.LastResult = trimmedText
-			s.Summary.UpdatedAt = time.Now().Unix()
-			snap := s.Summary
-			s.mu.Unlock()
-			if m.hubClient != nil {
-				_ = m.hubClient.SendSessionSummary(snap)
-			}
-			m.updateTraceFromSummary(s, snap)
-		} else if classifyRemoteSessionOutputMarker(trimmedText) == remoteSessionOutputMarkerGeminiSessionError {
-			// Session-level error from Gemini
-			s.mu.Lock()
-			s.Summary.Severity = "warn"
-			s.Summary.LastResult = trimmedText
-			s.Summary.UpdatedAt = time.Now().Unix()
-			snap := s.Summary
-			s.mu.Unlock()
-			if m.hubClient != nil {
-				_ = m.hubClient.SendSessionSummary(snap)
-			}
-			m.updateTraceFromSummary(s, snap)
-		}
-
-		// Append to raw output lines — filter nudge echoes first.
-		lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
-		filtered := make([]string, 0, len(lines))
-		for _, line := range lines {
-			if !m.stallDetector.IsNudgeEcho(s.ID, line) {
-				filtered = append(filtered, line)
-			}
-		}
-
-		// Always reset the stall timer — even nudge echoes prove the tool
-		// is alive and responding.
-		m.stallDetector.ResetTimer(s.ID, true)
-
-		if len(filtered) == 0 {
-			continue
-		}
-		s.mu.Lock()
-		appendRawOutputLines(s, filtered)
-		s.mu.Unlock()
-
-		programLogger.WriteLines(s.ID, s.Tool, filtered)
-
-		filteredText := strings.Join(filtered, "\n") + "\n"
-		result := pipeline.Consume(s, []byte(filteredText))
-
-		s.mu.Lock()
-		applyOutputResult(s, result)
-		s.mu.Unlock()
-
-		m.syncTraceFromOutputResult(s, result)
-		syncOutputResult(m.hubClient, result)
-
-		// Emit code file events for the code preview panel.
-		m.emitCodeFileEvents(s, result.Events)
-
-		m.app.refreshPowerOptimizationState()
-		m.app.emitRemoteStateChanged()
-	}
 }
 
 // filterNudgeEchoLines removes lines that are echoes of stall-detector nudge
 // messages. Returns the filtered text; may return "" if all lines were echoes.
 func (m *RemoteSessionManager) filterNudgeEchoLines(sessionID, text string) string {
 	if !strings.Contains(text, "\n") {
-		// Single incomplete line — check as-is.
+		// Single incomplete line 鈥?check as-is.
 		if m.stallDetector.IsNudgeEcho(sessionID, text) {
 			return ""
 		}
@@ -2256,7 +2107,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	now := time.Now()
 	sessionDuration := now.Sub(s.CreatedAt)
 
-	log.Printf("[session-lifecycle] ◼ Session %s exiting: tool=%s, pid=%d, duration=%s, created_at=%s, exit_time=%s",
+	log.Printf("[session-lifecycle] 鈼?Session %s exiting: tool=%s, pid=%d, duration=%s, created_at=%s, exit_time=%s",
 		s.ID, s.Tool, s.PID, sessionDuration, s.CreatedAt.Format(time.RFC3339), now.Format(time.RFC3339))
 	if exit.Code != nil {
 		log.Printf("[session-lifecycle] session=%s: exit_code=%d", s.ID, *exit.Code)
@@ -2324,15 +2175,15 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 		if exit.Code != nil {
 			s.Summary.LastResult = fmt.Sprintf("Session exited with code %d", *exit.Code)
 			if *exit.Code != 0 {
-				// Structured sessions (Claude Code SDK, Gemini ACP, Codex, iFlow)
-				// normally exit with code 1 — treat this as a benign exit, not a warning.
+				// Structured sessions (Claude Code SDK, Codex, iFlow)
+				// normally exit with code 1 鈥?treat this as a benign exit, not a warning.
 				if s.isStructuredSession() && *exit.Code == 1 {
 					s.Summary.Severity = "info"
 				} else {
 					s.Summary.Severity = "warn"
 				}
 				if stderrHint != "" {
-					s.Summary.LastResult += " — " + stderrHint
+					s.Summary.LastResult += " 鈥?" + stderrHint
 				}
 				if s.Summary.Severity == "warn" {
 					s.Summary.SuggestedAction = "Check tool installation and configuration, then retry"
@@ -2406,12 +2257,12 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 		_ = m.hubClient.SendSessionClosed(s)
 	}
 
-	// --- Harness: FeedbackInjector — consume session events for next-session feedback ---
+	// --- Harness: FeedbackInjector 鈥?consume session events for next-session feedback ---
 	// Note: feedbackInjector uses corelib/remote.ImportantEvent which differs
 	// from the GUI's local ImportantEvent type. Integration deferred until
 	// the types are unified or an adapter is added.
 
-	// --- Harness: FailureLearner — record errors for constraint generation ---
+	// --- Harness: FailureLearner 鈥?record errors for constraint generation ---
 	if s.ProjectPath != "" && (exit.Err != nil || exitStatus == SessionError) {
 		errDetail := firstNonEmptyTraceText(summarySnap.LastResult, summarySnap.ProgressSummary)
 		if errDetail != "" {
@@ -2426,7 +2277,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 		}
 	}
 
-	// --- Harness: HarnessGate — validate changed files against project constraints ---
+	// --- Harness: HarnessGate 鈥?validate changed files against project constraints ---
 	if exitStatus == SessionExited && s.ProjectPath != "" && len(summarySnap.ImportantFiles) > 0 {
 		gate := security.NewHarnessGate(nil, s.ProjectPath)
 		if err := gate.LoadConstraints(s.ProjectPath); err == nil {
@@ -2441,27 +2292,32 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	// Trigger experience extraction for successfully completed sessions
 	// (exited with code 0). Failed sessions are poor candidates for
 	// reusable patterns.
-	// Structured sessions (Claude Code, Gemini, Codex, iFlow) normally
-	// exit with code 1, so treat exit code ≤ 1 as success for them.
+	// Structured sessions (Claude Code, Codex, iFlow) normally
+	// exit with code 1, so treat exit code 鈮?1 as success for them.
 	exitOK := exitStatus == SessionExited && exitCodeVal != nil &&
 		(*exitCodeVal == 0 || (s.isStructuredSession() && *exitCodeVal == 1))
-	if exitOK {
-		m.app.ensureExperienceExtractor()
-		if m.app.experienceExtractor != nil {
-			go func() {
+	if exitOK && m.app != nil {
+		go func() {
+			m.app.ensureExperienceExtractor()
+			if m.app.experienceExtractor != nil {
 				_ = m.app.experienceExtractor.Extract(s)
-			}()
-		}
+			}
+		}()
 	}
 	// Save session checkpoint to memory store so the next session on the
 	// same project can resume where this one left off.
-	m.app.ensureSessionCheckpointer()
-	if m.app.sessionCheckpointer != nil {
+	if m.app != nil {
 		if strings.TrimSpace(m.app.testHomeDir) != "" {
-			_ = m.app.sessionCheckpointer.SaveCheckpoint(s)
+			m.app.ensureSessionCheckpointer()
+			if m.app.sessionCheckpointer != nil {
+				_ = m.app.sessionCheckpointer.SaveCheckpoint(s)
+			}
 		} else {
 			go func() {
-				_ = m.app.sessionCheckpointer.SaveCheckpoint(s)
+				m.app.ensureSessionCheckpointer()
+				if m.app.sessionCheckpointer != nil {
+					_ = m.app.sessionCheckpointer.SaveCheckpoint(s)
+				}
 			}()
 		}
 	}
@@ -2504,7 +2360,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 		m.app.codeEventEmitter.EmitSessionEnd(s.ID)
 	}
 
-	log.Printf("[session-lifecycle] ◼ Session %s cleanup complete: tool=%s, final_status=%s, output_lines=%d, duration=%s",
+	log.Printf("[session-lifecycle] 鈼?Session %s cleanup complete: tool=%s, final_status=%s, output_lines=%d, duration=%s",
 		s.ID, s.Tool, exitStatus, len(traceTailLines), sessionDuration)
 
 	m.app.refreshPowerOptimizationState()

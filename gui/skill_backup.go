@@ -216,6 +216,9 @@ func writeSkillsZipContents(zw *zip.Writer, skills []corelib.NLSkillEntry, dedup
 }
 
 func (e *SkillExecutor) scanSkillBeforeArchiveExport(entry corelib.NLSkillEntry) error {
+	if e != nil && e.app != nil && e.app.isRiskGuardrailOffMode() {
+		return nil
+	}
 	report := cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), &entry, entry.SkillDir, nil)
 	if report == nil {
 		if e != nil && e.app != nil && !e.app.skillInstallMissingScanShouldBlock() {
@@ -315,13 +318,23 @@ func (e *SkillExecutor) RestoreSkills(zipPath string) (*RestoreReport, error) {
 			continue
 		}
 
+		if isShellBrowserAutomationSkillEntry(skill) {
+			report.Failed++
+			report.Details = append(report.Details, fmt.Sprintf("%s: %s", skill.Name, browserAutomationSkillRejectedError(skill.Name)))
+			continue
+		}
+
 		if existingNames[skill.Name] {
 			report.Skipped++
 			report.Details = append(report.Details, fmt.Sprintf("%s: skipped (duplicate)", skill.Name))
 			continue
 		}
 
-		scanReport := cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), &skill, skill.SkillDir, nil)
+		skippedRiskScan := e.app != nil && e.app.isRiskGuardrailOffMode()
+		var scanReport *cskill.ScanReport
+		if !skippedRiskScan {
+			scanReport = cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), &skill, skill.SkillDir, nil)
+		}
 		missingScanBlocked := scanReport == nil && (e.app == nil || e.app.skillInstallMissingScanShouldBlock())
 		riskyScanBlocked := scanReport != nil && e.app != nil && e.app.skillInstallScanShouldBlock(scanReport)
 		legacyRiskyScanBlocked := false
@@ -336,9 +349,9 @@ func (e *SkillExecutor) RestoreSkills(zipPath string) (*RestoreReport, error) {
 			report.Details = append(report.Details, fmt.Sprintf("%s: blocked by security scan (level=%s): %s", skill.Name, level, summary))
 			continue
 		}
-		if scanReport == nil {
+		if scanReport == nil && !skippedRiskScan {
 			report.Details = append(report.Details, fmt.Sprintf("%s: security scan unavailable; restored by current policy", skill.Name))
-		} else if scanReport.NeedsUserReview() {
+		} else if scanReport != nil && scanReport.NeedsUserReview() {
 			report.Details = append(report.Details, fmt.Sprintf("%s: security scan recorded risk (level=%s); restored by current policy", skill.Name, scanReport.FinalLevel))
 		}
 

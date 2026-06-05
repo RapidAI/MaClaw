@@ -28,7 +28,7 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 		return askUserContext, freshTask, false
 	}
 	tcDecision := h.resolveTaskContext(
-		msg.UserID, trimmed, entries,
+		msg.CancelCtx, msg.UserID, trimmed, entries,
 		hasPendingTaskAnswer, false, false,
 	)
 	switch tcDecision.Action {

@@ -163,7 +163,7 @@ func printUsage() {
 	cliName := strings.ToLower(brandName) + "-tui"
 
 	// 构建 launch 命令的工具列表描述
-	launchTools := "claude/codex/gemini/opencode/iflow/kilo"
+	launchTools := "claude/codex/opencode/iflow/kilo"
 	for _, t := range brand.Current().ExtraTools {
 		launchTools += "/" + t.Name
 	}

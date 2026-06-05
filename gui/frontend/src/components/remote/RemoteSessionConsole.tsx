@@ -409,7 +409,7 @@ export function RemoteSessionConsole(props: Props) {
     const sessionClosed = TERMINAL_STATUSES.has(status);
     const disabled = sessionClosed || sending;
     const isSDK = session.execution_mode === "sdk";
-    const isStructured = isSDK || session.execution_mode === "gemini-acp" || session.execution_mode === "codex";
+    const isStructured = isSDK || session.execution_mode === "codex";
     const pendingQuestion = session.summary?.pending_question;
 
     // Merge incoming lines with the local cache — content only grows.
@@ -514,7 +514,7 @@ export function RemoteSessionConsole(props: Props) {
     const handleSendRaw = useCallback(async () => {
         const text = inputValueRef.current;
         if (!text || sending) return;
-        // For structured sessions (SDK, Gemini ACP, Codex), fall back to normal send
+        // For structured sessions (SDK, Codex), fall back to normal send
         // to avoid sending each character as a separate prompt.
         if (isStructured) {
             handleSend();

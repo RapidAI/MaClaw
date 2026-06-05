@@ -29,6 +29,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
@@ -53,36 +54,38 @@ type App struct {
 	watcher         *fsnotify.Watcher
 
 	// Managers to reduce struct complexity
-	managers            *AppManagers
-	testHomeDir         string // For testing purposes
-	downloadCancelers   map[string]context.CancelFunc
-	downloadMutex       sync.Mutex
-	skillInstallConfirm sync.Map
-	IsInitMode          bool
-	IsAutoStart         bool
-	installingNode      bool      // Flag to prevent concurrent Node.js installation
-	installingGit       bool      // Flag to prevent concurrent Git installation
-	nodeInstallDone     chan bool // Channel to signal Node.js installation completion
-	installMutex        sync.Mutex
-	toolInstallLocks    map[string]bool // Track which tools are currently being installed
-	toolLockMutex       sync.Mutex      // Mutex for toolInstallLocks map
-	remoteSessions      *RemoteSessionManager
-	browserSessions     *BrowserAgentManager
-	powerStateMutex     sync.Mutex
-	powerStateProcess   *exec.Cmd
-	screenDimCancel     context.CancelFunc // cancels the screen-dim goroutine
-	workstationCancel   context.CancelFunc // cancels the workstation-mode anti-lock goroutine
-	mcpRegistry         *MCPRegistry
-	localMCPManager     *LocalMCPManager
-	skillExecutor       *SkillExecutor
-	cachedSkillScanner  *CachedSkillScanner
-	skillRunner         *SkillRunner
-	sessionStarter      *CodingSessionStarter
-	skillMarketClient   *SkillMarketClient
-	skillLifecycle      *SkillLifecycleManager
-	gossipClient        *GossipClient
-	autoUploadTrigger   *AutoUploadTrigger
-	gossipAutoPublish   *AutoPublishTrigger
+	managers                        *AppManagers
+	testHomeDir                     string // For testing purposes
+	downloadCancelers               map[string]context.CancelFunc
+	downloadMutex                   sync.Mutex
+	skillInstallConfirm             sync.Map
+	IsInitMode                      bool
+	IsAutoStart                     bool
+	installingNode                  bool      // Flag to prevent concurrent Node.js installation
+	installingGit                   bool      // Flag to prevent concurrent Git installation
+	nodeInstallDone                 chan bool // Channel to signal Node.js installation completion
+	installMutex                    sync.Mutex
+	toolInstallLocks                map[string]bool // Track which tools are currently being installed
+	toolLockMutex                   sync.Mutex      // Mutex for toolInstallLocks map
+	remoteSessions                  *RemoteSessionManager
+	browserSessions                 *BrowserAgentManager
+	powerStateMutex                 sync.Mutex
+	powerStateProcess               *exec.Cmd
+	screenDimCancel                 context.CancelFunc // cancels the screen-dim goroutine
+	workstationCancel               context.CancelFunc // cancels the workstation-mode anti-lock goroutine
+	mcpRegistry                     *MCPRegistry
+	localMCPManager                 *LocalMCPManager
+	skillExecutor                   *SkillExecutor
+	cachedSkillScanner              *CachedSkillScanner
+	skillRunner                     *SkillRunner
+	sessionStarter                  *CodingSessionStarter
+	skillMarketClient               *SkillMarketClient
+	skillMarketAutoLoginRunning     atomic.Bool
+	skillMarketAutoLoginNextAttempt atomic.Value // stores time.Time; throttles failed machine-login retries
+	skillLifecycle                  *SkillLifecycleManager
+	gossipClient                    *GossipClient
+	autoUploadTrigger               *AutoUploadTrigger
+	gossipAutoPublish               *AutoPublishTrigger
 	// Maclaw capability evolution components
 	riskAssessor          *RiskAssessor
 	policyEngine          *PolicyEngine
@@ -115,76 +118,84 @@ type App struct {
 	oauthMu               sync.Mutex
 	oauthCancel           context.CancelFunc
 	// Smart session components
-	memoryStore                *memory.Store
-	configManager              *ConfigManager
-	templateManager            *remote.SessionTemplateManager
-	contextResolver            *SessionContextResolver
-	sessionPrecheck            *SessionPrecheck
-	conversationArchiver       *ConversationArchiver
-	sessionCheckpointer        *SessionCheckpointer
-	startupFeedback            *SessionStartupFeedback
-	imHandler                  *IMMessageHandler
-	ioRelay                    *SessionIORelay
-	aiConversationMemory       *agent.ConversationMemory
-	aiConfirmationStore        *aiConfirmationStore
-	swarmOrchestrator          *swarm.SwarmOrchestrator
-	memoryCompressor           *MemoryCompressor
-	memoryMaintenance          *memory.Maintenance
-	memPipeline                *memory.Pipeline
-	memoryPipelineDebounce     time.Duration
-	compressorMu               sync.Mutex // guards lazy creation of memoryCompressor
-	scheduledTaskManager       *scheduler.Manager
-	remoteInfraOnce            sync.Once   // guards ensureRemoteInfra initialization
-	remoteInfraReady           atomic.Bool // fast-path check for ensureRemoteInfra
-	warmupDone                 atomic.Bool // true after WarmupTools + WarmupHTTPConn complete
-	mcpAutoDiscovery           *MCPAutoDiscovery
-	llmPromptCache             *corelib.LLMPromptResponseCache
-	llmPromptCacheDir          string
-	llmPromptCacheMu           sync.Mutex
-	toolVersionCache           *ToolVersionCache
-	securityFirewall           *SecurityFirewall
-	securityRiskAnalyzer       *SecurityRiskAnalyzer
-	hubSecurityCache           hubSecurityCache
-	digitalEmployeeAuthCache   digitalEmployeeAuthorizationCache
-	capabilitySyncRunning      atomic.Bool
-	capabilitySyncNextAttempt  atomic.Value // stores time.Time; throttles heartbeat-triggered managed sync retries
-	hubMarketplaceUnsupported  atomic.Bool  // capability discovery: hub doesn't have marketplace API
-	hubMarketplace404URL       atomic.Value // stores the hub URL (string) that returned 404
-	managedDeploymentIDs       sync.Map     // capability_ref (string) -> true; cached from last sync
-	contextBridge              *ContextBridge
-	aiTrace                    *AITraceService
-	taskOrchestrator2          *TaskOrchestrator2
-	qqBotGateway               *qqBotGatewayManager
-	telegramGateway            *telegramGatewayManager
-	weixinGateway              *weixinGatewayManager
-	lansengerGateway           *lansengerGatewayManager
-	thirdPartyGateway          *thirdPartyGatewayManager
-	passthroughRegistry        *PassthroughRegistry
-	iworkerGoalWatch           *IWorkerGoalWatchService
-	iworkerGoalWatchMu         sync.Mutex
-	configMu                   sync.Mutex
-	configCache                corelib.AppConfig
-	configCacheValid           bool
-	tokenUsageMu               sync.Mutex         // guards AccumulateLLMTokenUsage
-	ssoPolling                 *ssoPollingSession // active embedded SSO polling session
-	ssoPollingMu               sync.Mutex         // guards ssoPolling
-	interactionInfraOnce       sync.Once          // guards ensureInteractionInfra initialization
-	interactionInfraDone       atomic.Bool
-	aiAssistantReadyAt         atomic.Int64
-	aiAssistantFirstChatLogged atomic.Bool
-	docGenerator               *swarm.SwarmDocGenerator // cached PDF doc generator
-	workflowEngine             *workflow.WorkflowEngine // maclaw agent workflow engine (corelib/workflow)
-	workflowArtifactSaver      *deferredArtifactSaver   // shared artifact saver for OwnerID injection
-	workflowDisabled           atomic.Bool              // true when user disables workflow in settings; checked by getWorkflowEngine()
-	steeringStore              *steering.Store          // declarative rule injection (corelib/steering)
-	codeEventEmitter           *CodeEventEmitter        // emits code file events to frontend for code preview panel
-	deepCrawlMu                sync.Mutex               // guards deepCrawlCancel
-	deepCrawlCancel            context.CancelFunc       // cancels active deep crawl session
-	deepCrawlCtx               context.Context          // active deep crawl context (used to identify ownership)
-	deepCrawlMode              string                   // active deep crawl owner: crawl or preview
-	floatingAssistant          *FloatingAssistantManager
-	floatingAssistantMu        sync.Mutex
-	agentViewEmissionSeq       atomic.Int64
+	memoryStore                       *memory.Store
+	configManager                     *ConfigManager
+	templateManager                   *remote.SessionTemplateManager
+	contextResolver                   *SessionContextResolver
+	sessionPrecheck                   *SessionPrecheck
+	conversationArchiver              *ConversationArchiver
+	sessionCheckpointer               *SessionCheckpointer
+	startupFeedback                   *SessionStartupFeedback
+	imHandler                         *IMMessageHandler
+	ioRelay                           *SessionIORelay
+	aiConversationMemory              *agent.ConversationMemory
+	aiConfirmationStore               *aiConfirmationStore
+	swarmOrchestrator                 *swarm.SwarmOrchestrator
+	memoryCompressor                  *MemoryCompressor
+	memoryMaintenance                 *memory.Maintenance
+	memPipeline                       *memory.Pipeline
+	memoryPipelineDebounce            time.Duration
+	memoryPipelineScheduleMu          sync.Mutex
+	memoryPipelineTimer               *time.Timer
+	memoryPipelineScheduleSeq         uint64
+	memoryPipelineRunCancel           context.CancelFunc
+	memoryPipelineRunSeq              uint64
+	memoryPipelineRunActive           bool
+	foregroundAgentLoops              atomic.Int64
+	compressorMu                      sync.Mutex // guards lazy creation of memoryCompressor
+	scheduledTaskManager              *scheduler.Manager
+	remoteInfraOnce                   sync.Once   // guards ensureRemoteInfra initialization
+	remoteInfraReady                  atomic.Bool // fast-path check for ensureRemoteInfra
+	warmupDone                        atomic.Bool // true after WarmupTools + WarmupHTTPConn complete
+	mcpAutoDiscovery                  *MCPAutoDiscovery
+	llmPromptCache                    *corelib.LLMPromptResponseCache
+	llmPromptCacheDir                 string
+	llmPromptCacheMu                  sync.Mutex
+	toolVersionCache                  *ToolVersionCache
+	securityFirewall                  *SecurityFirewall
+	securityRiskAnalyzer              *SecurityRiskAnalyzer
+	hubSecurityCache                  hubSecurityCache
+	digitalEmployeeAuthCache          digitalEmployeeAuthorizationCache
+	hubViewerTokenRecoveryNextAttempt atomic.Value // stores time.Time; throttles failed viewer-token recovery
+	capabilitySyncRunning             atomic.Bool
+	capabilitySyncNextAttempt         atomic.Value // stores time.Time; throttles heartbeat-triggered managed sync retries
+	hubMarketplaceUnsupported         atomic.Bool  // capability discovery: hub doesn't have marketplace API
+	hubMarketplace404URL              atomic.Value // stores the hub URL (string) that returned 404
+	managedDeploymentIDs              sync.Map     // capability_ref (string) -> true; cached from last sync
+	contextBridge                     *ContextBridge
+	aiTrace                           *AITraceService
+	taskOrchestrator2                 *TaskOrchestrator2
+	qqBotGateway                      *qqBotGatewayManager
+	telegramGateway                   *telegramGatewayManager
+	weixinGateway                     *weixinGatewayManager
+	lansengerGateway                  *lansengerGatewayManager
+	thirdPartyGateway                 *thirdPartyGatewayManager
+	passthroughRegistry               *PassthroughRegistry
+	iworkerGoalWatch                  *IWorkerGoalWatchService
+	iworkerGoalWatchMu                sync.Mutex
+	configMu                          sync.Mutex
+	configCache                       corelib.AppConfig
+	configCacheValid                  bool
+	tokenUsageMu                      sync.Mutex         // guards AccumulateLLMTokenUsage
+	ssoPolling                        *ssoPollingSession // active embedded SSO polling session
+	ssoPollingMu                      sync.Mutex         // guards ssoPolling
+	interactionInfraOnce              sync.Once          // guards ensureInteractionInfra initialization
+	interactionInfraDone              atomic.Bool
+	aiAssistantReadyAt                atomic.Int64
+	aiAssistantFirstChatLogged        atomic.Bool
+	docGenerator                      *swarm.SwarmDocGenerator // cached PDF doc generator
+	workflowEngine                    *workflow.WorkflowEngine // maclaw agent workflow engine (corelib/workflow)
+	workflowArtifactSaver             *deferredArtifactSaver   // shared artifact saver for OwnerID injection
+	workflowDisabled                  atomic.Bool              // true when user disables workflow in settings; checked by getWorkflowEngine()
+	steeringStore                     *steering.Store          // declarative rule injection (corelib/steering)
+	codeEventEmitter                  *CodeEventEmitter        // emits code file events to frontend for code preview panel
+	deepCrawlMu                       sync.Mutex               // guards deepCrawlCancel
+	deepCrawlCancel                   context.CancelFunc       // cancels active deep crawl session
+	deepCrawlCtx                      context.Context          // active deep crawl context (used to identify ownership)
+	deepCrawlMode                     string                   // active deep crawl owner: crawl or preview
+	floatingAssistant                 *FloatingAssistantManager
+	floatingAssistantMu               sync.Mutex
+	agentViewEmissionSeq              atomic.Int64
 
 	// IM audit store (SQLite-backed IM message audit for review/export).
 	imAuditStore   *IMAuditStore
@@ -256,23 +267,11 @@ func (a *App) resolveExperienceProviderForAttribution() lifecycle.Provider {
 		}
 	}
 	if a.workflowEngine != nil {
-		for _, userID := range []string{desktopUserID, a.lastIMUserID()} {
-			if userID == "" {
-				continue
-			}
-			if ws := a.workflowEngine.GetActiveWorkflow(userID); ws != nil {
-				providers = append(providers, workflow.NewExperienceProvider(ws))
-			}
+		if ws := a.workflowEngine.GetActiveWorkflow(desktopUserID); ws != nil {
+			providers = append(providers, workflow.NewExperienceProvider(ws))
 		}
 	}
 	return lifecycle.NewCompositeProvider(providers...)
-}
-
-func (a *App) lastIMUserID() string {
-	if a == nil || a.imHandler == nil {
-		return ""
-	}
-	return a.imHandler.legacyLastUserID()
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.
@@ -567,7 +566,7 @@ func (a *App) ensureMemoryStore() {
 		a.memoryCompressor = compressor
 		a.compressorMu.Unlock()
 		a.memPipeline = maintenance.Pipeline()
-		maintenance.Start()
+		a.triggerMemoryPipelineSoon(a.memoryPipelineStartupDelay())
 		a.refreshMemoryEvolutionLLM()
 		// Load embedding model asynchronously so it doesn't block the first
 		// AI assistant message. Vector search will become available once
@@ -596,21 +595,185 @@ func (a *App) ensureMemoryPipeline() {
 	if a.memPipeline == nil {
 		return
 	}
-	a.memPipeline.Start()
+	a.triggerMemoryPipelineSoon(a.projectIndexMemoryDebounce())
 }
 
 func (a *App) projectIndexMemoryDebounce() time.Duration {
 	if a != nil && a.memoryPipelineDebounce > 0 {
 		return a.memoryPipelineDebounce
 	}
-	return 2 * time.Minute
+	return 10 * time.Minute
+}
+
+func (a *App) memoryPipelineStartupDelay() time.Duration {
+	if a != nil && a.memoryPipelineDebounce > 0 {
+		return a.memoryPipelineDebounce
+	}
+	return 10 * time.Minute
 }
 
 func (a *App) triggerMemoryPipelineSoon(delay time.Duration) {
 	if a == nil || a.memPipeline == nil {
 		return
 	}
-	a.memPipeline.TriggerSoon(delay)
+	if delay < 0 {
+		delay = 0
+	}
+	if a.memoryPipelineDebounce <= 0 && delay < 10*time.Minute {
+		delay = 10 * time.Minute
+	}
+	a.memoryPipelineScheduleMu.Lock()
+	a.memoryPipelineScheduleSeq++
+	seq := a.memoryPipelineScheduleSeq
+	if a.memoryPipelineTimer != nil {
+		a.memoryPipelineTimer.Stop()
+	}
+	a.memoryPipelineTimer = time.AfterFunc(delay, func() {
+		a.runMemoryPipelineWhenIdle(seq)
+	})
+	a.memoryPipelineScheduleMu.Unlock()
+	log.Printf("[agent-qos] schedule_memory_pipeline seq=%d delay=%s", seq, delay.Round(time.Millisecond))
+}
+
+func (a *App) runMemoryPipelineWhenIdle(seq uint64) {
+	if a == nil || a.memPipeline == nil {
+		return
+	}
+	if !a.isCurrentMemoryPipelineSchedule(seq) {
+		log.Printf("[agent-qos] skip_stale_memory_pipeline seq=%d", seq)
+		return
+	}
+	now := time.Now()
+	active := a.activeForegroundAgentLoops()
+	quietUntil := foregroundAgentQuietUntil("")
+	if active > 0 || quietUntil.After(now) {
+		retryDelay := 30 * time.Second
+		if quietDelay := time.Until(quietUntil); quietDelay > retryDelay {
+			retryDelay = quietDelay
+		}
+		log.Printf("[agent-qos] defer_memory_pipeline_until_idle seq=%d active=%d quiet_for=%s retry=%s", seq, active, time.Until(quietUntil).Round(time.Millisecond), retryDelay.Round(time.Millisecond))
+		a.rescheduleMemoryPipelineRun(seq, retryDelay)
+		return
+	}
+	if a.hasActiveMemoryPipelineRun() {
+		retryDelay := 30 * time.Second
+		log.Printf("[agent-qos] defer_memory_pipeline_run_active seq=%d retry=%s", seq, retryDelay.Round(time.Millisecond))
+		a.rescheduleMemoryPipelineRun(seq, retryDelay)
+		return
+	}
+	log.Printf("[agent-qos] run_memory_pipeline_idle seq=%d", seq)
+	ctx, cancel := context.WithCancel(context.Background())
+	a.memoryPipelineScheduleMu.Lock()
+	if a.memoryPipelineScheduleSeq != seq {
+		a.memoryPipelineScheduleMu.Unlock()
+		cancel()
+		log.Printf("[agent-qos] skip_stale_memory_pipeline_before_run seq=%d", seq)
+		return
+	}
+	a.memoryPipelineRunCancel = cancel
+	a.memoryPipelineRunSeq = seq
+	a.memoryPipelineRunActive = true
+	a.memoryPipelineScheduleMu.Unlock()
+	runSucceeded := false
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[agent-qos] memory_pipeline_panic seq=%d panic=%v", seq, r)
+		}
+		a.memoryPipelineScheduleMu.Lock()
+		if a.memoryPipelineRunSeq == seq {
+			a.memoryPipelineRunCancel = nil
+			a.memoryPipelineRunSeq = 0
+			a.memoryPipelineRunActive = false
+		}
+		a.memoryPipelineScheduleMu.Unlock()
+		cancel()
+		if !runSucceeded && a.isCurrentMemoryPipelineSchedule(seq) {
+			a.triggerMemoryPipelineSoon(a.projectIndexMemoryDebounce())
+		}
+	}()
+	a.memPipeline.RunOnce(ctx)
+	runSucceeded = true
+	if a.isCurrentMemoryPipelineSchedule(seq) {
+		a.triggerMemoryPipelineSoon(6 * time.Hour)
+	}
+}
+
+func (a *App) hasActiveMemoryPipelineRun() bool {
+	if a == nil {
+		return false
+	}
+	a.memoryPipelineScheduleMu.Lock()
+	defer a.memoryPipelineScheduleMu.Unlock()
+	return a.memoryPipelineRunActive
+}
+
+func (a *App) rescheduleMemoryPipelineRun(seq uint64, delay time.Duration) {
+	if a == nil {
+		return
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	a.memoryPipelineScheduleMu.Lock()
+	if a.memoryPipelineScheduleSeq == seq {
+		if a.memoryPipelineTimer != nil {
+			a.memoryPipelineTimer.Stop()
+		}
+		a.memoryPipelineTimer = time.AfterFunc(delay, func() {
+			a.runMemoryPipelineWhenIdle(seq)
+		})
+	}
+	a.memoryPipelineScheduleMu.Unlock()
+}
+
+func (a *App) cancelMemoryPipelineRun(reason string) bool {
+	if a == nil {
+		return false
+	}
+	a.memoryPipelineScheduleMu.Lock()
+	cancel := a.memoryPipelineRunCancel
+	if cancel != nil {
+		a.memoryPipelineRunCancel = nil
+		a.memoryPipelineScheduleSeq++
+	}
+	a.memoryPipelineScheduleMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	log.Printf("[agent-qos] cancel_memory_pipeline_run reason=%s", strings.TrimSpace(reason))
+	cancel()
+	return true
+}
+
+func (a *App) stopMemoryPipelineSchedule(reason string) {
+	if a == nil {
+		return
+	}
+	a.memoryPipelineScheduleMu.Lock()
+	cancel := a.memoryPipelineRunCancel
+	a.memoryPipelineRunCancel = nil
+	a.memoryPipelineRunSeq = 0
+	a.memoryPipelineRunActive = false
+	if a.memoryPipelineTimer != nil {
+		a.memoryPipelineTimer.Stop()
+		a.memoryPipelineTimer = nil
+	}
+	a.memoryPipelineScheduleSeq++
+	seq := a.memoryPipelineScheduleSeq
+	a.memoryPipelineScheduleMu.Unlock()
+	if cancel != nil {
+		log.Printf("[agent-qos] stop_memory_pipeline_schedule reason=%s seq=%d", strings.TrimSpace(reason), seq)
+		cancel()
+	}
+}
+
+func (a *App) isCurrentMemoryPipelineSchedule(seq uint64) bool {
+	if a == nil {
+		return false
+	}
+	a.memoryPipelineScheduleMu.Lock()
+	defer a.memoryPipelineScheduleMu.Unlock()
+	return a.memoryPipelineScheduleSeq == seq
 }
 
 func (a *App) ensureScheduledTaskManager() {
@@ -684,7 +847,6 @@ func (a *App) ensureMDNSScanner() {
 }
 
 func (a *App) ensureSkillMarketClient() {
-	a.ensureInteractionInfra()
 	if a.skillMarketClient != nil {
 		return
 	}
@@ -707,9 +869,24 @@ func (a *App) ensureAutoUploadTrigger() {
 func (a *App) ensureSkillLifecycleManager() {
 	a.ensureAutoUploadTrigger()
 	if a.skillLifecycle != nil {
+		a.skillLifecycle.StartBackgroundProcessing(context.Background(), skillUploadQueueProcessInterval)
 		return
 	}
 	a.skillLifecycle = NewSkillLifecycleManager(a)
+	a.skillLifecycle.StartBackgroundProcessing(context.Background(), skillUploadQueueProcessInterval)
+}
+
+func (a *App) recoverSkillUploadQueueAfterStartup() {
+	probe := NewSkillLifecycleManager(a)
+	runnable, err := probe.HasRunnableUploadItems(time.Now())
+	if err != nil {
+		log.Printf("[skill-lifecycle] startup queue probe failed: %v", err)
+		return
+	}
+	if !runnable {
+		return
+	}
+	a.ensureSkillLifecycleManager()
 }
 
 func (a *App) ensureSkillRunner() {
@@ -761,7 +938,7 @@ func (a *App) refreshMemoryEvolutionLLM() {
 		}
 	}
 	a.memoryMaintenance.SetLLM(&archiverLLMCaller{app: a})
-	a.memoryMaintenance.Start()
+	a.triggerMemoryPipelineSoon(a.projectIndexMemoryDebounce())
 }
 
 func (a *App) ensureExperienceExtractor() {
@@ -1030,15 +1207,19 @@ func (a *App) ensureConversationMemory() *agent.ConversationMemory {
 	if strings.TrimSpace(a.testHomeDir) != "" {
 		storePath := filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json")
 		if _, err := os.Stat(storePath); err == nil {
+			log.Printf("[paths] ai_conversation_memory mode=persistent path=%q", storePath)
 			a.aiConversationMemory = agent.NewPersistentConversationMemory(storePath)
 		} else {
+			log.Printf("[paths] ai_conversation_memory mode=memory test_home=%q missing_path=%q", a.testHomeDir, storePath)
 			a.aiConversationMemory = agent.NewConversationMemory()
 		}
 		return a.aiConversationMemory
 	}
 	a.ensureRemoteInfra()
 	if a.aiConversationMemory == nil {
-		a.aiConversationMemory = agent.NewPersistentConversationMemory(filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
+		storePath := filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json")
+		log.Printf("[paths] ai_conversation_memory mode=persistent path=%q", storePath)
+		a.aiConversationMemory = agent.NewPersistentConversationMemory(storePath)
 	}
 	return a.aiConversationMemory
 }
@@ -1046,7 +1227,9 @@ func (a *App) ensureConversationMemory() *agent.ConversationMemory {
 func (a *App) ensureAIConfirmationStore() *aiConfirmationStore {
 	a.ensureRemoteInfra()
 	if a.aiConfirmationStore == nil {
-		a.aiConfirmationStore = newAIConfirmationStore(filepath.Join(a.GetDataDir(), "ai_assistant_confirmation.json"))
+		storePath := filepath.Join(a.GetDataDir(), "ai_assistant_confirmation.json")
+		log.Printf("[paths] ai_confirmation_store path=%q", storePath)
+		a.aiConfirmationStore = newAIConfirmationStore(storePath)
 	}
 	return a.aiConfirmationStore
 }
@@ -1464,6 +1647,9 @@ func (a *App) tryLockTool(toolName string) bool {
 	a.toolLockMutex.Lock()
 	defer a.toolLockMutex.Unlock()
 
+	if a.toolInstallLocks == nil {
+		a.toolInstallLocks = make(map[string]bool)
+	}
 	if a.toolInstallLocks[toolName] {
 		return false // Already being installed
 	}
@@ -1482,6 +1668,9 @@ func (a *App) unlockTool(toolName string) {
 func (a *App) isToolLocked(toolName string) bool {
 	a.toolLockMutex.Lock()
 	defer a.toolLockMutex.Unlock()
+	if a.toolInstallLocks == nil {
+		return false
+	}
 	return a.toolInstallLocks[toolName]
 }
 
@@ -1496,6 +1685,7 @@ func (a *App) startup(ctx context.Context) {
 	startupBegin := time.Now()
 	log.Printf("[startup] begin")
 	a.ctx = ctx
+	a.logStoragePaths("startup.begin", nil)
 	// Initialize code event emitter for code preview panel.
 	a.codeEventEmitter = NewCodeEventEmitter(a)
 	// Migrate legacy ~/.cceasy data to ~/.maclaw/data on first launch.
@@ -1514,6 +1704,7 @@ func (a *App) startup(ctx context.Context) {
 		log.Printf("[startup] LoadConfig done in %v (since startup begin: %v)", time.Since(startupBegin), time.Since(startupBegin))
 		// Apply user-configured working directory (or keep default).
 		corelib.SetWorkspaceDir(config.WorkingDirectory)
+		a.logStoragePaths("startup.config_loaded", &config)
 		// a.syncToCodeBuddySettings(config, ")
 		if config.Language != "" {
 			a.SetLanguage(config.Language)
@@ -1578,6 +1769,10 @@ func (a *App) startup(ctx context.Context) {
 			a.ensureCodeGenProxyIfNeeded()
 		}()
 		go a.startIWorkerGoalWatchIfConfigured(config)
+		go func() {
+			time.Sleep(90 * time.Second)
+			a.recoverSkillUploadQueueAfterStartup()
+		}()
 		if config.PetEnabled {
 			go func(cfg corelib.AppConfig) {
 				if fa := a.ensureFloatingAssistant(); fa != nil {
@@ -1594,7 +1789,7 @@ func (a *App) startup(ctx context.Context) {
 		go a.initTTSManager()
 
 		// Initialize project tab session persistence and clean up stale sessions (>30 days).
-		a.projectTabSessionPersist = NewProjectTabSessionPersist()
+		a.projectTabSessionPersist = NewProjectTabSessionPersistForBaseDir(a.getMaclawBaseDir())
 		go func() {
 			removed, err := a.projectTabSessionPersist.CleanupStale(30 * 24 * time.Hour)
 			if err != nil {
@@ -1627,10 +1822,11 @@ func (a *App) domReady(ctx context.Context) {
 		return
 	}
 
-	// Background update check: non-blocking, toast notification if new version available.
+	// Background update check: non-blocking, notify the frontend if new version available.
 	go func() {
 		// Wait for startup to settle: avoid competing with other network
-		// requests and ensure the UI is fully interactive before showing toast.
+		// requests and ensure the UI is fully interactive before showing the
+		// in-app update affordance.
 		time.Sleep(60 * time.Second)
 		result, err := a.CheckUpdate(remoteAppVersion())
 		if err != nil {
@@ -1638,11 +1834,7 @@ func (a *App) domReady(ctx context.Context) {
 			return
 		}
 		if result.HasUpdate {
-			a.emitEvent("show-toast", map[string]interface{}{
-				"message":  a.tr("New version %s is available. Open About to download the update.", result.LatestVersion),
-				"type":     "info",
-				"duration": 8000,
-			})
+			a.emitEvent(EventAppUpdateAvailable, result)
 		}
 	}()
 }
@@ -1664,12 +1856,8 @@ func (a *App) SetUIZoomFactor(factor float64) error {
 	if factor > 2.0 {
 		factor = 2.0
 	}
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.UIZoomFactor = factor
-	return a.SaveConfig(cfg)
+	_, err := a.PatchConfigFields(map[string]interface{}{"ui_zoom_factor": factor})
+	return err
 }
 
 // GetChatFontSize returns the saved chat font size in pixels (default 14).
@@ -1695,12 +1883,8 @@ func (a *App) SetChatFontSize(size int) error {
 	if size > 24 {
 		size = 24
 	}
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.ChatFontSize = size
-	return a.SaveConfig(cfg)
+	_, err := a.PatchConfigFields(map[string]interface{}{"chat_font_size": size})
+	return err
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -1741,6 +1925,7 @@ func (a *App) shutdown(ctx context.Context) {
 			memoryCompressor.Stop()
 		}
 	}
+	a.stopMemoryPipelineSchedule("shutdown")
 	if a.memoryStore != nil {
 		a.memoryStore.Stop()
 	}
@@ -1762,6 +1947,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.scheduledTaskManager != nil {
 		a.scheduledTaskManager.Stop() // cancels ticker + all in-flight executor goroutines
+	}
+	if a.skillLifecycle != nil {
+		a.skillLifecycle.StopBackgroundProcessing()
 	}
 	if a.stopHubTicker != nil {
 		close(a.stopHubTicker)
@@ -1998,7 +2186,7 @@ func (a *App) buildCodexLaunchEnv(
 		// Surgical update: persist provider config to ~/.codex/auth.json and
 		// ~/.codex/config.toml so Codex subprocesses pick up the settings.
 		// Preserves user's MCP servers, profiles, and other config.
-		if err := configfile.WriteCodexConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel)); err != nil {
+		if err := configfile.WriteCodexConfigWithClientName(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel), codeGenClientNameForModelConfig(config, *selectedModel)); err != nil {
 			return nil, fmt.Errorf("prepare codex provider switch: %w", err)
 		}
 	} else {
@@ -2147,83 +2335,6 @@ func (a *App) buildKiloLaunchEnv(
 	return env, nil
 }
 
-func (a *App) buildGeminiLaunchEnv(
-	config corelib.AppConfig,
-	selectedModel *corelib.ModelConfig,
-	projectDir string,
-	useProxy bool,
-) (map[string]string, error) {
-	if selectedModel == nil {
-		return nil, fmt.Errorf("selected gemini model is nil")
-	}
-
-	env := map[string]string{}
-
-	// Original (Google native) mode: don't inject API key / base URL env vars,
-	// let Gemini CLI use its own Google OAuth login stored locally.
-	// Only inject env vars for third-party providers.
-	if !selectedModel.IsBuiltin {
-		if selectedModel.ApiKey != "" {
-			env["GEMINI_API_KEY"] = selectedModel.ApiKey
-			env["GOOGLE_API_KEY"] = selectedModel.ApiKey
-		}
-		if selectedModel.ModelUrl != "" {
-			env["GOOGLE_GEMINI_BASE_URL"] = selectedModel.ModelUrl
-		}
-		if selectedModel.ModelId != "" {
-			env["GEMINI_MODEL"] = selectedModel.ModelId
-		}
-		// Surgical update: persist provider config to ~/.gemini/.env and
-		// ~/.gemini/settings.json so Gemini subprocesses pick up the settings.
-		// Preserves user's custom env vars, session data, and other config.
-		if err := configfile.WriteGeminiConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
-			log.Printf("[buildGeminiLaunchEnv] Gemini: failed to write provider config: %v", err)
-		}
-	} else {
-		// Surgical cleanup: remove only third-party env/settings entries,
-		// preserving all other user state (sessions, custom .env vars, etc.).
-		if err := configfile.ClearGeminiThirdPartySettings(); err != nil {
-			log.Printf("[LaunchTool] Gemini: ClearGeminiThirdPartySettings error: %v", err)
-		}
-
-		// Backward-compat migration: if a pre-fix backup directory exists
-		// (created by the old clearGeminiConfig -backupToolNativeConfig flow),
-		// restore it one last time so users don't lose their old state.
-		backupDir := filepath.Join(a.configBackupDir("gemini"), ".gemini")
-		if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-			log.Printf("[LaunchTool] Gemini: pre-fix backup found at %s -running one-time migration restore", backupDir)
-			a.restoreToolNativeConfig("gemini")
-		}
-	}
-
-	a.injectProxyEnv(env, config, projectDir, useProxy)
-
-	return env, nil
-}
-
-func (a *App) buildCursorLaunchEnv(
-	config corelib.AppConfig,
-	selectedModel *corelib.ModelConfig,
-	projectDir string,
-	useProxy bool,
-) (map[string]string, error) {
-	if selectedModel == nil {
-		return nil, fmt.Errorf("selected cursor model is nil")
-	}
-
-	env := map[string]string{}
-	if selectedModel.ApiKey != "" {
-		env["CURSOR_API_KEY"] = selectedModel.ApiKey
-	}
-	if selectedModel.ModelUrl != "" {
-		env["CURSOR_BASE_URL"] = selectedModel.ModelUrl
-	}
-
-	a.injectProxyEnv(env, config, projectDir, useProxy)
-
-	return env, nil
-}
-
 func (a *App) buildRemoteLaunchEnvForTool(
 	toolName string,
 	config corelib.AppConfig,
@@ -2243,10 +2354,6 @@ func (a *App) buildRemoteLaunchEnvForTool(
 		return a.buildIFlowLaunchEnv(config, selectedModel, projectDir, useProxy)
 	case remoteToolNameKilo:
 		return a.buildKiloLaunchEnv(config, selectedModel, projectDir, useProxy)
-	case remoteToolNameGemini:
-		return a.buildGeminiLaunchEnv(config, selectedModel, projectDir, useProxy)
-	case remoteToolNameCursor:
-		return a.buildCursorLaunchEnv(config, selectedModel, projectDir, useProxy)
 	default:
 		// Check OEM extra tools
 		extraTool := findExtraTool(toolKind.String())
@@ -2739,21 +2846,6 @@ func (a *App) getClaudeConfigPaths(projectDir string, instanceID string) (string
 	legacy := filepath.Join(home, ".claude.json")
 	return dir, settings, legacy
 }
-func (a *App) getGeminiConfigPaths(projectDir string, instanceID string) (string, string, string) {
-	// Use project-specific config directory with instance ID to avoid cross-contamination
-	if projectDir != "" && instanceID != "" {
-		dir := filepath.Join(projectDir, ".aicoder", "gemini", instanceID)
-		config := filepath.Join(dir, "settings.json")
-		legacy := filepath.Join(dir, "geminirc")
-		return dir, config, legacy
-	}
-	// Fallback to home directory (for backward compatibility)
-	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".gemini")
-	config := filepath.Join(dir, "settings.json")
-	legacy := filepath.Join(home, ".geminirc")
-	return dir, config, legacy
-}
 func (a *App) getCodexConfigPaths(projectDir string, instanceID string) (string, string) {
 	// Use project-specific config directory with instance ID to avoid cross-contamination
 	if projectDir != "" && instanceID != "" {
@@ -2798,7 +2890,7 @@ func (a *App) getIFlowConfigPaths(projectDir string, instanceID string) (string,
 // Native config backup / restore
 // ---------------------------------------------------------------------------
 // When switching to a third-party provider we need to clear the tool's native
-// config directory (e.g. ~/.claude, ~/.codex, ~/.gemini) so that env-var-based
+// config directory (e.g. ~/.claude, ~/.codex) so that env-var-based
 // credentials take effect.  Instead of deleting the directory outright we move
 // it to a backup location (~/.maclaw/data/config_backup/<tool>/) so that switching
 // back to the original provider can restore it without forcing the user to
@@ -2815,9 +2907,6 @@ func (a *App) toolNativeConfigPaths(tool string) (dir string, extras []string) {
 				filepath.Join(home, ".claude.json"),
 				filepath.Join(home, ".claude.json.backup"),
 			}
-	case remoteToolNameGemini:
-		return filepath.Join(home, ".gemini"),
-			[]string{filepath.Join(home, ".geminirc")}
 	case remoteToolNameCodex:
 		return filepath.Join(home, ".codex"), nil
 	case remoteToolNameOpencode:
@@ -2964,7 +3053,6 @@ func (a *App) clearEnvVars() {
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
 		"MAX_THINKING_TOKENS", "API_TIMEOUT_MS",
 		"OPENAI_API_KEY", "OPENAI_BASE_URL", "WIRE_API",
-		"GEMINI_API_KEY", "GOOGLE_GEMINI_BASE_URL",
 		"OPENCODE_API_KEY", "OPENCODE_BASE_URL",
 		"CODEBUDDY_API_KEY", "CODEBUDDY_BASE_URL", "CODEBUDDY_CODE_MAX_OUTPUT_TOKENS",
 		"IFLOW_API_KEY", "IFLOW_BASE_URL",
@@ -3198,14 +3286,37 @@ func (a *App) syncToCodexSettings(config corelib.AppConfig, projectDir string, i
 		}
 		return nil
 	}
-	return configfile.WriteCodexConfigAt(
+	return configfile.WriteCodexConfigAtWithClientName(
 		dir,
 		selectedModel.ApiKey,
 		selectedModel.ModelUrl,
 		selectedModel.ModelId,
 		selectedModel.ModelName,
 		effectiveToolWireAPI("codex", *selectedModel),
+		codeGenClientNameForModelConfig(config, *selectedModel),
 	)
+}
+
+func codeGenClientNameForModelConfig(config corelib.AppConfig, selectedModel corelib.ModelConfig) string {
+	if !corelib.IsCodeGenURL(selectedModel.ModelUrl) {
+		return ""
+	}
+	if strings.TrimSpace(selectedModel.AgentType) != "" {
+		return selectedModel.AgentType
+	}
+	modelURL := strings.TrimRight(strings.TrimSpace(selectedModel.ModelUrl), "/")
+	modelName := strings.TrimSpace(selectedModel.ModelName)
+	for _, provider := range config.MaclawLLMProviders {
+		providerURL := strings.TrimRight(strings.TrimSpace(provider.URL), "/")
+		providerName := strings.TrimSpace(provider.Name)
+		if !corelib.IsCodeGenURL(providerURL) && !strings.EqualFold(providerName, codegenProviderName) {
+			continue
+		}
+		if strings.EqualFold(providerURL, modelURL) || strings.EqualFold(providerName, modelName) {
+			return provider.UserAgent()
+		}
+	}
+	return corelib.CodeGenClientName
 }
 func (a *App) syncToOpencodeSettings(config corelib.AppConfig, projectDir string, instanceID string) error {
 	var selectedModel *corelib.ModelConfig
@@ -3312,70 +3423,6 @@ func (a *App) syncToOpencodeSettings(config corelib.AppConfig, projectDir string
 		return err
 	}
 	return os.WriteFile(configPath, data, 0644)
-}
-func (a *App) syncToGeminiSettings(config corelib.AppConfig, projectDir string, instanceID string) error {
-	var selectedModel *corelib.ModelConfig
-	for _, m := range config.Gemini.Models {
-		if m.ModelName == config.Gemini.CurrentModel {
-			selectedModel = &m
-			break
-		}
-	}
-	if selectedModel == nil {
-		return fmt.Errorf("selected gemini model not found")
-	}
-
-	dir, configPath, _ := a.getGeminiConfigPaths(projectDir, instanceID)
-
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	var configData map[string]interface{}
-
-	// If using original (Google official)
-	if selectedModel.IsBuiltin {
-		a.log("Gemini: Using Google account authentication (Original mode)")
-		configData = map[string]interface{}{
-			"security": map[string]interface{}{
-				"auth": map[string]interface{}{
-					"selectedType": "oauth-personal",
-				},
-			},
-			"general": map[string]interface{}{
-				"previewFeatures": true,
-			},
-		}
-	} else {
-		// Non-original mode: Configure to use environment variables (API Key)
-		configData = map[string]interface{}{
-			"security": map[string]interface{}{
-				"auth": map[string]interface{}{
-					"selectedType": "gemini-api-key",
-				},
-			},
-			"general": map[string]interface{}{
-				"previewFeatures": true,
-			},
-		}
-		a.log(fmt.Sprintf("Gemini: Configured to use environment variables (API Key from env)"))
-	}
-
-	// Use compact JSON format for faster serialization
-	configJson, err := json.MarshalIndent(configData, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	// Check if file exists and has same content to avoid unnecessary writes
-	if existingData, err := os.ReadFile(configPath); err == nil {
-		if bytes.Equal(existingData, configJson) {
-			// File already has the correct content, skip writing
-			return nil
-		}
-	}
-
-	return os.WriteFile(configPath, configJson, 0644)
 }
 func (a *App) syncToIFlowSettings(config corelib.AppConfig, projectDir string, instanceID string) error {
 	var selectedModel *corelib.ModelConfig
@@ -3660,7 +3707,7 @@ func getBaseUrl(selectedModel *corelib.ModelConfig) string {
 func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonProject bool, pythonEnv string, projectDir string, useProxy bool) error {
 	a.log(fmt.Sprintf("LaunchTool called: %s, yolo=%v, admin=%v, py=%v, pyenv=%s, dir=%s, proxy=%v",
 		toolName, yoloMode, adminMode, pythonProject, pythonEnv, projectDir, useProxy))
-	if err := a.ensureWorkflowAllowsRemoteToolCall("create_session", map[string]interface{}{"tool": toolName, "project_dir": projectDir, "launch_source": "desktop"}); err != nil {
+	if err := a.ensureWorkflowAllowsRemoteToolCall(remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir, "launch_source": "desktop"}); err != nil {
 		a.log(fmt.Sprintf("LaunchTool blocked by workflow policy: %v", err))
 		return err
 	}
@@ -3694,11 +3741,6 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		envKey = "ANTHROPIC_AUTH_TOKEN"
 		envBaseUrl = "ANTHROPIC_BASE_URL"
 		binaryName = "claude"
-	case remoteToolNameGemini:
-		toolCfg = config.Gemini
-		envKey = "GEMINI_API_KEY"
-		envBaseUrl = "GOOGLE_GEMINI_BASE_URL"
-		binaryName = "gemini"
 	case remoteToolNameCodex:
 		toolCfg = config.Codex
 		envKey = "OPENAI_API_KEY"
@@ -3828,8 +3870,6 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			switch launchToolKind {
 			case remoteToolNameClaude:
 				env["ANTHROPIC_MODEL"] = selectedModel.ModelId
-			case remoteToolNameGemini:
-				env["GOOGLE_GEMINI_MODEL"] = selectedModel.ModelId
 			case remoteToolNameCodex:
 				env["OPENAI_MODEL"] = selectedModel.ModelId
 			case remoteToolNameOpencode:
@@ -3874,13 +3914,6 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 				log.Printf("Claude: failed to write provider settings: %v", err)
 			}
 			a.log("Claude: Updated settings.json with provider config (preserving user state)")
-		case remoteToolNameGemini:
-			// Surgically update ~/.gemini/.env and ~/.gemini/settings.json with provider config,
-			// preserving user's custom env vars, session data, and other settings.
-			if err := configfile.WriteGeminiConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
-				log.Printf("Gemini: failed to write provider config: %v", err)
-			}
-			a.log("Gemini: Updated config with provider settings (preserving user state)")
 		case remoteToolNameCodex:
 			env["WIRE_API"] = "responses"
 			// Ensure OpenAI standard vars for Codex
@@ -3890,7 +3923,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			}
 			// Surgically update ~/.codex/auth.json and ~/.codex/config.toml with provider config,
 			// preserving user's MCP servers, profiles, and other settings.
-			if err := configfile.WriteCodexConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel)); err != nil {
+			if err := configfile.WriteCodexConfigWithClientName(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel), codeGenClientNameForModelConfig(config, *selectedModel)); err != nil {
 				a.log("Codex provider switch failed: " + err.Error())
 				return err
 			}
@@ -3938,7 +3971,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		}
 	} else {
 		// --- ORIGINAL MODE: RESTORE NATIVE CONFIG ---
-		// For Claude/Gemini/Codex: use surgical cleanup to remove only
+		// For Claude/Codex: use surgical cleanup to remove only
 		// third-party config entries, preserving user state (conversations,
 		// plugins, hooks, MCP servers, etc.). Fall back to full directory
 		// restore only for backward-compat migration of pre-fix backups.
@@ -3955,15 +3988,6 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
 				log.Printf("[LaunchTool-desktop] Claude: pre-fix backup found -running one-time migration restore")
 				a.restoreToolNativeConfig("claude")
-			}
-		case remoteToolNameGemini:
-			if err := configfile.ClearGeminiThirdPartySettings(); err != nil {
-				log.Printf("[LaunchTool-desktop] Gemini: ClearGeminiThirdPartySettings error: %v", err)
-			}
-			backupDir := filepath.Join(a.configBackupDir("gemini"), ".gemini")
-			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-				log.Printf("[LaunchTool-desktop] Gemini: pre-fix backup found -running one-time migration restore")
-				a.restoreToolNativeConfig("gemini")
 			}
 		case remoteToolNameCodex:
 			if err := configfile.ClearCodexThirdPartySettings(); err != nil {
@@ -4035,6 +4059,39 @@ func (a *App) log(message string) {
 		a.emitEvent("env-log", message)
 	}
 }
+
+func (a *App) logStoragePaths(stage string, config *corelib.AppConfig) {
+	cwd, cwdErr := os.Getwd()
+	if cwdErr != nil {
+		cwd = "<error:" + cwdErr.Error() + ">"
+	}
+	exe, exeErr := os.Executable()
+	if exeErr != nil {
+		exe = "<error:" + exeErr.Error() + ">"
+	}
+	home, homeErr := os.UserHomeDir()
+	if homeErr != nil {
+		home = "<error:" + homeErr.Error() + ">"
+	}
+	configPath, configErr := a.getConfigPath()
+	if configErr != nil {
+		configPath = "<error:" + configErr.Error() + ">"
+	}
+	configuredDataDir := ""
+	configuredWorkingDir := ""
+	if config != nil {
+		configuredDataDir = strings.TrimSpace(config.DataDir)
+		configuredWorkingDir = strings.TrimSpace(config.WorkingDirectory)
+	}
+	baseDir := a.getMaclawBaseDir()
+	dataDir := a.GetDataDir()
+	conversationPath := filepath.Join(dataDir, "ai_assistant_conversation.json")
+	confirmationPath := filepath.Join(dataDir, "ai_assistant_confirmation.json")
+	uiStatePath := filepath.Join(dataDir, "ai_assistant_ui_state.json")
+	log.Printf("[paths] stage=%s cwd=%q exe=%q home=%q config_path=%q base_dir=%q data_dir=%q ai_conversation=%q ai_confirmation=%q ai_ui_state=%q configured_data_dir=%q configured_working_dir=%q",
+		stage, cwd, exe, home, configPath, baseDir, dataDir, conversationPath, confirmationPath, uiStatePath, configuredDataDir, configuredWorkingDir)
+}
+
 func (a *App) getConfigPath() (string, error) {
 	if a.testHomeDir != "" {
 		return filepath.Join(a.testHomeDir, ".maclaw", "config.json"), nil
@@ -4062,7 +4119,46 @@ func (a *App) migrateLegacyConfigLocked(path string) error {
 		}
 		return err
 	}
+	data = sanitizeLegacyCodingToolSelection(data)
 	return configfile.AtomicWrite(path, data)
+}
+
+func sanitizeLegacyCodingToolSelection(data []byte) []byte {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return data
+	}
+	changed := false
+	if tool, ok := raw["active_tool"].(string); ok {
+		if normalized, valid := normalizeCodingToolSelection(tool); valid {
+			if normalized != tool {
+				raw["active_tool"] = normalized
+				changed = true
+			}
+		} else {
+			raw["active_tool"] = "claude"
+			changed = true
+		}
+	}
+	if tool, ok := raw["default_tool"].(string); ok && strings.TrimSpace(tool) != "" {
+		if normalized, valid := normalizeCodingToolSelection(tool); valid {
+			if normalized != tool {
+				raw["default_tool"] = normalized
+				changed = true
+			}
+		} else {
+			raw["default_tool"] = "claude"
+			changed = true
+		}
+	}
+	if !changed {
+		return data
+	}
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return data
+	}
+	return out
 }
 func (a *App) LoadConfig() (corelib.AppConfig, error) {
 	lockStart := time.Now()
@@ -4100,6 +4196,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		log.Printf("[config] LoadConfig:get_path_failed after=%s err=%v", time.Since(start), err)
 		return corelib.AppConfig{}, err
 	}
+	log.Printf("[config] LoadConfig:path=%q", path)
 	if err := a.migrateLegacyConfigLocked(path); err != nil {
 		log.Printf("[config] LoadConfig:migrate_failed after=%s err=%v", time.Since(start), err)
 		return corelib.AppConfig{}, err
@@ -4114,7 +4211,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/anthropic", ApiKey: ""},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/anthropic", ApiKey: ""},
 		{ModelName: "Baidu Qianfan", ModelId: "qianfan-code-latest", ModelUrl: "https://qianfan.baidubce.com/anthropic/coding", ApiKey: "", HasSubscription: true},
-		{ModelName: "ChatFire", ModelId: "sonnet", ModelUrl: "https://api.chatfire.cn", ApiKey: ""},
 		{ModelName: "Tencent Cloud", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/anthropic", ApiKey: "", HasSubscription: true},
 		{ModelName: "Moore Threads", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kuaishou", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", ApiKey: "", HasSubscription: true},
@@ -4126,19 +4222,8 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
-	defaultGeminiModels := []corelib.ModelConfig{
-		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
-		{ModelName: "ChatFire", ModelId: "gemini-2.5-pro", ModelUrl: "https://api.chatfire.cn/v1beta/models/gemini-2.5-pro:generateContent", ApiKey: ""},
-		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom3", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-	}
 	defaultCodexModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
-		{ModelName: "ChatFire", ModelId: "gpt-5.1-codex-mini", ModelUrl: "https://api.chatfire.cn/v1", ApiKey: "", WireApi: "responses"},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: "", WireApi: "responses"},
 		{ModelName: "GLM", ModelId: "glm-5-turbo", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: "", WireApi: "responses"},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: "", WireApi: "responses"},
@@ -4157,7 +4242,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	}
 	defaultOpencodeModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
-		{ModelName: "ChatFire", ModelId: "gpt-4o", ModelUrl: "https://api.chatfire.cn/v1", ApiKey: ""},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
@@ -4191,7 +4275,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	}
 	defaultKiloModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
-		{ModelName: "ChatFire", ModelId: "gpt-4o", ModelUrl: "https://api.chatfire.cn/v1", ApiKey: ""},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
@@ -4199,26 +4282,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
 		{ModelName: "XiaoMi", ModelId: "mimo-v2-flash", ModelUrl: "https://api.xiaomimimo.com/v1", ApiKey: ""},
-		{ModelName: "Tencent Cloud", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
-		{ModelName: "Moore Threads", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
-		{ModelName: "Kuaishou", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
-		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom3", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-	}
-	// Cursor Agent uses OpenAI-compatible protocol, same providers as Codex
-	defaultCursorModels := []corelib.ModelConfig{
-		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
-		{ModelName: "ChatFire", ModelId: "gpt-5.1-codex-mini", ModelUrl: "https://api.chatfire.cn/v1", ApiKey: "", WireApi: "responses"},
-		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
-		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
-		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
-		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", WireApi: "responses", HasSubscription: true},
-		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
-		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
 		{ModelName: "Tencent Cloud", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
 		{ModelName: "Moore Threads", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kuaishou", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
@@ -4249,10 +4312,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 							CurrentModel: oldConfig.CurrentModel,
 							Models:       oldConfig.Models,
 						},
-						Gemini: corelib.ToolConfig{
-							CurrentModel: "Gemini 1.5 Pro",
-							Models:       defaultGeminiModels,
-						},
 						Codex: corelib.ToolConfig{
 							CurrentModel: "Codex",
 							Models:       defaultCodexModels,
@@ -4273,17 +4332,11 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 							CurrentModel: "Original",
 							Models:       defaultKiloModels,
 						},
-						Cursor: corelib.ToolConfig{
-							CurrentModel: "Original",
-							Models:       defaultCursorModels,
-						},
 						Projects:               oldConfig.Projects,
 						CurrentProject:         oldConfig.CurrentProj,
 						ActiveTool:             "claude",
-						ShowGemini:             true,
 						ShowCodex:              true,
 						ShowOpenCode:           true,
-						ShowCursor:             true,
 						ShowCodeBuddy:          true,
 						ShowIFlow:              true,
 						ShowKilo:               true,
@@ -4316,10 +4369,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 				CurrentModel: "GLM",
 				Models:       defaultClaudeModels,
 			},
-			Gemini: corelib.ToolConfig{
-				CurrentModel: "Gemini 1.5 Pro",
-				Models:       defaultGeminiModels,
-			},
 			Codex: corelib.ToolConfig{
 				CurrentModel: "Codex",
 				Models:       defaultCodexModels,
@@ -4340,10 +4389,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 				CurrentModel: "Original",
 				Models:       defaultKiloModels,
 			},
-			Cursor: corelib.ToolConfig{
-				CurrentModel: "Original",
-				Models:       defaultCursorModels,
-			},
 			Projects: []corelib.ProjectConfig{
 				{
 					Id:       "default",
@@ -4354,13 +4399,11 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 			},
 			CurrentProject:         "default",
 			ActiveTool:             "claude",
-			ShowGemini:             true,
 			ShowCodex:              true,
 			ShowOpenCode:           true,
 			ShowCodeBuddy:          true,
 			ShowIFlow:              true,
 			ShowKilo:               true,
-			ShowCursor:             true,
 			PowerOptimization:      true,
 			CheckUpdateOnStartup:   true,
 			EnvCheckInterval:       7,    // Default to 7 days
@@ -4397,10 +4440,8 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		return defaultConfig, err
 	}
 	config := corelib.AppConfig{
-		ShowGemini:             true,
 		ShowCodex:              true,
 		ShowOpenCode:           true,
-		ShowCursor:             true,
 		ShowCodeBuddy:          true,
 		ShowIFlow:              true,
 		ShowKilo:               true,
@@ -4423,10 +4464,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	hasShowKilo := false
 	if _, ok := rawConfig["show_kilo"]; ok {
 		hasShowKilo = true
-	}
-	hasShowCursor := false
-	if _, ok := rawConfig["show_cursor"]; ok {
-		hasShowCursor = true
 	}
 	hasPowerOptimization := false
 	if _, ok := rawConfig["power_optimization"]; ok {
@@ -4485,9 +4522,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	// Set default values for new fields if not present in old configs
 	if !hasShowKilo {
 		config.ShowKilo = true
-	}
-	if !hasShowCursor {
-		config.ShowCursor = true
 	}
 	if !hasPowerOptimization {
 		config.PowerOptimization = true
@@ -4595,8 +4629,8 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		"\u8baf\u98de\u661f\u8fb0": "iFlytek",
 	}
 	allToolCfgs := []*corelib.ToolConfig{
-		&config.Claude, &config.Gemini, &config.Codex, &config.Opencode,
-		&config.CodeBuddy, &config.IFlow, &config.Kilo, &config.Cursor,
+		&config.Claude, &config.Codex, &config.Opencode,
+		&config.CodeBuddy, &config.IFlow, &config.Kilo,
 	}
 	for oldName, newName := range chineseToEnglish {
 		for _, tc := range allToolCfgs {
@@ -4639,10 +4673,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		}
 		*models = newModels
 	}
-	if config.Gemini.Models == nil || len(config.Gemini.Models) == 0 {
-		config.Gemini.Models = defaultGeminiModels
-		config.Gemini.CurrentModel = "Original"
-	}
 	if config.Codex.Models == nil || len(config.Codex.Models) == 0 {
 		config.Codex.Models = defaultCodexModels
 		config.Codex.CurrentModel = "Original"
@@ -4663,11 +4693,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		config.Kilo.Models = defaultKiloModels
 		config.Kilo.CurrentModel = "Original"
 	}
-	if config.Cursor.Models == nil || len(config.Cursor.Models) == 0 {
-		config.Cursor.Models = defaultCursorModels
-		config.Cursor.CurrentModel = "Original"
-	}
-	ensureModel(&config.Claude.Models, "ChatFire", "https://api.chatfire.cn", "sonnet", "anthropic")
 	ensureModel(&config.Claude.Models, "DeepSeek", "https://api.deepseek.com/anthropic", "deepseek-chat", "anthropic")
 	ensureModel(&config.Claude.Models, "Kimi", "https://api.kimi.com/coding", "kimi-k2-thinking", "anthropic")
 	ensureModel(&config.Claude.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding", "doubao-seed-code-preview-latest", "anthropic")
@@ -4680,8 +4705,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	ensureModel(&config.Claude.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net", "GLM-4.7", "anthropic", true)
 	ensureModel(&config.Claude.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", "kat-coder-pro-v1", "anthropic", true)
 	ensureModel(&config.Claude.Models, "Aliyun", "https://coding.dashscope.aliyuncs.com/apps/anthropic", "glm-5", "anthropic", true)
-	ensureModel(&config.Gemini.Models, "ChatFire", "https://api.chatfire.cn/v1beta/models/gemini-2.5-pro:generateContent", "gemini-2.5-pro", "")
-	ensureModel(&config.Codex.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-5.1-codex-mini", "responses")
 	ensureModel(&config.Codex.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "responses")
 	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5-turbo", "responses")
 	ensureModel(&config.Codex.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "responses")
@@ -4698,7 +4721,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		}
 	}
 	ensureModel(&config.Opencode.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.Opencode.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-4o", "")
 	ensureModel(&config.Opencode.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.Opencode.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
 	ensureModel(&config.Opencode.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
@@ -4728,7 +4750,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	ensureModel(&config.IFlow.Models, "Tencent Cloud", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
 	ensureModel(&config.IFlow.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.IFlow.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
-	ensureModel(&config.Kilo.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-4o", "")
 	ensureModel(&config.Kilo.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Kilo.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.Kilo.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
@@ -4739,25 +4760,11 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	ensureModel(&config.Kilo.Models, "Tencent Cloud", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
 	ensureModel(&config.Kilo.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.Kilo.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
-	// Cursor Agent uses OpenAI-compatible protocol, same providers as Codex
-	ensureModel(&config.Cursor.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-5.1-codex-mini", "responses")
-	ensureModel(&config.Cursor.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.Cursor.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
-	ensureModel(&config.Cursor.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
-	ensureModel(&config.Cursor.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "responses", true)
-	ensureModel(&config.Cursor.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
-	ensureModel(&config.Cursor.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
-	ensureModel(&config.Cursor.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
-	ensureModel(&config.Cursor.Models, "Tencent Cloud", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
-	ensureModel(&config.Cursor.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
-	ensureModel(&config.Cursor.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 
 	// Purge Aliyun from other tools if it exists
-	removeModel(&config.Gemini.Models, "Aliyun")
 	removeModel(&config.Codex.Models, "Aliyun")
 	removeModel(&config.Opencode.Models, "Aliyun")
 	removeModel(&config.CodeBuddy.Models, "Aliyun")
-	removeModel(&config.Gemini.Models, "Baidu Qianfan")
 	removeModel(&config.Codex.Models, "Baidu Qianfan")
 	removeModel(&config.Opencode.Models, "Baidu Qianfan")
 	removeModel(&config.CodeBuddy.Models, "Baidu Qianfan")
@@ -4765,15 +4772,12 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	removeModel(&config.Kilo.Models, "Baidu Qianfan")
 	removeModel(&config.IFlow.Models, "Aliyun")
 	removeModel(&config.Kilo.Models, "Aliyun")
-	removeModel(&config.Cursor.Models, "Aliyun")
-	removeModel(&config.Gemini.Models, "aliyun")
 	removeModel(&config.Codex.Models, "aliyun")
 	removeModel(&config.Opencode.Models, "aliyun")
 	removeModel(&config.CodeBuddy.Models, "aliyun")
 	removeModel(&config.IFlow.Models, "aliyun")
 	removeModel(&config.Kilo.Models, "aliyun")
-	removeModel(&config.Cursor.Models, "aliyun")
-	removeModel(&config.Cursor.Models, "Baidu Qianfan")
+	removeDisallowedCodingToolProviders(&config)
 
 	// Ensure 'Original' is always present and first
 	ensureOriginal := func(models *[]corelib.ModelConfig) {
@@ -4800,13 +4804,11 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		*models = newModels
 	}
 	ensureOriginal(&config.Claude.Models)
-	ensureOriginal(&config.Gemini.Models)
 	ensureOriginal(&config.Codex.Models)
 	ensureOriginal(&config.Opencode.Models)
 	ensureOriginal(&config.CodeBuddy.Models)
 	ensureOriginal(&config.IFlow.Models)
 	ensureOriginal(&config.Kilo.Models)
-	ensureOriginal(&config.Cursor.Models)
 	cleanOpencodeModels(&config.Opencode.Models)
 	cleanOpencodeModels(&config.CodeBuddy.Models)
 	cleanOpencodeModels(&config.IFlow.Models)
@@ -4846,7 +4848,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		}
 	}
 	ensureCustom(&config.Claude.Models)
-	ensureCustom(&config.Gemini.Models)
 	ensureCustom(&config.Codex.Models)
 	ensureCustom(&config.Opencode.Models)
 	ensureCustom(&config.CodeBuddy.Models)
@@ -4885,23 +4886,18 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		}
 	}
 	moveCustomToLast(&config.Claude.Models)
-	moveCustomToLast(&config.Gemini.Models)
 	moveCustomToLast(&config.Codex.Models)
 	moveCustomToLast(&config.Opencode.Models)
 	moveCustomToLast(&config.CodeBuddy.Models)
 	moveCustomToLast(&config.IFlow.Models)
 	moveCustomToLast(&config.Kilo.Models)
 	ensureOriginalFirst(&config.Claude.Models)
-	ensureOriginalFirst(&config.Gemini.Models)
 	ensureOriginalFirst(&config.Codex.Models)
 	ensureOriginalFirst(&config.Opencode.Models)
 	ensureOriginalFirst(&config.CodeBuddy.Models)
 	ensureOriginalFirst(&config.IFlow.Models)
 	ensureOriginalFirst(&config.Kilo.Models)
 	// Ensure CurrentModel is valid
-	if config.Gemini.CurrentModel == "" {
-		config.Gemini.CurrentModel = "Original"
-	}
 	if config.Codex.CurrentModel == "" {
 		config.Codex.CurrentModel = "Original"
 	}
@@ -4921,39 +4917,37 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	if config.Kilo.CurrentModel == "" {
 		config.Kilo.CurrentModel = "Original"
 	}
-	if config.Cursor.Models == nil || len(config.Cursor.Models) == 0 {
-		config.Cursor.Models = defaultCursorModels
-		config.Cursor.CurrentModel = "Original"
-	}
-	if config.Cursor.CurrentModel == "" {
-		config.Cursor.CurrentModel = "Original"
-	}
 	if config.ActiveTool == "" {
 		config.ActiveTool = "message"
 	}
 	// Normalize CurrentModel casing for all tools
 	normalizeCurrentModel := func(toolCfg *corelib.ToolConfig) {
+		matched := false
 		for _, m := range toolCfg.Models {
 			if strings.EqualFold(m.ModelName, toolCfg.CurrentModel) {
 				toolCfg.CurrentModel = m.ModelName
+				matched = true
 				break
 			}
 		}
+		if !matched && len(toolCfg.Models) > 0 {
+			toolCfg.CurrentModel = toolCfg.Models[0].ModelName
+		}
 	}
 	normalizeCurrentModel(&config.Claude)
-	normalizeCurrentModel(&config.Gemini)
 	normalizeCurrentModel(&config.Codex)
 	normalizeCurrentModel(&config.Opencode)
 	normalizeCurrentModel(&config.CodeBuddy)
 	normalizeCurrentModel(&config.IFlow)
 	normalizeCurrentModel(&config.Kilo)
-	normalizeCurrentModel(&config.Cursor)
+	sanitizeCodingToolSelection(&config)
 	normalizeConfigTimeouts(&config)
 	config.LLMPromptCache = config.LLMPromptCache.WithDefaults()
 	if err := migrateLLMPromptCacheDirIfNeeded(corelib.DefaultLLMPromptCacheConfig(), config.LLMPromptCache); err != nil {
 		log.Printf("[config] LoadConfig:llm_cache_migrate_failed err=%v", err)
 	}
-	log.Printf("[config] LoadConfig:done total=%s", time.Since(start))
+	log.Printf("[config] LoadConfig:done total=%s config_path=%q configured_data_dir=%q configured_working_dir=%q effective_base_dir=%q effective_data_dir=%q ai_conversation=%q",
+		time.Since(start), path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory), a.getMaclawBaseDir(), a.GetDataDir(), filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
 	a.configCache = config
 	a.configCacheValid = true
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
@@ -4983,7 +4977,6 @@ func syncAllProviderApiKeys(a *App, oldConfig, newConfig *corelib.AppConfig) {
 	// Map of tools for easy access
 	tools := map[string]*corelib.ToolConfig{
 		"claude":    &newConfig.Claude,
-		"gemini":    &newConfig.Gemini,
 		"codex":     &newConfig.Codex,
 		"opencode":  &newConfig.Opencode,
 		"codebuddy": &newConfig.CodeBuddy,
@@ -4992,7 +4985,6 @@ func syncAllProviderApiKeys(a *App, oldConfig, newConfig *corelib.AppConfig) {
 	}
 	oldTools := map[string]*corelib.ToolConfig{
 		"claude":    &oldConfig.Claude,
-		"gemini":    &oldConfig.Gemini,
 		"codex":     &oldConfig.Codex,
 		"opencode":  &oldConfig.Opencode,
 		"codebuddy": &oldConfig.CodeBuddy,
@@ -5056,6 +5048,75 @@ func syncAllProviderApiKeys(a *App, oldConfig, newConfig *corelib.AppConfig) {
 		}
 	}
 }
+func (a *App) hubSecurityExplicitlyCentralizedFalse() bool {
+	if a == nil {
+		return false
+	}
+	policy := a.hubSecurityCache.get()
+	return policy != nil && !policy.CentralizedSecurity
+}
+
+func sanitizeCodingToolSelection(config *corelib.AppConfig) {
+	if tool, ok := normalizeCodingToolSelection(config.ActiveTool); ok {
+		config.ActiveTool = tool
+	} else {
+		config.ActiveTool = "claude"
+	}
+	if strings.TrimSpace(config.DefaultTool) != "" {
+		if tool, ok := normalizeCodingToolSelection(config.DefaultTool); ok {
+			config.DefaultTool = tool
+		} else {
+			config.DefaultTool = "claude"
+		}
+	}
+}
+
+func removeDisallowedCodingToolProviders(config *corelib.AppConfig) {
+	removeProvider := func(toolCfg *corelib.ToolConfig, name string) {
+		models := toolCfg.Models[:0]
+		for _, model := range toolCfg.Models {
+			if !strings.EqualFold(model.ModelName, name) {
+				models = append(models, model)
+			}
+		}
+		toolCfg.Models = models
+		if strings.EqualFold(toolCfg.CurrentModel, name) {
+			if len(toolCfg.Models) > 0 {
+				toolCfg.CurrentModel = toolCfg.Models[0].ModelName
+			} else {
+				toolCfg.CurrentModel = "Original"
+			}
+		}
+	}
+	for _, toolCfg := range []*corelib.ToolConfig{
+		&config.Claude,
+		&config.Codex,
+		&config.Opencode,
+		&config.CodeBuddy,
+		&config.IFlow,
+		&config.Kilo,
+	} {
+		removeProvider(toolCfg, "ChatFire")
+	}
+}
+
+func normalizeCodingToolSelection(tool string) (string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(tool))
+	switch normalized {
+	case "claude", "codex", "opencode", "codebuddy", "iflow", "kilo":
+		return normalized, true
+	default:
+		return "", false
+	}
+}
+
+func (a *App) shouldPreserveHubManagedSecurity(current corelib.AppConfig) bool {
+	if !current.HubSecurityCentralized {
+		return false
+	}
+	return !a.hubSecurityExplicitlyCentralizedFalse()
+}
+
 func (a *App) SaveConfig(config corelib.AppConfig) error {
 	lockStart := time.Now()
 	a.configMu.Lock()
@@ -5072,6 +5133,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 		log.Printf("[config] SaveConfig:get_path_failed after=%s err=%v", time.Since(start), err)
 		return err
 	}
+	log.Printf("[config] SaveConfig:path=%q configured_data_dir=%q configured_working_dir=%q", path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory))
 	if err := a.migrateLegacyConfigLocked(path); err != nil {
 		a.invalidateConfigCacheLocked()
 		a.configMu.Unlock()
@@ -5087,12 +5149,13 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 		}
 	}
 	sanitizeCustomNames(config.Claude.Models)
-	sanitizeCustomNames(config.Gemini.Models)
 	sanitizeCustomNames(config.Codex.Models)
 	sanitizeCustomNames(config.Opencode.Models)
 	sanitizeCustomNames(config.CodeBuddy.Models)
 	sanitizeCustomNames(config.IFlow.Models)
 	sanitizeCustomNames(config.Kilo.Models)
+	removeDisallowedCodingToolProviders(&config)
+	sanitizeCodingToolSelection(&config)
 	config.SubAgentConcurrency = corelib.NormalizeSubAgentConcurrency(config.SubAgentConcurrency)
 	normalizeConfigTimeouts(&config)
 	sanitizePetConfig(&config)
@@ -5118,7 +5181,11 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	if strings.TrimSpace(oldConfig.DefaultLaunchMode) != "" {
 		config.DefaultLaunchMode = oldConfig.DefaultLaunchMode
 	}
-	clientsecurity.PreserveHubManagedSecurityConfig(oldConfig, &config)
+	if a.shouldPreserveHubManagedSecurity(oldConfig) {
+		clientsecurity.PreserveHubManagedSecurityConfig(oldConfig, &config)
+	} else if a.hubSecurityExplicitlyCentralizedFalse() {
+		config.HubSecurityCentralized = false
+	}
 	// Sync all apikeys across all tools before saving
 	syncStart := time.Now()
 	syncAllProviderApiKeys(a, &oldConfig, &config)
@@ -5191,8 +5258,899 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 			}
 		}(hubClient)
 	}
-	log.Printf("[config] SaveConfig:done total=%s", time.Since(start))
+	log.Printf("[config] SaveConfig:done total=%s config_path=%q configured_data_dir=%q configured_working_dir=%q effective_base_dir=%q effective_data_dir=%q ai_conversation=%q",
+		time.Since(start), path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory), a.getMaclawBaseDir(), a.GetDataDir(), filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
 	return nil
+}
+
+// PatchConfigFields is a frontend-safe atomic config patch endpoint.
+// It only accepts whitelisted small settings so stale frontend snapshots cannot
+// overwrite unrelated config fields while a user toggles general settings.
+func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig, error) {
+	if len(patch) == 0 {
+		return a.LoadConfig()
+	}
+
+	boolField := func(key string, value interface{}) (bool, error) {
+		v, ok := value.(bool)
+		if !ok {
+			return false, fmt.Errorf("config field %q must be boolean", key)
+		}
+		return v, nil
+	}
+	stringField := func(key string, value interface{}) (string, error) {
+		v, ok := value.(string)
+		if !ok {
+			return "", fmt.Errorf("config field %q must be string", key)
+		}
+		return v, nil
+	}
+	intField := func(key string, value interface{}) (int, error) {
+		switch v := value.(type) {
+		case int:
+			return v, nil
+		case float64:
+			return int(v), nil
+		case float32:
+			return int(v), nil
+		default:
+			return 0, fmt.Errorf("config field %q must be number", key)
+		}
+	}
+	floatField := func(key string, value interface{}) (float64, error) {
+		switch v := value.(type) {
+		case float64:
+			return v, nil
+		case float32:
+			return float64(v), nil
+		case int:
+			return float64(v), nil
+		default:
+			return 0, fmt.Errorf("config field %q must be number", key)
+		}
+	}
+	cacheField := func(key string, value interface{}) (corelib.LLMPromptCacheConfig, error) {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return corelib.LLMPromptCacheConfig{}, fmt.Errorf("config field %q must be object: %w", key, err)
+		}
+		var cache corelib.LLMPromptCacheConfig
+		if err := json.Unmarshal(data, &cache); err != nil {
+			return corelib.LLMPromptCacheConfig{}, fmt.Errorf("config field %q must be object: %w", key, err)
+		}
+		return cache.WithDefaults(), nil
+	}
+	projectsField := func(key string, value interface{}) ([]corelib.ProjectConfig, error) {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("config field %q must be array: %w", key, err)
+		}
+		var projects []corelib.ProjectConfig
+		if err := json.Unmarshal(data, &projects); err != nil {
+			return nil, fmt.Errorf("config field %q must be array: %w", key, err)
+		}
+		return projects, nil
+	}
+	stringSliceField := func(key string, value interface{}) ([]string, error) {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("config field %q must be string array: %w", key, err)
+		}
+		var values []string
+		if err := json.Unmarshal(data, &values); err != nil {
+			return nil, fmt.Errorf("config field %q must be string array: %w", key, err)
+		}
+		return values, nil
+	}
+	stringMapField := func(key string, value interface{}) (map[string]string, error) {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("config field %q must be string map: %w", key, err)
+		}
+		var values map[string]string
+		if err := json.Unmarshal(data, &values); err != nil {
+			return nil, fmt.Errorf("config field %q must be string map: %w", key, err)
+		}
+		return values, nil
+	}
+	toolCurrentModelField := func(key string, value interface{}) (string, string, error) {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return "", "", fmt.Errorf("config field %q must be object: %w", key, err)
+		}
+		var patch struct {
+			Tool  string `json:"tool"`
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(data, &patch); err != nil {
+			return "", "", fmt.Errorf("config field %q must be object: %w", key, err)
+		}
+		tool := strings.TrimSpace(strings.ToLower(patch.Tool))
+		model := strings.TrimSpace(patch.Model)
+		if _, ok := normalizeCodingToolSelection(tool); !ok {
+			return "", "", fmt.Errorf("config field %q has invalid tool: %s", key, patch.Tool)
+		}
+		if model == "" {
+			return "", "", fmt.Errorf("config field %q model cannot be empty", key)
+		}
+		return tool, model, nil
+	}
+	setToolCurrentModel := func(cfg *corelib.AppConfig, tool, model string) error {
+		var toolCfg *corelib.ToolConfig
+		switch tool {
+		case "claude":
+			toolCfg = &cfg.Claude
+		case "codex":
+			toolCfg = &cfg.Codex
+		case "opencode":
+			toolCfg = &cfg.Opencode
+		case "codebuddy":
+			toolCfg = &cfg.CodeBuddy
+		case "iflow":
+			toolCfg = &cfg.IFlow
+		case "kilo":
+			toolCfg = &cfg.Kilo
+		default:
+			return fmt.Errorf("invalid coding tool: %s", tool)
+		}
+		for _, candidate := range toolCfg.Models {
+			if strings.EqualFold(candidate.ModelName, model) {
+				toolCfg.CurrentModel = candidate.ModelName
+				return nil
+			}
+		}
+		return fmt.Errorf("model %q not found for tool %s", model, tool)
+	}
+
+	a.configMu.Lock()
+	cfg, err := a.loadConfigLocked()
+	if err != nil {
+		a.configMu.Unlock()
+		return corelib.AppConfig{}, err
+	}
+	current := cfg
+	proxyChanged := false
+	policyModeChanged := false
+	petChanged := false
+
+	for key, value := range patch {
+		switch key {
+		case "language":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.Language = strings.TrimSpace(v)
+		case "active_tool":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ActiveTool = strings.TrimSpace(v)
+		case "current_project":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.CurrentProject = strings.TrimSpace(v)
+		case "projects":
+			v, err := projectsField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.Projects = v
+		case "favorite_employees":
+			v, err := stringSliceField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.FavoriteEmployees = v
+		case "favorite_employee_names":
+			v, err := stringMapField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.FavoriteEmployeeNames = v
+		case "tool_current_model":
+			tool, model, err := toolCurrentModelField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			if err := setToolCurrentModel(&cfg, tool, model); err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+		case "remote_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.RemoteEnabled = v
+		case "remote_hub_url":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.RemoteHubURL = strings.TrimSpace(v)
+		case "remote_hubcenter_url":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.RemoteHubCenterURL = strings.TrimSpace(v)
+		case "remote_email":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.RemoteEmail = strings.TrimSpace(v)
+		case "remote_mobile":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.RemoteMobile = strings.TrimSpace(v)
+		case "default_launch_mode":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			launchMode := normalizeLaunchModeKind(v)
+			if launchMode == launchModeInvalid {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, fmt.Errorf("invalid default launch mode: %s", v)
+			}
+			cfg.DefaultLaunchMode = string(launchMode)
+		case "security_policy_mode":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SecurityPolicyMode = strings.TrimSpace(v)
+			policyModeChanged = cfg.SecurityPolicyMode != current.SecurityPolicyMode
+		case "sandbox_mode":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SandboxMode = strings.TrimSpace(v)
+		case "network_level":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.NetworkLevel = strings.TrimSpace(v)
+		case "network_allowlist":
+			v, err := stringSliceField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.NetworkAllowlist = v
+		case "yolo_mode_allowed":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.YoloModeAllowed = v
+		case "smart_route_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SmartRouteEnabled = v
+		case "gossip_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.GossipEnabled = v
+		case "file_outbound_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.FileOutboundEnabled = v
+		case "image_outbound_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ImageOutboundEnabled = v
+		case "skill_sources_allowed":
+			v, err := stringSliceField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SkillSourcesAllowed = v
+		case "maclaw_role_name":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.MaclawRoleName = strings.TrimSpace(v)
+		case "maclaw_role_description":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.MaclawRoleDescription = strings.TrimSpace(v)
+		case "default_proxy_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.DefaultProxyEnabled = v
+			proxyChanged = true
+		case "default_proxy_protocol":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.DefaultProxyProtocol = strings.TrimSpace(v)
+			proxyChanged = true
+		case "default_proxy_host":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.DefaultProxyHost = strings.TrimSpace(v)
+			proxyChanged = true
+		case "default_proxy_port":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.DefaultProxyPort = strings.TrimSpace(v)
+			proxyChanged = true
+		case "default_proxy_username":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.DefaultProxyUsername = v
+			proxyChanged = true
+		case "default_proxy_password":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.DefaultProxyPassword = v
+			proxyChanged = true
+		case "default_proxy_bypass":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.DefaultProxyBypass = strings.TrimSpace(v)
+			proxyChanged = true
+		case "default_proxy_scope_maclaw":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.DefaultProxyScopeMaclaw = v
+			proxyChanged = true
+		case "default_proxy_scope_coding_tools":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.DefaultProxyScopeCodingTools = v
+			proxyChanged = true
+		case "default_proxy_scope_agent":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.DefaultProxyScopeAgent = v
+			proxyChanged = true
+		case "pause_env_check":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PauseEnvCheck = v
+		case "env_check_done":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.EnvCheckDone = v
+		case "use_windows_terminal":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.UseWindowsTerminal = v
+		case "show_ai_trace_entry":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ShowAITraceEntry = v
+		case "show_coding_tool_entry":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ShowCodingToolEntry = v
+		case "show_codex":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ShowCodex = v
+		case "show_opencode":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ShowOpenCode = v
+		case "show_codebuddy":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ShowCodeBuddy = v
+		case "show_iflow":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ShowIFlow = v
+		case "show_kilo":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ShowKilo = v
+		case "workstation_mode":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.WorkstationMode = v
+		case "screen_dim_timeout_min":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ScreenDimTimeoutMin = max(0, v)
+		case "remote_heartbeat_sec":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.RemoteHeartbeatSec = max(5, v)
+		case "agent_response_timeout_sec":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.AgentResponseTimeoutSec = v
+		case "maclaw_llm_timeout_sec":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.MaclawLLMTimeoutSec = v
+		case "audio_input_device_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.AudioInputDeviceID = strings.TrimSpace(v)
+		case "audio_output_device_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.AudioOutputDeviceID = strings.TrimSpace(v)
+		case "noise_floor_calibrated":
+			v, err := floatField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.NoiseFloorCalibrated = max(0, v)
+		case "speech_level_calibrated":
+			v, err := floatField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SpeechLevelCalibrated = max(0, v)
+		case "llm_prompt_cache":
+			v, err := cacheField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LLMPromptCache = v
+		case "gossip_auto_publish":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.GossipAutoPublish = v
+		case "llm_trajectory_logging":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LLMTrajectoryLogging = v
+		case "log_detail_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LogDetailEnabled = v
+		case "working_directory":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.WorkingDirectory = strings.TrimSpace(v)
+		case "ui_zoom_factor":
+			v, err := floatField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			if v < 0.5 {
+				v = 0.5
+			}
+			if v > 2.0 {
+				v = 2.0
+			}
+			cfg.UIZoomFactor = v
+		case "chat_font_size":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			if v < 12 {
+				v = 12
+			}
+			if v > 24 {
+				v = 24
+			}
+			cfg.ChatFontSize = v
+		case "env_check_interval":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			if v < 2 || v > 30 {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, fmt.Errorf("env_check_interval must be between 2 and 30 days")
+			}
+			cfg.EnvCheckInterval = v
+		case "last_env_check_time":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LastEnvCheckTime = strings.TrimSpace(v)
+		case "vector_search_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.VectorSearchEnabled = v
+		case "screen_parsing_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ScreenParsingEnabled = &v
+		case "asr_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ASREnabled = v
+		case "tts_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.TTSEnabled = v
+		case "tts_voice_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.TTSVoiceID = normalizeTTSVoiceID(v)
+		case "maclaw_agent_max_iterations":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.MaclawAgentMaxIterations = config.EffectiveMaxIterations(v)
+		case "subagent_concurrency":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SubAgentConcurrency = corelib.NormalizeSubAgentConcurrency(v)
+		case "trial_reflect_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.TrialReflectEnabled = v
+		case "pet_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetEnabled = v
+			petChanged = true
+		case "pet_skin":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetSkin = strings.TrimSpace(v)
+			petChanged = true
+		case "pet_size":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetSize = v
+			petChanged = true
+		case "pet_motion_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetMotionEnabled = &v
+			petChanged = true
+		case "pet_motion_sound_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetMotionSound = &v
+			petChanged = true
+		case "pet_motion_sound_preset":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetMotionSoundPreset = strings.TrimSpace(v)
+			petChanged = true
+		case "pet_text_interaction_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetTextInteraction = &v
+			petChanged = true
+		case "pet_voice_input_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetVoiceInput = v
+			petChanged = true
+		case "pet_voice_readback_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetVoiceReadback = v
+			petChanged = true
+		case "pet_file_drop_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetFileDropEnabled = &v
+			petChanged = true
+		case "pet_interaction_mode":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetInteractionMode = strings.TrimSpace(v)
+			petChanged = true
+		case "pet_conversation_mode":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetConversationMode = strings.TrimSpace(v)
+			petChanged = true
+		case "pet_readback_mode":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetReadbackMode = strings.TrimSpace(v)
+			petChanged = true
+		case "pet_auto_retry_on_no_hear":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetAutoRetryOnNoHear = v
+			petChanged = true
+		case "pet_continuous_timeout_sec":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetContinuousTimeout = v
+			petChanged = true
+		case "pet_quiet_mode":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetQuietMode = v
+			petChanged = true
+		default:
+			a.configMu.Unlock()
+			return corelib.AppConfig{}, fmt.Errorf("unsupported config patch field: %s", key)
+		}
+	}
+
+	if a.shouldPreserveHubManagedSecurity(current) {
+		clientsecurity.PreserveHubManagedSecurityConfig(current, &cfg)
+	} else if a.hubSecurityExplicitlyCentralizedFalse() {
+		cfg.HubSecurityCentralized = false
+	}
+	sanitizeCodingToolSelection(&cfg)
+	normalizeConfigTimeouts(&cfg)
+	if petChanged {
+		sanitizePetConfig(&cfg)
+	}
+	if _, ok := patch["llm_prompt_cache"]; ok {
+		if err := migrateLLMPromptCacheDirIfNeeded(current.LLMPromptCache, cfg.LLMPromptCache); err != nil {
+			a.invalidateConfigCacheLocked()
+			a.configMu.Unlock()
+			return corelib.AppConfig{}, err
+		}
+	}
+
+	path, err := a.getConfigPath()
+	if err != nil {
+		a.configMu.Unlock()
+		return corelib.AppConfig{}, err
+	}
+	if err := a.saveToPath(path, cfg); err != nil {
+		a.invalidateConfigCacheLocked()
+		a.configMu.Unlock()
+		return corelib.AppConfig{}, err
+	}
+	a.configCache = cfg
+	a.configCacheValid = true
+	a.workflowDisabled.Store(!cfg.IsWorkflowEnabled())
+	floatingChanged := petChanged && floatingAppearanceChanged(current, cfg)
+	soundChanged := petChanged && floatingSoundChanged(current, cfg)
+	a.configMu.Unlock()
+
+	corelib.SetLogDetailEnabled(cfg.LogDetailEnabled)
+	corelib.SetWorkspaceDir(cfg.WorkingDirectory)
+	a.refreshPowerOptimizationStateFromConfig(cfg)
+	a.refreshWorkstationMode(cfg)
+	if policyModeChanged && a.policyEngine != nil {
+		a.policyEngine.SetMode(cfg.SecurityPolicyMode)
+	}
+	if OnConfigChanged != nil {
+		go OnConfigChanged(cfg)
+	}
+	if floatingChanged {
+		go func(cfg corelib.AppConfig) {
+			if cfg.PetEnabled {
+				if fa := a.ensureFloatingAssistant(); fa != nil {
+					fa.RefreshAppearance(cfg)
+				}
+				return
+			}
+			if fa := a.existingFloatingAssistant(); fa != nil {
+				fa.RefreshAppearance(cfg)
+			}
+		}(cfg)
+	}
+	if !floatingChanged && soundChanged {
+		go func(cfg corelib.AppConfig) {
+			if fa := a.existingFloatingAssistant(); fa != nil {
+				fa.UpdateSoundConfig(cfg)
+			}
+		}(cfg)
+	}
+	if proxyChanged {
+		a.applyAgentProxy()
+	}
+	log.Printf("[config] PatchConfigFields:done fields=%d", len(patch))
+	return cfg, nil
 }
 
 // PatchConfig performs an atomic read-modify-write on the config file.
@@ -5240,7 +6198,78 @@ func (a *App) PatchConfig(patchFn func(cfg *corelib.AppConfig)) error {
 	return a.patchConfig(patchFn, false)
 }
 
+func (a *App) PatchConfigIfChanged(patchFn func(cfg *corelib.AppConfig) bool) (bool, error) {
+	return a.patchConfigIfChanged(patchFn, false)
+}
+
+func configPatchCaller(skip int) string {
+	for i := skip; i < skip+8; i++ {
+		pc, file, line, ok := goruntime.Caller(i)
+		if !ok {
+			continue
+		}
+		fnName := ""
+		if fn := goruntime.FuncForPC(pc); fn != nil {
+			fnName = fn.Name()
+			if idx := strings.LastIndex(fnName, "/"); idx >= 0 {
+				fnName = fnName[idx+1:]
+			}
+		}
+		base := filepath.Base(file)
+		if base == "app.go" && (strings.Contains(fnName, ".patchConfig") || strings.Contains(fnName, ".PatchConfig")) {
+			continue
+		}
+		if fnName == "" {
+			return fmt.Sprintf("%s:%d", base, line)
+		}
+		return fmt.Sprintf("%s:%d %s", base, line, fnName)
+	}
+	return "unknown"
+}
+
+func (a *App) patchConfigIfChanged(patchFn func(cfg *corelib.AppConfig) bool, allowHubManagedSecurity bool) (bool, error) {
+	caller := configPatchCaller(2)
+	a.configMu.Lock()
+	cfg, err := a.loadConfigLocked()
+	if err != nil {
+		a.configMu.Unlock()
+		return false, err
+	}
+	current := cfg
+	changed := patchFn(&cfg)
+	if !changed {
+		a.configCache = current
+		a.configCacheValid = true
+		a.configMu.Unlock()
+		log.Printf("[config] PatchConfig:skip_no_change caller=%q", caller)
+		return false, nil
+	}
+	if !allowHubManagedSecurity && a.shouldPreserveHubManagedSecurity(current) {
+		clientsecurity.PreserveHubManagedSecurityConfig(current, &cfg)
+	} else if !allowHubManagedSecurity && a.hubSecurityExplicitlyCentralizedFalse() {
+		cfg.HubSecurityCentralized = false
+	}
+	sanitizeCodingToolSelection(&cfg)
+	normalizeConfigTimeouts(&cfg)
+	path, err := a.getConfigPath()
+	if err != nil {
+		a.configMu.Unlock()
+		return false, err
+	}
+	if err := a.saveToPath(path, cfg); err != nil {
+		a.invalidateConfigCacheLocked()
+		a.configMu.Unlock()
+		return false, err
+	}
+	a.configCache = cfg
+	a.configCacheValid = true
+	a.configMu.Unlock()
+	log.Printf("[config] PatchConfig:done caller=%q", caller)
+	return true, nil
+}
+
 func (a *App) patchConfig(patchFn func(cfg *corelib.AppConfig), allowHubManagedSecurity bool) error {
+	caller := configPatchCaller(2)
 	a.configMu.Lock()
 	cfg, err := a.loadConfigLocked()
 	if err != nil {
@@ -5249,9 +6278,12 @@ func (a *App) patchConfig(patchFn func(cfg *corelib.AppConfig), allowHubManagedS
 	}
 	current := cfg
 	patchFn(&cfg)
-	if !allowHubManagedSecurity {
+	if !allowHubManagedSecurity && a.shouldPreserveHubManagedSecurity(current) {
 		clientsecurity.PreserveHubManagedSecurityConfig(current, &cfg)
+	} else if !allowHubManagedSecurity && a.hubSecurityExplicitlyCentralizedFalse() {
+		cfg.HubSecurityCentralized = false
 	}
+	sanitizeCodingToolSelection(&cfg)
 	normalizeConfigTimeouts(&cfg)
 	path, err := a.getConfigPath()
 	if err != nil {
@@ -5266,7 +6298,7 @@ func (a *App) patchConfig(patchFn func(cfg *corelib.AppConfig), allowHubManagedS
 	a.configCache = cfg
 	a.configCacheValid = true
 	a.configMu.Unlock()
-	log.Printf("[config] PatchConfig:done")
+	log.Printf("[config] PatchConfig:done caller=%q", caller)
 	return nil
 }
 
@@ -6506,12 +7538,12 @@ func (a *App) ListSkills(toolName string) []corelib.Skill {
 	json.Unmarshal(data, &skills)
 
 	// Filter out duplicates of default skills if they exist in JSON
-	// AND filter out 'address' type skills for gemini/codex
-	isGeminiOrCodex := normalizeRemoteToolNameKind(toolName).RequiresZipSkills()
+	// AND filter out 'address' type skills for Codex
+	requiresZipSkills := normalizeRemoteToolNameKind(toolName).RequiresZipSkills()
 
 	filteredSkills := defaultSkills
 	for _, s := range skills {
-		if isGeminiOrCodex && normalizeSkillTypeKind(s.Type).IsAddress() {
+		if requiresZipSkills && normalizeSkillTypeKind(s.Type).IsAddress() {
 			continue
 		}
 
@@ -6748,6 +7780,7 @@ func (a *App) scanSkillZipBeforeInstallDetailed(path, displayName, description s
 		ByName:    make(map[string]*skill.ScanReport),
 		ByDirName: make(map[string]*skill.ScanReport),
 	}
+	skippedRiskScan := false
 	for _, root := range roots {
 		entry, err := loadImportedSkillEntry(root)
 		if err != nil {
@@ -6769,6 +7802,13 @@ func (a *App) scanSkillZipBeforeInstallDetailed(path, displayName, description s
 		entry.SkillDir = root
 		entry.Source = firstNonEmpty(entry.Source, "zip")
 		entry.TrustLevel = firstNonEmpty(entry.TrustLevel, "community")
+		if a.isRiskGuardrailOffMode() {
+			skippedRiskScan = true
+			if err := a.admitManualSkillInstall(ctx, entry, "manual zip", nil); err != nil {
+				return result, err
+			}
+			continue
+		}
 		report := scanner.ScanInstallStaged(ctx, entry, root, func(status string) {
 			if a != nil {
 				a.log(status)
@@ -6788,7 +7828,7 @@ func (a *App) scanSkillZipBeforeInstallDetailed(path, displayName, description s
 			return result, err
 		}
 	}
-	if result.HighestReport == nil {
+	if result.HighestReport == nil && !skippedRiskScan {
 		entry := &corelib.NLSkillEntry{Name: name, Description: description, SkillDir: tmpDir, Source: "zip", TrustLevel: "community"}
 		result.HighestReport = scanner.ScanInstallStaged(ctx, entry, tmpDir, func(status string) {
 			if a != nil {
@@ -6828,9 +7868,9 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 		return err
 	}
 	skillKind := normalizeSkillTypeKind(skillType)
-	// Prevent address skills for gemini/codex
+	// Prevent address skills for Codex
 	if normalizeRemoteToolNameKind(toolName).RequiresZipSkills() && skillKind.IsAddress() {
-		return fmt.Errorf("gemini and codex only support zip package skills")
+		return fmt.Errorf("codex only supports zip package skills")
 	}
 	// Validate zip if applicable
 	if skillKind.IsZip() && strings.Contains(value, string(os.PathSeparator)) {

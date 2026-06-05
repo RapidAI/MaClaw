@@ -98,6 +98,48 @@ func TestHubSecurityCacheUpdate_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestUpdateHubHeartbeatConfigPreservesCapabilityPolicyWhenFieldAbsent(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.CapabilityMarketPolicy.PreferredUploadTarget = corelib.CapabilitySourceEnterpriseHub
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	changed := app.updateHubHeartbeatConfig(json.RawMessage(`{"hub_config":{"digital_employee_authorization":{"enabled":true}}}`))
+	if changed {
+		t.Fatalf("updateHubHeartbeatConfig() changed policy without capability_market_policy field")
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig(after) error = %v", err)
+	}
+	if saved.CapabilityMarketPolicy.EffectivePreferredUploadTarget() != corelib.CapabilitySourceEnterpriseHub {
+		t.Fatalf("preferred upload target = %q", saved.CapabilityMarketPolicy.EffectivePreferredUploadTarget())
+	}
+}
+
+func TestUpdateHubHeartbeatConfigAppliesPreferredUploadTarget(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+
+	changed := app.updateHubHeartbeatConfig(json.RawMessage(`{"hub_config":{"capability_market_policy":{"preferred_upload_target":"enterprise_hub"}}}`))
+	if !changed {
+		t.Fatalf("updateHubHeartbeatConfig() did not report policy change")
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig(after) error = %v", err)
+	}
+	if saved.CapabilityMarketPolicy.EffectivePreferredUploadTarget() != corelib.CapabilitySourceEnterpriseHub {
+		t.Fatalf("preferred upload target = %q", saved.CapabilityMarketPolicy.EffectivePreferredUploadTarget())
+	}
+}
+
 func TestHubSecurityCacheUpdate_DetectsChange(t *testing.T) {
 	cache := &hubSecurityCache{}
 

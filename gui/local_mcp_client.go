@@ -22,16 +22,23 @@ import (
 // It launches the command, communicates via JSON-RPC 2.0 over stdin/stdout,
 // and provides tool discovery and invocation.
 type LocalMCPClient struct {
-	entry   corelib.LocalMCPServerEntry
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  *bufio.Reader
-	mu      sync.Mutex   // guards sendRequest (serializes JSON-RPC I/O)
-	stateMu sync.RWMutex // guards running, tools
-	nextID  atomic.Int64
-	tools   []MCPToolView
-	running bool
-	cancel  context.CancelFunc
+	entry     corelib.LocalMCPServerEntry
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    *bufio.Reader
+	mu        sync.Mutex   // serializes writes to stdin; responses are routed by id
+	stateMu   sync.RWMutex // guards running, tools
+	pendingMu sync.Mutex
+	pending   map[int64]chan localMCPPendingResponse
+	nextID    atomic.Int64
+	tools     []MCPToolView
+	running   bool
+	cancel    context.CancelFunc
+}
+
+type localMCPPendingResponse struct {
+	result json.RawMessage
+	err    error
 }
 
 // jsonRPCRequest is a JSON-RPC 2.0 request.
@@ -146,13 +153,15 @@ func (c *LocalMCPClient) tryStart(ctx context.Context) error {
 	c.stdin = stdinPipe
 	c.stdout = bufio.NewReaderSize(stdoutPipe, 256*1024)
 	c.cancel = cancel
+	c.pending = make(map[int64]chan localMCPPendingResponse)
 	c.running = true
 	c.stateMu.Unlock()
 
 	// Monitor process exit in background to update running state.
 	go c.watchProcess()
+	go c.readLoop()
 
-	// Perform MCP initialize handshake (holds mu for serialized I/O).
+	// Perform MCP initialize handshake.
 	if err := c.initialize(); err != nil {
 		c.Stop()
 		return fmt.Errorf("MCP initialize: %w", err)
@@ -174,6 +183,68 @@ func (c *LocalMCPClient) watchProcess() {
 	c.stateMu.Lock()
 	c.running = false
 	c.stateMu.Unlock()
+	c.failPending(fmt.Errorf("process exited: %v", err))
+}
+
+func (c *LocalMCPClient) readLoop() {
+	for {
+		c.stateMu.RLock()
+		alive := c.running
+		reader := c.stdout
+		c.stateMu.RUnlock()
+		if !alive || reader == nil {
+			return
+		}
+
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			c.stateMu.Lock()
+			if c.running {
+				c.running = false
+			}
+			c.stateMu.Unlock()
+			c.failPending(fmt.Errorf("read response: %w", readErr))
+			return
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		var resp jsonRPCResponse
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			continue
+		}
+		if resp.ID == 0 {
+			continue
+		}
+
+		c.pendingMu.Lock()
+		ch := c.pending[resp.ID]
+		delete(c.pending, resp.ID)
+		c.pendingMu.Unlock()
+		if ch == nil {
+			continue
+		}
+		if resp.Error != nil {
+			ch <- localMCPPendingResponse{err: fmt.Errorf("JSON-RPC error %d: %s", resp.Error.Code, resp.Error.Message)}
+		} else {
+			ch <- localMCPPendingResponse{result: resp.Result}
+		}
+	}
+}
+
+func (c *LocalMCPClient) failPending(err error) {
+	if err == nil {
+		err = fmt.Errorf("local MCP client stopped")
+	}
+	c.pendingMu.Lock()
+	pending := c.pending
+	c.pending = make(map[int64]chan localMCPPendingResponse)
+	c.pendingMu.Unlock()
+	for _, ch := range pending {
+		ch <- localMCPPendingResponse{err: err}
+	}
 }
 
 // initialize sends the MCP initialize request and initialized notification.
@@ -210,8 +281,9 @@ func (c *LocalMCPClient) initialize() error {
 	return nil
 }
 
-// sendRequest sends a JSON-RPC request and reads the response.
-// It serializes all I/O through c.mu to prevent interleaved reads/writes.
+// sendRequest sends a JSON-RPC request and waits for its matching response.
+// Writes are serialized so JSON lines do not interleave. Responses are routed
+// by request id in readLoop, allowing concurrent calls to the same MCP server.
 func (c *LocalMCPClient) sendRequest(method string, params interface{}) (json.RawMessage, error) {
 	c.stateMu.RLock()
 	if !c.running {
@@ -234,54 +306,36 @@ func (c *LocalMCPClient) sendRequest(method string, params interface{}) (json.Ra
 	}
 	data = append(data, '\n')
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	responseC := make(chan localMCPPendingResponse, 1)
+	c.pendingMu.Lock()
+	if c.pending == nil {
+		c.pending = make(map[int64]chan localMCPPendingResponse)
+	}
+	c.pending[id] = responseC
+	c.pendingMu.Unlock()
 
-	if _, err := c.stdin.Write(data); err != nil {
+	defer func() {
+		c.pendingMu.Lock()
+		delete(c.pending, id)
+		c.pendingMu.Unlock()
+	}()
+
+	c.mu.Lock()
+	_, err = c.stdin.Write(data)
+	c.mu.Unlock()
+	if err != nil {
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
-	// Read lines until we get a response with matching id.
-	// Skip notifications and non-JSON lines (e.g. stderr leaking to stdout).
-	// Use a hard deadline to avoid blocking forever if the process dies.
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		// Check if process is still alive before blocking on read.
-		c.stateMu.RLock()
-		alive := c.running
-		c.stateMu.RUnlock()
-		if !alive {
-			return nil, fmt.Errorf("process exited while waiting for response to %s", method)
+	select {
+	case resp := <-responseC:
+		if resp.err != nil {
+			return nil, resp.err
 		}
-
-		line, readErr := c.stdout.ReadString('\n')
-		if readErr != nil {
-			return nil, fmt.Errorf("read response: %w", readErr)
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		var resp jsonRPCResponse
-		if err := json.Unmarshal([]byte(line), &resp); err != nil {
-			// Not valid JSON-RPC — skip (could be log output from the server).
-			continue
-		}
-
-		if resp.ID != id {
-			// Different request ID or notification — skip.
-			continue
-		}
-
-		if resp.Error != nil {
-			return nil, fmt.Errorf("JSON-RPC error %d: %s", resp.Error.Code, resp.Error.Message)
-		}
-
-		return resp.Result, nil
+		return resp.result, nil
+	case <-time.After(30 * time.Second):
+		return nil, fmt.Errorf("timeout waiting for response to %s", method)
 	}
-
-	return nil, fmt.Errorf("timeout waiting for response to %s", method)
 }
 
 // DiscoverTools calls tools/list and caches the result.
@@ -356,6 +410,7 @@ func (c *LocalMCPClient) Stop() {
 	wasRunning := c.running
 	c.running = false
 	c.stateMu.Unlock()
+	c.failPending(fmt.Errorf("local MCP client stopped"))
 
 	if !wasRunning {
 		return

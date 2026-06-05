@@ -122,8 +122,13 @@ func (h *IMMessageHandler) buildTraceEvidencePrompt(userID, userMessage string) 
 }
 
 func (h *IMMessageHandler) buildResumeTraceContext(userID, fallbackTask string) string {
+	lang, _ := agentViewCurrentLang.Load().(string)
+	return h.buildResumeTraceContextWithLang(userID, fallbackTask, lang)
+}
+
+func (h *IMMessageHandler) buildResumeTraceContextWithLang(userID, fallbackTask, lang string) string {
 	if activeSlot := h.memory.ActiveUnfinishedSlot(userID); activeSlot != nil {
-		return buildUnfinishedSlotResumeContext(activeSlot) + h.buildTraceEvidencePrompt(userID, activeSlot.LastTask)
+		return buildUnfinishedSlotResumeContextWithLang(activeSlot, lang) + h.buildTraceEvidencePrompt(userID, activeSlot.LastTask)
 	}
 	return h.buildTraceEvidencePrompt(userID, fallbackTask)
 }

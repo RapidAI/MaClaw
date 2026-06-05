@@ -109,6 +109,12 @@ var defaultKeywords = []KeywordEntry{
 
 	{Keyword: "browser", Label: LabelBrowser, Strength: Strong},
 	{Keyword: "playwright", Label: LabelBrowser, Strength: Strong},
+	{Keyword: "登录知乎", Label: LabelBrowser, Strength: Strong},
+	{Keyword: "发表", Label: LabelBrowser, Strength: Weak},
+	{Keyword: "发布", Label: LabelBrowser, Strength: Weak},
+	{Keyword: "发帖", Label: LabelBrowser, Strength: Strong},
+	{Keyword: "publish", Label: LabelBrowser, Strength: Weak},
+	{Keyword: "sign in", Label: LabelBrowser, Strength: Strong},
 	{Keyword: "web page", Label: LabelBrowser, Strength: Weak},
 	{Keyword: "click", Label: LabelBrowser, Strength: Weak},
 

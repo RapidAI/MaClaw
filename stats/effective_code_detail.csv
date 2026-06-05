@@ -300,8 +300,6 @@ gui/remote_event_extractor.go,gui,Backend/Core,prod,Go,248
 gui/remote_event_extractor_test.go,gui,Backend/Core,test,Go,61
 gui/remote_event_types.go,gui,Backend/Core,prod,Go,59
 gui/remote_execution_codex.go,gui,Backend/Core,prod,Go,218
-gui/remote_execution_gemini_acp.go,gui,Backend/Core,prod,Go,553
-gui/remote_execution_gemini_acp_live_test.go,gui,Backend/Core,test,Go,143
 gui/remote_execution_helpers.go,gui,Backend/Core,prod,Go,122
 gui/remote_execution_iflow.go,gui,Backend/Core,prod,Go,233
 gui/remote_execution_kilo_stub.go,gui,Backend/Core,prod,Go,9
@@ -354,8 +352,6 @@ gui/remote_tool_claude.go,gui,Backend/Core,prod,Go,139
 gui/remote_tool_claude_test.go,gui,Backend/Core,test,Go,53
 gui/remote_tool_codebuddy.go,gui,Backend/Core,prod,Go,43
 gui/remote_tool_codex.go,gui,Backend/Core,prod,Go,61
-gui/remote_tool_cursor.go,gui,Backend/Core,prod,Go,38
-gui/remote_tool_gemini.go,gui,Backend/Core,prod,Go,38
 gui/remote_tool_iflow.go,gui,Backend/Core,prod,Go,61
 gui/remote_tool_kilo.go,gui,Backend/Core,prod,Go,104
 gui/remote_tool_opencode.go,gui,Backend/Core,prod,Go,51

@@ -155,7 +155,7 @@ func (ke *KnowledgeExtractor) preCompress(ctx context.Context, messages []Conver
 
 	systemPrompt := `You are a conversation compressor. Compress the following conversation into a concise summary that preserves ALL technical details, decisions, code snippets, file paths, commands, and key facts. Remove greetings, filler, and redundant exchanges. Output ONLY the compressed text.`
 
-	resp, err := ke.llm.ChatCall([]map[string]string{
+	resp, err := chatCallWithContext(ctx, ke.llm, []map[string]string{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": sb.String()},
 	})
@@ -378,7 +378,7 @@ CRITICAL RULES:
 - If no knowledge worth extracting, return an empty array: []
 - Return ONLY the JSON array, no markdown, no commentary`
 
-	resp, err := ke.llm.ChatCall([]map[string]string{
+	resp, err := chatCallWithContext(ctx, ke.llm, []map[string]string{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": conversationText},
 	})

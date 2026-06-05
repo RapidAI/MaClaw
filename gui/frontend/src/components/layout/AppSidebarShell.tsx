@@ -7,7 +7,6 @@ import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
 import type { HistoryDiscussionSummary } from './SidebarHistorySessions';
 import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
-
 type RecentProject = {
     id?: string;
     name?: string;
@@ -69,6 +68,8 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     showHubCreditAction: boolean;
     openHubCreditsPage: () => void;
     openServiceRedeemPage?: () => void;
+    openLLMSettingsPage?: () => void;
+    openHubCardStorePage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
     handleRecentTasksResizeStart: (e: ReactMouseEvent<HTMLDivElement>) => void;
@@ -88,7 +89,6 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     favoriteEmployeeIds?: string[];
     showCodingToolEntry?: boolean;
 }
-
 
 export const AppSidebarShell = ({
     navTab,
@@ -143,6 +143,8 @@ export const AppSidebarShell = ({
     showHubCreditAction,
     openHubCreditsPage,
     openServiceRedeemPage,
+    openLLMSettingsPage,
+    openHubCardStorePage,
     codingAgentProgress = null,
     codingAgentTurnSnapshot = null,
     handleRecentTasksResizeStart,
@@ -236,7 +238,7 @@ export const AppSidebarShell = ({
                         noHubAuthorizationText={noHubAuthorizationText}
                         showHubCreditAction={showHubCreditAction}
                         openHubCreditsPage={openHubCreditsPage}
-                        openServiceRedeemPage={openServiceRedeemPage}
+                        openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openHubCardStorePage={openHubCardStorePage}
                         codingAgentProgress={codingAgentProgress}
                         codingAgentTurnSnapshot={codingAgentTurnSnapshot}
                         handleRecentTasksResizeStart={handleRecentTasksResizeStart}

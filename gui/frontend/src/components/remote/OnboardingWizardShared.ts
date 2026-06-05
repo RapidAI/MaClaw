@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import { colors } from "./styles";
+import { localizeByLang } from "../../utils/hubServiceI18n";
 
 export interface HubLLMServiceStatus {
     active?: boolean;
@@ -77,9 +78,7 @@ export const labelStyle: CSSProperties = {
     display: "block",
 };
 
-export const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en
-);
+export const localizeText = localizeByLang;
 
 /* ── Shared button styles for the onboarding wizard ──
    These centralize the visual hierarchy so the same look is reused across

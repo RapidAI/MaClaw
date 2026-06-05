@@ -18,9 +18,8 @@ import (
 )
 
 var (
-	claudeReleasesBase     = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
-	cursorInstallScriptURL = "https://cursor.com/install"
-	httpGet                = http.Get
+	claudeReleasesBase = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
+	httpGet            = http.Get
 )
 
 type ToolStatus struct {
@@ -96,52 +95,10 @@ func (tm *ToolManager) fetchLatestClaudeVersion(target string) (string, error) {
 	return version, nil
 }
 
-func (tm *ToolManager) fetchLatestCursorVersion() (string, error) {
-	resp, err := httpGet(cursorInstallScriptURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch cursor install script: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("cursor install script returned HTTP %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read cursor install script: %w", err)
-	}
-	version := parseCursorVersionFromInstallScript(string(body))
-	if version == "" {
-		return "", fmt.Errorf("failed to detect cursor agent version from install script")
-	}
-	return version, nil
-}
-
-func parseCursorVersionFromInstallScript(script string) string {
-	for _, line := range strings.Split(script, "\n") {
-		if !strings.Contains(line, "downloads.cursor.com/lab/") {
-			continue
-		}
-		parts := strings.Split(line, "downloads.cursor.com/lab/")
-		if len(parts) < 2 {
-			continue
-		}
-		rest := parts[1]
-		if idx := strings.Index(rest, "/"); idx > 0 {
-			return strings.TrimSpace(rest[:idx])
-		}
-	}
-	return ""
-}
-
 func (tm *ToolManager) GetLatestVersion(name string) (string, error) {
 	switch remote.NormalizeRemoteToolName(name) {
 	case "claude":
 		return tm.fetchLatestClaudeVersion("latest")
-	case "cursor":
-		if runtime.GOOS == "windows" {
-			return "", fmt.Errorf("automatic update checks are not supported for cursor on windows")
-		}
-		return tm.fetchLatestCursorVersion()
 	default:
 		packageName := tm.GetPackageName(name)
 		if packageName == "" {
@@ -208,11 +165,6 @@ func (tm *ToolManager) InstallTool(name string) error {
 	// Use native installation for Claude Code
 	if name == "claude" {
 		return tm.installClaudeNative("latest")
-	}
-
-	// Use native installation for Cursor Agent (not an npm package)
-	if name == "cursor" {
-		return tm.installCursorAgent()
 	}
 
 	npmPath := tm.getNpmPath()
@@ -391,15 +343,84 @@ func (tm *ToolManager) InstallTool(name string) error {
 	return nil
 }
 
+func (a *App) installToolOnDemandForOwner(ownerID, toolName string) error {
+	toolName = strings.ToLower(strings.TrimSpace(toolName))
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, "bash", map[string]interface{}{"command": "install tool " + toolName, "tool": toolName}); err != nil {
+		return err
+	}
+	return a.installToolOnDemandUnchecked(toolName)
+}
+
+func (a *App) installToolOnDemandUnchecked(toolName string) error {
+	toolName = normalizeRemoteToolName(toolName)
+	if !remoteToolAutoInstallSupported(toolName) {
+		return fmt.Errorf("automatic installation is not supported for %s", toolName)
+	}
+
+	// Try to acquire lock for this tool
+	if !a.tryLockTool(toolName) {
+		a.log(a.tr("On-demand installation: %s is already being installed in background, waiting...", toolName))
+		// Wait for background installation to complete
+		for i := 0; i < 60; i++ { // Wait up to 60 seconds
+			time.Sleep(1 * time.Second)
+			if !a.isToolLocked(toolName) {
+				break
+			}
+		}
+		// Check if tool is now installed
+		tm := NewToolManager(a)
+		status := tm.GetToolStatus(toolName)
+		if status.Installed {
+			a.log(a.tr("On-demand installation: %s was installed by background process.", toolName))
+			return nil
+		}
+		// Try to acquire lock again
+		if !a.tryLockTool(toolName) {
+			return fmt.Errorf("tool %s is still being installed", toolName)
+		}
+	}
+	defer a.unlockTool(toolName)
+
+	tm := NewToolManager(a)
+	status := tm.GetToolStatus(toolName)
+
+	if status.Installed {
+		needsUpdate, _, err := tm.NeedsUpdate(toolName, status.Version)
+		if err != nil {
+			a.log(a.tr("On-demand installation: Warning: failed to check updates for %s: %v", toolName, err))
+			return nil
+		}
+		if !needsUpdate {
+			return nil
+		}
+		a.log(a.tr("On-demand installation: Updating %s...", toolName))
+		if err := tm.UpdateTool(toolName); err != nil {
+			a.log(a.tr("On-demand installation: ERROR: Failed to update %s: %v", toolName, err))
+			return err
+		}
+		a.log(a.tr("On-demand installation: %s updated successfully.", toolName))
+		a.emitEvent("tool-updated", toolName)
+		return nil
+	}
+
+	a.log(a.tr("On-demand installation: Installing %s...", toolName))
+	if err := tm.InstallTool(toolName); err != nil {
+		a.log(a.tr("On-demand installation: ERROR: Failed to install %s: %v", toolName, err))
+		return err
+	}
+
+	// Update PATH to include newly installed tool
+	a.updatePathForNode()
+
+	a.log(a.tr("On-demand installation: %s installed successfully.", toolName))
+	a.emitEvent("tool-installed", toolName)
+	return nil
+}
+
 func (tm *ToolManager) UpdateTool(name string) error {
 	// Use native update for Claude Code
 	if name == "claude" {
 		return tm.installClaudeNative("latest")
-	}
-
-	// Use native update for Cursor Agent
-	if name == "cursor" {
-		return tm.installCursorAgent()
 	}
 
 	// Verify the tool is installed in our private directory first
@@ -728,139 +749,6 @@ func (tm *ToolManager) installClaudeNative(target string) error {
 	return nil
 }
 
-// installCursorAgent downloads and installs the Cursor Agent CLI binary.
-// Cursor Agent is distributed as a tar.gz package from downloads.cursor.com.
-// On Windows it is not officially supported natively, so we skip gracefully.
-func (tm *ToolManager) installCursorAgent() error {
-	home := tm.app.GetUserHomeDir()
-	installDir := filepath.Join(home, ".maclaw", "data", "tools", "bin")
-
-	if err := os.MkdirAll(installDir, 0755); err != nil {
-		return fmt.Errorf("failed to create install directory: %w", err)
-	}
-
-	// Determine platform
-	var goos, arch string
-	switch runtime.GOOS {
-	case "linux":
-		goos = "linux"
-	case "darwin":
-		goos = "darwin"
-	default:
-		return fmt.Errorf("cursor agent CLI is currently only supported on macOS and Linux (see https://docs.cursor.com/en/cli/installation)")
-	}
-	switch runtime.GOARCH {
-	case "amd64":
-		arch = "x64"
-	case "arm64":
-		arch = "arm64"
-	default:
-		return fmt.Errorf("unsupported architecture for cursor agent: %s", runtime.GOARCH)
-	}
-
-	tm.app.log(tm.app.tr("Fetching Cursor Agent install metadata..."))
-	version, err := tm.fetchLatestCursorVersion()
-	if err != nil {
-		return err
-	}
-
-	tm.app.log(tm.app.tr("Cursor Agent version: %s", version))
-
-	// Step 2: Download the tar.gz package
-	downloadURL := fmt.Sprintf("https://downloads.cursor.com/lab/%s/%s/%s/agent-cli-package.tar.gz", version, goos, arch)
-	tm.app.log(tm.app.tr("Downloading Cursor Agent from: %s", downloadURL))
-
-	dlResp, err := http.Get(downloadURL)
-	if err != nil {
-		return fmt.Errorf("failed to download cursor agent: %w", err)
-	}
-	defer dlResp.Body.Close()
-	if dlResp.StatusCode != 200 {
-		return fmt.Errorf("cursor agent download returned HTTP %d", dlResp.StatusCode)
-	}
-
-	tmpFile, err := os.CreateTemp("", "cursor-agent-*.tar.gz")
-	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := io.Copy(tmpFile, dlResp.Body); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("failed to download cursor agent package: %w", err)
-	}
-	tmpFile.Close()
-
-	// Step 3: Extract the tar.gz to a temp directory
-	extractDir, err := os.MkdirTemp("", "cursor-agent-extract-*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp extract dir: %w", err)
-	}
-	defer os.RemoveAll(extractDir)
-
-	tarCmd := exec.Command("tar", "--strip-components=1", "-xzf", tmpPath, "-C", extractDir)
-	hideCommandWindow(tarCmd)
-	if out, err := tarCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to extract cursor agent package: %w\nOutput: %s", err, string(out))
-	}
-
-	// Step 4: Find the cursor-agent binary in the extracted directory and copy to install dir
-	binaryName := "cursor-agent"
-	extractedBinary := filepath.Join(extractDir, binaryName)
-	if _, err := os.Stat(extractedBinary); err != nil {
-		return fmt.Errorf("cursor-agent binary not found in extracted package")
-	}
-
-	targetPath := filepath.Join(installDir, binaryName)
-
-	// Remove old version if exists
-	if _, err := os.Stat(targetPath); err == nil {
-		for i := 0; i < 3; i++ {
-			err = os.Remove(targetPath)
-			if err == nil {
-				break
-			}
-			time.Sleep(time.Second)
-		}
-	}
-
-	srcFile, err := os.Open(extractedBinary)
-	if err != nil {
-		return fmt.Errorf("failed to open extracted binary: %w", err)
-	}
-	defer srcFile.Close()
-
-	dstFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-	if err != nil {
-		return fmt.Errorf("failed to create target binary: %w", err)
-	}
-
-	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		dstFile.Close()
-		return fmt.Errorf("failed to copy cursor-agent binary: %w", err)
-	}
-	dstFile.Sync()
-	dstFile.Close()
-
-	// Also create an "agent" symlink for compatibility
-	agentPath := filepath.Join(installDir, "agent")
-	os.Remove(agentPath) // best effort
-	os.Symlink(binaryName, agentPath)
-
-	// Verify installation
-	tm.app.log(tm.app.tr("Verifying Cursor Agent installation..."))
-	time.Sleep(500 * time.Millisecond)
-
-	status := tm.GetToolStatus("cursor")
-	if !status.Installed {
-		return fmt.Errorf("installation completed but verification failed - cursor-agent not found")
-	}
-
-	tm.app.log(tm.app.tr("✓ Cursor Agent %s installed successfully!", status.Version))
-	return nil
-}
-
 func (tm *ToolManager) GetPackageName(name string) string {
 	return remote.PackageName(name)
 }
@@ -907,7 +795,7 @@ func (a *App) UpdateTool(name string) error {
 func (a *App) CheckToolsStatus() []ToolStatus {
 	tm := NewToolManager(a)
 	// Check kilo first, then other tools
-	tools := []string{"kilo", "claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "iflow"}
+	tools := []string{"kilo", "claude", "codex", "opencode", "codebuddy", "iflow"}
 	statuses := make([]ToolStatus, len(tools))
 	for i, name := range tools {
 		statuses[i] = tm.GetToolStatus(name)

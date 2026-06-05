@@ -2,6 +2,7 @@ package browser
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -57,17 +58,28 @@ func (l *AuditLogger) LogConnect(sessionID, addr string) {
 
 // LogDisconnect records a disconnection.
 func (l *AuditLogger) LogDisconnect(sessionID, reason string) {
-	l.write(fmt.Sprintf("[DISCONNECT] session_id=%s reason=%s", sessionID, reason))
+	l.write(fmt.Sprintf("[DISCONNECT] session_id=%s reason_len=%d", sessionID, len([]rune(reason))))
 }
 
 // LogNavigation records a page navigation.
 func (l *AuditLogger) LogNavigation(sessionID, url string) {
-	l.write(fmt.Sprintf("[NAVIGATE] session_id=%s url=%s", sessionID, url))
+	l.write(fmt.Sprintf("[NAVIGATE] session_id=%s url=%s", sessionID, SafeURLForLog(url)))
 }
 
 // LogAction records a generic browser action.
 func (l *AuditLogger) LogAction(sessionID, action, detail string) {
-	l.write(fmt.Sprintf("[ACTION] session_id=%s action=%s detail=%s", sessionID, action, detail))
+	l.write(fmt.Sprintf("[ACTION] session_id=%s action=%s detail_len=%d", sessionID, action, len([]rune(detail))))
+}
+
+func SafeURLForLog(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u == nil {
+		return fmt.Sprintf("<invalid len=%d>", len([]rune(raw)))
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.User = nil
+	return u.String()
 }
 
 // Close flushes and closes the log file.

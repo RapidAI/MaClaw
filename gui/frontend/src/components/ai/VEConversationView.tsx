@@ -444,6 +444,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const loadedHistorySessionRef = useRef<string>("");
     const sessionInitInFlightRef = useRef<Promise<boolean> | null>(null);
     const sessionInitGenerationRef = useRef(0);
+    const lastVEIdRef = useRef(veId);
     const [queueDrainSignal, setQueueDrainSignal] = useState(0);
 
     sendingRef.current = sending;
@@ -453,6 +454,13 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const assistantDisplayName = useMemo(() => readableConversationPartnerName(veName, veId, isZh), [isZh, veId, veName]);
     const safeAssistantAvatar = useMemo(() => safeAvatarDataURL(avatarDataURL), [avatarDataURL]);
     const canSend = veOnline && !readOnly && !sending && (!!inputText.trim() || pendingAttachments.length > 0);
+
+    useEffect(() => {
+        const veChanged = lastVEIdRef.current !== veId;
+        lastVEIdRef.current = veId;
+        if (initialOnlineStatus === "offline") setVeOnline(false);
+        else if (initialOnlineStatus === "online" || veChanged) setVeOnline(true);
+    }, [initialOnlineStatus, veId]);
 
     const clearAuthPendingTimer = useCallback(() => {
         if (authPendingTimerRef.current) {
@@ -1147,6 +1155,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 return true;
             } catch (err: any) {
                 if (mountedRef.current) {
+                    const errorMessage = extractErrorMessage(err) || "Send failed";
+                    const errorType = classifySendError(err);
                     // Mark last user message as failed
                     setState((prev) => {
                         const msgs = [...prev.messages];
@@ -1160,8 +1170,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                             ...prev,
                             messages: msgs,
                             error: {
-                                type: "send_failed",
-                                message: extractErrorMessage(err) || "Send failed",
+                                type: errorType,
+                                message: errorMessage,
                             },
                         };
                     });
@@ -1678,6 +1688,13 @@ function classifySessionInitError(err: unknown): VEConversationError["type"] {
     return "hub_disconnected";
 }
 
+function classifySendError(err: unknown): VEConversationError["type"] {
+    const message = extractErrorMessage(err) || String((err as any)?.message || err || "");
+    const lower = message.toLowerCase();
+    if (lower.includes("offline") || lower.includes("ve_offline")) return "ve_offline";
+    return "send_failed";
+}
+
 function MessageBubble({ message, sessionId, theme, isZh, assistantName, userName, assistantAvatarDataURL }: MessageBubbleProps) {
     const isUser = message.role === "user";
     const speakerName = isUser ? userName : assistantName;
@@ -1960,12 +1977,42 @@ function formatError(error: VEConversationError, isZh: boolean): string {
                 ? (isZh ? "\u5f53\u524d\u65e0\u6cd5\u8bbf\u95ee\u8be5\u6570\u5b57\u5458\u5de5" : "This digital employee is unavailable")
                 : (isZh ? "\u8bbf\u95ee\u672a\u901a\u8fc7\uff0c\u5bf9\u65b9\u6682\u672a\u5141\u8bb8\u672c\u6b21\u8bbf\u95ee" : "Access was not approved");
         case "send_failed":
-            return error.message ? (isZh ? `\u6d88\u606f\u53d1\u9001\u5931\u8d25\uff1a${error.message}` : `Message send failed: ${error.message}`) : (isZh ? "\u6d88\u606f\u53d1\u9001\u5931\u8d25" : "Message send failed");
+            return error.message ? (isZh ? `\u6d88\u606f\u53d1\u9001\u5931\u8d25\uff1a${localizeBackendErrorDetail(error.message, isZh)}` : `Message send failed: ${error.message}`) : (isZh ? "\u6d88\u606f\u53d1\u9001\u5931\u8d25" : "Message send failed");
         case "session_timeout":
             return isZh ? "\u4f1a\u8bdd\u521b\u5efa\u8d85\u65f6\uff0815\u79d2\uff09" : "Session creation timed out (15s)";
         default:
             return (error as VEConversationError).message;
     }
+}
+
+function localizeBackendErrorDetail(message: string, isZh: boolean): string {
+    const text = String(message || "").trim();
+    if (!isZh || text === "") return text;
+    const lower = text.toLowerCase();
+    if (lower === "send failed") return "\u53d1\u9001\u5931\u8d25";
+    if (lower === "network error") return "\u7f51\u7edc\u9519\u8bef";
+    if (lower === "failed to fetch") return "\u7f51\u7edc\u8bf7\u6c42\u5931\u8d25";
+    if (lower.includes("context deadline exceeded") || lower.includes("timeout") || lower.includes("timed out")) return "\u8bf7\u6c42\u8d85\u65f6";
+    if (lower.includes("machine is offline")) return "\u76ee\u6807\u673a\u5668\u79bb\u7ebf";
+    if (lower.includes("digital employee is offline")) return "\u6570\u5b57\u5458\u5de5\u5df2\u79bb\u7ebf";
+
+    let localized = text
+        .replace(/send digital employee message/gi, "\u53d1\u9001\u6570\u5b57\u5458\u5de5\u6d88\u606f")
+        .replace(/message_delivery_failed/gi, "\u6d88\u606f\u6295\u9012\u5931\u8d25")
+        .replace(/hub returned\s+(\d+)/gi, "Hub \u8fd4\u56de $1")
+        .replace(/deliver discussion message to\s+([^:]+):/gi, "\u6295\u9012\u8ba8\u8bba\u6d88\u606f\u5230 $1\uff1a")
+        .replace(/deliver discussion message/gi, "\u6295\u9012\u8ba8\u8bba\u6d88\u606f")
+        .replace(/machine is offline/gi, "\u76ee\u6807\u673a\u5668\u79bb\u7ebf")
+        .replace(/bad gateway/gi, "\u7f51\u5173\u9519\u8bef")
+        .replace(/unauthorized/gi, "\u672a\u6388\u6743")
+        .replace(/access denied/gi, "\u8bbf\u95ee\u88ab\u62d2\u7edd")
+        .replace(/forbidden/gi, "\u65e0\u6743\u8bbf\u95ee")
+        .replace(/not found/gi, "\u672a\u627e\u5230")
+        .replace(/conflict/gi, "\u72b6\u6001\u51b2\u7a81");
+    const translated = localized !== text;
+    localized = localized.replace(/:\s*/g, "\uff1a").replace(/\uff1a\s+/g, "\uff1a");
+    if (translated) return localized;
+    return /[a-z]/i.test(text) ? "\u8bf7\u7a0d\u540e\u91cd\u8bd5" : text;
 }
 
 function extractErrorMessage(err: unknown): string {
@@ -2222,4 +2269,4 @@ function formatFileSize(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export { formatError, classifyAttachmentType, fileNameFromPath, formatFileSize, createSessionWithTimeout, classifySessionInitError };
+export { formatError, classifyAttachmentType, fileNameFromPath, formatFileSize, createSessionWithTimeout, classifySessionInitError, classifySendError };

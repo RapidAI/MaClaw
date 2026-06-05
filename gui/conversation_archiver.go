@@ -11,6 +11,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
@@ -178,7 +179,8 @@ func (a *ConversationArchiver) callLLMForSummary(cfg corelib.MaclawLLMConfig, co
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	result, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 30*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "memory-maintenance"})
+	result, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -208,8 +210,16 @@ type archiverLLMCaller struct {
 }
 
 func (c *archiverLLMCaller) ChatCall(messages []map[string]string) (string, error) {
+	return c.ChatCallContext(context.Background(), messages)
+}
+
+func (c *archiverLLMCaller) ChatCallContext(ctx context.Context, messages []map[string]string) (string, error) {
 	if c == nil || c.app == nil {
 		return "", fmt.Errorf("archiver LLM caller is not configured")
+	}
+	ctx = llm.WithRequestTraceIfMissing(ctx, "memory-maintenance")
+	if !c.app.waitForForegroundAgentIdle(ctx, "memory-maintenance", "") {
+		return "", ctx.Err()
 	}
 	cfg := c.app.GetMaclawLLMConfig()
 	// Convert []map[string]string to []interface{} for doSimpleLLMRequest.
@@ -218,7 +228,7 @@ func (c *archiverLLMCaller) ChatCall(messages []map[string]string) (string, erro
 		ifaces[i] = m
 	}
 	client := &http.Client{Timeout: 60 * time.Second}
-	result, err := doSimpleLLMRequest(context.Background(), cfg, ifaces, client, 60*time.Second)
+	result, err := doSimpleLLMRequest(ctx, cfg, ifaces, client, 60*time.Second)
 	if err != nil {
 		return "", err
 	}

@@ -57,7 +57,7 @@ func NewSDKExecutionStrategy() *SDKExecutionStrategy {
 }
 
 func (s *SDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
-	log.Printf("[sdk-lifecycle] ▶ Starting SDK process: cmd=%q, args=%v, cwd=%q", cmd.Command, cmd.Args, cmd.Cwd)
+	log.Printf("[sdk-lifecycle] ▶ Starting SDK process: cmd=%q, args_summary=%s, cwd=%q", cmd.Command, summarizeLaunchArgs(cmd.Args), cmd.Cwd)
 
 	execPath, err := resolveExecutablePath(cmd.Command)
 	if err != nil {
@@ -76,16 +76,16 @@ func (s *SDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
 	}
 
 	if err := c.Start(); err != nil {
-		log.Printf("[sdk-lifecycle] ✖ Process start failed: cmd=%s, args=%v, cwd=%s, error=%v",
-			execPath, args, cmd.Cwd, err)
+		log.Printf("[sdk-lifecycle] ✖ Process start failed: cmd=%s, args_summary=%s, cwd=%s, error=%v",
+			execPath, summarizeLaunchArgs(args), cmd.Cwd, err)
 		return nil, fmt.Errorf("sdk: start: %w", err)
 	}
 
 	log.Printf("[sdk-lifecycle] ✔ SDK process started: pid=%d, cmd=%s, cwd=%s", c.Process.Pid, execPath, cmd.Cwd)
 	logLaunchEnv("sdk-lifecycle", cmd.Env)
 
-	sdkDiag("process started: pid=%d, cmd=%s, args=%v, cwd=%s",
-		c.Process.Pid, cmd.Command, cmd.Args, cmd.Cwd)
+	sdkDiag("process started: pid=%d, cmd=%s, args_summary=%s, cwd=%s",
+		c.Process.Pid, cmd.Command, summarizeLaunchArgs(cmd.Args), cmd.Cwd)
 	// Log key env vars for debugging custom provider issues
 	for _, key := range []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL"} {
 		if v, ok := cmd.Env[key]; ok {
@@ -190,7 +190,7 @@ func (h *SDKExecutionHandle) Write(data []byte) error {
 		SessionID:       "default",
 		ParentToolUseID: nil,
 	}
-	sdkDiag("Write() pid=%d, text_len=%d, text=%.100s", h.pid, len(text), text)
+	sdkDiag("Write() pid=%d, text_len=%d", h.pid, len([]rune(text)))
 	return h.writeJSON(msg)
 }
 
@@ -407,7 +407,7 @@ func (h *SDKExecutionHandle) writeJSON(v interface{}) error {
 	}
 	data = append(data, '\n')
 
-	sdkDiag("writeJSON pid=%d, len=%d, data=%.200s", h.pid, len(data), string(data))
+	sdkDiag("writeJSON pid=%d, len=%d", h.pid, len(data))
 
 	// Use a goroutine + timer to avoid blocking indefinitely when the
 	// child process is not reading stdin.  Without this, a stuck process
@@ -447,7 +447,7 @@ func (h *SDKExecutionHandle) readStdout() {
 	for scanner.Scan() {
 		lineCount++
 		if lineCount <= 5 {
-			sdkDiag("stdout line #%d (pid=%d): %.500s", lineCount, h.pid, scanner.Text())
+			sdkDiag("stdout line #%d (pid=%d, len=%d)", lineCount, h.pid, len([]rune(scanner.Text())))
 		}
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
@@ -544,7 +544,7 @@ func (h *SDKExecutionHandle) readStderr() {
 		line := scanner.Text()
 		stderrLineCount++
 		if stderrLineCount <= 3 {
-			sdkDiag("stderr line #%d (pid=%d): %.300s", stderrLineCount, h.pid, line)
+			sdkDiag("stderr line #%d (pid=%d, len=%d)", stderrLineCount, h.pid, len([]rune(line)))
 		}
 		if strings.TrimSpace(line) != "" {
 			h.outputCh <- []byte("[stderr] " + line + "\n")

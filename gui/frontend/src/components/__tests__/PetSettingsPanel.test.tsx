@@ -23,7 +23,7 @@ function renderPetSettings(lang: string) {
             config={config}
             lang={lang}
             setConfig={vi.fn()}
-            saveConfig={vi.fn().mockResolvedValue(undefined)}
+            patchConfig={vi.fn().mockResolvedValue(undefined)}
         />,
     );
 }

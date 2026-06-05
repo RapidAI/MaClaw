@@ -90,9 +90,54 @@ function uniqueClipboardFiles(e: React.ClipboardEvent<HTMLTextAreaElement>): Fil
     return files;
 }
 
-export function usePastedImageAttachments() {
-    const [pendingAttachments, setPendingAttachments] = useState<AttachmentInfo[]>([]);
+const DEFAULT_ATTACHMENT_SESSION_KEY = "desktop-user";
+const FORGET_SESSION_STATE_EVENT = "ai-assistant:forget-session-rounds";
+
+function normalizeAttachmentSessionKey(sessionKey?: string): string {
+    const trimmed = typeof sessionKey === "string" ? sessionKey.trim() : "";
+    return trimmed || DEFAULT_ATTACHMENT_SESSION_KEY;
+}
+
+export function usePastedImageAttachments(sessionKey = DEFAULT_ATTACHMENT_SESSION_KEY) {
+    const activeSessionKey = normalizeAttachmentSessionKey(sessionKey);
+    const [pendingAttachments, setVisiblePendingAttachments] = useState<AttachmentInfo[]>([]);
+    const pendingAttachmentsBySessionRef = useRef<Map<string, AttachmentInfo[]>>(new Map());
+    const activeSessionKeyRef = useRef(activeSessionKey);
     const objectUrlsRef = useRef<Set<string>>(new Set());
+
+    useEffect(() => {
+        activeSessionKeyRef.current = activeSessionKey;
+        setVisiblePendingAttachments(pendingAttachmentsBySessionRef.current.get(activeSessionKey) || []);
+    }, [activeSessionKey]);
+
+    useEffect(() => {
+        const handler = (event: Event) => {
+            const rawSessionKey = String((event as CustomEvent)?.detail?.sessionKey || '').trim();
+            if (!rawSessionKey) return;
+            const forgottenSessionKey = normalizeAttachmentSessionKey(rawSessionKey);
+            if (!pendingAttachmentsBySessionRef.current.has(forgottenSessionKey)) return;
+            console.info("[usePastedImageAttachments] clearing pending attachments for forgotten session", { sessionKey: forgottenSessionKey });
+            pendingAttachmentsBySessionRef.current.delete(forgottenSessionKey);
+            if (activeSessionKeyRef.current === forgottenSessionKey) {
+                setVisiblePendingAttachments([]);
+            }
+        };
+        window.addEventListener(FORGET_SESSION_STATE_EVENT, handler);
+        return () => window.removeEventListener(FORGET_SESSION_STATE_EVENT, handler);
+    }, []);
+
+    const setPendingAttachments = useCallback((next: AttachmentInfo[] | ((prev: AttachmentInfo[]) => AttachmentInfo[])) => {
+        const session = activeSessionKeyRef.current;
+        const current = pendingAttachmentsBySessionRef.current.get(session) || [];
+        const resolved = typeof next === "function" ? (next as (prev: AttachmentInfo[]) => AttachmentInfo[])(current) : next;
+        const safeNext = Array.isArray(resolved) ? resolved : [];
+        if (safeNext.length > 0) {
+            pendingAttachmentsBySessionRef.current.set(session, safeNext);
+        } else {
+            pendingAttachmentsBySessionRef.current.delete(session);
+        }
+        setVisiblePendingAttachments(safeNext);
+    }, []);
 
     useEffect(() => {
         const activeUrls = new Set(

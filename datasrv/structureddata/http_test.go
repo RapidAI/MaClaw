@@ -28,6 +28,33 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(webBody, "MaClawDataSrv MIS") || !strings.Contains(webBody, `data-testid="language-switch"`) || !strings.Contains(webBody, `data-testid="tab-overview"`) || !strings.Contains(webBody, `data-testid="setup-checklist"`) || !strings.Contains(webBody, `data-testid="overview-health"`) || !strings.Contains(webBody, `data-testid="overview-coverage"`) || !strings.Contains(webBody, `data-testid="overview-domain-readiness"`) || !strings.Contains(webBody, `data-testid="overview-capabilities"`) || !strings.Contains(webBody, `data-testid="overview-intent-results"`) || !strings.Contains(webBody, `data-testid="overview-work-queue"`) || !strings.Contains(webBody, `data-testid="overview-integration-health"`) || !strings.Contains(webBody, `data-testid="overview-access-risk"`) || !strings.Contains(webBody, `data-testid="overview-readiness"`) || !strings.Contains(webBody, `data-testid="overview-recommendations"`) || !strings.Contains(webBody, `data-testid="overview-activity"`) || !strings.Contains(webBody, `data-testid="access-workspace-summary"`) || !strings.Contains(webBody, `data-testid="access-guide-grant-analytics"`) || !strings.Contains(webBody, `data-testid="access-agent-handoff"`) || !strings.Contains(webBody, `data-testid="generate-agent-handoff"`) || !strings.Contains(webBody, `data-testid="run-agent-readiness"`) || !strings.Contains(webBody, `data-testid="agent-readiness-result"`) || !strings.Contains(webBody, `data-testid="compare-access-policy"`) || !strings.Contains(webBody, `data-testid="access-policy-diff"`) || !strings.Contains(webBody, `data-testid="access-policy-risk"`) || !strings.Contains(webBody, `data-testid="admin-accounts"`) || !strings.Contains(webBody, `data-testid="admin-sessions"`) || !strings.Contains(webBody, `data-testid="refresh-admin-sessions"`) || !strings.Contains(webBody, `data-testid="create-admin-account"`) || !strings.Contains(webBody, `data-testid="update-admin-account"`) || !strings.Contains(webBody, `data-testid="governance-evidence-summary"`) || !strings.Contains(webBody, `data-testid="governance-evidence-summary-text"`) || !strings.Contains(webBody, `data-testid="copy-evidence-summary"`) || !strings.Contains(webBody, `data-testid="access-agent-purpose"`) || !strings.Contains(webBody, `data-testid="recommend-access-policy"`) || !strings.Contains(webBody, `data-testid="access-recommendation"`) || !strings.Contains(webBody, `data-testid="generate-agent-onboarding"`) || !strings.Contains(webBody, `data-testid="agent-onboarding-checklist"`) || !strings.Contains(webBody, `data-testid="generate-agent-packet"`) || !strings.Contains(webBody, `data-testid="agent-onboarding-packet"`) || !strings.Contains(webBody, `data-testid="download-agent-packet"`) || !strings.Contains(webBody, `data-testid="export-access-review"`) || !strings.Contains(webBody, `data-testid="refresh-evidence-summary"`) || !strings.Contains(webBody, `data-testid="download-evidence-summary"`) || !strings.Contains(webBody, `data-testid="export-evidence-pack"`) || !strings.Contains(webBody, "overview-grid") || !strings.Contains(webBody, "nav-group") {
 		t.Fatalf("web console status=%d body=%s", w.Code, w.Body.String())
 	}
+	for _, want := range []string{
+		`data-testid="refresh-login-tenants"`,
+		`id="tenantOptions"`,
+		`withButtonBusy`,
+		`Refreshing tenants`,
+		`Registering Hub`,
+		`Pulling tenants`,
+		`Creating admin`,
+		`Updating admin`,
+		`Revoking`,
+		`data-testid="hub-registration-state"`,
+		`data-testid="hub-registration-panel"`,
+		`currentAdminScope`,
+		`updateAdminControlScope`,
+		`authSignature`,
+		`classList.remove("global-admin-mode", "tenant-admin-mode")`,
+		`state.currentAdminScope !== item.admin_scope`,
+		`data-testid="hub-base-url"`,
+		`data-testid="save-hub-registration"`,
+		`data-testid="register-hub"`,
+		`data-testid="sync-tenants-from-hub"`,
+		`Virtual mail`,
+	} {
+		if !strings.Contains(webBody, want) {
+			t.Fatalf("web console missing Hub registration/login tenant control %q", want)
+		}
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)
 	w = httptest.NewRecorder()
@@ -48,6 +75,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	}
 	for _, path := range []string{
 		"/api/v1/setup/status",
+		"/api/v1/setup/tenants/sync",
 		"/api/v1/setup/admin",
 		"/api/v1/login",
 		"/api/v1/data/capabilities",
@@ -139,6 +167,20 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			t.Fatalf("openapi path %s missing", path)
 		}
 	}
+	for _, route := range []struct {
+		path   string
+		method string
+	}{
+		{"/api/v1/data/admin/accounts", "get"},
+		{"/api/v1/data/admin/accounts/{username}", "patch"},
+		{"/api/v1/data/admin/sessions", "get"},
+		{"/api/v1/data/admin/sessions/{sessionId}", "patch"},
+		{"/api/v1/data/admin/sessions/{sessionId}", "delete"},
+	} {
+		if !openAPIOperationHasQueryParam(paths, route.path, route.method, "tenant") {
+			t.Fatalf("openapi %s %s missing tenant query parameter: %#v", route.method, route.path, paths[route.path])
+		}
+	}
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
 		t.Fatalf("marshal openapi spec: %v", err)
@@ -154,6 +196,12 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	}{
 		{path: "/api/v1/setup/status", method: "get", status: "200", field: "initialized"},
 		{path: "/api/v1/setup/status", method: "get", status: "200", field: "mode"},
+		{path: "/api/v1/data/admin/tenants", method: "get", status: "200", field: "items"},
+		{path: "/api/v1/data/admin/tenants/sync", method: "post", status: "200", field: "tenants"},
+		{path: "/api/v1/data/admin/hub-registration", method: "get", status: "200", field: "status"},
+		{path: "/api/v1/data/admin/hub-registration", method: "post", status: "200", field: "status"},
+		{path: "/api/v1/data/admin/hub-registration/register", method: "post", status: "200", field: "status"},
+		{path: "/api/v1/data/admin/hub-registration/sync-tenants", method: "post", status: "200", field: "tenants"},
 		{path: "/api/v1/setup/admin", method: "post", status: "201", field: "token"},
 		{path: "/api/v1/setup/admin", method: "post", status: "201", field: "expires_at"},
 		{path: "/api/v1/login", method: "post", status: "200", field: "token"},
@@ -4406,6 +4454,86 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	}
 }
 
+func TestSetupTenantSyncRequiresRegisteredHubAndWorksPublicly(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	server := NewHTTPServer(svc, "", "test")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/setup/tenants/sync", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("public tenant sync before Hub registration status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	req = jsonRequest(http.MethodPost, "/api/v1/setup/admin", InitializeAdminInput{Username: "admin", Password: "change-me-123"})
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("initialize admin status=%d body=%s", w.Code, w.Body.String())
+	}
+	var initResult InitializeAdminResult
+	if err := json.NewDecoder(w.Body).Decode(&initResult); err != nil {
+		t.Fatalf("decode init result: %v", err)
+	}
+
+	var publicKeyPEM string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/platform/providers/register":
+			var body map[string]any
+			readSignedJSON(t, r, &body)
+			publicKeyPEM, _ = body["public_key"].(string)
+			if strings.TrimSpace(publicKeyPEM) == "" {
+				t.Fatalf("register body missing public_key: %#v", body)
+			}
+			verifyHubRequestSignature(t, r, publicKeyPEM)
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		case "/api/platform/tenants/list":
+			verifyHubRequestSignature(t, r, publicKeyPEM)
+			writeJSON(w, http.StatusOK, map[string]any{"tenants": []map[string]any{{"id": "tenant-login", "name": "Login Tenant", "status": "active", "primary_domain": "login.example", "virtual_mail_domain": "login.data.example"}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	for _, step := range []struct {
+		method string
+		path   string
+		body   any
+	}{
+		{http.MethodPost, "/api/v1/data/admin/hub-registration", SaveHubRegistrationInput{HubBaseURL: hub.URL, PlatformID: "datasrv-http", PlatformName: "DataSrv HTTP"}},
+		{http.MethodPost, "/api/v1/data/admin/hub-registration/register", map[string]any{}},
+	} {
+		req = jsonRequest(step.method, step.path, step.body)
+		req.Header.Set("Authorization", "Bearer "+initResult.Token)
+		w = httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s %s status=%d body=%s", step.method, step.path, w.Code, w.Body.String())
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/setup/tenants/sync", nil)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("public tenant sync after Hub registration status=%d body=%s", w.Code, w.Body.String())
+	}
+	var synced SyncHubTenantsResult
+	if err := json.NewDecoder(w.Body).Decode(&synced); err != nil {
+		t.Fatalf("decode synced tenants: %v", err)
+	}
+	if synced.Synced != 1 || synced.Tenants[0].ID != "tenant-login" || synced.Tenants[0].VirtualMailDomain != "login.data.example" {
+		t.Fatalf("unexpected synced tenants: %#v", synced)
+	}
+}
+
 func TestHTTPBooleanQueryParamsRejectInvalidValues(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -6087,15 +6215,23 @@ func openAPIGetQueryParamHasType(paths map[string]any, path string, name string,
 }
 
 func openAPIGetQueryParam(paths map[string]any, path string, name string) map[string]any {
+	return openAPIOperationQueryParam(paths, path, "get", name)
+}
+
+func openAPIOperationHasQueryParam(paths map[string]any, path string, method string, name string) bool {
+	return openAPIOperationQueryParam(paths, path, method, name) != nil
+}
+
+func openAPIOperationQueryParam(paths map[string]any, path string, method string, name string) map[string]any {
 	pathItem, ok := paths[path].(map[string]any)
 	if !ok {
 		return nil
 	}
-	get, ok := pathItem["get"].(map[string]any)
+	operation, ok := pathItem[strings.ToLower(method)].(map[string]any)
 	if !ok {
 		return nil
 	}
-	params, ok := get["parameters"].([]any)
+	params, ok := operation["parameters"].([]any)
 	if !ok {
 		return nil
 	}

@@ -10,7 +10,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-// ProgramLogger writes programming tool output (Claude Code, Gemini, etc.)
+// ProgramLogger writes programming tool output (Claude Code, Codex, etc.)
 // to ~/.maclaw/logs/program.log, independent of the maclaw.log detail gate.
 // It is always gated by corelib.IsLogDetailEnabled().
 type ProgramLogger struct {

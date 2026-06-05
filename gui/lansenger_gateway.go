@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
@@ -776,8 +777,9 @@ func (a *App) SetLansengerLocalMode(enabled bool) error {
 	if !enabled && cfg.RemoteMachineID == "" {
 		return fmt.Errorf("请先注册到 Hub（设置 Hub 地址并完成注册），再开启多机模式")
 	}
-	cfg.SetLansengerLocal(enabled)
-	if err := a.SaveConfig(cfg); err != nil {
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.SetLansengerLocal(enabled)
+	}); err != nil {
 		return err
 	}
 

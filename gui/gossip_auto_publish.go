@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // ── Content sanitization ────────────────────────────────────────────────
@@ -202,7 +202,8 @@ func (t *AutoPublishTrigger) detectAndPublish(exchanges []ChatExchange, cfg core
 	}
 
 	httpClient := t.httpClient
-	resp, err := agent.DoSimpleLLMRequest(cfg, messages, httpClient, 30*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "gossip-auto"})
+	resp, err := doSimpleLLMRequest(ctx, cfg, messages, httpClient, 30*time.Second)
 	if err != nil {
 		log.Printf("[gossip-auto] LLM detection failed: %v", err)
 		return
@@ -223,7 +224,7 @@ func (t *AutoPublishTrigger) detectAndPublish(exchanges []ChatExchange, cfg core
 		Category    string `json:"category"`
 	}
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		log.Printf("[gossip-auto] failed to parse LLM response: %v (raw: %s)", err, gossipTruncateStr(content, 200))
+		log.Printf("[gossip-auto] failed to parse LLM response: %v (raw_len=%d)", err, len([]rune(content)))
 		return
 	}
 

@@ -4,12 +4,11 @@
 This track addresses a bug where environment configuration and cleanup are not correctly applied based on the selected service provider and CLI tool. The goal is to ensure that every time a tool is launched, the environment is prepared exactly according to the user's selection: either a clean "Original" state or a correctly configured "Custom/Third-party" state.
 
 ## Functional Requirements
-1.  **Launch-Time Configuration:** The configuration logic MUST execute every time the "Launch" button is clicked for any tool (Claude, Gemini, Codex).
+1.  **Launch-Time Configuration:** The configuration logic MUST execute every time the "Launch" button is clicked for any tool (Claude, Codex).
 2.  **"Original" (原厂) Provider Logic:**
     *   If "Original" is selected for the active tool, the application MUST clear all known configuration files and environment variables associated with that specific CLI.
     *   **NO** new configuration data should be written to files or environment variables.
     *   Target items for Claude: `~/.claude/`, `~/.claude.json`, `ANTHROPIC_AUTH_TOKEN`, etc.
-    *   Target items for Gemini: `~/.gemini/`, `GEMINI_API_KEY`, etc.
     *   Target items for Codex: `~/.codex/`, `OPENAI_API_KEY`, `WIRE_API`, etc.
 3.  **Third-Party/Custom Provider Logic:**
     *   If a non-"Original" provider is selected, the application MUST first perform the cleanup logic described above.

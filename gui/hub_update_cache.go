@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
@@ -122,15 +123,10 @@ func (p *guiHubCenterPersister) SaveHubCenterURLs(preferred string, discovered [
 	if p.app == nil {
 		return nil
 	}
-	// Field-level merge to avoid overwriting concurrent config changes.
-	// This is the same pattern used in TUI's HubCenterPersister.
-	cfg, err := p.app.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.RemoteHubCenterURL = preferred
-	cfg.RemoteHubCenterURLs = discovered
-	return p.app.SaveConfig(cfg)
+	return p.app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteHubCenterURL = preferred
+		cfg.RemoteHubCenterURLs = discovered
+	})
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -17,9 +17,9 @@ func (s *SQLiteStore) AdminInitialized(ctx context.Context) (bool, error) {
 
 func (s *SQLiteStore) CreateAdminUser(ctx context.Context, record adminUserRecord) (*adminUserRecord, error) {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO admin_users(
-		id, tenant_id, username, display_name, role, password_hash, enabled, created_at, updated_at, login_failure_count, login_locked_until
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ID, record.TenantID, record.Username, record.DisplayName, record.Role, record.PasswordHash, boolInt(record.Enabled), formatTime(record.CreatedAt), formatTime(record.UpdatedAt), record.LoginFailureCount, formatOptionalAdminTime(record.LoginLockedUntil))
+		id, tenant_id, username, display_name, role, admin_scope, password_hash, enabled, created_at, updated_at, login_failure_count, login_locked_until
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.ID, record.TenantID, record.Username, record.DisplayName, record.Role, normalizedAdminScope(record.AdminScope), record.PasswordHash, boolInt(record.Enabled), formatTime(record.CreatedAt), formatTime(record.UpdatedAt), record.LoginFailureCount, formatOptionalAdminTime(record.LoginLockedUntil))
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "constraint") {
 			return nil, ErrAlreadyExists
@@ -31,11 +31,11 @@ func (s *SQLiteStore) CreateAdminUser(ctx context.Context, record adminUserRecor
 
 func (s *SQLiteStore) ListAdminUsers(ctx context.Context, tenantID string) ([]adminUserRecord, error) {
 	tenantID = strings.TrimSpace(tenantID)
-	query := `SELECT id, tenant_id, username, display_name, role, password_hash, enabled, last_login_at, created_at, updated_at, login_failure_count, login_locked_until
+	query := `SELECT id, tenant_id, username, display_name, role, admin_scope, password_hash, enabled, last_login_at, created_at, updated_at, login_failure_count, login_locked_until
 		FROM admin_users WHERE tenant_id = ? ORDER BY tenant_id, username`
 	args := []any{tenantID}
 	if strings.EqualFold(tenantID, "all") || tenantID == "*" {
-		query = `SELECT id, tenant_id, username, display_name, role, password_hash, enabled, last_login_at, created_at, updated_at, login_failure_count, login_locked_until
+		query = `SELECT id, tenant_id, username, display_name, role, admin_scope, password_hash, enabled, last_login_at, created_at, updated_at, login_failure_count, login_locked_until
 			FROM admin_users ORDER BY tenant_id, username`
 		args = nil
 	}
@@ -56,7 +56,7 @@ func (s *SQLiteStore) ListAdminUsers(ctx context.Context, tenantID string) ([]ad
 }
 
 func (s *SQLiteStore) FindAdminUser(ctx context.Context, tenantID, username string) (*adminUserRecord, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, username, display_name, role, password_hash, enabled, last_login_at, created_at, updated_at, login_failure_count, login_locked_until
+	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, username, display_name, role, admin_scope, password_hash, enabled, last_login_at, created_at, updated_at, login_failure_count, login_locked_until
 		FROM admin_users WHERE tenant_id = ? AND username = ?`, strings.TrimSpace(tenantID), strings.ToLower(strings.TrimSpace(username)))
 	item, err := scanAdminUser(row)
 	if err != nil {
@@ -88,8 +88,12 @@ func (s *SQLiteStore) UpdateAdminUser(ctx context.Context, tenantID, username st
 	if in.Enabled != nil {
 		enabled = *in.Enabled
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE admin_users SET display_name = ?, role = ?, enabled = ?, updated_at = ? WHERE tenant_id = ? AND username = ?`,
-		displayName, role, boolInt(enabled), formatTime(now), strings.TrimSpace(tenantID), strings.ToLower(strings.TrimSpace(username)))
+	adminScope := normalizedAdminScope(existing.AdminScope)
+	if strings.TrimSpace(in.AdminScope) != "" {
+		adminScope = normalizedAdminScope(in.AdminScope)
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE admin_users SET display_name = ?, role = ?, admin_scope = ?, enabled = ?, updated_at = ? WHERE tenant_id = ? AND username = ?`,
+		displayName, role, adminScope, boolInt(enabled), formatTime(now), strings.TrimSpace(tenantID), strings.ToLower(strings.TrimSpace(username)))
 	if err != nil {
 		return nil, err
 	}
@@ -170,9 +174,9 @@ func (s *SQLiteStore) ClearAdminLoginFailure(ctx context.Context, tenantID, user
 
 func (s *SQLiteStore) CreateAdminSession(ctx context.Context, record adminSessionRecord) (*adminSessionRecord, error) {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO admin_sessions(
-		id, tenant_id, user_id, username, role, token_hash, expires_at, created_at
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ID, record.TenantID, record.UserID, record.Username, record.Role, record.TokenHash, formatTime(record.ExpiresAt), formatTime(record.CreatedAt))
+		id, tenant_id, user_id, username, role, admin_scope, token_hash, expires_at, created_at
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.ID, record.TenantID, record.UserID, record.Username, record.Role, normalizedAdminScope(record.AdminScope), record.TokenHash, formatTime(record.ExpiresAt), formatTime(record.CreatedAt))
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "constraint") {
 			return nil, ErrAlreadyExists
@@ -183,7 +187,7 @@ func (s *SQLiteStore) CreateAdminSession(ctx context.Context, record adminSessio
 }
 
 func (s *SQLiteStore) FindAdminSessionByHash(ctx context.Context, tokenHash string, now time.Time) (*adminSessionRecord, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, user_id, username, role, token_hash, expires_at, created_at
+	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, user_id, username, role, admin_scope, token_hash, expires_at, created_at
 		FROM admin_sessions WHERE token_hash = ? AND expires_at > ?`, strings.TrimSpace(tokenHash), formatTime(now))
 	item, err := scanAdminSession(row)
 	if err != nil {
@@ -197,11 +201,11 @@ func (s *SQLiteStore) FindAdminSessionByHash(ctx context.Context, tokenHash stri
 
 func (s *SQLiteStore) ListAdminSessions(ctx context.Context, tenantID string, now time.Time) ([]adminSessionRecord, error) {
 	tenantID = strings.TrimSpace(tenantID)
-	query := `SELECT id, tenant_id, user_id, username, role, token_hash, expires_at, created_at
+	query := `SELECT id, tenant_id, user_id, username, role, admin_scope, token_hash, expires_at, created_at
 		FROM admin_sessions WHERE tenant_id = ? AND expires_at > ? ORDER BY created_at DESC`
 	args := []any{tenantID, formatTime(now)}
 	if strings.EqualFold(tenantID, "all") || tenantID == "*" {
-		query = `SELECT id, tenant_id, user_id, username, role, token_hash, expires_at, created_at
+		query = `SELECT id, tenant_id, user_id, username, role, admin_scope, token_hash, expires_at, created_at
 			FROM admin_sessions WHERE expires_at > ? ORDER BY tenant_id, created_at DESC`
 		args = []any{formatTime(now)}
 	}
@@ -230,7 +234,7 @@ func (s *SQLiteStore) UpdateAdminSessionExpiresAt(ctx context.Context, tenantID,
 	if count, _ := res.RowsAffected(); count == 0 {
 		return nil, ErrSessionNotFound
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, user_id, username, role, token_hash, expires_at, created_at
+	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, user_id, username, role, admin_scope, token_hash, expires_at, created_at
 		FROM admin_sessions WHERE tenant_id = ? AND id = ?`, strings.TrimSpace(tenantID), strings.TrimSpace(sessionID))
 	item, err := scanAdminSession(row)
 	if err != nil {
@@ -254,6 +258,10 @@ func (s *SQLiteStore) DeleteAdminSession(ctx context.Context, tenantID, sessionI
 }
 
 func (s *SQLiteStore) DeleteAdminSessionsForUser(ctx context.Context, tenantID, userID string) error {
+	if strings.EqualFold(strings.TrimSpace(tenantID), "all") || strings.TrimSpace(tenantID) == "*" {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE user_id = ?`, strings.TrimSpace(userID))
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE tenant_id = ? AND user_id = ?`, strings.TrimSpace(tenantID), strings.TrimSpace(userID))
 	return err
 }
@@ -271,7 +279,7 @@ func scanAdminUser(row adminUserScanner) (adminUserRecord, error) {
 	var item adminUserRecord
 	var enabled int
 	var lastLoginAt, createdAt, updatedAt, loginLockedUntil string
-	err := row.Scan(&item.ID, &item.TenantID, &item.Username, &item.DisplayName, &item.Role, &item.PasswordHash, &enabled, &lastLoginAt, &createdAt, &updatedAt, &item.LoginFailureCount, &loginLockedUntil)
+	err := row.Scan(&item.ID, &item.TenantID, &item.Username, &item.DisplayName, &item.Role, &item.AdminScope, &item.PasswordHash, &enabled, &lastLoginAt, &createdAt, &updatedAt, &item.LoginFailureCount, &loginLockedUntil)
 	if err != nil {
 		return item, err
 	}
@@ -302,7 +310,7 @@ type adminSessionScanner interface {
 func scanAdminSession(row adminSessionScanner) (adminSessionRecord, error) {
 	var item adminSessionRecord
 	var expiresAt, createdAt string
-	err := row.Scan(&item.ID, &item.TenantID, &item.UserID, &item.Username, &item.Role, &item.TokenHash, &expiresAt, &createdAt)
+	err := row.Scan(&item.ID, &item.TenantID, &item.UserID, &item.Username, &item.Role, &item.AdminScope, &item.TokenHash, &expiresAt, &createdAt)
 	if err != nil {
 		return item, err
 	}

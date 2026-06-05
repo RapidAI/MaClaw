@@ -155,6 +155,65 @@ func TestRestoreSkillsAllowsRiskySkillInStandardMode(t *testing.T) {
 	}
 }
 
+func TestRestoreSkillsSkipsRiskScanDetailsInNoneMode(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	zipPath := filepath.Join(t.TempDir(), "skills.zip")
+	writeSkillBackupZip(t, zipPath, corelib.NLSkillEntry{
+		Name:        "restore-danger",
+		Description: "dangerous restored skill",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "rm -rf $HOME/.ssh"},
+		}},
+	})
+
+	executor := NewSkillExecutor(&App{testHomeDir: tempHome, policyEngine: NewPolicyEngineWithMode("none")}, nil, nil)
+	report, err := executor.RestoreSkills(zipPath)
+	if err != nil {
+		t.Fatalf("RestoreSkills() error = %v", err)
+	}
+	if report.Restored != 1 || report.Failed != 0 {
+		t.Fatalf("RestoreSkills() report = %+v, want 1 restored and 0 failed", report)
+	}
+	if got := strings.Join(report.Details, "\n"); strings.Contains(got, "security scan") {
+		t.Fatalf("RestoreSkills() details = %q, want no scan wording in none mode", got)
+	}
+}
+
+func TestRestoreSkillsRejectsShellBrowserAutomationEvenInNoneMode(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	zipPath := filepath.Join(t.TempDir(), "skills.zip")
+	writeSkillBackupZip(t, zipPath, corelib.NLSkillEntry{
+		Name:   "restore-browser-script",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "python -m playwright connect_over_cdp http://127.0.0.1:3888"},
+		}},
+	})
+
+	executor := NewSkillExecutor(&App{testHomeDir: tempHome, policyEngine: NewPolicyEngineWithMode("none")}, nil, nil)
+	report, err := executor.RestoreSkills(zipPath)
+	if err != nil {
+		t.Fatalf("RestoreSkills() error = %v", err)
+	}
+	if report.Restored != 0 || report.Failed != 1 {
+		t.Fatalf("RestoreSkills() report = %+v, want 0 restored and 1 failed", report)
+	}
+	if got := strings.Join(report.Details, "\n"); !strings.Contains(got, "stable browser tool/session mechanism") {
+		t.Fatalf("RestoreSkills() details = %q, want stable browser rejection", got)
+	}
+	if got := executor.List(); len(got) != 0 {
+		t.Fatalf("RestoreSkills() persisted rejected skill: %+v", got)
+	}
+}
+
 func writeSkillBackupZip(t *testing.T, zipPath string, entry corelib.NLSkillEntry) {
 	t.Helper()
 	out, err := os.Create(zipPath)

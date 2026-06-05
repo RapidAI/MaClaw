@@ -3,6 +3,7 @@ package memory
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestProjectContextForHostUsesStrictProjectRecallAndScene(t *testing.T) {
@@ -41,6 +42,55 @@ func TestProjectContextForHostUsesStrictProjectRecallAndScene(t *testing.T) {
 	}
 	if nilStore := (*Store)(nil); len(nilStore.ProjectContextForHost(projectPath, 10).Entries) != 0 {
 		t.Fatalf("nil store should return empty project context")
+	}
+}
+
+func TestProjectContextForHostFastScanIsProjectScopedAndRecentFirst(t *testing.T) {
+	store, err := NewStoreWithMode(t.TempDir(), StoreModeJSON)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode: %v", err)
+	}
+	defer store.Stop()
+
+	projectPath := `D:\workprj\alpha`
+	otherProject := `D:\workprj\beta`
+	now := time.Now()
+	entries := make([]Entry, 0, 64)
+	for i := 0; i < 50; i++ {
+		entries = append(entries, Entry{
+			ID:        "other-" + string(rune('a'+i%26)),
+			Title:     "Other",
+			Content:   "unrelated project memory",
+			Category:  CategoryTaskArtifact,
+			Tags:      []string{otherProject},
+			Scope:     ScopeProject,
+			UpdatedAt: now.Add(time.Duration(i) * time.Second),
+		})
+	}
+	entries = append(entries,
+		Entry{ID: "old-artifact", Title: "Old", Content: "old project progress", Category: CategoryTaskArtifact, Tags: []string{projectPath}, SourceURL: `D:\workprj\alpha\old.md`, Scope: ScopeProject, UpdatedAt: now.Add(time.Minute)},
+		Entry{ID: "new-artifact", Title: "New", Content: "new project progress", Category: CategoryTaskArtifact, Tags: []string{projectPath}, SourceURL: `D:\workprj\alpha\new.md`, Scope: ScopeProject, UpdatedAt: now.Add(2 * time.Minute)},
+		Entry{ID: "knowledge", Title: "Knowledge", Content: "project knowledge", Category: CategoryProjectKnowledge, Tags: []string{projectPath}, Scope: ScopeProject, UpdatedAt: now.Add(3 * time.Minute)},
+	)
+
+	store.Lock()
+	store.SetEntries(entries)
+	store.Unlock()
+
+	got := store.ProjectContextForHost(projectPath, 1)
+	if len(got.TaskArtifacts) != 2 || got.TaskArtifacts[0].ID != "new-artifact" || got.TaskArtifacts[1].ID != "old-artifact" {
+		t.Fatalf("TaskArtifacts = %#v", got.TaskArtifacts)
+	}
+	if len(got.ProjectKnowledge) != 1 || got.ProjectKnowledge[0].ID != "knowledge" {
+		t.Fatalf("ProjectKnowledge = %#v", got.ProjectKnowledge)
+	}
+	if !got.HasScene || got.Scene.ProjectPath != projectPath || got.Scene.EntryCount != 3 {
+		t.Fatalf("Scene = %#v HasScene=%v", got.Scene, got.HasScene)
+	}
+	for _, entry := range got.Entries {
+		if entry.ID == "" || entry.Tags[0] != projectPath {
+			t.Fatalf("unrelated entry leaked into context: %#v", entry)
+		}
 	}
 }
 

@@ -6,8 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/RapidAI/CodeClaw/corelib"
-
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -535,7 +535,56 @@ func (c *SkillHubClient) getJSONFromExplicitHubURL(ctx context.Context, hubURL s
 	if base == "" {
 		return c.getJSON(ctx, path, dest)
 	}
+	if authHeader := c.enterpriseHubAuthHeaderForBase(base); authHeader != "" {
+		return c.getJSONFromExplicitHubURLWithAuth(ctx, base, path, dest, authHeader)
+	}
 	return c.app.getHubCenterJSONFromCandidates(ctx, c.client, []string{base}, path, maxDownloadSize, dest)
+}
+
+func (c *SkillHubClient) enterpriseHubAuthHeaderForBase(base string) string {
+	if c == nil || c.app == nil {
+		return ""
+	}
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	configured := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if configured == "" || !strings.EqualFold(configured, base) {
+		return ""
+	}
+	if token := strings.TrimSpace(cfg.RemoteViewerToken); token != "" {
+		return "Bearer " + token
+	}
+	return ""
+}
+
+func (c *SkillHubClient) getJSONFromExplicitHubURLWithAuth(ctx context.Context, base, path string, dest interface{}, authHeader string) (string, []string, error) {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", []string{base}, fmt.Errorf("request hub JSON %s%s failed (%d): %s", base, path, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	data, err := readHubCenterJSONBody(resp.Body, maxDownloadSize)
+	if err != nil {
+		return "", []string{base}, fmt.Errorf("read hub JSON %s%s failed: %w", base, path, err)
+	}
+	if err := json.Unmarshal(data, dest); err != nil {
+		return "", []string{base}, fmt.Errorf("decode hub JSON %s%s failed after %d bytes: %w", base, path, len(data), err)
+	}
+	return base, []string{base}, nil
 }
 
 func (c *SkillHubClient) cacheResults(query string, results []HubSkillMeta) {

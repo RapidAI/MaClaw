@@ -84,13 +84,13 @@ func (h *IMMessageHandler) toolSearchAndInstallSkillResult(args map[string]inter
 			onProgress(msg)
 		}
 	}
-	platform := consumeRuntimePlatformFromToolArgs(args)
-	if platform == "" {
-		platform = h.currentRuntimePlatform()
-	}
 	policyOwnerID, explicitRuntime := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrentState(args)
 	if policyOwnerID == "" && explicitRuntime {
 		return searchAndInstallSkillResult{Text: "Skill search failed: runtime owner is missing; isolated runtime will not fall back to desktop owner", Success: false}
+	}
+	platform := consumeRuntimePlatformFromToolArgs(args)
+	if platform == "" {
+		platform = h.runtimePlatformForOwnerOrCurrent(policyOwnerID, explicitRuntime)
 	}
 	ctx := context.Background()
 	searcher := NewSkillSearcher(NewSkillMarketClient(h.app))

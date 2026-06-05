@@ -446,6 +446,21 @@ func TestMemoryContextHintWithoutRuntimeOwnerDoesNotFallbackToDesktop(t *testing
 	}
 }
 
+func TestMemoryContextHintWithoutHiddenOwnerDoesNotInheritCurrentRuntimeOwner(t *testing.T) {
+	handler := &IMMessageHandler{
+		memory: agent.NewConversationMemory(),
+		currentLoopCtx: &LoopContext{Runtime: RuntimeContext{
+			RequestID:     "req-remote-memory",
+			PolicyOwnerID: "remote:mobile",
+		}},
+	}
+	handler.memory.Save("remote:mobile", []agent.ConversationEntry{{Role: "user", Content: "remote secret context"}})
+
+	if hint := handler.buildMemoryContextHint(); hint != "" {
+		t.Fatalf("memory context hint without hidden owner should not inherit current runtime owner, got %q", hint)
+	}
+}
+
 func TestToolMemoryWithoutRuntimeOwnerDoesNotFallbackToDesktop(t *testing.T) {
 	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {
@@ -463,6 +478,29 @@ func TestToolMemoryWithoutRuntimeOwnerDoesNotFallbackToDesktop(t *testing.T) {
 	}
 	if entries := store.List("", ""); len(entries) != 0 {
 		t.Fatalf("memory tool wrote entries without owner: %#v", entries)
+	}
+}
+
+func TestToolMemoryWithoutHiddenOwnerDoesNotInheritCurrentRuntimeOwner(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	handler := &IMMessageHandler{
+		memoryStore: store,
+		currentLoopCtx: &LoopContext{Runtime: RuntimeContext{
+			RequestID:     "req-remote-memory",
+			PolicyOwnerID: "remote:mobile",
+		}},
+	}
+
+	got := handler.toolMemory(map[string]interface{}{"action": "save", "content": "remote leak"})
+	if !strings.Contains(got, "owner is missing") {
+		t.Fatalf("memory tool should reject missing hidden owner instead of inheriting current runtime, got %q", got)
+	}
+	if entries := store.List("", ""); len(entries) != 0 {
+		t.Fatalf("memory tool wrote entries without hidden owner: %#v", entries)
 	}
 }
 

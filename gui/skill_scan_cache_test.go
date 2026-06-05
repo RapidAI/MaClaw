@@ -484,7 +484,7 @@ func TestScanAndAdmitSkillBeforeRegisterIgnoresClaimedTrustedLevel(t *testing.T)
 			{Action: "bash", Params: map[string]interface{}{"command": "rm -rf /"}},
 		},
 	}
-	app := &App{testHomeDir: t.TempDir()}
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("relaxed")}
 	report, err := app.scanAndAdmitSkillBeforeRegister(context.Background(), entry, "unit test")
 	// Critical skill now goes through user confirmation (auto-approved in test harness).
 	// The key assertion is that the scan still detects critical risk despite claimed trusted level.
@@ -528,6 +528,42 @@ func TestDeveloperModeSkillInstallRecordsAuditOnly(t *testing.T) {
 	}
 }
 
+func TestNoneModeSkillInstallAllowsRiskWithoutAuditDecision(t *testing.T) {
+	auditLog, err := NewAuditLog(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAuditLog: %v", err)
+	}
+	defer auditLog.Close()
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("none"), auditLog: auditLog}
+	entry := &corelib.NLSkillEntry{Name: "guardrails-off-risk"}
+	report := &cskill.ScanReport{FinalLevel: security.RiskCritical, Summary: "critical", ScannedBy: "unit"}
+	if err := app.admitManualSkillInstall(context.Background(), entry, "unit test", report); err != nil {
+		t.Fatalf("none mode should allow critical skill report, got %v", err)
+	}
+	entries, err := auditLog.Query(security.AuditFilter{})
+	if err != nil {
+		t.Fatalf("query audit: %v", err)
+	}
+	if len(entries) != 1 || entries[0].PolicyAction != security.PolicyAllow || entries[0].RiskLevel != security.RiskCritical {
+		t.Fatalf("none mode audit entry = %#v", entries)
+	}
+	if got := app.skillInstallFinalAuditAction(report); got != security.PolicyAllow {
+		t.Fatalf("none mode final audit action = %s, want %s", got, security.PolicyAllow)
+	}
+}
+
+func TestScanAndAdmitSkillBeforeRegisterSkipsRiskScanInNoneMode(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("none")}
+	entry := &corelib.NLSkillEntry{Name: "guardrails-off-install", SkillDir: filepath.Join(t.TempDir(), "missing")}
+	report, err := app.scanAndAdmitSkillBeforeRegister(context.Background(), entry, "unit test")
+	if err != nil {
+		t.Fatalf("none mode should skip pre-install risk scan, got %v", err)
+	}
+	if report != nil {
+		t.Fatalf("none mode report = %+v, want nil because risk scan is skipped", report)
+	}
+}
+
 func TestAdmitManualSkillInstallAllowsMissingReportInRelaxedMode(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("relaxed")}
 	entry := &corelib.NLSkillEntry{Name: "relaxed-missing-report"}
@@ -538,7 +574,7 @@ func TestAdmitManualSkillInstallAllowsMissingReportInRelaxedMode(t *testing.T) {
 
 func TestSkillInstallReviewNeedsConfirmationByMode(t *testing.T) {
 	highReport := &cskill.ScanReport{FinalLevel: security.RiskHigh, Summary: "high", ScannedBy: "pattern"}
-	for _, mode := range []string{"standard", "relaxed"} {
+	for _, mode := range []string{"standard", "none", "relaxed"} {
 		app := &App{policyEngine: NewPolicyEngineWithMode(mode)}
 		if app.skillInstallReviewNeedsConfirmation(highReport) || app.skillInstallScanShouldBlock(highReport) {
 			t.Fatalf("%s mode should record high-risk skill scan without blocking", mode)
@@ -551,11 +587,23 @@ func TestSkillInstallReviewNeedsConfirmationByMode(t *testing.T) {
 	if (&App{policyEngine: NewPolicyEngineWithMode("relaxed")}).skillInstallReviewNeedsConfirmation(criticalReport) {
 		t.Fatal("relaxed mode should record critical skill risk without confirmation")
 	}
+	if (&App{policyEngine: NewPolicyEngineWithMode("none")}).skillInstallReviewNeedsConfirmation(criticalReport) || (&App{policyEngine: NewPolicyEngineWithMode("none")}).skillInstallScanShouldBlock(criticalReport) {
+		t.Fatal("none mode should allow critical skill risk without confirmation or blocking")
+	}
 	if !(&App{policyEngine: NewPolicyEngineWithMode("strict")}).skillInstallScanShouldBlock(criticalReport) {
 		t.Fatal("strict mode should block critical skill risk")
 	}
 	if (&App{policyEngine: NewPolicyEngineWithMode("developer")}).skillInstallReviewNeedsConfirmation(criticalReport) || (&App{policyEngine: NewPolicyEngineWithMode("developer")}).skillInstallScanShouldBlock(criticalReport) {
 		t.Fatal("developer mode should only record critical skill risk")
+	}
+}
+
+func TestEnsureSkillSecurityScannedSkipsInNoneMode(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("none")}
+	runner := &SkillRunner{executor: &SkillExecutor{app: app}}
+	entry := &corelib.NLSkillEntry{Name: "guardrails-off-missing-dir", SkillDir: filepath.Join(t.TempDir(), "missing")}
+	if err := runner.ensureSkillSecurityScanned(entry); err != nil {
+		t.Fatalf("none mode should skip runtime skill scan, got %v", err)
 	}
 }
 

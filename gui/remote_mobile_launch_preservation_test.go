@@ -26,7 +26,7 @@ func TestPreservation_DesktopRemoteEnabledFalse_ReturnsDisabledError(t *testing.
 	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(toolsDir) error = %v", err)
 	}
-	for _, bin := range []string{"claude", "codex", "opencode", "gemini"} {
+	for _, bin := range []string{"claude", "codex", "opencode"} {
 		name := bin
 		if runtime.GOOS == "windows" {
 			name = bin + ".exe"
@@ -59,10 +59,6 @@ func TestPreservation_DesktopRemoteEnabledFalse_ReturnsDisabledError(t *testing.
 		CurrentModel: "Default",
 		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "opencode-v1", IsBuiltin: true}},
 	}
-	cfg.Gemini = corelib.ToolConfig{
-		CurrentModel: "Default",
-		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "gemini-2.5-pro", IsBuiltin: true}},
-	}
 	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
@@ -79,7 +75,7 @@ func TestPreservation_DesktopRemoteEnabledFalse_ReturnsDisabledError(t *testing.
 	// Property: For all desktop-source requests with RemoteEnabled=false,
 	// StartRemoteSessionForProject SHALL return "remote mode is disabled".
 	desktopSources := []RemoteLaunchSource{"", RemoteLaunchSourceDesktop}
-	tools := []string{"claude", "codex", "opencode", "gemini"}
+	tools := []string{"claude", "codex", "opencode"}
 
 	for _, source := range desktopSources {
 		for _, tool := range tools {
@@ -150,7 +146,7 @@ func TestPreservation_RemoteEnabledTrue_NoDisabledError(t *testing.T) {
 	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(toolsDir) error = %v", err)
 	}
-	for _, bin := range []string{"claude", "codex", "opencode", "gemini"} {
+	for _, bin := range []string{"claude", "codex", "opencode"} {
 		name := bin
 		if runtime.GOOS == "windows" {
 			name = bin + ".exe"
@@ -183,10 +179,6 @@ func TestPreservation_RemoteEnabledTrue_NoDisabledError(t *testing.T) {
 		CurrentModel: "Default",
 		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "opencode-v1", IsBuiltin: true}},
 	}
-	cfg.Gemini = corelib.ToolConfig{
-		CurrentModel: "Default",
-		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "gemini-2.5-pro", IsBuiltin: true}},
-	}
 	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
@@ -209,7 +201,7 @@ func TestPreservation_RemoteEnabledTrue_NoDisabledError(t *testing.T) {
 		RemoteLaunchSourceAI,
 		RemoteLaunchSourceHandoff,
 	}
-	tools := []string{"claude", "codex", "opencode", "gemini"}
+	tools := []string{"claude", "codex", "opencode"}
 
 	for _, source := range allSources {
 		for _, tool := range tools {

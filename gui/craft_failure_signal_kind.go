@@ -99,7 +99,7 @@ var craftEnvironmentFailureMarkers = []string{
 
 var craftCapabilityFailureMarkers = []string{
 	"manual login", "interactive login", "browser interaction", "captcha", "human verification",
-	"repository-wide", "repo-wide", "whole codebase", "large codebase", "multi-file refactor", "requires create_session", "use create_session",
+	"repository-wide", "repo-wide", "whole codebase", "large codebase", "multi-file refactor",
 }
 
 var craftScriptFailureMarkers = []string{

@@ -161,6 +161,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 		fusionResult := u.classifyWithFusion(msg.Text)
 		u.fusionCache.Store(fusionCacheKey(epoch, msg.Text), fusionResult) // store for diagnostics
 		bestResult := u.fusionToClassification(fusionResult)
+		applyExecutionAffordances(msg.Text, &bestResult)
 		bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
 		u.cacheAndLog(cacheKey, msg.Text, &bestResult)
 		return bestResult
@@ -169,6 +170,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 	// Single-channel fallback: embedding only.
 	if canEmb {
 		l2Result, _ := classifyByEmbedding(emb, anchors, msg.Text)
+		applyExecutionAffordances(msg.Text, &l2Result)
 		l2Result.ToolNames = u.affinity.Resolve(l2Result.Primary, l2Result.Secondary)
 		u.cacheAndLog(cacheKey, msg.Text, &l2Result)
 		return l2Result
@@ -195,6 +197,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 			if top.Label == LabelCoding && top.WorkflowType == "coding" {
 				bestResult.CreationOriented = true
 			}
+			applyExecutionAffordances(msg.Text, &bestResult)
 			bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
 			u.cacheAndLog(cacheKey, msg.Text, &bestResult)
 			return bestResult
@@ -202,17 +205,18 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 		log.Printf("[UnifiedIntentClassifier] Layer 3 failed: %v; returning conservative unknown intent", err)
 	}
 
-	// Degraded mode: neither L2 nor L3 is available (or L3 failed).
-	// Do not infer executable intent from local keyword rules; callers that
-	// gate workflow transitions should fail closed and ask for clarification.
+	// Degraded mode: neither L2 nor L3 is available (or L3 failed). Primary
+	// intent remains unknown; only narrow execution affordances may add secondary
+	// tool needs such as browser delivery to a named web platform.
 	result := ClassificationResult{
 		Primary:    LabelUnknown,
 		Confidence: 0.30,
 		Layer:      0,
 		Reason:     "semantic classifiers unavailable",
 		Degraded:   true,
-		ToolNames:  u.affinity.Resolve(LabelUnknown, nil),
 	}
+	applyExecutionAffordances(msg.Text, &result)
+	result.ToolNames = u.affinity.Resolve(result.Primary, result.Secondary)
 	u.cacheAndLog(cacheKey, msg.Text, &result)
 	return result
 }
@@ -403,8 +407,8 @@ func fusionCacheKey(epoch uint64, text string) string {
 // cacheAndLog stores the result in cache and logs the decision.
 func (u *UnifiedIntentClassifier) cacheAndLog(cacheKey, text string, result *ClassificationResult) {
 	u.cache.Store(cacheKey, result)
-	log.Printf("[UnifiedIntentClassifier] result: text=%q primary=%s conf=%.2f layer=%d reason=%s",
-		truncateText(text, 30), result.Primary, result.Confidence, result.Layer, result.Reason)
+	log.Printf("[UnifiedIntentClassifier] result: text_len=%d primary=%s conf=%.2f layer=%d reason=%s",
+		len([]rune(text)), result.Primary, result.Confidence, result.Layer, result.Reason)
 }
 
 // truncateText truncates text to maxRunes for logging.

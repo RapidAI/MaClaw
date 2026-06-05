@@ -11,10 +11,14 @@ const mcpAgentViewCallArgsField = "_mcp_call_args"
 const mcpAgentViewCorrectionMessage = "MCP tool parameters need correction. A task panel form has been opened on the right."
 
 func (h *IMMessageHandler) emitMCPToolAgentView(serverRef, resolvedID, toolName string, inputSchema map[string]interface{}, toolArgs map[string]interface{}, validationErrs []mcputil.ValidationError) bool {
+	return h.emitMCPToolAgentViewForOwner(serverRef, resolvedID, toolName, inputSchema, toolArgs, validationErrs, h.currentRuntimePolicyOwnerID())
+}
+
+func (h *IMMessageHandler) emitMCPToolAgentViewForOwner(serverRef, resolvedID, toolName string, inputSchema map[string]interface{}, toolArgs map[string]interface{}, validationErrs []mcputil.ValidationError, policyOwnerID string) bool {
 	if h == nil || h.app == nil || len(inputSchema) == 0 || strings.TrimSpace(toolName) == "" {
 		return false
 	}
-	view := buildMCPToolAgentViewWithPolicyOwner(serverRef, resolvedID, toolName, inputSchema, toolArgs, validationErrs, h.currentRuntimePolicyOwnerID())
+	view := buildMCPToolAgentViewWithPolicyOwner(serverRef, resolvedID, toolName, inputSchema, toolArgs, validationErrs, policyOwnerID)
 	if view == nil {
 		return false
 	}
@@ -28,9 +32,13 @@ func (h *IMMessageHandler) handleMCPToolAgentViewSubmit(data map[string]interfac
 	if toolArgs == nil {
 		toolArgs = map[string]interface{}{}
 	}
+	policyOwnerID := runtimePolicyOwnerIDFromToolArgs(callArgs)
 
 	serverRef := strings.TrimSpace(fmt.Sprint(callArgs["server_id"]))
 	toolName := strings.TrimSpace(fmt.Sprint(callArgs["tool_name"]))
+	if isDisabledExternalCodingSessionTool(toolName) {
+		return &IMAgentResponse{Text: disabledExternalCodingSessionToolText(toolName), Error: "external coding-session MCP target disabled: " + toolName, ResponseSource: imResponseSourceAgentViewSubmit.String()}
+	}
 	inputSchema := map[string]interface{}{}
 	if serverRef != "" && toolName != "" {
 		if resolvedID, isLocal, err := h.resolveMCPServerRef(serverRef); err == nil {
@@ -48,12 +56,12 @@ func (h *IMMessageHandler) handleMCPToolAgentViewSubmit(data map[string]interfac
 	if validationIssues := registeredToolValidateArgIssues(*schemaTool, toolArgs); len(validationIssues) > 0 {
 		validationErrors := registeredToolValidationMessages(validationIssues)
 		if h != nil && h.app != nil {
-			h.emitMCPToolAgentView(serverRef, strings.TrimSpace(fmt.Sprint(callArgs["resolved_id"])), toolName, inputSchema, toolArgs, registeredToolValidationIssuesForMCP(validationIssues))
+			h.emitMCPToolAgentViewForOwner(serverRef, strings.TrimSpace(fmt.Sprint(callArgs["resolved_id"])), toolName, inputSchema, toolArgs, registeredToolValidationIssuesForMCP(validationIssues), policyOwnerID)
 		}
 		return &IMAgentResponse{Text: "MCP tool parameters need correction. Review the task panel.", Error: strings.Join(validationErrors, "; "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	callArgs["arguments"] = toolArgs
-	policyOwnerID := consumeRuntimePolicyOwnerIDFromToolArgs(callArgs)
+	policyOwnerID = consumeRuntimePolicyOwnerIDFromToolArgs(callArgs)
 	if rejection := h.registeredToolWorkflowPolicyRejectionForOwner(policyOwnerID, "call_mcp_tool", callArgs); rejection != nil {
 		return rejection
 	}

@@ -63,7 +63,7 @@ func (h *IMMessageHandler) runActiveSessionBonusRound(opts agentLoopBonusRoundOp
 	}
 
 	conversation := autoCompressConversation(opts.Conversation, opts.Config, opts.HTTPClient)
-	conversation = trimConversation(conversation, opts.EffectiveTokenLimit, opts.ToolsTokenBudget, makeSummarizer(opts.Config, opts.HTTPClient))
+	conversation = trimConversation(conversation, opts.EffectiveTokenLimit, opts.ToolsTokenBudget, nil)
 	if opts.OnNewRound != nil {
 		opts.OnNewRound()
 	}

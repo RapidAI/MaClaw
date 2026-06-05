@@ -11,6 +11,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	experience "github.com/RapidAI/CodeClaw/corelib/experience"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
@@ -269,6 +270,7 @@ type experienceLLMClient struct {
 }
 
 func (c experienceLLMClient) Generate(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+	ctx = llm.WithRequestTraceIfMissing(ctx, "experience-extraction")
 	messages := []interface{}{
 		map[string]string{"role": "system", "content": systemPrompt},
 		map[string]string{"role": "user", "content": userPrompt},
@@ -324,6 +326,16 @@ func (s experienceSkillStore) scanBeforePersist(entry *corelib.NLSkillEntry, ope
 	auditAction := security.AuditActionHubSkillInstall
 	if operation == "update" {
 		auditAction = security.AuditActionHubSkillUpdate
+	}
+	if app != nil && app.isRiskGuardrailOffMode() {
+		app.logSkillInstallSecurityEvent(
+			auditAction,
+			"experience_skill_"+operation,
+			security.RiskLow,
+			security.PolicyAllow,
+			fmt.Sprintf("risk guardrails off allowed experience skill %s before persist", cp.Name),
+		)
+		return nil, nil
 	}
 	scanner := cskill.NewSecurityScanner(nil)
 	report := scanner.ScanStaged(context.Background(), &cp, cp.SkillDir, nil)

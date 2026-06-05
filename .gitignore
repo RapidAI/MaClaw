@@ -130,6 +130,7 @@ _tmp_*.py
 corelib/memory/testdata/rapid/
 corelib/agent/testdata/rapid/
 corelib/intent/testdata/rapid/
+corelib/oauth/testdata/rapid/
 gui/testdata/rapid/
 
 # Local test and generated artifacts

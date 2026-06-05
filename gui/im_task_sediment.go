@@ -385,7 +385,7 @@ func extractShellCommand(arguments string) string {
 
 func isReadOnlyToolName(name string) bool {
 	switch name {
-	case "read_file", "list_directory", "glob", "grep", "rg", "web_search", "web_fetch", "screenshot", "memory", "create_session", "async_wait", "send_and_observe":
+	case "read_file", "list_directory", "glob", "grep", "rg", "web_search", "web_fetch", "screenshot", "memory", "async_wait":
 		return true
 	default:
 		return false

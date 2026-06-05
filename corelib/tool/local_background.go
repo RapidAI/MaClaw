@@ -89,6 +89,15 @@ func (m *LocalBackgroundTaskManager) SubmitWithRole(command, workDir, role strin
 	if rejection, rejected := RejectRawSSHCommand(command); rejected {
 		return nil, fmt.Errorf("%s", rejection)
 	}
+	if rejection, rejected := RejectBroadBrowserKillCommand(command); rejected {
+		return nil, fmt.Errorf("%s", rejection)
+	}
+	if rejection, rejected := RejectShellBrowserAutomationCommand(command); rejected {
+		return nil, fmt.Errorf("%s", rejection)
+	}
+	if rejection, rejected := RejectBrowserSideEffectHTTPCommand(command); rejected {
+		return nil, fmt.Errorf("%s", rejection)
+	}
 	role = NormalizeBackgroundTaskRole(role, command)
 
 	seq := m.counter.Add(1)

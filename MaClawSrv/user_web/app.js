@@ -125,9 +125,9 @@ const FIELD_I18N = {
   }
 };
 const HIDDEN_CONFIG_KEYS = new Set([
-  "claude", "gemini", "codex", "opencode", "codebuddy", "iflow", "kilo", "cursor",
+  "claude", "codex", "opencode", "codebuddy", "iflow", "kilo",
   "projects", "current_project", "active_tool", "default_tool", "default_tool_provider",
-  "show_gemini", "show_codex", "show_opencode", "show_codebuddy", "show_iflow", "show_kilo", "show_cursor",
+  "show_codex", "show_opencode", "show_codebuddy", "show_iflow", "show_kilo",
   "extra_tool_configs", "default_proxy_scope_coding_tools", "use_windows_terminal", "nl_skills", "llm_token_usage",
   "mcp_servers", "local_mcp_servers", "ssh_hosts", "skill_hub_urls", "external_skill_dirs", "skill_sources_allowed", "web_search_providers", "web_search_current_provider",
   "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec", "maclaw_llm_current_provider", "maclaw_llm_providers", "llm_prompt_cache", "auxiliary_llm", "model_routes",

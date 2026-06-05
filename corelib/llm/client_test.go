@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -441,7 +442,7 @@ func TestMiniMax_RequestBody_PreservesValidReplayedToolArguments(t *testing.T) {
 	}
 }
 
-func TestNonMiniMax_RequestBody_LeavesInvalidReplayedToolArgumentsUntouched(t *testing.T) {
+func TestOpenAI_RequestBody_SanitizesInvalidReplayedToolArguments(t *testing.T) {
 	var capturedBody []byte
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -482,8 +483,69 @@ func TestNonMiniMax_RequestBody_LeavesInvalidReplayedToolArgumentsUntouched(t *t
 	assistantCalls, _ := req.Messages[0]["tool_calls"].([]interface{})
 	assistantCall, _ := assistantCalls[0].(map[string]interface{})
 	fn, _ := assistantCall["function"].(map[string]interface{})
-	if got := fn["arguments"]; got != "{" {
-		t.Fatalf("arguments = %#v, want invalid payload unchanged for non-MiniMax", got)
+	if got := fn["arguments"]; got != "{}" {
+		t.Fatalf("arguments = %#v, want sanitized empty object", got)
+	}
+}
+
+func TestOpenAI_RequestBody_SanitizesTypedMapToolArguments(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://example.test/v1", Model: "test-model"},
+		[]interface{}{map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []map[string]interface{}{{
+				"id":   "call_1",
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":      "search",
+					"arguments": "{",
+				},
+			}},
+		}},
+		OpenAIChatRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	assistantCalls, _ := req.Messages[0]["tool_calls"].([]interface{})
+	assistantCall, _ := assistantCalls[0].(map[string]interface{})
+	fn, _ := assistantCall["function"].(map[string]interface{})
+	if got := fn["arguments"]; got != "{}" {
+		t.Fatalf("arguments = %#v, want sanitized empty object", got)
+	}
+}
+
+func TestOpenAI_RequestBody_DoesNotInventMissingToolFunction(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://example.test/v1", Model: "test-model"},
+		[]interface{}{map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []interface{}{map[string]interface{}{
+				"id":   "call_1",
+				"type": "function",
+			}},
+		}},
+		OpenAIChatRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	assistantCalls, _ := req.Messages[0]["tool_calls"].([]interface{})
+	assistantCall, _ := assistantCalls[0].(map[string]interface{})
+	if _, ok := assistantCall["function"]; ok {
+		t.Fatalf("function was invented for malformed tool call: %#v", assistantCall)
 	}
 }
 
@@ -714,6 +776,16 @@ func TestPreservation_HTTPErrorResponse400(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HTTP 400") {
 		t.Errorf("error = %q, want it to contain %q", err.Error(), "HTTP 400")
+	}
+	if strings.Contains(err.Error(), "bad request") {
+		t.Fatalf("error leaked response body: %q", err.Error())
+	}
+	var httpErr *HTTPStatusError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error type = %T, want HTTPStatusError", err)
+	}
+	if httpErr.StatusCode != http.StatusBadRequest || !strings.Contains(string(httpErr.Body), "bad request") {
+		t.Fatalf("HTTPStatusError = status %d body %q", httpErr.StatusCode, string(httpErr.Body))
 	}
 }
 

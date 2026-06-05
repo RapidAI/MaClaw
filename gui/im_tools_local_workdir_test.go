@@ -64,13 +64,20 @@ func TestProjectTabWorkDir_ValidDirectory(t *testing.T) {
 	// Create a temporary directory to simulate a valid project path.
 	tmpDir := t.TempDir()
 
-	h := &IMMessageHandler{
-		lastUserID: "desktop-user:" + tmpDir,
-	}
+	h := &IMMessageHandler{}
 
-	got := h.projectTabWorkDir()
+	got := h.projectTabWorkDirForOwner(desktopUserID + ":" + tmpDir)
 	if got != tmpDir {
-		t.Errorf("projectTabWorkDir() = %q, want %q", got, tmpDir)
+		t.Errorf("projectTabWorkDirForOwner() = %q, want %q", got, tmpDir)
+	}
+}
+
+func TestProjectTabWorkDir_NoRuntimeOwnerDoesNotUseLastUserID(t *testing.T) {
+	tmpDir := t.TempDir()
+	h := &IMMessageHandler{lastUserID: desktopUserID + ":" + tmpDir}
+
+	if got := h.projectTabWorkDir(); got != "" {
+		t.Fatalf("projectTabWorkDir() = %q, want empty without runtime owner", got)
 	}
 }
 
@@ -116,18 +123,31 @@ func TestToolBashEmptyRuntimeOwnerFailsClosed(t *testing.T) {
 	}
 }
 
-func TestProjectTabWorkDir_InvalidDirectory_FallsBackToHome(t *testing.T) {
+func TestProjectTabWorkDir_InvalidDirectoryFailsClosed(t *testing.T) {
 	// Use a non-existent path as projectPath.
 	nonExistent := filepath.Join(t.TempDir(), "does_not_exist_xyz")
 
-	h := &IMMessageHandler{
-		lastUserID: "desktop-user:" + nonExistent,
-	}
+	h := &IMMessageHandler{}
 
-	got := h.projectTabWorkDir()
-	home, _ := os.UserHomeDir()
-	if got != home {
-		t.Errorf("projectTabWorkDir() with invalid path = %q, want home dir %q", got, home)
+	got := h.projectTabWorkDirForOwner(desktopUserID + ":" + nonExistent)
+	if got != nonExistent {
+		t.Errorf("projectTabWorkDirForOwner() with invalid path = %q, want missing project path %q", got, nonExistent)
+	}
+	if _, err := os.Stat(nonExistent); !os.IsNotExist(err) {
+		t.Fatalf("invalid non-task project path must not be auto-created, stat err=%v", err)
+	}
+}
+
+func TestProjectTabWorkDir_RepairsManagedRecentTaskWorkspace(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	projectPath := filepath.Join(app.GetDataDir(), "tasks", "missing-task")
+	h := &IMMessageHandler{app: app}
+
+	if got := h.projectTabWorkDirForOwner(desktopUserID + ":" + projectPath); got != projectPath {
+		t.Fatalf("projectTabWorkDirForOwner() = %q, want repaired managed task path %q", got, projectPath)
+	}
+	if info, err := os.Stat(projectPath); err != nil || !info.IsDir() {
+		t.Fatalf("managed task workspace was not repaired, info=%v err=%v", info, err)
 	}
 }
 
@@ -163,13 +183,11 @@ func TestResolveToolWorkDir_EmptyWorkDir_ProjectTab(t *testing.T) {
 	// When working_dir is empty and we're in a Project Tab, use projectPath.
 	tmpDir := t.TempDir()
 
-	h := &IMMessageHandler{
-		lastUserID: "desktop-user:" + tmpDir,
-	}
+	h := &IMMessageHandler{}
 
-	got := h.resolveToolWorkDir("")
+	got := h.resolveToolWorkDirForOwner("", desktopUserID+":"+tmpDir)
 	if got != tmpDir {
-		t.Errorf("resolveToolWorkDir(\"\") in Project Tab = %q, want %q", got, tmpDir)
+		t.Errorf("resolveToolWorkDirForOwner(\"\") in Project Tab = %q, want %q", got, tmpDir)
 	}
 }
 
@@ -184,6 +202,54 @@ func TestResolveToolWorkDir_ExplicitOwnerOverridesGlobalLoop(t *testing.T) {
 	got := h.resolveToolWorkDirForOwner("", desktopUserID+":"+mobileDir)
 	if got != mobileDir {
 		t.Fatalf("resolveToolWorkDirForOwner() = %q, want explicit owner project %q", got, mobileDir)
+	}
+}
+
+func TestFileToolsUseRuntimeOwnerProjectForRelativePaths(t *testing.T) {
+	projectDir := t.TempDir()
+	h := &IMMessageHandler{lastUserID: desktopUserID}
+	args := map[string]interface{}{
+		"path":                           "notes.txt",
+		"content":                        "project-owned",
+		registeredToolPolicyOwnerIDField: desktopUserID + ":" + projectDir,
+	}
+
+	result := h.toolWriteFile(args)
+	if !contains(result, filepath.Join(projectDir, "notes.txt")) {
+		t.Fatalf("toolWriteFile result = %q, want project path", result)
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, "notes.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile project notes: %v", err)
+	}
+	if string(data) != "project-owned" {
+		t.Fatalf("project notes = %q", data)
+	}
+}
+
+func TestExecuteFileToolInjectsRuntimeOwnerForRelativePaths(t *testing.T) {
+	desktopDir := t.TempDir()
+	projectDir := t.TempDir()
+	h := &IMMessageHandler{
+		lastUserID:     desktopUserID + ":" + desktopDir,
+		currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-desktop", PolicyOwnerID: desktopUserID + ":" + desktopDir}},
+		registry:       NewToolRegistry(),
+	}
+	registerBuiltinTools(h.registry, h)
+
+	result := h.executeToolDetailedWithRuntime(desktopUserID+":"+projectDir, "", "write_file", `{"path":"notes.txt","content":"project-owned"}`, "", nil)
+	if result.Outcome != toolOutcomeSucceeded {
+		t.Fatalf("write_file outcome = %v text=%q", result.Outcome, result.Text)
+	}
+	projectData, err := os.ReadFile(filepath.Join(projectDir, "notes.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile project notes: %v", err)
+	}
+	if string(projectData) != "project-owned" {
+		t.Fatalf("project notes = %q", projectData)
+	}
+	if _, err := os.Stat(filepath.Join(desktopDir, "notes.txt")); !os.IsNotExist(err) {
+		t.Fatalf("write_file leaked into desktop dir, stat err=%v", err)
 	}
 }
 

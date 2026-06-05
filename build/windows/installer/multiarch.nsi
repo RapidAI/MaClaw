@@ -102,6 +102,27 @@ LangString AlreadyInstalled ${LANG_GERMAN} "${INFO_PRODUCTNAME} ist bereits inst
 LangString AlreadyInstalled ${LANG_SPANISH} "${INFO_PRODUCTNAME} ya está instalado. ¿Desea desinstalarlo primero?"
 LangString AlreadyInstalled ${LANG_RUSSIAN} "${INFO_PRODUCTNAME} уже установлен. Удалить сначала?"
 
+# Localized strings for running app dialog
+LangString AppIsRunning ${LANG_ENGLISH} "${INFO_PRODUCTNAME} is still running. Stop it and continue installing?"
+LangString AppIsRunning ${LANG_SIMPCHINESE} "${INFO_PRODUCTNAME} 正在运行。是否停止旧进程并继续安装？"
+LangString AppIsRunning ${LANG_TRADCHINESE} "${INFO_PRODUCTNAME} 正在執行。是否停止舊行程並繼續安裝？"
+LangString AppIsRunning ${LANG_JAPANESE} "${INFO_PRODUCTNAME} はまだ実行中です。停止してインストールを続行しますか？"
+LangString AppIsRunning ${LANG_KOREAN} "${INFO_PRODUCTNAME}이(가) 아직 실행 중입니다. 중지하고 설치를 계속하시겠습니까?"
+LangString AppIsRunning ${LANG_FRENCH} "${INFO_PRODUCTNAME} est encore en cours d'exécution. L'arrêter et continuer l'installation ?"
+LangString AppIsRunning ${LANG_GERMAN} "${INFO_PRODUCTNAME} wird noch ausgeführt. Beenden und Installation fortsetzen?"
+LangString AppIsRunning ${LANG_SPANISH} "${INFO_PRODUCTNAME} aún se está ejecutando. ¿Detenerlo y continuar la instalación?"
+LangString AppIsRunning ${LANG_RUSSIAN} "${INFO_PRODUCTNAME} всё ещё запущен. Остановить и продолжить установку?"
+
+LangString AppStillRunning ${LANG_ENGLISH} "${INFO_PRODUCTNAME} could not be stopped. Please close it and run the installer again."
+LangString AppStillRunning ${LANG_SIMPCHINESE} "无法停止 ${INFO_PRODUCTNAME}。请手动关闭后重新运行安装程序。"
+LangString AppStillRunning ${LANG_TRADCHINESE} "無法停止 ${INFO_PRODUCTNAME}。請手動關閉後重新執行安裝程式。"
+LangString AppStillRunning ${LANG_JAPANESE} "${INFO_PRODUCTNAME} を停止できませんでした。手動で閉じてからインストーラーを再実行してください。"
+LangString AppStillRunning ${LANG_KOREAN} "${INFO_PRODUCTNAME}을(를) 중지할 수 없습니다. 직접 닫은 후 설치 프로그램을 다시 실행해 주세요."
+LangString AppStillRunning ${LANG_FRENCH} "Impossible d'arrêter ${INFO_PRODUCTNAME}. Fermez-le manuellement puis relancez l'installation."
+LangString AppStillRunning ${LANG_GERMAN} "${INFO_PRODUCTNAME} konnte nicht beendet werden. Bitte manuell schließen und Installer erneut ausführen."
+LangString AppStillRunning ${LANG_SPANISH} "No se pudo detener ${INFO_PRODUCTNAME}. Ciérrelo manualmente y vuelva a ejecutar el instalador."
+LangString AppStillRunning ${LANG_RUSSIAN} "Не удалось остановить ${INFO_PRODUCTNAME}. Закройте его вручную и запустите установщик снова."
+
 # Localized strings for uninstall user data dialog
 LangString DeleteUserData ${LANG_ENGLISH} "Do you want to delete user data (.cceasy and part of .maclaw)?$\n$\nThis will remove AI tools, configurations and cache.$\nNote: .maclaw/data, .maclaw/models and memories.json will be preserved."
 LangString DeleteUserData ${LANG_SIMPCHINESE} "是否删除用户数据（.cceasy 和部分 .maclaw 内容）？$\n$\n这将删除 AI 工具、配置和缓存。$\n注意：.maclaw/data、.maclaw/models 和 memories.json 将被保留。"
@@ -166,6 +187,28 @@ Function .onInit
     lang_en:
         StrCpy $LANGUAGE ${LANG_ENGLISH}
     lang_done:
+
+    # Stop old running GUI only after user confirms; otherwise exit.
+    nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq ${PRODUCT_EXECUTABLE}" /NH | find /I "${PRODUCT_EXECUTABLE}" >nul'
+    Pop $R1
+    StrCmp $R1 "0" appRunning appNotRunning
+
+    appRunning:
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AppIsRunning)" IDYES stopApp
+    Abort
+
+    stopApp:
+    ExecWait 'taskkill /F /IM ${PRODUCT_EXECUTABLE}'
+    Sleep 1000
+    nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq ${PRODUCT_EXECUTABLE}" /NH | find /I "${PRODUCT_EXECUTABLE}" >nul'
+    Pop $R1
+    StrCmp $R1 "0" appStillRunning appNotRunning
+
+    appStillRunning:
+    MessageBox MB_OK|MB_ICONSTOP "$(AppStillRunning)"
+    Abort
+
+    appNotRunning:
 
     # Check if already installed
     ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString"

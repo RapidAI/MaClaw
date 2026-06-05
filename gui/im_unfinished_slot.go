@@ -159,14 +159,14 @@ func (h *IMMessageHandler) recoverInterruptedTaskSlot(userID string, entries []a
 	return slot
 }
 
-func (h *IMMessageHandler) handleRecoverableSessionDecision(decision *explicitTaskSlotDecision) (*IMAgentResponse, bool, bool) {
+func (h *IMMessageHandler) handleRecoverableSessionDecision(decision *explicitTaskSlotDecision, lang string) (*IMAgentResponse, bool, bool) {
 	if h == nil || decision == nil || h.manager == nil {
 		return nil, false, false
 	}
 	if decision.DismissRecoverableSessionID != "" {
 		h.manager.SuppressResumeForSession(decision.DismissRecoverableSessionID)
 		decision.ResumeRecoverableSessionID = ""
-		return &IMAgentResponse{Text: "Recoverable session dismissed."}, true, true
+		return &IMAgentResponse{Text: localizedRecoverableSessionDismissedMessage(lang)}, true, true
 	}
 	if decision.ResumeRecoverableSessionID == "" {
 		return nil, false, false
@@ -178,10 +178,31 @@ func (h *IMMessageHandler) handleRecoverableSessionDecision(decision *explicitTa
 		session.mu.RUnlock()
 		if hasResumeContext {
 			h.manager.SuppressResumeForSession(decision.ResumeRecoverableSessionID)
-			return &IMAgentResponse{Text: "Recoverable external coding session resume is disabled. Coding work now runs through the internal CodingSubAgent; start the task again to continue with agent-managed coding."}, true, false
+			return &IMAgentResponse{Text: localizedRecoverableSessionResumeDisabledMessage(lang)}, true, false
 		}
 	}
-	return &IMAgentResponse{Error: "There is no recoverable session available, or the session does not support resume."}, true, false
+	return &IMAgentResponse{Error: localizedRecoverableSessionUnavailableMessage(lang)}, true, false
+}
+
+func localizedRecoverableSessionDismissedMessage(lang string) string {
+	return unfinishedSlotText(lang,
+		"Recoverable session dismissed.",
+		"已忽略可恢复会话。",
+		"已忽略可恢復會話。")
+}
+
+func localizedRecoverableSessionResumeDisabledMessage(lang string) string {
+	return unfinishedSlotText(lang,
+		"Recoverable external coding session resume is disabled. Coding work now runs through the internal CodingSubAgent; start the task again to continue with agent-managed coding.",
+		"已禁用外部编码会话恢复。编码任务现在通过内部 CodingSubAgent 执行；请重新发起任务以继续由智能体管理的编码流程。",
+		"已停用外部編碼會話恢復。編碼任務現在透過內部 CodingSubAgent 執行；請重新發起任務以繼續由智能體管理的編碼流程。")
+}
+
+func localizedRecoverableSessionUnavailableMessage(lang string) string {
+	return unfinishedSlotText(lang,
+		"There is no recoverable session available, or the session does not support resume.",
+		"没有可恢复的会话，或该会话不支持恢复。",
+		"沒有可恢復的會話，或該會話不支援恢復。")
 }
 
 func (h *IMMessageHandler) applyExplicitTaskSlotAction(msg *IMUserMessage, trimmed *string, decision explicitTaskSlotDecision, entries *[]agent.ConversationEntry, unfinishedSlot **agent.UnfinishedTaskSlot) (bool, *IMAgentResponse, bool) {
@@ -189,6 +210,14 @@ func (h *IMMessageHandler) applyExplicitTaskSlotAction(msg *IMUserMessage, trimm
 		return false, nil, false
 	}
 	if decision.StartNewTask {
+		var savedPendingText *pendingSlotText
+		if msg.UIAction {
+			if savedText, ok := h.pendingSlotUserText.LoadAndDelete(msg.UserID); ok {
+				if pending, ok := savedText.(*pendingSlotText); ok && pending != nil {
+					savedPendingText = pending
+				}
+			}
+		}
 		if len(*entries) >= 2 {
 			h.archiveCurrentTask(msg.UserID, *entries, agent.ArchivedTaskStatusAbandoned)
 		}
@@ -198,9 +227,8 @@ func (h *IMMessageHandler) applyExplicitTaskSlotAction(msg *IMUserMessage, trimm
 		*unfinishedSlot = nil
 
 		if msg.UIAction {
-			savedText, hasSavedText := h.pendingSlotUserText.LoadAndDelete(msg.UserID)
-			if hasSavedText {
-				pending := savedText.(*pendingSlotText)
+			if savedPendingText != nil {
+				pending := savedPendingText
 				if time.Since(pending.Timestamp) < 10*time.Minute {
 					msg.Text = pending.Text
 					msg.UIAction = false
@@ -208,12 +236,12 @@ func (h *IMMessageHandler) applyExplicitTaskSlotAction(msg *IMUserMessage, trimm
 					log.Printf("[TaskSlot] UI action for user %s: dismiss+replay original task %q", msg.UserID, truncateRunes(*trimmed, 80))
 				} else {
 					log.Printf("[TaskSlot] UI action for user %s: saved text expired (age=%v)", msg.UserID, time.Since(pending.Timestamp))
-					hasSavedText = false
+					savedPendingText = nil
 				}
 			}
-			if !hasSavedText {
+			if savedPendingText == nil {
 				log.Printf("[TaskSlot] UI action for user %s: dismiss_slot:%s", msg.UserID, decision.DismissSlotID)
-				return true, &IMAgentResponse{Text: "Previous task dismissed. Tell me the new task."}, true
+				return true, &IMAgentResponse{Text: localizedPreviousTaskDismissedMessage(msg.Lang)}, true
 			}
 		}
 		return true, nil, false
@@ -224,6 +252,17 @@ func (h *IMMessageHandler) applyExplicitTaskSlotAction(msg *IMUserMessage, trimm
 		}
 	}
 	return false, nil, false
+}
+
+func localizedPreviousTaskDismissedMessage(lang string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return "Previous task dismissed. Tell me the new task."
+	case appLanguageZhHant:
+		return "已忽略上次未完成任務。請告訴我新的任務。"
+	default:
+		return "已忽略上次未完成任务。请告诉我新的任务。"
+	}
 }
 
 func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trimmed string, freshTask bool, decision explicitTaskSlotDecision, unfinishedSlot *agent.UnfinishedTaskSlot) (*IMAgentResponse, bool) {
@@ -243,7 +282,7 @@ func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trim
 		}
 	}
 
-	hint := buildUnfinishedSlotHint(unfinishedSlot)
+	hint := buildUnfinishedSlotHintWithLang(unfinishedSlot, msg.Lang)
 	if hint == "" {
 		return nil, false
 	}
@@ -258,14 +297,14 @@ func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trim
 		})
 	}
 
-	unfinishedTask := buildUnfinishedTaskPayload(unfinishedSlot)
+	unfinishedTask := buildUnfinishedTaskPayloadWithLang(unfinishedSlot, msg.Lang)
 	recoverableSession := (*IMResponseRecoverableSession)(nil)
 	if h.manager != nil {
 		for _, session := range h.manager.List() {
 			if strings.TrimSpace(session.ProjectPath) != strings.TrimSpace(unfinishedSlot.ProjectPath) {
 				continue
 			}
-			recoverableSession = buildRecoverableSessionPayload(session)
+			recoverableSession = buildRecoverableSessionPayloadWithLang(session, msg.Lang)
 			if recoverableSession != nil {
 				break
 			}
@@ -281,19 +320,27 @@ func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trim
 }
 
 func buildUnfinishedSlotResumeContext(slot *agent.UnfinishedTaskSlot) string {
+	lang, _ := agentViewCurrentLang.Load().(string)
+	return buildUnfinishedSlotResumeContextWithLang(slot, lang)
+}
+
+func buildUnfinishedSlotResumeContextWithLang(slot *agent.UnfinishedTaskSlot, lang string) string {
 	if slot == nil {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n## 显式恢复未完成任务\n")
+	b.WriteString(unfinishedSlotText(lang,
+		"\n## Explicit unfinished task resume\n",
+		"\n## \u663e\u5f0f\u6062\u590d\u672a\u5b8c\u6210\u4efb\u52a1\n",
+		"\n## \u986f\u5f0f\u6062\u5fa9\u672a\u5b8c\u6210\u4efb\u52d9\n"))
 	if slot.LastTask != "" {
-		b.WriteString("- 任务: ")
+		b.WriteString(unfinishedSlotText(lang, "- Task: ", "- \u4efb\u52a1: ", "- \u4efb\u52d9: "))
 		b.WriteString(slot.LastTask)
 		b.WriteString("\n")
 	}
 	if slot.Summary != "" {
-		b.WriteString("- 当前进度: ")
-		b.WriteString(slot.Summary)
+		b.WriteString(unfinishedSlotText(lang, "- Current progress: ", "- \u5f53\u524d\u8fdb\u5ea6: ", "- \u76ee\u524d\u9032\u5ea6: "))
+		b.WriteString(localizedUnfinishedSlotSummary(slot.Summary, lang))
 		b.WriteString("\n")
 	}
 	if slot.ResumePrompt != "" {
@@ -302,33 +349,62 @@ func buildUnfinishedSlotResumeContext(slot *agent.UnfinishedTaskSlot) string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("用户已显式选择继续这个未完成任务。请仅围绕该任务继续，不要混入其他旧任务。\n")
+	b.WriteString(unfinishedSlotText(lang,
+		"User explicitly chose to continue this unfinished task. Continue only that task; do not mix in other old tasks.\n",
+		"\u7528\u6237\u5df2\u663e\u5f0f\u9009\u62e9\u7ee7\u7eed\u8fd9\u4e2a\u672a\u5b8c\u6210\u4efb\u52a1\u3002\u8bf7\u4ec5\u56f4\u7ed5\u8be5\u4efb\u52a1\u7ee7\u7eed\uff0c\u4e0d\u8981\u6df7\u5165\u5176\u4ed6\u65e7\u4efb\u52a1\u3002\n",
+		"\u4f7f\u7528\u8005\u5df2\u986f\u5f0f\u9078\u64c7\u7e7c\u7e8c\u9019\u500b\u672a\u5b8c\u6210\u4efb\u52d9\u3002\u8acb\u50c5\u570d\u7e5e\u8a72\u4efb\u52d9\u7e7c\u7e8c\uff0c\u4e0d\u8981\u6df7\u5165\u5176\u4ed6\u820a\u4efb\u52d9\u3002\n"))
 	return b.String()
 }
 
 func buildResumeSlotActions(slot *agent.UnfinishedTaskSlot) []IMResponseAction {
+	lang, _ := agentViewCurrentLang.Load().(string)
+	return buildResumeSlotActionsWithLang(slot, lang)
+}
+
+func buildResumeSlotActionsWithLang(slot *agent.UnfinishedTaskSlot, lang string) []IMResponseAction {
 	if slot == nil || strings.TrimSpace(slot.SlotID) == "" {
 		return nil
 	}
 	return []IMResponseAction{
-		{Label: avTr("Resume previous task", "\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1"), Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
-		{Label: avTr("Start new task", "\u5f00\u59cb\u65b0\u4efb\u52a1"), Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "primary"},
+		{Label: unfinishedSlotText(lang, "Resume previous task", "\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1", "\u7e7c\u7e8c\u4e0a\u6b21\u4efb\u52d9"), Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
+		{Label: unfinishedSlotText(lang, "Start new task", "\u5f00\u59cb\u65b0\u4efb\u52a1", "\u958b\u59cb\u65b0\u4efb\u52d9"), Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "primary"},
 	}
 }
 
 func buildUnfinishedSlotHint(slot *agent.UnfinishedTaskSlot) string {
+	lang, _ := agentViewCurrentLang.Load().(string)
+	return buildUnfinishedSlotHintWithLang(slot, lang)
+}
+
+func buildUnfinishedSlotHintWithLang(slot *agent.UnfinishedTaskSlot, lang string) string {
 	if slot == nil {
 		return ""
 	}
 	title := strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary, slot.ProjectPath))
 	if title == "" {
-		title = avTr("Previous unfinished task", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1")
+		title = unfinishedSlotText(lang, "Previous unfinished task", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9")
 	}
+	title = localizedUnfinishedSlotSummary(title, lang)
 	title = truncateRunes(title, 60)
-	if avTr("en", "zh") == "en" {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
 		return "Detected an unfinished task: " + title + ". Choose resume to continue it."
+	case appLanguageZhHant:
+		return "偵測到未完成任務：" + title + "。選擇「繼續上次任務」可繼續。"
+	default:
+		return "\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1\uff1a" + title + "\u3002\u9009\u62e9\u201c\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1\u201d\u53ef\u7ee7\u7eed\u3002"
 	}
-	return "\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1\uff1a" + title + "\u3002\u9009\u62e9\u201c\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1\u201d\u53ef\u7ee7\u7eed\u3002"
+}
+
+func unfinishedSlotText(lang, en, zhHans, zhHant string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return en
+	case appLanguageZhHant:
+		return zhHant
+	default:
+		return zhHans
+	}
 }
 
 func isSlotActionCommand(text string) bool {

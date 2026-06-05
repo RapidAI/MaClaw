@@ -17,22 +17,40 @@ import (
 // Supports both OpenAI-compatible and Anthropic Messages API protocols.
 // The httpClient parameter selects which connection pool to use (chat vs background).
 func (h *IMMessageHandler) doLLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
+	return h.doLLMRequestWithContext(context.Background(), cfg, messages, tools, httpClient)
+}
+
+func (h *IMMessageHandler) doLLMRequestWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
+	ctx = llm.WithRequestTraceIfMissing(ctx, "im_llm")
 	if cfg.IsResponsesAPI() {
-		return h.doResponsesAPILLMRequest(cfg, messages, tools, httpClient)
+		return h.doResponsesAPILLMRequestWithContext(ctx, cfg, messages, tools, httpClient)
 	}
 	if cfg.Protocol == "anthropic" {
-		return h.doAnthropicLLMRequest(cfg, messages, tools, httpClient)
+		return h.doAnthropicLLMRequestWithContext(ctx, cfg, messages, tools, httpClient)
 	}
-	return h.doOpenAILLMRequest(cfg, messages, tools, httpClient)
+	return h.doOpenAILLMRequestWithContext(ctx, cfg, messages, tools, httpClient)
 }
 
 func (h *IMMessageHandler) doOpenAILLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
-	ctx := context.Background()
+	return h.doOpenAILLMRequestWithContext(context.Background(), cfg, messages, tools, httpClient)
+}
+
+func (h *IMMessageHandler) doOpenAILLMRequestWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
+	ctx = llm.WithRequestTraceIfMissing(ctx, "im_openai")
+	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
+	if acquireErr != nil {
+		return nil, acquireErr
+	}
+	defer lease.Release()
+	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	lease.SetCancel(scheduledCancel)
+	defer scheduledCancel()
 	requestFn := llm.DoOpenAIRequest
 	if h.app != nil {
 		requestFn = h.app.cachedOpenAIRequest
 	}
-	resp, err := requestFn(ctx, cfg, messages, tools, httpClient)
+	resp, err := requestFn(scheduledCtx, cfg, messages, tools, httpClient)
+	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
 		// Re-wrap with dumpLLMContext for HTTP 500 context dump support.
 		// DoOpenAIRequest returns "HTTP %d: ..." errors; extract status if 500.
@@ -53,14 +71,29 @@ func (h *IMMessageHandler) doOpenAILLMRequest(cfg corelib.MaclawLLMConfig, messa
 // doAnthropicLLMRequest sends a request using the Anthropic Messages API protocol
 // and converts the response to the internal llm.Response format for compatibility.
 func (h *IMMessageHandler) doAnthropicLLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
+	return h.doAnthropicLLMRequestWithContext(context.Background(), cfg, messages, tools, httpClient)
+}
+
+func (h *IMMessageHandler) doAnthropicLLMRequestWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
+	ctx = llm.WithRequestTraceIfMissing(ctx, "im_anthropic")
+	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
+	if acquireErr != nil {
+		return nil, acquireErr
+	}
+	defer lease.Release()
+	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	lease.SetCancel(scheduledCancel)
+	defer scheduledCancel()
 	if h.app != nil {
-		return h.app.cachedAnthropicRequest(context.Background(), cfg, messages, tools, httpClient)
+		resp, err := h.app.cachedAnthropicRequest(scheduledCtx, cfg, messages, tools, httpClient)
+		globalLLMScheduler.ObserveResult(trace, err)
+		return resp, err
 	}
 	endpoint, data, err := llm.BuildAnthropicMessagesRequestData(cfg, messages, llm.AnthropicMessagesRequestOptions{Stream: false, Tools: tools})
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(scheduledCtx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -68,14 +101,18 @@ func (h *IMMessageHandler) doAnthropicLLMRequest(cfg corelib.MaclawLLMConfig, me
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
 	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
 	resp, err := httpClient.Do(req)
+	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	return llm.ParseNonStreamAnthropicResponse(resp)
+	parsed, err := llm.ParseNonStreamAnthropicResponse(resp)
+	globalLLMScheduler.ObserveResult(trace, err)
+	return parsed, err
 }
 
 // ---------------------------------------------------------------------------

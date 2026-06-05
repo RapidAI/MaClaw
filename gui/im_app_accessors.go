@@ -415,15 +415,6 @@ func (h *IMMessageHandler) appGetDocGenerator() interface{} {
 	return h.app.docGenerator
 }
 
-// --- Save Config ---
-
-func (h *IMMessageHandler) saveConfig(cfg corelib.AppConfig) error {
-	if h.app == nil {
-		return nil
-	}
-	return h.app.SaveConfig(cfg)
-}
-
 // --- Save LLM Providers ---
 
 func (h *IMMessageHandler) saveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, current string) error {

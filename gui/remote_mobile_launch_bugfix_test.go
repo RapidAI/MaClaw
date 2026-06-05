@@ -29,7 +29,7 @@ func TestBugCondition_NonDesktopSourceBlockedByRemoteEnabled(t *testing.T) {
 	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(toolsDir) error = %v", err)
 	}
-	toolBinaries := []string{"claude", "codex", "opencode", "gemini"}
+	toolBinaries := []string{"claude", "codex", "opencode"}
 	for _, bin := range toolBinaries {
 		name := bin
 		if runtime.GOOS == "windows" {
@@ -64,10 +64,6 @@ func TestBugCondition_NonDesktopSourceBlockedByRemoteEnabled(t *testing.T) {
 		CurrentModel: "Default",
 		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "opencode-v1", IsBuiltin: true}},
 	}
-	cfg.Gemini = corelib.ToolConfig{
-		CurrentModel: "Default",
-		Models:       []corelib.ModelConfig{{ModelName: "Default", ModelId: "gemini-2.5-pro", IsBuiltin: true}},
-	}
 	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
@@ -89,7 +85,7 @@ func TestBugCondition_NonDesktopSourceBlockedByRemoteEnabled(t *testing.T) {
 	}
 
 	// Supported coding tools
-	tools := []string{"claude", "codex", "opencode", "gemini"}
+	tools := []string{"claude", "codex", "opencode"}
 
 	for _, source := range nonDesktopSources {
 		for _, tool := range tools {

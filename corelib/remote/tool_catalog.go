@@ -54,18 +54,6 @@ var BuiltinToolInfos = map[string]RemoteToolInfo{
 		ReadinessHint: "Checks Kilo config sync plus KILO and OpenAI-compatible environment wiring.",
 		SmokeHint:     "Runs registration, PTY, launch, real session start, and Hub visibility verification for Kilo.",
 	},
-	"gemini": {
-		Name: "gemini", DisplayName: "Gemini", BinaryName: "gemini",
-		DefaultTitle: "Gemini Session", SupportsProxy: true, SupportsRemote: true,
-		ReadinessHint: "Checks Gemini CLI installation, API key, and ACP protocol readiness.",
-		SmokeHint:     "Runs registration, launch, real session start, and Hub visibility verification for Gemini (ACP mode).",
-	},
-	"cursor": {
-		Name: "cursor", DisplayName: "Cursor Agent", BinaryName: "cursor-agent",
-		DefaultTitle: "Cursor Session", SupportsProxy: true, SupportsRemote: true,
-		ReadinessHint: "Checks Cursor Agent CLI installation, SDK stream-json readiness, and remote capability.",
-		SmokeHint:     "Runs registration, launch, real session start, and Hub visibility verification for Cursor Agent (SDK mode).",
-	},
 	"codebuddy": {
 		Name: "codebuddy", DisplayName: "CodeBuddy", BinaryName: "codebuddy",
 		DefaultTitle: "CodeBuddy Session", UsesOpenAICompat: true, RequiresSessionConfig: true,
@@ -116,4 +104,4 @@ func RemoteToolSupported(toolName string) bool {
 }
 
 // ToolOrder is the canonical display order for remote tools.
-var ToolOrder = []string{"claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "iflow", "kilo"}
+var ToolOrder = []string{"claude", "codex", "opencode", "codebuddy", "iflow", "kilo"}

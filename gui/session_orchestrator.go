@@ -157,7 +157,7 @@ func (s *CodingSessionStarter) Start(req CodingSessionStartRequest) (CodingSessi
 			Severity:    "info",
 			Title:       "Remote session created",
 			Summary:     fmt.Sprintf("session=%s tool=%s project=%s", view.ID, view.Tool, result.ResolvedProjectPath),
-			Command:     "create_session",
+			Command:     "remote_session_start",
 			ProjectPath: result.ResolvedProjectPath,
 			CreatedAt:   traceNowMillis(),
 		})

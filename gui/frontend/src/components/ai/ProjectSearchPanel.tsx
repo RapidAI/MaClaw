@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArchiveProject, GetArchivedExperience, GetProjectScene, HideTask, OpenFileOrShowInFolder, PinTask, RenameTask, ResumeProject, SearchProjects } from "../../../wailsjs/go/main/App";
+import { ArchiveProject, ForkRecentTask, GetArchivedExperience, GetProjectScene, HideTask, OpenFileOrShowInFolder, PinTask, RenameTask, ResumeProject, SearchProjects } from "../../../wailsjs/go/main/App";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { localizeText } from "./aiAssistantI18n";
 import { ProjectSearchArchivedPanel } from "./ProjectSearchArchivedPanel";
@@ -94,7 +94,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
     theme: Theme;
     inline: boolean;
     onProjectSwitch: (displayMsg: string) => Promise<void> | void;
-    onCreateProjectTab?: (projectPath: string, taskTitle: string) => void;
+    onCreateProjectTab?: (projectPath: string, taskTitle: string, options?: { autoSend?: boolean }) => void;
     /** Close an open project tab by its project path (e.g. after archiving). */
     onCloseProjectTab?: (projectPath: string) => void;
     /** Fork current local tab conversation into a new project tab. */
@@ -161,11 +161,20 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
         if (renamingPath) return;
         if (item.archived) { await openArchived(item); return; }
         search.close();
-        if (onCreateProjectTab) { onCreateProjectTab(item.project_path, item.name || item.project_path); return; }
         try {
-            const msg = await ResumeProject(item.project_path);
+            const forked = await ForkRecentTask(item.project_path);
+            const forkedPath = forked?.project_path || "";
+            if (!forkedPath) {
+                console.warn("[ProjectSearch] task fork returned empty path", { sourcePath: item.project_path });
+                return;
+            }
+            const title = forked?.name || item.name || item.project_path;
+            const autoSend = false;
+            console.info("[ProjectSearch] opened task fork", { sourcePath: item.project_path, forkedPath, name: title, autoSend });
+            if (onCreateProjectTab) { onCreateProjectTab(forkedPath, title, { autoSend }); return; }
+            const msg = await ResumeProject(forkedPath);
             if (msg) await onProjectSwitch(msg);
-        } catch (error) { console.error("[ProjectSearch] ResumeProject failed:", error); }
+        } catch (error) { console.error("[ProjectSearch] open forked task failed:", error); }
     }, [renamingPath, openArchived, search, onCreateProjectTab, onProjectSwitch]);
 
     if (!search.open && !archivedExperience) return null;
@@ -195,7 +204,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
                 {!search.loading && visibleResults.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} search={search} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} onShowSceneDetail={openSceneDetail} sceneLoading={sceneLoadingPath === item.project_path} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
             </div>
             {(sceneLoadingPath || sceneDetail) && <ProjectSceneDetailPanel detail={sceneDetail} loading={!!sceneLoadingPath} lang={lang} theme={t} formatTime={search.formatTime} onClose={() => setSceneDetail(null)} />}
-            {ctxMenu && <ProjectSearchContextMenu ctxMenu={ctxMenu} lang={lang} theme={t} refreshResults={refreshResults} setCtxMenu={setCtxMenu} setRenamingPath={setRenamingPath} setRenameVal={setRenameVal} />}
+            {ctxMenu && <ProjectSearchContextMenu ctxMenu={ctxMenu} lang={lang} theme={t} refreshResults={refreshResults} setCtxMenu={setCtxMenu} setRenamingPath={setRenamingPath} setRenameVal={setRenameVal} onCloseProjectTab={onCloseProjectTab} />}
         </div>
     );
 }
@@ -223,14 +232,14 @@ function ProjectSearchRow({ item, lang, theme: t, search, renamingPath, renameVa
 }
 
 
-function ProjectSearchContextMenu({ ctxMenu, lang, theme: t, refreshResults, setCtxMenu, setRenamingPath, setRenameVal }: {
-    ctxMenu: { x: number; y: number; item: ProjectSearchItem }; lang: string; theme: Theme; refreshResults: () => void; setCtxMenu: (menu: null) => void; setRenamingPath: (path: string | null) => void; setRenameVal: (value: string) => void;
+function ProjectSearchContextMenu({ ctxMenu, lang, theme: t, refreshResults, setCtxMenu, setRenamingPath, setRenameVal, onCloseProjectTab }: {
+    ctxMenu: { x: number; y: number; item: ProjectSearchItem }; lang: string; theme: Theme; refreshResults: () => void; setCtxMenu: (menu: null) => void; setRenamingPath: (path: string | null) => void; setRenameVal: (value: string) => void; onCloseProjectTab?: (projectPath: string) => void;
 }) {
     const actions = [
         { label: localizeText(lang, "Rename", "\u91cd\u547d\u540d"), icon: "edit", action: () => { setRenamingPath(ctxMenu.item.project_path); setRenameVal(ctxMenu.item.name || ""); setCtxMenu(null); } },
         { label: ctxMenu.item.pinned ? localizeText(lang, "Unpin", "\u53d6\u6d88\u7f6e\u9876") : localizeText(lang, "Pin", "\u7f6e\u9876"), icon: "pin", action: async () => { await PinTask(ctxMenu.item.project_path, !ctxMenu.item.pinned); refreshResults(); setCtxMenu(null); } },
-        { label: localizeText(lang, "Remove", "\u79fb\u9664"), icon: "x", action: async () => { await HideTask(ctxMenu.item.project_path); refreshResults(); setCtxMenu(null); } },
-        { label: localizeText(lang, "Archive", "\u5f52\u6863"), icon: "\u{1F4E6}", action: async () => { setCtxMenu(null); const confirmed = window.confirm(localizeText(lang, "After archiving, you will not be able to continue this task, but the experience will be preserved. Confirm archive?", "\u5f52\u6863\u540e\u5c06\u65e0\u6cd5\u7ee7\u7eed\u6b64\u4efb\u52a1\uff0c\u4f46\u7ecf\u9a8c\u4f1a\u88ab\u4fdd\u7559\u3002\u786e\u8ba4\u5f52\u6863\uff1f")); if (!confirmed) return; try { await ArchiveProject(ctxMenu.item.project_path); refreshResults(); } catch (error) { console.error("[ProjectSearch] ArchiveProject failed:", error); } } },
+        { label: localizeText(lang, "Remove", "\u79fb\u9664"), icon: "x", action: async () => { console.info("[ProjectSearch] removing task", { projectPath: ctxMenu.item.project_path }); await HideTask(ctxMenu.item.project_path); onCloseProjectTab?.(ctxMenu.item.project_path); refreshResults(); setCtxMenu(null); } },
+        { label: localizeText(lang, "Archive", "\u5f52\u6863"), icon: "\u{1F4E6}", action: async () => { setCtxMenu(null); const confirmed = window.confirm(localizeText(lang, "After archiving, you will not be able to continue this task, but the experience will be preserved. Confirm archive?", "\u5f52\u6863\u540e\u5c06\u65e0\u6cd5\u7ee7\u7eed\u6b64\u4efb\u52a1\uff0c\u4f46\u7ecf\u9a8c\u4f1a\u88ab\u4fdd\u7559\u3002\u786e\u8ba4\u5f52\u6863\uff1f")); if (!confirmed) return; try { console.info("[ProjectSearch] archiving task", { projectPath: ctxMenu.item.project_path }); await ArchiveProject(ctxMenu.item.project_path); onCloseProjectTab?.(ctxMenu.item.project_path); refreshResults(); } catch (error) { console.error("[ProjectSearch] ArchiveProject failed:", error); } } },
     ];
     return <><div style={{ position: "fixed", inset: 0, zIndex: 9998 }} onClick={() => setCtxMenu(null)} /><div style={{ position: "fixed", left: ctxMenu.x, top: ctxMenu.y, zIndex: 9999, background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: "6px", boxShadow: "0 4px 12px rgba(0,0,0,0.15)", padding: "4px 0", minWidth: "120px" }}>{actions.map(item => <div key={item.label} onClick={item.action} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", cursor: "pointer", fontSize: "12px", color: t.text, transition: "background 0.1s" }} onMouseEnter={event => (event.currentTarget.style.background = t.codeBlockBg)} onMouseLeave={event => (event.currentTarget.style.background = "transparent")}><span style={{ fontSize: "13px" }}>{item.icon}</span><span>{item.label}</span></div>)}</div></>;
 }

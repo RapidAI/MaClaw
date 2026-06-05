@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 const voiceCommandNormalizationTimeout = 3 * time.Second
@@ -36,7 +38,7 @@ func normalizeVoiceCommandLLMResult(raw, fallback string) VoiceCommandNormalizat
 		Reason        string  `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
-		log.Printf("[voice-command] parse normalization result failed: %v raw=%q", err, truncateRunes(text, 200))
+		log.Printf("[voice-command] parse normalization result failed: %v raw_len=%d", err, len([]rune(text)))
 		return result
 	}
 	corrected := strings.TrimSpace(parsed.CorrectedText)
@@ -83,7 +85,8 @@ func (a *App) NormalizeVoiceCommand(text string) VoiceCommandNormalizationResult
 	}
 
 	client := &http.Client{Timeout: voiceCommandNormalizationTimeout}
-	resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, voiceCommandNormalizationTimeout)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "voice-command-normalization"})
+	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, voiceCommandNormalizationTimeout)
 	if err != nil {
 		log.Printf("[voice-command] normalization failed, falling back to original: %v", err)
 		result.IsCommand = true

@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"net/http"
 	"time"
 
@@ -117,7 +118,8 @@ func (c *guiLLMCaller) CallLLM(prompt string, temperature float64, timeout time.
 		map[string]string{"role": "user", "content": prompt},
 	}
 	client := &http.Client{Timeout: timeout}
-	result, err := doSimpleLLMRequest(context.Background(), c.cfg, messages, client, timeout)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "swarm"})
+	result, err := doSimpleLLMRequest(ctx, c.cfg, messages, client, timeout)
 	if err != nil {
 		return nil, err
 	}

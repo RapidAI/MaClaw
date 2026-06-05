@@ -87,8 +87,12 @@ func (h *IMMessageHandler) toolListMCPTools(args map[string]interface{}) string 
 }
 
 func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
+	ownerID, _ := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
 	serverRef, _ := args["server_id"].(string)
 	toolName, _ := args["tool_name"].(string)
+	if isDisabledExternalCodingSessionTool(toolName) {
+		return disabledExternalCodingSessionToolText(toolName)
+	}
 	if serverRef == "" || toolName == "" {
 		return "缺少 server_id 或 tool_name 参数；server_id 支持 MCP Server 的 ID 或 Name"
 	}
@@ -131,7 +135,7 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	// Validate arguments against the InputSchema before making the RPC call.
 	if inputSchema != nil {
 		if validationErrs := mcputil.ValidateArgs(inputSchema, toolArgs); len(validationErrs) > 0 {
-			if h.emitMCPToolAgentView(serverRef, resolvedID, toolName, inputSchema, toolArgs, validationErrs) {
+			if h.emitMCPToolAgentViewForOwner(serverRef, resolvedID, toolName, inputSchema, toolArgs, validationErrs, ownerID) {
 				return mcpAgentViewCorrectionMessage
 			}
 			var msgs []string
@@ -148,7 +152,7 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 		if mgr == nil {
 			return "本地 MCP Manager 未初始化"
 		}
-		result, err := mgr.CallTool(resolvedID, toolName, toolArgs)
+		result, err := mgr.CallToolForOwner(ownerID, resolvedID, toolName, toolArgs)
 		if err != nil {
 			code, msg := mcputil.ClassifyError(err, 0, "")
 			stdErr := mcputil.NewStandardError(resolvedID, toolName, code, msg)
@@ -165,7 +169,7 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	if registry == nil {
 		return "MCP Registry 未初始化"
 	}
-	result, err := registry.CallTool(resolvedID, toolName, toolArgs)
+	result, err := registry.CallToolForOwner(ownerID, resolvedID, toolName, toolArgs)
 	if err != nil {
 		code, msg := mcputil.ClassifyError(err, 0, "")
 		stdErr := mcputil.NewStandardError(resolvedID, toolName, code, msg)
@@ -332,11 +336,14 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			scanDir = entry.SkillDir
 		}
 
-		scanner := NewSkillSecurityScanner(h.app, nil)
-		scanReport := scanner.ScanInstallStaged(ctx, entry, scanDir, func(status string) {
-			log.Printf("[skill-install] %s: %s", entry.Name, status)
-		})
-		installScanReport = scanReport
+		var scanReport *cskill.ScanReport
+		if h.app == nil || !h.app.isRiskGuardrailOffMode() {
+			scanner := NewSkillSecurityScanner(h.app, nil)
+			scanReport = scanner.ScanInstallStaged(ctx, entry, scanDir, func(status string) {
+				log.Printf("[skill-install] %s: %s", entry.Name, status)
+			})
+			installScanReport = scanReport
+		}
 
 		if h.app != nil && h.app.skillInstallScanShouldBlockForSource(scanReport, effectiveSource) {
 			cskill.CleanupStaging(stagingDir)
@@ -363,8 +370,6 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 				var cancel context.CancelFunc
 				confirmCtx, cancel = loopCtx.Context()
 				defer cancel()
-			} else if platform == "" {
-				platform = h.currentRuntimePlatform()
 			}
 
 			allFactors := scanReport.PatternAssessment.Factors
@@ -1117,6 +1122,16 @@ func (h *IMMessageHandler) scanManagedSkillWriteback(skillDir, skillName string)
 		entry.Name = skillName
 	}
 	entry.SkillDir = skillDir
+	if h != nil && h.app != nil && h.app.isRiskGuardrailOffMode() {
+		h.app.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillUpdate,
+			"manage_skill_autofix",
+			security.RiskLow,
+			security.PolicyAllow,
+			fmt.Sprintf("risk guardrails off allowed skill autofix writeback for %s", entry.Name),
+		)
+		return nil
+	}
 	scanner := cskill.NewSecurityScanner(nil)
 	report := scanner.ScanInstallStaged(context.Background(), entry, skillDir, func(status string) {
 		if h != nil && h.app != nil {
@@ -1209,7 +1224,7 @@ func (h *IMMessageHandler) toolRecommendTool(args map[string]interface{}) string
 	}
 	// Build list of installed tools by checking if their binaries are on PATH.
 	var installed []string
-	for _, tool := range []string{"claude", "codex", "gemini", "cursor", "opencode", "iflow", "kilo"} {
+	for _, tool := range []string{"claude", "codex", "opencode", "iflow", "kilo"} {
 		meta, ok := remoteToolCatalog[tool]
 		if !ok {
 			continue
@@ -1358,9 +1373,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		return "memory owner is missing; isolated runtime will not fall back to desktop memory"
 	}
 	if ownerID == "" {
-		var explicitRuntime bool
-		ownerID, explicitRuntime = h.currentRuntimePolicyOwnerState()
-		if ownerID == "" && explicitRuntime {
+		if _, explicitRuntime := h.currentRuntimePolicyOwnerState(); explicitRuntime {
 			return "memory owner is missing; isolated runtime will not fall back to desktop memory"
 		}
 	}
@@ -1387,11 +1400,10 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 // buildMemoryContextHint extracts recent conversation text (last 5 user+assistant
 // messages) to provide alias and context terms for tag enrichment during memory save.
 func (h *IMMessageHandler) buildMemoryContextHint() string {
-	ownerID, explicitRuntime := h.currentRuntimePolicyOwnerState()
-	if ownerID == "" && explicitRuntime {
+	if _, explicitRuntime := h.currentRuntimePolicyOwnerState(); explicitRuntime {
 		return ""
 	}
-	return h.buildMemoryContextHintForUser(ownerID)
+	return h.buildMemoryContextHintForUser(desktopUserID)
 }
 
 func (h *IMMessageHandler) buildMemoryContextHintForUser(userID string) string {
@@ -1681,6 +1693,9 @@ func (h *IMMessageHandler) toolManageSchedule(args map[string]interface{}) strin
 // persisted config — it only affects the in-flight loop.
 func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) string {
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if !hasRuntimeOwner {
+		return "set_max_iterations failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	}
 	if hasRuntimeOwner && ownerID == "" {
 		return "set_max_iterations failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
 	}
@@ -1691,16 +1706,8 @@ func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) str
 	// Use the single source of truth for value normalization.
 	limit := config.EffectiveMaxIterations(int(n))
 	reason := stringVal(args, "reason")
-	if hasRuntimeOwner {
-		if ctx := h.runtimeLoopContextForOwner(ownerID); ctx != nil {
-			ctx.SetMaxIterations(limit)
-		}
-	} else {
-		h.loopMaxOverride = limit
-		// Also update the active LoopContext so background loops see the change.
-		if ctx := h.runtimeLoopContextForOwner(""); ctx != nil {
-			ctx.SetMaxIterations(limit)
-		}
+	if ctx := h.runtimeLoopContextForOwner(ownerID); ctx != nil {
+		ctx.SetMaxIterations(limit)
 	}
 
 	if reason != "" {
@@ -1725,14 +1732,16 @@ func (h *IMMessageHandler) toolSetNickname(args map[string]interface{}) string {
 	if nickname == "" {
 		return "❌ nickname 不能为空"
 	}
-	// Persist to local config.
-	cfg, err := h.loadConfig()
-	if err == nil {
+	// Persist only nickname so concurrent settings edits are not overwritten.
+	if cfg, err := h.loadConfig(); err == nil {
 		if strings.TrimSpace(cfg.RemoteNickname) == nickname {
 			return fmt.Sprintf("✅ 昵称已经是「%s」，无需重复上报。", nickname)
 		}
-		cfg.RemoteNickname = nickname
-		_ = h.saveConfig(cfg)
+	}
+	if h.app != nil {
+		_ = h.app.PatchConfig(func(cfg *corelib.AppConfig) {
+			cfg.RemoteNickname = nickname
+		})
 	}
 	// Send to Hub via WebSocket.
 	if hc := h.getHubClient(); hc != nil {

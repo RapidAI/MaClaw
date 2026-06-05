@@ -17,6 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -35,6 +36,10 @@ type fakeVEOwnerLookup struct {
 
 type fakeVEMachineEventSender struct {
 	messages []sentVEMachineEvent
+}
+
+type fakeVEMachinePresence struct {
+	infos map[string]*device.MachineRuntimeInfo
 }
 
 type sentVEMachineEvent struct {
@@ -65,6 +70,11 @@ func (f fakeVEMachineAuth) AuthenticateMachine(ctx context.Context, machineID, r
 		return nil, errors.New("bad machine")
 	}
 	return principal, nil
+}
+
+func (f fakeVEMachinePresence) GetMachineInfo(ctx context.Context, machineID string) (*device.MachineRuntimeInfo, error) {
+	_ = ctx
+	return f.infos[machineID], nil
 }
 
 func TestDigitalEmployeeRegisterApproveAndDiscover(t *testing.T) {
@@ -419,6 +429,53 @@ func TestDiscoverableShowsActiveMaClawSrvRuntimeEmployeeOnline(t *testing.T) {
 	}
 	if byID["ve_physical"].OnlineStatus != veOnlineStatusOffline {
 		t.Fatalf("physical employee without heartbeat online_status = %q, want offline", byID["ve_physical"].OnlineStatus)
+	}
+}
+
+func TestDiscoverableUsesRuntimePresenceForPhysicalEmployees(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 3)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_stale_online", MachineID: "machine-stale", EmployeeType: veEmployeeTypePhysical, Name: "Stale Online", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_live_online", MachineID: "machine-live", EmployeeType: veEmployeeTypePhysical, Name: "Live Online", Status: veStatusActive, OnlineStatus: veOnlineStatusOffline},
+	}}
+	data, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	if err := tenantSystem.Set(context.Background(), veRegistryKey, string(data)); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-gui": {TenantID: "tenant-a", UserID: "user-gui", MachineID: "machine-gui"},
+		},
+	}
+	presence := fakeVEMachinePresence{infos: map[string]*device.MachineRuntimeInfo{
+		"machine-live": {MachineID: "machine-live", Online: true},
+	}}
+
+	discoverRR := doVEMachineJSON(t, VEDiscoverableHandler(settings, authn, presence), http.MethodGet, "/api/ve/discoverable", nil, "machine-gui", "machine-token")
+	if discoverRR.Code != http.StatusOK {
+		t.Fatalf("discover status=%d body=%s", discoverRR.Code, discoverRR.Body.String())
+	}
+	var out struct {
+		Employees []digitalEmployeeEntry `json:"employees"`
+	}
+	if err := json.Unmarshal(discoverRR.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode discover: %v", err)
+	}
+	byID := map[string]digitalEmployeeEntry{}
+	for _, emp := range out.Employees {
+		byID[emp.ID] = emp
+	}
+	if byID["ve_stale_online"].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("stale physical online_status = %q, want offline; body=%s", byID["ve_stale_online"].OnlineStatus, discoverRR.Body.String())
+	}
+	if byID["ve_live_online"].OnlineStatus != veOnlineStatusOnline {
+		t.Fatalf("live physical online_status = %q, want online; body=%s", byID["ve_live_online"].OnlineStatus, discoverRR.Body.String())
 	}
 }
 

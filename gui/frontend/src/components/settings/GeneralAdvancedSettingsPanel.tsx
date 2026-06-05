@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { SaveConfig, SetEnvCheckInterval } from '../../../wailsjs/go/main/App';
+import { PatchConfigFields, SetEnvCheckInterval } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 
 type GeneralAdvancedSettingsPanelProps = {
@@ -24,7 +24,12 @@ const saveConfigPatch = (
     if (!config) return;
     const next = new main.AppConfig({ ...config, ...patch });
     setConfig(next);
-    SaveConfig(next);
+    PatchConfigFields(patch).then((saved) => {
+        setConfig(new main.AppConfig(saved));
+    }).catch((err) => {
+        console.error('Failed to patch advanced settings:', err);
+        setConfig(config);
+    });
 };
 
 export const GeneralAdvancedSettingsPanel = ({

@@ -70,7 +70,10 @@ func ProductionCases() []CalibrationCase {
 		{Message: "用浏览器自动化填写表单", ExpectedLabel: LabelBrowser},
 		{Message: "录制浏览器操作步骤", ExpectedLabel: LabelBrowser},
 		{Message: "用playwright测试登录流程", ExpectedLabel: LabelBrowser},
+		{Message: "登录知乎发表一条码卡龙 6 发布感言", ExpectedLabel: LabelBrowser},
+		{Message: "打开网页登录账号然后发布内容", ExpectedLabel: LabelBrowser},
 		{Message: "open the browser and navigate to this URL", ExpectedLabel: LabelBrowser},
+		{Message: "log into Zhihu and publish a post", ExpectedLabel: LabelBrowser},
 		{Message: "automate web testing with browser tools", ExpectedLabel: LabelBrowser},
 
 		// =====================================================================

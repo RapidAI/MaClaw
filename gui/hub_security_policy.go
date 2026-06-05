@@ -416,7 +416,10 @@ func (a *App) enforceYoloModeQuiet(requested bool) bool {
 
 func (a *App) updateHubHeartbeatConfig(payload json.RawMessage) bool {
 	var wrapper struct {
-		HubConfig *HubHeartbeatConfig `json:"hub_config"`
+		HubConfig *struct {
+			CapabilityMarketPolicy       *corelib.CapabilityMarketPolicy       `json:"capability_market_policy,omitempty"`
+			DigitalEmployeeAuthorization *corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorization,omitempty"`
+		} `json:"hub_config"`
 	}
 	if err := json.Unmarshal(payload, &wrapper); err != nil {
 		log.Printf("[hub-config] failed to parse ack payload: %v", err)
@@ -434,6 +437,9 @@ func (a *App) updateHubHeartbeatConfig(payload json.RawMessage) bool {
 		if a.digitalEmployeeAuthCache.update(wrapper.HubConfig.DigitalEmployeeAuthorization) {
 			a.emitEvent("digital-employee-authorization-changed", a.GetDigitalEmployeeFeatureStatus())
 		}
+	}
+	if wrapper.HubConfig.CapabilityMarketPolicy == nil {
+		return false
 	}
 	policy := wrapper.HubConfig.CapabilityMarketPolicy.WithDefaults()
 	if cfg, err := a.LoadConfig(); err != nil {

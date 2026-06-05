@@ -274,9 +274,9 @@ func sourcePriority(source string) int {
 func mixedSourceLabel(source string) string {
 	switch skillSearchSourceFromStatus(source) {
 	case skillSearchSourceEnterpriseHub:
-		return "Enterprise Hub"
+		return "私有市场"
 	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
-		return "SkillMarket"
+		return "公共市场"
 	case skillSearchSourceClawHub:
 		return "ClawHub"
 	case skillSearchSourceGitHub:

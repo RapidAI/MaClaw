@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // ---------------------------------------------------------------------------
@@ -106,7 +108,7 @@ func (h *IMMessageHandler) understandTaskWithLLM(userID, text string, intent tas
 	}
 
 	// --- Attempt 1: full prompt, 30s timeout ---
-	ctx := context.Background()
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "task-understanding", OwnerID: userID})
 	result, err := h.LLMClassify(ctx, LLMClassifyRequest{
 		SystemPrompt: taskUnderstandingSystemPrompt,
 		UserMessage:  userMsg,
@@ -115,12 +117,12 @@ func (h *IMMessageHandler) understandTaskWithLLM(userID, text string, intent tas
 	})
 	if err == nil {
 		if parsed, parseErr := parseTaskUnderstandingResponse(result.Text); parseErr == nil {
-			log.Printf("[task-understanding] user=%s type=%q summary=%q plan=%d steps input=%d output=%d latency=%.1fs",
-				userID, parsed.TaskType, truncateForLogGUI(parsed.Summary, 40),
+			log.Printf("[task-understanding] user=%s type=%q summary_len=%d plan=%d steps input=%d output=%d latency=%.1fs",
+				userID, parsed.TaskType, len([]rune(parsed.Summary)),
 				len(parsed.ExecutionPlan), result.InputTokens, result.OutputTokens, result.Latency.Seconds())
 			return parsed
 		} else {
-			log.Printf("[task-understanding] attempt 1 parse failed for user %s: %v (raw=%q)", userID, parseErr, truncateForLogGUI(result.Text, 200))
+			log.Printf("[task-understanding] attempt 1 parse failed for user %s: %v (raw_len=%d)", userID, parseErr, len([]rune(result.Text)))
 		}
 	} else {
 		log.Printf("[task-understanding] attempt 1 LLM call failed for user %s: %v", userID, err)
@@ -143,12 +145,12 @@ func (h *IMMessageHandler) understandTaskWithLLM(userID, text string, intent tas
 
 	parsed2, parseErr2 := parseTaskUnderstandingResponse(result2.Text)
 	if parseErr2 != nil {
-		log.Printf("[task-understanding] attempt 2 parse failed for user %s: %v (raw=%q)", userID, parseErr2, truncateForLogGUI(result2.Text, 200))
+		log.Printf("[task-understanding] attempt 2 parse failed for user %s: %v (raw_len=%d)", userID, parseErr2, len([]rune(result2.Text)))
 		return nil
 	}
 
-	log.Printf("[task-understanding] user=%s type=%q summary=%q plan=%d steps input=%d output=%d latency=%.1fs (retry)",
-		userID, parsed2.TaskType, truncateForLogGUI(parsed2.Summary, 40),
+	log.Printf("[task-understanding] user=%s type=%q summary_len=%d plan=%d steps input=%d output=%d latency=%.1fs (retry)",
+		userID, parsed2.TaskType, len([]rune(parsed2.Summary)),
 		len(parsed2.ExecutionPlan), result2.InputTokens, result2.OutputTokens, result2.Latency.Seconds())
 
 	return parsed2

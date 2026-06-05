@@ -110,7 +110,7 @@ func SupportedStepActions(runner string) []string {
 
 func isExternalCodingSessionAction(action string) bool {
 	switch NormalizeStepActionName(action) {
-	case "create_session", "send_input", "send_and_observe":
+	case "create_session", "send_input", "send_and_observe", "control_session":
 		return true
 	default:
 		return false

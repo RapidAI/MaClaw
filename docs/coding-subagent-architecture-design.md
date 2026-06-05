@@ -273,7 +273,7 @@ func (o *TaskExecutionOrchestrator) ExecuteNextTask() {
 核心论据：
 1. **数据证明**：当前架构下，初始 context 开销 40K（30%），129 轮后膨胀到 134K 导致模型返回空响应。即使 #74 的 token 校准修复了 trimConversation 不触发的问题，裁剪后的 context 仍然包含大量非编码噪音。
 2. **机制性问题**：单体 Agent 的 context 是"编码 + 非编码"的混合体，trimConversation 无法区分"编码相关的重要历史"和"IM 规则注入的噪音"——它只能按时间顺序裁剪。
-3. **对标行业实践**：Claude Code、Kiro、Cursor 等编程工具都使用独立的编码 context，不混入非编码信息。MaClaw 的 `create_session` 启动外部编程工具本质上就是这个思路，但外部进程管理带来了额外的复杂性（#20 rate limit、#46 SSH 重连、进程管理等）。
+3. **对标行业实践**：主流编程工具通常使用独立的编码 context，不混入非编码信息。MaClaw 的 `create_session` 启动外部编程工具本质上就是这个思路，但外部进程管理带来了额外的复杂性（#20 rate limit、#46 SSH 重连、进程管理等）。
 4. **基础设施已就绪**：`corelib/agent/loop.go` 的 `RunLoop` 已经是一个通用的 agent loop 实现，`TaskExecutionOrchestrator` 已经有任务调度逻辑。SubAgent 方案是把这些已有组件连接起来，不是从零开始。
 
 SubAgent 方案不是 workaround——它是从架构层面解决"编码 context 被非编码信息污染"这个根本问题。

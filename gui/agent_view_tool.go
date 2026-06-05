@@ -96,6 +96,9 @@ func (h *IMMessageHandler) emitRegisteredToolApprovalAgentViewIfNeeded(name stri
 
 func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, data map[string]interface{}) *IMAgentResponse {
 	toolName = strings.TrimSpace(toolName)
+	if isDisabledExternalCodingSessionTool(toolName) {
+		return &IMAgentResponse{Text: disabledExternalCodingSessionToolText(toolName), Error: "external coding-session tool disabled: " + toolName, ResponseSource: imResponseSourceAgentViewSubmit.String()}
+	}
 	if h == nil || h.registry == nil || toolName == "" {
 		return &IMAgentResponse{Text: "Tool task panel submission is missing tool context.", Error: "missing tool context", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
@@ -249,7 +252,7 @@ func (h *IMMessageHandler) currentRuntimeOrLegacyPolicyOwnerID() string {
 	if ownerID, explicit := h.currentRuntimePolicyOwnerState(); explicit {
 		return ownerID
 	}
-	return h.legacyLastUserID()
+	return ""
 }
 
 func (h *IMMessageHandler) legacyLastUserID() string {

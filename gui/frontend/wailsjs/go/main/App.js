@@ -307,6 +307,10 @@ export function CreateRecentTask(arg1) {
   return window['go']['main']['App']['CreateRecentTask'](arg1);
 }
 
+export function ForkRecentTask(arg1) {
+  return window['go']['main']['App']['ForkRecentTask'](arg1);
+}
+
 export function ForkConversationToProject(arg1) {
   return window['go']['main']['App']['ForkConversationToProject'](arg1);
 }
@@ -497,6 +501,10 @@ export function ListSkillsWithInstallStatus(arg1, arg2, arg3) {
 
 export function LoadConfig() {
   return window['go']['main']['App']['LoadConfig']();
+}
+
+export function PatchConfigFields(arg1) {
+  return window['go']['main']['App']['PatchConfigFields'](arg1);
 }
 
 export function MaximiseAndSaveGeometry() {
@@ -819,8 +827,8 @@ export function FetchCodeGenModels() {
   return window['go']['main']['App']['FetchCodeGenModels']();
 }
 
-export function FetchProviderModels(arg1, arg2, arg3) {
-  return window['go']['main']['App']['FetchProviderModels'](arg1, arg2, arg3);
+export function FetchProviderModels(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['FetchProviderModels'](arg1, arg2, arg3, arg4);
 }
 
 export function SaveCodeGenModelChoice(arg1, arg2) {
@@ -1157,6 +1165,10 @@ export function ClearAIAssistantHistory() {
   return window['go']['main']['App']['ClearAIAssistantHistory']();
 }
 
+export function ClearAIAssistantUIState() {
+  return window['go']['main']['App']['ClearAIAssistantUIState']();
+}
+
 export function FetchNews() {
   return window['go']['main']['App']['FetchNews']();
 }
@@ -1211,6 +1223,14 @@ export function GetTrialReflectEnabled() {
 
 export function GetAIAssistantTrace(arg1) {
   return window['go']['main']['App']['GetAIAssistantTrace'](arg1);
+}
+
+export function LoadAIAssistantUIState() {
+  return window['go']['main']['App']['LoadAIAssistantUIState']();
+}
+
+export function SaveAIAssistantUIState(arg1) {
+  return window['go']['main']['App']['SaveAIAssistantUIState'](arg1);
 }
 
 export function ListBackgroundLoops() {

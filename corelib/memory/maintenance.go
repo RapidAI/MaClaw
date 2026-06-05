@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -83,6 +84,16 @@ func (m *Maintenance) Start() {
 		return
 	}
 	m.pipeline.Start()
+}
+
+// StartDelayed begins background maintenance without an immediate full cycle.
+// Hosts use this when foreground interaction should not compete with startup
+// memory evolution LLM calls.
+func (m *Maintenance) StartDelayed(initialDelay time.Duration) {
+	if m == nil || m.pipeline == nil {
+		return
+	}
+	m.pipeline.StartDelayed(initialDelay)
 }
 
 // Stop halts background maintenance loops owned by this facade.

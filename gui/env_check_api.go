@@ -23,13 +23,10 @@ func (a *App) SetEnvCheckInterval(days int) error {
 		return fmt.Errorf("interval must be between 2 and 30 days")
 	}
 
-	config, err := a.LoadConfig()
-	if err != nil {
+	if _, err := a.PatchConfigFields(map[string]interface{}{"env_check_interval": days}); err != nil {
 		return err
 	}
-
-	config.EnvCheckInterval = days
-	return a.SaveConfig(config)
+	return nil
 }
 
 // ShouldCheckEnvironment checks if it's time to remind the user about environment check.
@@ -62,11 +59,5 @@ func (a *App) ShouldCheckEnvironment() bool {
 
 // UpdateLastEnvCheckTime updates the last environment check time to now.
 func (a *App) UpdateLastEnvCheckTime() {
-	config, err := a.LoadConfig()
-	if err != nil {
-		return
-	}
-
-	config.LastEnvCheckTime = time.Now().Format(time.RFC3339)
-	a.SaveConfig(config)
+	_, _ = a.PatchConfigFields(map[string]interface{}{"last_env_check_time": time.Now().Format(time.RFC3339)})
 }

@@ -94,6 +94,28 @@ func TestSkillDocInject_DisabledSkillNotInjected(t *testing.T) {
 	assertNotContains(t, result, "disabled-skill")
 }
 
+func TestSkillDocInject_ShellBrowserAutomationSkillNotInjected(t *testing.T) {
+	skills := []NLSkillDefinition{
+		{
+			Name:        "zhihu-poster",
+			Type:        "knowledge",
+			Status:      "active",
+			RequiresGUI: true,
+			Content:     "# Zhihu Poster\nUse playwright connect_over_cdp and --screenshot.",
+			Triggers:    []string{"zhihu", "publish"},
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{"command": "python post.py --screenshot"},
+			}},
+		},
+	}
+
+	result := runInjection(t, skills, "publish to zhihu", 0)
+
+	assertNotContains(t, result, "zhihu-poster")
+	assertNotContains(t, result, "connect_over_cdp")
+}
+
 // TestSkillDocInject_NoTriggerMatch verifies that skills whose triggers
 // don't match the user message are not injected.
 func TestSkillDocInject_NoTriggerMatch(t *testing.T) {
@@ -168,6 +190,9 @@ func runInjection(t *testing.T, skills []NLSkillDefinition, userMessage string, 
 	var matched []matchedKnowledgeSkill
 	for _, s := range skills {
 		if s.Status != "active" {
+			continue
+		}
+		if isShellBrowserAutomationSkill(s) {
 			continue
 		}
 

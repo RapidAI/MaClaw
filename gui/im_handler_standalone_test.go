@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
@@ -679,16 +680,16 @@ func TestPendingUserReplyIntentClassifiersDriveBinding(t *testing.T) {
 		return strings.Contains(question, "deploy") && strings.Contains(answer, "recommendation"), nil
 	}
 
-	if !h.classifyPendingUserReplyPrompt("Which model should I deploy? I recommend qwen-server-model.") {
+	if !h.classifyPendingUserReplyPrompt("desktop-user", "Which model should I deploy? I recommend qwen-server-model.") {
 		t.Fatal("expected classifier-approved assistant question to create pending reply state")
 	}
-	if h.classifyPendingUserReplyPrompt("Task completed. Let me know if you need anything else.") {
+	if h.classifyPendingUserReplyPrompt("desktop-user", "Task completed. Let me know if you need anything else.") {
 		t.Fatal("classifier-rejected closing text must not create pending reply state")
 	}
-	if ok, classified := h.classifyPendingUserReplyAnswer("Which model should I deploy?", "use your recommendation"); !classified || !ok {
+	if ok, classified := h.classifyPendingUserReplyAnswer("desktop-user", "Which model should I deploy?", "use your recommendation"); !classified || !ok {
 		t.Fatal("expected classifier-approved answer to continue pending reply")
 	}
-	if ok, classified := h.classifyPendingUserReplyAnswer("Which model should I deploy?", "deploy nginx to the server"); !classified || ok {
+	if ok, classified := h.classifyPendingUserReplyAnswer("desktop-user", "Which model should I deploy?", "deploy nginx to the server"); !classified || ok {
 		t.Fatal("classifier-rejected fresh task must not be treated as a pending reply")
 	}
 }
@@ -702,6 +703,43 @@ func TestPendingUserReplyPromptCandidateFiltersClosingStatements(t *testing.T) {
 	}
 	if !looksLikePendingUserReplyPromptCandidate("Which model should I deploy?") {
 		t.Fatal("question should be a pending reply candidate")
+	}
+}
+
+func TestPendingUserReplySkipsBrowserDebugInstructions(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	defer h.memory.Stop()
+	h.pendingReplyPromptClassifier = func(text string) (bool, error) {
+		return true, nil
+	}
+
+	debugPrompt := "Browser: 伯伯，您当前的 Chrome 还没有开启远程调试功能。请在 Chrome 地址栏输入 chrome://inspect/#remote-debugging，然后勾选 Allow remote debugging。"
+	if got := sanitizePendingUserReplyQuestion(debugPrompt); strings.Contains(got, "Browser:") {
+		t.Fatalf("role prefix not sanitized: %q", got)
+	}
+	if h.classifyPendingUserReplyPrompt("desktop-user", debugPrompt) {
+		t.Fatal("browser remote-debugging instructions must not become pending reply context")
+	}
+}
+
+func TestBuildAgentLoopAssistantTurnStripsRolePrefixFromReasoning(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	defer h.memory.Stop()
+
+	turn := h.buildAgentLoopAssistantTurn(nil, llm.Choice{Message: llm.Message{
+		Role:             "assistant",
+		Content:          "Visible answer.",
+		ReasoningContent: "thinking kept\nBrowser: hidden browser instruction",
+	}})
+
+	if strings.Contains(turn.Reasoning, "Browser:") {
+		t.Fatalf("role prefix leaked in reasoning: %q", turn.Reasoning)
+	}
+	if turn.Reasoning != "thinking kept" {
+		t.Fatalf("reasoning = %q, want sanitized reasoning", turn.Reasoning)
+	}
+	if turn.HistoryEntry.ReasoningContent != "thinking kept" {
+		t.Fatalf("history reasoning = %q, want sanitized reasoning", turn.HistoryEntry.ReasoningContent)
 	}
 }
 

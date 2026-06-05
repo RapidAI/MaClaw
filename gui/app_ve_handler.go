@@ -16,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
@@ -299,7 +300,7 @@ func (h *VEMessageHandler) processAndRespond(sessionCtx context.Context, session
 
 	// Start the AI agent processing with streaming
 	go func() {
-		err := h.runAgentWithStreaming(ctx, sessionID, userMessage, firstChunkSent)
+		err := h.runAgentWithStreaming(ctx, sessionID, userMessage, msg.ID, firstChunkSent)
 		resultCh <- result{err: err}
 	}()
 	handleResult := func(r result, notifyRequester bool) {
@@ -345,7 +346,7 @@ func (h *VEMessageHandler) processAndRespond(sessionCtx context.Context, session
 // runAgentWithStreaming runs the AI agent and sends only user-visible output via Hub.
 // Raw LLM deltas are internal to the agent loop; the final response is sent as
 // one stream_chunk followed by stream_end.
-func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID, userMessage string, firstChunkSent chan<- struct{}) error {
+func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID, userMessage, requestID string, firstChunkSent chan<- struct{}) error {
 	if query, ok := detectDigitalEmployeeSensitiveQuery(userMessage); ok {
 		if h.shouldAnnounceSensitivePermissionRequest() {
 			h.SendStreamChunk(sessionID, "\u6b63\u5728\u5bfb\u6c42\u4eba\u7c7b\u5458\u5de5\u8bb8\u53ef...")
@@ -364,7 +365,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	// Run the agent loop (reusing IMMessageHandler pattern). Do not stream raw
 	// LLM deltas here: intermediate assistant deltas can be tool-call planning
 	// content. Only publish the final loop result below.
-	fullResponse, err := h.runAgentForVE(ctx, sessionID, userMessage, nil)
+	fullResponse, err := h.runAgentForVE(ctx, sessionID, userMessage, requestID, nil)
 	if err != nil {
 		return err
 	}
@@ -388,7 +389,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 // This is intentionally separate from the main IMMessageHandler to maintain security
 // isolation: VE sessions don't trigger workflow engines, coding gates, or other
 // main-agent middleware that could interfere with remote user requests.
-func (h *VEMessageHandler) runAgentForVE(ctx context.Context, sessionID, userMessage string, onToken func(string)) (string, error) {
+func (h *VEMessageHandler) runAgentForVE(ctx context.Context, sessionID, userMessage, requestID string, onToken func(string)) (string, error) {
 	if h.app == nil {
 		return "", fmt.Errorf("app is nil")
 	}
@@ -398,11 +399,25 @@ func (h *VEMessageHandler) runAgentForVE(ctx context.Context, sessionID, userMes
 		return "", fmt.Errorf("LLM not configured")
 	}
 
+	ownerID := veAgentOwnerID(sessionID)
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		requestID = fmt.Sprintf("ve-%d", time.Now().UnixNano())
+	}
+	loopID := "ve-agent:" + strings.TrimSpace(sessionID)
+	cleanupForegroundQoS := h.app.beginForegroundAgentLoop(ownerID, requestID, loopID)
+	defer cleanupForegroundQoS()
+	log.Printf("[ve-agent-loop] start owner=%q session=%q request_id=%q loop=%q", ownerID, sessionID, requestID, loopID)
+	defer log.Printf("[ve-agent-loop] done owner=%q session=%q request_id=%q loop=%q", ownerID, sessionID, requestID, loopID)
+
 	// Build VE-specific callbacks for the agent loop
 	callbacks := &veAgentCallbacks{
 		app:       h.app,
 		ctx:       ctx,
 		sessionID: sessionID,
+		ownerID:   ownerID,
+		requestID: requestID,
+		loopID:    loopID,
 		llmCfg:    llmCfg,
 		onToken:   onToken,
 	}
@@ -427,12 +442,23 @@ func (h *VEMessageHandler) runAgentForVE(ctx context.Context, sessionID, userMes
 	return result.Text, nil
 }
 
+func veAgentOwnerID(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "digital-employee:unknown"
+	}
+	return "digital-employee:" + sessionID
+}
+
 // veAgentCallbacks implements agent.LoopCallbacks for VE sessions.
 // It provides a simplified agent loop with VE-specific system prompt and tools.
 type veAgentCallbacks struct {
 	app       *App
 	ctx       context.Context
 	sessionID string
+	ownerID   string
+	requestID string
+	loopID    string
 	llmCfg    corelib.MaclawLLMConfig
 	onToken   func(string)
 
@@ -445,6 +471,32 @@ type veAgentCallbacks struct {
 
 func (c *veAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 	return c.llmCfg
+}
+
+func (c *veAgentCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
+	baseCtx := context.Background()
+	if c != nil && c.ctx != nil {
+		baseCtx = c.ctx
+	}
+	trace := llm.RequestTrace{
+		Caller:    "ve-agent-loop",
+		OwnerID:   strings.TrimSpace(c.ownerID),
+		RequestID: strings.TrimSpace(c.requestID),
+		LoopID:    strings.TrimSpace(c.loopID),
+		Iteration: iteration,
+	}
+	ctx := llm.WithRequestTrace(baseCtx, trace)
+	lease, scheduledTrace, err := acquireLLMSchedulerLease(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	lease.SetCancel(scheduledCancel)
+	return scheduledCtx, func(err error) {
+		globalLLMScheduler.ObserveResult(scheduledTrace, err)
+		scheduledCancel()
+		lease.Release()
+	}, nil
 }
 
 func (c *veAgentCallbacks) GetMaxIterations() int {
@@ -553,28 +605,10 @@ func (c *veAgentCallbacks) appendVEKnowledgeAutoRecall(b *strings.Builder, msg s
 		query = string(runes[:200])
 	}
 
-	// Reuse the global auto-recall store singleton used by the main
-	// AI assistant. This avoids repeated open/close and benefits from FTS index caching.
-	knowledgeAutoRecallStoreMu.Lock()
-	store := knowledgeAutoRecallStore
-	knowledgeAutoRecallStoreMu.Unlock()
-
+	store, cleanupStore := getAutoRecallStoreForAppUse(c.app, true)
+	defer cleanupStore()
 	if store == nil {
-		// Lazily initialize if not yet opened (VE message may arrive before main AI assistant)
-		var err error
-		store, err = c.app.openKnowledgeStore()
-		if err != nil {
-			return
-		}
-		knowledgeAutoRecallStoreMu.Lock()
-		if knowledgeAutoRecallStore == nil {
-			knowledgeAutoRecallStore = store
-		} else {
-			// Another goroutine initialized it; close our duplicate and use theirs.
-			store.Close()
-			store = knowledgeAutoRecallStore
-		}
-		knowledgeAutoRecallStoreMu.Unlock()
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

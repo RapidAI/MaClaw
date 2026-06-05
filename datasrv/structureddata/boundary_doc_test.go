@@ -227,7 +227,7 @@ func TestDataSrvInstallerUsesIndependentModuleReadme(t *testing.T) {
 			t.Fatalf("DataSrv installer missing %s", want)
 		}
 	}
-	if strings.Contains(text, "taskkill /F") {
-		t.Fatal("DataSrv installer should not force-kill service processes during uninstall")
+	if strings.Contains(text, "taskkill") {
+		t.Fatal("DataSrv installer should rely on Windows service control instead of killing service processes")
 	}
 }

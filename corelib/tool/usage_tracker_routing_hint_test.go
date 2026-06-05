@@ -52,7 +52,7 @@ func TestRoutingHintAdjustmentMatchesExplanation(t *testing.T) {
 		})
 	}
 
-	explanation := tracker.ExplainRoutingHintAdjustment("browser_open", []string{"browser"})
+	explanation := tracker.ExplainRoutingHintAdjustment("browser", []string{"browser"})
 	adjustment := tracker.RoutingHintAdjustment("browser_open", []string{"browser"})
 	if explanation.Adjustment != adjustment {
 		t.Fatalf("explanation adjustment %.6f != direct adjustment %.6f", explanation.Adjustment, adjustment)

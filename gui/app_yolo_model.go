@@ -43,12 +43,7 @@ func (a *App) GetScreenParsingEnabled() bool {
 // SetScreenParsingEnabled persists the screen parsing toggle.
 // When enabling, triggers background download if model is missing.
 func (a *App) SetScreenParsingEnabled(enabled bool) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.ScreenParsingEnabled = &enabled
-	if err := a.SaveConfig(cfg); err != nil {
+	if _, err := a.PatchConfigFields(map[string]interface{}{"screen_parsing_enabled": enabled}); err != nil {
 		return err
 	}
 

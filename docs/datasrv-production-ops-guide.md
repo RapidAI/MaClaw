@@ -51,6 +51,9 @@ Caddy, IIS ARR, or a platform gateway. The proxy should forward:
 - `/api/v1/*` for JSON APIs.
 - `Authorization`, `X-MaClaw-Tenant-ID`, `X-MaClaw-User-ID`, and
   `X-MaClaw-Role` headers when trusted upstream service tokens are used.
+- `X-MaClaw-Admin-Scope` only for trusted static service-token calls that need
+  administrator scope. Use `global` for cross-tenant operations such as Hub
+  registration, otherwise omit it or use `tenant`.
 
 Recommended proxy behavior:
 
@@ -95,6 +98,65 @@ prints it once. A provided `-password` is hashed with bcrypt and is not echoed.
 Password reset revokes active sessions for that administrator. After reset,
 sign in with the new password, issue fresh API keys if needed, and retire any
 copied temporary passwords.
+
+## Hub Registration And Tenants
+
+The first administrator created by setup is a global administrator. Global
+administrators can register DataSrv with Hub, pull the Hub tenant registry, and
+create tenant administrators. Tenant administrators are limited to their own
+tenant and cannot save Hub registration settings or promote accounts to global
+scope.
+
+Register DataSrv with Hub from the Web Console access area, or through the API:
+
+```powershell
+$token = "<global administrator bearer token>"
+$headers = @{ Authorization = "Bearer $token" }
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:18180/api/v1/data/admin/hub-registration `
+  -Headers $headers `
+  -ContentType application/json `
+  -Body '{"hub_base_url":"http://127.0.0.1:18181","platform_id":"datasrv","platform_name":"MaClawDataSrv","callback_base_url":"http://127.0.0.1:18180","virtual_mail_domain":"datasrv.local"}'
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:18180/api/v1/data/admin/hub-registration/register `
+  -Headers $headers `
+  -ContentType application/json `
+  -Body '{}'
+```
+
+After registration, pull tenants from Hub:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:18180/api/v1/data/admin/hub-registration/sync-tenants `
+  -Headers $headers `
+  -ContentType application/json `
+  -Body '{}'
+```
+
+The login screen can refresh tenant choices with
+`POST /api/v1/setup/tenants/sync`. That endpoint is public so the login UI can
+work before a user has a token, but it is rate-limited and only succeeds after
+Hub registration is active. The request to Hub is still signed by DataSrv using
+the registered platform key.
+
+Operational checks:
+
+- Keep Hub and DataSrv base URLs on loopback or behind trusted TLS gateways.
+- Record `platform_id`, Hub URL, callback base URL, and virtual mail domain in
+  deployment notes.
+- Review `/api/v1/setup/status` after registration. It should include
+  `hub_registration.registered=true` and synced tenant entries.
+- Create tenant administrators only after the tenant appears in
+  `/api/v1/data/admin/tenants`.
+- Use `GET /api/v1/data/admin/accounts?tenant=all` and
+  `GET /api/v1/data/admin/sessions?tenant=all` only from global administrator
+  sessions during audits.
 
 ## Backup Checklist
 

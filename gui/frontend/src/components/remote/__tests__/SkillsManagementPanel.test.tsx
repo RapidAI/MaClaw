@@ -117,6 +117,67 @@ describe('SkillsManagementPanel execution class', () => {
         expect(screen.getByTitle('导入的 Markdown 类 Skill，通过 agent skill 流程执行。')).toBeTruthy();
         expect(screen.getByTitle('常规 Skill，直接由原生 skill runner 执行。')).toBeTruthy();
     });
+    it('shows public and private market source badges with tooltips for search results', async () => {
+        SearchMixedSkillsMock.mockResolvedValue([
+            {
+                id: 'private-skill',
+                name: 'Private Paper Skill',
+                description: 'Private market result',
+                tags: [],
+                source: 'enterprise_hub',
+                source_label: '私有市场',
+                avg_rating: 0,
+                rating_count: 0,
+                downloads: 0,
+                score: 100,
+                price: 0,
+                installed: false,
+                can_update: false,
+                has_update: false,
+            },
+            {
+                id: 'public-skill',
+                name: 'Public Paper Skill',
+                description: 'Public market result',
+                tags: [],
+                source: 'skillmarket',
+                source_label: '公共市场',
+                avg_rating: 0,
+                rating_count: 0,
+                downloads: 0,
+                score: 90,
+                price: 0,
+                installed: false,
+                can_update: false,
+                has_update: false,
+            },
+        ]);
+
+        renderPanel();
+
+        await waitFor(() => {
+            expect(ListNLSkillsMock).toHaveBeenCalled();
+        });
+
+        fireEvent.click(screen.getAllByRole('button')[1]);
+
+        const input = document.querySelector('input.form-input') as HTMLInputElement;
+        expect(input).toBeTruthy();
+        fireEvent.change(input, { target: { value: 'paper' } });
+
+        const searchButton = document.querySelector('button.btn-primary') as HTMLButtonElement;
+        expect(searchButton).toBeTruthy();
+        fireEvent.click(searchButton);
+
+        await waitFor(() => {
+            expect(SearchMixedSkillsMock).toHaveBeenCalledWith('paper');
+        });
+
+        expect(screen.getByText('Private Paper Skill')).toBeTruthy();
+        expect(screen.getByText('Public Paper Skill')).toBeTruthy();
+        expect(screen.getByTitle('私有市场：来自你当前所属 Hub 或组织的能力市场。')).toBeTruthy();
+        expect(screen.getByTitle('公共市场：来自 HubCenter 的公共 SkillMarket 能力市场。')).toBeTruthy();
+    });
 });
 
 /**

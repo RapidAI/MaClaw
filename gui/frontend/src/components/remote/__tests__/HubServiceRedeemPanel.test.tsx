@@ -205,6 +205,155 @@ describe('HubServiceRedeemPanel', () => {
         expect(screen.getAllByText('25').length).toBeGreaterThan(0);
     });
 
+    it('uses grant-level available credits in summary when status totals are missing', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: true,
+            service_group_names: ['newbie'],
+            default_model: 'auto',
+            available_models: ['auto'],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{
+                service_group_id: 'newbie',
+                source: 'card',
+                expires_at: '2026-06-06T00:00:00Z',
+                active: true,
+                status: 'active',
+                credits_total: 0,
+                credits_used: 0,
+                credits_remaining: 0,
+                credits_available: 479.211,
+            }],
+        });
+
+        render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        expect((await screen.findAllByText('newbie')).length).toBeGreaterThan(0);
+        expect(screen.getByText('Total credits').parentElement?.textContent).toContain('479.211');
+        expect(screen.getByText('Remaining credits').parentElement?.textContent).toContain('479.211');
+    });
+
+    it('localizes known redeem errors in Chinese', async () => {
+        RedeemHubLLMServiceMock.mockRejectedValue(new Error('redeem code already used'));
+        render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+
+        const codeInput = await screen.findByLabelText('兑换码');
+        fireEvent.change(codeInput, { target: { value: 'USED-CODE' } });
+        fireEvent.click(screen.getByRole('button', { name: '立即兑换' }));
+
+        expect(await screen.findByText('该兑换码已被使用。')).toBeTruthy();
+        expect(screen.queryByText('redeem code already used')).toBeNull();
+    });
+
+    it('localizes redeem code format errors in Chinese', async () => {
+        RedeemHubLLMServiceMock.mockRejectedValue(new Error('redeem code must be 24 letters or digits'));
+        render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+
+        const codeInput = await screen.findByLabelText('兑换码');
+        fireEvent.change(codeInput, { target: { value: 'SHORT' } });
+        fireEvent.click(screen.getByRole('button', { name: '立即兑换' }));
+
+        expect(await screen.findByText('兑换码必须是 24 位字母或数字。')).toBeTruthy();
+        expect(screen.queryByText(/Error:/)).toBeNull();
+    });
+
+    it('localizes service load errors and inactive reasons in Chinese', async () => {
+        GetHubLLMServiceStatusMock.mockRejectedValueOnce(new Error('hub access token is missing'));
+        const { unmount } = render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+        expect(await screen.findByText('Hub 访问令牌缺失，请重新连接 Hub 后重试。')).toBeTruthy();
+        unmount();
+
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: false,
+            skip_llm_config: false,
+            default_model: 'auto',
+            available_models: ['auto'],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            inactive_reasons: ['grant credits are exhausted'],
+        });
+        render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+
+        expect(await screen.findByText('- 授权额度已用尽。')).toBeTruthy();
+        expect(screen.queryByText(/grant credits are exhausted/)).toBeNull();
+    });
+
+    it('relocates existing load errors on language change without refetching status', async () => {
+        GetHubLLMServiceStatusMock.mockRejectedValue(new Error('hub access token is missing'));
+        const { rerender } = render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        expect(await screen.findByText('Hub access token is missing. Reconnect Hub and try again.')).toBeTruthy();
+        expect(GetHubLLMServiceStatusMock).toHaveBeenCalledTimes(1);
+
+        rerender(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+
+        expect(await screen.findByText('Hub 访问令牌缺失，请重新连接 Hub 后重试。')).toBeTruthy();
+        expect(GetHubLLMServiceStatusMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('localizes account status query errors in Chinese', async () => {
+        GetHubLLMServiceStatusMock.mockRejectedValue(new Error('account status query failed: 401 Unauthorized: viewer token expired'));
+
+        render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+
+        expect(await screen.findByText('Hub 授权已过期，请重新连接 Hub 后重试。')).toBeTruthy();
+        expect(screen.queryByText(/viewer token expired/)).toBeNull();
+        expect(screen.queryByText(/account status query failed/)).toBeNull();
+    });
+
+    it('falls back to service group IDs and available models when display names are absent', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: true,
+            service_group_ids: ['newbie'],
+            default_model: 'auto',
+            available_models: ['auto'],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{
+                service_group_id: 'newbie',
+                source: 'card',
+                expires_at: '2026-06-06T00:00:00Z',
+                active: true,
+                status: 'active',
+                credits_available: 479.211,
+            }],
+        });
+
+        render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        expect(await screen.findByText('Authorized Groups')).toBeTruthy();
+        expect(screen.getByText('Authorized Groups').parentElement?.textContent).toContain('newbie');
+        expect(screen.getByText('Authorized Models').parentElement?.textContent).toContain('auto');
+        expect(screen.getByText('Authorized Models').parentElement?.textContent).toContain('newbie');
+        expect(screen.queryByText('No model permissions yet')).toBeNull();
+    });
+
+    it('shows active free services as unlimited instead of zero credits', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: true,
+            service_group_ids: ['free'],
+            service_group_names: ['企业免费服务'],
+            default_model: 'auto',
+            available_models: ['auto'],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credits_total: 0,
+            credits_used: 0,
+            credits_remaining: 0,
+            credits_available: 0,
+            authorized_models: [{ name: 'auto', service_group_ids: ['free'] }],
+        });
+
+        render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+
+        expect(await screen.findByText('企业免费服务')).toBeTruthy();
+        expect(screen.getByText('有效期至').parentElement?.textContent).toContain('长期有效');
+        expect(screen.getByText('总额度').parentElement?.textContent).toContain('不限');
+        expect(screen.getByText('剩余额度').parentElement?.textContent).toContain('不限');
+        expect(screen.getByText('已用额度').parentElement?.textContent).toContain('-');
+        expect(screen.getByText('免费服务无需授权额度明细。')).toBeTruthy();
+        expect(screen.queryByText('暂无授权额度明细')).toBeNull();
+    });
+
     it('shows currently available credits instead of blocked remaining credits while service is active', async () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({
             active: true,
@@ -240,7 +389,69 @@ describe('HubServiceRedeemPanel', () => {
 
         await screen.findByText('coding-monthly');
         expect(screen.getByText('Remaining credits').parentElement?.textContent).toContain('10000');
-        expect(screen.getByText('Total credits').parentElement?.textContent).toContain('10100');
+        expect(screen.getByText('Total credits').parentElement?.textContent).toContain('15000');
+    });
+
+    it('includes queued future grants in the displayed total credits', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: true,
+            service_group_names: ['充值服务组'],
+            default_model: 'auto',
+            available_models: ['auto'],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credits_total: 55000,
+            credits_used: 5672.116,
+            credits_available: 49148.916,
+            credit_grants: [{
+                service_group_id: 'newbie',
+                source: 'card',
+                starts_at: '2026-05-07T06:44:00Z',
+                expires_at: '2026-06-06T06:44:00Z',
+                active: true,
+                status: 'active',
+                credits_total: 5000,
+                credits_used: 4607.093,
+                credits_remaining: 392.907,
+            }, {
+                service_group_id: 'newbie',
+                source: 'card',
+                starts_at: '2026-06-02T09:36:00Z',
+                expires_at: '2026-08-01T09:36:00Z',
+                active: true,
+                status: 'active',
+                credits_total: 50000,
+                credits_used: 1065.023,
+                credits_remaining: 48934.977,
+            }, {
+                service_group_id: 'newbie',
+                source: 'card',
+                starts_at: '2026-08-05T06:44:00Z',
+                expires_at: '2026-08-06T06:44:00Z',
+                active: false,
+                status: 'queued',
+                credits_total: 1,
+                credits_used: 0,
+                credits_remaining: 1,
+            }, {
+                service_group_id: 'newbie',
+                source: 'card',
+                starts_at: '2026-08-06T06:44:00Z',
+                expires_at: '2026-08-07T06:44:00Z',
+                active: false,
+                status: 'queued',
+                credits_total: 300,
+                credits_used: 0,
+                credits_remaining: 300,
+            }],
+        });
+
+        render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+
+        expect((await screen.findAllByText('充值服务组')).length).toBeGreaterThan(0);
+        expect(screen.getByText('总额度').parentElement?.textContent).toContain('55301');
+        expect(screen.getByText('已用额度').parentElement?.textContent).toContain('5672.116');
+        expect(screen.getByText('剩余额度').parentElement?.textContent).toContain('49148.916');
     });
 
     it('falls back to the longest grant expiry when status has no effective expiry', async () => {

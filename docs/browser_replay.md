@@ -1,82 +1,72 @@
-# 浏览器测试动作录制与回放指南
+# Browser Automation Stable Workflow
 
-## 准备（一次性）
+Browser automation now uses one stable mechanism only: the merged `browser` tool with a `browser-session-*` session id.
 
-Chrome 地址栏输入 `chrome://inspect/#remote-debugging`，勾选 "Allow remote debugging for this browser instance"，重启 Chrome。
+Legacy direct tools such as `browser_navigate` and `browser_click` are internal compatibility handlers. Recording/replay and arbitrary JavaScript paths are disabled. They must not be exposed or recommended as the primary workflow.
 
-程序会自动通过 `DevToolsActivePort` 文件发现调试端口，无需命令行参数。
+## Start Session
 
-## 录制测试动作
+Use `session_start` or `connect` to create/reuse a stable browser agent session. `connect` is only an alias for `session_start`.
 
-在 maclaw 的 AI 助手对话框里依次说：
-
-### 1. 连接浏览器
-
-```
-你: 连接浏览器
+```json
+{"action":"session_start","start_url":"https://example.com"}
 ```
 
-maclaw 自动发现 DevToolsActivePort，连上 Chrome。
+The result includes:
 
-### 2. 开始录制
-
-```
-你: 开始录制
+```json
+{"session_id":"browser-session-..."}
 ```
 
-maclaw 调用 `browser_record_start`，进入录制模式。
+## Operate Page
 
-### 3. 用自然语言描述操作步骤
+Every page action must pass the returned `session_id`.
 
-```
-你: 打开 https://my-app.com/login
-你: 在用户名输入框输入 testuser
-你: 在密码框输入 123456
-你: 点击登录按钮
-你: 等待页面出现"欢迎"文字
-你: 截个图看看
-```
-
-maclaw 会把自然语言翻译成对应的浏览器工具调用（`browser_navigate` / `browser_type` / `browser_click` / `browser_wait` / `browser_screenshot`），每一步都会实际执行并被录制器自动记录。
-
-### 4. 停止录制并保存
-
-```
-你: 停止录制，保存为 login_test
+```json
+{"action":"observe","session_id":"browser-session-..."}
+{"action":"navigate","session_id":"browser-session-...","url":"https://example.com/login"}
+{"action":"click","session_id":"browser-session-...","ref":"@e1"}
+{"action":"type","session_id":"browser-session-...","ref":"@e2","text":"testuser"}
+{"action":"wait","session_id":"browser-session-...","duration_ms":1000}
+{"action":"screenshot","session_id":"browser-session-...","full_page":true}
 ```
 
-流程保存到 `~/.maclaw/browser_flows/login_test.json`。
+Do not use CDP target ids such as `CA8EC545` as `session_id`. Target ids are tab ids, not browser agent sessions.
 
-## 回放
+## Run Multi-Step Task
 
-### 基本回放
+For repeatable automation, use `task_run` inside the same browser session.
 
-```
-你: 回放 login_test
-```
-
-maclaw 调用 `browser_task_replay`，按录制的步骤自动重新执行一遍。
-
-### 带参数替换的回放
-
-```
-你: 回放 login_test，把 testuser 替换成 admin
+```json
+{
+  "action":"task_run",
+  "session_id":"browser-session-...",
+  "steps":"[{\"action\":\"navigate\",\"params\":{\"url\":\"https://example.com/login\"}},{\"action\":\"type\",\"params\":{\"selector\":\"#username\",\"text\":\"testuser\"}},{\"action\":\"click\",\"params\":{\"selector\":\"button[type=submit]\"}}]"
+}
 ```
 
-maclaw 传 `overrides` 参数，回放时自动替换对应值。
+Query task state with the same session id:
 
-## 查看已有录制
-
-```
-你: 列出所有录制的浏览器流程
+```json
+{"action":"task_status","session_id":"browser-session-...","task_id":"task-..."}
 ```
 
-## 注意事项
+## Stop Session
 
-- 全程用中文自然语言跟 maclaw 对话即可，不需要写代码或 JSON
-- maclaw 负责理解意图并调用对应的浏览器工具
-- 录制器在后台自动捕获每一步操作
-- 如果 Chrome 版本较老不支持 `chrome://inspect` 方式，可用命令行启动：
-  ```
-  chrome.exe --remote-debugging-port=9222
-  ```
+```json
+{"action":"session_stop","session_id":"browser-session-...","close_browser":true}
+```
+
+## Disabled Unstable Paths
+
+Recording/replay actions are not part of the stable session workflow:
+
+- `eval`
+- `click_at`
+- `get_text`
+- `get_html`
+- `record_start`
+- `record_stop`
+- `task_replay`
+
+Use `session_start` plus `task_run` instead.

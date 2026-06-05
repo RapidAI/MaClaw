@@ -214,7 +214,6 @@ const (
 	ExecModeIFlowSDK    ExecutionMode = "iflow-sdk"
 	ExecModeOpenCodeSDK ExecutionMode = "opencode-sdk"
 	ExecModeKiloSDK     ExecutionMode = "kilo-sdk"
-	ExecModeGeminiACP   ExecutionMode = "gemini-acp"
 )
 
 // ExecutionHandle 表示一个正在运行的远程执行实例。

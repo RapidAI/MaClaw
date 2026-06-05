@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
@@ -23,10 +24,15 @@ type taskContextLLMAdapter struct {
 }
 
 func (a *taskContextLLMAdapter) Classify(systemPrompt, userMessage string, timeoutSec int) (string, error) {
+	return a.ClassifyWithContext(context.Background(), systemPrompt, userMessage, timeoutSec)
+}
+
+func (a *taskContextLLMAdapter) ClassifyWithContext(ctx context.Context, systemPrompt, userMessage string, timeoutSec int) (string, error) {
 	if a.handler == nil {
 		return "", fmt.Errorf("handler not initialized")
 	}
-	result, err := a.handler.LLMClassify(context.Background(), LLMClassifyRequest{
+	ctx = llm.WithRequestTraceIfMissing(ctx, "task-context")
+	result, err := a.handler.LLMClassify(ctx, LLMClassifyRequest{
 		SystemPrompt:      systemPrompt,
 		UserMessage:       userMessage,
 		TimeoutSec:        timeoutSec,
@@ -75,6 +81,7 @@ func (h *IMMessageHandler) ensureTaskContextManager() {
 // for a new user message. Returns the decision and applies side effects
 // (archiving current task, restoring recalled task, clearing history).
 func (h *IMMessageHandler) resolveTaskContext(
+	ctx context.Context,
 	userID, trimmedMsg string,
 	history []agent.ConversationEntry,
 	hasPendingAskUser bool,
@@ -95,7 +102,13 @@ func (h *IMMessageHandler) resolveTaskContext(
 		}
 	}
 
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "task-context", OwnerID: userID})
 	input := agent.ResolveInput{
+		Context:                       ctx,
+		OwnerID:                       userID,
 		UserMessage:                   trimmedMsg,
 		History:                       history,
 		LastAccess:                    h.memory.LastAccessTime(userID),

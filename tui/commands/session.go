@@ -89,7 +89,7 @@ func sessionList(client *HubClient, args []string) error {
 
 func sessionStart(client *HubClient, args []string) error {
 	fs := flag.NewFlagSet("session start", flag.ExitOnError)
-	tool := fs.String("tool", "", "工具名称 (claude, codex, gemini)")
+	tool := fs.String("tool", "", "工具名称 (claude, codex, opencode)")
 	project := fs.String("project", "", "项目路径")
 	tmpl := fs.String("template", "", "模板名称")
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")

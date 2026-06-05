@@ -1,5 +1,5 @@
 import { useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { LoadConfig, SaveConfig } from '../../../wailsjs/go/main/App';
+import { PatchConfigFields } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 
 type LLMCacheSettingsPanelProps = {
@@ -85,15 +85,8 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessag
         setSaving(true);
         setSaveError('');
         try {
-            const latest = await LoadConfig();
-            const next = new main.AppConfig({ ...latest, llm_prompt_cache: normalizeSwitchPatch(cache, {}) });
-            await SaveConfig(next);
-            try {
-                const saved = await LoadConfig();
-                setConfig(saved);
-            } catch {
-                setConfig(next);
-            }
+            const saved = await PatchConfigFields({ llm_prompt_cache: normalizeSwitchPatch(cache, {}) });
+            setConfig(new main.AppConfig(saved));
             showToastMessage?.(textForLang(lang, 'Saved successfully', '\u4fdd\u5b58\u6210\u529f', '\u5132\u5b58\u6210\u529f'));
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

@@ -13,8 +13,8 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
         const status = String(grant.status ?? grant.Status ?? '').toLowerCase();
         return status === 'active' || grant.active === true || grant.Active === true;
     });
-    const statusAvailable = numeric(status?.credits_available ?? status?.CreditsAvailable);
-    const activeViaFallbackGrant = active && !activeGrant && statusAvailable > 0;
+    const initialStatusAvailable = numeric(status?.credits_available ?? status?.CreditsAvailable);
+    const activeViaFallbackGrant = active && !activeGrant && initialStatusAvailable > 0;
     const statusGrant = active
         ? (activeGrant || (activeViaFallbackGrant ? undefined : periodLimitedGrant) || grants[0])
         : (grantStatusPriority
@@ -30,7 +30,19 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
     let total = 0;
     let used = 0;
     let remaining = 0;
+    let grantAvailable = 0;
+    let visibleGrantTotal = 0;
     for (const grant of grants) {
+        const grantStatus = String(grant.status ?? grant.Status ?? '').toLowerCase();
+        if (grantStatus !== 'expired') {
+            const grantTotal = numeric(grant.credits_total ?? grant.CreditsTotal);
+            visibleGrantTotal += grantTotal > 0
+                ? grantTotal
+                : Math.max(
+                    numeric(grant.credits_available ?? grant.CreditsAvailable),
+                    numeric(grant.credits_remaining ?? grant.CreditsRemaining),
+                );
+        }
         // Use backend's "effective" flag as single source of truth.
         // Fall back to status string check for old hub versions without the field.
         const eff = grant.effective ?? grant.Effective;
@@ -42,11 +54,14 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
         total += numeric(grant.credits_total ?? grant.CreditsTotal);
         used += numeric(grant.credits_used ?? grant.CreditsUsed);
         remaining += numeric(grant.credits_remaining ?? grant.CreditsRemaining);
+        grantAvailable += numeric(grant.credits_available ?? grant.CreditsAvailable);
     }
-    total = numeric(status?.credits_total ?? status?.CreditsTotal ?? total);
+    total = Math.max(numeric(status?.credits_total ?? status?.CreditsTotal ?? total), visibleGrantTotal);
     used = numeric(status?.credits_used ?? status?.CreditsUsed ?? used);
     remaining = numeric(status?.credits_remaining ?? status?.CreditsRemaining ?? remaining);
-    const available = numeric(status?.credits_available ?? status?.CreditsAvailable ?? statusGrant?.credits_available ?? statusGrant?.CreditsAvailable);
+    const statusAvailable = numeric(status?.credits_available ?? status?.CreditsAvailable);
+    const statusGrantAvailable = numeric(statusGrant?.credits_available ?? statusGrant?.CreditsAvailable);
+    const available = statusAvailable > 0 ? statusAvailable : (grantAvailable > 0 ? grantAvailable : statusGrantAvailable);
     if (!active && grantStatus === 'expired') remaining = Math.max(0, available);
     if ((active || remaining <= 0) && available > 0) remaining = available;
     if (remaining > 0 && total < used + remaining) total = used + remaining;

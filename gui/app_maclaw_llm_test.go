@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +20,53 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"pgregory.net/rapid"
 )
+
+type appLLMRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f appLLMRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestDoFetchModelsRequestDefaultsCodeGenUserAgentToTigerclaw(t *testing.T) {
+	app := &App{}
+	client := &http.Client{Transport: appLLMRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("User-Agent"); got != corelib.CodeGenClientName {
+			t.Fatalf("User-Agent = %q, want %q", got, corelib.CodeGenClientName)
+		}
+		if got := req.Header.Get(corelib.CodeGenClientNameHeader); got != corelib.CodeGenClientName {
+			t.Fatalf("%s = %q, want %q", corelib.CodeGenClientNameHeader, got, corelib.CodeGenClientName)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{"data":[]}`))),
+			Request:    req,
+		}, nil
+	})}
+
+	resp, err := app.doFetchModelsRequest(client, "https://codegen.qianxin-inc.cn/api/v1/models", "token", "openai", "openclaw")
+	if err != nil {
+		t.Fatalf("doFetchModelsRequest() error = %v", err)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestCodeGenClientNameForModelConfigPrefersModelAgentType(t *testing.T) {
+	model := corelib.ModelConfig{
+		ModelName: "CodeGen",
+		ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+		AgentType: "custom-tool-agent",
+	}
+	cfg := corelib.AppConfig{MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+		Name:      "CodeGen",
+		URL:       "https://codegen.qianxin-inc.cn/api/v1",
+		AgentType: "provider-agent",
+	}}}
+
+	if got := codeGenClientNameForModelConfig(cfg, model); got != "custom-tool-agent" {
+		t.Fatalf("codeGenClientNameForModelConfig() = %q, want custom-tool-agent", got)
+	}
+}
 
 func TestTestOpenAILLM_UsesReasoningFallbackAndStripsTags(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -528,6 +577,33 @@ func TestUpdateCodeGenToolAPIKeyMatchesRenamedCodeGenEntryWithoutSwitchingCurren
 	}
 }
 
+func TestUpdateCodeGenToolAPIKeyPropagatesClientName(t *testing.T) {
+	tc := corelib.ToolConfig{Models: []corelib.ModelConfig{{
+		ModelName: "first-usable-model",
+		ModelId:   "first-usable-model",
+		ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+		ApiKey:    "old-token",
+		WireApi:   "responses",
+		AgentType: "old-agent",
+	}}}
+
+	changed := updateCodeGenToolAPIKey(&tc, corelib.ModelConfig{
+		ModelName: "first-usable-model",
+		ModelId:   "first-usable-model",
+		ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+		ApiKey:    "new-token",
+		WireApi:   "responses",
+		AgentType: "custom-agent",
+	})
+
+	if !changed {
+		t.Fatal("updateCodeGenToolAPIKey() changed = false, want true")
+	}
+	if got := tc.Models[0].AgentType; got != "custom-agent" {
+		t.Fatalf("AgentType = %q, want custom-agent", got)
+	}
+}
+
 func TestMaclawLLMTokenUsageIgnoresRemoteToolProviders(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -551,6 +627,41 @@ func TestMaclawLLMTokenUsageIgnoresRemoteToolProviders(t *testing.T) {
 	}
 	if got := app.GetLLMTokenUsage("codex:gpt-5.4"); got.TotalTokens != 0 || got.CachedInputTokens != 0 {
 		t.Fatalf("remote tool provider should read as zero usage, got %+v", got)
+	}
+}
+
+func TestMaclawLLMTokenUsagePatchesWithoutStaleOverwrite(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "owner@example.com"
+	cfg.LogDetailEnabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig error: %v", err)
+	}
+
+	app.AccumulateLLMTokenUsageWithCache("MiniMax", 100, 20, 10, 5)
+	app.AccumulateLLMLocalCacheRequest("MiniMax", true)
+	if err := app.ResetLLMTokenUsage("Other"); err != nil {
+		t.Fatalf("ResetLLMTokenUsage(other) error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if saved.RemoteEmail != "owner@example.com" || !saved.LogDetailEnabled {
+		t.Fatalf("unrelated fields overwritten by token usage updates: %#v", saved)
+	}
+	stat := saved.LLMTokenUsage["MiniMax"]
+	if stat == nil || stat.InputTokens != 100 || stat.OutputTokens != 20 || stat.LocalCacheRequests != 1 || stat.LocalCacheHits != 1 {
+		t.Fatalf("token usage not patched: %+v", stat)
 	}
 }
 
@@ -578,7 +689,6 @@ func TestRemoteToolTokenUsageProviderMatchingIsCaseAndSpaceInsensitive(t *testin
 	for _, provider := range []string{
 		" Codex:gpt-5.4 ",
 		"CLAUDE:sonnet",
-		"Gemini:2.5-pro",
 		"remote:opencode",
 	} {
 		if !isRemoteToolTokenUsageProvider(provider) {
@@ -738,6 +848,33 @@ func TestEnsureCodeGenToolModelAvailableFallsBackToFirstModel(t *testing.T) {
 	}
 	if got := tc.Models[0].ModelId; got != "first-available-model" {
 		t.Fatalf("ModelId = %q, want %q", got, "first-available-model")
+	}
+}
+
+func TestEnsureCodeGenToolModelAvailablePropagatesClientName(t *testing.T) {
+	tc := corelib.ToolConfig{Models: []corelib.ModelConfig{{
+		ModelName: "missing-model",
+		ModelId:   "missing-model",
+		ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+		ApiKey:    "old-token",
+		WireApi:   "responses",
+		AgentType: "old-agent",
+	}}}
+
+	changed := ensureCodeGenToolModelAvailable(&tc, corelib.ModelConfig{
+		ModelName: "first-available-model",
+		ModelId:   "first-available-model",
+		ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+		ApiKey:    "token-123",
+		WireApi:   "responses",
+		AgentType: "custom-agent",
+	}, map[string]bool{"first-available-model": true})
+
+	if !changed {
+		t.Fatal("ensureCodeGenToolModelAvailable() changed = false, want true")
+	}
+	if got := tc.Models[0].AgentType; got != "custom-agent" {
+		t.Fatalf("AgentType = %q, want custom-agent", got)
 	}
 }
 
@@ -1181,8 +1318,8 @@ func TestGetMaclawLLMProviders_CanonicalizesLegacyHubCurrentAndBackfillsTimeout(
 	if !ok {
 		t.Fatalf("providers missing canonical hub provider: %+v", data.Providers)
 	}
-	if provider.TimeoutSec != 77 {
-		t.Fatalf("TimeoutSec = %d, want legacy timeout backfill", provider.TimeoutSec)
+	if provider.TimeoutSec != corelib.DefaultLLMTimeoutSec {
+		t.Fatalf("TimeoutSec = %d, want normalized default timeout %d", provider.TimeoutSec, corelib.DefaultLLMTimeoutSec)
 	}
 	if !provider.IsHubService {
 		t.Fatal("canonical hub provider IsHubService = false, want true")
@@ -1232,6 +1369,526 @@ func TestSaveMaclawLLMProviders_SyncsMissingHubProviderWhenSelected(t *testing.T
 	}
 	if saved.MaclawLLMUrl != provider.URL || saved.MaclawLLMCurrentProvider != hubServiceProviderName {
 		t.Fatalf("legacy/current fields not synced: current=%q url=%q provider=%+v", saved.MaclawLLMCurrentProvider, saved.MaclawLLMUrl, provider)
+	}
+}
+
+func TestGetHubLLMServiceStatus_PrefersAccountEndpointCredits(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var sawStatusEndpoint bool
+	hubURL := ""
+	var hub *httptest.Server
+	hub = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/llm/service/account":
+			_, _ = w.Write([]byte(`{"status":{"active":true,"service_group_ids":["newbie"],"service_group_names":["充值服务组"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"` + hubURL + `/api/llm/v1","credits_total":50000,"credits_used":1017.432,"credits_remaining":48982.568,"credits_available":48982.568,"credit_grants":[{"service_group_id":"newbie","source":"card","active":true,"status":"active","credits_total":50000,"credits_used":1017.432,"credits_remaining":48982.568,"credits_available":48982.568}]}}`))
+		case "/api/llm/service/status":
+			sawStatusEndpoint = true
+			_, _ = w.Write([]byte(`{"active":true,"service_group_ids":["free"],"service_group_names":["企业免费服务"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"` + hubURL + `/api/llm/v1","credits_total":0,"credits_used":0,"credits_remaining":0,"credits_available":0}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	hubURL = hub.URL
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	status, err := app.GetHubLLMServiceStatus()
+	if err != nil {
+		t.Fatalf("GetHubLLMServiceStatus() error = %v", err)
+	}
+	if sawStatusEndpoint {
+		t.Fatal("GetHubLLMServiceStatus() should use account endpoint when available")
+	}
+	if status.CreditsAvailable != 48982.568 || status.CreditsTotal != 50000 {
+		t.Fatalf("credits = total %v available %v, want paid account credits", status.CreditsTotal, status.CreditsAvailable)
+	}
+	if len(status.ServiceGroupNames) != 1 || status.ServiceGroupNames[0] != "充值服务组" {
+		t.Fatalf("service group names = %#v, want paid group", status.ServiceGroupNames)
+	}
+}
+
+func TestGetHubLLMServiceStatus_AcceptsDirectAccountStatusResponse(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var sawStatusEndpoint bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/llm/service/account":
+			_, _ = w.Write([]byte(`{"active":true,"service_group_ids":["newbie"],"service_group_names":["充值服务组"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1","credits_total":55000,"credits_used":5536.136,"credits_remaining":48982.568,"credits_available":48982.568}`))
+		case "/api/llm/service/status":
+			sawStatusEndpoint = true
+			_, _ = w.Write([]byte(`{"active":true,"service_group_ids":["free"],"service_group_names":["企业免费服务"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1","credits_total":0,"credits_available":0}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	status, err := app.GetHubLLMServiceStatus()
+	if err != nil {
+		t.Fatalf("GetHubLLMServiceStatus() error = %v", err)
+	}
+	if sawStatusEndpoint {
+		t.Fatal("GetHubLLMServiceStatus() should accept direct account status without falling back")
+	}
+	if status.CreditsAvailable != 48982.568 || status.CreditsTotal != 55000 {
+		t.Fatalf("credits = total %v available %v, want direct account credits", status.CreditsTotal, status.CreditsAvailable)
+	}
+	if len(status.ServiceGroupNames) != 1 || status.ServiceGroupNames[0] != "充值服务组" {
+		t.Fatalf("service group names = %#v, want direct account group", status.ServiceGroupNames)
+	}
+}
+
+func TestGetHubLLMServiceStatus_AcceptsServiceStatusAccountResponse(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var sawStatusEndpoint bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/llm/service/account":
+			_, _ = w.Write([]byte(`{"service_status":{"active":true,"service_group_ids":["newbie"],"service_group_names":["充值服务组"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1","credits_total":55000,"credits_used":5536.136,"credits_remaining":48982.568,"credits_available":48982.568}}`))
+		case "/api/llm/service/status":
+			sawStatusEndpoint = true
+			_, _ = w.Write([]byte(`{"active":true,"service_group_ids":["free"],"service_group_names":["企业免费服务"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1","credits_total":0,"credits_available":0}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	status, err := app.GetHubLLMServiceStatus()
+	if err != nil {
+		t.Fatalf("GetHubLLMServiceStatus() error = %v", err)
+	}
+	if sawStatusEndpoint {
+		t.Fatal("GetHubLLMServiceStatus() should accept service_status account response without falling back")
+	}
+	if status.CreditsAvailable != 48982.568 || status.CreditsTotal != 55000 {
+		t.Fatalf("credits = total %v available %v, want service_status account credits", status.CreditsTotal, status.CreditsAvailable)
+	}
+	if len(status.ServiceGroupNames) != 1 || status.ServiceGroupNames[0] != "充值服务组" {
+		t.Fatalf("service group names = %#v, want service_status account group", status.ServiceGroupNames)
+	}
+}
+
+func TestGetHubLLMServiceStatus_AcceptsCreditsOnlyAccountStatus(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var sawStatusEndpoint bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/llm/service/account":
+			_, _ = w.Write([]byte(`{"status":{"active":true,"credits_total":55000,"credits_used":5536.136,"credits_remaining":48982.568,"credits_available":48982.568}}`))
+		case "/api/llm/service/status":
+			sawStatusEndpoint = true
+			_, _ = w.Write([]byte(`{"active":true,"service_group_ids":["free"],"service_group_names":["企业免费服务"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1","credits_total":0,"credits_available":0}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	status, err := app.GetHubLLMServiceStatus()
+	if err != nil {
+		t.Fatalf("GetHubLLMServiceStatus() error = %v", err)
+	}
+	if !sawStatusEndpoint {
+		t.Fatal("GetHubLLMServiceStatus() should query status endpoint to fill route details")
+	}
+	if status.CreditsAvailable != 48982.568 || status.CreditsTotal != 55000 {
+		t.Fatalf("credits = total %v available %v, want account credit totals", status.CreditsTotal, status.CreditsAvailable)
+	}
+	if status.HubLLMBaseURL != "https://hub.example.com/api/llm/v1" || status.DefaultModel != "auto" {
+		t.Fatalf("route details = base %q default %q, want legacy status route details", status.HubLLMBaseURL, status.DefaultModel)
+	}
+	if len(status.ServiceGroupNames) != 0 {
+		t.Fatalf("service group names = %#v, want account groups preserved instead of stale fallback free group", status.ServiceGroupNames)
+	}
+}
+
+func TestGetHubLLMServiceStatus_MergesRouteDetailsWithoutOverwritingPaidAccount(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var sawStatusEndpoint bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/llm/service/account":
+			_, _ = w.Write([]byte(`{"status":{"active":true,"service_group_ids":["newbie"],"service_group_names":["充值服务组"],"credits_total":55000,"credits_used":5536.136,"credits_remaining":48982.568,"credits_available":48982.568}}`))
+		case "/api/llm/service/status":
+			sawStatusEndpoint = true
+			_, _ = w.Write([]byte(`{"active":true,"service_group_ids":["free"],"service_group_names":["企业免费服务"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1","credits_total":0,"credits_available":0}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	status, err := app.GetHubLLMServiceStatus()
+	if err != nil {
+		t.Fatalf("GetHubLLMServiceStatus() error = %v", err)
+	}
+	if !sawStatusEndpoint {
+		t.Fatal("GetHubLLMServiceStatus() should query status endpoint to fill route details")
+	}
+	if status.CreditsAvailable != 48982.568 || status.CreditsTotal != 55000 {
+		t.Fatalf("credits = total %v available %v, want paid account credits", status.CreditsTotal, status.CreditsAvailable)
+	}
+	if len(status.ServiceGroupNames) != 1 || status.ServiceGroupNames[0] != "充值服务组" {
+		t.Fatalf("service group names = %#v, want paid account group preserved", status.ServiceGroupNames)
+	}
+	if status.HubLLMBaseURL != "https://hub.example.com/api/llm/v1" || status.DefaultModel != "auto" || len(status.AvailableModels) != 1 || status.AvailableModels[0] != "auto" {
+		t.Fatalf("route details = base %q default %q models %#v, want merged route details", status.HubLLMBaseURL, status.DefaultModel, status.AvailableModels)
+	}
+}
+
+func TestGetHubLLMServiceStatus_KeepsPaidAccountWhenRouteDetailsFail(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var sawStatusEndpoint bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/llm/service/account":
+			_, _ = w.Write([]byte(`{"status":{"active":true,"service_group_ids":["newbie"],"service_group_names":["充值服务组"],"credits_total":55000,"credits_used":5536.136,"credits_remaining":48982.568,"credits_available":48982.568}}`))
+		case "/api/llm/service/status":
+			sawStatusEndpoint = true
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"legacy status unavailable"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	status, err := app.GetHubLLMServiceStatus()
+	if err != nil {
+		t.Fatalf("GetHubLLMServiceStatus() error = %v", err)
+	}
+	if !sawStatusEndpoint {
+		t.Fatal("GetHubLLMServiceStatus() should try status endpoint to fill missing route details")
+	}
+	if status.CreditsAvailable != 48982.568 || status.CreditsTotal != 55000 {
+		t.Fatalf("credits = total %v available %v, want paid account credits", status.CreditsTotal, status.CreditsAvailable)
+	}
+	if len(status.ServiceGroupNames) != 1 || status.ServiceGroupNames[0] != "充值服务组" {
+		t.Fatalf("service group names = %#v, want paid account group preserved", status.ServiceGroupNames)
+	}
+}
+
+func TestGetHubLLMServiceStatus_FallsBackWhenAccountEndpointFails(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var sawStatusEndpoint bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/llm/service/account":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"usage report failed"}`))
+		case "/api/llm/service/status":
+			sawStatusEndpoint = true
+			_, _ = w.Write([]byte(`{"active":true,"service_group_ids":["free"],"service_group_names":["企业免费服务"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	status, err := app.GetHubLLMServiceStatus()
+	if err != nil {
+		t.Fatalf("GetHubLLMServiceStatus() error = %v", err)
+	}
+	if !sawStatusEndpoint {
+		t.Fatal("GetHubLLMServiceStatus() should fall back to status endpoint")
+	}
+	if len(status.ServiceGroupNames) != 1 || status.ServiceGroupNames[0] != "企业免费服务" {
+		t.Fatalf("service group names = %#v, want fallback status", status.ServiceGroupNames)
+	}
+}
+
+func TestGetHubLLMServiceStatus_DoesNotFallbackWhenAccountEndpointUnauthorized(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var sawStatusEndpoint bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/llm/service/account":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"viewer token expired"}`))
+		case "/api/llm/service/status":
+			sawStatusEndpoint = true
+			_, _ = w.Write([]byte(`{"active":true,"service_group_ids":["free"],"service_group_names":["企业免费服务"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1","credits_total":0,"credits_available":0}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "expired-viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	_, err := app.GetHubLLMServiceStatus()
+	if err == nil {
+		t.Fatal("GetHubLLMServiceStatus() error = nil, want unauthorized account error")
+	}
+	if sawStatusEndpoint {
+		t.Fatal("GetHubLLMServiceStatus() must not fall back to status endpoint on 401/403")
+	}
+	if !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "viewer token expired") {
+		t.Fatalf("error = %v, want 401 viewer token expired", err)
+	}
+}
+
+func TestGetHubLLMServiceStatus_DoesNotFallbackWhenAccountEndpointRejectsRequest(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var sawStatusEndpoint bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/llm/service/account":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"invalid tenant"}`))
+		case "/api/llm/service/status":
+			sawStatusEndpoint = true
+			_, _ = w.Write([]byte(`{"active":true,"service_group_ids":["free"],"service_group_names":["Free"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1","credits_total":0,"credits_available":0}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	_, err := app.GetHubLLMServiceStatus()
+	if err == nil {
+		t.Fatal("GetHubLLMServiceStatus() error = nil, want bad account request error")
+	}
+	if sawStatusEndpoint {
+		t.Fatal("GetHubLLMServiceStatus() must not fall back to status endpoint on 400")
+	}
+	if !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "invalid tenant") {
+		t.Fatalf("error = %v, want 400 invalid tenant", err)
+	}
+}
+
+func TestGetHubLLMServiceStatus_FallsBackWhenAccountEndpointReturnsEmptyStatus(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var sawStatusEndpoint bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/llm/service/account":
+			_, _ = w.Write([]byte(`{"status":{"active":true}}`))
+		case "/api/llm/service/status":
+			sawStatusEndpoint = true
+			_, _ = w.Write([]byte(`{"active":true,"service_group_ids":["free"],"service_group_names":["企业免费服务"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	status, err := app.GetHubLLMServiceStatus()
+	if err != nil {
+		t.Fatalf("GetHubLLMServiceStatus() error = %v", err)
+	}
+	if !sawStatusEndpoint {
+		t.Fatal("GetHubLLMServiceStatus() should fall back when account status has no usable entitlement details")
+	}
+	if len(status.ServiceGroupNames) != 1 || status.ServiceGroupNames[0] != "企业免费服务" {
+		t.Fatalf("service group names = %#v, want fallback status", status.ServiceGroupNames)
+	}
+}
+
+func TestGetHubLLMServiceStatus_FallsBackWhenAccountEndpointTimesOut(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var sawStatusEndpoint bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/llm/service/account":
+			time.Sleep(50 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"status":{"active":true}}`))
+		case "/api/llm/service/status":
+			sawStatusEndpoint = true
+			_, _ = w.Write([]byte(`{"active":true,"service_group_ids":["free"],"service_group_names":["企业免费服务"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	status, err := app.fetchHubLLMServiceStatusWithTimeout(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "viewer-token",
+	}, 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("fetchHubLLMServiceStatusWithTimeout() error = %v", err)
+	}
+	if !sawStatusEndpoint {
+		t.Fatal("fetchHubLLMServiceStatusWithTimeout() should fall back to status endpoint")
+	}
+	if len(status.ServiceGroupNames) != 1 || status.ServiceGroupNames[0] != "企业免费服务" {
+		t.Fatalf("service group names = %#v, want fallback status", status.ServiceGroupNames)
+	}
+}
+
+func TestHubLLMServiceAccountStatusTimeoutCapsLongStatusTimeout(t *testing.T) {
+	if got := hubLLMServiceAccountStatusTimeout(30 * time.Second); got != hubServiceAccountStatusMaxTimeout {
+		t.Fatalf("hubLLMServiceAccountStatusTimeout(30s) = %v, want %v", got, hubServiceAccountStatusMaxTimeout)
+	}
+	if got := hubLLMServiceAccountStatusTimeout(500 * time.Millisecond); got != 500*time.Millisecond {
+		t.Fatalf("hubLLMServiceAccountStatusTimeout(500ms) = %v, want 500ms", got)
+	}
+}
+
+func TestRedeemHubLLMService_RefreshesAccountStatusAfterRedeem(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var sawAccountEndpoint bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/llm/service/redeem":
+			_, _ = w.Write([]byte(`{"success":true,"service_status":{"active":true,"service_group_ids":["free"],"service_group_names":["企业免费服务"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1","credits_total":0,"credits_available":0}}`))
+		case "/api/llm/service/account":
+			sawAccountEndpoint = true
+			_, _ = w.Write([]byte(`{"status":{"active":true,"service_group_ids":["newbie"],"service_group_names":["充值服务组"],"available_models":["auto"],"default_model":"auto","hub_llm_base_url":"https://hub.example.com/api/llm/v1","credits_total":50000,"credits_used":1017.432,"credits_remaining":48982.568,"credits_available":48982.568}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	status, err := app.RedeemHubLLMService("ABC123")
+	if err != nil {
+		t.Fatalf("RedeemHubLLMService() error = %v", err)
+	}
+	if !sawAccountEndpoint {
+		t.Fatal("RedeemHubLLMService() should refresh account status after redeem")
+	}
+	if status.CreditsAvailable != 48982.568 || status.CreditsTotal != 50000 {
+		t.Fatalf("credits = total %v available %v, want refreshed paid account credits", status.CreditsTotal, status.CreditsAvailable)
+	}
+	if len(status.ServiceGroupNames) != 1 || status.ServiceGroupNames[0] != "充值服务组" {
+		t.Fatalf("service group names = %#v, want refreshed paid group", status.ServiceGroupNames)
 	}
 }
 

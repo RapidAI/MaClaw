@@ -49,12 +49,6 @@ var toolSummaryRules = map[string]SummaryRule{
 	"generate_pdf": {
 		Verb: "生成 PDF 文档", Static: true, Phase: "generating",
 	},
-	"create_session": {
-		Verb: "启动编程环境", Static: true, Phase: "coding",
-	},
-	"send_and_observe": {
-		Verb: "编码中", ArgKey: "text", MaxLen: 40, Phase: "coding",
-	},
 	"run_skill": {
 		Verb: "执行技能", ArgKey: "skill_name", MaxLen: 30, Phase: "skill",
 	},

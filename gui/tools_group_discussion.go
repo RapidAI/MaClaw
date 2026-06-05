@@ -1807,7 +1807,10 @@ func groupDiscussionClassifyHumanAuthorization(app *App, handler *IMMessageHandl
 		client = &http.Client{Timeout: 35 * time.Second}
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
-		resp, err := handler.doAnthropicLLMRequest(cfg, messages, nil, client)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "group-discussion-authorization"})
+		resp, err := handler.doAnthropicLLMRequestWithContext(ctx, cfg, messages, nil, client)
 		if err != nil {
 			return groupDiscussionAuthorizationDecision{}, err
 		}
@@ -1819,6 +1822,15 @@ func groupDiscussionClassifyHumanAuthorization(app *App, handler *IMMessageHandl
 func requestGroupDiscussionAuthorizationOpenAI(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (groupDiscussionAuthorizationDecision, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "group-discussion-authorization"})
+	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
+	if acquireErr != nil {
+		return groupDiscussionAuthorizationDecision{}, acquireErr
+	}
+	defer lease.Release()
+	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	lease.SetCancel(scheduledCancel)
+	defer scheduledCancel()
 	responseFormat := map[string]interface{}{
 		"type": "json_schema",
 		"json_schema": map[string]interface{}{
@@ -1826,7 +1838,7 @@ func requestGroupDiscussionAuthorizationOpenAI(handler *IMMessageHandler, cfg co
 			"schema": groupDiscussionAuthorizationJSONSchema,
 		},
 	}
-	req, body, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
+	req, body, endpoint, err := llm.NewOpenAIChatRequest(scheduledCtx, cfg, messages, llm.OpenAIChatRequestOptions{
 		Stream:         false,
 		ResponseFormat: responseFormat,
 	})
@@ -1834,12 +1846,15 @@ func requestGroupDiscussionAuthorizationOpenAI(handler *IMMessageHandler, cfg co
 		return groupDiscussionAuthorizationDecision{}, err
 	}
 	resp, err := client.Do(req)
+	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
 		return groupDiscussionAuthorizationDecision{}, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return groupDiscussionAuthorizationDecision{}, dumpLLMContext(resp.StatusCode, "group discussion authorization request failed", body, handler.getTempDir())
+		err := dumpLLMContext(resp.StatusCode, "group discussion authorization request failed", body, handler.getTempDir())
+		globalLLMScheduler.ObserveResult(trace, err)
+		return groupDiscussionAuthorizationDecision{}, err
 	}
 	parsedResp, err := llm.ParseNonStreamOpenAIResponse(resp)
 	if err != nil {

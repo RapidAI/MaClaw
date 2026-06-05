@@ -3,9 +3,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectSearchPanel } from "../ProjectSearchPanel";
 import { lightTheme } from "../aiAssistantPanelTheme";
-import { GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, ResumeProject } from "../../../../wailsjs/go/main/App";
+import { ForkRecentTask, GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, ResumeProject } from "../../../../wailsjs/go/main/App";
 
-const { getArchivedExperienceMock, getProjectSceneMock, openFileOrShowInFolderMock, resumeProjectMock, renameTaskMock, pinTaskMock, hideTaskMock, archiveProjectMock } = vi.hoisted(() => ({
+const { forkRecentTaskMock, getArchivedExperienceMock, getProjectSceneMock, openFileOrShowInFolderMock, resumeProjectMock, renameTaskMock, pinTaskMock, hideTaskMock, archiveProjectMock } = vi.hoisted(() => ({
+    forkRecentTaskMock: vi.fn(),
     getArchivedExperienceMock: vi.fn(),
     getProjectSceneMock: vi.fn(),
     openFileOrShowInFolderMock: vi.fn(),
@@ -18,6 +19,7 @@ const { getArchivedExperienceMock, getProjectSceneMock, openFileOrShowInFolderMo
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     SearchProjects: vi.fn().mockResolvedValue([]),
+    ForkRecentTask: forkRecentTaskMock,
     GetArchivedExperience: getArchivedExperienceMock,
     GetProjectScene: getProjectSceneMock,
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
@@ -76,15 +78,17 @@ describe("ProjectSearchPanel", () => {
         expect(ResumeProject).not.toHaveBeenCalled();
     });
 
-    it("opens active tasks in a project tab when tab creation is available", () => {
+    it("forks active tasks into a project tab when tab creation is available", async () => {
         const search = makeSearch([{ id: "p1", name: "Active task", project_path: "D:/p/live" }]);
         const onCreateProjectTab = vi.fn();
+        forkRecentTaskMock.mockResolvedValue({ project_path: "D:/p/forked", name: "Active task" });
 
         renderPanel(search, { onCreateProjectTab });
         fireEvent.click(screen.getByText("Active task"));
 
         expect(search.close).toHaveBeenCalled();
-        expect(onCreateProjectTab).toHaveBeenCalledWith("D:/p/live", "Active task");
+        await waitFor(() => expect(onCreateProjectTab).toHaveBeenCalledWith("D:/p/forked", "Active task", { autoSend: false }));
+        expect(ForkRecentTask).toHaveBeenCalledWith("D:/p/live");
         expect(ResumeProject).not.toHaveBeenCalled();
     });
 
@@ -131,13 +135,45 @@ describe("ProjectSearchPanel", () => {
     it("falls back to ResumeProject when project tabs are unavailable", async () => {
         const search = makeSearch([{ id: "p2", name: "Fallback task", project_path: "D:/p/fallback" }]);
         const onProjectSwitch = vi.fn();
+        forkRecentTaskMock.mockResolvedValue({ project_path: "D:/p/forked", name: "Fallback task" });
         resumeProjectMock.mockResolvedValue("resumed");
 
         renderPanel(search, { onProjectSwitch });
         fireEvent.click(screen.getByText("Fallback task"));
 
-        await waitFor(() => expect(ResumeProject).toHaveBeenCalledWith("D:/p/fallback"));
+        await waitFor(() => expect(ResumeProject).toHaveBeenCalledWith("D:/p/forked"));
+        expect(ForkRecentTask).toHaveBeenCalledWith("D:/p/fallback");
         expect(onProjectSwitch).toHaveBeenCalledWith("resumed");
+    });
+
+    it("closes an open project tab when a task is removed", async () => {
+        const search = makeSearch([{ id: "p4", name: "Removable task", project_path: "D:/p/remove" }]);
+        const onCloseProjectTab = vi.fn();
+        hideTaskMock.mockResolvedValue(undefined);
+
+        renderPanel(search, { onCloseProjectTab });
+        fireEvent.contextMenu(screen.getByText("Removable task"));
+        fireEvent.click(screen.getByText("Remove"));
+
+        await waitFor(() => expect(hideTaskMock).toHaveBeenCalledWith("D:/p/remove"));
+        expect(onCloseProjectTab).toHaveBeenCalledWith("D:/p/remove");
+        expect(search.refresh).toHaveBeenCalled();
+    });
+
+    it("closes an open project tab when a task is archived", async () => {
+        const search = makeSearch([{ id: "p5", name: "Archivable task", project_path: "D:/p/archive" }]);
+        const onCloseProjectTab = vi.fn();
+        archiveProjectMock.mockResolvedValue({ archived: true });
+        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+        renderPanel(search, { onCloseProjectTab });
+        fireEvent.contextMenu(screen.getByText("Archivable task"));
+        fireEvent.click(screen.getByText("Archive"));
+
+        await waitFor(() => expect(archiveProjectMock).toHaveBeenCalledWith("D:/p/archive"));
+        expect(onCloseProjectTab).toHaveBeenCalledWith("D:/p/archive");
+        expect(search.refresh).toHaveBeenCalled();
+        confirmSpy.mockRestore();
     });
 
     it("creates a task from current chat with inline naming instead of browser prompt", () => {

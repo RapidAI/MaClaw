@@ -206,6 +206,23 @@ func TestCanonicalCodingSubAgentToolNameAcceptsModelCasing(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentMaxIterationsUsesRuntimeBudget(t *testing.T) {
+	loopCtx := NewLoopContext("subagent-budget", 180, nil)
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{loopCtx: loopCtx}}
+
+	if got := cb.GetMaxIterations(); got != 180 {
+		t.Fatalf("max iterations = %d, want runtime budget", got)
+	}
+}
+
+func TestCodingSubAgentMaxIterationsFallsBackToDefaultBudget(t *testing.T) {
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{}}
+
+	if got := cb.GetMaxIterations(); got <= 50 {
+		t.Fatalf("max iterations = %d, want expanded default budget", got)
+	}
+}
+
 func TestBuildCodingSubAgentSystemPromptIncludesWindowsShellContract(t *testing.T) {
 	if normalizedRemotePlatform() != "windows" {
 		t.Skip("Windows shell contract is platform-specific")

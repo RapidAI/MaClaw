@@ -1,5 +1,5 @@
 import type { Dispatch, MouseEvent as ReactMouseEvent, SetStateAction } from 'react';
-import { getToolLabel, getVisibleToolOptions, isToolTab } from '../../config/toolCatalog';
+import { getAllToolOptions, isToolTab, normalizeToolTab } from '../../config/toolCatalog';
 import { getHeaderTitle } from './mainTopHeaderTitle';
 import { MainTopHeaderActions } from './MainTopHeaderActions';
 import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from './WindowControlIcons';
@@ -9,7 +9,6 @@ interface MainTopHeaderProps {
     lang: string;
     t: (key: string) => string;
     activeTool: string;
-    config: any;
     switchTool: (tool: string) => void;
     handleAddNewProject: () => void;
     setRefreshStatus: Dispatch<SetStateAction<string>>;
@@ -55,7 +54,6 @@ export const MainTopHeader = ({
     lang,
     t,
     activeTool,
-    config,
     switchTool,
     handleAddNewProject,
     setRefreshStatus,
@@ -68,10 +66,8 @@ export const MainTopHeader = ({
     handleWindowMaximizeToggle,
     windowMaximized,
 }: MainTopHeaderProps) => {
-    const visibleToolOptions = getVisibleToolOptions(config);
-    const toolOptions = visibleToolOptions.some((tool) => tool.id === activeTool)
-        ? visibleToolOptions
-        : [{ id: activeTool, name: getToolLabel(activeTool) }, ...visibleToolOptions];
+    const safeActiveTool = normalizeToolTab(activeTool);
+    const toolOptions = getAllToolOptions();
     const showToolSwitcher = isToolTab(navTab);
     return (
     <div className="top-header" style={{ '--wails-draggable': 'drag' } as any} onDoubleClick={() => handleWindowMaximizeToggle()}>
@@ -80,7 +76,7 @@ export const MainTopHeader = ({
                 {showToolSwitcher ? (
                     <select
                         className="top-header-tool-select"
-                        value={activeTool}
+                        value={safeActiveTool}
                         aria-label={lang === 'en' ? 'Coding tool' : '\u7f16\u7a0b\u5de5\u5177'}
                         onMouseDown={(event) => event.stopPropagation()}
                         onClick={(event) => event.stopPropagation()}
@@ -98,7 +94,7 @@ export const MainTopHeader = ({
                     navTab={navTab}
                     lang={lang}
                     t={t}
-                    activeTool={activeTool}
+                    activeTool={safeActiveTool}
                     switchTool={switchTool}
                     handleAddNewProject={handleAddNewProject}
                     setRefreshStatus={setRefreshStatus}

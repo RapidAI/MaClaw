@@ -111,7 +111,6 @@ func (r *SessionContextResolver) ResolveTool(projectPath, taskDescription string
 		case fileExists(filepath.Join(projectPath, "package.json")):
 			candidates = []recommendation{
 				{"claude", "Node.js 项目推荐使用 Claude"},
-				{"cursor", "Node.js 项目推荐使用 Cursor"},
 			}
 		case fileExists(filepath.Join(projectPath, "requirements.txt")) || fileExists(filepath.Join(projectPath, "setup.py")):
 			candidates = []recommendation{
@@ -136,7 +135,7 @@ func (r *SessionContextResolver) ResolveTool(projectPath, taskDescription string
 	}
 
 	// Fallback: try any installed tool from the catalog
-	fallbackOrder := []string{"claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "iflow", "kilo"}
+	fallbackOrder := []string{"claude", "codex", "opencode", "codebuddy", "iflow", "kilo"}
 	for _, name := range fallbackOrder {
 		status := toolManager.GetToolStatus(name)
 		if status.Installed && strings.TrimSpace(status.Path) != "" {

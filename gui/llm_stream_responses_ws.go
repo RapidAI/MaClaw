@@ -64,6 +64,17 @@ func buildResponsesWSFrame(
 	return json.Marshal(frame)
 }
 
+func buildResponsesWSHeaders(cfg corelib.MaclawLLMConfig, wsURL string) http.Header {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+cfg.Key)
+	headers.Set("User-Agent", cfg.UserAgent())
+	headers.Set("originator", "codex_cli_rs")
+	if corelib.IsCodeGenURL(wsURL) {
+		headers.Set(corelib.CodeGenClientNameHeader, corelib.NormalizeCodeGenClientName(cfg.UserAgent()))
+	}
+	return headers
+}
+
 // doResponsesWSLLMRequestStream streams an LLM response over WebSocket using
 // the OpenAI Responses API WebSocket transport. The event types and accumulator
 // logic mirror the SSE path in doResponsesAPILLMRequestStream.
@@ -97,10 +108,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 		HandshakeTimeout: time.Duration(cfg.EffectiveTimeoutSec()) * time.Second,
 		TLSClientConfig:  tlsConfig,
 	}
-	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+cfg.Key)
-	headers.Set("User-Agent", cfg.UserAgent())
-	headers.Set("originator", "codex_cli_rs")
+	headers := buildResponsesWSHeaders(cfg, wsURL)
 	// Codex subscription headers for chatgpt.com/backend-api
 	if llm.IsCodexSubscriptionEndpoint(cfg.URL) {
 		headers.Set("OpenAI-Beta", "responses_websockets=2026-02-06")

@@ -38,6 +38,53 @@ func TestInstallSkillHub_AutoRunAcceptsWaitSeconds(t *testing.T) {
 	}
 }
 
+func TestNormalizeSkillRunWaitSeconds_AllowsFastSnapshot(t *testing.T) {
+	if got := normalizeSkillRunWaitSeconds(nil); got != 2*time.Second {
+		t.Fatalf("expected default wait to stay 2s, got %v", got)
+	}
+	if got := normalizeSkillRunWaitSeconds(float64(0.01)); got != 100*time.Millisecond {
+		t.Fatalf("expected tiny explicit wait to clamp to 100ms, got %v", got)
+	}
+	if got := normalizeSkillRunWaitSeconds(float64(0)); got != 0 {
+		t.Fatalf("expected explicit zero wait to return immediately, got %v", got)
+	}
+}
+
+func TestSkillRunStatusExpectsSession_OnlySessionActions(t *testing.T) {
+	if skillRunStatusExpectsSession(&SkillRunStatus{Steps: []StepResult{{Action: "bash"}}}) {
+		t.Fatal("bash-only skill must not expect legacy session binding")
+	}
+	if !skillRunStatusExpectsSession(&SkillRunStatus{Steps: []StepResult{{Action: "create_session"}}}) {
+		t.Fatal("create_session skill should expect legacy session binding")
+	}
+}
+
+func TestWaitForSkillRunnerSnapshot_DoesNotExtendForTerminalBashStep(t *testing.T) {
+	runner := NewSkillRunner(&SkillExecutor{})
+	runner.runs["run-bash"] = &skillRun{status: SkillRunStatus{
+		RunID:  "run-bash",
+		Skill:  "bash-skill",
+		Status: skillRunStatusRunning,
+		Steps: []StepResult{{
+			Index:  0,
+			Action: "bash",
+			Status: skillStepStatusSuccess,
+		}},
+	}}
+
+	startedAt := time.Now()
+	status, err := waitForSkillRunnerSnapshot(runner, "run-bash", 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("waitForSkillRunnerSnapshot() error = %v", err)
+	}
+	if status == nil || status.RunID != "run-bash" {
+		t.Fatalf("unexpected status: %#v", status)
+	}
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("bash terminal step wait was extended unexpectedly: %s", elapsed)
+	}
+}
+
 func TestToolRunSkill_WaitSecondsInStructuredOutput(t *testing.T) {
 	app := &App{}
 	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})

@@ -60,6 +60,8 @@ type RemoteHubCenterHub struct {
 
 var remoteEnrollTimeout = remote.EnrollTimeout
 
+const skillMarketAutoLoginRetryDelay = 15 * time.Minute
+
 func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, error) {
 	hubURL = strings.TrimSpace(hubURL)
 	if hubURL == "" {
@@ -183,6 +185,8 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		cfg.RemoteEnabled = true
 		if enrollResult.ViewerToken != "" {
 			cfg.RemoteViewerToken = enrollResult.ViewerToken
+		} else {
+			cfg.RemoteViewerToken = ""
 		}
 		if enrollResult.ClientID != "" && cfg.RemoteClientID == "" {
 			cfg.RemoteClientID = enrollResult.ClientID
@@ -198,6 +202,30 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		return RemoteActivationResult{}, err
 	}
 	log.Printf("[onboarding] ActivateRemote PatchConfig=%s machine_id=%s email=%s", time.Since(persistStart), enrollResult.MachineID, enrollResult.Email)
+
+	// If this Hub account already has MaClaw official service entitlement,
+	// make it the active LLM provider immediately after registration. This
+	// handles re-registration to another Hub where official service is available.
+	if freshCfg, loadErr := a.LoadConfig(); loadErr == nil {
+		if strings.TrimSpace(freshCfg.RemoteViewerToken) != "" {
+			if status, statusErr := a.fetchHubLLMServiceStatusWithTimeout(freshCfg, hubServiceStatusTimeout); statusErr == nil {
+				if _, syncErr := a.syncHubLLMServiceStatusToConfig(status, true); syncErr != nil {
+					log.Printf("[onboarding] ActivateRemote hub_service_sync_failed err=%v", syncErr)
+				}
+			} else {
+				if isHubLLMServiceAuthorizationError(statusErr) {
+					if _, syncErr := a.syncHubLLMServiceStatusToConfig(HubLLMServiceStatus{}, false); syncErr != nil {
+						log.Printf("[onboarding] ActivateRemote hub_service_clear_failed err=%v", syncErr)
+					}
+				}
+				log.Printf("[onboarding] ActivateRemote hub_service_status_failed err=%v", statusErr)
+			}
+		} else if _, syncErr := a.syncHubLLMServiceStatusToConfig(HubLLMServiceStatus{}, false); syncErr != nil {
+			log.Printf("[onboarding] ActivateRemote hub_service_clear_failed err=%v", syncErr)
+		}
+	} else {
+		log.Printf("[onboarding] ActivateRemote hub_service_load_config_failed err=%v", loadErr)
+	}
 
 	// Auto-acquire SkillMarket session token via machine-login.
 	// This allows the user to upload skills immediately after Hub registration
@@ -443,6 +471,11 @@ func (a *App) acquireSkillMarketTokenAfterEnroll(email, machineID, viewerToken s
 	if email == "" || viewerToken == "" {
 		return
 	}
+	if !a.shouldAttemptSkillMarketAutoLogin() {
+		return
+	}
+	defer a.skillMarketAutoLoginRunning.Store(false)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -460,10 +493,12 @@ func (a *App) acquireSkillMarketTokenAfterEnroll(email, machineID, viewerToken s
 	client := remote.NewSkillMarketAuthClient()
 	result, err := client.MachineLogin(ctx, baseURL, email, machineID, viewerToken)
 	if err != nil {
+		a.deferSkillMarketAutoLoginRetry(skillMarketAutoLoginRetryDelay)
 		log.Printf("[skillmarket-auto-login] machine-login failed (non-fatal): %v", err)
 		return
 	}
 	if result.SessionToken == "" {
+		a.deferSkillMarketAutoLoginRetry(skillMarketAutoLoginRetryDelay)
 		log.Printf("[skillmarket-auto-login] empty token returned")
 		return
 	}
@@ -475,5 +510,27 @@ func (a *App) acquireSkillMarketTokenAfterEnroll(email, machineID, viewerToken s
 		log.Printf("[skillmarket-auto-login] save token failed: %v", err)
 		return
 	}
+	a.skillMarketAutoLoginNextAttempt.Store(time.Time{})
 	log.Printf("[skillmarket-auto-login] success email=%s", email)
+}
+
+func (a *App) shouldAttemptSkillMarketAutoLogin() bool {
+	if a == nil {
+		return false
+	}
+	now := time.Now()
+	if next, ok := a.skillMarketAutoLoginNextAttempt.Load().(time.Time); ok && !next.IsZero() && now.Before(next) {
+		return false
+	}
+	return a.skillMarketAutoLoginRunning.CompareAndSwap(false, true)
+}
+
+func (a *App) deferSkillMarketAutoLoginRetry(delay time.Duration) {
+	if a == nil {
+		return
+	}
+	if delay <= 0 {
+		delay = skillMarketAutoLoginRetryDelay
+	}
+	a.skillMarketAutoLoginNextAttempt.Store(time.Now().Add(delay))
 }

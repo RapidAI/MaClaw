@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
@@ -92,6 +93,7 @@ func (c *workflowLLMCaller) DoSimpleLLMRequest(messages []interface{}, timeout t
 	cfg := c.app.GetMaclawLLMConfig()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "workflow-understanding"})
 	result, err := doSimpleLLMRequest(ctx, cfg, messages, c.client, timeout)
 	if err != nil {
 		return "", err

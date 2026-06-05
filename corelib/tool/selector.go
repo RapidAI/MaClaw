@@ -35,16 +35,6 @@ func NewSelector() *Selector {
 			Frameworks: []string{"react", "express", "django", "flask", "nextjs"},
 			TaskTypes:  []string{"generate", "complete", "edit", "fix", "shell", "command", "automate", "script"},
 			Score:      0.85},
-		"gemini": {Name: "gemini",
-			Languages:  []string{"python", "javascript", "typescript", "go", "java", "kotlin", "dart", "swift"},
-			Frameworks: []string{"flutter", "angular", "react", "firebase", "android", "tensorflow"},
-			TaskTypes:  []string{"generate", "analyze", "explain", "multimodal", "review", "test", "document"},
-			Score:      0.85},
-		"cursor": {Name: "cursor",
-			Languages:  []string{"python", "javascript", "typescript", "go", "rust", "java", "cpp", "ruby"},
-			Frameworks: []string{"react", "vue", "svelte", "nextjs", "tailwind", "express"},
-			TaskTypes:  []string{"edit", "generate", "refactor", "fix", "complete", "navigate", "search"},
-			Score:      0.8},
 		"opencode": {Name: "opencode",
 			Languages:  []string{"python", "javascript", "typescript", "go", "java", "rust"},
 			Frameworks: []string{"react", "express", "django", "spring"},
@@ -61,7 +51,7 @@ func NewSelector() *Selector {
 			TaskTypes:  []string{"generate", "edit", "fix", "complete", "refactor", "test"},
 			Score:      0.75},
 	}
-	order := []string{"claude", "codex", "gemini", "cursor", "opencode", "iflow", "kilo"}
+	order := []string{"claude", "codex", "opencode", "iflow", "kilo"}
 
 	s := &Selector{
 		profiles:     profiles,

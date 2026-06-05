@@ -454,7 +454,8 @@ func makeSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(s
 		msgs := []interface{}{
 			map[string]string{"role": "user", "content": compactionHandoffPrompt + text},
 		}
-		result, err := doSimpleLLMRequest(context.Background(), cfg, msgs, httpClient, 30*time.Second)
+		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "conversation-trim-summary"})
+		result, err := doSimpleLLMRequest(ctx, cfg, msgs, httpClient, 30*time.Second)
 		if err != nil || result.Content == "" {
 			return ""
 		}
@@ -979,7 +980,7 @@ func truncateToolResultForTool(toolName, s string) string {
 	budget := limit - sepLen
 
 	switch toolName {
-	case "get_session_output", "send_and_observe", "bash":
+	case "get_session_output", "bash":
 		// Terminal output: tail is more important (recent lines)
 		headLen := budget / 4
 		tailLen := budget - headLen
@@ -1262,102 +1263,8 @@ func stripThinkingTags(s string) string {
 	return strings.TrimSpace(cleaned)
 }
 
-// rolePrefixPattern matches hallucinated role prefixes that some LLMs produce
-// when tool definitions (especially 25+ browser tools) are in context.
-// The LLM confuses tool categories with chat roles and emits lines like
-// "Browser: 伯伯，API 服务器资源状况如下：" in the middle or at the start
-// of an otherwise normal response.
-//
-// Only "Browser:" and "Tool:" are matched — these are the observed
-// hallucination patterns. "Assistant:"/"System:"/"User:" are intentionally
-// excluded because they appear too often in legitimate LLM output (e.g.
-// explaining chat roles, quoting API docs).
-// Allows optional leading whitespace, Markdown block-level markers (>, -, *, digits),
-// and an optional space before the colon.
-// Also matches fullwidth colon (：U+FF1A) which Chinese LLMs sometimes produce.
-var rolePrefixRe = regexp.MustCompile(`(?m)^[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|：)`)
-
-// stripRolePrefixHallucination removes hallucinated role-prefix lines from
-// LLM output. Two cases:
-//
-//  1. Prefix at the very start of the text → strip the prefix token, keep
-//     the rest (the content after "Browser: " is the actual response).
-//  2. Prefix in the middle of the text → the content after the prefix is
-//     almost always a duplicate of the preceding text. Truncate at the
-//     prefix boundary to remove the duplicate.
-//
-// Code blocks (``` fenced) are excluded from matching to avoid false positives
-// on lines like "Browser: connected" inside a code sample.
 func stripRolePrefixHallucination(s string) string {
-	if s == "" {
-		return s
-	}
-
-	// Fast path: no known prefix present at all.
-	// Check both ASCII colon (:) and fullwidth colon (：U+FF1A).
-	if !strings.Contains(s, "Browser:") && !strings.Contains(s, "Tool:") &&
-		!strings.Contains(s, "Browser：") && !strings.Contains(s, "Tool：") {
-		return s
-	}
-
-	// Split into code-block-aware segments. We only process segments that
-	// are outside fenced code blocks.
-	type segment struct {
-		text   string
-		isCode bool
-	}
-	var segments []segment
-	rest := s
-	for {
-		idx := strings.Index(rest, "```")
-		if idx < 0 {
-			segments = append(segments, segment{text: rest, isCode: false})
-			break
-		}
-		if idx > 0 {
-			segments = append(segments, segment{text: rest[:idx], isCode: false})
-		}
-		// Find closing ```.
-		closeIdx := strings.Index(rest[idx+3:], "```")
-		if closeIdx < 0 {
-			// Unclosed code block — treat the rest as code.
-			segments = append(segments, segment{text: rest[idx:], isCode: true})
-			break
-		}
-		end := idx + 3 + closeIdx + 3
-		segments = append(segments, segment{text: rest[idx:end], isCode: true})
-		rest = rest[end:]
-	}
-
-	// Scan non-code segments for role prefix.
-	for i, seg := range segments {
-		if seg.isCode {
-			continue
-		}
-		loc := rolePrefixRe.FindStringIndex(seg.text)
-		if loc == nil {
-			continue
-		}
-
-		// Compute absolute offset of the match in the original string.
-		absOffset := 0
-		for j := 0; j < i; j++ {
-			absOffset += len(segments[j].text)
-		}
-		absOffset += loc[0]
-
-		trimmedBefore := strings.TrimSpace(s[:absOffset])
-		if trimmedBefore == "" {
-			// Case 1: prefix at the start — strip the "Browser: " token.
-			// Find the end of the matched prefix (e.g. "Browser: ").
-			prefixEnd := absOffset + loc[1]
-			return strings.TrimSpace(s[prefixEnd:])
-		}
-		// Case 2: prefix in the middle — truncate before it.
-		return strings.TrimSpace(trimmedBefore)
-	}
-
-	return s
+	return agent.StripRolePrefixHallucination(s)
 }
 
 // ---------------------------------------------------------------------------

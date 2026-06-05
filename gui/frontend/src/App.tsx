@@ -5,11 +5,11 @@ import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ForkRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels } from "../wailsjs/go/main/App";
 
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
-import { EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
+import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
 import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
 import { WebSearchConfigPanel } from './components/remote/WebSearchConfigPanel';
 import { SecurityPolicyPanel } from './components/remote/SecurityPolicyPanel';
@@ -25,6 +25,7 @@ import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
+import type { AssistantUpdatePayload } from './components/ai/AssistantUpdateNotice';
 import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
 import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureTabs } from './components/ai/digitalEmployeeFeature';
 import type { HistoryDiscussionSummary } from './components/layout/SidebarHistorySessions';
@@ -33,13 +34,13 @@ import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStor
 import { PetSettingsPanel } from './components/PetSettingsPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { useDialog } from './components/CustomDialog';
-import { buildHubCreditsURL } from './utils/hubCredits';
+import { buildHubCardStoreURL, buildHubCreditsURL } from './utils/hubCredits';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './utils/sidebarProviderSelection';
 import { translations } from './i18n/appTranslations';
 import { ToolConfiguration } from './components/tools/ToolConfiguration';
 import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, type ProviderEndpoint } from './config/providerCatalog';
-import { TOOL_NAMES, getToolLabel, isToolTab } from './config/toolCatalog';
+import { TOOL_NAMES, getToolLabel, isToolTab, normalizeToolTab } from './config/toolCatalog';
 import { getSettingsTabOptions, type SettingsTabId } from './config/settingsTabs';
 import { SettingsTabsRail } from './components/settings/SettingsTabsRail';
 import { GeneralSettingsPanel } from './components/settings/GeneralSettingsPanel';
@@ -87,6 +88,7 @@ import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHu
 
 const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
+const DISMISSED_APP_UPDATE_VERSION_KEY = "maclaw:dismissed-app-update-version";
 
 const unavailableDigitalEmployeeFeatureStatus = { visible: false, reason: 'unavailable' };
 
@@ -217,6 +219,11 @@ function App() {
         };
     }, []);
     const navTabRef = useRef(navTab);
+    const startupNavAppliedRef = useRef(false);
+    const setNavTabNow = useCallback((tab: string) => {
+        navTabRef.current = tab;
+        setNavTab(tab);
+    }, []);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
     const [tutorialContent, setTutorialContent] = useState<string>("");
@@ -235,7 +242,7 @@ function App() {
     const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean } | null>(null);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
-    const [recentProjects, setRecentProjects] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; preview?: string; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
+    const [recentProjects, setRecentProjects] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; preview?: string; tags?: string[]; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
     const recentProjectsRef = useRef(recentProjects);
     recentProjectsRef.current = recentProjects;
     const [status, setStatus] = useState("");
@@ -272,7 +279,7 @@ function App() {
     const [chatFontSize, setChatFontSize] = useState<number>(14);
     const [pendingVEOpen, setPendingVEOpen] = useState<VirtualEmployeeEntry | null>(null);
     const [pendingHistoryDiscussionOpen, setPendingHistoryDiscussionOpen] = useState<HistoryDiscussionSummary | null>(null);
-    const [pendingProjectTabOpen, setPendingProjectTabOpen] = useState<{ projectPath: string; taskTitle: string; initialMessage?: string; autoSend?: boolean } | null>(null);
+    const [pendingProjectTabOpen, setPendingProjectTabOpen] = useState<{ projectPath: string; taskTitle: string; initialMessage?: string; autoSend?: boolean; prepareMode?: 'restore-context' | 'new-agent' } | null>(null);
 
     // --- Favorite Employees state ---
     const [favoriteEmployeeIds, setFavoriteEmployeeIds] = useState<string[]>([]);
@@ -419,10 +426,8 @@ function App() {
         setFavoriteEmployeeIds(normalized);
         setFavoriteEmployeeNames(normalizedNames);
         try {
-            const latest = await callBackend(() => LoadConfig());
-            const updated = new main.AppConfig({ ...latest, favorite_employees: normalized, favorite_employee_names: normalizedNames } as any);
-            await callBackend(() => SaveConfig(updated));
-            setConfig(updated);
+            const updated = await callBackend(() => PatchConfigFields({ favorite_employees: normalized, favorite_employee_names: normalizedNames }));
+            setConfig(new main.AppConfig(updated));
         } catch (error) {
             if (options?.throwOnError) throw error;
         }
@@ -595,11 +600,11 @@ function App() {
     const [showInstallLog, setShowInstallLog] = useState(false);
     const [showUpdateModal, setShowUpdateModal] = useState(false);
     const [updateResult, setUpdateResult] = useState<any>(null);
+    const [appUpdateAvailable, setAppUpdateAvailable] = useState<AssistantUpdatePayload | null>(null);
     const [isDownloading, setIsDownloading] = useState(false);
     const [downloadProgress, setDownloadProgress] = useState(0);
     const [downloadError, setDownloadError] = useState("");
     const [installerPath, setInstallerPath] = useState("");
-    const [isStartupUpdateCheck, setIsStartupUpdateCheck] = useState(false);
     const isWindows = /window/i.test(navigator.userAgent);
     const [hasWindowsTerminal, setHasWindowsTerminal] = useState(false);
     const [lang, setLang] = useState("en");
@@ -724,7 +729,7 @@ function App() {
         try {
             await callBackend(() => RespondDigitalEmployeeSensitiveRequest(request.request_id, decision));
         } catch (err: any) {
-            showToastMessage(err?.message || String(err || localizeText('Failed to respond', '响应失败', '回應失敗')));
+            showToastMessage(err?.message || String(err || localizeText('Failed to respond', '鍝嶅簲澶辫触', '鍥炴噳澶辨晽')));
         }
     }, [sensitivePermissionRequest]);
 
@@ -774,6 +779,24 @@ function App() {
             }
         });
     };
+
+    const handleOpenAppUpdate = useCallback(() => {
+        if (!appUpdateAvailable) return;
+        setUpdateResult(appUpdateAvailable);
+        setShowUpdateModal(true);
+    }, [appUpdateAvailable]);
+
+    const handleDismissAppUpdate = useCallback((latestVersion: string) => {
+        const normalizedVersion = String(latestVersion || "").trim();
+        if (normalizedVersion) {
+            try {
+                window.localStorage.setItem(DISMISSED_APP_UPDATE_VERSION_KEY, normalizedVersion);
+            } catch {
+                // Ignore storage failures; clearing in-memory notice still honors this click.
+            }
+        }
+        setAppUpdateAvailable(null);
+    }, []);
 
     const handleDownload = async () => {
         if (!updateResult) return;
@@ -977,6 +1000,20 @@ function App() {
             }
         });
 
+        safeEventsOn(EVENT_APP_UPDATE_AVAILABLE, (result: AssistantUpdatePayload) => {
+            const payload = result as AssistantUpdatePayload & Record<string, unknown>;
+            if (!(payload.has_update || payload.HasUpdate)) return;
+            const latestVersion = String(payload.latest_version || payload.LatestVersion || "").trim();
+            if (latestVersion) {
+                try {
+                    if (window.localStorage.getItem(DISMISSED_APP_UPDATE_VERSION_KEY) === latestVersion) return;
+                } catch {
+                    // localStorage may be unavailable in some embedded/dev contexts.
+                }
+            }
+            setAppUpdateAvailable({ ...result, has_update: true, latest_version: latestVersion });
+        });
+
         void callBackend(() => CheckEnvironment(false)); // Start checks
 
         // Load environment check interval and check if due
@@ -1057,13 +1094,14 @@ function App() {
             }
             if (cfg) {
                 // Both modes default to AI assistant panel on startup
-                setNavTab("ai");
+                if (!startupNavAppliedRef.current) {
+                    startupNavAppliedRef.current = true;
+                    if (navTabRef.current === "ai") setNavTabNow("ai");
+                }
 
                 // Keep track of the last active tool for settings/launch logic
-                const lastActiveTool = cfg.active_tool || "claude";
-                if (isToolTab(lastActiveTool)) {
-                    setActiveTool(lastActiveTool);
-                }
+                const lastActiveTool = normalizeToolTab(cfg.active_tool);
+                setActiveTool(lastActiveTool);
 
                 callBackend(() => ReadBBS()).then(content => setBbsContent(content)).catch(err => console.error(err));
 
@@ -1098,7 +1136,7 @@ function App() {
         });
 
         // Listen for external config changes (e.g. from Tray)
-        const handleConfigChange = (cfg: main.AppConfig) => {
+        const applyConfigChange = (cfg: main.AppConfig) => {
             setConfig(cfg);
             callBackend(() => GetUIZoomFactor()).then((z) => {
                 if (z > 0) {
@@ -1110,21 +1148,24 @@ function App() {
                     setChatFontSize(s);
                 }
             }).catch(() => {});
-            // Sync with tray menu changes, but don't yank the user away from
-            // the AI assistant panel.  'ai' is never persisted as active_tool,
-            // so a config-changed event would always overwrite it.
-            if (navTabRef.current !== 'ai') {
-                const tool = cfg.active_tool || "ai";
-                setNavTab(tool);
-                if (tool === 'claude' || tool === 'gemini' || tool === 'codex' || tool === 'opencode' || tool === 'codebuddy' || tool === 'cursor' || tool === 'iflow' || tool === 'kilo') {
-                    setActiveTool(tool);
-                    const toolCfg = (cfg as any)[tool];
-                    if (toolCfg && toolCfg.models) {
-                        const idx = toolCfg.models.findIndex((m: any) => m.model_name === toolCfg.current_model);
-                        if (idx !== -1) setActiveTab(idx);
-                    }
-                }
+            const tool = normalizeToolTab(cfg.active_tool);
+            setActiveTool(tool);
+            const toolCfg = (cfg as any)[tool];
+            if (toolCfg && toolCfg.models) {
+                const idx = toolCfg.models.findIndex((m: any) => m.model_name === toolCfg.current_model);
+                if (idx !== -1) setActiveTab(idx);
             }
+            // Config refreshes are frequent background events; they must not
+            // navigate away from the user's current page.
+        };
+        const handleConfigChange = (cfg?: main.AppConfig) => {
+            if (cfg) {
+                applyConfigChange(cfg);
+                return;
+            }
+            void callBackend(() => LoadConfig()).then(applyConfigChange).catch((err) => {
+                console.warn('Failed to reload config after config event:', err);
+            });
         };
         safeEventsOn("config-changed", handleConfigChange);
         safeEventsOn("config-updated", handleConfigChange);
@@ -1215,6 +1256,7 @@ function App() {
             safeEventsOff("env-log");
             safeEventsOff("env-check-done");
             safeEventsOff("download-progress");
+            safeEventsOff(EVENT_APP_UPDATE_AVAILABLE);
             safeEventsOff("config-changed");
             safeEventsOff("config-updated");
             safeEventsOff("qqbot-status-changed");
@@ -1305,12 +1347,12 @@ function App() {
         if (config) {
             const newConfig = new main.AppConfig({ ...config, language: newLang });
             setConfig(newConfig);
-            void callBackend(() => SaveConfig(newConfig));
+            void callBackend(() => PatchConfigFields({ language: newLang })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save language:', err));
         }
     };
 
     const switchTool = (tool: string) => {
-                setNavTab(tool);
+        setNavTabNow(tool);
         setToolDropdownOpen(false);
         if (isToolTab(tool)) {
             setActiveTool(tool);
@@ -1335,10 +1377,10 @@ function App() {
 
         if (config) {
             // Don't persist 'ai' as active_tool; it's a UI nav state, not a coding tool
-            if (tool !== 'ai') {
+            if (isToolTab(tool)) {
                 const newConfig = new main.AppConfig({ ...config, active_tool: tool });
                 setConfig(newConfig);
-                void callBackend(() => SaveConfig(newConfig));
+                void callBackend(() => PatchConfigFields({ active_tool: tool })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save active tool:', err));
             }
 
             const toolCfg = (config as any)[tool];
@@ -1440,23 +1482,43 @@ function App() {
             || config.projects.find((p: any) => p.id === config.current_project)
             || config.projects[0];
     }, [config, selectedProjectForLaunch]);
-    const updateResolvedLaunchProject = (updater: (project: any) => any) => {
-        if (!config?.projects || !resolvedLaunchProject) return;
-        const newProjects = config.projects.map((project: any) =>
-            project.id === resolvedLaunchProject.id ? updater(project) : project
-        );
-        const newConfig = new main.AppConfig({ ...config, projects: newProjects });
-        setConfig(newConfig);
-        void callBackend(() => SaveConfig(newConfig));
-    };
-    const getSelectedProjectForRemote = () => resolvedLaunchProject?.path || "";
     const launchProjectSelectOptions = useMemo(() => {
+        if (normalizedLaunchProjectKeyword.length > 0) return launchProjectOptions;
         if (!resolvedLaunchProject) return launchProjectOptions;
         if (launchProjectOptions.some((p: any) => p.id === resolvedLaunchProject.id)) {
             return launchProjectOptions;
         }
         return [resolvedLaunchProject, ...launchProjectOptions];
-    }, [launchProjectOptions, resolvedLaunchProject]);
+    }, [launchProjectOptions, normalizedLaunchProjectKeyword, resolvedLaunchProject]);
+    const launchProjectSelectValue = useMemo(() => {
+        if (!resolvedLaunchProject) return launchProjectSelectOptions[0]?.id || "";
+        return launchProjectSelectOptions.some((p: any) => p.id === resolvedLaunchProject.id)
+            ? resolvedLaunchProject.id
+            : launchProjectSelectOptions[0]?.id || "";
+    }, [launchProjectSelectOptions, resolvedLaunchProject]);
+    const activeLaunchProject = useMemo(() => (
+        launchProjectSelectOptions.find((p: any) => p.id === launchProjectSelectValue) || null
+    ), [launchProjectSelectOptions, launchProjectSelectValue]);
+    const launchPanelProject = activeLaunchProject || resolvedLaunchProject;
+    const hasSelectableLaunchProject = !!activeLaunchProject;
+    const updateResolvedLaunchProject = (updater: (project: any) => any) => {
+        if (!config?.projects || !launchPanelProject) return;
+        const newProjects = config.projects.map((project: any) =>
+            project.id === launchPanelProject.id ? updater(project) : project
+        );
+        const newConfig = new main.AppConfig({ ...config, projects: newProjects });
+        setConfig(newConfig);
+        void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save launch project:', err));
+    };
+    useEffect(() => {
+        if (launchProjectSelectOptions.length === 0) return;
+        const nextId = launchProjectSelectOptions[0]?.id || "";
+        if (!nextId) return;
+        if (resolvedLaunchProject && launchProjectSelectOptions.some((p: any) => p.id === resolvedLaunchProject.id)) return;
+        if (selectedProjectForLaunch === nextId) return;
+        setSelectedProjectForLaunch(nextId);
+    }, [launchProjectSelectOptions, resolvedLaunchProject, selectedProjectForLaunch]);
+    const getSelectedProjectForRemote = () => activeLaunchProject?.path || "";
     const normalizeIssueItems = (items: any): string[] => {
         if (!Array.isArray(items)) return [];
         return items.map((item: any) => {
@@ -1570,13 +1632,13 @@ function App() {
 
     const handleOpenExperienceTrace = useCallback((focus?: string) => {
         setMemoryTraceFocus((prev) => ({ value: String(focus || "").trim(), seq: prev.seq + 1 }));
-        setNavTab('settings');
+        setNavTabNow('settings');
         setSettingsTab('memory');
     }, []);
 
     useEffect(() => {
         const openPetSettings = () => {
-            setNavTab('settings');
+            setNavTabNow('settings');
             setSettingsTab('pet');
         };
         const unsubscribe = safeEventsOn('open-pet-settings', openPetSettings);
@@ -1622,32 +1684,38 @@ function App() {
         const refresh = () => {
             if (navTabRef.current === 'ai') refreshRecentProjects();
         };
-        safeEventsOn(EVENT_PROJECT_INDEX_CHANGED, refresh);
-        safeEventsOn(EVENT_TASKS_CHANGED, refresh);
+        const offProjectIndexChanged = safeEventsOn(EVENT_PROJECT_INDEX_CHANGED, refresh);
+        const offTasksChanged = safeEventsOn(EVENT_TASKS_CHANGED, refresh);
         return () => {
-            safeEventsOff(EVENT_PROJECT_INDEX_CHANGED);
-            safeEventsOff(EVENT_TASKS_CHANGED);
+            if (typeof offProjectIndexChanged === 'function') offProjectIndexChanged(); else safeEventsOff(EVENT_PROJECT_INDEX_CHANGED);
+            if (typeof offTasksChanged === 'function') offTasksChanged(); else safeEventsOff(EVENT_TASKS_CHANGED);
         };
     }, [refreshRecentProjects]);
 
     const resumeRecentProject = useCallback(async (projectPath: string) => {
+        const startedAt = performance.now();
         try {
             switchTool('ai');
-            // Find the task title from recentProjects for the tab label
             const proj = recentProjectsRef.current.find(p => p.project_path === projectPath);
-            const title = proj?.name || projectPath.split(/[\\/]/).pop() || projectPath;
-            // Open (or activate) the project tab. If the tab is new, autoSend
-            // sends the task title as the first message. If the tab already has
-            // conversation history (duplicate), it just activates without sending.
+            console.info("[recent_tasks] open requested", { sourcePath: projectPath });
+            const forked = await ForkRecentTask(projectPath);
+            const forkedPath = forked?.project_path || "";
+            if (!forkedPath) {
+                console.warn("[recent_tasks] open failed", { sourcePath: projectPath, elapsedMs: Math.round(performance.now() - startedAt) });
+                return;
+            }
+            const title = forked?.name || proj?.name || projectPath.split(/[\\/]/).pop() || projectPath;
+            console.info("[recent_tasks] fork ready", { sourcePath: projectPath, forkedPath, title, autoSend: false, elapsedMs: Math.round(performance.now() - startedAt) });
             setPendingProjectTabOpen({
-                projectPath,
+                projectPath: forkedPath,
                 taskTitle: title,
-                autoSend: true,
+                autoSend: false,
             });
+            refreshRecentProjects();
         } catch (error) {
             console.error("resumeRecentProject failed:", error);
         }
-    }, [switchTool]);
+    }, [refreshRecentProjects, switchTool]);
 
     const createRecentTask = useCallback(async (name: string) => {
         const taskName = name.trim();
@@ -1664,6 +1732,7 @@ function App() {
             setPendingProjectTabOpen({
                 projectPath: created.project_path,
                 taskTitle: created.name || taskName,
+                prepareMode: 'new-agent',
                 autoSend: true,
             });
             refreshRecentProjects();
@@ -1767,9 +1836,29 @@ function App() {
     }, [config, lang, showAlert]);
 
     const openServiceRedeemPage = useCallback(() => {
-        setNavTab('settings');
+        setNavTabNow('settings');
         setSettingsTab('redeem');
     }, []);
+
+    const openLLMSettingsPage = useCallback(() => {
+        setNavTabNow('settings');
+        setSettingsTab('llm');
+    }, []);
+
+    const openHubCardStorePage = useCallback(async () => {
+        try {
+            const freshConfig = await callBackend(() => LoadConfig());
+            const sourceConfig = freshConfig || config;
+            const url = buildHubCardStoreURL((sourceConfig as any)?.remote_hub_url, (sourceConfig as any)?.remote_tenant_id, (sourceConfig as any)?.remote_email, (sourceConfig as any)?.remote_viewer_token);
+            if (url) {
+                safeBrowserOpenURL(url);
+                return;
+            }
+            showAlert(lang === 'zh-Hans' ? 'Hub \u5730\u5740\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00\u670d\u52a1\u5361\u5546\u5e97\u3002' : lang === 'zh-Hant' ? 'Hub \u4f4d\u5740\u7f3a\u5931\uff0c\u66ab\u6642\u7121\u6cd5\u6253\u958b\u670d\u52d9\u5361\u5546\u5e97\u3002' : 'Hub URL is missing, so the card store cannot be opened.');
+        } catch (error) {
+            showAlert(String(error || (lang === 'zh-Hans' ? '\u6253\u5f00\u670d\u52a1\u5361\u5546\u5e97\u5931\u8d25' : lang === 'zh-Hant' ? '\u6253\u958b\u670d\u52d9\u5361\u5546\u5e97\u5931\u6557' : 'Failed to open card store')));
+        }
+    }, [config, lang, showAlert]);
 
     const formatSidebarCredit = useCallback((value: number) => {
         if (!Number.isFinite(value)) return '0';
@@ -2144,8 +2233,8 @@ function App() {
             if (p.includes("aigocode")) return "claude-3-5-sonnet-20241022";
             if (p.includes("aicodemirror")) return "Haiku";
             if (p.includes("coderelay")) return "claude-3-5-sonnet-20241022";
-            if (p.includes("摩尔线程")) return "GLM-4.7";
-            if (p.includes("快手")) return "kat-coder-pro-v1";
+            if (p.includes("鎽╁皵绾跨▼")) return "GLM-4.7";
+            if (p.includes("蹇墜")) return "kat-coder-pro-v1";
         } else if (tool === "gemini") {
             return "gemini-2.0-flash-exp";
         } else if (tool === "codex") {
@@ -2161,8 +2250,8 @@ function App() {
             if (p.includes("doubao")) return "doubao-seed-code-preview-latest";
             if (p.includes("kimi")) return "kimi-for-coding";
             if (p.includes("minimax")) return "MiniMax-M2.1";
-            if (p.includes("摩尔线程")) return "GLM-4.7";
-            if (p.includes("快手")) return "kat-coder-pro-v1";
+            if (p.includes("鎽╁皵绾跨▼")) return "GLM-4.7";
+            if (p.includes("蹇墜")) return "kat-coder-pro-v1";
         }
         return "";
     };
@@ -2205,7 +2294,8 @@ function App() {
         if (isCodexProviderSwitch) {
             setCodexConfigUpdateCount((count) => count + 1);
         }
-        callBackend(() => SaveConfig(newConfig)).then(() => {
+        callBackend(() => PatchConfigFields({ tool_current_model: { tool: activeTool, model: modelName } })).then((saved) => {
+            setConfig(new main.AppConfig(saved));
             setStatus(t("switched"));
             setTimeout(() => setStatus(""), 1500);
         }).catch(err => {
@@ -2229,7 +2319,7 @@ function App() {
         setSelectedProjectForLaunch(projectId);
         setStatus(t("projectSwitched"));
         setTimeout(() => setStatus(""), 1500);
-        void callBackend(() => SaveConfig(newConfig));
+        void callBackend(() => PatchConfigFields({ current_project: projectId })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save current project:', err));
     };
 
     const handleSelectDir = () => {
@@ -2247,7 +2337,7 @@ function App() {
                 setConfig(newConfig);
                 setStatus(t("dirUpdated"));
                 setTimeout(() => setStatus(""), 1500);
-                void callBackend(() => SaveConfig(newConfig));
+                void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save project directory:', err));
             }
         });
     };
@@ -2265,7 +2355,7 @@ function App() {
         setConfig(newConfig);
         setStatus(t("saved"));
         setTimeout(() => setStatus(""), 1500);
-        void callBackend(() => SaveConfig(newConfig));
+        void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save project yolo mode:', err));
     };
 
     const openRemoteActivationModal = (toolName: string) => {
@@ -2327,14 +2417,20 @@ function App() {
             remote_enabled: true,
         });
         setConfig(newConfig);
-        await callBackend(() => SaveConfig(newConfig));
+        const saved = await callBackend(() => PatchConfigFields({
+            remote_hub_url: hubURL,
+            remote_hubcenter_url: hubCenterURL,
+            remote_email: email,
+            remote_enabled: true,
+        }));
+        setConfig(new main.AppConfig(saved));
         const activated = await activateRemoteWithEmail();
         if (!activated) {
             return;
         }
         setShowRemoteActivationModal(false);
         if (pendingRemoteLaunchTool) {
-            setStatus(lang === 'zh-Hans' ? '正在启动远程...' : lang === 'zh-Hant' ? '正在啟動遠端...' : 'Starting remotely...');
+            setStatus(lang === 'zh-Hans' ? '姝ｅ湪鍚姩杩滅▼...' : lang === 'zh-Hant' ? '姝ｅ湪鍟熷嫊閬犵...' : 'Starting remotely...');
             setLaunchingTool(pendingRemoteLaunchTool);
             await quickStartRemoteSession(pendingRemoteLaunchTool as any);
             setPendingRemoteLaunchTool("");
@@ -2366,7 +2462,7 @@ function App() {
         const newProjects = [...config.projects, newProject];
         const newConfig = new main.AppConfig({ ...config, projects: newProjects });
         setConfig(newConfig);
-        void callBackend(() => SaveConfig(newConfig));
+        void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save new project:', err));
         setStatus(t("saved"));
         setTimeout(() => setStatus(""), 1500);
     };
@@ -2600,6 +2696,8 @@ ${instruction}`;
                 showHubCreditAction={showHubCreditAction}
                 openHubCreditsPage={openHubCreditsPage}
                 openServiceRedeemPage={openServiceRedeemPage}
+                openLLMSettingsPage={openLLMSettingsPage}
+                openHubCardStorePage={openHubCardStorePage}
                 codingAgentProgress={codingAgentProgress}
                 codingAgentTurnSnapshot={codingAgentTurnSnapshot}
                 handleRecentTasksResizeStart={handleRecentTasksResizeStart}
@@ -2637,6 +2735,9 @@ ${instruction}`;
                             onPendingHistoryDiscussionOpenHandled={() => setPendingHistoryDiscussionOpen(null)}
                             pendingProjectTabOpen={pendingProjectTabOpen}
                             onPendingProjectTabOpenHandled={() => setPendingProjectTabOpen(null)}
+                            appUpdateAvailable={appUpdateAvailable}
+                            onOpenAppUpdate={handleOpenAppUpdate}
+                            onDismissAppUpdate={handleDismissAppUpdate}
                             state={{
                                 ...aiAssistant.panelState,
                                 selectedFilePath: aiAssistant.selectedFilePaths?.[0] ?? "",
@@ -2663,7 +2764,6 @@ ${instruction}`;
                     lang={lang}
                     t={t}
                     activeTool={activeTool}
-                    config={config}
                     switchTool={switchTool}
                     handleAddNewProject={handleAddNewProject}
                     setRefreshStatus={setRefreshStatus}
@@ -2804,7 +2904,7 @@ ${instruction}`;
                                     config={config}
                                     lang={lang}
                                     setConfig={setConfig}
-                                    saveConfig={SaveConfig}
+                                    patchConfig={(patch) => callBackend(() => PatchConfigFields(patch))}
                                 />
                             </div>
 
@@ -2966,7 +3066,6 @@ ${instruction}`;
                                 CheckUpdate(APP_VERSION).then((res: any) => {
                                     console.log("CheckUpdate result:", res);
                                     setUpdateResult(res);
-                                    setIsStartupUpdateCheck(false);
                                     setShowUpdateModal(true);
                                     setStatus("");
                                 }).catch((err: any) => {
@@ -2974,10 +3073,9 @@ ${instruction}`;
                                     setStatus((lang === 'zh-Hans' ? '检查更新失败：' : lang === 'zh-Hant' ? '檢查更新失敗：' : 'Update check failed: ') + err);
                                     setUpdateResult({
                                         has_update: false,
-                                        latest_version: lang === 'zh-Hans' ? "获取失败" : lang === 'zh-Hant' ? "取得失敗" : "Fetch failed",
+                                        latest_version: lang === 'zh-Hans' ? "鑾峰彇澶辫触" : lang === 'zh-Hant' ? "鍙栧緱澶辨晽" : "Fetch failed",
                                         release_url: ""
                                     });
-                                    setIsStartupUpdateCheck(false);
                                     setShowUpdateModal(true);
                                 });
                             }}
@@ -3011,7 +3109,7 @@ ${instruction}`;
                                     <label className="coding-launch-check">
                                         <input
                                             type="checkbox"
-                                            checked={resolvedLaunchProject?.yolo_mode || false}
+                                            checked={launchPanelProject?.yolo_mode || false}
                                             onChange={(e) => {
                                                 updateResolvedLaunchProject((project) => {
                                                     const updated = { ...project, yolo_mode: e.target.checked };
@@ -3023,75 +3121,37 @@ ${instruction}`;
                                             }}
                                         />
                                         <span>{t("yoloModeLabel")}</span>
-                                        {resolvedLaunchProject?.yolo_mode && (
+                                        {launchPanelProject?.yolo_mode && (
                                             <span className="coding-launch-danger-badge">
                                                 {t("danger")}
                                             </span>
                                         )}
                                     </label>
                                 )}
-                                {activeTool === 'claude' && (
-                                    <label className="coding-launch-check">
-                                        <input
-                                            type="checkbox"
-                                            checked={resolvedLaunchProject?.team_mode || false}
-                                            onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, team_mode: e.target.checked }))}
-                                        />
-                                        <span>{t("teamModeLabel")}</span>
-                                    </label>
-                                )}
-                                {!isWindows && (
-                                    <label className="coding-launch-check">
-                                        <input
-                                            type="checkbox"
-                                            checked={resolvedLaunchProject?.use_proxy || false}
-                                            onChange={(e) => {
-                                                if (e.target.checked && !resolvedLaunchProject?.proxy_host && !config?.default_proxy_host) {
-                                                    setShowProxySettings(true);
-                                                    return;
-                                                }
-                                                updateResolvedLaunchProject((project) => ({ ...project, use_proxy: e.target.checked }));
-                                            }}
-                                        />
-                                        <span>{t("proxyMode")}</span>
-                                        <span
-                                            className="coding-launch-inline-action"
-                                            role="button"
-                                            tabIndex={0}
-                                            onClick={(e) => {
-                                                e.preventDefault();
-                                                e.stopPropagation();
-                                                setShowProxySettings(true);
-                                            }}
-                                            onKeyDown={(e) => {
-                                                if (e.key === 'Enter' || e.key === ' ') {
-                                                    e.preventDefault();
-                                                    e.stopPropagation();
-                                                    setShowProxySettings(true);
-                                                }
-                                            }}
-                                            title={t("proxySettings")}
-                                        >
-                                            {lang === 'zh-Hans' ? '设置' : lang === 'zh-Hant' ? '設定' : 'Edit'}
-                                        </span>
-                                    </label>
-                                )}
                                 <label className="coding-launch-check">
                                     <input
                                         type="checkbox"
-                                        checked={resolvedLaunchProject?.admin_mode || false}
-                                        onChange={(e) => {
-                                            updateResolvedLaunchProject((project) => {
-                                                const updated = { ...project, admin_mode: e.target.checked };
-                                                if (!isWindows && e.target.checked) {
-                                                    updated.yolo_mode = false;
-                                                }
-                                                return updated;
-                                            });
-                                        }}
+                                        checked={launchPanelProject?.python_project || false}
+                                        onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, python_project: e.target.checked }))}
                                     />
-                                    <span>{isWindows ? t("adminModeLabel") : t("rootModeLabel")}</span>
+                                    <span>{t("pythonProjectLabel")}</span>
                                 </label>
+                                {launchPanelProject?.python_project && (
+                                    <div className="coding-launch-python-env">
+                                        <span className="coding-launch-python-label">{t("pythonEnvLabel")}:</span>
+                                        <select
+                                            value={launchPanelProject?.python_env || ""}
+                                            onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, python_env: e.target.value }))}
+                                            className="coding-launch-python-select"
+                                        >
+                                            {pythonEnvironments.map((env: any, index: number) => (
+                                                <option key={index} value={env.name}>
+                                                    {env.name} {env.type === 'conda' ? '(Conda)' : ''}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                )}
                             </div>
                             </div>
                             <div className="coding-launch-mode-row">
@@ -3125,39 +3185,75 @@ ${instruction}`;
                                                 openRemoteActivationModal(activeTool);
                                             }
                                         }}
-                                        title={remoteActivationStatus?.activated ? t("remoteActivated") : (lang === 'zh-Hans' ? '点击注册' : lang === 'zh-Hant' ? '點擊註冊' : 'Click to register')}
+                                        title={remoteActivationStatus?.activated ? t("remoteActivated") : (lang === 'zh-Hans' ? '鐐瑰嚮娉ㄥ唽' : lang === 'zh-Hant' ? '榛炴搳瑷诲唺' : 'Click to register')}
                                     >
                                         <span>
                                             {remoteActivationStatus?.activated ? t("remoteActivated") : t("remoteRegister")}
                                         </span>
                                     </div>
                                 )}
+                                {activeTool === 'claude' && (
+                                    <label className="coding-launch-check">
+                                        <input
+                                            type="checkbox"
+                                            checked={launchPanelProject?.team_mode || false}
+                                            onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, team_mode: e.target.checked }))}
+                                        />
+                                        <span>{t("teamModeLabel")}</span>
+                                    </label>
+                                )}
+                                {!isWindows && (
+                                    <label className="coding-launch-check">
+                                        <input
+                                            type="checkbox"
+                                            checked={launchPanelProject?.use_proxy || false}
+                                            onChange={(e) => {
+                                                if (e.target.checked && !launchPanelProject?.proxy_host && !config?.default_proxy_host) {
+                                                    setShowProxySettings(true);
+                                                    return;
+                                                }
+                                                updateResolvedLaunchProject((project) => ({ ...project, use_proxy: e.target.checked }));
+                                            }}
+                                        />
+                                        <span>{t("proxyMode")}</span>
+                                        <span
+                                            className="coding-launch-inline-action"
+                                            role="button"
+                                            tabIndex={0}
+                                            onClick={(e) => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                                setShowProxySettings(true);
+                                            }}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') {
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                    setShowProxySettings(true);
+                                                }
+                                            }}
+                                            title={t("proxySettings")}
+                                        >
+                                            {lang === 'zh-Hans' ? '璁剧疆' : lang === 'zh-Hant' ? '瑷畾' : 'Edit'}
+                                        </span>
+                                    </label>
+                                )}
                                 <label className="coding-launch-check">
                                     <input
                                         type="checkbox"
-                                        checked={resolvedLaunchProject?.python_project || false}
-                                        onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, python_project: e.target.checked }))}
+                                        checked={launchPanelProject?.admin_mode || false}
+                                        onChange={(e) => {
+                                            updateResolvedLaunchProject((project) => {
+                                                const updated = { ...project, admin_mode: e.target.checked };
+                                                if (!isWindows && e.target.checked) {
+                                                    updated.yolo_mode = false;
+                                                }
+                                                return updated;
+                                            });
+                                        }}
                                     />
-                                    <span>{t("pythonProjectLabel")}</span>
+                                    <span>{isWindows ? t("adminModeLabel") : t("rootModeLabel")}</span>
                                 </label>
-                                {resolvedLaunchProject?.python_project && (
-                                    <div className="coding-launch-python-env">
-                                        <span className="coding-launch-python-label">{t("pythonEnvLabel")}:</span>
-                                        <select
-                                            value={resolvedLaunchProject?.python_env || ""}
-                                            onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, python_env: e.target.value }))}
-                                            className="coding-launch-python-select"
-                                        >
-                                            {pythonEnvironments.map((env: any, index: number) => (
-                                                <option key={index} value={env.name}>
-                                                    {env.name} {env.type === 'conda' ? '(Conda)' : ''}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                )}
-                            </div>
-                            <div className="coding-launch-project-row">
                                 <div className="coding-launch-project-main">
                                     <div className="coding-launch-project-picker">
                                         <span className="coding-launch-project-label">{t("project")}</span>
@@ -3171,7 +3267,7 @@ ${instruction}`;
                                             autoComplete="off"
                                         />
                                         <select
-                                            value={resolvedLaunchProject?.id || ""}
+                                            value={launchProjectSelectValue}
                                             onChange={(e) => setSelectedProjectForLaunch(e.target.value)}
                                             className="coding-launch-select"
                                         >
@@ -3196,7 +3292,7 @@ ${instruction}`;
                                 </div>
                                 <button
                                     className="btn-launch coding-launch-button"
-                                    disabled={onDemandInstallingTool === activeTool || backgroundInstallingTool === activeTool || launchingTool === activeTool}
+                                    disabled={onDemandInstallingTool === activeTool || backgroundInstallingTool === activeTool || launchingTool === activeTool || (!hasActiveRemoteSessionForTool && !hasSelectableLaunchProject)}
                                     aria-busy={launchingTool === activeTool || onDemandInstallingTool === activeTool || backgroundInstallingTool === activeTool}
                                     onClick={async () => {
                                         console.log("Launch button clicked. activeTool:", activeTool);
@@ -3207,18 +3303,18 @@ ${instruction}`;
                                             setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
                                             return;
                                         }
-                                        const selectedProj = resolvedLaunchProject;
+                                        const selectedProj = activeLaunchProject;
                                         if (selectedProj && selectedProj.path && selectedProj.path.trim() !== "") {
                                             if (launchRemoteEnabled) {
                                                 if (remoteToolMetadata.length > 0 && !isRemoteCapableActiveTool) {
-                                                    setStatus(localizeText("This tool does not support remote launch", "此工具不支持远程启动", "此工具不支援遠端啟動"));
+                                                    setStatus(localizeText("This tool does not support remote launch", "姝ゅ伐鍏蜂笉鏀寔杩滅▼鍚姩", "姝ゅ伐鍏蜂笉鏀彺閬犵鍟熷嫊"));
                                                     return;
                                                 }
                                                 if (!config?.remote_hub_url?.trim() || !remoteActivationStatus?.activated || !config?.remote_email?.trim()) {
                                                     openRemoteActivationModal(activeTool);
                                                     return;
                                                 }
-                                                setStatus(localizeText("Starting remotely...", "正在启动远程...", "正在啟動遠端..."));
+                                                setStatus(localizeText("Starting remotely...", "姝ｅ湪鍚姩杩滅▼...", "姝ｅ湪鍟熷嫊閬犵..."));
                                                 setLaunchingTool(activeTool);
                                                 try {
                                                     await quickStartRemoteSession(activeTool as any);
@@ -3238,8 +3334,8 @@ ${instruction}`;
                                                     // Tool is being installed in background, just wait
                                                     setStatus(localizeText(
                                                         `${activeTool} is being installed in background, please wait...`,
-                                                        `${activeTool} 正在后台安装，请稍候...`,
-                                                        `${activeTool} 正在背景安裝，請稍候...`,
+                                                        `${activeTool} 姝ｅ湪鍚庡彴瀹夎锛岃绋嶅€?..`,
+                                                        `${activeTool} 姝ｅ湪鑳屾櫙瀹夎锛岃珛绋嶅€?..`,
                                                     ));
                                                     setOnDemandInstallingTool(activeTool);
                                                     try {
@@ -3247,7 +3343,7 @@ ${instruction}`;
                                                         // Refresh tool statuses
                                                         const updatedStatuses = await callBackend(() => CheckToolsStatus());
                                                         setToolStatuses(updatedStatuses);
-                                                        setStatus(localizeText(`${activeTool} installed`, `${activeTool} 已安装`, `${activeTool} 已安裝`));
+                                                        setStatus(localizeText(`${activeTool} installed`, `${activeTool} 安装成功`, `${activeTool} 安裝成功`));
                                                         setOnDemandInstallingTool("");
                                                         // Auto launch
                                                         setTimeout(async () => {
@@ -3371,8 +3467,8 @@ ${instruction}`;
                     backgroundInstallStatus={backgroundInstallStatus}
                     lobsterOffline={lobsterOffline}
                     lobsterHalf={lobsterHalf}
-                    onOpenIMSettings={() => { setNavTab('settings'); setSettingsTab('im'); }}
-                    onOpenLLMSettings={() => { setNavTab('settings'); setSettingsTab('llm'); }}
+                    onOpenIMSettings={() => { setNavTabNow('settings'); setSettingsTab('im'); }}
+                    onOpenLLMSettings={() => { setNavTabNow('settings'); setSettingsTab('llm'); }}
                     codingAgentProgress={codingAgentProgress}
                 />
             </>)}
@@ -3441,7 +3537,6 @@ ${instruction}`;
                     onUpdateResultChange={setUpdateResult}
                     onClose={() => {
                         setShowUpdateModal(false);
-                        setIsStartupUpdateCheck(false);
                         setDownloadError("");
                     }}
                 />
@@ -3498,7 +3593,7 @@ ${instruction}`;
                                                     badge = { tone: 'warning', label: t("bigSpender") };
                                                 } else if (model.is_custom) {
                                                     badge = { tone: 'neutral', label: t("customized") };
-                                                } else if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "chatfire", "coderelay"].some(p => name.includes(p))) {
+                                                } else if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "coderelay"].some(p => name.includes(p))) {
                                                     badge = { tone: 'success', label: t("forward") };
                                                 }
 
@@ -3612,7 +3707,8 @@ ${instruction}`;
                                                     setFetchingModelList(true);
                                                     setFetchedModelList([]);
                                                     try {
-                                                        const models = await FetchProviderModels(url, key, protocol);
+                                                        const userAgent = currentModel.agent_type || currentModel.user_agent || 'openclaw';
+                                                        const models = await FetchProviderModels(url, key, protocol, userAgent);
                                                         if (models && models.length > 0) {
                                                             setFetchedModelList(models.map((m: any) => ({ id: m.id || '', name: m.name || '' })));
                                                         } else {

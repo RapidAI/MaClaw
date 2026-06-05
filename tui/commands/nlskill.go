@@ -325,7 +325,10 @@ func tui_executeStep(step corelib.NLSkillStep, skillDir string) (string, error) 
 		}
 		return tui_executeBashStep(command, step.Params, skillDir)
 
-	case "create_session", "send_input", "call_mcp_tool":
+	case "create_session", "send_and_observe", "control_session":
+		return "", fmt.Errorf("external coding-session action %q is disabled", step.Action)
+
+	case "send_input", "call_mcp_tool":
 		return "", fmt.Errorf("action %q 仅在 GUI 模式下可用", step.Action)
 
 	default:

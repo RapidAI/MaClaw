@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -192,6 +194,18 @@ func (h *IMMessageHandler) runAgentLoopMainIterations(opts agentLoopMainIteratio
 }
 
 func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatchOptions) agentLoopIterationDispatchResult {
+	iterationStartedAt := time.Now()
+	requestID, loopID := "", ""
+	if opts.Context != nil {
+		requestID = opts.Context.Runtime.RequestID
+		loopID = opts.Context.ID
+	}
+	logSlowPhase := func(phase string, startedAt time.Time) {
+		if elapsed := time.Since(startedAt); elapsed >= 500*time.Millisecond {
+			log.Printf("[agent-loop-iter] slow phase=%s owner=%q request_id=%q loop=%q iteration=%d elapsed=%s", phase, opts.UserID, requestID, loopID, opts.Iteration, elapsed.Round(time.Millisecond))
+		}
+	}
+	phaseStartedAt := time.Now()
 	roundPrep := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
 		Context:                 opts.Context,
 		UserID:                  opts.UserID,
@@ -224,6 +238,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		IsDebug:                 opts.RuntimeState.IsDebug,
 		RecordSystemMessages:    opts.RecordSystemMessages,
 	})
+	logSlowPhase("round_prep", phaseStartedAt)
 	*opts.EffectiveMax = roundPrep.EffectiveMax
 	*opts.Conversation = roundPrep.Conversation
 	*opts.Tools = roundPrep.Tools
@@ -239,6 +254,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		opts.Telemetry.PreLLMIterationPrepElapsed += roundPrep.PrepElapsed
 	}
 
+	phaseStartedAt = time.Now()
 	llmDispatch := h.dispatchAgentLoopLLMRound(agentLoopLLMDispatchOptions{
 		Context:             opts.Context,
 		RequestContext:      opts.RequestContext,
@@ -262,6 +278,8 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		OnNewRound:          opts.OnNewRound,
 		InFlightLifecycle:   opts.InFlightLifecycle,
 	})
+	llmElapsed := time.Since(phaseStartedAt)
+	logSlowPhase("llm_round", phaseStartedAt)
 	resp := llmDispatch.Response
 	*opts.Conversation = llmDispatch.Conversation
 	opts.Telemetry.ApplyLLMDispatch(llmDispatch)
@@ -272,6 +290,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		return agentLoopIterationDispatchResult{Response: llmDispatch.Exit}
 	}
 
+	phaseStartedAt = time.Now()
 	postTurn := h.handleAgentLoopPostLLMTurn(agentLoopPostLLMTurnOptions{
 		Context:                       opts.Context,
 		Response:                      resp,
@@ -293,6 +312,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		AttachLLMTelemetry:            opts.AttachLLMTelemetry,
 		AttachPendingVisibleArtifacts: opts.AttachPendingVisibleArtifacts,
 	})
+	logSlowPhase("post_llm", phaseStartedAt)
 	choice := postTurn.Choice
 	msgContent := postTurn.MessageContent
 	*opts.Conversation = postTurn.Conversation
@@ -342,6 +362,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		}
 	}
 
+	phaseStartedAt = time.Now()
 	toolPath := h.handleAgentLoopToolPath(agentLoopToolPathOptions{
 		Context:                    opts.Context,
 		UserID:                     opts.UserID,
@@ -377,12 +398,16 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		AttachLLMTelemetry:         opts.AttachLLMTelemetry,
 		AttachVisibleArtifacts:     opts.AttachPendingVisibleArtifacts,
 	})
+	logSlowPhase("tool_path", phaseStartedAt)
 	*opts.Conversation = toolPath.Conversation
 	*opts.History = toolPath.History
 	opts.RunState.ApplyToolPath(toolPath)
 	opts.Telemetry.ApplyToolPath(toolPath)
 	if toolPath.Response != nil {
 		return agentLoopIterationDispatchResult{Response: toolPath.Response}
+	}
+	if elapsed := time.Since(iterationStartedAt); elapsed >= time.Second {
+		log.Printf("[agent-loop-iter] done owner=%q request_id=%q loop=%q iteration=%d elapsed=%s llm=%s tool=%s", opts.UserID, requestID, loopID, opts.Iteration, elapsed.Round(time.Millisecond), llmElapsed.Round(time.Millisecond), toolPath.ToolExecElapsed.Round(time.Millisecond))
 	}
 	return agentLoopIterationDispatchResult{}
 }

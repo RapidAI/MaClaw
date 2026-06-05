@@ -7,9 +7,11 @@
  * using fast-check for property-based testing.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, waitFor } from "@testing-library/react";
 import fc from "fast-check";
 import { useAITabManager } from "../useAITabManager";
+import { normalizeProjectSessionPath } from "../aiAssistantPanelSessionUtils";
+import { CloseProjectTabSession, CreateProjectTabSession, LoadProjectTabIndex } from "../../../../wailsjs/go/main/App";
 
 vi.mock("../../../../wailsjs/runtime", () => ({
     EventsOn: vi.fn(() => vi.fn()),
@@ -31,6 +33,10 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
     // (loadPersistedProjectTabs reads from localStorage on hook mount)
     beforeEach(() => {
         localStorage.clear();
+        vi.clearAllMocks();
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([]);
+        vi.mocked(CloseProjectTabSession).mockResolvedValue(undefined as any);
+        vi.mocked(CreateProjectTabSession).mockResolvedValue("");
     });
     /**
      * Property 1: Tab creation produces correct structure
@@ -52,7 +58,7 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
 
                     expect(tab).not.toBeNull();
                     expect(tab!.type).toBe("project");
-                    expect(tab!.projectPath).toBe(projectPath);
+                    expect(tab!.projectPath).toBe(normalizeProjectSessionPath(projectPath));
                     expect(tab!.closable).toBe(true);
                     expect(tab!.title).toBe(taskTitle);
                     expect(tab!.id).toMatch(/^proj-[0-9a-f]{12}$/);
@@ -119,8 +125,9 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
                     expect(tab1!.id).toBe(tab2!.id);
 
                     // No duplicates in tab list
+                    const normalizedPath = normalizeProjectSessionPath(projectPath);
                     const projectTabs = result.current.tabState.tabs.filter(
-                        t => t.type === "project" && t.projectPath === projectPath
+                        t => t.type === "project" && t.projectPath === normalizedPath
                     );
                     expect(projectTabs.length).toBe(1);
                 }),
@@ -324,5 +331,101 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
                 { numRuns: 50 }
             );
         });
+    });
+
+    it("prunes localStorage-restored project tabs absent from the backend active index", async () => {
+        localStorage.setItem("ai_assistant_project_tabs", JSON.stringify([
+            { id: "proj-stale", title: "Stale task", projectPath: "D:/tasks/stale" },
+            { id: "proj-active", title: "Active task", projectPath: "D:/tasks/active" },
+        ]));
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([
+            { id: "proj-active", type: "project", title: "Active task", projectPath: "D:/tasks/active", lastActiveAt: 1, archived: false },
+        ] as any);
+
+        const { result } = renderHook(() => useAITabManager());
+        expect(result.current.tabState.tabs.some(t => t.projectPath === "D:/tasks/stale")).toBe(true);
+
+        await waitFor(() => {
+            expect(result.current.tabState.tabs.some(t => t.projectPath === "D:/tasks/stale")).toBe(false);
+            expect(result.current.tabState.tabs.some(t => t.projectPath === "D:/tasks/active")).toBe(true);
+        });
+    });
+
+    it("updates a localStorage-restored project tab title from the backend index", async () => {
+        localStorage.setItem("ai_assistant_project_tabs", JSON.stringify([
+            { id: "proj-weather", title: "Task 17804916...", projectPath: "D:/tasks/weather-fork" },
+        ]));
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([
+            { id: "proj-weather", type: "project", title: "北京天气", projectPath: "D:/tasks/weather-fork", lastActiveAt: 1, archived: false },
+        ] as any);
+
+        const { result } = renderHook(() => useAITabManager());
+        expect(result.current.tabState.tabs.find(t => t.projectPath === "D:/tasks/weather-fork")?.title).toBe("Task 17804916...");
+
+        await waitFor(() => {
+            expect(result.current.tabState.tabs.find(t => t.projectPath === "D:/tasks/weather-fork")?.title).toBe("北京天气");
+        });
+    });
+
+    it("keeps a freshly opened project tab when backend restore resolves late", async () => {
+        let resolveIndex!: (entries: any[]) => void;
+        vi.mocked(LoadProjectTabIndex).mockReturnValueOnce(new Promise(resolve => {
+            resolveIndex = resolve;
+        }) as any);
+
+        const { result } = renderHook(() => useAITabManager());
+
+        act(() => {
+            result.current.createProjectTab("D:/tasks/fresh-open", "Fresh open");
+        });
+        expect(result.current.tabState.tabs.some(t => t.projectPath === "D:/tasks/fresh-open")).toBe(true);
+
+        await act(async () => {
+            resolveIndex([]);
+        });
+
+        await waitFor(() => {
+            expect(result.current.tabState.tabs.some(t => t.projectPath === "D:/tasks/fresh-open")).toBe(true);
+            expect(result.current.tabState.activeTabId).not.toBe("local");
+        });
+    });
+
+    it("serializes project tab reopen after pending close for the same deterministic tab", async () => {
+        let resolveClose!: () => void;
+        vi.mocked(CloseProjectTabSession).mockImplementation(() => new Promise<void>(resolve => {
+            resolveClose = resolve;
+        }) as any);
+
+        const { result } = renderHook(() => useAITabManager());
+
+        act(() => {
+            result.current.createProjectTab("D:/tasks/reopen-race", "Reopen race");
+        });
+        expect(CreateProjectTabSession).toHaveBeenCalledTimes(1);
+
+        const tabId = result.current.tabState.tabs.find(t => t.projectPath === "D:/tasks/reopen-race")?.id;
+        expect(tabId).toBeTruthy();
+
+        act(() => {
+            result.current.closeTab(tabId!);
+        });
+        await waitFor(() => expect(CloseProjectTabSession).toHaveBeenCalledWith(tabId));
+
+        act(() => {
+            result.current.createProjectTab("D:/tasks/reopen-race", "Reopen race");
+        });
+        expect(result.current.tabState.tabs.some(t => t.projectPath === "D:/tasks/reopen-race")).toBe(true);
+        expect(CreateProjectTabSession).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            resolveClose();
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        await waitFor(() => expect(CreateProjectTabSession).toHaveBeenCalledTimes(2));
+        expect(vi.mocked(CloseProjectTabSession).mock.invocationCallOrder[0]).toBeLessThan(
+            vi.mocked(CreateProjectTabSession).mock.invocationCallOrder[1],
+        );
     });
 });

@@ -106,7 +106,6 @@ func parseLLMResponse(raw string) (llmResponsePayload, error) {
 	return payload, nil
 }
 
-
 // buildLLMSystemPrompt constructs the system prompt for Layer 3 LLM
 // classification from the given definitions. The intent labels section is
 // auto-generated from TreeText, ensuring it stays in sync with the
@@ -138,7 +137,8 @@ When a message is ambiguous (could belong to multiple categories depending on co
 4. **Keyword context**: A keyword like "页面" means different things in different contexts — game UI description → coding; browser automation → browser; file viewing → non_coding. Use surrounding words to disambiguate.
 5. **Short messages**: Messages ≤5 characters like "继续", "开工", "好的" → "continuation" unless there is strong evidence of another intent.
 6. **Mixed signals**: When creation keywords (开发/游戏) co-occur with fix keywords (修复/bug), creation dominates → "coding" not "bug_fix".
-7. **When truly uncertain**: Set confidence lower (0.50-0.65) and populate "secondary" with alternative labels. Do NOT force a high-confidence answer when the message is genuinely ambiguous without conversation context.
+7. **Multi-phase delivery**: If the primary work is research/writing but the user asks to publish/login/submit on a named web platform (for example Zhihu), keep the primary work label and add "browser" as a secondary label because delivery requires browser automation.
+8. **When truly uncertain**: Set confidence lower (0.50-0.65) and populate "secondary" with alternative labels. Do NOT force a high-confidence answer when the message is genuinely ambiguous without conversation context.
 
 ## Output Format
 

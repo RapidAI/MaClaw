@@ -86,7 +86,8 @@ func (h *IMMessageHandler) finishAgentLoopAfterMainIterations(opts agentLoopComp
 		CacheReadTokens:  opts.LastCacheReadTokens,
 		CacheWriteTokens: opts.LastCacheWriteTokens,
 	}
-	if h.manager != nil && h.manager.HasActiveSessions() {
+	activeSessionProject := projectPathFromUserID(opts.UserID)
+	if h.manager != nil && h.manager.HasActiveSessionsForProject(activeSessionProject) {
 		bonusResult := h.runActiveSessionBonusRound(agentLoopBonusRoundOptions{
 			Context:                opts.Context,
 			UserID:                 opts.UserID,

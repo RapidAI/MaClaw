@@ -48,14 +48,14 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 	if !ok {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
-	// Screenshot capture works for SDK-mode and Gemini ACP sessions.
+	// Screenshot capture works for SDK-mode sessions.
 	// The capture runs outside the CLI process (platform-native commands),
 	// so it doesn't depend on the CLI tool's own image support.
 	switch s.Exec.(type) {
-	case *SDKExecutionHandle, *GeminiACPExecutionHandle:
+	case *SDKExecutionHandle:
 		// supported
 	default:
-		return fmt.Errorf("screenshot capture is only supported in SDK and ACP mode sessions")
+		return fmt.Errorf("screenshot capture is only supported in SDK mode sessions")
 	}
 
 	// On macOS 10.15+, ensure screen recording permission is granted before
@@ -127,8 +127,8 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("screenshot command timed out after %s", screenshotCommandTimeout)
 			}
-			m.app.log(fmt.Sprintf("[screenshot] capture failed for session=%s: %v, stderr: %s", sessionID, err, stderr.String()))
-			return fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+			m.app.log(fmt.Sprintf("[screenshot] capture failed for session=%s: %v, stderr_len=%d", sessionID, err, len([]rune(stderr.String()))))
+			return fmt.Errorf("screenshot command failed: %w (stderr_len=%d)", err, len([]rune(stderr.String())))
 		}
 
 		rawOut := stdout.String()
@@ -142,8 +142,8 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 		base64Data, blank, err = remote.ParseScreenshotOutputOpt(rawOut)
 		rawOut = "" // allow GC
 		if err != nil {
-			m.app.log(fmt.Sprintf("[screenshot] failed to parse output for session=%s: %v (stderr=%q)",
-				sessionID, err, strings.TrimSpace(stderr.String())))
+			m.app.log(fmt.Sprintf("[screenshot] failed to parse output for session=%s: %v (stderr_len=%d)",
+				sessionID, err, len([]rune(stderr.String()))))
 			return fmt.Errorf("screenshot output parse error: %w", err)
 		}
 		if blank {
@@ -252,8 +252,8 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("screenshot command timed out after %s", screenshotCommandTimeout)
 		}
-		m.app.log(fmt.Sprintf("[screenshot-direct] capture failed: %v, stderr: %s", err, stderr.String()))
-		return "", fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+		m.app.log(fmt.Sprintf("[screenshot-direct] capture failed: %v, stderr_len=%d", err, len([]rune(stderr.String()))))
+		return "", fmt.Errorf("screenshot command failed: %w (stderr_len=%d)", err, len([]rune(stderr.String())))
 	}
 
 	rawOut := stdout.String()
@@ -262,7 +262,7 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 	base64Data, blank, err := remote.ParseScreenshotOutputOpt(rawOut)
 	rawOut = "" // allow GC
 	if err != nil {
-		m.app.log(fmt.Sprintf("[screenshot-direct] parse error: %v (stderr=%q)", err, strings.TrimSpace(stderr.String())))
+		m.app.log(fmt.Sprintf("[screenshot-direct] parse error: %v (stderr_len=%d)", err, len([]rune(stderr.String()))))
 		return "", fmt.Errorf("screenshot output parse error: %w", err)
 	}
 
@@ -327,7 +327,7 @@ func (m *RemoteSessionManager) CaptureScreenshotDirectForDisplay(displayIndex in
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("screenshot command timed out after %s", screenshotCommandTimeout)
 		}
-		return "", fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("screenshot command failed: %w (stderr_len=%d)", err, len([]rune(stderr.String())))
 	}
 
 	rawOut := stdout.String()
@@ -360,10 +360,10 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 		return "", fmt.Errorf("session not found: %s", sessionID)
 	}
 	switch s.Exec.(type) {
-	case *SDKExecutionHandle, *GeminiACPExecutionHandle:
+	case *SDKExecutionHandle:
 		// supported
 	default:
-		return "", fmt.Errorf("screenshot capture is only supported in SDK and ACP mode sessions")
+		return "", fmt.Errorf("screenshot capture is only supported in SDK mode sessions")
 	}
 
 	if !EnsureScreenRecordingPermission() {
@@ -422,7 +422,7 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("screenshot command timed out after %s", screenshotCommandTimeout)
 		}
-		return "", fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("screenshot command failed: %w (stderr_len=%d)", err, len([]rune(stderr.String())))
 	}
 
 	rawOut := stdout.String()

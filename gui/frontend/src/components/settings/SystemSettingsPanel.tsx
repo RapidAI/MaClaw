@@ -1,5 +1,4 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { SaveConfig } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { SystemDiagnosticsTable } from './SystemDiagnosticsTable';
 import { DataDirectorySection } from './DataDirectorySection';
@@ -89,17 +88,8 @@ export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, sav
                             type="checkbox"
                             aria-label={textForLang(lang, 'Workstation Mode', '\u5de5\u4f5c\u7ad9\u6a21\u5f0f', '\u5de5\u4f5c\u7ad9\u6a21\u5f0f')}
                             checked={(config as any)?.workstation_mode === true}
-                            onChange={async (e) => {
-                                if (!config) return;
-                                const prevConfig = config;
-                                const newConfig = new main.AppConfig({ ...config, workstation_mode: e.target.checked } as any);
-                                setConfig(newConfig);
-                                try {
-                                    await SaveConfig(newConfig);
-                                } catch (err: any) {
-                                    setConfig(prevConfig);
-                                    showToastMessage(err?.message || String(err));
-                                }
+                            onChange={(e) => {
+                                saveRemoteConfigField({ workstation_mode: e.target.checked } as any);
                             }}
                         />
                         <span>

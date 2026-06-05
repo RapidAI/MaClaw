@@ -237,7 +237,7 @@ if err != nil { return &IMAgentResponse{Text: "❌ 网络请求失败。"}, err 
 defer resp.Body.Close()
 respBody, _ := io.ReadAll(resp.Body)
 if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-log.Printf("[WorkflowInitiation] submitToHub: status %d: %s", resp.StatusCode, string(respBody))
+log.Printf("[WorkflowInitiation] submitToHub: status %d body_len=%d", resp.StatusCode, len(respBody))
 return &IMAgentResponse{Text: fmt.Sprintf("❌ 创建审批失败（HTTP %d）。", resp.StatusCode)}, nil
 }
 var result struct { InstanceID string `json:"instance_id"` }

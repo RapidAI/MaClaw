@@ -377,11 +377,15 @@ func TestSearchMixedSkillsIncludesEnterpriseHubCapabilitiesFirst(t *testing.T) {
 		t.Fatalf("expected enterprise + market results, got %#v", results)
 	}
 	got := results[0]
-	if got.Source != corelib.CapabilitySourceEnterpriseHub || got.ID != "cap-skill-1" || got.InstallRef != "cap-skill-1" || got.SourceLabel != "Enterprise Hub" {
+	if got.Source != corelib.CapabilitySourceEnterpriseHub || got.ID != "cap-skill-1" || got.InstallRef != "cap-skill-1" || got.SourceLabel != "私有市场" {
 		t.Fatalf("unexpected enterprise result: %+v", got)
 	}
 	if got.Name != "Paper Digest" || got.TrustLevel != "enterprise" {
 		t.Fatalf("unexpected display fields: %+v", got)
+	}
+	market := results[1]
+	if market.SourceLabel != "公共市场" || market.Source != "skillmarket" {
+		t.Fatalf("unexpected market source label: %+v", market)
 	}
 }
 func TestSearchMixedSkillsIncludesGitHubSkillMDResult(t *testing.T) {

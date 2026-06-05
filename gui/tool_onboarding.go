@@ -24,30 +24,16 @@ func ensureToolOnboardingComplete(app *App, toolName string, projectPath string)
 	switch toolName {
 	case "claude":
 		err = ensureClaudeOnboardingComplete(app, projectPath)
-	case "gemini":
-		err = ensureGeminiOnboardingComplete(app)
 	case "codebuddy":
 		err = ensureCodeBuddyOnboardingComplete(app, projectPath)
 	default:
-		// Other tools (codex, iflow, kilo, opencode, cursor) don't have
+		// Other tools (codex, iflow, kilo, opencode) don't have
 		// known first-run wizards that need pre-configuration.
 		return
 	}
 	if err != nil && app != nil {
 		app.log(fmt.Sprintf("[tool-onboarding] %s pre-check warning: %v", toolName, err))
 	}
-}
-
-// ensureGeminiOnboardingComplete delegates to the shared corelib
-// implementation that writes theme, auth type, and UI flags to
-// ~/.gemini/settings.json so first-run interactive prompts are skipped.
-func ensureGeminiOnboardingComplete(app *App) error {
-	logFn := func(msg string) {
-		if app != nil {
-			app.log(msg)
-		}
-	}
-	return configfile.EnsureGeminiOnboarding(logFn)
 }
 
 // ensureCodeBuddyOnboardingComplete ensures that CodeBuddy CLI's user-level
@@ -95,7 +81,6 @@ func ensureCustomApiKeyApproved(config map[string]any, apiKey string) bool {
 var toolConfigFiles = map[string][]string{
 	"claude":    {".claude.json"},
 	"codebuddy": {".codebuddy.json"},
-	"gemini":    {filepath.Join(".gemini", "settings.json")},
 }
 
 // toolConfigPaths returns the absolute config file paths that onboarding

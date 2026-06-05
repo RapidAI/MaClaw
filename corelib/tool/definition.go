@@ -59,9 +59,21 @@ type DefinitionGenerator struct {
 func NewDefinitionGenerator(mcpProvider MCPServerProvider, builtinDefs []map[string]interface{}) *DefinitionGenerator {
 	return &DefinitionGenerator{
 		mcpProvider:   mcpProvider,
-		builtinDefs:   builtinDefs,
+		builtinDefs:   filterAgentVisibleToolDefinitions(builtinDefs),
 		deferredTools: make(map[string]bool),
 	}
+}
+
+func filterAgentVisibleToolDefinitions(defs []map[string]interface{}) []map[string]interface{} {
+	filtered := FilterDisabledExternalCodingSessionToolDefs(defs)
+	out := make([]map[string]interface{}, 0, len(filtered))
+	for _, def := range filtered {
+		if isInternalBrowserDispatchToolName(ExtractToolName(def)) {
+			continue
+		}
+		out = append(out, def)
+	}
+	return out
 }
 
 // SetDeferredTools marks tool names that should be excluded from Generate()
@@ -69,12 +81,18 @@ func NewDefinitionGenerator(mcpProvider MCPServerProvider, builtinDefs []map[str
 func (g *DefinitionGenerator) SetDeferredTools(names []string) {
 	g.deferredTools = make(map[string]bool, len(names))
 	for _, n := range names {
+		if IsDisabledExternalCodingSessionTool(n) || isInternalBrowserDispatchToolName(n) {
+			continue
+		}
 		g.deferredTools[n] = true
 	}
 }
 
 // IsDeferredTool returns true if the tool name is in the deferred set.
 func (g *DefinitionGenerator) IsDeferredTool(name string) bool {
+	if IsDisabledExternalCodingSessionTool(name) || isInternalBrowserDispatchToolName(name) {
+		return false
+	}
 	return g.deferredTools[name]
 }
 
@@ -97,6 +115,9 @@ func (g *DefinitionGenerator) Generate() []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(g.builtinDefs))
 	for _, def := range g.builtinDefs {
 		name := ExtractToolName(def)
+		if IsDisabledExternalCodingSessionTool(name) || isInternalBrowserDispatchToolName(name) {
+			continue
+		}
 		if name != "" && g.deferredTools[name] {
 			continue
 		}
@@ -106,6 +127,9 @@ func (g *DefinitionGenerator) Generate() []map[string]interface{} {
 	builtinNames := make(map[string]bool, len(g.builtinDefs))
 	for _, def := range g.builtinDefs {
 		if name := ExtractToolName(def); name != "" {
+			if IsDisabledExternalCodingSessionTool(name) || isInternalBrowserDispatchToolName(name) {
+				continue
+			}
 			builtinNames[name] = true
 		}
 	}
@@ -150,6 +174,9 @@ func (g *DefinitionGenerator) Generate() []map[string]interface{} {
 
 	for _, p := range pending {
 		name := p.tool.Name
+		if IsDisabledExternalCodingSessionTool(name) || isInternalBrowserDispatchToolName(name) {
+			continue
+		}
 		if g.deferredTools[name] {
 			continue
 		}
@@ -302,6 +329,9 @@ func (g *DefinitionGenerator) GenerateDeferred() []map[string]interface{} {
 	var result []map[string]interface{}
 	for _, def := range g.builtinDefs {
 		name := ExtractToolName(def)
+		if IsDisabledExternalCodingSessionTool(name) || isInternalBrowserDispatchToolName(name) {
+			continue
+		}
 		if name != "" && g.deferredTools[name] {
 			result = append(result, def)
 		}
@@ -314,6 +344,9 @@ func (g *DefinitionGenerator) GenerateDeferred() []map[string]interface{} {
 				continue
 			}
 			for _, t := range g.mcpProvider.GetServerTools(srv.ID) {
+				if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) {
+					continue
+				}
 				if g.deferredTools[t.Name] {
 					result = append(result, MCPToolToDefinition(t.Name, t))
 				}
@@ -323,6 +356,9 @@ func (g *DefinitionGenerator) GenerateDeferred() []map[string]interface{} {
 	if g.localMCPProvider != nil {
 		for _, ts := range g.localMCPProvider.GetAllTools() {
 			for _, t := range ts.Tools {
+				if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) {
+					continue
+				}
 				if g.deferredTools[t.Name] {
 					result = append(result, MCPToolToDefinition(t.Name, t))
 				}

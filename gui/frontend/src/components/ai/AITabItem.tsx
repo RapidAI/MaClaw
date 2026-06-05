@@ -72,9 +72,8 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
     const isProject = tab.type === "project";
     const isVE = tab.type === "ve";
     const isGroup = tab.type === "group";
-    // VE tabs reflect actual online status (undefined defaults to online for optimistic UX);
-    // group tabs are always considered "online".
-    const isOnline = isGroup || (isVE && tab.onlineStatus !== "offline");
+    // VE/group tabs reflect known status; undefined stays optimistic for live tabs.
+    const isOnline = (isVE || isGroup) && tab.onlineStatus !== "offline";
     const readOnlyLabel = tab.readOnly ? (lang === "en" ? "Read-only" : lang === "zh-Hant" ? "\u552f\u8b80" : "\u53ea\u8bfb") : "";
     const displayTitle = getAITabDisplayTitle(tab, lang);
     const accessibleTitle = readOnlyLabel ? `${displayTitle} - ${readOnlyLabel}` : displayTitle;
@@ -88,12 +87,31 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
         : (active ? theme.btnColor : theme.textMuted);
 
     const tabIconElement = avatarDataURL ? (
-        <img
-            data-testid={`ai-tab-avatar-${tab.id}`}
-            src={avatarDataURL}
-            alt=""
-            style={{ width: 14, height: 14, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
-        />
+        <span style={{ position: "relative", width: 14, height: 14, flexShrink: 0, display: "inline-flex" }}>
+            <img
+                data-testid={`ai-tab-avatar-${tab.id}`}
+                src={avatarDataURL}
+                alt=""
+                style={{ width: 14, height: 14, borderRadius: "50%", objectFit: "cover", display: "block" }}
+            />
+            {(isVE || isGroup) && (
+                <span
+                    data-testid={`ai-tab-status-${tab.id}`}
+                    aria-hidden="true"
+                    style={{
+                        position: "absolute",
+                        right: -2,
+                        bottom: -2,
+                        width: 6,
+                        height: 6,
+                        borderRadius: "50%",
+                        background: isOnline ? "#22c55e" : "#6b7280",
+                        border: `1px solid ${active ? theme.bg : theme.titleBarBg || theme.bg}`,
+                        boxSizing: "border-box",
+                    }}
+                />
+            )}
+        </span>
     ) : isLocal ? (
         // Sparkle/star — AI assistant main session
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>

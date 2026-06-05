@@ -22,24 +22,34 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 	if _, err := s.session.Navigate(url); err != nil {
 		return nil, err
 	}
-	obs, err := s.Observe(true)
+	s.waitForActionSettle(3*time.Second, 300*time.Millisecond)
+	obs, err := s.Observe(false)
 	if err != nil {
 		return nil, err
 	}
-	s.appendActionTrace("navigate", fmt.Sprintf("导航到 %s", url))
+	s.appendActionTrace("navigate", fmt.Sprintf("navigate to %s", url))
 	return &BrowserActionResult{
 		SessionID:  s.ID,
 		SnapshotID: obs.Snapshot.SnapshotID,
 		Action:     "browser_navigate",
 		Status:     "ok",
 		Detail:     url,
-		Display:    fmt.Sprintf("已导航到 %s", url),
+		Display:    fmt.Sprintf("navigated to %s", url),
 		Data: map[string]interface{}{
 			"url":         obs.Snapshot.URL,
 			"title":       obs.Snapshot.Title,
 			"snapshot_id": obs.Snapshot.SnapshotID,
 		},
 	}, nil
+}
+
+func (s *BrowserAgentSession) waitForActionSettle(timeout, quiet time.Duration) {
+	if s == nil || s.session == nil {
+		return
+	}
+	if err := s.session.WaitForStable(timeout, quiet); err != nil {
+		s.appendActionTrace("settle", fmt.Sprintf("page settle skipped: %v", err))
+	}
 }
 
 func (s *BrowserAgentSession) selectorCandidatesForAction(snapshotID, ref, selector string) ([]string, *BrowserElementRef, error) {
@@ -75,7 +85,7 @@ func (s *BrowserAgentSession) clickWithCandidates(candidates []string) (string, 
 	return "", attempts, fmt.Errorf("no usable selector candidates")
 }
 
-func (s *BrowserAgentSession) typeWithCandidates(candidates []string, text string) (string, int, error) {
+func (s *BrowserAgentSession) typeWithCandidates(candidates []string, text, contentFormat string) (string, int, error) {
 	var lastErr error
 	attempts := 0
 	for _, candidate := range candidates {
@@ -84,7 +94,7 @@ func (s *BrowserAgentSession) typeWithCandidates(candidates []string, text strin
 			continue
 		}
 		attempts++
-		if err := s.session.Type(candidate, text); err == nil {
+		if err := s.session.TypeContent(candidate, text, contentFormat); err == nil {
 			return candidate, attempts, nil
 		} else {
 			lastErr = err
@@ -138,6 +148,102 @@ func (s *BrowserAgentSession) extractWithCandidates(candidates []string) (string
 	return "", "", attempts, fmt.Errorf("no usable selector candidates")
 }
 
+func (s *BrowserAgentSession) submitClickKey(ref *BrowserElementRef, selector, fallbackText string) string {
+	label := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(fallbackText)), " "))
+	if ref != nil {
+		if name := strings.TrimSpace(ref.Name); name != "" {
+			label = strings.ToLower(strings.Join(strings.Fields(name), " "))
+		}
+		if label == "" && strings.TrimSpace(ref.Text) != "" {
+			label = strings.ToLower(strings.Join(strings.Fields(ref.Text), " "))
+		}
+	}
+	selectorLower := strings.ToLower(strings.TrimSpace(selector))
+	var info *PageInfo
+	if s != nil && s.session != nil {
+		info, _ = s.session.Info()
+	}
+	url := ""
+	if info != nil {
+		url = strings.ToLower(info.URL)
+	}
+	risky := false
+	for _, marker := range []string{"publish", "post", "submit", "send", "发布", "发表", "发送", "提交", "确认发布"} {
+		if strings.Contains(label, marker) || strings.Contains(selectorLower, marker) {
+			risky = true
+			break
+		}
+	}
+	if !risky && containsSubmitClickMarker(label, selectorLower) {
+		risky = true
+	}
+	if strings.Contains(url, "zhihu.com") && strings.Contains(selectorLower, "button--blue") {
+		risky = true
+		if label == "" {
+			label = "zhihu-blue-submit"
+		}
+	}
+	if !risky {
+		return ""
+	}
+	if label == "" {
+		label = selectorLower
+	}
+	return strings.TrimSpace(url + "|" + label)
+}
+
+func containsSubmitClickMarker(label, selector string) bool {
+	for _, marker := range []string{"\u53d1\u5e03", "\u53d1\u8868", "\u53d1\u9001", "\u63d0\u4ea4", "\u786e\u8ba4\u53d1\u5e03"} {
+		if strings.Contains(label, marker) || strings.Contains(selector, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *BrowserAgentSession) guardSubmitClick(key string) error {
+	if key == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.submitClickRecentLocked(key, time.Now()) {
+		return fmt.Errorf("non-idempotent browser click was already attempted recently; observe/verify page state before retrying")
+	}
+	return nil
+}
+
+func (s *BrowserAgentSession) rememberSubmitClick(key string) {
+	if key == "" {
+		return
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recentSubmitClicks == nil {
+		s.recentSubmitClicks = map[string]time.Time{}
+	}
+	for k, ts := range s.recentSubmitClicks {
+		if now.Sub(ts) > 3*time.Minute {
+			delete(s.recentSubmitClicks, k)
+		}
+	}
+	s.recentSubmitClicks[key] = now
+}
+
+func (s *BrowserAgentSession) submitClickRecentLocked(key string, now time.Time) bool {
+	if s.recentSubmitClicks == nil {
+		return false
+	}
+	for k, ts := range s.recentSubmitClicks {
+		if now.Sub(ts) > 3*time.Minute {
+			delete(s.recentSubmitClicks, k)
+		}
+	}
+	ts, ok := s.recentSubmitClicks[key]
+	return ok && now.Sub(ts) <= 3*time.Minute
+}
+
 // Click clicks an element by ref or selector.
 func (s *BrowserAgentSession) Click(snapshotID, ref, selector string) (*BrowserActionResult, error) {
 	if s == nil || s.session == nil {
@@ -151,63 +257,22 @@ func (s *BrowserAgentSession) Click(snapshotID, ref, selector string) (*BrowserA
 	if err != nil {
 		return nil, err
 	}
+	submitKey := s.submitClickKey(resolvedRef, selector, "")
+	if err := s.guardSubmitClick(submitKey); err != nil {
+		return nil, err
+	}
 	resolvedSelector, attempts, err := s.clickWithCandidates(candidates)
 	if err != nil {
 		if ref != "" {
-			return nil, fmt.Errorf("ref %s 已失效，请重新 observe 获取新的 refs: %w", ref, err)
+			return nil, fmt.Errorf("ref %s is stale; run observe again to get fresh refs: %w", ref, err)
 		}
 		return nil, err
 	}
 	if attempts > 1 && ref != "" {
-		s.appendActionTrace("retry", fmt.Sprintf("click 回退候选 selector 成功 %s -> %s", ref, resolvedSelector))
+		s.appendActionTrace("retry", fmt.Sprintf("click fallback selector succeeded %s -> %s", ref, resolvedSelector))
 	}
-	obs, err := s.Observe(true)
-	if err != nil {
-		return nil, err
-	}
-	target := resolvedSelector
-	if resolvedRef != nil {
-		target = resolvedRef.Ref
-	}
-	s.appendActionTrace("click", fmt.Sprintf("点击 %s", target))
-	return &BrowserActionResult{
-		SessionID:  s.ID,
-		SnapshotID: obs.Snapshot.SnapshotID,
-		Action:     "browser_click",
-		Status:     "ok",
-		Detail:     target,
-		Display:    fmt.Sprintf("已点击 %s", target),
-		Data: map[string]interface{}{
-			"target":      target,
-			"selector":    resolvedSelector,
-			"snapshot_id": obs.Snapshot.SnapshotID,
-		},
-	}, nil
-}
-
-// Type enters text into an element by ref or selector.
-func (s *BrowserAgentSession) Type(snapshotID, ref, selector, text string) (*BrowserActionResult, error) {
-	if s == nil || s.session == nil {
-		return nil, fmt.Errorf("browser session not connected")
-	}
-	ref = strings.TrimSpace(ref)
-	selector = strings.TrimSpace(selector)
-	var resolvedRef *BrowserElementRef
-	var err error
-	candidates, resolvedRef, err := s.selectorCandidatesForAction(snapshotID, ref, selector)
-	if err != nil {
-		return nil, err
-	}
-	resolvedSelector, attempts, err := s.typeWithCandidates(candidates, text)
-	if err != nil {
-		if ref != "" {
-			return nil, fmt.Errorf("ref %s 已失效，请重新 observe 获取新的 refs: %w", ref, err)
-		}
-		return nil, err
-	}
-	if attempts > 1 && ref != "" {
-		s.appendActionTrace("retry", fmt.Sprintf("type 回退候选 selector 成功 %s -> %s", ref, resolvedSelector))
-	}
+	s.rememberSubmitClick(submitKey)
+	s.waitForActionSettle(2*time.Second, 250*time.Millisecond)
 	obs, err := s.Observe(false)
 	if err != nil {
 		return nil, err
@@ -216,19 +281,150 @@ func (s *BrowserAgentSession) Type(snapshotID, ref, selector, text string) (*Bro
 	if resolvedRef != nil {
 		target = resolvedRef.Ref
 	}
-	s.appendActionTrace("type", fmt.Sprintf("输入到 %s", target))
+	s.appendActionTrace("click", fmt.Sprintf("click %s", target))
+	return &BrowserActionResult{
+		SessionID:  s.ID,
+		SnapshotID: obs.Snapshot.SnapshotID,
+		Action:     "browser_click",
+		Status:     "ok",
+		Detail:     target,
+		Display:    fmt.Sprintf("clicked %s", target),
+		Data: map[string]interface{}{
+			"target":      target,
+			"selector":    resolvedSelector,
+			"snapshot_id": obs.Snapshot.SnapshotID,
+		},
+	}, nil
+}
+
+// ClickText clicks an element from the latest snapshot by visible text/name.
+func (s *BrowserAgentSession) ClickText(snapshotID, text string) (*BrowserActionResult, error) {
+	if s == nil || s.session == nil {
+		return nil, fmt.Errorf("browser session not connected")
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("missing text")
+	}
+	candidates, resolvedRef, err := s.selectorCandidatesForText(snapshotID, text)
+	if err != nil {
+		return nil, err
+	}
+	submitKey := s.submitClickKey(resolvedRef, "", text)
+	if err := s.guardSubmitClick(submitKey); err != nil {
+		return nil, err
+	}
+	resolvedSelector, attempts, err := s.clickWithCandidates(candidates)
+	if err != nil {
+		return nil, fmt.Errorf("text %q is stale; run observe again to get fresh refs: %w", text, err)
+	}
+	if attempts > 1 {
+		s.appendActionTrace("retry", fmt.Sprintf("click text fallback selector succeeded %s -> %s", text, resolvedSelector))
+	}
+	s.rememberSubmitClick(submitKey)
+	s.waitForActionSettle(2*time.Second, 250*time.Millisecond)
+	obs, err := s.Observe(false)
+	if err != nil {
+		return nil, err
+	}
+	target := text
+	if resolvedRef != nil {
+		target = resolvedRef.Ref
+	}
+	s.appendActionTrace("click", fmt.Sprintf("click text %s", text))
+	return &BrowserActionResult{
+		SessionID:  s.ID,
+		SnapshotID: obs.Snapshot.SnapshotID,
+		Action:     "browser_click",
+		Status:     "ok",
+		Detail:     target,
+		Display:    fmt.Sprintf("clicked text %s", text),
+		Data: map[string]interface{}{
+			"target":      target,
+			"selector":    resolvedSelector,
+			"text":        text,
+			"snapshot_id": obs.Snapshot.SnapshotID,
+		},
+	}, nil
+}
+
+// Type enters text into an element by ref or selector.
+func (s *BrowserAgentSession) Type(snapshotID, ref, selector, text string) (*BrowserActionResult, error) {
+	return s.TypeContent(snapshotID, ref, selector, text, BrowserContentFormatPlain)
+}
+
+// TypeContent enters plain text or rich markdown content into an element by ref or selector.
+func (s *BrowserAgentSession) TypeContent(snapshotID, ref, selector, text, contentFormat string) (*BrowserActionResult, error) {
+	if s == nil || s.session == nil {
+		return nil, fmt.Errorf("browser session not connected")
+	}
+	ref = strings.TrimSpace(ref)
+	selector = strings.TrimSpace(selector)
+	contentFormat = normalizeBrowserContentFormat(contentFormat)
+	if ref == "" && selector == "" {
+		if err := s.session.TypeActiveContent(text, contentFormat); err != nil {
+			return nil, err
+		}
+		s.waitForActionSettle(1*time.Second, 200*time.Millisecond)
+		obs, err := s.Observe(false)
+		if err != nil {
+			return nil, err
+		}
+		s.appendActionTrace("type", "typed into active element")
+		return &BrowserActionResult{
+			SessionID:  s.ID,
+			SnapshotID: obs.Snapshot.SnapshotID,
+			Action:     "browser_type",
+			Status:     "ok",
+			Detail:     "activeElement",
+			Display:    fmt.Sprintf("typed %d chars into active element", len([]rune(text))),
+			Data: map[string]interface{}{
+				"target":         "activeElement",
+				"text_length":    len([]rune(text)),
+				"content_format": contentFormat,
+				"snapshot_id":    obs.Snapshot.SnapshotID,
+			},
+		}, nil
+	}
+	var resolvedRef *BrowserElementRef
+	var err error
+	candidates, resolvedRef, err := s.selectorCandidatesForAction(snapshotID, ref, selector)
+	if err != nil {
+		return nil, err
+	}
+	resolvedSelector, attempts, err := s.typeWithCandidates(candidates, text, contentFormat)
+	if err != nil {
+		if ref != "" {
+			return nil, fmt.Errorf("ref %s is stale; run observe again to get fresh refs: %w", ref, err)
+		}
+		return nil, err
+	}
+	if attempts > 1 && ref != "" {
+		s.appendActionTrace("retry", fmt.Sprintf("type fallback selector succeeded %s -> %s", ref, resolvedSelector))
+	}
+	s.waitForActionSettle(1*time.Second, 200*time.Millisecond)
+	obs, err := s.Observe(false)
+	if err != nil {
+		return nil, err
+	}
+	target := resolvedSelector
+	if resolvedRef != nil {
+		target = resolvedRef.Ref
+	}
+	s.appendActionTrace("type", fmt.Sprintf("type into %s", target))
 	return &BrowserActionResult{
 		SessionID:  s.ID,
 		SnapshotID: obs.Snapshot.SnapshotID,
 		Action:     "browser_type",
 		Status:     "ok",
 		Detail:     target,
-		Display:    fmt.Sprintf("已在 %s 中输入 %d 个字符", target, len([]rune(text))),
+		Display:    fmt.Sprintf("typed %d chars into %s", len([]rune(text)), target),
 		Data: map[string]interface{}{
-			"target":      target,
-			"selector":    resolvedSelector,
-			"text_length": len([]rune(text)),
-			"snapshot_id": obs.Snapshot.SnapshotID,
+			"target":         target,
+			"selector":       resolvedSelector,
+			"text_length":    len([]rune(text)),
+			"content_format": contentFormat,
+			"snapshot_id":    obs.Snapshot.SnapshotID,
 		},
 	}, nil
 }
@@ -266,10 +462,10 @@ func (s *BrowserAgentSession) Wait(snapshotID, ref, selector string, durationMS 
 		}
 		resolvedSelector, attempts, err := s.waitWithCandidates(candidates, timeoutSec)
 		if err != nil {
-			return nil, fmt.Errorf("ref %s 已失效，请重新 observe 获取新的 refs: %w", ref, err)
+			return nil, fmt.Errorf("ref %s is stale; run observe again to get fresh refs: %w", ref, err)
 		}
 		if attempts > 1 {
-			s.appendActionTrace("retry", fmt.Sprintf("wait 回退候选 selector 成功 %s -> %s", ref, resolvedSelector))
+			s.appendActionTrace("retry", fmt.Sprintf("wait fallback selector succeeded %s -> %s", ref, resolvedSelector))
 		}
 		_ = resolvedRef
 	} else {
@@ -282,13 +478,13 @@ func (s *BrowserAgentSession) Wait(snapshotID, ref, selector string, durationMS 
 	if err != nil {
 		return nil, err
 	}
-	s.appendActionTrace("wait", "等待页面稳定")
+	s.appendActionTrace("wait", "wait for page stability")
 	return &BrowserActionResult{
 		SessionID:  s.ID,
 		SnapshotID: obs.Snapshot.SnapshotID,
 		Action:     "browser_wait",
 		Status:     "ok",
-		Display:    "等待完成",
+		Display:    "wait complete",
 		Data: map[string]interface{}{
 			"selector":    resolvedSelector,
 			"duration_ms": durationMS,
@@ -311,9 +507,9 @@ func (s *BrowserAgentSession) Refresh() (*BrowserActionResult, error) {
 		return nil, err
 	}
 	result.Action = "browser_refresh"
-	result.Display = fmt.Sprintf("已刷新 %s", info.URL)
+	result.Display = fmt.Sprintf("refreshed %s", info.URL)
 	result.Detail = info.URL
-	s.appendActionTrace("refresh", fmt.Sprintf("刷新 %s", info.URL))
+	s.appendActionTrace("refresh", fmt.Sprintf("refresh %s", info.URL))
 	return result, nil
 }
 
@@ -325,17 +521,18 @@ func (s *BrowserAgentSession) Back() (*BrowserActionResult, error) {
 	if err := s.session.Back(); err != nil {
 		return nil, err
 	}
-	obs, err := s.Observe(true)
+	s.waitForActionSettle(3*time.Second, 300*time.Millisecond)
+	obs, err := s.Observe(false)
 	if err != nil {
 		return nil, err
 	}
-	s.appendActionTrace("back", "浏览器后退")
+	s.appendActionTrace("back", "browser back")
 	return &BrowserActionResult{
 		SessionID:  s.ID,
 		SnapshotID: obs.Snapshot.SnapshotID,
 		Action:     "browser_back",
 		Status:     "ok",
-		Display:    "已后退到上一页",
+		Display:    "went back",
 		Data: map[string]interface{}{
 			"url":         obs.Snapshot.URL,
 			"title":       obs.Snapshot.Title,
@@ -372,10 +569,10 @@ func (s *BrowserAgentSession) Extract(snapshotID, ref, selector, query, format s
 		var attempts int
 		resolvedSelector, value, attempts, err = s.extractWithCandidates(candidates)
 		if err != nil {
-			return nil, fmt.Errorf("ref %s 已失效，请重新 observe 获取新的 refs: %w", ref, err)
+			return nil, fmt.Errorf("ref %s is stale; run observe again to get fresh refs: %w", ref, err)
 		}
 		if attempts > 1 {
-			s.appendActionTrace("retry", fmt.Sprintf("extract 回退候选 selector 成功 %s -> %s", ref, resolvedSelector))
+			s.appendActionTrace("retry", fmt.Sprintf("extract fallback selector succeeded %s -> %s", ref, resolvedSelector))
 		}
 	} else if snapshotID != "" {
 		snap, ok := s.GetSnapshot(snapshotID)
@@ -409,9 +606,9 @@ func (s *BrowserAgentSession) Extract(snapshotID, ref, selector, query, format s
 	value = strings.TrimSpace(value)
 	detail := strings.TrimSpace(query)
 	if detail == "" {
-		detail = "页面内容"
+		detail = "page content"
 	}
-	s.appendActionTrace("extract", fmt.Sprintf("提取 %s", detail))
+	s.appendActionTrace("extract", fmt.Sprintf("extract %s", detail))
 	data := map[string]interface{}{
 		"query":       query,
 		"format":      format,
@@ -433,7 +630,7 @@ func (s *BrowserAgentSession) Extract(snapshotID, ref, selector, query, format s
 		SnapshotID: snapshotID,
 		Action:     "browser_extract",
 		Status:     "ok",
-		Display:    fmt.Sprintf("已提取 %s", detail),
+		Display:    fmt.Sprintf("extracted %s", detail),
 		Data:       data,
 	}, nil
 }

@@ -433,7 +433,7 @@ Return a JSON array. Each pattern must have:
 - "triggers": list of 3-5 keywords or phrases that would trigger this pattern
 - "steps": list of steps, each with "action" (call_mcp_tool/bash/skill_md), "params" (key-value map), and optional "on_error" ("stop" or "continue")
 
-Do not emit external coding-session actions such as create_session, send_input, or send_and_observe. Coding work is handled by the internal CodingSubAgent, not persisted learned skills.
+Do not emit external coding-session actions. Coding work is handled by the internal CodingSubAgent, not persisted learned skills.
 
 Return only a JSON array. If no genuinely reusable patterns are found, return [].
 Quality over quantity: only extract patterns you are confident are reusable.`

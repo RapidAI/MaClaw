@@ -20,7 +20,7 @@ MaClaw's configuration is saved in your user home directory at `~/.maclaw/config
 Native settings for various AI tools (like Claude's `~/.claude/settings.json`) are also automatically synced based on your configuration.
 
 ## 5. How to update AI CLI tools?
-Each time MaClaw starts, it automatically checks the versions of supported tools (like `claude-code`, `codex`, `gemini-cli`). If a new version is available, it will attempt to update it for you. You can see the specific status in the startup progress window.
+Each time MaClaw starts, it automatically checks the versions of supported tools (like `claude-code`, `codex`, `opencode`). If a new version is available, it will attempt to update it for you. You can see the specific status in the startup progress window.
 
 ## 6. What if the environment check fails?
 If Node.js or tool installation fails, please check your internet connection. In mainland China, the program automatically attempts to use domestic mirrors to speed up downloads. If automatic installation continues to fail, it is recommended to manually install the environment as prompted.
@@ -35,7 +35,7 @@ Select **"Original"** as the provider in the tool's settings to restore each too
 When Yolo mode is enabled, the programming tool will no longer ask for confirmation before every file or system operation, enhancing the coding experience. However, please be aware that this option is risky and carries the potential for accidental file deletion or modification. It is intended for expert users only.
 
 ## 10. Which tools does MaClaw support?
-MaClaw currently supports **Claude Code**, **OpenAI Codex**, **Google Gemini CLI**, **OpenCode**, **CodeBuddy**, and **Qoder CLI**. You can quickly switch between them in the sidebar and configure each tool independently.
+MaClaw currently supports **Claude Code**, **OpenAI Codex**, **OpenCode**, **CodeBuddy**, and **Qoder CLI**. You can quickly switch between them in the sidebar and configure each tool independently.
 
 ## 11. Why hasn't the tool's behavior changed after switching providers?
 Please make sure you click the **"Launch"** button on the main interface to restart the tool after switching providers. MaClaw automatically syncs the environment based on your latest configuration before launching. If issues persist, try switching to **"Original"** mode first to clear old configurations, and then switch back to your target provider.
@@ -44,20 +44,17 @@ Please make sure you click the **"Launch"** button on the main interface to rest
 *   **Original**: Uses the default authentication method of Qoder CLI, which requires **logging in via a web browser**.
 *   **Qoder**: Uses a **Personal Access Token** for authentication. You can obtain a token from the Qoder website and enter it into MaClaw. This method is ideal for environments where opening a browser is not possible or for faster deployment.
 
-## 13. How to use Chinese LLMs like DeepSeek in Gemini CLI?
-You need to set up a **liteLLM proxy** service yourself. In Gemini CLI, select **"Custom"** as the provider and enter the Gemini protocol-compatible endpoint address and the corresponding API Key provided by your liteLLM service.
-
 ## 14. Which Python environments are supported?
 MaClaw currently supports **Conda/Anaconda** environments. After enabling "Python Project" in the project settings, MaClaw scans for available conda environments on your system for selection. Environment switching is handled automatically upon launch.
 
 ## 15. Why use admin privileges to launch?
 Some projects may involve system-level file operations or access to restricted directories. Launching with admin privileges can prevent tools from failing due to insufficient permissions. This feature is currently only supported on Windows.
 
-## 16. Why can't I install some skills in Gemini/Codex?
-Gemini and Codex currently only support skills in **Zip Package** format. If you try to install a Skill ID (Address) type skill (e.g., `@org/skill`), the system will report an incompatibility. These skills are only supported in Claude Code. Please try to obtain the Zip package version of the skill for installation.
+## 16. Why can't I install some skills in Codex?
+Codex currently only supports skills in **Zip Package** format. If you try to install a Skill ID (Address) type skill (e.g., `@org/skill`), the system will report an incompatibility. These skills are only supported in Claude Code. Please try to obtain the Zip package version of the skill for installation.
 
 ## 17. Are skills shared across all tools?
-Yes. Skills added via **Zip Package** are stored in a global repository and are automatically recognized and usable by **Claude**, **Gemini**, **Codex**, and other supported tools. You only need to add them once to use them anywhere.
+Yes. Skills added via **Zip Package** are stored in a global repository and are automatically recognized and usable by **Claude**, **Codex**, and other supported tools. You only need to add them once to use them anywhere.
 
 ---
 *For more issues, please visit GitHub Issues: [RapidAI/cceasy/issues](https://github.com/RapidAI/cceasy/issues)*

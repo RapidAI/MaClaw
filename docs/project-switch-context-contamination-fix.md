@@ -37,7 +37,7 @@
 
 - 新增 `switchCurrentProjectByPath(projectPath)` 方法：根据路径查找匹配的 `ProjectConfig`，更新 `config.CurrentProject`
 - `ResumeProject` 在清理 session 之前调用此方法
-- 使用 `LoadConfig → merge → SaveConfig` 模式避免覆盖并发修改
+- 使用 `PatchConfigFields(current_project)` 只修改当前项目字段，避免覆盖并发修改
 - 路径比较使用 `filepath.Clean` + `strings.EqualFold`（Windows 路径不区分大小写）
 
 ### Fix 2: 前端 config 同步——`config-changed` 事件（`gui/app_project_search.go`）

@@ -151,7 +151,7 @@ CRITICAL category rules:
 	default:
 	}
 
-	resp, err := llm.ChatCall(messages)
+	resp, err := chatCallWithContext(ctx, llm, messages)
 	if err != nil {
 		return &SynthesizeResult{Error: err.Error()}, nil
 	}

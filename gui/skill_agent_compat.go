@@ -132,6 +132,9 @@ func ExportAgentSkill(entry corelib.NLSkillEntry, outputDir string, appOpt ...*A
 }
 
 func scanAgentSkillExport(entry corelib.NLSkillEntry, appOpt ...*App) error {
+	if app := firstSkillLifecycleApp(appOpt...); app != nil && app.isRiskGuardrailOffMode() {
+		return nil
+	}
 	report := cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), &entry, entry.SkillDir, nil)
 	if report == nil {
 		if app := firstSkillLifecycleApp(appOpt...); app != nil && !app.skillInstallMissingScanShouldBlock() {

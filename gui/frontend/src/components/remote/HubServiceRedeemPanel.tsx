@@ -3,6 +3,7 @@ import { GetHubLLMServiceStatus, LoadConfig, RedeemHubLLMService } from "../../.
 import { BrowserOpenURL, EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { useDialog } from "../CustomDialog";
 import { buildHubCardStoreURL, buildHubCreditsURL, grantCanContributeExpiry, latestExpiry, numeric } from "../../utils/hubCredits";
+import { localizeHubServiceReason, localizeHubServiceRedeemError, localizeHubServiceStatusError } from "../../utils/hubServiceI18n";
 
 interface HubLLMAuthorizedModel {
     name: string;
@@ -89,32 +90,57 @@ function formatCredits(value?: number): string {
     return num.toFixed(3).replace(/\.000$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
 }
 
+function formatUnlimitedCredits(lang?: string): string {
+    if (lang === "zh-Hans") return "不限";
+    if (lang === "zh-Hant") return "不限";
+    return "Unlimited";
+}
+
 function creditGrants(status: HubLLMServiceStatus | null): HubLLMActiveGrant[] {
     return (status?.credit_grants?.length ? status.credit_grants : status?.active_grants) || [];
 }
 
 function creditTotals(status: HubLLMServiceStatus | null) {
     const grants = creditGrants(status);
+    const visibleGrants = grants.filter((grant) => String(grant.status || "").toLowerCase() !== "expired");
     // Use the backend's "effective" flag as single source of truth for which
-    // grants count toward totals. Falls back to status string check for
+    // grants count toward used/remaining. Falls back to status string check for
     // backward compatibility with older hub versions that don't send "effective".
     const effectiveGrants = grants.filter((grant) => {
         if (typeof grant.effective === "boolean") return grant.effective;
         const s = String(grant.status || "").toLowerCase();
         return s !== "queued" && s !== "expired";
     });
+    const visibleGrantTotal = visibleGrants.reduce((sum, grant) => {
+        const total = numeric(grant.credits_total);
+        if (total > 0) return sum + total;
+        return sum + Math.max(numeric(grant.credits_available), numeric(grant.credits_remaining));
+    }, 0);
     const grantTotal = effectiveGrants.reduce((sum, grant) => sum + numeric(grant.credits_total), 0);
     const grantUsed = effectiveGrants.reduce((sum, grant) => sum + numeric(grant.credits_used), 0);
     const grantRemaining = effectiveGrants.reduce((sum, grant) => sum + numeric(grant.credits_remaining), 0);
-    let total = numeric(status?.credits_total ?? grantTotal);
+    const grantAvailable = effectiveGrants.reduce((sum, grant) => sum + numeric(grant.credits_available), 0);
+    let total = Math.max(numeric(status?.credits_total ?? grantTotal), visibleGrantTotal);
     const used = numeric(status?.credits_used ?? grantUsed);
     const remainingRaw = numeric(status?.credits_remaining ?? grantRemaining);
-    const available = numeric(status?.credits_available);
+    const statusAvailable = numeric(status?.credits_available);
+    const available = statusAvailable > 0 ? statusAvailable : grantAvailable;
     const onlyExpiredGrants = !status?.active && grants.length > 0 && grants.every((grant) => String(grant.status || "").toLowerCase() === "expired");
     if (onlyExpiredGrants) return { total, used, remaining: Math.max(0, available) };
     const remaining = (status?.active || remainingRaw <= 0) && available > 0 ? available : remainingRaw;
     if (remaining > 0 && total < used + remaining) total = used + remaining;
     return { total, used, remaining };
+}
+
+function localizeServiceStatusReason(
+    reason: unknown,
+    lang: string | undefined,
+    _t: (en: string, zhHans: string, zhHant?: string) => string,
+): string {
+    const raw = String(reason || "").trim().replace(/^Error:\s*/i, "");
+    const localizedReason = localizeHubServiceReason(raw, lang);
+    if (localizedReason !== raw) return localizedReason;
+    return localizeHubServiceStatusError(raw, lang);
 }
 
 function serviceExpiry(status: HubLLMServiceStatus | null): string {
@@ -133,6 +159,17 @@ function grantRemainingCredits(grant: HubLLMActiveGrant): number {
     if (remaining > 0) return remaining;
     const available = numeric(grant.credits_available);
     return available > 0 ? available : remaining;
+}
+
+function hasAnyCreditValue(status: HubLLMServiceStatus | null): boolean {
+    const fields: Array<keyof HubLLMServiceStatus> = ["credits_total", "credits_used", "credits_remaining", "credits_available"];
+    if (fields.some((field) => numeric(status?.[field]) > 0)) return true;
+    return creditGrants(status).some((grant) => (
+        numeric(grant.credits_total) > 0
+        || numeric(grant.credits_used) > 0
+        || numeric(grant.credits_remaining) > 0
+        || numeric(grant.credits_available) > 0
+    ));
 }
 
 function formatTime(value?: string, lang?: string): string {
@@ -299,14 +336,14 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             setStatus(next);
             onStatusChangeRef.current?.(next);
         } catch (error) {
-            setLoadError(String(error));
+            setLoadError(String(error || ""));
         } finally {
             setLoading(false);
             setRefreshing(false);
         }
-    }, []); // no deps — onStatusChange is read from ref
+    }, []); // onStatusChange is read from ref
 
-    // Load once on mount. loadStatus is stable (no deps), so this runs exactly once.
+    // Load once on mount. Inline errors are localized at render time.
     useEffect(() => {
         loadStatus();
     }, [loadStatus]);
@@ -336,13 +373,22 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     }, [loadStatus]);
 
     const activeGroupNames = useMemo(() => {
-        if (!status?.service_group_names?.length) return [] as string[];
-        return status.service_group_names.filter(Boolean);
+        const names = (status?.service_group_names || []).filter(Boolean);
+        return names.length ? names : (status?.service_group_ids || []).filter(Boolean);
     }, [status]);
 
     const availableModels = useMemo(() => {
         return (status?.available_models || []).filter(Boolean);
     }, [status]);
+
+    const authorizedModelsForDisplay = useMemo(() => {
+        const models = (status?.authorized_models || []).filter((model) => model?.name);
+        if (models.length) return models;
+        return availableModels.map((name) => ({
+            name,
+            service_group_ids: (status?.service_group_ids || activeGroupNames).filter(Boolean),
+        }));
+    }, [activeGroupNames, availableModels, status]);
 
     const totals = useMemo(() => creditTotals(status), [status]);
     const grantsForDetails = useMemo(() => {
@@ -350,6 +396,16 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         const all = creditGrants(status);
         return all.filter((grant) => String(grant.status || "").toLowerCase() !== "expired");
     }, [status]);
+    const isActiveUnmeteredService = useMemo(() => {
+        if (!status?.active || grantsForDetails.length > 0 || hasAnyCreditValue(status)) return false;
+        return availableModels.length > 0 || authorizedModelsForDisplay.length > 0 || activeGroupNames.length > 0;
+    }, [activeGroupNames, availableModels, authorizedModelsForDisplay, grantsForDetails, status]);
+    const expiryLabel = useMemo(() => {
+        const expiry = serviceExpiry(status);
+        if (expiry) return formatTime(expiry, lang);
+        if (isActiveUnmeteredService) return t("No expiry", "长期有效", "長期有效");
+        return "-";
+    }, [isActiveUnmeteredService, lang, status, t]);
     const statusSummary = useMemo(() => serviceStatusSummary(status, lang, t), [status, lang, t]);
 
     const openHubCardStorePage = useCallback(async () => {
@@ -371,12 +427,12 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             const cfg = await callBackend(() => LoadConfig()) as { remote_hub_url?: string; remote_viewer_token?: string; remote_tenant_id?: string; remote_email?: string } | null;
             const url = buildHubCreditsURL(cfg?.remote_hub_url, cfg?.remote_viewer_token, cfg?.remote_tenant_id, cfg?.remote_email);
             if (!url) {
-                await showAlert(t("Credits page is unavailable because Hub URL is missing.", "Hub \u5730\u5740\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00 Credits \u9875\u9762\u3002"));
+                await showAlert(t("Credits page is unavailable because Hub URL is missing.", "Hub 地址缺失，暂时无法打开额度页面。", "Hub 位址缺失，暫時無法開啟額度頁面。"));
                 return;
             }
             safeBrowserOpenURL(url);
         } catch (error) {
-            await showAlert(String(error || t("Failed to open Credits page", "\u6253\u5f00 Credits \u9875\u9762\u5931\u8d25")));
+            await showAlert(String(error || t("Failed to open Credits page", "打开额度页面失败", "開啟額度頁面失敗")));
         }
     }, [showAlert, t]);
 
@@ -396,11 +452,11 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             onStatusChangeRef.current?.(next);
             setRedeemResult({ ok: true, msg: t("Redeem successful", "兑换成功") });
         } catch (error) {
-            setRedeemResult({ ok: false, msg: String(error) });
+            setRedeemResult({ ok: false, msg: localizeHubServiceRedeemError(error, lang) });
         } finally {
             setRedeeming(false);
         }
-    }, [redeemCode, t]);
+    }, [lang, redeemCode, t]);
 
     if (loading) {
         return <div className="hub-service-redeem__loading">{t("Loading service status...", "正在加载服务状态...")}</div>;
@@ -418,18 +474,18 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                             type="button"
                             onClick={() => void openHubCardStorePage()}
                             className="hub-service-redeem__button hub-service-redeem__button--buy"
-                            title={t("Open card store to buy Credits", "\u524d\u5f80\u670d\u52a1\u5361\u5546\u5e97\u8d2d\u4e70 Credits", "\u524d\u5f80\u670d\u52d9\u5361\u5546\u5e97\u8cfc\u8cb7 Credits")}
+                            title={t("Open card store to buy Credits", "前往服务卡商店购买额度", "前往服務卡商店購買額度")}
                         >
                             <span className="hub-service-redeem__buy-icon" aria-hidden="true" />
-                            <span>{t("Buy Credits", "\u8d2d\u4e70 Credits", "\u8cfc\u8cb7 Credits")}</span>
+                            <span>{t("Buy Credits", "购买额度", "購買額度")}</span>
                         </button>
                         <button
                             type="button"
                             onClick={() => void openHubCreditsPage()}
                             className="hub-service-redeem__button hub-service-redeem__button--secondary"
-                            title={t("Open Credits page to view balance", "\u524d\u5f80 Credits \u9875\u9762\u67e5\u770b\u4f59\u989d", "\u524d\u5f80 Credits \u9801\u9762\u67e5\u770b\u9918\u984d")}
+                            title={t("Open Credits page to view balance", "前往额度页面查看余额", "前往額度頁面查看餘額")}
                         >
-                            {t("View Credits", "\u67e5\u770b Credits", "\u67e5\u770b Credits")}
+                            {t("View Credits", "查看额度", "查看額度")}
                         </button>
                         <button type="button" onClick={() => loadStatus(true)} disabled={refreshing} className="hub-service-redeem__button hub-service-redeem__button--secondary">
                             {refreshing ? t("Refreshing...", "刷新中...") : t("Refresh", "刷新")}
@@ -466,7 +522,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                 {/* loadError: show inline in the status card, not above the redeem input */}
                 {loadError && (
                     <div className="hub-service-redeem__message hub-service-redeem__message--spaced" data-kind="warning">
-                        {loadError}
+                        {localizeServiceStatusReason(loadError, lang, t)}
                     </div>
                 )}
 
@@ -483,7 +539,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                     </div>
                     <div className="hub-service-redeem__metric-card">
                         <div className="hub-service-redeem__label">{t("Valid Until", "有效期至")}</div>
-                        <div className="hub-service-redeem__value">{formatTime(serviceExpiry(status), lang)}</div>
+                        <div className="hub-service-redeem__value">{expiryLabel}</div>
                     </div>
                     <div className="hub-service-redeem__metric-card">
                         <div className="hub-service-redeem__label">{t("Default Model", "默认模型")}</div>
@@ -493,16 +549,16 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
 
                 <div className="hub-service-redeem__credit-grid">
                     <div className="hub-service-redeem__credit-card">
-                        <div className="hub-service-redeem__label">{t("Total credits", "总 credits")}</div>
-                        <div className="hub-service-redeem__value hub-service-redeem__value--primary">{formatCredits(totals.total)}</div>
+                        <div className="hub-service-redeem__label">{t("Total credits", "总额度", "總額度")}</div>
+                        <div className="hub-service-redeem__value hub-service-redeem__value--primary">{isActiveUnmeteredService ? formatUnlimitedCredits(lang) : formatCredits(totals.total)}</div>
                     </div>
                     <div className="hub-service-redeem__credit-card">
-                        <div className="hub-service-redeem__label">{t("Used credits", "已用 credits")}</div>
-                        <div className="hub-service-redeem__value hub-service-redeem__value--warning">{formatCredits(totals.used)}</div>
+                        <div className="hub-service-redeem__label">{t("Used credits", "已用额度", "已用額度")}</div>
+                        <div className="hub-service-redeem__value hub-service-redeem__value--warning">{isActiveUnmeteredService ? "-" : formatCredits(totals.used)}</div>
                     </div>
                     <div className="hub-service-redeem__credit-card">
-                        <div className="hub-service-redeem__label">{t("Remaining credits", "剩余 credits")}</div>
-                        <div className="hub-service-redeem__value hub-service-redeem__value--success">{formatCredits(totals.remaining)}</div>
+                        <div className="hub-service-redeem__label">{t("Remaining credits", "剩余额度", "剩餘額度")}</div>
+                        <div className="hub-service-redeem__value hub-service-redeem__value--success">{isActiveUnmeteredService ? formatUnlimitedCredits(lang) : formatCredits(totals.remaining)}</div>
                     </div>
                 </div>
 
@@ -516,7 +572,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                 {!statusSummary.detail && !status?.active && status?.inactive_reasons?.length ? (
                     <div className="hub-service-redeem__message hub-service-redeem__message--top" data-kind="warning">
                         {status.inactive_reasons.map((reason, i) => (
-                            <div key={i}>- {reason}</div>
+                            <div key={i}>- {localizeServiceStatusReason(reason, lang, t)}</div>
                         ))}
                     </div>
                 ) : null}
@@ -566,14 +622,18 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                             </tbody>
                         </table>
                     ) : (
-                        <div className="hub-service-redeem__empty">{t("No grant credit details", "暂无授权额度明细", "暫無授權額度明細")}</div>
+                        <div className="hub-service-redeem__empty">
+                            {isActiveUnmeteredService
+                                ? t("Free service does not require grant credit details.", "免费服务无需授权额度明细。", "免費服務無需授權額度明細。")
+                                : t("No grant credit details", "暂无授权额度明细", "暫無授權額度明細")}
+                        </div>
                     )}
                 </div>
 
                 {/* Authorized Models table */}
                 <div className="hub-service-redeem__section hub-service-redeem__section--large">
                     <div className="hub-service-redeem__label hub-service-redeem__label--spaced">{t("Authorized Models", "授权模型列表")}</div>
-                    {(status?.authorized_models || []).length ? (
+                    {authorizedModelsForDisplay.length ? (
                         <div className="hub-service-redeem__models-wrap">
                             <table className="hub-service-redeem__detail-table hub-service-redeem__models-table">
                                 <colgroup>
@@ -587,7 +647,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {(status?.authorized_models || []).map((model) => {
+                                    {authorizedModelsForDisplay.map((model) => {
                                         const groups = (model.service_group_ids || []).filter(Boolean);
                                         return (
                                             <tr key={model.name}>

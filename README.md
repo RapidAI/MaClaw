@@ -244,7 +244,7 @@ MaClaw 不限于一种使用方式，你可以在多个入口与它协作：
 编程是 MaClaw 的工作能力之一，通过编码工作流和外部编程工具协作完成：
 
 *   **结构化流程**：需求分析 → 技术设计 → 任务拆分 → 逐任务执行 → 集成联调
-*   **多工具支持**：Claude Code、Codex、Gemini CLI、OpenCode、CodeBuddy、Qoder CLI
+*   **多工具支持**：Claude Code、Codex、OpenCode、CodeBuddy、Qoder CLI
 *   **编码 SubAgent**：纯净上下文编码执行器，每个任务独立 context，不会因历史膨胀而失效
 *   **Swarm 编排**：大型任务可拆分给多个 AI 开发者并行执行，自动合并
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/session"
 )
@@ -162,56 +163,174 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		}
 	}
 
-	// Persist transcript to FTS5 session search store (non-blocking).
-	h.persistSessionTranscriptAsync(userID, history)
+	h.schedulePostConversationProcessing(userID, trimmed)
+}
 
-	// Process pending semantic dedup pairs asynchronously.
-	// This piggybacks on every agent loop exit to drain the pending queue
-	// without adding a separate timer. Each pair takes ~1-3s (one LLM call),
-	// --- Background LLM tasks ---
-	// Create a shared cancellable context for all background LLM work.
-	// If the user sends a new message, enterIMMessageSerializationBoundary
-	// will cancel this context, aborting in-flight background LLM calls
-	// to free API bandwidth for the new agent loop.
-	bgCtx, bgCancel := context.WithCancel(context.Background())
-	h.backgroundLLMCancel = bgCancel
-
-	// Process pending semantic dedup pairs asynchronously.
-	if h.memoryStore != nil && h.memoryStore.PendingDedupCount() > 0 {
-		go func() {
-			ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
-			defer cancel()
-			merged := h.memoryStore.ProcessPendingDedup(ctx)
-			if merged > 0 {
-				log.Printf("[semantic_dedup] processed pending pairs after agent loop: merged %d entries", merged)
-			}
-		}()
+func (h *IMMessageHandler) schedulePostConversationProcessing(userID string, history []agent.ConversationEntry) {
+	if h == nil {
+		return
 	}
-
-	// --- Task sedimentation: ensure meaningful conversations appear in recent tasks. ---
-	// Many tasks (SSH ops, file processing, info queries) don't go through
-	// workflow_artifact_saver or memory(action=save), so they never appear
-	// in the task list. This mechanism creates a lightweight project_knowledge
-	// entry at the end of every substantial agent loop, giving the task list
-	// a complete picture of what the user has been working on.
-	h.sedimentTaskEntry(userID, history)
-
-	// --- Online incremental extraction (Mem0-style) ---
-	// Uses the shared bgCtx - cancelled if user sends a new message.
-	h.triggerOnlineExtractionWithContext(bgCtx, userID, history)
-
-	// --- Deferred session-start extraction ---
+	if h.app != nil && strings.TrimSpace(h.app.testHomeDir) != "" {
+		log.Printf("[post-conversation] skip async post-processing in test mode user=%s history_len=%d", userID, len(history))
+		return
+	}
+	var deferredMessages []memory.ConversationMessage
 	if raw, ok := h.deferredSessionExtraction.LoadAndDelete(userID); ok {
 		if msgs, ok := raw.([]memory.ConversationMessage); ok {
-			go func() {
-				// Check if cancelled before starting the expensive LLM call.
-				if bgCtx.Err() != nil {
-					return
-				}
-				h.sessionStartExtractor.MaybeExtractAsync(userID, msgs)
-			}()
+			deferredMessages = msgs
 		}
 	}
+	historySnapshot := append([]agent.ConversationEntry(nil), history...)
+	h.ensurePostConversationScheduler().Enqueue(postConversationTask{
+		UserID:           userID,
+		History:          historySnapshot,
+		DeferredMessages: deferredMessages,
+	})
+}
+
+func (h *IMMessageHandler) ensurePostConversationScheduler() *postConversationScheduler {
+	h.postConversationSchedulerMu.Lock()
+	defer h.postConversationSchedulerMu.Unlock()
+	if h.postConversationScheduler != nil {
+		return h.postConversationScheduler
+	}
+	h.postConversationScheduler = newPostConversationScheduler(h)
+	return h.postConversationScheduler
+}
+
+func (h *IMMessageHandler) runPostConversationProcessing(bgCtx context.Context, userID string, history []agent.ConversationEntry, deferredMessages []memory.ConversationMessage) {
+	startedAt := time.Now()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[post-conversation] panic user=%s panic=%v", userID, r)
+		}
+		log.Printf("[post-conversation] done user=%s duration=%s cancelled=%v history_len=%d", userID, time.Since(startedAt).Round(time.Millisecond), bgCtx.Err() != nil, len(history))
+	}()
+	log.Printf("[post-conversation] start user=%s history_len=%d", userID, len(history))
+
+	// Persist transcript to FTS5 session search store (non-blocking).
+	stageStartedAt := time.Now()
+	h.persistSessionTranscriptAsync(userID, history)
+	log.Printf("[post-conversation] stage=transcript user=%s duration=%s cancelled=%v", userID, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
+	if h.app != nil && !h.app.waitForForegroundAgentIdle(bgCtx, "post-conversation-llm", userID) {
+		return
+	}
+
+	// Process pending semantic dedup pairs in the background. This can make LLM
+	// calls, so it uses the owner-scoped cancellable context.
+	if h.memoryStore != nil && h.memoryStore.PendingDedupCount() > 0 {
+		stageStartedAt = time.Now()
+		ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
+		merged := h.memoryStore.ProcessPendingDedup(ctx)
+		cancel()
+		log.Printf("[post-conversation] stage=semantic_dedup user=%s merged=%d duration=%s cancelled=%v", userID, merged, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
+		if merged > 0 {
+			log.Printf("[semantic_dedup] processed pending pairs after agent loop: merged %d entries", merged)
+		}
+	}
+
+	// Recent-task sedimentation is useful, but not required before the visible
+	// answer is delivered to the user.
+	stageStartedAt = time.Now()
+	h.sedimentTaskEntry(userID, history)
+	log.Printf("[post-conversation] stage=sediment user=%s duration=%s cancelled=%v", userID, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
+	if h.app != nil && !h.app.waitForForegroundAgentIdle(bgCtx, "online-extraction", userID) {
+		return
+	}
+
+	// Online incremental extraction uses the shared bgCtx and exits early if the
+	// user sends a new foreground message for the same owner.
+	stageStartedAt = time.Now()
+	h.triggerOnlineExtractionWithContext(bgCtx, userID, history)
+	log.Printf("[post-conversation] stage=online_extraction user=%s duration=%s cancelled=%v", userID, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
+
+	if len(deferredMessages) > 0 && bgCtx.Err() == nil && h.sessionStartExtractor != nil {
+		stageStartedAt = time.Now()
+		extractCtx := llm.WithRequestTrace(bgCtx, llm.RequestTrace{Caller: "session-start-extraction", OwnerID: userID})
+		h.sessionStartExtractor.MaybeExtract(extractCtx, userID, deferredMessages)
+		log.Printf("[post-conversation] stage=session_start_extraction user=%s messages=%d duration=%s cancelled=%v", userID, len(deferredMessages), time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
+	}
+}
+
+func (h *IMMessageHandler) storeBackgroundLLMCancelForOwner(userID string, cancel context.CancelFunc) {
+	if h == nil || cancel == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		h.backgroundLLMMu.Lock()
+		previous := h.backgroundLLMCancel
+		h.backgroundLLMCancel = cancel
+		h.backgroundLLMMu.Unlock()
+		if previous != nil {
+			previous()
+		}
+		return
+	}
+	if previous, loaded := h.backgroundLLMCancelByUser.LoadOrStore(userID, cancel); loaded {
+		if prevCancel, ok := previous.(context.CancelFunc); ok && prevCancel != nil {
+			prevCancel()
+		}
+		h.backgroundLLMCancelByUser.Store(userID, cancel)
+	}
+}
+
+func (h *IMMessageHandler) cancelBackgroundLLMForOwner(userID string) bool {
+	if h == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		h.backgroundLLMMu.Lock()
+		cancel := h.backgroundLLMCancel
+		h.backgroundLLMCancel = nil
+		h.backgroundLLMMu.Unlock()
+		if cancel == nil {
+			return false
+		}
+		cancel()
+		return true
+	}
+	if previous, loaded := h.backgroundLLMCancelByUser.LoadAndDelete(userID); loaded {
+		if cancel, ok := previous.(context.CancelFunc); ok && cancel != nil {
+			cancel()
+			return true
+		}
+	}
+	return h.ensurePostConversationScheduler().CancelOwner(userID, "foreground")
+}
+
+func (h *IMMessageHandler) cancelAllBackgroundLLM(reason string) int {
+	if h == nil {
+		return 0
+	}
+	cancelled := 0
+	h.backgroundLLMMu.Lock()
+	legacyCancel := h.backgroundLLMCancel
+	h.backgroundLLMCancel = nil
+	h.backgroundLLMMu.Unlock()
+	if legacyCancel != nil {
+		legacyCancel()
+		cancelled++
+	}
+	h.backgroundLLMCancelByUser.Range(func(key, value any) bool {
+		if cancel, ok := value.(context.CancelFunc); ok && cancel != nil {
+			cancel()
+			cancelled++
+		}
+		h.backgroundLLMCancelByUser.Delete(key)
+		return true
+	})
+	h.postConversationSchedulerMu.Lock()
+	postScheduler := h.postConversationScheduler
+	h.postConversationSchedulerMu.Unlock()
+	if postScheduler != nil {
+		cancelled += postScheduler.CancelAll(reason)
+	}
+	if cancelled > 0 {
+		log.Printf("[background-llm] cancel_all reason=%s cancelled=%d", strings.TrimSpace(reason), cancelled)
+	}
+	return cancelled
 }
 
 func sanitizeVEGroupExecutorHistory(userID string, history []agent.ConversationEntry) []agent.ConversationEntry {
@@ -235,8 +354,12 @@ func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, hist
 	if _, ok := h.suppressPendingUserReplyUpdate.Load(userID); ok {
 		return
 	}
-	assistantText := strings.TrimSpace(firstNonEmptyTraceText(resp.Text, latestAssistantText(history)))
+	assistantText := sanitizePendingUserReplyQuestion(firstNonEmptyTraceText(resp.Text, latestAssistantText(history)))
 	if assistantText == "" {
+		h.pendingUserReply.Delete(userID)
+		return
+	}
+	if looksLikeBrowserDebugInstruction(assistantText) {
 		h.pendingUserReply.Delete(userID)
 		return
 	}
@@ -246,18 +369,38 @@ func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, hist
 	// the next message arrives (typically seconds to minutes later).
 	historyCopy := cloneConversationEntries(history)
 	go func() {
-		if !h.classifyPendingUserReplyPrompt(assistantText) {
+		if !h.classifyPendingUserReplyPrompt(userID, assistantText) {
 			h.pendingUserReply.Delete(userID)
 			return
 		}
 		h.pendingUserReply.Store(userID, &pendingUserReplyState{Question: truncateRunes(assistantText, 500), History: historyCopy, Timestamp: time.Now()})
-		log.Printf("[PendingUserReply] stored pending text reply context for user=%s historyLen=%d question=%q", userID, len(historyCopy), truncateRunes(assistantText, 80))
+		log.Printf("[PendingUserReply] stored pending text reply context for user=%s historyLen=%d question_len=%d", userID, len(historyCopy), len([]rune(assistantText)))
 	}()
 }
 
-func (h *IMMessageHandler) classifyPendingUserReplyPrompt(assistantText string) bool {
-	assistantText = strings.TrimSpace(assistantText)
+func sanitizePendingUserReplyQuestion(text string) string {
+	text = strings.TrimSpace(agent.StripRolePrefixHallucination(text))
+	return strings.TrimSpace(text)
+}
+
+func looksLikeBrowserDebugInstruction(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "chrome://inspect/#remote-debugging") ||
+		strings.Contains(normalized, "edge://inspect/#remote-debugging") ||
+		strings.Contains(normalized, "allow remote debugging") ||
+		(strings.Contains(normalized, "remote debugging") && strings.Contains(normalized, "chrome")) ||
+		(strings.Contains(normalized, "远程调试") && strings.Contains(normalized, "chrome"))
+}
+
+func (h *IMMessageHandler) classifyPendingUserReplyPrompt(userID, assistantText string) bool {
+	assistantText = sanitizePendingUserReplyQuestion(assistantText)
 	if assistantText == "" {
+		return false
+	}
+	if looksLikeBrowserDebugInstruction(assistantText) {
 		return false
 	}
 	if !looksLikePendingUserReplyPromptCandidate(assistantText) {
@@ -271,7 +414,8 @@ func (h *IMMessageHandler) classifyPendingUserReplyPrompt(assistantText string) 
 		log.Printf("[PendingUserReply] prompt test classifier failed: %v", err)
 	}
 	if h != nil {
-		result, err := h.LLMClassify(context.Background(), LLMClassifyRequest{
+		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "pending-reply-prompt", OwnerID: userID})
+		result, err := h.LLMClassify(ctx, LLMClassifyRequest{
 			SystemPrompt: `You classify whether the assistant's last message is waiting for the user's next reply inside the same task.
 
 Reply with exactly one word:
@@ -290,7 +434,7 @@ Reply with exactly one word:
 	return false
 }
 
-func (h *IMMessageHandler) classifyPendingUserReplyAnswer(question, answer string) (bool, bool) {
+func (h *IMMessageHandler) classifyPendingUserReplyAnswer(userID, question, answer string) (bool, bool) {
 	question = strings.TrimSpace(question)
 	answer = strings.TrimSpace(answer)
 	if question == "" || answer == "" {
@@ -305,7 +449,8 @@ func (h *IMMessageHandler) classifyPendingUserReplyAnswer(question, answer strin
 	}
 
 	if h != nil {
-		result, err := h.LLMClassify(context.Background(), LLMClassifyRequest{
+		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "pending-reply-answer", OwnerID: userID})
+		result, err := h.LLMClassify(ctx, LLMClassifyRequest{
 			SystemPrompt: `You classify whether the user's next message answers the assistant's pending question or starts a new task.
 
 Reply with exactly one word:

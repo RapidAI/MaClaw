@@ -14,23 +14,50 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 // CapabilityGapDetector detects capability gaps in Agent responses and
 // resolves them by searching SkillHub for matching Skills.
 type CapabilityGapDetector struct {
-	app             *App
-	hubClient       *SkillHubClient
-	skillExecutor   *SkillExecutor
-	riskAssessor    *RiskAssessor
-	auditLog        *AuditLog
-	llmConfig       corelib.MaclawLLMConfig
-	client          *http.Client
-	confirmCallback func(skillName string, riskDetails string) bool
+	app                        *App
+	hubClient                  *SkillHubClient
+	skillExecutor              *SkillExecutor
+	riskAssessor               *RiskAssessor
+	auditLog                   *AuditLog
+	llmConfig                  corelib.MaclawLLMConfig
+	client                     *http.Client
+	confirmCallback            func(skillName string, riskDetails string) bool
+	confirmCallbackWithContext func(ctx context.Context, skillName string, riskDetails string) bool
 	// unifiedClassifier is used to check whether the original user message
 	// was classified as non-coding/ambiguous before applying gap detection.
 	unifiedClassifier *intent.UnifiedIntentClassifier
+}
+
+type capabilityGapRuntimeContextKey struct{}
+
+type capabilityGapRuntimeContext struct {
+	Platform      string
+	PolicyOwnerID string
+}
+
+func withCapabilityGapRuntimeContext(ctx context.Context, platform, policyOwnerID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, capabilityGapRuntimeContextKey{}, capabilityGapRuntimeContext{
+		Platform:      strings.TrimSpace(platform),
+		PolicyOwnerID: strings.TrimSpace(policyOwnerID),
+	})
+}
+
+func capabilityGapRuntimeFromContext(ctx context.Context) (platform, policyOwnerID string) {
+	if ctx == nil {
+		return "", ""
+	}
+	runtimeCtx, _ := ctx.Value(capabilityGapRuntimeContextKey{}).(capabilityGapRuntimeContext)
+	return strings.TrimSpace(runtimeCtx.Platform), strings.TrimSpace(runtimeCtx.PolicyOwnerID)
 }
 
 // NewCapabilityGapDetector creates a new CapabilityGapDetector.
@@ -59,6 +86,34 @@ func NewCapabilityGapDetector(
 // set, critical-risk Skills are rejected automatically.
 func (d *CapabilityGapDetector) SetConfirmCallback(cb func(skillName string, riskDetails string) bool) {
 	d.confirmCallback = cb
+	if cb == nil {
+		d.confirmCallbackWithContext = nil
+		return
+	}
+	d.confirmCallbackWithContext = func(ctx context.Context, skillName string, riskDetails string) bool {
+		return cb(skillName, riskDetails)
+	}
+}
+
+func (d *CapabilityGapDetector) SetConfirmCallbackWithContext(cb func(ctx context.Context, skillName string, riskDetails string) bool) {
+	d.confirmCallbackWithContext = cb
+	if cb == nil {
+		d.confirmCallback = nil
+		return
+	}
+	d.confirmCallback = func(skillName string, riskDetails string) bool {
+		return cb(context.Background(), skillName, riskDetails)
+	}
+}
+
+func (d *CapabilityGapDetector) confirmSkillReview(ctx context.Context, skillName, riskDetails string) bool {
+	if d.confirmCallbackWithContext != nil {
+		return d.confirmCallbackWithContext(ctx, skillName, riskDetails)
+	}
+	if d.confirmCallback != nil {
+		return d.confirmCallback(skillName, riskDetails)
+	}
+	return true
 }
 
 // SetUnifiedClassifier sets the UIC instance for intent-aware gap detection.
@@ -190,9 +245,12 @@ func (d *CapabilityGapDetector) Resolve(
 		// Developer mode records scan findings but never blocks installation.
 		var githubScanReport *cskill.ScanReport
 		{
-			scanner := NewSkillSecurityScanner(d.app, nil)
-			scanReport := scanner.ScanInstallStaged(ctx, imported, imported.SkillDir, sendStatus)
-			githubScanReport = scanReport
+			var scanReport *cskill.ScanReport
+			if d.app == nil || !d.app.isRiskGuardrailOffMode() {
+				scanner := NewSkillSecurityScanner(d.app, nil)
+				scanReport = scanner.ScanInstallStaged(ctx, imported, imported.SkillDir, sendStatus)
+				githubScanReport = scanReport
+			}
 			if d.app != nil && d.app.skillInstallScanShouldBlock(scanReport) {
 				if d.auditLog != nil {
 					_ = d.auditLog.Log(security.AuditEntry{
@@ -208,10 +266,10 @@ func (d *CapabilityGapDetector) Resolve(
 			}
 			if d.app != nil && d.app.skillInstallReviewNeedsConfirmation(scanReport) {
 				riskDetails := FormatScanReportForUser(scanReport, imported.Name)
-				confirmed := d.confirmCallback == nil
-				if d.confirmCallback != nil {
+				confirmed := d.confirmCallbackWithContext == nil && d.confirmCallback == nil
+				if d.confirmCallbackWithContext != nil || d.confirmCallback != nil {
 					sendStatus(localizedSkillInstallReviewStatus(lang, scanReport.Summary))
-					confirmed = d.confirmCallback(imported.Name, riskDetails)
+					confirmed = d.confirmSkillReview(ctx, imported.Name, riskDetails)
 				} else {
 					sendStatus(localizedSkillInstallNoConfirmationStatus(lang, imported.Name))
 				}
@@ -308,8 +366,10 @@ func (d *CapabilityGapDetector) Resolve(
 	// Developer mode records scan findings but never blocks installation.
 	var scanReport *cskill.ScanReport
 	{
-		scanner := NewSkillSecurityScanner(d.app, nil)
-		scanReport = scanner.ScanInstallStaged(ctx, skill, stagingDir, sendStatus)
+		if d.app == nil || !d.app.isRiskGuardrailOffMode() {
+			scanner := NewSkillSecurityScanner(d.app, nil)
+			scanReport = scanner.ScanInstallStaged(ctx, skill, stagingDir, sendStatus)
+		}
 		if d.app != nil && d.app.skillInstallScanShouldBlockForSource(scanReport, "skillhub") {
 			cskill.CleanupStaging(stagingDir)
 			if d.auditLog != nil {
@@ -326,10 +386,10 @@ func (d *CapabilityGapDetector) Resolve(
 		}
 		if d.app != nil && d.app.skillInstallReviewNeedsConfirmationForSource(scanReport, "skillhub") {
 			riskDetails := FormatScanReportForUser(scanReport, chosen.Name)
-			confirmed := d.confirmCallback == nil
-			if d.confirmCallback != nil {
+			confirmed := d.confirmCallbackWithContext == nil && d.confirmCallback == nil
+			if d.confirmCallbackWithContext != nil || d.confirmCallback != nil {
 				sendStatus(localizedSkillInstallReviewStatus(lang, scanReport.Summary))
-				confirmed = d.confirmCallback(chosen.Name, riskDetails)
+				confirmed = d.confirmSkillReview(ctx, chosen.Name, riskDetails)
 			} else {
 				sendStatus(localizedSkillInstallNoConfirmationStatus(lang, chosen.Name))
 			}
@@ -450,7 +510,8 @@ func (d *CapabilityGapDetector) doLLMChat(messages []map[string]interface{}) (st
 		msgs[i] = m
 	}
 
-	result, err := doSimpleLLMRequest(context.Background(), d.llmConfig, msgs, d.client, 30*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "capability-gap"})
+	result, err := doSimpleLLMRequest(ctx, d.llmConfig, msgs, d.client, 30*time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -636,9 +697,12 @@ func (d *CapabilityGapDetector) AutoPublishSkill(ctx context.Context, entry core
 	// high/critical reports; other modes record the finding and allow publish.
 	scanEntry := entry
 	scanEntry.SkillDir = skillDir
-	scanner := NewSkillSecurityScanner(d.app, nil)
-	report := scanner.ScanInstallStaged(ctx, &scanEntry, skillDir, sendStatus)
-	if report == nil {
+	var report *cskill.ScanReport
+	if d.app == nil || !d.app.isRiskGuardrailOffMode() {
+		scanner := NewSkillSecurityScanner(d.app, nil)
+		report = scanner.ScanInstallStaged(ctx, &scanEntry, skillDir, sendStatus)
+	}
+	if report == nil && !(d.app != nil && d.app.isRiskGuardrailOffMode()) {
 		if d.app != nil && !d.app.skillInstallMissingScanShouldBlock() {
 			if d.auditLog != nil {
 				_ = d.auditLog.Log(security.AuditEntry{

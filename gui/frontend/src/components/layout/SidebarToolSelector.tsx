@@ -1,11 +1,10 @@
 import claudecodeIcon from '../../assets/images/claudecode.png';
 import codebuddyIcon from '../../assets/images/Codebuddy.png';
 import codexIcon from '../../assets/images/Codex.png';
-import geminiIcon from '../../assets/images/gemincli.png';
 import iflowIcon from '../../assets/images/iflow.png';
 import opencodeIcon from '../../assets/images/opencode.png';
 import kiloIcon from '../../assets/images/KiloCode.png';
-import { getToolLabel, getVisibleToolOptions } from '../../config/toolCatalog';
+import { getToolLabel, getVisibleToolOptions, normalizeToolTab } from '../../config/toolCatalog';
 
 type SidebarToolSelectorProps = {
     activeTool: string;
@@ -18,7 +17,6 @@ type SidebarToolSelectorProps = {
 
 const toolIcons: Record<string, string> = {
     claude: claudecodeIcon,
-    gemini: geminiIcon,
     codex: codexIcon,
     opencode: opencodeIcon,
     codebuddy: codebuddyIcon,
@@ -26,7 +24,7 @@ const toolIcons: Record<string, string> = {
     kilo: kiloIcon,
 };
 
-const sidebarToolSelectorLabels = ['Claude Code', 'Gemini CLI', 'CodeBuddy', 'Kilo Code'];
+const sidebarToolSelectorLabels = ['Claude Code', 'CodeBuddy', 'Kilo Code'];
 
 /** Premium decorative divider shown when coding tool entry is hidden. */
 function PremiumDivider() {
@@ -55,11 +53,12 @@ export const SidebarToolSelector = ({
         return <PremiumDivider />;
     }
 
+    const safeActiveTool = normalizeToolTab(activeTool);
     const visibleTools = getVisibleToolOptions(config);
-    const tools = visibleTools.some((tool) => tool.id === activeTool)
+    const tools = visibleTools.some((tool) => tool.id === safeActiveTool)
         ? visibleTools
-        : [{ id: activeTool, name: getToolLabel(activeTool) }, ...visibleTools];
-    const activeToolIcon = toolIcons[activeTool];
+        : [{ id: safeActiveTool, name: getToolLabel(safeActiveTool) }, ...visibleTools];
+    const activeToolIcon = toolIcons[safeActiveTool];
 
     return (
         <div style={{ flexShrink: 0, borderBottom: '1px solid var(--theme-border)' }}>
@@ -72,7 +71,7 @@ export const SidebarToolSelector = ({
                 {activeToolIcon
                     ? <img src={activeToolIcon} style={{ width: '18px', height: '18px', flexShrink: 0 }} alt="" />
                     : <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--theme-primary)', flexShrink: 0 }} />}
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.82rem', fontWeight: 700, color: 'var(--theme-text-primary)', flex: 1 }}>{getToolLabel(activeTool)}</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.82rem', fontWeight: 700, color: 'var(--theme-text-primary)', flex: 1 }}>{getToolLabel(safeActiveTool)}</span>
                 <span style={{ fontSize: '0.72rem', opacity: 0.55, flexShrink: 0 }}>{toolDropdownOpen ? '\u25B4' : '\u25BE'}</span>
             </button>
             {toolDropdownOpen && (
@@ -80,14 +79,14 @@ export const SidebarToolSelector = ({
                     {tools.map(tool => (
                         <button
                             type="button"
-                            aria-current={activeTool === tool.id ? 'true' : undefined}
+                            aria-current={safeActiveTool === tool.id ? 'true' : undefined}
                             key={tool.id}
                             onClick={() => switchTool(tool.id)}
-                            style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '8px', padding: '7px 10px', borderRadius: '6px', cursor: 'pointer', border: 0, fontSize: '0.82rem', color: 'var(--theme-text-primary)', background: activeTool === tool.id ? 'color-mix(in srgb, var(--theme-primary) 16%, transparent)' : 'transparent', fontWeight: activeTool === tool.id ? 700 : 500, textAlign: 'left' }}
+                            style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '8px', padding: '7px 10px', borderRadius: '6px', cursor: 'pointer', border: 0, fontSize: '0.82rem', color: 'var(--theme-text-primary)', background: safeActiveTool === tool.id ? 'color-mix(in srgb, var(--theme-primary) 16%, transparent)' : 'transparent', fontWeight: safeActiveTool === tool.id ? 700 : 500, textAlign: 'left' }}
                         >
                             {toolIcons[tool.id] && <img src={toolIcons[tool.id]} style={{ width: '16px', height: '16px' }} alt="" />}
                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{tool.name}</span>
-                            {activeTool === tool.id && <span style={{ fontSize: '0.7rem', opacity: 0.65 }}>{'\u2713'}</span>}
+                            {safeActiveTool === tool.id && <span style={{ fontSize: '0.7rem', opacity: 0.65 }}>{'\u2713'}</span>}
                         </button>
                     ))}
                 </div>

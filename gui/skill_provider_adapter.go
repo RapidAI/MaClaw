@@ -18,10 +18,17 @@ func (p *skillExecutorProvider) ListActiveSkills() []tool.SkillSummary {
 		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
 			continue
 		}
+		if isShellBrowserAutomationSkill(s) {
+			continue
+		}
 		out = append(out, tool.SkillSummary{
-			Name:        s.Name,
-			Triggers:    s.Triggers,
-			Description: s.Description,
+			Name:                s.Name,
+			Triggers:            s.Triggers,
+			Description:         s.Description,
+			RequiresTools:       s.RequiresTools,
+			FallbackForTools:    s.FallbackForTools,
+			RequiresToolsets:    s.RequiresToolsets,
+			FallbackForToolsets: s.FallbackForToolsets,
 		})
 	}
 	return out

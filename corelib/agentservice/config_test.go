@@ -79,7 +79,7 @@ func TestDefaultParameterDefinitionsHideCodingToolConfig(t *testing.T) {
 	for _, def := range defs {
 		byKey[def.Key] = def
 	}
-	for _, key := range []string{"claude", "gemini", "codex", "opencode", "codebuddy", "iflow", "kilo", "cursor", "projects", "current_project", "active_tool", "default_tool", "default_tool_provider", "extra_tool_configs", "default_proxy_scope_coding_tools", "use_windows_terminal", "nl_skills"} {
+	for _, key := range []string{"claude", "codex", "opencode", "codebuddy", "iflow", "kilo", "projects", "current_project", "active_tool", "default_tool", "default_tool_provider", "extra_tool_configs", "default_proxy_scope_coding_tools", "use_windows_terminal", "nl_skills"} {
 		if byKey[key].Key != "" {
 			t.Fatalf("schema should hide coding/desktop field %s", key)
 		}

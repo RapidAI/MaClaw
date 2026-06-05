@@ -211,7 +211,7 @@ func (r *AdaptiveRetry) RecordFailure(toolName string, category FailureCategory,
 		return
 	}
 	r.ensureState()
-	toolName = strings.TrimSpace(toolName)
+	toolName = normalizeExperienceBrowserToolName(toolName)
 	if toolName == "" {
 		toolName = "unknown_tool"
 	}
@@ -240,7 +240,7 @@ func (r *AdaptiveRetry) persistFailureMemory(toolName string, category FailureCa
 	if r == nil || r.memoryStore == nil {
 		return
 	}
-	toolName = strings.TrimSpace(toolName)
+	toolName = normalizeExperienceBrowserToolName(toolName)
 	if toolName == "" {
 		toolName = "unknown_tool"
 	}

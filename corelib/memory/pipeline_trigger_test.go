@@ -54,3 +54,27 @@ func TestPipelineTriggerSoonDebouncesBursts(t *testing.T) {
 		t.Fatalf("pipeline run count = %d, want 1", got)
 	}
 }
+
+func TestPipelineStartDelayedDefersInitialRun(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Stop()
+	emitter := &pipelineTestEmitter{ch: make(chan struct{}, 4)}
+	pipeline := NewPipeline(store, nil, nil, nil, emitter)
+	pipeline.StartDelayed(80 * time.Millisecond)
+	defer pipeline.Stop()
+
+	select {
+	case <-emitter.ch:
+		t.Fatal("pipeline ran before initial delay")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	select {
+	case <-emitter.ch:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for delayed pipeline run")
+	}
+}

@@ -15,6 +15,7 @@ import (
 	coreliba2a "github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
+	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -81,6 +82,10 @@ type veOwnerLookup interface {
 
 type veMachineEventSender interface {
 	SendToMachine(machineID string, msg any) error
+}
+
+type veMachinePresenceGetter interface {
+	GetMachineInfo(ctx context.Context, machineID string) (*device.MachineRuntimeInfo, error)
 }
 
 type veHistorySearchMatch struct {
@@ -304,7 +309,7 @@ func VEStatusHandler(system store.SystemSettingsRepository, authenticator veMach
 	}
 }
 
-func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator veMachineAuthenticator) http.HandlerFunc {
+func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator veMachineAuthenticator, presenceGetters ...veMachinePresenceGetter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := authenticateVEMachine(w, r, authenticator)
 		if !ok {
@@ -329,6 +334,7 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 			if !veAccessAllowed(entry, accessID) {
 				continue
 			}
+			entry = applyVEDiscoverablePresence(r.Context(), entry, firstVEMachinePresenceGetter(presenceGetters...))
 			employees = append(employees, entry)
 		}
 		sort.SliceStable(employees, func(i, j int) bool { return employees[i].Name < employees[j].Name })
@@ -337,6 +343,31 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 			"max_group_participants": cfg.MaxGroupParticipants,
 		})
 	}
+}
+
+func applyVEDiscoverablePresence(ctx context.Context, entry digitalEmployeeEntry, getter veMachinePresenceGetter) digitalEmployeeEntry {
+	if getter == nil || inferVEEmployeeType(entry) != veEmployeeTypePhysical {
+		return entry
+	}
+	info, err := getter.GetMachineInfo(ctx, entry.MachineID)
+	if err != nil {
+		return entry
+	}
+	if info != nil && info.Online {
+		entry.OnlineStatus = veOnlineStatusOnline
+	} else {
+		entry.OnlineStatus = veOnlineStatusOffline
+	}
+	return entry
+}
+
+func firstVEMachinePresenceGetter(getters ...veMachinePresenceGetter) veMachinePresenceGetter {
+	for _, getter := range getters {
+		if getter != nil {
+			return getter
+		}
+	}
+	return nil
 }
 
 // VEInitiateHandler handles POST /api/ve/{id}/initiate for a machine-owned direct discussion.

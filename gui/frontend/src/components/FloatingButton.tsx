@@ -27,7 +27,7 @@ declare global {
                     OpenPetSettingsFromMenu(): Promise<void>;
                     QuitApp(): Promise<void>;
                     LoadConfig(): Promise<Record<string, unknown>>;
-                    SaveConfig(config: Record<string, unknown>): Promise<void>;
+                    PatchConfigFields(patch: Record<string, unknown>): Promise<Record<string, unknown>>;
                 };
             };
         };
@@ -53,6 +53,7 @@ function callGoBinding(method: string, ...args: unknown[]): void {
 
 // Drag threshold (pixels)
 const DRAG_THRESHOLD = 5;
+const PET_CONFIG_FALLBACK_POLL_MS = 60000;
 
 type PetState = 'idle' | 'listening' | 'thinking' | 'speaking';
 type PetInteractionMode = 'quiet' | 'balanced' | 'active';
@@ -65,9 +66,14 @@ type PetStateEvent = {
     ttlMs?: number;
 };
 
-function subscribeRuntimeEvent(eventName: string, handler: (...args: any[]) => void): () => void {
-    const unsubscribe = EventsOn(eventName, handler);
-    return typeof unsubscribe === 'function' ? unsubscribe : () => EventsOff(eventName);
+function subscribeRuntimeEvent(eventName: string, handler: (...args: any[]) => void): (() => void) | undefined {
+    try {
+        const unsubscribe = EventsOn(eventName, handler);
+        return typeof unsubscribe === 'function' ? unsubscribe : () => EventsOff(eventName);
+    } catch (err) {
+        console.warn(`[FloatingButton] Runtime event unavailable: ${eventName}`, err);
+        return undefined;
+    }
 }
 
 function isAsrSource(source: unknown): boolean {
@@ -140,15 +146,25 @@ function readPetConfig(cfg: Record<string, unknown>): FloatingPetConfig {
     };
 }
 
+function arePetConfigsEqual(a: FloatingPetConfig, b: FloatingPetConfig): boolean {
+    return a.petEnabled === b.petEnabled
+        && a.petSkin === b.petSkin
+        && a.petSize === b.petSize
+        && a.motionEnabled === b.motionEnabled
+        && a.motionSoundEnabled === b.motionSoundEnabled
+        && a.motionSoundPreset === b.motionSoundPreset
+        && a.quietMode === b.quietMode
+        && a.interactionMode === b.interactionMode;
+}
+
 async function savePetMotionSoundEnabled(enabled: boolean): Promise<FloatingPetConfig> {
     const app = window.go?.main?.App;
-    if (!app?.LoadConfig || !app?.SaveConfig) {
+    if (!app?.LoadConfig || !app?.PatchConfigFields) {
         throw new Error('Go config bindings not available');
     }
     const cfg = await app.LoadConfig();
     const nextConfig = { ...cfg, pet_motion_sound_enabled: enabled };
-    await app.SaveConfig(nextConfig);
-    const savedConfig = await app.LoadConfig();
+    const savedConfig = await app.PatchConfigFields({ pet_motion_sound_enabled: enabled });
     return readPetConfig(savedConfig ?? nextConfig);
 }
 
@@ -434,11 +450,15 @@ export function FloatingButton() {
 
     useEffect(() => {
         let cancelled = false;
+        const applyPetConfig = (cfg: Record<string, unknown>) => {
+            const nextConfig = readPetConfig(cfg);
+            setPetConfig((current) => arePetConfigsEqual(current, nextConfig) ? current : nextConfig);
+        };
         const load = async () => {
             try {
                 const cfg = await window.go?.main?.App?.LoadConfig?.();
                 if (!cfg || cancelled) return;
-                setPetConfig(readPetConfig(cfg));
+                applyPetConfig(cfg);
             } catch (err) {
                 console.warn('[FloatingButton] LoadConfig failed:', err);
             }
@@ -449,16 +469,18 @@ export function FloatingButton() {
                 void load();
                 return;
             }
-            setPetConfig(readPetConfig(cfg));
+            applyPetConfig(cfg);
         };
         const offConfigChanged = subscribeRuntimeEvent('config-changed', handleConfigChange);
         const offConfigUpdated = subscribeRuntimeEvent('config-updated', handleConfigChange);
-        const timer = window.setInterval(load, 5000);
+        const timer = offConfigChanged || offConfigUpdated
+            ? undefined
+            : window.setInterval(load, PET_CONFIG_FALLBACK_POLL_MS);
         return () => {
             cancelled = true;
-            offConfigChanged();
-            offConfigUpdated();
-            window.clearInterval(timer);
+            offConfigChanged?.();
+            offConfigUpdated?.();
+            if (timer !== undefined) window.clearInterval(timer);
         };
     }, []);
 
@@ -527,7 +549,7 @@ export function FloatingButton() {
         const offPetState = subscribeRuntimeEvent('pet:state', handler);
         return () => {
             clearIdleTimer();
-            offPetState();
+            offPetState?.();
         };
     }, [petConfig.petEnabled, petConfig.quietMode, restoreIdleState]);
 

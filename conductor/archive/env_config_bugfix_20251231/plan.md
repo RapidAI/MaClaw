@@ -1,10 +1,10 @@
-# Implementation Plan - Targeted Environment Configuration Bugfix
+﻿# Implementation Plan - Targeted Environment Configuration Bugfix
 
-This plan outlines the steps to fix the environment configuration logic, ensuring correct cleanup and setup for Claude, Gemini, and Codex based on the selected provider.
+This plan outlines the steps to fix the environment configuration logic, ensuring correct cleanup and setup for Claude and Codex based on the selected provider.
 
 ## Phase 1: Core Logic Refactoring & Infrastructure
 - [x] Task: Audit and consolidate configuration paths for all tools in `common.go` or `app.go`.
-- [x] Task: Implement standardized, tool-specific cleanup functions (e.g., `clearClaudeConfig`, `clearGeminiConfig`, `clearCodexConfig`).
+- [x] Task: Implement standardized, tool-specific cleanup functions (e.g., `clearClaudeConfig`, `clearCodexConfig`).
 - [x] Task: Create a unified environment variable clearing utility for the launch process.
 - [x] Task: Conductor - User Manual Verification 'Phase 1: Core Infrastructure' (Protocol in workflow.md) [checkpoint: 505f065]
 
@@ -13,12 +13,6 @@ This plan outlines the steps to fix the environment configuration logic, ensurin
 - [x] Task: Refactor `LaunchTool` for Claude to ensure environment variables are unset before launch in "Original" mode.
 - [x] Task: Write unit tests to verify Claude config file deletion and variable unsetting.
 - [x] Task: Conductor - User Manual Verification 'Phase 2: Claude Code' (Protocol in workflow.md) [checkpoint: 80edf01]
-
-## Phase 3: Gemini CLI Configuration Fixes
-- [x] Task: Update `syncToGeminiSettings` to handle the "Original" provider by deleting relevant config files (e.g., `~/.gemini/config.json`).
-- [x] Task: Refactor `LaunchTool` for Gemini to ensure `GEMINI_API_KEY` and `GEMINI_BASE_URL` are cleared in "Original" mode.
-- [x] Task: Write unit tests to verify Gemini cleanup and custom setup.
-- [x] Task: Conductor - User Manual Verification 'Phase 3: Gemini CLI' (Protocol in workflow.md) [checkpoint: 00b87b7]
 
 ## Phase 4: OpenAI Codex Configuration Fixes
 - [x] Task: Update `syncToCodexSettings` to handle the "Original" provider by deleting `.codex` directory or files.

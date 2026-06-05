@@ -2,6 +2,9 @@ package main
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -9,6 +12,24 @@ import (
 	coreintent "github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
+
+func attachCodeProjectToRouteHandler(t *testing.T, h *IMMessageHandler) string {
+	t.Helper()
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module example.com/route\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	if h.app == nil {
+		h.app = &App{testHomeDir: t.TempDir()}
+	}
+	if err := h.app.SaveConfig(corelib.AppConfig{
+		CurrentProject: "route-test",
+		Projects:       []corelib.ProjectConfig{{Id: "route-test", Path: project}},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	return project
+}
 
 func TestSubAgentRouteKeepsIncompleteRunsActiveForResume(t *testing.T) {
 	if shouldDeactivateSubAgentOrchestratorAfterRun(false, false) {
@@ -66,6 +87,7 @@ func TestDirectCodingSubAgentRouteAcceptsSemanticBugFixIntent(t *testing.T) {
 		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"existing code repair"}]}`, nil
 	}})
 	h := &IMMessageHandler{unifiedClassifier: uic}
+	attachCodeProjectToRouteHandler(t, h)
 	msg := IMUserMessage{UserID: "u1", Text: "repair the failing startup path in this project"}
 
 	if !h.shouldRouteBugFixToDirectCodingSubAgent(msg, &LoopContext{Kind: LoopKindChat}) {
@@ -79,6 +101,7 @@ func TestDirectCodingSubAgentRouteBlockedByActiveDocOnlyWorkflow(t *testing.T) {
 	}})
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	h.unifiedClassifier = uic
+	attachCodeProjectToRouteHandler(t, h)
 	userID := "direct-route-doc-policy-user"
 	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
@@ -98,6 +121,7 @@ func TestDirectCodingSubAgentRouteDoesNotInheritSingleActiveWorkflowPolicy(t *te
 	}})
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	h.unifiedClassifier = uic
+	attachCodeProjectToRouteHandler(t, h)
 	userID := "direct-route-single-active-policy-user"
 	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
@@ -146,6 +170,7 @@ func TestDirectCodingSubAgentRouteAllowedInImplementationWorkflowPhase(t *testin
 	}})
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	h.unifiedClassifier = uic
+	attachCodeProjectToRouteHandler(t, h)
 	userID := "direct-route-implementation-user"
 	state, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
 	if err != nil {
@@ -174,6 +199,167 @@ func TestDirectCodingSubAgentRouteRejectsCloudflareLoginOpsIntent(t *testing.T) 
 
 	if h.shouldRouteBugFixToDirectCodingSubAgent(msg, &LoopContext{Kind: LoopKindChat}) {
 		t.Fatal("ops/login guidance must not route directly to CodingSubAgent")
+	}
+}
+
+func TestDirectCodingSubAgentRouteRejectsAskUserContinuation(t *testing.T) {
+	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"existing code repair"}]}`, nil
+	}})
+	h := &IMMessageHandler{unifiedClassifier: uic}
+	msg := IMUserMessage{UserID: "u1", Text: "submit failed and the content disappeared"}
+
+	if h.shouldRouteBugFixToDirectCodingSubAgent(msg, &LoopContext{Kind: LoopKindChat, IsAskUserResponse: true}) {
+		t.Fatal("ask_user continuations must stay in the current interaction context, not route to CodingSubAgent")
+	}
+}
+
+func TestDirectCodingSubAgentRouteRejectsBrowserPublicationExecutionContext(t *testing.T) {
+	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"submit flow failure"}]}`, nil
+	}})
+	h := &IMMessageHandler{unifiedClassifier: uic}
+	msg := IMUserMessage{UserID: "u1", Text: "log into Zhihu and publish a post; submit failed"}
+
+	if h.shouldRouteBugFixToDirectCodingSubAgent(msg, &LoopContext{Kind: LoopKindChat}) {
+		t.Fatal("browser publication tasks must not route to CodingSubAgent even if classified as bug_fix")
+	}
+}
+
+func TestDirectCodingSubAgentRouteRejectsBrowserPublicationFollowUp(t *testing.T) {
+	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"submit flow failure"}]}`, nil
+	}})
+	h := &IMMessageHandler{memory: agent.NewConversationMemory(), unifiedClassifier: uic}
+	h.memory.Save("u1", []agent.ConversationEntry{{Role: "user", Content: "log into Zhihu and publish a post"}})
+	msg := IMUserMessage{UserID: "u1", Text: "submit failed and the content disappeared"}
+
+	if h.shouldRouteBugFixToDirectCodingSubAgent(msg, &LoopContext{Kind: LoopKindChat}) {
+		t.Fatal("follow-ups to browser publication tasks must not route to CodingSubAgent")
+	}
+}
+
+func TestCodingContextDoesNotMatchAppInsideDisappeared(t *testing.T) {
+	if hasExplicitCodingImplementationContext("submit failed and the content disappeared") {
+		t.Fatal("disappeared must not count as explicit app/code context")
+	}
+	if hasExplicitCodingImplementationContext("test zhihu publish flow") {
+		t.Fatal("generic test wording must not count as explicit code context")
+	}
+	if !hasExplicitCodingImplementationContext("fix the app submit bug") {
+		t.Fatal("explicit app/code words should still count")
+	}
+}
+
+func TestCodingSubAgentAdmissionBlocksBrowserPublicationTestFlow(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module example.com/x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	h := &IMMessageHandler{}
+	reason := h.codingSubAgentAdmissionBlockReason(codingSubAgentAdmissionInput{
+		Text:                        "test zhihu publish flow",
+		ProjectPath:                 project,
+		RequireExistingCodeEvidence: true,
+	})
+
+	if !strings.Contains(reason, "browser publication") {
+		t.Fatalf("reason = %q, want browser publication block", reason)
+	}
+}
+
+func TestDirectCodingSubAgentRouteRejectsChineseBrowserPublicationFollowUp(t *testing.T) {
+	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"submit flow failure"}]}`, nil
+	}})
+	h := &IMMessageHandler{memory: agent.NewConversationMemory(), unifiedClassifier: uic}
+	h.memory.Save("u1", []agent.ConversationEntry{{Role: "user", Content: "\u767b\u5f55\u77e5\u4e4e\u5e76\u53d1\u5e03\u6587\u7ae0"}})
+	msg := IMUserMessage{UserID: "u1", Text: "\u6ca1\u6709\u6210\u529f\uff0c\u6bcf\u6b21\u90fd\u662f\u586b\u5145\u5b8c\u5185\u5bb9\uff0c\u7136\u540e\u63d0\u4ea4\u65f6\u5c31\u6d88\u5931\u4e86"}
+
+	if h.shouldRouteBugFixToDirectCodingSubAgent(msg, &LoopContext{Kind: LoopKindChat}) {
+		t.Fatal("Chinese browser publication follow-ups must not route to CodingSubAgent")
+	}
+}
+
+func TestProjectPathHasExistingCodeEvidence(t *testing.T) {
+	empty := t.TempDir()
+	if projectPathHasExistingCodeEvidence(empty) {
+		t.Fatal("empty directory must not count as existing code evidence")
+	}
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module example.com/x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	if !projectPathHasExistingCodeEvidence(project) {
+		t.Fatal("project marker file must count as existing code evidence")
+	}
+}
+
+func TestCodingSubAgentAdmissionBlocksBrowserPublicationWithoutCodeContext(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module example.com/x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	h := &IMMessageHandler{}
+	reason := h.codingSubAgentAdmissionBlockReason(codingSubAgentAdmissionInput{
+		Text:                        "log into zhihu and publish a post",
+		ProjectPath:                 project,
+		RequireExistingCodeEvidence: true,
+	})
+
+	if !strings.Contains(reason, "browser publication") {
+		t.Fatalf("reason = %q, want browser publication block", reason)
+	}
+}
+
+func TestCodingSubAgentAdmissionAllowsBrowserNamedCodeFix(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module example.com/x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	h := &IMMessageHandler{}
+	reason := h.codingSubAgentAdmissionBlockReason(codingSubAgentAdmissionInput{
+		Text:                        "fix the zhihu publish bug in the app code",
+		ProjectPath:                 project,
+		RequireExistingCodeEvidence: true,
+	})
+
+	if reason != "" {
+		t.Fatalf("reason = %q, want code fix admitted", reason)
+	}
+}
+
+func TestCodingSubAgentAdmissionBlocksAmbiguousBrowserFix(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module example.com/x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	h := &IMMessageHandler{}
+	reason := h.codingSubAgentAdmissionBlockReason(codingSubAgentAdmissionInput{
+		Text:                        "fix zhihu publish submit failed",
+		ProjectPath:                 project,
+		RequireExistingCodeEvidence: true,
+	})
+
+	if !strings.Contains(reason, "browser publication") {
+		t.Fatalf("reason = %q, want ambiguous browser fix blocked", reason)
+	}
+}
+
+func TestCodingSubAgentAdmissionAllowsSubmitFailureInCodeProjectWithoutBrowserHistory(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module example.com/x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	h := &IMMessageHandler{}
+	reason := h.codingSubAgentAdmissionBlockReason(codingSubAgentAdmissionInput{
+		Text:                        "submit failed and the content disappeared",
+		ProjectPath:                 project,
+		RequireExistingCodeEvidence: true,
+	})
+
+	if reason != "" {
+		t.Fatalf("reason = %q, want code project submit failure admitted", reason)
 	}
 }
 

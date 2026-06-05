@@ -72,31 +72,32 @@ func (m *BrowserAgentManager) syncFromCore() {
 			view = &BrowserSessionView{ID: state.ID, Tool: "browser", Status: SessionRunning, CreatedAt: state.CreatedAt}
 			m.mapViews[state.ID] = view
 			if traceSvc != nil {
-				_, run := traceSvc.StartJobRun(TraceJobKindBrowserSession, firstNonEmptyBrowserText(state.CurrentTitle, state.ID), "browser", "", "")
+				_, run := traceSvc.StartJobRun(TraceJobKindBrowserSession, browserTraceStoredText("session", state.ID), "browser", "", "")
 				view.RunID = run.RunID
 				traceSvc.SetRunSessionID(run.RunID, state.ID)
 			}
 		}
 		m.applyStateLocked(view, state)
 		if traceSvc != nil && view.RunID != "" {
-			traceSvc.UpdateRun(view.RunID, traceStatusFromSessionStatus(view.Status), view.Summary.ProgressSummary, "")
+			traceSvc.UpdateRun(view.RunID, traceStatusFromSessionStatus(view.Status), browserTraceStoredText("progress", view.Summary.ProgressSummary), "")
 			events := make([]TraceEvent, 0, len(view.Events))
 			for _, evt := range view.Events {
 				events = append(events, TraceEvent{
 					Kind:      evt.Type,
 					Severity:  evt.Severity,
 					Title:     firstNonEmptyBrowserText(evt.Title, evt.Type),
-					Summary:   evt.Summary,
+					Summary:   browserTraceStoredText(evt.Type, evt.Summary),
 					CreatedAt: evt.CreatedAt,
 				})
 			}
 			evidence := make([]EvidenceRecord, 0, len(view.RawOutputLines))
 			for _, line := range tailStrings(view.RawOutputLines, 6) {
+				safeLine := browserTraceStoredText("output", line)
 				evidence = append(evidence, EvidenceRecord{
 					SourceKind:     "browser_output",
 					Category:       "browser",
-					Summary:        line,
-					ContentSnippet: line,
+					Summary:        safeLine,
+					ContentSnippet: safeLine,
 					CreatedAt:      traceNowMillis(),
 				})
 			}
@@ -212,8 +213,9 @@ func (m *BrowserAgentManager) Start(args map[string]interface{}) (BrowserSession
 		AllowUpload:                boolValue(args["allow_upload"], false),
 		ContentBoundary:            boolValue(args["content_boundary"], true),
 	}
-	mode := browser.SessionMode(firstNonEmptyBrowserText(stringValue(args["mode"]), string(browser.SessionModeAuto)))
-	sess, err := browser.StartAgentSession(stringValue(args["addr"]), policy, boolValue(args["reuse_existing"], true), mode)
+	mode := stableBrowserManagerSessionMode(args)
+	ownerID := strings.TrimSpace(stringValue(args[registeredToolPolicyOwnerIDField]))
+	sess, err := browser.StartAgentSessionForOwner(ownerID, stringValue(args["addr"]), policy, boolValue(args["reuse_existing"], true), mode)
 	if err != nil {
 		return BrowserSessionView{}, err
 	}
@@ -301,6 +303,18 @@ func browserProgressSummary(state browser.BrowserAgentState) string {
 	return "Browser session active"
 }
 
+func stableBrowserManagerSessionMode(args map[string]interface{}) browser.SessionMode {
+	mode := strings.ToLower(strings.TrimSpace(stringValue(args["mode"])))
+	switch browser.SessionMode(mode) {
+	case "", browser.SessionModeAuto:
+		return browser.SessionModePersistent
+	case browser.SessionModePersistent, browser.SessionModeIsolated, browser.SessionModeConnectUser:
+		return browser.SessionMode(mode)
+	default:
+		return browser.SessionModePersistent
+	}
+}
+
 func browserLastResult(state browser.BrowserAgentState) string {
 	if len(state.Trace) > 0 {
 		return state.Trace[len(state.Trace)-1].Summary
@@ -313,9 +327,9 @@ func browserLastResult(state browser.BrowserAgentState) string {
 
 func browserSuggestedAction(state browser.BrowserAgentState) string {
 	if state.LastSnapshotID == "" {
-		return "Run browser_observe to capture refs and page state"
+		return "Run browser(action=\"observe\") to capture refs and page state"
 	}
-	return "Use browser_click/browser_type with refs from the latest snapshot"
+	return "Use browser(action=\"click\"/\"type\") with refs from the latest snapshot"
 }
 
 func severityFromBrowserState(state browser.BrowserAgentState) string {
@@ -334,6 +348,14 @@ func severityForBrowserTrace(kind string) string {
 
 func browserEventTitle(kind string) string {
 	return normalizeBrowserEventKind(kind).Title(kind)
+}
+
+func browserTraceStoredText(kind, text string) string {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = "browser"
+	}
+	return fmt.Sprintf("%s text_len=%d", kind, len([]rune(text)))
 }
 
 func firstNonEmptyBrowserText(values ...string) string {

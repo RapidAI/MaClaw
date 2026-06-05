@@ -89,6 +89,9 @@ func (r *FlowReplayer) recordedStepToStepSpec(rs RecordedStep, overrides map[str
 			}
 		}
 		params["text"] = text
+		if format := normalizeBrowserContentFormat(rs.ContentFormat); format != "" {
+			params["content_format"] = format
+		}
 
 	case "scroll":
 		params["delta_y"] = "500" // default
@@ -110,8 +113,13 @@ func (r *FlowReplayer) recordedStepToStepSpec(rs RecordedStep, overrides map[str
 		}
 	}
 
+	action := rs.Action
+	if action == "click_at" {
+		action = "click"
+	}
+
 	return StepSpec{
-		Action: rs.Action,
+		Action: action,
 		Params: params,
 		Verify: verify,
 	}

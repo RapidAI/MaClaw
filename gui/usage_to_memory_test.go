@@ -2,7 +2,6 @@ package main
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -41,11 +40,11 @@ func TestUsagePatternBridgeWritesRoutingHintsAndSkillNudges(t *testing.T) {
 	if !hasMemoryEntryWithTag(entries, "usage_routing_hint") {
 		t.Fatalf("expected routing hint memory entry, got %#v", entries)
 	}
-	if !hasMemoryEntryWithTag(entries, "skill_nudge_candidate") {
-		t.Fatalf("expected skill nudge memory entry, got %#v", entries)
+	if hasMemoryEntryWithTag(entries, "skill_nudge_candidate") {
+		t.Fatalf("unexpected legacy browser skill nudge memory entry, got %#v", entries)
 	}
 	for _, entry := range entries {
-		if hasTag(entry.Tags, "usage_routing_hint") || hasTag(entry.Tags, "skill_nudge_candidate") {
+		if hasTag(entry.Tags, "usage_routing_hint") {
 			if entry.SourceType != "tool_usage" {
 				t.Fatalf("learned usage entry source_type = %q, want tool_usage", entry.SourceType)
 			}
@@ -114,14 +113,7 @@ func TestUsagePatternBridgeWritesRecoveryPattern(t *testing.T) {
 	bridge.RunOnce()
 
 	entries := store.List(memory.CategoryProjectKnowledge, "")
-	if !hasMemoryEntryWithTag(entries, "tool_recovery_pattern") {
-		t.Fatalf("expected recovery pattern memory entry, got %#v", entries)
-	}
-	for _, entry := range entries {
-		if hasTag(entry.Tags, "tool_recovery_pattern") {
-			if entry.SourceType != "tool_usage" || !strings.Contains(entry.Content, "recover browser_click with browser_observe") {
-				t.Fatalf("unexpected recovery memory entry: %#v", entry)
-			}
-		}
+	if hasMemoryEntryWithTag(entries, "tool_recovery_pattern") {
+		t.Fatalf("unexpected same-browser recovery pattern memory entry, got %#v", entries)
 	}
 }

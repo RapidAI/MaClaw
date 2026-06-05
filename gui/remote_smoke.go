@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -98,36 +99,30 @@ func runRemoteSmoke(app *App, args []string) int {
 	*toolName = normalizeRemoteToolName(*toolName)
 
 	if *hubURL != "" || *centerURL != "" || *doStart {
-		cfg, err := app.LoadConfig()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "remote-smoke: load config failed: %v\n", err)
-			return 1
-		}
-
-		if *hubURL != "" {
-			cfg.RemoteHubURL = strings.TrimRight(strings.TrimSpace(*hubURL), "/")
-		}
-		if *centerURL != "" {
-			cfg.RemoteHubCenterURL = strings.TrimRight(strings.TrimSpace(*centerURL), "/")
-		}
-		if *doStart {
-			cfg.RemoteEnabled = true
-		}
-
-		if err := app.SaveConfig(cfg); err != nil {
+		if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+			if *hubURL != "" {
+				cfg.RemoteHubURL = strings.TrimRight(strings.TrimSpace(*hubURL), "/")
+			}
+			if *centerURL != "" {
+				cfg.RemoteHubCenterURL = strings.TrimRight(strings.TrimSpace(*centerURL), "/")
+			}
+			if *doStart {
+				cfg.RemoteEnabled = true
+			}
+		}); err != nil {
 			fmt.Fprintf(os.Stderr, "remote-smoke: save config overrides failed: %v\n", err)
 			return 1
 		}
 	}
 
 	report := RemoteSmokeReport{
-		Tool:         *toolName,
-		ProjectPath:  *projectDir,
-		UseProxy:     *useProxy,
-		Phase:        "initializing",
-		LastUpdated:  time.Now().Format(time.RFC3339),
-		Connection:   app.GetRemoteConnectionStatus(),
-		Readiness:    app.GetRemoteToolReadiness(*toolName, *projectDir, *useProxy),
+		Tool:            *toolName,
+		ProjectPath:     *projectDir,
+		UseProxy:        *useProxy,
+		Phase:           "initializing",
+		LastUpdated:     time.Now().Format(time.RFC3339),
+		Connection:      app.GetRemoteConnectionStatus(),
+		Readiness:       app.GetRemoteToolReadiness(*toolName, *projectDir, *useProxy),
 		RecommendedNext: "Review readiness and run PTY / launch probes.",
 	}
 	writeRemoteSmokeProgress(*progressFile, report)

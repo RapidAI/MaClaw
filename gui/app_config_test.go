@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -235,6 +236,43 @@ func TestLoadConfigConcurrentLegacyMigration(t *testing.T) {
 	}
 }
 
+func TestLoadConfigLegacyMigrationSanitizesRemovedCodingTools(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	legacyConfig := []byte(`{"active_tool":"cursor","default_tool":"gemini","current_project":"legacy-project"}`)
+	legacyPath := filepath.Join(tmpHome, ".aicoder_config.json")
+	if err := os.WriteFile(legacyPath, legacyConfig, 0644); err != nil {
+		t.Fatalf("Write legacy config error = %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.ActiveTool != "claude" || cfg.DefaultTool != "claude" {
+		t.Fatalf("config not sanitized: active=%q default=%q", cfg.ActiveTool, cfg.DefaultTool)
+	}
+
+	configPath := filepath.Join(tmpHome, ".maclaw", "config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("Read migrated config error = %v", err)
+	}
+	var migrated map[string]any
+	if err := json.Unmarshal(data, &migrated); err != nil {
+		t.Fatalf("Unmarshal migrated config error = %v", err)
+	}
+	if migrated["active_tool"] != "claude" || migrated["default_tool"] != "claude" {
+		t.Fatalf("migrated tools not sanitized: %#v", migrated)
+	}
+	if migrated["current_project"] != "legacy-project" {
+		t.Fatalf("current_project = %q, want legacy-project", migrated["current_project"])
+	}
+}
+
 func TestLoadConfigCachesInMemoryUntilSave(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -371,6 +409,412 @@ func TestSaveConfigPersistsLogDetailEnabled(t *testing.T) {
 	}
 }
 
+func TestPatchConfigFieldsUpdatesOnlyRequestedGeneralFields(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "owner@example.com"
+	cfg.LogDetailEnabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"gossip_auto_publish": false,
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields() error = %v", err)
+	}
+	if patched.GossipAutoPublish {
+		t.Fatal("GossipAutoPublish = true, want false")
+	}
+	if patched.RemoteEmail != "owner@example.com" {
+		t.Fatalf("RemoteEmail = %q, want preserved owner@example.com", patched.RemoteEmail)
+	}
+	if !patched.LogDetailEnabled {
+		t.Fatal("LogDetailEnabled = false, want preserved true")
+	}
+}
+
+func TestPatchConfigFieldsAppliesRuntimeSideEffects(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	corelib.SetLogDetailEnabled(false)
+	t.Cleanup(func() { corelib.SetLogDetailEnabled(false) })
+	t.Cleanup(func() { corelib.SetWorkspaceDir("") })
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.PatchConfigFields(map[string]interface{}{
+		"log_detail_enabled": true,
+		"working_directory":  filepath.Join(tmpHome, "work"),
+	}); err != nil {
+		t.Fatalf("PatchConfigFields() error = %v", err)
+	}
+	if !corelib.IsLogDetailEnabled() {
+		t.Fatal("expected runtime log detail gate to be enabled after PatchConfigFields")
+	}
+	if got := corelib.EffectiveWorkspaceDir(); got != filepath.Join(tmpHome, "work") {
+		t.Fatalf("WorkspaceDir = %q, want patched working directory", got)
+	}
+}
+
+func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"pause_env_check":              true,
+		"env_check_done":               true,
+		"language":                     "zh-Hans",
+		"active_tool":                  "codex",
+		"current_project":              "p2",
+		"favorite_employees":           []interface{}{"ve1", "ve2"},
+		"favorite_employee_names":      map[string]interface{}{"ve1": "Reviewer"},
+		"tool_current_model":           map[string]interface{}{"tool": "codex", "model": "Original"},
+		"remote_enabled":               true,
+		"remote_hub_url":               " https://hub.example.com/ ",
+		"remote_hubcenter_url":         " http://127.0.0.1:9388 ",
+		"remote_email":                 " owner@example.com ",
+		"remote_mobile":                " 13800138000 ",
+		"default_launch_mode":          "remote",
+		"security_policy_mode":         "strict",
+		"sandbox_mode":                 "os",
+		"network_level":                "allowlist",
+		"network_allowlist":            []interface{}{"example.com"},
+		"yolo_mode_allowed":            false,
+		"smart_route_enabled":          true,
+		"gossip_enabled":               true,
+		"file_outbound_enabled":        false,
+		"image_outbound_enabled":       false,
+		"skill_sources_allowed":        []interface{}{"skillhub"},
+		"maclaw_role_name":             " reviewer ",
+		"maclaw_role_description":      " checks code ",
+		"ui_zoom_factor":               float64(3.5),
+		"chat_font_size":               float64(99),
+		"env_check_interval":           float64(14),
+		"last_env_check_time":          " 2026-06-05T12:00:00Z ",
+		"vector_search_enabled":        false,
+		"screen_parsing_enabled":       false,
+		"asr_enabled":                  false,
+		"tts_enabled":                  false,
+		"tts_voice_id":                 " zm_yunxi ",
+		"maclaw_agent_max_iterations":  float64(12),
+		"subagent_concurrency":         float64(99),
+		"trial_reflect_enabled":        true,
+		"pet_enabled":                  true,
+		"pet_skin":                     " mini-claw ",
+		"pet_size":                     float64(92),
+		"pet_motion_enabled":           true,
+		"pet_motion_sound_enabled":     false,
+		"pet_motion_sound_preset":      " soft ",
+		"pet_text_interaction_enabled": true,
+		"pet_voice_input_enabled":      true,
+		"pet_voice_readback_enabled":   true,
+		"pet_file_drop_enabled":        false,
+		"pet_interaction_mode":         " active ",
+		"pet_conversation_mode":        " continuous ",
+		"pet_readback_mode":            " summary ",
+		"pet_auto_retry_on_no_hear":    true,
+		"pet_continuous_timeout_sec":   float64(45),
+		"pet_quiet_mode":               true,
+		"projects": []interface{}{
+			map[string]interface{}{"id": "p1", "name": "One", "path": "D:/one", "yolo_mode": false},
+			map[string]interface{}{"id": "p2", "name": "Two", "path": "D:/two", "yolo_mode": true},
+		},
+		"use_windows_terminal":       false,
+		"show_ai_trace_entry":        true,
+		"show_coding_tool_entry":     true,
+		"show_codex":                 false,
+		"screen_dim_timeout_min":     float64(9),
+		"remote_heartbeat_sec":       float64(3),
+		"agent_response_timeout_sec": float64(300),
+		"maclaw_llm_timeout_sec":     float64(480),
+		"audio_input_device_id":      " mic-1 ",
+		"audio_output_device_id":     " speaker-1 ",
+		"default_proxy_enabled":      true,
+		"default_proxy_protocol":     " socks5 ",
+		"default_proxy_host":         " proxy.example.com ",
+		"default_proxy_port":         " 1080 ",
+		"default_proxy_username":     "user",
+		"default_proxy_password":     "pass",
+		"default_proxy_bypass":       " localhost;127.0.0.1 ",
+		"default_proxy_scope_agent":  true,
+		"noise_floor_calibrated":     float64(0.012),
+		"speech_level_calibrated":    float64(0.2),
+		"llm_prompt_cache": map[string]interface{}{
+			"enabled":     true,
+			"ttl_seconds": float64(120),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields() error = %v", err)
+	}
+	if !patched.PauseEnvCheck || !patched.EnvCheckDone || patched.UseWindowsTerminal || !patched.ShowAITraceEntry || !patched.ShowCodingToolEntry || patched.ShowCodex {
+		t.Fatalf("boolean patch fields not applied: %#v", patched)
+	}
+	if patched.Language != "zh-Hans" || patched.ActiveTool != "codex" || patched.CurrentProject != "p2" || len(patched.Projects) != 2 || len(patched.FavoriteEmployees) != 2 || patched.FavoriteEmployeeNames["ve1"] != "Reviewer" {
+		t.Fatalf("navigation/project/favorite fields not applied: %#v", patched)
+	}
+	if !patched.RemoteEnabled || patched.RemoteHubURL != "https://hub.example.com/" || patched.RemoteHubCenterURL != "http://127.0.0.1:9388" || patched.RemoteEmail != "owner@example.com" || patched.RemoteMobile != "13800138000" || patched.DefaultLaunchMode != "remote" || patched.Codex.CurrentModel != "Original" {
+		t.Fatalf("remote/provider fields not applied: %#v", patched)
+	}
+	if patched.SecurityPolicyMode != "strict" || patched.SandboxMode != "os" || patched.NetworkLevel != "allowlist" || len(patched.NetworkAllowlist) != 1 || patched.YoloModeAllowed || !patched.SmartRouteEnabled || !patched.GossipEnabled || patched.FileOutboundEnabled || patched.ImageOutboundEnabled || len(patched.SkillSourcesAllowed) != 1 {
+		t.Fatalf("security fields not applied: %#v", patched)
+	}
+	if patched.MaclawRoleName != "reviewer" || patched.MaclawRoleDescription != "checks code" {
+		t.Fatalf("maclaw role fields not applied: %#v", patched)
+	}
+	if patched.UIZoomFactor != 2.0 || patched.ChatFontSize != 24 || patched.EnvCheckInterval != 14 || patched.LastEnvCheckTime != "2026-06-05T12:00:00Z" || patched.VectorSearchEnabled || patched.ScreenParsingEnabled == nil || *patched.ScreenParsingEnabled || patched.ASREnabled || patched.TTSEnabled || patched.TTSVoiceID != "zm_yunxi" || patched.MaclawAgentMaxIterations != 30 || patched.SubAgentConcurrency != corelib.MaxSubAgentConcurrency || !patched.TrialReflectEnabled {
+		t.Fatalf("ui/vector/agent fields not applied with normalization: %#v", patched)
+	}
+	if !patched.PetEnabled || patched.PetSkin != "mini-claw" || patched.PetSize != 92 || patched.PetMotionEnabled == nil || !*patched.PetMotionEnabled || patched.PetMotionSound == nil || *patched.PetMotionSound || patched.PetMotionSoundPreset != "soft" || patched.PetTextInteraction == nil || !*patched.PetTextInteraction || !patched.PetVoiceInput || !patched.PetVoiceReadback || patched.PetFileDropEnabled == nil || *patched.PetFileDropEnabled || patched.PetInteractionMode != "active" || patched.PetConversationMode != "continuous" || patched.PetReadbackMode != "summary" || !patched.PetAutoRetryOnNoHear || patched.PetContinuousTimeout != 45 || !patched.PetQuietMode {
+		t.Fatalf("pet fields not applied: %#v", patched)
+	}
+	if patched.ScreenDimTimeoutMin != 9 || patched.RemoteHeartbeatSec != 5 || patched.AgentResponseTimeoutSec != 300 || patched.MaclawLLMTimeoutSec != 480 {
+		t.Fatalf("numeric patch fields not applied: %#v", patched)
+	}
+	if patched.AudioInputDeviceID != "mic-1" || patched.AudioOutputDeviceID != "speaker-1" {
+		t.Fatalf("audio device fields not trimmed/applied: %#v", patched)
+	}
+	if !patched.DefaultProxyEnabled || patched.DefaultProxyProtocol != "socks5" || patched.DefaultProxyHost != "proxy.example.com" || patched.DefaultProxyPort != "1080" || !patched.DefaultProxyScopeAgent {
+		t.Fatalf("proxy fields not applied: %#v", patched)
+	}
+	if patched.NoiseFloorCalibrated != 0.012 || patched.SpeechLevelCalibrated != 0.2 {
+		t.Fatalf("calibration fields not applied: %#v", patched)
+	}
+	if !patched.LLMPromptCache.Enabled || patched.LLMPromptCache.TTLSeconds != 120 || patched.LLMPromptCache.MemoryMaxEntries == 0 {
+		t.Fatalf("LLM prompt cache field not applied with defaults: %#v", patched.LLMPromptCache)
+	}
+}
+
+func TestPatchConfigFieldsRejectsUnsupportedFields(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.PatchConfigFields(map[string]interface{}{"unknown_field": "bad"}); err == nil {
+		t.Fatal("PatchConfigFields(unknown_field) error = nil, want unsupported field error")
+	}
+}
+
+func TestLocalVoiceSettersPatchWithoutStaleOverwrite(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "owner@example.com"
+	cfg.LogDetailEnabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.SetASREnabled(false); err != nil {
+		t.Fatalf("SetASREnabled(false) error = %v", err)
+	}
+	if err := app.SetTTSEnabled(false); err != nil {
+		t.Fatalf("SetTTSEnabled(false) error = %v", err)
+	}
+	if err := app.SetTTSVoiceID("zm_yunyang"); err != nil {
+		t.Fatalf("SetTTSVoiceID() error = %v", err)
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.RemoteEmail != "owner@example.com" || !reloaded.LogDetailEnabled {
+		t.Fatalf("unrelated fields overwritten by local voice setters: %#v", reloaded)
+	}
+	if reloaded.ASREnabled || reloaded.TTSEnabled || reloaded.TTSVoiceID != "zm_yunyang" {
+		t.Fatalf("local voice settings not applied: %#v", reloaded)
+	}
+}
+
+func TestSaveMISDataConfigPatchesWithoutStaleOverwrite(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "owner@example.com"
+	cfg.LogDetailEnabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{
+		Enabled:  true,
+		Endpoint: " http://127.0.0.1:18180/ ",
+		Token:    " token ",
+		TenantID: " tenant ",
+		UserID:   " user ",
+		Role:     " DATA_ADMIN ",
+	}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.RemoteEmail != "owner@example.com" || !reloaded.LogDetailEnabled {
+		t.Fatalf("unrelated fields overwritten by MIS data save: %#v", reloaded)
+	}
+	if !reloaded.MISData.Enabled || reloaded.MISData.Endpoint != "http://127.0.0.1:18180" || reloaded.MISData.Token != "token" || reloaded.MISData.TenantID != "tenant" || reloaded.MISData.UserID != "user" || reloaded.MISData.Role != "data_admin" {
+		t.Fatalf("MIS data config not normalized/applied: %#v", reloaded.MISData)
+	}
+}
+
+func TestSmallLocalSettersPatchWithoutStaleOverwrite(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "owner@example.com"
+	cfg.LogDetailEnabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.SetScreenParsingEnabled(false); err != nil {
+		t.Fatalf("SetScreenParsingEnabled(false) error = %v", err)
+	}
+	if err := app.SetEnvCheckInterval(14); err != nil {
+		t.Fatalf("SetEnvCheckInterval(14) error = %v", err)
+	}
+	app.UpdateLastEnvCheckTime()
+	if err := app.SetVEAllowedDirectories([]string{`C:\Work`, `c:/work/`, `D:\Data`}); err != nil {
+		t.Fatalf("SetVEAllowedDirectories() error = %v", err)
+	}
+	for name, setLocal := range map[string]func(bool) error{
+		"qqbot":       app.SetQQBotLocalMode,
+		"telegram":    app.SetTelegramLocalMode,
+		"weixin":      app.SetWeixinLocalMode,
+		"lansenger":   app.SetLansengerLocalMode,
+		"third_party": app.SetThirdPartyGatewayLocalMode,
+	} {
+		if err := setLocal(true); err != nil {
+			t.Fatalf("%s local mode setter error = %v", name, err)
+		}
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.RemoteEmail != "owner@example.com" || !reloaded.LogDetailEnabled {
+		t.Fatalf("unrelated fields overwritten by small setters: %#v", reloaded)
+	}
+	if reloaded.ScreenParsingEnabled == nil || *reloaded.ScreenParsingEnabled {
+		t.Fatalf("ScreenParsingEnabled not patched false: %#v", reloaded.ScreenParsingEnabled)
+	}
+	if reloaded.EnvCheckInterval != 14 || reloaded.LastEnvCheckTime == "" {
+		t.Fatalf("env check fields not patched: interval=%d last=%q", reloaded.EnvCheckInterval, reloaded.LastEnvCheckTime)
+	}
+	if len(reloaded.VEAllowedDirectories) != 2 {
+		t.Fatalf("VEAllowedDirectories = %#v, want 2 deduplicated entries", reloaded.VEAllowedDirectories)
+	}
+	if !reloaded.IsQQBotLocalMode() || !reloaded.IsTelegramLocalMode() || !reloaded.IsWeixinLocalMode() || !reloaded.IsLansengerLocalMode() || !reloaded.IsThirdPartyGatewayLocalMode() {
+		t.Fatalf("gateway local mode fields not patched: %#v", reloaded)
+	}
+}
+
+func TestSetDataDirPatchesWithoutStaleOverwrite(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "owner@example.com"
+	cfg.LogDetailEnabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	dataDir := filepath.Join(tmpHome, "custom-data")
+	if msg := app.SetDataDir(dataDir); msg != "" {
+		t.Fatalf("SetDataDir() message = %q, want success", msg)
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.DataDir != dataDir {
+		t.Fatalf("DataDir = %q, want %q", reloaded.DataDir, dataDir)
+	}
+	if reloaded.RemoteEmail != "owner@example.com" || !reloaded.LogDetailEnabled {
+		t.Fatalf("unrelated fields overwritten by SetDataDir: %#v", reloaded)
+	}
+}
+
+func TestProjectSearchSwitchPatchesWithoutStaleOverwrite(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	one := filepath.Join(tmpHome, "one")
+	two := filepath.Join(tmpHome, "two")
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "owner@example.com"
+	cfg.LogDetailEnabled = true
+	cfg.CurrentProject = "p1"
+	cfg.Projects = []corelib.ProjectConfig{
+		{Id: "p1", Name: "One", Path: one},
+		{Id: "p2", Name: "Two", Path: two},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	patched := app.switchCurrentProjectByPath(two)
+	if patched == nil {
+		t.Fatal("switchCurrentProjectByPath() returned nil")
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if saved.CurrentProject != "p2" {
+		t.Fatalf("CurrentProject = %q, want p2", saved.CurrentProject)
+	}
+	if saved.RemoteEmail != "owner@example.com" || !saved.LogDetailEnabled {
+		t.Fatalf("unrelated fields overwritten by project search switch: %#v", saved)
+	}
+}
+
 func TestSaveConfigSanitizesSubAgentConcurrency(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -392,6 +836,108 @@ func TestSaveConfigSanitizesSubAgentConcurrency(t *testing.T) {
 	}
 	if reloaded.SubAgentConcurrency != corelib.MaxSubAgentConcurrency {
 		t.Fatalf("SubAgentConcurrency = %d, want %d", reloaded.SubAgentConcurrency, corelib.MaxSubAgentConcurrency)
+	}
+}
+
+func TestSaveConfigSanitizesRemovedCodingTools(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.ActiveTool = "cursor"
+	cfg.DefaultTool = "gemini"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.ActiveTool != "claude" {
+		t.Fatalf("ActiveTool = %q, want claude", reloaded.ActiveTool)
+	}
+	if reloaded.DefaultTool != "claude" {
+		t.Fatalf("DefaultTool = %q, want claude", reloaded.DefaultTool)
+	}
+}
+
+func TestSanitizeCodingToolSelectionCanonicalizesValidTools(t *testing.T) {
+	cfg := corelib.AppConfig{ActiveTool: " CoDeX ", DefaultTool: " KILO "}
+	sanitizeCodingToolSelection(&cfg)
+
+	if cfg.ActiveTool != "codex" || cfg.DefaultTool != "kilo" {
+		t.Fatalf("tools not canonicalized: active=%q default=%q", cfg.ActiveTool, cfg.DefaultTool)
+	}
+}
+
+func TestPatchConfigSanitizesRemovedCodingTools(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.ActiveTool = "cursor"
+		cfg.DefaultTool = "gemini"
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.ActiveTool != "claude" || reloaded.DefaultTool != "claude" {
+		t.Fatalf("removed tools not sanitized: active=%q default=%q", reloaded.ActiveTool, reloaded.DefaultTool)
+	}
+}
+
+func TestSaveConfigRemovesChatFireFromCodingTools(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	chatFire := corelib.ModelConfig{ModelName: "ChatFire", ModelId: "gpt-4o", ModelUrl: "https://api.chatfire.cn/v1"}
+	tools := []*corelib.ToolConfig{&cfg.Claude, &cfg.Codex, &cfg.Opencode, &cfg.CodeBuddy, &cfg.IFlow, &cfg.Kilo}
+	for _, tool := range tools {
+		tool.Models = append(tool.Models, chatFire)
+		tool.CurrentModel = "ChatFire"
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	for name, tool := range map[string]corelib.ToolConfig{
+		"claude":    reloaded.Claude,
+		"codex":     reloaded.Codex,
+		"opencode":  reloaded.Opencode,
+		"codebuddy": reloaded.CodeBuddy,
+		"iflow":     reloaded.IFlow,
+		"kilo":      reloaded.Kilo,
+	} {
+		if strings.EqualFold(tool.CurrentModel, "ChatFire") {
+			t.Fatalf("%s current_model still ChatFire", name)
+		}
+		for _, model := range tool.Models {
+			if strings.EqualFold(model.ModelName, "ChatFire") {
+				t.Fatalf("%s still contains ChatFire provider", name)
+			}
+		}
 	}
 }
 
@@ -728,6 +1274,39 @@ func TestConfigManagerRemoteEnabledDoesNotChangeDefaultLaunchMode(t *testing.T) 
 	}
 }
 
+func TestConfigManagerUpdatePatchesWithoutStaleOverwrite(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "owner@example.com"
+	cfg.LogDetailEnabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	mgr := NewConfigManager(app)
+	if _, err := mgr.UpdateConfig("general", "language", "en"); err != nil {
+		t.Fatalf("UpdateConfig(language) error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after update error = %v", err)
+	}
+	if saved.Language != "en" {
+		t.Fatalf("Language = %q, want en", saved.Language)
+	}
+	if saved.RemoteEmail != "owner@example.com" || !saved.LogDetailEnabled {
+		t.Fatalf("unrelated fields overwritten by ConfigManager update: %#v", saved)
+	}
+}
+
 func TestConfigManagerDefaultLaunchModeDoesNotChangeRemoteEnabled(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -959,6 +1538,70 @@ func TestPatchConfigPreservesHubManagedSecurityUnlessExplicitBypass(t *testing.T
 	}
 	if saved.HubSecurityCentralized || saved.SecurityPolicyMode != "developer" || saved.SandboxMode != "none" || saved.NetworkLevel != "full" || !saved.FileOutboundEnabled || !saved.ImageOutboundEnabled {
 		t.Fatalf("patchConfig bypass did not update managed security: %#v", saved)
+	}
+}
+
+func TestSaveConfigClearsStaleHubManagedSecurityWhenHubDisablesCentralizedPolicy(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	current := corelib.AppConfig{HubSecurityCentralized: true, SecurityPolicyMode: "strict", SandboxMode: "os", NetworkLevel: "allowlist", NetworkAllowlist: []string{"api.example.com"}, FileOutboundEnabled: false, ImageOutboundEnabled: false}
+	if err := app.SaveConfig(current); err != nil {
+		t.Fatalf("SaveConfig(current) error = %v", err)
+	}
+	app.hubSecurityCache.update(json.RawMessage(`{"security_policy":{"centralized_security":false}}`))
+
+	next := current
+	next.SecurityPolicyMode = "developer"
+	next.SandboxMode = "none"
+	next.NetworkLevel = "full"
+	next.NetworkAllowlist = nil
+	next.FileOutboundEnabled = true
+	next.ImageOutboundEnabled = true
+	if err := app.SaveConfig(next); err != nil {
+		t.Fatalf("SaveConfig(next) error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.HubSecurityCentralized || saved.SecurityPolicyMode != "developer" || saved.SandboxMode != "none" || saved.NetworkLevel != "full" || len(saved.NetworkAllowlist) != 0 || !saved.FileOutboundEnabled || !saved.ImageOutboundEnabled {
+		t.Fatalf("stale Hub-managed security was preserved after centralized=false: %#v", saved)
+	}
+}
+
+func TestPatchConfigClearsStaleHubManagedSecurityWhenHubDisablesCentralizedPolicy(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	current := corelib.AppConfig{HubSecurityCentralized: true, SecurityPolicyMode: "strict", SandboxMode: "os", NetworkLevel: "allowlist", NetworkAllowlist: []string{"api.example.com"}, FileOutboundEnabled: false, ImageOutboundEnabled: false}
+	if err := app.SaveConfig(current); err != nil {
+		t.Fatalf("SaveConfig(current) error = %v", err)
+	}
+	app.hubSecurityCache.update(json.RawMessage(`{"security_policy":{"centralized_security":false}}`))
+
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.SecurityPolicyMode = "developer"
+		cfg.SandboxMode = "none"
+		cfg.NetworkLevel = "full"
+		cfg.NetworkAllowlist = nil
+		cfg.FileOutboundEnabled = true
+		cfg.ImageOutboundEnabled = true
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.HubSecurityCentralized || saved.SecurityPolicyMode != "developer" || saved.SandboxMode != "none" || saved.NetworkLevel != "full" || len(saved.NetworkAllowlist) != 0 || !saved.FileOutboundEnabled || !saved.ImageOutboundEnabled {
+		t.Fatalf("stale Hub-managed security was preserved after centralized=false: %#v", saved)
 	}
 }
 

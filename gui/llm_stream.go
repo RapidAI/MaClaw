@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -24,6 +25,7 @@ type tokenStreamFilter struct {
 }
 
 var guiFuncCallBlock = regexp.MustCompile(`(?s)<\|FunctionCallBegin\|>.*?<\|FunctionCallEnd\|>\s*`)
+var openAICompatibleHTTPStatusRe = regexp.MustCompile(`HTTP\s+(\d+)`)
 
 const (
 	guiThinkOpen     = "<think>"
@@ -44,15 +46,15 @@ const (
 // JSON arguments when the model hit its output token limit
 // (finish_reason="length"). Two cases are detected:
 //
-//  1. JSON parse failure — arguments string is not valid JSON (truncated mid-token)
-//  2. Required field missing — JSON parses OK but a required field is absent,
+//  1. JSON parse failure  - arguments string is not valid JSON (truncated mid-token)
+//  2. Required field missing  - JSON parses OK but a required field is absent,
 //     indicating the model ran out of output tokens before generating all fields.
 //     This happens when a large field (e.g. write_file content) consumes the
 //     entire output budget, leaving no room for subsequent fields like path.
 //
 // Truncated tool calls are removed from msg.ToolCalls. The truncated tool
 // names are returned so the caller (agent loop) can inject a recovery system
-// message and continue the loop. msg.Content is NOT modified — the hint
+// message and continue the loop. msg.Content is NOT modified  - the hint
 // belongs in a system message, not in the assistant's own text.
 //
 // Returns the (possibly modified) finishReason and the list of truncated
@@ -79,7 +81,7 @@ func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []
 		}
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(args), &parsed); err != nil {
-			// Case 1: JSON parse failure — the arguments are not valid JSON.
+			// Case 1: JSON parse failure  - the arguments are not valid JSON.
 			// This is always a truncation or generation error regardless of
 			// finish_reason. The tool handler would fail on json.Unmarshal
 			// anyway, so removing the call and hinting is strictly better
@@ -91,7 +93,7 @@ func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []
 			// With finish_reason="length" this is definitely truncation.
 			// Without "length" but with large args (>4000 bytes), some API
 			// proxies (e.g. 智谱 GLM) return "stop" instead of "length"
-			// when hitting max_output_tokens — still treat as truncation.
+			// when hitting max_output_tokens  - still treat as truncation.
 			if isLengthTruncated || len(args) > 4000 {
 				truncatedNames = append(truncatedNames, tc.Function.Name)
 				log.Printf("[LLM Stream] truncated tool call (missing required field %q): %s args=%d bytes finish_reason=%s",
@@ -109,7 +111,7 @@ func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []
 		return finishReason, nil
 	}
 	msg.ToolCalls = validCalls
-	// Do NOT append hint to msg.Content — the agent loop will inject it
+	// Do NOT append hint to msg.Content  - the agent loop will inject it
 	// as a separate system message. Keeping msg.Content clean ensures the
 	// assistant message in conversation history only contains the LLM's
 	// own text, not system-injected recovery instructions.
@@ -131,7 +133,7 @@ var truncatedRequiredFields = map[string][]string{
 // missing a required field, which indicates the output was truncated by the
 // model's max_output_tokens limit.
 //
-// This is NOT a general parameter validation — it specifically detects the
+// This is NOT a general parameter validation  - it specifically detects the
 // pattern where a large field (e.g. content) consumed the entire output
 // budget, preventing subsequent required fields from being generated.
 func detectTruncatedRequiredField(toolName string, parsed map[string]interface{}) string {
@@ -237,13 +239,13 @@ func classifyOpenAIHTTPError(statusCode int, body []byte, providerName string) s
 		}
 		return "API 网关错误，上游服务不可用，请稍后再试 (HTTP 502)"
 	case statusCode == http.StatusServiceUnavailable:
-		return "API 服务暂时不可用，请稍后再试 (HTTP 503)"
+		return "API service temporarily unavailable; retry later (HTTP 503)"
 	case statusCode == http.StatusGatewayTimeout:
-		return "API 网关超时，上游服务响应过慢，请稍后再试 (HTTP 504)"
+		return "API gateway timeout; upstream is slow; retry later (HTTP 504)"
 	case statusCode >= 500:
-		return fmt.Sprintf("API 服务端错误，请稍后再试 (HTTP %d)", statusCode)
+		return fmt.Sprintf("API server error; retry later (HTTP %d)", statusCode)
 	default:
-		return fmt.Sprintf("%s API 错误 (HTTP %d): %s", providerDisplay, statusCode, truncateLLMBody(body, 200))
+		return fmt.Sprintf("%s API 错误 (HTTP %d)", providerDisplay, statusCode)
 	}
 }
 
@@ -252,21 +254,21 @@ func classifyHubLLMServiceError(code, message string, retryAfterSeconds int64, r
 	case "LLM_SERVICE_PERIOD_LIMITED":
 		retryText := formatHubRetryText(retryAfterSeconds, retryAfterAt)
 		if retryText != "" {
-			return "MaClaw 官方周期限流：当前周期额度已用尽，约 " + retryText + " 后恢复。若官方还有其它可用通道会自动切换；不会静默切到你的私有服务商。"
+			return "MaClaw official quota is rate-limited; retry after " + retryText + "."
 		}
-		return "MaClaw 官方周期限流：当前周期额度已用尽。若官方还有其它可用通道会自动切换；不会静默切到你的私有服务商。"
+		return "MaClaw official quota is rate-limited."
 	case "LLM_SERVICE_CREDITS_EXHAUSTED":
-		return "MaClaw 官方额度已用尽：请兑换更多额度，或手动切换到其它服务商。"
+		return "MaClaw official credits are exhausted. Redeem credits or switch provider."
 	case "LLM_SERVICE_GRANT_QUEUED":
 		retryText := formatHubRetryText(retryAfterSeconds, retryAfterAt)
 		if retryText != "" {
-			return "MaClaw 官方授权尚未生效：约 " + retryText + " 后生效。"
+			return "MaClaw official grant is not active yet; retry after " + retryText + "."
 		}
-		return "MaClaw 官方授权尚未生效，请稍后再试。"
+		return "MaClaw official grant is not active yet; retry later."
 	case "LLM_SERVICE_GRANT_EXPIRED":
-		return "MaClaw 官方授权已过期：请兑换新的授权，或手动切换到其它服务商。"
+		return "MaClaw official grant expired. Redeem a new grant or switch provider."
 	case "LLM_SERVICE_CREDITS_REQUIRED":
-		return "MaClaw 官方需要有效授权额度：请先兑换授权，或手动切换到其它服务商。"
+		return "MaClaw official provider requires valid credits. Redeem credits or switch provider."
 	}
 	if strings.HasPrefix(code, "LLM_SERVICE_") && message != "" {
 		return message
@@ -284,7 +286,7 @@ func formatHubRetryText(seconds int64, retryAfterAt string) string {
 		return ""
 	}
 	if seconds < 60 {
-		return fmt.Sprintf("%d 秒", seconds)
+		return fmt.Sprintf("%d seconds", seconds)
 	}
 	minutes := (seconds + 59) / 60
 	if minutes < 60 {
@@ -295,31 +297,34 @@ func formatHubRetryText(seconds int64, retryAfterAt string) string {
 		return fmt.Sprintf("%d 小时", hours)
 	}
 	days := (hours + 23) / 24
-	return fmt.Sprintf("%d 天", days)
+	return fmt.Sprintf("%d days", days)
 }
 
 func classifyOpenAICompatibleHTTPError(err error, providerName string) (string, bool) {
 	if err == nil {
 		return "", false
 	}
+	var httpErr *llm.HTTPStatusError
+	if errors.As(err, &httpErr) && httpErr != nil && httpErr.StatusCode > 0 {
+		return classifyOpenAIHTTPError(httpErr.StatusCode, httpErr.Body, providerName), true
+	}
 	msg := err.Error()
-	idx := strings.Index(msg, "HTTP ")
-	if idx < 0 {
+	match := openAICompatibleHTTPStatusRe.FindStringSubmatchIndex(msg)
+	if len(match) < 4 {
 		return "", false
 	}
-	var statusCode int
-	if _, scanErr := fmt.Sscanf(msg[idx:], "HTTP %d:", &statusCode); scanErr != nil || statusCode <= 0 {
+	statusCode, parseErr := strconv.Atoi(msg[match[2]:match[3]])
+	if parseErr != nil || statusCode <= 0 {
 		return "", false
 	}
 	body := ""
-	if colon := strings.Index(msg[idx:], ":"); colon >= 0 {
-		body = strings.TrimSpace(msg[idx+colon+1:])
+	if colon := strings.Index(msg[match[1]:], ":"); colon >= 0 {
+		body = strings.TrimSpace(msg[match[1]+colon+1:])
 	}
 	return classifyOpenAIHTTPError(statusCode, []byte(body), providerName), true
 }
 
-// truncateLLMBody 截断错误 body 用于日志显示。
-// 如果 body 包含 HTML 标签，先剥离标签再截断，避免原始 HTML 透传到用户界面。
+// truncateLLMBody trims an error body for logs and UI messages.
 func truncateLLMBody(body []byte, maxLen int) string {
 	s := string(body)
 	if looksLikeHTML(s) {
@@ -675,9 +680,10 @@ func (h *IMMessageHandler) doLLMRequestStream(
 	onToken llm.TokenCallback,
 	metrics *llmStreamMetrics,
 ) (*llm.Response, error) {
+	reqCtx = llm.WithRequestTraceIfMissing(reqCtx, "im_stream")
 	// Always use the streaming path even when onToken is nil (e.g. WeChat IM
 	// standalone mode). The non-streaming DoOpenAIRequest path uses io.ReadAll
-	// which blocks until the entire SSE stream finishes — causing multi-minute
+	// which blocks until the entire SSE stream finishes  - causing multi-minute
 	// delays when the API returns SSE despite stream:false. A noop callback
 	// lets us stream incrementally and discard tokens we don't need to display.
 	tokenBuffer := newTransactionalTokenBuffer(onToken)
@@ -692,17 +698,26 @@ func (h *IMMessageHandler) doLLMRequestStream(
 			return cachedResp, nil
 		}
 	}
+	lease, trace, acquireErr := acquireLLMSchedulerLease(reqCtx)
+	if acquireErr != nil {
+		return nil, acquireErr
+	}
+	defer lease.Release()
+	scheduledCtx, scheduledCancel := context.WithCancel(reqCtx)
+	lease.SetCancel(scheduledCancel)
+	defer scheduledCancel()
 	var resp *llm.Response
 	var err error
 	if cfg.IsResponsesWebSocket() {
-		resp, err = h.doResponsesWSLLMRequestStream(reqCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+		resp, err = h.doResponsesWSLLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
 	} else if cfg.IsResponsesAPI() {
-		resp, err = h.doResponsesAPILLMRequestStream(reqCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+		resp, err = h.doResponsesAPILLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
 	} else if cfg.Protocol == "anthropic" {
-		resp, err = h.doAnthropicLLMRequestStream(reqCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+		resp, err = h.doAnthropicLLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
 	} else {
-		resp, err = h.doOpenAILLMRequestStream(reqCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+		resp, err = h.doOpenAILLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
 	}
+	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil || responseHasToolCalls(resp) {
 		tokenBuffer.Discard()
 	} else {
@@ -767,7 +782,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	if metrics != nil {
 		metrics.RequestBuildNanos += time.Since(requestBuildStartedAt).Nanoseconds()
 	}
-	log.Printf("[LLM Stream] POST %s model=%s protocol=%s", endpoint, cfg.Model, cfg.Protocol)
+	log.Printf("[LLM Stream] POST %s model=%s protocol=%s %s", endpoint, cfg.Model, cfg.Protocol, llm.RequestTraceLogFields(reqCtx))
 
 	httpDoStartedAt := time.Now()
 	resp, err := httpClient.Do(req)
@@ -781,15 +796,14 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 
 	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		log.Printf("[LLM Stream] HTTP 404: endpoint=%s content_type=%q body=%s", endpoint, resp.Header.Get("Content-Type"), truncateLLMBody(body, 500))
-		return nil, fmt.Errorf("HTTP 404: %s (endpoint=%s, model=%s, protocol=%s)", truncateLLMBody(body, 200), endpoint, cfg.Model, cfg.Protocol)
+		log.Printf("[LLM Stream] HTTP 404: endpoint=%s content_type=%q body_len=%d", endpoint, resp.Header.Get("Content-Type"), len(body))
+		return nil, fmt.Errorf("HTTP 404 (endpoint=%s, model=%s, protocol=%s, body_len=%d)", endpoint, cfg.Model, cfg.Protocol, len(body))
 	}
 
-	// 对已知 HTTP 错误提供友好提示，避免原始 HTML/JSON body 直接透传给用户。
-	// 覆盖 4xx（客户端错误，404 已单独处理）和 5xx（网关/服务端错误）。
+	// Provide friendly HTTP errors instead of raw HTML/JSON bodies.
 	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		log.Printf("[LLM Stream] HTTP %d: endpoint=%s content_type=%q body=%s", resp.StatusCode, endpoint, resp.Header.Get("Content-Type"), truncateLLMBody(body, 500))
+		log.Printf("[LLM Stream] HTTP %d: endpoint=%s content_type=%q body_len=%d", resp.StatusCode, endpoint, resp.Header.Get("Content-Type"), len(body))
 		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
 		return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, cfg.Model)
 	}
@@ -813,16 +827,12 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	}
 
 	if !isSSE {
-		// bodyReader includes the peeked bytes via MultiReader — we must
+		// bodyReader includes the peeked bytes via MultiReader  - we must
 		// read from it (not resp.Body) to get the complete response body.
 		body, _ := io.ReadAll(io.LimitReader(bodyReader, 256*1024))
 		parsed, parseErr := llm.ParseNonStreamOpenAIResponseBody(body)
 		if parseErr != nil {
-			snippet := string(body)
-			if len(snippet) > 500 {
-				snippet = snippet[:500] + "..."
-			}
-			log.Printf("[LLM Stream] non-SSE parse failed: content_type=%q body_len=%d err=%v body=%s", contentType, len(body), parseErr, snippet)
+			log.Printf("[LLM Stream] non-SSE parse failed: content_type=%q body_len=%d err=%T", contentType, len(body), parseErr)
 		}
 		return parsed, parseErr
 	}
@@ -830,7 +840,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	// filteredBuf accumulates the content that actually reaches onToken
 	// (after all stream filters). msg.Content reads from filteredBuf so
 	// the backend response is identical to what the frontend received via
-	// streaming — eliminating the data-flow fork between contentBuf (raw)
+	// streaming  - eliminating the data-flow fork between contentBuf (raw)
 	// and the filter chain output that caused Browser: prefix leaks.
 	var filteredBuf strings.Builder
 	filteredOnToken := func(delta string) {
@@ -871,7 +881,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 			if metrics != nil {
 				metrics.IdleTimeoutAfterToken = !metrics.FirstTokenAt.IsZero()
 			}
-			log.Printf("[LLM Stream] SSE idle timeout (%v) — aborting stalled request", guiSSEIdleTimeout)
+			log.Printf("[LLM Stream] SSE idle timeout (%v)  - aborting stalled request", guiSSEIdleTimeout)
 			resp.Body.Close() // unblocks scanner.Scan()
 		case <-watchdogDone:
 		case <-reqCtx.Done():
@@ -909,12 +919,14 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		delta := choice.Delta
 
 		if delta.ReasoningContent != "" {
+			beforeReasoning := stripRolePrefixReasoningForDisplay(reasoningBuf.String())
 			reasoningBuf.WriteString(delta.ReasoningContent)
-			// Forward reasoning content directly to the frontend (bypassing
-			// content filters which would corrupt it). The \x01 prefix lets
-			// the frontend distinguish thinking tokens from content tokens
-			// and render them with a different style (gray/collapsed).
-			onToken("\x01" + delta.ReasoningContent)
+			afterReasoning := stripRolePrefixReasoningForDisplay(reasoningBuf.String())
+			// Forward only sanitized reasoning deltas. The \x01 prefix lets
+			// the frontend distinguish thinking tokens from content tokens.
+			if len(afterReasoning) > len(beforeReasoning) {
+				onToken("\x01" + afterReasoning[len(beforeReasoning):])
+			}
 		}
 		if delta.Content != "" {
 			contentBuf.WriteString(delta.Content)
@@ -960,6 +972,8 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		}
 		if choice.FinishReason != nil {
 			finishReason = *choice.FinishReason
+			log.Printf("[LLM Stream] finish_reason=%q received; closing SSE stream without waiting for trailing DONE/usage", finishReason)
+			break
 		}
 	}
 
@@ -994,7 +1008,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	// the frontend's streamed content are from the same data path.
 	// Fall back to contentBuf only when filteredBuf is empty (e.g. all content
 	// was inside <think> tags or was entirely tool calls).
-	// Apply stripXMLToolCalls to filteredBuf too — the stream filter chain
+	// Apply stripXMLToolCalls to filteredBuf too  - the stream filter chain
 	// does not handle XML-formatted tool calls from models that emit tools in content.
 	filteredStr := filteredBuf.String()
 	if filteredStr != "" {
@@ -1013,7 +1027,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		browserDiagHasBrowserRolePrefix(filteredStr),
 		filteredStr,
 	)
-	reasoning := reasoningBuf.String()
+	reasoning := stripRolePrefixReasoningForDisplay(reasoningBuf.String())
 	if content == "" && reasoning != "" {
 		content = stripXMLToolCalls(stripFunctionCalls(stripThinkTags(reasoning)))
 	}
@@ -1096,6 +1110,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
 	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
 	httpDoStartedAt := time.Now()
 	resp, err := httpClient.Do(req)
@@ -1107,7 +1122,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	}
 	defer resp.Body.Close()
 
-	// 对 HTTP 错误提供友好提示，避免 HTML 错误页面透传到聊天界面。
+	// Provide friendly HTTP errors instead of raw HTML pages.
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
@@ -1157,7 +1172,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 			if metrics != nil {
 				metrics.IdleTimeoutAfterToken = !metrics.FirstTokenAt.IsZero()
 			}
-			log.Printf("[LLM Stream] Anthropic SSE idle timeout (%v) — aborting stalled request", guiSSEIdleTimeout)
+			log.Printf("[LLM Stream] Anthropic SSE idle timeout (%v)  - aborting stalled request", guiSSEIdleTimeout)
 			resp.Body.Close()
 		case <-anthWatchdogDone:
 		case <-reqCtx.Done():

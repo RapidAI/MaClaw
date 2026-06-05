@@ -80,8 +80,42 @@ func TestToolRouter_BelowBudget(t *testing.T) {
 	router := NewToolRouter(nil)
 	result := router.Route("hello world", allTools)
 
-	if len(result) != len(allTools) {
-		t.Errorf("expected %d tools (unchanged), got %d", len(allTools), len(result))
+	resultNames := make(map[string]bool)
+	for _, tool := range result {
+		resultNames[extractToolName(tool)] = true
+	}
+	if resultNames["screenshot"] {
+		t.Fatalf("screenshot should be filtered without explicit screenshot request: %#v", resultNames)
+	}
+	if len(result) != len(allTools)-1 {
+		t.Errorf("expected screenshot-filtered tool count %d, got %d", len(allTools)-1, len(result))
+	}
+}
+
+func TestToolRouter_ChineseBrowserPublicationKeepsStableBrowserOnly(t *testing.T) {
+	allTools := []map[string]interface{}{
+		toolDef("browser", "Browser automation merged tool", nil, nil),
+		toolDef("bash", "Run shell commands", nil, nil),
+		toolDef("screenshot", "Capture screen", nil, nil),
+		toolDef("manage_skill", "Manage skills", nil, nil),
+		toolDef("discover_tool", "Discover tools", nil, nil),
+		toolDef("call_mcp_tool", "Call MCP", nil, nil),
+		toolDef("web_search", "Search web", nil, nil),
+	}
+	router := NewToolRouter(nil)
+	result := router.Route("\u627e\u7bc7\u6700\u65b0\u8bba\u6587\uff0c\u5199\u5b8c\u540e\u53d1\u5e03\u5230\u77e5\u4e4e", allTools)
+
+	resultNames := make(map[string]bool)
+	for _, tool := range result {
+		resultNames[extractToolName(tool)] = true
+	}
+	if !resultNames["browser"] {
+		t.Fatalf("browser should be kept for Chinese publication task, got %#v", resultNames)
+	}
+	for _, name := range []string{"bash", "screenshot", "manage_skill", "discover_tool", "call_mcp_tool"} {
+		if resultNames[name] {
+			t.Fatalf("%s should be suppressed for browser publication task, got %#v", name, resultNames)
+		}
 	}
 }
 

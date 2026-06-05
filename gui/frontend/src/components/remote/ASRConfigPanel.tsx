@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { GetASREnabled, SetASREnabled, CheckASRModel, DownloadASRModel, LoadConfig, SaveConfig } from "../../../wailsjs/go/main/App";
+import { GetASREnabled, SetASREnabled, CheckASRModel, DownloadASRModel, LoadConfig, PatchConfigFields } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { ModelStatusBox } from "./ModelStatusBox";
 
@@ -212,11 +212,10 @@ export function ASRConfigPanel({ lang }: Props) {
             }
             const clampedSpeech = Math.max(noiseFloor * 2, speechLevel); // at least 2× noise
 
-            // Persist both values to config
-            const cfg = await LoadConfig();
-            (cfg as any).noise_floor_calibrated = noiseFloor;
-            (cfg as any).speech_level_calibrated = clampedSpeech;
-            await SaveConfig(cfg);
+            await PatchConfigFields({
+                noise_floor_calibrated: noiseFloor,
+                speech_level_calibrated: clampedSpeech,
+            });
 
             setCalibratedValue(noiseFloor);
             setSpeechLevelValue(clampedSpeech);
@@ -249,10 +248,10 @@ export function ASRConfigPanel({ lang }: Props) {
     /** Clear calibration and revert to auto-detection. */
     const clearCalibration = useCallback(async () => {
         try {
-            const cfg = await LoadConfig();
-            (cfg as any).noise_floor_calibrated = 0;
-            (cfg as any).speech_level_calibrated = 0;
-            await SaveConfig(cfg);
+            await PatchConfigFields({
+                noise_floor_calibrated: 0,
+                speech_level_calibrated: 0,
+            });
             setCalibratedValue(0);
             setSpeechLevelValue(0);
             setCalibrationMsg(t('Calibration cleared. Using auto-detection.', '已清除校准，使用自动检测。', '已清除校準，使用自動檢測。'));

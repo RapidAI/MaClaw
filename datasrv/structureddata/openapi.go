@@ -55,6 +55,17 @@ func openAPISpec(version string) map[string]interface{} {
 			},
 		},
 	}
+	paths["/api/v1/setup/tenants/sync"] = map[string]interface{}{
+		"post": map[string]interface{}{
+			"summary":     "Refresh setup tenant options from Hub",
+			"description": "Pulls the Hub tenant registry using the saved Hub registration so the login screen can show current tenant options.",
+			"requestBody": objectRequestBody(false, nil, map[string]interface{}{}),
+			"responses": map[string]interface{}{
+				"200": jsonObjectOpenAPIResponse("Hub tenants synced", syncHubTenantsResultOpenAPISchema()),
+				"400": errorResponseOpenAPISchema("Hub registration is missing or inactive."),
+			},
+		},
+	}
 	paths["/api/v1/login"] = map[string]interface{}{
 		"post": map[string]interface{}{
 			"summary":     "Login with a local administrator account",
@@ -87,6 +98,11 @@ func openAPISpec(version string) map[string]interface{} {
 	add("/api/v1/data/admin/accounts/{username}", "patch")
 	add("/api/v1/data/admin/sessions", "get")
 	add("/api/v1/data/admin/sessions/{sessionId}", "patch", "delete")
+	add("/api/v1/data/admin/tenants", "get")
+	add("/api/v1/data/admin/tenants/sync", "post")
+	add("/api/v1/data/admin/hub-registration", "get", "post")
+	add("/api/v1/data/admin/hub-registration/register", "post")
+	add("/api/v1/data/admin/hub-registration/sync-tenants", "post")
 	add("/api/v1/data/access/presets", "get")
 	add("/api/v1/data/access/review", "get")
 	add("/api/v1/data/access/remediation-plan", "get")
@@ -456,6 +472,11 @@ func openAPISpec(version string) map[string]interface{} {
 		setOpenAPIPostRequestBody(paths, path, queryRecordsOpenAPIRequestBody(50000, "Maximum number of records to export in the background job."))
 	}
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/access/check", accessCheckOpenAPIRequestBody())
+	adminTenantQuery := []map[string]interface{}{stringQueryParam("tenant", "Optional administrator tenant scope. Global administrators may use all or a specific tenant id; tenant administrators are limited to their own tenant.")}
+	addOperationQueryParameters(paths, "/api/v1/data/admin/accounts", []string{"get"}, adminTenantQuery)
+	addOperationQueryParameters(paths, "/api/v1/data/admin/accounts/{username}", []string{"patch"}, adminTenantQuery)
+	addOperationQueryParameters(paths, "/api/v1/data/admin/sessions", []string{"get"}, adminTenantQuery)
+	addOperationQueryParameters(paths, "/api/v1/data/admin/sessions/{sessionId}", []string{"patch", "delete"}, adminTenantQuery)
 	setOpenAPIGetResponses(paths, "/api/v1/data/admin/accounts", adminAccountListOpenAPIResponses())
 	setOpenAPIPostResponses(paths, "/api/v1/data/admin/accounts", adminAccountResultOpenAPIResponses("201", "Administrator account created"))
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/admin/accounts", createAdminAccountOpenAPIRequestBody())
@@ -465,6 +486,16 @@ func openAPISpec(version string) map[string]interface{} {
 	setOpenAPIPatchResponses(paths, "/api/v1/data/admin/sessions/{sessionId}", adminSessionResultOpenAPIResponses())
 	setOpenAPIPatchRequestBody(paths, "/api/v1/data/admin/sessions/{sessionId}", updateAdminSessionOpenAPIRequestBody())
 	setOpenAPIDeleteResponses(paths, "/api/v1/data/admin/sessions/{sessionId}", revokeAdminSessionOpenAPIResponses())
+	setOpenAPIGetResponses(paths, "/api/v1/data/admin/tenants", dataTenantListOpenAPIResponses())
+	setOpenAPIPostResponses(paths, "/api/v1/data/admin/tenants/sync", syncHubTenantsOpenAPIResponses())
+	setOpenAPIGetResponses(paths, "/api/v1/data/admin/hub-registration", hubRegistrationOpenAPIResponses("Hub registration status"))
+	setOpenAPIPostResponses(paths, "/api/v1/data/admin/hub-registration", hubRegistrationOpenAPIResponses("Hub registration saved"))
+	setOpenAPIPostResponses(paths, "/api/v1/data/admin/hub-registration/register", hubRegistrationOpenAPIResponses("Hub registration completed"))
+	setOpenAPIPostResponses(paths, "/api/v1/data/admin/hub-registration/sync-tenants", syncHubTenantsOpenAPIResponses())
+	setOpenAPIPostRequestBody(paths, "/api/v1/data/admin/tenants/sync", syncHubTenantsOpenAPIRequestBody())
+	setOpenAPIPostRequestBody(paths, "/api/v1/data/admin/hub-registration", saveHubRegistrationOpenAPIRequestBody())
+	setOpenAPIPostRequestBody(paths, "/api/v1/data/admin/hub-registration/register", objectRequestBody(false, nil, map[string]interface{}{}))
+	setOpenAPIPostRequestBody(paths, "/api/v1/data/admin/hub-registration/sync-tenants", objectRequestBody(false, nil, map[string]interface{}{}))
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/access/api-keys", createAPIKeyPolicyOpenAPIRequestBody())
 	setOpenAPIPatchRequestBody(paths, "/api/v1/data/access/api-keys/{keyId}", updateAPIKeyPolicyOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/maintenance/run", runMaintenanceOpenAPIRequestBody())
@@ -753,6 +784,20 @@ func addQueryParameters(paths map[string]interface{}, paramsByPath map[string][]
 			continue
 		}
 		operation, ok := pathItem["get"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		operation["parameters"] = appendNamedParameters(operation["parameters"], params)
+	}
+}
+
+func addOperationQueryParameters(paths map[string]interface{}, path string, methods []string, params []map[string]interface{}) {
+	pathItem, ok := paths[path].(map[string]interface{})
+	if !ok {
+		return
+	}
+	for _, method := range methods {
+		operation, ok := pathItem[strings.ToLower(method)].(map[string]interface{})
 		if !ok {
 			continue
 		}
@@ -1186,6 +1231,7 @@ func accessCheckOpenAPIRequestBody() map[string]interface{} {
 func createAdminAccountOpenAPIRequestBody() map[string]interface{} {
 	return objectRequestBody(true, []string{"username", "password"}, map[string]interface{}{
 		"tenant_id":    map[string]interface{}{"type": "string"},
+		"admin_scope":  map[string]interface{}{"type": "string", "enum": []string{"global", "tenant"}},
 		"username":     map[string]interface{}{"type": "string"},
 		"password":     map[string]interface{}{"type": "string", "format": "password"},
 		"display_name": map[string]interface{}{"type": "string"},
@@ -1196,8 +1242,36 @@ func createAdminAccountOpenAPIRequestBody() map[string]interface{} {
 func updateAdminAccountOpenAPIRequestBody() map[string]interface{} {
 	return objectRequestBody(true, nil, map[string]interface{}{
 		"display_name": map[string]interface{}{"type": "string"},
+		"admin_scope":  map[string]interface{}{"type": "string", "enum": []string{"global", "tenant"}},
 		"role":         map[string]interface{}{"type": "string", "enum": []string{"data_admin", "data_auditor", "data_user"}},
 		"enabled":      map[string]interface{}{"type": "boolean"},
+	})
+}
+
+func syncHubTenantsOpenAPIRequestBody() map[string]interface{} {
+	tenantSchema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+		"id":                  map[string]interface{}{"type": "string"},
+		"hub_tenant_id":       map[string]interface{}{"type": "string"},
+		"slug":                map[string]interface{}{"type": "string"},
+		"name":                map[string]interface{}{"type": "string"},
+		"status":              map[string]interface{}{"type": "string"},
+		"primary_domain":      map[string]interface{}{"type": "string"},
+		"domains":             map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+		"virtual_mail_domain": map[string]interface{}{"type": "string"},
+	}}
+	return objectRequestBody(true, []string{"tenants"}, map[string]interface{}{
+		"source":  map[string]interface{}{"type": "string", "description": "Tenant source, normally hub."},
+		"tenants": map[string]interface{}{"type": "array", "items": tenantSchema},
+	})
+}
+
+func saveHubRegistrationOpenAPIRequestBody() map[string]interface{} {
+	return objectRequestBody(false, nil, map[string]interface{}{
+		"hub_base_url":        map[string]interface{}{"type": "string", "description": "Hub base URL. Omit to preserve the existing value; send an empty string to clear it."},
+		"platform_id":         map[string]interface{}{"type": "string", "description": "Platform id registered with Hub. Omit to preserve the existing value."},
+		"platform_name":       map[string]interface{}{"type": "string", "description": "Human-readable platform name. Omit to preserve the existing value."},
+		"callback_base_url":   map[string]interface{}{"type": "string", "description": "Callback base URL. Omit to preserve the existing value; send an empty string to clear it."},
+		"virtual_mail_domain": map[string]interface{}{"type": "string", "description": "Virtual mail domain used by Hub tenant sync. Omit to preserve the existing value; send an empty string to clear it."},
 	})
 }
 
@@ -1329,9 +1403,15 @@ func setupStatusOpenAPISchema() map[string]interface{} {
 		"type":     "object",
 		"required": []string{"initialized"},
 		"properties": map[string]interface{}{
-			"initialized": map[string]interface{}{"type": "boolean"},
-			"tenant_id":   map[string]interface{}{"type": "string"},
-			"mode":        map[string]interface{}{"type": "string", "enum": []string{"local_admin"}},
+			"initialized":  map[string]interface{}{"type": "boolean"},
+			"tenant_id":    map[string]interface{}{"type": "string"},
+			"mode":         map[string]interface{}{"type": "string", "enum": []string{"local_admin", "hub_tenant_admin"}},
+			"admin_scopes": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string", "enum": []string{"global", "tenant"}}},
+			"tenants":      map[string]interface{}{"type": "array", "items": dataTenantOpenAPISchema()},
+			"hub_registration": map[string]interface{}{
+				"type":       "object",
+				"properties": publicHubRegistrationOpenAPIProperties(),
+			},
 			"password_policy": map[string]interface{}{
 				"type":     "object",
 				"required": []string{"min_length", "lockout_enabled", "offline_reset_available"},
@@ -1348,6 +1428,95 @@ func setupStatusOpenAPISchema() map[string]interface{} {
 	}
 }
 
+func dataTenantOpenAPISchema() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+		"id":                  map[string]interface{}{"type": "string"},
+		"hub_tenant_id":       map[string]interface{}{"type": "string"},
+		"slug":                map[string]interface{}{"type": "string"},
+		"name":                map[string]interface{}{"type": "string"},
+		"status":              map[string]interface{}{"type": "string"},
+		"primary_domain":      map[string]interface{}{"type": "string"},
+		"domains":             map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+		"source":              map[string]interface{}{"type": "string"},
+		"synced_at":           map[string]interface{}{"type": "string", "format": "date-time"},
+		"updated_at":          map[string]interface{}{"type": "string", "format": "date-time"},
+		"virtual_mail_domain": map[string]interface{}{"type": "string"},
+	}}
+}
+
+func syncHubTenantsResultOpenAPISchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type":     "object",
+		"required": []string{"synced", "tenants"},
+		"properties": map[string]interface{}{
+			"synced":  map[string]interface{}{"type": "integer"},
+			"tenants": map[string]interface{}{"type": "array", "items": dataTenantOpenAPISchema()},
+		},
+	}
+}
+
+func dataTenantListOpenAPIResponses() map[string]interface{} {
+	return map[string]interface{}{
+		"200": jsonObjectOpenAPIResponse("Data tenant list", map[string]interface{}{
+			"type":     "object",
+			"required": []string{"items"},
+			"properties": map[string]interface{}{
+				"items": map[string]interface{}{"type": "array", "items": dataTenantOpenAPISchema()},
+			},
+		}),
+	}
+}
+
+func syncHubTenantsOpenAPIResponses() map[string]interface{} {
+	return map[string]interface{}{
+		"200": jsonObjectOpenAPIResponse("Hub tenants synced", syncHubTenantsResultOpenAPISchema()),
+	}
+}
+
+func hubRegistrationOpenAPISchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type":       "object",
+		"required":   []string{"configured", "registered"},
+		"properties": hubRegistrationOpenAPIProperties(),
+	}
+}
+
+func hubRegistrationOpenAPIResponses(description string) map[string]interface{} {
+	return map[string]interface{}{
+		"200": jsonObjectOpenAPIResponse(description, map[string]interface{}{
+			"type":     "object",
+			"required": []string{"status"},
+			"properties": map[string]interface{}{
+				"status": hubRegistrationOpenAPISchema(),
+			},
+		}),
+	}
+}
+
+func hubRegistrationOpenAPIProperties() map[string]interface{} {
+	return map[string]interface{}{
+		"configured":          map[string]interface{}{"type": "boolean"},
+		"registered":          map[string]interface{}{"type": "boolean"},
+		"hub_base_url":        map[string]interface{}{"type": "string"},
+		"platform_id":         map[string]interface{}{"type": "string"},
+		"platform_name":       map[string]interface{}{"type": "string"},
+		"callback_base_url":   map[string]interface{}{"type": "string"},
+		"virtual_mail_domain": map[string]interface{}{"type": "string"},
+		"last_registered_at":  map[string]interface{}{"type": "string", "format": "date-time"},
+		"last_synced_at":      map[string]interface{}{"type": "string", "format": "date-time"},
+		"last_error":          map[string]interface{}{"type": "string"},
+	}
+}
+
+func publicHubRegistrationOpenAPIProperties() map[string]interface{} {
+	return map[string]interface{}{
+		"configured":         map[string]interface{}{"type": "boolean"},
+		"registered":         map[string]interface{}{"type": "boolean"},
+		"last_registered_at": map[string]interface{}{"type": "string", "format": "date-time"},
+		"last_synced_at":     map[string]interface{}{"type": "string", "format": "date-time"},
+	}
+}
+
 func initializeAdminResultOpenAPISchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type":     "object",
@@ -1358,6 +1527,7 @@ func initializeAdminResultOpenAPISchema() map[string]interface{} {
 			"username":     map[string]interface{}{"type": "string"},
 			"display_name": map[string]interface{}{"type": "string"},
 			"role":         map[string]interface{}{"type": "string"},
+			"admin_scope":  map[string]interface{}{"type": "string", "enum": []string{"global", "tenant"}},
 			"token":        map[string]interface{}{"type": "string", "description": "Temporary bearer token returned once after setup."},
 			"expires_at":   map[string]interface{}{"type": "string", "format": "date-time"},
 		},
@@ -1369,11 +1539,12 @@ func loginResultOpenAPISchema() map[string]interface{} {
 		"type":     "object",
 		"required": []string{"tenant_id", "username", "role", "token", "expires_at"},
 		"properties": map[string]interface{}{
-			"tenant_id":  map[string]interface{}{"type": "string"},
-			"username":   map[string]interface{}{"type": "string"},
-			"role":       map[string]interface{}{"type": "string"},
-			"token":      map[string]interface{}{"type": "string", "description": "Temporary bearer token for the Web Console and data APIs."},
-			"expires_at": map[string]interface{}{"type": "string", "format": "date-time"},
+			"tenant_id":   map[string]interface{}{"type": "string"},
+			"username":    map[string]interface{}{"type": "string"},
+			"role":        map[string]interface{}{"type": "string"},
+			"admin_scope": map[string]interface{}{"type": "string", "enum": []string{"global", "tenant"}},
+			"token":       map[string]interface{}{"type": "string", "description": "Temporary bearer token for the Web Console and data APIs."},
+			"expires_at":  map[string]interface{}{"type": "string", "format": "date-time"},
 		},
 	}
 }
@@ -1388,6 +1559,7 @@ func adminAccountOpenAPISchema() map[string]interface{} {
 			"username":      map[string]interface{}{"type": "string"},
 			"display_name":  map[string]interface{}{"type": "string"},
 			"role":          map[string]interface{}{"type": "string"},
+			"admin_scope":   map[string]interface{}{"type": "string", "enum": []string{"global", "tenant"}},
 			"enabled":       map[string]interface{}{"type": "boolean"},
 			"last_login_at": map[string]interface{}{"type": "string", "format": "date-time"},
 			"created_at":    map[string]interface{}{"type": "string", "format": "date-time"},
@@ -1425,14 +1597,15 @@ func adminSessionOpenAPISchema() map[string]interface{} {
 		"type":     "object",
 		"required": []string{"id", "tenant_id", "user_id", "username", "role", "expires_at", "created_at"},
 		"properties": map[string]interface{}{
-			"id":         map[string]interface{}{"type": "string"},
-			"tenant_id":  map[string]interface{}{"type": "string"},
-			"user_id":    map[string]interface{}{"type": "string"},
-			"username":   map[string]interface{}{"type": "string"},
-			"role":       map[string]interface{}{"type": "string"},
-			"current":    map[string]interface{}{"type": "boolean"},
-			"expires_at": map[string]interface{}{"type": "string", "format": "date-time"},
-			"created_at": map[string]interface{}{"type": "string", "format": "date-time"},
+			"id":          map[string]interface{}{"type": "string"},
+			"tenant_id":   map[string]interface{}{"type": "string"},
+			"user_id":     map[string]interface{}{"type": "string"},
+			"username":    map[string]interface{}{"type": "string"},
+			"role":        map[string]interface{}{"type": "string"},
+			"admin_scope": map[string]interface{}{"type": "string", "enum": []string{"global", "tenant"}},
+			"current":     map[string]interface{}{"type": "boolean"},
+			"expires_at":  map[string]interface{}{"type": "string", "format": "date-time"},
+			"created_at":  map[string]interface{}{"type": "string", "format": "date-time"},
 		},
 	}
 }

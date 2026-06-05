@@ -38,7 +38,7 @@ func TestMarkQueuedTasksSkippedAfterRateLimit(t *testing.T) {
 	tasks := []TaskRequest{
 		{Tool: "codex"},
 		{Tool: "claude"},
-		{Tool: "gemini"},
+		{Tool: "opencode"},
 	}
 	results := map[string]SessionResult{
 		"task_0": {Tool: "codex", Status: orchestratorSessionStatusFailed, Error: "HTTP 429: rate limit"},
@@ -61,7 +61,7 @@ func TestBuildOrchestratorSummaryCountsRateLimitSkipsSeparately(t *testing.T) {
 	results := map[string]SessionResult{
 		"task_0": {Tool: "codex", Status: orchestratorSessionStatusFailed, Error: "HTTP 429: rate limit"},
 		"task_1": {Tool: "claude", Status: orchestratorSessionStatusFailed, Error: "skipped: prior queued task hit an LLM rate limit"},
-		"task_2": {Tool: "gemini", Status: orchestratorSessionStatusFailed, Error: "skipped: prior queued task hit an LLM rate limit"},
+		"task_2": {Tool: "opencode", Status: orchestratorSessionStatusFailed, Error: "skipped: prior queued task hit an LLM rate limit"},
 	}
 
 	got := buildOrchestratorSummary(results)

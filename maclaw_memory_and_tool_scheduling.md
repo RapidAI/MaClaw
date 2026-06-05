@@ -358,7 +358,7 @@ type Reranker interface {
 
 ### 2.10 工具选择器（Selector）
 
-推荐最佳编程工具（claude/codex/gemini/cursor/opencode/iflow/kilo）：
+推荐最佳编程工具（claude/codex/cursor/opencode/iflow/kilo）：
 
 - 每个工具有能力画像：支持语言、框架、任务类型、基础分
 - 使用 BM25 对任务描述与能力文本进行匹配

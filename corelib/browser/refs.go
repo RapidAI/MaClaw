@@ -34,6 +34,56 @@ func (s *BrowserAgentSession) selectorCandidatesForRef(snapshotID, ref string) (
 	if err != nil {
 		return nil, nil, err
 	}
+	return selectorCandidatesFromResolvedRef(resolved)
+}
+
+func (s *BrowserAgentSession) selectorCandidatesForText(snapshotID, text string) ([]string, *BrowserElementRef, error) {
+	text = normalizeElementText(text)
+	if text == "" {
+		return nil, nil, fmt.Errorf("missing text")
+	}
+	if s == nil {
+		return nil, nil, fmt.Errorf("browser session is nil")
+	}
+	s.mu.RLock()
+	if snapshotID == "" {
+		snapshotID = s.lastSnapshotID
+	}
+	snap, ok := s.snapshots[snapshotID]
+	s.mu.RUnlock()
+	if !ok || snap == nil {
+		return nil, nil, fmt.Errorf("browser snapshot not found: %s", snapshotID)
+	}
+
+	var exact *BrowserElementRef
+	var contains *BrowserElementRef
+	for _, item := range snap.Refs {
+		name := normalizeElementText(item.Name)
+		body := normalizeElementText(item.Text)
+		if name == text || body == text {
+			cp := item
+			exact = &cp
+			break
+		}
+		if contains == nil && (strings.Contains(name, text) || strings.Contains(body, text) || strings.Contains(text, name) && name != "") {
+			cp := item
+			contains = &cp
+		}
+	}
+	resolved := exact
+	if resolved == nil {
+		resolved = contains
+	}
+	if resolved == nil {
+		return nil, nil, fmt.Errorf("browser element text not found: %s", text)
+	}
+	return selectorCandidatesFromResolvedRef(resolved)
+}
+
+func selectorCandidatesFromResolvedRef(resolved *BrowserElementRef) ([]string, *BrowserElementRef, error) {
+	if resolved == nil {
+		return nil, nil, fmt.Errorf("browser ref is nil")
+	}
 	candidates := make([]string, 0, 1+len(resolved.SelectorCandidates))
 	if strings.TrimSpace(resolved.Selector) != "" {
 		candidates = append(candidates, strings.TrimSpace(resolved.Selector))
@@ -55,9 +105,13 @@ func (s *BrowserAgentSession) selectorCandidatesForRef(snapshotID, ref string) (
 		}
 	}
 	if len(candidates) == 0 {
-		return nil, resolved, fmt.Errorf("ref %s 没有关联 selector，请重新 observe", ref)
+		return nil, resolved, fmt.Errorf("ref %s has no selector candidates; run observe again", resolved.Ref)
 	}
 	return candidates, resolved, nil
+}
+
+func normalizeElementText(text string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
 }
 
 func (s *BrowserAgentSession) selectorForAction(snapshotID, ref, selector string) (string, *BrowserElementRef, error) {
@@ -73,7 +127,7 @@ func (s *BrowserAgentSession) selectorForAction(snapshotID, ref, selector string
 				return candidate, resolved, nil
 			}
 		}
-		return "", resolved, fmt.Errorf("ref %s 已失效，请重新 observe 获取新的 refs", ref)
+		return "", resolved, fmt.Errorf("ref %s is stale; run observe again to get fresh refs", ref)
 	}
 	if selector == "" {
 		return "", nil, fmt.Errorf("missing ref or selector")

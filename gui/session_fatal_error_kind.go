@@ -60,8 +60,7 @@ func hasFatalSessionToolMissingMarker(lower string) bool {
 	}
 	return strings.Contains(lower, "no such file or directory") &&
 		(strings.Contains(lower, "claude") ||
-			strings.Contains(lower, "codex") ||
-			strings.Contains(lower, "gemini"))
+			strings.Contains(lower, "codex"))
 }
 
 func hasFatalSessionOSPermissionMarker(lower string) bool {

@@ -3,11 +3,12 @@ package structureddata
 import "time"
 
 type Principal struct {
-	TenantID string        `json:"tenant_id"`
-	UserID   string        `json:"user_id,omitempty"`
-	Role     string        `json:"role,omitempty"`
-	APIKeyID string        `json:"api_key_id,omitempty"`
-	Policy   *APIKeyPolicy `json:"-"`
+	TenantID   string        `json:"tenant_id"`
+	UserID     string        `json:"user_id,omitempty"`
+	Role       string        `json:"role,omitempty"`
+	AdminScope string        `json:"admin_scope,omitempty"`
+	APIKeyID   string        `json:"api_key_id,omitempty"`
+	Policy     *APIKeyPolicy `json:"-"`
 }
 
 type APIKeyPolicy struct {
@@ -56,10 +57,62 @@ type APIKeyPolicyRecord struct {
 }
 
 type SetupStatus struct {
-	Initialized    bool                 `json:"initialized"`
-	TenantID       string               `json:"tenant_id,omitempty"`
-	Mode           string               `json:"mode,omitempty"`
-	PasswordPolicy *AdminPasswordPolicy `json:"password_policy,omitempty"`
+	Initialized     bool                   `json:"initialized"`
+	TenantID        string                 `json:"tenant_id,omitempty"`
+	Mode            string                 `json:"mode,omitempty"`
+	AdminScopes     []string               `json:"admin_scopes,omitempty"`
+	Tenants         []DataTenantInfo       `json:"tenants,omitempty"`
+	HubRegistration *HubRegistrationStatus `json:"hub_registration,omitempty"`
+	PasswordPolicy  *AdminPasswordPolicy   `json:"password_policy,omitempty"`
+}
+
+type DataTenantInfo struct {
+	ID                string    `json:"id"`
+	HubTenantID       string    `json:"hub_tenant_id,omitempty"`
+	Slug              string    `json:"slug,omitempty"`
+	Name              string    `json:"name,omitempty"`
+	Status            string    `json:"status,omitempty"`
+	PrimaryDomain     string    `json:"primary_domain,omitempty"`
+	Domains           []string  `json:"domains,omitempty"`
+	VirtualMailDomain string    `json:"virtual_mail_domain,omitempty"`
+	Source            string    `json:"source,omitempty"`
+	SyncedAt          time.Time `json:"synced_at,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type SyncHubTenantsInput struct {
+	Source  string           `json:"source,omitempty"`
+	Tenants []DataTenantInfo `json:"tenants"`
+}
+
+type SyncHubTenantsResult struct {
+	Synced  int              `json:"synced"`
+	Tenants []DataTenantInfo `json:"tenants"`
+}
+
+type HubRegistrationStatus struct {
+	Configured        bool       `json:"configured"`
+	Registered        bool       `json:"registered"`
+	HubBaseURL        string     `json:"hub_base_url,omitempty"`
+	PlatformID        string     `json:"platform_id,omitempty"`
+	PlatformName      string     `json:"platform_name,omitempty"`
+	CallbackBaseURL   string     `json:"callback_base_url,omitempty"`
+	VirtualMailDomain string     `json:"virtual_mail_domain,omitempty"`
+	LastRegisteredAt  *time.Time `json:"last_registered_at,omitempty"`
+	LastSyncedAt      *time.Time `json:"last_synced_at,omitempty"`
+	LastError         string     `json:"last_error,omitempty"`
+}
+
+type SaveHubRegistrationInput struct {
+	HubBaseURL        string `json:"hub_base_url"`
+	PlatformID        string `json:"platform_id,omitempty"`
+	PlatformName      string `json:"platform_name,omitempty"`
+	CallbackBaseURL   string `json:"callback_base_url,omitempty"`
+	VirtualMailDomain string `json:"virtual_mail_domain,omitempty"`
+}
+
+type HubRegistrationResult struct {
+	Status HubRegistrationStatus `json:"status"`
 }
 
 type AdminPasswordPolicy struct {
@@ -85,6 +138,7 @@ type InitializeAdminResult struct {
 	Username    string    `json:"username"`
 	DisplayName string    `json:"display_name,omitempty"`
 	Role        string    `json:"role"`
+	AdminScope  string    `json:"admin_scope,omitempty"`
 	Token       string    `json:"token,omitempty"`
 	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 }
@@ -97,11 +151,12 @@ type LoginInput struct {
 }
 
 type LoginResult struct {
-	TenantID  string    `json:"tenant_id"`
-	Username  string    `json:"username"`
-	Role      string    `json:"role"`
-	Token     string    `json:"token"`
-	ExpiresAt time.Time `json:"expires_at"`
+	TenantID   string    `json:"tenant_id"`
+	Username   string    `json:"username"`
+	Role       string    `json:"role"`
+	AdminScope string    `json:"admin_scope,omitempty"`
+	Token      string    `json:"token"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
 type AdminAccountInfo struct {
@@ -110,6 +165,7 @@ type AdminAccountInfo struct {
 	Username    string     `json:"username"`
 	DisplayName string     `json:"display_name,omitempty"`
 	Role        string     `json:"role"`
+	AdminScope  string     `json:"admin_scope,omitempty"`
 	Enabled     bool       `json:"enabled"`
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
@@ -122,6 +178,7 @@ type ListAdminAccountsResult struct {
 
 type CreateAdminAccountInput struct {
 	TenantID    string `json:"tenant_id,omitempty"`
+	AdminScope  string `json:"admin_scope,omitempty"`
 	Username    string `json:"username"`
 	Password    string `json:"password"`
 	DisplayName string `json:"display_name,omitempty"`
@@ -131,6 +188,7 @@ type CreateAdminAccountInput struct {
 type UpdateAdminAccountInput struct {
 	DisplayName *string `json:"display_name,omitempty"`
 	Role        string  `json:"role,omitempty"`
+	AdminScope  string  `json:"admin_scope,omitempty"`
 	Enabled     *bool   `json:"enabled,omitempty"`
 }
 
@@ -139,14 +197,15 @@ type AdminAccountResult struct {
 }
 
 type AdminSessionInfo struct {
-	ID        string    `json:"id"`
-	TenantID  string    `json:"tenant_id"`
-	UserID    string    `json:"user_id"`
-	Username  string    `json:"username"`
-	Role      string    `json:"role"`
-	Current   bool      `json:"current,omitempty"`
-	ExpiresAt time.Time `json:"expires_at"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string    `json:"id"`
+	TenantID   string    `json:"tenant_id"`
+	UserID     string    `json:"user_id"`
+	Username   string    `json:"username"`
+	Role       string    `json:"role"`
+	AdminScope string    `json:"admin_scope,omitempty"`
+	Current    bool      `json:"current,omitempty"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type ListAdminSessionsResult struct {

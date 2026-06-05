@@ -16,6 +16,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -156,12 +157,7 @@ func (a *App) GetVectorSearchStatus() VectorSearchStatus {
 // activates/deactivates the embedder accordingly.
 // When enabling, the embedder is wired asynchronously so the UI is not blocked.
 func (a *App) SetVectorSearchEnabled(enabled bool) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.VectorSearchEnabled = enabled
-	if err := a.SaveConfig(cfg); err != nil {
+	if _, err := a.PatchConfigFields(map[string]interface{}{"vector_search_enabled": enabled}); err != nil {
 		return err
 	}
 
@@ -619,7 +615,8 @@ func (a *App) buildIntentLLMFunc() tool.LLMClassifyFunc {
 			map[string]string{"role": "user", "content": prompt},
 		}
 		client := &http.Client{Timeout: 35 * time.Second}
-		resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 30*time.Second)
+		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "intent-classifier"})
+		resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 		if err != nil {
 			return "", err
 		}
@@ -644,7 +641,8 @@ func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 			map[string]string{"role": "user", "content": userText},
 		}
 		client := &http.Client{Timeout: 35 * time.Second}
-		resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 30*time.Second)
+		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "unified-intent-classifier"})
+		resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 		if err != nil {
 			return "", err
 		}

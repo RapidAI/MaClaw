@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -283,6 +284,7 @@ type LLMProviderConcurrencySnapshot struct {
 }
 
 type llmProviderConcurrencyState struct {
+	providerID      string
 	maxConcurrency  int
 	maxQueueWaiters int
 	queueTimeoutMS  int
@@ -340,15 +342,27 @@ func (c *LLMProviderConcurrencyController) Acquire(ctx context.Context, provider
 	if len(state.sema) < cap(state.sema) {
 		state.sema <- struct{}{}
 		state.inFlight++
+		inFlight := state.inFlight
+		queueWaiters := state.queueWaiters
 		c.mu.Unlock()
+		if maxConcurrency == 1 || inFlight >= maxConcurrency {
+			log.Printf("[LLM concurrency] acquired provider=%q max=%d in_flight=%d queue_waiters=%d immediate=true", providerID, maxConcurrency, inFlight, queueWaiters)
+		}
 		return c.releaseFunc(state), nil
 	}
 	if maxQueueWaiters > 0 && state.queueWaiters >= maxQueueWaiters {
+		inFlight := state.inFlight
+		queueWaiters := state.queueWaiters
 		c.mu.Unlock()
+		log.Printf("[LLM concurrency] rejected provider=%q max=%d in_flight=%d queue_waiters=%d max_queue_waiters=%d reason=queue_full", providerID, maxConcurrency, inFlight, queueWaiters, maxQueueWaiters)
 		return nil, &LLMProviderConcurrencyError{ProviderID: providerID, Kind: LLMProviderConcurrencyQueueFull}
 	}
 	state.queueWaiters++
+	inFlight := state.inFlight
+	queueWaiters := state.queueWaiters
 	c.mu.Unlock()
+	queuedAt := time.Now()
+	log.Printf("[LLM concurrency] queued provider=%q max=%d in_flight=%d queue_waiters=%d queue_timeout_ms=%d", providerID, maxConcurrency, inFlight, queueWaiters, queueTimeoutMS)
 
 	waitCtx := ctx
 	cancel := func() {}
@@ -364,17 +378,24 @@ func (c *LLMProviderConcurrencyController) Acquire(ctx context.Context, provider
 			state.queueWaiters--
 		}
 		state.inFlight++
+		inFlight := state.inFlight
+		queueWaiters := state.queueWaiters
 		c.mu.Unlock()
+		log.Printf("[LLM concurrency] acquired provider=%q max=%d in_flight=%d queue_waiters=%d immediate=false waited=%s", providerID, maxConcurrency, inFlight, queueWaiters, time.Since(queuedAt).Round(time.Millisecond))
 		return c.releaseFunc(state), nil
 	case <-waitCtx.Done():
 		c.mu.Lock()
 		if state.queueWaiters > 0 {
 			state.queueWaiters--
 		}
+		inFlight := state.inFlight
+		queueWaiters := state.queueWaiters
 		c.mu.Unlock()
 		if ctx.Err() != nil {
+			log.Printf("[LLM concurrency] wait_failed provider=%q max=%d in_flight=%d queue_waiters=%d waited=%s reason=canceled err=%v", providerID, maxConcurrency, inFlight, queueWaiters, time.Since(queuedAt).Round(time.Millisecond), ctx.Err())
 			return nil, &LLMProviderConcurrencyError{ProviderID: providerID, Kind: LLMProviderConcurrencyQueueCanceled, Err: ctx.Err()}
 		}
+		log.Printf("[LLM concurrency] wait_failed provider=%q max=%d in_flight=%d queue_waiters=%d waited=%s reason=timeout", providerID, maxConcurrency, inFlight, queueWaiters, time.Since(queuedAt).Round(time.Millisecond))
 		return nil, &LLMProviderConcurrencyError{ProviderID: providerID, Kind: LLMProviderConcurrencyQueueTimeout}
 	}
 }
@@ -408,7 +429,14 @@ func (c *LLMProviderConcurrencyController) releaseFunc(state *llmProviderConcurr
 		if state.inFlight > 0 {
 			state.inFlight--
 		}
+		inFlight := state.inFlight
+		queueWaiters := state.queueWaiters
+		maxConcurrency := state.maxConcurrency
+		providerID := state.providerID
 		c.mu.Unlock()
+		if maxConcurrency == 1 || queueWaiters > 0 {
+			log.Printf("[LLM concurrency] released provider=%q max=%d in_flight=%d queue_waiters=%d", providerID, maxConcurrency, inFlight, queueWaiters)
+		}
 	}
 }
 
@@ -418,6 +446,7 @@ func (c *LLMProviderConcurrencyController) stateForProvider(providerID string, m
 	state := c.states[providerID]
 	if state == nil || state.maxConcurrency != maxConcurrency || state.maxQueueWaiters != maxQueueWaiters || state.queueTimeoutMS != queueTimeoutMS {
 		state = &llmProviderConcurrencyState{
+			providerID:      providerID,
 			maxConcurrency:  maxConcurrency,
 			maxQueueWaiters: maxQueueWaiters,
 			queueTimeoutMS:  queueTimeoutMS,

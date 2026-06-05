@@ -78,23 +78,17 @@ func (r *RetryStrategy) decideElementNotFound(step StepSpec, count int, ps *Page
 	case 0:
 		return &RetryDecision{
 			ShouldRetry: true,
-			WaitBefore:  5 * time.Second,
-			Reason:      "element not found, waiting 5s before retry",
+			WaitBefore:  300 * time.Millisecond,
+			Reason:      "element not found, short settle before retry",
 		}
 	case 1:
 		return &RetryDecision{
 			ShouldRetry: true,
-			WaitBefore:  10 * time.Second,
-			Reason:      "element not found, waiting 10s before retry",
+			WaitBefore:  700 * time.Millisecond,
+			Reason:      "element not found, one more short retry",
 		}
 	default:
-		return &RetryDecision{
-			ShouldRetry: true,
-			NeedsLLM:    true,
-			WaitBefore:  2 * time.Second,
-			Reason:      "element not found after multiple retries, asking LLM",
-			LLMContext:  r.buildLLMContext("element_not_found", step, ps),
-		}
+		return &RetryDecision{ShouldRetry: false, Reason: "element not found after short retries; observe again for fresh refs"}
 	}
 }
 
@@ -105,7 +99,7 @@ func (r *RetryStrategy) decideTimeout(step StepSpec, count int) *RetryDecision {
 		if adjusted.Timeout > 0 {
 			adjusted.Timeout *= 2
 		} else {
-			adjusted.Timeout = 60 * time.Second
+			adjusted.Timeout = 10 * time.Second
 		}
 		return &RetryDecision{
 			ShouldRetry:  true,
@@ -117,7 +111,7 @@ func (r *RetryStrategy) decideTimeout(step StepSpec, count int) *RetryDecision {
 		if adjusted.Timeout > 0 {
 			adjusted.Timeout *= 3
 		} else {
-			adjusted.Timeout = 90 * time.Second
+			adjusted.Timeout = 20 * time.Second
 		}
 		return &RetryDecision{
 			ShouldRetry:  true,
@@ -133,28 +127,21 @@ func (r *RetryStrategy) decidePageChanged(step StepSpec, count int, ps *PageSnap
 	if count == 0 {
 		return &RetryDecision{
 			ShouldRetry: true,
-			NeedsLLM:    true,
-			WaitBefore:  2 * time.Second,
-			Reason:      "page changed unexpectedly, asking LLM to re-plan",
-			LLMContext:  r.buildLLMContext("page_changed", step, ps),
+			WaitBefore:  500 * time.Millisecond,
+			Reason:      "page changed, short settle before retry",
 		}
 	}
-	return &RetryDecision{
-		ShouldRetry: true,
-		NeedsLLM:    true,
-		WaitBefore:  2 * time.Second,
-		Reason:      "page changed again, LLM re-plan",
-		LLMContext:  r.buildLLMContext("page_changed", step, ps),
-	}
+	return &RetryDecision{ShouldRetry: false, Reason: "page changed again; observe current page before continuing"}
 }
 
 func (r *RetryStrategy) decideUnknown(step StepSpec, count int, ps *PageSnapshot) *RetryDecision {
+	if count > 0 {
+		return &RetryDecision{ShouldRetry: false, Reason: "unknown browser state after retry; observe current page before continuing"}
+	}
 	return &RetryDecision{
 		ShouldRetry: true,
-		NeedsLLM:    true,
-		WaitBefore:  2 * time.Second,
-		Reason:      "unknown state, asking LLM",
-		LLMContext:  r.buildLLMContext("unknown_state", step, ps),
+		WaitBefore:  500 * time.Millisecond,
+		Reason:      "unknown state, short retry after settle",
 	}
 }
 
@@ -162,37 +149,31 @@ func (r *RetryStrategy) decideVerificationFailed(step StepSpec, count int, ps *P
 	if count == 0 {
 		return &RetryDecision{
 			ShouldRetry: true,
-			WaitBefore:  3 * time.Second,
+			WaitBefore:  700 * time.Millisecond,
 			Reason:      "verification failed, retrying after short wait",
 		}
 	}
-	return &RetryDecision{
-		ShouldRetry: true,
-		NeedsLLM:    true,
-		WaitBefore:  2 * time.Second,
-		Reason:      "verification still failing, asking LLM",
-		LLMContext:  r.buildLLMContext("verification_failed", step, ps),
-	}
+	return &RetryDecision{ShouldRetry: false, Reason: "verification still failing after short retry"}
 }
 
 func (r *RetryStrategy) buildLLMContext(failureKind string, step StepSpec, ps *PageSnapshot) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("浏览器任务步骤失败 (类型: %s)\n", failureKind))
-	b.WriteString(fmt.Sprintf("操作: %s, 参数: %v\n", step.Action, step.Params))
+	b.WriteString(fmt.Sprintf("browser task step failed (type: %s)\n", failureKind))
+	b.WriteString(fmt.Sprintf("action: %s, params: %v\n", step.Action, step.Params))
 	if ps != nil {
-		b.WriteString(fmt.Sprintf("当前 URL: %s\n", ps.URL))
-		b.WriteString(fmt.Sprintf("页面标题: %s\n", ps.Title))
+		b.WriteString(fmt.Sprintf("current URL: %s\n", ps.URL))
+		b.WriteString(fmt.Sprintf("page title: %s\n", ps.Title))
 		if len(ps.OCRText) > 0 {
-			b.WriteString("页面 OCR 文本:\n")
+			b.WriteString("page OCR text:\n")
 			for _, r := range ps.OCRText {
 				b.WriteString(fmt.Sprintf("  [%d,%d,%d,%d] %q (%.2f)\n",
 					r.BBox[0], r.BBox[1], r.BBox[2], r.BBox[3], r.Text, r.Confidence))
 			}
 		}
 		if ps.DOMSnippet != "" {
-			b.WriteString(fmt.Sprintf("DOM 片段: %s\n", ps.DOMSnippet))
+			b.WriteString(fmt.Sprintf("DOM snippet: %s\n", ps.DOMSnippet))
 		}
 	}
-	b.WriteString("请根据以上信息决定下一步操作。")
+	b.WriteString("Decide the next browser action from this state.")
 	return b.String()
 }

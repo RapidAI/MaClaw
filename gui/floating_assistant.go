@@ -181,26 +181,11 @@ func (m *FloatingAssistantManager) persistPosition(x, y int) {
 	if m.app == nil {
 		return
 	}
-	config, err := m.app.LoadConfig()
-	if err != nil {
-		return
-	}
-	changed := false
-	if config.FloatingBtnX != x {
+	_ = m.app.PatchConfig(func(config *corelib.AppConfig) {
 		config.FloatingBtnX = x
-		changed = true
-	}
-	if config.FloatingBtnY != y {
 		config.FloatingBtnY = y
-		changed = true
-	}
-	if !config.FloatingBtnPositionSet {
 		config.FloatingBtnPositionSet = true
-		changed = true
-	}
-	if changed {
-		_ = m.app.SaveConfig(config)
-	}
+	})
 }
 
 // loadOrDefaultPosition returns the persisted position from config,
@@ -418,10 +403,7 @@ func (m *FloatingAssistantManager) DisablePetFromMenu() {
 		return
 	}
 	if m.app != nil {
-		if config, err := m.app.LoadConfig(); err == nil {
-			config.PetEnabled = false
-			_ = m.app.SaveConfig(config)
-		}
+		_, _ = m.app.PatchConfigFields(map[string]interface{}{"pet_enabled": false})
 	}
 	m.HideFloatingButton()
 }

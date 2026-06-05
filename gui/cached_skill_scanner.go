@@ -23,7 +23,7 @@ type skillCacheEntry struct {
 // Design:
 //   - Init() records roots and spawns a background scan goroutine, returns in <50ms
 //   - Get() returns cached results or empty list (graceful degradation)
-//   - Expired cache (>30s): returns stale data immediately + triggers background refresh
+//   - Expired cache (>10m): returns stale data immediately + triggers background refresh
 //   - Invalidate(): marks cache stale and triggers background refresh
 //   - Only one concurrent scan at a time (mutex-guarded)
 //   - Individual directory scan errors are skipped (logged), remaining dirs continue
@@ -34,7 +34,7 @@ type CachedSkillScanner struct {
 	mu       sync.Mutex // guards scan execution to prevent concurrent scans
 }
 
-const skillCacheTTL = 30 * time.Second
+const skillCacheTTL = 10 * time.Minute
 
 // Init records skill directory roots and starts a background scan.
 // Returns in <50ms — no synchronous file system scanning.
@@ -49,8 +49,8 @@ func (s *CachedSkillScanner) Init(roots []string) {
 //
 // Behavior:
 //   - No cache yet (scan in progress): returns empty list
-//   - Cache valid (age <= 30s): returns cached results
-//   - Cache expired (age > 30s): returns stale results immediately + triggers background refresh
+//   - Cache valid (age <= 10m): returns cached results
+//   - Cache expired (age > 10m): returns stale results immediately + triggers background refresh
 func (s *CachedSkillScanner) Get() []corelib.NLSkillEntry {
 	entry := s.cache.Load()
 	if entry == nil {

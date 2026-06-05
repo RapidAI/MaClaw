@@ -12,7 +12,7 @@ interface PetSettingsPanelProps {
     config: main.AppConfig;
     lang: Lang;
     setConfig: (config: main.AppConfig) => void;
-    saveConfig: (config: main.AppConfig) => Promise<void>;
+    patchConfig: (patch: Record<string, unknown>) => Promise<main.AppConfig | void>;
 }
 
 const modeOptionIds = ['quiet', 'balanced', 'active'] as const;
@@ -214,7 +214,7 @@ function clampPetSize(value: number): number {
     return Math.min(120, Math.max(56, Math.round(value)));
 }
 
-export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSettingsPanelProps) {
+export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSettingsPanelProps) {
     const [previewState, setPreviewState] = useState<PetPreviewState>('idle');
     const [saveState, setSaveState] = useState<SaveState>('idle');
     const latestConfigRef = useRef<main.AppConfig>(config);
@@ -222,6 +222,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
     const savedTimerRef = useRef<number | undefined>(undefined);
     const mountedRef = useRef(true);
     const saveSeqRef = useRef(0);
+    const pendingPatchRef = useRef<Record<string, unknown>>({});
     const petSize = clampPetSize((config as any).pet_size || defaultPetSize);
     const selectedSkin = (config as any).pet_skin || 'clawmate';
     const interactionMode = (config as any).pet_interaction_mode || 'balanced';
@@ -272,24 +273,35 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                 }
             });
             if (savedTimerRef.current) window.clearTimeout(savedTimerRef.current);
-            if (hadPendingSave) void saveConfig(latestConfigRef.current);
+            if (hadPendingSave && Object.keys(pendingPatchRef.current).length > 0) {
+                void patchConfig(pendingPatchRef.current);
+                pendingPatchRef.current = {};
+            }
         };
-    }, [saveConfig]);
+    }, [patchConfig]);
 
-    const persistPetConfig = (next: main.AppConfig) => {
+    const persistPetConfig = (patch: Record<string, unknown>, next: main.AppConfig) => {
         if (savedTimerRef.current) window.clearTimeout(savedTimerRef.current);
         const saveSeq = ++saveSeqRef.current;
         setSaveState('saving');
-        void saveConfig(next)
-            .then(() => {
+        void patchConfig(patch)
+            .then((saved) => {
                 if (!mountedRef.current || saveSeq !== saveSeqRef.current) return;
+                if (saved) {
+                    const confirmed = new main.AppConfig(saved);
+                    latestConfigRef.current = confirmed;
+                    setConfig(confirmed);
+                } else {
+                    latestConfigRef.current = next;
+                }
+                pendingPatchRef.current = {};
                 setSaveState('saved');
                 savedTimerRef.current = window.setTimeout(() => {
                     if (mountedRef.current && saveSeq === saveSeqRef.current) setSaveState('idle');
                 }, 1400);
             })
             .catch((err) => {
-                console.error('[PetSettingsPanel] SaveConfig failed:', err);
+                console.error('[PetSettingsPanel] PatchConfigFields failed:', err);
                 if (!mountedRef.current || saveSeq !== saveSeqRef.current) return;
                 setSaveState('error');
             });
@@ -308,17 +320,18 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
         const next = new main.AppConfig({ ...latestConfigRef.current, ...patch });
         latestConfigRef.current = next;
         setConfig(next);
+        pendingPatchRef.current = { ...pendingPatchRef.current, ...patch };
         if (debounceKey) {
             clearPendingSaveTimers();
             setSaveState('pending');
             saveTimersRef.current[debounceKey] = window.setTimeout(() => {
                 saveTimersRef.current[debounceKey] = undefined;
-                persistPetConfig(latestConfigRef.current);
+                persistPetConfig({ ...pendingPatchRef.current }, latestConfigRef.current);
             }, 350);
             return;
         }
         clearPendingSaveTimers();
-        persistPetConfig(next);
+        persistPetConfig({ ...pendingPatchRef.current }, next);
     };
 
     return (

@@ -53,6 +53,9 @@ func (s *EnrichmentStore) GetSearchText(t RegisteredTool) string {
 	for _, tag := range t.Tags {
 		base += " " + tag
 	}
+	if isInternalBrowserDispatchToolName(t.Name) {
+		return base
+	}
 
 	// Check builtin enrichments first.
 	if queries, ok := BuiltinEnrichments[t.Name]; ok {
@@ -76,6 +79,9 @@ func (s *EnrichmentStore) GetSearchText(t RegisteredTool) string {
 
 // Set stores synthetic queries for a tool and persists to disk.
 func (s *EnrichmentStore) Set(toolName string, queries []string) error {
+	if isInternalBrowserDispatchToolName(toolName) {
+		return nil
+	}
 	s.mu.Lock()
 	s.enrichments[toolName] = &ToolEnrichment{
 		ToolName:         toolName,
@@ -88,6 +94,9 @@ func (s *EnrichmentStore) Set(toolName string, queries []string) error {
 
 // Has returns true if enrichment exists for the tool (builtin or stored).
 func (s *EnrichmentStore) Has(toolName string) bool {
+	if isInternalBrowserDispatchToolName(toolName) {
+		return false
+	}
 	if _, ok := BuiltinEnrichments[toolName]; ok {
 		return true
 	}
@@ -95,6 +104,11 @@ func (s *EnrichmentStore) Has(toolName string) bool {
 	_, ok := s.enrichments[toolName]
 	s.mu.RUnlock()
 	return ok
+}
+
+func isInternalBrowserDispatchToolName(name string) bool {
+	name = strings.TrimSpace(name)
+	return name != "browser" && strings.HasPrefix(name, "browser_")
 }
 
 // Load reads enrichments from disk.
@@ -256,78 +270,17 @@ Typical usage: Fetch webpage content, read documentation, download text resource
 - region (string, optional): Screen region to capture (x,y,w,h)
 Typical usage: Capture screen state, verify UI changes, document visual output`,
 
-	"send_and_observe": `Disabled for agent coding work. External coding-session follow-up is legacy-only; coding tasks must use the internal CodingSubAgent.`,
-
-	"create_session": `Disabled for agent coding work. Do not start external coding sessions; route coding tasks to the internal CodingSubAgent.`,
-
 	"call_mcp_tool": `Parameters:
 - server_id (string, required): MCP server id or name; if names are duplicated, use the id
 - tool_name (string, required): Tool name on the server
 - arguments (object, optional): Tool arguments as key-value pairs
 Typical usage: Invoke external tools via MCP protocol`,
 
-	"browser_session_start": `Parameters:
-- addr (string, optional): CDP address for browser session discovery or launch
-- start_url (string, optional): Initial URL to open in the session
-- reuse_existing (bool, optional): Reuse an existing browser agent session, default true
-- allowed_domains (array, optional): Allowlist of navigable domains
-- blocked_domains (array, optional): Denylist of blocked domains
-Typical usage: Start or reuse a long-lived browser agent session with policy controls`,
-
-	"browser_observe": `Parameters:
-- session_id (string, required): Browser agent session ID
-- include_screenshot (bool, optional): Include screenshot in observation, default true
-Typical usage: Capture a snapshot with refs, screenshot, console, and network summaries`,
-
-	"browser_navigate": `Parameters:
-- session_id (string, required): Browser agent session ID
-- url (string, required): URL to navigate to inside the session
-Typical usage: Open a webpage in the browser session and auto-observe after navigation`,
-
-	"browser_click": `Parameters:
-- session_id (string, required): Browser agent session ID
-- snapshot_id (string, optional): Snapshot ID for ref resolution
-- ref (string, optional): Stable ref from browser_observe such as @e1
-- selector (string, optional): CSS selector fallback
-Typical usage: Click a page element via stable refs with selector fallback`,
-
-	"browser_type": `Parameters:
-- session_id (string, required): Browser agent session ID
-- snapshot_id (string, optional): Snapshot ID for ref resolution
-- ref (string, optional): Stable ref from browser_observe such as @e1
-- selector (string, optional): CSS selector fallback
-- text (string, required): Text to input
-Typical usage: Fill an input in the browser session via stable refs or selector fallback`,
-
-	"browser_wait": `Parameters:
-- session_id (string, required): Browser agent session ID
-- snapshot_id (string, optional): Snapshot ID for ref resolution
-- ref (string, optional): Stable ref to wait for
-- selector (string, optional): CSS selector to wait for
-- duration_ms (int, optional): Milliseconds to wait when no target is provided
-Typical usage: Wait for a page, ref, or selector to become ready in the browser session`,
-
-	"browser_refresh": `Parameters:
-- session_id (string, required): Browser agent session ID
-Typical usage: Refresh the current page in the browser session and auto-observe`,
-
-	"browser_back": `Parameters:
-- session_id (string, required): Browser agent session ID
-Typical usage: Go back in browser history inside the browser session and auto-observe`,
-
-	"browser_extract": `Parameters:
-- session_id (string, required): Browser agent session ID
-- snapshot_id (string, optional): Snapshot ID for ref resolution
-- ref (string, optional): Stable ref from browser_observe
-- selector (string, optional): CSS selector fallback
-- query (string, optional): What content to extract
-- format (string, optional): Output format, default text
-Typical usage: Extract page or element text from the browser session using refs, selectors, or whole-page summary`,
-
-	"browser_connect": `Parameters:
-- url (string, optional): CDP endpoint URL to connect to
-- launch (bool, optional): Launch a new browser instance, default false
-Typical usage: Connect to Chrome via CDP for browser automation`,
+	"browser": `Parameters:
+- action (string, required): session_start/connect/observe/navigate/click/type/wait/extract/scroll/select/list_pages/switch_page/close/set_files/info/task_run/task_status/task_verify/list_flows
+- session_id (string, required for page actions): Browser agent session ID returned by session_start/connect
+- start_url/url/ref/selector/text/value/task_id/steps (optional): Action-specific arguments
+Typical usage: Use one stable BrowserAgentSession workflow. First call action=session_start or connect to get browser-session-*, then use observe refs for page actions. For rich editors, click the editable field then action=type may omit ref/selector to type into the focused element; set content_format=markdown when Markdown should render as rich content. No screenshot fallback, eval, raw HTTP, coordinate clicks, or broad browser process kills`,
 
 	"list_skills": `Parameters:
 - filter (string, optional): Filter skills by name or tag
@@ -379,11 +332,6 @@ Typical usage: Read the latest output from a coding session`,
 - session_id (string, required): Session ID to read events from
 - since (string, optional): Timestamp to filter events after
 Typical usage: Get activity log and events from a coding session`,
-
-	"control_session": `Parameters:
-- session_id (string, required): Session ID to control
-- action (string, required): Control action (interrupt/kill/resume)
-Typical usage: Stop, interrupt, or resume a coding session`,
 
 	"discover_tool": `Parameters:
 - query (string, required): Description of the capability needed
@@ -480,20 +428,6 @@ var BuiltinEnrichments = map[string][]string{
 		"show me what's on screen",
 		"grab a screenshot of the desktop",
 	},
-	"send_and_observe": {
-		"disabled external coding session follow-up",
-		"legacy coding session observe disabled",
-		"发送到编程工具并等待结果",
-		"use internal CodingSubAgent instead",
-		"external coding session follow-up is disabled",
-	},
-	"create_session": {
-		"disabled external coding session creation",
-		"do not start external coding tools",
-		"创建编程会话",
-		"use internal CodingSubAgent instead",
-		"external coding session creation is disabled",
-	},
 	"call_mcp_tool": {
 		"call an MCP server tool",
 		"use an external tool via MCP",
@@ -522,75 +456,12 @@ var BuiltinEnrichments = map[string][]string{
 		"generate and run a script for this task",
 		"build a quick local automation without opening a coding session",
 	},
-	"browser_session_start": {
-		"start a browser agent session",
-		"reuse an existing browser session",
-		"启动浏览器会话",
-		"open a browser session with allowed domains",
-		"create a long lived browser automation session",
-	},
-	"browser_observe": {
-		"observe the current browser page",
-		"capture browser snapshot and refs",
-		"观察浏览器页面",
-		"take a browser snapshot with screenshot",
-		"inspect page refs console and network",
-	},
-	"browser_navigate": {
-		"navigate to a URL in the browser session",
-		"open a webpage in browser session",
-		"浏览器打开网页",
-		"go to this website in current browser session",
-		"visit a URL and observe the page",
-	},
-	"browser_click": {
-		"click an element on the page",
-		"click a button in the browser session",
-		"点击网页元素",
-		"press this ref on the page",
-		"interact with a web element via ref",
-	},
-	"browser_type": {
-		"type text into a browser field",
-		"fill an input in browser session",
-		"在浏览器输入内容",
-		"enter text into page element by ref",
-		"type into a web form",
-	},
-	"browser_wait": {
-		"wait for browser page to load",
-		"wait for selector in browser session",
-		"等待浏览器页面稳定",
-		"pause until a page element appears",
-		"wait for a ref to become available",
-	},
-	"browser_refresh": {
-		"refresh the current browser page",
-		"reload browser session page",
-		"刷新浏览器页面",
-		"reload this website",
-		"refresh and observe current page",
-	},
-	"browser_back": {
-		"go back in browser history",
-		"navigate back in browser session",
-		"浏览器后退",
-		"return to previous page",
-		"back to last webpage",
-	},
-	"browser_extract": {
-		"extract text from the webpage",
-		"get content from browser page",
-		"提取网页内容",
-		"read text from page element by ref",
-		"extract page summary or selected content",
-	},
-	"browser_connect": {
-		"connect to a browser",
-		"attach to Chrome for automation",
-		"连接浏览器",
-		"start browser automation",
-		"open browser CDP connection",
+	"browser": {
+		"browser automation with one merged tool",
+		"open a browser session and inspect page",
+		"use browser action session_start then observe",
+		"stable browser-session workflow",
+		"网页浏览器自动化",
 	},
 	"parallel_execute": {
 		"disabled external queued coding sessions",
@@ -640,13 +511,6 @@ var BuiltinEnrichments = map[string][]string{
 		"查看会话事件",
 		"what happened in the session",
 		"session event history",
-	},
-	"control_session": {
-		"control a coding session",
-		"interrupt or kill a session",
-		"控制会话",
-		"stop the coding session",
-		"manage session lifecycle",
 	},
 	"discover_tool": {
 		"find a tool I don't have",

@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -9,9 +11,23 @@ import (
 )
 
 func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt string, history []agent.ConversationEntry, userText string, attachments []MessageAttachment, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback, minIterations int, platform string) (result *IMAgentResponse) {
+	startedAt := time.Now()
+	requestID := ""
+	loopID := ""
+	if ctx != nil {
+		requestID = ctx.Runtime.RequestID
+		loopID = ctx.ID
+	}
+	log.Printf("[agent-loop] start owner=%q request_id=%q loop=%q platform=%q project=%q text_len=%d", userID, requestID, loopID, platform, projectPathFromUserID(userID), len([]rune(userText)))
 	defer func() {
+		status := "success"
+		if result != nil && result.Error != "" {
+			status = "error"
+		}
+		log.Printf("[agent-loop] end owner=%q request_id=%q loop=%q status=%s elapsed=%s", userID, requestID, loopID, status, time.Since(startedAt).Round(time.Millisecond))
 		if r := recover(); r != nil {
 			result = &IMAgentResponse{Error: fmt.Sprintf("Agent loop panicked: %v", r)}
+			log.Printf("[agent-loop] panic owner=%q request_id=%q loop=%q panic=%v elapsed=%s", userID, requestID, loopID, r, time.Since(startedAt).Round(time.Millisecond))
 		}
 	}()
 

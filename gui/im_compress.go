@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"log"
 	"net/http"
 	"strings"
@@ -199,7 +200,8 @@ func makeSummarizeCallback(cfg corelib.MaclawLLMConfig, httpClient *http.Client)
 			},
 		}
 
-		resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, httpClient, 30*time.Second)
+		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "conversation-compress"})
+		resp, err := doSimpleLLMRequest(ctx, cfg, messages, httpClient, 30*time.Second)
 		if err != nil {
 			return "", err
 		}

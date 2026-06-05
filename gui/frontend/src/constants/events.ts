@@ -19,3 +19,9 @@ export const EVENT_PROJECT_INDEX_CHANGED = "project-index:changed";
 
 /** Companion event emitted together with EVENT_PROJECT_INDEX_CHANGED. */
 export const EVENT_TASKS_CHANGED = "tasks:changed";
+
+/** Emitted when a task is removed/archived and matching project tabs should close. */
+export const EVENT_PROJECT_TASK_CLOSED = "project-task:closed";
+
+/** Emitted after the delayed startup update check finds a newer application release. */
+export const EVENT_APP_UPDATE_AVAILABLE = "app-update-available";

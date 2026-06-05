@@ -17,7 +17,6 @@ func NewToolAffinityRegistry() *ToolAffinityRegistry {
 			LabelBusinessData:     {"mis_data"},
 			LabelBrowser: {
 				"browser",
-				"gui_record_start", "gui_record_stop",
 			},
 			LabelOffice: {"office"},
 			LabelKnowledgeWrite: {

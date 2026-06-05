@@ -231,6 +231,21 @@ func TestHandleMCPToolAgentViewSubmitHonorsWorkflowPolicy(t *testing.T) {
 	}
 }
 
+func TestHandleMCPToolAgentViewSubmitRejectsDisabledExternalCodingSessionTarget(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+
+	resp := h.handleMCPToolAgentViewSubmit(map[string]interface{}{
+		mcpAgentViewCallArgsField: map[string]interface{}{
+			"server_id": "legacy",
+			"tool_name": " CREATE_SESSION ",
+			"arguments": map[string]interface{}{},
+		},
+	})
+	if resp == nil || !strings.Contains(resp.Text, "create_session is disabled") || !strings.Contains(resp.Error, "external coding-session MCP target disabled") {
+		t.Fatalf("expected disabled MCP target rejection, got %#v", resp)
+	}
+}
+
 func TestHandleMCPToolAgentViewSubmitWithoutOwnerDoesNotUseCurrentRuntime(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "mcp-agent-view-current-runtime-doc-only-user"

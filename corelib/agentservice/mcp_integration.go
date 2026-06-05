@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // MCPToolProvider is the interface required by the agent executor to discover
@@ -88,6 +89,9 @@ func (b *MCPToolBridge) ListAvailableTools(ctx context.Context, p Principal) []M
 			continue
 		}
 		for _, t := range state.tools {
+			if coretool.IsDisabledExternalCodingSessionTool(t.Name) {
+				continue
+			}
 			entries = append(entries, MCPToolEntry{
 				ServerID:    srv.ID,
 				ServerName:  srv.Name,
@@ -108,6 +112,9 @@ func (b *MCPToolBridge) ListAvailableTools(ctx context.Context, p Principal) []M
 			continue
 		}
 		for _, t := range client.GetTools() {
+			if coretool.IsDisabledExternalCodingSessionTool(t.Name) {
+				continue
+			}
 			entries = append(entries, MCPToolEntry{
 				ServerID:    srv.ID,
 				ServerName:  srv.Name,
@@ -123,6 +130,9 @@ func (b *MCPToolBridge) ListAvailableTools(ctx context.Context, p Principal) []M
 
 // CallTool invokes an MCP tool on the appropriate server (remote or local).
 func (b *MCPToolBridge) CallTool(ctx context.Context, p Principal, serverID, toolName string, arguments map[string]interface{}) (string, error) {
+	if coretool.IsDisabledExternalCodingSessionTool(toolName) {
+		return "", fmt.Errorf("external coding-session tool %q is disabled", toolName)
+	}
 	cfg, err := b.svc.getOrLoadUserConfig(p.TenantID, p.UserID)
 	if err != nil {
 		return "", fmt.Errorf("load user config: %w", err)

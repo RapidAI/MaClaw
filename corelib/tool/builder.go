@@ -147,6 +147,9 @@ func (b *DynamicToolBuilder) BuildAll() []map[string]interface{} {
 	tools := b.registry.ListAvailable()
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
+		if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) {
+			continue
+		}
 		// Skip backward-compat aliases that have handler only, no definition.
 		// These tools have empty descriptions and are not meant to be exposed
 		// to the LLM as tool definitions (e.g. legacy "run_skill" replaced by
@@ -168,6 +171,9 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	if len(tools) <= b.maxDirectTools {
 		out := make([]map[string]interface{}, 0, len(tools))
 		for _, t := range tools {
+			if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) {
+				continue
+			}
 			if t.Description == "" {
 				continue // skip backward-compat aliases
 			}
@@ -182,6 +188,9 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	// Split into builtin (always included), group-activated, and dynamic (scored).
 	var builtins, groupActivated, dynamic []RegisteredTool
 	for _, t := range tools {
+		if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) {
+			continue
+		}
 		// Skip backward-compat aliases (handler only, no definition).
 		if t.Description == "" {
 			continue

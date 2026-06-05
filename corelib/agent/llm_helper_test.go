@@ -121,6 +121,36 @@ func TestDoSimpleLLMRequest_HTTPErrorIncludesStatus(t *testing.T) {
 	}
 }
 
+func TestDoSimpleLLMRequest_HTTPErrorDoesNotExposeBodyOrPrompt(t *testing.T) {
+	const responseSecret = "Browser: SECRET_RESPONSE_BODY"
+	const promptSecret = "SECRET_REQUEST_PROMPT"
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(responseSecret))
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	_, err := DoSimpleLLMRequest(cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": promptSecret},
+	}, srv.Client(), 5*time.Second)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	errText := err.Error()
+	if strings.Contains(errText, responseSecret) || strings.Contains(errText, promptSecret) || strings.Contains(errText, "llm_context_") {
+		t.Fatalf("error leaked sensitive data or dump path: %q", errText)
+	}
+	if !strings.Contains(errText, "request body not dumped") {
+		t.Fatalf("error = %q, want request body not dumped marker", errText)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1", got)
+	}
+}
+
 func TestDoSimpleLLMRequest_DoesNotRetryClientErrors(t *testing.T) {
 	var attempts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

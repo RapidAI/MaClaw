@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -11,7 +12,7 @@ import (
 // Coding Tool Gate: code-level enforcement of the three-phase coding workflow.
 //
 // When the gate intent classifier returns a confirmed new-project intent, the
-// gate strips coding tool calls (create_session, bash, etc.) from all
+// gate strips coding tool calls from all
 // iterations of the LLM response loop, preserving text content and delivery
 // tools (generate_pdf, send_file, etc.). Bug-fix, maintenance, continuation,
 // and non-coding decisions come from the classifier result, not local keyword
@@ -49,21 +50,15 @@ type codingToolGateResult struct {
 // This includes coding session tools, direct coding tools, AND browser automation
 // tools; during the three-phase phases, none of these should be available.
 var codingToolBlocklist = map[string]bool{
-	// Coding session tools.
-	"create_session":   true,
-	"bash":             true,
-	"write_file":       true,
-	"edit_file":        true,
-	"edit_lines":       true,
-	"craft_tool":       true,
-	"send_and_observe": true,
-	"control_session":  true,
-	// Browser automation tools; the unified "browser" tool replaces 22
-	// individual browser_* tools. Block it plus the remaining individual tools.
+	// Coding tools.
+	"bash":       true,
+	"write_file": true,
+	"edit_file":  true,
+	"edit_lines": true,
+	"craft_tool": true,
+	// Browser automation tools; the unified "browser" tool is the only public
+	// browser surface. isCodingTool blocks every legacy browser_* name by prefix.
 	"browser":          true,
-	"browser_task_run": true, "browser_task_replay": true, "browser_task_verify": true, "browser_task_status": true,
-	"browser_record_start": true, "browser_record_stop": true, "browser_list_flows": true,
-	"browser_ocr":      true,
 	"gui_record_start": true, "gui_record_stop": true,
 	"gui_observe": true, "gui_verify": true,
 }
@@ -74,15 +69,19 @@ var codingToolBlocklist = map[string]bool{
 // session tools are unnecessary and their presence confuses the LLM into
 // trying to delegate instead of coding directly.
 var directModeSessionBlocklist = map[string]bool{
-	"create_session":     true,
-	"send_and_observe":   true,
-	"control_session":    true,
 	"get_session_output": true,
 	"get_session_events": true,
 	"interrupt_session":  true,
 	"kill_session":       true,
 	"list_sessions":      true,
 	"send_input":         true,
+}
+
+func init() {
+	for name := range disabledExternalCodingSessionTools {
+		codingToolBlocklist[name] = true
+		directModeSessionBlocklist[name] = true
+	}
 }
 
 // deliveryToolAllowlist lists tool names that are never intercepted.
@@ -100,6 +99,10 @@ var deliveryToolAllowlist = map[string]bool{
 
 // isCodingTool returns true iff name is in the blocklist and not in the allowlist.
 func isCodingTool(name string) bool {
+	name = strings.TrimSpace(name)
+	if strings.HasPrefix(name, "browser_") {
+		return true
+	}
 	return codingToolBlocklist[name] && !deliveryToolAllowlist[name]
 }
 

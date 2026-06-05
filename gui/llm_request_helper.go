@@ -6,9 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,22 +15,16 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
-// dumpLLMContext saves the request body to a temp file when an HTTP 500 error
-// occurs, and returns an enriched error message containing the context length
-// (in bytes) and the dump file path.
+// dumpLLMContext reports LLM HTTP failures without persisting prompt/request
+// bodies. Those bodies may contain browser observations, screenshots OCR, or
+// user secrets, so writing them under ~/.maclaw would leak private context.
 func dumpLLMContext(statusCode int, respMsg string, requestBody []byte, tempDir string) error {
-	if statusCode != http.StatusInternalServerError {
-		return fmt.Errorf("HTTP %d: %s", statusCode, respMsg)
-	}
+	_ = tempDir
 	ctxLen := len(requestBody)
-	if tempDir == "" {
-		tempDir = os.TempDir()
+	if statusCode != http.StatusInternalServerError {
+		return fmt.Errorf("HTTP %d: %s (context %d bytes)", statusCode, respMsg, ctxLen)
 	}
-	dumpFile := filepath.Join(tempDir, fmt.Sprintf("llm_context_%d.json", time.Now().UnixMilli()))
-	if err := os.WriteFile(dumpFile, requestBody, 0644); err != nil {
-		return fmt.Errorf("HTTP %d (context %d bytes, dump failed: %v): %s", statusCode, ctxLen, err, respMsg)
-	}
-	return fmt.Errorf("HTTP %d (context %d bytes, dumped to %s): %s", statusCode, ctxLen, dumpFile, respMsg)
+	return fmt.Errorf("HTTP %d (context %d bytes, request body not dumped): %s", statusCode, ctxLen, respMsg)
 }
 
 // llmSimpleResponse is a minimal response from a simple (non-tool-calling) LLM request.
@@ -43,10 +36,24 @@ type llmSimpleResponse struct {
 // to the configured LLM, supporting both OpenAI and Anthropic protocols.
 // It returns the text content of the assistant's reply.
 func doSimpleLLMRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
-	if cfg.Protocol == "anthropic" {
-		return doSimpleAnthropicRequest(ctx, cfg, messages, client, timeout)
+	ctx = llm.WithRequestTraceIfMissing(ctx, "simple_llm")
+	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
+	if acquireErr != nil {
+		return nil, acquireErr
 	}
-	return doSimpleOpenAIRequest(ctx, cfg, messages, client, timeout)
+	defer lease.Release()
+	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	lease.SetCancel(scheduledCancel)
+	defer scheduledCancel()
+	var resp *llmSimpleResponse
+	var err error
+	if cfg.Protocol == "anthropic" {
+		resp, err = doSimpleAnthropicRequest(scheduledCtx, cfg, messages, client, timeout)
+	} else {
+		resp, err = doSimpleOpenAIRequest(scheduledCtx, cfg, messages, client, timeout)
+	}
+	globalLLMScheduler.ObserveResult(trace, err)
+	return resp, err
 }
 
 func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
@@ -57,9 +64,6 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	if err != nil {
 		msg := err.Error()
 		if strings.HasPrefix(msg, "HTTP 500:") {
-			if len(msg) > 512 {
-				msg = msg[:512] + "..."
-			}
 			endpoint, data, buildErr := llm.BuildOpenAIChatRequestData(cfg, messages, llm.OpenAIChatRequestOptions{
 				Stream: false,
 			})
@@ -67,7 +71,7 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 				return nil, err
 			}
 			_ = endpoint
-			return nil, dumpLLMContext(http.StatusInternalServerError, msg, data, "")
+			return nil, dumpLLMContext(http.StatusInternalServerError, "llm request failed", data, "")
 		}
 		return nil, err
 	}
@@ -125,19 +129,22 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
 	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
+	traceFields := llm.RequestTraceLogFields(ctx)
+	log.Printf("[LLM] POST %s model=%s protocol=anthropic simple=true %s", endpoint, cfg.Model, traceFields)
+	startedAt := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[LLM] done %s model=%s protocol=anthropic simple=true status=error elapsed=%s err=%v %s", endpoint, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	log.Printf("[LLM] done %s model=%s protocol=anthropic simple=true status=%d elapsed=%s body_len=%d %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
-		}
+		msg := fmt.Sprintf("llm request failed body_len=%d", len(body))
 		return nil, dumpLLMContext(resp.StatusCode, msg, data, "")
 	}
 

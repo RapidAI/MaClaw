@@ -31,14 +31,14 @@ func NewCompletionAnalyzer(config CompletionAnalyzerConfig) *CompletionAnalyzer 
 // Logic:
 //  1. Empty lines → CompletionUncertain
 //  2. Non-nil sdkResult (SDK finished without error) → bias toward CompletionCompleted
-//  3. Scan last N lines for completion / incompletion signals and Gemini ACP markers
+//  3. Scan last N lines for completion / incompletion signals
 //  4. completionCount > incompletionCount → CompletionCompleted
 //  5. incompletionCount > 0 → CompletionIncomplete
 //  6. Otherwise → CompletionUncertain
 //
 // Note: early-exit detection (session exited with very few output lines) is
 // handled by runExitLoop, not here, because Analyze is also called on
-// Gemini ACP turn-complete where few output lines is perfectly normal.
+// structured sessions may produce short outputs between turns.
 func (a *CompletionAnalyzer) Analyze(lines []string, tool string, sdkResult *SDKResultPayload) CompletionLevel {
 	if len(lines) == 0 {
 		return CompletionUncertain
@@ -60,16 +60,6 @@ func (a *CompletionAnalyzer) Analyze(lines []string, tool string, sdkResult *SDK
 	}
 
 	for _, line := range tail {
-		// Check Gemini ACP turn-complete marker.
-		if marker := classifyGeminiACPTurnCompleteMarker(line); marker != sessionCompletionMarkerUnknown {
-			if marker == sessionCompletionMarkerCompleted {
-				completionCount++
-			} else if marker == sessionCompletionMarkerIncomplete {
-				incompletionCount++
-			}
-			continue
-		}
-
 		switch classifySessionCompletionSignal(line) {
 		case sessionCompletionSignalCompleted:
 			completionCount++

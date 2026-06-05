@@ -3,12 +3,49 @@ package corelib
 import (
 	"math"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 )
 
 // RequiredNodeVersion 是项目要求的最低 Node.js 版本。
 const RequiredNodeVersion = "24.13.0"
+
+const (
+	CodeGenClientNameHeader = "X-Codegen-Client-Name"
+	CodeGenClientName       = "tigerclaw"
+)
+
+func SetCodeGenClientNameHeaderIfNeeded(req *http.Request) {
+	SetCodeGenClientNameHeaderIfNeededWithName(req, CodeGenClientName)
+}
+
+func SetCodeGenClientNameHeaderIfNeededWithName(req *http.Request, clientName string) {
+	if req != nil && req.URL != nil && IsCodeGenHostname(req.URL.Hostname()) {
+		req.Header.Set(CodeGenClientNameHeader, NormalizeCodeGenClientName(clientName))
+	}
+}
+
+func NormalizeCodeGenClientName(clientName string) string {
+	name := strings.TrimSpace(clientName)
+	if name == "" || strings.EqualFold(name, "openclaw") {
+		return CodeGenClientName
+	}
+	return name
+}
+
+func IsCodeGenHostname(hostname string) bool {
+	host := strings.ToLower(strings.TrimSpace(hostname))
+	return host == "codegen.qianxin-inc.cn" || strings.HasSuffix(host, ".codegen.qianxin-inc.cn")
+}
+
+func IsCodeGenURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	return IsCodeGenHostname(u.Hostname())
+}
 
 // DefaultContextTokens is the fallback context limit when no explicit
 // context_length is configured on the LLM provider.
@@ -52,6 +89,7 @@ type ModelConfig struct {
 	ModelUrl        string `json:"model_url"`
 	ApiKey          string `json:"api_key"`
 	WireApi         string `json:"wire_api"` // tool-facing protocol, e.g. "anthropic" or "responses"
+	AgentType       string `json:"agent_type,omitempty"`
 	IsCustom        bool   `json:"is_custom"`
 	IsBuiltin       bool   `json:"is_builtin"`
 	HasSubscription bool   `json:"has_subscription"`
@@ -439,24 +477,25 @@ type MaclawLLMProvider struct {
 
 // UserAgent returns the User-Agent header value for LLM API requests.
 func (p MaclawLLMProvider) UserAgent() string {
-	if p.AgentType != "" {
-		return p.AgentType
+	if agentType := strings.TrimSpace(p.AgentType); agentType != "" {
+		return agentType
 	}
 	return "openclaw"
 }
 
 // MaclawLLMConfig 是 MaClaw 桌面 Agent 的 LLM 配置。
 type MaclawLLMConfig struct {
-	URL            string `json:"url"`
-	Key            string `json:"key"`
-	Model          string `json:"model"`
-	Protocol       string `json:"protocol,omitempty"`
-	ContextLength  int    `json:"context_length,omitempty"`
-	TimeoutSec     int    `json:"timeout_sec,omitempty"`
-	SupportsVision bool   `json:"supports_vision"`
-	AgentType      string `json:"agent_type,omitempty"`    // "openclaw" (default) or "claude" → controls User-Agent header
-	WireAPI        string `json:"wire_api,omitempty"`      // "chat" or "responses"; empty defaults to "chat"
-	ProviderName   string `json:"provider_name,omitempty"` // human-readable provider name (e.g. "智谱编程")
+	URL                      string `json:"url"`
+	Key                      string `json:"key"`
+	Model                    string `json:"model"`
+	Protocol                 string `json:"protocol,omitempty"`
+	ContextLength            int    `json:"context_length,omitempty"`
+	TimeoutSec               int    `json:"timeout_sec,omitempty"`
+	SupportsVision           bool   `json:"supports_vision"`
+	AgentType                string `json:"agent_type,omitempty"`    // "openclaw" (default) or "claude" → controls User-Agent header
+	WireAPI                  string `json:"wire_api,omitempty"`      // "chat" or "responses"; empty defaults to "chat"
+	ProviderName             string `json:"provider_name,omitempty"` // human-readable provider name (e.g. "智谱编程")
+	MaclawAgentMaxIterations int    `json:"maclaw_agent_max_iterations,omitempty"`
 }
 
 // IsResponsesAPI reports whether this config targets the OpenAI Responses API.
@@ -487,11 +526,11 @@ type WebSearchProvider struct {
 }
 
 // UserAgent returns the User-Agent header value for LLM API requests.
-// Returns AgentType directly as the User-Agent string.
+// Returns AgentType as the User-Agent string.
 // Default is "openclaw" when AgentType is empty.
 func (c MaclawLLMConfig) UserAgent() string {
-	if c.AgentType != "" {
-		return c.AgentType
+	if agentType := strings.TrimSpace(c.AgentType); agentType != "" {
+		return agentType
 	}
 	return "openclaw"
 }

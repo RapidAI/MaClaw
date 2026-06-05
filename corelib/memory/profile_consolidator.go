@@ -94,7 +94,7 @@ func (pc *ProfileConsolidator) ConsolidateForOwner(ctx context.Context, ownerID 
 	// Build prompt.
 	prompt := pc.buildProfilePrompt(currentProfile, weeklySummaries, recentInsights)
 
-	resp, err := llm.ChatCall(prompt)
+	resp, err := chatCallWithContext(ctx, llm, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("profile_consolidator: %w", err)
 	}

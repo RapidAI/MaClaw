@@ -334,3 +334,44 @@ func TestMCPToolBridge_ListAvailableTools_EnsuresReadiness(t *testing.T) {
 		t.Fatal("expected ListAvailableTools to trigger EnsureReady for local server")
 	}
 }
+
+func TestMCPToolBridge_ListAvailableToolsFiltersDisabledExternalCodingSessionTools(t *testing.T) {
+	store := NewMemoryStore()
+	svc, err := NewService(Config{
+		DataRoot:    t.TempDir(),
+		TokenSecret: "test-token-secret-0123456789abcdef",
+	}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	_ = store.SaveTenant(Tenant{ID: "t1", Name: "test"})
+	_ = store.SaveUser(User{TenantID: "t1", ID: "u1", Name: "user1"})
+	if err := store.SaveUserConfig(UserConfig{
+		TenantID: "t1",
+		UserID:   "u1",
+		AppConfig: corelib.AppConfig{MCPServers: []corelib.MCPServerEntry{{
+			ID:          "remote",
+			Name:        "remote",
+			EndpointURL: "https://example.com/mcp",
+		}}},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	runtime := runtimeForService(svc).user(composite("t1", "u1"))
+	runtime.mu.Lock()
+	runtime.remote["remote"] = &remoteMCPRuntime{healthStatus: MCPHealthHealthy, lastCheckAt: time.Now(), tools: []MCPToolView{
+		{Name: "create_session", Description: "legacy create"},
+		{Name: "send_and_observe", Description: "legacy observe"},
+		{Name: "control_session", Description: "legacy control"},
+		{Name: "safe_tool", Description: "safe"},
+	}}
+	runtime.mu.Unlock()
+
+	bridge := NewMCPToolBridge(svc)
+	tools := bridge.ListAvailableTools(context.Background(), Principal{TenantID: "t1", UserID: "u1"})
+	if len(tools) != 1 || tools[0].ToolName != "safe_tool" {
+		t.Fatalf("expected only safe_tool, got %#v", tools)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/telegram"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
@@ -632,8 +633,9 @@ func (a *App) SetTelegramLocalMode(enabled bool) error {
 	if !enabled && cfg.RemoteMachineID == "" {
 		return fmt.Errorf("please register this machine to Hub before enabling multi-machine mode")
 	}
-	cfg.SetTelegramLocal(enabled)
-	if err := a.SaveConfig(cfg); err != nil {
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.SetTelegramLocal(enabled)
+	}); err != nil {
 		return err
 	}
 	log.Printf("[telegram-mgr] SetTelegramLocalMode: enabled=%v", enabled)

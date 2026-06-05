@@ -23,11 +23,16 @@ func (r *Registry) Register(tool RegisteredTool) error {
 	if tool.Name == "" {
 		return fmt.Errorf("tool name cannot be empty")
 	}
+	if IsDisabledExternalCodingSessionTool(tool.Name) {
+		return nil
+	}
 	if tool.Status == "" {
 		tool.Status = StatusAvailable
 	}
-	// Auto-populate Body from BuiltinBodies when Body is empty.
-	if tool.Body == "" {
+	// Auto-populate Body from BuiltinBodies when Body is empty. Internal browser
+	// dispatch tools stay bodyless so only the merged browser surface can shape
+	// routing prompts and retrieval.
+	if tool.Body == "" && !isInternalBrowserDispatchToolName(tool.Name) {
 		if body, ok := BuiltinBodies[tool.Name]; ok {
 			tool.Body = body
 			tool.BodySummary = TruncateBody(body, DefaultBodyMaxChars)

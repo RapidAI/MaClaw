@@ -106,6 +106,11 @@ func defaultAnchors() []intentAnchor {
 			Texts: []string{
 				"open a website in the browser",
 				"click a button on a web page",
+				"log into a website and publish a post",
+				"sign in to a social website and submit content",
+				"open Zhihu in a browser and publish a pin",
+				"登录知乎并发表一条想法",
+				"打开网页登录账号然后发布内容",
 				"record a browser workflow",
 				"replay browser automation",
 				"verify a web page visually",

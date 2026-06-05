@@ -9,6 +9,7 @@ import {
     fileNameFromPath,
     createSessionWithTimeout,
     classifySessionInitError,
+    classifySendError,
 } from "../VEConversationView";
 import type { VEConversationViewProps, VEConversationError, VEConversationHandle } from "../VEConversationView";
 import type { Theme } from "../aiAssistantPanelTheme";
@@ -256,8 +257,18 @@ describe("VEConversationView", () => {
 
         it("includes backend detail for send_failed errors", () => {
             const err: VEConversationError = { type: "send_failed", message: "MESSAGE_DELIVERY_FAILED" };
-            expect(formatError(err, true)).toBe("消息发送失败：MESSAGE_DELIVERY_FAILED");
+            expect(formatError(err, true)).toBe("消息发送失败：消息投递失败");
             expect(formatError(err, false)).toBe("Message send failed: MESSAGE_DELIVERY_FAILED");
+        });
+
+        it("localizes backend send failure details in Chinese", () => {
+            const err: VEConversationError = {
+                type: "send_failed",
+                message: "send digital employee message: hub returned 502: deliver discussion message to machine-ve: bad gateway",
+            };
+            expect(formatError(err, true)).toBe("消息发送失败：发送数字员工消息：Hub 返回 502：投递讨论消息到 machine-ve：网关错误");
+            expect(formatError({ type: "send_failed", message: "network error" }, true)).toBe("消息发送失败：网络错误");
+            expect(formatError({ type: "send_failed", message: "opaque backend failure" }, true)).toBe("消息发送失败：请稍后重试");
         });
 
         it("formats access confirmation states", () => {
@@ -270,6 +281,12 @@ describe("VEConversationView", () => {
         it("classifies per-request confirmation as auth pending", () => {
             expect(classifySessionInitError(new Error("pending_confirmation"))).toBe("auth_pending");
             expect(classifySessionInitError(new Error("hub returned 202: waiting for digital employee owner confirmation"))).toBe("auth_pending");
+        });
+
+        it("classifies machine-offline send failures", () => {
+            expect(classifySendError(new Error("send digital employee message: hub returned 502: deliver discussion message to machine-ve: machine is offline"))).toBe("ve_offline");
+            expect(classifySendError(new Error("Digital employee is offline"))).toBe("ve_offline");
+            expect(classifySendError(new Error("network error"))).toBe("send_failed");
         });
     });
 
@@ -2182,6 +2199,49 @@ describe("VEConversationView", () => {
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(initiate).not.toHaveBeenCalled();
             expect(ref.current?.getState().sessionId).toBe("history-session");
+        });
+
+        it("syncs initial online status changes after the mounted tab metadata updates", async () => {
+            const initiate = vi.fn().mockResolvedValue({ session_id: "created-session", ve_id: "ve-1", ve_name: "Test VE" });
+            const props = {
+                veId: "ve-1",
+                veName: "Test VE",
+                theme: mockTheme,
+                lang: "zh",
+                initiateConversation: initiate,
+                sendMessage: vi.fn(),
+                sendMessageWithAttachments: vi.fn(),
+            } satisfies VEConversationViewProps;
+            const { rerender } = render(<VEConversationView {...props} initialOnlineStatus="offline" />);
+
+            expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).disabled).toBe(true);
+            expect(initiate).not.toHaveBeenCalled();
+
+            rerender(<VEConversationView {...props} initialOnlineStatus="online" />);
+            await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+
+            expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).disabled).toBe(false);
+            expect(initiate).toHaveBeenCalledTimes(1);
+        });
+
+        it("does not flip a known offline VE back online when metadata becomes unknown", async () => {
+            const props = {
+                veId: "ve-1",
+                veName: "Test VE",
+                theme: mockTheme,
+                lang: "zh",
+                existingSessionId: "test-session-1",
+                initiateConversation: vi.fn(),
+                sendMessage: vi.fn(),
+                sendMessageWithAttachments: vi.fn(),
+            } satisfies VEConversationViewProps;
+            const { rerender } = render(<VEConversationView {...props} initialOnlineStatus="offline" />);
+
+            expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).disabled).toBe(true);
+            rerender(<VEConversationView {...props} />);
+            await act(async () => { await Promise.resolve(); });
+
+            expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).disabled).toBe(true);
         });
 
         it("loads saved messages when opening a digital employee session", async () => {

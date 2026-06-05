@@ -1433,7 +1433,7 @@ type ExperienceToolRecoveryQueryResult struct {
 }
 
 func (a *App) QueryExperienceToolRecoverySummaries(req ExperienceToolRecoveryQuery) ExperienceToolRecoveryQueryResult {
-	req.Tool = strings.TrimSpace(req.Tool)
+	req.Tool = normalizeExperienceBrowserToolName(req.Tool)
 	req.Category = strings.TrimSpace(req.Category)
 	req.Provider = strings.TrimSpace(req.Provider)
 	req.Model = strings.TrimSpace(req.Model)
@@ -1454,6 +1454,7 @@ func (a *App) QueryExperienceToolRecoverySummaries(req ExperienceToolRecoveryQue
 	reviewRequiredCount := 0
 	disabledCount := 0
 	for _, summary := range snapshot.ToolRecoverySummaries {
+		summary.ToolName = normalizeExperienceBrowserToolName(summary.ToolName)
 		if !experienceToolRecoveryFilterMatches(summary.ToolName, req.Tool) {
 			continue
 		}
@@ -1515,11 +1516,11 @@ func (a *App) QueryExperienceToolRecoverySummaries(req ExperienceToolRecoveryQue
 }
 
 func experienceToolRecoveryFilterMatches(value, query string) bool {
-	query = strings.TrimSpace(query)
+	query = normalizeExperienceBrowserToolName(query)
 	if query == "" {
 		return true
 	}
-	value = strings.TrimSpace(value)
+	value = normalizeExperienceBrowserToolName(value)
 	if strings.EqualFold(value, query) {
 		return true
 	}
@@ -1543,6 +1544,7 @@ func experienceToolRecoveryGovernanceFromSummaries(summaries []ExperienceToolRec
 	wireAPICounts := result["wire_api_counts"].(map[string]int)
 	categoryCounts := result["category_counts"].(map[string]int)
 	for _, summary := range summaries {
+		summary.ToolName = normalizeExperienceBrowserToolName(summary.ToolName)
 		toolCounts[firstNonEmptyExperienceString(summary.ToolName, "unknown_tool")]++
 		if summary.ProviderName != "" {
 			providerCounts[summary.ProviderName]++
@@ -1918,7 +1920,7 @@ func experienceRoutingSignalsRecommendedToolCall(result ExperienceRoutingSignalR
 
 func normalizeExperienceRoutingSignalQuery(req ExperienceRoutingSignalQuery) ExperienceRoutingSignalQuery {
 	req.TaskType = strings.ToLower(strings.TrimSpace(req.TaskType))
-	req.Tool = strings.ToLower(strings.TrimSpace(req.Tool))
+	req.Tool = normalizeExperienceBrowserToolName(req.Tool)
 	req.Query = strings.ToLower(strings.TrimSpace(req.Query))
 	if req.Limit <= 0 {
 		req.Limit = 20
@@ -1963,7 +1965,7 @@ func experienceRoutingSignalValuesMatch(values []string, req ExperienceRoutingSi
 	if req.TaskType != "" && strings.ToLower(strings.TrimSpace(taskType)) != req.TaskType {
 		return false
 	}
-	if req.Tool != "" && !experienceRoutingSignalContainsValue(tools, req.Tool) {
+	if req.Tool != "" && !experienceRoutingSignalContainsTool(tools, req.Tool) {
 		return false
 	}
 	if req.Query != "" && !experienceRoutingSignalContainsValue(values, req.Query) {
@@ -1983,6 +1985,30 @@ func experienceRoutingSignalContainsValue(values []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func experienceRoutingSignalContainsTool(values []string, needle string) bool {
+	needle = normalizeExperienceBrowserToolName(needle)
+	if needle == "" {
+		return true
+	}
+	for _, value := range values {
+		if strings.EqualFold(normalizeExperienceBrowserToolName(value), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeExperienceBrowserToolName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return ""
+	}
+	if name == "browser" || strings.HasPrefix(name, "browser_") {
+		return "browser"
+	}
+	return name
 }
 
 func experienceRoutingSignalMergeTools(groups ...[]string) []string {
@@ -2095,7 +2121,7 @@ func experienceRoutingScoreCandidateTools(req ExperienceRoutingSignalQuery, resu
 	var tools []string
 	add := func(values ...string) {
 		for _, value := range values {
-			value = strings.TrimSpace(value)
+			value = normalizeExperienceBrowserToolName(value)
 			if value == "" {
 				continue
 			}

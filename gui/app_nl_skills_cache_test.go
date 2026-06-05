@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -53,6 +54,41 @@ func TestSkillExecutorListUsesScanCacheUntilInvalidated(t *testing.T) {
 	}
 	if got := exec.List(); len(got) != 3 {
 		t.Fatalf("List() after config key change len = %d, want 3", len(got))
+	}
+}
+
+func TestSkillExecutorDoesNotForegroundScanWhileAppScannerWarms(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome, cachedSkillScanner: &CachedSkillScanner{}}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalDir := filepath.Join(tmpHome, "skills")
+	if err := os.MkdirAll(filepath.Join(externalDir, "first"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(externalDir, "first", "skill.yaml"), []byte("name: first\ndescription: first skill\ntriggers: [first]\nsteps:\n  - action: bash\n    params:\n      command: echo first\nstatus: active\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.ExternalSkillDirs = []string{externalDir}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewSkillExecutor(app, nil, nil)
+	if got := exec.List(); len(got) != 0 {
+		t.Fatalf("List while scanner warms = %+v, want no foreground scan result", got)
+	}
+
+	app.cachedSkillScanner.cache.Store(&skillCacheEntry{
+		skills:    []corelib.NLSkillEntry{{Name: "first", Description: "first skill", Status: "active", SkillDir: filepath.Join(externalDir, "first")}},
+		createdAt: time.Now(),
+	})
+	if got := exec.List(); len(got) != 1 || got[0].Name != "first" {
+		t.Fatalf("List after scanner ready = %+v, want first skill", got)
 	}
 }
 

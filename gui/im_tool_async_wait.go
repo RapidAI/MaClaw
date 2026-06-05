@@ -170,8 +170,7 @@ func (h *IMMessageHandler) runtimeLoopContextForOwner(ownerID string) *LoopConte
 	if ownerID != "" {
 		return h.getSessionLoopCtx(ownerID)
 	}
-	ctx, _, _ := h.legacyLoopSnapshot()
-	return ctx
+	return nil
 }
 
 func (h *IMMessageHandler) asyncWaitKill(mgr *coretool.LocalBackgroundTaskManager, args map[string]interface{}) string {

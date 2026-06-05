@@ -449,10 +449,10 @@ func TestHandleRegisteredToolAgentViewSubmitWithoutOwnerDoesNotUseCurrentRuntime
 	}
 }
 
-func TestRegisteredToolAgentViewCarriesRuntimePolicyOwner(t *testing.T) {
-	h := &IMMessageHandler{currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-1", PolicyOwnerID: "owner-1"}}}
+func TestRegisteredToolAgentViewCarriesExplicitPolicyOwner(t *testing.T) {
+	h := &IMMessageHandler{}
 	tool := RegisteredTool{Name: "write_file", Required: []string{"path"}}
-	view := buildRegisteredToolAgentView(tool, h.attachRegisteredToolPolicyOwner(map[string]interface{}{"content": "x"}), []string{"path"})
+	view := buildRegisteredToolAgentView(tool, h.attachRegisteredToolPolicyOwnerForOwner(map[string]interface{}{"content": "x"}, "owner-1"), []string{"path"})
 	fields, ok := view["fields"].([]map[string]interface{})
 	if !ok {
 		t.Fatalf("fields = %#v", view["fields"])

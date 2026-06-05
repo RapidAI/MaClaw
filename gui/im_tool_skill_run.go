@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -247,16 +248,16 @@ func normalizeSkillRunWaitSeconds(raw interface{}) time.Duration {
 	seconds := 2.0
 	switch v := raw.(type) {
 	case float64:
-		if v > 0 {
+		if v >= 0 {
 			seconds = v
 		}
 	case int:
-		if v > 0 {
+		if v >= 0 {
 			seconds = float64(v)
 		}
 	}
-	if seconds < 5 {
-		seconds = 5
+	if seconds > 0 && seconds < 0.1 {
+		seconds = 0.1
 	}
 	if seconds > 30 {
 		seconds = 30
@@ -264,31 +265,61 @@ func normalizeSkillRunWaitSeconds(raw interface{}) time.Duration {
 	return time.Duration(seconds * float64(time.Second))
 }
 
+func normalizeInitialSkillRunWaitSeconds(raw interface{}) time.Duration {
+	if raw == nil {
+		return 12 * time.Second
+	}
+	return normalizeSkillRunWaitSeconds(raw)
+}
+
 func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.Duration) (*SkillRunStatus, error) {
 	if runner == nil {
 		return nil, fmt.Errorf("skill runner not initialized")
 	}
+	startedAt := time.Now()
+	polls := 0
+	extendedForTerminalStep := false
+	var lastStatus string
+	var lastOwner string
+	var lastSkill string
 	deadline := time.Now().Add(timeout)
+	log.Printf("[skill-runner-wait] start run=%s timeout=%s", runID, timeout.Round(time.Millisecond))
+	finish := func(reason string, status *SkillRunStatus) (*SkillRunStatus, error) {
+		if status != nil {
+			lastStatus = status.Status.String()
+			lastOwner = status.OwnerID
+			lastSkill = status.Skill
+		}
+		log.Printf("[skill-runner-wait] done run=%s owner=%q skill=%q reason=%s status=%q polls=%d elapsed=%s extended_terminal=%v",
+			runID, lastOwner, lastSkill, reason, lastStatus, polls, time.Since(startedAt).Round(time.Millisecond), extendedForTerminalStep)
+		return status, nil
+	}
 	// Track whether we've seen any step progress to decide if we should
 	// extend the wait for session_id binding.
 	sawStepProgress := false
 	for {
+		polls++
 		status, err := runner.GetRunStatus(runID)
 		if err != nil {
+			log.Printf("[skill-runner-wait] error run=%s polls=%d elapsed=%s err=%v", runID, polls, time.Since(startedAt).Round(time.Millisecond), err)
 			return nil, err
 		}
 		if status != nil {
+			lastStatus = status.Status.String()
+			lastOwner = status.OwnerID
+			lastSkill = status.Skill
 			if status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "" {
-				return status, nil
+				return finish("session_ready", status)
 			}
 			if !status.IsRunning() {
-				return status, nil
+				return finish("finished", status)
 			}
 			if status.Summary.ArtifactStatus.IsDecided() {
-				return status, nil
+				return finish("artifact_decided", status)
 			}
+			expectsSession := skillRunStatusExpectsSession(status)
 			for _, step := range status.Steps {
-				if step.IsTerminal() {
+				if expectsSession && step.IsTerminal() {
 					// A step completed but session_id not yet bound — extend
 					// deadline by up to 10s to give legacy session binding time to
 					// propagate the session meta. This addresses P0-1 where
@@ -299,22 +330,41 @@ func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.
 						extended := time.Now().Add(10 * time.Second)
 						if extended.After(deadline) {
 							deadline = extended
+							extendedForTerminalStep = true
+							log.Printf("[skill-runner-wait] extend run=%s owner=%q skill=%q reason=terminal_step_without_session deadline_in=%s",
+								runID, lastOwner, lastSkill, time.Until(deadline).Round(time.Millisecond))
 						}
 					}
 					// If session is still not bound after extension, return
 					// what we have so the caller can poll via get_skill_run.
 					if time.Now().After(deadline) {
-						return status, nil
+						return finish("terminal_step_deadline", status)
 					}
 					break // check again after sleep
 				}
 			}
 		}
 		if time.Now().After(deadline) {
-			return status, nil
+			return finish("deadline", status)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func skillRunStatusExpectsSession(status *SkillRunStatus) bool {
+	if status == nil {
+		return false
+	}
+	if status.Session != nil {
+		return true
+	}
+	for _, step := range status.Steps {
+		switch classifySkillStepAction(step.Action) {
+		case skillStepActionCreateSession, skillStepActionSendInput, skillStepActionSendAndObserve, skillStepActionControlSession:
+			return true
+		}
+	}
+	return false
 }
 
 func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress tool.ProgressCallback) string {
@@ -337,19 +387,37 @@ func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress 
 	if onProgress != nil {
 		onProgress(fmt.Sprintf("🚀 正在启动 Skill「%s」...", name))
 	}
-	waitDuration := normalizeSkillRunWaitSeconds(args["wait_seconds"])
+	waitDuration := normalizeInitialSkillRunWaitSeconds(args["wait_seconds"])
 	ownerID, explicitRuntime := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrentState(args)
 	if ownerID == "" && explicitRuntime {
 		return "Skill 启动失败: runtime owner is missing; isolated runtime will not fall back to desktop owner"
 	}
-	runID, err := runner.StartRunForOwner(ownerID, name, buildRunSkillArgs(args))
+	toolStartedAt := time.Now()
+	runArgs := buildRunSkillArgs(args)
+	log.Printf("[run_skill] start owner=%q explicit_runtime=%v skill=%q wait=%s args=%d", ownerID, explicitRuntime, name, waitDuration.Round(time.Millisecond), len(runArgs))
+	runID, err := runner.StartRunForOwner(ownerID, name, runArgs)
+	if err != nil {
+		log.Printf("[run_skill] start failed owner=%q skill=%q elapsed=%s err=%v", ownerID, name, time.Since(toolStartedAt).Round(time.Millisecond), err)
+	} else {
+		log.Printf("[run_skill] launched owner=%q skill=%q run=%s launch_elapsed=%s", ownerID, name, runID, time.Since(toolStartedAt).Round(time.Millisecond))
+	}
 	if err != nil {
 		return fmt.Sprintf("Skill 启动失败: %s", err.Error())
 	}
 	if onProgress != nil {
 		onProgress("⏳ Skill 已启动，正在等待状态快照...")
 	}
+	waitStartedAt := time.Now()
 	status, err := waitForSkillRunnerSnapshot(runner, runID, waitDuration)
+	if err != nil {
+		log.Printf("[run_skill] wait failed owner=%q skill=%q run=%s wait_elapsed=%s total=%s err=%v", ownerID, name, runID, time.Since(waitStartedAt).Round(time.Millisecond), time.Since(toolStartedAt).Round(time.Millisecond), err)
+	} else {
+		statusLabel := ""
+		if status != nil {
+			statusLabel = status.Status.String()
+		}
+		log.Printf("[run_skill] done owner=%q skill=%q run=%s status=%q wait_elapsed=%s total=%s", ownerID, name, runID, statusLabel, time.Since(waitStartedAt).Round(time.Millisecond), time.Since(toolStartedAt).Round(time.Millisecond))
+	}
 	if err != nil {
 		return fmt.Sprintf("Skill 已启动，但读取状态失败: %s（run_id=%s）", err.Error(), runID)
 	}
@@ -371,7 +439,20 @@ func (h *IMMessageHandler) toolGetSkillRun(args map[string]interface{}) string {
 		return "缺少 run_id 参数"
 	}
 	waitDuration := normalizeSkillRunWaitSeconds(args["wait_seconds"])
+	startedAt := time.Now()
+	log.Printf("[get_skill_run] start run=%s wait=%s", runID, waitDuration.Round(time.Millisecond))
 	status, err := waitForSkillRunnerSnapshot(runner, runID, waitDuration)
+	if err != nil {
+		log.Printf("[get_skill_run] failed run=%s elapsed=%s err=%v", runID, time.Since(startedAt).Round(time.Millisecond), err)
+	} else {
+		statusLabel := ""
+		ownerID := ""
+		if status != nil {
+			statusLabel = status.Status.String()
+			ownerID = status.OwnerID
+		}
+		log.Printf("[get_skill_run] done run=%s owner=%q status=%q elapsed=%s", runID, ownerID, statusLabel, time.Since(startedAt).Round(time.Millisecond))
+	}
 	if err != nil {
 		return fmt.Sprintf("读取 Skill 状态失败: %s（run_id=%s）", err.Error(), runID)
 	}

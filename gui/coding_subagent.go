@@ -24,6 +24,7 @@ package main
 //   └──────────────────────┘          └──────────────────────┘
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -40,6 +41,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // CodingSubAgent executes a single coding task in a clean context.
@@ -320,9 +322,43 @@ func (c *codingSubAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 	return c.subagent.cfg
 }
 
+func (c *codingSubAgentCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
+	baseCtx := context.Background()
+	baseCancel := func() {}
+	trace := llm.RequestTrace{Caller: "coding-subagent", Iteration: iteration}
+	if c != nil && c.subagent != nil && c.subagent.loopCtx != nil {
+		loopCtx := c.subagent.loopCtx
+		baseCtx, baseCancel = loopCtx.Context()
+		trace.OwnerID = strings.TrimSpace(loopCtx.Runtime.PolicyOwnerID)
+		if trace.OwnerID == "" {
+			trace.OwnerID = strings.TrimSpace(loopCtx.UserID)
+		}
+		trace.RequestID = loopCtx.Runtime.RequestID
+		trace.LoopID = loopCtx.ID
+	}
+	ctx := llm.WithRequestTrace(baseCtx, trace)
+	lease, scheduledTrace, err := acquireLLMSchedulerLease(ctx)
+	if err != nil {
+		baseCancel()
+		return nil, nil, err
+	}
+	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	lease.SetCancel(scheduledCancel)
+	return scheduledCtx, func(err error) {
+		globalLLMScheduler.ObserveResult(scheduledTrace, err)
+		scheduledCancel()
+		lease.Release()
+		baseCancel()
+	}, nil
+}
+
 func (c *codingSubAgentCallbacks) GetMaxIterations() int {
-	// Single task: 50 iterations is generous. This keeps context bounded.
-	return config.EffectiveMaxIterations(50)
+	if c != nil && c.subagent != nil {
+		if c.subagent.loopCtx != nil && c.subagent.loopCtx.MaxIterations() > 0 {
+			return config.EffectiveMaxIterations(c.subagent.loopCtx.MaxIterations())
+		}
+	}
+	return config.EffectiveMaxIterations(0)
 }
 
 func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {

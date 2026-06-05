@@ -150,6 +150,8 @@ export function SearchProjects(arg1:string,arg2:number):Promise<Array<main.Proje
 
 export function CreateRecentTask(arg1:string):Promise<main.ProjectSearchResult>;
 
+export function ForkRecentTask(arg1:string):Promise<main.ProjectSearchResult>;
+
 export function ForkConversationToProject(arg1:string):Promise<void>;
 
 export function ResumeProject(arg1:string):Promise<string>;
@@ -248,6 +250,8 @@ export function ListSkills(arg1:string):Promise<Array<main.Skill>>;
 export function ListSkillsWithInstallStatus(arg1:string,arg2:string,arg3:string):Promise<Array<main.Skill>>;
 
 export function LoadConfig():Promise<main.AppConfig>;
+
+export function PatchConfigFields(arg1:Record<string, any>):Promise<main.AppConfig>;
 
 export function MaximiseAndSaveGeometry():Promise<boolean>;
 
@@ -411,7 +415,7 @@ export function CancelCodeGenSSOPolling():Promise<void>;
 
 export function FetchCodeGenModels():Promise<Array<any>>;
 
-export function FetchProviderModels(arg1:string,arg2:string,arg3:string):Promise<Array<any>>;
+export function FetchProviderModels(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Array<any>>;
 
 export function SaveCodeGenModelChoice(arg1:string,arg2:string):Promise<void>;
 
@@ -596,6 +600,8 @@ export function SendBtwQuery(arg1:string, arg2:string):Promise<any>;
 
 export function ClearAIAssistantHistory():Promise<void>;
 
+export function ClearAIAssistantUIState():Promise<void>;
+
 export function FetchNews():Promise<Array<any>>;
 
 export function CancelAIAssistantSession():Promise<string>;
@@ -623,6 +629,10 @@ export function StartAIAssistantBackgroundTask(arg1:any):Promise<any>;
 export function GetTrialReflectEnabled():Promise<boolean>;
 
 export function GetAIAssistantTrace(arg1:string):Promise<any>;
+
+export function LoadAIAssistantUIState():Promise<any>;
+
+export function SaveAIAssistantUIState(arg1:any):Promise<void>;
 
 // Background Loop bindings
 export function ListBackgroundLoops():Promise<Array<any>>;

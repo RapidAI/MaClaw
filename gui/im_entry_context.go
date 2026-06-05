@@ -1,6 +1,11 @@
 package main
 
-import "github.com/RapidAI/CodeClaw/corelib/agent"
+import (
+	"log"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+)
 
 type imEntryContextOptions struct {
 	Message                    *IMUserMessage
@@ -35,6 +40,34 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		UnfinishedSlot:     opts.UnfinishedSlot,
 		FreshTask:          opts.FreshTask,
 	}
+	startedAt := time.Now()
+	lastPhaseAt := startedAt
+	var slotActionElapsed time.Duration
+	var pendingReplyElapsed time.Duration
+	var workflowRouteElapsed time.Duration
+	var askUserElapsed time.Duration
+	var taskContextElapsed time.Duration
+	var capabilityGapElapsed time.Duration
+	defer func() {
+		total := time.Since(startedAt)
+		if total > 500*time.Millisecond {
+			userID := ""
+			if opts.Message != nil {
+				userID = opts.Message.UserID
+			}
+			log.Printf("[im-entry-context] slow: total=%s slot_action=%s pending_reply=%s workflow_route=%s ask_user=%s task_context=%s capability_gap=%s user=%s handled=%v",
+				total.Truncate(time.Millisecond),
+				slotActionElapsed.Truncate(time.Millisecond),
+				pendingReplyElapsed.Truncate(time.Millisecond),
+				workflowRouteElapsed.Truncate(time.Millisecond),
+				askUserElapsed.Truncate(time.Millisecond),
+				taskContextElapsed.Truncate(time.Millisecond),
+				capabilityGapElapsed.Truncate(time.Millisecond),
+				userID,
+				result.Handled,
+			)
+		}
+	}()
 	if opts.Message == nil || opts.Trimmed == nil {
 		return result
 	}
@@ -42,12 +75,15 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	trimmed := *opts.Trimmed
 
 	if slotFreshTask, resp, handled := h.applyExplicitTaskSlotAction(msg, opts.Trimmed, opts.Decision, &result.EntriesBeforeClear, &result.UnfinishedSlot); handled {
+		slotActionElapsed = time.Since(lastPhaseAt)
 		result.Handled = true
 		result.Response = resp
 		return result
 	} else if slotFreshTask {
 		result.FreshTask = true
 	}
+	slotActionElapsed = time.Since(lastPhaseAt)
+	lastPhaseAt = time.Now()
 
 	workflowReviewPending := h.workflowReviewPending(msg.UserID, msg.IsBackground)
 	if !workflowReviewPending {
@@ -56,17 +92,24 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		h.pendingUserReply.Delete(msg.UserID)
 		h.pendingAskUser.Delete(msg.UserID)
 	}
+	pendingReplyElapsed = time.Since(lastPhaseAt)
+	lastPhaseAt = time.Now()
 
 	workflowRoute := h.routeWorkflowIMMessage(*msg, trimmed, opts.ConfirmedWorkflowAgentLoop, result.HasPendingUserReply)
 	if workflowRoute.Response != nil {
+		workflowRouteElapsed = time.Since(lastPhaseAt)
 		result.Handled = true
 		result.Response = workflowRoute.Response
 		return result
 	}
 	result.WorkflowAgentLoop = workflowRoute.WorkflowAgentLoop
 	result.SkipNeedsConfirmGate = workflowRoute.SkipNeedsConfirmGate
+	workflowRouteElapsed = time.Since(lastPhaseAt)
+	lastPhaseAt = time.Now()
 
 	result.AskUserContext, result.HasPendingAskUser = h.consumePendingAskUserAnswer(msg.UserID, trimmed, result.EntriesBeforeClear)
+	askUserElapsed = time.Since(lastPhaseAt)
+	lastPhaseAt = time.Now()
 	var taskContextClearUI bool
 	result.AskUserContext, result.FreshTask, taskContextClearUI = h.applyUnifiedTaskContextDecision(
 		*msg,
@@ -80,6 +123,9 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		result.HasPendingAskUser || result.HasPendingUserReply,
 	)
 	result.ClearUIAfterContextSwitch = taskContextClearUI
+	taskContextElapsed = time.Since(lastPhaseAt)
+	lastPhaseAt = time.Now()
 	result.CapabilityGapContext = h.consumePendingCapabilityGapContext(msg.UserID)
+	capabilityGapElapsed = time.Since(lastPhaseAt)
 	return result
 }

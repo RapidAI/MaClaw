@@ -1230,10 +1230,9 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 				}
 				// Toggle: if currently enabled → disable, if disabled → enable
 				newEnabled := !petMotionSoundEnabled(cfg)
-				cfg.PetMotionSound = &newEnabled
-				// SaveConfig triggers floatingSoundChanged → UpdateSoundConfig,
+				// PatchConfigFields triggers floatingSoundChanged → UpdateSoundConfig,
 				// which updates w.petMotionSound without rebuilding the window.
-				_ = w.app.SaveConfig(cfg)
+				_, _ = w.app.PatchConfigFields(map[string]interface{}{"pet_motion_sound_enabled": newEnabled})
 			}()
 		case menuIdSettings:
 			go func() {

@@ -47,6 +47,21 @@ func TestSetMaxIterationsEmptyRuntimeOwnerFailsClosed(t *testing.T) {
 	}
 }
 
+func TestSetMaxIterationsMissingRuntimeOwnerFailsClosed(t *testing.T) {
+	desktopCtx := NewLoopContext("desktop", 20, nil)
+	h := &IMMessageHandler{currentLoopCtx: desktopCtx, lastUserID: desktopUserID}
+	result := h.toolSetMaxIterations(map[string]interface{}{"max_iterations": float64(31)})
+	if result == "" || !strings.Contains(result, "runtime owner is missing") {
+		t.Fatalf("set_max_iterations should fail closed without runtime owner, got %q", result)
+	}
+	if desktopCtx.MaxIterations() == 31 {
+		t.Fatal("ownerless set_max_iterations must not update current loop")
+	}
+	if h.loopMaxOverride == 31 {
+		t.Fatal("ownerless set_max_iterations must not set global override")
+	}
+}
+
 func TestAgentLoopSetMaxIterationsEmptyRuntimeOwnerFailsClosed(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	registerBuiltinTools(h.registry, h)

@@ -42,11 +42,11 @@ func TestExperienceLearningToolRecoveryGovernanceSummarizesAdaptiveRetry(t *test
 		t.Fatalf("recovery focus context should expose count maps and recommended row dimensions: %#v", direct.RecommendedFocusContext)
 	}
 	providerDirect := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{Provider: "chatfire", Model: "GPT-5.1-CODEX-MINI", Limit: 5})
-	if providerDirect.Count != 1 || providerDirect.Summaries[0].ToolName != "browser_open" || providerDirect.ProviderCounts["ChatFire"] != 1 || providerDirect.ModelCounts["gpt-5.1-codex-mini"] != 1 || providerDirect.WireAPICounts["responses"] != 1 {
+	if providerDirect.Count != 1 || providerDirect.Summaries[0].ToolName != "browser" || providerDirect.ProviderCounts["ChatFire"] != 1 || providerDirect.ModelCounts["gpt-5.1-codex-mini"] != 1 || providerDirect.WireAPICounts["responses"] != 1 {
 		t.Fatalf("expected provider/model/wire_api filtered recovery summary: %#v", providerDirect)
 	}
 	tagModelDirect := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{Provider: "chatfire", Model: "gpt-5-1-codex-mini", Limit: 5})
-	if tagModelDirect.Count != 1 || tagModelDirect.Summaries[0].ToolName != "browser_open" {
+	if tagModelDirect.Count != 1 || tagModelDirect.Summaries[0].ToolName != "browser" {
 		t.Fatalf("expected safe-tag model filter to match provider recovery summary: %#v", tagModelDirect)
 	}
 	providerArgs, ok := providerDirect.RecommendedToolCall["args"].(map[string]interface{})
@@ -57,7 +57,7 @@ func TestExperienceLearningToolRecoveryGovernanceSummarizesAdaptiveRetry(t *test
 		t.Fatalf("provider focus context should expose recommended provider/model/wire dimensions: %#v", providerDirect.RecommendedFocusContext)
 	}
 	wireDirect := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{WireAPI: "RESPONSES", Limit: 5})
-	if wireDirect.Count != 1 || wireDirect.Summaries[0].ToolName != "browser_open" || wireDirect.WireAPICounts["responses"] != 1 {
+	if wireDirect.Count != 1 || wireDirect.Summaries[0].ToolName != "browser" || wireDirect.WireAPICounts["responses"] != 1 {
 		t.Fatalf("expected wire_api filtered recovery summary: %#v", wireDirect)
 	}
 	wireArgs, ok := wireDirect.RecommendedToolCall["args"].(map[string]interface{})
@@ -104,7 +104,7 @@ func TestExperienceLearningToolRecoveryGovernanceSummarizesAdaptiveRetry(t *test
 		"wire_api": "RESPONSES",
 		"limit":    5,
 	}))
-	if !providerPayload.OK || providerPayload.Count != 1 || len(providerPayload.Summaries) != 1 || providerPayload.Summaries[0].ToolName != "browser_open" {
+	if !providerPayload.OK || providerPayload.Count != 1 || len(providerPayload.Summaries) != 1 || providerPayload.Summaries[0].ToolName != "browser" {
 		t.Fatalf("unexpected provider/model tool recovery payload: %#v", providerPayload)
 	}
 	if providerPayload.Query.Provider != "chatfire" || providerPayload.Query.Model != "GPT-5.1-CODEX-MINI" || providerPayload.Query.WireAPI != "RESPONSES" || providerPayload.ProviderCounts["ChatFire"] != 1 || providerPayload.ModelCounts["gpt-5.1-codex-mini"] != 1 || providerPayload.WireAPICounts["responses"] != 1 {
@@ -116,7 +116,7 @@ func TestExperienceLearningToolRecoveryGovernanceSummarizesAdaptiveRetry(t *test
 		"model":  "gpt-5-1-codex-mini",
 		"limit":  5,
 	}))
-	if !aliasPayload.OK || aliasPayload.Count != 1 || aliasPayload.Summaries[0].ToolName != "browser_open" || aliasPayload.Query.Model != "gpt-5-1-codex-mini" {
+	if !aliasPayload.OK || aliasPayload.Count != 1 || aliasPayload.Summaries[0].ToolName != "browser" || aliasPayload.Query.Model != "gpt-5-1-codex-mini" {
 		t.Fatalf("tool recovery governance alias should preserve query and safe-tag model matching: %#v", aliasPayload)
 	}
 
@@ -125,7 +125,7 @@ func TestExperienceLearningToolRecoveryGovernanceSummarizesAdaptiveRetry(t *test
 		"provider": "chatfire",
 		"limit":    5,
 	}))
-	if !shortAliasPayload.OK || shortAliasPayload.Count != 1 || shortAliasPayload.Summaries[0].ToolName != "browser_open" || shortAliasPayload.Query.Provider != "chatfire" {
+	if !shortAliasPayload.OK || shortAliasPayload.Count != 1 || shortAliasPayload.Summaries[0].ToolName != "browser" || shortAliasPayload.Query.Provider != "chatfire" {
 		t.Fatalf("recovery_governance alias should preserve provider query: %#v", shortAliasPayload)
 	}
 
@@ -134,8 +134,35 @@ func TestExperienceLearningToolRecoveryGovernanceSummarizesAdaptiveRetry(t *test
 		"provider": "chatfire",
 		"limit":    5,
 	}))
-	if !inspectAliasPayload.OK || inspectAliasPayload.Count != 1 || inspectAliasPayload.Summaries[0].ToolName != "browser_open" || inspectAliasPayload.Query.Provider != "chatfire" {
+	if !inspectAliasPayload.OK || inspectAliasPayload.Count != 1 || inspectAliasPayload.Summaries[0].ToolName != "browser" || inspectAliasPayload.Query.Provider != "chatfire" {
 		t.Fatalf("inspect_tool_recovery_governance alias should preserve provider query: %#v", inspectAliasPayload)
+	}
+}
+
+func TestExperienceToolRecoveryNormalizesLegacyBrowserMemory(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+
+	_, err = store.UpsertProjectKnowledge(corememory.ProjectKnowledgeUpsertOptions{
+		ID:      "adaptive-retry-browser-open-network",
+		Title:   "Adaptive retry: browser_open / network",
+		Content: "Tool: browser_open\nCategory: network\nProvider: ChatFire\nModel: gpt-5.1-codex-mini\nWire API: responses\nFirst observed at: 2026-01-01T00:00:00Z\nLast observed at: 2026-01-01T00:01:00Z",
+		Tags:    []string{experienceTraceKindToolRecoveryPattern.String(), "adaptive_retry", "tool:browser_open", "category:network", "action:retry", "failure_count:1", "provider:chatfire", "model:gpt-5-1-codex-mini", "wire_api:responses"},
+	})
+	if err != nil {
+		t.Fatalf("UpsertProjectKnowledge: %v", err)
+	}
+
+	app := &App{memoryStore: store}
+	result := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{Tool: "browser_open", Limit: 5})
+	if result.Query.Tool != "browser" || result.Count != 1 || result.ToolCounts["browser"] != 1 {
+		t.Fatalf("legacy browser recovery query not normalized: %#v", result)
+	}
+	if len(result.Summaries) != 1 || result.Summaries[0].ToolName != "browser" || result.RecommendedFocusContext["recommended_tool"] != "browser" {
+		t.Fatalf("legacy browser recovery summary not normalized: %#v", result)
 	}
 }
 
@@ -214,22 +241,25 @@ func TestExperienceLearningToolRoutingSignalsFiltersToolEvidence(t *testing.T) {
 	if !strings.Contains(payload.NonExecutingBoundary, "no tool execution") || !strings.Contains(payload.NonExecutingBoundary, "skill creation") || !strings.Contains(payload.NonExecutingBoundary, "policy update") {
 		t.Fatalf("routing signal boundary should come from the shared result model: %q", payload.NonExecutingBoundary)
 	}
-	if payload.Counts["routing_hints"] != 1 || payload.Counts["recovery_patterns"] != 1 || payload.Counts["skill_nudge_candidates"] != 1 {
-		t.Fatalf("routing signal counts should include hint, recovery, and skill nudge evidence: %#v", payload.Counts)
+	if payload.Query.Tool != "browser" {
+		t.Fatalf("routing signal query should normalize legacy browser tools: %#v", payload.Query)
 	}
-	if payload.Returned["routing_hints"] != 1 || payload.Returned["recovery_patterns"] != 1 || payload.Returned["skill_nudge_candidates"] != 1 {
-		t.Fatalf("routing signal returned counts should respect limit: %#v", payload.Returned)
+	if payload.Counts["routing_hints"] != 1 || payload.Counts["recovery_patterns"] != 0 || payload.Counts["skill_nudge_candidates"] != 0 {
+		t.Fatalf("routing signal counts should collapse legacy split browser evidence: %#v", payload.Counts)
 	}
-	if len(payload.RecoveryPatterns) != 1 || payload.RecoveryPatterns[0].RecoveryTool != "browser_open" {
-		t.Fatalf("expected browser_open recovery signal: %#v", payload.RecoveryPatterns)
+	if payload.Returned["routing_hints"] != 1 || payload.Returned["recovery_patterns"] != 0 || payload.Returned["skill_nudge_candidates"] != 0 {
+		t.Fatalf("routing signal returned counts should respect collapsed browser evidence: %#v", payload.Returned)
 	}
-	if len(payload.ScoreAdjustments) != 1 || payload.ScoreAdjustments[0].ToolName != "browser_open" || payload.ScoreAdjustments[0].Adjustment <= 0 {
-		t.Fatalf("expected positive browser_open score adjustment: %#v", payload.ScoreAdjustments)
+	if len(payload.RecoveryPatterns) != 0 {
+		t.Fatalf("same merged browser tool should not create recovery signal: %#v", payload.RecoveryPatterns)
 	}
-	if len(payload.ToolCandidates) != 1 || payload.ToolCandidates[0].ToolName != "browser_open" || payload.ToolCandidates[0].Direction != "prefer" || !strings.Contains(payload.RoutingRecommendation, "read-only") {
-		t.Fatalf("expected read-only browser_open routing candidate: %#v recommendation=%q", payload.ToolCandidates, payload.RoutingRecommendation)
+	if len(payload.ScoreAdjustments) != 1 || payload.ScoreAdjustments[0].ToolName != "browser" || payload.ScoreAdjustments[0].Adjustment <= 0 {
+		t.Fatalf("expected positive browser score adjustment: %#v", payload.ScoreAdjustments)
 	}
-	if payload.RecommendedFocusContext["tool"] != "browser_open" ||
+	if len(payload.ToolCandidates) != 1 || payload.ToolCandidates[0].ToolName != "browser" || payload.ToolCandidates[0].Direction != "prefer" || !strings.Contains(payload.RoutingRecommendation, "read-only") {
+		t.Fatalf("expected read-only browser routing candidate: %#v recommendation=%q", payload.ToolCandidates, payload.RoutingRecommendation)
+	}
+	if payload.RecommendedFocusContext["tool"] != "browser" ||
 		payload.RecommendedFocusContext["direction"] != "prefer" ||
 		payload.RecommendedFocusContext["task_type"] != "research" ||
 		payload.RecommendedFocusContext["query"] != "browser" {
@@ -240,15 +270,15 @@ func TestExperienceLearningToolRoutingSignalsFiltersToolEvidence(t *testing.T) {
 		payload.RecommendedToolCall["tool"] != "experience_learning" ||
 		recommendedArgs["action"] != "build_routing_adjustment_draft" ||
 		recommendedArgs["task_type"] != "research" ||
-		recommendedArgs["tool"] != "browser_open" ||
+		recommendedArgs["tool"] != "browser" ||
 		recommendedArgs["query"] != "browser" {
 		t.Fatalf("routing signals should expose safe draft recommended tool call: %#v", payload.RecommendedToolCall)
 	}
 	if !experienceRoutingSignalsHasReason(payload.ScoreAdjustments[0].Reasons, "recovery_tool_evidence") {
 		t.Fatalf("expected recovery evidence reason: %#v", payload.ScoreAdjustments[0])
 	}
-	if len(payload.SkillNudgeCandidates) != 1 || strings.Join(payload.SkillNudgeCandidates[0].ToolSequence, ">") != "browser_search>browser_open" {
-		t.Fatalf("expected browser search/open skill nudge: %#v", payload.SkillNudgeCandidates)
+	if len(payload.SkillNudgeCandidates) != 0 {
+		t.Fatalf("expected no split browser skill nudge after merge: %#v", payload.SkillNudgeCandidates)
 	}
 }
 
@@ -284,8 +314,8 @@ func TestExperienceLearningToolBuildsRoutingAdjustmentDraft(t *testing.T) {
 	if !payload.OK || draft.Query.TaskType != "research" || len(draft.ToolCandidates) != 1 {
 		t.Fatalf("unexpected routing draft payload: %#v", payload)
 	}
-	if draft.ToolCandidates[0].ToolName != "browser_open" || draft.ToolCandidates[0].Direction != "prefer" {
-		t.Fatalf("expected browser_open preference draft: %#v", draft.ToolCandidates)
+	if draft.Query.Tool != "browser" || draft.ToolCandidates[0].ToolName != "browser" || draft.ToolCandidates[0].Direction != "prefer" {
+		t.Fatalf("expected browser preference draft: %#v", draft)
 	}
 	if len(draft.Checks) == 0 || draft.NonExecutingBoundary == "" {
 		t.Fatalf("expected checks and non-executing boundary: %#v", draft)
@@ -353,7 +383,7 @@ func TestExperienceGovernanceSummaryUsesQueryScopedRoutingCandidates(t *testing.
 		t.Fatalf("expected read-only recommended tool call: %#v", summary["recommended_tool_call"])
 	}
 	recommendedArgs, ok := recommendedCall["args"].(map[string]interface{})
-	if !ok || recommendedArgs["action"] != "build_routing_adjustment_draft" || recommendedArgs["task_type"] != "research" || recommendedArgs["tool"] != "browser_open" || recommendedArgs["query"] != "browser" {
+	if !ok || recommendedArgs["action"] != "build_routing_adjustment_draft" || recommendedArgs["task_type"] != "research" || recommendedArgs["tool"] != "browser" || recommendedArgs["query"] != "browser" {
 		t.Fatalf("expected routing draft recommended args: %#v", recommendedCall["args"])
 	}
 	routing, ok := summary["routing_self_evolution"].(map[string]interface{})
@@ -361,15 +391,15 @@ func TestExperienceGovernanceSummaryUsesQueryScopedRoutingCandidates(t *testing.
 		t.Fatalf("routing_self_evolution missing: %#v", summary)
 	}
 	candidates, ok := routing["tool_candidates"].([]ExperienceRoutingToolCandidate)
-	if !ok || len(candidates) != 1 || candidates[0].ToolName != "browser_open" || candidates[0].Direction != "prefer" {
-		t.Fatalf("expected browser_open routing candidate: %#v", routing["tool_candidates"])
+	if !ok || len(candidates) != 1 || candidates[0].ToolName != "browser" || candidates[0].Direction != "prefer" {
+		t.Fatalf("expected browser routing candidate: %#v", routing["tool_candidates"])
 	}
 	query, ok := routing["query"].(ExperienceRoutingSignalQuery)
-	if !ok || query.TaskType != "research" || query.Tool != "browser_open" || query.Query != "browser" || query.Limit != 2 {
+	if !ok || query.TaskType != "research" || query.Tool != "browser" || query.Query != "browser" || query.Limit != 2 {
 		t.Fatalf("expected normalized governance routing query: %#v", routing["query"])
 	}
 	routingFocus, ok := routing["recommended_focus_context"].(map[string]interface{})
-	if !ok || routingFocus["tool"] != "browser_open" || routingFocus["query"] != "browser" {
+	if !ok || routingFocus["tool"] != "browser" || routingFocus["query"] != "browser" {
 		t.Fatalf("expected governance routing safe focus context: %#v", routing["recommended_focus_context"])
 	}
 	routingCall, ok := routing["recommended_tool_call"].(map[string]interface{})
@@ -378,7 +408,7 @@ func TestExperienceGovernanceSummaryUsesQueryScopedRoutingCandidates(t *testing.
 		t.Fatalf("expected governance routing safe recommended tool call: %#v", routing["recommended_tool_call"])
 	}
 	routingCallFocus, ok := routingCall["governance_focus_context"].(map[string]interface{})
-	if !ok || routingCallFocus["tool"] != "browser_open" || routingCallFocus["query"] != "browser" {
+	if !ok || routingCallFocus["tool"] != "browser" || routingCallFocus["query"] != "browser" {
 		t.Fatalf("expected governance routing recommended call focus alias: %#v", routing["recommended_tool_call"])
 	}
 	if routing["non_executing_boundary"] != directSignals.NonExecutingBoundary {
@@ -409,12 +439,12 @@ func TestExperienceGovernanceSummaryUsesQueryScopedRoutingCandidates(t *testing.
 		t.Fatalf("tool governance summary should expose routing safety boundary: %#v", toolRouting["non_executing_boundary"])
 	}
 	toolRoutingFocus, ok := toolRouting["recommended_focus_context"].(map[string]interface{})
-	if !ok || toolRoutingFocus["tool"] != "browser_open" || toolRoutingFocus["query"] != "browser" || toolRoutingFocus["direction"] != "prefer" {
+	if !ok || toolRoutingFocus["tool"] != "browser" || toolRoutingFocus["query"] != "browser" || toolRoutingFocus["direction"] != "prefer" {
 		t.Fatalf("tool governance summary should expose routing handoff focus context: %#v", toolRouting["recommended_focus_context"])
 	}
 	toolRoutingCall, ok := toolRouting["recommended_tool_call"].(map[string]interface{})
 	toolRoutingArgs, argsOK := toolRoutingCall["args"].(map[string]interface{})
-	if !ok || !argsOK || toolRoutingCall["tool"] != "experience_learning" || toolRoutingArgs["action"] != "build_routing_adjustment_draft" || toolRoutingArgs["tool"] != "browser_open" {
+	if !ok || !argsOK || toolRoutingCall["tool"] != "experience_learning" || toolRoutingArgs["action"] != "build_routing_adjustment_draft" || toolRoutingArgs["tool"] != "browser" {
 		t.Fatalf("tool governance summary should expose routing handoff tool call: %#v", toolRouting["recommended_tool_call"])
 	}
 }
@@ -424,7 +454,7 @@ func TestExperienceGovernanceSummaryKeepsGlobalReviewPriorityForUnscopedRouting(
 	routingSignals := &ExperienceRoutingSignalResult{
 		Query: ExperienceRoutingSignalQuery{},
 		ToolCandidates: []ExperienceRoutingToolCandidate{{
-			ToolName:  "browser_open",
+			ToolName:  "browser",
 			Direction: "prefer",
 		}},
 	}
@@ -447,7 +477,7 @@ func TestExperienceGovernanceSummaryKeepsGlobalReviewPriorityForUnscopedRouting(
 		t.Fatalf("routing_self_evolution missing: %#v", summary)
 	}
 	candidates, ok := routing["tool_candidates"].([]ExperienceRoutingToolCandidate)
-	if !ok || len(candidates) != 1 || candidates[0].ToolName != "browser_open" {
+	if !ok || len(candidates) != 1 || candidates[0].ToolName != "browser" {
 		t.Fatalf("expected routing candidates to remain visible without changing global priority: %#v", routing["tool_candidates"])
 	}
 }

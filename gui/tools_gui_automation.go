@@ -638,7 +638,7 @@ func captureDesktopScreenshot(screenIndex int) (string, error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("screenshot timed out after 15s")
 		}
-		return "", fmt.Errorf("screenshot failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("screenshot failed: %w (stderr_len=%d)", err, len([]rune(stderr.String())))
 	}
 
 	base64Data, blank, err := remote.ParseScreenshotOutputOpt(stdout.String())

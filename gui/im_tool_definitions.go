@@ -14,17 +14,9 @@ import (
 func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 	defs := []map[string]interface{}{
 		toolDef("list_sessions", "列出当前所有远程会话及其状态", nil, nil),
-		toolDef("create_session", "创建新的远程编程会话。仅用于明确的代码修改/编程任务，可指定 provider 选择服务商，也可传 resume_session_id 恢复结构化会话。若是服务器运维、SSH 登录、日志排查，请改用 ssh 工具；若需求模糊，先澄清后再创建。创建后建议用 get_session_output 观察启动状态。",
-			map[string]interface{}{
-				"tool":              map[string]string{"type": "string", "description": "工具名称，如 claude, codex, cursor, gemini, opencode"},
-				"project_path":      map[string]string{"type": "string", "description": "项目路径（可选）"},
-				"project_id":        map[string]string{"type": "string", "description": "预设项目 ID（可选，与 project_path 二选一）"},
-				"provider":          map[string]string{"type": "string", "description": "服务商名称（可选，如 Original, DeepSeek, 百度千帆）。不指定则使用桌面端当前选中的服务商"},
-				"resume_session_id": map[string]string{"type": "string", "description": "续接会话 ID（可选）。自动续接时由 get_session_output 返回，传入后使用 --resume 模式恢复完整对话历史"},
-			}, []string{"tool"}),
 		toolDef("list_providers", "列出指定编程工具的所有可用服务商（已过滤未配置的空服务商）",
 			map[string]interface{}{
-				"tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, gemini"},
+				"tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, opencode"},
 			}, []string{"tool"}),
 		toolDef("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/upload/download/list/close）。适用于服务器登录、远程命令、日志排查、服务重启与文件传输。长命令请优先使用 exec_background。",
 			map[string]interface{}{
@@ -268,7 +260,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		toolDef("manage_config", "配置管理（action: get/set/batch/schema/export/import）。get 获取配置，set 修改单项，batch 批量修改，schema 列出可配置项，export 导出，import 导入。",
 			map[string]interface{}{
 				"action":    map[string]string{"type": "string", "description": "操作: get/set/batch/schema/export/import"},
-				"section":   map[string]string{"type": "string", "description": "配置区域（get/set 时使用，如 claude/gemini/remote/projects/maclaw_llm/proxy/general）"},
+				"section":   map[string]string{"type": "string", "description": "配置区域（get/set 时使用，如 claude/codex/remote/projects/maclaw_llm/proxy/general）"},
 				"key":       map[string]string{"type": "string", "description": "配置项名称（set 时必填）"},
 				"value":     map[string]string{"type": "string", "description": "新值（set 时必填）"},
 				"changes":   map[string]string{"type": "string", "description": "JSON 数组（batch 时必填），每项含 section/key/value"},
@@ -331,7 +323,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			}, []string{"url"}),
 	)
 
-	return defs
+	return filterDisabledExternalCodingSessionToolDefs(defs)
 }
 
 func toolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {

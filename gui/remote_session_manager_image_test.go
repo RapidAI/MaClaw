@@ -328,7 +328,6 @@ func TestRunSDKOutputLoop_ImageInterception_MixedContent(t *testing.T) {
 	}
 }
 
-
 func TestWriteImageInput_SessionNotFound(t *testing.T) {
 	app := &App{}
 	manager := NewRemoteSessionManager(app)
@@ -354,7 +353,7 @@ func TestWriteImageInput_PTYSessionRejected(t *testing.T) {
 	ptyHandle := newFakeExecutionHandle(10)
 	session := &RemoteSession{
 		ID:     "sess-pty-1",
-		Tool:   "cursor",
+		Tool:   "opencode",
 		Status: SessionRunning,
 		Exec:   ptyHandle,
 	}

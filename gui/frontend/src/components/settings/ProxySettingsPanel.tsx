@@ -1,5 +1,4 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { SaveConfig } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { ProxyScopeSettings } from './ProxyScopeSettings';
 
@@ -116,7 +115,6 @@ export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t }: Pr
                 className="btn-primary"
                 onClick={() => {
                     if (!config) return;
-                    SaveConfig(config);
                     try {
                         (window as any).go?.main?.App?.SaveProxyConfig?.({
                             enabled: config.default_proxy_enabled || false,

@@ -198,6 +198,12 @@ func defaultAnchors() []intentAnchor {
 				"take a screenshot of this page in Chrome",
 				"use playwright to test the login flow",
 				"automate web testing with browser tools",
+				"log into a website and publish a post",
+				"sign in to a social website and submit content",
+				"open Zhihu in a browser and publish a pin",
+				"登录知乎并发表一条想法",
+				"打开网页登录账号然后发布内容",
+				"在网页上发帖并验证发布结果",
 			},
 		},
 		{

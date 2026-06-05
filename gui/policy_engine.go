@@ -31,7 +31,7 @@ func NewPolicyEngine() *PolicyEngine {
 }
 
 // NewPolicyEngineWithMode creates a PolicyEngine using rules for the given mode.
-// Supported modes: "developer", "relaxed"/"permissive", "standard" (default), "strict".
+// Supported modes: "none", "developer", "relaxed"/"permissive", "standard" (default), "strict".
 func NewPolicyEngineWithMode(mode string) *PolicyEngine {
 	mode = normalizePolicyEngineMode(mode)
 	return &PolicyEngine{
@@ -56,7 +56,7 @@ func (e *PolicyEngine) SetMode(mode string) {
 
 func normalizePolicyEngineMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "developer", "relaxed", "standard", "strict":
+	case "none", "developer", "relaxed", "standard", "strict":
 		return strings.ToLower(strings.TrimSpace(mode))
 	case "permissive":
 		return "relaxed"
@@ -168,6 +168,7 @@ func DefaultPolicyRules() []security.PolicyRule {
 //
 // Supported modes:
 //
+//	none:      risk guardrail decisions disabled; independent security controls still apply.
 //	developer: all operations allowed; callers may still audit observations.
 //	relaxed:   low/medium/high/critical allow so skills can install and run.
 //	standard:  low allow, medium audit, high/critical ask when a UI is available.
@@ -189,6 +190,13 @@ func PolicyRulesForMode(mode string) []security.PolicyRule {
 	var rules []security.PolicyRule
 
 	switch mode {
+	case "none":
+		rules = []security.PolicyRule{
+			{Name: "guardrails-off-allow-critical", Priority: 10, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskCritical}, Action: security.PolicyAllow},
+			{Name: "guardrails-off-allow-high", Priority: 20, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskHigh}, Action: security.PolicyAllow},
+			{Name: "guardrails-off-allow-medium", Priority: 30, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskMedium}, Action: security.PolicyAllow},
+			{Name: "guardrails-off-allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskLow}, Action: security.PolicyAllow},
+		}
 	case "developer":
 		rules = []security.PolicyRule{
 			{Name: "allow-critical", Priority: 10, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskCritical}, Action: security.PolicyAllow},

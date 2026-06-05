@@ -514,8 +514,7 @@ func ensureLifecycleUploadEmail(app *App, trigger *AutoUploadTrigger) {
 	if err != nil || strings.TrimSpace(cfg.RemoteEmail) != "" {
 		return
 	}
-	cfg.RemoteEmail = email
-	if err := app.SaveConfig(cfg); err != nil {
+	if _, err := app.PatchConfigFields(map[string]interface{}{"remote_email": email}); err != nil {
 		log.Printf("[auto-upload] persist upload email failed: %v", err)
 	}
 }

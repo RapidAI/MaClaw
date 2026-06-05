@@ -109,12 +109,12 @@ func TestNoEagerPinTools_DerivedFromRules(t *testing.T) {
 		}
 	}
 
-	for _, name := range []string{"browser", "gui_record_start"} {
+	for _, name := range []string{"browser"} {
 		if !noEagerPinTools[name] {
 			t.Fatalf("expected %q to be in noEagerPinTools", name)
 		}
 	}
-	for _, name := range []string{"gui_observe", "gui_verify", "ssh"} {
+	for _, name := range []string{"gui_record_start", "gui_observe", "gui_verify", "ssh"} {
 		if noEagerPinTools[name] {
 			t.Fatalf("%q should not be in noEagerPinTools", name)
 		}

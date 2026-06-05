@@ -146,13 +146,12 @@ func BrowserDiagCP1_Route(userMsg string, routedTools []map[string]interface{}, 
 		return
 	}
 
-	msgPreview := truncateDiagMsg(userMsg, 80)
 	if len(found) > 0 {
-		log.Printf("[browser-diag] CP1_Route: browser tools IN routed list: %v | sessionPinned=%v | msg=%q",
-			found, sessionPinned, msgPreview)
+		log.Printf("[browser-diag] CP1_Route: browser tools IN routed list: %v | sessionPinned=%v | msg_len=%d",
+			found, sessionPinned, len([]rune(userMsg)))
 	} else {
-		log.Printf("[browser-diag] CP1_Route: browser tools NOT in routed list | sessionPinned=%v | msg=%q",
-			sessionPinned, msgPreview)
+		log.Printf("[browser-diag] CP1_Route: browser tools NOT in routed list | sessionPinned=%v | msg_len=%d",
+			sessionPinned, len([]rune(userMsg)))
 	}
 }
 

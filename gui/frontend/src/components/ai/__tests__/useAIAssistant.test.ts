@@ -5,6 +5,7 @@ import { main } from '../../../../wailsjs/go/models';
 
 let mockSendResponse: any = { text: 'ok', error: '', fields: null, actions: null, request_id: 'req-default' };
 let mockSendError: Error | null = null;
+let mockUIState: any = { messages: [], prompts: [] };
 const runtimeHandlers = new Map<string, (payload?: unknown) => void>();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
@@ -16,6 +17,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
         return mockSendResponse;
     }),
     ClearAIAssistantHistory: vi.fn(async () => {}),
+    ClearAIAssistantUIState: vi.fn(async () => { mockUIState = { messages: [], prompts: [] }; }),
+    LoadAIAssistantUIState: vi.fn(async () => mockUIState),
+    SaveAIAssistantUIState: vi.fn(async (state: any) => { mockUIState = state; }),
     IsAIAssistantReady: vi.fn(async () => true),
     GetAIAssistantInitStatus: vi.fn(async () => 'ready'),
     GetTrialReflectEnabled: vi.fn(async () => false),
@@ -45,8 +49,8 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     }),
 }));
 
-import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
+import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
+import { ClearAIAssistantHistory, ClearAIAssistantUIState, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
     return renderHook(() => useAIAssistant(options));
@@ -91,6 +95,12 @@ function resetAppMocks() {
     });
     (ClearAIAssistantHistory as any).mockReset();
     (ClearAIAssistantHistory as any).mockImplementation(async () => {});
+    (ClearAIAssistantUIState as any).mockReset();
+    (ClearAIAssistantUIState as any).mockImplementation(async () => { mockUIState = { messages: [], prompts: [] }; });
+    (LoadAIAssistantUIState as any).mockReset();
+    (LoadAIAssistantUIState as any).mockImplementation(async () => mockUIState);
+    (SaveAIAssistantUIState as any).mockReset();
+    (SaveAIAssistantUIState as any).mockImplementation(async (state: any) => { mockUIState = state; });
     (IsAIAssistantReady as any).mockReset();
     (IsAIAssistantReady as any).mockImplementation(async () => true);
     (GetAIAssistantInitStatus as any).mockReset();
@@ -227,15 +237,19 @@ describe('useAIAssistant property tests', () => {
     beforeEach(() => {
         mockSendResponse = { text: 'ok', error: '', fields: null, actions: null, request_id: 'req-default' };
         mockSendError = null;
+        mockUIState = { messages: [], prompts: [] };
         runtimeHandlers.clear();
         resetAppMocks();
         localStorage.clear();
+        setActiveSessionKey('');
     });
 
     afterEach(() => {
+        mockUIState = { messages: [], prompts: [] };
         localStorage.clear();
         runtimeHandlers.clear();
         resetAppMocks();
+        setActiveSessionKey('');
     });
 
     it('preserves llm_token_usage when AppConfig is reconstructed on the frontend', () => {
@@ -294,7 +308,8 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(accepted).toBe(true);
-        expect(InjectAIAssistantGuideReference).toHaveBeenCalledWith('下一轮参考这个');
+        expect(InjectAIAssistantGuideReferenceForSession).toHaveBeenCalledWith('下一轮参考这个', 'desktop-user');
+        expect(InjectAIAssistantGuideReference).not.toHaveBeenCalled();
         expect(messageContents(result.current.messages)).toContain('引导已注入下一轮：\n下一轮参考这个');
     });
 
@@ -312,7 +327,7 @@ describe('useAIAssistant property tests', () => {
     });
 
     it('does not show guide reference echo when the active loop rejects it', async () => {
-        (InjectAIAssistantGuideReference as any).mockResolvedValueOnce(false);
+        (InjectAIAssistantGuideReferenceForSession as any).mockResolvedValueOnce(false);
         const { result } = renderAssistantHook();
 
         let accepted = true;
@@ -427,7 +442,60 @@ describe('useAIAssistant property tests', () => {
         expect(SendAIAssistantMessage).toHaveBeenLastCalledWith({
             text: buildOutgoingMessageMulti('inspect this', ['/tmp/example.png', '/tmp/another.txt']),
             request_id: expect.any(String),
+            lang: 'en',
         });
+    });
+
+    it('keeps selected files scoped to the active session key', async () => {
+        (SelectAIAssistantFiles as any)
+            .mockResolvedValueOnce(['/tmp/project.png'])
+            .mockResolvedValueOnce(['/tmp/local.txt']);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            setActiveSessionKey('desktop-user:D:/tasks/files-project');
+            await result.current.browseFile();
+        });
+        expect(result.current.selectedFilePaths).toEqual(['/tmp/project.png']);
+
+        await act(async () => {
+            setActiveSessionKey('desktop-user');
+        });
+        expect(result.current.selectedFilePaths).toEqual([]);
+
+        await act(async () => {
+            await result.current.browseFile();
+        });
+        expect(result.current.selectedFilePaths).toEqual(['/tmp/local.txt']);
+
+        await act(async () => {
+            setActiveSessionKey('desktop-user:D:/tasks/files-project');
+        });
+        expect(result.current.selectedFilePaths).toEqual(['/tmp/project.png']);
+    });
+
+    it('clears selected files when a project session is forgotten', async () => {
+        (SelectAIAssistantFiles as any).mockResolvedValueOnce(['/tmp/project.png']);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            setActiveSessionKey('desktop-user:D:/tasks/files-project');
+            await result.current.browseFile();
+        });
+        expect(result.current.selectedFilePaths).toEqual(['/tmp/project.png']);
+
+        act(() => {
+            forgetAIAssistantSessionRounds('desktop-user:D:/tasks/files-project');
+        });
+        expect(result.current.selectedFilePaths).toEqual([]);
+
+        act(() => {
+            setActiveSessionKey('desktop-user');
+            setActiveSessionKey('desktop-user:D:/tasks/files-project');
+        });
+        expect(result.current.selectedFilePaths).toEqual([]);
     });
 
     it('init progress ready stops follow-up polling', async () => {
@@ -510,13 +578,15 @@ describe('useAIAssistant property tests', () => {
 
         expect(result.current.submittedPrompts).toEqual(['first prompt', 'second prompt']);
         await waitFor(() => {
-            expect(JSON.parse(localStorage.getItem(AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY) || '[]')).toEqual(['first prompt', 'second prompt']);
+            expect(mockUIState.prompts).toEqual(['first prompt', 'second prompt']);
         });
 
         unmount();
 
         const { result: remounted } = renderAssistantHook();
-        expect(remounted.current.submittedPrompts).toEqual(['first prompt', 'second prompt']);
+        await waitFor(() => {
+            expect(remounted.current.submittedPrompts).toEqual(['first prompt', 'second prompt']);
+        });
     });
 
     it('deduplicates consecutive submitted prompts', async () => {
@@ -538,13 +608,16 @@ describe('useAIAssistant property tests', () => {
         const persistedMessages = [
             { id: 'u-1', role: 'user', content: 'remember this', timestamp: 1 },
             { id: 'a-1', role: 'assistant', content: 'restored reply', timestamp: 2 },
+            { id: 'a-browser', role: 'assistant', content: 'Browser: leaked browser instruction', reasoning: 'thinking\nBrowser: hidden tool echo', timestamp: 3 },
             { id: 'p-1', role: 'progress', content: 'skip me', timestamp: 3 },
             { id: 's-1', role: 'system', content: 'skip me too', timestamp: 4 },
         ];
         localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify(persistedMessages));
 
         const { result, unmount } = renderAssistantHook();
-        expect(result.current.messages.map(m => m.id)).toEqual(['u-1', 'a-1']);
+        expect(result.current.messages.map(m => m.id)).toEqual(['u-1', 'a-1', 'a-browser']);
+        expect(result.current.messages.find(m => m.id === 'a-browser')?.content).toBe('leaked browser instruction');
+        expect(result.current.messages.find(m => m.id === 'a-browser')?.reasoning).toBe('thinking');
 
         await act(async () => {
             await result.current.clearHistory();
@@ -561,6 +634,140 @@ describe('useAIAssistant property tests', () => {
 
         const { result: remounted } = renderAssistantHook();
         expect(remounted.current.messages).toEqual([]);
+    });
+
+    it('keeps legacy localStorage history when backend UI-state migration fails', async () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const persistedMessages = [
+            { id: 'legacy-user', role: 'user', content: 'legacy question', timestamp: 1 },
+        ];
+        localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify(persistedMessages));
+        (SaveAIAssistantUIState as any).mockRejectedValueOnce(new Error('disk full'));
+
+        try {
+            renderAssistantHook();
+
+            await waitFor(() => {
+                expect(SaveAIAssistantUIState).toHaveBeenCalled();
+            });
+            expect(localStorage.getItem(AI_ASSISTANT_HISTORY_STORAGE_KEY)).toBe(JSON.stringify(persistedMessages));
+        } finally {
+            errorSpy.mockRestore();
+        }
+    });
+
+    it('merges legacy localStorage history when backend UI-state is partial', async () => {
+        const persistedMessages = [
+            { id: 'legacy-user', role: 'user', content: 'legacy question', timestamp: 1 },
+        ];
+        mockUIState = { messages: [], prompts: ['backend prompt'] };
+        localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify(persistedMessages));
+
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(result.current.messages.map(m => m.content)).toEqual(['legacy question']);
+            expect(result.current.submittedPrompts).toEqual(['backend prompt']);
+            expect(mockUIState.messages?.map((m: any) => m.content)).toEqual(['legacy question']);
+            expect(localStorage.getItem(AI_ASSISTANT_HISTORY_STORAGE_KEY)).toBeNull();
+        });
+    });
+
+    it('serializes backend UI-state writes so slow saves cannot overwrite newer state', async () => {
+        const firstSave = deferred<void>();
+        let firstPayload: any = null;
+        const laterPayloads: any[] = [];
+        (SaveAIAssistantUIState as any)
+            .mockImplementationOnce(async (state: any) => {
+                firstPayload = state;
+                await firstSave.promise;
+                mockUIState = state;
+            })
+            .mockImplementation(async (state: any) => {
+                laterPayloads.push(state);
+                mockUIState = state;
+            });
+
+        const { result } = renderAssistantHook();
+        await waitFor(() => expect(LoadAIAssistantUIState).toHaveBeenCalled());
+
+        await act(async () => {
+            result.current.recordSubmittedPrompt('first prompt');
+        });
+
+        await waitFor(() => expect(SaveAIAssistantUIState).toHaveBeenCalledTimes(1));
+        expect(firstPayload.prompts).toEqual(['first prompt']);
+
+        await act(async () => {
+            result.current.recordSubmittedPrompt('second prompt');
+        });
+
+        expect(SaveAIAssistantUIState).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            firstSave.resolve();
+            await firstSave.promise;
+        });
+
+        await waitFor(() => expect(SaveAIAssistantUIState).toHaveBeenCalledTimes(2));
+        expect(laterPayloads.at(-1)?.prompts).toEqual(['first prompt', 'second prompt']);
+        expect(mockUIState.prompts).toEqual(['first prompt', 'second prompt']);
+    });
+
+    it('does not mark failed backend UI-state saves as persisted', async () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        (SaveAIAssistantUIState as any)
+            .mockRejectedValueOnce(new Error('temporary disk error'))
+            .mockImplementation(async (state: any) => { mockUIState = state; });
+
+        try {
+            const { result, unmount } = renderAssistantHook();
+            await waitFor(() => expect(LoadAIAssistantUIState).toHaveBeenCalled());
+
+            await act(async () => {
+                result.current.recordSubmittedPrompt('retry me');
+            });
+
+            await waitFor(() => expect(SaveAIAssistantUIState).toHaveBeenCalledTimes(1));
+            expect(mockUIState.prompts).toEqual([]);
+
+            unmount();
+
+            await waitFor(() => expect(SaveAIAssistantUIState).toHaveBeenCalledTimes(2));
+            expect(mockUIState.prompts).toEqual(['retry me']);
+        } finally {
+            errorSpy.mockRestore();
+        }
+    });
+
+    it('clearHistory clears messages but preserves submitted prompt history', async () => {
+        const { result, unmount } = renderAssistantHook();
+        await waitFor(() => expect(LoadAIAssistantUIState).toHaveBeenCalled());
+
+        await act(async () => {
+            result.current.recordSubmittedPrompt('keep prompt');
+            await result.current.sendMessage('clearable message');
+        });
+
+        await waitFor(() => expect(mockUIState.prompts).toEqual(['keep prompt']));
+
+        await act(async () => {
+            await result.current.clearHistory();
+        });
+
+        expect(result.current.messages).toEqual([]);
+        await waitFor(() => {
+            expect(mockUIState.messages).toEqual([]);
+            expect(mockUIState.prompts).toEqual(['keep prompt']);
+        });
+
+        unmount();
+
+        const { result: remounted } = renderAssistantHook();
+        await waitFor(() => {
+            expect(remounted.current.messages).toEqual([]);
+            expect(remounted.current.submittedPrompts).toEqual(['keep prompt']);
+        });
     });
 
     it('Property 3c: clearHistory prevents old persisted turns from polluting the next send', async () => {
@@ -607,7 +814,9 @@ describe('useAIAssistant property tests', () => {
             'new task',
             'new answer',
         ]);
-        expect(localStorage.getItem(AI_ASSISTANT_HISTORY_STORAGE_KEY)).not.toBeNull();
+        await waitFor(() => {
+            expect(mockUIState.messages?.length).toBeGreaterThan(0);
+        });
 
         await act(async () => {
             await result.current.sendMessage('follow up');
@@ -671,7 +880,7 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages).toEqual([]);
     });
     it('rerender-only message changes do not rewrite persisted history', async () => {
-        const setItemSpy = vi.spyOn(Storage.prototype, 'setItem');
+        const saveStateSpy = SaveAIAssistantUIState as any;
         const removeItemSpy = vi.spyOn(Storage.prototype, 'removeItem');
         const { result, rerender } = renderAssistantHook();
 
@@ -680,9 +889,9 @@ describe('useAIAssistant property tests', () => {
         });
 
         await waitFor(() => {
-            expect(setItemSpy).toHaveBeenCalled();
+            expect(saveStateSpy).toHaveBeenCalled();
         });
-        const writesAfterSend = setItemSpy.mock.calls.length;
+        const writesAfterSend = saveStateSpy.mock.calls.length;
         const removesAfterSend = removeItemSpy.mock.calls.length;
 
         rerender();
@@ -691,7 +900,7 @@ describe('useAIAssistant property tests', () => {
             await Promise.resolve();
         });
 
-        expect(setItemSpy.mock.calls.length).toBe(writesAfterSend);
+        expect(saveStateSpy.mock.calls.length).toBe(writesAfterSend);
         expect(removeItemSpy.mock.calls.length).toBe(removesAfterSend);
     });
 
@@ -1815,7 +2024,7 @@ describe('useAIAssistant property tests', () => {
         (SendAIAssistantMessage as any)
             .mockImplementationOnce(() => first.promise)
             .mockImplementationOnce(() => second.promise);
-        (CancelAIAssistantSession as any).mockResolvedValueOnce('retry first request');
+        (CancelAIAssistantSessionForSession as any).mockResolvedValueOnce('retry first request');
 
         const { result } = renderAssistantHook();
 
@@ -1837,6 +2046,8 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(cancelResult).toEqual({ canceledText: 'retry first request' });
+        expect(CancelAIAssistantSessionForSession).toHaveBeenCalledWith('desktop-user');
+        expect(CancelAIAssistantSession).not.toHaveBeenCalled();
         expect(assistantMessages(result.current.messages)).toHaveLength(1);
         expect(assistantMessages(result.current.messages)[0].content).toBe(`partial\n${CANCELED_BY_USER_LINE}`);
         expect(result.current.sending).toBe(false);
@@ -1872,7 +2083,7 @@ describe('useAIAssistant property tests', () => {
         vi.useFakeTimers();
         try {
             mockSendResponse = { deferred: true, text: '', error: '', fields: null, actions: null };
-            (CancelAIAssistantSession as any).mockResolvedValueOnce('');
+            (CancelAIAssistantSessionForSession as any).mockResolvedValueOnce('');
             const { result } = renderAssistantHook();
 
             await act(async () => {
@@ -1910,7 +2121,7 @@ describe('useAIAssistant property tests', () => {
         (SendAIAssistantMessage as any)
             .mockImplementationOnce(() => first.promise)
             .mockImplementationOnce(() => second.promise);
-        (CancelAIAssistantSession as any).mockImplementationOnce(() => cancel.promise);
+        (CancelAIAssistantSessionForSession as any).mockImplementationOnce(() => cancel.promise);
 
         const { result } = renderAssistantHook();
 
@@ -1930,7 +2141,8 @@ describe('useAIAssistant property tests', () => {
             await Promise.resolve();
         });
 
-        expect(CancelAIAssistantSession).toHaveBeenCalledTimes(1);
+        expect(CancelAIAssistantSessionForSession).toHaveBeenCalledWith('desktop-user');
+        expect(CancelAIAssistantSession).not.toHaveBeenCalled();
         expect(SendAIAssistantMessage).toHaveBeenCalledTimes(1);
 
         await act(async () => {
@@ -1989,7 +2201,7 @@ describe('useAIAssistant property tests', () => {
             (SendAIAssistantMessage as any)
                 .mockImplementationOnce(() => first.promise)
                 .mockImplementationOnce(() => second.promise);
-            (CancelAIAssistantSession as any).mockResolvedValueOnce('');
+            (CancelAIAssistantSessionForSession as any).mockResolvedValueOnce('');
 
             const { result } = renderAssistantHook();
 
@@ -2091,6 +2303,135 @@ describe('useAIAssistant property tests', () => {
         });
     });
 
+    it('normalizes legacy unfinished_task payloads into assistant messages', async () => {
+        mockSendResponse = {
+            text: '\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1',
+            error: '',
+            unfinished_task: {
+                slot_id: 'slot-task',
+                title: '\u7ee7\u7eed\u4efb\u52a1',
+                status: 'interrupted',
+                actions: [
+                    { label: '\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1', command: '__resume_unfinished__ slot-task', style: 'default' },
+                ],
+            },
+        };
+
+        const { result } = renderAssistantHook({ lang: 'zh-Hans' });
+
+        await act(async () => {
+            await result.current.sendMessage('\u7ee7\u7eed');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.unfinishedSlot).toEqual({
+            slotID: 'slot-task',
+            title: '\u7ee7\u7eed\u4efb\u52a1',
+            summary: undefined,
+            projectPath: undefined,
+            status: 'interrupted',
+            actions: [
+                { label: '\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1', command: '__resume_unfinished__ slot-task', style: 'default' },
+            ],
+        });
+    });
+
+    it('normalizes structured recoverable session payloads into assistant messages', async () => {
+        mockSendResponse = {
+            text: '',
+            error: '',
+            recoverable_session: {
+                session_id: 'sess-1',
+                tool: 'claude',
+                title: '\u7ee7\u7eed Daily Paper',
+                summary: '\u8fd8\u5dee\u6700\u540e\u4e00\u8f6e\u6574\u7406',
+                project_path: 'D:/work/project',
+                status: 'exited',
+                exit_reason: 'token_limit',
+                resume_session_id: 'resume-123',
+                resume_count: 2,
+                last_progress: '\u8fd8\u5dee\u6700\u540e\u4e00\u8f6e\u6574\u7406',
+                actions: [
+                    { label: '\u6062\u590d\u4f1a\u8bdd', command: '__resume_session__ sess-1', style: 'default' },
+                    { label: '\u5ffd\u7565\u4f1a\u8bdd', command: '__dismiss_recoverable_session__ sess-1', style: 'danger' },
+                ],
+            },
+        };
+
+        const { result } = renderAssistantHook({ lang: 'zh-Hans' });
+
+        await act(async () => {
+            await result.current.sendMessage('\u7ee7\u7eed');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.content).toBe('');
+        expect(assistantMsg?.recoverableSession).toEqual({
+            sessionID: 'sess-1',
+            tool: 'claude',
+            title: '\u7ee7\u7eed Daily Paper',
+            summary: '\u8fd8\u5dee\u6700\u540e\u4e00\u8f6e\u6574\u7406',
+            projectPath: 'D:/work/project',
+            status: 'exited',
+            exitReason: 'token_limit',
+            resumeSessionID: 'resume-123',
+            resumeCount: 2,
+            lastProgress: '\u8fd8\u5dee\u6700\u540e\u4e00\u8f6e\u6574\u7406',
+            actions: [
+                { label: '\u6062\u590d\u4f1a\u8bdd', command: '__resume_session__ sess-1', style: 'default' },
+                { label: '\u5ffd\u7565\u4f1a\u8bdd', command: '__dismiss_recoverable_session__ sess-1', style: 'danger' },
+            ],
+        });
+
+        await waitFor(() => {
+            expect(mockUIState.messages?.some((m: any) => m.recoverableSession?.sessionID === 'sess-1')).toBe(true);
+        });
+
+        mockSendResponse = { text: 'ok', error: '' };
+        await act(async () => {
+            await result.current.executeAction('__resume_session__ sess-1');
+        });
+
+        const updatedRecoverableMsg = result.current.messages.find(m => m.recoverableSession?.sessionID === 'sess-1');
+        expect(updatedRecoverableMsg?.recoverableSession?.actions).toEqual([
+            { label: '\u5ffd\u7565\u4f1a\u8bdd', command: '__dismiss_recoverable_session__ sess-1', style: 'danger' },
+        ]);
+    });
+
+    it('sends persisted structured task handoff cards as concise follow-up context', async () => {
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: any) => ({
+                text: '',
+                error: '',
+                request_id: req.request_id,
+                recoverable_session: {
+                    session_id: 'sess-context',
+                    title: '\u7ee7\u7eed Daily Paper',
+                    summary: '\u8fd8\u5dee\u6700\u540e\u4e00\u8f6e\u6574\u7406',
+                    project_path: 'D:/work/project',
+                    status: 'exited',
+                },
+            }))
+            .mockImplementationOnce(async (req: any) => ({ text: 'ok', error: '', request_id: req.request_id }));
+
+        const { result } = renderAssistantHook({ lang: 'zh-Hans' });
+
+        await act(async () => {
+            await result.current.sendMessage('\u7ee7\u7eed');
+        });
+        await act(async () => {
+            await result.current.sendMessage('\u8865\u5145\u4e00\u4e0b');
+        });
+
+        const followRequest = parseSentRequest(1) as any;
+        expect(followRequest.recent_messages?.map((m: any) => m.content)).toEqual([
+            '\u7ee7\u7eed',
+            expect.stringContaining('Assistant showed recoverable session card'),
+        ]);
+        expect(followRequest.recent_messages?.[1]?.content).toContain('title=\u7ee7\u7eed Daily Paper');
+        expect(followRequest.recent_messages?.[1]?.content).toContain('progress=\u8fd8\u5dee\u6700\u540e\u4e00\u8f6e\u6574\u7406');
+    });
+
     it('executeAction routes explicit unfinished slot commands through sendMessage options', async () => {
         const calls: any[] = [];
         (SendAIAssistantMessage as any).mockImplementation(async (req: any) => {
@@ -2104,18 +2445,59 @@ describe('useAIAssistant property tests', () => {
             await result.current.executeAction('__resume_unfinished__ slot-99');
             await result.current.executeAction('__start_new_task__');
             await result.current.executeAction('__dismiss_unfinished__ slot-99');
+            await result.current.executeAction('__resume_session__ sess-99');
+            await result.current.executeAction('__dismiss_recoverable_session__ sess-99');
         });
 
         expect(calls[0]?.resume_slot_id).toBe('slot-99');
+        expect(calls[0]?.ui_action).toBe(true);
         expect(calls[0]?.text).toBe('\u7ee7\u7eed\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1');
+        expect(calls[0]?.lang).toBe('zh-Hans');
         expect(calls[1]?.start_new_task).toBe(true);
         expect(calls[1]?.text).toBe('\u5f00\u59cb\u4e00\u4e2a\u65b0\u4efb\u52a1');
+        expect(calls[1]?.lang).toBe('zh-Hans');
         expect(calls[2]?.dismiss_slot_id).toBe('slot-99');
         expect(calls[2]?.start_new_task).toBe(true);
         expect(calls[2]?.text).toBe('\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1');
+        expect(calls[2]?.lang).toBe('zh-Hans');
+        expect(calls[3]?.resume_session_id).toBe('sess-99');
+        expect(calls[3]?.ui_action).toBe(true);
+        expect(calls[3]?.text).toBe('\u6062\u590d\u4f1a\u8bdd');
+        expect(calls[3]?.lang).toBe('zh-Hans');
+        expect(calls[4]?.dismiss_recoverable_session_id).toBe('sess-99');
+        expect(calls[4]?.ui_action).toBe(true);
+        expect(calls[4]?.text).toBe('\u5ffd\u7565\u4f1a\u8bdd');
+        expect(calls[4]?.lang).toBe('zh-Hans');
         const userMessages = result.current.messages.filter(m => m.role === 'user');
         expect(userMessages[0]?.content).toBe('\u7ee7\u7eed\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1');
         expect(userMessages[2]?.content).toBe('\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1');
+        expect(userMessages[3]?.content).toBe('\u6062\u590d\u4f1a\u8bdd');
+        expect(userMessages[4]?.content).toBe('\u5ffd\u7565\u4f1a\u8bdd');
+    });
+
+    it('executeAction keeps project tab action commands on the active project session', async () => {
+        const calls: any[] = [];
+        (SendAIAssistantMessage as any).mockImplementation(async (req: any) => {
+            calls.push(req);
+            return { text: 'ok', error: '', fields: null, actions: null, request_id: req.request_id || 'req' };
+        });
+
+        const { result } = renderAssistantHook({ activeSessionKey: 'desktop-user:D:/tasks/action-project', lang: 'zh-Hans' });
+
+        await act(async () => {
+            await result.current.executeAction('__resume_unfinished__ slot-project');
+            await result.current.executeAction('__dismiss_recoverable_session__ sess-project');
+            await result.current.executeAction('plain project action');
+        });
+
+        expect(calls[0]?.project_path).toBe('D:/tasks/action-project');
+        expect(calls[0]?.resume_slot_id).toBe('slot-project');
+        expect(calls[1]?.project_path).toBe('D:/tasks/action-project');
+        expect(calls[1]?.dismiss_recoverable_session_id).toBe('sess-project');
+        expect(calls[2]?.project_path).toBe('D:/tasks/action-project');
+        expect(calls[2]?.ui_action).toBe(true);
+        expect(calls[2]?.text).toBe('plain project action');
+        expect(result.current.messages.filter(m => m.role === 'user').every(m => m.sessionKey === 'desktop-user:D:/tasks/action-project')).toBe(true);
     });
 
     it('normalizes confirmation payloads into assistant messages', async () => {
@@ -2841,7 +3223,7 @@ describe('useAIAssistant property tests', () => {
         (SendAIAssistantMessage as any)
             .mockImplementationOnce(() => first.promise)
             .mockImplementationOnce(() => second.promise);
-        (CancelAIAssistantSession as any).mockResolvedValueOnce('retry first request');
+        (CancelAIAssistantSessionForSession as any).mockResolvedValueOnce('retry first request');
 
         const { result } = renderAssistantHook();
 
@@ -2992,6 +3374,55 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(result.current.agentView).toBeNull();
+    });
+
+    it('keeps AgentView state scoped to the active session key', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            setActiveSessionKey('desktop-user:D:/tasks/agent-view-project');
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                view: {
+                    id: 'workflow:form:project',
+                    type: 'form',
+                    title: 'Project form',
+                    fields: [
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:D:/tasks/agent-view-project' },
+                    ],
+                },
+            });
+        });
+        expect(result.current.agentView?.id).toBe('workflow:form:project');
+
+        act(() => {
+            setActiveSessionKey('desktop-user');
+        });
+        expect(result.current.agentView).toBeNull();
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                view: {
+                    id: 'workflow:form:local',
+                    type: 'form',
+                    title: 'Local form',
+                    fields: [
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user' },
+                    ],
+                },
+            });
+        });
+        expect(result.current.agentView?.id).toBe('workflow:form:local');
+
+        act(() => {
+            setActiveSessionKey('desktop-user:D:/tasks/agent-view-project');
+        });
+        expect(result.current.agentView?.id).toBe('workflow:form:project');
     });
 
     it('keeps lifecycle complete result views visible', async () => {
@@ -3708,6 +4139,44 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.progressMessages).toEqual([]);
     });
 
+    it('keeps live progress scoped to the active session key', async () => {
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: any) => ({ deferred: true, text: '', error: '', fields: null, actions: null, request_id: req.request_id }))
+            .mockImplementationOnce(async (req: any) => ({ deferred: true, text: '', error: '', fields: null, actions: null, request_id: req.request_id }));
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            setActiveSessionKey('desktop-user:D:/tasks/progress-project');
+            void result.current.sendMessage('project progress task', { project_path: 'D:/tasks/progress-project' });
+            await Promise.resolve();
+        });
+        const projectReq = parseSentRequest(0);
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: projectReq.request_id, session_key: 'desktop-user:D:/tasks/progress-project', text: 'project progress' });
+        });
+        expect(result.current.progressMessages.map(m => m.content)).toEqual(['project progress']);
+
+        await act(async () => {
+            setActiveSessionKey('desktop-user');
+        });
+        expect(result.current.progressMessages).toEqual([]);
+
+        await act(async () => {
+            void result.current.sendMessage('local progress task');
+            await Promise.resolve();
+        });
+        const localReq = parseSentRequest(1);
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: localReq.request_id, session_key: 'desktop-user', text: 'local progress' });
+        });
+        expect(result.current.progressMessages.map(m => m.content)).toEqual(['local progress']);
+
+        await act(async () => {
+            setActiveSessionKey('desktop-user:D:/tasks/progress-project');
+        });
+        expect(result.current.progressMessages.map(m => m.content)).toEqual(['project progress']);
+    });
+
     it('ignores malformed deferred responses without the active request id', async () => {
         vi.useFakeTimers();
         try {
@@ -3834,6 +4303,764 @@ describe('useAIAssistant property tests', () => {
             first.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id, local_file_path: '/tmp/review.pdf' });
             await first.promise;
         });
+    });
+
+    it('does not queue local foreground send behind an active project tab send', async () => {
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: '',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'local done',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('project keeps running', { project_path: 'D:/tasks/weather' });
+            await Promise.resolve();
+        });
+        expect(SendAIAssistantMessage).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            void result.current.sendMessage('local should enter agent');
+            await Promise.resolve();
+        });
+
+        expect(SendAIAssistantMessage).toHaveBeenCalledTimes(2);
+        expect((SendAIAssistantMessage as any).mock.calls[0][0]).toEqual(expect.objectContaining({
+            text: 'project keeps running',
+            project_path: 'D:/tasks/weather',
+        }));
+        expect((SendAIAssistantMessage as any).mock.calls[1][0]).toEqual(expect.objectContaining({
+            text: 'local should enter agent',
+        }));
+        expect((SendAIAssistantMessage as any).mock.calls[1][0]).not.toHaveProperty('project_path');
+        expect(messageContents(result.current.messages)).toContain('local done');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                text: 'project later',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: parseSentRequest(0).request_id || '',
+            });
+        });
+        expect(messageContents(result.current.messages)).toContain('project later');
+    });
+
+    it('keeps detached project progress scoped when progress has only session key', async () => {
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: '',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'local done',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('project keeps running', { project_path: 'D:/tasks/weather' });
+            await Promise.resolve();
+        });
+
+        await act(async () => {
+            void result.current.sendMessage('local should enter agent');
+            await Promise.resolve();
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', {
+                session_key: 'desktop-user:D:/tasks/weather',
+                text: 'project tool still running',
+            });
+        });
+
+        expect(result.current.progressMessages).toEqual([]);
+
+        await act(async () => {
+            setActiveSessionKey('desktop-user:D:/tasks/weather');
+            await Promise.resolve();
+        });
+
+        expect(result.current.progressMessages).toHaveLength(1);
+        expect(result.current.progressMessages[0].content).toBe('project tool still running');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                text: 'project later',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: parseSentRequest(0).request_id || '',
+            });
+        });
+    });
+
+    it('reports the session key that currently owns foreground busy state', async () => {
+        (SendAIAssistantMessage as any).mockImplementationOnce(async (req: { request_id?: string }) => ({
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            request_id: req.request_id || '',
+            deferred: true,
+        }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('project owns busy state', { project_path: 'D:/tasks/busy-owner' });
+            await Promise.resolve();
+        });
+
+        expect(result.current.sending).toBe(true);
+        expect(result.current.sendingSessionKey).toBe('desktop-user:D:/tasks/busy-owner');
+        expect(result.current.busySessionKeys).toContain('desktop-user:D:/tasks/busy-owner');
+        expect(result.current.panelState.sendingSessionKey).toBe('desktop-user:D:/tasks/busy-owner');
+        expect(result.current.panelState.busySessionKeys).toContain('desktop-user:D:/tasks/busy-owner');
+    });
+
+    it('uses explicit project recent messages instead of local assistant history', async () => {
+        localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify([
+            { id: 'local-user', role: 'user', content: '南京天气', timestamp: 1 },
+            { id: 'local-assistant', role: 'assistant', content: '南京本地天气结果', timestamp: 2 },
+        ]));
+        (SendAIAssistantMessage as any).mockImplementationOnce(async (req: { request_id?: string }) => ({
+            text: 'project reply',
+            error: '',
+            fields: null,
+            actions: null,
+            request_id: req.request_id || '',
+        }));
+
+        const { result } = renderAssistantHook({ activeSessionKey: 'desktop-user:D:/tasks/beijing-weather' });
+
+        await act(async () => {
+            await result.current.sendMessage('成都天气', {
+                project_path: 'D:/tasks/beijing-weather',
+                recentMessages: [
+                    { role: 'user', content: '北京天气' },
+                    { role: 'assistant', content: '北京天气旧结果' },
+                ],
+            } as any);
+        });
+
+        const request = parseSentRequest(0) as any;
+        expect(request.project_path).toBe('D:/tasks/beijing-weather');
+        expect(request.recent_messages?.map((m: any) => m.content)).toEqual(['北京天气', '北京天气旧结果']);
+        expect(request.recent_messages?.map((m: any) => m.content)).not.toContain('南京本地天气结果');
+    });
+
+    it('does not send completed project messages as local recent context', async () => {
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'project answer should stay project scoped',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'local answer',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('project question', { project_path: 'D:/tasks/context-isolated', tabId: 'proj-context-isolated' } as any);
+        });
+        await act(async () => {
+            await result.current.sendMessage('local question');
+        });
+
+        const localRequest = parseSentRequest(1) as any;
+        const localContext = (localRequest.recent_messages || []).map((message: any) => message.content);
+        expect(localContext).not.toContain('project question');
+        expect(localContext).not.toContain('project answer should stay project scoped');
+    });
+
+    it('keeps detached project stream tokens after local foreground send takes over', async () => {
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: '',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'local answer',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('project streams later', { project_path: 'D:/tasks/weather' });
+            await Promise.resolve();
+        });
+        const projectReq = parseSentRequest(0);
+
+        await act(async () => {
+            void result.current.sendMessage('local takes over');
+            await Promise.resolve();
+        });
+        expect(messageContents(result.current.messages)).toContain('local answer');
+        expect(result.current.sending).toBe(true);
+        expect(result.current.busySessionKeys).toContain('desktop-user:D:/tasks/weather');
+        expect(result.current.busySessionKeys).not.toContain('desktop-user');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: projectReq.request_id || '', session_key: 'desktop-user:D:/tasks/weather', text: 'detached token' });
+        });
+        expect(result.current.streaming).toBe(true);
+        expect(result.current.streamingSessionKeys).toContain('desktop-user:D:/tasks/weather');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                text: '',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: projectReq.request_id || '',
+            });
+        });
+
+        expect(messageContents(result.current.messages)).toContain('detached token');
+    });
+
+    it('recreates a missing project assistant placeholder before applying the terminal response', async () => {
+        (SendAIAssistantMessage as any).mockImplementationOnce(async (req: { request_id?: string }) => ({
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            request_id: req.request_id || '',
+            deferred: true,
+        }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('project placeholder can disappear', { project_path: 'D:/tasks/missing-placeholder' });
+            await Promise.resolve();
+        });
+        const projectReq = parseSentRequest(0);
+
+        await act(async () => {
+            result.current.messages.splice(1, 1);
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: projectReq.request_id || '',
+                session_key: 'desktop-user:D:/tasks/missing-placeholder',
+                text: 'project terminal survives missing placeholder',
+                error: '',
+                fields: null,
+                actions: null,
+            });
+        });
+
+        expect(messageContents(result.current.messages)).toContain('project terminal survives missing placeholder');
+        expect(result.current.messages.find(m => m.content === 'project terminal survives missing placeholder')?.sessionKey).toBe('desktop-user:D:/tasks/missing-placeholder');
+        expect(result.current.busySessionKeys).not.toContain('desktop-user:D:/tasks/missing-placeholder');
+    });
+
+    it('cancelSession cancels detached project round after local foreground send completes', async () => {
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: '',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'local finished',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            }));
+        (CancelAIAssistantSessionForSession as any).mockResolvedValueOnce('');
+
+        const { result } = renderHook(() => useAIAssistant({ activeSessionKey: 'desktop-user:D:/tasks/weather' }));
+
+        await act(async () => {
+            void result.current.sendMessage('project to cancel', { project_path: 'D:/tasks/weather' });
+            await Promise.resolve();
+        });
+        const projectReq = parseSentRequest(0);
+
+        await act(async () => {
+            void result.current.sendMessage('local finishes first');
+            await Promise.resolve();
+        });
+        expect(messageContents(result.current.messages)).toContain('local finished');
+
+        await act(async () => {
+            await result.current.cancelSession();
+        });
+
+        expect(CancelAIAssistantSessionForSession).toHaveBeenCalledWith('desktop-user:D:/tasks/weather');
+        expect(CancelAIAssistantSession).not.toHaveBeenCalled();
+        expect(messageContents(result.current.messages).join('\n')).toContain(CANCELED_BY_USER_LINE);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                text: 'stale project after cancel',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: projectReq.request_id || '',
+            });
+        });
+        expect(messageContents(result.current.messages)).not.toContain('stale project after cancel');
+    });
+
+    it('removes reassigned synchronous request from detached round tracking', async () => {
+        (SendAIAssistantMessage as any).mockImplementationOnce(async () => ({
+            text: 'sync done',
+            error: '',
+            fields: null,
+            actions: null,
+            request_id: 'backend-reassigned-request',
+        }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('sync reassigned id');
+        });
+        expect(messageContents(result.current.messages)).toContain('sync done');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                text: 'late duplicate should not land',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: 'backend-reassigned-request',
+            });
+        });
+
+        expect(messageContents(result.current.messages)).not.toContain('late duplicate should not land');
+    });
+
+    it('keeps deferred reassigned project requests isolated under the backend request id', async () => {
+        (SendAIAssistantMessage as any).mockImplementationOnce(async () => ({
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            request_id: 'backend-deferred-project-request',
+            deferred: true,
+        }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('project deferred reassigned', { project_path: 'D:/tasks/reassigned-project' });
+            await Promise.resolve();
+        });
+        expect(result.current.busySessionKeys).toContain('desktop-user:D:/tasks/reassigned-project');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', {
+                request_id: 'backend-deferred-project-request',
+                session_key: 'desktop-user:D:/tasks/reassigned-project',
+                text: 'project token ',
+            });
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: 'backend-deferred-project-request',
+                text: 'project final',
+                error: '',
+                fields: null,
+                actions: null,
+            });
+        });
+
+        expect(messageContents(result.current.messages)).toContain('project final');
+        expect(result.current.busySessionKeys).not.toContain('desktop-user:D:/tasks/reassigned-project');
+    });
+
+    it('serializes sends within the same project session until the deferred round finishes', async () => {
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: '',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'second project answer',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('project first', { project_path: 'D:/tasks/same-session' });
+            await Promise.resolve();
+        });
+        const firstReq = parseSentRequest(0);
+
+        await act(async () => {
+            void result.current.sendMessage('project second', { project_path: 'D:/tasks/same-session' });
+            await Promise.resolve();
+        });
+        expect((SendAIAssistantMessage as any).mock.calls).toHaveLength(1);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: firstReq.request_id || '',
+                text: 'first project answer',
+                error: '',
+                fields: null,
+                actions: null,
+            });
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            expect((SendAIAssistantMessage as any).mock.calls).toHaveLength(2);
+        });
+        expect(parseSentRequest(1).text).toBe('project second');
+    });
+
+    it('forgets detached project rounds when the project tab closes', async () => {
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: '',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'local done',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('project tab will close', { project_path: 'D:/tasks/close-me' });
+            await Promise.resolve();
+        });
+        const projectReq = parseSentRequest(0);
+
+        await act(async () => {
+            void result.current.sendMessage('local done first');
+            await Promise.resolve();
+        });
+        expect(messageContents(result.current.messages)).toContain('local done');
+
+        act(() => {
+            forgetAIAssistantSessionRounds('desktop-user:D:/tasks/close-me');
+        });
+        await waitFor(() => {
+            expect(result.current.busySessionKeys).not.toContain('desktop-user:D:/tasks/close-me');
+            expect(result.current.sending).toBe(false);
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                text: 'stale closed project reply',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: projectReq.request_id || '',
+            });
+        });
+
+        expect(messageContents(result.current.messages)).not.toContain('stale closed project reply');
+    });
+
+    it('clears a detached pending project task when its remote session exits', async () => {
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'project remote still running',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+                run_id: 'run-detached-exit',
+                job_id: 'job-detached-exit',
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'local done after detached pending',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            }));
+        (ListRemoteSessions as any)
+            .mockResolvedValueOnce([
+                { id: 'sess-detached-exit', launch_source: 'ai', status: 'busy', run_id: 'run-detached-exit', job_id: 'job-detached-exit' },
+            ])
+            .mockResolvedValueOnce([
+                { id: 'sess-detached-exit', launch_source: 'ai', status: 'busy', run_id: 'run-detached-exit', job_id: 'job-detached-exit' },
+            ])
+            .mockResolvedValueOnce([
+                { id: 'sess-detached-exit', launch_source: 'ai', status: 'exited', run_id: 'run-detached-exit', job_id: 'job-detached-exit' },
+            ]);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('project pending exits later', { project_path: 'D:/tasks/detached-exit' });
+            await Promise.resolve();
+        });
+        const projectReq = parseSentRequest(0);
+
+        await act(async () => {
+            void result.current.sendMessage('local takes active round');
+            await Promise.resolve();
+        });
+        expect(messageContents(result.current.messages)).toContain('local done after detached pending');
+        expect(result.current.busySessionKeys).toContain('desktop-user:D:/tasks/detached-exit');
+
+        await act(async () => {
+            emitRuntimeEvent('remote-state-changed');
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            expect(result.current.busySessionKeys).not.toContain('desktop-user:D:/tasks/detached-exit');
+            expect(result.current.sending).toBe(false);
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                text: 'stale detached exited reply',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: projectReq.request_id || '',
+            });
+        });
+        expect(messageContents(result.current.messages)).not.toContain('stale detached exited reply');
+    });
+
+    it('tracks multiple detached pending project tasks independently', async () => {
+        let sessions: any[] = [
+            { id: 'sess-pending-a', launch_source: 'ai', status: 'busy', run_id: 'run-pending-a', job_id: 'job-pending-a' },
+            { id: 'sess-pending-b', launch_source: 'ai', status: 'busy', run_id: 'run-pending-b', job_id: 'job-pending-b' },
+        ];
+        (ListRemoteSessions as any).mockImplementation(async () => sessions);
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'project a pending',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+                run_id: 'run-pending-a',
+                job_id: 'job-pending-a',
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'project b pending',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+                run_id: 'run-pending-b',
+                job_id: 'job-pending-b',
+            }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('project a pending', { project_path: 'D:/tasks/pending-a' });
+            await Promise.resolve();
+        });
+        await act(async () => {
+            void result.current.sendMessage('project b pending', { project_path: 'D:/tasks/pending-b' });
+            await Promise.resolve();
+        });
+
+        expect(result.current.busySessionKeys).toEqual(expect.arrayContaining([
+            'desktop-user:D:/tasks/pending-a',
+            'desktop-user:D:/tasks/pending-b',
+        ]));
+
+        sessions = [
+            { id: 'sess-pending-b', launch_source: 'ai', status: 'busy', run_id: 'run-pending-b', job_id: 'job-pending-b' },
+        ];
+        await act(async () => {
+            emitRuntimeEvent('remote-state-changed');
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            expect(result.current.busySessionKeys).not.toContain('desktop-user:D:/tasks/pending-a');
+            expect(result.current.busySessionKeys).toContain('desktop-user:D:/tasks/pending-b');
+            expect(result.current.sending).toBe(true);
+        });
+
+        sessions = [];
+        await act(async () => {
+            emitRuntimeEvent('remote-state-changed');
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            expect(result.current.busySessionKeys).not.toContain('desktop-user:D:/tasks/pending-b');
+            expect(result.current.sending).toBe(false);
+        });
+    });
+
+    it('unblocks a session queue when that session finishes even if another project is still pending', async () => {
+        let sessions: any[] = [
+            { id: 'sess-local', launch_source: 'ai', status: 'busy', run_id: 'run-local', job_id: 'job-local' },
+            { id: 'sess-project', launch_source: 'ai', status: 'busy', run_id: 'run-project', job_id: 'job-project' },
+        ];
+        (ListRemoteSessions as any).mockImplementation(async () => sessions);
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'local pending',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+                run_id: 'run-local',
+                job_id: 'job-local',
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'project pending',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                deferred: true,
+                run_id: 'run-project',
+                job_id: 'job-project',
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'local second done',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('local first');
+            await Promise.resolve();
+        });
+        await act(async () => {
+            void result.current.sendMessage('project pending', { project_path: 'D:/tasks/still-running' });
+            await Promise.resolve();
+        });
+
+        const localReq = parseSentRequest(0);
+        expect(result.current.busySessionKeys).toEqual(expect.arrayContaining([
+            'desktop-user',
+            'desktop-user:D:/tasks/still-running',
+        ]));
+
+        await act(async () => {
+            void result.current.sendMessage('local second');
+            await Promise.resolve();
+        });
+        expect((SendAIAssistantMessage as any).mock.calls).toHaveLength(2);
+
+        sessions = [
+            { id: 'sess-project', launch_source: 'ai', status: 'busy', run_id: 'run-project', job_id: 'job-project' },
+        ];
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                text: 'local first done',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: localReq.request_id || '',
+                session_key: 'desktop-user',
+            });
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            expect((SendAIAssistantMessage as any).mock.calls).toHaveLength(3);
+        });
+        expect(parseSentRequest(2).text).toBe('local second');
+        expect(result.current.busySessionKeys).toContain('desktop-user:D:/tasks/still-running');
+    });
+
+    it('does not let project clear_ui responses wipe local desktop history', async () => {
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'local seed answer',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            }))
+            .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                text: 'project reset done',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                clear_ui: true,
+            }));
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('local seed');
+        });
+        await act(async () => {
+            await result.current.sendMessage('/reset', { project_path: 'D:/tasks/reset-project' });
+        });
+
+        expect(messageContents(result.current.messages)).toContain('local seed');
+        expect(messageContents(result.current.messages)).toContain('local seed answer');
+        expect(messageContents(result.current.messages)).toContain('project reset done');
     });
 
     it('Property 10: assistant reply is populated after progress messages', async () => {

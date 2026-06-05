@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..');
+const selfTestConfigPersistence = process.argv.includes('--self-test-config-persistence') || process.argv.includes('--self-test-saveconfig');
 const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
 const exists = (rel) => fs.existsSync(path.join(repoRoot, rel));
 const failures = [];
@@ -28,6 +29,349 @@ const requireOrder = (rel, before, after, label) => {
   const afterIndex = text.indexOf(after);
   if (beforeIndex === -1 || afterIndex === -1 || beforeIndex > afterIndex) failures.push(`${rel} has wrong order for ${label}`);
 };
+const walkFiles = (dir, out = []) => {
+  for (const entry of fs.readdirSync(path.join(repoRoot, dir), { withFileTypes: true })) {
+    const rel = path.join(dir, entry.name).replace(/\\/g, '/');
+    if (entry.isDirectory()) {
+      if (rel === 'gui/frontend/dist' || rel === 'gui/frontend/node_modules') continue;
+      walkFiles(rel, out);
+    }
+    else out.push(rel);
+  }
+  return out;
+};
+const saveConfigAllowedSnippets = [
+  ['gui/app.go', 'func (a *App) SaveConfig(config corelib.AppConfig) error', 'SaveConfig implementation'],
+  ['gui/config_manager.go', 'm.app.SaveConfig(mergedCfg)', 'config import owns a full merged config snapshot'],
+  ['gui/frontend/src/App.tsx', 'SaveConfig(sanitizedConfig)', 'main model settings save owns a full sanitized config snapshot'],
+  ['gui/frontend/wailsjs/go/main/App.d.ts', 'export function SaveConfig', 'generated Wails binding declaration'],
+  ['gui/frontend/wailsjs/go/main/App.js', 'export function SaveConfig', 'generated Wails binding implementation'],
+  ['gui/frontend/wailsjs/go/main/App.js', "window['go']['main']['App']['SaveConfig'](arg1)", 'generated Wails binding forwards to backend SaveConfig'],
+  ['gui/frontend/src/components/remote/useRemotePanel.ts', 'SaveConfig({ ...config, field: value })', 'comment documenting the stale snapshot bug pattern'],
+  ['gui/tui_mode.go', 'a.app.SaveConfig(cfg)', 'TUI HasConfig path carries a full config snapshot'],
+];
+const saveConfigCallPatterns = [
+  /SaveConfig\s*\(/,
+  /SaveConfig\s*\?\.\s*\(/,
+  /\.SaveConfig\s*\(/,
+  /\.SaveConfig\s*\?\.\s*\(/,
+  /\[['"]SaveConfig['"]\]\s*\(/,
+  /\[['"]SaveConfig['"]\]\s*\?\.\s*\(/,
+];
+const patchConfigFieldsCallPattern = /\bPatchConfigFields\s*(?:\?\.)?\s*\(/;
+const saveConfigAliasPatterns = [
+  /\b(?:const|let|var)\s+\w+\s*=\s*SaveConfig\b/,
+  /\b(?:const|let|var)\s+\w+\s*=\s*[\w.]+\.SaveConfig\b/,
+  /\b(?:const|let|var)\s+\w+\s*=\s*[^;\n]*\[['"]SaveConfig['"]\]/,
+  /\{[^}]*\bSaveConfig\s*:\s*\w+\b/,
+  /\{[^}]*\bSaveConfig\b[^}]*\}\s*=\s*\w+/,
+  /\bSaveConfig\s+as\s+\w+\b/,
+  /\b[A-Za-z]\w*\s*(?::=|=)\s*\w+\.SaveConfig\b/,
+];
+const collectSaveConfigAllowlistFailures = (files, readFile, allowedEntries = saveConfigAllowedSnippets) => {
+  const allowed = [
+    ...allowedEntries,
+  ];
+  const fileSet = new Set(files);
+  const allowedByFile = new Map();
+  const found = [];
+  for (const [rel, snippet, reason] of allowed) {
+    if (!reason || reason.trim().length < 12) {
+      found.push(`${rel} SaveConfig allowlist entry for ${JSON.stringify(snippet)} needs a clear reason`);
+      continue;
+    }
+    if (!fileSet.has(rel)) {
+      found.push(`${rel} SaveConfig allowlist entry for ${JSON.stringify(snippet)} points to a missing scanned file`);
+      continue;
+    }
+    if (!readFile(rel).includes(snippet)) {
+      found.push(`${rel} SaveConfig allowlist entry for ${JSON.stringify(snippet)} no longer matches current code`);
+      continue;
+    }
+    if (!allowedByFile.has(rel)) allowedByFile.set(rel, []);
+    allowedByFile.get(rel).push(snippet);
+  }
+  for (const rel of files) {
+    if (!/\.(go|js|ts|tsx|d\.ts)$/.test(rel) || /_test\.go$|\.test\.tsx$|\.test\.ts$|\.test\.js$/.test(rel)) continue;
+    const text = readFile(rel);
+    const hasSaveConfigCall = saveConfigCallPatterns.some((pattern) => pattern.test(text));
+    const hasSaveConfigAlias = saveConfigAliasPatterns.some((pattern) => pattern.test(text));
+    if (!hasSaveConfigCall && !hasSaveConfigAlias) continue;
+    const snippets = allowedByFile.get(rel) || [];
+    text.split(/\r?\n/).forEach((line, index) => {
+      if (saveConfigCallPatterns.some((pattern) => pattern.test(line)) && !snippets.some((snippet) => line.includes(snippet))) {
+        found.push(`${rel}:${index + 1} has unallowlisted SaveConfig usage; use PatchConfig/PatchConfigFields for partial saves`);
+      }
+      if (saveConfigAliasPatterns.some((pattern) => pattern.test(line)) && !snippets.some((snippet) => line.includes(snippet))) {
+        found.push(`${rel}:${index + 1} aliases SaveConfig; call PatchConfig/PatchConfigFields directly for partial saves`);
+      }
+    });
+  }
+  return found;
+};
+const requireSaveConfigAllowlist = () => {
+  failures.push(...collectSaveConfigAllowlistFailures(walkFiles('gui'), read));
+};
+
+const findMatchingBrace = (text, openIndex) => {
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  for (let i = openIndex; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+};
+const patchConfigFieldsFunctionBody = (text) => {
+  const start = text.indexOf('func (a *App) PatchConfigFields');
+  if (start === -1) return '';
+  const signatureEnd = text.indexOf('\n', start);
+  const open = text.lastIndexOf('{', signatureEnd === -1 ? text.length : signatureEnd);
+  if (open === -1) return '';
+  const close = findMatchingBrace(text, open);
+  return close === -1 ? '' : text.slice(open + 1, close);
+};
+const supportedPatchConfigFields = (readFile) => {
+  const body = patchConfigFieldsFunctionBody(readFile('gui/app.go'));
+  return new Set(Array.from(body.matchAll(/case\s+"([^"]+)"\s*:/g), (match) => match[1]));
+};
+const extractPatchConfigFieldKeys = (text, startIndex) => {
+  const callOpen = text.indexOf('(', startIndex);
+  if (callOpen === -1) return [];
+  let cursor = callOpen + 1;
+  while (/\s/.test(text[cursor] || '')) cursor += 1;
+  if (text.startsWith('map[string]interface{}', cursor)) {
+    cursor += 'map[string]interface{}'.length;
+  }
+  while (/\s/.test(text[cursor] || '')) cursor += 1;
+  if (text[cursor] !== '{') return [];
+  const close = findMatchingBrace(text, cursor);
+  if (close === -1) return [];
+  const body = text.slice(cursor + 1, close);
+  const keys = [];
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  let segmentStart = 0;
+  const pushSegment = (segment) => {
+    const match = segment.match(/^\s*(?:["']([^"']+)["']|([A-Za-z_]\w*))\s*:/);
+    if (match) keys.push(match[1] || match[2]);
+  };
+  for (let i = 0; i <= body.length; i += 1) {
+    const ch = body[i] || ',';
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '{' || ch === '[' || ch === '(') depth += 1;
+    else if (ch === '}' || ch === ']' || ch === ')') depth -= 1;
+    else if (ch === ',' && depth === 0) {
+      pushSegment(body.slice(segmentStart, i));
+      segmentStart = i + 1;
+    }
+  }
+  return keys;
+};
+const collectPatchConfigFieldFailures = (files, readFile) => {
+  const supported = supportedPatchConfigFields(readFile);
+  const found = [];
+  if (supported.size === 0) {
+    return ['gui/app.go PatchConfigFields has no discoverable supported field cases'];
+  }
+  for (const rel of files) {
+    if (!/\.(go|js|ts|tsx)$/.test(rel) || /_test\.go$|\.test\.tsx$|\.test\.ts$|\.test\.js$/.test(rel)) continue;
+    const text = readFile(rel);
+    let index = -1;
+    while ((index = text.indexOf('PatchConfigFields', index + 1)) !== -1) {
+      const keys = extractPatchConfigFieldKeys(text, index);
+      for (const key of keys) {
+        if (!supported.has(key)) {
+          const line = text.slice(0, index).split(/\r?\n/).length;
+          found.push(`${rel}:${line} patches unsupported config field ${JSON.stringify(key)}; add it to App.PatchConfigFields or fix the key`);
+        }
+      }
+    }
+  }
+  return found;
+};
+const requirePatchConfigFieldsSupported = () => {
+  failures.push(...collectPatchConfigFieldFailures(walkFiles('gui'), read));
+};
+
+const patchConfigFieldsDynamicAllowedSnippets = [
+  ['gui/app_proxy.go', 'a.PatchConfigFields(patch)', 'proxy setter builds a closed patch map from validated proxy option keys'],
+  ['gui/frontend/src/App.tsx', 'patchConfig={(patch) => callBackend(() => PatchConfigFields(patch))}', 'pet settings component owns a typed patch prop constrained by PetSettingsPanel fields'],
+  ['gui/frontend/src/components/remote/useRemotePanel.ts', 'PatchConfigFields(patch).then((saved)', 'remote panel saveConfigPatch helper receives patches built by local typed setters'],
+  ['gui/frontend/src/components/remote/useRemotePanel.ts', 'PatchConfigFields(patchWithLaunchMode as Record<string, any>)', 'remote quick-start augments a locally built patch with default_launch_mode'],
+  ['gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 'PatchConfigFields(patch)).catch((err)', 'general settings helper receives patches from same-file controls only'],
+  ['gui/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'PatchConfigFields(patch).then((saved)', 'advanced settings helper receives patches from same-file controls only'],
+  ['gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'PatchConfigFields(patch).then((saved)', 'programming tools helper receives patches from same-file controls only'],
+];
+const collectDynamicPatchConfigFieldFailures = (files, readFile, allowedEntries = patchConfigFieldsDynamicAllowedSnippets) => {
+  const fileSet = new Set(files);
+  const allowedByFile = new Map();
+  const found = [];
+  for (const [rel, snippet, reason] of allowedEntries) {
+    if (!reason || reason.trim().length < 12) {
+      found.push(`${rel} PatchConfigFields dynamic allowlist entry for ${JSON.stringify(snippet)} needs a clear reason`);
+      continue;
+    }
+    if (!fileSet.has(rel)) {
+      found.push(`${rel} PatchConfigFields dynamic allowlist entry for ${JSON.stringify(snippet)} points to a missing scanned file`);
+      continue;
+    }
+    if (!readFile(rel).includes(snippet)) {
+      found.push(`${rel} PatchConfigFields dynamic allowlist entry for ${JSON.stringify(snippet)} no longer matches current code`);
+      continue;
+    }
+    if (!allowedByFile.has(rel)) allowedByFile.set(rel, []);
+    allowedByFile.get(rel).push(snippet);
+  }
+  for (const rel of files) {
+    if (!/\.(go|js|ts|tsx)$/.test(rel) || /_test\.go$|\.test\.tsx$|\.test\.ts$|\.test\.js$/.test(rel)) continue;
+    if (rel.startsWith('gui/frontend/wailsjs/')) continue;
+    const text = readFile(rel);
+    const snippets = allowedByFile.get(rel) || [];
+    let index = -1;
+    while ((index = text.indexOf('PatchConfigFields', index + 1)) !== -1) {
+      const lineStart = text.lastIndexOf('\n', index) + 1;
+      const lineEnd = text.indexOf('\n', index);
+      const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+      if (!patchConfigFieldsCallPattern.test(line)) continue;
+      if (line.includes('func (a *App) PatchConfigFields')) continue;
+      if (/\bPatchConfigFields\s*(?:\?\.)?\s*\(\s*[A-Za-z_$]\w*\s*:\s*[^)]*\)\s*(?::|;)/.test(line)) continue;
+      const keys = extractPatchConfigFieldKeys(text, index);
+      if (keys.length > 0) continue;
+      if (snippets.some((snippet) => line.includes(snippet))) continue;
+      const lineNo = text.slice(0, index).split(/\r?\n/).length;
+      found.push(`${rel}:${lineNo} has dynamic PatchConfigFields patch; use an object literal or add a reasoned allowlist entry`);
+    }
+  }
+  return found;
+};
+const requireDynamicPatchConfigFieldsAllowlist = () => {
+  failures.push(...collectDynamicPatchConfigFieldFailures(walkFiles('gui'), read));
+};
+
+if (selfTestConfigPersistence) {
+  const files = ['gui/app.go', 'gui/new_partial_save.go', 'gui/spaced_partial_save.go', 'gui/optional_partial.go', 'gui/aliased_partial_save.go', 'gui/frontend/src/aliased.ts', 'gui/frontend/src/generated_partial.js', 'gui/frontend/src/optional_partial.ts', 'gui/frontend/src/dot_alias.ts', 'gui/frontend/src/destructure_plain_alias.ts', 'gui/frontend/src/bracket_partial.js', 'gui/frontend/src/bracket_optional_partial.js', 'gui/frontend/src/bracket_alias.js', 'gui/frontend/src/deep_bracket_alias.js', 'gui/frontend/src/destructure_alias.ts'];
+  const contents = {
+    'gui/app.go': 'func (a *App) SaveConfig(config corelib.AppConfig) error { return nil }',
+    'gui/new_partial_save.go': 'func bad(a *App, cfg corelib.AppConfig) { _ = a.SaveConfig(cfg) }',
+    'gui/spaced_partial_save.go': 'func bad(a *App, cfg corelib.AppConfig) { _ = a.SaveConfig (cfg) }',
+    'gui/optional_partial.go': 'func bad(a *App, cfg corelib.AppConfig) { _ = a.SaveConfig?.(cfg) }',
+    'gui/aliased_partial_save.go': 'func bad(a *App) { save := a.SaveConfig; _ = save }',
+    'gui/frontend/src/aliased.ts': 'import { SaveConfig as saveConfig } from "../wailsjs/go/main/App";',
+    'gui/frontend/src/generated_partial.js': 'export function bad(cfg) { return SaveConfig(cfg); }',
+    'gui/frontend/src/optional_partial.ts': 'export function bad(cfg: any) { return SaveConfig?.(cfg); }',
+    'gui/frontend/src/dot_alias.ts': 'const save = app.SaveConfig; export function bad(cfg: any) { return save(cfg); }',
+    'gui/frontend/src/destructure_plain_alias.ts': 'const { SaveConfig } = app; export function bad(cfg: any) { return SaveConfig; }',
+    'gui/frontend/src/bracket_partial.js': 'export function bad(app, cfg) { return app["SaveConfig"](cfg); }',
+    'gui/frontend/src/bracket_optional_partial.js': 'export function bad(app, cfg) { return app["SaveConfig"]?.(cfg); }',
+    'gui/frontend/src/bracket_alias.js': 'const save = app["SaveConfig"]; export function bad(cfg) { return save(cfg); }',
+    'gui/frontend/src/deep_bracket_alias.js': 'const save = window["go"]["main"]["App"]["SaveConfig"]; export function bad(cfg) { return save(cfg); }',
+    'gui/frontend/src/destructure_alias.ts': 'const { SaveConfig: save } = app; export function bad(cfg: any) { return save(cfg); }',
+  };
+  const result = collectSaveConfigAllowlistFailures(
+    files,
+    (rel) => contents[rel] || '',
+    [['gui/app.go', 'func (a *App) SaveConfig(config corelib.AppConfig) error', 'SaveConfig implementation used by self-test']]
+  );
+  if (result.length !== 14 || !result.some((item) => item.includes('gui/new_partial_save.go:1')) || !result.some((item) => item.includes('gui/spaced_partial_save.go:1')) || !result.some((item) => item.includes('gui/optional_partial.go:1')) || !result.some((item) => item.includes('gui/aliased_partial_save.go:1')) || !result.some((item) => item.includes('gui/frontend/src/aliased.ts:1')) || !result.some((item) => item.includes('gui/frontend/src/generated_partial.js:1')) || !result.some((item) => item.includes('gui/frontend/src/optional_partial.ts:1')) || !result.some((item) => item.includes('gui/frontend/src/dot_alias.ts:1')) || !result.some((item) => item.includes('gui/frontend/src/destructure_plain_alias.ts:1')) || !result.some((item) => item.includes('gui/frontend/src/bracket_partial.js:1')) || !result.some((item) => item.includes('gui/frontend/src/bracket_optional_partial.js:1')) || !result.some((item) => item.includes('gui/frontend/src/bracket_alias.js:1')) || !result.some((item) => item.includes('gui/frontend/src/deep_bracket_alias.js:1')) || !result.some((item) => item.includes('gui/frontend/src/destructure_alias.ts:1'))) {
+    console.error('SaveConfig allowlist self-test failed:', result);
+    process.exit(1);
+  }
+  const missingReason = collectSaveConfigAllowlistFailures(
+    ['gui/app.go'],
+    (rel) => contents[rel] || '',
+    [['gui/app.go', 'func (a *App) SaveConfig(config corelib.AppConfig) error', '']]
+  );
+  if (!missingReason.some((item) => item.includes('needs a clear reason'))) {
+    console.error('SaveConfig allowlist reason self-test failed:', missingReason);
+    process.exit(1);
+  }
+  const staleEntry = collectSaveConfigAllowlistFailures(
+    ['gui/app.go'],
+    (rel) => contents[rel] || '',
+    [['gui/app.go', 'not present SaveConfig snippet', 'stale allowlist entries must fail clearly']]
+  );
+  if (!staleEntry.some((item) => item.includes('no longer matches current code'))) {
+    console.error('SaveConfig allowlist stale-entry self-test failed:', staleEntry);
+    process.exit(1);
+  }
+  const patchFieldFiles = ['gui/app.go', 'gui/frontend/src/good_patch.ts', 'gui/frontend/src/bad_patch.ts', 'gui/good_patch.go', 'gui/bad_patch.go'];
+  const patchFieldContents = {
+    'gui/app.go': 'func (a *App) PatchConfigFields(patch map[string]interface{}) { switch key { case "remote_email": case "projects": } }',
+    'gui/frontend/src/good_patch.ts': 'PatchConfigFields({ remote_email: email, projects: list });',
+    'gui/frontend/src/bad_patch.ts': 'PatchConfigFields({ remote_mail: email });',
+    'gui/good_patch.go': 'func good() { PatchConfigFields(map[string]interface{}{"remote_email": email}) }',
+    'gui/bad_patch.go': 'func bad() { PatchConfigFields(map[string]interface{}{"remote_mail": email}) }',
+  };
+  const patchFieldResult = collectPatchConfigFieldFailures(patchFieldFiles, (rel) => patchFieldContents[rel] || '');
+  if (patchFieldResult.length !== 2 || !patchFieldResult.some((item) => item.includes('gui/frontend/src/bad_patch.ts:1')) || !patchFieldResult.some((item) => item.includes('gui/bad_patch.go:1'))) {
+    console.error('PatchConfigFields supported-field self-test failed:', patchFieldResult);
+    process.exit(1);
+  }
+  const dynamicPatchFiles = ['gui/app.go', 'gui/frontend/src/good_dynamic.ts', 'gui/frontend/src/bad_dynamic.ts', 'gui/frontend/src/optional_bad_dynamic.ts', 'gui/frontend/src/computed_key_patch.ts', 'gui/frontend/src/type_signature.ts'];
+  const dynamicPatchContents = {
+    'gui/app.go': 'func (a *App) PatchConfigFields(patch map[string]interface{}) { switch key { case "remote_email": } }',
+    'gui/frontend/src/good_dynamic.ts': 'function save(patch: Record<string, any>) { return PatchConfigFields(patch); }',
+    'gui/frontend/src/bad_dynamic.ts': 'function save(patch: Record<string, any>) { return PatchConfigFields(patch); }',
+    'gui/frontend/src/optional_bad_dynamic.ts': 'function save(patch: Record<string, any>) { return PatchConfigFields?.(patch); }',
+    'gui/frontend/src/computed_key_patch.ts': 'function save(key: string, value: boolean) { return PatchConfigFields({ [key]: value }); }',
+    'gui/frontend/src/type_signature.ts': 'type API = { PatchConfigFields(patch: Record<string, unknown>): Promise<unknown>; };',
+  };
+  const dynamicPatchResult = collectDynamicPatchConfigFieldFailures(
+    dynamicPatchFiles,
+    (rel) => dynamicPatchContents[rel] || '',
+    [['gui/frontend/src/good_dynamic.ts', 'PatchConfigFields(patch)', 'self-test allowlisted local dynamic patch helper']]
+  );
+  if (dynamicPatchResult.length !== 3 || !dynamicPatchResult.some((item) => item.includes('gui/frontend/src/bad_dynamic.ts:1')) || !dynamicPatchResult.some((item) => item.includes('gui/frontend/src/optional_bad_dynamic.ts:1')) || !dynamicPatchResult.some((item) => item.includes('gui/frontend/src/computed_key_patch.ts:1'))) {
+    console.error('PatchConfigFields dynamic-patch self-test failed:', dynamicPatchResult);
+    process.exit(1);
+  }
+  const dynamicPatchMissingReason = collectDynamicPatchConfigFieldFailures(
+    dynamicPatchFiles,
+    (rel) => dynamicPatchContents[rel] || '',
+    [['gui/frontend/src/good_dynamic.ts', 'PatchConfigFields(patch)', '']]
+  );
+  if (!dynamicPatchMissingReason.some((item) => item.includes('needs a clear reason'))) {
+    console.error('PatchConfigFields dynamic-patch reason self-test failed:', dynamicPatchMissingReason);
+    process.exit(1);
+  }
+  const dynamicPatchStaleEntry = collectDynamicPatchConfigFieldFailures(
+    dynamicPatchFiles,
+    (rel) => dynamicPatchContents[rel] || '',
+    [['gui/frontend/src/good_dynamic.ts', 'PatchConfigFields(missingPatch)', 'stale dynamic patch allowlist entries must fail clearly']]
+  );
+  if (!dynamicPatchStaleEntry.some((item) => item.includes('no longer matches current code'))) {
+    console.error('PatchConfigFields dynamic-patch stale-entry self-test failed:', dynamicPatchStaleEntry);
+    process.exit(1);
+  }
+  console.log('Config persistence guard self-test passed.');
+  process.exit(0);
+}
 
 const mojibakeMarkers = [
   0x95b0, 0x935a, 0x935f, 0x923c, 0x9983, 0x93c8, 0x59d7, 0x9352,
@@ -56,7 +400,16 @@ const app = read(appRel);
 const lines = app.split(/\r?\n/).length;
 
 requireFile('gui/frontend/src/i18n/appTranslations.ts');
-requireIncludes('gui/frontend/package.json', '--strict-mojibake && node ../../scripts/check-main-ui-guards.mjs', 'frontend prebuild strict mojibake and UI guard gate');
+requireFile('docs/config-persistence-guardrails.md');
+requireIncludes('docs/config-persistence-guardrails.md', 'Use `PatchConfig` or `PatchConfigFields` for small, local config changes.', 'config persistence guardrail guidance');
+requireIncludes('docs/config-persistence-guardrails.md', '`SaveConfig` is reserved for full authoritative snapshots', 'SaveConfig authoritative snapshot guidance');
+requireExcludes('gui/app_maclaw_llm.go', 'injectCodeGenModelIntoToolConfigs: SaveConfig failed', 'stale SaveConfig failure log in CodeGen SSO patch path');
+requireExcludes('gui/app_project_search.go', 'LoadConfig → merge → SaveConfig', 'stale SaveConfig project-switch persistence comment');
+requireExcludes('gui/app_project_search.go', 'switchCurrentProjectByPath: SaveConfig failed', 'stale SaveConfig project-switch failure log');
+requireExcludes('gui/floating_windows.go', 'SaveConfig triggers floatingSoundChanged', 'stale SaveConfig floating sound comment');
+requireExcludes('docs/project-switch-context-contamination-fix.md', 'LoadConfig → merge → SaveConfig', 'stale SaveConfig project-switch docs');
+requireIncludes('gui/frontend/package.json', '--strict-mojibake && npm run check:ui-guards', 'frontend prebuild strict mojibake and UI guard gate');
+requireIncludes('package.json', 'node scripts/check-main-ui-guards.mjs --self-test-config-persistence && node scripts/check-main-ui-guards.mjs', 'UI guard script runs config persistence self-test before normal guard');
 requireFile('gui/frontend/src/config/providerCatalog.ts');
 requireFile('gui/frontend/src/components/common/MarkdownLink.tsx');
 requireFile('gui/frontend/src/components/tools/ToolConfiguration.tsx');
@@ -175,11 +528,11 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/AboutPanel.tsx', 500],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 800],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 1250],
   ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 850],
   ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 420],
   ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],
-  ['gui/frontend/src/components/ai/ProjectSearchPanel.tsx', 240],
+  ['gui/frontend/src/components/ai/ProjectSearchPanel.tsx', 260],
   ['gui/frontend/src/components/ai/aiAssistantControls.tsx', 120],
   ['gui/frontend/src/components/ai/useTTSReadback.ts', 120],
   ['gui/frontend/src/components/ai/aiAssistantPanelTypes.ts', 120],
@@ -187,7 +540,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/ai/useAssistantOutputScroll.ts', 100],
   ['gui/frontend/src/components/ai/useResizableAssistantInput.ts', 80],
   ['gui/frontend/src/components/ai/useAssistantInputHistory.ts', 100],
-  ['gui/frontend/src/components/ai/usePastedImageAttachments.ts', 170],
+  ['gui/frontend/src/components/ai/usePastedImageAttachments.ts', 220],
   ['gui/frontend/src/components/ai/useGroupDiscussionControls.ts', 90],
   ['gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 170],
   ['gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx', 80],
@@ -555,7 +908,6 @@ requireIncludes('gui/frontend/src/components/layout/SidebarRecentTasks.tsx', 're
 requireIncludes('gui/frontend/src/components/layout/SidebarRecentTasks.tsx', 'pinTask', 'recent task pin wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarRecentTasks.tsx', 'hideTask', 'recent task hide wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarToolSelector.tsx', 'Claude Code', 'Claude Code selector entry');
-requireIncludes('gui/frontend/src/components/layout/SidebarToolSelector.tsx', 'Gemini CLI', 'Gemini CLI selector entry');
 requireIncludes('gui/frontend/src/components/layout/SidebarToolSelector.tsx', 'CodeBuddy', 'CodeBuddy selector entry');
 requireIncludes('gui/frontend/src/components/layout/SidebarToolSelector.tsx', 'Kilo Code', 'Kilo Code selector entry');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubTotalCredits', 'hub credits total display wiring');
@@ -590,8 +942,9 @@ requireIncludes('gui/frontend/src/components/pages/ApiStoreProviderCard.tsx', 'v
 requireIncludes('gui/frontend/src/components/pages/ProjectManagerPage.tsx', 'export const ProjectManagerPage', 'project manager page export');
 requireIncludes('gui/frontend/src/components/pages/ProjectManagerPage.tsx', 'ProjectManagerItem', 'project manager item wiring');
 requireIncludes('gui/frontend/src/components/pages/ProjectManagerItem.tsx', 'SelectProjectDir', 'project path picker wiring');
-requireIncludes('gui/frontend/src/components/pages/ProjectManagerItem.tsx', 'SaveConfig', 'project manager save wiring');
+requireIncludes('gui/frontend/src/components/pages/ProjectManagerItem.tsx', 'PatchConfigFields', 'project manager save wiring');
 requireIncludes('gui/frontend/src/components/pages/ProjectManagerItem.tsx', 'var(--theme-surface-muted)', 'project path theme-aware background');
+requireExcludes('gui/frontend/src/components/pages/ProjectManagerItem.tsx', 'SaveConfig', 'project manager full-config save; use PatchConfigFields');
 requireIncludes('gui/frontend/src/components/pages/RemoteSessionsPage.tsx', 'RemoteSessionList', 'remote session list stays in RemoteSessionsPage');
 requireIncludes('gui/frontend/src/components/pages/SkillsPage.tsx', 'SkillsManagementPanel', 'skills management stays in SkillsPage');
 requireIncludes('gui/frontend/src/components/pages/MCPPage.tsx', 'MCPManagementPanel', 'MCP management stays in MCPPage');
@@ -635,7 +988,8 @@ requireIncludes('gui/frontend/src/components/modals/InstallLogModal.tsx', 'navig
 requireIncludes('gui/frontend/src/components/modals/InstallLogModal.tsx', 'onSendLog(hasError)', 'install log send action');
 requireIncludes('gui/frontend/src/components/modals/ProjectProxySettingsDialog.tsx', 'proxyHostPlaceholder', 'project proxy host input');
 requireIncludes('gui/frontend/src/components/modals/ProjectProxySettingsDialog.tsx', 'useDefaultProxy', 'project proxy default toggle');
-requireIncludes('gui/frontend/src/components/modals/ProjectProxySettingsDialog.tsx', 'SaveConfig(newConfig)', 'project proxy save wiring');
+requireIncludes('gui/frontend/src/components/modals/ProjectProxySettingsDialog.tsx', 'PatchConfigFields({ projects: newConfig.projects })', 'project proxy save wiring');
+requireExcludes('gui/frontend/src/components/modals/ProjectProxySettingsDialog.tsx', 'SaveConfig', 'project proxy full-config save; use PatchConfigFields');
 requireIncludes('gui/frontend/src/components/modals/InstallSkillModal.tsx', 'InstallSkill', 'install skill action');
 requireIncludes('gui/frontend/src/components/modals/InstallSkillFooter.tsx', 'InstallDefaultMarketplace', 'install default marketplace action');
 requireIncludes('gui/frontend/src/components/modals/InstallSkillModal.tsx', 'skillZipOnlyError', 'skill compatibility error');
@@ -649,6 +1003,67 @@ requireIncludes('gui/frontend/src/components/modals/InstallSkillList.tsx', 'expo
 requireIncludes('gui/frontend/src/components/modals/InstallLocationSelector.tsx', 'export const InstallLocationSelector', 'install location selector export');
 requireIncludes('gui/frontend/src/components/modals/InstallLocationSelector.tsx', 'setInstallLocation', 'install location update wiring');
 requireIncludes('gui/frontend/src/components/modals/InstallLocationSelector.tsx', 'setInstallProject', 'install project update wiring');
+requireIncludes('gui/frontend/src/components/PetSettingsPanel.tsx', 'patchConfig(patch)', 'pet settings atomic patch save wiring');
+requireExcludes('gui/frontend/src/components/PetSettingsPanel.tsx', 'saveConfig', 'pet settings full-config save prop; use patchConfig');
+requireIncludes('gui/frontend/src/components/FloatingButton.tsx', 'PatchConfigFields({ pet_motion_sound_enabled: enabled })', 'floating pet sound atomic patch save wiring');
+requireExcludes('gui/frontend/src/components/FloatingButton.tsx', 'SaveConfig', 'floating pet full-config save fallback; use PatchConfigFields');
+requireIncludes('gui/frontend/src/App.tsx', 'SaveConfig(sanitizedConfig)', 'model settings full authoritative save stays explicit');
+requireIncludes('gui/app_asr.go', 'PatchConfigFields(map[string]interface{}{"asr_enabled": enabled})', 'ASR enabled setter uses atomic config patch');
+requireExcludes('gui/app_asr.go', 'a.SaveConfig(cfg)', 'ASR setter full-config save; use PatchConfigFields');
+requireIncludes('gui/app_tts.go', 'PatchConfigFields(map[string]interface{}{"tts_enabled": enabled})', 'TTS enabled setter uses atomic config patch');
+requireIncludes('gui/app_tts.go', 'PatchConfigFields(map[string]interface{}{"tts_voice_id": voiceID})', 'TTS voice setter uses atomic config patch');
+requireExcludes('gui/app_tts.go', 'a.SaveConfig(cfg)', 'TTS setter full-config save; use PatchConfigFields');
+requireIncludes('gui/app_websearch.go', 'return a.PatchConfig(func(cfg *corelib.AppConfig) {', 'web search provider save uses atomic config patch');
+requireExcludes('gui/app_websearch.go', 'a.SaveConfig(cfg)', 'web search provider full-config save; use PatchConfig');
+requireIncludes('gui/app_mis_data.go', 'return a.PatchConfig(func(cfg *corelib.AppConfig) {', 'MIS data settings save uses atomic config patch');
+requireExcludes('gui/app_mis_data.go', 'a.SaveConfig(cfg)', 'MIS data full-config save; use PatchConfig');
+requireIncludes('gui/app_wails_bindings.go', 'cfg.MemoryAutoCompress = enabled', 'memory auto-compress config write remains explicit');
+requireIncludes('gui/app_wails_bindings.go', 'return a.PatchConfig(func(cfg *corelib.AppConfig) {', 'memory auto-compress save uses atomic config patch');
+requireIncludes('gui/app_yolo_model.go', 'PatchConfigFields(map[string]interface{}{"screen_parsing_enabled": enabled})', 'screen parsing setter uses atomic config patch');
+requireExcludes('gui/app_yolo_model.go', 'a.SaveConfig(cfg)', 'screen parsing setter full-config save; use PatchConfigFields');
+requireIncludes('gui/env_check_api.go', 'PatchConfigFields(map[string]interface{}{"env_check_interval": days})', 'environment interval setter uses atomic config patch');
+requireIncludes('gui/env_check_api.go', 'PatchConfigFields(map[string]interface{}{"last_env_check_time": time.Now().Format(time.RFC3339)})', 'environment check timestamp uses atomic config patch');
+requireExcludes('gui/env_check_api.go', 'a.SaveConfig(config)', 'environment check full-config save; use PatchConfigFields');
+requireIncludes('gui/app_nl_mcp.go', 'cfg.MCPServers = servers', 'remote MCP server save remains explicit');
+requireIncludes('gui/app_nl_mcp.go', 'cfg.LocalMCPServers = servers', 'local MCP server save remains explicit');
+requireIncludes('gui/app_nl_skills.go', 'cfg.ExternalSkillDirs = nextDirs', 'external skill dir add uses atomic config patch');
+requireIncludes('gui/app_nl_skills.go', 'cfg.ExternalSkillDirs = filtered', 'external skill dir remove uses atomic config patch');
+requireIncludes('gui/app_ve.go', 'cfg.VEAllowedDirectories = nextDirs', 'VE allowed directories save uses atomic config patch');
+requireIncludes('gui/app_wails_bindings.go', 'cfg.MemoryMaxBackups = n', 'memory max backups save uses atomic config patch');
+requireIncludes('gui/qqbot_gateway.go', 'cfg.SetQQBotLocal(enabled)', 'QQ bot local mode uses atomic config patch');
+requireIncludes('gui/telegram_gateway.go', 'cfg.SetTelegramLocal(enabled)', 'Telegram local mode uses atomic config patch');
+requireIncludes('gui/weixin_gateway.go', 'cfg.SetWeixinLocal(enabled)', 'Weixin local mode uses atomic config patch');
+requireIncludes('gui/lansenger_gateway.go', 'cfg.SetLansengerLocal(enabled)', 'Lansenger local mode uses atomic config patch');
+requireIncludes('gui/thirdparty_gateway.go', 'cfg.SetThirdPartyGatewayLocal(enabled)', 'third-party gateway local mode uses atomic config patch');
+requireIncludes('gui/config_manager.go', 'm.app.PatchConfig(func(cfg *corelib.AppConfig) {', 'config manager updates use atomic config patch');
+requireIncludes('gui/hub_update_cache.go', 'cfg.RemoteHubCenterURLs = discovered', 'hub center URL cache uses atomic config patch');
+requireIncludes('gui/floating_assistant.go', 'config.FloatingBtnPositionSet = true', 'floating button position uses atomic config patch');
+requireIncludes('gui/floating_assistant.go', 'PatchConfigFields(map[string]interface{}{"pet_enabled": false})', 'floating assistant disable uses pet atomic patch');
+requireIncludes('gui/floating_windows.go', 'PatchConfigFields(map[string]interface{}{"pet_motion_sound_enabled": newEnabled})', 'floating window pet sound menu uses atomic config patch');
+requireIncludes('gui/app_project_search.go', 'PatchConfigFields(map[string]interface{}{"current_project": p.Id})', 'project search current-project switch uses atomic config patch');
+requireIncludes('gui/app_data_migration.go', 'PatchConfig(func(cfg *corelib.AppConfig) { cfg.DataDir = newDir })', 'data directory save uses atomic config patch');
+requireExcludes('gui/app_data_migration.go', 'a.SaveConfig(config)', 'data directory full-config save; use PatchConfig');
+requireIncludes('gui/remote_smoke.go', 'app.PatchConfig(func(cfg *corelib.AppConfig) {', 'remote smoke config overrides use atomic config patch');
+requireExcludes('gui/remote_smoke.go', 'app.SaveConfig(cfg)', 'remote smoke full-config save; use PatchConfig');
+requireIncludes('gui/im_tools_misc.go', 'cfg.RemoteNickname = nickname', 'nickname setter persists only nickname');
+requireIncludes('gui/im_tools_misc.go', 'h.app.PatchConfig(func(cfg *corelib.AppConfig) {', 'nickname setter uses atomic config patch');
+requireExcludes('gui/im_tools_misc.go', 'h.saveConfig(cfg)', 'nickname full-config save; use PatchConfig');
+requireIncludes('gui/skill_auto_summary.go', 'PatchConfigFields(map[string]interface{}{"remote_email": email})', 'auto-upload email backfill uses atomic config patch');
+requireIncludes('gui/app_nl_skills.go', 'cfg.NLSkills = filtered', 'skill executor save uses atomic config patch');
+requireIncludes('gui/weixin_gateway.go', 'saveWeixinLoginConfig(result)', 'Weixin QR login saves through atomic config patch helper');
+requireIncludes('gui/weixin_gateway.go', 'cfg.WeixinToken = result.BotToken', 'Weixin login patch persists token');
+requireIncludes('gui/app_maclaw_llm.go', 'a.PatchConfig(func(cfg *corelib.AppConfig) {', 'LLM token usage updates use atomic config patch');
+requireIncludes('gui/app_maclaw_llm.go', 'stat.LocalCacheRequests++', 'LLM local cache usage counter preserved');
+requireIncludes('gui/app_maclaw_llm.go', 'delete(cfg.LLMTokenUsage, provider)', 'LLM token reset patches usage map');
+requireIncludes('gui/app_maclaw_llm.go', 'currentCfg.MaclawLLMProviders = cfg.MaclawLLMProviders', 'Maclaw LLM provider save uses atomic config patch');
+requireIncludes('gui/app_maclaw_llm.go', 'PatchConfigFields(map[string]interface{}{"remote_email": result.Email})', 'CodeGen SSO email backfill uses atomic config patch');
+requireIncludes('gui/hub_llm_service.go', 'syncHubLLMServiceStatusToConfig(status, false)', 'Hub LLM status refresh uses atomic config patch');
+requireIncludes('gui/hub_llm_service.go', 'syncHubLLMServiceStatusToConfig(serviceStatus, false)', 'Hub LLM redemption uses atomic config patch');
+requireExcludes('gui/hub_llm_service.go', 'a.SaveConfig(', 'Hub LLM service full-config save; use PatchConfig');
+requireIncludes('gui/tui_mode.go', 'a.app.PatchConfig(func(cfg *corelib.AppConfig) {', 'TUI single-field config save uses atomic config patch');
+requireIncludes('gui/platform_windows.go', 'PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})', 'Windows env-check completion uses atomic config patch');
+requireIncludes('gui/platform_linux.go', 'PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})', 'Linux env-check completion uses atomic config patch');
+requireIncludes('gui/platform_darwin.go', 'PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})', 'Darwin env-check completion uses atomic config patch');
 requireIncludes('gui/frontend/src/components/modals/InstallLocationSelector.tsx', 'var(--theme-surface)', 'install location theme-aware surface');
 requireIncludes('gui/frontend/src/components/modals/InstallSkillList.tsx', 'selectedSkillsToInstall.includes(skill.name)', 'install skill selection state');
 requireIncludes('gui/frontend/src/components/modals/InstallSkillList.tsx', 'setSelectedSkillsToInstall', 'install skill selection update');
@@ -664,6 +1079,9 @@ requireIncludes('gui/frontend/src/components/modals/ConfirmDialog.tsx', 'var(--t
 requireIncludes('gui/frontend/src/components/modals/ConfirmDialog.tsx', 'var(--theme-text-primary)', 'confirm dialog theme-aware text');
 requireIncludes('gui/frontend/src/components/modals/ConfirmDialog.tsx', 'onConfirm', 'confirm dialog confirm action');
 requireIncludes('gui/frontend/src/components/modals/ConfirmDialog.tsx', 'onCancel', 'confirm dialog cancel action');
+requireSaveConfigAllowlist();
+requirePatchConfigFieldsSupported();
+requireDynamicPatchConfigFieldsAllowlist();
 
 if (failures.length) {
   console.error('Main UI guard check failed:');

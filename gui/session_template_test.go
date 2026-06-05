@@ -1,10 +1,9 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"encoding/json"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"testing"
-
 )
 
 func TestMarshalTemplate(t *testing.T) {
@@ -89,9 +88,9 @@ func TestUnmarshalTemplate_InvalidJSON(t *testing.T) {
 func TestMarshalUnmarshal_RoundTrip(t *testing.T) {
 	original := remote.SessionTemplate{
 		Name:        "roundtrip",
-		Tool:        "gemini",
+		Tool:        "codex",
 		ProjectPath: "/home/dev/app",
-		ModelConfig: "gemini-pro",
+		ModelConfig: "gpt-5.2-codex",
 		YoloMode:    true,
 		EnvVars:     map[string]string{"KEY": "val"},
 		CreatedAt:   "2025-06-01T12:00:00Z",

@@ -92,6 +92,7 @@ func forwardOpenAICompatStreamRequest(ctx context.Context, cfg MaclawLLMConfig, 
 	if cfg.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
+	SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	return client.Do(req)
 }
 
@@ -242,6 +243,7 @@ func forwardOpenAICompatRequest(ctx context.Context, cfg MaclawLLMConfig, body m
 	if cfg.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
+	SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
@@ -282,13 +284,9 @@ func forwardAnthropicCompatRequest(ctx context.Context, cfg MaclawLLMConfig, bod
 		return nil, 0, fmt.Errorf("read response body: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		errBodyStr := string(respBody)
-		if len(errBodyStr) > 1024 {
-			errBodyStr = errBodyStr[:1024] + "...(truncated)"
-		}
 		errResp := map[string]interface{}{
 			"error": map[string]interface{}{
-				"message": fmt.Sprintf("upstream error (HTTP %d): %s", resp.StatusCode, errBodyStr),
+				"message": fmt.Sprintf("upstream error (HTTP %d): body_len=%d", resp.StatusCode, len(respBody)),
 				"type":    "server_error",
 			},
 		}
@@ -555,6 +553,7 @@ func forwardResponsesCompat(ctx context.Context, cfg MaclawLLMConfig, body map[s
 	if cfg.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
+	SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
@@ -565,13 +564,9 @@ func forwardResponsesCompat(ctx context.Context, cfg MaclawLLMConfig, body map[s
 		return nil, 0, fmt.Errorf("read response body: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		errBodyStr := string(respBody)
-		if len(errBodyStr) > 1024 {
-			errBodyStr = errBodyStr[:1024] + "...(truncated)"
-		}
 		errResp := map[string]interface{}{
 			"error": map[string]interface{}{
-				"message": fmt.Sprintf("upstream error (HTTP %d): %s", resp.StatusCode, errBodyStr),
+				"message": fmt.Sprintf("upstream error (HTTP %d): body_len=%d", resp.StatusCode, len(respBody)),
 				"type":    "server_error",
 			},
 		}
@@ -625,8 +620,8 @@ func appendV1Path(baseURL, subPath string) string {
 // sanitizeToolMessages converts tool-calling messages to plain user/assistant
 // format for upstream providers that don't support the OpenAI tool calling
 // protocol. Specifically:
-//   - role:"tool" messages → role:"user" with content "[Tool Result] ..."
-//   - role:"assistant" messages with tool_calls → keep as assistant, replace
+//   - role:"tool" messages ->role:"user" with content "[Tool Result] ..."
+//   - role:"assistant" messages with tool_calls ->keep as assistant, replace
 //     content with a text summary of the tool calls, remove tool_calls field
 //   - Consecutive converted tool results are merged into a single user message
 //     to avoid violating user/assistant alternation requirements.

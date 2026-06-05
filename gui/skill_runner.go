@@ -16,11 +16,13 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
@@ -61,6 +63,7 @@ type SkillRunSummary struct {
 type SkillRunStatus struct {
 	RunID             string                  `json:"run_id"`
 	Skill             string                  `json:"skill"`
+	OwnerID           string                  `json:"owner_id,omitempty"`
 	Status            skillRunLifecycleStatus `json:"status"`
 	Steps             []StepResult            `json:"steps"`
 	Session           *SkillRunSessionMeta    `json:"session,omitempty"`
@@ -122,6 +125,7 @@ type SkillRunner struct {
 	counter       int
 	uploadTrigger *AutoUploadTrigger
 	packageFn     func(skillName string) (string, error) // packageSkillForMarket
+	activeRuns    atomic.Int64
 
 	// recentRepairs tracks skills that were recently auto-repaired.
 	// Consumed by the system prompt builder to notify the LLM about
@@ -129,6 +133,32 @@ type SkillRunner struct {
 	// Key: skill name, Value: repair explanation.
 	// Entries are consumed (deleted) after being injected into the prompt.
 	recentRepairs sync.Map
+}
+
+func (r *SkillRunner) beginRunExecution(run *skillRun, kind string) (time.Time, func(string)) {
+	startedAt := time.Now()
+	active := int64(0)
+	if r != nil {
+		active = r.activeRuns.Add(1)
+	}
+	runID, ownerID, skillName := "", "", ""
+	if run != nil {
+		runID = run.status.RunID
+		ownerID = run.status.OwnerID
+		skillName = run.status.Skill
+	}
+	log.Printf("[skill-runner] exec_start kind=%s run=%s owner=%q skill=%q active=%d", strings.TrimSpace(kind), runID, ownerID, skillName, active)
+	return startedAt, func(status string) {
+		remaining := int64(0)
+		if r != nil {
+			remaining = r.activeRuns.Add(-1)
+			if remaining < 0 {
+				r.activeRuns.Store(0)
+				remaining = 0
+			}
+		}
+		log.Printf("[skill-runner] exec_done kind=%s run=%s owner=%q skill=%q status=%q elapsed=%s active=%d", strings.TrimSpace(kind), runID, ownerID, skillName, strings.TrimSpace(status), time.Since(startedAt).Round(time.Millisecond), remaining)
+	}
 }
 
 type skillRun struct {
@@ -139,6 +169,7 @@ type skillRun struct {
 	runArgs       map[string]interface{}
 	selectedSteps []string          // api_workflow mode: only run steps with these labels
 	extraEnv      map[string]string // env vars from run_skill caller, injected into subprocesses
+	workspaceDir  string            // isolated per-run copy of the skill directory
 }
 
 // NewSkillRunner creates a SkillRunner.
@@ -156,18 +187,33 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 
 // StartRunForOwner starts a skill run under an explicit workflow policy owner.
 func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs map[string]interface{}) (string, error) {
+	startedAt := time.Now()
+	policyOwnerID = strings.TrimSpace(policyOwnerID)
+	log.Printf("[skill-runner] start_run requested owner=%q skill=%q args=%d", policyOwnerID, skillName, len(runArgs))
 	if r != nil && r.executor != nil && r.executor.app != nil {
+		policyStart := time.Now()
 		if err := r.executor.app.ensureWorkflowAllowsRemoteToolCallForOwner(policyOwnerID, "manage_skill", map[string]interface{}{"action": "run", "name": skillName, "args": runArgs}); err != nil {
+			log.Printf("[skill-runner] start_run policy_denied owner=%q skill=%q elapsed=%s err=%v", policyOwnerID, skillName, time.Since(policyStart).Round(time.Millisecond), err)
 			return "", err
 		}
+		if elapsed := time.Since(policyStart); elapsed > 100*time.Millisecond {
+			log.Printf("[skill-runner] start_run policy_check owner=%q skill=%q elapsed=%s", policyOwnerID, skillName, elapsed.Round(time.Millisecond))
+		}
 	}
-	// ?? skill ? match by name regardless of status so we can provide
-	// specific error messages for disabled/needs_setup skills (Bug #3).
-	r.executor.mu.RLock()
+	// Match by name regardless of status so we can provide specific error
+	// messages for disabled/needs_setup skills. Do not take SkillExecutor.mu
+	// here: loadSkills is protected by config/cache locks, and holding the
+	// executor read lock makes new agent runs wait behind unrelated usage-stat
+	// writes from other agent instances.
+	loadStart := time.Now()
 	var target *corelib.NLSkillEntry
 	var collisions []corelib.NLSkillEntry // track bare name collisions across publishers
 	isQualified := strings.Contains(skillName, ":")
-	for _, s := range r.executor.loadSkills() {
+	loadedSkills := r.executor.loadSkills()
+	if elapsed := time.Since(loadStart); elapsed > 100*time.Millisecond {
+		log.Printf("[skill-runner] start_run load_skills owner=%q skill=%q count=%d elapsed=%s", policyOwnerID, skillName, len(loadedSkills), elapsed.Round(time.Millisecond))
+	}
+	for _, s := range loadedSkills {
 		if s.MatchesName(skillName) {
 			if isQualified {
 				// Qualified name: exact match, no collision possible.
@@ -194,12 +240,10 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 					qualifiedNames = append(qualifiedNames, s.Name+" (local)")
 				}
 			}
-			r.executor.mu.RUnlock()
 			return "", fmt.Errorf("skill name %q is ambiguous ? multiple skills match:\n  %s\nPlease use the qualified name (publisher:name) to disambiguate",
 				skillName, strings.Join(qualifiedNames, "\n  "))
 		}
 	}
-	r.executor.mu.RUnlock()
 
 	if target == nil {
 		// Fuzzy match fallback: suggest the closest skill when exact match fails.
@@ -235,6 +279,9 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 
 	// Normalize community/imported skill shapes before pre-checks and execution.
 	cskill.NormalizeSkillForRunner(target)
+	if isShellBrowserAutomationSkillEntry(*target) {
+		return "", browserAutomationSkillRejectedError(skillName)
+	}
 
 	if cskill.IsKnowledgeSkillType(target.Type) {
 		return "", fmt.Errorf("%s", cskill.FormatNoExecutableStepsMessage(skillName, target, cskill.RunnerBackendGUI))
@@ -243,7 +290,7 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 	templateVars := normalizeSkillRunVars(runArgs)
 	extraEnv := cskill.ExtractRunExtraEnvFromArgs(runArgs)
 	if cskill.IsPipelineSkill(target) {
-		return r.startPipelineRun(skillName, target, runArgs, templateVars, extraEnv)
+		return r.startPipelineRun(policyOwnerID, skillName, target, runArgs, templateVars, extraEnv)
 	}
 	// ── Credential file pre-check: validate required credential files exist locally ──
 	if len(target.RequiredCredentialFiles) > 0 {
@@ -296,9 +343,14 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 
 	// Shared runner preparation handles step selection, parameter completion,
 	// requirements, implicit placeholders, and local file diagnostics.
+	prepStart := time.Now()
 	prep, err := cskill.PrepareRunnerExecution(target, templateVars, runArgs, extraEnv, cskill.RunnerBackendGUI)
 	if err != nil {
+		log.Printf("[skill-runner] start_run prepare_failed owner=%q skill=%q elapsed=%s err=%v", policyOwnerID, skillName, time.Since(prepStart).Round(time.Millisecond), err)
 		return "", err
+	}
+	if elapsed := time.Since(prepStart); elapsed > 100*time.Millisecond {
+		log.Printf("[skill-runner] start_run prepare owner=%q skill=%q elapsed=%s", policyOwnerID, skillName, elapsed.Round(time.Millisecond))
 	}
 	selectedSteps := prep.SelectedSteps
 	warnings := prep.Warnings
@@ -311,7 +363,11 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 	}
 
 	// 生成 runID
+	runnerLockWaitStart := time.Now()
 	r.mu.Lock()
+	if waited := time.Since(runnerLockWaitStart); waited > 100*time.Millisecond {
+		log.Printf("[skill-runner] start_run runner_lock_wait owner=%q skill=%q waited=%s", policyOwnerID, skillName, waited.Round(time.Millisecond))
+	}
 	r.counter++
 	runID := fmt.Sprintf("run-%d-%d", time.Now().UnixMilli(), r.counter)
 
@@ -320,6 +376,7 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 		status: SkillRunStatus{
 			RunID:          runID,
 			Skill:          skillName,
+			OwnerID:        strings.TrimSpace(policyOwnerID),
 			Status:         skillRunStatusRunning,
 			ExpectedOutput: strings.TrimSpace(templateVars["output"]),
 			ExpectedArtifact: skillRunExpectsArtifactForSteps(target, prep.ExecutionSteps,
@@ -342,6 +399,7 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 	}
 	r.runs[runID] = run
 	r.mu.Unlock()
+	log.Printf("[skill-runner] start_run accepted owner=%q skill=%q run=%s steps=%d total=%s", policyOwnerID, skillName, runID, len(target.Steps), time.Since(startedAt).Round(time.Millisecond))
 
 	// 异步执行
 	go r.executeAsync(ctx, run, target)
@@ -357,7 +415,7 @@ func (r *SkillRunner) defaultSkillRunPolicyOwnerID() string {
 }
 
 // startPipelineRun starts a pipeline skill asynchronously.
-func (r *SkillRunner) startPipelineRun(skillName string, target *corelib.NLSkillEntry, runArgs map[string]interface{}, templateVars map[string]string, extraEnv map[string]string) (string, error) {
+func (r *SkillRunner) startPipelineRun(policyOwnerID, skillName string, target *corelib.NLSkillEntry, runArgs map[string]interface{}, templateVars map[string]string, extraEnv map[string]string) (string, error) {
 	if target == nil {
 		return "", fmt.Errorf("skill entry is nil")
 	}
@@ -384,6 +442,7 @@ func (r *SkillRunner) startPipelineRun(skillName string, target *corelib.NLSkill
 		status: SkillRunStatus{
 			RunID:          runID,
 			Skill:          skillName,
+			OwnerID:        strings.TrimSpace(policyOwnerID),
 			Status:         skillRunStatusRunning,
 			ExpectedOutput: strings.TrimSpace(templateVars["output"]),
 			ExpectedArtifact: skillRunExpectsArtifactForSteps(target, nil,
@@ -414,7 +473,9 @@ func (r *SkillRunner) startPipelineRun(skillName string, target *corelib.NLSkill
 }
 
 func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, entry *corelib.NLSkillEntry) {
-	execStart := time.Now()
+	execStart, finishExecution := r.beginRunExecution(run, "pipeline")
+	finishStatus := "unknown"
+	defer func() { finishExecution(finishStatus) }()
 	globalTimeout := 5 * time.Minute
 	if entry.GlobalTimeout > 0 {
 		globalTimeout = time.Duration(entry.GlobalTimeout) * time.Second
@@ -429,8 +490,11 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 	if len(run.extraEnv) > 0 {
 		baseArgs["extra_env"] = run.extraEnv
 	}
+	if ownerID := strings.TrimSpace(run.status.OwnerID); ownerID != "" {
+		baseArgs["_skill_owner_id"] = ownerID
+	}
 	baseRunArgs := cskill.WithPipelineRunStack(baseArgs, entry.Name)
-	pr := &cskill.PipelineRunner{Executor: skillExecutorPipelineExecutor{exec: r.executor, baseRunArgs: baseRunArgs}}
+	pr := &cskill.PipelineRunner{Executor: skillExecutorPipelineExecutor{exec: r.executor, baseRunArgs: baseRunArgs, ownerID: run.status.OwnerID}}
 	result, err := pr.Run(globalCtx, entry.Pipeline, run.templateVars)
 	if err == nil && result == nil {
 		err = fmt.Errorf("pipeline returned no result")
@@ -440,6 +504,7 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 	r.mu.Lock()
 	if err != nil {
 		execErr = err
+		finishStatus = skillRunStatusFailed.String()
 		for i := range run.status.Steps {
 			if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending {
 				run.status.Steps[i].Status = skillStepStatusSkipped
@@ -447,8 +512,8 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 		}
 		run.status.Error = err.Error()
 		r.mu.Unlock()
-		r.updateUsageStats(entry, execErr)
 		r.finalizeRunOutcome(run, skillRunStatusFailed, execStart)
+		r.updateUsageStats(entry, execErr)
 		return
 	}
 
@@ -490,14 +555,20 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 		}
 	}
 	r.mu.Unlock()
+	finishStatus = finalStatus.String()
+	r.finalizeRunOutcome(run, finalStatus, execStart)
 	if finalStatus != skillRunStatusCancelled {
 		r.updateUsageStats(entry, execErr)
 	}
-	r.finalizeRunOutcome(run, finalStatus, execStart)
 }
 
 func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
+	startedAt := time.Now()
+	lockWaitStart := time.Now()
 	r.mu.RLock()
+	if waited := time.Since(lockWaitStart); waited > 100*time.Millisecond {
+		log.Printf("[skill-runner] get_status lock_wait run=%s waited=%s", runID, waited.Round(time.Millisecond))
+	}
 	run, ok := r.runs[runID]
 	if !ok {
 		r.mu.RUnlock()
@@ -508,6 +579,9 @@ func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
 
 	r.hydrateRunSessionMeta(&cp)
 	summarizeSkillRun(&cp)
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		log.Printf("[skill-runner] get_status slow run=%s owner=%q skill=%q status=%q elapsed=%s", runID, cp.OwnerID, cp.Skill, cp.Status.String(), elapsed.Round(time.Millisecond))
+	}
 	return &cp, nil
 }
 
@@ -1171,12 +1245,242 @@ func (r *SkillRunner) failRunPendingSkipped(run *skillRun, skill *corelib.NLSkil
 	}
 	run.status.Error = errMsg
 	r.mu.Unlock()
-	r.updateUsageStats(skill, execErr)
 	r.finalizeRunOutcome(run, skillRunStatusFailed, execStart)
+	r.updateUsageStats(skill, execErr)
+}
+
+func prepareSkillRunWorkspace(runID, skillName, skillDir string) (string, func(), error) {
+	skillDir = strings.TrimSpace(skillDir)
+	if skillDir == "" {
+		return "", func() {}, nil
+	}
+	cleanupStaleSkillRunWorkspaces()
+	info, err := os.Stat(skillDir)
+	if err != nil {
+		return "", func() {}, err
+	}
+	if !info.IsDir() {
+		return "", func() {}, fmt.Errorf("skill dir is not a directory: %s", skillDir)
+	}
+	root := skillRunWorkspaceRoot()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", func() {}, err
+	}
+	prefix := sanitizeSkillRunWorkspacePart(skillName)
+	if prefix == "" {
+		prefix = "skill"
+	}
+	workspace, err := os.MkdirTemp(root, prefix+"-*")
+	if err != nil {
+		return "", func() {}, err
+	}
+	copyStartedAt := time.Now()
+	if err := copyDirContentsForSkillRun(skillDir, workspace); err != nil {
+		_ = os.RemoveAll(workspace)
+		return "", func() {}, err
+	}
+	log.Printf("[skill-runner] run=%s skill=%q workspace prepared elapsed=%s source_dir=%s workspace=%s", runID, skillName, time.Since(copyStartedAt).Truncate(time.Millisecond), skillDir, workspace)
+	cleanup := func() {
+		if err := os.RemoveAll(workspace); err != nil {
+			log.Printf("[skill-runner] run=%s workspace cleanup failed dir=%q err=%v", runID, workspace, err)
+		}
+	}
+	return workspace, cleanup, nil
+}
+
+var cleanupStaleSkillRunWorkspacesOnce sync.Once
+
+func cleanupStaleSkillRunWorkspaces() {
+	cleanupStaleSkillRunWorkspacesOnce.Do(func() {
+		root := skillRunWorkspaceRoot()
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return
+		}
+		cutoff := time.Now().Add(-24 * time.Hour)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			path := filepath.Join(root, entry.Name())
+			info, err := entry.Info()
+			if err != nil || info.ModTime().After(cutoff) {
+				continue
+			}
+			if !pathWithinDir(root, path) {
+				continue
+			}
+			if err := os.RemoveAll(path); err != nil {
+				log.Printf("[skill-runner] stale workspace cleanup failed dir=%q err=%v", path, err)
+			}
+		}
+	})
+}
+
+func skillRunWorkspaceRoot() string {
+	return filepath.Join(os.TempDir(), "maclaw-skill-runs")
+}
+
+func shouldRetainSkillRunWorkspaceStatus(status SkillRunStatus, workspace string) bool {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return false
+	}
+	if artifactPath := strings.TrimSpace(detectArtifactPathFromStatus(&status)); artifactPath != "" && pathWithinDir(workspace, artifactPath) {
+		return true
+	}
+	summarizeSkillRun(&status)
+	artifactPath := strings.TrimSpace(status.Summary.ArtifactPath)
+	if artifactPath == "" {
+		return false
+	}
+	return pathWithinDir(workspace, artifactPath)
+}
+
+func sanitizeSkillRunWorkspacePart(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteByte('-')
+	}
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 48 {
+		out = out[:48]
+	}
+	return out
+}
+
+func remapSkillRunStepToWorkspace(step corelib.NLSkillStep, sourceDir, workspaceDir string) corelib.NLSkillStep {
+	sourceDir = strings.TrimSpace(sourceDir)
+	workspaceDir = strings.TrimSpace(workspaceDir)
+	if sourceDir == "" || workspaceDir == "" || step.Params == nil {
+		return step
+	}
+	sourceDir = filepath.Clean(sourceDir)
+	workspaceDir = filepath.Clean(workspaceDir)
+	if sameCleanPath(sourceDir, workspaceDir) {
+		return step
+	}
+	params := make(map[string]interface{}, len(step.Params))
+	for key, value := range step.Params {
+		params[key] = remapSkillRunParamValue(value, sourceDir, workspaceDir)
+	}
+	step.Params = params
+	return step
+}
+
+func remapSkillRunParamValue(value interface{}, sourceDir, workspaceDir string) interface{} {
+	switch v := value.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return value
+		}
+		return remapSkillRunPathString(v, sourceDir, workspaceDir)
+	case map[string]interface{}:
+		if len(v) == 0 {
+			return value
+		}
+		out := make(map[string]interface{}, len(v))
+		for key, child := range v {
+			out[key] = remapSkillRunParamValue(child, sourceDir, workspaceDir)
+		}
+		return out
+	case map[string]string:
+		if len(v) == 0 {
+			return value
+		}
+		out := make(map[string]string, len(v))
+		for key, child := range v {
+			out[key] = remapSkillRunPathString(child, sourceDir, workspaceDir)
+		}
+		return out
+	case []interface{}:
+		if len(v) == 0 {
+			return value
+		}
+		out := make([]interface{}, len(v))
+		for i, child := range v {
+			out[i] = remapSkillRunParamValue(child, sourceDir, workspaceDir)
+		}
+		return out
+	case []string:
+		if len(v) == 0 {
+			return value
+		}
+		out := make([]string, len(v))
+		for i, child := range v {
+			out[i] = remapSkillRunPathString(child, sourceDir, workspaceDir)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func remapSkillRunPathString(value, sourceDir, workspaceDir string) string {
+	if strings.TrimSpace(value) == "" || sourceDir == "" || workspaceDir == "" {
+		return value
+	}
+	variants := []string{sourceDir, filepath.ToSlash(sourceDir)}
+	if runtime.GOOS == "windows" {
+		variants = append(variants, strings.ReplaceAll(sourceDir, `\`, `/`))
+	}
+	out := value
+	for _, from := range variants {
+		from = strings.TrimSpace(from)
+		if from == "" {
+			continue
+		}
+		to := workspaceDir
+		if strings.Contains(from, "/") && !strings.Contains(from, `\`) {
+			to = filepath.ToSlash(workspaceDir)
+		}
+		out = strings.ReplaceAll(out, from, to)
+	}
+	return out
+}
+
+func sameCleanPath(a, b string) bool {
+	a = filepath.Clean(strings.TrimSpace(a))
+	b = filepath.Clean(strings.TrimSpace(b))
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *corelib.NLSkillEntry) {
-	execStart := time.Now()
+	execStart, finishExecution := r.beginRunExecution(run, "steps")
+	finishStatus := "unknown"
+	defer func() { finishExecution(finishStatus) }()
+	originalSkill := skill
+	execSkill := *skill
+	skill = &execSkill
+	sourceSkillDir := skill.SkillDir
+	if workspace, cleanup, err := prepareSkillRunWorkspace(run.status.RunID, skill.Name, skill.SkillDir); err != nil {
+		log.Printf("[skill-runner] run=%s owner=%q skill=%q workspace isolation unavailable dir=%q err=%v; using installed dir", run.status.RunID, run.status.OwnerID, skill.Name, skill.SkillDir, err)
+	} else if workspace != "" {
+		run.workspaceDir = workspace
+		log.Printf("[skill-runner] run=%s owner=%q skill=%q workspace=%s source_dir=%s", run.status.RunID, run.status.OwnerID, skill.Name, workspace, skill.SkillDir)
+		skill.SkillDir = workspace
+		defer func() {
+			r.mu.RLock()
+			statusSnapshot := run.status
+			r.mu.RUnlock()
+			if shouldRetainSkillRunWorkspaceStatus(statusSnapshot, workspace) {
+				log.Printf("[skill-runner] run=%s owner=%q retaining workspace for artifact access: %s", run.status.RunID, run.status.OwnerID, workspace)
+				return
+			}
+			cleanup()
+		}()
+	}
 	// Global timeout: use skill-level setting if available, otherwise 5 minutes.
 	globalTimeout := 5 * time.Minute
 	if skill.GlobalTimeout > 0 {
@@ -1189,11 +1493,12 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	defer func() {
 		if rec := recover(); rec != nil {
 			execErr := fmt.Errorf("panic: %v", rec)
+			finishStatus = skillRunStatusFailed.String()
 			r.mu.Lock()
 			run.status.Error = execErr.Error()
 			r.mu.Unlock()
-			r.updateUsageStats(skill, execErr)
 			r.finalizeRunOutcome(run, skillRunStatusFailed, execStart)
+			r.updateUsageStats(skill, execErr)
 		}
 	}()
 
@@ -1207,8 +1512,9 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			run.status.Steps[i].Status = skillStepStatusSkipped
 		}
 		r.mu.Unlock()
-		r.updateUsageStats(skill, nil)
+		finishStatus = skillRunStatusSuccess.String()
 		r.finalizeRunOutcome(run, skillRunStatusSuccess, execStart)
+		r.updateUsageStats(skill, nil)
 		return
 	}
 
@@ -1263,8 +1569,8 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		proxyRequiredEnv = nil
 	}
 	needsProxy := corelib.NeedsOpenAIProxyAuto(proxyRequiredEnv, run.extraEnv, proxyProbeSteps, skill.SkillDir)
-	log.Printf("[skill-runner] openai proxy check: needsProxy=%v required_env=%v extraEnv_keys=%v processEnv_OPENAI_API_KEY=%q",
-		needsProxy, skill.RequiredEnv, mapKeys(run.extraEnv), truncateEnvForLog(os.Getenv("OPENAI_API_KEY")))
+	log.Printf("[skill-runner] run=%s owner=%q openai proxy check: needsProxy=%v required_env=%v extraEnv_keys=%v processEnv_OPENAI_API_KEY=%q",
+		run.status.RunID, run.status.OwnerID, needsProxy, skill.RequiredEnv, mapKeys(run.extraEnv), truncateEnvForLog(os.Getenv("OPENAI_API_KEY")))
 	if needsProxy {
 		// Build config from current LLM provider
 		var proxyCfg corelib.OpenAIProxyConfig
@@ -1299,15 +1605,15 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		run.extraEnv["OPENAI_API_KEY"] = "sk-maclaw-local-proxy"
 		run.extraEnv["OPENAI_BASE_URL"] = fmt.Sprintf("http://127.0.0.1:%d/v1", port)
 		run.extraEnv["OPENAI_MODEL"] = proxyCfg.Model
-		log.Printf("[skill-runner] openai proxy started on port %d for skill %q", port, skill.Name)
+		log.Printf("[skill-runner] run=%s owner=%q openai proxy started on port %d for skill %q", run.status.RunID, run.status.OwnerID, port, skill.Name)
 	}
 
 	// ── Dependency auto-install is now handled by the unified requirement
 	// system in StartRun (Registry.FixAll). The pip/npm packages are checked
 	// and installed before execution begins. ──
 
-	log.Printf("[skill-runner] starting skill %q (%d steps, mode=%s, dir=%s)",
-		skill.Name, len(skill.Steps), skill.Mode, skill.SkillDir)
+	log.Printf("[skill-runner] run=%s owner=%q starting skill %q (%d steps, mode=%s, dir=%s)",
+		run.status.RunID, run.status.OwnerID, skill.Name, len(skill.Steps), skill.Mode, skill.SkillDir)
 	if len(skill.RequiredArgs) > 0 {
 		log.Printf("[skill-runner]   required_args: %v", skill.RequiredArgs)
 	}
@@ -1361,8 +1667,8 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			}
 			run.status.Error = execErr.Error()
 			r.mu.Unlock()
-			r.updateUsageStats(skill, execErr)
 			r.finalizeRunOutcome(run, skillRunStatusFailed, execStart)
+			r.updateUsageStats(skill, execErr)
 			return
 		default:
 		}
@@ -1485,8 +1791,15 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		}
 		// Propagate skill-level required_env to bash steps for auto-injection.
 		resolvedStep = cskill.PrepareResolvedStepEnv(resolvedStep, skill.RequiredEnv, run.extraEnv)
-		restoreEnv := installSkillStepProcessEnv(resolvedStep.Action, run.extraEnv)
-		log.Printf("[skill-runner] step %d/%d: action=%s command=%q", i+1, len(skill.Steps), resolvedStep.Action, resolveCommandForDisplay(resolvedStep))
+		resolvedStep = remapSkillRunStepToWorkspace(resolvedStep, sourceSkillDir, run.workspaceDir)
+		if resolvedStep.Params == nil {
+			resolvedStep.Params = map[string]interface{}{}
+		}
+		resolvedStep.Params["_skill_run_id"] = run.status.RunID
+		resolvedStep.Params["_skill_owner_id"] = run.status.OwnerID
+		restoreEnv := installSkillStepProcessEnvForRun(run.status.RunID, run.status.OwnerID, resolvedStep.Action, run.extraEnv)
+		stepStart := time.Now()
+		log.Printf("[skill-runner] run=%s owner=%q step %d/%d: action=%s command=%q", run.status.RunID, run.status.OwnerID, i+1, len(skill.Steps), resolvedStep.Action, resolveCommandForDisplay(resolvedStep))
 		result, stepErr := func() (string, error) {
 			defer restoreEnv()
 			return r.executeStepWithPoll(globalCtx, run.status.RunID, resolvedStep, skill.SkillDir)
@@ -1530,7 +1843,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			run.status.Steps[i].Status = skillStepStatusFailed
 			run.status.Steps[i].Error = stepErr.Error()
 			run.status.Steps[i].Output = result
-			log.Printf("[skill-runner] step %d/%d FAILED: %v", i+1, len(skill.Steps), stepErr)
+			log.Printf("[skill-runner] run=%s owner=%q step %d/%d FAILED elapsed=%s: %v", run.status.RunID, run.status.OwnerID, i+1, len(skill.Steps), time.Since(stepStart).Truncate(time.Millisecond), stepErr)
 			// Extract error details if it's a bashStepError
 			if bErr, ok := stepErr.(*bashStepError); ok {
 				run.status.Steps[i].ExitCode = bErr.ExitCode()
@@ -1555,7 +1868,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		} else {
 			run.status.Steps[i].Status = skillStepStatusSuccess
 			run.status.Steps[i].Output = result
-			log.Printf("[skill-runner] step %d/%d OK (output %d bytes)", i+1, len(skill.Steps), len(result))
+			log.Printf("[skill-runner] run=%s owner=%q step %d/%d OK elapsed=%s (output %d bytes)", run.status.RunID, run.status.OwnerID, i+1, len(skill.Steps), time.Since(stepStart).Truncate(time.Millisecond), len(result))
 		}
 		r.mu.Unlock()
 	}
@@ -1572,6 +1885,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			run.monitorCancel()
 		}
 		r.mu.Unlock()
+		finishStatus = skillRunStatusCancelled.String()
 		r.finalizeRunOutcome(run, skillRunStatusCancelled, execStart)
 		return
 	}
@@ -1586,29 +1900,37 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	if run.monitorCancel != nil {
 		run.monitorCancel()
 	}
-	log.Printf("[skill-runner] skill %q finished: status=%s steps=%d elapsed=%s",
-		skill.Name, finalStatus, len(skill.Steps), time.Since(execStart).Truncate(time.Millisecond))
+	log.Printf("[skill-runner] run=%s owner=%q skill %q finished: status=%s steps=%d elapsed=%s",
+		run.status.RunID, run.status.OwnerID, skill.Name, finalStatus, len(skill.Steps), time.Since(execStart).Truncate(time.Millisecond))
 	r.mu.Unlock()
 
 	// 更新 skill 使用统计
-	r.updateUsageStats(skill, execErr)
-
+	finishStatus = finalStatus.String()
 	r.finalizeRunOutcome(run, finalStatus, execStart)
 
+	r.updateUsageStats(skill, execErr)
+
 	// 自动上传触发
-	r.tryAutoUpload(skill, run)
+	r.tryAutoUpload(originalSkill, run)
 }
 
 func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr error) {
 	if r == nil || r.executor == nil || r.executor.app == nil || skill == nil {
 		return
 	}
+	startedAt := time.Now()
 	shouldEmit := false
 	var updatedEntry *corelib.NLSkillEntry
 	successfulSkillName := ""
 
+	lockWaitStart := time.Now()
 	r.executor.mu.Lock()
+	if waited := time.Since(lockWaitStart); waited > 100*time.Millisecond {
+		log.Printf("[skill-runner] usage_stats lock_wait skill=%q waited=%s", skill.Name, waited.Round(time.Millisecond))
+	}
+	loadStart := time.Now()
 	skills := r.executor.loadSkills()
+	loadElapsed := time.Since(loadStart)
 	for i, s := range skills {
 		if s.Name == skill.Name {
 			skills[i].UsageCount++
@@ -1631,9 +1953,14 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 				// 2. LLM receives actionable repair suggestions
 				skills[i].LastError = formatExecErrorForStorage(execErr)
 			}
+			saveStart := time.Now()
 			_ = r.executor.saveSkills(skills)
+			saveElapsed := time.Since(saveStart)
 			log.Printf("[skill-runner] usage stats updated for %q: usage=%d success=%d failure=%d workaround=%d",
 				skill.Name, skills[i].UsageCount, skills[i].SuccessCount, skills[i].FailureCount, skills[i].WorkaroundCount)
+			if loadElapsed > 100*time.Millisecond || saveElapsed > 100*time.Millisecond {
+				log.Printf("[skill-runner] usage_stats io skill=%q load=%s save=%s", skill.Name, loadElapsed.Round(time.Millisecond), saveElapsed.Round(time.Millisecond))
+			}
 			shouldEmit = true
 			// Deep copy for async self-repair (outside lock).
 			if execErr != nil {
@@ -1646,6 +1973,9 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 		}
 	}
 	r.executor.mu.Unlock()
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		log.Printf("[skill-runner] usage_stats done skill=%q elapsed=%s", skill.Name, elapsed.Round(time.Millisecond))
+	}
 
 	// Notify frontend to refresh skill list with updated stats (outside lock).
 	if shouldEmit && r.executor.app != nil {
@@ -1760,10 +2090,13 @@ func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 		return
 	}
 
-	repairReport := r.scanRepairedSkill(entry)
 	app := (*App)(nil)
 	if r.executor != nil {
 		app = r.executor.app
+	}
+	var repairReport *cskill.ScanReport
+	if app == nil || !app.isRiskGuardrailOffMode() {
+		repairReport = r.scanRepairedSkill(entry)
 	}
 	missingScanBlocked := repairReport == nil && (app == nil || app.skillInstallMissingScanShouldBlock())
 	riskyScanBlocked := repairReport != nil && app != nil && app.skillInstallScanShouldBlock(repairReport)
@@ -1891,6 +2224,9 @@ func (r *SkillRunner) persistRepairResult(entry *corelib.NLSkillEntry) error {
 	if r == nil || r.executor == nil || entry == nil {
 		return nil
 	}
+	if isShellBrowserAutomationSkillEntry(*entry) {
+		return browserAutomationSkillRejectedError(entry.Name)
+	}
 	var yamlErr error
 	if strings.TrimSpace(entry.SkillDir) != "" {
 		if err := writeSkillYAMLForEntry(entry.SkillDir, entry); err != nil {
@@ -1948,7 +2284,8 @@ func (r *guiSkillRepairer) ChatCall(messages []map[string]string) (string, error
 	for i, m := range messages {
 		ifaces[i] = m
 	}
-	resp, err := doSimpleLLMRequest(context.Background(), r.cfg, ifaces, r.client, 60*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "skill-repair"})
+	resp, err := doSimpleLLMRequest(ctx, r.cfg, ifaces, r.client, 60*time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -2064,10 +2401,19 @@ func (r *SkillRunner) RecordWorkaround(skillName, lastError string) {
 var skillStepProcessEnvMu sync.Mutex
 
 func installSkillStepProcessEnv(action string, extraEnv map[string]string) func() {
+	return installSkillStepProcessEnvForRun("", "", action, extraEnv)
+}
+
+func installSkillStepProcessEnvForRun(runID, ownerID, action string, extraEnv map[string]string) func() {
 	if !classifySkillStepAction(action).UsesManagedProcessEnv() || len(extraEnv) == 0 {
 		return func() {}
 	}
+	waitStart := time.Now()
 	skillStepProcessEnvMu.Lock()
+	if waited := time.Since(waitStart); waited > 200*time.Millisecond {
+		log.Printf("[skill-runner] process env lock waited %s run=%s owner=%q action=%s env_keys=%d", waited.Round(time.Millisecond), runID, ownerID, action, len(extraEnv))
+	}
+	lockAcquiredAt := time.Now()
 	restores := make([]func(), 0, len(extraEnv))
 	for k, v := range extraEnv {
 		key := strings.TrimSpace(k)
@@ -2092,6 +2438,9 @@ func installSkillStepProcessEnv(action string, extraEnv map[string]string) func(
 		once.Do(func() {
 			for i := len(restores) - 1; i >= 0; i-- {
 				restores[i]()
+			}
+			if held := time.Since(lockAcquiredAt); held > time.Second {
+				log.Printf("[skill-runner] process env lock held %s run=%s owner=%q action=%s env_keys=%d", held.Round(time.Millisecond), runID, ownerID, action, len(extraEnv))
 			}
 			skillStepProcessEnvMu.Unlock()
 		})
@@ -2186,9 +2535,15 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 	case skillStepActionSendAndObserve:
 		return "", fmt.Errorf("external coding-session observe steps are disabled; coding tasks must run through CodingSubAgent")
 
+	case skillStepActionControlSession:
+		return "", fmt.Errorf("external coding-session control steps are disabled; coding tasks must run through CodingSubAgent")
+
 	case skillStepActionCallMCPTool:
 		serverRef, _ := step.Params["server_id"].(string)
 		toolName, _ := step.Params["tool_name"].(string)
+		if isDisabledExternalCodingSessionTool(toolName) {
+			return "", fmt.Errorf("external coding-session MCP target %q is disabled", toolName)
+		}
 		var args map[string]interface{}
 		switch v := step.Params["arguments"].(type) {
 		case map[string]interface{}:
@@ -2212,12 +2567,12 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 			if r.executor.app.localMCPManager == nil {
 				return "", fmt.Errorf("local MCP manager not initialized")
 			}
-			return r.executor.app.localMCPManager.CallTool(resolvedID, toolName, args)
+			return r.executor.app.localMCPManager.CallToolForOwner(strings.TrimSpace(nonEmptyStringFromAny(step.Params["_skill_owner_id"])), resolvedID, toolName, args)
 		}
 		if r.executor.mcpRegistry == nil {
 			return "", fmt.Errorf("MCP registry not initialized")
 		}
-		return r.executor.mcpRegistry.CallTool(resolvedID, toolName, args)
+		return r.executor.mcpRegistry.CallToolForOwner(strings.TrimSpace(nonEmptyStringFromAny(step.Params["_skill_owner_id"])), resolvedID, toolName, args)
 
 	case skillStepActionBash:
 		command, _ := step.Params["command"].(string)
@@ -2479,7 +2834,9 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	cmd.Stderr = &stderr
 
 	startTime := time.Now()
-	log.Printf("[skill-runner] bash exec: shell=%s workDir=%s timeout=%ds", filepath.Base(shellName), workDir, timeout)
+	runID, _ := params["_skill_run_id"].(string)
+	ownerID, _ := params["_skill_owner_id"].(string)
+	log.Printf("[skill-runner] bash exec: run=%s owner=%q shell=%s workDir=%s timeout=%ds", strings.TrimSpace(runID), strings.TrimSpace(ownerID), filepath.Base(shellName), workDir, timeout)
 	err := cmd.Start()
 	if err == nil {
 		err = coretool.WaitCommandWithContext(stepCtx, cmd)

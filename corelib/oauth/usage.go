@@ -84,11 +84,7 @@ func QueryUsageFrom(endpoint, accessToken string) (*UsageInfo, error) {
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			msg := string(body)
-			if len(msg) > 256 {
-				msg = msg[:256] + "..."
-			}
-			return nil, fmt.Errorf("costs API error (HTTP %d): %s", resp.StatusCode, msg)
+			return nil, fmt.Errorf("costs API error (HTTP %d): body_len=%d", resp.StatusCode, len(body))
 		}
 
 		var direct UsageInfo

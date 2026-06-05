@@ -12,6 +12,7 @@ import (
 func TestIsVEToolBlocked_BlockedTools(t *testing.T) {
 	blocked := []string{
 		"write_file", "edit_file", "edit_lines", "bash", "ssh", "browser",
+		"browser_navigate", "browser_click",
 		"create_session", "send_and_observe", "send_input",
 		"control_session", "interrupt_session", "kill_session",
 		"parallel_execute", "craft_tool",

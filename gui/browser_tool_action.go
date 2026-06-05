@@ -40,7 +40,9 @@ const (
 )
 
 func normalizeBrowserToolAction(action string) browserToolAction {
-	switch browserToolAction(strings.ToLower(strings.TrimSpace(action))) {
+	normalized := strings.ToLower(strings.TrimSpace(action))
+	normalized = strings.TrimPrefix(normalized, "browser_")
+	switch browserToolAction(normalized) {
 	case browserToolActionSessionStart:
 		return browserToolActionSessionStart
 	case browserToolActionSessionStop:
@@ -104,7 +106,7 @@ func normalizeBrowserToolAction(action string) browserToolAction {
 	case browserToolActionListFlows:
 		return browserToolActionListFlows
 	default:
-		return browserToolAction(strings.TrimSpace(action))
+		return browserToolAction(strings.TrimSpace(normalized))
 	}
 }
 
@@ -124,38 +126,35 @@ func (a browserToolAction) ShouldSyncSessions() bool {
 	}
 }
 
+var mergedBrowserSupportedActions = []browserToolAction{
+	browserToolActionSessionStart,
+	browserToolActionSessionStop,
+	browserToolActionObserve,
+	browserToolActionNavigate,
+	browserToolActionClick,
+	browserToolActionType,
+	browserToolActionWait,
+	browserToolActionRefresh,
+	browserToolActionBack,
+	browserToolActionExtract,
+	browserToolActionConnect,
+	browserToolActionScroll,
+	browserToolActionSelect,
+	browserToolActionListPages,
+	browserToolActionSwitchPage,
+	browserToolActionClose,
+	browserToolActionSetFiles,
+	browserToolActionInfo,
+	browserToolActionTaskRun,
+	browserToolActionTaskStatus,
+	browserToolActionTaskVerify,
+	browserToolActionListFlows,
+}
+
 func browserSupportedActionNames() []string {
-	return []string{
-		string(browserToolActionSessionStart),
-		string(browserToolActionSessionStop),
-		string(browserToolActionObserve),
-		string(browserToolActionNavigate),
-		string(browserToolActionClick),
-		string(browserToolActionType),
-		string(browserToolActionWait),
-		string(browserToolActionRefresh),
-		string(browserToolActionBack),
-		string(browserToolActionExtract),
-		string(browserToolActionConnect),
-		string(browserToolActionScreenshot),
-		string(browserToolActionGetText),
-		string(browserToolActionGetHTML),
-		string(browserToolActionEval),
-		string(browserToolActionScroll),
-		string(browserToolActionSelect),
-		string(browserToolActionListPages),
-		string(browserToolActionSwitchPage),
-		string(browserToolActionClose),
-		string(browserToolActionClickAt),
-		string(browserToolActionSetFiles),
-		string(browserToolActionInfo),
-		string(browserToolActionOCR),
-		string(browserToolActionTaskRun),
-		string(browserToolActionTaskStatus),
-		string(browserToolActionTaskVerify),
-		string(browserToolActionTaskReplay),
-		string(browserToolActionRecordStart),
-		string(browserToolActionRecordStop),
-		string(browserToolActionListFlows),
+	names := make([]string, 0, len(mergedBrowserSupportedActions))
+	for _, action := range mergedBrowserSupportedActions {
+		names = append(names, string(action))
 	}
+	return names
 }

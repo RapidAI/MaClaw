@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -190,6 +192,96 @@ func TestProjectIndex_OutputTitleAndPreviewWin(t *testing.T) {
 	}
 	if recent[0].Preview != "Generated descriptive titles from task results" {
 		t.Fatalf("Preview = %q, want output result preview", recent[0].Preview)
+	}
+}
+
+func TestProjectIndex_SearchArchivedByEnglishAndChineseKeywords(t *testing.T) {
+	pi := NewProjectIndex()
+	projectPath := "D:\\workprj\\archived-task"
+	pi.IndexEntry(&Entry{
+		ID:         "archived-output",
+		Title:      "Archived Task Notes",
+		Content:    "Task: archive search\nResult: Saved archive summary",
+		Category:   CategoryProjectKnowledge,
+		SourceType: "task_sediment",
+		Tags:       []string{"task_sediment", "tangible_output", "output_tool:edit_file", projectPath},
+		UpdatedAt:  time.Now(),
+	})
+	pi.SetArchived(projectPath, true)
+
+	if got := pi.Search("Task Notes", 10); len(got) != 0 {
+		t.Fatalf("Search without archive keyword returned archived task: %+v", got)
+	}
+	for _, query := range []string{"archive", "archived", "\u5f52\u6863", "\u6b78\u6a94"} {
+		got := pi.Search(query, 10)
+		if len(got) != 1 || got[0].ProjectPath != projectPath || !got[0].Archived {
+			t.Fatalf("Search(%q) = %+v, want archived project", query, got)
+		}
+	}
+}
+
+func TestProjectIndex_TaskPrefsNormalizeSlashVariants(t *testing.T) {
+	pi := NewProjectIndex()
+	projectPath := "D:\\workprj\\slash-pref-task"
+	slashPath := "D:/workprj/slash-pref-task"
+	pi.IndexEntry(&Entry{
+		ID:         "slash-pref-output",
+		Title:      "Slash Pref Task",
+		Content:    "Task: slash prefs\nResult: Saved prefs across path slash styles",
+		Category:   CategoryProjectKnowledge,
+		SourceType: "task_sediment",
+		Tags:       []string{"task_sediment", "tangible_output", "output_tool:edit_file", projectPath},
+		UpdatedAt:  time.Now(),
+	})
+
+	pi.SetCustomName(slashPath, "Custom Slash Name")
+	pi.SetPinned(slashPath, true)
+	if got := pi.CustomName(projectPath); got != "Custom Slash Name" {
+		t.Fatalf("CustomName(%q) = %q, want slash-variant custom name", projectPath, got)
+	}
+	if !pi.IsPinned(projectPath) {
+		t.Fatalf("IsPinned(%q) = false, want true from slash-variant pref", projectPath)
+	}
+
+	pi.SetHidden(slashPath, true)
+	if !pi.IsHidden(projectPath) {
+		t.Fatalf("IsHidden(%q) = false, want true from slash-variant pref", projectPath)
+	}
+	if got := pi.ListRecent(10); len(got) != 0 {
+		t.Fatalf("ListRecent after slash-variant hide = %+v, want hidden task omitted", got)
+	}
+}
+
+func TestProjectIndex_LoadPrefsNormalizesSlashVariants(t *testing.T) {
+	tempDir := t.TempDir()
+	prefsPath := filepath.Join(tempDir, "task_prefs.json")
+	if err := os.WriteFile(prefsPath, []byte(`{
+  "prefs": {
+    "D:/workprj/persisted-pref-task": { "name": "Persisted Slash Name", "hidden": true }
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(task_prefs.json): %v", err)
+	}
+	projectPath := "D:\\workprj\\persisted-pref-task"
+	pi := NewProjectIndex(tempDir)
+	pi.IndexEntry(&Entry{
+		ID:         "persisted-pref-output",
+		Title:      "Persisted Pref Task",
+		Content:    "Task: persisted prefs\nResult: Loaded prefs across path slash styles",
+		Category:   CategoryProjectKnowledge,
+		SourceType: "task_sediment",
+		Tags:       []string{"task_sediment", "tangible_output", "output_tool:edit_file", projectPath},
+		UpdatedAt:  time.Now(),
+	})
+
+	if got := pi.CustomName(projectPath); got != "Persisted Slash Name" {
+		t.Fatalf("CustomName(%q) = %q, want persisted slash-variant custom name", projectPath, got)
+	}
+	if !pi.IsHidden(projectPath) {
+		t.Fatalf("IsHidden(%q) = false, want true from persisted slash-variant pref", projectPath)
+	}
+	if got := pi.ListRecent(10); len(got) != 0 {
+		t.Fatalf("ListRecent after loading slash-variant hidden pref = %+v, want hidden task omitted", got)
 	}
 }
 

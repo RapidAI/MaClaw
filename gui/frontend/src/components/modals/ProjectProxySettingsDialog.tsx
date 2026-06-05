@@ -1,4 +1,4 @@
-import { SaveConfig } from '../../../wailsjs/go/main/App';
+import { PatchConfigFields } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 
 type ProjectProxySettingsDialogProps = {
@@ -50,7 +50,7 @@ export const ProjectProxySettingsDialog = ({
                                         );
                                         const newConfig = new main.AppConfig({ ...config, projects: newProjects });
                                         setConfig(newConfig);
-                                        SaveConfig(newConfig);
+                                        PatchConfigFields({ projects: newProjects }).catch((err) => console.error('Failed to save project proxy:', err));
                                     }
                                 }}
                             />
@@ -100,14 +100,13 @@ export const ProjectProxySettingsDialog = ({
                         {t("cancel")}
                     </button>
                     <button className="btn-primary" onClick={() => {
+                        let newConfig = config;
                         if (selectedProject && !selectedProject.use_proxy) {
                             const newProjects = config.projects.map((p: any) => p.id === selectedProject.id ? { ...p, use_proxy: true } : p);
-                            const newConfig = new main.AppConfig({ ...config, projects: newProjects });
+                            newConfig = new main.AppConfig({ ...config, projects: newProjects });
                             setConfig(newConfig);
-                            SaveConfig(newConfig);
-                        } else {
-                            SaveConfig(config);
                         }
+                        PatchConfigFields({ projects: newConfig.projects }).catch((err) => console.error('Failed to save project proxy:', err));
                     }}>
                         {saveLabel}
                     </button>

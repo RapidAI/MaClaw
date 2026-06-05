@@ -2074,6 +2074,291 @@ func TestSkillLifecycleEnqueueCanonicalizesNameBeforeDedupe(t *testing.T) {
 	}
 }
 
+func TestSkillLifecycleBackgroundProcessorUploadsDueFailedItem(t *testing.T) {
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	dir := filepath.Join(tempHome, "skills", "background-upload")
+	writeLifecycleTestSkill(t, dir, "background-upload")
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Background upload\n\nA verified skill retried by the upload worker.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+
+	var submitCount int
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "urls": []string{server.URL}})
+		case "/api/v1/skills/submit":
+			submitCount++
+			_ = json.NewEncoder(w).Encode(map[string]any{"submission_id": "sub-background"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "user@example.com"
+	cfg.RemoteViewerToken = "test-token"
+	cfg.RemoteHubCenterURL = server.URL
+	cfg.RemoteHubCenterURLs = []string{server.URL}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "background-upload", SkillDir: dir, Source: "file", Status: "active", UsageCount: 1, SuccessCount: 1}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillMarketClient = NewSkillMarketClient(app)
+	m := NewSkillLifecycleManager(app)
+	app.skillLifecycle = m
+
+	localHash := skillDirHash(dir)
+	now := time.Now()
+	failed := SkillUploadQueueItem{
+		ID:             skillUploadQueueID("background-upload", localHash),
+		SkillName:      "background-upload",
+		SkillDir:       dir,
+		LocalHash:      localHash,
+		Reason:         "background-retry",
+		Status:         skillUploadStatusFailed,
+		Attempts:       1,
+		LastError:      "temporary network failure",
+		NextAttemptAt:  now.Add(-time.Minute).Format(time.RFC3339),
+		QualityScore:   100,
+		RequireRuntime: true,
+		CreatedAt:      now.Add(-time.Hour).Format(time.RFC3339),
+		UpdatedAt:      now.Add(-time.Minute).Format(time.RFC3339),
+	}
+	if err := m.saveQueueLocked(skillUploadQueueFile{Items: []SkillUploadQueueItem{failed}}); err != nil {
+		t.Fatalf("saveQueueLocked() error = %v", err)
+	}
+	runnable, err := m.HasRunnableUploadItems(time.Now())
+	if err != nil || !runnable {
+		t.Fatalf("HasRunnableUploadItems() = %v, %v", runnable, err)
+	}
+
+	m.StartBackgroundProcessing(context.Background(), 25*time.Millisecond)
+	defer m.StopBackgroundProcessing()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		items, err := m.ListUploadQueue()
+		if err != nil {
+			t.Fatalf("ListUploadQueue() error = %v", err)
+		}
+		if len(items) == 1 && items[0].Status == skillUploadStatusUploaded {
+			if items[0].SubmissionID != "sub-background" || submitCount != 1 {
+				t.Fatalf("uploaded item = %+v submitCount=%d", items[0], submitCount)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	items, _ := m.ListUploadQueue()
+	t.Fatalf("background processor did not upload queue item: %+v submitCount=%d", items, submitCount)
+}
+
+func TestSkillLifecyclePartialTargetRetrySkipsCompletedHubCenter(t *testing.T) {
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	dir := filepath.Join(tempHome, "skills", "partial-target-skill")
+	writeLifecycleTestSkill(t, dir, "partial-target-skill")
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Partial target skill\n\nA verified skill for partial target retry.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+
+	var hubCenterHits int
+	var enterpriseHits int
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "urls": []string{server.URL}})
+		case "/api/v1/skills/submit":
+			hubCenterHits++
+			_ = json.NewEncoder(w).Encode(map[string]any{"submission_id": "sub-hubcenter"})
+		case "/api/capabilities/skills/submit":
+			enterpriseHits++
+			if enterpriseHits == 1 {
+				http.Error(w, "temporary enterprise failure", http.StatusBadGateway)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"submission_id": "sub-enterprise"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "user@example.com"
+	cfg.RemoteViewerToken = "test-token"
+	cfg.RemoteHubCenterURL = server.URL
+	cfg.RemoteHubCenterURLs = []string{server.URL}
+	cfg.RemoteHubURL = server.URL
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "partial-target-skill", SkillDir: dir, Source: "file", Status: "active", UsageCount: 1, SuccessCount: 1}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillMarketClient = NewSkillMarketClient(app)
+	m := NewSkillLifecycleManager(app)
+
+	if _, err := m.EnqueueUpload(context.Background(), "partial-target-skill", dir, "test", true, false); err != nil {
+		t.Fatalf("EnqueueUpload() error = %v", err)
+	}
+	if err := m.ProcessPendingUploads(context.Background(), 1); err != nil {
+		t.Fatalf("ProcessPendingUploads(first) error = %v", err)
+	}
+	items, err := m.ListUploadQueue()
+	if err != nil || len(items) != 1 {
+		t.Fatalf("queue after first process = %+v err=%v", items, err)
+	}
+	if items[0].Status != skillUploadStatusFailed || items[0].UploadedTargets[corelib.CapabilitySourceHubCenter] != "sub-hubcenter" {
+		t.Fatalf("first queue item = %+v", items[0])
+	}
+	items[0].NextAttemptAt = time.Now().Add(-time.Minute).Format(time.RFC3339)
+	if err := m.saveOrReplace(items[0]); err != nil {
+		t.Fatalf("saveOrReplace() error = %v", err)
+	}
+
+	if err := m.ProcessPendingUploads(context.Background(), 1); err != nil {
+		t.Fatalf("ProcessPendingUploads(second) error = %v", err)
+	}
+	items, err = m.ListUploadQueue()
+	if err != nil || len(items) != 1 {
+		t.Fatalf("queue after second process = %+v err=%v", items, err)
+	}
+	if items[0].Status != skillUploadStatusUploaded || items[0].SubmissionID != "sub-hubcenter;enterprise_hub=sub-enterprise" {
+		t.Fatalf("second queue item = %+v", items[0])
+	}
+	if hubCenterHits != 1 || enterpriseHits != 2 {
+		t.Fatalf("hubCenterHits=%d enterpriseHits=%d", hubCenterHits, enterpriseHits)
+	}
+}
+
+func TestSkillLifecycleMarkUploadedClassifiesEnterpriseOnlyBareSubmissionID(t *testing.T) {
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteHubURL = "https://enterprise.example"
+	cfg.RemoteViewerToken = "viewer-token"
+	cfg.CapabilityMarketPolicy.PreferredUploadTarget = corelib.CapabilitySourceEnterpriseHub
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	m := NewSkillLifecycleManager(app)
+	now := time.Now().Format(time.RFC3339)
+	item := SkillUploadQueueItem{ID: "enterprise-only", SkillName: "enterprise-only", Status: skillUploadStatusUploading, CreatedAt: now, UpdatedAt: now}
+	if err := m.saveQueueLocked(skillUploadQueueFile{Items: []SkillUploadQueueItem{item}}); err != nil {
+		t.Fatalf("saveQueueLocked() error = %v", err)
+	}
+
+	m.markUploaded("enterprise-only", "enterprise-submission")
+
+	items, err := m.ListUploadQueue()
+	if err != nil || len(items) != 1 {
+		t.Fatalf("ListUploadQueue() = %+v err=%v", items, err)
+	}
+	if items[0].UploadedTargets[corelib.CapabilitySourceEnterpriseHub] != "enterprise-submission" || items[0].UploadedTargets[corelib.CapabilitySourceHubCenter] != "" {
+		t.Fatalf("uploaded targets = %+v", items[0].UploadedTargets)
+	}
+}
+
+func TestSkillLifecycleMarkUploadedReplacesStaleUploadedTargets(t *testing.T) {
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteHubURL = "https://enterprise.example"
+	cfg.RemoteViewerToken = "viewer-token"
+	cfg.CapabilityMarketPolicy.PreferredUploadTarget = corelib.CapabilitySourceEnterpriseHub
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	m := NewSkillLifecycleManager(app)
+	now := time.Now().Format(time.RFC3339)
+	item := SkillUploadQueueItem{
+		ID:        "policy-switched",
+		SkillName: "policy-switched",
+		Status:    skillUploadStatusUploading,
+		UploadedTargets: map[string]string{
+			corelib.CapabilitySourceHubCenter: "old-hubcenter",
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := m.saveQueueLocked(skillUploadQueueFile{Items: []SkillUploadQueueItem{item}}); err != nil {
+		t.Fatalf("saveQueueLocked() error = %v", err)
+	}
+
+	m.markUploaded("policy-switched", "enterprise_hub=enterprise-submission")
+
+	items, err := m.ListUploadQueue()
+	if err != nil || len(items) != 1 {
+		t.Fatalf("ListUploadQueue() = %+v err=%v", items, err)
+	}
+	if items[0].UploadedTargets[corelib.CapabilitySourceEnterpriseHub] != "enterprise-submission" || items[0].UploadedTargets[corelib.CapabilitySourceHubCenter] != "" {
+		t.Fatalf("uploaded targets = %+v", items[0].UploadedTargets)
+	}
+}
+
+func TestSkillLifecycleRunnableProbeHonorsBackoff(t *testing.T) {
+	now := time.Now()
+	m := &SkillLifecycleManager{queuePath: filepath.Join(t.TempDir(), "queue.json")}
+	future := SkillUploadQueueItem{
+		ID:            "future-failed",
+		SkillName:     "future-failed",
+		Status:        skillUploadStatusFailed,
+		NextAttemptAt: now.Add(time.Hour).Format(time.RFC3339),
+		CreatedAt:     now.Add(-time.Hour).Format(time.RFC3339),
+		UpdatedAt:     now.Add(-time.Minute).Format(time.RFC3339),
+	}
+	if err := m.saveQueueLocked(skillUploadQueueFile{Items: []SkillUploadQueueItem{future}}); err != nil {
+		t.Fatalf("saveQueueLocked() error = %v", err)
+	}
+	runnable, err := m.HasRunnableUploadItems(now)
+	if err != nil {
+		t.Fatalf("HasRunnableUploadItems() error = %v", err)
+	}
+	if runnable {
+		t.Fatal("future failed item should not be runnable before backoff expires")
+	}
+	runnable, err = m.HasRunnableUploadItems(now.Add(2 * time.Hour))
+	if err != nil || !runnable {
+		t.Fatalf("HasRunnableUploadItems(after backoff) = %v, %v", runnable, err)
+	}
+}
+
 func TestSkillLifecycleRetryBlockedAndProcessUploadsReadySkill(t *testing.T) {
 	originalDefaultCenter := defaultRemoteHubCenterURL
 	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs

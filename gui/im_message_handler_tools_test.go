@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -600,6 +601,148 @@ func TestDiscoverToolActivatesDeferredToolDefinition(t *testing.T) {
 	}
 	if !toolDefsContain(gen.Generate(), "gui_observe") {
 		t.Fatalf("activated deferred tool should be included by Generate")
+	}
+}
+
+func TestDiscoverToolSkipsHiddenDispatchTools(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{Name: "browser", Description: "browser automation merged tool", Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
+		t.Fatalf("Register browser: %v", err)
+	}
+	if err := registry.Register(RegisteredTool{Name: "browser_navigate", Description: "", Tags: []string{"browser", "navigate"}, Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
+		t.Fatalf("Register browser_navigate: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry}
+
+	out := h.toolDiscoverTool(map[string]interface{}{"need": "browser navigate page"})
+	if strings.Contains(out, "browser_navigate") {
+		t.Fatalf("discover_tool should hide internal dispatch tools, got %q", out)
+	}
+	if !strings.Contains(out, "browser") {
+		t.Fatalf("discover_tool should still show merged browser tool, got %q", out)
+	}
+}
+
+func TestDirectInternalBrowserToolCallRewritesToMergedBrowser(t *testing.T) {
+	registry := NewToolRegistry()
+	var received map[string]interface{}
+	if err := registry.Register(RegisteredTool{
+		Name:        "browser",
+		Description: "browser automation merged tool",
+		Status:      RegToolAvailable,
+		Handler: func(args map[string]interface{}) string {
+			received = args
+			return "merged"
+		},
+	}); err != nil {
+		t.Fatalf("Register browser: %v", err)
+	}
+	if err := registry.Register(RegisteredTool{
+		Name:        "browser_navigate",
+		Description: "",
+		Status:      RegToolAvailable,
+		Handler: func(args map[string]interface{}) string {
+			return "legacy"
+		},
+	}); err != nil {
+		t.Fatalf("Register browser_navigate: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry}
+
+	result := h.executeToolDetailed("browser_navigate", `{"url":"https://example.com","session_id":"browser-session-test"}`, nil)
+	if result.Text != "merged" {
+		t.Fatalf("executeToolDetailed text = %q, want merged", result.Text)
+	}
+	if result.ToolName != "browser" {
+		t.Fatalf("ToolName = %q, want browser", result.ToolName)
+	}
+	if received["action"] != "navigate" || received["url"] != "https://example.com" {
+		t.Fatalf("merged browser args = %#v", received)
+	}
+}
+
+func TestInternalBrowserToolCallJSONRewriteAddsAction(t *testing.T) {
+	name, argsJSON, rewritten := rewriteInternalBrowserToolCallJSON("browser_click", `{"session_id":"browser-session-test","ref":"@e1"}`)
+	if !rewritten || name != "browser" {
+		t.Fatalf("rewrite = (%q, %q, %v), want browser/.../true", name, argsJSON, rewritten)
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		t.Fatalf("rewritten args JSON invalid: %v", err)
+	}
+	if args["action"] != "click" || args["ref"] != "@e1" {
+		t.Fatalf("rewritten args = %#v", args)
+	}
+}
+
+func TestMergedBrowserToolReceivesRuntimeOwner(t *testing.T) {
+	if !toolAcceptsRuntimePolicyOwnerArg("browser") {
+		t.Fatal("merged browser tool must accept hidden runtime owner args")
+	}
+	registry := NewToolRegistry()
+	var received map[string]interface{}
+	if err := registry.Register(RegisteredTool{
+		Name:        "browser",
+		Description: "browser automation merged tool",
+		Status:      RegToolAvailable,
+		Handler: func(args map[string]interface{}) string {
+			received = cloneMISInterfaceMap(args)
+			return "merged"
+		},
+	}); err != nil {
+		t.Fatalf("Register browser: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry}
+
+	result := h.executeToolDetailedWithRuntimeState("owner-browser", true, "", "browser", `{"action":"session_start"}`, "", nil)
+	if result.Text != "merged" {
+		t.Fatalf("executeToolDetailedWithRuntimeState text = %q, want merged", result.Text)
+	}
+	if got := received[registeredToolPolicyOwnerIDField]; got != "owner-browser" {
+		t.Fatalf("runtime owner = %#v, want owner-browser; args=%#v", got, received)
+	}
+}
+
+func TestUnstableBrowserToolCallRejectedBeforeExecution(t *testing.T) {
+	registry := NewToolRegistry()
+	called := false
+	if err := registry.Register(RegisteredTool{
+		Name:        "browser",
+		Description: "browser automation merged tool",
+		Status:      RegToolAvailable,
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "legacy path reached"
+		},
+	}); err != nil {
+		t.Fatalf("Register browser: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry}
+
+	result := h.executeToolDetailed("browser", `{"action":"eval","expression":"document.cookie"}`, nil)
+	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("expected policy rejection, got outcome=%v failure=%v text=%q", result.Outcome, result.FailureKind, result.Text)
+	}
+	if called {
+		t.Fatal("unstable browser action reached browser handler")
+	}
+}
+
+func TestAgentLoopRejectsUnstableBrowserBeforeAudit(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	recorded := false
+
+	result := h.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		ToolCall: llm.ToolCall{ID: "call-1", Function: llm.ToolCallFunction{Name: "browser_eval", Arguments: `{"expression":"fetch('/api', {method: 'POST'})"}`}},
+		RecordToolCall: func(string, string, string) {
+			recorded = true
+		},
+	})
+	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("expected policy rejection, got outcome=%v failure=%v text=%q", result.Outcome, result.FailureKind, result.Text)
+	}
+	if recorded {
+		t.Fatal("unstable browser action should be rejected before tool-call audit/progress")
 	}
 }
 
@@ -1319,6 +1462,30 @@ func TestToolCallMCPToolRejectsBuiltinToolRefs(t *testing.T) {
 	}
 }
 
+func TestToolCallMCPToolRejectsDisabledExternalCodingSessionTargets(t *testing.T) {
+	handler := &IMMessageHandler{}
+	for _, name := range []string{"create_session", "send_and_observe", "control_session"} {
+		out := handler.toolCallMCPTool(map[string]interface{}{
+			"server_id": "external",
+			"tool_name": name,
+		})
+		if !strings.Contains(out, name+" is disabled") {
+			t.Fatalf("call_mcp_tool target %s should be disabled, got %q", name, out)
+		}
+	}
+}
+
+func TestPreCheckToolArgsForAgentLoopRejectsDisabledMCPExternalCodingSessionTargets(t *testing.T) {
+	handler := &IMMessageHandler{}
+	result := handler.preCheckMCPToolArgsForAgentLoop(map[string]interface{}{
+		"server_id": "external",
+		"tool_name": "create_session",
+	}, 1)
+	if result == nil || result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("precheck should reject disabled MCP target before resolution, got %#v", result)
+	}
+}
+
 func TestPreCheckToolArgsForAgentLoopReturnsMCPValidationToLLM(t *testing.T) {
 	registry := NewToolRegistry()
 	if err := registry.Register(RegisteredTool{
@@ -1690,6 +1857,19 @@ func TestExternalCodingSessionFollowupToolsDisabled(t *testing.T) {
 		result := call()
 		if !contains(result, name+" is disabled") || !contains(result, "CodingSubAgent") {
 			t.Fatalf("%s should be disabled with CodingSubAgent guidance, got: %s", name, result)
+		}
+	}
+}
+
+func TestExecuteToolDetailedRejectsExternalCodingSessionTools(t *testing.T) {
+	handler := &IMMessageHandler{registry: NewToolRegistry()}
+	for _, name := range []string{"create_session", "send_and_observe", "control_session"} {
+		result := handler.executeToolDetailed(name, `{}`, nil)
+		if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected {
+			t.Fatalf("%s outcome = %s/%s, want failed/policy_rejected", name, result.Outcome, result.FailureKind)
+		}
+		if !contains(result.Text, name+" is disabled") {
+			t.Fatalf("%s should return disabled text, got %q", name, result.Text)
 		}
 	}
 }
@@ -2088,46 +2268,21 @@ func containsStr(s, substr string) bool {
 // Tests for Task 5: create_session provider parameter
 // ---------------------------------------------------------------------------
 
-// TestBuildToolDefinitions_CreateSessionHasProviderParam verifies that the
-// create_session tool definition includes the provider parameter.
+// TestBuildToolDefinitions_CreateSessionHasProviderParam verifies that legacy
+// external coding-session tools no longer appear in the hardcoded tool catalog.
 func TestBuildToolDefinitions_CreateSessionHasProviderParam(t *testing.T) {
 	handler := &IMMessageHandler{app: &App{}}
 	tools := handler.buildToolDefinitions()
+	for _, name := range []string{"create_session", "send_and_observe", "control_session"} {
+		assertToolDefinitionAbsent(t, tools, name)
+	}
+}
 
-	var createSessionDef map[string]interface{}
+func assertToolDefinitionAbsent(t *testing.T, tools []map[string]interface{}, name string) {
+	t.Helper()
 	for _, tool := range tools {
-		name := extractToolName(tool)
-		if name == "create_session" {
-			createSessionDef = tool
-			break
-		}
-	}
-	if createSessionDef == nil {
-		t.Fatal("create_session tool not found in buildToolDefinitions")
-	}
-
-	// Extract the function.parameters.properties to check for "provider".
-	fn, _ := createSessionDef["function"].(map[string]interface{})
-	if fn == nil {
-		t.Fatal("create_session missing function field")
-	}
-	params, _ := fn["parameters"].(map[string]interface{})
-	if params == nil {
-		t.Fatal("create_session missing parameters field")
-	}
-	props, _ := params["properties"].(map[string]interface{})
-	if props == nil {
-		t.Fatal("create_session missing properties field")
-	}
-	if _, ok := props["provider"]; !ok {
-		t.Error("create_session tool definition missing 'provider' parameter")
-	}
-
-	// Verify provider is NOT in required list (it's optional).
-	required, _ := params["required"].([]string)
-	for _, r := range required {
-		if r == "provider" {
-			t.Error("provider should not be in required list")
+		if extractToolName(tool) == name {
+			t.Fatalf("%s should not be exposed in buildToolDefinitions", name)
 		}
 	}
 }
@@ -2177,36 +2332,12 @@ func TestToolCreateSession_WithProviderPassedThrough(t *testing.T) {
 	}
 }
 
-// TestBuildToolDefinitions_CreateSessionHasResumeSessionIDParam verifies that the
-// create_session tool definition includes the resume_session_id parameter.
+// TestBuildToolDefinitions_CreateSessionHasResumeSessionIDParam pins removal of
+// create_session from the legacy tool catalog.
 func TestBuildToolDefinitions_CreateSessionHasResumeSessionIDParam(t *testing.T) {
 	handler := &IMMessageHandler{app: &App{}}
 	tools := handler.buildToolDefinitions()
-
-	var createSessionDef map[string]interface{}
-	for _, tool := range tools {
-		name := extractToolName(tool)
-		if name == "create_session" {
-			createSessionDef = tool
-			break
-		}
-	}
-	if createSessionDef == nil {
-		t.Fatal("create_session tool not found in buildToolDefinitions")
-	}
-
-	fn, _ := createSessionDef["function"].(map[string]interface{})
-	params, _ := fn["parameters"].(map[string]interface{})
-	props, _ := params["properties"].(map[string]interface{})
-	if _, ok := props["resume_session_id"]; !ok {
-		t.Error("create_session tool definition missing 'resume_session_id' parameter")
-	}
-	required, _ := params["required"].([]string)
-	for _, r := range required {
-		if r == "resume_session_id" {
-			t.Error("resume_session_id should not be in required list")
-		}
-	}
+	assertToolDefinitionAbsent(t, tools, "create_session")
 }
 
 // TestToolCreateSession_ProviderDescriptionInToolDef verifies the create_session
@@ -2668,30 +2799,12 @@ func TestToolCreateSession_UserSpecifiedProviderUsed(t *testing.T) {
 // Tests for Task 3: create_session project_id parameter
 // ---------------------------------------------------------------------------
 
-// TestBuildToolDefinitions_CreateSessionHasProjectIDParam verifies that the
-// create_session tool definition includes the project_id parameter.
+// TestBuildToolDefinitions_CreateSessionHasProjectIDParam pins removal of
+// create_session from the legacy tool catalog.
 func TestBuildToolDefinitions_CreateSessionHasProjectIDParam(t *testing.T) {
 	handler := &IMMessageHandler{app: &App{}}
 	tools := handler.buildToolDefinitions()
-
-	var createSessionDef map[string]interface{}
-	for _, tool := range tools {
-		name := extractToolName(tool)
-		if name == "create_session" {
-			createSessionDef = tool
-			break
-		}
-	}
-	if createSessionDef == nil {
-		t.Fatal("create_session tool not found in buildToolDefinitions")
-	}
-
-	fn, _ := createSessionDef["function"].(map[string]interface{})
-	params, _ := fn["parameters"].(map[string]interface{})
-	props, _ := params["properties"].(map[string]interface{})
-	if _, ok := props["project_id"]; !ok {
-		t.Error("create_session tool definition missing 'project_id' parameter")
-	}
+	assertToolDefinitionAbsent(t, tools, "create_session")
 }
 
 // TestToolCreateSession_ProjectIDResolvesSuccessfully verifies that when
@@ -2986,5 +3099,29 @@ func TestToolBashRejectsRawSSHCommand(t *testing.T) {
 	result := handler.toolBash(map[string]interface{}{"command": "ssh root@example.com uptime"}, nil)
 	if !strings.Contains(result, "Raw ssh/scp/sftp") || !strings.Contains(result, "builtin ssh tool") {
 		t.Fatalf("expected raw ssh command rejection, got: %s", result)
+	}
+}
+
+func TestToolBashRejectsBroadBrowserKillCommand(t *testing.T) {
+	handler := &IMMessageHandler{}
+	result := handler.toolBash(map[string]interface{}{"command": "taskkill /f /im chrome.exe"}, nil)
+	if !strings.Contains(result, "Broad Chrome/Edge process kill") || !strings.Contains(result, "persistent browser process and login/cookies are preserved") {
+		t.Fatalf("expected browser kill rejection, got: %s", result)
+	}
+}
+
+func TestToolBashRejectsShellBrowserAutomationCommand(t *testing.T) {
+	handler := &IMMessageHandler{}
+	result := handler.toolBash(map[string]interface{}{"command": `python -c "from playwright.sync_api import sync_playwright; sync_playwright().start().chromium.connect_over_cdp('http://127.0.0.1:3888')"`}, nil)
+	if !strings.Contains(result, "Shell Playwright/Puppeteer/Selenium/CDP/screenshot browser automation is disabled") || !strings.Contains(result, "stable browser tool/session mechanism") {
+		t.Fatalf("expected shell browser automation rejection, got: %s", result)
+	}
+}
+
+func TestToolBashRejectsAuthenticatedBrowserSideEffectHTTPCommand(t *testing.T) {
+	handler := &IMMessageHandler{}
+	result := handler.toolBash(map[string]interface{}{"command": `curl -X POST https://www.zhihu.com/api/v4/pins -H "x-csrftoken: token" --data-raw "{}"`}, nil)
+	if !strings.Contains(result, "Direct authenticated browser-side HTTP side effects") || !strings.Contains(result, "Use the browser tool") {
+		t.Fatalf("expected browser side-effect HTTP rejection, got: %s", result)
 	}
 }

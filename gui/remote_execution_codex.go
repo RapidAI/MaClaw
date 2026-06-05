@@ -27,7 +27,7 @@ func NewCodexSDKExecutionStrategy() *CodexSDKExecutionStrategy {
 }
 
 func (s *CodexSDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
-	log.Printf("[codex-lifecycle] ▶ Starting Codex SDK process: cmd=%q, args=%v, cwd=%q", cmd.Command, cmd.Args, cmd.Cwd)
+	log.Printf("[codex-lifecycle] ▶ Starting Codex SDK process: cmd=%q, args_summary=%s, cwd=%q", cmd.Command, summarizeLaunchArgs(cmd.Args), cmd.Cwd)
 
 	execPath, err := resolveExecutablePath(cmd.Command)
 	if err != nil {
@@ -46,10 +46,10 @@ func (s *CodexSDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, err
 	}
 
 	if err := c.Start(); err != nil {
-		log.Printf("[codex-lifecycle] ✖ Process start failed: cmd=%s, args=%v, cwd=%s, error=%v",
-			execPath, args, cmd.Cwd, err)
-		return nil, fmt.Errorf("codex-sdk: start failed: cmd=%s args=%v cwd=%s: %w",
-			execPath, args, cmd.Cwd, err)
+		log.Printf("[codex-lifecycle] ✖ Process start failed: cmd=%s, args_summary=%s, cwd=%s, error=%v",
+			execPath, summarizeLaunchArgs(args), cmd.Cwd, err)
+		return nil, fmt.Errorf("codex-sdk: start failed: cmd=%s args_summary=%s cwd=%s: %w",
+			execPath, summarizeLaunchArgs(args), cmd.Cwd, err)
 	}
 
 	log.Printf("[codex-lifecycle] ✔ Codex SDK process started: pid=%d, cmd=%s, cwd=%s", c.Process.Pid, execPath, cmd.Cwd)
@@ -70,8 +70,8 @@ func (s *CodexSDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, err
 
 	// Emit launch diagnostics into the output channel so they appear in the
 	// session preview — this is critical for debugging headless remote launches.
-	launchInfo := fmt.Sprintf("[codex-launch] pid=%d cmd=%s args=%v cwd=%s",
-		handle.pid, execPath, args, cmd.Cwd)
+	launchInfo := fmt.Sprintf("[codex-launch] pid=%d cmd=%s args_summary=%s cwd=%s",
+		handle.pid, execPath, summarizeLaunchArgs(args), cmd.Cwd)
 	handle.outputCh <- []byte(launchInfo + "\n")
 
 	// Log key environment variables (redact API keys).

@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 20
+const currentSchemaVersion = 23
 
 type SQLiteStore struct {
 	db        *sql.DB
@@ -165,6 +165,21 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if version < 21 {
+		if err := s.applyMigrationV21(ctx); err != nil {
+			return err
+		}
+	}
+	if version < 22 {
+		if err := s.applyMigrationV22(ctx); err != nil {
+			return err
+		}
+	}
+	if version < 23 {
+		if err := s.applyMigrationV23(ctx); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -255,7 +270,7 @@ func (s *SQLiteStore) applyMigrationV1(ctx context.Context) error {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, currentSchemaVersion, formatTime(time.Now().UTC())); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 1, formatTime(time.Now().UTC())); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1151,6 +1166,170 @@ func (s *SQLiteStore) applyMigrationV20(ctx context.Context) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 20, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (s *SQLiteStore) applyMigrationV21(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, column := range []struct{ name, ddl string }{
+		{"admin_scope", `ALTER TABLE admin_users ADD COLUMN admin_scope TEXT NOT NULL DEFAULT 'tenant'`},
+	} {
+		exists, err := sqliteColumnExists(ctx, tx, "admin_users", column.name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := tx.ExecContext(ctx, column.ddl); err != nil {
+				return err
+			}
+		}
+	}
+	exists, err := sqliteColumnExists(ctx, tx, "admin_sessions", "admin_scope")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE admin_sessions ADD COLUMN admin_scope TEXT NOT NULL DEFAULT 'tenant'`); err != nil {
+			return err
+		}
+	}
+	var globalAdminCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM admin_users WHERE admin_scope = 'global' AND enabled = 1 AND lower(role) = 'data_admin'`).Scan(&globalAdminCount); err != nil {
+		return err
+	}
+	if globalAdminCount == 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE admin_users
+			SET admin_scope = 'global'
+			WHERE id = (
+				SELECT id FROM admin_users
+				WHERE enabled = 1 AND lower(role) = 'data_admin'
+				ORDER BY created_at, tenant_id, username
+				LIMIT 1
+			)`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE admin_sessions
+		SET admin_scope = 'global'
+		WHERE user_id IN (SELECT id FROM admin_users WHERE admin_scope = 'global')`); err != nil {
+		return err
+	}
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS data_tenants(
+			id TEXT PRIMARY KEY,
+			hub_tenant_id TEXT NOT NULL DEFAULT '',
+			slug TEXT NOT NULL DEFAULT '',
+			name TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'active',
+			primary_domain TEXT NOT NULL DEFAULT '',
+			domains_json TEXT NOT NULL DEFAULT '[]',
+			virtual_mail_domain TEXT NOT NULL DEFAULT '',
+			source TEXT NOT NULL DEFAULT 'hub',
+			synced_at TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_users_scope_tenant ON admin_users(admin_scope, tenant_id, username)`,
+		`CREATE INDEX IF NOT EXISTS idx_data_tenants_status ON data_tenants(status, id)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO data_tenants(id, hub_tenant_id, slug, name, status, source, synced_at, updated_at) VALUES('default', 'default', 'default', 'Default', 'active', 'local', ?, ?)`, formatTime(time.Now().UTC()), formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 21, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (s *SQLiteStore) applyMigrationV22(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS hub_registration(
+			id TEXT PRIMARY KEY,
+			hub_base_url TEXT NOT NULL DEFAULT '',
+			platform_id TEXT NOT NULL DEFAULT '',
+			platform_name TEXT NOT NULL DEFAULT '',
+			callback_base_url TEXT NOT NULL DEFAULT '',
+			virtual_mail_domain TEXT NOT NULL DEFAULT '',
+			public_key_pem TEXT NOT NULL DEFAULT '',
+			private_key_pem TEXT NOT NULL DEFAULT '',
+			callback_secret TEXT NOT NULL DEFAULT '',
+			registered INTEGER NOT NULL DEFAULT 0,
+			last_registered_at TEXT NOT NULL DEFAULT '',
+			last_synced_at TEXT NOT NULL DEFAULT '',
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 22, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (s *SQLiteStore) applyMigrationV23(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	exists, err := sqliteColumnExists(ctx, tx, "data_tenants", "virtual_mail_domain")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE data_tenants ADD COLUMN virtual_mail_domain TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 23, formatTime(time.Now().UTC())); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

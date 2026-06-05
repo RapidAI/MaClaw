@@ -70,48 +70,40 @@ func (a *App) GetProxyConfig() map[string]interface{} {
 
 // SaveProxyConfig saves the proxy configuration from the frontend and applies it.
 func (a *App) SaveProxyConfig(data map[string]interface{}) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-
+	patch := make(map[string]interface{})
 	if v, ok := data["enabled"].(bool); ok {
-		cfg.DefaultProxyEnabled = v
+		patch["default_proxy_enabled"] = v
 	}
 	if v, ok := data["protocol"].(string); ok {
-		cfg.DefaultProxyProtocol = v
+		patch["default_proxy_protocol"] = v
 	}
 	if v, ok := data["host"].(string); ok {
-		cfg.DefaultProxyHost = v
+		patch["default_proxy_host"] = v
 	}
 	if v, ok := data["port"].(string); ok {
-		cfg.DefaultProxyPort = v
+		patch["default_proxy_port"] = v
 	}
 	if v, ok := data["username"].(string); ok {
-		cfg.DefaultProxyUsername = v
+		patch["default_proxy_username"] = v
 	}
 	if v, ok := data["password"].(string); ok {
-		cfg.DefaultProxyPassword = v
+		patch["default_proxy_password"] = v
 	}
 	if v, ok := data["bypass"].(string); ok {
-		cfg.DefaultProxyBypass = v
+		patch["default_proxy_bypass"] = v
 	}
 	if v, ok := data["scope_maclaw"].(bool); ok {
-		cfg.DefaultProxyScopeMaclaw = v
+		patch["default_proxy_scope_maclaw"] = v
 	}
 	if v, ok := data["scope_coding_tools"].(bool); ok {
-		cfg.DefaultProxyScopeCodingTools = v
+		patch["default_proxy_scope_coding_tools"] = v
 	}
 	if v, ok := data["scope_agent"].(bool); ok {
-		cfg.DefaultProxyScopeAgent = v
+		patch["default_proxy_scope_agent"] = v
 	}
-
-	if err := a.SaveConfig(cfg); err != nil {
+	if _, err := a.PatchConfigFields(patch); err != nil {
 		return err
 	}
-
-	// Apply proxy changes immediately
-	a.applyAgentProxy()
 	return nil
 }
 

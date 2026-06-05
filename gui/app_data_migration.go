@@ -303,13 +303,8 @@ func (a *App) SetDataDir(newDir string) string {
 		}
 	}
 
-	// Save to config.
-	config, err := a.LoadConfig()
-	if err != nil {
-		return fmt.Sprintf("加载配置失败: %v", err)
-	}
-	config.DataDir = newDir
-	if err := a.SaveConfig(config); err != nil {
+	// Save only data_dir so concurrent settings changes are not overwritten.
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) { cfg.DataDir = newDir }); err != nil {
 		return fmt.Sprintf("保存配置失败: %v", err)
 	}
 

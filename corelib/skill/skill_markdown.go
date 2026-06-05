@@ -2012,7 +2012,7 @@ func extractOperationLabeledBlocks(content string) map[string]string {
 //
 //	<!-- extract: SESSION_ID=sessionId[":]\s*([a-f0-9-]+) -->
 //	```bash
-//	python3 create_session.py "hello"
+//	python3 session_example.py "hello"
 //	```
 //
 // This returns [{SESSION_ID: `sessionId[":]\s*([a-f0-9-]+)`}] for the first

@@ -262,7 +262,7 @@ func (a *App) RecommendTool(taskDescription string) (string, string) {
 	}
 	// Get installed tools by checking which known tools have their binary available.
 	var installed []string
-	for _, tool := range []string{"claude", "codex", "gemini", "cursor", "opencode", "iflow", "kilo"} {
+	for _, tool := range []string{"claude", "codex", "opencode", "iflow", "kilo"} {
 		meta, ok := remoteToolCatalog[tool]
 		if !ok {
 			continue
@@ -674,7 +674,7 @@ func (a *App) GetHubRecommendations() ([]MixedSkillSearchResult, error) {
 			Name:        r.Name,
 			Description: r.Description,
 			Source:      "skillhub",
-			SourceLabel: "SkillHub",
+			SourceLabel: mixedSourceLabel("skillhub"),
 			TrustLevel:  r.TrustLevel,
 			Version:     r.Version,
 			Author:      r.Author,
@@ -837,13 +837,10 @@ func (a *App) SetAutoCompress(enabled bool) error {
 	if compressorErr != nil {
 		return compressorErr
 	}
-	// Persist to config.
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.MemoryAutoCompress = enabled
-	return a.SaveConfig(cfg)
+	// Persist to config without rewriting a stale full snapshot.
+	return a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.MemoryAutoCompress = enabled
+	})
 }
 
 // GetAutoCompressStatus returns the current state of the auto-compression service (Wails binding).
@@ -1013,12 +1010,9 @@ func (a *App) SetMemoryMaxBackups(n int) error {
 	if n < memory.MinBackups {
 		n = memory.MinBackups
 	}
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.MemoryMaxBackups = n
-	if err := a.SaveConfig(cfg); err != nil {
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.MemoryMaxBackups = n
+	}); err != nil {
 		return err
 	}
 	if a.memoryStore == nil {
@@ -1210,7 +1204,7 @@ func (a *App) ListTemplates() []remote.SessionTemplate {
 
 // CreateTemplate creates a new session template (Wails binding).
 func (a *App) CreateTemplate(name, tool, projectPath, modelConfig string, yoloMode bool) error {
-	if err := a.ensureWorkflowAllowsRemoteToolCall("create_session", map[string]interface{}{"action": "create_template", "name": name, "tool": tool, "project_path": projectPath}); err != nil {
+	if err := a.ensureWorkflowAllowsRemoteToolCall(remoteTemplatePolicyToolName, map[string]interface{}{"action": "create_template", "name": name, "tool": tool, "project_path": projectPath}); err != nil {
 		return err
 	}
 	a.ensureTemplateManager()
@@ -1228,7 +1222,7 @@ func (a *App) CreateTemplate(name, tool, projectPath, modelConfig string, yoloMo
 
 // DeleteTemplate removes the session template with the given name (Wails binding).
 func (a *App) DeleteTemplate(name string) error {
-	if err := a.ensureWorkflowAllowsRemoteToolCall("create_session", map[string]interface{}{"action": "delete_template", "name": name}); err != nil {
+	if err := a.ensureWorkflowAllowsRemoteToolCall(remoteTemplatePolicyToolName, map[string]interface{}{"action": "delete_template", "name": name}); err != nil {
 		return err
 	}
 	a.ensureTemplateManager()
@@ -1412,6 +1406,7 @@ type AIAssistantSendRequest struct {
 	ResumeSlotID                string                      `json:"resume_slot_id,omitempty"`
 	StartNewTask                bool                        `json:"start_new_task,omitempty"`
 	DismissSlotID               string                      `json:"dismiss_slot_id,omitempty"`
+	Lang                        string                      `json:"lang,omitempty"`
 	ResumeSessionID             string                      `json:"resume_session_id,omitempty"`
 	DismissRecoverableSessionID string                      `json:"dismiss_recoverable_session_id,omitempty"`
 	UIAction                    bool                        `json:"ui_action,omitempty"`
@@ -1521,6 +1516,9 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	if text == "" {
 		return nil, fmt.Errorf("message text is required")
 	}
+	rawProjectPath := strings.TrimSpace(req.ProjectPath)
+	projectPath := normalizeProjectSessionPath(req.ProjectPath)
+	req.ProjectPath = projectPath
 	if resp, handled, err := a.handleAgentViewControlMessage(text); handled {
 		normalizeArtifactResponseSource(resp)
 		return resp, err
@@ -1536,21 +1534,30 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		}
 		return resp, nil
 	}
-	hubClient := a.hubClient()
-	if hubClient == nil {
-		return nil, fmt.Errorf("AI assistant not initialized")
-	}
-
 	requestID := strings.TrimSpace(req.RequestID)
 	if requestID == "" {
 		requestID = fmt.Sprintf("desktop-ai-%d", time.Now().UnixNano())
 	}
+	if rawProjectPath != "" && rawProjectPath != projectPath {
+		log.Printf("[AI assistant] normalized project path request_id=%s raw=%q normalized=%q", requestID, rawProjectPath, projectPath)
+	}
+	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
+	if projectPath != "" && a.isProjectTaskClosed(projectPath) {
+		log.Printf("[AI assistant] reject closed project request request_id=%s session_key=%q project_path=%q", requestID, userID, projectPath)
+		a.cancelProjectTaskLoop(projectPath)
+		return nil, fmt.Errorf("project task is closed: %s", projectPath)
+	}
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return nil, fmt.Errorf("AI assistant not initialized")
+	}
+	log.Printf("[AI assistant] enqueue request request_id=%s session_key=%q project_path=%q text_len=%d", requestID, userID, projectPath, len(text))
 
 	// All messages run in a background goroutine so the Wails IPC channel is
 	// freed immediately. The final response is pushed via the
 	// "ai-assistant-response" event. This prevents the WebView2 message loop
 	// from being blocked during long-running agent loops.
-	go a.runAIAssistantMessageAsync(req, hubClient, requestID, text)
+	go a.runAIAssistantMessageAsyncForUser(req, hubClient, requestID, text, userID)
 
 	return &IMAgentResponse{
 		RequestID: requestID,
@@ -1559,11 +1566,7 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 }
 
 func desktopAIAssistantUserIDForProjectPath(projectPath string) string {
-	projectPath = strings.TrimSpace(projectPath)
-	if projectPath == "" {
-		return desktopUserID
-	}
-	return fmt.Sprintf("desktop-user:%s", projectPath)
+	return projectSessionOwnerID(projectPath)
 }
 
 // runAIAssistantMessageAsync executes the agent loop in a background goroutine
@@ -1679,10 +1682,23 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	if userID == "" {
 		userID = desktopAIAssistantUserIDForProjectPath(req.ProjectPath)
 	}
+	projectPath := normalizeProjectSessionPath(req.ProjectPath)
+	req.ProjectPath = projectPath
+	log.Printf("[AI assistant] async start request_id=%s session_key=%q project_path=%q text_len=%d", requestID, userID, projectPath, len(text))
+	// Foreground QoS is owned by beginAgentLoopRuntime, the canonical lifetime
+	// of an agent loop. The Wails request wrapper can outlive the loop while it
+	// emits final events or runs post-processing; counting it here makes the LLM
+	// scheduler see stale foreground work and can block unrelated tabs.
+	log.Printf("[AI assistant] desktop request accepted request_id=%s session_key=%q project_path=%q", requestID, userID, projectPath)
+	msgLang := strings.TrimSpace(req.Lang)
+	if msgLang == "" {
+		msgLang = a.CurrentLanguage
+	}
 	msg := IMUserMessage{
 		UserID:                      userID,
 		Platform:                    desktopPlatform,
 		Text:                        text,
+		Lang:                        msgLang,
 		ResumeSlotID:                strings.TrimSpace(req.ResumeSlotID),
 		StartNewTask:                req.StartNewTask,
 		DismissSlotID:               strings.TrimSpace(req.DismissSlotID),
@@ -1859,7 +1875,8 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	streamTailElapsed = handlerTailElapsed + memorySaveElapsed + capabilityGapElapsed + fileMaterializeElapsed + finalizeTraceElapsed
 	// Per-message timing log (fires for every message, not just the first).
 	// This is the primary diagnostic tool for "user sent message -> response slow" issues.
-	log.Printf("[AI assistant] agent_loop=%v first_token=%v ensure_infra=%v ensure_handler=%v pre_llm=%v llm_http=%v llm_first_sse=%v stream_tail=%v text_len=%d",
+	log.Printf("[AI assistant] async done request_id=%s session_key=%q project_path=%q agent_loop=%v first_token=%v ensure_infra=%v ensure_handler=%v pre_llm=%v llm_http=%v llm_first_sse=%v stream_tail=%v text_len=%d",
+		requestID, userID, projectPath,
 		agentLoopElapsed, firstTokenElapsed, ensureInteractionInfraElapsed, ensureIMHandlerElapsed,
 		preLLMPrepElapsed, llmHTTPDoElapsed, llmFirstSSEWaitElapsed, streamTailElapsed,
 		len(text))
@@ -1895,6 +1912,8 @@ func (a *App) emitAIAssistantResponse(requestID string, resp *IMAgentResponse) (
 		log.Printf("[emitAIAssistantResponse] marshal failed: %v", err)
 		return false
 	}
+	log.Printf("[emitAIAssistantResponse] emit request_id=%s session_key=%q text_len=%d error_len=%d fields=%d actions=%d payload_len=%d",
+		requestID, strings.TrimSpace(resp.SessionKey), len(resp.Text), len(resp.Error), len(resp.Fields), len(resp.Actions), len(payload))
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[emitAIAssistantResponse] EventsEmit panic: %v", r)
@@ -1985,9 +2004,9 @@ func (a *App) StartAIAssistantBackgroundTask(req AIAssistantBackgroundTaskReques
 	if handler == nil {
 		return nil, fmt.Errorf("AI assistant handler not initialized")
 	}
-	projectPath := strings.TrimSpace(req.ProjectPath)
+	projectPath := normalizeProjectSessionPath(req.ProjectPath)
 	if projectPath == "" {
-		projectPath = a.GetCurrentProjectPath()
+		projectPath = normalizeProjectSessionPath(a.GetCurrentProjectPath())
 	}
 	result, err := handler.StartDesktopBackgroundTask(strings.TrimSpace(req.Text), projectPath)
 	if err != nil {
@@ -2141,13 +2160,10 @@ func normalizeAIAssistantSessionUserID(userID string) (string, error) {
 }
 
 func activeAIAssistantLoopUserID(handler *IMMessageHandler) string {
-	if handler == nil {
-		return desktopUserID
-	}
-	userID := handler.legacyLastUserID()
-	if normalized, err := normalizeAIAssistantSessionUserID(userID); err == nil && normalized != "" {
-		return normalized
-	}
+	// Legacy desktop APIs do not carry a tab/session id. Under concurrent tabs,
+	// lastUserID is whichever loop most recently started, so using it here can
+	// cancel or inject into a recent-task tab from the main panel. Session-aware
+	// callers must use the *ForSession variants.
 	return desktopUserID
 }
 

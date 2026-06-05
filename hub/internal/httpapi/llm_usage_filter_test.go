@@ -19,7 +19,6 @@ func TestRemoteCodingToolProviderIDMatchingIsCaseAndSpaceInsensitive(t *testing.
 	for _, providerID := range []string{
 		" Codex:gpt-5.4 ",
 		"CLAUDE:sonnet",
-		"Gemini:2.5-pro",
 		"remote:opencode",
 	} {
 		if !isRemoteCodingToolUsageProviderID(providerID) {

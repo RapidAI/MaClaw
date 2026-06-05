@@ -848,15 +848,21 @@ func (a *App) installManagedExternalSkill(ctx context.Context, item HubCapabilit
 		cskill.CleanupStaging(stagingDir)
 		return false, nil
 	}
-	a.emitSkillInstallProgress(entry.Name, "scan-start", "Starting managed capability skill security scan.", nil)
-	scanner := cskill.NewSecurityScanner(nil)
-	report := scanner.ScanInstallStaged(ctx, entry, entry.SkillDir, func(status string) {
-		if a != nil {
-			a.log(status)
-			a.emitSkillInstallProgress(entry.Name, "scanning", status, nil)
-		}
-	})
-	if report == nil {
+	var report *cskill.ScanReport
+	if a.isRiskGuardrailOffMode() {
+		a.emitSkillInstallProgress(entry.Name, "scan-complete", "Risk guardrails are off; installation allowed.", nil)
+		a.logSkillInstallSecurityEvent(security.AuditActionHubSkillInstall, "managed_capability_skill_install", security.RiskLow, security.PolicyAllow, fmt.Sprintf("risk guardrails off allowed managed capability %s skill %s", item.ID, entry.Name))
+	} else {
+		a.emitSkillInstallProgress(entry.Name, "scan-start", "Starting managed capability skill security scan.", nil)
+		scanner := cskill.NewSecurityScanner(nil)
+		report = scanner.ScanInstallStaged(ctx, entry, entry.SkillDir, func(status string) {
+			if a != nil {
+				a.log(status)
+				a.emitSkillInstallProgress(entry.Name, "scanning", status, nil)
+			}
+		})
+	}
+	if report == nil && !a.isRiskGuardrailOffMode() {
 		if a.skillInstallMissingScanShouldBlock() {
 			cskill.CleanupStaging(stagingDir)
 			return false, fmt.Errorf("managed skill %s security scan produced no report", entry.Name)
@@ -943,15 +949,21 @@ func (a *App) installManagedHubSkill(ctx context.Context, skillID, hubURL, capab
 		cskill.CleanupStaging(stagingDir)
 		return false, nil
 	}
-	a.emitSkillInstallProgress(entry.Name, "scan-start", "Starting managed capability skill security scan.", nil)
-	scanner := cskill.NewSecurityScanner(nil)
-	report := scanner.ScanInstallStaged(ctx, entry, entry.SkillDir, func(status string) {
-		if a != nil {
-			a.log(status)
-			a.emitSkillInstallProgress(entry.Name, "scanning", status, nil)
-		}
-	})
-	if report == nil {
+	var report *cskill.ScanReport
+	if a.isRiskGuardrailOffMode() {
+		a.emitSkillInstallProgress(entry.Name, "scan-complete", "Risk guardrails are off; installation allowed.", nil)
+		a.logSkillInstallSecurityEvent(security.AuditActionHubSkillInstall, "managed_capability_skill_install", security.RiskLow, security.PolicyAllow, fmt.Sprintf("risk guardrails off allowed managed capability %s skill %s", capabilityID, entry.Name))
+	} else {
+		a.emitSkillInstallProgress(entry.Name, "scan-start", "Starting managed capability skill security scan.", nil)
+		scanner := cskill.NewSecurityScanner(nil)
+		report = scanner.ScanInstallStaged(ctx, entry, entry.SkillDir, func(status string) {
+			if a != nil {
+				a.log(status)
+				a.emitSkillInstallProgress(entry.Name, "scanning", status, nil)
+			}
+		})
+	}
+	if report == nil && !a.isRiskGuardrailOffMode() {
 		if a.skillInstallMissingScanShouldBlock() {
 			cskill.CleanupStaging(stagingDir)
 			return false, fmt.Errorf("managed skill %s security scan produced no report", entry.Name)
@@ -1054,6 +1066,9 @@ func (a *App) registerOrReplaceManagedCapabilitySkill(entry corelib.NLSkillEntry
 	entry.RepairAttemptCount = existing.RepairAttemptCount
 	entry.LastRepairAt = existing.LastRepairAt
 	entry.RepairHistory = append([]corelib.SkillRepairRecord(nil), existing.RepairHistory...)
+	if isShellBrowserAutomationSkillEntry(entry) {
+		return browserAutomationSkillRejectedError(entry.Name)
+	}
 	skills := a.skillExecutor.loadSkills()
 	for i, skill := range skills {
 		if skill.Name == existing.Name || (skill.Capability != nil && entry.Capability != nil && strings.TrimSpace(skill.Capability.CapabilityID) == strings.TrimSpace(entry.Capability.CapabilityID)) {

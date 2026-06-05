@@ -71,7 +71,7 @@ func shouldConsiderExecutionConfirmation(freshTask bool, msg IMUserMessage, trim
 	return freshTask && !msg.IsBackground && strings.TrimSpace(trimmedText) != ""
 }
 
-func (h *IMMessageHandler) classifyTaskIntentForExecution(text string, attachments []MessageAttachment, httpClient *http.Client) taskIntentResult {
+func (h *IMMessageHandler) classifyTaskIntentForExecution(userID, text string, attachments []MessageAttachment, httpClient *http.Client) taskIntentResult {
 	if len(attachments) == 0 {
 		if result, ok := h.classifyTaskIntentWithUIC(text); ok && isDecisiveTaskIntentResult(result) {
 			return result
@@ -85,7 +85,7 @@ func (h *IMMessageHandler) classifyTaskIntentForExecution(text string, attachmen
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return fallback
 	}
-	llmResult, err := h.classifyTaskIntentWithLLM(cfg, text, attachments, httpClient)
+	llmResult, err := h.classifyTaskIntentWithLLM(cfg, userID, text, attachments, httpClient)
 	if err != nil {
 		if result, ok := h.classifyTaskIntentWithUIC(text); ok && isDecisiveTaskIntentResult(result) {
 			return result
@@ -132,9 +132,9 @@ func (h *IMMessageHandler) classifyTaskIntentWithUIC(text string) (taskIntentRes
 	}, true
 }
 
-func (h *IMMessageHandler) classifyTaskIntentWithLLM(cfg corelib.MaclawLLMConfig, text string, attachments []MessageAttachment, httpClient *http.Client) (taskIntentResult, error) {
+func (h *IMMessageHandler) classifyTaskIntentWithLLM(cfg corelib.MaclawLLMConfig, userID, text string, attachments []MessageAttachment, httpClient *http.Client) (taskIntentResult, error) {
 	messages := buildIntentClassifierMessages(text, attachments)
-	parsed, err := h.requestIntentClassification(cfg, messages, httpClient)
+	parsed, err := h.requestIntentClassification(cfg, userID, messages, httpClient)
 	if err != nil {
 		return taskIntentResult{}, err
 	}
@@ -192,16 +192,26 @@ func summarizeAttachmentNames(attachments []MessageAttachment) []string {
 	return names
 }
 
-func (h *IMMessageHandler) requestIntentClassification(cfg corelib.MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
+func (h *IMMessageHandler) requestIntentClassification(cfg corelib.MaclawLLMConfig, userID string, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
 	if strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
-		return h.requestIntentClassificationAnthropic(cfg, messages, httpClient)
+		return h.requestIntentClassificationAnthropic(cfg, userID, messages, httpClient)
 	}
-	return h.requestIntentClassificationOpenAI(cfg, messages, httpClient)
+	return h.requestIntentClassificationOpenAI(cfg, userID, messages, httpClient)
 }
 
-func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg corelib.MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
+func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg corelib.MaclawLLMConfig, userID string, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "task-intent-classifier", OwnerID: userID})
+	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
+	if acquireErr != nil {
+		return llmIntentClassification{}, acquireErr
+	}
+	defer lease.Release()
+	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	lease.SetCancel(scheduledCancel)
+	defer scheduledCancel()
+
 	responseFormat := map[string]interface{}{
 		"type": "json_schema",
 		"json_schema": map[string]interface{}{
@@ -209,17 +219,20 @@ func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg corelib.MaclawL
 			"schema": intentClassifierJSONSchema,
 		},
 	}
-	req, body, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{Stream: false, ResponseFormat: responseFormat})
+	req, body, endpoint, err := llm.NewOpenAIChatRequest(scheduledCtx, cfg, messages, llm.OpenAIChatRequestOptions{Stream: false, ResponseFormat: responseFormat})
 	if err != nil {
 		return llmIntentClassification{}, err
 	}
 	resp, err := httpClient.Do(req)
+	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
 		return llmIntentClassification{}, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return llmIntentClassification{}, dumpLLMContext(resp.StatusCode, "intent classify request failed", body, h.getTempDir())
+		err := dumpLLMContext(resp.StatusCode, "intent classify request failed", body, h.getTempDir())
+		globalLLMScheduler.ObserveResult(trace, err)
+		return llmIntentClassification{}, err
 	}
 	parsedResp, err := llm.ParseNonStreamOpenAIResponse(resp)
 	if err != nil {
@@ -228,8 +241,11 @@ func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg corelib.MaclawL
 	return decodeIntentClassificationContent(firstLLMResponseText(parsedResp))
 }
 
-func (h *IMMessageHandler) requestIntentClassificationAnthropic(cfg corelib.MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
-	resp, err := h.doAnthropicLLMRequest(cfg, messages, nil, httpClient)
+func (h *IMMessageHandler) requestIntentClassificationAnthropic(cfg corelib.MaclawLLMConfig, userID string, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "task-intent-classifier", OwnerID: userID})
+	resp, err := h.doAnthropicLLMRequestWithContext(ctx, cfg, messages, nil, httpClient)
 	if err != nil {
 		return llmIntentClassification{}, err
 	}

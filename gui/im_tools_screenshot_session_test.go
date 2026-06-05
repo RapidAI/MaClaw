@@ -7,7 +7,7 @@ import (
 
 func TestSelectScreenshotSession(t *testing.T) {
 	s1 := &RemoteSession{ID: "s1", Tool: "codex", Status: SessionRunning}
-	s2 := &RemoteSession{ID: "s2", Tool: "gemini", Status: SessionBusy}
+	s2 := &RemoteSession{ID: "s2", Tool: "opencode", Status: SessionBusy}
 
 	tests := []struct {
 		name       string
@@ -42,9 +42,9 @@ func TestSelectScreenshotSession(t *testing.T) {
 func TestRenderMultipleScreenshotSessions(t *testing.T) {
 	got := renderMultipleScreenshotSessions([]*RemoteSession{
 		{ID: "s1", Tool: "codex", Status: SessionRunning},
-		{ID: "s2", Tool: "gemini", Status: SessionBusy},
+		{ID: "s2", Tool: "opencode", Status: SessionBusy},
 	})
-	for _, want := range []string{"s1", "codex", "running", "s2", "gemini", "busy"} {
+	for _, want := range []string{"s1", "codex", "running", "s2", "opencode", "busy"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("rendered sessions missing %q:\n%s", want, got)
 		}

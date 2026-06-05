@@ -259,8 +259,8 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 
 	_, hasOutput := ws.PhaseOutputs[ws.CurrentPhase]
 	if phase.NeedsConfirm && hasOutput {
-		log.Printf("[WorkflowEngine] pending review: user=%s phase=%s msg=%q",
-			userID, ws.CurrentPhase, truncateForLog(trimmed, 50))
+		log.Printf("[WorkflowEngine] pending review: user=%s phase=%s msg_len=%d",
+			userID, ws.CurrentPhase, len([]rune(trimmed)))
 		return &WorkflowResponse{
 			PendingReview:  true,
 			PendingConfirm: true,

@@ -115,12 +115,7 @@ func sendMCPRequest(ctx context.Context, config MCPServerConfig, method string, 
 
 	// Check HTTP status.
 	if resp.StatusCode != http.StatusOK {
-		// Try to extract error message from response body.
-		errMsg := string(respBody)
-		if len(errMsg) > 200 {
-			errMsg = errMsg[:200] + "..."
-		}
-		return nil, fmt.Errorf("MCP server returned HTTP %d: %s", resp.StatusCode, errMsg)
+		return nil, fmt.Errorf("MCP server returned HTTP %d: body_len=%d", resp.StatusCode, len(respBody))
 	}
 
 	// Parse JSON-RPC response.

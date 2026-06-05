@@ -10,13 +10,11 @@ import (
 
 type AppConfig struct {
 	Claude               ToolConfig      `json:"claude"`
-	Gemini               ToolConfig      `json:"gemini"`
 	Codex                ToolConfig      `json:"codex"`
 	Opencode             ToolConfig      `json:"opencode"`
 	CodeBuddy            ToolConfig      `json:"codebuddy"`
 	IFlow                ToolConfig      `json:"iflow"`
 	Kilo                 ToolConfig      `json:"kilo"`
-	Cursor               ToolConfig      `json:"cursor"`
 	Projects             []ProjectConfig `json:"projects"`
 	CurrentProject       string          `json:"current_project"`
 	ActiveTool           string          `json:"active_tool"`
@@ -24,13 +22,11 @@ type AppConfig struct {
 	DefaultToolProvider  string          `json:"default_tool_provider"`
 	HideStartupPopup     bool            `json:"hide_startup_popup"`
 	HideMaclawLLMPopup   bool            `json:"hide_maclaw_llm_popup"`
-	ShowGemini           bool            `json:"show_gemini"`
 	ShowCodex            bool            `json:"show_codex"`
 	ShowOpenCode         bool            `json:"show_opencode"`
 	ShowCodeBuddy        bool            `json:"show_codebuddy"`
 	ShowIFlow            bool            `json:"show_iflow"`
 	ShowKilo             bool            `json:"show_kilo"`
-	ShowCursor           bool            `json:"show_cursor"`
 	Language             string          `json:"language"`
 	PowerOptimization    bool            `json:"power_optimization"`
 	ScreenDimTimeoutMin  int             `json:"screen_dim_timeout_min"`
@@ -284,7 +280,7 @@ type AppConfig struct {
 	// FavoriteEmployeeNames stores user-defined display names for pinned digital employees.
 	FavoriteEmployeeNames map[string]string `json:"favorite_employee_names,omitempty"`
 	// ShowCodingToolEntry controls whether the coding tool selector (Claude Code,
-	// Gemini CLI, etc.) is visible in the sidebar. Default: false (hidden).
+	// Optional coding tools can be hidden in the sidebar. Default: false (hidden).
 	ShowCodingToolEntry bool `json:"show_coding_tool_entry,omitempty"`
 	// VEAllowedDirectories is the list of local filesystem directories
 	// that the VE is authorized to access for file operations (list, read, send).
@@ -446,6 +442,7 @@ func (c AppConfig) IsIMProgressNudgeEnabled() bool {
 // CapabilityMarketPolicy controls enterprise capability discovery and install behavior.
 type CapabilityMarketPolicy struct {
 	ViewMode              string                                  `json:"view_mode,omitempty"`
+	PreferredUploadTarget string                                  `json:"preferred_upload_target,omitempty"`
 	EnterpriseOnlyInstall *bool                                   `json:"enterprise_only_install,omitempty"`
 	EnterpriseOnlySearch  *bool                                   `json:"enterprise_only_search,omitempty"`
 	ManagedDeployment     CapabilityManagedDeploymentPolicy       `json:"managed_deployment,omitempty"`
@@ -494,6 +491,7 @@ func DefaultCapabilityMarketPolicy() CapabilityMarketPolicy {
 	allowUserDismiss := true
 	return CapabilityMarketPolicy{
 		ViewMode:              "merged",
+		PreferredUploadTarget: CapabilitySourceHubCenter,
 		EnterpriseOnlyInstall: &enterpriseOnlyInstall,
 		EnterpriseOnlySearch:  &enterpriseOnlySearch,
 		ManagedDeployment: CapabilityManagedDeploymentPolicy{
@@ -542,6 +540,7 @@ func (p CapabilityMarketPolicy) WithDefaults() CapabilityMarketPolicy {
 	if strings.TrimSpace(p.ViewMode) == "" {
 		p.ViewMode = defaults.ViewMode
 	}
+	p.PreferredUploadTarget = NormalizeCapabilityUploadTarget(firstNonEmptyCapabilityPolicyString(p.PreferredUploadTarget, defaults.PreferredUploadTarget))
 	if p.EnterpriseOnlyInstall == nil {
 		p.EnterpriseOnlyInstall = defaults.EnterpriseOnlyInstall
 	}
@@ -576,6 +575,44 @@ func (p CapabilityMarketPolicy) WithDefaults() CapabilityMarketPolicy {
 		p.ResourceTypes = defaults.ResourceTypes
 	}
 	return p
+}
+
+func NormalizeCapabilityUploadTarget(target string) string {
+	switch strings.TrimSpace(strings.ToLower(target)) {
+	case "hub", "enterprise", "enterprisehub", "enterprise_hub":
+		return CapabilitySourceEnterpriseHub
+	case "hubcenter", "hub_center", "skillhub", "skill_hub", "market":
+		return CapabilitySourceHubCenter
+	default:
+		return CapabilitySourceHubCenter
+	}
+}
+
+func (p CapabilityMarketPolicy) EffectivePreferredUploadTarget() string {
+	return NormalizeCapabilityUploadTarget(firstNonEmptyCapabilityPolicyString(p.PreferredUploadTarget, CapabilitySourceHubCenter))
+}
+
+func (p CapabilityMarketPolicy) UploadTargets(hasEnterpriseHub bool) []string {
+	preferred := p.WithDefaults().EffectivePreferredUploadTarget()
+	if preferred == CapabilitySourceEnterpriseHub {
+		if hasEnterpriseHub {
+			return []string{CapabilitySourceEnterpriseHub}
+		}
+		return nil
+	}
+	if hasEnterpriseHub {
+		return []string{CapabilitySourceHubCenter, CapabilitySourceEnterpriseHub}
+	}
+	return []string{CapabilitySourceHubCenter}
+}
+
+func firstNonEmptyCapabilityPolicyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (p CapabilityMarketPolicy) EffectiveEnterpriseOnlyInstall() bool {
@@ -667,6 +704,7 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 		YoloModeAllowed      *bool                  `json:"yolo_mode_allowed"`
 		SmartRouteEnabled    *bool                  `json:"smart_route_enabled"`
 		GossipEnabled        *bool                  `json:"gossip_enabled"`
+		GossipAutoPublish    *bool                  `json:"gossip_auto_publish"`
 		FileOutboundEnabled  *bool                  `json:"file_outbound_enabled"`
 		ImageOutboundEnabled *bool                  `json:"image_outbound_enabled"`
 		GroupDiscussion      *GroupDiscussionConfig `json:"group_discussion,omitempty"`
@@ -692,6 +730,9 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 	}
 	if raw.GossipEnabled == nil {
 		c.GossipEnabled = true
+	}
+	if raw.GossipAutoPublish == nil {
+		c.GossipAutoPublish = true
 	}
 	if raw.FileOutboundEnabled == nil {
 		c.FileOutboundEnabled = true

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // MCPToolView is a tool exposed by an MCP Server.
@@ -94,13 +95,75 @@ type MCPRegistry struct {
 	// Cached tool lists from the last successful tools/list call.
 	toolsCache map[string][]MCPToolView
 	// MCP session tracking (per-server Streamable HTTP sessions).
-	sessions map[string]*mcpSession
+	sessionMu        sync.RWMutex
+	sessions         map[string]*mcpSession
+	sessionInitMu    sync.Mutex
+	sessionInitLocks map[string]*sync.Mutex
 }
 
 // mcpSession tracks an active MCP Streamable HTTP session for a server.
 type mcpSession struct {
 	SessionID string
 	CreatedAt time.Time
+}
+
+func mcpSessionKey(serverID, ownerID string) string {
+	serverID = strings.TrimSpace(serverID)
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return serverID
+	}
+	return serverID + "\x00" + ownerID
+}
+
+func (r *MCPRegistry) getSession(serverID string) (mcpSession, bool) {
+	return r.getSessionForOwner(serverID, "")
+}
+
+func (r *MCPRegistry) getSessionForOwner(serverID, ownerID string) (mcpSession, bool) {
+	r.sessionMu.RLock()
+	defer r.sessionMu.RUnlock()
+	if r.sessions == nil {
+		return mcpSession{}, false
+	}
+	sess, ok := r.sessions[mcpSessionKey(serverID, ownerID)]
+	if !ok || sess == nil {
+		return mcpSession{}, false
+	}
+	return *sess, true
+}
+
+func (r *MCPRegistry) setSession(serverID, sessionID string) {
+	r.setSessionForOwner(serverID, "", sessionID)
+}
+
+func (r *MCPRegistry) setSessionForOwner(serverID, ownerID, sessionID string) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	r.sessionMu.Lock()
+	defer r.sessionMu.Unlock()
+	if r.sessions == nil {
+		r.sessions = make(map[string]*mcpSession)
+	}
+	r.sessions[mcpSessionKey(serverID, ownerID)] = &mcpSession{SessionID: sessionID, CreatedAt: time.Now()}
+}
+
+func (r *MCPRegistry) deleteSession(serverID string) {
+	r.sessionMu.Lock()
+	defer r.sessionMu.Unlock()
+	serverID = strings.TrimSpace(serverID)
+	for key := range r.sessions {
+		if key == serverID || strings.HasPrefix(key, serverID+"\x00") {
+			delete(r.sessions, key)
+		}
+	}
+}
+
+func (r *MCPRegistry) deleteSessionForOwner(serverID, ownerID string) {
+	r.sessionMu.Lock()
+	defer r.sessionMu.Unlock()
+	delete(r.sessions, mcpSessionKey(serverID, ownerID))
 }
 
 type mcpHealthState struct {
@@ -120,6 +183,24 @@ func NewMCPRegistry(app *App) *MCPRegistry {
 	}
 }
 
+func (r *MCPRegistry) sessionInitLockForOwner(serverID, ownerID string) *sync.Mutex {
+	if r == nil {
+		return &sync.Mutex{}
+	}
+	key := mcpSessionKey(serverID, ownerID)
+	r.sessionInitMu.Lock()
+	defer r.sessionInitMu.Unlock()
+	if r.sessionInitLocks == nil {
+		r.sessionInitLocks = make(map[string]*sync.Mutex)
+	}
+	lock := r.sessionInitLocks[key]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		r.sessionInitLocks[key] = lock
+	}
+	return lock
+}
+
 // loadServers reads MCP server entries from config.
 func (r *MCPRegistry) loadServers() []corelib.MCPServerEntry {
 	cfg, err := r.app.LoadConfig()
@@ -131,12 +212,9 @@ func (r *MCPRegistry) loadServers() []corelib.MCPServerEntry {
 
 // saveServers persists MCP server entries to config.
 func (r *MCPRegistry) saveServers(servers []corelib.MCPServerEntry) error {
-	cfg, err := r.app.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.MCPServers = servers
-	return r.app.SaveConfig(cfg)
+	return r.app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.MCPServers = servers
+	})
 }
 
 // sanitizeMCPID converts a name to a safe ID slug.
@@ -223,6 +301,7 @@ func (r *MCPRegistry) Update(entry corelib.MCPServerEntry) error {
 			if endpointChanged || entry.AuthType != s.AuthType || entry.AuthSecret != s.AuthSecret {
 				delete(r.toolsCache, entry.ID)
 				delete(r.health, entry.ID)
+				r.deleteSession(entry.ID)
 			}
 			return r.saveServers(servers)
 		}
@@ -241,6 +320,7 @@ func (r *MCPRegistry) Unregister(serverID string) error {
 			servers = append(servers[:i], servers[i+1:]...)
 			delete(r.health, serverID)
 			delete(r.toolsCache, serverID)
+			r.deleteSession(serverID)
 			return r.saveServers(servers)
 		}
 	}
@@ -372,7 +452,7 @@ func setAuthHeader(req *http.Request, target *corelib.MCPServerEntry) {
 
 // newMCPJSONRequest creates a JSON-RPC request to the given MCP server endpoint.
 // If a session ID is known for this server, it is included via the Mcp-Session-Id header.
-func (r *MCPRegistry) newMCPJSONRequest(target *corelib.MCPServerEntry, body []byte) (*http.Request, error) {
+func (r *MCPRegistry) newMCPJSONRequest(target *corelib.MCPServerEntry, body []byte, ownerID ...string) (*http.Request, error) {
 	url := strings.TrimRight(target.EndpointURL, "/")
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -382,7 +462,12 @@ func (r *MCPRegistry) newMCPJSONRequest(target *corelib.MCPServerEntry, body []b
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	setAuthHeader(req, target)
 	// Attach MCP session ID if available (required by Streamable HTTP servers).
-	if sess, ok := r.sessions[target.ID]; ok && sess.SessionID != "" {
+	owner := ""
+	if len(ownerID) > 0 {
+		owner = ownerID[0]
+	}
+	owner = strings.TrimSpace(owner)
+	if sess, ok := r.getSessionForOwner(target.ID, owner); ok && sess.SessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sess.SessionID)
 	}
 	return req, nil
@@ -390,9 +475,13 @@ func (r *MCPRegistry) newMCPJSONRequest(target *corelib.MCPServerEntry, body []b
 
 // doMCPRoundTrip executes an MCP JSON-RPC request and extracts the session ID
 // from the response. Returns the parsed JSON-RPC payload.
-func (r *MCPRegistry) doMCPRoundTrip(target *corelib.MCPServerEntry, reqBody map[string]interface{}) ([]byte, error) {
+func (r *MCPRegistry) doMCPRoundTrip(target *corelib.MCPServerEntry, reqBody map[string]interface{}, ownerID ...string) ([]byte, error) {
 	data, _ := json.Marshal(reqBody)
-	req, err := r.newMCPJSONRequest(target, data)
+	owner := ""
+	if len(ownerID) > 0 {
+		owner = ownerID[0]
+	}
+	req, err := r.newMCPJSONRequest(target, data, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -405,10 +494,7 @@ func (r *MCPRegistry) doMCPRoundTrip(target *corelib.MCPServerEntry, reqBody map
 
 	// Capture session ID from response header (Streamable HTTP servers).
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
-		r.sessions[target.ID] = &mcpSession{
-			SessionID: sid,
-			CreatedAt: time.Now(),
-		}
+		r.setSessionForOwner(target.ID, owner, sid)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -427,16 +513,37 @@ func (r *MCPRegistry) doMCPRoundTrip(target *corelib.MCPServerEntry, reqBody map
 // ensureSession sends an MCP "initialize" handshake if no session exists for
 // the given server. Streamable HTTP servers (e.g. 智谱 BigModel) require this
 // handshake before tools/call will accept the API key.
-func (r *MCPRegistry) ensureSession(target *corelib.MCPServerEntry) error {
-	if sess, ok := r.sessions[target.ID]; ok && sess.SessionID != "" {
+func (r *MCPRegistry) ensureSession(target *corelib.MCPServerEntry, ownerID ...string) error {
+	startedAt := time.Now()
+	owner := ""
+	if len(ownerID) > 0 {
+		owner = ownerID[0]
+	}
+	owner = strings.TrimSpace(owner)
+	if sess, ok := r.getSessionForOwner(target.ID, owner); ok && sess.SessionID != "" {
 		// Session already established; check if it's stale (>30 min).
 		if time.Since(sess.CreatedAt) < 30*time.Minute {
 			return nil
 		}
 		// Stale session — re-initialize.
-		delete(r.sessions, target.ID)
+		r.deleteSessionForOwner(target.ID, owner)
 	}
 
+	initLock := r.sessionInitLockForOwner(target.ID, owner)
+	lockWaitStart := time.Now()
+	initLock.Lock()
+	if waited := time.Since(lockWaitStart); waited > 100*time.Millisecond {
+		log.Printf("[MCPRegistry] ensure_session lock_wait server=%s owner=%q waited=%s", target.ID, owner, waited.Round(time.Millisecond))
+	}
+	defer initLock.Unlock()
+	if sess, ok := r.getSessionForOwner(target.ID, owner); ok && sess.SessionID != "" {
+		if time.Since(sess.CreatedAt) < 30*time.Minute {
+			return nil
+		}
+		r.deleteSessionForOwner(target.ID, owner)
+	}
+
+	log.Printf("[MCPRegistry] ensure_session start server=%s owner=%q", target.ID, owner)
 	initBody := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -451,19 +558,36 @@ func (r *MCPRegistry) ensureSession(target *corelib.MCPServerEntry) error {
 		},
 	}
 
-	_, err := r.doMCPRoundTrip(target, initBody)
+	_, err := r.doMCPRoundTrip(target, initBody, owner)
 	if err != nil {
 		// Some servers don't support initialize (e.g. simple REST-based MCP).
 		// Log and continue — the session will be empty and requests will
 		// proceed without Mcp-Session-Id (backward compatible).
-		log.Printf("[MCPRegistry] initialize handshake failed for %s: %v (proceeding without session)", target.ID, err)
+		log.Printf("[MCPRegistry] initialize handshake failed for %s owner=%q elapsed=%s: %v (proceeding without session)", target.ID, strings.TrimSpace(owner), time.Since(startedAt).Round(time.Millisecond), err)
 		return nil
 	}
+	log.Printf("[MCPRegistry] ensure_session done server=%s owner=%q elapsed=%s", target.ID, strings.TrimSpace(owner), time.Since(startedAt).Round(time.Millisecond))
 	return nil
 }
 
 // CallTool calls a tool on the specified MCP Server with a 30-second timeout.
 func (r *MCPRegistry) CallTool(serverID, toolName string, args map[string]interface{}) (string, error) {
+	return r.CallToolForOwner("", serverID, toolName, args)
+}
+
+// CallToolForOwner calls a tool with an owner-scoped Streamable HTTP session.
+// Independent agent loops must not share one remote MCP session.
+func (r *MCPRegistry) CallToolForOwner(ownerID, serverID, toolName string, args map[string]interface{}) (string, error) {
+	startedAt := time.Now()
+	if coretool.IsDisabledExternalCodingSessionTool(toolName) {
+		return "", fmt.Errorf("external coding-session tool %q is disabled", toolName)
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	defer func() {
+		if elapsed := time.Since(startedAt); elapsed > 500*time.Millisecond {
+			log.Printf("[MCPRegistry] call_tool slow server=%s owner=%q tool=%s elapsed=%s", serverID, ownerID, toolName, elapsed.Round(time.Millisecond))
+		}
+	}()
 	target, err := r.findServer(serverID)
 	if err != nil {
 		return "", err
@@ -474,7 +598,7 @@ func (r *MCPRegistry) CallTool(serverID, toolName string, args map[string]interf
 	}
 
 	// Ensure MCP session is established (Streamable HTTP handshake).
-	if err := r.ensureSession(target); err != nil {
+	if err := r.ensureSession(target, ownerID); err != nil {
 		return "", fmt.Errorf("MCP session init failed: %w", err)
 	}
 
@@ -488,15 +612,15 @@ func (r *MCPRegistry) CallTool(serverID, toolName string, args map[string]interf
 		},
 	}
 
-	parsed, err := r.doMCPRoundTrip(target, reqBody)
+	parsed, err := r.doMCPRoundTrip(target, reqBody, ownerID)
 	if err != nil {
 		// If we get an auth error and have a session, the session may be stale.
 		// Clear it and retry once with a fresh session.
-		if r.sessions[target.ID] != nil && isMCPAuthError(err) {
+		if _, hasSession := r.getSessionForOwner(target.ID, ownerID); hasSession && isMCPAuthError(err) {
 			log.Printf("[MCPRegistry] auth error with session for %s, retrying with fresh session", serverID)
-			delete(r.sessions, target.ID)
-			if initErr := r.ensureSession(target); initErr == nil {
-				parsed, err = r.doMCPRoundTrip(target, reqBody)
+			r.deleteSessionForOwner(target.ID, ownerID)
+			if initErr := r.ensureSession(target, ownerID); initErr == nil {
+				parsed, err = r.doMCPRoundTrip(target, reqBody, ownerID)
 			}
 		}
 		if err != nil {
@@ -1039,12 +1163,9 @@ func (r *MCPRegistry) loadLocalServers() []corelib.LocalMCPServerEntry {
 
 // saveLocalServers persists local MCP server entries to config.
 func (r *MCPRegistry) saveLocalServers(servers []corelib.LocalMCPServerEntry) error {
-	cfg, err := r.app.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.LocalMCPServers = servers
-	return r.app.SaveConfig(cfg)
+	return r.app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.LocalMCPServers = servers
+	})
 }
 
 // RegisterLocal adds a new local MCP server entry.
@@ -1250,6 +1371,7 @@ func (a *App) resolveMCPServerRef(serverRef string) (resolvedID string, isLocal 
 		return "", false, fmt.Errorf("missing server_id parameter")
 	}
 
+	a.ensureLocalMCPManager()
 	if a.localMCPManager != nil {
 		if id, localErr := a.localMCPManager.ResolveServerID(serverRef); localErr == nil {
 			return id, true, nil

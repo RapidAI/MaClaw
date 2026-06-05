@@ -21,7 +21,7 @@ func TestFilterToolDefinitionsOpsControlledIsDenyByDefault(t *testing.T) {
 		testToolDef("bash"),
 		testToolDef("read_file"),
 		testToolDef("task"),
-		testToolDef("create_session"),
+		testToolDef("write_file"),
 		testToolDef("edit_file"),
 		testToolDef("unknown"),
 	}
@@ -37,7 +37,7 @@ func TestFilterToolDefinitionsOpsControlledIsDenyByDefault(t *testing.T) {
 			t.Fatalf("expected %s to remain allowed; got %#v", allowed, names)
 		}
 	}
-	for _, blocked := range []string{"task", "create_session", "edit_file", "unknown"} {
+	for _, blocked := range []string{"task", "write_file", "edit_file", "unknown"} {
 		if names[blocked] {
 			t.Fatalf("expected %s to be blocked; got %#v", blocked, names)
 		}
@@ -50,7 +50,7 @@ func TestFilterToolDefinitionsOpsControlledIsDenyByDefault(t *testing.T) {
 func TestFilterToolDefinitionsDocOnlyCanReturnEmpty(t *testing.T) {
 	filtered := FilterToolDefinitions(ToolFilterDocOnly, []map[string]interface{}{
 		testToolDef("task"),
-		testToolDef("create_session"),
+		testToolDef("bash"),
 	})
 	if len(filtered) != 0 {
 		t.Fatalf("expected doc-only policy to return empty allowed set, got %#v", filtered)

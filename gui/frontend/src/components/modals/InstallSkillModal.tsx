@@ -85,8 +85,8 @@ export const InstallSkillModal = ({
             const skill = skills.find(s => s.name === name);
             if (skill) {
                 setInstallProgress({ skill: skill.name, phase: 'queued', status: 'Queued for install.', percent: 5 });
-                const isGeminiOrCodex = activeTool?.toLowerCase() === 'gemini' || activeTool?.toLowerCase() === 'codex';
-                if (isGeminiOrCodex && skill.type === 'address') {
+                const isCodex = activeTool?.toLowerCase() === 'codex';
+                if (isCodex && skill.type === 'address') {
                     console.warn('Skill ' + skill.name + ' is not supported for ' + activeTool);
                     failCount++;
                     continue;
@@ -105,8 +105,8 @@ export const InstallSkillModal = ({
         setIsBatchInstalling(false);
 
         if (failCount > 0) {
-            const isGeminiOrCodex = activeTool?.toLowerCase() === 'gemini' || activeTool?.toLowerCase() === 'codex';
-            if (isGeminiOrCodex && selectedSkillsToInstall.some(name => skills.find(s => s.name === name)?.type === 'address')) {
+            const isCodex = activeTool?.toLowerCase() === 'codex';
+            if (isCodex && selectedSkillsToInstall.some(name => skills.find(s => s.name === name)?.type === 'address')) {
                 showToastMessage(t("skillZipOnlyError"));
             } else {
                 showToastMessage(successCount + ' installed, ' + failCount + ' failed.');

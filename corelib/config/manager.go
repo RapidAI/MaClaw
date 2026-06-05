@@ -145,8 +145,6 @@ func (m *Manager) GetConfig(section string, unmasked ...bool) (string, error) {
 	switch sec {
 	case "claude":
 		return m.formatToolConfig("Claude", cfg.Claude, raw), nil
-	case "gemini":
-		return m.formatToolConfig("Gemini", cfg.Gemini, raw), nil
 	case "codex":
 		return m.formatToolConfig("Codex", cfg.Codex, raw), nil
 	case "opencode":
@@ -157,8 +155,6 @@ func (m *Manager) GetConfig(section string, unmasked ...bool) (string, error) {
 		return m.formatToolConfig("iFlow", cfg.IFlow, raw), nil
 	case "kilo":
 		return m.formatToolConfig("Kilo", cfg.Kilo, raw), nil
-	case "cursor":
-		return m.formatToolConfig("Cursor", cfg.Cursor, raw), nil
 	case "remote":
 		return m.formatRemoteConfig(cfg, raw), nil
 	case "projects":
@@ -196,7 +192,6 @@ func (m *Manager) configOverview(cfg corelib.AppConfig) string {
 	}
 	b.WriteString(fmt.Sprintf("MaClaw 角色: %s\n", roleName))
 	b.WriteString(fmt.Sprintf("Claude 当前模型: %s\n", cfg.Claude.CurrentModel))
-	b.WriteString(fmt.Sprintf("Gemini 当前模型: %s\n", cfg.Gemini.CurrentModel))
 	b.WriteString(fmt.Sprintf("Codex 当前模型: %s\n", cfg.Codex.CurrentModel))
 	b.WriteString(fmt.Sprintf("QQ Bot: %v\n", cfg.QQBotEnabled))
 	return b.String()
@@ -636,8 +631,6 @@ func (m *Manager) applyChange(cfg *corelib.AppConfig, section, key, value string
 	switch sec {
 	case "claude":
 		return applyToolModel(&cfg.Claude)
-	case "gemini":
-		return applyToolModel(&cfg.Gemini)
 	case "codex":
 		return applyToolModel(&cfg.Codex)
 	case "opencode":
@@ -648,8 +641,6 @@ func (m *Manager) applyChange(cfg *corelib.AppConfig, section, key, value string
 		return applyToolModel(&cfg.IFlow)
 	case "kilo":
 		return applyToolModel(&cfg.Kilo)
-	case "cursor":
-		return applyToolModel(&cfg.Cursor)
 	case "remote":
 		return m.applyRemoteChange(cfg, k, value)
 	case "projects":
@@ -944,12 +935,10 @@ func (m *Manager) initSchema() {
 
 	m.schema = []ConfigSection{
 		toolModelSection("claude", "Claude 工具模型配置"),
-		toolModelSection("gemini", "Gemini 工具模型配置"),
 		toolModelSection("codex", "Codex 工具模型配置"),
 		toolModelSection("opencode", "OpenCode 工具模型配置"),
 		toolModelSection("iflow", "iFlow 工具模型配置"),
 		toolModelSection("kilo", "Kilo 工具模型配置"),
-		toolModelSection("cursor", "Cursor 工具模型配置"),
 		toolModelSection("codebuddy", "CodeBuddy 工具模型配置"),
 		{
 			Name:        "projects",
@@ -1010,7 +999,7 @@ func (m *Manager) initSchema() {
 			Name:        "general",
 			Description: "通用设置",
 			Keys: []ConfigKeySchema{
-				{Key: "active_tool", Description: "当前激活的编程工具", Type: "enum", ValidValues: []string{"claude", "gemini", "codex", "opencode", "iflow", "kilo", "cursor", "codebuddy"}},
+				{Key: "active_tool", Description: "当前激活的编程工具", Type: "enum", ValidValues: []string{"claude", "codex", "opencode", "iflow", "kilo", "codebuddy"}},
 				{Key: "language", Description: "界面语言", Type: "enum", Default: "zh", ValidValues: []string{"zh", "en"}},
 				{Key: "power_optimization", Description: "是否启用省电优化", Type: "bool", Default: "false"},
 				{Key: "screen_dim_timeout_min", Description: "无操作多少分钟后熄屏（0=禁用）", Type: "int", Default: "3"},

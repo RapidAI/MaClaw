@@ -3,8 +3,10 @@ package main
 import (
 	"crypto/sha256"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -186,7 +188,8 @@ func (h *IMMessageHandler) observeAgentLoopTrialIteration(ctx *LoopContext, tria
 }
 
 func (h *IMMessageHandler) recordAgentLoopToolUsage(ctx *LoopContext, userText string, toolCall llm.ToolCall, outcome toolOutcome, followUp toolUsageFollowUp) {
-	if h.usageTracker == nil {
+	tracker := h.usageTracker
+	if tracker == nil {
 		return
 	}
 	var msgTokens []string
@@ -197,12 +200,25 @@ func (h *IMMessageHandler) recordAgentLoopToolUsage(ctx *LoopContext, userText s
 		}
 	}
 	name := strings.TrimSpace(toolCall.Function.Name)
-	h.usageTracker.RecordExperience(coretool.ToolExperience{
+	exp := coretool.ToolExperience{
 		ToolName:     name,
 		QueryTokens:  msgTokens,
 		Success:      outcome == toolOutcomeSucceeded,
 		FollowUp:     followUp.String(),
 		FinalOutcome: outcome.String(),
 		EventContext: experienceContextFromLoop(ctx),
-	})
+	}
+	go func() {
+		startedAt := time.Now()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[tool-usage] panic tool=%q panic=%v", exp.ToolName, r)
+				return
+			}
+			if elapsed := time.Since(startedAt); elapsed >= 500*time.Millisecond {
+				log.Printf("[tool-usage] async_done tool=%q outcome=%q elapsed=%s", exp.ToolName, exp.FinalOutcome, elapsed.Round(time.Millisecond))
+			}
+		}()
+		tracker.RecordExperience(exp)
+	}()
 }

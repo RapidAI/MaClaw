@@ -234,18 +234,18 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 	}
 	pending, pendingFresh := pendingUserReplyForCurrentHistory(raw, *entries)
 	if !pendingFresh && pending != nil {
-		log.Printf("[PendingUserReply] discarded stale pending reply for user=%s currentLen=%d boundLen=%d answer=%q", msg.UserID, len(*entries), len(pending.History), truncateRunes(trimmed, 80))
+		log.Printf("[PendingUserReply] discarded stale pending reply for user=%s currentLen=%d boundLen=%d answer_len=%d", msg.UserID, len(*entries), len(pending.History), len([]rune(trimmed)))
 		if len(pending.History) > 0 && conversationHistoryHasPrefix(*entries, pending.History) && conversationExtensionHasUserMessage(*entries, len(pending.History)) {
 			currentTaskEntries := cloneConversationEntries((*entries)[len(pending.History):])
 			h.memory.Save(msg.UserID, currentTaskEntries)
 			*entries = currentTaskEntries
 			*unfinishedSlot = h.memory.GetUnfinishedSlot(msg.UserID)
-			log.Printf("[PendingUserReply] removed stale bound prefix for user=%s restoredLen=%d answer=%q", msg.UserID, len(currentTaskEntries), truncateRunes(trimmed, 80))
+			log.Printf("[PendingUserReply] removed stale bound prefix for user=%s restoredLen=%d answer_len=%d", msg.UserID, len(currentTaskEntries), len([]rune(trimmed)))
 		}
 	}
 	isPendingAnswer, classifiedPendingAnswer := false, true
 	if pendingFresh {
-		isPendingAnswer, classifiedPendingAnswer = h.classifyPendingUserReplyAnswer(pending.Question, trimmed)
+		isPendingAnswer, classifiedPendingAnswer = h.classifyPendingUserReplyAnswer(msg.UserID, pending.Question, trimmed)
 	}
 	if pendingFresh && isPendingAnswer {
 		if len(pending.History) > 0 {
@@ -255,7 +255,7 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 				h.memory.Save(msg.UserID, restored)
 				*entries = restored
 				*unfinishedSlot = h.memory.GetUnfinishedSlot(msg.UserID)
-				log.Printf("[PendingUserReply] restored bound question context for user=%s currentLen=%d restoredLen=%d answer=%q", msg.UserID, len(current), len(restored), truncateRunes(trimmed, 80))
+				log.Printf("[PendingUserReply] restored bound question context for user=%s currentLen=%d restoredLen=%d answer_len=%d", msg.UserID, len(current), len(restored), len([]rune(trimmed)))
 			}
 		}
 		context := fmt.Sprintf("[Context hint] The user is answering the assistant question from the current task, not starting or resuming another task.\nAssistant question: %s\nUser answer: %s", pending.Question, trimmed)
@@ -278,7 +278,7 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 	}
 	pending, pendingFresh := pendingAskUserForCurrentHistory(raw, entries)
 	if !pendingFresh && pending != nil {
-		log.Printf("[AskUser] discarded stale pending ask_user for user %s, currentLen=%d boundLen=%d answer=%q", userID, len(entries), len(pending.History), truncateRunes(trimmed, 80))
+		log.Printf("[AskUser] discarded stale pending ask_user for user %s, currentLen=%d boundLen=%d answer_len=%d", userID, len(entries), len(pending.History), len([]rune(trimmed)))
 	}
 	if !pendingFresh {
 		return "", false
@@ -287,6 +287,6 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 		"[Context hint] The user is answering your previous clarification question, not starting a new request.\nAssistant question: %s\nUser answer: %s\nInterpret it as supplementary or corrective information for the current task.",
 		pending.Question, trimmed,
 	)
-	log.Printf("[AskUser] consumed pending ask_user for user %s, question=%q, answer=%q", userID, truncateRunes(pending.Question, 50), truncateRunes(trimmed, 50))
+	log.Printf("[AskUser] consumed pending ask_user for user %s, question_len=%d answer_len=%d", userID, len([]rune(pending.Question)), len([]rune(trimmed)))
 	return context, true
 }

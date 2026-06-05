@@ -30,12 +30,12 @@ func (a *replayActivityAdapter) ClearReplay() {
 
 // registerBrowserTools registers browser automation tools into the gui ToolRegistry.
 //
-// Architecture (root-cause fix for Browser: hallucination — #79):
+// Architecture (root-cause fix for Browser role-prefix drift):
 //
 // The 22 core browser actions (session_start, navigate, click, type, observe, etc.)
 // are registered as individual tools in the registry (for handler dispatch), but
 // only ONE merged "browser" tool definition is visible to the LLM. This reduces
-// LLM context token density from ~4500 tokens (30 definitions × ~150 tokens) to
+// LLM context token density from ~4500 tokens (30 definitions x ~150 tokens) to
 // ~500 tokens (1 definition), eliminating the root cause of "Browser:" role-prefix
 // hallucinations.
 //
@@ -64,14 +64,13 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 
 	// Create BrowserTaskSupervisor
 	sessionFn := func() (*browser.Session, error) {
-		return browser.GetSession("")
+		return nil, fmt.Errorf("browser session_id required")
 	}
 	supervisor := browser.NewBrowserTaskSupervisor(nil, nil, compositeOCR, sessionFn, func(msg string) {
 		log.Printf("[browser-task] %s", msg)
 	})
 
 	browser.RegisterTaskTools(coreReg, supervisor, nil)
-	browser.RegisterOCRTool(coreReg, compositeOCR, sessionFn)
 
 	recorder := browser.NewBrowserRecorder(sessionFn, func(msg string) {
 		log.Printf("[browser-record] %s", msg)
@@ -82,7 +81,7 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 	})
 
 	// Bridge individual tools into gui registry (handlers only, for dispatch).
-	// Description is set to empty so BuildAll() skips them — only the merged
+	// Description is set to empty so BuildAll() skips them; only the merged
 	// "browser" tool definition is visible to the LLM.
 	for _, ct := range coreReg.ListAvailable() {
 		toolName := ct.Name   // capture for closure
@@ -100,6 +99,9 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 		}
 		if handler != nil {
 			gt.Handler = func(args map[string]interface{}) string {
+				if strings.HasPrefix(toolName, "browser_") && browserToolRequiresSessionID(toolName) && strings.TrimSpace(browserToolStringArg(args, "session_id")) == "" {
+					return fmt.Sprintf("browser tool %s requires session_id. First call browser(action=\"session_start\") and use the returned browser-session-*.", toolName)
+				}
 				result := handler(args)
 				if app != nil && app.browserSessions != nil && strings.HasPrefix(toolName, "browser_session_") {
 					app.browserSessions.syncFromCore()
@@ -116,9 +118,9 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 	// It dispatches to individual handlers via dispatchMergedBrowser().
 	registry.Register(RegisteredTool{
 		Name:        MergedBrowserToolName,
-		Description: mergedBrowserToolDescription,
+		Description: "Stable browser automation. session_start/connect default to persistent managed profile and preserve login/cookies; auto maps to persistent.\n\n" + mergedBrowserToolDescription,
 		Category:    ToolCategoryBuiltin,
-		Tags:        []string{"browser", "web", "automation", "浏览器", "网页", "自动化"},
+		Tags:        []string{"browser", "web", "automation"},
 		Priority:    6,
 		Status:      RegToolAvailable,
 		InputSchema: mergedBrowserInputSchema,
@@ -137,4 +139,23 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 			return result
 		},
 	})
+}
+
+func browserToolRequiresSessionID(toolName string) bool {
+	action := normalizeBrowserToolAction(strings.TrimPrefix(strings.TrimSpace(toolName), "browser_"))
+	switch action {
+	case browserToolActionSessionStart, browserToolActionConnect, browserToolActionListFlows:
+		return false
+	case browserToolActionUnknown:
+		return false
+	default:
+		return true
+	}
+}
+
+func browserToolStringArg(args map[string]interface{}, key string) string {
+	if v, ok := args[key].(string); ok {
+		return v
+	}
+	return ""
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import * as fc from 'fast-check';
 import { AIAssistantPanel } from '../AIAssistantPanel';
 import { openCurrentTenantCardStore } from '../AssistantTitleBar';
@@ -7,9 +7,11 @@ import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } f
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock, createProjectTabSessionMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
     showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
+    loadProjectContextMock: vi.fn().mockResolvedValue({ project_name: '', recent_progress: '', key_artifacts: [] }),
+    createProjectTabSessionMock: vi.fn().mockResolvedValue(undefined),
     listVirtualEmployeesMock: vi.fn().mockResolvedValue([
         { id: 've-a', machine_id: 've-a', name: 'Agent A', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
         { id: 've-b', machine_id: 've-b', name: 'Contract Bot', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
@@ -17,6 +19,8 @@ const { openFileOrShowInFolderMock, showItemInFolderMock, listVirtualEmployeesMo
     initiateVEConversationMock: vi.fn().mockResolvedValue({ session_id: 'session-ve-a' }),
     addVEToGroupMock: vi.fn().mockResolvedValue(undefined),
     renameGroupDiscussionMock: vi.fn().mockResolvedValue({ id: 'disc-1', topic: 'Renamed group' }),
+    runtimeEventsOnMock: vi.fn(),
+    runtimeEventsOffMock: vi.fn(),
 }));
 
 const scrollIntoViewMock = vi.fn();
@@ -37,8 +41,8 @@ Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
 // Mock Wails runtime (not used by panel but imported transitively).
 vi.mock('../../../../wailsjs/runtime', () => ({
     BrowserOpenURL: vi.fn(),
-    EventsOn: vi.fn(),
-    EventsOff: vi.fn(),
+    EventsOn: runtimeEventsOnMock,
+    EventsOff: runtimeEventsOffMock,
 }));
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
@@ -46,10 +50,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ShowItemInFolder: showItemInFolderMock,
     SelectProjectDir: vi.fn(),
     SetWorkflowWorkingDir: vi.fn(),
-    LoadProjectContext: vi.fn().mockResolvedValue({ summary: '', items: [] }),
+    LoadProjectContext: loadProjectContextMock,
     SearchProjects: vi.fn().mockResolvedValue([]),
     ResumeProject: vi.fn(),
-    CreateProjectTabSession: vi.fn().mockResolvedValue(undefined),
+    CreateProjectTabSession: createProjectTabSessionMock,
     RenameTask: vi.fn(),
     PinTask: vi.fn(),
     HideTask: vi.fn(),
@@ -152,6 +156,7 @@ function mockURLObjectURLs(value: string) {
 describe('AIAssistantPanel property tests', () => {
     afterEach(() => {
         cleanup();
+        vi.useRealTimers();
         window.localStorage.clear();
         scrollIntoViewMock.mockClear();
         scrollToMock.mockClear();
@@ -159,6 +164,10 @@ describe('AIAssistantPanel property tests', () => {
         openFileOrShowInFolderMock.mockResolvedValue(undefined);
         showItemInFolderMock.mockReset();
         showItemInFolderMock.mockResolvedValue(undefined);
+        loadProjectContextMock.mockReset();
+        loadProjectContextMock.mockResolvedValue({ project_name: '', recent_progress: '', key_artifacts: [] });
+        createProjectTabSessionMock.mockReset();
+        createProjectTabSessionMock.mockResolvedValue(undefined);
         listVirtualEmployeesMock.mockReset();
         listVirtualEmployeesMock.mockResolvedValue([
             { id: 've-a', machine_id: 've-a', name: 'Agent A', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
@@ -589,7 +598,7 @@ describe('AIAssistantPanel property tests', () => {
         const sendMessage = vi.fn().mockResolvedValue(undefined);
         const recordSubmittedPrompt = vi.fn();
         const { getByTestId, queryByTestId } = renderPanel({
-            state: { messages: [], sending: true, streaming: true, ready: true },
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
             actions: {
                 sendMessage,
                 injectSupplementary,
@@ -621,7 +630,7 @@ describe('AIAssistantPanel property tests', () => {
         const guideLaunchReference = vi.fn().mockResolvedValue(false);
         const sendMessage = vi.fn().mockResolvedValue(undefined);
         const { getByTestId, getByText } = renderPanel({
-            state: { messages: [], sending: true, streaming: true, ready: true },
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
             actions: {
                 sendMessage,
                 injectSupplementary,
@@ -780,7 +789,7 @@ describe('AIAssistantPanel property tests', () => {
                 autoSend: false,
             },
             onPendingProjectTabOpenHandled: onHandled,
-            state: { messages: [], sending: true, streaming: true, ready: true },
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/no-global-fallback', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/no-global-fallback', ready: true },
             actions: {
                 injectSupplementary,
                 guideLaunchReference,
@@ -801,6 +810,355 @@ describe('AIAssistantPanel property tests', () => {
         expect(injectSupplementary).not.toHaveBeenCalled();
         expect(document.body.textContent || '').toContain('project selected session only');
     });
+
+    it('renders restored project context as a compact user-facing note', async () => {
+        loadProjectContextMock.mockResolvedValue({
+            project_name: '北京天气',
+            recent_progress: [
+                'Forked from recent task.',
+                'Source task: D:\\Users\\alice\\.maclaw\\data\\tasks\\source-task',
+                '查询了北京今天的天气，当前多云，适合继续跟进预报。',
+                '',
+                '**关键产出物:**',
+                '- `D:\\Users\\alice\\.maclaw\\data\\tasks\\source-task\\weather.md`',
+                '**最近产物来源:**',
+                '- weather.md - `D:\\Users\\alice\\.maclaw\\data\\tasks\\source-task\\weather.md`; full: read_file',
+            ].join('\n'),
+            key_artifacts: ['D:\\Users\\alice\\.maclaw\\data\\tasks\\source-task\\weather.md'],
+            recent_artifacts: [{ title: 'weather.md', source_url: 'D:\\Users\\alice\\.maclaw\\data\\tasks\\source-task\\weather.md', source_hint: 'full: read_file' }],
+            active_workflow: '',
+        });
+        const onHandled = vi.fn();
+
+        const { queryByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/beijing-weather',
+                taskTitle: '北京天气',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(document.body.textContent || '').toContain('已恢复任务上下文：北京天气'));
+        const bodyText = document.body.textContent || '';
+        expect(bodyText).toContain('最近进展：查询了北京今天的天气');
+        expect(bodyText).toContain('相关产物和来源已载入，AI 会参考。可以直接继续问。');
+        expect(bodyText).not.toContain('Forked from recent task');
+        expect(bodyText).not.toContain('Source task:');
+        expect(bodyText).not.toContain('关键产出物');
+        expect(bodyText).not.toContain('最近产物来源');
+        expect(bodyText).not.toContain('.maclaw');
+        expect(queryByText(/read_file/)).toBeNull();
+    });
+
+    it('locks a newly opened project tab until context restore finishes and queues typed input', async () => {
+        let resolveContext!: (value: any) => void;
+        loadProjectContextMock.mockReturnValueOnce(new Promise(resolve => {
+            resolveContext = resolve;
+        }));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/prepare-before-send',
+                taskTitle: 'Prepare before send',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect(getByTestId('project-tab-restore-progress')).toBeTruthy();
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.disabled).toBe(false);
+        expect(input.placeholder).toContain('Restoring task context');
+
+        fireEvent.change(input, { target: { value: 'send only after restore' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(getByTestId('buffer-queue-panel')).toBeTruthy();
+        expect(document.body.textContent || '').toContain('send only after restore');
+        expect((document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true);
+        expect((document.querySelector('[data-testid^="edit-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true);
+
+        await act(async () => {
+            resolveContext({ project_name: 'Prepare before send', recent_progress: '', key_artifacts: [], recent_artifacts: [], active_workflow: '' });
+        });
+
+        await waitFor(() => expect(queryByTestId('project-tab-restore-progress')).toBeNull());
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('send only after restore', expect.objectContaining({ project_path: 'D:/tasks/prepare-before-send' })));
+    });
+
+    it('releases project tab restore lock after context timeout while retry continues in background', async () => {
+        loadProjectContextMock.mockReturnValue(new Promise(() => {}));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/slow-context',
+                taskTitle: 'Slow context',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect(getByTestId('project-tab-restore-progress')).toBeTruthy();
+
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'continue after timeout' } });
+        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter' });
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        await waitFor(() => expect(queryByTestId('project-tab-restore-progress')).toBeNull(), { timeout: 3000 });
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('continue after timeout', expect.objectContaining({ project_path: 'D:/tasks/slow-context' })));
+    });
+
+    it('queues send-button clicks while project context restore is preparing', async () => {
+        let resolveContext!: (value: any) => void;
+        loadProjectContextMock.mockReturnValueOnce(new Promise(resolve => {
+            resolveContext = resolve;
+        }));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+
+        const { getByTestId, getByTitle } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/prepare-button-send',
+                taskTitle: 'Prepare button send',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress')).toBeTruthy());
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'button waits too' } });
+        fireEvent.click(getByTitle('Send (Enter)'));
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(getByTestId('buffer-queue-panel').textContent || '').toContain('button waits too');
+
+        await act(async () => {
+            resolveContext({ project_name: 'Prepare button send', recent_progress: '', key_artifacts: [], recent_artifacts: [], active_workflow: '' });
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('button waits too', expect.objectContaining({ project_path: 'D:/tasks/prepare-button-send' })));
+    });
+
+    it('defers project auto-send until context restore finishes', async () => {
+        let resolveContext!: (value: any) => void;
+        loadProjectContextMock.mockReturnValueOnce(new Promise(resolve => {
+            resolveContext = resolve;
+        }));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/autosend-after-prepare',
+                taskTitle: 'Auto after prepare',
+                initialMessage: 'auto waits for context',
+                autoSend: true,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect(getByTestId('project-tab-restore-progress')).toBeTruthy();
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        await act(async () => {
+            resolveContext({ project_name: 'Auto after prepare', recent_progress: '', key_artifacts: [], recent_artifacts: [], active_workflow: '' });
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('auto waits for context', expect.objectContaining({ project_path: 'D:/tasks/autosend-after-prepare' })));
+    });
+
+    it('labels new task preparation as agent instance creation while input waits', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-agent-prepare',
+                taskTitle: 'Create new agent backed task',
+                autoSend: false,
+                prepareMode: 'new-agent',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating agent instance'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toContain('Creating agent instance');
+
+        fireEvent.change(input, { target: { value: 'queued while creating' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(loadProjectContextMock).not.toHaveBeenCalled();
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued while creating', expect.objectContaining({ project_path: 'D:/tasks/new-agent-prepare' })));
+    });
+
+    it('keeps new task input queued until the project tab session is registered', async () => {
+        let resolveSession!: () => void;
+        createProjectTabSessionMock.mockReturnValueOnce(new Promise<void>(resolve => {
+            resolveSession = resolve;
+        }));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-agent-session-wait',
+                taskTitle: 'Wait for session registration',
+                autoSend: false,
+                prepareMode: 'new-agent',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating agent instance'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'send after session exists' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await new Promise(resolve => setTimeout(resolve, 180));
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        await act(async () => {
+            resolveSession();
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('send after session exists', expect.objectContaining({ project_path: 'D:/tasks/new-agent-session-wait' })));
+    });
+
+    it('uses the fallback delay when project tab session registration fails', async () => {
+        vi.useFakeTimers();
+        createProjectTabSessionMock.mockRejectedValueOnce(new Error('session failed'));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-agent-session-fallback',
+                taskTitle: 'Fallback session registration',
+                autoSend: false,
+                prepareMode: 'new-agent',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating agent instance');
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'fallback after registration failure' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        await act(async () => {
+            vi.advanceTimersByTime(5000);
+            await Promise.resolve();
+        });
+
+        expect(sendMessage).toHaveBeenCalledWith('fallback after registration failure', expect.objectContaining({ project_path: 'D:/tasks/new-agent-session-fallback' }));
+    });
+
+    it('drops queued new-task input when the tab closes before session registration finishes', async () => {
+        let resolveSession!: () => void;
+        createProjectTabSessionMock.mockReturnValueOnce(new Promise<void>(resolve => {
+            resolveSession = resolve;
+        }));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+
+        const { getByTestId, queryByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-agent-close-before-ready',
+                taskTitle: 'Close before ready',
+                autoSend: false,
+                prepareMode: 'new-agent',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating agent instance'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'should be dropped on close' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        const closeEventHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'project-task:closed').at(-1)?.[1];
+        expect(closeEventHandler).toBeTypeOf('function');
+        act(() => closeEventHandler('D:/tasks/new-agent-close-before-ready'));
+        await waitFor(() => expect(queryByText('Close before ready')).toBeNull());
+
+        await act(async () => {
+            resolveSession();
+            await Promise.resolve();
+        });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not re-enter preparation or auto-send when reopening an existing new task tab', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { queryByTestId, rerender } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/reopen-new-agent-existing',
+                taskTitle: 'Reopen new agent existing',
+                autoSend: false,
+                prepareMode: 'new-agent',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(queryByTestId('project-tab-restore-progress')).toBeNull());
+        expect(loadProjectContextMock).not.toHaveBeenCalled();
+
+        onHandled.mockClear();
+        loadProjectContextMock.mockClear();
+        const base = defaultPanelProps();
+        rerender(<AIAssistantPanel
+            {...base}
+            actions={{ ...base.actions, sendMessage }}
+            pendingProjectTabOpen={{
+                projectPath: 'D:/tasks/reopen-new-agent-existing',
+                taskTitle: 'Reopen new agent existing',
+                autoSend: true,
+                prepareMode: 'new-agent',
+            }}
+            onPendingProjectTabOpenHandled={onHandled}
+        />);
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect(queryByTestId('project-tab-restore-progress')).toBeNull();
+        expect(loadProjectContextMock).not.toHaveBeenCalled();
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
     it('disables queued entry actions while a guide fire is in flight', async () => {
         localStorage.removeItem('ai_assistant_buffer_queue');
         let resolveGuide!: (value: boolean) => void;
@@ -808,7 +1166,7 @@ describe('AIAssistantPanel property tests', () => {
             resolveGuide = resolve;
         }));
         const { getByTestId, getByText, queryByTestId } = renderPanel({
-            state: { messages: [], sending: true, streaming: true, ready: true },
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
             actions: {
                 guideLaunchReference,
             },
@@ -882,6 +1240,108 @@ describe('AIAssistantPanel property tests', () => {
         expect(onHandled).toHaveBeenCalled();
     });
 
+    it('lets local assistant submit while a project tab round is running', async () => {
+        let resolveProjectSend!: (value: boolean) => void;
+        const sendMessage = vi.fn(() => new Promise<boolean>((resolve) => {
+            resolveProjectSend = resolve;
+        }));
+        const onHandled = vi.fn();
+        const localBefore = makeMsg({ role: 'user', content: 'local remains active' });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/running-project-round',
+                taskTitle: 'Running project round',
+                initialMessage: 'start project work',
+                autoSend: true,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { ...base.state, messages: [localBefore], sending: false, streaming: false, ready: true },
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender, getByTestId, queryByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('start project work', expect.objectContaining({
+            project_path: 'D:/tasks/running-project-round',
+        })));
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, sending: true, streaming: true }} />);
+
+        fireEvent.click(getByTestId('ai-tab-local'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'local question during project' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local question during project'));
+        expect(queryByTestId('buffer-queue-panel')).toBeNull();
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, sending: true, streaming: true }} />);
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'second local waits for local agent' } });
+        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter' });
+        expect(sendMessage).not.toHaveBeenCalledWith('second local waits for local agent');
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('second local waits for local agent'));
+        resolveProjectSend(true);
+    });
+
+    it('does not keep a project tab busy after detached round messages disappear', async () => {
+        let resolveProjectSend!: (value: boolean) => void;
+        const sendMessage = vi.fn((_: string, options?: any) => {
+            if (options?.project_path) {
+                return new Promise<boolean>((resolve) => {
+                    resolveProjectSend = resolve;
+                });
+            }
+            return Promise.resolve(true);
+        });
+        const localBefore = makeMsg({ role: 'user', content: 'local before stale detach' });
+        const projectUser = makeMsg({ role: 'user', content: 'project stale user' });
+        const projectAssistant = makeMsg({ role: 'assistant', content: '', requestId: 'req-stale-detach' });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/stale-detached-round',
+                taskTitle: 'Stale detached round',
+                initialMessage: 'start stale project work',
+                autoSend: true,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { ...base.state, messages: [localBefore], sending: false, streaming: false, ready: true },
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender, getByTestId, queryByTestId, getByText } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('start stale project work', expect.objectContaining({
+            project_path: 'D:/tasks/stale-detached-round',
+        })));
+        const projectTabId = (((sendMessage as any).mock.calls[0]?.[1]) as any)?.tabId as string;
+
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, messages: [localBefore, projectUser, projectAssistant], sending: true, streaming: true }} />);
+        fireEvent.click(getByTestId('ai-tab-local'));
+        const localInput = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(localInput, { target: { value: 'local takes over stale project' } });
+        fireEvent.keyDown(localInput, { key: 'Enter' });
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local takes over stale project'));
+
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, messages: [localBefore], sending: false, streaming: false }} />);
+        const projectTabButton = queryByTestId(`ai-tab-${projectTabId}`);
+        if (projectTabButton) {
+            fireEvent.click(projectTabButton);
+        } else {
+            fireEvent.click(getByTestId('ai-tab-overflow-btn'));
+            fireEvent.click(getByText('Stale detached round'));
+        }
+        await waitFor(() => expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe(''));
+        const projectInput = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(projectInput, { target: { value: 'project should send after cleanup' } });
+        fireEvent.keyDown(projectInput, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('project should send after cleanup', expect.objectContaining({
+            tabId: projectTabId,
+            project_path: 'D:/tasks/stale-detached-round',
+        })));
+        resolveProjectSend(true);
+    });
+
     it('keeps project guide reference echo inside the active project tab', async () => {
         localStorage.removeItem('ai_assistant_buffer_queue');
         const guideLaunchReference = vi.fn().mockResolvedValue(true);
@@ -893,7 +1353,7 @@ describe('AIAssistantPanel property tests', () => {
                 autoSend: false,
             },
             onPendingProjectTabOpenHandled: onHandled,
-            state: { messages: [], sending: true, streaming: true, ready: true },
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/weather', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/weather', ready: true },
             actions: {
                 guideLaunchReference,
             },
@@ -931,7 +1391,7 @@ describe('AIAssistantPanel property tests', () => {
                 autoSend: false,
             },
             onPendingProjectTabOpenHandled: onHandled,
-            state: { messages: [], sending: true, streaming: true, ready: true },
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/delayed-guide', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/delayed-guide', ready: true },
             actions: {
                 guideLaunchReference,
             },
@@ -968,8 +1428,8 @@ describe('AIAssistantPanel property tests', () => {
     });
     it('preserves multiple rapid project guide reference echoes', async () => {
         localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
-            { id: 'project-guide-one', text: 'first project guide', attachments: [], createdAt: 1 },
-            { id: 'project-guide-two', text: 'second project guide', attachments: [], createdAt: 2 },
+            { id: 'project-guide-one', text: 'first project guide', attachments: [], createdAt: 1, sessionKey: 'desktop-user:D:/tasks/rapid-guides' },
+            { id: 'project-guide-two', text: 'second project guide', attachments: [], createdAt: 2, sessionKey: 'desktop-user:D:/tasks/rapid-guides' },
         ]));
         const guideLaunchReference = vi.fn().mockResolvedValue(true);
         const onHandled = vi.fn();
@@ -980,7 +1440,7 @@ describe('AIAssistantPanel property tests', () => {
                 autoSend: false,
             },
             onPendingProjectTabOpenHandled: onHandled,
-            state: { messages: [], sending: true, streaming: true, ready: true },
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/rapid-guides', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/rapid-guides', ready: true },
             actions: {
                 guideLaunchReference,
             },
@@ -1266,6 +1726,81 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('unfinished-slot-status').textContent || '').toContain('已恢复');
     });
 
+    it('localizes interrupted unfinished slot details in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Detected an unfinished task: Login to Zhihu. Choose resume to continue it.',
+                unfinishedSlot: {
+                    slotID: 'slot-interrupted',
+                    title: '登录知乎发表一下码卡龙 6发布感言。',
+                    summary: 'Previous task stopped making progress and was moved to recovery.',
+                    status: 'interrupted',
+                },
+            }),
+        ];
+
+        const { getByTestId, getByText, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-status').textContent || '').toContain('已中断');
+        expect(getByTestId('unfinished-slot-summary').textContent || '').toContain('上次任务停止推进');
+        expect(getByText(/检测到未完成任务/)).toBeTruthy();
+        expect(queryByText(/Previous task stopped making progress/)).toBeNull();
+    });
+
+    it('localizes unfinished slot notice fallback title in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Detected an unfinished task: Previous task stopped making progress and was moved to recovery. Choose resume to continue it.',
+                unfinishedSlot: {
+                    slotID: 'slot-summary-title',
+                    summary: 'Previous task stopped making progress and was moved to recovery.',
+                    status: 'interrupted',
+                },
+            }),
+        ];
+
+        const { getByText, getByTestId, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByText(/\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1/)).toBeTruthy();
+        expect(getByTestId('unfinished-slot-summary').textContent || '').toContain('\u4e0a\u6b21\u4efb\u52a1\u505c\u6b62\u63a8\u8fdb');
+        expect((getByText(/\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1/).textContent || '')).not.toContain('\u3002\u3002');
+        expect(queryByText(/Previous task stopped making progress/)).toBeNull();
+    });
+
+    it('localizes unfinished slot status in Traditional Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Detected an unfinished task: Continue work. Choose resume to continue it.',
+                unfinishedSlot: {
+                    slotID: 'slot-hant-status',
+                    title: '繼續整理報告',
+                    status: 'max_rounds_reached',
+                },
+            }),
+        ];
+
+        const { getByTestId, getByText, queryByText } = renderPanel({
+            lang: 'zh-Hant',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-status').textContent || '').toContain('達到最大輪次');
+        expect(getByText(/偵測到未完成任務/)).toBeTruthy();
+        expect(queryByText(/Detected an unfinished task/)).toBeNull();
+    });
+
     it('localizes unfinished slot notice, title, and action labels in Chinese', () => {
         const messages: ChatMessage[] = [
             makeMsg({
@@ -1294,6 +1829,117 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByText('开始新任务')).toBeTruthy();
         expect(queryByText('Unfinished item')).toBeNull();
         expect(queryByText('Start new task')).toBeNull();
+    });
+
+    it('localizes recoverable session action labels in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '\u53ef\u6062\u590d\u4f1a\u8bdd',
+                actions: [
+                    { label: 'Resume session', command: '__resume_session__ sess-1', style: 'default' },
+                    { label: 'Dismiss session', command: '__dismiss_recoverable_session__ sess-1', style: 'danger' },
+                ],
+            }),
+        ];
+
+        const { getByText, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByText('\u6062\u590d\u4f1a\u8bdd')).toBeTruthy();
+        expect(getByText('\u5ffd\u7565\u4f1a\u8bdd')).toBeTruthy();
+        expect(queryByText('Resume session')).toBeNull();
+        expect(queryByText('Dismiss session')).toBeNull();
+    });
+
+    it('renders recoverable session cards in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '\u68c0\u6d4b\u5230\u53ef\u6062\u590d\u4f1a\u8bdd',
+                recoverableSession: {
+                    sessionID: 'sess-1',
+                    title: '\u7ee7\u7eed Daily Paper',
+                    summary: '\u8fd8\u5dee\u6700\u540e\u4e00\u8f6e\u6574\u7406',
+                    projectPath: 'D:/work/project',
+                    status: 'exited',
+                    actions: [
+                        { label: 'Resume session', command: '__resume_session__ sess-1', style: 'default' },
+                        { label: 'Dismiss session', command: '__dismiss_recoverable_session__ sess-1', style: 'danger' },
+                    ],
+                },
+            }),
+        ];
+
+        const { getByTestId, getByText, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('recoverable-session-card')).toBeTruthy();
+        expect(getByTestId('recoverable-session-status').textContent || '').toContain('\u5df2\u9000\u51fa');
+        expect(getByText('\u53ef\u6062\u590d\u4f1a\u8bdd')).toBeTruthy();
+        expect(getByText('\u6062\u590d\u4f1a\u8bdd')).toBeTruthy();
+        expect(getByText('\u5ffd\u7565\u4f1a\u8bdd')).toBeTruthy();
+        expect(queryByText('Recoverable session')).toBeNull();
+    });
+
+    it('localizes recoverable session known English progress in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '\u68c0\u6d4b\u5230\u53ef\u6062\u590d\u4f1a\u8bdd',
+                recoverableSession: {
+                    sessionID: 'sess-progress',
+                    title: '\u7ee7\u7eed\u4efb\u52a1',
+                    lastProgress: 'Previous task stopped making progress and was moved to recovery.',
+                    status: 'exited',
+                },
+            }),
+        ];
+
+        const { getByTestId, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('recoverable-session-summary').textContent || '').toContain('\u4e0a\u6b21\u4efb\u52a1\u505c\u6b62\u63a8\u8fdb');
+        expect(queryByText(/Previous task stopped making progress/)).toBeNull();
+    });
+
+    it('localizes task handoff fallback statuses in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                unfinishedSlot: {
+                    slotID: 'slot-failed',
+                    title: 'fallback status',
+                    status: 'failed',
+                },
+                recoverableSession: {
+                    sessionID: 'sess-waiting',
+                    title: 'waiting session',
+                    status: 'waiting_input',
+                },
+            }),
+        ];
+
+        const { getByTestId, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-status').textContent || '').toContain('\u5df2\u5931\u8d25');
+        expect(getByTestId('recoverable-session-status').textContent || '').toContain('\u7b49\u5f85\u8f93\u5165');
+        expect(queryByText(/failed/)).toBeNull();
+        expect(queryByText(/waiting input|waiting_input/i)).toBeNull();
     });
 
     it('unfinished slot card buttons reuse executeAction', async () => {
@@ -1595,6 +2241,42 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         expect(getByText('done')).toBeTruthy();
+    });
+
+    it('keeps tool-running status in one compact row while busy', () => {
+        const { container, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: {
+                messages: [makeMsg({ role: 'user', content: '南京天气' })],
+                progressMessages: [makeMsg({ role: 'progress', content: '🚀 正在执行 Skill「Weather Query 🌤」...' })],
+                sending: true,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        expect(queryByText('🚀 正在执行 Skill「Weather Query 🌤」...')).toBeNull();
+        expect(container.textContent).toContain('正在执行 Weather Query 🌤');
+        expect(container.textContent).toContain('可继续输入');
+        expect((container.textContent || '').match(/Weather Query/g) || []).toHaveLength(1);
+    });
+
+    it('summarizes shell-style tool paths without duplicating the chat row', () => {
+        const { container, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: {
+                messages: [makeMsg({ role: 'user', content: '南京天气' })],
+                progressMessages: [makeMsg({ role: 'progress', content: '🚀 正在执行 Shell /Weather Query 🌤 / ...' })],
+                sending: true,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        expect(queryByText('🚀 正在执行 Shell /Weather Query 🌤 / ...')).toBeNull();
+        expect(container.textContent).toContain('正在执行 Weather Query 🌤');
+        expect(container.textContent).toContain('可继续输入');
+        expect((container.textContent || '').match(/Weather Query/g) || []).toHaveLength(1);
     });
 
     it('renders coding agent progress as a visible task status row', () => {
@@ -1924,6 +2606,306 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => {
             expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('draft survives reopen');
         });
+    });
+
+    it('keeps project tab draft text isolated from the local assistant draft', async () => {
+        const setDraftInputValue = vi.fn();
+        const onHandled = vi.fn();
+
+        const { getByTestId, getByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/draft-isolated',
+                taskTitle: 'Draft isolated task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true, draftInputValue: 'local draft' },
+            actions: { setDraftInputValue },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect(getByText('Draft isolated task')).toBeTruthy();
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'project draft' } });
+        expect(setDraftInputValue).not.toHaveBeenCalledWith('project draft');
+
+        fireEvent.click(getByTestId('ai-tab-local'));
+        await waitFor(() => expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('local draft'));
+
+        fireEvent.click(getByTestId('ai-tab-overflow-btn'));
+        fireEvent.click(getByText('Draft isolated task'));
+        await waitFor(() => expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('project draft'));
+    });
+
+    it('does not clear the local assistant history when clearing a project tab', async () => {
+        const clearHistory = vi.fn().mockResolvedValue(undefined);
+        const onHandled = vi.fn();
+
+        const { getByTitle } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/project-clear-isolated',
+                taskTitle: 'Project clear isolated',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { clearHistory },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        fireEvent.click(getByTitle('Clear history'));
+
+        expect(clearHistory).not.toHaveBeenCalled();
+    });
+
+    it('keeps a project tab input unlocked while the local assistant session is busy', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/beijing-weather-idle',
+                taskTitle: 'Beijing weather idle',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [],
+                sending: true,
+                sendingSessionKey: 'desktop-user',
+                streaming: true,
+                streamingSessionKey: 'desktop-user',
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Type a message...');
+        fireEvent.change(input, { target: { value: 'project tab should not inherit local busy' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('project tab should not inherit local busy', expect.objectContaining({
+            project_path: 'D:/tasks/beijing-weather-idle',
+        })));
+        expect(queryByTestId('buffer-queue-panel')).toBeNull();
+    });
+
+    it('keeps the local assistant input unlocked while a project tab session is busy', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/project-busy-local-idle',
+                taskTitle: 'Project busy local idle',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [],
+                sending: true,
+                sendingSessionKey: 'desktop-user:D:/tasks/project-busy-local-idle',
+                streaming: true,
+                streamingSessionKey: 'desktop-user:D:/tasks/project-busy-local-idle',
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        fireEvent.click(getByTestId('ai-tab-local'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Type a message...');
+        fireEvent.change(input, { target: { value: 'local tab should not inherit project busy' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local tab should not inherit project busy'));
+        expect(queryByTestId('buffer-queue-panel')).toBeNull();
+    });
+
+    it('keeps the local assistant input queued when its own detached session is busy', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, getByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/project-active-local-detached',
+                taskTitle: 'Project active local detached',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [],
+                sending: true,
+                sendingSessionKey: 'desktop-user:D:/tasks/project-active-local-detached',
+                busySessionKeys: ['desktop-user', 'desktop-user:D:/tasks/project-active-local-detached'],
+                streaming: true,
+                streamingSessionKey: 'desktop-user:D:/tasks/project-active-local-detached',
+                streamingSessionKeys: ['desktop-user:D:/tasks/project-active-local-detached'],
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        fireEvent.click(getByTestId('ai-tab-local'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Running tools... (you can type ahead)');
+        fireEvent.change(input, { target: { value: 'local detached should queue' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByText('local detached should queue')).toBeTruthy());
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('keeps a project tab queued when its detached session remains busy after the active round idles', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, getByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/detached-project-still-busy',
+                taskTitle: 'Detached project still busy',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [],
+                progressMessages: [makeMsg({ role: 'progress', content: 'Coding Agent: running project session only' })],
+                sending: false,
+                busySessionKeys: ['desktop-user:D:/tasks/detached-project-still-busy'],
+                streaming: false,
+                streamingSessionKeys: [],
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Running tools... (you can type ahead)');
+        expect(getByText('Coding Agent: running project session only')).toBeTruthy();
+        fireEvent.change(input, { target: { value: 'project detached should queue' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByText('project detached should queue')).toBeTruthy());
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('shows thinking only for the project tab whose detached session is streaming', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/detached-project-streaming',
+                taskTitle: 'Detached project streaming',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [],
+                sending: false,
+                busySessionKeys: ['desktop-user:D:/tasks/detached-project-streaming'],
+                streaming: false,
+                streamingSessionKeys: ['desktop-user:D:/tasks/detached-project-streaming'],
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Thinking... (you can type ahead)');
+
+        fireEvent.click(getByTestId('ai-tab-local'));
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Type a message...');
+    });
+
+    it('keeps an idle project tab input unlocked when legacy busy state has no session key', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/legacy-busy-project-idle',
+                taskTitle: 'Legacy busy project idle',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [],
+                sending: true,
+                streaming: true,
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Type a message...');
+        fireEvent.change(input, { target: { value: 'legacy busy should not queue project input' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('legacy busy should not queue project input', expect.objectContaining({
+            project_path: 'D:/tasks/legacy-busy-project-idle',
+        })));
+        expect(queryByTestId('buffer-queue-panel')).toBeNull();
+    });
+
+    it('keeps queued project input isolated from the local assistant tab', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId, getByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/queue-isolated',
+                taskTitle: 'Queue isolated task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/queue-isolated', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/queue-isolated', ready: true, draftInputValue: 'local draft' },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'project queued only' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('project queued only'));
+
+        fireEvent.click(getByTestId('ai-tab-local'));
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+
+        fireEvent.click(getByTestId('ai-tab-overflow-btn'));
+        fireEvent.click(getByText('Queue isolated task'));
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('project queued only'));
+    });
+
+    it('closes matching project tab on backend task closed event', async () => {
+        const onHandled = vi.fn();
+
+        const { getByText, queryByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/close-event',
+                taskTitle: 'Close event task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect(getByText('Close event task')).toBeTruthy();
+
+        const closeEventHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'project-task:closed').at(-1)?.[1];
+        expect(closeEventHandler).toBeTypeOf('function');
+        act(() => closeEventHandler('D:/tasks/close-event'));
+
+        await waitFor(() => expect(queryByText('Close event task')).toBeNull());
     });
 
     it('opens digital employee invite picker after converting a direct VE chat to group mode', async () => {

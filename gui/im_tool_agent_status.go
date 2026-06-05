@@ -11,7 +11,7 @@ package main
 // Data sources (single enumeration point — add new sources here):
 //   - LocalBackgroundTaskManager: bash(background=true) local processes
 //   - SSHBackgroundTaskManager:   ssh(submit_task) remote processes
-//   - RemoteSessionManager:       coding sessions (create_session)
+//   - RemoteSessionManager:       coding sessions
 //   - SSHSessionManager:          SSH interactive connections
 //
 // Consumers:
@@ -170,14 +170,8 @@ func (h *IMMessageHandler) collectMainAgentRuntimeStatusForOwner(rs *RuntimeStat
 		return
 	}
 
-	// Legacy fallback for callers that do not yet have an owner. New runtime
-	// paths should pass ownerID so concurrent channels cannot see each other.
-	ctx, _, userText := h.legacyLoopSnapshot()
-	if ctx != nil && !ctx.IsCancelled() {
-		rs.MainAgentRunning = true
-		rs.MainAgentTask = userText
-		rs.MainAgentElapsed = time.Since(ctx.StartedAt).Round(time.Second)
-	}
+	// Empty owner is an unknown isolation boundary. Do not report whichever loop
+	// last touched legacy globals; status callers in agent paths must pass ownerID.
 }
 
 // ---------------------------------------------------------------------------

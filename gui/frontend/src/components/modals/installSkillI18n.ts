@@ -55,6 +55,7 @@ export const localizeSkillInstallStatus = (status: string | undefined, summary: 
         'security scanning generated script before execution.': installSkillText(lang, 'Security scanning generated script before execution.', '正在执行前安全扫描生成脚本。', '正在執行前安全掃描生成腳本。'),
         'generated script security scan did not produce a report; current policy allows execution.': installSkillText(lang, 'Generated script security scan did not produce a report; current policy allows execution.', '生成脚本安全扫描未生成报告；当前策略允许执行。', '生成腳本安全掃描未產生報告；目前策略允許執行。'),
         'developer mode enabled; generated script scan will not block execution.': installSkillText(lang, 'Developer mode enabled; generated script scan will not block execution.', '开发者模式已启用；生成脚本扫描不会阻止执行。', '開發者模式已啟用；生成腳本掃描不會封鎖執行。'),
+        'risk guardrails are off; generated script allowed.': installSkillText(lang, 'Risk guardrails are off; generated script allowed.', '风险护栏已关闭，允许执行生成脚本。', '風險護欄已關閉，允許執行生成腳本。'),
         'generated script security scan passed.': installSkillText(lang, 'Generated script security scan passed.', '生成脚本安全扫描已通过。', '生成腳本安全掃描已通過。'),
         'generated script security scan recorded risk and allowed execution by current policy.': installSkillText(lang, 'Generated script security scan recorded risk and allowed execution by current policy.', '生成脚本安全扫描已记录风险，当前策略允许执行。', '生成腳本安全掃描已記錄風險，目前策略允許執行。'),
         'security scan did not produce a report; current policy allows installation.': installSkillText(lang, 'Security scan did not produce a report; current policy allows installation.', '安全扫描未生成报告；当前策略允许安装。', '安全掃描未產生報告；目前策略允許安裝。'),
@@ -64,6 +65,7 @@ export const localizeSkillInstallStatus = (status: string | undefined, summary: 
         'user approved high-risk installation.': installSkillText(lang, 'User approved high-risk installation.', '用户已批准高风险安装。', '使用者已核准高風險安裝。'),
         'security scan recorded risk and allowed installation by current policy.': installSkillText(lang, 'Security scan recorded risk and allowed installation by current policy.', '安全扫描已记录风险，当前策略允许安装。', '安全掃描已記錄風險，目前策略允許安裝。'),
         'security scan recorded risk and allowed installation by trusted marketplace policy.': installSkillText(lang, 'Security scan recorded risk and allowed installation by trusted marketplace policy.', '安全扫描已记录风险，受信能力市场策略允许安装。', '安全掃描已記錄風險，受信能力市場策略允許安裝。'),
+        'risk guardrails are off; installation allowed.': installSkillText(lang, 'Risk guardrails are off; installation allowed.', '风险护栏已关闭，允许安装。', '風險護欄已關閉，允許安裝。'),
         'developer mode enabled; security scan will not block installation.': installSkillText(lang, 'Developer mode enabled; security scan will not block installation.', '开发者模式已启用；安全扫描不会阻止安装。', '開發者模式已啟用；安全掃描不會封鎖安裝。'),
         'developer mode enabled; high-risk scan result allowed.': installSkillText(lang, 'Developer mode enabled; high-risk scan result allowed.', '开发者模式已启用；高风险扫描结果已允许。', '開發者模式已啟用；高風險掃描結果已允許。'),
     };

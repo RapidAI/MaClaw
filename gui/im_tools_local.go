@@ -34,6 +34,15 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 	if rejection, rejected := coretool.RejectRawSSHCommand(command); rejected {
 		return rejection
 	}
+	if rejection, rejected := coretool.RejectBroadBrowserKillCommand(command); rejected {
+		return rejection
+	}
+	if rejection, rejected := coretool.RejectShellBrowserAutomationCommand(command); rejected {
+		return rejection
+	}
+	if rejection, rejected := coretool.RejectBrowserSideEffectHTTPCommand(command); rejected {
+		return rejection
+	}
 
 	// --- Background mode: submit to LocalBackgroundTaskManager ---
 	if bg, ok := args["background"].(bool); ok && bg {
@@ -138,7 +147,23 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 }
 
 func resolveFileToolPath(path string) (string, error) {
-	return coretool.ResolveFileToolPath(path, func() string {
+	return resolveFileToolPathWithBase(path, func() string {
+		if wd, err := os.Getwd(); err == nil {
+			return wd
+		}
+		return ""
+	})
+}
+
+func resolveFileToolPathWithBase(path string, baseResolver coretool.PathResolver) (string, error) {
+	return coretool.ResolveFileToolPath(path, baseResolver)
+}
+
+func (h *IMMessageHandler) resolveFileToolPathForOwner(path, ownerID string) (string, error) {
+	return resolveFileToolPathWithBase(path, func() string {
+		if dir := h.projectTabWorkDirForOwner(ownerID); dir != "" {
+			return dir
+		}
 		if wd, err := os.Getwd(); err == nil {
 			return wd
 		}
@@ -173,12 +198,36 @@ func (h *IMMessageHandler) projectTabWorkDirForOwner(ownerID string) string {
 	if info, err := os.Stat(projectPath); err == nil && info.IsDir() {
 		return projectPath
 	}
-	// Fallback to user home directory if projectPath is invalid.
-	log.Printf("[projectTabWorkDir] project path %q does not exist or is not a directory, falling back to home dir", projectPath)
-	if home, err := os.UserHomeDir(); err == nil {
-		return home
+	if h.ensureRecentTaskWorkspaceForProjectPath(projectPath) {
+		return projectPath
 	}
-	return ""
+	// Project-tab owners are isolation boundaries. Never fall back to home or
+	// the default workspace when the bound project path is invalid.
+	log.Printf("[projectTabWorkDir] invalid project path %q for owner=%q; using missing path so tool fails closed", projectPath, ownerID)
+	return projectPath
+}
+
+func (h *IMMessageHandler) ensureRecentTaskWorkspaceForProjectPath(projectPath string) bool {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" || !filepath.IsAbs(projectPath) {
+		return false
+	}
+	if h == nil || h.app == nil || !h.app.isManagedRecentTaskWorkspacePath(projectPath) {
+		return false
+	}
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		log.Printf("[projectTabWorkDir] repair managed recent-task workspace failed path=%q err=%v", projectPath, err)
+		return false
+	}
+	taskFile := filepath.Join(projectPath, "task.md")
+	if _, err := os.Stat(taskFile); os.IsNotExist(err) {
+		content := fmt.Sprintf("# %s\n\nRecovered recent-task workspace.\nProject path: %s\n", lastPathComponent(projectPath), projectPath)
+		if writeErr := os.WriteFile(taskFile, []byte(content), 0o644); writeErr != nil {
+			log.Printf("[projectTabWorkDir] repair managed recent-task task.md failed path=%q err=%v", taskFile, writeErr)
+		}
+	}
+	log.Printf("[projectTabWorkDir] repaired managed recent-task workspace path=%q", projectPath)
+	return true
 }
 
 // resolveToolWorkDir resolves the working directory for tool execution.
@@ -203,11 +252,15 @@ func (h *IMMessageHandler) resolveToolWorkDirForOwner(workingDir, ownerID string
 }
 
 func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "read_file failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
+	}
 	p, _ := args["path"].(string)
 	if p == "" {
 		return "缺少 path 参数"
 	}
-	absPath, err := resolveFileToolPath(p)
+	absPath, err := h.resolveFileToolPathForOwner(p, ownerID)
 	if err != nil {
 		return err.Error()
 	}
@@ -305,6 +358,10 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 }
 
 func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "write_file failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
+	}
 	p, _ := args["path"].(string)
 	content, ok := args["content"].(string)
 	if p == "" {
@@ -319,7 +376,7 @@ func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 	mode := stringVal(args, "mode")
 	p = workflowDocWritePath(p, args)
 
-	absPath, err := resolveFileToolPath(p)
+	absPath, err := h.resolveFileToolPathForOwner(p, ownerID)
 	if err != nil {
 		return err.Error()
 	}
@@ -341,13 +398,17 @@ func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 }
 
 func (h *IMMessageHandler) toolEditFile(args map[string]interface{}) string {
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "edit_file failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
+	}
 	p, _ := args["path"].(string)
 	oldString, okOld := args["old_string"].(string)
 	newString, okNew := args["new_string"].(string)
 	if p == "" || !okOld || !okNew {
 		return "缺少 path、old_string 或 new_string 参数"
 	}
-	absPath, err := resolveFileToolPath(p)
+	absPath, err := h.resolveFileToolPathForOwner(p, ownerID)
 	if err != nil {
 		return err.Error()
 	}
@@ -363,11 +424,15 @@ func (h *IMMessageHandler) toolEditFile(args map[string]interface{}) string {
 }
 
 func (h *IMMessageHandler) toolEditLines(args map[string]interface{}) string {
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "edit_lines failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
+	}
 	p, _ := args["path"].(string)
 	if p == "" {
 		return "缺少 path 参数"
 	}
-	absPath, err := resolveFileToolPath(p)
+	absPath, err := h.resolveFileToolPathForOwner(p, ownerID)
 	if err != nil {
 		return err.Error()
 	}
@@ -442,8 +507,12 @@ func buildAdaptiveReadResult(lines []string, totalLines int, absPath string) str
 }
 
 func (h *IMMessageHandler) toolListDirectory(args map[string]interface{}) string {
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "list_directory failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
+	}
 	p, _ := args["path"].(string)
-	absPath, err := resolveFileToolPath(p)
+	absPath, err := h.resolveFileToolPathForOwner(p, ownerID)
 	if err != nil {
 		return err.Error()
 	}
@@ -485,11 +554,15 @@ func (h *IMMessageHandler) toolListDirectory(args map[string]interface{}) string
 const sendFileMaxSize = 200 << 20 // 200 MB — large files are handled by plugin-level fallback (temp URL)
 
 func (h *IMMessageHandler) toolSendFile(args map[string]interface{}) string {
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "send_file failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
+	}
 	p, _ := args["path"].(string)
 	if p == "" {
 		return "缺少 path 参数"
 	}
-	absPath, err := resolveFileToolPath(p)
+	absPath, err := h.resolveFileToolPathForOwner(p, ownerID)
 	if err != nil {
 		return err.Error()
 	}

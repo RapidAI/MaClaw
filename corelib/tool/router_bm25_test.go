@@ -442,6 +442,178 @@ func TestRouter_BrowserSemanticConfirm_AcceptsTruePositive(t *testing.T) {
 	}
 }
 
+func TestRouter_SemanticBrowserIntentKeepsBrowserAndSuppressesFallbacks(t *testing.T) {
+	router := NewRouter(nil)
+	ic := NewIntentClassifier(embedding.NoopEmbedder{})
+	defer ic.Close()
+	ic.SetLLMFunc(func(prompt string) (string, error) { return IntentBrowser, nil })
+	router.SetIntentClassifier(ic)
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools, makeToolDef("browser", "stable browser automation tool"))
+	for i := 0; i < 30; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("登录知乎发表一条码卡龙 6 发布感言", tools)
+	resultNames := make(map[string]bool)
+	var names []string
+	for _, r := range result {
+		name := ExtractToolName(r)
+		resultNames[name] = true
+		names = append(names, name)
+	}
+	if !resultNames["browser"] {
+		t.Fatalf("browser should be routed for semantic browser login/publish intent, got: %v", names)
+	}
+	if resultNames["screenshot"] {
+		t.Fatalf("desktop screenshot should be suppressed for browser automation intent, got: %v", names)
+	}
+	if resultNames["bash"] {
+		t.Fatalf("bash should be suppressed for browser automation intent, got: %v", names)
+	}
+}
+
+func TestRouter_ScreenshotIsNotAlwaysOnCoreTool(t *testing.T) {
+	if CoreToolNames["screenshot"] {
+		t.Fatal("screenshot must not be a core always-on tool; route it only when user explicitly asks")
+	}
+}
+
+func TestRouter_ExplicitScreenshotRequestStillRoutesScreenshot(t *testing.T) {
+	router := NewRouter(nil)
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools, makeToolDef("screenshot", "take a desktop screenshot capture the visible screen"))
+	for i := 0; i < 30; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("take a desktop screenshot and show me", tools)
+	if !routedToolNames(result)["screenshot"] {
+		t.Fatalf("explicit screenshot request should still route screenshot, got: %v", result)
+	}
+}
+
+func TestRouter_GenericFollowupDoesNotRouteScreenshot(t *testing.T) {
+	router := NewRouter(nil)
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools, makeToolDef("screenshot", "take a desktop screenshot capture the visible screen"))
+	for i := 0; i < 30; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("不是已经好了吗？", tools)
+	if routedToolNames(result)["screenshot"] {
+		t.Fatalf("generic follow-up should not route screenshot, got: %v", result)
+	}
+}
+
+func TestRouter_CompositeResearchPublishToZhihuRoutesBrowser(t *testing.T) {
+	router := NewRouter(nil)
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools,
+		makeToolDef("browser", "stable browser automation merged tool"),
+		makeToolDef("web_search", "search the web for latest papers"),
+		makeToolDef("screenshot", "take a desktop screenshot capture the visible screen"),
+	)
+	for i := 0; i < 30; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("找篇最新的agentic RL相关论文，做完综述，发表到知乎，作为正式文章，不是想法。", tools)
+	names := routedToolNames(result)
+	if !names["browser"] {
+		t.Fatalf("composite publish-to-Zhihu task should route browser, got: %v", result)
+	}
+	for _, suppressed := range []string{"bash", "screenshot", "manage_skill", "discover_tool", "call_mcp_tool", "search_and_install_skill", "git_commit", "git_push", "passthrough_task", "list_mcp_tools"} {
+		if names[suppressed] {
+			t.Fatalf("browser publish task should suppress %s, got: %v", suppressed, result)
+		}
+	}
+}
+
+func TestRouter_BrowserSessionFollowupSuppressesUnstableFallbacks(t *testing.T) {
+	router := NewRouter(nil)
+	router.ActivateSessionTool("browser")
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools,
+		makeToolDef("browser", "stable browser automation merged tool"),
+		makeToolDef("screenshot", "take a desktop screenshot capture the visible screen"),
+		makeToolDef("git_commit", "commit code changes to git repository"),
+		makeToolDef("git_push", "push git commits to remote repository"),
+		makeToolDef("manage_skill", "run local skill"),
+	)
+	for i := 0; i < 30; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("\u597d\u50cf\u63d0\u4ea4\u65f6\u6ca1\u6210\u529f\uff0c\u6d88\u5931\u4e86\u3002", tools)
+	names := routedToolNames(result)
+	if !names["browser"] {
+		t.Fatalf("active browser session should keep browser tool for short follow-up, got: %v", result)
+	}
+	for _, suppressed := range []string{"bash", "screenshot", "git_commit", "git_push", "manage_skill"} {
+		if names[suppressed] {
+			t.Fatalf("browser follow-up should suppress %s, got: %v", suppressed, result)
+		}
+	}
+}
+
+func TestRouter_GenericSubmitFollowupDoesNotRouteScreenshotOrGit(t *testing.T) {
+	router := NewRouter(nil)
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools,
+		makeToolDef("screenshot", "take a desktop screenshot capture the visible screen"),
+		makeToolDef("git_commit", "commit code changes to git repository"),
+		makeToolDef("git_push", "push git commits to remote repository"),
+	)
+	for i := 0; i < 30; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("\u597d\u50cf\u63d0\u4ea4\u65f6\u6ca1\u6210\u529f\uff0c\u6d88\u5931\u4e86\u3002", tools)
+	names := routedToolNames(result)
+	for _, suppressed := range []string{"screenshot", "git_commit", "git_push"} {
+		if names[suppressed] {
+			t.Fatalf("generic submit follow-up should not route %s without explicit request, got: %v", suppressed, result)
+		}
+	}
+}
+
+func TestRouter_ExplicitGitRequestStillRoutesGitCommit(t *testing.T) {
+	router := NewRouter(nil)
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools, makeToolDef("git_commit", "commit code changes to git repository"))
+	for i := 0; i < 30; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("\u5e2e\u6211\u628a\u4ee3\u7801 git commit \u4e00\u4e0b", tools)
+	if !routedToolNames(result)["git_commit"] {
+		t.Fatalf("explicit git request should still route git_commit, got: %v", result)
+	}
+}
+
 // TestRouter_BrowserSemanticConfirm_NoFallbackWithoutClassifier verifies that
 // when no IntentClassifier is available, browser tools do not fall back to
 // local lexical activation.

@@ -29,6 +29,23 @@ describe("AITabItem", () => {
         expect(screen.getByTestId("ai-tab-ve-avatar-tab").textContent).toContain("Avatar Agent");
     });
 
+    it("keeps VE online status visible when an avatar replaces the default icon", () => {
+        const tab = {
+            id: "ve-avatar-offline-tab",
+            type: "ve" as const,
+            title: "Avatar Agent",
+            veId: "ve-avatar",
+            onlineStatus: "offline" as const,
+            avatarDataURL: "data:image/jpeg;base64,/9j/",
+            closable: true,
+        };
+
+        render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onClose={vi.fn()} lang="en" />);
+
+        expect(screen.getByTestId("ai-tab-avatar-ve-avatar-offline-tab")).toBeTruthy();
+        expect(screen.getByTestId("ai-tab-status-ve-avatar-offline-tab").style.background).toBe("rgb(107, 114, 128)");
+    });
+
     it("shows live group participant names instead of raw ids in the tab title", () => {
         const tab = {
             id: "group-live",

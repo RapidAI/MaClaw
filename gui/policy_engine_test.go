@@ -78,6 +78,13 @@ func TestPolicyEngineModeNormalization(t *testing.T) {
 	if pe.Mode() != "relaxed" {
 		t.Fatalf("Mode() = %q, want relaxed", pe.Mode())
 	}
+	pe.SetMode("none")
+	if pe.Mode() != "none" {
+		t.Fatalf("Mode() after none = %q, want none", pe.Mode())
+	}
+	if pe.IsDeveloperMode() {
+		t.Fatal("none mode must not enable developer mode")
+	}
 	pe.SetMode("permissive")
 	if pe.Mode() != "relaxed" {
 		t.Fatalf("Mode() after permissive = %q, want relaxed", pe.Mode())
@@ -85,6 +92,17 @@ func TestPolicyEngineModeNormalization(t *testing.T) {
 	pe.SetMode("unknown")
 	if pe.Mode() != "standard" {
 		t.Fatalf("Mode() after unknown = %q, want standard", pe.Mode())
+	}
+}
+
+func TestPolicyEngineNoneModeAllowsRiskGuardrailDecisionsWithoutDeveloperMode(t *testing.T) {
+	pe := NewPolicyEngineWithMode("none")
+	if pe.IsDeveloperMode() {
+		t.Fatal("none mode must not use developer-mode bypass semantics")
+	}
+	action := pe.Evaluate("Bash", map[string]interface{}{"command": "sudo rm -rf /"}, security.RiskCritical)
+	if action != security.PolicyAllow {
+		t.Fatalf("none mode action = %s, want allow", action)
 	}
 }
 

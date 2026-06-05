@@ -326,7 +326,7 @@ allowed_commands:
 		agent.ToolDef("ssh", "remote shell", nil, nil),
 		agent.ToolDef("read_file", "read file", nil, nil),
 		agent.ToolDef("task", "spawn task", nil, nil),
-		agent.ToolDef("create_session", "create session", nil, nil),
+		agent.ToolDef("write_file", "write file", nil, nil),
 		agent.ToolDef("edit_file", "edit file", nil, nil),
 	}
 	got := agent.FilterToolDefinitionsByAuthorizer(&tuiCallbacks{app: app}, tools)
@@ -340,7 +340,7 @@ allowed_commands:
 			t.Fatalf("expected %s to remain allowed; got names=%v", name, names)
 		}
 	}
-	for _, name := range []string{"task", "create_session", "edit_file"} {
+	for _, name := range []string{"task", "write_file", "edit_file"} {
 		if names[name] {
 			t.Fatalf("expected %s to be filtered out; got names=%v", name, names)
 		}

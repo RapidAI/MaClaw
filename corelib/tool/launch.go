@@ -16,7 +16,7 @@ const (
 // LaunchOptions 工具启动选项。
 type LaunchOptions struct {
 	ProjectDir string
-	Tool       string            // "claude", "codex", "gemini", ...
+	Tool       string // "claude", "codex", "opencode", ...
 	Mode       ToolLaunchMode
 	Env        map[string]string // 额外环境变量
 	Args       []string          // 额外命令行参数

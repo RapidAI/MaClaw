@@ -1147,6 +1147,26 @@ func TestResolveWorkflowFormUserIDFallsBackToSingleActivePhase(t *testing.T) {
 	}
 }
 
+func TestResolveWorkflowFormUserIDDoesNotInheritCurrentRuntimeWhenAmbiguous(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userA := "desktop-user:C:/project-a"
+	userB := "desktop-user:C:/project-b"
+	stateA, err := engine.StartWorkflow(userA, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app a"})
+	if err != nil {
+		t.Fatalf("StartWorkflow A failed: %v", err)
+	}
+	if _, err := engine.StartWorkflow(userB, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app b"}); err != nil {
+		t.Fatalf("StartWorkflow B failed: %v", err)
+	}
+	handler.currentLoopCtx = &LoopContext{Runtime: RuntimeContext{RequestID: "req-a", PolicyOwnerID: userA}}
+	handler.lastUserID = userA
+
+	if got := resolveWorkflowFormUserID(handler, engine, stateA.CurrentPhase, nil); got != "" {
+		t.Fatalf("ambiguous form without hidden user inherited runtime user %q", got)
+	}
+}
+
 func TestWorkflowFormMatchesActiveWorkflowRejectsStaleDismiss(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine

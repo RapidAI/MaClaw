@@ -1,9 +1,12 @@
 package oauth
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,111 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"pgregory.net/rapid"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestSetCodeGenClientNameHeader(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, CodeGenModelsEndpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setCodeGenClientNameHeader(req)
+	if got := req.Header.Get(corelib.CodeGenClientNameHeader); got != corelib.CodeGenClientName {
+		t.Fatalf("%s = %q, want %q", corelib.CodeGenClientNameHeader, got, corelib.CodeGenClientName)
+	}
+
+	custom, err := http.NewRequest(http.MethodGet, CodeGenModelsEndpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setCodeGenClientNameHeaderWithName(custom, "custom-agent")
+	if got := custom.Header.Get(corelib.CodeGenClientNameHeader); got != "custom-agent" {
+		t.Fatalf("custom %s = %q, want %q", corelib.CodeGenClientNameHeader, got, "custom-agent")
+	}
+
+	legacyDefault, err := http.NewRequest(http.MethodGet, CodeGenModelsEndpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setCodeGenClientNameHeaderWithName(legacyDefault, "openclaw")
+	if got := legacyDefault.Header.Get(corelib.CodeGenClientNameHeader); got != corelib.CodeGenClientName {
+		t.Fatalf("legacy default %s = %q, want %q", corelib.CodeGenClientNameHeader, got, corelib.CodeGenClientName)
+	}
+}
+
+func TestValidateAndRefreshCodeGenTokenUseCustomClientName(t *testing.T) {
+	originalClient := codeGenHTTPClient
+	t.Cleanup(func() { codeGenHTTPClient = originalClient })
+
+	var seen []string
+	codeGenHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		seen = append(seen, req.Method+" "+req.URL.Path+" "+req.Header.Get(corelib.CodeGenClientNameHeader))
+		body := []byte(`{"token":"new-token","expires_in":3600,"refresh_token":"new-refresh"}`)
+		if req.Method == http.MethodGet {
+			body = []byte(`{"data":[{"id":"qax-codegen/model","status":"available"}]}`)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	if !ValidateCodeGenTokenWithClientName("access-token", "custom-agent") {
+		t.Fatal("ValidateCodeGenTokenWithClientName() = false, want true")
+	}
+	if _, err := RefreshCodeGenTokenWithClientName("refresh-token", "custom-agent"); err != nil {
+		t.Fatalf("RefreshCodeGenTokenWithClientName() error = %v", err)
+	}
+
+	want := []string{
+		"GET /api/v1/models custom-agent",
+		"POST /api/v1/auth/refresh custom-agent",
+	}
+	if strings.Join(seen, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("seen requests:\n%s\nwant:\n%s", strings.Join(seen, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestValidateAndRefreshCodeGenTokenNormalizeLegacyClientName(t *testing.T) {
+	originalClient := codeGenHTTPClient
+	t.Cleanup(func() { codeGenHTTPClient = originalClient })
+
+	var seen []string
+	codeGenHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		seen = append(seen, req.Method+" "+req.URL.Path+" "+req.Header.Get(corelib.CodeGenClientNameHeader))
+		body := []byte(`{"token":"new-token","expires_in":3600,"refresh_token":"new-refresh"}`)
+		if req.Method == http.MethodGet {
+			body = []byte(`{"data":[{"id":"qax-codegen/model","status":"available"}]}`)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	if !ValidateCodeGenTokenWithClientName("access-token", "openclaw") {
+		t.Fatal("ValidateCodeGenTokenWithClientName() = false, want true")
+	}
+	if _, err := RefreshCodeGenTokenWithClientName("refresh-token", "openclaw"); err != nil {
+		t.Fatalf("RefreshCodeGenTokenWithClientName() error = %v", err)
+	}
+
+	want := []string{
+		"GET /api/v1/models " + corelib.CodeGenClientName,
+		"POST /api/v1/auth/refresh " + corelib.CodeGenClientName,
+	}
+	if strings.Join(seen, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("seen requests:\n%s\nwant:\n%s", strings.Join(seen, "\n"), strings.Join(want, "\n"))
+	}
+}
 
 // ─── Task 2.2 ───────────────────────────────────────────────────────────────
 // Feature: codegen-scan-login, Property 5: Token result application sets provider fields correctly

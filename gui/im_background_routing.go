@@ -55,7 +55,7 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 		systemPrompt = h.buildSystemPrompt()
 	}
 	if activeSlot := h.memory.ActiveUnfinishedSlot(msg.UserID); activeSlot != nil {
-		systemPrompt += buildUnfinishedSlotResumeContext(activeSlot)
+		systemPrompt += buildUnfinishedSlotResumeContextWithLang(activeSlot, msg.Lang)
 		systemPrompt += h.buildTraceEvidencePrompt(msg.UserID, activeSlot.LastTask)
 	} else {
 		systemPrompt += h.buildTraceEvidencePrompt(msg.UserID, msg.Text)

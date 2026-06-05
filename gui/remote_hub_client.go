@@ -491,7 +491,7 @@ func (c *RemoteHubClient) sendMachineHelloLocked() error {
 	// If cache is empty (first startup or no prior cache), use install-status-only
 	// detection via GetInstallStatus (exec.LookPath / file stat, no process execution).
 	if len(toolNames) == 0 {
-		defaultTools := []string{"claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "iflow", "kilo", "browser"}
+		defaultTools := []string{"claude", "codex", "opencode", "codebuddy", "iflow", "kilo", "browser"}
 		for _, name := range defaultTools {
 			if name == "browser" {
 				// browser is always a builtin capability
@@ -538,7 +538,7 @@ func (c *RemoteHubClient) sendMachineHelloLocked() error {
 	// After sending hello, asynchronously refresh version cache for all tools.
 	// This runs external processes in background goroutines with a 10s combined timeout.
 	if c.app.toolVersionCache != nil {
-		allTools := []string{"claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "iflow", "kilo"}
+		allTools := []string{"claude", "codex", "opencode", "codebuddy", "iflow", "kilo"}
 		c.app.toolVersionCache.RefreshAllAsync(allTools, 10*time.Second)
 	}
 
@@ -555,8 +555,6 @@ func (c *RemoteHubClient) SendSessionCreated(s *RemoteSession) error {
 	execMode := "sdk"
 	if _, isSDK := s.Exec.(*SDKExecutionHandle); isSDK {
 		execMode = "sdk"
-	} else if _, isACP := s.Exec.(*GeminiACPExecutionHandle); isACP {
-		execMode = "gemini-acp"
 	}
 
 	msg := HubEnvelope{
@@ -1384,7 +1382,7 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			return
 		}
 		wl.Log("hubClient.reply", "IN", reply.PlatformUID, "dispatching type=%s text_len=%d ctx_token_len=%d", reply.ReplyType, len(reply.Text), len(reply.ContextToken))
-		c.app.log(fmt.Sprintf("[hub-client] im.gateway_reply: dispatching to weixinGateway, text=%q ctx_token_len=%d", reply.Text, len(reply.ContextToken)))
+		c.app.log(fmt.Sprintf("[hub-client] im.gateway_reply: dispatching to weixinGateway, text_len=%d ctx_token_len=%d", len([]rune(reply.Text)), len(reply.ContextToken)))
 		c.app.weixinGateway.HandleGatewayReply(GatewayReplyPayload{
 			ReplyType:    reply.ReplyType,
 			PlatformUID:  reply.PlatformUID,

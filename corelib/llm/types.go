@@ -162,8 +162,7 @@ type AnthropicContentBlock struct {
 func ParseNonStreamAnthropicResponse(resp *http.Response) (*Response, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 	if resp.StatusCode != http.StatusOK {
-		sanitized := sanitizeHTMLBody(body, 300)
-		return nil, fmt.Errorf("llm error: status=%d body=%s", resp.StatusCode, sanitized)
+		return nil, fmt.Errorf("llm error: status=%d body_len=%d", resp.StatusCode, len(body))
 	}
 
 	var anthropicResp struct {
@@ -285,8 +284,7 @@ func ParseNonStreamOpenAIResponseBody(body []byte) (*Response, error) {
 func ParseNonStreamOpenAIResponse(resp *http.Response) (*Response, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 	if resp.StatusCode != http.StatusOK {
-		sanitized := sanitizeHTMLBody(body, 300)
-		return nil, fmt.Errorf("llm error: status=%d body=%s", resp.StatusCode, sanitized)
+		return nil, fmt.Errorf("llm error: status=%d body_len=%d", resp.StatusCode, len(body))
 	}
 	return ParseNonStreamOpenAIResponseBody(body)
 }

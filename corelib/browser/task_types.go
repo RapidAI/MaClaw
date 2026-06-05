@@ -47,8 +47,8 @@ type StepTrace struct {
 
 // StepSpec defines a single browser operation step.
 type StepSpec struct {
-	Action    string            `json:"action"`            // navigate, click, type, wait, eval, scroll, select
-	Params    map[string]string `json:"params"`            // action-specific: url, selector, text, expression, value, delta_y
+	Action    string            `json:"action"`            // navigate, click, type, wait, scroll, select
+	Params    map[string]string `json:"params"`            // action-specific: url, ref, selector, text, value, delta_y
 	Verify    *CriterionSpec    `json:"verify,omitempty"`  // optional per-step verification
 	Timeout   time.Duration     `json:"timeout,omitempty"` // overrides TaskSpec.StepTimeout
 	Target    *StepTargetSpec   `json:"target,omitempty"`
@@ -57,7 +57,7 @@ type StepSpec struct {
 
 // CriterionSpec defines a success criterion for verification.
 type CriterionSpec struct {
-	Type     string `json:"type"`               // dom_exists, dom_text, url_contains, url_matches, ocr_contains, ax_exists, ax_name, ax_role, frame_url_contains, network_request, console_no_error
+	Type     string `json:"type"`               // dom_exists, dom_text, url_contains, url_matches, ax_exists, ax_name, ax_role, frame_url_contains, network_request, console_no_error
 	Selector string `json:"selector,omitempty"` // CSS selector (for dom_*)
 	Pattern  string `json:"pattern"`            // match pattern (text/regex/URL)
 	TabID    string `json:"tab_id,omitempty"`

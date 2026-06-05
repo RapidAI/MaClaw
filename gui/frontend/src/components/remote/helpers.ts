@@ -6,6 +6,7 @@ import type {
     RemoteSuggestedAction,
     RemoteToolLaunchProbeView,
     RemoteToolMetadataView,
+    BuiltinRemoteToolName,
     RemoteToolName,
     RemoteToolReadinessView,
 } from "./types";
@@ -14,7 +15,7 @@ type LocalizeText = (en: string, zhHans: string, zhHant: string) => string;
 type Translate = (key: string) => string;
 type FormatText = (key: string, vars?: Record<string, string>) => string;
 
-export const fallbackRemoteToolMeta: Record<string, { label: string; configHint: string; smokeHint: string }> = {
+export const fallbackRemoteToolMeta: Record<BuiltinRemoteToolName, { label: string; configHint: string; smokeHint: string }> = {
     claude: {
         label: "Claude",
         configHint: "Checks Anthropic-compatible auth, Claude launch command, and remote PTY readiness.",
@@ -30,6 +31,11 @@ export const fallbackRemoteToolMeta: Record<string, { label: string; configHint:
         configHint: "Checks OpenCode config sync, OpenAI-compatible endpoints, and isolated session config.",
         smokeHint: "Runs registration, PTY, launch, real session start, and Hub visibility verification for OpenCode.",
     },
+    codebuddy: {
+        label: "CodeBuddy",
+        configHint: "Checks CodeBuddy config sync, OpenAI-compatible endpoints, and remote PTY readiness.",
+        smokeHint: "Runs registration, PTY, launch, real session start, and Hub visibility verification for CodeBuddy.",
+    },
     iflow: {
         label: "iFlow",
         configHint: "Checks iFlow config sync plus IFLOW and OpenAI-compatible environment wiring.",
@@ -42,28 +48,47 @@ export const fallbackRemoteToolMeta: Record<string, { label: string; configHint:
     },
 };
 
+const normalizeRemoteMetaName = (name: string): string => name.trim().toLowerCase();
+
+const removedRemoteToolNames = new Set(["cursor", "gemini"]);
+
+const isRemovedRemoteToolName = (name: string): boolean => removedRemoteToolNames.has(normalizeRemoteMetaName(name));
+
+const isFallbackRemoteToolName = (name: string): name is BuiltinRemoteToolName => (
+    Object.prototype.hasOwnProperty.call(fallbackRemoteToolMeta, name)
+);
+
 export function buildRemoteToolMetaByName(remoteToolMetadata: RemoteToolMetadataView[]): Record<string, RemoteToolMetadataView> {
     const mapped: Record<string, RemoteToolMetadataView> = {};
     for (const item of remoteToolMetadata) {
-        mapped[item.name] = item;
+        const name = normalizeRemoteMetaName(item.name);
+        if (isRemovedRemoteToolName(name)) continue;
+        mapped[name] = { ...item, name };
     }
     return mapped;
 }
 
 export function buildVisibleRemoteTools(remoteToolMetadata: RemoteToolMetadataView[]): RemoteToolMetadataView[] {
     if (remoteToolMetadata.length > 0) {
-        return remoteToolMetadata.filter((tool) => tool.visible !== false);
+        return remoteToolMetadata
+            .map((tool) => ({ ...tool, name: normalizeRemoteMetaName(tool.name) }))
+            .filter((tool) => tool.visible !== false && !isRemovedRemoteToolName(tool.name));
     }
-    return Object.keys(fallbackRemoteToolMeta).map((name) => ({
-        name,
-        display_name: fallbackRemoteToolMeta[name].label,
-        visible: true,
-        can_start: true,
-    }));
+    return Object.keys(fallbackRemoteToolMeta).map((name) => {
+        const toolName = name as BuiltinRemoteToolName;
+        return {
+            name: toolName,
+            display_name: fallbackRemoteToolMeta[toolName].label,
+            visible: true,
+            can_start: true,
+        };
+    });
 }
 
 export function getRemoteToolLabel(tool: string, remoteToolMetaByName: Record<string, RemoteToolMetadataView>): string {
-    return remoteToolMetaByName[tool]?.display_name ?? fallbackRemoteToolMeta[tool]?.label ?? tool;
+    const normalized = normalizeRemoteMetaName(tool);
+    const fallbackLabel = isFallbackRemoteToolName(normalized) ? fallbackRemoteToolMeta[normalized].label : undefined;
+    return remoteToolMetaByName[normalized]?.display_name ?? fallbackLabel ?? tool;
 }
 
 export function getRemoteToolConfigHint(
@@ -71,7 +96,7 @@ export function getRemoteToolConfigHint(
     remoteToolMetaByName: Record<string, RemoteToolMetadataView>,
     localizeText: LocalizeText,
 ): string {
-    return remoteToolMetaByName[tool]?.readiness_hint ?? localizeText(
+    return remoteToolMetaByName[normalizeRemoteMetaName(tool)]?.readiness_hint ?? localizeText(
         `Checks ${getRemoteToolLabel(tool, remoteToolMetaByName)} command resolution, configuration wiring, and remote PTY readiness.`,
         `检查 ${getRemoteToolLabel(tool, remoteToolMetaByName)} 的命令解析、配置连通性，以及远程 PTY 就绪情况。`,
         `檢查 ${getRemoteToolLabel(tool, remoteToolMetaByName)} 的命令解析、配置連通性，以及遠端 PTY 就緒情況。`,
@@ -83,7 +108,7 @@ export function getRemoteToolSmokeHint(
     remoteToolMetaByName: Record<string, RemoteToolMetadataView>,
     localizeText: LocalizeText,
 ): string {
-    return remoteToolMetaByName[tool]?.smoke_hint ?? localizeText(
+    return remoteToolMetaByName[normalizeRemoteMetaName(tool)]?.smoke_hint ?? localizeText(
         `Runs registration, PTY, launch, real session start, and Hub visibility verification for ${getRemoteToolLabel(tool, remoteToolMetaByName)}.`,
         `执行 ${getRemoteToolLabel(tool, remoteToolMetaByName)} 的注册、PTY、启动、真实会话启动与 Hub 可见性验证。`,
         `執行 ${getRemoteToolLabel(tool, remoteToolMetaByName)} 的註冊、PTY、啟動、真實會話啟動與 Hub 可見性驗證。`,
@@ -190,12 +215,15 @@ export function getRemoteSuggestedAction(args: {
         config,
     } = args;
 
-    if (!selectedRemoteToolInfo?.installed) {
+    if (!selectedRemoteToolInfo?.installed && selectedRemoteToolCanStart) {
         return {
             label: formatText("remoteInstallTool", { tool: getRemoteToolLabel(selectedRemoteTool, remoteToolMetaByName) }),
             description: formatText("remoteInstallTool", { tool: getRemoteToolLabel(selectedRemoteTool, remoteToolMetaByName) }),
             action: "install",
         };
+    }
+    if (!selectedRemoteToolCanStart) {
+        return null;
     }
     if (!remoteActivationStatus?.activated) {
         return {

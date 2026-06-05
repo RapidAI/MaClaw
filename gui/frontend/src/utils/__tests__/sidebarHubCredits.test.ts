@@ -30,7 +30,7 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.authorized).toBe(true);
         expect(credits?.serviceActive).toBe(true);
         expect(credits?.status).toBe('active');
-        expect(credits?.total).toBe(200);
+        expect(credits?.total).toBe(300);
         expect(credits?.remaining).toBe(189);
         expect(credits?.expiresAt).toBe('2026-06-06T00:00:00Z');
         expect(credits?.retryAfterSeconds).toBe(0);
@@ -90,6 +90,24 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.total).toBe(100);
     });
 
+    it('sums grant-level available credits when top-level available credits are missing', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credits_total: 0,
+            credits_used: 0,
+            credits_remaining: 0,
+            credits_available: 0,
+            credit_grants: [
+                { status: 'active', active: true, credits_total: 0, credits_used: 0, credits_remaining: 0, credits_available: 120.25 },
+                { status: 'active', active: true, credits_total: 0, credits_used: 0, credits_remaining: 0, credits_available: 80.75 },
+            ],
+        });
+
+        expect(credits?.serviceActive).toBe(true);
+        expect(credits?.remaining).toBe(201);
+        expect(credits?.total).toBe(201);
+    });
+
     it('prefers currently available credits over blocked remaining credits while service is active', () => {
         const credits = normalizeSidebarHubCredits({
             active: true,
@@ -103,7 +121,7 @@ describe('normalizeSidebarHubCredits', () => {
 
         expect(credits?.serviceActive).toBe(true);
         expect(credits?.remaining).toBe(10000);
-        expect(credits?.total).toBe(10100);
+        expect(credits?.total).toBe(15000);
     });
 
     it('reports active status when service is covered by an early-start eligible queued point card', () => {
@@ -121,6 +139,26 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.retryAfterSeconds).toBe(0);
         expect(credits?.retryAfterAt).toBe('');
         expect(credits?.remaining).toBe(10000);
+    });
+
+    it('matches service redemption total by including queued future credits', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credits_total: 55000,
+            credits_used: 5757.027,
+            credits_remaining: 49064.005,
+            credits_available: 49064.005,
+            credit_grants: [
+                { status: 'active', active: true, credits_total: 5000, credits_used: 4607.093, credits_remaining: 392.907, expires_at: '2026-06-06T06:44:00Z' },
+                { status: 'active', active: true, credits_total: 50000, credits_used: 1149.934, credits_remaining: 48850.066, expires_at: '2026-08-01T09:36:00Z' },
+                { status: 'queued', active: false, credits_total: 1, credits_used: 0, credits_remaining: 1, expires_at: '2026-08-06T06:44:00Z' },
+                { status: 'queued', active: false, credits_total: 300, credits_used: 0, credits_remaining: 300, expires_at: '2026-08-07T06:44:00Z' },
+            ],
+        });
+
+        expect(credits?.total).toBe(55301);
+        expect(credits?.used).toBe(5757.027);
+        expect(credits?.remaining).toBe(49064.005);
     });
 
     it('keeps expired grants authorized for explanation but exposes zero currently available credits', () => {

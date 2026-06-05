@@ -108,8 +108,6 @@ func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
 		execMode = "sdk"
 	} else if _, isCodex := exec.(*CodexSDKExecutionHandle); isCodex {
 		execMode = "codex-sdk"
-	} else if _, isACP := exec.(*GeminiACPExecutionHandle); isACP {
-		execMode = "gemini-acp"
 	} else if _, isIFlow := exec.(*IFlowSDKExecutionHandle); isIFlow {
 		execMode = "iflow-acp"
 	}
@@ -257,7 +255,7 @@ func sanitizeRemoteText(value string) string {
 }
 
 // sanitizeRawOutputLine performs minimal sanitization for raw terminal
-// output lines — only ensures valid UTF-8 and strips remaining control
+// output lines - only ensures valid UTF-8 and strips remaining control
 // characters.  Unlike sanitizeRemoteText it does NOT collapse whitespace
 // or replace newlines, preserving the original terminal layout.
 func sanitizeRawOutputLine(value string) string {
@@ -337,6 +335,11 @@ func (a *App) emitRemoteStateChanged() {
 func (a *App) ensureWorkflowAllowsRemoteToolCall(toolName string, args map[string]interface{}) error {
 	return a.ensureWorkflowAllowsRemoteToolCallForOwner(a.defaultManualPolicyOwnerID(), toolName, args)
 }
+
+const (
+	remoteSessionStartPolicyToolName = "remote_session_start"
+	remoteTemplatePolicyToolName     = "remote_template_manage"
+)
 
 func (a *App) ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, toolName string, args map[string]interface{}) error {
 	if a == nil {
@@ -436,6 +439,25 @@ func (a *App) GetRemoteToolLaunchProbe(toolName, projectDir string, useProxy boo
 	return a.CheckRemoteToolLaunchProbe(toolName, projectDir, useProxy)
 }
 
+func (a *App) ensureRemoteLaunchToolInstalled(toolName string, launchSource RemoteLaunchSource) error {
+	toolName = normalizeRemoteToolName(toolName)
+	if toolName == "browser" {
+		return nil
+	}
+	if !remoteToolSupported(toolName) {
+		return fmt.Errorf("tool %q does not support remote mode", toolName)
+	}
+	status := NewToolManager(a).GetToolStatus(toolName)
+	if status.Installed && strings.TrimSpace(status.Path) != "" {
+		return nil
+	}
+	if !remoteToolAutoInstallSupported(toolName) {
+		return fmt.Errorf("%s is not installed", toolName)
+	}
+	a.log(fmt.Sprintf("Remote launch: %s is not installed, installing on demand...", toolName))
+	return a.installToolOnDemandUnchecked(toolName)
+}
+
 func (a *App) RunRemoteClaudeSmoke(projectDir string, useProxy bool) (RemoteSmokeReport, error) {
 	return a.RunRemoteToolSmoke("claude", projectDir, useProxy)
 }
@@ -453,7 +475,7 @@ func (a *App) RunRemoteToolSmoke(toolName, projectDir string, useProxy bool) (Re
 		Connection:  a.GetRemoteConnectionStatus(),
 		Readiness:   a.GetRemoteToolReadiness(toolName, projectDir, useProxy),
 	}
-	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(RemoteLaunchSourceDesktop), "create_session", map[string]interface{}{"tool": toolName, "project_dir": projectDir}); err != nil {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(RemoteLaunchSourceDesktop), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir}); err != nil {
 		return report, err
 	}
 
@@ -471,6 +493,10 @@ func (a *App) RunRemoteToolSmoke(toolName, projectDir string, useProxy bool) (Re
 			return report, err
 		}
 		report.Activation = &activation
+	}
+
+	if err := a.ensureRemoteLaunchToolInstalled(toolName, RemoteLaunchSourceDesktop); err != nil {
+		return report, err
 	}
 
 	report.Connection = a.GetRemoteConnectionStatus()
@@ -549,8 +575,12 @@ func (a *App) StartRemoteClaudeSession(projectDir string, useProxy bool) (Remote
 }
 
 func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, provider string, launchSource RemoteLaunchSource) (RemoteSessionView, error) {
-	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(launchSource), "create_session", map[string]interface{}{"tool": toolName, "project_dir": projectDir, "provider": provider, "launch_source": string(launchSource)}); err != nil {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(launchSource), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir, "provider": provider, "launch_source": string(launchSource)}); err != nil {
 		return RemoteSessionView{}, err
+	}
+	toolName = normalizeRemoteToolName(toolName)
+	if !remoteToolSupported(toolName) {
+		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", toolName)
 	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
@@ -562,6 +592,9 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, pro
 
 	if projectDir == "" {
 		projectDir = a.GetCurrentProjectPath()
+	}
+	if err := a.ensureRemoteLaunchToolInstalled(toolName, launchSource); err != nil {
+		return RemoteSessionView{}, err
 	}
 
 	if a.remoteSessions == nil {
@@ -595,8 +628,12 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, pro
 }
 
 func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bool, provider string, launchSource RemoteLaunchSource) (RemoteSessionView, error) {
-	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(launchSource), "create_session", map[string]interface{}{"tool": toolName, "project_dir": projectDir, "provider": provider, "launch_source": string(launchSource)}); err != nil {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(launchSource), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir, "provider": provider, "launch_source": string(launchSource)}); err != nil {
 		return RemoteSessionView{}, err
+	}
+	toolName = normalizeRemoteToolName(toolName)
+	if !remoteToolSupported(toolName) {
+		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", toolName)
 	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
@@ -608,6 +645,9 @@ func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bo
 
 	if projectDir == "" {
 		projectDir = a.GetCurrentProjectPath()
+	}
+	if err := a.ensureRemoteLaunchToolInstalled(toolName, launchSource); err != nil {
+		return RemoteSessionView{}, err
 	}
 
 	if a.remoteSessions == nil {
@@ -677,7 +717,7 @@ func (a *App) SendRemoteSessionInput(sessionID, text string) error {
 // SendRemoteSessionRawInput writes raw bytes to the PTY without any
 // line-ending normalization.  Use this for sending individual keystrokes
 // or control sequences to TUI applications like Claude Code.
-// For SDK sessions, raw input is not supported — use SendRemoteSessionInput instead.
+// For SDK sessions, raw input is not supported - use SendRemoteSessionInput instead.
 func (a *App) SendRemoteSessionRawInput(sessionID, text string) error {
 	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "send_input", map[string]interface{}{"session_id": sessionID, "text": text, "raw": true}); err != nil {
 		return err
@@ -693,7 +733,7 @@ func (a *App) SendRemoteSessionRawInput(sessionID, text string) error {
 		return fmt.Errorf("session execution not available: %s", sessionID)
 	}
 
-	// SDK sessions don't support raw keystroke input — route through
+	// SDK sessions don't support raw keystroke input - route through
 	// the normal WriteInput path which wraps text in a JSON user message.
 	if _, isSDK := s.Exec.(*SDKExecutionHandle); isSDK {
 		a.log(fmt.Sprintf("[remote-raw-input] session=%s is SDK, routing to WriteInput", sessionID))
@@ -703,12 +743,7 @@ func (a *App) SendRemoteSessionRawInput(sessionID, text string) error {
 		a.log(fmt.Sprintf("[remote-raw-input] session=%s is Codex SDK, routing to WriteInput", sessionID))
 		return a.remoteSessions.WriteInput(sessionID, text)
 	}
-	if _, isACP := s.Exec.(*GeminiACPExecutionHandle); isACP {
-		a.log(fmt.Sprintf("[remote-raw-input] session=%s is Gemini ACP, routing to WriteInput", sessionID))
-		return a.remoteSessions.WriteInput(sessionID, text)
-	}
-
-	a.log(fmt.Sprintf("[remote-raw-input] session=%s, len=%d, text=%q", sessionID, len(text), text))
+	a.log(fmt.Sprintf("[remote-raw-input] session=%s, input_len=%d", sessionID, len([]rune(text))))
 	return s.Exec.Write([]byte(text))
 }
 

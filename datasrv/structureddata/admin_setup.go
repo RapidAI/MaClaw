@@ -2,6 +2,7 @@ package structureddata
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -21,6 +22,7 @@ type adminUserRecord struct {
 	Username          string
 	DisplayName       string
 	Role              string
+	AdminScope        string
 	Enabled           bool
 	LastLoginAt       *time.Time
 	CreatedAt         time.Time
@@ -31,14 +33,15 @@ type adminUserRecord struct {
 }
 
 type adminSessionRecord struct {
-	ID        string
-	TenantID  string
-	UserID    string
-	Username  string
-	Role      string
-	TokenHash string
-	ExpiresAt time.Time
-	CreatedAt time.Time
+	ID         string
+	TenantID   string
+	UserID     string
+	Username   string
+	Role       string
+	AdminScope string
+	TokenHash  string
+	ExpiresAt  time.Time
+	CreatedAt  time.Time
 }
 
 func (s *Service) SetupStatus(ctx context.Context) (*SetupStatus, error) {
@@ -46,12 +49,32 @@ func (s *Service) SetupStatus(ctx context.Context) (*SetupStatus, error) {
 	if err != nil {
 		return nil, err
 	}
+	tenants, err := s.store.ListDataTenants(ctx)
+	if err != nil {
+		return nil, err
+	}
+	hubRegistration, err := s.store.GetHubRegistration(ctx)
+	if err != nil {
+		return nil, err
+	}
+	mode := "local_admin"
+	if hubRegistration != nil && strings.TrimSpace(hubRegistration.HubBaseURL) != "" {
+		mode = "hub_tenant_admin"
+	}
 	return &SetupStatus{
-		Initialized:    initialized,
-		TenantID:       "default",
-		Mode:           "local_admin",
-		PasswordPolicy: s.adminPasswordPolicy(),
+		Initialized:     initialized,
+		TenantID:        "default",
+		Mode:            mode,
+		AdminScopes:     []string{"global", "tenant"},
+		Tenants:         tenants,
+		HubRegistration: ptrHubRegistrationStatus(hubRegistration),
+		PasswordPolicy:  s.adminPasswordPolicy(),
 	}, nil
+}
+
+func ptrHubRegistrationStatus(record *hubRegistrationRecord) *HubRegistrationStatus {
+	status := publicHubRegistrationStatusFromRecord(record)
+	return &status
 }
 
 func (s *Service) InitializeAdmin(ctx context.Context, in InitializeAdminInput) (*InitializeAdminResult, error) {
@@ -84,6 +107,7 @@ func (s *Service) InitializeAdmin(ctx context.Context, in InitializeAdminInput) 
 		Username:     username,
 		DisplayName:  trimForStorage(in.DisplayName, 120),
 		Role:         "data_admin",
+		AdminScope:   "global",
 		Enabled:      true,
 		PasswordHash: string(hash),
 		CreatedAt:    now,
@@ -92,17 +116,18 @@ func (s *Service) InitializeAdmin(ctx context.Context, in InitializeAdminInput) 
 	if _, err := s.store.CreateAdminUser(ctx, user); err != nil {
 		return nil, err
 	}
-	login, err := s.createAdminSession(ctx, user, in.ExpiresHours)
+	login, err := s.createAdminSession(ctx, user, tenantID, in.ExpiresHours)
 	if err != nil {
 		return nil, err
 	}
-	s.audit(ctx, Principal{TenantID: tenantID, UserID: user.ID, Role: user.Role}, "admin.setup_initialize", "", "admin_user", user.ID, "Initialized first administrator "+username, map[string]any{"username": username, "role": user.Role})
+	s.audit(ctx, Principal{TenantID: tenantID, UserID: user.ID, Role: user.Role, AdminScope: user.AdminScope}, "admin.setup_initialize", "", "admin_user", user.ID, "Initialized first global administrator "+username, map[string]any{"username": username, "role": user.Role, "admin_scope": user.AdminScope})
 	return &InitializeAdminResult{
 		Initialized: true,
 		TenantID:    tenantID,
 		Username:    username,
 		DisplayName: user.DisplayName,
 		Role:        user.Role,
+		AdminScope:  user.AdminScope,
 		Token:       login.Token,
 		ExpiresAt:   login.ExpiresAt,
 	}, nil
@@ -117,35 +142,30 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginResult, error
 		return nil, ErrUnauthorized
 	}
 	now := s.now().UTC()
-	user, err := s.store.FindAdminUser(ctx, tenantID, username)
+	users, err := s.findAdminUsersForLogin(ctx, tenantID, username)
 	if err != nil {
 		return nil, ErrUnauthorized
 	}
-	if s.adminLoginLocked(*user, now) {
-		return nil, ErrUnauthorized
-	}
-	if !user.Enabled {
-		if err := s.recordAdminLoginFailure(ctx, tenantID, username, now); err != nil {
+	password := strings.TrimSpace(in.Password)
+	for _, user := range users {
+		if user == nil || s.adminLoginLocked(*user, now) || !user.Enabled {
+			continue
+		}
+		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+			continue
+		}
+		_ = s.store.TouchAdminLogin(ctx, user.TenantID, user.ID, now)
+		if err := s.store.ClearAdminLoginFailure(ctx, user.TenantID, username, now); err != nil {
 			return nil, err
 		}
-		return nil, ErrUnauthorized
-	}
-	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(strings.TrimSpace(in.Password))) != nil {
-		if err := s.recordAdminLoginFailure(ctx, tenantID, username, now); err != nil {
+		login, err := s.createAdminSession(ctx, *user, tenantID, in.ExpiresHours)
+		if err != nil {
 			return nil, err
 		}
-		return nil, ErrUnauthorized
+		s.audit(ctx, Principal{TenantID: tenantID, UserID: user.ID, Role: user.Role, AdminScope: user.AdminScope}, "admin.login", "", "admin_user", user.ID, "Administrator login "+user.Username, map[string]any{"username": user.Username, "role": user.Role, "admin_scope": user.AdminScope, "expires_at": login.ExpiresAt})
+		return login, nil
 	}
-	_ = s.store.TouchAdminLogin(ctx, user.TenantID, user.ID, now)
-	if err := s.store.ClearAdminLoginFailure(ctx, tenantID, username, now); err != nil {
-		return nil, err
-	}
-	login, err := s.createAdminSession(ctx, *user, in.ExpiresHours)
-	if err != nil {
-		return nil, err
-	}
-	s.audit(ctx, Principal{TenantID: user.TenantID, UserID: user.ID, Role: user.Role}, "admin.login", "", "admin_user", user.ID, "Administrator login "+user.Username, map[string]any{"username": user.Username, "role": user.Role, "expires_at": login.ExpiresAt})
-	return login, nil
+	return nil, s.recordAdminLoginFailures(ctx, users, username, now)
 }
 
 func (s *Service) CreateAdminAccount(ctx context.Context, p Principal, in CreateAdminAccountInput) (*AdminAccountResult, error) {
@@ -154,10 +174,31 @@ func (s *Service) CreateAdminAccount(ctx context.Context, p Principal, in Create
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	tenantID := normalizedAdminTenant(in.TenantID)
+	if !principalIsGlobalAdmin(p) && strings.TrimSpace(in.TenantID) == "" {
+		in.TenantID = p.TenantID
+	}
+	adminScope, tenantID, err := normalizeAdminScopeTenant(in.AdminScope, in.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	if adminScope == "global" && !principalIsGlobalAdmin(p) {
+		return nil, ErrForbidden
+	}
+	if err := requireAdminTenantAccess(p, tenantID); err != nil {
+		return nil, err
+	}
 	username, err := normalizedAdminUsername(in.Username)
 	if err != nil {
 		return nil, err
+	}
+	if adminScope == "global" {
+		if err := s.ensureGlobalAdminUsernameAvailable(ctx, username, ""); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := s.ensureTenantAdminUsernameDoesNotShadowGlobal(ctx, username); err != nil {
+			return nil, err
+		}
 	}
 	password := strings.TrimSpace(in.Password)
 	if err := s.validateAdminPassword(password); err != nil {
@@ -178,6 +219,7 @@ func (s *Service) CreateAdminAccount(ctx context.Context, p Principal, in Create
 		Username:     username,
 		DisplayName:  trimForStorage(in.DisplayName, 120),
 		Role:         role,
+		AdminScope:   adminScope,
 		Enabled:      true,
 		PasswordHash: string(hash),
 		CreatedAt:    now,
@@ -187,7 +229,7 @@ func (s *Service) CreateAdminAccount(ctx context.Context, p Principal, in Create
 	if err != nil {
 		return nil, err
 	}
-	s.audit(ctx, p, "admin.account_create", "", "admin_user", out.ID, "Created administrator account "+out.Username, map[string]any{"username": out.Username, "role": out.Role})
+	s.audit(ctx, p, "admin.account_create", "", "admin_user", out.ID, "Created administrator account "+out.Username, map[string]any{"username": out.Username, "role": out.Role, "admin_scope": out.AdminScope})
 	return &AdminAccountResult{Account: adminAccountInfoFromRecord(*out)}, nil
 }
 
@@ -210,7 +252,14 @@ func (s *Service) ListAdminAccountsForPrincipal(ctx context.Context, p Principal
 		return nil, ErrForbidden
 	}
 	if strings.TrimSpace(tenantID) == "" {
-		tenantID = p.TenantID
+		if principalIsGlobalAdmin(p) {
+			tenantID = "all"
+		} else {
+			tenantID = p.TenantID
+		}
+	}
+	if err := requireAdminTenantAccess(p, normalizedAdminTenant(tenantID)); err != nil {
+		return nil, err
 	}
 	return s.ListAdminAccounts(ctx, tenantID)
 }
@@ -221,7 +270,13 @@ func (s *Service) UpdateAdminAccount(ctx context.Context, p Principal, tenantID,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !principalIsGlobalAdmin(p) && strings.TrimSpace(tenantID) == "" {
+		tenantID = p.TenantID
+	}
 	tenantID = normalizedAdminTenant(tenantID)
+	if err := requireAdminTenantAccess(p, tenantID); err != nil {
+		return nil, err
+	}
 	username, err := normalizedAdminUsername(username)
 	if err != nil {
 		return nil, err
@@ -232,6 +287,22 @@ func (s *Service) UpdateAdminAccount(ctx context.Context, p Principal, tenantID,
 			return nil, err
 		}
 		in.Role = role
+	}
+	if strings.TrimSpace(in.AdminScope) != "" {
+		adminScope, scopeTenant, err := normalizeAdminScopeTenant(in.AdminScope, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		if adminScope == "global" && !principalIsGlobalAdmin(p) {
+			return nil, ErrForbidden
+		}
+		if adminScope == "global" {
+			if err := s.ensureGlobalAdminUsernameAvailable(ctx, username, tenantID); err != nil {
+				return nil, err
+			}
+		}
+		in.AdminScope = adminScope
+		tenantID = scopeTenant
 	}
 	existing, err := s.store.FindAdminUser(ctx, tenantID, username)
 	if err != nil {
@@ -245,27 +316,35 @@ func (s *Service) UpdateAdminAccount(ctx context.Context, p Principal, tenantID,
 	if strings.TrimSpace(in.Role) != "" {
 		nextRole = in.Role
 	}
-	if existing.Enabled && strings.EqualFold(existing.Role, "data_admin") && (!nextEnabled || !strings.EqualFold(nextRole, "data_admin")) {
+	nextAdminScope := normalizedAdminScope(existing.AdminScope)
+	if strings.TrimSpace(in.AdminScope) != "" {
+		nextAdminScope = normalizedAdminScope(in.AdminScope)
+	}
+	if existing.Enabled && strings.EqualFold(existing.Role, "data_admin") && normalizedAdminScope(existing.AdminScope) == "global" && (!nextEnabled || !strings.EqualFold(nextRole, "data_admin") || nextAdminScope != "global") {
 		users, err := s.store.ListAdminUsers(ctx, "all")
 		if err != nil {
 			return nil, err
 		}
-		enabledAdminCount := 0
+		enabledGlobalAdminCount := 0
 		for _, user := range users {
-			if user.Enabled && strings.EqualFold(user.Role, "data_admin") {
-				enabledAdminCount++
+			if user.Enabled && strings.EqualFold(user.Role, "data_admin") && normalizedAdminScope(user.AdminScope) == "global" {
+				enabledGlobalAdminCount++
 			}
 		}
-		if enabledAdminCount <= 1 {
-			return nil, fmt.Errorf("%w: cannot remove the last enabled data_admin administrator", ErrInvalidInput)
+		if enabledGlobalAdminCount <= 1 {
+			return nil, fmt.Errorf("%w: cannot remove the last enabled global data_admin administrator", ErrInvalidInput)
 		}
 	}
 	out, err := s.store.UpdateAdminUser(ctx, tenantID, username, in, s.now().UTC())
 	if err != nil {
 		return nil, err
 	}
-	if in.Enabled != nil && !*in.Enabled {
-		if err := s.store.DeleteAdminSessionsForUser(ctx, out.TenantID, out.ID); err != nil {
+	if adminAccountSessionInvalidated(*existing, *out) {
+		sessionTenantID := out.TenantID
+		if normalizedAdminScope(existing.AdminScope) == "global" {
+			sessionTenantID = "all"
+		}
+		if err := s.store.DeleteAdminSessionsForUser(ctx, sessionTenantID, out.ID); err != nil {
 			return nil, err
 		}
 	}
@@ -294,7 +373,11 @@ func (s *Service) ResetAdminPassword(ctx context.Context, in ResetAdminPasswordI
 	if err != nil {
 		return nil, err
 	}
-	if err := s.store.DeleteAdminSessionsForUser(ctx, user.TenantID, user.ID); err != nil {
+	sessionTenantID := user.TenantID
+	if normalizedAdminScope(user.AdminScope) == "global" {
+		sessionTenantID = "all"
+	}
+	if err := s.store.DeleteAdminSessionsForUser(ctx, sessionTenantID, user.ID); err != nil {
 		return nil, err
 	}
 	s.audit(ctx, Principal{TenantID: user.TenantID, UserID: "offline_admin_recovery", Role: "data_admin"}, "admin.password_reset", "", "admin_user", user.ID, "Reset administrator password "+user.Username, map[string]any{"username": user.Username})
@@ -311,9 +394,10 @@ func (s *Service) FindAdminSessionBySecret(ctx context.Context, token string) (*
 		return nil, ErrUnauthorized
 	}
 	return &Principal{
-		TenantID: session.TenantID,
-		UserID:   session.UserID,
-		Role:     session.Role,
+		TenantID:   session.TenantID,
+		UserID:     session.UserID,
+		Role:       session.Role,
+		AdminScope: normalizedAdminScope(session.AdminScope),
 		Policy: &APIKeyPolicy{
 			ID:             session.ID,
 			TenantID:       session.TenantID,
@@ -331,7 +415,14 @@ func (s *Service) ListAdminSessionsForPrincipal(ctx context.Context, p Principal
 		return nil, ErrForbidden
 	}
 	if strings.TrimSpace(tenantID) == "" {
-		tenantID = p.TenantID
+		if principalIsGlobalAdmin(p) {
+			tenantID = "all"
+		} else {
+			tenantID = p.TenantID
+		}
+	}
+	if err := requireAdminTenantAccess(p, normalizedAdminTenant(tenantID)); err != nil {
+		return nil, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -354,7 +445,13 @@ func (s *Service) UpdateAdminSession(ctx context.Context, p Principal, tenantID,
 	if !principalCanAdmin(p) {
 		return nil, ErrForbidden
 	}
+	if !principalIsGlobalAdmin(p) && strings.TrimSpace(tenantID) == "" {
+		tenantID = p.TenantID
+	}
 	tenantID = normalizedAdminTenant(tenantID)
+	if err := requireAdminTenantAccess(p, tenantID); err != nil {
+		return nil, err
+	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil, fmt.Errorf("%w: session id is required", ErrInvalidInput)
@@ -366,6 +463,13 @@ func (s *Service) UpdateAdminSession(ctx context.Context, p Principal, tenantID,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if principalIsGlobalAdmin(p) && adminTenantSelectorIsAll(tenantID) {
+		resolvedTenantID, err := s.resolveAdminSessionTenant(ctx, sessionID, now)
+		if err != nil {
+			return nil, err
+		}
+		tenantID = resolvedTenantID
+	}
 	session, err := s.store.UpdateAdminSessionExpiresAt(ctx, tenantID, sessionID, expiresAt, now)
 	if err != nil {
 		return nil, err
@@ -382,13 +486,26 @@ func (s *Service) RevokeAdminSession(ctx context.Context, p Principal, tenantID,
 	if !principalCanAdmin(p) {
 		return nil, ErrForbidden
 	}
+	if !principalIsGlobalAdmin(p) && strings.TrimSpace(tenantID) == "" {
+		tenantID = p.TenantID
+	}
 	tenantID = normalizedAdminTenant(tenantID)
+	if err := requireAdminTenantAccess(p, tenantID); err != nil {
+		return nil, err
+	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil, fmt.Errorf("%w: session id is required", ErrInvalidInput)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if principalIsGlobalAdmin(p) && adminTenantSelectorIsAll(tenantID) {
+		resolvedTenantID, err := s.resolveAdminSessionTenant(ctx, sessionID, s.now().UTC())
+		if err != nil {
+			return nil, err
+		}
+		tenantID = resolvedTenantID
+	}
 	if err := s.store.DeleteAdminSession(ctx, tenantID, sessionID); err != nil {
 		return nil, err
 	}
@@ -403,6 +520,7 @@ func adminAccountInfoFromRecord(user adminUserRecord) AdminAccountInfo {
 		Username:    user.Username,
 		DisplayName: user.DisplayName,
 		Role:        user.Role,
+		AdminScope:  normalizedAdminScope(user.AdminScope),
 		Enabled:     user.Enabled,
 		LastLoginAt: user.LastLoginAt,
 		CreatedAt:   user.CreatedAt,
@@ -412,45 +530,197 @@ func adminAccountInfoFromRecord(user adminUserRecord) AdminAccountInfo {
 
 func adminSessionInfoFromRecord(session adminSessionRecord, currentID string) AdminSessionInfo {
 	return AdminSessionInfo{
-		ID:        session.ID,
-		TenantID:  session.TenantID,
-		UserID:    session.UserID,
-		Username:  session.Username,
-		Role:      session.Role,
-		Current:   currentID != "" && session.ID == currentID,
-		ExpiresAt: session.ExpiresAt,
-		CreatedAt: session.CreatedAt,
+		ID:         session.ID,
+		TenantID:   session.TenantID,
+		UserID:     session.UserID,
+		Username:   session.Username,
+		Role:       session.Role,
+		AdminScope: normalizedAdminScope(session.AdminScope),
+		Current:    currentID != "" && session.ID == currentID,
+		ExpiresAt:  session.ExpiresAt,
+		CreatedAt:  session.CreatedAt,
 	}
 }
 
-func (s *Service) createAdminSession(ctx context.Context, user adminUserRecord, expiresHours int) (*LoginResult, error) {
+func adminAccountSessionInvalidated(before adminUserRecord, after adminUserRecord) bool {
+	return before.Enabled != after.Enabled ||
+		!strings.EqualFold(before.Role, after.Role) ||
+		normalizedAdminScope(before.AdminScope) != normalizedAdminScope(after.AdminScope)
+}
+
+func (s *Service) createAdminSession(ctx context.Context, user adminUserRecord, requestedTenantID string, expiresHours int) (*LoginResult, error) {
 	ttl := defaultAdminSessionTTL
 	if expiresHours > 0 && expiresHours <= 168 {
 		ttl = time.Duration(expiresHours) * time.Hour
 	}
 	now := s.now().UTC()
 	token := generateAPIKeySecret()
+	sessionTenantID := user.TenantID
+	if normalizedAdminScope(user.AdminScope) == "global" {
+		sessionTenantID = normalizedAdminTenant(requestedTenantID)
+	}
 	if err := s.store.DeleteExpiredAdminSessions(ctx, now); err != nil {
 		return nil, err
 	}
 	session := adminSessionRecord{
-		ID:        newID("sess"),
-		TenantID:  user.TenantID,
-		UserID:    user.ID,
-		Username:  user.Username,
-		Role:      user.Role,
-		TokenHash: apiKeyHash(token),
-		ExpiresAt: now.Add(ttl),
-		CreatedAt: now,
+		ID:         newID("sess"),
+		TenantID:   sessionTenantID,
+		UserID:     user.ID,
+		Username:   user.Username,
+		Role:       user.Role,
+		AdminScope: normalizedAdminScope(user.AdminScope),
+		TokenHash:  apiKeyHash(token),
+		ExpiresAt:  now.Add(ttl),
+		CreatedAt:  now,
 	}
 	if _, err := s.store.CreateAdminSession(ctx, session); err != nil {
 		return nil, err
 	}
-	return &LoginResult{TenantID: user.TenantID, Username: user.Username, Role: user.Role, Token: token, ExpiresAt: session.ExpiresAt}, nil
+	return &LoginResult{TenantID: sessionTenantID, Username: user.Username, Role: user.Role, AdminScope: normalizedAdminScope(user.AdminScope), Token: token, ExpiresAt: session.ExpiresAt}, nil
+}
+
+func (s *Service) findAdminUsersForLogin(ctx context.Context, tenantID, username string) ([]*adminUserRecord, error) {
+	users := make([]*adminUserRecord, 0, 2)
+	user, err := s.store.FindAdminUser(ctx, tenantID, username)
+	if err == nil {
+		users = append(users, user)
+	} else if !errors.Is(err, ErrAdminNotFound) {
+		return nil, err
+	}
+	globalUser, err := s.findGlobalAdminUserByUsername(ctx, username)
+	if err == nil && !adminUserAlreadyIncluded(users, globalUser) {
+		users = append(users, globalUser)
+	} else if err != nil && !errors.Is(err, ErrAdminNotFound) {
+		return nil, err
+	}
+	if len(users) == 0 {
+		return nil, ErrAdminNotFound
+	}
+	return users, nil
+}
+
+func adminUserAlreadyIncluded(users []*adminUserRecord, candidate *adminUserRecord) bool {
+	if candidate == nil {
+		return true
+	}
+	for _, user := range users {
+		if user != nil && strings.EqualFold(user.ID, candidate.ID) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) resolveAdminSessionTenant(ctx context.Context, sessionID string, now time.Time) (string, error) {
+	sessions, err := s.store.ListAdminSessions(ctx, "all", now)
+	if err != nil {
+		return "", err
+	}
+	for _, session := range sessions {
+		if strings.EqualFold(session.ID, sessionID) {
+			return session.TenantID, nil
+		}
+	}
+	return "", ErrSessionNotFound
+}
+
+func adminTenantSelectorIsAll(tenantID string) bool {
+	tenantID = strings.TrimSpace(tenantID)
+	return strings.EqualFold(tenantID, "all") || tenantID == "*"
+}
+
+func (s *Service) findGlobalAdminUserByUsername(ctx context.Context, username string) (*adminUserRecord, error) {
+	users, err := s.store.ListAdminUsers(ctx, "all")
+	if err != nil {
+		return nil, err
+	}
+	for _, user := range users {
+		if strings.EqualFold(user.Username, username) && normalizedAdminScope(user.AdminScope) == "global" {
+			return &user, nil
+		}
+	}
+	return nil, ErrAdminNotFound
+}
+
+func (s *Service) ensureGlobalAdminUsernameAvailable(ctx context.Context, username, currentTenantID string) error {
+	users, err := s.store.ListAdminUsers(ctx, "all")
+	if err != nil {
+		return err
+	}
+	currentTenantID = strings.TrimSpace(currentTenantID)
+	for _, user := range users {
+		if !strings.EqualFold(user.Username, username) {
+			continue
+		}
+		if currentTenantID != "" && strings.EqualFold(normalizedAdminTenant(user.TenantID), normalizedAdminTenant(currentTenantID)) {
+			continue
+		}
+		return fmt.Errorf("%w: global administrator username must be unique across tenants", ErrAlreadyExists)
+	}
+	return nil
+}
+
+func (s *Service) ensureTenantAdminUsernameDoesNotShadowGlobal(ctx context.Context, username string) error {
+	users, err := s.store.ListAdminUsers(ctx, "all")
+	if err != nil {
+		return err
+	}
+	for _, user := range users {
+		if strings.EqualFold(user.Username, username) && normalizedAdminScope(user.AdminScope) == "global" {
+			return fmt.Errorf("%w: tenant administrator username must not shadow a global administrator", ErrAlreadyExists)
+		}
+	}
+	return nil
+}
+
+func normalizedAdminScope(scope string) string {
+	if strings.EqualFold(strings.TrimSpace(scope), "tenant") {
+		return "tenant"
+	}
+	return "global"
+}
+
+func normalizeAdminScopeTenant(scope, tenantID string) (string, string, error) {
+	scope = strings.ToLower(strings.TrimSpace(scope))
+	if scope == "" {
+		scope = "tenant"
+	}
+	switch scope {
+	case "global":
+		return "global", normalizedAdminTenant(tenantID), nil
+	case "tenant":
+		return "tenant", normalizedAdminTenant(tenantID), nil
+	default:
+		return "", "", fmt.Errorf("%w: admin_scope must be global or tenant", ErrInvalidInput)
+	}
+}
+
+func principalAdminScope(p Principal) string {
+	if p.AdminScope != "" {
+		return normalizedAdminScope(p.AdminScope)
+	}
+	return "tenant"
+}
+
+func principalIsGlobalAdmin(p Principal) bool {
+	return principalCanAdmin(p) && principalAdminScope(p) == "global"
+}
+
+func requireAdminTenantAccess(p Principal, tenantID string) error {
+	if principalIsGlobalAdmin(p) {
+		return nil
+	}
+	if strings.EqualFold(normalizedAdminTenant(p.TenantID), normalizedAdminTenant(tenantID)) {
+		return nil
+	}
+	return ErrForbidden
 }
 
 func normalizedAdminTenant(value string) string {
 	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "__global__") {
+		return ""
+	}
 	if value == "" {
 		return "default"
 	}
@@ -578,6 +848,21 @@ func (s *Service) recordAdminLoginFailure(ctx context.Context, tenantID, usernam
 	}
 	_, err := s.store.RecordAdminLoginFailure(ctx, tenantID, username, now, s.adminLoginMaxFailures, s.adminLoginLockout)
 	return err
+}
+
+func (s *Service) recordAdminLoginFailures(ctx context.Context, users []*adminUserRecord, username string, now time.Time) error {
+	if s.adminLoginMaxFailures <= 0 {
+		return ErrUnauthorized
+	}
+	for _, user := range users {
+		if user == nil {
+			continue
+		}
+		if err := s.recordAdminLoginFailure(ctx, user.TenantID, username, now); err != nil {
+			return err
+		}
+	}
+	return ErrUnauthorized
 }
 
 func adminSessionExpiresAtFromInput(now time.Time, in UpdateAdminSessionInput) (time.Time, error) {

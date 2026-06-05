@@ -62,4 +62,12 @@ describe("SystemSettingsPanel", () => {
     expect(screen.getByDisplayValue("240")).toBeTruthy();
     expect(screen.getByDisplayValue("600")).toBeTruthy();
   });
+
+  it("saves workstation mode through config patch flow", () => {
+    const { saveRemoteConfigField } = renderPanel({ workstation_mode: false });
+
+    fireEvent.click(screen.getByLabelText("Workstation Mode"));
+
+    expect(saveRemoteConfigField).toHaveBeenCalledWith({ workstation_mode: true });
+  });
 });

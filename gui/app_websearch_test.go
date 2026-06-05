@@ -28,6 +28,16 @@ func TestSaveWebSearchProviders_NormalizesAndPersistsCurrent(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() seed error = %v", err)
+	}
+	cfg.RemoteEmail = "owner@example.com"
+	cfg.LogDetailEnabled = true
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() seed error = %v", err)
+	}
+
 	providers := []corelib.WebSearchProvider{
 		{Name: " Brave ", Type: " BRAVE ", Key: "  brave-key  ", BaseURL: "https://api.search.brave.com/res/v1/web/search/"},
 	}
@@ -41,6 +51,9 @@ func TestSaveWebSearchProviders_NormalizesAndPersistsCurrent(t *testing.T) {
 	}
 	if saved.WebSearchCurrentProvider != "brave" {
 		t.Fatalf("WebSearchCurrentProvider = %q, want brave", saved.WebSearchCurrentProvider)
+	}
+	if saved.RemoteEmail != "owner@example.com" || !saved.LogDetailEnabled {
+		t.Fatalf("unrelated fields overwritten by web search save: %#v", saved)
 	}
 	wantCount := len(defaultWebSearchProviders())
 	if len(saved.WebSearchProviders) != wantCount {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -267,6 +268,353 @@ func TestSubmitSkill_PrefersSkillMarketSessionToken(t *testing.T) {
 	}
 	if id != "sub-ok" {
 		t.Fatalf("submission id = %q", id)
+	}
+}
+
+func TestSubmitSkillToConfiguredTargetsEnterpriseOnlySkipsHubCenter(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var hubCenterHits int32
+	var enterpriseHits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters", "/api/v1/skills/submit":
+			atomic.AddInt32(&hubCenterHits, 1)
+			http.Error(w, "hubcenter should not be used", http.StatusInternalServerError)
+		case "/api/capabilities/skills/submit":
+			atomic.AddInt32(&enterpriseHits, 1)
+			if got := r.Header.Get("Authorization"); got != "Bearer viewer-token" {
+				t.Errorf("Authorization = %q, want viewer token", got)
+			}
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("ParseMultipartForm() error = %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "enterprise-ok"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL: server.URL,
+		RemoteHubURL:       server.URL,
+		RemoteViewerToken:  "viewer-token",
+		CapabilityMarketPolicy: corelib.CapabilityMarketPolicy{
+			PreferredUploadTarget: corelib.CapabilitySourceEnterpriseHub,
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	zipPath := tmpHome + "/skill.zip"
+	if err := os.WriteFile(zipPath, []byte("zip bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	id, err := NewSkillMarketClient(app).SubmitSkillToConfiguredTargets(context.Background(), zipPath, "uploader@example.com")
+	if err != nil {
+		t.Fatalf("SubmitSkillToConfiguredTargets() error = %v", err)
+	}
+	if id != "enterprise_hub=enterprise-ok" {
+		t.Fatalf("submission id = %q", id)
+	}
+	if atomic.LoadInt32(&enterpriseHits) != 1 || atomic.LoadInt32(&hubCenterHits) != 0 {
+		t.Fatalf("enterprise hits = %d, hubcenter hits = %d", enterpriseHits, hubCenterHits)
+	}
+}
+
+func TestSubmitSkillToConfiguredTargetsDefaultUploadsBothTargets(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var hubCenterHits int32
+	var enterpriseHits int32
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{server.URL}})
+		case "/api/v1/skills/submit":
+			atomic.AddInt32(&hubCenterHits, 1)
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "hubcenter-ok"})
+		case "/api/capabilities/skills/submit":
+			atomic.AddInt32(&enterpriseHits, 1)
+			if got := r.Header.Get("Authorization"); got != "Bearer viewer-token" {
+				t.Errorf("Authorization = %q, want viewer token", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "enterprise-ok"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	zipPath := tmpHome + "/skill.zip"
+	if err := os.WriteFile(zipPath, []byte("zip bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	id, err := NewSkillMarketClient(app).SubmitSkillToConfiguredTargets(context.Background(), zipPath, "uploader@example.com")
+	if err != nil {
+		t.Fatalf("SubmitSkillToConfiguredTargets() error = %v", err)
+	}
+	if id != "hubcenter-ok;enterprise_hub=enterprise-ok" {
+		t.Fatalf("submission id = %q", id)
+	}
+	if atomic.LoadInt32(&hubCenterHits) != 1 || atomic.LoadInt32(&enterpriseHits) != 1 {
+		t.Fatalf("hubcenter hits = %d, enterprise hits = %d", hubCenterHits, enterpriseHits)
+	}
+}
+
+func TestSubmitSkillRejectsEmptyHubCenterSubmissionID(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{server.URL}})
+		case "/api/v1/skills/submit":
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": ""})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	zipPath := tmpHome + "/skill.zip"
+	if err := os.WriteFile(zipPath, []byte("zip bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	bodyBytes, contentType, err := buildSkillSubmitMultipart(zipPath, "uploader@example.com")
+	if err != nil {
+		t.Fatalf("buildSkillSubmitMultipart() error = %v", err)
+	}
+	_, err = NewSkillMarketClient(app).submitSkillToHubCenter(context.Background(), []string{server.URL}, bodyBytes, contentType)
+	if err == nil || !strings.Contains(err.Error(), "missing submission_id") {
+		t.Fatalf("submitSkillToHubCenter() err = %v", err)
+	}
+}
+
+func TestSubmitSkillToConfiguredTargetsRejectsEmptyEnterpriseSubmissionID(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/capabilities/skills/submit":
+			_ = json.NewEncoder(w).Encode(map[string]string{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      server.URL,
+		RemoteViewerToken: "viewer-token",
+		CapabilityMarketPolicy: corelib.CapabilityMarketPolicy{
+			PreferredUploadTarget: corelib.CapabilitySourceEnterpriseHub,
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	zipPath := tmpHome + "/skill.zip"
+	if err := os.WriteFile(zipPath, []byte("zip bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := NewSkillMarketClient(app).SubmitSkillToConfiguredTargets(context.Background(), zipPath, "uploader@example.com")
+	if err == nil || !strings.Contains(err.Error(), "missing submission_id") {
+		t.Fatalf("SubmitSkillToConfiguredTargets() err = %v", err)
+	}
+}
+
+func TestSubmitSkillToConfiguredTargetsPartialRetrySkipsCompletedTarget(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var hubCenterHits int32
+	var enterpriseHits int32
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{server.URL}})
+		case "/api/v1/skills/submit":
+			atomic.AddInt32(&hubCenterHits, 1)
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "hubcenter-ok"})
+		case "/api/capabilities/skills/submit":
+			hit := atomic.AddInt32(&enterpriseHits, 1)
+			if hit == 1 {
+				http.Error(w, "temporary enterprise failure", http.StatusBadGateway)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "enterprise-ok"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	zipPath := tmpHome + "/skill.zip"
+	if err := os.WriteFile(zipPath, []byte("zip bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	client := NewSkillMarketClient(app)
+
+	_, err := client.SubmitSkillToConfiguredTargets(context.Background(), zipPath, "uploader@example.com")
+	var partial *skillSubmitPartialError
+	if !errors.As(err, &partial) || partial.Completed[corelib.CapabilitySourceHubCenter] != "hubcenter-ok" {
+		t.Fatalf("first submit err=%v partial=%+v", err, partial)
+	}
+	id, err := client.SubmitSkillToConfiguredTargetsWithCompleted(context.Background(), zipPath, "uploader@example.com", partial.Completed)
+	if err != nil {
+		t.Fatalf("retry submit error = %v", err)
+	}
+	if id != "hubcenter-ok;enterprise_hub=enterprise-ok" {
+		t.Fatalf("submission id = %q", id)
+	}
+	if atomic.LoadInt32(&hubCenterHits) != 1 || atomic.LoadInt32(&enterpriseHits) != 2 {
+		t.Fatalf("hubcenter hits = %d, enterprise hits = %d", hubCenterHits, enterpriseHits)
+	}
+}
+
+func TestSubmitSkillToConfiguredTargetsPartialRetrySkipsCompletedEnterpriseTarget(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var hubCenterHits int32
+	var enterpriseHits int32
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{server.URL}})
+		case "/api/v1/skills/submit":
+			hit := atomic.AddInt32(&hubCenterHits, 1)
+			if hit == 1 {
+				http.Error(w, "temporary hubcenter failure", http.StatusBadGateway)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "hubcenter-ok"})
+		case "/api/capabilities/skills/submit":
+			atomic.AddInt32(&enterpriseHits, 1)
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "enterprise-ok"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	zipPath := tmpHome + "/skill.zip"
+	if err := os.WriteFile(zipPath, []byte("zip bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	client := NewSkillMarketClient(app)
+
+	_, err := client.SubmitSkillToConfiguredTargets(context.Background(), zipPath, "uploader@example.com")
+	var partial *skillSubmitPartialError
+	if !errors.As(err, &partial) || partial.Completed[corelib.CapabilitySourceEnterpriseHub] != "enterprise-ok" {
+		t.Fatalf("first submit err=%v partial=%+v", err, partial)
+	}
+	id, err := client.SubmitSkillToConfiguredTargetsWithCompleted(context.Background(), zipPath, "uploader@example.com", partial.Completed)
+	if err != nil {
+		t.Fatalf("retry submit error = %v", err)
+	}
+	if id != "hubcenter-ok;enterprise_hub=enterprise-ok" {
+		t.Fatalf("submission id = %q", id)
+	}
+	if atomic.LoadInt32(&hubCenterHits) != 2 || atomic.LoadInt32(&enterpriseHits) != 1 {
+		t.Fatalf("hubcenter hits = %d, enterprise hits = %d", hubCenterHits, enterpriseHits)
+	}
+}
+
+func TestSubmitSkillToConfiguredTargetsDropsCompletedTargetsOutsideCurrentPolicy(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var hubCenterHits int32
+	var enterpriseHits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters", "/api/v1/skills/submit":
+			atomic.AddInt32(&hubCenterHits, 1)
+			http.Error(w, "hubcenter should not be used", http.StatusInternalServerError)
+		case "/api/capabilities/skills/submit":
+			atomic.AddInt32(&enterpriseHits, 1)
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "enterprise-ok"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL: server.URL,
+		RemoteHubURL:       server.URL,
+		RemoteViewerToken:  "viewer-token",
+		CapabilityMarketPolicy: corelib.CapabilityMarketPolicy{
+			PreferredUploadTarget: corelib.CapabilitySourceEnterpriseHub,
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	zipPath := tmpHome + "/skill.zip"
+	if err := os.WriteFile(zipPath, []byte("zip bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	id, err := NewSkillMarketClient(app).SubmitSkillToConfiguredTargetsWithCompleted(context.Background(), zipPath, "uploader@example.com", map[string]string{corelib.CapabilitySourceHubCenter: "old-hubcenter"})
+	if err != nil {
+		t.Fatalf("SubmitSkillToConfiguredTargetsWithCompleted() error = %v", err)
+	}
+	if id != "enterprise_hub=enterprise-ok" {
+		t.Fatalf("submission id = %q", id)
+	}
+	if atomic.LoadInt32(&hubCenterHits) != 0 || atomic.LoadInt32(&enterpriseHits) != 1 {
+		t.Fatalf("hubcenter hits = %d, enterprise hits = %d", hubCenterHits, enterpriseHits)
 	}
 }
 

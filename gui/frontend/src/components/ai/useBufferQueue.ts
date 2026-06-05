@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -18,6 +18,7 @@ export interface BufferEntry {
     attachments: AttachmentInfo[];
     createdAt: number;
     autoDrain?: boolean;
+    sessionKey?: string;
 }
 
 export interface UseBufferQueueReturn {
@@ -77,6 +78,7 @@ function normalizePersistedEntry(entry: any): BufferEntry | null {
         attachments,
         createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now(),
         autoDrain: entry.autoDrain === false ? false : true,
+        sessionKey: normalizeSessionKey(entry.sessionKey),
     };
 }
 
@@ -98,6 +100,13 @@ export function getTextPreview(text: string): string {
 // ---------------------------------------------------------------------------
 
 export const BUFFER_QUEUE_STORAGE_KEY = "ai_assistant_buffer_queue";
+const DEFAULT_BUFFER_QUEUE_SESSION_KEY = "desktop-user";
+const FORGET_SESSION_STATE_EVENT = "ai-assistant:forget-session-rounds";
+
+function normalizeSessionKey(sessionKey?: string): string {
+    const trimmed = typeof sessionKey === "string" ? sessionKey.trim() : "";
+    return trimmed || DEFAULT_BUFFER_QUEUE_SESSION_KEY;
+}
 
 function persistQueue(queue: BufferEntry[]): void {
     try {
@@ -118,7 +127,8 @@ function persistQueue(queue: BufferEntry[]): void {
 // Hook
 // ---------------------------------------------------------------------------
 
-export function useBufferQueue(): UseBufferQueueReturn {
+export function useBufferQueue(sessionKey = DEFAULT_BUFFER_QUEUE_SESSION_KEY): UseBufferQueueReturn {
+    const activeSessionKey = normalizeSessionKey(sessionKey);
     // Restore persisted queue from localStorage on first mount.
     const [queue, setQueue] = useState<BufferEntry[]>(() => {
         try {
@@ -136,6 +146,13 @@ export function useBufferQueue(): UseBufferQueueReturn {
     // Subsequent queue mutations set initializedRef via their callbacks.
     const initializedRef = useRef(false);
     const queueRef = useRef(queue);
+    const activeSessionKeyRef = useRef(activeSessionKey);
+    activeSessionKeyRef.current = activeSessionKey;
+
+    const visibleQueue = useMemo(
+        () => queue.filter(entry => normalizeSessionKey(entry.sessionKey) === activeSessionKey),
+        [activeSessionKey, queue],
+    );
 
     const commitQueue = useCallback((next: BufferEntry[]) => {
         initializedRef.current = true;
@@ -153,6 +170,7 @@ export function useBufferQueue(): UseBufferQueueReturn {
             attachments,
             createdAt: Date.now(),
             autoDrain: options?.autoDrain === false ? false : options?.autoDrain || undefined,
+            sessionKey: activeSessionKeyRef.current,
         };
         commitQueue([...queueRef.current, entry]);
     }, [commitQueue]);
@@ -169,29 +187,35 @@ export function useBufferQueue(): UseBufferQueueReturn {
                 return;
             }
             const autoDrain = options?.autoDrain === false ? false : options?.autoDrain || undefined;
-            commitQueue(queueRef.current.map(e => (e.id === id ? { ...e, text, attachments, autoDrain } : e)));
+            commitQueue(queueRef.current.map(e => (e.id === id ? { ...e, text, attachments, autoDrain, sessionKey: normalizeSessionKey(e.sessionKey) } : e)));
         },
         [commitQueue],
     );
 
     const reorderEntry = useCallback((fromIndex: number, toIndex: number) => {
+        const visible = queueRef.current.filter(e => normalizeSessionKey(e.sessionKey) === activeSessionKeyRef.current);
+        const moving = visible[fromIndex];
+        const target = visible[toIndex];
+        if (!moving || !target) return;
         const current = queueRef.current;
+        const fromAllIndex = current.findIndex(e => e.id === moving.id);
+        const toAllIndex = current.findIndex(e => e.id === target.id);
         if (
-            fromIndex < 0 ||
-            fromIndex >= current.length ||
-            toIndex < 0 ||
-            toIndex >= current.length
+            fromAllIndex < 0 ||
+            fromAllIndex >= current.length ||
+            toAllIndex < 0 ||
+            toAllIndex >= current.length
         ) {
             return;
         }
         const next = [...current];
-        const [moved] = next.splice(fromIndex, 1);
-        next.splice(toIndex, 0, moved);
+        const [moved] = next.splice(fromAllIndex, 1);
+        next.splice(toAllIndex, 0, moved);
         commitQueue(next);
     }, [commitQueue]);
 
     const clearQueue = useCallback(() => {
-        commitQueue([]);
+        commitQueue(queueRef.current.filter(e => normalizeSessionKey(e.sessionKey) !== activeSessionKeyRef.current));
     }, [commitQueue]);
 
     const extractEntry = useCallback((id: string): BufferEntry | null => {
@@ -214,7 +238,7 @@ export function useBufferQueue(): UseBufferQueueReturn {
             }
             const entries: BufferEntry[] = parsed.map(normalizePersistedEntry).filter((entry): entry is BufferEntry => !!entry);
             commitQueue(entries);
-            return entries;
+            return entries.filter(entry => normalizeSessionKey(entry.sessionKey) === activeSessionKeyRef.current);
         } catch {
             console.warn("Failed to restore buffer queue from localStorage");
             return [];
@@ -232,8 +256,22 @@ export function useBufferQueue(): UseBufferQueueReturn {
         persistQueue(queue);
     }, [queue]);
 
+    useEffect(() => {
+        const handler = (event: Event) => {
+            const rawSessionKey = String((event as CustomEvent)?.detail?.sessionKey || '').trim();
+            if (!rawSessionKey) return;
+            const forgottenSessionKey = normalizeSessionKey(rawSessionKey);
+            const next = queueRef.current.filter(entry => normalizeSessionKey(entry.sessionKey) !== forgottenSessionKey);
+            if (next.length === queueRef.current.length) return;
+            console.info("[useBufferQueue] clearing queued input for forgotten session", { sessionKey: forgottenSessionKey });
+            commitQueue(next);
+        };
+        window.addEventListener(FORGET_SESSION_STATE_EVENT, handler);
+        return () => window.removeEventListener(FORGET_SESSION_STATE_EVENT, handler);
+    }, [commitQueue]);
+
     return {
-        queue,
+        queue: visibleQueue,
         addEntry,
         removeEntry,
         updateEntry,

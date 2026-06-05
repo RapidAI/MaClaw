@@ -247,6 +247,9 @@ func (a *App) BuildExperienceSkillDraft(traceID string) (ExperienceSkillDraft, e
 	if detail.ReviewRequired || detail.ReviewStatus != experienceReviewOutcomeApproved || nextActionKind != experienceGovernanceActionDraftSkillManually {
 		return ExperienceSkillDraft{}, fmt.Errorf("experience trace %q must be approved and queued for manual skill drafting", traceID)
 	}
+	if experienceIsMergedBrowserOnlySequence(experienceSkillDraftSequence(detail.Detail, detail.Tags)) {
+		return ExperienceSkillDraft{}, fmt.Errorf("experience trace %q is a legacy browser automation skill nudge; use the built-in browser tool instead of drafting a browser skill", traceID)
+	}
 	return finalizeExperienceSkillDraft(buildExperienceSkillDraft(detail)), nil
 }
 
@@ -258,6 +261,9 @@ func (a *App) BuildExperienceSkillDraftFromUsageNudge(req ExperienceRoutingSigna
 	var candidate *coretool.ToolSkillNudgeCandidate
 	if len(result.SkillNudgeCandidates) > 0 {
 		candidate = &result.SkillNudgeCandidates[0]
+		if experienceIsMergedBrowserOnlySequence(candidate.ToolSequence) {
+			candidate = nil
+		}
 	}
 	return finalizeExperienceSkillDraft(buildExperienceSkillDraftFromUsageNudge(result.Query, candidate))
 }
@@ -972,7 +978,7 @@ func buildExperienceSkillDraft(detail ExperienceTraceDetail) ExperienceSkillDraf
 	))
 	taskType := experienceSkillDraftField(detail.Detail, "Task type:")
 	tokens := experienceSkillDraftTokens(detail.Detail)
-	sequence := experienceSkillDraftSequence(detail.Detail, detail.Tags)
+	sequence := normalizeExperienceBrowserToolSequence(experienceSkillDraftSequence(detail.Detail, detail.Tags))
 	evidence := experienceSkillDraftEvidence(detail.Detail)
 	description := firstNonEmptyExperienceString(detail.Summary, "Manual skill candidate distilled from an approved repeated tool sequence.")
 	checks := []string{
@@ -1233,7 +1239,7 @@ func buildExperienceSkillDraftFromUsageNudge(query ExperienceRoutingSignalQuery,
 	if candidate != nil {
 		name = normalizeExperienceSkillDraftName(firstNonEmptyExperienceString(candidate.SuggestedName, strings.Join(candidate.QueryTokens, "-"), "usage_sequence_skill"))
 		tokens = append([]string(nil), candidate.QueryTokens...)
-		sequence = append([]string(nil), candidate.ToolSequence...)
+		sequence = normalizeExperienceBrowserToolSequence(candidate.ToolSequence)
 		taskType = firstNonEmptyExperienceString(query.TaskType, candidate.TaskType, taskType)
 		evidence = fmt.Sprintf("evidence %d, success %.0f%%, confidence %.2f", candidate.Evidence, candidate.SuccessRate*100, candidate.Confidence)
 		description = firstNonEmptyExperienceString(candidate.Description, description)
@@ -1516,6 +1522,28 @@ func splitExperienceSkillDraftList(value string) []string {
 		result = append(result, part)
 	}
 	return result
+}
+
+func normalizeExperienceBrowserToolSequence(values []string) []string {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = normalizeExperienceBrowserToolName(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func experienceIsMergedBrowserOnlySequence(values []string) bool {
+	values = normalizeExperienceBrowserToolSequence(values)
+	return len(values) == 1 && values[0] == "browser"
 }
 
 func experienceSkillDraftStateTag(tag string) bool {

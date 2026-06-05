@@ -968,7 +968,10 @@ func sanitizeConversationEntriesForPersistence(entries []ConversationEntry) []Co
 
 func sanitizeConversationEntryForPersistence(entry ConversationEntry) ConversationEntry {
 	entry.Content = sanitizeConversationPersistenceValue("content", entry.Content)
-	entry.ReasoningContent = security.RedactSensitiveString(entry.ReasoningContent)
+	if content, ok := entry.Content.(string); ok {
+		entry.Content = StripRolePrefixHallucination(content)
+	}
+	entry.ReasoningContent = StripRolePrefixHallucination(security.RedactSensitiveString(entry.ReasoningContent))
 	if entry.ToolCalls != nil {
 		entry.ToolCalls = sanitizeConversationPersistenceValue("tool_calls", entry.ToolCalls)
 	}

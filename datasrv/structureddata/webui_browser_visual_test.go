@@ -264,8 +264,40 @@ func (c *chromeDevTools) capturePage(pageURL string, width, height int) (image.I
 	if err := client.waitFor(`document.readyState === "complete" &&
 		!!document.querySelector('[data-testid="admin-setup-panel"]') &&
 		!!document.querySelector('[data-testid="admin-password-policy"]') &&
-		document.querySelector('[data-testid="admin-password-policy"]').textContent.includes('Password policy') &&
-		document.querySelector('#serviceStatus').textContent.includes('Service online')`, 15*time.Second); err != nil {
+		!!document.querySelector('[data-testid="app-language-switch"]') &&
+		typeof document.querySelector('[data-testid="app-language-switch"]').oninput === 'function' &&
+		document.querySelector('[data-testid="admin-password-policy"]').textContent.trim().length > 10 &&
+		document.querySelector('#serviceStatus').classList.contains('ok')`, 15*time.Second); err != nil {
+		return nil, err
+	}
+	if err := client.waitFor(`(() => {
+		const appLanguage = document.querySelector('[data-testid="app-language-switch"]');
+		if (!appLanguage) return false;
+		appLanguage.value = 'zh';
+		appLanguage.oninput({ target: appLanguage });
+		const moduleContext = document.querySelector('#moduleContext')?.textContent || '';
+		const summaryLabel = document.querySelector('.summary-label')?.textContent || '';
+		const serviceStatus = document.querySelector('#serviceStatus')?.textContent || '';
+		const hubState = document.querySelector('#hubRegistrationState')?.textContent || '';
+		const passed = document.documentElement.lang === 'zh-CN' &&
+			document.querySelector('#language')?.value === 'zh' &&
+			!moduleContext.includes('Dataset') &&
+			!summaryLabel.includes('Engine') &&
+			!serviceStatus.includes('Service online') &&
+			!['Registered', 'Configured', 'Not configured'].includes(hubState) &&
+			typeof appLanguage.onchange === 'function';
+		return passed || JSON.stringify({
+			appLanguage: appLanguage.value,
+			loginLanguage: document.querySelector('#language')?.value,
+			documentLang: document.documentElement.lang,
+			moduleContext,
+			summaryLabel,
+			serviceStatus,
+			hubState,
+			onchange: typeof appLanguage.onchange,
+			oninput: typeof appLanguage.oninput
+		});
+	})()`, 5*time.Second); err != nil {
 		return nil, err
 	}
 	resp, err := client.call("Page.captureScreenshot", map[string]any{
@@ -342,7 +374,13 @@ func (c *cdpClient) call(method string, params map[string]any) (map[string]any, 
 		if rawErr, ok := raw["error"]; ok {
 			return nil, fmt.Errorf("cdp %s error: %#v", method, rawErr)
 		}
+		if exceptionDetails, ok := raw["exceptionDetails"]; ok {
+			return nil, fmt.Errorf("cdp %s exception: %#v", method, exceptionDetails)
+		}
 		if result, ok := raw["result"].(map[string]any); ok {
+			if exceptionDetails, ok := result["exceptionDetails"]; ok {
+				return nil, fmt.Errorf("cdp %s exception: %#v", method, exceptionDetails)
+			}
 			return result, nil
 		}
 		return map[string]any{}, nil
@@ -351,6 +389,7 @@ func (c *cdpClient) call(method string, params map[string]any) (map[string]any, 
 
 func (c *cdpClient) waitFor(expression string, limit time.Duration) error {
 	deadline := time.Now().Add(limit)
+	var lastValue string
 	for time.Now().Before(deadline) {
 		resp, err := c.call("Runtime.evaluate", map[string]any{
 			"expression":    expression,
@@ -360,13 +399,16 @@ func (c *cdpClient) waitFor(expression string, limit time.Duration) error {
 			return err
 		}
 		if result, ok := resp["result"].(map[string]any); ok {
+			if encoded, err := json.Marshal(result["value"]); err == nil {
+				lastValue = string(encoded)
+			}
 			if value, ok := result["value"].(bool); ok && value {
 				return nil
 			}
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
-	return fmt.Errorf("timed out waiting for browser expression: %s", expression)
+	return fmt.Errorf("timed out waiting for browser expression: %s\nlast value: %s", expression, lastValue)
 }
 
 func killChromeProcessTree(pid int) {

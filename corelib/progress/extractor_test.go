@@ -21,6 +21,14 @@ func TestExtractMilestone_UnknownTool(t *testing.T) {
 	}
 }
 
+func TestExtractMilestone_ExternalCodingSessionToolsIgnored(t *testing.T) {
+	for _, tool := range []string{"create_session", "send_and_observe", "control_session"} {
+		if m := ExtractMilestone(tool, map[string]any{"text": "go"}, true); m != nil {
+			t.Fatalf("expected nil milestone for disabled external coding-session tool %q, got %v", tool, m)
+		}
+	}
+}
+
 func TestExtractMilestone_StaticTool(t *testing.T) {
 	m := ExtractMilestone("generate_pdf", nil, true)
 	if m == nil {

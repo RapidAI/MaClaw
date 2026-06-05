@@ -148,11 +148,21 @@ func (h *IMMessageHandler) shouldRouteBugFixToDirectCodingSubAgent(msg IMUserMes
 			return false
 		}
 	}
+	if blocked, reason := h.directCodingSubAgentExecutionContextBlockReason(msg, loopCtx, false); blocked {
+		log.Printf("[subagent-intercept] blocked direct CodingSubAgent route by execution context user=%s reason=%s", msg.UserID, reason)
+		return false
+	}
 	result, ok := h.classifyDirectCodingSubAgentGateIntent(msg)
 	if !ok {
 		return false
 	}
 	shouldRoute := shouldRouteGateResultToDirectCodingSubAgent(result, msg, loopCtx)
+	if shouldRoute {
+		if blocked, reason := h.directCodingSubAgentExecutionContextBlockReason(msg, loopCtx, true); blocked {
+			log.Printf("[subagent-intercept] blocked direct CodingSubAgent route by execution context user=%s reason=%s", msg.UserID, reason)
+			return false
+		}
+	}
 	if shouldRoute {
 		log.Printf("[subagent-intercept] routing semantic bug_fix to CodingSubAgent user=%s conf=%.2f layer=%d degraded=%v reason=%q",
 			msg.UserID, result.Confidence, result.Layer, result.Degraded, result.Reason)
@@ -182,6 +192,35 @@ func shouldRouteGateResultToDirectCodingSubAgent(result GateIntentResult, msg IM
 		return false
 	}
 	return result.Intent == GateIntentBugFix
+}
+
+func (h *IMMessageHandler) directCodingSubAgentExecutionContextBlockReason(msg IMUserMessage, loopCtx *LoopContext, requireExistingCodeEvidence bool) (bool, string) {
+	ownerID := strings.TrimSpace(msg.UserID)
+	interactionContinuation := false
+	if loopCtx != nil {
+		ownerID = strings.TrimSpace(h.workflowPolicyOwnerID(msg.UserID, loopCtx))
+		interactionContinuation = loopCtx.IsAskUserResponse
+	}
+	reason := h.codingSubAgentAdmissionBlockReason(codingSubAgentAdmissionInput{
+		Text:                        msg.Text,
+		OwnerID:                     ownerID,
+		ProjectPath:                 h.workflowStartProjectPath(),
+		InteractionContinuation:     interactionContinuation,
+		RequireExistingCodeEvidence: requireExistingCodeEvidence,
+	})
+	if reason == "" && ownerID != strings.TrimSpace(msg.UserID) {
+		reason = h.codingSubAgentAdmissionBlockReason(codingSubAgentAdmissionInput{
+			Text:                        msg.Text,
+			OwnerID:                     strings.TrimSpace(msg.UserID),
+			ProjectPath:                 h.workflowStartProjectPath(),
+			InteractionContinuation:     interactionContinuation,
+			RequireExistingCodeEvidence: requireExistingCodeEvidence,
+		})
+	}
+	if reason != "" {
+		return true, reason
+	}
+	return false, ""
 }
 
 func isSemanticGateResultForDirectCodingSubAgent(result GateIntentResult) bool {

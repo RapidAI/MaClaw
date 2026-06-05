@@ -92,15 +92,7 @@ func (a *App) GetTTSVoiceID() string {
 
 func (a *App) SetTTSVoiceID(voiceID string) error {
 	voiceID = normalizeTTSVoiceID(voiceID)
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	if normalizeTTSVoiceID(cfg.TTSVoiceID) == voiceID && cfg.TTSVoiceID != "" {
-		return nil
-	}
-	cfg.TTSVoiceID = voiceID
-	if err := a.SaveConfig(cfg); err != nil {
+	if _, err := a.PatchConfigFields(map[string]interface{}{"tts_voice_id": voiceID}); err != nil {
 		return err
 	}
 	ttsSpeakMu.Lock()
@@ -115,12 +107,7 @@ func (a *App) SetTTSVoiceID(voiceID string) error {
 
 // SetTTSEnabled enables/disables TTS. Auto-downloads model if enabling.
 func (a *App) SetTTSEnabled(enabled bool) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.TTSEnabled = enabled
-	if err := a.SaveConfig(cfg); err != nil {
+	if _, err := a.PatchConfigFields(map[string]interface{}{"tts_enabled": enabled}); err != nil {
 		return err
 	}
 	if enabled {
@@ -188,14 +175,7 @@ func (a *App) downloadTTSModel(autoEnable bool) error {
 	return nil
 }
 func (a *App) autoEnableTTS() {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return
-	}
-	if !cfg.TTSEnabled {
-		cfg.TTSEnabled = true
-		a.SaveConfig(cfg)
-	}
+	_, _ = a.PatchConfigFields(map[string]interface{}{"tts_enabled": true})
 }
 
 func (a *App) downloadTTSFrom(url, destPath string, emitErrors bool) error {

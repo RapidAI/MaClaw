@@ -66,12 +66,3 @@ func TestToolManagerNeedsUpdateReturnsFalseWhenClaudeIsCurrent(t *testing.T) {
 		t.Fatalf("latest = %q, want 2.1.82", latest)
 	}
 }
-
-func TestParseCursorVersionFromInstallScript(t *testing.T) {
-	script := `#!/bin/sh
-DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.03.11-6dfa30c/${OS}/${ARCH}/agent-cli-package.tar.gz"`
-	got := parseCursorVersionFromInstallScript(script)
-	if got != "2026.03.11-6dfa30c" {
-		t.Fatalf("parseCursorVersionFromInstallScript() = %q, want %q", got, "2026.03.11-6dfa30c")
-	}
-}

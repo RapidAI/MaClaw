@@ -160,7 +160,7 @@ func (s *TaskSplitter) callLLM(prompt string) ([]byte, error) {
 }
 
 // SplitViaAgent delegates task decomposition to a programming tool instance
-// (e.g. Claude, Gemini) instead of calling the LLM API directly. This lets
+// (e.g. Claude, Codex) instead of calling the LLM API directly. This lets
 // the tool analyze the actual project files and produce more accurate tasks.
 // The orchestrator creates a session with the "architect" role, sends the
 // requirements, and parses the structured output.

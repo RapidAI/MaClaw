@@ -15,48 +15,48 @@ type Props = {
 const SECURITY_MODES: { value: SecurityPolicyMode; labelZh: string; labelZhHant: string; labelEn: string; descZh: string; descZhHant: string; descEn: string }[] = [
     {
         value: "none",
-        labelZh: "无",
-        labelZhHant: "無",
-        labelEn: "None",
-        descZh: "不启用护栏规则；仅保留其他安全开关与网络/沙箱策略",
-        descZhHant: "不啟用護欄規則；僅保留其他安全開關與網路/沙箱策略",
-        descEn: "guardrail rules disabled; other security toggles plus network/sandbox policy still apply",
+        labelZh: "关闭护栏",
+        labelZhHant: "關閉護欄",
+        labelEn: "Off",
+        descZh: "不做风险护栏的确认/阻断判断；操作仍可能写入安全日志，网络访问、沙箱、文件外发等独立安全开关仍会生效",
+        descZhHant: "不做風險護欄的確認/阻斷判斷；操作仍可能寫入安全日誌，網路訪問、沙箱、檔案外發等獨立安全開關仍會生效",
+        descEn: "Disables risk-guardrail confirmation and blocking; actions may still be logged, and network access, sandboxing, and outbound-file controls still apply",
     },
     {
         value: "relaxed",
         labelZh: "宽松",
         labelZhHant: "寬鬆",
         labelEn: "Relaxed",
-        descZh: "所有风险等级放行；风险扫描仅记录，不阻断 skill 安装/执行",
-        descZhHant: "所有風險等級放行；風險掃描僅記錄，不阻斷 skill 安裝/執行",
-        descEn: "all risk levels allowed; scan findings are recorded and do not block skill install/run",
+        descZh: "护栏放行所有风险等级；仍记录风险扫描结果，不阻断 skill 安装/执行",
+        descZhHant: "護欄放行所有風險等級；仍記錄風險掃描結果，不阻斷 skill 安裝/執行",
+        descEn: "Guardrails allow all risk levels; scan findings are still recorded and do not block skill install/run",
     },
     {
         value: "standard",
         labelZh: "标准",
         labelZhHant: "標準",
         labelEn: "Standard",
-        descZh: "low 放行，medium 记录；high/critical 有确认通道则确认，否则记录后放行",
-        descZhHant: "low 放行，medium 記錄；high/critical 有確認通道則確認，否則記錄後放行",
-        descEn: "low allowed, medium audited; high/critical asks when a confirmation channel exists, otherwise records and allows",
+        descZh: "低风险放行，中风险记录；高/危险操作有确认界面则询问，否则记录后放行",
+        descZhHant: "低風險放行，中風險記錄；高/危險操作有確認介面則詢問，否則記錄後放行",
+        descEn: "Low risk is allowed, medium is audited; high/critical asks when a confirmation UI exists, otherwise records and allows",
     },
     {
         value: "strict",
         labelZh: "严格",
         labelZhHant: "嚴格",
         labelEn: "Strict",
-        descZh: "low 放行，medium/high 需要确认，critical 与危险命令直接阻止",
-        descZhHant: "low 放行，medium/high 需要確認，critical 與危險命令直接阻止",
-        descEn: "low allowed, medium/high require confirmation, critical and dangerous commands are blocked",
+        descZh: "低风险放行，中/高风险需要确认；危险操作和危险命令直接阻止",
+        descZhHant: "低風險放行，中/高風險需要確認；危險操作和危險命令直接阻止",
+        descEn: "Low risk is allowed, medium/high require confirmation; critical operations and dangerous commands are blocked",
     },
     {
         value: "developer",
         labelZh: "开发者",
         labelZhHant: "開發者",
         labelEn: "Developer",
-        descZh: "⚠️ 所有操作放行；仅记录审计，不弹确认、不阻止。仅供开发和安全研究使用",
-        descZhHant: "⚠️ 所有操作放行；僅記錄審計，不彈確認、不阻止。僅供開發和安全研究使用",
-        descEn: "⚠️ All operations allowed; audit only, no confirmation or blocking. For development and security research only",
+        descZh: "开发者旁路：高风险仍记录开发审计，不弹确认、不阻止。仅供开发和安全研究使用",
+        descZhHant: "開發者旁路：高風險仍記錄開發稽核，不彈確認、不阻止。僅供開發和安全研究使用",
+        descEn: "Developer bypass: high-risk activity is still audited, with no confirmation or blocking. For development and security research only",
     },
 ];
 
@@ -137,13 +137,13 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                     fontSize: "0.78rem",
                     color: colors.warning,
                 }}>
-                    {t("Managed by Hub centralized security. The settings below are read-only.", "当前由 Hub 集中管控，以下设置为只读", "當前由 Hub 集中管控，以下設置為只讀")}
+                    {t("Managed by Hub centralized security. Local edits are disabled until Hub centralized policy is turned off.", "当前由 Hub 集中安全策略管控，本地不可修改；关闭 Hub 集中策略后才可编辑", "當前由 Hub 集中安全策略管控，本地不可修改；關閉 Hub 集中策略後才可編輯")}
                 </div>
             )}
 
             <div className="form-group" style={{ marginBottom: "14px", ...disabledStyle }}>
                 <label className="form-label" style={{ fontSize: "0.82rem" }}>
-                    {t("Guardrail Mode", "安全护栏", "安全護欄")}
+                    {t("Risk Guardrails", "风险护栏", "風險護欄")}
                 </label>
                 <div style={{ display: "flex", gap: "6px" }}>
                     {SECURITY_MODES.map((mode) => (
@@ -178,6 +178,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                     <thead>
                         <tr style={{ borderBottom: `1px solid ${colors.border}` }}>
                             <th style={{ textAlign: "left", padding: "4px 6px", fontWeight: 600 }}>{t("Risk Level", "风险等级", "風險等級")}</th>
+                            <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Off", "关闭", "關閉")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Relaxed", "宽松", "寬鬆")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Standard", "标准", "標準")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Strict", "严格", "嚴格")}</th>
@@ -186,13 +187,14 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                     </thead>
                     <tbody>
                         {[
-                            { levelEn: "Low", levelZh: "低", levelZhHant: "低", relaxed: "Allow", standard: "Allow", strict: "Allow" },
-                            { levelEn: "Medium", levelZh: "中", levelZhHant: "中", relaxed: "Allow", standard: "Audit", strict: "Confirm" },
-                            { levelEn: "High", levelZh: "高", levelZhHant: "高", relaxed: "Allow", standard: "Confirm*", strict: "Confirm" },
-                            { levelEn: "Critical", levelZh: "危险", levelZhHant: "危險", relaxed: "Allow", standard: "Confirm*", strict: "Deny" },
+                            { levelEn: "Low", levelZh: "低", levelZhHant: "低", off: "Allow", relaxed: "Allow", standard: "Allow", strict: "Allow" },
+                            { levelEn: "Medium", levelZh: "中", levelZhHant: "中", off: "Allow", relaxed: "Allow", standard: "Audit", strict: "Confirm" },
+                            { levelEn: "High", levelZh: "高", levelZhHant: "高", off: "Allow", relaxed: "Allow", standard: "Confirm*", strict: "Confirm" },
+                            { levelEn: "Critical", levelZh: "危险", levelZhHant: "危險", off: "Allow", relaxed: "Allow", standard: "Confirm*", strict: "Deny" },
                         ].map((row) => (
                             <tr key={row.levelEn} style={{ borderBottom: `1px solid ${colors.borderLight}` }}>
                                 <td style={{ padding: "3px 6px" }}>{t(row.levelEn, row.levelZh, row.levelZhHant)}</td>
+                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.off, "放行", "放行")}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.relaxed, row.relaxed === "Allow" ? "放行" : row.relaxed, row.relaxed === "Allow" ? "放行" : row.relaxed)}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.standard, row.standard === "Allow" ? "放行" : row.standard === "Audit" ? "记录" : row.standard.startsWith("Confirm") ? "确认*" : "拒绝", row.standard === "Allow" ? "放行" : row.standard === "Audit" ? "記錄" : row.standard.startsWith("Confirm") ? "確認*" : "拒絕")}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.strict, row.strict === "Allow" ? "放行" : row.strict === "Audit" ? "记录" : row.strict.startsWith("Confirm") ? "确认" : "拒绝", row.strict === "Allow" ? "放行" : row.strict === "Audit" ? "記錄" : row.strict.startsWith("Confirm") ? "確認" : "拒絕")}</td>
@@ -202,17 +204,17 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                     </tbody>
                 </table>
                 <div style={{ fontSize: "0.7rem", color: colors.textMuted, marginTop: "6px" }}>
-                    {t("Allow = directly allowed, Audit = recorded, Confirm* = ask when UI is available; otherwise record and allow, Deny = blocked", "放行 = 直接允许，记录 = 仅审计，确认* = 有确认界面时询问，否则记录后放行，拒绝 = 直接阻止", "放行 = 直接允許，記錄 = 僅審計，確認* = 有確認介面時詢問，否則記錄後放行，拒絕 = 直接阻止")}
+                    {t("This table describes risk guardrails only. Off disables guardrail confirmation/blocking while actions may still be logged; Developer allows but keeps high-risk developer audit. Network access, sandboxing, and outbound-file controls are separate and may still block actions.", "此表只说明风险护栏：关闭=不做护栏确认/阻断但仍可能记录日志，开发者=放行但保留高风险开发审计。网络访问、沙箱、文件外发单独配置，仍可能阻止操作", "此表只說明風險護欄：關閉=不做護欄確認/阻斷但仍可能記錄日誌，開發者=放行但保留高風險開發稽核。網路訪問、沙箱、檔案外發單獨配置，仍可能阻止操作")}
                 </div>
             </div>
 
             <PolicySelect
-                label={t("Sandbox Mode", "沙箱模式", "沙箱模式")}
-                desc={t("Isolation mode for tool execution", "工具执行时的隔离模式", "工具執行時的隔離模式")}
+                label={t("Execution Sandbox", "执行沙箱", "執行沙箱")}
+                desc={t("Process/filesystem isolation for tool execution; separate from risk guardrails", "工具执行时的进程/文件系统隔离；与风险护栏相互独立", "工具執行時的程序/檔案系統隔離；與風險護欄相互獨立")}
                 value={sandboxMode}
                 options={SANDBOX_OPTIONS as unknown as string[]}
                 labels={[
-                    t("None", "无", "無"),
+                    t("No Sandbox", "不使用沙箱", "不使用沙箱"),
                     t("OS Sandbox", "系统沙箱", "系統沙箱"),
                     "Docker",
                 ]}
@@ -221,15 +223,15 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
             />
 
             <PolicySelect
-                label={t("Network Access", "网络访问", "網路訪問")}
-                desc={t("Network scope for agent tool access", "Agent 工具可访问的网络范围", "Agent 工具可訪問的網路範圍")}
+                label={t("Tool Network Access", "工具网络访问", "工具網路訪問")}
+                desc={t("Network scope for agent tools; separate from risk guardrails", "Agent 工具可访问的网络范围；与风险护栏相互独立", "Agent 工具可訪問的網路範圍；與風險護欄相互獨立")}
                 value={networkLevel}
                 options={NETWORK_OPTIONS as unknown as string[]}
                 labels={[
-                    t("None", "禁止", "禁止"),
+                    t("Blocked", "禁止联网", "禁止聯網"),
                     t("Intranet", "内网", "內網"),
                     t("Allowlist", "允许列表", "允許列表"),
-                    t("Full", "全部", "全部"),
+                    t("Full", "完全开放", "完全開放"),
                 ]}
                 disabled={readOnly}
                 onChange={(value) => saveRemoteConfigField({ network_level: value } as any)}

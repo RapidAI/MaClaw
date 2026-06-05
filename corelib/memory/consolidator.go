@@ -62,7 +62,7 @@ func (c *Consolidator) ConsolidateSegment(ctx context.Context, userMsg, assistan
 	history := c.getHistoryContext(LevelSegment)
 	prompt := c.buildSegmentPrompt(userMsg, assistantMsg, history)
 
-	resp, err := llm.ChatCall(prompt)
+	resp, err := chatCallWithContext(ctx, llm, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("consolidator: L1 segment: %w", err)
 	}
@@ -155,7 +155,7 @@ func (c *Consolidator) ConsolidateLevel(ctx context.Context, level TemporalLevel
 	// Build level-specific prompt.
 	prompt := c.buildLevelPrompt(level, childContents, history)
 
-	resp, err := llm.ChatCall(prompt)
+	resp, err := chatCallWithContext(ctx, llm, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("consolidator: L%d: %w", level, err)
 	}

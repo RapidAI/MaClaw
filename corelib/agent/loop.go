@@ -82,6 +82,13 @@ type StructuredToolExecutor interface {
 	ExecuteToolStructured(name, argsJSON string) ToolExecutionResult
 }
 
+// LLMRequestContextProvider lets hosts wrap each LLM round with their own
+// scheduling, tracing, and cancellation boundary without making corelib/agent
+// depend on GUI/runtime packages.
+type LLMRequestContextProvider interface {
+	LLMRequestContext(iteration int) (context.Context, func(error), error)
+}
+
 // ToolAuthorizer is an optional host callback implemented when tool execution
 // must be constrained by an outer policy, such as a workflow phase.
 type ToolAuthorizer interface {
@@ -187,16 +194,22 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 		}
 
 		// Call LLM with tools via corelib/llm (streaming for real-time display).
-		ctx := context.Background()
+		ctx, finishLLMRequest, ctxErr := llmRequestContextForLoop(cb, iteration)
+		if ctxErr != nil {
+			return LoopResult{Error: fmt.Sprintf("LLM request context failed: %v", ctxErr), Iterations: iteration, ToolCalls: totalToolCalls}
+		}
 		resp, err := doLLMRequestWithToolsStream(ctx, cfg, conversation, tools, httpClient, cb.OnToken)
 		if err != nil {
 			if shouldRetrySimpleLLMError(err) {
 				time.Sleep(2 * time.Second)
 				resp, err = doLLMRequestWithTools(ctx, cfg, conversation, tools, httpClient)
 			}
+			finishLLMRequest(err)
 			if err != nil {
 				return LoopResult{Error: fmt.Sprintf("LLM call failed: %v", err), Iterations: iteration, ToolCalls: totalToolCalls}
 			}
+		} else {
+			finishLLMRequest(nil)
 		}
 
 		if len(resp.Choices) == 0 {
@@ -207,20 +220,19 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 		}
 
 		choice := resp.Choices[0]
+		reasoningContent := StripRolePrefixHallucination(choice.Message.ReasoningContent)
 		content := choice.Message.Content
-		if content == "" && choice.Message.ReasoningContent != "" {
-			content = choice.Message.ReasoningContent
+		if content == "" && reasoningContent != "" {
+			content = reasoningContent
 		}
+		content = StripRolePrefixHallucination(content)
 
 		// Track consecutive empty responses for hard exit.
 		if strings.TrimSpace(content) == "" && len(choice.Message.ToolCalls) == 0 {
 			consecutiveEmpty++
-			logSnippet := strings.ReplaceAll(lastToolOutcome.snippet, "\n", "\\n")
-			if len(logSnippet) > 120 {
-				logSnippet = logSnippet[:120] + "…"
-			}
-			log.Printf("[agent-loop] empty response #%d (iteration=%d, lastTool=%s, outcome=%d, snippet=%s)",
-				consecutiveEmpty, iteration, lastToolName, lastToolOutcome.kind, logSnippet)
+			snippetLen := len([]rune(lastToolOutcome.snippet))
+			log.Printf("[agent-loop] empty response #%d (iteration=%d, lastTool=%s, outcome=%d, snippet_len=%d)",
+				consecutiveEmpty, iteration, lastToolName, lastToolOutcome.kind, snippetLen)
 			if consecutiveEmpty >= maxConsecutiveEmpty {
 				log.Printf("[agent-loop] hard exit: %d consecutive empty responses", consecutiveEmpty)
 				// Return the last non-empty content as a fallback.
@@ -263,8 +275,8 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 			"role":    "assistant",
 			"content": content,
 		}
-		if choice.Message.ReasoningContent != "" {
-			assistantMsg["reasoning_content"] = choice.Message.ReasoningContent
+		if reasoningContent != "" {
+			assistantMsg["reasoning_content"] = reasoningContent
 		} else {
 			// DeepSeek V4+ thinking mode: when tools are present in the
 			// request, reasoning_content must exist on ALL assistant messages.
@@ -508,6 +520,23 @@ func buildEmptyResponseRecovery(emptyCount int, lastToolName string, outcome too
 	return sb.String()
 }
 
+func llmRequestContextForLoop(cb LoopCallbacks, iteration int) (context.Context, func(error), error) {
+	if provider, ok := cb.(LLMRequestContextProvider); ok {
+		ctx, finish, err := provider.LLMRequestContext(iteration)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if finish == nil {
+			finish = func(error) {}
+		}
+		return ctx, finish, nil
+	}
+	return context.Background(), func(error) {}, nil
+}
+
 // ---------------------------------------------------------------------------
 // toolOutcome — structured classification of tool execution results.
 //
@@ -596,8 +625,20 @@ func truncateRunesPrefix(s string, n int) string {
 // doLLMRequestWithToolsStream sends a streaming LLM request, calling onToken
 // for each text delta. Falls back to non-streaming if the streaming request fails.
 func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfig, conversation []interface{}, tools []map[string]interface{}, httpClient *http.Client, onToken llm.TokenCallback) (*llm.Response, error) {
+	var rolePrefixFilter *rolePrefixStreamFilter
+	if onToken != nil {
+		rolePrefixFilter = newRolePrefixStreamFilter(onToken)
+		onToken = rolePrefixFilter.Write
+	}
+	flushRolePrefixFilter := func(err error) {
+		if err == nil && rolePrefixFilter != nil {
+			rolePrefixFilter.Flush()
+		}
+	}
+
 	if cfg.Protocol == "anthropic" {
 		resp, err := llm.DoAnthropicRequestStream(ctx, cfg, conversation, tools, httpClient, onToken)
+		flushRolePrefixFilter(err)
 		if err != nil {
 			// Fallback to non-streaming on error.
 			log.Printf("[agent-loop] streaming failed, falling back to non-stream: %v", err)
@@ -606,6 +647,7 @@ func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfi
 		return resp, nil
 	}
 	resp, err := llm.DoOpenAIRequestStream(ctx, cfg, conversation, tools, httpClient, onToken)
+	flushRolePrefixFilter(err)
 	if err != nil {
 		log.Printf("[agent-loop] streaming failed, falling back to non-stream: %v", err)
 		return llm.DoOpenAIRequest(ctx, cfg, conversation, tools, httpClient)

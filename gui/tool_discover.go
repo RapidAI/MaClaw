@@ -32,6 +32,12 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 	toolMap := make(map[string]RegisteredTool, len(allTools))
 
 	for _, t := range allTools {
+		if shouldHideToolFromDiscovery(t.Name) {
+			continue
+		}
+		if strings.TrimSpace(t.Description) == "" {
+			continue
+		}
 		text := t.Name + " " + t.Description
 		for _, tag := range t.Tags {
 			text += " " + tag
@@ -43,6 +49,9 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 	if h.toolDefGen != nil {
 		for _, def := range h.toolDefGen.GenerateDeferred() {
 			name := extractToolName(def)
+			if shouldHideToolFromDiscovery(name) {
+				continue
+			}
 			if name == "" || toolMap[name].Name != "" {
 				continue
 			}
@@ -114,6 +123,11 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 		b.WriteString("\nUse the matched tool name when the next step needs that capability.")
 	}
 	return b.String()
+}
+
+func shouldHideToolFromDiscovery(name string) bool {
+	name = strings.TrimSpace(name)
+	return name != MergedBrowserToolName && strings.HasPrefix(name, "browser_")
 }
 
 func discoverToolStatusLine(index int, name, desc string, coreTool, activated bool) string {

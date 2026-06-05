@@ -4,15 +4,21 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SidebarRecentTasks } from '../SidebarRecentTasks';
 import type { ComponentProps } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder } from '../../../../wailsjs/go/main/App';
+import { EventsEmit } from '../../../../wailsjs/runtime';
 
-const { getProjectSceneMock, openFileOrShowInFolderMock } = vi.hoisted(() => ({
+const { getProjectSceneMock, openFileOrShowInFolderMock, eventsEmitMock } = vi.hoisted(() => ({
     getProjectSceneMock: vi.fn(),
     openFileOrShowInFolderMock: vi.fn(),
+    eventsEmitMock: vi.fn(),
 }));
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetProjectScene: getProjectSceneMock,
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
+}));
+
+vi.mock('../../../../wailsjs/runtime', () => ({
+    EventsEmit: eventsEmitMock,
 }));
 
 const baseProject = {
@@ -46,6 +52,7 @@ function renderRecentTasks(overrides: Partial<ComponentProps<typeof SidebarRecen
 
 afterEach(() => {
     vi.restoreAllMocks();
+    eventsEmitMock.mockClear();
 });
 
 describe('SidebarRecentTasks', () => {
@@ -88,6 +95,62 @@ describe('SidebarRecentTasks', () => {
 
         expect(resumeRecentProject).not.toHaveBeenCalled();
         expect(onRecentTaskSwitchBlocked).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows restore progress and ignores duplicate opens while a task is opening', async () => {
+        let resolveOpen: () => void = () => {};
+        const resumeRecentProject = vi.fn(() => new Promise<void>((resolve) => {
+            resolveOpen = resolve;
+        }));
+        renderRecentTasks({ resumeRecentProject });
+
+        fireEvent.doubleClick(screen.getByText('Build dashboard'));
+        fireEvent.doubleClick(screen.getByText('Build dashboard'));
+
+        expect(resumeRecentProject).toHaveBeenCalledTimes(1);
+        expect(screen.getByText('Restoring...')).toBeTruthy();
+        expect(screen.getByLabelText('Restoring task')).toBeTruthy();
+
+        resolveOpen();
+        await waitFor(() => expect(screen.queryByText('Restoring...')).toBeNull());
+    });
+
+    it('emits project close event when removing a recent task', async () => {
+        const hideTask = vi.fn().mockResolvedValue(undefined);
+        const refreshRecentProjects = vi.fn();
+        const setTaskContextMenu = vi.fn();
+        renderRecentTasks({
+            hideTask,
+            refreshRecentProjects,
+            setTaskContextMenu,
+            taskContextMenu: { x: 10, y: 20, projectPath: baseProject.project_path, name: baseProject.name, pinned: false },
+        });
+
+        fireEvent.click(screen.getByText('Remove'));
+
+        await waitFor(() => expect(hideTask).toHaveBeenCalledWith(baseProject.project_path));
+        expect(EventsEmit).toHaveBeenCalledWith('project-task:closed', baseProject.project_path);
+        expect(refreshRecentProjects).toHaveBeenCalledTimes(1);
+        expect(setTaskContextMenu).toHaveBeenCalledWith(null);
+    });
+
+    it('still refreshes after remove when project close event emit fails', async () => {
+        eventsEmitMock.mockImplementationOnce(() => { throw new Error('runtime unavailable'); });
+        const hideTask = vi.fn().mockResolvedValue(undefined);
+        const refreshRecentProjects = vi.fn();
+        const setTaskContextMenu = vi.fn();
+        renderRecentTasks({
+            hideTask,
+            refreshRecentProjects,
+            setTaskContextMenu,
+            taskContextMenu: { x: 10, y: 20, projectPath: baseProject.project_path, name: baseProject.name, pinned: false },
+        });
+
+        fireEvent.click(screen.getByText('Remove'));
+
+        await waitFor(() => expect(hideTask).toHaveBeenCalledWith(baseProject.project_path));
+        expect(refreshRecentProjects).toHaveBeenCalledTimes(1);
+        expect(setTaskContextMenu).toHaveBeenCalledWith(null);
     });
 
 

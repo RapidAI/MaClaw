@@ -19,8 +19,8 @@ import (
 // ── managed browser process ──
 
 var (
-	managedBrowserMu   sync.Mutex
-	managedBrowserProc *os.Process
+	managedBrowserMu    sync.Mutex
+	managedBrowserProcs = map[string]*os.Process{}
 )
 
 type devToolsActivePortInfo struct {
@@ -114,17 +114,105 @@ func debugProfileDir() string {
 	return filepath.Join(home, ".maclaw-chrome-debug-profile")
 }
 
+// persistentProfileDir is the managed MaClaw browser profile. It keeps cookies
+// and login state across automation runs without using the user's daily Chrome
+// profile, which avoids profile locks and unstable CDP target reuse.
+func persistentProfileDir() string {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		home = os.TempDir()
+	}
+	return filepath.Join(home, ".maclaw", "browser-profile")
+}
+
+func browserProfileKind(userDataDir string) string {
+	clean := filepath.Clean(userDataDir)
+	switch clean {
+	case filepath.Clean(persistentProfileDir()):
+		return "persistent managed profile"
+	case filepath.Clean(debugProfileDir()):
+		return "isolated debug profile"
+	default:
+		return "managed profile"
+	}
+}
+
 // debugPort is the fixed CDP port used for the isolated debug browser.
 const debugPort = 9222
 
+// DiscoverOrLaunchPersistent launches/reuses the managed persistent browser.
+// This is the stable default for agent automation: one controlled Chrome
+// profile, durable cookies, and browser-session-* handles for all operations.
+func DiscoverOrLaunchPersistent() (string, error) {
+	profileDir := persistentProfileDir()
+	if addr, ok := discoverCDPAddrFromManagedProcess(profileDir); ok {
+		if _, err := DiscoverTargets(addr); err == nil {
+			log.Printf("[browser] reused managed browser from process command line: %s", addr)
+			return addr, nil
+		}
+	}
+	if addr, ok := readCDPAddrFromUserDataDir(profileDir); ok {
+		if _, err := DiscoverTargets(addr); err == nil {
+			log.Printf("[browser] reused managed browser from DevToolsActivePort: %s", addr)
+			return addr, nil
+		}
+	}
+	// Persistent profile owns login/cookies. If a browser already has this profile
+	// open, do not kill or relaunch it just because CDP is slow or temporarily
+	// unreachable. Starting a second Chrome against the same profile causes process
+	// churn and unstable sessions. Recovery must reconnect to the existing
+	// profile process or ask the user to close it manually.
+	if browserProcessExistsForDir(profileDir) {
+		if addr, ok := waitForPersistentCDP(profileDir, 10*time.Second); ok {
+			return addr, nil
+		}
+		return "", fmt.Errorf("persistent browser profile is already open but CDP is unavailable; not killing or relaunching profile=%s", profileDir)
+	}
+
+	bi := detectBrowser()
+	if bi == nil {
+		return "", fmt.Errorf("未找到 Chrome 或 Edge 浏览器，请安装后重试")
+	}
+
+	// Do not delete Singleton* lock files for the persistent profile. If an older
+	// managed browser is still alive but CDP is temporarily unreachable, removing
+	// the profile lock can start a second browser on the same profile and corrupt
+	// state. Chrome/Edge can clean stale locks on its own after a crash.
+	os.Remove(filepath.Join(profileDir, "DevToolsActivePort"))
+
+	port, err := findFreeLocalPort()
+	if err != nil {
+		return "", err
+	}
+	return launchDebugBrowser(bi, profileDir, port)
+}
+
+func waitForPersistentCDP(profileDir string, timeout time.Duration) (string, bool) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if addr, ok := discoverCDPAddrFromManagedProcess(profileDir); ok {
+			if _, err := DiscoverTargets(addr); err == nil {
+				log.Printf("[browser] reused managed browser after CDP wait: %s", addr)
+				return addr, true
+			}
+		}
+		if addr, ok := readCDPAddrFromUserDataDir(profileDir); ok {
+			if _, err := DiscoverTargets(addr); err == nil {
+				log.Printf("[browser] reused managed browser from DevToolsActivePort after CDP wait: %s", addr)
+				return addr, true
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return "", false
+}
+
 // DiscoverOrLaunch tries DiscoverCDPAddr first. If that fails, it launches
 // Chrome/Edge with an isolated debug profile and a fixed port (9222).
-// This is the ISOLATED mode fallback — used only when SessionModeIsolated is
-// explicitly requested, or when DiscoverOrLaunchUserProfile cannot determine
-// the user's data directory.
+// This is the isolated mode path; stable automation uses
+// DiscoverOrLaunchPersistent instead.
 //
-// For the default (auto) mode, use DiscoverOrLaunchUserProfile() instead,
-// which preserves user cookies/passwords/extensions.
+// For persistent login state, use DiscoverOrLaunchPersistent() instead.
 func DiscoverOrLaunch() (string, error) {
 	// Fast path: already available.
 	if addr, err := DiscoverCDPAddr(); err == nil {
@@ -151,7 +239,7 @@ func DiscoverOrLaunch() (string, error) {
 	if probePort(debugPort) {
 		if _, err := DiscoverTargets(addr); err != nil {
 			log.Printf("[browser] 端口 %d 被占用但非 CDP: %v", debugPort, err)
-			if killManagedBrowser() {
+			if killManagedBrowserForDir(debugDir) {
 				waitForPortRelease(debugPort, 8*time.Second)
 			} else {
 				return "", fmt.Errorf("调试端口 %d 已被占用，但不是有效 CDP 端点；未自动结束未知进程以避免误杀。详情: %w", debugPort, err)
@@ -170,7 +258,7 @@ func DiscoverOrLaunch() (string, error) {
 	if err != nil {
 		// Retry once: force-kill only our managed process and try again.
 		log.Printf("[browser] 首次启动失败 (%v)，清理托管浏览器后重试...", err)
-		killManagedBrowser()
+		killManagedBrowserForDir(debugDir)
 		waitForPortRelease(debugPort, 10*time.Second)
 		for _, lockName := range []string{"SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile"} {
 			os.Remove(filepath.Join(debugDir, lockName))
@@ -188,6 +276,13 @@ func DiscoverOrLaunch() (string, error) {
 // remote-debugging-port, waits for the port to become available, and returns
 // the CDP HTTP address.
 func launchDebugBrowser(bi *browserInfo, userDataDir string, port int) (string, error) {
+	if port <= 0 {
+		freePort, err := findFreeLocalPort()
+		if err != nil {
+			return "", err
+		}
+		port = freePort
+	}
 	args := []string{
 		fmt.Sprintf("--remote-debugging-port=%d", port),
 		"--no-first-run",
@@ -202,10 +297,21 @@ func launchDebugBrowser(bi *browserInfo, userDataDir string, port int) (string, 
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("启动浏览器失败: %w (browser=%s path=%s user_data_dir=%s port=%d)", err, bi.name, bi.path, userDataDir, port)
 	}
+	success := false
+	defer func() {
+		if success {
+			return
+		}
+		if cmd.Process != nil {
+			log.Printf("[browser] 启动未得到可用 CDP，清理托管浏览器进程 (PID %d)", cmd.Process.Pid)
+			_ = cmd.Process.Kill()
+		}
+	}()
 
 	// Track the process for cleanup.
+	managedKey := managedBrowserKey(userDataDir)
 	managedBrowserMu.Lock()
-	managedBrowserProc = cmd.Process
+	managedBrowserProcs[managedKey] = cmd.Process
 	managedBrowserMu.Unlock()
 
 	procExited := make(chan struct{})
@@ -213,7 +319,9 @@ func launchDebugBrowser(bi *browserInfo, userDataDir string, port int) (string, 
 		cmd.Wait()
 		close(procExited)
 		managedBrowserMu.Lock()
-		managedBrowserProc = nil
+		if managedBrowserProcs[managedKey] == cmd.Process {
+			delete(managedBrowserProcs, managedKey)
+		}
 		managedBrowserMu.Unlock()
 	}()
 
@@ -226,25 +334,26 @@ func launchDebugBrowser(bi *browserInfo, userDataDir string, port int) (string, 
 		Stage:       "launch",
 	}
 
-	// Check if the process exits immediately (profile conflict or bad args).
+	// Chrome on Windows may let the launcher process exit after handing off to a
+	// browser child process. Do not treat that as fatal; keep probing CDP.
 	select {
 	case <-procExited:
 		diag.Stage = "exited_early"
 		diag.StderrTail = summarizeStderr(stderr.String())
-		return "", fmt.Errorf("浏览器进程立即退出。%s", diag.Summary())
 	case <-time.After(2 * time.Second):
-		// Good — process is alive.
+		// Process is still alive, or at least has not handed off yet.
 	}
 
 	// Wait for the fixed port to start serving CDP.
 	addr := fmt.Sprintf("http://127.0.0.1:%d", port)
 	deadline := time.Now().Add(15 * time.Second)
+	procExitedCh := procExited
 	for time.Now().Before(deadline) {
 		select {
-		case <-procExited:
-			diag.Stage = "exited_waiting_cdp"
+		case <-procExitedCh:
+			diag.Stage = "launcher_exited_waiting_cdp"
 			diag.StderrTail = summarizeStderr(stderr.String())
-			return "", fmt.Errorf("浏览器进程在等待 CDP 端口期间退出。%s", diag.Summary())
+			procExitedCh = nil
 		default:
 		}
 		diag.PortOccupied = probePort(port)
@@ -255,7 +364,8 @@ func launchDebugBrowser(bi *browserInfo, userDataDir string, port int) (string, 
 			continue
 		}
 		if _, err := DiscoverTargets(addr); err == nil {
-			log.Printf("[browser] 已启动 %s，调试端口: %d (独立 profile)", bi.name, port)
+			log.Printf("[browser] launched %s with CDP port %d (%s)", bi.name, port, browserProfileKind(userDataDir))
+			success = true
 			return addr, nil
 		} else {
 			diag.Stage = "waiting_json"
@@ -274,6 +384,19 @@ func launchDebugBrowser(bi *browserInfo, userDataDir string, port int) (string, 
 	return "", fmt.Errorf("浏览器已启动但端口 %d 未响应 CDP。%s", port, diag.Summary())
 }
 
+func findFreeLocalPort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("failed to reserve browser debug port: %w", err)
+	}
+	defer listener.Close()
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok || addr.Port <= 0 {
+		return 0, fmt.Errorf("failed to inspect reserved browser debug port")
+	}
+	return addr.Port, nil
+}
+
 // waitForPortRelease waits until the given TCP port is no longer listening.
 func waitForPortRelease(port int, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
@@ -286,23 +409,79 @@ func waitForPortRelease(port int, timeout time.Duration) {
 	log.Printf("[browser] waitForPortRelease: 端口 %d 超时仍被占用", port)
 }
 
-// killManagedBrowser kills the browser process that we started (if any).
-// Returns true if a managed process was found and killed.
-func killManagedBrowser() bool {
+func managedBrowserKey(userDataDir string) string {
+	key := filepath.Clean(userDataDir)
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	return key
+}
+
+// killManagedBrowserForDir kills the browser process that we started for a profile.
+// Returns true if a matching managed process was found and killed.
+func killManagedBrowserForDir(userDataDir string) bool {
 	managedBrowserMu.Lock()
-	proc := managedBrowserProc
+	key := managedBrowserKey(userDataDir)
+	proc := managedBrowserProcs[key]
+	if proc != nil {
+		delete(managedBrowserProcs, key)
+	}
 	managedBrowserMu.Unlock()
-	if proc == nil {
+	if proc != nil {
+		log.Printf("[browser] 终止托管浏览器进程 (PID %d)...", proc.Pid)
+		_ = proc.Kill()
+		// Give the OS a moment to release resources.
+		time.Sleep(1 * time.Second)
+		return true
+	}
+	return killManagedBrowserProcessesByDir(userDataDir)
+}
+
+func killManagedBrowserProcessesByDir(userDataDir string) bool {
+	if runtime.GOOS != "windows" || strings.TrimSpace(userDataDir) == "" {
 		return false
 	}
-	log.Printf("[browser] 终止托管浏览器进程 (PID %d)...", proc.Pid)
-	proc.Kill()
-	// Give the OS a moment to release resources.
+	ps := browserProcessesByDirPowerShell(userDataDir, true)
+	out, err := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput()
+	if err != nil {
+		log.Printf("[browser] 按 profile 清理托管浏览器失败: %v output=%s", err, summarizeStderr(string(out)))
+		return false
+	}
+	pids := strings.TrimSpace(string(out))
+	if pids == "" {
+		return false
+	}
+	log.Printf("[browser] 按 profile 清理托管浏览器进程 user_data_dir=%s pids=%s", userDataDir, pids)
 	time.Sleep(1 * time.Second)
 	return true
 }
 
 // ── browser detection ──
+
+func browserProcessExistsForDir(userDataDir string) bool {
+	if strings.TrimSpace(userDataDir) == "" {
+		return false
+	}
+	managedBrowserMu.Lock()
+	proc := managedBrowserProcs[managedBrowserKey(userDataDir)]
+	managedBrowserMu.Unlock()
+	if proc != nil {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	out, err := exec.Command("powershell", "-NoProfile", "-Command", browserProcessesByDirPowerShell(userDataDir, false)).CombinedOutput()
+	return err == nil && strings.TrimSpace(string(out)) != ""
+}
+
+func browserProcessesByDirPowerShell(userDataDir string, kill bool) string {
+	needle := strings.ReplaceAll(filepath.Clean(userDataDir), "'", "''")
+	if kill {
+		return fmt.Sprintf(`$needle = '%s'; $procs = Get-CimInstance Win32_Process -Filter "name='chrome.exe' OR name='msedge.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0 }; $ids = @($procs | ForEach-Object { $_.ProcessId }); if ($ids.Count -gt 0) { $ids -join ','; $ids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }`, needle)
+	}
+	return fmt.Sprintf(`$needle = '%s'; $procs = Get-CimInstance Win32_Process -Filter "name='chrome.exe' OR name='msedge.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0 }; $ids = @($procs | ForEach-Object { $_.ProcessId }); if ($ids.Count -gt 0) { $ids -join ',' }`, needle)
+}
 
 type browserInfo struct {
 	path string // absolute path to executable
@@ -448,63 +627,6 @@ func isBrowserRunning(browserName string) bool {
 	}
 }
 
-// killBrowserByName terminates all instances of the given browser.
-func killBrowserByName(browserName string) {
-	switch runtime.GOOS {
-	case "windows":
-		var procName string
-		if browserName == "chrome" {
-			procName = "chrome.exe"
-		} else {
-			procName = "msedge.exe"
-		}
-		// /T kills the entire process tree (GPU helper, crashpad, etc.)
-		exec.Command("taskkill", "/F", "/T", "/IM", procName).Run()
-		// Fallback: enumerate remaining PIDs via tasklist and kill individually.
-		// tasklist is available on all Windows versions (unlike wmic which is deprecated).
-		out, err := exec.Command("tasklist", "/FI",
-			fmt.Sprintf("IMAGENAME eq %s", procName), "/FO", "CSV", "/NH").Output()
-		if err == nil {
-			for _, line := range strings.Split(string(out), "\n") {
-				line = strings.TrimSpace(line)
-				// CSV format: "chrome.exe","12345","Console","1","123,456 K"
-				fields := strings.Split(line, ",")
-				if len(fields) >= 2 {
-					pid := strings.Trim(fields[1], "\" ")
-					if pid != "" && pid != "0" {
-						exec.Command("taskkill", "/F", "/T", "/PID", pid).Run()
-					}
-				}
-			}
-		}
-	case "darwin":
-		// On macOS, use killall which is more reliable than pkill for app bundles.
-		var appName string
-		if browserName == "chrome" {
-			appName = "Google Chrome"
-		} else {
-			appName = "Microsoft Edge"
-		}
-		exec.Command("killall", appName).Run()
-		// Also pkill helper processes.
-		var helperName string
-		if browserName == "chrome" {
-			helperName = "Google Chrome Helper"
-		} else {
-			helperName = "Microsoft Edge Helper"
-		}
-		exec.Command("killall", helperName).Run()
-	default:
-		var procName string
-		if browserName == "chrome" {
-			procName = "chrome"
-		} else {
-			procName = "msedge"
-		}
-		exec.Command("pkill", "-f", procName).Run()
-	}
-}
-
 // readDevToolsActivePort reads the DevToolsActivePort file from known Chrome profile locations.
 // Returns info when a valid DevToolsActivePort file is found.
 func readDevToolsActivePort() (*devToolsActivePortInfo, bool) {
@@ -537,6 +659,78 @@ func readDevToolsActivePort() (*devToolsActivePortInfo, bool) {
 		return &devToolsActivePortInfo{Port: port, WSPath: wsPath, Source: p}, true
 	}
 	return nil, false
+}
+
+func readCDPAddrFromUserDataDir(userDataDir string) (string, bool) {
+	info, ok := readDevToolsActivePortFile(filepath.Join(userDataDir, "DevToolsActivePort"))
+	if !ok || !probePort(info.Port) {
+		return "", false
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", info.Port), true
+}
+
+func discoverCDPAddrFromManagedProcess(userDataDir string) (string, bool) {
+	if runtime.GOOS != "windows" || strings.TrimSpace(userDataDir) == "" {
+		return "", false
+	}
+	needle := strings.ReplaceAll(filepath.Clean(userDataDir), "'", "''")
+	ps := fmt.Sprintf(`$needle = '%s'; Get-CimInstance Win32_Process -Filter "name='chrome.exe' OR name='msedge.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $_.CommandLine.IndexOf('--remote-debugging-port', [StringComparison]::OrdinalIgnoreCase) -ge 0 } | ForEach-Object { $_.CommandLine }`, needle)
+	out, err := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput()
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		port, ok := remoteDebuggingPortFromCommandLine(line)
+		if !ok || !probePort(port) {
+			continue
+		}
+		return fmt.Sprintf("http://127.0.0.1:%d", port), true
+	}
+	return "", false
+}
+
+func remoteDebuggingPortFromCommandLine(commandLine string) (int, bool) {
+	lower := strings.ToLower(commandLine)
+	idx := strings.Index(lower, "--remote-debugging-port")
+	if idx < 0 {
+		return 0, false
+	}
+	start := idx + len("--remote-debugging-port")
+	for start < len(commandLine) && (commandLine[start] == '=' || commandLine[start] == ' ' || commandLine[start] == '\t') {
+		start++
+	}
+	if start < len(commandLine) && (commandLine[start] == '"' || commandLine[start] == '\'') {
+		start++
+	}
+	end := start
+	for end < len(commandLine) && commandLine[end] >= '0' && commandLine[end] <= '9' {
+		end++
+	}
+	if end == start {
+		return 0, false
+	}
+	port, err := strconv.Atoi(commandLine[start:end])
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, false
+	}
+	return port, true
+}
+
+func readDevToolsActivePortFile(path string) (*devToolsActivePortInfo, bool) {
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, false
+	}
+	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
+	port, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil || port <= 0 || port > 65535 {
+		return nil, false
+	}
+	wsPath := ""
+	if len(lines) > 1 {
+		wsPath = strings.TrimSpace(lines[1])
+	}
+	return &devToolsActivePortInfo{Port: port, WSPath: wsPath, Source: path}, true
 }
 
 func devToolsActivePortCandidates() []string {

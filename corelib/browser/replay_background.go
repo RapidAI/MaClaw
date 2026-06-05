@@ -129,14 +129,6 @@ func notifyReplayComplete(
 		Message: msg,
 	}
 
-	// Attach last screenshot if available
-	if state != nil && len(state.Checkpoints) > 0 {
-		last := state.Checkpoints[len(state.Checkpoints)-1]
-		if last.ScreenshotB64 != "" {
-			ev.Extra = map[string]string{"screenshot": last.ScreenshotB64}
-		}
-	}
-
 	select {
 	case statusC <- ev:
 	default:

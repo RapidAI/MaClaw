@@ -2,10 +2,10 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
-
-	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"time"
 )
 
 // ProjectContextSummary holds the structured project context loaded from
@@ -33,9 +33,15 @@ type ProjectContextArtifact struct {
 // and checks for an active workflow, returning a structured summary suitable
 // for injection as the initial system message in a Project Tab.
 func (a *App) LoadProjectContext(projectPath string) (*ProjectContextSummary, error) {
+	started := time.Now()
 	if strings.TrimSpace(projectPath) == "" {
 		return nil, fmt.Errorf("projectPath is required")
 	}
+	defer func() {
+		if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+			log.Printf("[project_context] LoadProjectContext slow project=%q elapsed=%s", projectPath, elapsed.Round(time.Millisecond))
+		}
+	}()
 
 	a.ensureMemoryStore()
 	if a.memoryStore == nil {
@@ -47,19 +53,9 @@ func (a *App) LoadProjectContext(projectPath string) (*ProjectContextSummary, er
 		KeyArtifacts: []string{},
 	}
 
-	// Recall task_artifact entries for this project.
-	taskArtifacts := a.memoryStore.RecallDynamicStrict(
-		"task artifact progress",
-		memory.CategoryTaskArtifact,
-		projectPath,
-	)
-
-	// Recall project_knowledge entries for this project.
-	projectKnowledge := a.memoryStore.RecallDynamicStrict(
-		"project knowledge",
-		memory.CategoryProjectKnowledge,
-		projectPath,
-	)
+	contextData := a.memoryStore.ProjectContextForHost(projectPath, 1)
+	taskArtifacts := contextData.TaskArtifacts
+	projectKnowledge := contextData.ProjectKnowledge
 
 	// Build recent progress from task artifacts (most recent first from recall).
 	var progressParts []string
@@ -94,7 +90,8 @@ func (a *App) LoadProjectContext(projectPath string) (*ProjectContextSummary, er
 		addArtifactPath(entry.SourceURL)
 	}
 
-	if scene, ok := projectSceneMap(a.memoryStore.SceneIndex(20))[projectPath]; ok {
+	if contextData.HasScene {
+		scene := contextData.Scene
 		for _, sourceURL := range scene.SourceURLs {
 			addArtifactPath(sourceURL)
 		}

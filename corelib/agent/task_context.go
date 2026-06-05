@@ -15,6 +15,7 @@ package agent
 // decision, then apply their own logic only within the resolved action.
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -117,6 +118,12 @@ type TaskLLMClassifier interface {
 	Classify(systemPrompt, userMessage string, timeoutSec int) (string, error)
 }
 
+// TaskLLMContextClassifier is implemented by classifiers that can bind an
+// auxiliary LLM call to the owning agent loop's context and trace metadata.
+type TaskLLMContextClassifier interface {
+	ClassifyWithContext(ctx context.Context, systemPrompt, userMessage string, timeoutSec int) (string, error)
+}
+
 // TaskContextManager is the unified decision point for task switching.
 type TaskContextManager struct {
 	config TaskContextConfig
@@ -133,8 +140,15 @@ func NewTaskContextManager(config TaskContextConfig, llm TaskLLMClassifier) *Tas
 
 // ResolveInput bundles the signals available at decision time.
 type ResolveInput struct {
+	// Context scopes optional LLM work to the owning agent loop. If nil, a
+	// bounded background context is used for compatibility.
+	Context context.Context
+
 	// UserMessage is the new message from the user.
 	UserMessage string
+
+	// OwnerID identifies the logical conversation owner for diagnostics.
+	OwnerID string
 
 	// History is the current conversation history (may be empty).
 	History []ConversationEntry
@@ -276,6 +290,17 @@ func (m *TaskContextManager) classifyWithLLM(input ResolveInput) TaskContextDeci
 	}
 	resultCh := make(chan llmResult, 1)
 	go func() {
+		callCtx := input.Context
+		if callCtx == nil {
+			callCtx = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(callCtx, m.config.LLMTimeout)
+		defer cancel()
+		if classifier, ok := m.llm.(TaskLLMContextClassifier); ok {
+			resp, err := classifier.ClassifyWithContext(ctx, systemPrompt, userMsg.String(), int(m.config.LLMTimeout.Seconds()))
+			resultCh <- llmResult{resp: resp, err: err}
+			return
+		}
 		resp, err := m.llm.Classify(systemPrompt, userMsg.String(), int(m.config.LLMTimeout.Seconds()))
 		resultCh <- llmResult{resp: resp, err: err}
 	}()
@@ -283,6 +308,10 @@ func (m *TaskContextManager) classifyWithLLM(input ResolveInput) TaskContextDeci
 	// Wait for result with timeout (defensive; the LLM.Classify already
 	// has its own timeout, but this ensures we never block longer than LLMTimeout + 500ms).
 	deadline := m.config.LLMTimeout + 500*time.Millisecond
+	var done <-chan struct{}
+	if input.Context != nil {
+		done = input.Context.Done()
+	}
 	select {
 	case r := <-resultCh:
 		if r.err != nil {
@@ -293,6 +322,9 @@ func (m *TaskContextManager) classifyWithLLM(input ResolveInput) TaskContextDeci
 	case <-time.After(deadline):
 		log.Printf("[TaskContext] LLM classification timed out after %v, preserving current task context", deadline)
 		return fallbackTaskContextDecision(fmt.Sprintf("LLM timed out after %v", deadline))
+	case <-done:
+		log.Printf("[TaskContext] LLM classification canceled: %v, preserving current task context", input.Context.Err())
+		return fallbackTaskContextDecision(fmt.Sprintf("LLM canceled: %v", input.Context.Err()))
 	}
 }
 

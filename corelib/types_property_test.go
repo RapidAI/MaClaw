@@ -2,11 +2,83 @@ package corelib
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
 	"pgregory.net/rapid"
 )
+
+func TestSetCodeGenClientNameHeaderIfNeeded(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "https://codegen.qianxin-inc.cn/api/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetCodeGenClientNameHeaderIfNeeded(req)
+	if got := req.Header.Get(CodeGenClientNameHeader); got != CodeGenClientName {
+		t.Fatalf("%s = %q, want %q", CodeGenClientNameHeader, got, CodeGenClientName)
+	}
+
+	custom, err := http.NewRequest(http.MethodGet, "https://api.codegen.qianxin-inc.cn/api/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetCodeGenClientNameHeaderIfNeededWithName(custom, "custom-agent")
+	if got := custom.Header.Get(CodeGenClientNameHeader); got != "custom-agent" {
+		t.Fatalf("custom %s = %q, want %q", CodeGenClientNameHeader, got, "custom-agent")
+	}
+
+	legacyDefault, err := http.NewRequest(http.MethodGet, "https://codegen.qianxin-inc.cn/api/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetCodeGenClientNameHeaderIfNeededWithName(legacyDefault, "openclaw")
+	if got := legacyDefault.Header.Get(CodeGenClientNameHeader); got != CodeGenClientName {
+		t.Fatalf("legacy default %s = %q, want %q", CodeGenClientNameHeader, got, CodeGenClientName)
+	}
+
+	other, err := http.NewRequest(http.MethodGet, "https://api.example.com/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetCodeGenClientNameHeaderIfNeeded(other)
+	if got := other.Header.Get(CodeGenClientNameHeader); got != "" {
+		t.Fatalf("non-CodeGen %s = %q, want empty", CodeGenClientNameHeader, got)
+	}
+
+	lookalike, err := http.NewRequest(http.MethodGet, "https://codegen.qianxin-inc.cn.evil.example/api/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetCodeGenClientNameHeaderIfNeeded(lookalike)
+	if got := lookalike.Header.Get(CodeGenClientNameHeader); got != "" {
+		t.Fatalf("lookalike %s = %q, want empty", CodeGenClientNameHeader, got)
+	}
+
+	if !IsCodeGenURL("wss://api.codegen.qianxin-inc.cn/api/v1/responses") {
+		t.Fatal("CodeGen websocket URL was not recognized")
+	}
+	if IsCodeGenURL("wss://codegen.qianxin-inc.cn.evil.example/api/v1/responses") {
+		t.Fatal("lookalike websocket URL was recognized as CodeGen")
+	}
+}
+
+func TestMaclawLLMUserAgentTrimsCustomValue(t *testing.T) {
+	provider := MaclawLLMProvider{AgentType: "  custom-agent  "}
+	if got := provider.UserAgent(); got != "custom-agent" {
+		t.Fatalf("provider UserAgent() = %q, want %q", got, "custom-agent")
+	}
+
+	config := MaclawLLMConfig{AgentType: "  tigerclaw  "}
+	if got := config.UserAgent(); got != "tigerclaw" {
+		t.Fatalf("config UserAgent() = %q, want %q", got, "tigerclaw")
+	}
+
+	blank := MaclawLLMConfig{AgentType: "   "}
+	if got := blank.UserAgent(); got != "openclaw" {
+		t.Fatalf("blank UserAgent() = %q, want %q", got, "openclaw")
+	}
+}
 
 // Feature: openai-oauth-provider, Property 1: MaclawLLMProvider JSON 序列化往返
 // **Validates: Requirements 1.1, 1.2, 1.3, 1.5**

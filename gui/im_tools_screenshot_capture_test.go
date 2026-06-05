@@ -2,7 +2,7 @@ package main
 
 import "testing"
 
-func TestShouldReturnScreenshotBase64ForCurrentPlatform(t *testing.T) {
+func TestShouldReturnScreenshotBase64ForPlatform(t *testing.T) {
 	tests := []struct {
 		name     string
 		platform string
@@ -17,20 +17,17 @@ func TestShouldReturnScreenshotBase64ForCurrentPlatform(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := &IMMessageHandler{}
-			if tt.platform != "" {
-				h.currentLoopCtx = &LoopContext{Platform: tt.platform}
-			}
-			if got := h.shouldReturnScreenshotBase64ForCurrentPlatform(); got != tt.want {
-				t.Fatalf("shouldReturnScreenshotBase64ForCurrentPlatform() = %v, want %v", got, tt.want)
+			if got := shouldReturnScreenshotBase64ForPlatform(tt.platform); got != tt.want {
+				t.Fatalf("shouldReturnScreenshotBase64ForPlatform(%q) = %v, want %v", tt.platform, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestShouldReturnScreenshotBase64ForCurrentPlatformNilHandler(t *testing.T) {
-	if got := (*IMMessageHandler)(nil).shouldReturnScreenshotBase64ForCurrentPlatform(); got {
-		t.Fatal("nil handler should default to desktop playback behavior")
+func TestCurrentRuntimePlatformDoesNotReadGlobalLoop(t *testing.T) {
+	h := &IMMessageHandler{currentLoopCtx: &LoopContext{Platform: "weixin"}}
+	if got := h.currentRuntimePlatform(); got != "" {
+		t.Fatalf("currentRuntimePlatform() = %q, want empty isolation boundary", got)
 	}
 }
 
@@ -45,5 +42,20 @@ func TestConsumeRuntimePlatformFromToolArgsOverridesCurrentLoopPlatform(t *testi
 	}
 	if got := shouldReturnScreenshotBase64ForPlatform("weixin"); !got {
 		t.Fatal("weixin screenshot should return inline base64")
+	}
+}
+
+func TestRuntimePlatformForExplicitOwnerDoesNotInheritCurrentLoop(t *testing.T) {
+	h := &IMMessageHandler{currentLoopCtx: &LoopContext{Platform: "weixin", Runtime: RuntimeContext{RequestID: "req-other", PolicyOwnerID: "other"}}}
+	if got := h.runtimePlatformForOwnerOrCurrent("owner-without-loop", true); got != "" {
+		t.Fatalf("explicit owner without loop platform = %q, want empty (no global inheritance)", got)
+	}
+}
+
+func TestRuntimePlatformForOwnerUsesOwnerLoop(t *testing.T) {
+	h := &IMMessageHandler{currentLoopCtx: &LoopContext{Platform: "weixin", Runtime: RuntimeContext{RequestID: "req-other", PolicyOwnerID: "other"}}}
+	h.setSessionLoopCtx("owner-1", &LoopContext{Platform: "desktop", Runtime: RuntimeContext{RequestID: "req-owner", PolicyOwnerID: "owner-1"}})
+	if got := h.runtimePlatformForOwnerOrCurrent("owner-1", true); got != "desktop" {
+		t.Fatalf("owner platform = %q, want desktop", got)
 	}
 }

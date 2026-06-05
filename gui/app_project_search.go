@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -15,6 +16,31 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+var recentTaskForkMu sync.Mutex
+
+func normalizeProjectSessionPath(projectPath string) string {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(projectPath)
+	if strings.HasSuffix(cleaned, string(filepath.Separator)+".") {
+		cleaned = filepath.Clean(cleaned[:len(cleaned)-2])
+	}
+	if len(cleaned) >= 2 && cleaned[1] == ':' {
+		cleaned = strings.ToUpper(cleaned[:1]) + cleaned[1:]
+	}
+	return cleaned
+}
+
+func projectSessionOwnerID(projectPath string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return desktopUserID
+	}
+	return fmt.Sprintf("desktop-user:%s", projectPath)
+}
 
 // ProjectSearchResult is the frontend-facing search result type.
 // Exported as a Wails binding return type.
@@ -102,6 +128,7 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 	} else {
 		records = pi.Search(query, limit)
 	}
+	records = collapseRecentTaskForkRecords(records)
 
 	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(limit * 2))
 
@@ -113,6 +140,55 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 	}
 
 	return results
+}
+
+func collapseRecentTaskForkRecords(records []memory.ProjectRecord) []memory.ProjectRecord {
+	if len(records) <= 1 {
+		return records
+	}
+	bySource := make(map[string]memory.ProjectRecord, len(records))
+	order := make([]string, 0, len(records))
+	for _, rec := range records {
+		key := recentTaskLineageKey(rec)
+		if key == "" {
+			key = normalizeRecentTaskPathKey(rec.ProjectPath)
+		}
+		if key == "" {
+			key = rec.ProjectPath
+		}
+		current, exists := bySource[key]
+		if !exists {
+			bySource[key] = rec
+			order = append(order, key)
+			continue
+		}
+		if preferRecentTaskRecord(rec, current) {
+			bySource[key] = rec
+		}
+	}
+	out := make([]memory.ProjectRecord, 0, len(order))
+	for _, key := range order {
+		out = append(out, bySource[key])
+	}
+	return out
+}
+
+func recentTaskLineageKey(rec memory.ProjectRecord) string {
+	for _, tag := range rec.Tags {
+		if strings.HasPrefix(tag, "source:") {
+			return normalizeRecentTaskPathKey(strings.TrimPrefix(tag, "source:"))
+		}
+	}
+	return normalizeRecentTaskPathKey(rec.ProjectPath)
+}
+
+func preferRecentTaskRecord(candidate, current memory.ProjectRecord) bool {
+	candidateFork := projectRecordHasTag(candidate, "forked_task")
+	currentFork := projectRecordHasTag(current, "forked_task")
+	if candidateFork != currentFork {
+		return candidateFork
+	}
+	return candidate.LastActivity.After(current.LastActivity)
 }
 
 func projectRecordToSearchResult(pi *memory.ProjectIndex, rec memory.ProjectRecord) ProjectSearchResult {
@@ -210,6 +286,187 @@ func (a *App) CreateRecentTask(name string) ProjectSearchResult {
 	if taskName == "" {
 		return ProjectSearchResult{}
 	}
+	return a.createRecentTaskRecord(taskName, "", nil, false)
+}
+
+// ForkRecentTask returns the independent task/session for a recent task. The
+// first open creates that session; later opens of the same source return the
+// same visible fork instead of creating duplicate recent-task rows.
+func (a *App) ForkRecentTask(sourceProjectPath string) ProjectSearchResult {
+	started := time.Now()
+	sourceProjectPath = strings.TrimSpace(sourceProjectPath)
+	if sourceProjectPath == "" {
+		return ProjectSearchResult{}
+	}
+
+	var copySourcePath string
+	var copyTargetPath string
+	result := func() ProjectSearchResult {
+		recentTaskForkMu.Lock()
+		defer recentTaskForkMu.Unlock()
+		lockStarted := time.Now()
+		log.Printf("[project_search] ForkRecentTask requested source=%q", sourceProjectPath)
+
+		a.ensureMemoryStore()
+		if a.memoryStore == nil {
+			log.Printf("[project_search] ForkRecentTask skipped source=%q reason=memory_store_unavailable elapsed=%s", sourceProjectPath, time.Since(started).Round(time.Millisecond))
+			return ProjectSearchResult{}
+		}
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			if rec := pi.Get(sourceProjectPath); rec != nil && strings.TrimSpace(rec.ProjectPath) != "" {
+				sourceProjectPath = rec.ProjectPath
+			}
+		}
+		pi := a.memoryStore.ProjectIndex()
+		if pi != nil && (pi.IsHidden(sourceProjectPath) || pi.IsArchived(sourceProjectPath)) {
+			log.Printf("[project_search] ForkRecentTask skipped source=%q reason=closed_task elapsed=%s", sourceProjectPath, time.Since(started).Round(time.Millisecond))
+			return ProjectSearchResult{}
+		}
+		if pi != nil {
+			if rec := pi.Get(sourceProjectPath); rec != nil && projectRecordHasTag(*rec, "forked_task") {
+				a.ensureRecentTaskWorkspace(rec.ProjectPath, rec.Name)
+				log.Printf("[project_search] ForkRecentTask reuse existing fork source=%q fork=%q reason=source_is_fork elapsed=%s", sourceProjectPath, rec.ProjectPath, time.Since(started).Round(time.Millisecond))
+				return projectRecordToSearchResult(pi, *rec)
+			}
+			if existing := findVisibleForkForSource(pi, sourceProjectPath); existing != nil {
+				a.ensureRecentTaskWorkspace(existing.ProjectPath, existing.Name)
+				log.Printf("[project_search] ForkRecentTask reuse existing fork source=%q fork=%q elapsed=%s", sourceProjectPath, existing.ProjectPath, time.Since(started).Round(time.Millisecond))
+				return projectRecordToSearchResult(pi, *existing)
+			}
+		}
+
+		taskName := ""
+		if pi != nil {
+			taskName = pi.GetDisplayName(sourceProjectPath)
+		}
+		if taskName == "" {
+			taskName = lastPathComponent(sourceProjectPath)
+		}
+		taskName = normalizeRecentTaskName(taskName)
+		if taskName == "" {
+			taskName = "Forked task"
+		}
+
+		content := fmt.Sprintf("# %s\n\nForked from recent task.\nSource task: %s\nFork ID: %d", taskName, sourceProjectPath, time.Now().UnixNano())
+		created := a.createRecentTaskRecord(taskName, content, []string{"forked_task", "source:" + sourceProjectPath}, false)
+		if created.ProjectPath == "" {
+			log.Printf("[project_search] ForkRecentTask create failed source=%q elapsed=%s", sourceProjectPath, time.Since(started).Round(time.Millisecond))
+			return created
+		}
+		copySourcePath = sourceProjectPath
+		copyTargetPath = created.ProjectPath
+		a.emitProjectIndexChanged(sourceProjectPath)
+		a.emitProjectIndexChanged(created.ProjectPath)
+		log.Printf("[project_search] ForkRecentTask created independent fork source=%q fork=%q critical_elapsed=%s lock_elapsed=%s", sourceProjectPath, created.ProjectPath, time.Since(started).Round(time.Millisecond), time.Since(lockStarted).Round(time.Millisecond))
+		return created
+	}()
+
+	if copySourcePath != "" && copyTargetPath != "" {
+		go func(source, target string) {
+			copyStarted := time.Now()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[project_search] ForkRecentTask async copy panic source=%q fork=%q panic=%v elapsed=%s", source, target, r, time.Since(copyStarted).Round(time.Millisecond))
+				}
+			}()
+			a.copyProjectConversation(source, target)
+			log.Printf("[project_search] ForkRecentTask async copy complete source=%q fork=%q elapsed=%s", source, target, time.Since(copyStarted).Round(time.Millisecond))
+		}(copySourcePath, copyTargetPath)
+	}
+	return result
+}
+
+func findVisibleForkForSource(pi *memory.ProjectIndex, sourceProjectPath string) *memory.ProjectRecord {
+	if pi == nil || strings.TrimSpace(sourceProjectPath) == "" {
+		return nil
+	}
+	sourceKey := normalizeRecentTaskPathKey(sourceProjectPath)
+	for _, rec := range pi.ListRecent(1000) {
+		if rec.ProjectPath == sourceProjectPath {
+			continue
+		}
+		if !projectRecordHasTag(rec, "forked_task") {
+			continue
+		}
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		for _, tag := range rec.Tags {
+			if strings.HasPrefix(tag, "source:") && normalizeRecentTaskPathKey(strings.TrimPrefix(tag, "source:")) == sourceKey {
+				clone := rec
+				return &clone
+			}
+		}
+	}
+	return nil
+}
+
+func projectRecordHasTag(rec memory.ProjectRecord, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, tag := range rec.Tags {
+		if strings.TrimSpace(tag) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeRecentTaskPathKey(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
+}
+
+func (a *App) isManagedRecentTaskWorkspacePath(projectPath string) bool {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return false
+	}
+	pathKey := normalizeRecentTaskPathKey(projectPath)
+	if pathKey == "" {
+		return false
+	}
+	dataTaskRoot := normalizeRecentTaskPathKey(filepath.Join(a.GetDataDir(), "tasks"))
+	if dataTaskRoot != "" && (pathKey == dataTaskRoot || strings.HasPrefix(pathKey, dataTaskRoot+"/")) {
+		return true
+	}
+	defaultTaskRoot := normalizeRecentTaskPathKey(filepath.Join(corelib.MaclawDefaultBaseDir(), "data", "tasks"))
+	return defaultTaskRoot != "" && (pathKey == defaultTaskRoot || strings.HasPrefix(pathKey, defaultTaskRoot+"/"))
+}
+
+func (a *App) ensureRecentTaskWorkspace(projectPath, taskName string) bool {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" || !a.isManagedRecentTaskWorkspacePath(projectPath) {
+		return false
+	}
+	if info, err := os.Stat(projectPath); err == nil && info.IsDir() {
+		return true
+	}
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		log.Printf("[project_search] repair recent-task workspace failed project=%q err=%v", projectPath, err)
+		return false
+	}
+	name := normalizeRecentTaskName(taskName)
+	if name == "" {
+		name = lastPathComponent(projectPath)
+	}
+	taskFile := filepath.Join(projectPath, "task.md")
+	if _, err := os.Stat(taskFile); os.IsNotExist(err) {
+		content := fmt.Sprintf("# %s\n\nRecovered recent-task workspace.\nProject path: %s\n", name, projectPath)
+		if writeErr := os.WriteFile(taskFile, []byte(content), 0o644); writeErr != nil {
+			log.Printf("[project_search] repair recent-task task.md failed project=%q err=%v", projectPath, writeErr)
+		}
+	}
+	log.Printf("[project_search] repaired recent-task workspace project=%q", projectPath)
+	return true
+}
+
+func (a *App) createRecentTaskRecord(taskName, taskContent string, extraTags []string, flushSync ...bool) ProjectSearchResult {
 	a.ensureMemoryStore()
 	if a.memoryStore == nil {
 		return ProjectSearchResult{}
@@ -222,16 +479,19 @@ func (a *App) CreateRecentTask(name string) ProjectSearchResult {
 		return ProjectSearchResult{}
 	}
 	taskFile := filepath.Join(taskDir, "task.md")
-	taskContent := fmt.Sprintf("# %s\n\nCreated from recent tasks.\nTask ID: %d", taskName, now.UnixNano())
+	if strings.TrimSpace(taskContent) == "" {
+		taskContent = fmt.Sprintf("# %s\n\nCreated from recent tasks.\nTask ID: %d", taskName, now.UnixNano())
+	}
 	if err := os.WriteFile(taskFile, []byte(taskContent), 0o644); err != nil {
 		log.Printf("[project_search] CreateRecentTask write task file failed: %v", err)
 		return ProjectSearchResult{}
 	}
+	tags := append([]string{"manual_task", "recent_task", taskDir}, extraTags...)
 
 	_, err := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
 		Title:            taskName,
 		Content:          taskContent,
-		Tags:             []string{"manual_task", "recent_task", taskDir},
+		Tags:             tags,
 		IdentityTagCount: 3,
 		SourceURL:        taskFile,
 		SourceType:       "manual",
@@ -241,13 +501,26 @@ func (a *App) CreateRecentTask(name string) ProjectSearchResult {
 		return ProjectSearchResult{}
 	}
 	a.triggerMemoryPipelineSoon(45 * time.Second)
-	if err := a.memoryStore.Flush(); err != nil {
-		log.Printf("[project_search] CreateRecentTask flush failed: %v", err)
+	shouldFlushSync := true
+	if len(flushSync) > 0 {
+		shouldFlushSync = flushSync[0]
 	}
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "project-index:changed", taskDir)
-		runtime.EventsEmit(a.ctx, "tasks:changed", nil)
+	if shouldFlushSync {
+		if err := a.memoryStore.Flush(); err != nil {
+			log.Printf("[project_search] CreateRecentTask flush failed: %v", err)
+		}
+	} else {
+		store := a.memoryStore
+		go func(projectPath string) {
+			started := time.Now()
+			if err := store.Flush(); err != nil {
+				log.Printf("[project_search] async task flush failed project=%q err=%v elapsed=%s", projectPath, err, time.Since(started).Round(time.Millisecond))
+				return
+			}
+			log.Printf("[project_search] async task flush complete project=%q elapsed=%s", projectPath, time.Since(started).Round(time.Millisecond))
+		}(taskDir)
 	}
+	a.emitProjectIndexChanged(taskDir)
 
 	pi := a.memoryStore.ProjectIndex()
 	if pi == nil {
@@ -257,6 +530,87 @@ func (a *App) CreateRecentTask(name string) ProjectSearchResult {
 		return projectRecordToSearchResult(pi, *rec)
 	}
 	return ProjectSearchResult{ID: taskDir, Name: taskName, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
+}
+
+func (a *App) copyProjectConversation(sourceProjectPath, targetProjectPath string) {
+	started := time.Now()
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		log.Printf("[project_search] ForkRecentTask copy skipped source=%q fork=%q reason=hub_client_unavailable elapsed=%s", sourceProjectPath, targetProjectPath, time.Since(started).Round(time.Millisecond))
+		return
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil || handler.memory == nil {
+		log.Printf("[project_search] ForkRecentTask copy skipped source=%q fork=%q reason=memory_unavailable elapsed=%s", sourceProjectPath, targetProjectPath, time.Since(started).Round(time.Millisecond))
+		return
+	}
+	sourceUserID := projectSessionOwnerID(sourceProjectPath)
+	targetUserID := projectSessionOwnerID(targetProjectPath)
+	sourceEntries := handler.memory.Load(sourceUserID)
+	if len(sourceEntries) == 0 {
+		log.Printf("[project_search] ForkRecentTask copy skipped source=%q fork=%q reason=no_entries elapsed=%s", sourceProjectPath, targetProjectPath, time.Since(started).Round(time.Millisecond))
+		return
+	}
+	handler.memory.Save(targetUserID, sourceEntries)
+	log.Printf("[project_search] ForkRecentTask copied entries=%d source_user=%q target_user=%q elapsed=%s", len(sourceEntries), sourceUserID, targetUserID, time.Since(started).Round(time.Millisecond))
+}
+
+func (a *App) emitProjectIndexChanged(projectPath string) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, EventProjectIndexChanged, projectPath)
+	runtime.EventsEmit(a.ctx, EventTasksChanged, nil)
+}
+
+func (a *App) emitProjectTaskClosed(projectPath string) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, EventProjectTaskClosed, projectPath)
+}
+
+func (a *App) cancelProjectTaskLoop(projectPath string) {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	ownerID := projectSessionOwnerID(projectPath)
+	if a.localMCPManager != nil {
+		a.localMCPManager.StopOwner(ownerID)
+	}
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		log.Printf("[project_search] cancel project task loop skipped project=%q reason=hub_client_unavailable", projectPath)
+		return
+	}
+	if cancelProjectTaskLoopForHandler(hubClient.ensureIMHandler(), projectPath) {
+		log.Printf("[project_search] cancel project task loop requested project=%q", projectPath)
+	} else {
+		log.Printf("[project_search] cancel project task loop skipped project=%q reason=no_active_loop", projectPath)
+	}
+}
+
+func cancelProjectTaskLoopForHandler(handler *IMMessageHandler, projectPath string) bool {
+	projectPath = strings.TrimSpace(projectPath)
+	if handler == nil || projectPath == "" {
+		return false
+	}
+	userID := projectSessionOwnerID(projectPath)
+	if !handler.hasActiveLoopForUser(userID) {
+		return false
+	}
+	go func() {
+		taskText, err := handler.CancelSessionForUser(userID)
+		if err != nil {
+			log.Printf("[project_search] cancel project task loop failed user=%q err=%v", userID, err)
+			return
+		}
+		log.Printf("[project_search] cancel project task loop done user=%q task=%q", userID, truncateForLog(taskText, 120))
+	}()
+	return true
 }
 
 // ForkConversationToProject copies the current local tab's conversation history
@@ -285,7 +639,7 @@ func (a *App) ForkConversationToProject(projectPath string) {
 	}
 
 	// Save to the project-scoped session.
-	targetUserID := fmt.Sprintf("desktop-user:%s", projectPath)
+	targetUserID := projectSessionOwnerID(projectPath)
 	handler.memory.Save(targetUserID, sourceEntries)
 	log.Printf("[project_search] ForkConversationToProject: copied %d entries from %s to %s",
 		len(sourceEntries), desktopUserID, targetUserID)
@@ -364,9 +718,9 @@ func (a *App) ResumeProject(projectPath string) string {
 	//    causing cross-project context contamination.
 	//
 	// Also notify frontend of the config change so its cached
-	// config.current_project stays in sync. Without this, a subsequent
-	// frontend SaveConfig would overwrite the backend's correct
-	// current_project with the stale value (same race pattern as #11/#23).
+	// config.current_project stays in sync. Without this, a subsequent full
+	// frontend save could overwrite the backend's correct current_project
+	// with a stale value (same race pattern as #11/#23).
 	if updatedCfg := a.switchCurrentProjectByPath(projectPath); updatedCfg != nil && a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "config-changed", *updatedCfg)
 	}
@@ -465,15 +819,27 @@ func (a *App) PinTask(projectPath string, pinned bool) {
 // HideTask removes a task from the recent tasks list (soft delete).
 // The underlying memory entries are preserved — only the list visibility is affected.
 func (a *App) HideTask(projectPath string) {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		log.Printf("[project_search] HideTask skipped reason=empty_path")
+		return
+	}
+	log.Printf("[project_search] HideTask requested path=%q", projectPath)
 	a.ensureMemoryStore()
 	if a.memoryStore == nil {
+		log.Printf("[project_search] HideTask skipped path=%q reason=memory_store_unavailable", projectPath)
 		return
 	}
 	pi := a.memoryStore.ProjectIndex()
 	if pi == nil {
+		log.Printf("[project_search] HideTask skipped path=%q reason=project_index_unavailable", projectPath)
 		return
 	}
 	pi.SetHidden(projectPath, true)
+	log.Printf("[project_search] HideTask hidden path=%q", projectPath)
+	a.cancelProjectTaskLoop(projectPath)
+	a.emitProjectIndexChanged(projectPath)
+	a.emitProjectTaskClosed(projectPath)
 }
 
 // switchCurrentProjectByPath updates config.CurrentProject to match the
@@ -486,8 +852,7 @@ func (a *App) HideTask(projectPath string) {
 // Returns the updated config on success (for event emission), or nil if
 // no change was needed or an error occurred.
 //
-// This uses LoadConfig → merge → SaveConfig to avoid overwriting concurrent
-// config changes (same pattern as #11 / #23 config race fix).
+// This patches only current_project so concurrent config changes are preserved.
 func (a *App) switchCurrentProjectByPath(projectPath string) *corelib.AppConfig {
 	if projectPath == "" {
 		return nil
@@ -504,13 +869,13 @@ func (a *App) switchCurrentProjectByPath(projectPath string) *corelib.AppConfig 
 			if cfg.CurrentProject == p.Id {
 				return nil // already current, no-op
 			}
-			cfg.CurrentProject = p.Id
-			if err := a.SaveConfig(cfg); err != nil {
-				log.Printf("[project_search] switchCurrentProjectByPath: SaveConfig failed: %v", err)
+			patched, err := a.PatchConfigFields(map[string]interface{}{"current_project": p.Id})
+			if err != nil {
+				log.Printf("[project_search] switchCurrentProjectByPath: PatchConfigFields failed: %v", err)
 				return nil
 			}
 			log.Printf("[project_search] switchCurrentProjectByPath: switched to project %q (id=%s)", p.Name, p.Id)
-			return &cfg
+			return &patched
 		}
 	}
 	log.Printf("[project_search] switchCurrentProjectByPath: no matching project config for path %q", projectPath)
@@ -571,6 +936,12 @@ func (a *App) ArchiveProject(projectPath string) (*ArchiveResult, error) {
 
 	log.Printf("[ArchiveProject] path=%q archived=%v experience=%v",
 		projectPath, result.Archived, result.ExperienceExtracted)
+	a.emitProjectIndexChanged(projectPath)
+	if result.Archived {
+		a.cancelProjectTaskLoop(projectPath)
+		a.emitProjectTaskClosed(projectPath)
+		log.Printf("[ArchiveProject] emitted task close path=%q", projectPath)
+	}
 
 	return result, nil
 }
@@ -629,7 +1000,17 @@ func (a *App) GetArchivedExperience(projectPath string) (string, error) {
 // If a session already exists for this tabID, it loads and returns its context.
 // This is a Wails binding method called from the frontend when a Project Tab is created.
 func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
+	tabID = strings.TrimSpace(tabID)
+	rawProjectPath := strings.TrimSpace(projectPath)
+	projectPath = normalizeProjectSessionPath(projectPath)
 	if tabID == "" || projectPath == "" {
+		return ""
+	}
+	if rawProjectPath != projectPath {
+		log.Printf("[CreateProjectTabSession] normalized project path tab=%q raw=%q normalized=%q", tabID, rawProjectPath, projectPath)
+	}
+	if a.isProjectTaskClosed(projectPath) {
+		log.Printf("[CreateProjectTabSession] skipped closed task tab=%q project=%q", tabID, projectPath)
 		return ""
 	}
 
@@ -638,10 +1019,14 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 	// Cache the tabID → projectPath mapping in memory for fast lookup.
 	a.tabProjectPaths.Store(tabID, projectPath)
 
+	projectName := a.projectTabDisplayName(projectPath)
+	a.ensureRecentTaskWorkspace(projectPath, projectName)
+
 	// Check if session already exists on disk — if so, just return a welcome-back message.
 	existing, err := persist.LoadSession(tabID)
 	if err == nil && existing != nil {
-		return fmt.Sprintf("📂 已恢复项目会话：%s", lastPathComponent(projectPath))
+		a.upsertProjectTabIndexEntry(persist, tabID, projectPath, time.Now())
+		return fmt.Sprintf("📂 已恢复项目会话：%s", projectName)
 	}
 
 	// Create new session entry in the index.
@@ -656,6 +1041,8 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 	found := false
 	for i, entry := range index.Tabs {
 		if entry.ID == tabID {
+			index.Tabs[i].Title = projectName
+			index.Tabs[i].ProjectPath = projectPath
 			index.Tabs[i].LastActiveAt = now.Unix()
 			index.Tabs[i].Archived = false // Un-archive: tab is being re-opened
 			found = true
@@ -663,7 +1050,6 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 		}
 	}
 	if !found {
-		projectName := lastPathComponent(projectPath)
 		index.Tabs = append(index.Tabs, TabIndexEntry{
 			ID:           tabID,
 			Type:         "project",
@@ -698,7 +1084,62 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 		return contextMsg
 	}
 
-	return fmt.Sprintf("📂 已打开项目：%s\n📁 %s\n\n请问需要我做什么？", lastPathComponent(projectPath), projectPath)
+	return fmt.Sprintf("📂 已打开项目：%s\n📁 %s\n\n请问需要我做什么？", projectName, projectPath)
+}
+
+func (a *App) projectTabDisplayName(projectPath string) string {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return "Task"
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore != nil {
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			if name := strings.TrimSpace(pi.GetDisplayName(projectPath)); name != "" {
+				return normalizeRecentTaskName(name)
+			}
+		}
+	}
+	if name := normalizeRecentTaskName(lastPathComponent(projectPath)); name != "" {
+		return name
+	}
+	return "Task"
+}
+
+func (a *App) upsertProjectTabIndexEntry(persist *ProjectTabSessionPersist, tabID, projectPath string, now time.Time) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if persist == nil || strings.TrimSpace(tabID) == "" || projectPath == "" {
+		return
+	}
+	index, err := persist.LoadIndex()
+	if err != nil {
+		log.Printf("[CreateProjectTabSession] LoadIndex failed: %v", err)
+		index = &TabIndex{Tabs: []TabIndexEntry{}}
+	}
+	projectName := a.projectTabDisplayName(projectPath)
+	for i, entry := range index.Tabs {
+		if entry.ID == tabID {
+			index.Tabs[i].Title = projectName
+			index.Tabs[i].ProjectPath = projectPath
+			index.Tabs[i].LastActiveAt = now.Unix()
+			index.Tabs[i].Archived = false
+			if err := persist.SaveIndex(index); err != nil {
+				log.Printf("[CreateProjectTabSession] SaveIndex failed: %v", err)
+			}
+			return
+		}
+	}
+	index.Tabs = append(index.Tabs, TabIndexEntry{
+		ID:           tabID,
+		Type:         "project",
+		Title:        projectName,
+		ProjectPath:  projectPath,
+		LastActiveAt: now.Unix(),
+		Archived:     false,
+	})
+	if err := persist.SaveIndex(index); err != nil {
+		log.Printf("[CreateProjectTabSession] SaveIndex failed: %v", err)
+	}
 }
 
 // buildProjectTabContextMessage recalls project-related entries from memory
@@ -716,19 +1157,9 @@ func (a *App) buildProjectTabContextMessage(projectPath string) string {
 
 	projectName := lastPathComponent(projectPath)
 
-	// Recall task_artifact entries for this project (strict project filter).
-	artifacts := a.memoryStore.RecallDynamicStrict(
-		"task artifact progress",
-		memory.CategoryTaskArtifact,
-		projectPath,
-	)
-
-	// Recall project_knowledge entries for this project (strict project filter).
-	knowledge := a.memoryStore.RecallDynamicStrict(
-		"project knowledge",
-		memory.CategoryProjectKnowledge,
-		projectPath,
-	)
+	contextData := a.memoryStore.ProjectContextForHost(projectPath, 1)
+	artifacts := contextData.TaskArtifacts
+	knowledge := contextData.ProjectKnowledge
 
 	// Merge and deduplicate by ID.
 	seen := make(map[string]bool, len(artifacts)+len(knowledge))
@@ -750,7 +1181,7 @@ func (a *App) buildProjectTabContextMessage(projectPath string) string {
 		return ""
 	}
 
-	scene := projectSceneMap(a.memoryStore.SceneIndex(20))[projectPath]
+	scene := contextData.Scene
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📂 项目：%s\n📁 路径：%s\n\n", projectName, projectPath))
@@ -914,32 +1345,54 @@ func projectTabAppendUniquePaths(paths []string, candidates []string) []string {
 // Marks the tab as archived so it won't be restored on next startup.
 // This is a Wails binding method.
 func (a *App) CloseProjectTabSession(tabID string) {
+	tabID = strings.TrimSpace(tabID)
 	if tabID == "" {
 		return
 	}
 
 	persist := a.ensureProjectTabSessionPersist()
+	var projectPath string
+	if cached, ok := a.tabProjectPaths.Load(tabID); ok {
+		projectPath, _ = cached.(string)
+	}
 
 	// Mark the tab as archived in the index so it won't be restored on startup.
 	index, err := persist.LoadIndex()
 	if err != nil {
 		log.Printf("[CloseProjectTabSession] LoadIndex failed: %v", err)
-		return
+	} else if index != nil {
+		found := false
+		for i, entry := range index.Tabs {
+			if entry.ID == tabID {
+				found = true
+				if strings.TrimSpace(projectPath) == "" {
+					projectPath = entry.ProjectPath
+				}
+				index.Tabs[i].LastActiveAt = time.Now().Unix()
+				index.Tabs[i].Archived = true
+				break
+			}
+		}
+
+		if err := persist.SaveIndex(index); err != nil {
+			log.Printf("[CloseProjectTabSession] SaveIndex failed: %v", err)
+		}
+		log.Printf("[CloseProjectTabSession] tab=%s archived found=%v project=%q", tabID, found, projectPath)
 	}
 
-	for i, entry := range index.Tabs {
-		if entry.ID == tabID {
-			index.Tabs[i].LastActiveAt = time.Now().Unix()
-			index.Tabs[i].Archived = true
-			break
+	if strings.TrimSpace(projectPath) == "" {
+		if session, err := persist.LoadSession(tabID); err == nil && session != nil {
+			projectPath = session.ProjectPath
+		} else if err != nil {
+			log.Printf("[CloseProjectTabSession] LoadSession failed tab=%s err=%v", tabID, err)
 		}
 	}
 
-	if err := persist.SaveIndex(index); err != nil {
-		log.Printf("[CloseProjectTabSession] SaveIndex failed: %v", err)
+	a.tabProjectPaths.Delete(tabID)
+	if strings.TrimSpace(projectPath) != "" {
+		a.cancelProjectTaskLoop(projectPath)
 	}
-
-	log.Printf("[CloseProjectTabSession] tab=%s archived", tabID)
+	log.Printf("[CloseProjectTabSession] tab=%s closed project=%q", tabID, projectPath)
 }
 
 // SendMessageForTab routes a message to the project-specific session identified
@@ -953,24 +1406,32 @@ func (a *App) CloseProjectTabSession(tabID string) {
 //
 // This is a Wails binding method.
 func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentResponse, error) {
+	tabID = strings.TrimSpace(tabID)
 	if tabID == "" {
 		return nil, fmt.Errorf("tabID is required")
 	}
-	if strings.TrimSpace(text) == "" {
+	trimmedText := strings.TrimSpace(text)
+	if trimmedText == "" {
 		return nil, fmt.Errorf("message text is required")
 	}
+	rawProjectPathHint := strings.TrimSpace(projectPathHint)
+	projectPathHint = normalizeProjectSessionPath(projectPathHint)
+	if rawProjectPathHint != "" && rawProjectPathHint != projectPathHint {
+		log.Printf("[SendMessageForTab] normalized hint tab=%q raw=%q normalized=%q", tabID, rawProjectPathHint, projectPathHint)
+	}
+	log.Printf("[SendMessageForTab] send requested tab=%q hint=%q text_len=%d", tabID, projectPathHint, len(trimmedText))
 
 	// Look up the project path — first from in-memory cache, then fall back to disk.
 	var projectPath string
 	if cached, ok := a.tabProjectPaths.Load(tabID); ok {
-		projectPath = cached.(string)
+		projectPath = normalizeProjectSessionPath(cached.(string))
 	}
 
 	if projectPath == "" {
 		persist := a.ensureProjectTabSessionPersist()
 		session, err := persist.LoadSession(tabID)
 		if err == nil && session != nil {
-			projectPath = session.ProjectPath
+			projectPath = normalizeProjectSessionPath(session.ProjectPath)
 		}
 
 		if projectPath == "" {
@@ -979,7 +1440,7 @@ func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentRe
 			if err == nil && index != nil {
 				for _, entry := range index.Tabs {
 					if entry.ID == tabID {
-						projectPath = entry.ProjectPath
+						projectPath = normalizeProjectSessionPath(entry.ProjectPath)
 						break
 					}
 				}
@@ -994,15 +1455,22 @@ func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentRe
 
 	// Self-healing: if all lookups failed but the frontend provided a hint,
 	// use it and register the mapping so future calls succeed without the hint.
-	if projectPath == "" && strings.TrimSpace(projectPathHint) != "" {
-		projectPath = strings.TrimSpace(projectPathHint)
+	if projectPath == "" && projectPathHint != "" {
+		projectPath = projectPathHint
 		a.tabProjectPaths.Store(tabID, projectPath)
 		log.Printf("[SendMessageForTab] self-healed tab %s → %s (from hint)", tabID, projectPath)
 	}
 
 	if projectPath == "" {
+		log.Printf("[SendMessageForTab] send rejected tab=%q reason=no_project_path", tabID)
 		return nil, fmt.Errorf("no project path found for tab %s", tabID)
 	}
+	if a.isProjectTaskClosed(projectPath) {
+		log.Printf("[SendMessageForTab] send rejected tab=%q project=%q reason=closed_task", tabID, projectPath)
+		a.cancelProjectTaskLoop(projectPath)
+		return nil, fmt.Errorf("project task is closed: %s", projectPath)
+	}
+	log.Printf("[SendMessageForTab] route tab=%q project=%q text_len=%d", tabID, projectPath, len(trimmedText))
 
 	// Delegate to the existing SendAIAssistantMessage with project_path set.
 	// This auto-synthesizes per-project userID (desktop-user:{projectPath})
@@ -1011,6 +1479,25 @@ func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentRe
 		Text:        text,
 		ProjectPath: projectPath,
 	})
+}
+
+func (a *App) isProjectTaskClosed(projectPath string) bool {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return false
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return false
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return false
+	}
+	if rec := pi.Get(projectPath); rec != nil && strings.TrimSpace(rec.ProjectPath) != "" {
+		projectPath = rec.ProjectPath
+	}
+	return pi.IsHidden(projectPath) || pi.IsArchived(projectPath)
 }
 
 // maxRestoredTabs is the maximum number of project tabs restored on startup.
@@ -1034,10 +1521,25 @@ func (a *App) LoadProjectTabIndex() []TabIndexEntry {
 
 	// Filter non-archived entries and sort by LastActiveAt descending.
 	var active []TabIndexEntry
+	var projectIndex *memory.ProjectIndex
+	a.ensureMemoryStore()
+	if a.memoryStore != nil {
+		projectIndex = a.memoryStore.ProjectIndex()
+	}
 	for _, entry := range index.Tabs {
-		if !entry.Archived {
-			active = append(active, entry)
+		if entry.Archived {
+			continue
 		}
+		if entry.ProjectPath != "" {
+			entry.Title = a.projectTabDisplayName(entry.ProjectPath)
+		}
+		if projectIndex != nil && entry.ProjectPath != "" {
+			if projectIndex.IsHidden(entry.ProjectPath) || projectIndex.IsArchived(entry.ProjectPath) {
+				log.Printf("[LoadProjectTabIndex] skip closed task tab=%q project=%q", entry.ID, entry.ProjectPath)
+				continue
+			}
+		}
+		active = append(active, entry)
 	}
 	if len(active) == 0 {
 		return []TabIndexEntry{}
@@ -1061,7 +1563,7 @@ func (a *App) LoadProjectTabIndex() []TabIndexEntry {
 // instance from the App struct, lazily initializing it if nil.
 func (a *App) ensureProjectTabSessionPersist() *ProjectTabSessionPersist {
 	if a.projectTabSessionPersist == nil {
-		a.projectTabSessionPersist = NewProjectTabSessionPersist()
+		a.projectTabSessionPersist = NewProjectTabSessionPersistForBaseDir(a.getMaclawBaseDir())
 	}
 	return a.projectTabSessionPersist
 }

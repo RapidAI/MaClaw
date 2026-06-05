@@ -17,47 +17,50 @@ const webConsoleHTML = `<!doctype html>
   <style>
     :root {
       color-scheme: light;
-      --bg: #eef2f6;
+      --bg: #f3f5f8;
       --panel: #ffffff;
-      --panel-2: #f8fafc;
-      --line: #d4dce7;
-      --line-2: #e8edf3;
-      --text: #17212f;
-      --muted: #657386;
-      --brand: #155e75;
-      --brand-2: #0f4c5f;
-      --brand-soft: #e7f5f8;
-      --accent: #7c3aed;
-      --amber: #b7791f;
+      --panel-2: #f7f9fb;
+      --panel-3: #edf5f3;
+      --line: #d7dee8;
+      --line-2: #e8edf2;
+      --text: #151b24;
+      --muted: #5f6c7b;
+      --brand: #0f766e;
+      --brand-2: #0b5f59;
+      --brand-soft: #e6f5f2;
+      --accent: #4f46e5;
+      --accent-soft: #eef2ff;
+      --amber: #a16207;
       --danger: #b42318;
-      --ok: #0f7a45;
-      --focus: #2d7ff9;
-      --nav: #102331;
-      --nav-2: #162f42;
-      --nav-muted: #a8b8c5;
-      --shadow-sm: 0 1px 2px rgba(16, 35, 49, .06);
-      --shadow-md: 0 14px 34px rgba(16, 35, 49, .10);
+      --ok: #047857;
+      --focus: #2563eb;
+      --nav: #17202b;
+      --nav-2: #202936;
+      --nav-muted: #b7c2cf;
+      --shadow-sm: 0 1px 2px rgba(15, 23, 42, .06);
+      --shadow-md: 0 18px 42px rgba(15, 23, 42, .11);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: var(--bg);
+      background: linear-gradient(180deg, #f7f9fb 0%, var(--bg) 160px);
       color: var(--text);
       font-size: 14px;
       line-height: 1.45;
     }
     header {
-      display: grid;
-      grid-template-columns: minmax(240px, 360px) minmax(0, 1fr);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       gap: 18px;
-      padding: 16px 22px;
+      padding: 12px 24px;
       background: rgba(255, 255, 255, .96);
       border-bottom: 1px solid var(--line);
       position: sticky;
       top: 0;
       z-index: 10;
-      box-shadow: var(--shadow-sm);
+      box-shadow: 0 1px 0 rgba(15, 23, 42, .04);
       backdrop-filter: blur(12px);
     }
     h1 { margin: 0; font-size: 19px; font-weight: 760; letter-spacing: 0; }
@@ -66,43 +69,89 @@ const webConsoleHTML = `<!doctype html>
     button, input, textarea, select {
       font: inherit;
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 7px;
       background: #fff;
       color: var(--text);
     }
-    input, textarea, select { width: 100%; padding: 9px 10px; }
+    input, textarea, select { width: 100%; min-height: 40px; padding: 9px 10px; }
     textarea { min-height: 140px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: 13px; }
-    button { min-height: 36px; padding: 8px 12px; cursor: pointer; white-space: nowrap; font-weight: 650; box-shadow: 0 1px 0 rgba(16, 35, 49, .03); }
+    button { min-height: 40px; padding: 8px 12px; cursor: pointer; white-space: nowrap; font-weight: 650; box-shadow: 0 1px 0 rgba(15, 23, 42, .03); touch-action: manipulation; transition: background .16s ease, border-color .16s ease, color .16s ease, transform .16s ease; }
     button:hover { border-color: #b8c4d2; background: #f8fafc; }
+    button:active { transform: translateY(1px); }
     button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
     button.primary:hover { background: var(--brand-2); }
     button.danger { border-color: #e5b7b2; color: var(--danger); }
-    button.small { min-height: 30px; padding: 5px 8px; font-size: 12px; }
+    button.danger:hover { border-color: #d9928a; background: #fff5f3; }
+    button.small { min-height: 32px; padding: 5px 9px; font-size: 12px; }
     button:disabled { cursor: not-allowed; opacity: .6; }
     input:focus, textarea:focus, select:focus, button:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
+    input[type="checkbox"] { width: 16px; min-height: 16px; accent-color: var(--brand); }
     main { padding: 18px; max-width: 1680px; margin: 0 auto; }
+    body.auth-mode { min-height: 100vh; background: #eef2f6; }
+    body.auth-mode .app-shell { display: none; }
+    body.app-mode .auth-screen { display: none; }
+    .auth-screen { min-height: 100vh; display: grid; grid-template-columns: minmax(320px, .92fr) minmax(420px, 1.08fr); background: #eef2f6; }
+    .auth-hero { display: grid; align-content: space-between; padding: 44px; background: #17202b; color: #fff; border-right: 1px solid rgba(255,255,255,.08); }
+    .auth-brand { display: flex; gap: 14px; align-items: center; }
+    .auth-brand .brand-mark { background: rgba(255,255,255,.16); box-shadow: none; }
+    .auth-hero .product-subtitle { color: #aebdcc; }
+    .auth-hero #serviceStatus { color: #dbe7ef; border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.08); }
+    .topbar #appServiceStatus { margin-top: 0; }
+    .auth-title { max-width: 520px; }
+    .auth-title h1 { font-size: 32px; line-height: 1.15; margin-bottom: 12px; }
+    .auth-title p { margin: 0; color: #c7d7df; font-size: 15px; max-width: 500px; }
+    .auth-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 28px; }
+    .auth-fact { border: 1px solid rgba(255,255,255,.18); border-radius: 8px; padding: 12px; background: rgba(255,255,255,.08); }
+    .auth-fact strong { display: block; font-size: 18px; }
+    .auth-fact span { display: block; margin-top: 3px; color: #b9cad3; font-size: 12px; }
+    .auth-card-wrap { display: grid; align-content: center; padding: 44px; }
+    .auth-card { width: min(100%, 560px); margin: 0 auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow-md); overflow: hidden; }
+    .auth-card-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; padding: 22px 24px; border-bottom: 1px solid var(--line-2); background: var(--panel-2); }
+    .auth-card-head h2 { margin-bottom: 4px; font-size: 19px; }
+    .auth-card-head p { margin: 0; color: var(--muted); }
+    .auth-form { padding: 22px 24px 24px; display: grid; gap: 14px; }
+    .auth-fields { display: grid; grid-template-columns: minmax(0, 1fr) 132px; gap: 10px; }
+    .auth-advanced { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding-top: 2px; }
+    .app-shell { min-height: 100vh; }
     .brand { display: flex; gap: 12px; align-items: center; min-width: 0; }
-    .brand-mark { width: 42px; height: 42px; border-radius: 10px; display: grid; place-items: center; background: linear-gradient(135deg, var(--brand), var(--accent)); color: #fff; font-weight: 760; box-shadow: 0 10px 22px rgba(21, 94, 117, .22); }
+    .brand-mark { width: 42px; height: 42px; border-radius: 8px; display: grid; place-items: center; background: var(--brand); color: #fff; font-weight: 760; box-shadow: 0 10px 22px rgba(15, 118, 110, .20); }
     .brand-copy { min-width: 0; }
     .product-subtitle { margin-top: 2px; color: var(--muted); font-size: 12px; }
-    .topbar { display: grid; grid-template-columns: minmax(200px, 1.4fr) minmax(160px, 1fr) 120px 130px 120px 112px 112px; gap: 10px; align-items: end; min-width: 780px; }
-    .layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 18px; align-items: start; }
-    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; box-shadow: var(--shadow-sm); }
-    .setup-panel { max-width: 1180px; margin: 16px auto 0; display: grid; grid-template-columns: minmax(220px, 1fr) minmax(260px, 1.2fr) minmax(260px, 1.2fr); gap: 14px; align-items: start; }
+    .topbar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+    .topbar .context-chip { max-width: 220px; background: #fff; }
+    .topbar-language { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--muted); font-size: 12px; font-weight: 650; }
+    .topbar-language select { width: auto; min-width: 82px; min-height: 26px; padding: 2px 22px 2px 6px; border: 0; background: transparent; color: var(--text); font-size: 12px; }
+    .global-admin-mode .topbar .context-chip:first-child { border-color: #99d6cc; background: var(--brand-soft); color: #0b5f59; }
+    .tenant-admin-mode .topbar .context-chip:first-child { border-color: #c7d2fe; background: var(--accent-soft); color: #3730a3; }
+    .layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; align-items: start; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; box-shadow: var(--shadow-sm); }
+    .setup-panel { border: 0; padding: 0; box-shadow: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
     .setup-panel.ready { border-color: #b7dfc4; background: #f7fcf9; }
     .setup-panel.locked { display: none; }
+    .setup-copy { grid-column: 1 / -1; padding: 12px 0 2px; border-bottom: 1px solid var(--line-2); }
     .setup-copy p { margin: 4px 0 0; color: var(--muted); }
-    .resource-sidebar { position: sticky; top: 92px; max-height: calc(100vh - 112px); overflow: auto; }
-    .workspace { padding: 0; overflow: hidden; box-shadow: var(--shadow-md); }
-    .workspace-shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: calc(100vh - 132px); }
-    .workspace-body { min-width: 0; padding: 18px; background: #fff; }
+    #adminInitBox, #adminLoginBox { padding: 14px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
+    #adminInitBox.hide, #adminLoginBox.hide { display: none !important; }
+    .resource-sidebar { position: sticky; top: 88px; max-height: calc(100vh - 108px); overflow: auto; background: rgba(255,255,255,.98); }
+    .resource-sidebar h2 { font-size: 15px; margin-bottom: 6px; }
+    .resource-sidebar .row { justify-content: space-between; }
+    .resource-sidebar button.primary { width: fit-content; }
+    .resource-sidebar section { padding-top: 12px; border-top: 1px solid var(--line-2); }
+    .resource-sidebar section h3 { color: #334155; }
+    .resource-sidebar .action-toolbar { display: grid; grid-template-columns: 1fr; gap: 7px; padding: 8px; background: var(--panel-2); }
+    .resource-sidebar .action-toolbar button, .resource-sidebar section > button { width: 100%; min-height: 36px; }
+    .resource-sidebar .label { gap: 4px; }
+    .workspace { padding: 0; overflow: hidden; box-shadow: 0 18px 42px rgba(15, 23, 42, .08); }
+    .workspace-shell { display: grid; grid-template-columns: 204px minmax(0, 1fr); min-height: calc(100vh - 132px); }
+    .workspace-body { min-width: 0; padding: 18px; background: #fbfcfe; }
     .module-header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--line-2); }
     .module-kicker { color: var(--brand); font-size: 12px; font-weight: 760; text-transform: uppercase; letter-spacing: .05em; }
     .module-title { margin: 2px 0 4px; font-size: 20px; font-weight: 760; }
     .module-desc { color: var(--muted); max-width: 760px; }
     .context-chip { display: inline-flex; align-items: center; min-height: 30px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); color: var(--muted); font-size: 12px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .muted { color: var(--muted); }
     .summary-bar { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
-    .summary-item { border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel-2); padding: 10px 12px; min-width: 0; }
+    .summary-item { border: 1px solid var(--line-2); border-radius: 8px; background: #fff; padding: 10px 12px; min-width: 0; box-shadow: inset 3px 0 0 var(--brand-soft); }
     .summary-label { color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
     .summary-value { margin-top: 4px; font-weight: 760; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .status-history { display: grid; gap: 6px; margin-bottom: 14px; }
@@ -112,7 +161,7 @@ const webConsoleHTML = `<!doctype html>
     .status-history-kind.err { color: var(--danger); }
     .status-history-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .overview-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-    .overview-card { border: 1px solid var(--line); border-radius: 10px; padding: 15px; background: #fff; min-height: 150px; display: grid; gap: 10px; align-content: start; box-shadow: var(--shadow-sm); }
+    .overview-card { border: 1px solid var(--line); border-radius: 8px; padding: 15px; background: #fff; min-height: 150px; display: grid; gap: 10px; align-content: start; box-shadow: none; }
     .overview-card h3 { margin: 0; font-size: 15px; }
     .overview-card p { margin: 0; color: var(--muted); }
     .overview-card .row { margin-top: 2px; }
@@ -134,7 +183,10 @@ const webConsoleHTML = `<!doctype html>
     .evidence-summary-value.ok { color: var(--ok); }
     .evidence-summary-value.warn { color: var(--danger); }
     .evidence-summary-value.fail { color: var(--danger); }
-    .summary-preview { margin: 0 0 10px; padding: 12px; border: 1px solid var(--line-2); border-radius: 8px; background: #f7f9fb; color: var(--text); max-height: 220px; overflow: auto; }
+    .text-ok { color: var(--ok); }
+    .text-warn { color: var(--amber); }
+    .text-danger { color: var(--danger); }
+    .summary-preview { margin: 0 0 10px; padding: 12px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel-2); color: var(--text); max-height: 220px; overflow: auto; }
     .access-playbook { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
     .access-playbook-card { display: grid; gap: 8px; align-content: start; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; padding: 12px; min-height: 132px; }
     .access-playbook-card strong { font-size: 14px; }
@@ -182,6 +234,7 @@ const webConsoleHTML = `<!doctype html>
     .checklist { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
     .checklist-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: var(--panel-2); border-bottom: 1px solid var(--line); }
     .checklist-title { font-weight: 760; }
+    .checklist-content { padding: 12px 14px; }
     .checklist-body { display: grid; }
     .checklist-item { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line-2); }
     .checklist-item:last-child { border-bottom: 0; }
@@ -192,51 +245,99 @@ const webConsoleHTML = `<!doctype html>
     .checklist-desc { color: var(--muted); font-size: 12px; margin-top: 2px; }
     .stack { display: grid; gap: 12px; }
     .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .section-title-row { justify-content: space-between; min-height: 36px; }
+    .section-title-row h2, .section-title-row h3 { margin: 0; }
+    .section-title-row > button, .section-title-row .row button { min-height: 34px; }
+    .admin-ops-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .86fr); gap: 12px; align-items: start; }
+    .admin-panel { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
+    .admin-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 30px; }
+    .admin-panel-header h3 { margin: 0; font-size: 14px; }
+    .textarea-tool { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
+    .textarea-tool textarea { min-height: 170px; background: #fbfcfe; }
+    .tab-panel > .grid-2, .tab-panel > .grid-3 { padding: 12px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
+    .tab-panel > .row:not(.section-title-row), .action-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
+    .tab-panel > .row:not(.section-title-row) button, .action-toolbar button { min-height: 36px; }
+    .action-toolbar.compact-groups { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 10px; align-items: stretch; }
+    .toolbar-cluster { display: grid; grid-template-columns: 1fr; gap: 7px; align-content: start; min-width: 0; padding: 8px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel-2); }
+    .toolbar-cluster-title { color: #475569; font-size: 11px; font-weight: 760; text-transform: uppercase; letter-spacing: .04em; }
+    .toolbar-cluster-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+    .toolbar-cluster-actions button { flex: 1 1 140px; min-width: 0; }
+    .access-filter-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, .86fr); gap: 12px; align-items: start; }
+    .filter-panel { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
+    .filter-panel-title { color: #334155; font-size: 13px; font-weight: 760; }
+    .access-results-grid { display: grid; grid-template-columns: minmax(320px, .8fr) minmax(0, 1.2fr); gap: 12px; align-items: start; }
+    .access-results-stack { display: grid; gap: 10px; min-width: 0; }
+    .access-policy-editor textarea { min-height: 280px; }
+    .dataset-workbench { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(280px, .82fr); gap: 12px; align-items: start; }
+    .dataset-create-panel { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
+    .dataset-create-panel h3 { margin: 0; }
     .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
     .label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 650; }
     .check { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; font-weight: 650; }
     .readonly { background: #f5f7f8; color: var(--muted); }
     .status { font-size: 12px; color: var(--muted); }
-    #serviceStatus { display: inline-flex; align-items: center; gap: 6px; width: fit-content; margin-top: 6px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); }
-    #serviceStatus::before { content: ""; width: 7px; height: 7px; border-radius: 999px; background: var(--muted); }
-    #serviceStatus.ok::before { background: var(--ok); }
-    #serviceStatus.err::before { background: var(--danger); }
+    #serviceStatus, #appServiceStatus { display: inline-flex; align-items: center; gap: 6px; width: fit-content; margin-top: 6px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); }
+    #serviceStatus::before, #appServiceStatus::before { content: ""; width: 7px; height: 7px; border-radius: 999px; background: var(--muted); }
+    #serviceStatus.ok::before, #appServiceStatus.ok::before { background: var(--ok); }
+    #serviceStatus.err::before, #appServiceStatus.err::before { background: var(--danger); }
     .status.ok { color: var(--ok); }
     .status.err { color: var(--danger); }
-    .tabs { display: grid; align-content: start; gap: 3px; padding: 12px; background: linear-gradient(180deg, var(--nav), var(--nav-2)); border-right: 1px solid #0b1c24; overflow: auto; }
-    .nav-group { margin: 10px 8px 4px; color: #6f8791; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+    .tabs { display: grid; align-content: start; gap: 4px; padding: 12px; background: var(--nav); border-right: 1px solid #101722; overflow: auto; }
+    .nav-group { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 12px 8px 4px; color: #8795a6; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+    .nav-group::after { content: attr(data-count); min-width: 22px; padding: 1px 6px; border: 1px solid rgba(255,255,255,.12); border-radius: 999px; color: #cbd5e1; background: rgba(255,255,255,.06); text-align: center; letter-spacing: 0; }
     .nav-group:first-child { margin-top: 2px; }
-    .tab { width: 100%; justify-content: flex-start; text-align: left; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--nav-muted); }
+    .tab { width: 100%; justify-content: flex-start; text-align: left; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--nav-muted); }
     .tab:hover { color: #fff; background: rgba(255,255,255,.07); }
-    .tab.active { color: #fff; background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.16); box-shadow: inset 3px 0 0 #67e8f9; }
+    .tab.active { color: #fff; background: #273344; border-color: rgba(255,255,255,.12); box-shadow: inset 3px 0 0 #2dd4bf; }
     .dataset-list { display: grid; gap: 6px; max-height: calc(100vh - 210px); overflow: auto; }
     .action-list { display: grid; gap: 8px; max-height: 320px; overflow: auto; }
-    .action-item { text-align: left; background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 10px; min-height: 62px; }
+    .action-item { text-align: left; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-height: 62px; }
     .action-item.active { border-color: var(--brand); background: var(--brand-soft); }
     .dataset-item { text-align: left; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-height: 58px; }
     .dataset-item.active { border-color: var(--brand); background: var(--brand-soft); }
     .dataset-id { font-weight: 700; color: var(--text); word-break: break-all; }
     .dataset-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
-    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.6); }
+    .table-wrap:empty { min-height: 56px; display: grid; place-items: center; color: var(--muted); font-size: 12px; background: #fbfcfe; }
+    .table-wrap:empty::before { content: ""; }
     table { width: 100%; border-collapse: collapse; background: #fff; min-width: 760px; }
-    th, td { border-bottom: 1px solid var(--line); padding: 9px 10px; text-align: left; vertical-align: top; }
-    th { background: var(--panel-2); font-size: 12px; color: var(--muted); position: sticky; top: 0; }
+    caption { caption-side: top; padding: 9px 10px; text-align: left; color: var(--muted); font-size: 12px; font-weight: 650; background: #fff; border-bottom: 1px solid var(--line-2); }
+    th, td { border-bottom: 1px solid var(--line-2); padding: 9px 10px; text-align: left; vertical-align: top; }
+    th { background: #f4f7fa; font-size: 12px; color: #4c5a68; position: sticky; top: 0; z-index: 1; font-weight: 760; }
+    tbody tr:hover { background: #f9fbfc; }
     tr:last-child td { border-bottom: 0; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
     pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
-    .pill { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 7px; border-radius: 999px; background: #eef2f6; color: #46515a; font-size: 12px; margin: 0 4px 4px 0; }
+    .pill { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 7px; border-radius: 999px; background: #edf2f7; color: #374151; font-size: 12px; margin: 0 4px 4px 0; }
+    .notice { padding: 10px 12px; border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; color: #1e3a8a; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+    .state-ok { border-color: #99d6cc; background: var(--brand-soft); color: var(--ok); }
+    .state-warn { border-color: #f3d58f; background: #fff8e5; color: var(--amber); }
     .empty { padding: 28px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; background: #fff; }
     .result { background: #101418; color: #e8edf2; border-radius: 8px; padding: 12px; min-height: 120px; max-height: 360px; overflow: auto; }
     .hide { display: none !important; }
+    @media (max-width: 1180px) {
+      .layout { grid-template-columns: 1fr; }
+      .resource-sidebar { position: static; max-height: none; }
+      .workspace-shell { grid-template-columns: 196px minmax(0, 1fr); }
+    }
     @media (max-width: 960px) {
-      header { grid-template-columns: 1fr; position: static; }
+      header { align-items: flex-start; position: static; flex-direction: column; }
+      .auth-screen { grid-template-columns: 1fr; }
+      .auth-hero { min-height: 360px; padding: 28px; }
+      .auth-title h1 { font-size: 26px; }
+      .auth-card-wrap { padding: 16px; align-content: start; }
+      .auth-fields { grid-template-columns: 1fr; }
       .topbar, .layout, .workspace-shell, .grid-2, .grid-3 { grid-template-columns: 1fr; min-width: 0; }
-      .setup-panel { grid-template-columns: 1fr; margin: 12px; }
+      .admin-ops-grid { grid-template-columns: 1fr; }
+      .action-toolbar.compact-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .access-filter-grid { grid-template-columns: 1fr; }
+      .access-results-grid { grid-template-columns: 1fr; }
+      .dataset-workbench { grid-template-columns: 1fr; }
       main { padding: 12px; }
       .resource-sidebar { position: static; max-height: none; }
-      .tabs { display: flex; border-right: 0; overflow-x: auto; }
-      .tab { width: auto; }
+      .tabs { display: flex; border-right: 0; border-bottom: 1px solid #101722; overflow-x: auto; }
+      .tab { width: auto; min-width: max-content; }
       .module-header { display: grid; }
       .summary-bar { grid-template-columns: 1fr 1fr; }
       .health-grid { grid-template-columns: 1fr 1fr; }
@@ -252,28 +353,75 @@ const webConsoleHTML = `<!doctype html>
       .overview-grid { grid-template-columns: 1fr; }
       .dataset-list { max-height: 280px; }
     }
+    @media (max-width: 640px) {
+      header { padding: 12px; gap: 12px; }
+      .brand-mark { width: 38px; height: 38px; }
+      .topbar { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
+      .topbar .context-chip { max-width: 100%; }
+      .topbar-language { width: 100%; justify-content: space-between; border-radius: 8px; }
+      .topbar-language select { flex: 1; }
+      .auth-hero { min-height: auto; gap: 28px; padding: 24px 18px; }
+      .auth-title h1 { font-size: 24px; }
+      .auth-facts { grid-template-columns: 1fr; }
+      .auth-card-head { display: grid; padding: 18px; }
+      .auth-form { padding: 18px; }
+      .auth-advanced { grid-template-columns: 1fr; }
+      .setup-panel { grid-template-columns: 1fr; }
+      .tab-panel > .row:not(.section-title-row), .action-toolbar { display: grid; grid-template-columns: 1fr; }
+      .action-toolbar.compact-groups { grid-template-columns: 1fr; }
+      .toolbar-cluster-actions { display: grid; grid-template-columns: 1fr; }
+      .admin-panel-header { align-items: flex-start; flex-direction: column; }
+      .summary-bar, .health-grid, .risk-grid, .queue-grid, .integration-grid, .coverage-grid, .domain-strip, .capability-grid, .readiness-grid, .access-summary-grid, .evidence-summary-grid { grid-template-columns: 1fr; }
+      .workspace-body { padding: 14px; }
+      .checklist-item { grid-template-columns: 26px minmax(0, 1fr); }
+      .checklist-item .row { grid-column: 1 / -1; }
+    }
+    @media (pointer: coarse) {
+      button.small, .tab-panel > .row:not(.section-title-row) button, .action-toolbar button, .resource-sidebar section > button { min-height: 44px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
   </style>
 </head>
-<body>
-  <header>
-    <div class="brand">
-      <div class="brand-mark">MIS</div>
-      <div class="brand-copy">
-        <h1 data-i18n="app.title">MaClawDataSrv MIS Admin Console</h1>
-        <div class="product-subtitle" data-i18n="app.subtitle">Enterprise structured data operations</div>
-        <div class="status" id="serviceStatus">Not connected</div>
+<body class="auth-mode">
+  <section class="auth-screen" id="authScreen" data-testid="auth-screen">
+    <div class="auth-hero">
+      <div class="auth-brand">
+        <div class="brand-mark">MIS</div>
+        <div>
+          <h1 data-i18n="app.title">MaClawDataSrv MIS Admin Console</h1>
+          <div class="product-subtitle" data-i18n="app.subtitle">Enterprise structured data operations</div>
+        </div>
       </div>
+      <div class="auth-title">
+        <h1>Structured data command center</h1>
+        <p>Secure local administration for datasets, business actions, governance evidence, and operational recovery.</p>
+        <div class="auth-facts" aria-label="Console capabilities">
+          <div class="auth-fact"><strong>MIS</strong><span>Business data workspace</span></div>
+          <div class="auth-fact"><strong>RBAC</strong><span>Admin sessions and API keys</span></div>
+          <div class="auth-fact"><strong>Audit</strong><span>Evidence and recovery trail</span></div>
+        </div>
+      </div>
+      <div class="status" id="serviceStatus" role="status" aria-live="polite">Not connected</div>
     </div>
-    <div class="topbar">
-      <label class="label">Endpoint<input id="endpoint" data-testid="endpoint" value="" placeholder="http://127.0.0.1:18180"></label>
-      <label class="label">Token<input id="token" data-testid="token" type="password" autocomplete="off"></label>
-      <label class="label">Tenant<input id="tenant" data-testid="tenant" value="default"></label>
-      <label class="label">User<input id="user" data-testid="user" value="web-console"></label>
-      <label class="label">Role<input id="role" data-testid="role" value="data_user" placeholder="data_user"></label>
-      <label class="label">Language<select id="language" data-testid="language-switch"><option value="en">English</option><option value="zh">中文</option></select></label>
-      <button class="primary" id="saveAuth" data-testid="connect">Connect</button>
-    </div>
-  </header>
+    <div class="auth-card-wrap">
+      <div class="auth-card">
+        <div class="auth-card-head">
+          <div>
+            <h2>Administrator access</h2>
+            <p>Sign in with a local administrator account before opening the console.</p>
+          </div>
+          <label class="label">Language<select id="language" data-testid="language-switch"><option value="en">English</option><option value="zh">中文</option></select></label>
+        </div>
+        <div class="auth-form">
+          <div class="auth-fields">
+            <label class="label">Endpoint<input id="endpoint" data-testid="endpoint" value="" placeholder="http://127.0.0.1:18180"></label>
+            <label class="label">Tenant<input id="tenant" data-testid="tenant" value="default" list="tenantOptions"><datalist id="tenantOptions"></datalist></label>
+          </div>
+          <input id="token" data-testid="token" type="password" autocomplete="off" class="hide">
+          <input id="user" data-testid="user" value="web-console" class="hide">
+          <input id="role" data-testid="role" value="data_user" class="hide">
 
   <section class="panel setup-panel" id="adminSetupPanel" data-testid="admin-setup-panel">
     <div class="setup-copy">
@@ -297,38 +445,46 @@ const webConsoleHTML = `<!doctype html>
     </div>
   </section>
 
-  <main class="layout">
-    <aside class="panel stack resource-sidebar">
-      <div class="row" style="justify-content: space-between;">
+          <div class="auth-advanced">
+            <button id="refreshLoginTenants" data-testid="refresh-login-tenants">Refresh tenants</button>
+            <button id="saveAuth" data-testid="connect">Use saved token</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="app-shell" id="appShell" data-testid="app-shell">
+  <header>
+    <div class="brand">
+      <div class="brand-mark">MIS</div>
+      <div class="brand-copy">
+        <h1 data-i18n="app.title">MaClawDataSrv MIS Admin Console</h1>
+        <div class="product-subtitle" data-i18n="app.subtitle">Enterprise structured data operations</div>
+      </div>
+    </div>
+    <div class="topbar">
+      <label class="topbar-language">Language<select id="appLanguage" data-testid="app-language-switch"><option value="en">English</option><option value="zh">中文</option></select></label>
+      <div class="status" id="appServiceStatus" role="status" aria-live="polite" data-testid="app-service-status">Not connected</div>
+      <div class="context-chip" id="sessionTenant">Tenant: default</div>
+      <div class="context-chip" id="sessionUser">User: web-console</div>
+      <button id="signOut" data-testid="sign-out">Sign out</button>
+    </div>
+  </header>
+
+  <main class="layout" aria-label="Data service administration workspace">
+    <aside class="panel stack resource-sidebar" aria-label="Dataset selector">
+      <div class="row section-title-row">
         <h2>Datasets</h2>
         <button id="refreshDatasets" data-testid="refresh-datasets">Refresh</button>
       </div>
       <div class="dataset-list" id="datasetList" data-testid="dataset-list"></div>
-      <section class="stack">
-        <h3>Create from Template</h3>
-        <label class="label">Template<select id="templateSelect" data-testid="template-select"></select></label>
-        <label class="label">Dataset ID override<input id="templateDatasetId" data-testid="template-dataset-id" placeholder="optional, e.g. sales.orders_2026"></label>
-        <label class="label">Bootstrap domains<input id="bootstrapDomains" data-testid="bootstrap-domains" placeholder="optional, e.g. sales,finance"></label>
-        <div class="row">
-          <button class="primary" id="createFromTemplate" data-testid="create-from-template">Create template</button>
-          <button id="loadMoreTemplates" data-testid="load-more-templates">Load more templates</button>
-          <button id="previewBootstrapTemplates" data-testid="preview-bootstrap-templates">Preview Bootstrap</button>
-          <button id="bootstrapTemplates" data-testid="bootstrap-templates">Bootstrap MIS</button>
-        </div>
-      </section>
-      <section class="stack">
-        <h3>Custom Dataset</h3>
-        <label class="label">Domain<input id="newDomain" data-testid="new-domain" placeholder="sales"></label>
-        <label class="label">Name<input id="newName" data-testid="new-name" placeholder="orders"></label>
-        <label class="label">Title<input id="newTitle" data-testid="new-title" placeholder="Sales orders"></label>
-        <button id="createDataset" data-testid="create-dataset">Create custom</button>
-      </section>
     </aside>
 
     <section class="panel workspace">
       <div class="workspace-shell">
-      <div class="tabs" id="tabs">
-        <div class="nav-group">Operations</div>
+      <div class="tabs" id="tabs" role="tablist" aria-label="Administration modules">
+        <div class="nav-group" data-count="7">Operations</div>
         <button class="tab active" data-tab="overview" data-testid="tab-overview">Overview</button>
         <button class="tab" data-tab="records" data-testid="tab-records">Records</button>
         <button class="tab" data-tab="inbox" data-testid="tab-inbox">Inbox</button>
@@ -336,12 +492,12 @@ const webConsoleHTML = `<!doctype html>
         <button class="tab" data-tab="relationships" data-testid="tab-relationships">Relationships</button>
         <button class="tab" data-tab="actions" data-testid="tab-actions">Actions</button>
         <button class="tab" data-tab="rules" data-testid="tab-rules">Rules</button>
-        <div class="nav-group">Integration</div>
+        <div class="nav-group" data-count="4">Integration</div>
         <button class="tab" data-tab="connectors" data-testid="tab-connectors">Connectors</button>
         <button class="tab" data-tab="views" data-testid="tab-views">Views</button>
         <button class="tab" data-tab="dashboards" data-testid="tab-dashboards">Dashboards</button>
         <button class="tab" data-tab="reports" data-testid="tab-reports">Reports</button>
-        <div class="nav-group">Governance</div>
+        <div class="nav-group" data-count="7">Governance</div>
         <button class="tab" data-tab="quality" data-testid="tab-quality">Quality</button>
         <button class="tab" data-tab="dataset" data-testid="tab-dataset">Dataset</button>
         <button class="tab" data-tab="fields" data-testid="tab-fields">Fields</button>
@@ -349,7 +505,7 @@ const webConsoleHTML = `<!doctype html>
         <button class="tab" data-tab="backups" data-testid="tab-backups">Backups</button>
         <button class="tab" data-tab="events" data-testid="tab-events">Events</button>
         <button class="tab" data-tab="audit" data-testid="tab-audit">Audit</button>
-        <div class="nav-group">System</div>
+        <div class="nav-group" data-count="3">System</div>
         <button class="tab" data-tab="ops" data-testid="tab-ops">Ops</button>
         <button class="tab" data-tab="access" data-testid="tab-access">Access</button>
         <button class="tab" data-tab="raw" data-testid="tab-raw">Response</button>
@@ -362,15 +518,15 @@ const webConsoleHTML = `<!doctype html>
           <div class="module-title" id="moduleTitle">Overview</div>
           <div class="module-desc" id="moduleDesc">Start from common MIS workflows and service health.</div>
         </div>
-        <div class="context-chip" id="moduleContext">Dataset: none selected</div>
+        <div class="context-chip" id="moduleContext" data-i18n-key="Dataset: none selected">Dataset: none selected</div>
       </div>
       <div class="summary-bar" aria-label="Service summary">
-        <div class="summary-item"><div class="summary-label">Engine</div><div class="summary-value" id="summaryEngine">-</div></div>
-        <div class="summary-item"><div class="summary-label">Schema</div><div class="summary-value" id="summarySchema">-</div></div>
-        <div class="summary-item"><div class="summary-label">Datasets</div><div class="summary-value" id="summaryDatasets">0</div></div>
-        <div class="summary-item"><div class="summary-label">Records</div><div class="summary-value" id="summaryRecords">0</div></div>
-        <div class="summary-item"><div class="summary-label">Backups</div><div class="summary-value" id="summaryBackups">0</div></div>
-        <div class="summary-item"><div class="summary-label">Selected Dataset</div><div class="summary-value" id="summarySelectedDataset">-</div></div>
+        <div class="summary-item"><div class="summary-label" data-i18n-key="Engine">Engine</div><div class="summary-value" id="summaryEngine">-</div></div>
+        <div class="summary-item"><div class="summary-label" data-i18n-key="Schema">Schema</div><div class="summary-value" id="summarySchema">-</div></div>
+        <div class="summary-item"><div class="summary-label" data-i18n-key="Datasets">Datasets</div><div class="summary-value" id="summaryDatasets">0</div></div>
+        <div class="summary-item"><div class="summary-label" data-i18n-key="Records">Records</div><div class="summary-value" id="summaryRecords">0</div></div>
+        <div class="summary-item"><div class="summary-label" data-i18n-key="Backups">Backups</div><div class="summary-value" id="summaryBackups">0</div></div>
+        <div class="summary-item"><div class="summary-label" data-i18n-key="Selected Dataset">Selected Dataset</div><div class="summary-value" id="summarySelectedDataset">-</div></div>
       </div>
       <div class="status-history hide" id="statusHistory" aria-label="Recent status"></div>
       <div id="overview" class="tab-panel stack">
@@ -529,7 +685,7 @@ const webConsoleHTML = `<!doctype html>
       </div>
 
       <div id="inbox" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>MIS Inbox</h2>
           <button id="refreshInbox" data-testid="refresh-inbox">Refresh inbox</button>
         </div>
@@ -544,7 +700,7 @@ const webConsoleHTML = `<!doctype html>
       </div>
 
       <div id="domains" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>Business Domains</h2>
           <button id="refreshDomains" data-testid="refresh-domains">Refresh domains</button>
         </div>
@@ -561,7 +717,7 @@ const webConsoleHTML = `<!doctype html>
       </div>
 
       <div id="relationships" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>Relationships</h2>
           <button id="refreshRelationships" data-testid="refresh-relationships">Refresh relationships</button>
         </div>
@@ -577,7 +733,7 @@ const webConsoleHTML = `<!doctype html>
       </div>
 
       <div id="actions" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>Business Actions</h2>
           <button id="refreshActions" data-testid="refresh-actions">Refresh</button>
         </div>
@@ -609,7 +765,7 @@ const webConsoleHTML = `<!doctype html>
       </div>
 
       <div id="rules" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>Business Rules</h2>
           <button id="refreshRules" data-testid="refresh-rules">Refresh</button>
         </div>
@@ -627,7 +783,7 @@ const webConsoleHTML = `<!doctype html>
       </div>
 
       <div id="connectors" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>External Connectors</h2>
           <div class="row">
             <button id="refreshConnectors" data-testid="refresh-connectors">Refresh</button>
@@ -671,7 +827,7 @@ const webConsoleHTML = `<!doctype html>
       </div>
 
       <div id="views" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>Business Views</h2>
           <button id="refreshViews" data-testid="refresh-views">Refresh</button>
         </div>
@@ -695,7 +851,7 @@ const webConsoleHTML = `<!doctype html>
       </div>
 
       <div id="reports" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>Reports</h2>
           <button id="refreshReports" data-testid="refresh-reports">Refresh</button>
         </div>
@@ -726,7 +882,7 @@ const webConsoleHTML = `<!doctype html>
       </div>
 
       <div id="dashboards" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>Dashboards</h2>
           <button id="refreshDashboards" data-testid="refresh-dashboards">Refresh</button>
         </div>
@@ -744,7 +900,7 @@ const webConsoleHTML = `<!doctype html>
       </div>
 
       <div id="quality" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>Data Quality</h2>
           <button id="refreshQualityChecks" data-testid="refresh-quality-checks">Refresh checks</button>
         </div>
@@ -763,6 +919,37 @@ const webConsoleHTML = `<!doctype html>
       </div>
 
       <div id="dataset" class="tab-panel stack hide">
+        <section class="dataset-workbench" aria-label="Dataset creation workbench">
+          <div class="dataset-create-panel">
+            <div class="row section-title-row">
+              <h3>Create from Template</h3>
+            </div>
+            <div class="grid-3">
+              <label class="label">Template<select id="templateSelect" data-testid="template-select"></select></label>
+              <label class="label">Dataset ID override<input id="templateDatasetId" data-testid="template-dataset-id" placeholder="optional, e.g. sales.orders_2026"></label>
+              <label class="label">Bootstrap domains<input id="bootstrapDomains" data-testid="bootstrap-domains" placeholder="optional, e.g. sales,finance"></label>
+            </div>
+            <div class="action-toolbar">
+              <button class="primary" id="createFromTemplate" data-testid="create-from-template">Create template</button>
+              <button id="loadMoreTemplates" data-testid="load-more-templates">Load more templates</button>
+              <button id="previewBootstrapTemplates" data-testid="preview-bootstrap-templates">Preview Bootstrap</button>
+              <button id="bootstrapTemplates" data-testid="bootstrap-templates">Bootstrap MIS</button>
+            </div>
+          </div>
+          <div class="dataset-create-panel">
+            <div class="row section-title-row">
+              <h3>Custom Dataset</h3>
+            </div>
+            <div class="grid-3">
+              <label class="label">Domain<input id="newDomain" data-testid="new-domain" placeholder="sales"></label>
+              <label class="label">Name<input id="newName" data-testid="new-name" placeholder="orders"></label>
+              <label class="label">Title<input id="newTitle" data-testid="new-title" placeholder="Sales orders"></label>
+            </div>
+            <div class="action-toolbar">
+              <button class="primary" id="createDataset" data-testid="create-dataset">Create custom</button>
+            </div>
+          </div>
+        </section>
         <div class="grid-3">
           <label class="label">ID<input id="datasetId" class="readonly" readonly></label>
           <label class="label">Domain<input id="datasetDomain" class="readonly" readonly></label>
@@ -915,7 +1102,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       </div>
 
       <div id="audit" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>Audit</h2>
           <div class="row">
             <button id="refreshAudit" data-testid="refresh-audit">Refresh audit</button>
@@ -937,7 +1124,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       </div>
 
       <div id="events" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>Data Events</h2>
           <button id="refreshEvents" data-testid="refresh-events">Refresh events</button>
         </div>
@@ -968,7 +1155,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
           <button id="formatEventIngest" data-testid="format-event-ingest">Format event</button>
         </div>
         <div id="eventTable" class="table-wrap" data-testid="event-table"></div>
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h3>Dead Letters</h3>
           <button id="refreshDeadLetters" data-testid="refresh-dead-letters">Refresh dead letters</button>
         </div>
@@ -976,7 +1163,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       </div>
 
       <div id="ops" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>Operations</h2>
           <button id="refreshStats" data-testid="refresh-stats">Refresh stats</button>
         </div>
@@ -1013,7 +1200,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       </div>
 
       <div id="access" class="tab-panel stack hide">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row section-title-row">
           <h2>Business Access</h2>
           <button id="refreshAccessCatalog" data-testid="refresh-access-catalog">Refresh catalog</button>
         </div>
@@ -1066,66 +1253,128 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         <div class="grid-3">
           <label class="check"><input id="accessAllowAdmin" data-testid="access-allow-admin" type="checkbox"> Allow admin operations</label>
         </div>
-        <div class="row">
-          <button class="primary" id="generateAccessPolicy" data-testid="generate-access-policy">Generate policy</button>
-          <button id="createAccessKey" data-testid="create-access-key">Create managed key</button>
-          <button id="updateAccessKey" data-testid="update-access-key">Update managed key</button>
-          <button id="previewAccessKey" data-testid="preview-access-key">Preview key access</button>
-          <button id="checkAccessKey" data-testid="check-access-key">Check access</button>
-          <button id="reviewAccessKeys" data-testid="review-access-keys">Review access</button>
-          <button id="exportAccessReview" data-testid="export-access-review">Export review</button>
-          <button id="refreshEvidenceSummary" data-testid="refresh-evidence-summary">Refresh evidence summary</button>
-          <button id="downloadEvidenceSummary" data-testid="download-evidence-summary">Download summary</button>
-          <button id="exportEvidencePack" data-testid="export-evidence-pack">Export evidence pack</button>
-          <button id="planAccessRemediation" data-testid="plan-access-remediation">Plan remediation</button>
-          <button id="refreshAccessKeys" data-testid="refresh-access-keys">Refresh keys</button>
-          <button id="generateAgentHandoff" data-testid="generate-agent-handoff">Generate agent handoff</button>
-          <button id="runAgentReadiness" data-testid="run-agent-readiness">Run agent readiness</button>
-          <button id="compareAccessPolicy" data-testid="compare-access-policy">Compare policy changes</button>
-          <button id="generateAgentOnboarding" data-testid="generate-agent-onboarding">Generate onboarding checklist</button>
-          <button id="generateAgentPacket" data-testid="generate-agent-packet">Generate onboarding packet</button>
+        <div class="action-toolbar compact-groups">
+          <div class="toolbar-cluster">
+            <div class="toolbar-cluster-title">Policy</div>
+            <div class="toolbar-cluster-actions">
+              <button class="primary" id="generateAccessPolicy" data-testid="generate-access-policy">Generate policy</button>
+              <button id="compareAccessPolicy" data-testid="compare-access-policy">Compare policy changes</button>
+              <button id="checkAccessKey" data-testid="check-access-key">Check access</button>
+            </div>
+          </div>
+          <div class="toolbar-cluster">
+            <div class="toolbar-cluster-title">Keys</div>
+            <div class="toolbar-cluster-actions">
+              <button id="createAccessKey" data-testid="create-access-key">Create managed key</button>
+              <button id="updateAccessKey" data-testid="update-access-key">Update managed key</button>
+              <button id="previewAccessKey" data-testid="preview-access-key">Preview key access</button>
+              <button id="refreshAccessKeys" data-testid="refresh-access-keys">Refresh keys</button>
+            </div>
+          </div>
+          <div class="toolbar-cluster">
+            <div class="toolbar-cluster-title">Review</div>
+            <div class="toolbar-cluster-actions">
+              <button id="reviewAccessKeys" data-testid="review-access-keys">Review access</button>
+              <button id="exportAccessReview" data-testid="export-access-review">Export review</button>
+              <button id="planAccessRemediation" data-testid="plan-access-remediation">Plan remediation</button>
+              <button id="refreshEvidenceSummary" data-testid="refresh-evidence-summary">Refresh evidence summary</button>
+              <button id="downloadEvidenceSummary" data-testid="download-evidence-summary">Download summary</button>
+              <button id="exportEvidencePack" data-testid="export-evidence-pack">Export evidence pack</button>
+            </div>
+          </div>
+          <div class="toolbar-cluster">
+            <div class="toolbar-cluster-title">Agent</div>
+            <div class="toolbar-cluster-actions">
+              <button id="generateAgentHandoff" data-testid="generate-agent-handoff">Generate agent handoff</button>
+              <button id="runAgentReadiness" data-testid="run-agent-readiness">Run agent readiness</button>
+              <button id="generateAgentOnboarding" data-testid="generate-agent-onboarding">Generate onboarding checklist</button>
+              <button id="generateAgentPacket" data-testid="generate-agent-packet">Generate onboarding packet</button>
+            </div>
+          </div>
         </div>
-        <div class="grid-3">
-          <label class="label">Check type<select id="accessCheckType" data-testid="access-check-type"><option value="business_action">Business action</option><option value="report">Report</option><option value="business_view">Business view</option><option value="dashboard">Dashboard</option><option value="dataset">Raw dataset</option><option value="admin">Admin</option><option value="sensitive">Sensitive fields</option><option value="domain">Domain</option></select></label>
-          <label class="label">Check resource<input id="accessCheckResource" data-testid="access-check-resource" placeholder="sales.order_upsert"></label>
-          <label class="label">Review severity<select id="accessReviewSeverity" data-testid="access-review-severity"><option value="">All findings</option><option value="critical">Critical+</option><option value="high">High+</option><option value="medium">Medium+</option><option value="info">Info+</option></select></label>
-        </div>
-        <div class="grid-3">
-          <label class="label">Key status<select id="accessKeyStatus" data-testid="access-key-status"><option value="">All</option><option value="active">Active</option><option value="expiring_soon">Expiring soon</option><option value="expired">Expired</option><option value="disabled">Disabled</option></select></label>
-          <label class="label">Search keys<input id="accessKeySearch" data-testid="access-key-search" placeholder="id, user, note"></label>
-          <label class="label">Limit<input id="accessKeyLimit" data-testid="access-key-limit" placeholder="200"></label>
-        </div>
+        <section class="access-filter-grid" aria-label="Access filters">
+          <div class="filter-panel">
+            <div class="filter-panel-title">Access check</div>
+            <div class="grid-3">
+              <label class="label">Check type<select id="accessCheckType" data-testid="access-check-type"><option value="business_action">Business action</option><option value="report">Report</option><option value="business_view">Business view</option><option value="dashboard">Dashboard</option><option value="dataset">Raw dataset</option><option value="admin">Admin</option><option value="sensitive">Sensitive fields</option><option value="domain">Domain</option></select></label>
+              <label class="label">Check resource<input id="accessCheckResource" data-testid="access-check-resource" placeholder="sales.order_upsert"></label>
+              <label class="label">Review severity<select id="accessReviewSeverity" data-testid="access-review-severity"><option value="">All findings</option><option value="critical">Critical+</option><option value="high">High+</option><option value="medium">Medium+</option><option value="info">Info+</option></select></label>
+            </div>
+          </div>
+          <div class="filter-panel">
+            <div class="filter-panel-title">Key list</div>
+            <div class="grid-3">
+              <label class="label">Key status<select id="accessKeyStatus" data-testid="access-key-status"><option value="">All</option><option value="active">Active</option><option value="expiring_soon">Expiring soon</option><option value="expired">Expired</option><option value="disabled">Disabled</option></select></label>
+              <label class="label">Search keys<input id="accessKeySearch" data-testid="access-key-search" placeholder="id, user, note"></label>
+              <label class="label">Limit<input id="accessKeyLimit" data-testid="access-key-limit" placeholder="200"></label>
+            </div>
+          </div>
+        </section>
         <div id="accessCatalog" class="table-wrap" data-testid="access-catalog"></div>
-        <label class="label">MACLAW_DATA_API_KEYS entry<textarea id="accessPolicyJson" data-testid="access-policy-json" spellcheck="false">{}</textarea></label>
-        <div id="accessPolicyDiff" class="table-wrap" data-testid="access-policy-diff"></div>
-        <div id="accessPolicyRisk" class="table-wrap" data-testid="access-policy-risk"></div>
-        <div id="governanceEvidenceSummary" class="table-wrap" data-testid="governance-evidence-summary"><button class="small hide" data-testid="copy-evidence-summary">Copy summary</button><pre class="hide" data-testid="governance-evidence-summary-text"></pre></div>
-        <div id="accessKeySecret" class="notice hide" data-testid="access-key-secret"></div>
-        <section class="overview-card">
-          <div class="row" style="justify-content: space-between;">
-            <h3>Administrator accounts</h3>
-            <button class="small" id="refreshAdminAccounts" data-testid="refresh-admin-accounts">Refresh admins</button>
+        <section class="access-results-grid" aria-label="Access policy and review output">
+          <label class="label textarea-tool access-policy-editor">MACLAW_DATA_API_KEYS entry<textarea id="accessPolicyJson" data-testid="access-policy-json" spellcheck="false">{}</textarea></label>
+          <div class="access-results-stack">
+            <div id="accessPolicyDiff" class="table-wrap" data-testid="access-policy-diff"></div>
+            <div id="accessPolicyRisk" class="table-wrap" data-testid="access-policy-risk"></div>
+            <div id="governanceEvidenceSummary" class="table-wrap" data-testid="governance-evidence-summary"><button class="small hide" data-testid="copy-evidence-summary">Copy summary</button><pre class="hide" data-testid="governance-evidence-summary-text"></pre></div>
+            <div id="accessKeySecret" class="notice hide" data-testid="access-key-secret"></div>
           </div>
-          <p>Create and review local administrator accounts. Disabling an administrator revokes that account's active sessions.</p>
-          <div class="grid-3">
-            <label class="label">Admin username<input id="adminAccountUsername" data-testid="admin-account-username" placeholder="ops-admin"></label>
-            <label class="label">Display name<input id="adminAccountDisplayName" data-testid="admin-account-display-name" placeholder="Operations Admin"></label>
-            <label class="label">Role<select id="adminAccountRole" data-testid="admin-account-role"><option value="data_admin">data_admin</option><option value="data_auditor">data_auditor</option><option value="data_user">data_user</option></select></label>
+        </section>
+        <section class="admin-ops-grid" aria-label="Administrator and Hub controls">
+          <div class="admin-panel">
+            <div class="admin-panel-header">
+              <h3>Administrator accounts</h3>
+              <button class="small" id="refreshAdminAccounts" data-testid="refresh-admin-accounts">Refresh admins</button>
+            </div>
+            <p class="muted">Create and review local administrator accounts. Disabling an administrator revokes that account's active sessions.</p>
+            <div class="grid-3">
+              <label class="label">Admin username<input id="adminAccountUsername" data-testid="admin-account-username" placeholder="ops-admin"></label>
+              <label class="label">Display name<input id="adminAccountDisplayName" data-testid="admin-account-display-name" placeholder="Operations Admin"></label>
+              <label class="label">Role<select id="adminAccountRole" data-testid="admin-account-role"><option value="data_admin">data_admin</option><option value="data_auditor">data_auditor</option><option value="data_user">data_user</option></select></label>
+            </div>
+            <div class="grid-3">
+              <label class="label">Admin scope<select id="adminAccountScope" data-testid="admin-account-scope"><option value="tenant">Tenant admin</option><option value="global">Global admin</option></select></label>
+              <label class="label">Tenant<select id="adminAccountTenant" data-testid="admin-account-tenant"><option value="default">default</option></select></label>
+              <label class="label">Temporary password<input id="adminAccountPassword" data-testid="admin-account-password" type="password" autocomplete="new-password" placeholder="At least 8 characters"></label>
+            </div>
+            <div class="action-toolbar">
+              <button id="createAdminAccount" data-testid="create-admin-account">Create admin</button>
+              <button id="updateAdminAccount" data-testid="update-admin-account">Update admin</button>
+              <button id="syncHubTenants" data-testid="sync-hub-tenants">Sync tenants</button>
+            </div>
+            <div id="adminAccounts" class="table-wrap" data-testid="admin-accounts"></div>
+            <div class="admin-panel-header">
+              <h3>Administrator sessions</h3>
+              <button class="small" id="refreshAdminSessions" data-testid="refresh-admin-sessions">Refresh sessions</button>
+            </div>
+            <div id="adminSessions" class="table-wrap" data-testid="admin-sessions"></div>
           </div>
-          <div class="grid-3">
-            <label class="label">Temporary password<input id="adminAccountPassword" data-testid="admin-account-password" type="password" autocomplete="new-password" placeholder="At least 8 characters"></label>
-            <button id="createAdminAccount" data-testid="create-admin-account">Create admin</button>
-            <button id="updateAdminAccount" data-testid="update-admin-account">Update admin</button>
+          <div class="admin-panel" id="hubRegistrationPanel" data-testid="hub-registration-panel">
+            <div class="admin-panel-header">
+              <h3>Hub registration</h3>
+              <span class="context-chip" id="hubRegistrationState" data-testid="hub-registration-state">Not configured</span>
+            </div>
+            <div class="grid-3">
+              <label class="label">Hub base URL<input id="hubBaseUrl" data-testid="hub-base-url" placeholder="http://127.0.0.1:18181"></label>
+              <label class="label">Platform ID<input id="hubPlatformId" data-testid="hub-platform-id" placeholder="datasrv"></label>
+              <label class="label">Platform name<input id="hubPlatformName" data-testid="hub-platform-name" placeholder="MaClawDataSrv"></label>
+            </div>
+            <div class="grid-2">
+              <label class="label">Callback base URL<input id="hubCallbackBaseUrl" data-testid="hub-callback-base-url" placeholder="http://127.0.0.1:18180"></label>
+              <label class="label">Virtual mail domain<input id="hubVirtualMailDomain" data-testid="hub-virtual-mail-domain" placeholder="datasrv.local"></label>
+            </div>
+            <div class="action-toolbar">
+              <button id="loadHubRegistration" data-testid="load-hub-registration">Load Hub</button>
+              <button id="saveHubRegistration" data-testid="save-hub-registration">Save Hub</button>
+              <button class="primary" id="registerHub" data-testid="register-hub">Register Hub</button>
+              <button id="syncTenantsFromHub" data-testid="sync-tenants-from-hub">Pull tenants from Hub</button>
+            </div>
+            <label class="label textarea-tool" id="hubTenantPayloadLabel">Hub tenant payload<textarea id="hubTenantPayload" data-testid="hub-tenant-payload" spellcheck="false" placeholder='{"tenants":[{"id":"tenant_a","name":"Tenant A","status":"active"}]}'></textarea></label>
+            <div id="dataTenants" class="table-wrap" data-testid="data-tenants"></div>
           </div>
-          <div id="adminAccounts" class="table-wrap" data-testid="admin-accounts"></div>
-          <div class="row" style="justify-content: space-between;">
-            <h3>Administrator sessions</h3>
-            <button class="small" id="refreshAdminSessions" data-testid="refresh-admin-sessions">Refresh sessions</button>
-          </div>
-          <div id="adminSessions" class="table-wrap" data-testid="admin-sessions"></div>
         </section>
         <section class="overview-card">
-          <div class="row" style="justify-content: space-between;">
+          <div class="row section-title-row">
             <h3>Agent handoff</h3>
             <button class="small" id="copyAgentHandoff" data-testid="copy-agent-handoff">Copy handoff</button>
           </div>
@@ -1133,7 +1382,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
           <textarea id="accessAgentHandoff" data-testid="access-agent-handoff" spellcheck="false" placeholder="Create or load a managed API key, then generate the handoff."></textarea>
           <div id="agentOnboardingChecklist" class="table-wrap" data-testid="agent-onboarding-checklist"></div>
           <div id="agentReadinessResult" class="table-wrap" data-testid="agent-readiness-result"></div>
-          <div class="row" style="justify-content: space-between;">
+          <div class="row section-title-row">
             <h3>Onboarding packet</h3>
             <div class="row">
               <button class="small" id="copyAgentPacket" data-testid="copy-agent-packet">Copy packet</button>
@@ -1147,10 +1396,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       </div>
     </section>
   </main>
+  </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
-	const state = { datasets: [], selectedDataset: "", records: [], templates: [], businessActions: [], selectedBusinessAction: "", businessRules: [], eventContracts: [], connectors: [], selectedConnector: "", connectorSyncRuns: [], lastConnectorMappingSuggestion: null, businessViews: [], selectedBusinessView: "", dashboards: [], selectedDashboard: "", reports: [], selectedReport: "", qualityChecks: [], schemaProposals: [], relationships: [], accessCapabilities: null, accessPresets: [], accessKeys: [], adminAccounts: [], adminSessions: [], lastAccessKeySecret: "", loadedAccessPolicy: null };
+	const state = { datasets: [], selectedDataset: "", records: [], templates: [], businessActions: [], selectedBusinessAction: "", businessRules: [], eventContracts: [], connectors: [], selectedConnector: "", connectorSyncRuns: [], lastConnectorMappingSuggestion: null, businessViews: [], selectedBusinessView: "", dashboards: [], selectedDashboard: "", reports: [], selectedReport: "", qualityChecks: [], schemaProposals: [], relationships: [], accessCapabilities: null, accessPresets: [], accessKeys: [], dataTenants: [], adminAccounts: [], adminSessions: [], hubRegistration: null, currentAdminScope: "", authSignature: "", lastAccessKeySecret: "", loadedAccessPolicy: null };
     state.ready = null;
     state.stats = null;
     state.domains = [];
@@ -1289,45 +1539,52 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     const i18n = { zh: {
       "MaClawDataSrv MIS Admin Console": "MaClawDataSrv MIS 管理控制台",
       "Enterprise structured data operations": "企业结构化数据运营工作台",
-      "Not connected": "未连接",
-      "Endpoint": "服务地址",
-      "Token": "令牌",
-      "Tenant": "租户",
-      "User": "用户",
-      "Role": "角色",
+      "Structured data command center": "结构化数据指挥中心",
+      "Secure local administration for datasets, business actions, governance evidence, and operational recovery.": "用于数据集、业务动作、治理证据和运维恢复的本地安全管理。",
+      "Sign in with a local administrator account before opening the console.": "打开控制台前，请先使用本地管理员账号登录。",
       "Language": "语言",
-      "Connect": "连接",
-      "Datasets": "数据集",
-      "Refresh": "刷新",
-      "Create from Template": "从模板创建",
-      "Template": "模板",
-      "Dataset ID override": "数据集 ID 覆盖",
-      "Bootstrap domains": "初始化领域",
-      "Create template": "创建模板",
-      "Load more templates": "加载更多模板",
-      "Preview Bootstrap": "预览初始化",
-      "Bootstrap MIS": "初始化 MIS",
-      "Custom Dataset": "自定义数据集",
-      "Domain": "领域",
-      "Name": "名称",
-      "Title": "标题",
-      "Create custom": "创建自定义",
+      "English": "English",
+      "Endpoint": "服务地址",
+      "Tenant": "租户",
+      "Tenant: default": "租户：default",
+      "User: web-console": "用户：web-console",
+      "Dataset: none selected": "数据集：未选择",
+      "Dataset:none selected": "数据集：未选择",
+      "Dataset:": "数据集：",
+      "Not connected": "未连接",
+      "Service online:": "服务在线：",
+      "Service online": "服务在线",
+      "Administrator access": "管理员访问",
+      "First-time setup": "首次初始化",
+      "Admin username": "管理员账号",
+      "Admin display name": "管理员显示名",
+      "Admin password": "管理员密码",
+      "Initialize administrator": "初始化管理员",
+      "Admin sign in": "管理员登录",
+      "Admin password": "管理员密码",
+      "Sign in": "登录",
+      "Sign out": "退出登录",
+      "Refresh tenants": "刷新租户",
+      "Use saved token": "使用已保存令牌",
+      "Checking setup status": "正在检查初始化状态",
+      "Password policy loading": "正在加载密码策略",
       "Operations": "运营",
+      "Integration": "集成",
+      "Governance": "治理",
+      "System": "系统",
       "Overview": "总览",
       "Records": "记录",
-      "Inbox": "待办",
-      "Business Domains": "业务领域",
-      "Domains": "领域",
+      "Inbox": "收件箱",
+      "Business Domains": "业务域",
+      "Domains": "业务域",
       "Relationships": "关系",
       "Business Actions": "业务动作",
       "Actions": "动作",
       "Rules": "规则",
-      "Integration": "集成",
       "Connectors": "连接器",
       "Views": "视图",
       "Dashboards": "仪表盘",
       "Reports": "报表",
-      "Governance": "治理",
       "Quality": "质量",
       "Dataset": "数据集",
       "Fields": "字段",
@@ -1335,290 +1592,761 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       "Backups": "备份",
       "Events": "事件",
       "Audit": "审计",
-      "System": "系统",
       "Ops": "运维",
-      "Access": "访问控制",
       "Response": "响应",
-      "Start from common MIS workflows and service health.": "从常用 MIS 流程和服务健康开始。",
+      "Start from common MIS workflows and service health.": "从常用 MIS 工作流和服务健康开始。",
       "Search, export, and inspect structured business records.": "搜索、导出并检查结构化业务记录。",
-      "Review pending approvals, failed jobs, quality issues, and operational work.": "复核待审批、失败任务、质量问题和运营待办。",
-      "Discover business capabilities by domain or natural-language intent.": "按业务领域或自然语言意图发现能力。",
+      "Review pending approvals, failed jobs, quality issues, and operational work.": "查看待审批、失败任务、质量问题和运营事项。",
+      "Discover business capabilities by domain or natural-language intent.": "按业务域或自然语言意图发现业务能力。",
       "Inspect controlled links between business datasets and records.": "检查业务数据集和记录之间的受控关联。",
-      "Run business-level operations without editing raw tables.": "不直接编辑原始表，执行业务级操作。",
-      "Evaluate business rules and preflight checks before operational writes.": "在写入前评估业务规则和预检项。",
-      "Manage external CRM, ERP, HR, finance, and inventory integrations.": "管理外部 CRM、ERP、人事、财务和库存集成。",
-      "Query curated business views without exposing raw dataset internals.": "查询业务视图，不暴露原始数据集内部结构。",
-      "Run operational dashboard summaries for company and domain views.": "运行公司和领域视角的运营仪表盘摘要。",
+      "Run business-level operations without editing raw tables.": "在不直接编辑原始表的情况下执行业务操作。",
+      "Evaluate business rules and preflight checks before operational writes.": "在运营写入前评估业务规则和预检查。",
+      "Manage external CRM, ERP, HR, finance, and inventory integrations.": "管理 CRM、ERP、HR、财务和库存等外部集成。",
+      "Query curated business views without exposing raw dataset internals.": "查询受控业务视图，不暴露原始数据集内部结构。",
+      "Run operational dashboard summaries for company and domain views.": "运行公司和业务域维度的运营仪表盘摘要。",
       "Run built-in reports and controlled aggregate analysis.": "运行内置报表和受控聚合分析。",
       "Run data quality checks and inspect historical quality scans.": "运行数据质量检查并查看历史扫描。",
       "Manage dataset metadata and administrative lifecycle controls.": "管理数据集元数据和生命周期控制。",
-      "Maintain schema fields and controlled schema improvement proposals.": "维护 schema 字段和受控 schema 改进提案。",
+      "Maintain schema fields and controlled schema improvement proposals.": "维护字段结构和受控结构优化提案。",
       "Validate, edit, import, approve, and recover individual business records.": "校验、编辑、导入、审批和恢复单条业务记录。",
       "Create, download, and restore database recovery points.": "创建、下载和恢复数据库恢复点。",
       "Inspect event ingestion, dead letters, and retry workflows.": "检查事件接入、死信和重试流程。",
       "Search and export audit trails for compliance review.": "搜索并导出审计轨迹用于合规复核。",
       "Check service statistics and run controlled database maintenance.": "检查服务统计并执行受控数据库维护。",
-      "Grant API keys by business capability, review risk, and plan remediation.": "按业务能力授权 API key，复核风险并制定整改计划。",
+      "Grant API keys by business capability, review risk, and plan remediation.": "按业务能力授权 API Key，复核风险并规划整改。",
       "Inspect the latest raw API response for debugging and verification.": "查看最新原始 API 响应用于调试和验证。",
+      "Datasets": "数据集",
+      "Refresh": "刷新",
       "Dataset: none selected": "数据集：未选择",
       "Service summary": "服务摘要",
       "Engine": "引擎",
-      "Schema": "Schema",
-      "Selected Dataset": "已选数据集",
-      "Recent status": "最近状态",
-      "Setup Checklist": "上线检查清单",
-      "Prepare the service for reliable company MIS usage.": "为可靠承载企业 MIS 使用做好准备。",
-      "Administrator accounts": "管理员账号",
-      "Refresh admins": "刷新管理员",
-      "Create and review local administrator accounts. Disabling an administrator revokes that account's active sessions.": "创建并复核本地管理员账号。禁用管理员会撤销该账号的活动会话。",
-      "Admin username": "管理员用户名",
-      "Display name": "显示名称",
-      "Temporary password": "临时密码",
-      "Create admin": "创建管理员",
-      "Update admin": "更新管理员",
-      "Administrator sessions": "管理员会话",
-      "Refresh sessions": "刷新会话",
+      "Schema": "结构版本",
+      "Backups": "备份",
+      "Selected Dataset": "当前数据集",
+      "Setup Checklist": "初始化清单",
+      "Prepare the service for reliable company MIS usage.": "为公司 MIS 的稳定使用完成准备。",
+      "Refresh overview": "刷新总览",
+      "Service connected": "服务已连接",
+      "Templates loaded": "模板已加载",
+      "Datasets created": "数据集已创建",
+      "Admin access configured": "管理员访问已配置",
+      "Recovery path available": "恢复路径可用",
+      "Open": "打开",
+      "MIS Coverage": "MIS 覆盖",
+      "Template and dataset coverage across common enterprise business domains.": "常见企业业务域的模板和数据集覆盖。",
+      "Domains": "业务域",
+      "Initialized": "已初始化",
+      "Missing": "缺失",
+      "Templates": "模板",
+      "Open domains": "打开业务域",
+      "Preview bootstrap": "预览 Bootstrap",
+      "Business Domain Readiness": "业务域就绪度",
+      "Current service counters from the controlled stats API.": "来自受控统计 API 的当前服务计数。",
+      "Dataset creation workbench": "数据集创建工作台",
+      "Create from Template": "从模板创建",
+      "Template": "模板",
+      "Dataset ID override": "数据集 ID 覆盖",
+      "Bootstrap domains": "Bootstrap 业务域",
+      "Create template": "创建模板",
+      "Load more templates": "加载更多模板",
+      "Preview Bootstrap": "预览 Bootstrap",
+      "Bootstrap MIS": "Bootstrap MIS",
+      "Custom Dataset": "自定义数据集",
+      "Domain": "业务域",
+      "Name": "名称",
+      "Title": "标题",
+      "Create custom": "创建自定义数据集",
+      "ID": "ID",
+      "Description": "描述",
+      "Reload": "重新加载",
+      "Update": "更新",
+      "Delete dataset": "删除数据集",
+      "Setup Checklist": "初始化清单",
+      "Prepare the service for reliable company MIS usage.": "为公司 MIS 的稳定使用完成准备。",
+      "Refresh overview": "刷新总览",
+      "Daily Operations": "日常运营",
+      "Search records, run business actions, and handle pending MIS work from one place.": "在一个工作台中搜索记录、执行业务动作并处理待办 MIS 工作。",
+      "Query records": "查询记录",
+      "Run actions": "执行业务动作",
+      "Open inbox": "打开收件箱",
+      "Analytics": "分析",
+      "Use reports, dashboards, and curated views before asking for raw dataset access.": "优先使用报表、仪表盘和受控视图，再考虑原始数据集访问。",
+      "Run reports": "运行报表",
+      "Open dashboards": "打开仪表盘",
+      "Query views": "查询视图",
+      "Review access, inspect audit trails, run quality checks, and create backups before risky changes.": "在高风险变更前复核访问权限、审计轨迹、质量检查并创建备份。",
+      "Review access": "复核访问",
+      "Check quality": "检查质量",
+      "Create backup": "创建备份",
+      "Operational Health": "运营健康",
+      "Access": "访问控制",
+      "Governance evidence summary refreshed": "治理证据摘要已刷新",
+      "No datasets": "暂无数据集",
+      "Backup restored": "备份已恢复",
+      "Select a dataset first": "请先选择数据集",
+      "Hub registration": "Hub 注册",
+      "Register Hub": "注册 Hub",
+      "Pull tenants from Hub": "从 Hub 拉取租户",
+      "Registered": "已注册",
+      "Configured": "已配置",
+      "Not configured": "未配置",
+      "Loading Hub": "正在加载 Hub",
+      "Saving Hub": "正在保存 Hub",
+      "Registering Hub": "正在注册 Hub",
+      "Pulling tenants": "正在拉取租户",
+      "Syncing tenants": "正在同步租户",
+      "Refreshing tenants": "正在刷新租户",
+      "Initializing": "正在初始化",
+      "Signing in": "正在登录",
+      "Creating admin": "正在创建管理员",
+      "Updating admin": "正在更新管理员",
+      "Enabling": "正在启用",
+      "Disabling": "正在禁用",
+      "Updating": "正在更新",
+      "Revoking": "正在撤销",
+      "Hub registration loaded": "Hub 注册已加载",
+      "Hub registration saved": "Hub 注册已保存",
+      "Hub registered": "Hub 已注册",
+      "Tenants pulled from Hub": "已从 Hub 拉取租户",
+      "Hub tenants synced": "Hub 租户已同步",
+      "Login tenants synced from Hub": "登录租户已从 Hub 同步",
+      "Tenant registry loaded": "租户注册表已加载",
+      "Tenant registry requires a global data_admin session.": "租户注册表需要全局 data_admin 会话。",
+      "No Hub tenants synced yet.": "尚未同步 Hub 租户。",
+      "Tenant": "租户",
+      "Status": "状态",
+      "Primary domain": "主域名",
+      "Virtual mail": "虚拟邮箱",
+      "Source": "来源",
+      "Synced": "同步时间",
+      "active": "启用",
+      "No administrator accounts loaded.": "尚未加载管理员账号。",
+      "Administrator account management requires data_admin with allow_admin.": "管理员账号管理需要具备 allow_admin 的 data_admin 会话。",
+      "No active administrator sessions.": "暂无活跃管理员会话。",
+      "Administrator session management requires data_admin with allow_admin.": "管理员会话管理需要具备 allow_admin 的 data_admin 会话。",
+      "No managed API keys.": "暂无托管 API Key。",
+      "Managed key list requires data_admin with allow_admin.": "托管 Key 列表需要具备 allow_admin 的 data_admin 会话。",
       "Username": "用户名",
+      "Display name": "显示名",
+      "Scope": "范围",
+      "Role": "角色",
+      "Enabled": "启用",
       "Last login": "上次登录",
+      "Updated": "更新时间",
       "Session": "会话",
+      "User": "用户",
       "Current": "当前",
       "Created": "创建时间",
       "Expires": "过期时间",
-      "Revoke": "撤销",
-      "Load": "载入",
+      "ID": "ID",
+      "Scopes": "授权范围",
+      "Prefix": "前缀",
+      "Last used": "上次使用",
+      "Load": "加载",
+      "Preview": "预览",
+      "Rotate": "轮换",
       "Disable": "禁用",
       "Enable": "启用",
-      "Refresh overview": "刷新总览",
-      "Operational Health": "运营健康",
-      "Current service counters from the controlled stats API.": "来自受控统计 API 的当前服务指标。",
-      "MIS Coverage": "MIS 覆盖",
-      "Template and dataset coverage across common enterprise business domains.": "常见企业业务领域中的模板和数据集覆盖。",
-      "Open domains": "打开领域",
-      "Preview bootstrap": "预览初始化",
-      "Business Domain Readiness": "业务领域就绪度",
-      "Readiness of sales, finance, HR, legal, procurement, inventory, and asset domains.": "销售、财务、人事、法务、采购、库存和资产领域的就绪状态。",
-      "Manage domains": "管理领域",
-      "Refresh domains": "刷新领域",
-      "Business Capabilities": "业务能力",
-      "Business-first operations exposed to MaClaw agents and human operators.": "面向 MaClaw agent 和人工操作员的业务优先能力。",
-      "Run actions": "执行业务动作",
-      "Query views": "查询视图",
-      "Run reports": "运行报表",
-      "Intent Launcher": "意图启动器",
-      "Resolve a business request into actions, views, reports, dashboards, and safe next steps.": "将业务请求解析为动作、视图、报表、仪表盘和安全下一步。",
-      "Intent": "意图",
-      "Limit": "上限",
-      "Resolve": "解析",
-      "Work Queue": "工作队列",
-      "Pending operational work from the MIS inbox summary API.": "来自 MIS 待办摘要 API 的运营待办。",
-      "Open inbox": "打开待办",
-      "Refresh queue": "刷新队列",
-      "Integration Health": "集成健康",
-      "Connector status, recent failures, and open dead letters.": "连接器状态、近期失败和未处理死信。",
-      "Open connectors": "打开连接器",
-      "Refresh integration": "刷新集成",
-      "Access Risk": "访问风险",
-      "Managed API key risk summary from the authorization review API.": "授权复核 API 返回的托管 API key 风险摘要。",
-      "Review access": "复核访问",
-      "Refresh risk": "刷新风险",
-      "Governance Readiness": "治理就绪度",
-      "Minimum controls for using DataSrv with real company operations.": "DataSrv 承载真实公司运营所需的最低控制项。",
-      "Create backup": "创建备份",
-      "Check quality": "检查质量",
-      "Open audit": "打开审计",
-      "Recent Activity": "最近活动",
-      "Latest audit trail entries from the controlled audit API.": "来自受控审计 API 的最新审计轨迹。",
-      "Refresh activity": "刷新活动",
-      "Daily Operations": "日常运营",
-      "Search records, run business actions, and handle pending MIS work from one place.": "在一个工作台搜索记录、执行业务动作并处理 MIS 待办。",
-      "Query records": "查询记录",
-      "Analytics": "分析",
-      "Use reports, dashboards, and curated views before asking for raw dataset access.": "优先使用报表、仪表盘和业务视图，再申请原始数据访问。",
-      "Run dashboards": "运行仪表盘",
-      "Keyword": "关键词",
-      "Tag": "标签",
-      "Filter JSON": "过滤 JSON",
-      "Query": "查询",
-      "Export CSV": "导出 CSV",
-      "Export JSONL": "导出 JSONL",
-      "Start CSV export job": "启动 CSV 导出任务",
-      "Start JSONL export job": "启动 JSONL 导出任务",
-      "Refresh export jobs": "刷新导出任务",
-      "Clear": "清空",
-      "MIS Inbox": "MIS 待办",
-      "Refresh inbox": "刷新待办",
-      "Type": "类型",
-      "Status": "状态",
-      "Include completed or OK items": "包含已完成或正常项",
-      "Business Domains": "业务领域",
-      "Resolve intent": "解析意图",
-      "Dataset filter": "数据集过滤",
-      "Current selected": "当前选择",
-      "Use selected dataset": "使用已选数据集",
-      "Clear filter": "清除过滤",
-      "Action ID": "动作 ID",
-      "Target Dataset": "目标数据集",
-      "Description": "说明",
-      "Input JSON": "输入 JSON",
-      "Record ID": "记录 ID",
-      "Idempotency Key": "幂等键",
-      "Dry-run action": "试运行",
-      "Execute action": "执行动作",
-      "Check rules": "检查规则",
-      "Event contract": "事件契约",
-      "Format JSON": "格式化 JSON",
-      "Event Contracts": "事件契约",
-      "Domain filter": "领域过滤",
-      "Refresh contracts": "刷新契约",
-      "Business Rules": "业务规则",
-      "Business Action": "业务动作",
-      "Severity": "严重级别",
-      "Use selected action": "使用已选动作",
-      "Evaluate rules": "评估规则",
-      "External Connectors": "外部连接器",
-      "Health overview": "健康总览",
-      "Connector ID": "连接器 ID",
-      "Kind": "类型",
-      "Auth type": "认证类型",
-      "Token ref": "令牌引用",
-      "Base URL": "基础 URL",
-      "Subscribed actions": "订阅动作",
-      "Config JSON": "配置 JSON",
-      "Enabled": "启用",
-      "Save connector": "保存连接器",
-      "Test contract bindings": "测试契约绑定",
-      "Validate config": "校验配置",
-      "Readiness": "就绪度",
-      "Check health": "检查健康",
-      "Sync state": "同步状态",
-      "Sync runs": "同步运行",
-      "Suggested actions:": "建议动作：",
-      "Service online:": "服务在线：",
-      "Service online: ": "服务在线：",
-      "Service is not ready": "服务未就绪",
-      "Governance evidence summary downloaded": "治理证据摘要已下载",
-      "Governance evidence summary refreshed": "治理证据摘要已刷新",
-      "Dataset: ": "数据集：",
-      "No datasets": "暂无数据集",
-      "No backups": "暂无备份",
-      "No maintenance result": "暂无维护结果",
-      "No managed API keys.": "暂无托管 API key。",
-      "No records": "暂无记录",
-      "Load more": "加载更多",
-      "Download": "下载",
-      "Restore": "恢复",
-      "Approve": "批准",
-      "Reject": "拒绝",
-      "Apply": "应用",
-      "Cancel": "取消",
-      "Disable": "禁用",
-      "Rotate": "轮换",
-      "Preview": "预览",
-      "Edit": "编辑",
-      "Delete": "删除",
-      "Copy": "复制",
-      "Run": "运行",
-      "Create": "创建",
-      "Update": "更新",
-      "Save": "保存",
-      "ID": "ID",
-      "Task": "任务",
-      "Message": "消息",
-      "Duration ms": "耗时 ms",
-      "Metric": "指标",
-      "Value": "值",
-      "Size": "大小",
-      "Created": "创建时间",
-      "Updated": "更新时间",
-      "Actions": "操作",
-      "Fields": "字段",
-      "SHA256": "SHA256",
-      "Record": "记录",
-      "Records": "记录",
-      "Source": "来源",
-      "Target": "目标",
-      "Severity": "严重级别",
-      "Summary": "摘要",
-      "Priority": "优先级",
-      "Owner": "负责人",
-      "Created by": "创建人",
-      "Backup created": "备份已创建",
-      "Backup downloaded": "备份已下载",
-      "Backup restored": "备份已恢复",
-      "Maintenance completed": "维护完成",
-      "Maintenance found issues": "维护发现问题",
-      "Operation plan applied": "操作计划已应用",
-      "Operation plan canceled": "操作计划已取消",
-      "Authorization recommendation cleared": "授权建议已清除",
-      "Agent handoff generated": "Agent 交接信息已生成",
-      "Select a dataset first": "请先选择数据集",
-      "Dataset:": "数据集："
+      "Revoke": "撤销",
+      "yes": "是",
+      "no": "否",
+      "never": "从未",
+      "disabled": "已禁用",
+      "expiring soon": "即将过期"
+      ,"Agent onboarding checklist": "Agent 接入清单"
+      ,"Done": "完成"
+      ,"Step": "步骤"
+      ,"Detail": "详情"
+      ,"Purpose captured": "用途已填写"
+      ,"Scoped policy prepared": "授权范围已准备"
+      ,"Expiration set": "过期时间已设置"
+      ,"High-risk exceptions reviewed": "高风险例外已复核"
+      ,"Policy diff/risk reviewed": "策略差异和风险已复核"
+      ,"Managed key created or loaded": "托管 Key 已创建或加载"
+      ,"Readiness check run": "就绪检查已运行"
+      ,"Handoff generated": "交接内容已生成"
+      ,"Describe why this agent needs MIS access.": "说明该 Agent 为什么需要 MIS 访问。"
+      ,"Set an expiration for agent and employee access.": "为 Agent 和员工访问设置过期时间。"
+      ,"Run Compare policy changes before updating an existing key.": "更新现有 Key 前先运行策略差异比较。"
+      ,"Create or load a managed key.": "创建或加载托管 Key。"
+      ,"Run agent readiness to verify effective scopes.": "运行 Agent 就绪检查，验证实际生效范围。"
+      ,"Generate and share the handoff after key creation or rotation.": "创建或轮换 Key 后生成并分享交接内容。"
+      ,"Type": "类型"
+      ,"Resource": "资源"
+      ,"Allowed": "允许"
+      ,"Reasons": "原因"
+      ,"No scoped resources selected for readiness check.": "尚未选择用于就绪检查的授权资源。"
+      ,"No access review findings for the current filter.": "当前筛选条件下无访问复核发现。"
+      ,"Total keys": "Key 总数"
+      ,"findings": "发现"
+      ,"Severity": "严重级别"
+      ,"Key": "Key"
+      ,"Findings": "发现项"
+      ,"Recommended": "建议"
+      ,"Evidence summary": "治理证据摘要"
+      ,"Copy summary": "复制摘要"
+      ,"Risk": "风险"
+      ,"Evidence ID": "证据 ID"
+      ,"Sections": "章节"
+      ,"Controls": "控制项"
+      ,"Recommendations": "建议"
+      ,"Governance controls": "治理控制项"
+      ,"Control": "控制项"
+      ,"Action": "动作"
+      ,"Open": "打开"
+      ,"ok": "正常"
+      ,"ready": "就绪"
+      ,"low": "低"
+      ,"warn": "警告"
+      ,"fail": "失败"
+      ,"No remediation actions for the current filter.": "当前筛选条件下无整改动作。"
+      ,"Suggested actions": "建议动作"
+      ,"Method": "方法"
+      ,"Endpoint": "端点"
+      ,"Destructive": "破坏性"
+      ,"No schema proposals": "暂无结构提案"
+      ,"Suggested": "建议项"
+      ,"No matched records": "无匹配记录"
+      ,"Valid": "有效"
+      ,"Errors": "错误"
+      ,"Unknown fields": "未知字段"
+      ,"Data": "数据"
+      ,"No import jobs": "暂无导入任务"
+      ,"Kind": "类型"
+      ,"Imported": "已导入"
+      ,"pending": "待处理"
+      ,"completed": "已完成"
+      ,"failed": "失败"
+      ,"running": "运行中"
+      ,"queued": "排队中"
+      ,"Load more": "加载更多"
+      ,"No revisions": "暂无修订记录"
+      ,"No related records": "暂无关联记录"
+      ,"No timeline items": "暂无时间线记录"
+      ,"No approvals": "暂无审批"
+      ,"No audit logs": "暂无审计日志"
+      ,"No events": "暂无事件"
+      ,"No open dead letters": "暂无待处理死信"
+      ,"No operation plans": "暂无操作计划"
+      ,"No maintenance result": "暂无维护结果"
+      ,"No backups": "暂无备份"
+      ,"No business actions": "暂无业务动作"
+      ,"No matching business rules": "暂无匹配业务规则"
+      ,"No event contracts": "暂无事件契约"
+      ,"No connectors registered": "暂无已注册连接器"
+      ,"No connector sync runs": "暂无连接器同步运行"
+      ,"No business views": "暂无业务视图"
+      ,"No records": "暂无记录"
+      ,"No dashboards": "暂无仪表盘"
+      ,"No dashboard reports": "暂无仪表盘报表"
+      ,"No reports": "暂无报表"
+      ,"No report rows": "暂无报表行"
+      ,"No quality checks": "暂无质量检查"
+      ,"No quality runs": "暂无质量运行"
+      ,"No quality issues": "暂无质量问题"
+      ,"No inbox items": "暂无收件箱事项"
+      ,"No intent matches": "暂无意图匹配"
+      ,"No business domains": "暂无业务域"
+      ,"No relationships": "暂无关系"
+      ,"No export jobs": "暂无导出任务"
+      ,"No business capabilities available for the current key.": "当前 Key 暂无可用业务能力。"
+      ,"No authorization recommendation. Load presets and describe the agent purpose first.": "暂无授权建议。请先加载预设并描述 Agent 用途。"
+      ,"No policy changes.": "暂无策略变更。"
+      ,"No local policy risks detected.": "暂无本地策略风险。"
+      ,"No recent audit activity": "暂无近期审计活动"
+      ,"Intent is required": "请填写意图"
+      ,"Intent resolved:": "意图已解析："
+      ,"matches": "条匹配"
+      ,"Access policy changes compared": "访问策略变更已比较"
+      ,"Delete dataset": "删除数据集"
+      ,"and all its records?": "以及其中所有记录？"
+      ,"Disable administrator": "禁用管理员"
+      ,"Active sessions for this account will be revoked.": "该账号的活跃会话将被撤销。"
+      ,"Revoke your current administrator session? You may need to sign in again.": "撤销当前管理员会话？你可能需要重新登录。"
+      ,"Revoke administrator session": "撤销管理员会话"
+      ,"Rotate API key": "轮换 API Key"
+      ,"The old secret will stop working.": "旧密钥将停止工作。"
+      ,"Disable API key": "禁用 API Key"
+      ,"Apply schema proposal to": "应用结构提案到"
+      ,"Apply bulk delete to matched records?": "对匹配记录执行批量删除？"
+      ,"Delete record": "删除记录"
+      ,"Restore deleted record": "恢复已删除记录"
+      ,"Apply operation plan": "应用操作计划"
+      ,"Restore backup": "恢复备份"
+      ,"Current data will be replaced.": "当前数据将被替换。"
+      ,"Run VACUUM now?": "现在运行 VACUUM？"
+      ,"Allowed": "允许"
+      ,"Blocked": "阻止"
+      ,"Needed": "需要处理"
+      ,"Recovery": "恢复"
+      ,"Scoped keys": "范围 Key"
+      ,"Audit trail": "审计轨迹"
+      ,"Open work": "待办事项"
+      ,"Next actions": "下一步动作"
+      ,"backups": "个备份"
+      ,"keys": "个 Key"
+      ,"logs": "条日志"
+      ,"runs": "次运行"
+      ,"items": "项"
+      ,"records": "条记录"
+      ,"Create a recovery backup before imports or schema changes.": "导入或结构变更前先创建恢复备份。"
+      ,"Create scoped API keys for agents and employees.": "为 Agent 和员工创建范围化 API Key。"
+      ,"Run a quality check on the active business datasets.": "对活跃业务数据集运行质量检查。"
+      ,"Review critical or high-priority MIS inbox items.": "复核严重或高优先级 MIS 收件箱事项。"
+      ,"Governance controls look ready for normal operations.": "治理控制项已可支撑常规运行。"
+      ,"Created key": "已创建 Key"
+      ,"Rotated key": "已轮换 Key"
+      ,"Secret is shown once:": "密钥仅显示一次："
+      ,"New secret is shown once:": "新密钥仅显示一次："
+      ,"Recommended agent rule:": "建议 Agent 规则："
+      ,"Prefer business actions for writes.": "写入优先使用业务动作。"
+      ,"Prefer dashboards, business views, reports, and aggregate APIs for analysis.": "分析优先使用仪表盘、业务视图、报表和聚合 API。"
+      ,"Do not use raw dataset APIs unless allow_raw_data is explicitly true.": "除非 allow_raw_data 明确为 true，否则不要使用原始数据集 API。"
+      ,"Do not change schema unless the user/admin asks for schema governance.": "除非用户或管理员要求结构治理，否则不要修改结构。"
+      ,"Key has no expiration time.": "Key 未设置过期时间。"
+      ,"Set expires_at for agent and employee access.": "为 Agent 和员工访问设置 expires_at。"
+      ,"Key can perform administrative operations.": "Key 可执行管理员操作。"
+      ,"Keep only for break-glass or schema administration agents.": "仅保留给应急或结构管理 Agent。"
+      ,"Key can access sensitive fields.": "Key 可访问敏感字段。"
+      ,"Limit to trusted HR, finance, legal, or audit agents.": "仅限可信 HR、财务、法务或审计 Agent。"
+      ,"Key can use raw dataset APIs.": "Key 可使用原始数据集 API。"
+      ,"Prefer business actions, views, reports, and dashboards.": "优先使用业务动作、视图、报表和仪表盘。"
+      ,"Key grants whole business domains.": "Key 授权了完整业务域。"
+      ,"Prefer explicit business capabilities for narrow agents.": "窄范围 Agent 优先使用明确业务能力授权。"
+      ,"Key grants raw datasets.": "Key 授权了原始数据集。"
+      ,"Use curated business views unless raw access is required.": "除非必须原始访问，否则使用受控业务视图。"
+      ,"Key has no scoped business resources.": "Key 没有范围化业务资源。"
+      ,"Add at least one action, view, report, dashboard, domain, or dataset.": "至少添加一个动作、视图、报表、仪表盘、业务域或数据集。"
+      ,"Allowed domains:": "允许业务域："
+      ,"Allowed actions:": "允许动作："
+      ,"Allowed views:": "允许视图："
+      ,"Allowed reports:": "允许报表："
+      ,"Allowed dashboards:": "允许仪表盘："
+      ,"Allowed raw datasets:": "允许原始数据集："
+      ,"Raw dataset API:": "原始数据集 API："
+      ,"Sensitive fields:": "敏感字段："
+      ,"Admin operations:": "管理员操作："
+      ,"not set": "未设置"
+      ,"allowed": "允许"
+      ,"disabled": "已禁用"
+      ,"masked/denied": "已脱敏/拒绝"
+      ,"none": "无"
+      ,"Signed out": "已退出登录"
+      ,"Administrator initialized. Token saved for this console.": "管理员已初始化，令牌已保存到当前控制台。"
+      ,"Administrator login succeeded. Token saved.": "管理员登录成功，令牌已保存。"
+      ,"Select a business action first": "请先选择业务动作"
+      ,"Business action dry-run passed": "业务动作试运行通过"
+      ,"Business action dry-run failed": "业务动作试运行失败"
+      ,"Business action executed": "业务动作已执行"
+      ,"Business rule evaluation ready": "业务规则评估已就绪"
+      ,"Connector health overview loaded": "连接器健康总览已加载"
+      ,"Select or save a connector first": "请先选择或保存连接器"
+      ,"Connector contracts valid": "连接器契约有效"
+      ,"Connector contracts need attention": "连接器契约需要处理"
+      ,"Connector config valid": "连接器配置有效"
+      ,"Connector config has issues:": "连接器配置存在问题："
+      ,"Connector ready for dry-run sync": "连接器已可试运行同步"
+      ,"Connector readiness failed": "连接器就绪检查失败"
+      ,"Connector sync state loaded": "连接器同步状态已加载"
+      ,"Connector sync state updated": "连接器同步状态已更新"
+      ,"Connector sync plan ready": "连接器同步计划已就绪"
+      ,"Connector sync plan has blockers": "连接器同步计划存在阻塞"
+      ,"Load or enter an event payload first": "请先加载或输入事件载荷"
+      ,"Connector mapping suggestion ready": "连接器映射建议已就绪"
+      ,"Generate a mapping suggestion first": "请先生成映射建议"
+      ,"Connector mapping suggestion merged into config draft": "连接器映射建议已合并到配置草稿"
+      ,"Connector mapping suggestion saved": "连接器映射建议已保存"
+      ,"Connector has no subscribed actions": "连接器没有订阅动作"
+      ,"Connector mapping preview ready": "连接器映射预览已就绪"
+      ,"Connector preview ready without mapping": "连接器无映射预览已就绪"
+      ,"Select a business view first": "请先选择业务视图"
+      ,"Select a dashboard first": "请先选择仪表盘"
+      ,"Dashboard complete": "仪表盘已完成"
+      ,"Select a report first": "请先选择报表"
+      ,"Report complete": "报表已完成"
+      ,"Aggregate complete": "聚合已完成"
+      ,"Quality runs loaded": "质量运行已加载"
+      ,"Quality run loaded": "质量运行已加载"
+      ,"Inbox loaded": "收件箱已加载"
+      ,"Intent step has no business action id": "意图步骤缺少业务动作 ID"
+      ,"Intent step has no dashboard id": "意图步骤缺少仪表盘 ID"
+      ,"Intent step has no view id": "意图步骤缺少视图 ID"
+      ,"Intent step has no report id": "意图步骤缺少报表 ID"
+      ,"Select a template first": "请先选择模板"
+      ,"Dataset loaded": "数据集已加载"
+      ,"Dataset updated": "数据集已更新"
+      ,"Dataset deleted": "数据集已删除"
+      ,"Export jobs loaded": "导出任务已加载"
+      ,"Export job downloaded": "导出任务已下载"
+      ,"More authorization presets loaded": "更多授权预设已加载"
+      ,"Business access catalog loaded": "业务访问目录已加载"
+      ,"Governance evidence summary requires data_admin with allow_admin.": "治理证据摘要需要具备 allow_admin 的 data_admin。"
+      ,"Overview stats loaded": "总览统计已加载"
+      ,"Access capabilities loaded": "访问能力已加载"
+      ,"Access risk loaded": "访问风险已加载"
+      ,"Work queue loaded": "工作队列已加载"
+      ,"Integration health loaded": "集成健康已加载"
+      ,"Recent activity loaded": "近期活动已加载"
+      ,"Choose an authorization preset first": "请先选择授权预设"
+      ,"Authorization preset applied": "授权预设已应用"
+      ,"Authorization recommendation generated": "授权建议已生成"
+      ,"Generated scoped API key policy": "范围化 API Key 策略已生成"
+      ,"API key ID is required for managed keys": "托管 Key 需要 API Key ID"
+      ,"Managed API key created": "托管 API Key 已创建"
+      ,"Managed API key updated": "托管 API Key 已更新"
+      ,"Load an existing managed key before comparing policy changes.": "比较策略变更前请先加载现有托管 Key。"
+      ,"Agent handoff copied": "Agent 交接内容已复制"
+      ,"Agent handoff selected for copying": "Agent 交接内容已选中，可复制"
+      ,"Agent onboarding checklist generated": "Agent 接入清单已生成"
+      ,"Agent onboarding packet generated": "Agent 接入包已生成"
+      ,"Agent onboarding packet copied": "Agent 接入包已复制"
+      ,"Agent onboarding packet selected for copying": "Agent 接入包已选中，可复制"
+      ,"Agent onboarding packet downloaded": "Agent 接入包已下载"
+      ,"Agent readiness checked": "Agent 就绪检查已完成"
+      ,"Administrator accounts loaded": "管理员账号已加载"
+      ,"Administrator account loaded into form": "管理员账号已加载到表单"
+      ,"Admin username and temporary password are required": "需要管理员用户名和临时密码"
+      ,"Administrator account created": "管理员账号已创建"
+      ,"Admin username is required": "需要管理员用户名"
+      ,"Administrator account updated": "管理员账号已更新"
+      ,"Administrator account enabled": "管理员账号已启用"
+      ,"Administrator account disabled": "管理员账号已禁用"
+      ,"Administrator sessions loaded": "管理员会话已加载"
+      ,"Administrator session expiry updated": "管理员会话过期时间已更新"
+      ,"Administrator session revoked": "管理员会话已撤销"
+      ,"Managed API keys loaded": "托管 API Key 已加载"
+      ,"Managed API key loaded into form": "托管 API Key 已加载到表单"
+      ,"Managed API key rotated": "托管 API Key 已轮换"
+      ,"API key ID is required for access preview": "访问预览需要 API Key ID"
+      ,"Managed API key access preview loaded": "托管 API Key 访问预览已加载"
+      ,"API key ID is required for access check": "访问检查需要 API Key ID"
+      ,"Access check allowed": "访问检查允许"
+      ,"Access check denied": "访问检查拒绝"
+      ,"Access review loaded": "访问复核已加载"
+      ,"Access review exported": "访问复核已导出"
+      ,"Governance evidence pack exported": "治理证据包已导出"
+      ,"Governance evidence summary downloaded": "治理证据摘要已下载"
+      ,"Governance evidence summary copied": "治理证据摘要已复制"
+      ,"Governance evidence summary selected for copying": "治理证据摘要已选中，可复制"
+      ,"Access remediation plan loaded": "访问整改计划已加载"
+      ,"Managed API key disabled": "托管 API Key 已禁用"
+      ,"Fields loaded": "字段已加载"
+      ,"Fields saved": "字段已保存"
+      ,"Batch records must be a JSON array": "批量记录必须是 JSON 数组"
+      ,"Batch dry-run passed": "批量试运行通过"
+      ,"Batch dry-run failed": "批量试运行失败"
+      ,"Batch import complete:": "批量导入完成："
+      ,"Bulk update dry-run passed": "批量更新试运行通过"
+      ,"Bulk update dry-run failed": "批量更新试运行失败"
+      ,"Bulk update applied:": "批量更新已应用："
+      ,"Bulk delete dry-run matched:": "批量删除试运行匹配："
+      ,"Bulk delete applied:": "批量删除已应用："
+      ,"Batch import job queued:": "批量导入任务已排队："
+      ,"CSV dry-run passed": "CSV 试运行通过"
+      ,"CSV dry-run failed": "CSV 试运行失败"
+      ,"CSV import complete:": "CSV 导入完成："
+      ,"CSV template loaded": "CSV 模板已加载"
+      ,"CSV import job queued:": "CSV 导入任务已排队："
+      ,"JSONL dry-run passed": "JSONL 试运行通过"
+      ,"JSONL dry-run failed": "JSONL 试运行失败"
+      ,"JSONL import complete:": "JSONL 导入完成："
+      ,"JSONL import job queued:": "JSONL 导入任务已排队："
+      ,"Import jobs loaded": "导入任务已加载"
+      ,"Record ID is required": "需要记录 ID"
+      ,"Record validation passed": "记录校验通过"
+      ,"Record validation failed": "记录校验失败"
+      ,"Record saved": "记录已保存"
+      ,"Record deleted": "记录已删除"
+      ,"Record restored": "记录已恢复"
+      ,"Audit CSV exported": "审计 CSV 已导出"
+      ,"Event dry-run passed": "事件试运行通过"
+      ,"Event dry-run failed": "事件试运行失败"
+      ,"Dead letter retried": "死信已重试"
+      ,"Dead letter resolved": "死信已解决"
+      ,"Stats loaded": "统计已加载"
+      ,"Operation plan applied": "操作计划已应用"
+      ,"Operation plan canceled": "操作计划已取消"
+      ,"Maintenance completed": "维护已完成"
+      ,"Maintenance found issues": "维护发现问题"
+      ,"Backup created": "备份已创建"
+      ,"Backup downloaded": "备份已下载"
+      ,"Backup restored": "备份已恢复"
+      ,"Authorization recommendation cleared": "授权建议已清空"
+      ,"Agent handoff generated": "Agent 交接内容已生成"
+      ,"Service is not ready": "服务未就绪"
+      ,"Password policy: minimum": "密码策略：最少"
+      ,"characters.": "个字符。"
+      ,"Unavailable": "不可用"
+      ,"Missing templates": "缺失模板"
+      ,"Use cases": "用例"
+      ,"Capabilities": "能力"
+      ,"Open domain": "打开业务域"
+      ,"HTTP": "HTTP"
+      ,"schema": "结构"
+      ,"Connected:": "已连接："
+      ,"Loaded event contract:": "事件契约已加载："
+      ,"Connector saved:": "连接器已保存："
+      ,"Connector health:": "连接器健康状态："
+      ,"Connector sync batch:": "连接器同步批次："
+      ,"Loaded connector event template:": "连接器事件模板已加载："
+      ,"Business domains loaded": "业务域已加载"
+      ,"Schema proposal generated": "结构提案已生成"
+      ,"Schema proposal applied": "结构提案已应用"
+      ,"Approvals loaded": "审批已加载"
+      ,"Event ingested:": "事件已接收："
+      ,"succeeded": "成功"
+      ,"Operation plan ": "操作计划 "
+      ,"Business rules loaded:": "业务规则已加载："
+      ,"Event contracts loaded:": "事件契约已加载："
+      ,"Connector sync runs loaded:": "连接器同步运行已加载："
+      ,"Business view loaded:": "业务视图已加载："
+      ,"Quality check scanned": "质量检查已扫描"
+      ,"Relationships loaded:": "关系已加载："
+      ,"Created from template": "已从模板创建"
+      ,"Bootstrap preview: would create": "初始化预览：将创建"
+      ,"Bootstrap complete: created": "初始化完成：已创建"
+      ,"Query complete:": "查询完成："
+      ,"CSV exported:": "CSV 已导出："
+      ,"JSONL exported": "JSONL 已导出"
+      ,"Loaded intent action template:": "已加载意图动作模板："
+      ,"Schema proposals loaded:": "结构提案已加载："
+      ,"Loaded schema proposal": "已加载结构提案"
+      ,"Revisions loaded:": "修订记录已加载："
+      ,"Related records loaded:": "关联记录已加载："
+      ,"Timeline loaded:": "时间线已加载："
+      ,"Approval created:": "审批已创建："
+      ,"Audit loaded:": "审计已加载："
+      ,"Events loaded:": "事件已加载："
+      ,"Dead letters loaded:": "死信已加载："
+      ,"Operation plan created:": "操作计划已创建："
+      ,"Operation plans loaded": "操作计划已加载"
+      ,"Item": "项目"
+      ,"Dry run": "试运行"
+      ,"Dry-run": "试运行"
+      ,"Dry-run context": "试运行上下文"
+      ,"Event status": "事件状态"
+      ,"Can execute now": "可立即执行"
+      ,"Required": "必填"
+      ,"Recommended action": "建议动作"
+      ,"Rules": "规则"
+      ,"Rule next steps": "规则下一步"
+      ,"Business action": "业务动作"
+      ,"Scope": "范围"
+      ,"Conditions": "条件"
+      ,"Requires": "要求"
+      ,"Checks": "检查项"
+      ,"Governance": "治理"
+      ,"Gate statuses": "闸口状态"
+      ,"Matched rules": "匹配规则"
+      ,"Condition results": "条件结果"
+      ,"Approval": "审批"
+      ,"Backup": "备份"
+      ,"Quality": "质量"
+      ,"Admin": "管理员"
+      ,"Next steps": "下一步"
+      ,"Event type": "事件类型"
+      ,"Select": "选择"
+      ,"Finished": "完成时间"
+      ,"Count": "数量"
+      ,"Rows": "行数"
+      ,"Inbox total": "收件箱总数"
+      ,"Critical": "严重"
+      ,"High": "高"
+      ,"Overdue": "逾期"
+      ,"Scanned": "已扫描"
+      ,"Issues": "问题"
+      ,"Check": "检查"
+      ,"Field": "字段"
+      ,"Edit": "编辑"
+      ,"Delete": "删除"
+      ,"Tags": "标签"
+      ,"Untitled": "未命名"
+      ,"Use Case": "用例"
+      ,"Use": "使用"
+      ,"Data Template": "数据模板"
+      ,"Body Template": "请求模板"
+      ,"Tool Template": "工具模板"
+      ,"Source Dataset": "源数据集"
+      ,"Target Dataset": "目标数据集"
+      ,"Open source": "打开源"
+      ,"Open target": "打开目标"
+      ,"Ready": "就绪"
+      ,"Bootstrap": "初始化"
+      ,"template": "模板"
+      ,"dataset": "数据集"
+      ,"Format": "格式"
+      ,"Bytes": "字节"
+      ,"Grant": "授权"
+      ,"Business capability": "业务能力"
+      ,"Preset": "预设"
+      ,"Setup": "设置"
+      ,"Before": "之前"
+      ,"After": "之后"
+      ,"Change": "变更"
+      ,"Code": "代码"
+      ,"Reason": "原因"
+      ,"Use preset": "使用预设"
+      ,"Load action": "加载动作"
+      ,"Custom": "自定义"
+      ,"action": "动作"
+      ,"view": "视图"
+      ,"report": "报表"
+      ,"dashboard": "仪表盘"
+      ,"medium": "中"
+      ,"info": "信息"
+      ,"changed": "已变更"
+      ,"added": "已新增"
+      ,"removed": "已移除"
+      ,"Total": "总数"
+      ,"Succeeded": "成功"
+      ,"Failed": "失败"
+      ,"Error": "错误"
+      ,"required": "必需"
+      ,"global": "全局"
+      ,"all": "全部"
+      ,"any": "任一"
+      ,"dry-run": "试运行"
+      ,"approval": "审批"
+      ,"backup": "备份"
+      ,"quality": "质量"
+      ,"data_admin": "数据管理员"
+      ,"Direction": "方向"
+      ,"Relationship": "关系"
+      ,"Record": "记录"
+      ,"Missing": "缺失"
+      ,"Inspect": "检查"
+      ,"Details": "详情"
+      ,"Assignee": "负责人"
+      ,"Due": "截止时间"
+      ,"Reused": "复用"
+      ,"Created By": "创建人"
+      ,"Reviewed By": "复核人"
+      ,"Approve": "批准"
+      ,"Reject": "拒绝"
+      ,"Cancel": "取消"
+      ,"Apply": "应用"
+      ,"Target": "目标"
+      ,"Event": "事件"
+      ,"Business Action": "业务动作"
+      ,"Idempotency Key": "幂等键"
+      ,"Retry": "重试"
+      ,"Resolve": "解决"
+      ,"Operation": "操作"
+      ,"Matched": "匹配数"
+      ,"Task": "任务"
+      ,"Message": "消息"
+      ,"Duration ms": "耗时 ms"
+      ,"Metric": "指标"
+      ,"Value": "值"
+      ,"Fields": "字段"
+      ,"Size": "大小"
+      ,"Download": "下载"
+      ,"Restore": "恢复"
+      ,"approved": "已批准"
+      ,"rejected": "已拒绝"
+      ,"canceled": "已取消"
+      ,"applied": "已应用"
+      ,"open": "未处理"
+      ,"resolved": "已解决"
     } };
+    const chromeZh = {
+      "Dataset: none selected": "数据集：未选择",
+      "Engine": "引擎",
+      "Schema": "结构版本",
+      "Datasets": "数据集",
+      "Records": "记录",
+      "Backups": "备份",
+      "Selected Dataset": "当前数据集",
+      "Not connected": "未连接"
+    };
     const placeholderI18n = { zh: {
       "http://127.0.0.1:18180": "http://127.0.0.1:18180",
-      "data_user": "data_user",
-      "optional, e.g. sales.orders_2026": "可选，例如 sales.orders_2026",
-      "optional, e.g. sales,finance": "可选，例如 sales,finance",
-      "sales": "sales",
-      "orders": "orders",
-      "Sales orders": "销售订单",
-      "customer, amount, name": "客户、金额、姓名",
-      "q1": "q1",
-      "{\"field\":\"amount\",\"op\":\"gte\",\"value\":1000}": "{\"field\":\"amount\",\"op\":\"gte\",\"value\":1000}",
-      "approval, operation_plan, import_job, export_job, quality": "approval、operation_plan、import_job、export_job、quality",
-      "pending, failed, issue": "pending、failed、issue",
-      "e.g. low stock, expense reimbursement, procurement status": "例如：低库存、费用报销、采购状态",
-      "optional, e.g. inventory": "可选，例如 inventory",
-      "optional": "可选",
-      "finance": "finance",
-      "finance.expense_submit": "finance.expense_submit",
-      "high, critical": "high、critical",
-      "sales.crm": "sales.crm",
-      "Sales CRM": "销售 CRM",
-      "crm, erp, hris": "crm、erp、hris",
-      "bearer, api_key": "bearer、api_key",
-      "MIS_CRM_TOKEN": "MIS_CRM_TOKEN",
-      "https://crm.example.local": "https://crm.example.local",
-      "external business id": "外部业务 ID",
-      "source:object:id:version": "source:object:id:version",
-      "expense, low stock, sales order status": "报销、低库存、销售订单状态"
+      "admin": "admin",
+      "At least 8 characters": "至少 8 个字符"
     } };
     function currentLanguage() {
-      return ($("language") && $("language").value) || "en";
+      return ($("appLanguage") && $("appLanguage").value) || ($("language") && $("language").value) || "en";
+    }
+
+    function tChrome(key) {
+      return currentLanguage() === "zh" ? (chromeZh[key] || translateText(key)) : key;
+    }
+
+    function syncLanguageControls(lang) {
+      lang = lang || currentLanguage();
+      if ($("language") && $("language").value !== lang) $("language").value = lang;
+      if ($("appLanguage") && $("appLanguage").value !== lang) $("appLanguage").value = lang;
     }
 
     function translateText(text) {
       const lang = currentLanguage();
       if (lang === "en") return text;
+      const direct = i18n[lang] && i18n[lang][text];
+      if (direct) return direct;
       const prefixed = [
         "Suggested actions: ",
+        "Password policy: minimum ",
+        "Intent resolved: ",
+        "Business rules loaded: ",
+        "Event contracts loaded: ",
+        "Loaded event contract: ",
+        "Connector saved: ",
+        "Connector health: ",
+        "Connector config has issues: ",
+        "Connector sync runs loaded: ",
+        "Connector sync batch: ",
+        "Loaded connector event template: ",
+        "Business view loaded: ",
+        "Quality check scanned ",
+        "Relationships loaded: ",
+        "Created from template ",
+        "Bootstrap preview: would create ",
+        "Bootstrap complete: created ",
+        "Created ",
+        "Query complete: ",
+        "CSV exported: ",
+        "JSONL exported",
+        "Export jobs loaded",
+        "Loaded intent action template: ",
+        "Schema proposals loaded: ",
+        "Loaded schema proposal ",
+        "Batch import complete: ",
+        "Bulk update applied: ",
+        "Bulk delete dry-run matched: ",
+        "Bulk delete applied: ",
+        "Batch import job queued: ",
+        "CSV import complete: ",
+        "CSV import job queued: ",
+        "JSONL import complete: ",
+        "JSONL import job queued: ",
+        "Revisions loaded: ",
+        "Related records loaded: ",
+        "Timeline loaded: ",
+        "Approval created: ",
+        "Event ingested: ",
+        "Audit loaded: ",
+        "Events loaded: ",
+        "Dead letters loaded: ",
+        "Operation plan created: ",
+        "Operation plans loaded",
         "Service online: ",
+        "Service online:",
         "Dataset: ",
+        "Dataset:",
         "HTTP "
       ];
       for (const prefix of prefixed) {
-        if (text.startsWith(prefix)) return translateText(prefix.trimEnd()) + text.slice(prefix.length);
+        if (text.startsWith(prefix)) {
+          const tail = text.slice(prefix.length).replace(" schema ", " " + translateText("schema") + " ").replace(" succeeded", " " + translateText("succeeded"));
+          return translateText(prefix.trimEnd()) + tail;
+        }
+      }
+      if (text.endsWith(" matches")) return text.replace(" matches", " " + translateText("matches"));
+      for (const suffix of [" backups", " keys", " logs", " runs", " items", " records"]) {
+        if (text.endsWith(suffix)) return text.slice(0, -suffix.length) + translateText(suffix.trim());
       }
       if (text.startsWith("Operation plan ")) return text.replace("Operation plan ", "操作计划 ").replace("approved", "已批准").replace("rejected", "已拒绝");
-      const setupI18n = {
-        "Administrator access": "管理员访问",
-        "On first launch, create the local administrator account. After initialization, sign in to receive a temporary bearer token.": "首次启动时创建本地管理员账号。初始化后登录即可获得临时 Bearer 令牌。",
-        "Checking setup status": "正在检查初始化状态",
-        "First-time setup": "首次初始化",
-        "Admin username": "管理员用户名",
-        "Admin display name": "管理员显示名",
-        "Admin password": "管理员密码",
-        "Initialize administrator": "初始化管理员",
-        "Admin sign in": "管理员登录",
-        "Sign in": "登录",
-        "Password policy loading": "正在读取密码策略",
-        "Setup required: create the first administrator account": "需要初始化：请创建第一个管理员账号",
-        "Administrator initialized. Token saved for this console.": "管理员已初始化，令牌已保存到当前控制台。",
-        "Administrator login succeeded. Token saved.": "管理员登录成功，令牌已保存。",
-        "Administrator initialized": "管理员已初始化"
-      };
-      if (setupI18n[text]) return setupI18n[text];
-      return (i18n[lang] && i18n[lang][text]) || text;
+      return text;
     }
 
     function setText(id, text) {
@@ -1635,6 +2363,27 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function translateStatus(text) {
       return translateText(text);
     }
+
+    function tableHead(labels) {
+      return "<thead><tr>" + labels.map(label => "<th>" + translateText(label) + "</th>").join("") + "</tr></thead><tbody></tbody>";
+    }
+
+    function yesNo(value) {
+      return translateText(value ? "yes" : "no");
+    }
+
+    function neverText() {
+      return translateText("never");
+    }
+
+    function isYesText(value) {
+      return value === "yes" || value === translateText("yes");
+    }
+
+    function confirmText(parts) {
+      return parts.map(part => translateText(part)).join(" ").replace(/\s+([?？。])/g, "$1");
+    }
+
     function applyI18n(root) {
       if (i18nApplying) return;
       i18nApplying = true;
@@ -1646,7 +2395,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
           acceptNode(node) {
             const parent = node.parentElement;
             if (!parent) return NodeFilter.FILTER_REJECT;
-            if (parent.id === "serviceStatus") return NodeFilter.FILTER_REJECT;
+            if (parent.id === "serviceStatus" || parent.id === "appServiceStatus") return NodeFilter.FILTER_REJECT;
             const tag = parent.tagName;
             if (["SCRIPT", "STYLE", "TEXTAREA", "PRE", "CODE", "INPUT", "SELECT"].includes(tag)) return NodeFilter.FILTER_REJECT;
             if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
@@ -1669,8 +2418,13 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
           const lang = currentLanguage();
           el.setAttribute("placeholder", (placeholderI18n[lang] && placeholderI18n[lang][source]) || source);
         });
+        document.querySelectorAll("[data-i18n-key]").forEach(el => {
+          const key = el.dataset.i18nKey || el.textContent || "";
+          el.textContent = tChrome(key);
+        });
           renderStatus();
           updateModuleHeader(activeModuleName());
+          refreshStaticChromeI18n();
           renderStatusHistory();
         } finally {
           i18nApplying = false;
@@ -1686,19 +2440,98 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       $("user").value = saved.user || "web-console";
       $("role").value = saved.role || "data_user";
       $("language").value = saved.language || "en";
+      if ($("appLanguage")) $("appLanguage").value = saved.language || "en";
+      state.currentAdminScope = saved.admin_scope || "";
+      state.authSignature = authSignature();
       return saved;
     }
 
+    function authSignature() {
+      return [$("token").value.trim(), $("tenant").value.trim() || "default", $("user").value.trim() || "web-console", $("role").value.trim() || "data_user"].join("|");
+    }
+
     function saveSettings() {
+      state.authSignature = authSignature();
       localStorage.setItem(storageKey, JSON.stringify({
         endpoint: $("endpoint").value.trim() || location.origin,
         token: $("token").value.trim(),
         tenant: $("tenant").value.trim() || "default",
         user: $("user").value.trim() || "web-console",
         role: $("role").value.trim() || "data_user",
-        language: $("language").value || "en",
+        admin_scope: state.currentAdminScope || "",
+        language: currentLanguage(),
         active_tab: activeModuleName()
       }));
+      updateSessionChrome();
+    }
+
+    function isKnownTenantAdminSession() {
+      return state.currentAdminScope === "tenant";
+    }
+
+    function isKnownGlobalAdminSession() {
+      return state.currentAdminScope === "global";
+    }
+
+    function updateAdminControlScope() {
+      const globalKnown = isKnownGlobalAdminSession();
+      const tenantKnown = isKnownTenantAdminSession();
+      ["hubRegistrationPanel", "hubTenantPayloadLabel"].forEach(id => {
+        const el = $(id);
+        if (el) el.classList.toggle("hide", tenantKnown);
+      });
+      ["syncHubTenants", "loadHubRegistration", "saveHubRegistration", "registerHub", "syncTenantsFromHub"].forEach(id => {
+        const button = $(id);
+        if (button) button.disabled = tenantKnown;
+      });
+      const scopeSelect = $("adminAccountScope");
+      if (scopeSelect) {
+        const globalOption = Array.from(scopeSelect.options || []).find(option => option.value === "global");
+        if (globalOption) globalOption.disabled = tenantKnown;
+        if (tenantKnown && scopeSelect.value === "global") scopeSelect.value = "tenant";
+      }
+      const tenantSelect = $("adminAccountTenant");
+      if (tenantSelect && tenantKnown) tenantSelect.value = $("tenant").value.trim() || "default";
+      document.body.classList.toggle("global-admin-mode", globalKnown);
+      document.body.classList.toggle("tenant-admin-mode", tenantKnown);
+    }
+
+    function updateSessionChrome() {
+      const tenantLabel = currentLanguage() === "zh" ? "租户：" : "Tenant: ";
+      const userLabel = currentLanguage() === "zh" ? "用户：" : "User: ";
+      if ($("sessionTenant")) $("sessionTenant").textContent = tenantLabel + ($("tenant").value.trim() || "default");
+      if ($("sessionUser")) $("sessionUser").textContent = userLabel + ($("user").value.trim() || "web-console");
+    }
+
+    function refreshStaticChromeI18n() {
+      document.querySelectorAll("[data-i18n-key]").forEach(el => {
+        const key = el.dataset.i18nKey || el.textContent || "";
+        el.textContent = tChrome(key);
+      });
+      updateSessionChrome();
+    }
+
+    function showAuthShell() {
+      document.body.classList.add("auth-mode");
+      document.body.classList.remove("app-mode");
+      document.body.classList.remove("global-admin-mode", "tenant-admin-mode");
+      updateSessionChrome();
+    }
+
+    function showAppShell() {
+      document.body.classList.add("app-mode");
+      document.body.classList.remove("auth-mode");
+      updateSessionChrome();
+      updateAdminControlScope();
+    }
+
+    function signOut() {
+      $("token").value = "";
+      $("role").value = "data_user";
+      state.currentAdminScope = "";
+      saveSettings();
+      showAuthShell();
+      setStatus("Signed out", "ok");
     }
 
     function endpoint(path) {
@@ -1788,11 +2621,15 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const panel = $("adminSetupPanel");
       if (!panel) return;
       const initialized = !!(status && status.initialized);
+      state.dataTenants = Array.isArray(status?.tenants) ? status.tenants : state.dataTenants;
+      state.hubRegistration = status?.hub_registration || state.hubRegistration;
       panel.classList.toggle("ready", initialized);
       $("adminInitBox").classList.toggle("hide", initialized);
       $("adminLoginBox").classList.toggle("hide", !initialized);
       setText("setupStatusText", initialized ? "Administrator initialized" : "Setup required: create the first administrator account");
       renderAdminPasswordPolicy(status && status.password_policy);
+      renderTenantOptions();
+      renderHubRegistration(state.hubRegistration);
       if ($("tenant").value.trim() === "" && status && status.tenant_id) $("tenant").value = status.tenant_id;
     }
 
@@ -1822,8 +2659,36 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       }
     }
 
-    async function initializeAdmin() {
+    async function withButtonBusy(buttonTarget, busyText, work) {
+      const button = typeof buttonTarget === "string" ? $(buttonTarget) : buttonTarget;
+      if (!button) return await work();
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = translateText(busyText || originalText);
       try {
+        return await work();
+      } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
+    }
+
+    async function refreshLoginTenantsFromHub() {
+      return await withButtonBusy("refreshLoginTenants", "Refreshing tenants", async () => { try {
+        const synced = await publicApiJSON("/api/v1/setup/tenants/sync", {});
+        state.dataTenants = Array.isArray(synced?.tenants) ? synced.tenants : state.dataTenants;
+        renderTenantOptions();
+        setStatus("Login tenants synced from Hub", "ok");
+        return await refreshSetupStatus();
+      } catch (err) {
+        await refreshSetupStatus();
+        setStatus(err.message, "err");
+        return null;
+      } });
+    }
+
+    async function initializeAdmin() {
+      return await withButtonBusy("initializeAdmin", "Initializing", async () => { try {
         const result = await publicApiJSON("/api/v1/setup/admin", {
           tenant_id: $("tenant").value.trim() || "default",
           username: $("initUsername").value.trim(),
@@ -1833,17 +2698,19 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         $("token").value = result.token || "";
         $("user").value = result.username || $("initUsername").value.trim() || "admin";
         $("role").value = result.role || "data_admin";
+        state.currentAdminScope = result.admin_scope || "global";
         $("loginUsername").value = result.username || "";
         $("initPassword").value = "";
         saveSettings();
         updateSetupPanel({ initialized: true, tenant_id: result.tenant_id || "default" });
         setStatus("Administrator initialized. Token saved for this console.", "ok");
+        showAppShell();
         await checkConnection();
-      } catch (err) { notifyError(err); }
+      } catch (err) { notifyError(err); } });
     }
 
     async function loginAdmin() {
-      try {
+      return await withButtonBusy("loginAdmin", "Signing in", async () => { try {
         const result = await publicApiJSON("/api/v1/login", {
           tenant_id: $("tenant").value.trim() || "default",
           username: $("loginUsername").value.trim(),
@@ -1852,22 +2719,34 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         $("token").value = result.token || "";
         $("user").value = result.username || $("loginUsername").value.trim() || "admin";
         $("role").value = result.role || "data_admin";
+        state.currentAdminScope = result.admin_scope || state.currentAdminScope || "tenant";
         $("loginPassword").value = "";
         saveSettings();
         setStatus("Administrator login succeeded. Token saved.", "ok");
+        showAppShell();
         await checkConnection();
-      } catch (err) { notifyError(err); }
+      } catch (err) { notifyError(err); } });
+    }
+
+    function statusElements() {
+      return [$("serviceStatus"), $("appServiceStatus")].filter(Boolean);
     }
 
     function renderStatus() {
-      const el = $("serviceStatus");
-      const source = el.dataset.statusSource || "Not connected";
-      const text = translateStatus(source);
-      if (el.firstChild && el.firstChild.nodeType === Node.TEXT_NODE) {
-        if (el.firstChild.nodeValue !== text) el.firstChild.nodeValue = text;
-      } else {
-        el.textContent = text;
+      const primary = $("serviceStatus") || $("appServiceStatus");
+      if (!primary) return;
+      const source = primary.dataset.statusSource || "Not connected";
+      let text = translateStatus(source);
+      if (currentLanguage() === "zh") {
+        if (source === "Not connected") text = chromeZh[source];
       }
+      statusElements().forEach(el => {
+        if (el.firstChild && el.firstChild.nodeType === Node.TEXT_NODE) {
+          if (el.firstChild.nodeValue !== text) el.firstChild.nodeValue = text;
+        } else {
+          el.textContent = text;
+        }
+      });
     }
 
     function renderStatusHistory() {
@@ -1903,10 +2782,12 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const contextEl = $("moduleContext");
       if (contextEl) {
         contextEl.dataset.contextSource = context;
-        contextEl.textContent = currentLanguage() === "zh" && state.selectedDataset ? translateText("Dataset: ") + state.selectedDataset : translateText(context);
+        contextEl.dataset.i18nKey = state.selectedDataset ? "" : "Dataset: none selected";
+        contextEl.textContent = state.selectedDataset ? (currentLanguage() === "zh" ? "数据集：" : "Dataset: ") + state.selectedDataset : (currentLanguage() === "zh" ? chromeZh["Dataset: none selected"] : "Dataset: none selected");
         contextEl.title = context;
       }
       updateAdminSummary();
+      refreshStaticChromeI18n();
     }
 
     function updateAdminSummary() {
@@ -2038,7 +2919,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         item.className = "capability-item";
         item.innerHTML = "<div class='health-label'></div><div class='capability-value'></div>";
         item.querySelector(".health-label").textContent = translateText(row[0]);
-        item.querySelector(".capability-value").textContent = String(row[1]);
+        item.querySelector(".capability-value").textContent = translateText(String(row[1]));
         item.onclick = () => switchTab(row[2]);
         root.appendChild(item);
       });
@@ -2066,8 +2947,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("overviewIntentResults");
       if (!root) return;
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No intent matches</div>';
-        applyI18n(root);
+        root.innerHTML = '<div class="empty">' + translateText("No intent matches") + '</div>';
         return;
       }
       root.innerHTML = "";
@@ -2269,8 +3149,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       }
       const items = state.auditLogs || [];
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No recent audit activity</div>';
-        applyI18n(root);
+        root.innerHTML = '<div class="empty">' + translateText("No recent audit activity") + '</div>';
         return;
       }
       root.innerHTML = "";
@@ -2280,7 +3159,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         row.innerHTML = "<div></div><div></div><div></div>";
         row.children[0].textContent = item.created_at ? new Date(item.created_at).toLocaleString() : "";
         row.children[1].className = "activity-action";
-        row.children[1].textContent = item.action || "";
+        row.children[1].textContent = translateText(item.action || "");
         row.children[2].className = "activity-summary";
         row.children[2].textContent = [item.user_id || "", item.dataset_id || "", item.summary || ""].filter(Boolean).join(" / ");
         row.children[2].title = row.children[2].textContent;
@@ -2339,11 +3218,12 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     }
 
     function setStatus(text, kind) {
-      const el = $("serviceStatus");
-      el.dataset.statusSource = text;
-      el.dataset.statusKind = kind || "";
+      statusElements().forEach(el => {
+        el.dataset.statusSource = text;
+        el.dataset.statusKind = kind || "";
+        el.className = "status" + (kind ? " " + kind : "");
+      });
       renderStatus();
-      el.className = "status" + (kind ? " " + kind : "");
       state.statusHistory.unshift({ text, kind: kind || "info", time: new Date().toLocaleTimeString() });
       state.statusHistory = state.statusHistory.slice(0, 12);
       renderStatusHistory();
@@ -2382,12 +3262,17 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     }
 
     async function checkConnection() {
+      if (state.authSignature && state.authSignature !== authSignature()) {
+        state.currentAdminScope = "";
+        updateAdminControlScope();
+      }
       saveSettings();
       try {
         const ready = await publicApi("/readyz");
         state.ready = ready || {};
         updateAdminSummary();
         setStatus("Connected: " + ready.engine + " schema " + ready.schema_version, "ok");
+        showAppShell();
         await loadOverviewStats(false);
         await loadOverviewCapabilitiesData(false);
         await loadOverviewDomains(false);
@@ -2401,7 +3286,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         await loadBusinessViews();
         await loadQualityChecks();
         await loadDatasets();
-      } catch (err) { notifyError(err); }
+      } catch (err) { showAuthShell(); notifyError(err); }
     }
 
     async function loadTemplates(loadMore = false) {
@@ -2439,7 +3324,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (!root) return;
       root.innerHTML = "";
       if (!state.businessActions.length) {
-        root.innerHTML = '<div class="empty">No business actions</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No business actions") + '</div>';
         return;
       }
       state.businessActions.forEach(action => {
@@ -2459,7 +3344,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       renderBusinessActions();
       $("businessActionId").value = action.id || "";
       $("businessActionDataset").value = action.dataset_id || "";
-      $("businessActionDescription").value = (action.description || "") + "\nRequired: " + (action.required_fields || []).join(", ");
+      $("businessActionDescription").value = (action.description || "") + "\n" + translateText("Required") + ": " + (action.required_fields || []).join(", ");
       const sample = {};
       (action.input_fields || []).forEach(field => {
         if ((action.required_fields || []).includes(field.key)) sample[field.key] = field.type === "number" ? 0 : "";
@@ -2495,38 +3380,39 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("businessActionResult");
       const validation = result.validation || {};
       const rows = [
-        ["Dry run", result.dry_run ? "yes" : "no"],
-        ["Valid", result.valid === undefined ? "" : String(result.valid)],
+        ["Dry run", yesNo(result.dry_run)],
+        ["Valid", result.valid === undefined ? "" : yesNo(result.valid)],
         ["Dataset", (result.action && result.action.dataset_id) || (result.event && result.event.dataset_id) || ""],
         ["Record", (result.event && result.event.record_id) || ""],
-        ["Event status", (result.event && result.event.status) || ""],
-        ["Governance", result.rules ? (result.rules.governance_status || "") : ""],
-        ["Can execute now", result.rules ? String(!!result.rules.can_execute_now) : ""],
-        ["Recommended action", result.rules ? (result.rules.recommended_action || "") : ""],
+        ["Event status", translateText((result.event && result.event.status) || "")],
+        ["Governance", result.rules ? translateText(result.rules.governance_status || "") : ""],
+        ["Can execute now", result.rules ? yesNo(!!result.rules.can_execute_now) : ""],
+        ["Recommended action", result.rules ? translateText(result.rules.recommended_action || "") : ""],
         ["Rules", result.rules ? [
-          result.rules.requires_dry_run ? "dry-run" : "",
-          result.rules.requires_approval ? "approval" : "",
-          result.rules.requires_backup ? "backup" : "",
-          result.rules.requires_quality ? "quality" : "",
-          result.rules.requires_admin ? "data_admin" : ""
+          result.rules.requires_dry_run ? translateText("dry-run") : "",
+          result.rules.requires_approval ? translateText("approval") : "",
+          result.rules.requires_backup ? translateText("backup") : "",
+          result.rules.requires_quality ? translateText("quality") : "",
+          result.rules.requires_admin ? translateText("data_admin") : ""
         ].filter(Boolean).join(", ") : ""],
         ["Rule next steps", result.rules ? JSON.stringify(result.rules.next_steps || [], null, 2) : ""],
         ["Unknown fields", (validation.unknown_fields || []).join(", ")],
         ["Errors", (validation.errors || []).join("; ")],
       ];
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Item</th><th>Value</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Item", "Value"]);
       const body = table.querySelector("tbody");
       rows.forEach(row => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td><pre></pre></td>";
-        tr.children[0].textContent = row[0];
+        tr.children[0].textContent = translateText(row[0]);
         tr.children[1].querySelector("pre").textContent = row[1];
         body.appendChild(tr);
       });
       if (result.preview) {
         const tr = document.createElement("tr");
-        tr.innerHTML = "<td>Preview</td><td><pre></pre></td>";
+        tr.innerHTML = "<td></td><td><pre></pre></td>";
+        tr.children[0].textContent = translateText("Preview");
         tr.children[1].querySelector("pre").textContent = JSON.stringify(result.preview, null, 2);
         body.appendChild(tr);
       }
@@ -2560,28 +3446,28 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("ruleTable");
       if (!root) return;
       if (!state.businessRules.length) {
-        root.innerHTML = '<div class="empty">No matching business rules</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No matching business rules") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>ID</th><th>Scope</th><th>Severity</th><th>Conditions</th><th>Requires</th><th>Checks</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["ID", "Scope", "Severity", "Conditions", "Requires", "Checks"]);
       const body = table.querySelector("tbody");
       state.businessRules.forEach(rule => {
         const requires = [];
-        if (rule.requires_dry_run) requires.push("dry-run");
-        if (rule.requires_approval) requires.push("approval");
-        if (rule.requires_backup) requires.push("backup");
-        if (rule.requires_quality) requires.push("quality");
-        if (rule.requires_admin) requires.push("data_admin");
+        if (rule.requires_dry_run) requires.push(translateText("dry-run"));
+        if (rule.requires_approval) requires.push(translateText("approval"));
+        if (rule.requires_backup) requires.push(translateText("backup"));
+        if (rule.requires_quality) requires.push(translateText("quality"));
+        if (rule.requires_admin) requires.push(translateText("data_admin"));
         const tr = document.createElement("tr");
         tr.innerHTML = "<td><strong></strong><div class=\"muted\"></div></td><td></td><td></td><td><pre></pre></td><td></td><td><pre></pre></td>";
         tr.querySelector("strong").textContent = rule.title || rule.id;
         tr.querySelector(".muted").textContent = rule.id || "";
-        tr.children[1].textContent = [rule.domain, rule.dataset_id, rule.business_action_id].filter(Boolean).join(" / ") || "global";
-        tr.children[2].textContent = rule.severity || "";
+        tr.children[1].textContent = [rule.domain, rule.dataset_id, rule.business_action_id].filter(Boolean).join(" / ") || translateText("global");
+        tr.children[2].textContent = translateText(rule.severity || "");
         const conditionMode = rule.conditions_mode || ((rule.conditions || []).length ? "all" : "");
         const conditionLines = (rule.conditions || []).map(condition => condition.field + " " + condition.op + " " + JSON.stringify(condition.value));
-        tr.children[3].querySelector("pre").textContent = conditionMode ? conditionMode + ":\n" + conditionLines.join("\n") : "";
+        tr.children[3].querySelector("pre").textContent = conditionMode ? translateText(conditionMode) + ":\n" + conditionLines.join("\n") : "";
         tr.children[4].textContent = requires.join(", ");
         tr.children[5].querySelector("pre").textContent = (rule.recommended_checks || []).join("\n");
         body.appendChild(tr);
@@ -2615,29 +3501,29 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         ["Business action", result.business_action_id || ""],
         ["Dataset", result.dataset_id || ""],
         ["Domain", result.domain || ""],
-        ["Dry-run context", result.dry_run ? "yes" : "no"],
-        ["Governance", result.governance_status || ""],
+        ["Dry-run context", yesNo(result.dry_run)],
+        ["Governance", translateText(result.governance_status || "")],
         ["Reasons", (result.status_reasons || []).join("\n")],
-        ["Can execute now", result.can_execute_now === undefined ? "" : String(result.can_execute_now)],
-        ["Recommended action", result.recommended_action || ""],
+        ["Can execute now", result.can_execute_now === undefined ? "" : yesNo(result.can_execute_now)],
+        ["Recommended action", translateText(result.recommended_action || "")],
         ["Gate statuses", JSON.stringify(result.gate_statuses || [], null, 2)],
         ["Matched rules", (result.matched_rules || []).map(rule => rule.id).join("\n")],
         ["Condition results", JSON.stringify(result.rule_evaluations || [], null, 2)],
-        ["Dry-run", result.requires_dry_run ? "required" : ""],
-        ["Approval", result.requires_approval ? "required" : ""],
-        ["Backup", result.requires_backup ? "required" : ""],
-        ["Quality", result.requires_quality ? "required" : ""],
-        ["Admin", result.requires_admin ? "required" : ""],
+        ["Dry-run", result.requires_dry_run ? translateText("required") : ""],
+        ["Approval", result.requires_approval ? translateText("required") : ""],
+        ["Backup", result.requires_backup ? translateText("required") : ""],
+        ["Quality", result.requires_quality ? translateText("required") : ""],
+        ["Admin", result.requires_admin ? translateText("required") : ""],
         ["Checks", (result.recommended_checks || []).join("\n")],
         ["Next steps", JSON.stringify(result.next_steps || [], null, 2)],
       ];
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Item</th><th>Value</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Item", "Value"]);
       const body = table.querySelector("tbody");
       rows.forEach(row => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td><pre></pre></td>";
-        tr.children[0].textContent = row[0];
+        tr.children[0].textContent = translateText(row[0]);
         tr.children[1].querySelector("pre").textContent = row[1];
         body.appendChild(tr);
       });
@@ -2695,15 +3581,15 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("eventContractTable");
       if (!root) return;
       if (!(state.eventContracts || []).length) {
-        root.innerHTML = '<div class="empty">No event contracts</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No event contracts") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>ID</th><th>Domain</th><th>Dataset</th><th>Event type</th><th>Endpoint</th><th>Fields</th><th></th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["ID", "Domain", "Dataset", "Event type", "Endpoint", "Fields", ""]);
       const body = table.querySelector("tbody");
       state.eventContracts.forEach(contract => {
         const tr = document.createElement("tr");
-        tr.innerHTML = "<td><strong></strong><div class='muted'></div></td><td></td><td></td><td></td><td></td><td><pre></pre></td><td><button>Select</button></td>";
+        tr.innerHTML = "<td><strong></strong><div class='muted'></div></td><td></td><td></td><td></td><td></td><td><pre></pre></td><td><button></button></td>";
         tr.querySelector("strong").textContent = contract.title || contract.id || "";
         tr.querySelector(".muted").textContent = contract.business_action_id || "";
         tr.children[1].textContent = contract.domain || "";
@@ -2711,6 +3597,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         tr.children[3].textContent = contract.event_type || "";
         tr.children[4].textContent = contract.connector_endpoint_template || contract.endpoint || "";
         tr.children[5].querySelector("pre").textContent = (contract.required_fields || []).join("\n");
+        tr.querySelector("button").textContent = translateText("Select");
         tr.querySelector("button").onclick = () => applyEventContract(contract);
         body.appendChild(tr);
       });
@@ -2778,21 +3665,22 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("connectorTable");
       if (!root) return;
       if (!state.connectors.length) {
-        root.innerHTML = '<div class="empty">No connectors registered</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No connectors registered") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>ID</th><th>Name</th><th>Domain</th><th>Kind</th><th>Enabled</th><th>Actions</th><th></th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["ID", "Name", "Domain", "Kind", "Enabled", "Actions", ""]);
       const body = table.querySelector("tbody");
       state.connectors.forEach(connector => {
         const tr = document.createElement("tr");
-        tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td><pre></pre></td><td><button>Select</button></td>";
+        tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td><pre></pre></td><td><button></button></td>";
         tr.children[0].textContent = connector.id || "";
         tr.children[1].textContent = connector.name || "";
         tr.children[2].textContent = connector.domain || "";
         tr.children[3].textContent = connector.kind || "";
-        tr.children[4].textContent = connector.enabled ? "yes" : "no";
+        tr.children[4].textContent = yesNo(connector.enabled);
         tr.children[5].querySelector("pre").textContent = (connector.subscribed_actions || []).join(", ");
+        tr.children[6].querySelector("button").textContent = translateText("Select");
         tr.children[6].querySelector("button").onclick = () => selectConnector(connector);
         body.appendChild(tr);
       });
@@ -2920,21 +3808,21 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("connectorSyncRuns");
       if (!root) return;
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No connector sync runs</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No connector sync runs") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Finished</th><th>Status</th><th>Total</th><th>Succeeded</th><th>Failed</th><th>Dry run</th><th>Error</th><th>ID</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Finished", "Status", "Total", "Succeeded", "Failed", "Dry run", "Error", "ID"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.finished_at || item.started_at || "";
-        tr.children[1].textContent = item.status || "";
+        tr.children[1].textContent = translateText(item.status || "");
         tr.children[2].textContent = String(item.total || 0);
         tr.children[3].textContent = String(item.succeeded || 0);
         tr.children[4].textContent = String(item.failed || 0);
-        tr.children[5].textContent = item.dry_run ? "yes" : "";
+        tr.children[5].textContent = item.dry_run ? translateText("yes") : "";
         tr.children[6].textContent = item.error_summary || "";
         tr.children[7].textContent = item.id || "";
         body.appendChild(tr);
@@ -3103,7 +3991,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (!root) return;
       root.innerHTML = "";
       if (!state.businessViews.length) {
-        root.innerHTML = '<div class="empty">No business views</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No business views") + '</div>';
         return;
       }
       state.businessViews.forEach(view => {
@@ -3123,7 +4011,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       renderBusinessViews();
       $("businessViewId").value = view.id || "";
       $("businessViewDataset").value = view.dataset_id || "";
-      $("businessViewDescription").value = (view.description || "") + "\nFields: " + (view.fields || []).join(", ");
+      $("businessViewDescription").value = (view.description || "") + "\n" + translateText("Fields") + ": " + (view.fields || []).join(", ");
       $("viewQueryLimit").value = view.default_limit || 100;
       $("viewQueryFilter").value = JSON.stringify(view.default_filter || {}, null, 2);
     }
@@ -3159,21 +4047,22 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderViewRecords(items) {
       const root = $("viewRecordTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No records</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No records") + '</div>';
         return;
       }
       const keys = Array.from(new Set(items.flatMap(item => Object.keys(item.data || {}))));
       const table = document.createElement("table");
       const head = document.createElement("thead");
-      head.innerHTML = "<tr><th>ID</th>" + keys.map(k => "<th></th>").join("") + "<th>Updated</th><th>Actions</th></tr>";
+      head.innerHTML = "<tr><th>" + translateText("ID") + "</th>" + keys.map(k => "<th></th>").join("") + "<th>" + translateText("Updated") + "</th><th>" + translateText("Actions") + "</th></tr>";
       keys.forEach((key, index) => head.querySelectorAll("th")[index + 1].textContent = key);
       const body = document.createElement("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
-        tr.innerHTML = "<td></td>" + keys.map(() => "<td><pre></pre></td>").join("") + "<td></td><td><button class='small'>Edit</button></td>";
+        tr.innerHTML = "<td></td>" + keys.map(() => "<td><pre></pre></td>").join("") + "<td></td><td><button class='small'></button></td>";
         tr.children[0].textContent = item.id;
         keys.forEach((key, index) => { tr.children[index + 1].querySelector("pre").textContent = formatCell((item.data || {})[key]); });
         tr.children[tr.children.length - 2].textContent = item.updated_at || "";
+        tr.querySelector("button").textContent = translateText("Edit");
         tr.querySelector("button").onclick = () => loadRecordToEditor(item);
         tr.ondblclick = () => loadRecordToEditor(item);
         body.appendChild(tr);
@@ -3205,7 +4094,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (!root) return;
       root.innerHTML = "";
       if (!state.dashboards.length) {
-        root.innerHTML = '<div class="empty">No dashboards</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No dashboards") + '</div>';
         return;
       }
       state.dashboards.forEach(dashboard => {
@@ -3258,12 +4147,12 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         ["Overdue", inbox.overdue || 0],
       ];
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Metric</th><th>Count</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Metric", "Count"]);
       const body = table.querySelector("tbody");
       rows.forEach(row => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td>";
-        tr.children[0].textContent = row[0];
+        tr.children[0].textContent = translateText(row[0]);
         tr.children[1].textContent = row[1];
         body.appendChild(tr);
       });
@@ -3274,18 +4163,18 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderDashboardReports(items) {
       const root = $("dashboardReportTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No dashboard reports</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No dashboard reports") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Report</th><th>Status</th><th>Rows</th><th>Preview</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Report", "Status", "Rows", "Preview"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const rows = item.result && item.result.result ? (item.result.result.rows || []) : [];
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td><pre></pre></td>";
         tr.children[0].textContent = item.title || item.report_id || "";
-        tr.children[1].textContent = item.error ? item.error : "ok";
+        tr.children[1].textContent = item.error ? item.error : translateText("ok");
         tr.children[2].textContent = rows.length;
         tr.children[3].querySelector("pre").textContent = rows.slice(0, 5).map(row => JSON.stringify(row)).join("\n");
         body.appendChild(tr);
@@ -3314,7 +4203,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (!root) return;
       root.innerHTML = "";
       if (!state.reports.length) {
-        root.innerHTML = '<div class="empty">No reports</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No reports") + '</div>';
         return;
       }
       state.reports.forEach(report => {
@@ -3365,7 +4254,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("reportTable");
       if (!root) return;
       if (!rows.length) {
-        root.innerHTML = '<div class="empty">No report rows</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No report rows") + '</div>';
         return;
       }
       const keys = Array.from(new Set(rows.flatMap(row => Object.keys(row))));
@@ -3404,7 +4293,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("qualityCheckList");
       if (!root) return;
       if (!state.qualityChecks.length) {
-        root.innerHTML = '<div class="empty">No quality checks</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No quality checks") + '</div>';
         return;
       }
       root.innerHTML = "";
@@ -3413,7 +4302,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         item.className = "action-item";
         item.innerHTML = '<div class="dataset-id"></div><div class="dataset-meta"></div>';
         item.querySelector(".dataset-id").textContent = check.title || check.id;
-        item.querySelector(".dataset-meta").textContent = check.id + " / " + (check.severity || "info");
+        item.querySelector(".dataset-meta").textContent = check.id + " / " + translateText(check.severity || "info");
         root.appendChild(item);
       });
       appendLoadMoreButton(root, state.qualityCheckHasMore && state.qualityCheckNextBeforeID, () => loadQualityChecks(true));
@@ -3458,21 +4347,22 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderQualityRuns(items) {
       const root = $("qualityRunTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No quality runs</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No quality runs") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Time</th><th>ID</th><th>Valid</th><th>Scanned</th><th>Issues</th><th>Checks</th><th>Actions</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Time", "ID", "Valid", "Scanned", "Issues", "Checks", "Actions"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
-        tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td><button class='small'>Load</button></td>";
+        tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td><button class='small'></button></td>";
         tr.children[0].textContent = item.created_at || "";
         tr.children[1].textContent = item.id || "";
-        tr.children[2].textContent = String(!!item.valid);
+        tr.children[2].textContent = yesNo(!!item.valid);
         tr.children[3].textContent = String(item.scanned || 0);
         tr.children[4].textContent = String(item.issue_count || 0);
         tr.children[5].textContent = (item.checks || []).join(", ");
+        tr.querySelector("button").textContent = translateText("Load");
         tr.querySelector("button").onclick = () => loadQualityRun(item.id);
         body.appendChild(tr);
       });
@@ -3494,16 +4384,16 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("qualityTable");
       const issues = (result && result.issues) || [];
       if (!issues.length) {
-        root.innerHTML = '<div class="empty">No quality issues</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No quality issues") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Severity</th><th>Check</th><th>Record</th><th>Field</th><th>Message</th><th>Value</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Severity", "Check", "Record", "Field", "Message", "Value"]);
       const body = table.querySelector("tbody");
       issues.forEach(issue => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td><pre></pre></td>";
-        tr.children[0].textContent = issue.severity || "";
+        tr.children[0].textContent = translateText(issue.severity || "");
         tr.children[1].textContent = issue.check || "";
         tr.children[2].textContent = issue.record_id || "";
         tr.children[3].textContent = issue.field || "";
@@ -3571,12 +4461,12 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const typeCounts = summary.by_type || {};
       Object.keys(typeCounts).sort().forEach(key => parts.push([key, typeCounts[key]]));
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Metric</th><th>Count</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Metric", "Count"]);
       const body = table.querySelector("tbody");
       parts.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td>";
-        tr.children[0].textContent = item[0];
+        tr.children[0].textContent = translateText(item[0]);
         tr.children[1].textContent = String(item[1]);
         body.appendChild(tr);
       });
@@ -3588,22 +4478,22 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderInbox(items) {
       const root = $("inboxTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No inbox items</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No inbox items") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Type</th><th>Severity</th><th>Status</th><th>Dataset</th><th>Record</th><th>Title</th><th>Recommended</th><th>Updated</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Type", "Severity", "Status", "Dataset", "Record", "Title", "Recommended", "Updated"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>";
-        tr.children[0].textContent = item.type || "";
-        tr.children[1].textContent = item.severity || "";
-        tr.children[2].textContent = item.status || "";
+        tr.children[0].textContent = translateText(item.type || "");
+        tr.children[1].textContent = translateText(item.severity || "");
+        tr.children[2].textContent = translateText(item.status || "");
         tr.children[3].textContent = item.dataset_id || "";
         tr.children[4].textContent = item.record_id || "";
         tr.children[5].textContent = item.title || item.summary || item.id || "";
-        tr.children[6].textContent = item.recommended_action || item.action || "";
+        tr.children[6].textContent = translateText(item.recommended_action || item.action || "");
         tr.children[7].textContent = item.updated_at || item.created_at || "";
         tr.ondblclick = () => loadInboxItem(item);
         body.appendChild(tr);
@@ -3661,11 +4551,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderIntentMatches(items) {
       const root = $("intentResultTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No intent matches</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No intent matches") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Score</th><th>Domain</th><th>Use Case</th><th>Action</th><th>Use</th><th>Required</th><th>Data Template</th><th>Body Template</th><th>Tool Template</th><th>View</th><th>Report</th><th>Dashboard</th><th>Next Steps</th><th>Matched</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Score", "Domain", "Use Case", "Action", "Use", "Required", "Data Template", "Body Template", "Tool Template", "View", "Report", "Dashboard", "Next Steps", "Matched"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const useCase = item.use_case || {};
@@ -3680,7 +4570,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         if (writeStep) {
           const useButton = document.createElement("button");
           useButton.className = "small primary";
-          useButton.textContent = "Load action";
+          useButton.textContent = translateText("Load action");
           useButton.onclick = () => useIntentWriteStep(writeStep);
           useCell.appendChild(useButton);
         }
@@ -3691,7 +4581,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         tr.children[9].textContent = useCase.preferred_view || "";
         tr.children[10].textContent = useCase.preferred_report || "";
         tr.children[11].textContent = useCase.preferred_dashboard || "";
-        tr.children[12].textContent = (item.next_steps || []).map(step => step.order + ". " + step.action + (step.dry_run ? " dry-run" : "")).join(" | ");
+        tr.children[12].textContent = (item.next_steps || []).map(step => step.order + ". " + translateText(step.action || "") + (step.dry_run ? " " + translateText("dry-run") : "")).join(" | ");
         tr.children[13].textContent = (item.matched || []).join(", ");
         body.appendChild(tr);
       });
@@ -3789,17 +4679,17 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderDomains(items) {
       const root = $("domainTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No business domains</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No business domains") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Domain</th><th>Ready</th><th>Use Cases</th><th>Datasets</th><th>Missing Templates</th><th>Actions</th><th>Views</th><th>Dashboards</th><th>Reports</th><th>Actions</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Domain", "Ready", "Use Cases", "Datasets", "Missing Templates", "Actions", "Views", "Dashboards", "Reports", "Actions"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = (item.title || item.domain || "") + " (" + (item.domain || "") + ")";
-        tr.children[1].textContent = item.initialized ? "yes" : "no";
+        tr.children[1].textContent = yesNo(item.initialized);
         tr.children[2].textContent = String((item.use_cases || []).length);
         tr.children[3].textContent = String((item.datasets || []).length);
         tr.children[4].textContent = (item.missing_templates || []).join(", ");
@@ -3810,11 +4700,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         const actionCell = tr.children[9];
         const inspect = document.createElement("button");
         inspect.className = "small";
-        inspect.textContent = "Inspect";
+        inspect.textContent = translateText("Inspect");
         inspect.onclick = () => setRaw(item);
         const bootstrap = document.createElement("button");
         bootstrap.className = "small primary";
-        bootstrap.textContent = "Bootstrap";
+        bootstrap.textContent = translateText("Bootstrap");
         bootstrap.onclick = async () => {
           $("bootstrapDomains").value = item.domain || "";
           await bootstrapTemplates(true);
@@ -3852,11 +4742,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderRelationships(items) {
       const root = $("relationshipTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No relationships</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No relationships") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Source Dataset</th><th>Field</th><th>Title</th><th>Type</th><th>Target Dataset</th><th>Source</th><th>Ready</th><th>Actions</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Source Dataset", "Field", "Title", "Type", "Target Dataset", "Source", "Ready", "Actions"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
@@ -3866,16 +4756,16 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         tr.children[2].textContent = item.source_title || "";
         tr.children[3].textContent = item.field_type || "";
         tr.children[4].textContent = item.target_dataset_id || "";
-        tr.children[5].textContent = item.from_template ? "template" : "dataset";
-        tr.children[6].textContent = item.initialized ? "yes" : "no";
+        tr.children[5].textContent = translateText(item.from_template ? "template" : "dataset");
+        tr.children[6].textContent = yesNo(item.initialized);
         const actionCell = tr.children[7];
         const inspect = document.createElement("button");
         inspect.className = "small";
-        inspect.textContent = "Inspect";
+        inspect.textContent = translateText("Inspect");
         inspect.onclick = () => setRaw(item);
         const openSource = document.createElement("button");
         openSource.className = "small";
-        openSource.textContent = "Open source";
+        openSource.textContent = translateText("Open source");
         openSource.onclick = () => openRelationshipDataset(item.source_dataset_id);
         actionCell.appendChild(inspect);
         actionCell.appendChild(document.createTextNode(" "));
@@ -3883,7 +4773,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         if (item.target_dataset_id) {
           const openTarget = document.createElement("button");
           openTarget.className = "small";
-          openTarget.textContent = "Open target";
+          openTarget.textContent = translateText("Open target");
           openTarget.onclick = () => openRelationshipDataset(item.target_dataset_id);
           actionCell.appendChild(document.createTextNode(" "));
           actionCell.appendChild(openTarget);
@@ -3927,7 +4817,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("datasetList");
       root.innerHTML = "";
       if (!state.datasets.length) {
-        root.innerHTML = '<div class="empty">No datasets</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No datasets") + '</div>';
         clearDatasetForm();
         updateModuleHeader(activeModuleName());
         return;
@@ -3938,7 +4828,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         btn.dataset.testid = "dataset-item";
         btn.innerHTML = '<div class="dataset-id"></div><div class="dataset-meta"></div>';
         btn.querySelector(".dataset-id").textContent = ds.id;
-        btn.querySelector(".dataset-meta").textContent = (ds.title || "Untitled") + " / " + ds.domain;
+        btn.querySelector(".dataset-meta").textContent = (ds.title || translateText("Untitled")) + " / " + ds.domain;
         btn.onclick = async () => {
           state.selectedDataset = ds.id;
           renderDatasets();
@@ -4030,7 +4920,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     async function deleteDataset() {
       try {
         const dataset = requireDataset();
-        if (!confirm("Delete dataset " + dataset + " and all its records?")) return;
+        if (!confirm(confirmText(["Delete dataset", dataset, "and all its records?"]))) return;
         await api("/api/v1/data/datasets/" + encodeURIComponent(dataset), { method: "DELETE" });
         state.selectedDataset = "";
         state.records = [];
@@ -4139,25 +5029,25 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderExportJobs(items) {
       const root = $("exportJobTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No export jobs</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No export jobs") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Created</th><th>Status</th><th>Format</th><th>Total</th><th>Bytes</th><th>Error</th><th>Download</th><th>ID</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Created", "Status", "Format", "Total", "Bytes", "Error", "Download", "ID"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.created_at || "";
-        tr.children[1].textContent = item.status || "";
-        tr.children[2].textContent = item.format || "";
+        tr.children[1].textContent = translateText(item.status || "");
+        tr.children[2].textContent = String(item.format || "").toUpperCase();
         tr.children[3].textContent = String(item.total || 0);
         tr.children[4].textContent = String(item.bytes || 0);
         tr.children[5].textContent = item.error || "";
         if (item.status === "completed" && item.download_path) {
           const link = document.createElement("button");
           link.className = "small";
-          link.textContent = "Download";
+          link.textContent = translateText("Download");
           link.onclick = () => downloadExportJob(item);
           tr.children[6].appendChild(link);
         }
@@ -4191,13 +5081,13 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderRecords(items) {
       const root = $("recordTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No records</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No records") + '</div>';
         return;
       }
       const keys = Array.from(new Set(items.flatMap(item => Object.keys(item.data || {})))).slice(0, 8);
       const table = document.createElement("table");
       const head = document.createElement("thead");
-      head.innerHTML = "<tr><th>ID</th><th>Title</th><th>Tags</th>" + keys.map(k => "<th></th>").join("") + "<th>Updated</th><th>Actions</th></tr>";
+      head.innerHTML = "<tr><th>" + translateText("ID") + "</th><th>" + translateText("Title") + "</th><th>" + translateText("Tags") + "</th>" + keys.map(k => "<th></th>").join("") + "<th>" + translateText("Updated") + "</th><th>" + translateText("Actions") + "</th></tr>";
       keys.forEach((key, index) => head.querySelectorAll("th")[index + 3].textContent = key);
       const body = document.createElement("tbody");
       items.forEach(item => {
@@ -4211,11 +5101,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         const actions = tr.children[tr.children.length - 1].querySelector(".row");
         const edit = document.createElement("button");
         edit.className = "small";
-        edit.textContent = "Edit";
+        edit.textContent = translateText("Edit");
         edit.onclick = () => loadRecordToEditor(item);
         const del = document.createElement("button");
         del.className = "small danger";
-        del.textContent = "Delete";
+        del.textContent = translateText("Delete");
         del.onclick = () => deleteRecordByID(item.id);
         actions.appendChild(edit);
         actions.appendChild(del);
@@ -4376,7 +5266,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
 
     function renderAccessPresets() {
       const select = $("accessPreset");
-      select.innerHTML = "<option value=''>Custom</option>";
+      select.innerHTML = "<option value=''>" + translateText("Custom") + "</option>";
       (state.accessPresets || []).forEach(item => {
         const option = document.createElement("option");
         option.value = item.id || "";
@@ -4427,7 +5317,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const reports = caps.reports || [];
       const dashboards = caps.dashboards || [];
       if (!domains.length) {
-        root.innerHTML = "<p>No business capabilities available for the current key.</p>";
+        root.innerHTML = "<p>" + translateText("No business capabilities available for the current key.") + "</p>";
         return;
       }
       root.innerHTML = "";
@@ -4437,7 +5327,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         box.className = "stack";
         box.innerHTML = "<h3><label class='check'><input class='access-domain' type='checkbox' value='" + escapeHTML(domainID) + "'> " + escapeHTML(domainID) + "</label></h3>";
         const table = document.createElement("table");
-        table.innerHTML = "<thead><tr><th>Grant</th><th>Business capability</th><th>Type</th><th>Description</th></tr></thead><tbody></tbody>";
+        table.innerHTML = tableHead(["Grant", "Business capability", "Type", "Description"]);
         const body = table.querySelector("tbody");
         const addRow = (item, type, value, checked) => {
           const tr = document.createElement("tr");
@@ -4446,7 +5336,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
           input.value = value;
           input.checked = !!checked;
           tr.children[1].textContent = item.title || item.id || value;
-          tr.children[2].textContent = type;
+          tr.children[2].textContent = translateText(type);
           tr.children[3].textContent = item.description || item.id || "";
           body.appendChild(tr);
         };
@@ -4493,9 +5383,9 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function recommendAccessAuthorization() {
       const purpose = $("accessAgentPurpose").value.trim();
       if (!purpose || !(state.accessPresets || []).length) {
-        $("accessRecommendation").innerHTML = "<p class='muted'>No authorization recommendation. Load presets and describe the agent purpose first.</p>";
-        applyI18n($("accessRecommendation"));
-        setStatus("No authorization recommendation. Load presets and describe the agent purpose first.", "err");
+        const message = "No authorization recommendation. Load presets and describe the agent purpose first.";
+        $("accessRecommendation").innerHTML = "<p class='muted'>" + translateText(message) + "</p>";
+        setStatus(message, "err");
         return;
       }
       const tokens = accessPurposeTokens(purpose);
@@ -4543,12 +5433,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderAccessRecommendation(rows, tokens) {
       const root = $("accessRecommendation");
       if (!rows.length) {
-        root.innerHTML = "<p class='muted'>No authorization recommendation. Load presets and describe the agent purpose first.</p>";
-        applyI18n(root);
+        root.innerHTML = "<p class='muted'>" + translateText("No authorization recommendation. Load presets and describe the agent purpose first.") + "</p>";
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Preset</th><th>Score</th><th>Matched</th><th>Setup</th><th>Scope</th><th>Action</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Preset", "Score", "Matched", "Setup", "Scope", "Action"]);
       const body = table.querySelector("tbody");
       rows.forEach(item => {
         const preset = item.preset || {};
@@ -4560,12 +5449,13 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
           .concat((preset.allowed_views || []).map(v => "view:" + v))
           .concat((preset.allowed_dashboards || []).map(v => "dashboard:" + v));
         const tr = document.createElement("tr");
-        tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td><button class='small'>Use preset</button></td>";
+        tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td><button class='small'></button></td>";
         tr.children[0].textContent = (preset.title || preset.id || "") + " (" + (preset.id || "") + ")";
         tr.children[1].textContent = String(item.score || 0);
         tr.children[2].textContent = (item.matched || tokens || []).slice(0, 8).join(", ");
         tr.children[3].textContent = setup.key_id + " / " + setup.user_id + " / " + setup.expires_at;
         tr.children[4].textContent = scope.slice(0, 8).join(", ") + (scope.length > 8 ? " ..." : "");
+        tr.querySelector("button").textContent = translateText("Use preset");
         tr.querySelector("button").onclick = () => {
           $("accessPreset").value = preset.id || "";
           $("accessKeyId").value = setup.key_id;
@@ -4640,7 +5530,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         delete policy.key;
         const out = await api("/api/v1/data/access/api-keys", { method: "POST", body: JSON.stringify(policy) });
         $("accessKeySecret").classList.remove("hide");
-        $("accessKeySecret").textContent = "Created key " + out.policy.id + ". Secret is shown once: " + out.key;
+        $("accessKeySecret").textContent = translateText("Created key") + " " + out.policy.id + ". " + translateText("Secret is shown once:") + " " + out.key;
         state.lastAccessKeySecret = out.key || "";
         renderAgentHandoff(out.policy, state.lastAccessKeySecret);
         setRaw(out);
@@ -4739,22 +5629,21 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderAccessPolicyDiff(rows) {
       const root = $("accessPolicyDiff");
       if (!rows.length) {
-        root.innerHTML = "<p class='muted'>No policy changes.</p>";
-        applyI18n(root);
+        root.innerHTML = "<p class='muted'>" + translateText("No policy changes.") + "</p>";
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Field</th><th>Change</th><th>Before</th><th>After</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Field", "Change", "Before", "After"]);
       const body = table.querySelector("tbody");
       rows.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.field || "";
-        tr.children[1].textContent = item.change || "";
+        tr.children[1].textContent = translateText(item.change || "");
         tr.children[2].textContent = item.before || "";
         tr.children[3].textContent = item.after || "";
-        if (item.change === "removed") tr.children[1].style.color = "var(--danger)";
-        if (item.change === "added") tr.children[1].style.color = "var(--ok)";
+        if (item.change === "removed") tr.children[1].classList.add("text-danger");
+        if (item.change === "added") tr.children[1].classList.add("text-ok");
         body.appendChild(tr);
       });
       root.innerHTML = "";
@@ -4779,22 +5668,21 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderAccessPolicyRisk(risks) {
       const root = $("accessPolicyRisk");
       if (!risks.length) {
-        root.innerHTML = "<p class='muted'>No local policy risks detected.</p>";
-        applyI18n(root);
+        root.innerHTML = "<p class='muted'>" + translateText("No local policy risks detected.") + "</p>";
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Severity</th><th>Code</th><th>Reason</th><th>Recommended</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Severity", "Code", "Reason", "Recommended"]);
       const body = table.querySelector("tbody");
       risks.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td>";
-        tr.children[0].textContent = item.severity || "";
+        tr.children[0].textContent = translateText(item.severity || "");
         tr.children[1].textContent = item.code || "";
-        tr.children[2].textContent = item.reason || "";
-        tr.children[3].textContent = item.recommendation || "";
-        if (item.severity === "high") tr.children[0].style.color = "var(--danger)";
-        if (item.severity === "medium") tr.children[0].style.color = "#9a6700";
+        tr.children[2].textContent = translateText(item.reason || "");
+        tr.children[3].textContent = translateText(item.recommendation || "");
+        if (item.severity === "high") tr.children[0].classList.add("text-danger");
+        if (item.severity === "medium") tr.children[0].classList.add("text-warn");
         body.appendChild(tr);
       });
       root.innerHTML = "";
@@ -4825,21 +5713,21 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         "Secret: " + (secret || "[not shown; create or rotate the key to show it once]"),
         "Expires at: " + (policy.expires_at || "not set"),
         "",
-        "Recommended agent rule:",
-        "- Prefer business actions for writes.",
-        "- Prefer dashboards, business views, reports, and aggregate APIs for analysis.",
-        "- Do not use raw dataset APIs unless allow_raw_data is explicitly true.",
-        "- Do not change schema unless the user/admin asks for schema governance.",
+        translateText("Recommended agent rule:"),
+        "- " + translateText("Prefer business actions for writes."),
+        "- " + translateText("Prefer dashboards, business views, reports, and aggregate APIs for analysis."),
+        "- " + translateText("Do not use raw dataset APIs unless allow_raw_data is explicitly true."),
+        "- " + translateText("Do not change schema unless the user/admin asks for schema governance."),
         "",
-        "Allowed domains: " + (domains.length ? domains.join(", ") : "none"),
-        "Allowed actions: " + (actions.length ? actions.join(", ") : "none"),
-        "Allowed views: " + (views.length ? views.join(", ") : "none"),
-        "Allowed reports: " + (reports.length ? reports.join(", ") : "none"),
-        "Allowed dashboards: " + (dashboards.length ? dashboards.join(", ") : "none"),
-        "Allowed raw datasets: " + (datasets.length ? datasets.join(", ") : "none"),
-        "Raw dataset API: " + (policy.allow_raw_data ? "allowed" : "disabled"),
-        "Sensitive fields: " + (policy.allow_sensitive ? "allowed" : "masked/denied"),
-        "Admin operations: " + (policy.allow_admin ? "allowed" : "disabled"),
+        translateText("Allowed domains:") + " " + (domains.length ? domains.join(", ") : translateText("none")),
+        translateText("Allowed actions:") + " " + (actions.length ? actions.join(", ") : translateText("none")),
+        translateText("Allowed views:") + " " + (views.length ? views.join(", ") : translateText("none")),
+        translateText("Allowed reports:") + " " + (reports.length ? reports.join(", ") : translateText("none")),
+        translateText("Allowed dashboards:") + " " + (dashboards.length ? dashboards.join(", ") : translateText("none")),
+        translateText("Allowed raw datasets:") + " " + (datasets.length ? datasets.join(", ") : translateText("none")),
+        translateText("Raw dataset API:") + " " + translateText(policy.allow_raw_data ? "allowed" : "disabled"),
+        translateText("Sensitive fields:") + " " + translateText(policy.allow_sensitive ? "allowed" : "masked/denied"),
+        translateText("Admin operations:") + " " + translateText(policy.allow_admin ? "allowed" : "disabled"),
         "",
         "REST header example:",
         "Authorization: Bearer " + (secret || "[API_KEY_SECRET]"),
@@ -4923,15 +5811,15 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderAgentOnboardingChecklist(rows) {
       const root = $("agentOnboardingChecklist");
       const table = document.createElement("table");
-      table.innerHTML = "<caption>Agent onboarding checklist</caption><thead><tr><th>Done</th><th>Step</th><th>Detail</th></tr></thead><tbody></tbody>";
+      table.innerHTML = "<caption>" + translateText("Agent onboarding checklist") + "</caption>" + tableHead(["Done", "Step", "Detail"]);
       const body = table.querySelector("tbody");
       rows.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td>";
-        tr.children[0].textContent = item.done ? "yes" : "no";
-        tr.children[0].style.color = item.done ? "var(--ok)" : "var(--danger)";
-        tr.children[1].textContent = item.step || "";
-        tr.children[2].textContent = item.detail || "";
+        tr.children[0].textContent = yesNo(item.done);
+        tr.children[0].classList.add(item.done ? "text-ok" : "text-danger");
+        tr.children[1].textContent = translateText(item.step || "");
+        tr.children[2].textContent = translateText(item.detail || "");
         body.appendChild(tr);
       });
       root.innerHTML = "";
@@ -4983,9 +5871,9 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
           normalizePolicyList(policy, "allowed_domains").length +
           normalizePolicyList(policy, "allowed_datasets").length,
         high_risk_exceptions: ["allow_admin", "allow_sensitive", "allow_raw_data"].filter(key => !!policy[key]),
-        checklist_done: checklist.filter(item => item.done === "yes").length,
+        checklist_done: checklist.filter(item => isYesText(item.done)).length,
         checklist_total: checklist.length,
-        readiness_allowed: readiness.filter(item => item.allowed === "yes").length,
+        readiness_allowed: readiness.filter(item => isYesText(item.allowed)).length,
         readiness_total: readiness.length,
         local_risk_count: risks.length
       };
@@ -4996,7 +5884,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (!policy.expires_at) steps.push("Set an expiration date before production use.");
       if (risks.some(item => item.severity === "high")) steps.push("Review high-risk admin or sensitive scopes with a data admin.");
       if (!readiness.length) steps.push("Run agent readiness before handing the key to MaClaw or an external agent.");
-      if (readiness.some(item => item.allowed === "no")) steps.push("Fix denied readiness checks before production use.");
+      if (readiness.some(item => item.allowed === "no" || item.allowed === translateText("no"))) steps.push("Fix denied readiness checks before production use.");
       if (!$("accessAgentHandoff").value.trim()) steps.push("Generate the handoff after creating or rotating the managed key.");
       if (!steps.length) steps.push("Store this packet with the change record and rotate the key on schedule.");
       return steps;
@@ -5070,15 +5958,15 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderAgentReadinessResult(rows) {
       const root = $("agentReadinessResult");
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Type</th><th>Resource</th><th>Allowed</th><th>Reasons</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Type", "Resource", "Allowed", "Reasons"]);
       const body = table.querySelector("tbody");
       rows.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.resource_type || "";
         tr.children[1].textContent = item.resource_id || "";
-        tr.children[2].textContent = item.allowed ? "yes" : "no";
-        tr.children[2].style.color = item.allowed ? "var(--ok)" : "var(--danger)";
+        tr.children[2].textContent = yesNo(item.allowed);
+        tr.children[2].classList.add(item.allowed ? "text-ok" : "text-danger");
         tr.children[3].textContent = (item.reasons || []).join("; ");
         body.appendChild(tr);
       });
@@ -5088,38 +5976,190 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
 
     async function loadAdminAccounts(showStatus = true) {
       try {
+        await loadDataTenants(false);
         const out = await api("/api/v1/data/admin/accounts");
         state.adminAccounts = Array.isArray(out?.items) ? out.items : [];
+        inferCurrentAdminScopeFromAccounts();
+        updateAdminControlScope();
         renderAdminAccounts();
         if (showStatus) setStatus("Administrator accounts loaded", "ok");
       } catch (err) {
-        $("adminAccounts").innerHTML = "<p class='muted'>Administrator account management requires data_admin with allow_admin.</p>";
+        $("adminAccounts").innerHTML = "<p class='muted'>" + translateText("Administrator account management requires data_admin with allow_admin.") + "</p>";
         if (showStatus) setStatus(err.message, "err");
       }
+    }
+
+    function inferCurrentAdminScopeFromAccounts() {
+      const username = ($("user").value || "").trim().toLowerCase();
+      const tenantID = ($("tenant").value || "default").trim().toLowerCase();
+      const item = (state.adminAccounts || []).find(account =>
+        (account.username || "").toLowerCase() === username &&
+        ((account.tenant_id || "default").toLowerCase() === tenantID || (account.admin_scope || "tenant") === "global")
+      );
+      if (item && item.admin_scope && state.currentAdminScope !== item.admin_scope) {
+        state.currentAdminScope = item.admin_scope;
+        saveSettings();
+      }
+    }
+
+    async function loadDataTenants(showStatus = true) {
+      try {
+        const out = await api("/api/v1/data/admin/tenants");
+        state.dataTenants = Array.isArray(out?.items) ? out.items : [];
+        renderDataTenants();
+        renderTenantOptions();
+        if (showStatus) setStatus("Tenant registry loaded", "ok");
+      } catch (err) {
+        if ($("dataTenants")) $("dataTenants").innerHTML = "<p class='muted'>" + translateText("Tenant registry requires a global data_admin session.") + "</p>";
+        if (showStatus) setStatus(err.message, "err");
+      }
+    }
+
+    function renderTenantOptions() {
+      const select = $("adminAccountTenant");
+      const loginTenantOptions = $("tenantOptions");
+      const current = (select && select.value) || ($("tenant").value.trim() || "default");
+      const tenants = state.dataTenants.length ? state.dataTenants : [{ id: current || "default", name: current || "default" }];
+      const options = tenants.map(t => "<option value='" + escapeHTML(t.id || "default") + "'>" + escapeHTML((t.name || t.id || "default") + " (" + (t.id || "default") + ")") + "</option>").join("");
+      if (select) {
+        select.innerHTML = options;
+        select.value = tenants.some(t => (t.id || "default") === current) ? current : (tenants[0]?.id || "default");
+      }
+      if (loginTenantOptions) loginTenantOptions.innerHTML = options;
+      updateAdminControlScope();
+    }
+
+    function renderHubRegistration(status) {
+      state.hubRegistration = status || state.hubRegistration;
+      const item = state.hubRegistration || {};
+      const setValue = (id, value) => { if ($(id)) $(id).value = value || ""; };
+      setValue("hubBaseUrl", item.hub_base_url);
+      setValue("hubPlatformId", item.platform_id || "datasrv");
+      setValue("hubPlatformName", item.platform_name || "MaClawDataSrv");
+      setValue("hubCallbackBaseUrl", item.callback_base_url);
+      setValue("hubVirtualMailDomain", item.virtual_mail_domain);
+      const stateEl = $("hubRegistrationState");
+      if (stateEl) {
+        const configured = !!item.configured;
+        const registered = !!item.registered;
+        const label = registered ? "Registered" : (configured ? "Configured" : "Not configured");
+        stateEl.dataset.i18nKey = label;
+        stateEl.textContent = translateText(label);
+        stateEl.classList.toggle("state-ok", registered);
+        stateEl.classList.toggle("state-warn", configured && !registered);
+      }
+    }
+
+    function hubRegistrationPayload() {
+      return {
+        hub_base_url: $("hubBaseUrl")?.value.trim() || "",
+        platform_id: $("hubPlatformId")?.value.trim() || "datasrv",
+        platform_name: $("hubPlatformName")?.value.trim() || "MaClawDataSrv",
+        callback_base_url: $("hubCallbackBaseUrl")?.value.trim() || "",
+        virtual_mail_domain: $("hubVirtualMailDomain")?.value.trim() || ""
+      };
+    }
+
+    async function loadHubRegistration(showStatus = true) {
+      return await withButtonBusy("loadHubRegistration", "Loading Hub", async () => { try {
+        const out = await api("/api/v1/data/admin/hub-registration");
+        renderHubRegistration(out.status || out);
+        if (showStatus) setStatus("Hub registration loaded", "ok");
+      } catch (err) { if (showStatus) setStatus(err.message, "err"); } });
+    }
+
+    async function saveHubRegistration() {
+      return await withButtonBusy("saveHubRegistration", "Saving Hub", async () => { try {
+        const out = await api("/api/v1/data/admin/hub-registration", { method: "POST", body: JSON.stringify(hubRegistrationPayload()) });
+        renderHubRegistration(out.status || out);
+        setStatus("Hub registration saved", "ok");
+      } catch (err) { setStatus(err.message, "err"); } });
+    }
+
+    async function registerHub() {
+      return await withButtonBusy("registerHub", "Registering Hub", async () => { try {
+        const saved = await api("/api/v1/data/admin/hub-registration", { method: "POST", body: JSON.stringify(hubRegistrationPayload()) });
+        renderHubRegistration(saved.status || saved);
+        const out = await api("/api/v1/data/admin/hub-registration/register", { method: "POST", body: "{}" });
+        renderHubRegistration(out.status || out);
+        setStatus("Hub registered", "ok");
+      } catch (err) { setStatus(err.message, "err"); } });
+    }
+
+    async function syncTenantsFromHub() {
+      return await withButtonBusy("syncTenantsFromHub", "Pulling tenants", async () => { try {
+        const out = await api("/api/v1/data/admin/hub-registration/sync-tenants", { method: "POST", body: "{}" });
+        state.dataTenants = Array.isArray(out?.tenants) ? out.tenants : state.dataTenants;
+        renderDataTenants();
+        renderTenantOptions();
+        await loadHubRegistration(false);
+        setStatus("Tenants pulled from Hub", "ok");
+      } catch (err) { setStatus(err.message, "err"); } });
+    }
+
+    function renderDataTenants() {
+      const root = $("dataTenants");
+      if (!root) return;
+      if (!state.dataTenants.length) {
+        root.innerHTML = "<p class='muted'>" + translateText("No Hub tenants synced yet.") + "</p>";
+        return;
+      }
+      const table = document.createElement("table");
+      table.innerHTML = tableHead(["Tenant", "Status", "Primary domain", "Virtual mail", "Source", "Synced"]);
+      const body = table.querySelector("tbody");
+      state.dataTenants.forEach(item => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td>";
+        tr.children[0].textContent = (item.name || item.id || "") + " / " + (item.id || "");
+        tr.children[1].textContent = translateText(item.status || "active");
+        tr.children[2].textContent = item.primary_domain || (item.domains || []).join(", ");
+        tr.children[3].textContent = item.virtual_mail_domain || "";
+        tr.children[4].textContent = item.source || "hub";
+        tr.children[5].textContent = item.synced_at ? (new Date(item.synced_at)).toLocaleString() : "";
+        body.appendChild(tr);
+      });
+      root.innerHTML = "";
+      root.appendChild(table);
+    }
+
+    async function syncHubTenants() {
+      return await withButtonBusy("syncHubTenants", "Syncing tenants", async () => { try {
+        const raw = $("hubTenantPayload").value.trim();
+        const payload = raw ? JSON.parse(raw) : { tenants: [] };
+        const out = await api("/api/v1/data/admin/tenants/sync", { method: "POST", body: JSON.stringify(payload) });
+        setRaw(out);
+        await loadDataTenants(false);
+        setStatus("Hub tenants synced", "ok");
+      } catch (err) {
+        setStatus(err.message, "err");
+      } });
     }
 
     function renderAdminAccounts() {
       const root = $("adminAccounts");
       if (!state.adminAccounts.length) {
-        root.innerHTML = "<p class='muted'>No administrator accounts loaded.</p>";
+        root.innerHTML = "<p class='muted'>" + translateText("No administrator accounts loaded.") + "</p>";
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Username</th><th>Display name</th><th>Role</th><th>Enabled</th><th>Last login</th><th>Updated</th><th></th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Username", "Display name", "Scope", "Role", "Enabled", "Last login", "Updated", ""]);
       const body = table.querySelector("tbody");
       state.adminAccounts.forEach(item => {
         const tr = document.createElement("tr");
-        tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td><button data-action='load'>Load</button> <button data-action='toggle'></button></td>";
+        tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td><button data-action='load'>Load</button> <button data-action='toggle'></button></td>";
         tr.children[0].textContent = item.username || "";
         tr.children[1].textContent = item.display_name || "";
-        tr.children[2].textContent = item.role || "";
-        tr.children[3].textContent = item.enabled ? "yes" : "no";
-        tr.children[4].textContent = item.last_login_at ? (new Date(item.last_login_at)).toLocaleString() : "never";
-        tr.children[5].textContent = item.updated_at ? (new Date(item.updated_at)).toLocaleString() : "";
-        tr.querySelector("button[data-action='load']").onclick = () => loadAdminAccountIntoForm(item);
+        tr.children[2].textContent = (item.admin_scope || "tenant") + " / " + (item.tenant_id || "default");
+        tr.children[3].textContent = item.role || "";
+        tr.children[4].textContent = yesNo(item.enabled);
+        tr.children[5].textContent = item.last_login_at ? (new Date(item.last_login_at)).toLocaleString() : neverText();
+        tr.children[6].textContent = item.updated_at ? (new Date(item.updated_at)).toLocaleString() : "";
+        const load = tr.querySelector("button[data-action='load']");
+        load.textContent = translateText("Load");
+        load.onclick = () => loadAdminAccountIntoForm(item);
         const toggle = tr.querySelector("button[data-action='toggle']");
-        toggle.textContent = item.enabled ? "Disable" : "Enable";
-        toggle.onclick = () => setAdminAccountEnabled(item.username, !item.enabled);
+        toggle.textContent = translateText(item.enabled ? "Disable" : "Enable");
+        toggle.onclick = () => setAdminAccountEnabled(item.username, item.tenant_id, !item.enabled, toggle);
         body.appendChild(tr);
       });
       root.innerHTML = "";
@@ -5130,6 +6170,8 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       $("adminAccountUsername").value = item.username || "";
       $("adminAccountDisplayName").value = item.display_name || "";
       $("adminAccountRole").value = item.role || "data_admin";
+      $("adminAccountScope").value = item.admin_scope || "tenant";
+      $("adminAccountTenant").value = item.tenant_id || "default";
       $("adminAccountPassword").value = "";
       setStatus("Administrator account loaded into form", "ok");
     }
@@ -5141,12 +6183,18 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         setStatus("Admin username and temporary password are required", "err");
         return;
       }
-      try {
+      if (isKnownTenantAdminSession()) {
+        $("adminAccountScope").value = "tenant";
+        $("adminAccountTenant").value = $("tenant").value.trim() || "default";
+      }
+      return await withButtonBusy("createAdminAccount", "Creating admin", async () => { try {
         const out = await api("/api/v1/data/admin/accounts", {
           method: "POST",
           body: JSON.stringify({
             username,
             password,
+            tenant_id: $("adminAccountTenant").value || ($("tenant").value.trim() || "default"),
+            admin_scope: $("adminAccountScope").value || "tenant",
             display_name: $("adminAccountDisplayName").value.trim(),
             role: $("adminAccountRole").value
           })
@@ -5157,7 +6205,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         setStatus("Administrator account created", "ok");
       } catch (err) {
         setStatus(err.message, "err");
-      }
+      } });
     }
 
     async function updateAdminAccount() {
@@ -5166,11 +6214,17 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         setStatus("Admin username is required", "err");
         return;
       }
-      try {
-        const out = await api("/api/v1/data/admin/accounts/" + encodeURIComponent(username), {
+      if (isKnownTenantAdminSession()) {
+        $("adminAccountScope").value = "tenant";
+        $("adminAccountTenant").value = $("tenant").value.trim() || "default";
+      }
+      return await withButtonBusy("updateAdminAccount", "Updating admin", async () => { try {
+        const tenantID = $("adminAccountTenant").value || ($("tenant").value.trim() || "default");
+        const out = await api("/api/v1/data/admin/accounts/" + encodeURIComponent(username) + "?tenant=" + encodeURIComponent(tenantID), {
           method: "PATCH",
           body: JSON.stringify({
             display_name: $("adminAccountDisplayName").value.trim(),
+            admin_scope: $("adminAccountScope").value || "tenant",
             role: $("adminAccountRole").value
           })
         });
@@ -5179,14 +6233,15 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         setStatus("Administrator account updated", "ok");
       } catch (err) {
         setStatus(err.message, "err");
-      }
+      } });
     }
 
-    async function setAdminAccountEnabled(username, enabled) {
+    async function setAdminAccountEnabled(username, tenantID, enabled, button) {
       if (!username) return;
-      if (!enabled && !confirm("Disable administrator " + username + "? Active sessions for this account will be revoked.")) return;
-      try {
-        const out = await api("/api/v1/data/admin/accounts/" + encodeURIComponent(username), {
+      if (!enabled && !confirm(confirmText(["Disable administrator", username + "?", "Active sessions for this account will be revoked."]))) return;
+      return await withButtonBusy(button, enabled ? "Enabling" : "Disabling", async () => { try {
+        const tenantQuery = tenantID || ($("adminAccountTenant").value || ($("tenant").value.trim() || "default"));
+        const out = await api("/api/v1/data/admin/accounts/" + encodeURIComponent(username) + "?tenant=" + encodeURIComponent(tenantQuery), {
           method: "PATCH",
           body: JSON.stringify({ enabled })
         });
@@ -5195,7 +6250,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         setStatus(enabled ? "Administrator account enabled" : "Administrator account disabled", "ok");
       } catch (err) {
         setStatus(err.message, "err");
-      }
+      } });
     }
 
     async function loadAdminSessions(showStatus = true) {
@@ -5205,7 +6260,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         renderAdminSessions();
         if (showStatus) setStatus("Administrator sessions loaded", "ok");
       } catch (err) {
-        $("adminSessions").innerHTML = "<p class='muted'>Administrator session management requires data_admin with allow_admin.</p>";
+        $("adminSessions").innerHTML = "<p class='muted'>" + translateText("Administrator session management requires data_admin with allow_admin.") + "</p>";
         if (showStatus) setStatus(err.message, "err");
       }
     }
@@ -5213,11 +6268,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderAdminSessions() {
       const root = $("adminSessions");
       if (!state.adminSessions.length) {
-        root.innerHTML = "<p class='muted'>No active administrator sessions.</p>";
+        root.innerHTML = "<p class='muted'>" + translateText("No active administrator sessions.") + "</p>";
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Session</th><th>User</th><th>Role</th><th>Current</th><th>Created</th><th>Expires</th><th></th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Session", "User", "Role", "Current", "Created", "Expires", ""]);
       const body = table.querySelector("tbody");
       state.adminSessions.forEach(item => {
         const tr = document.createElement("tr");
@@ -5225,22 +6280,27 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         tr.children[0].textContent = item.id || "";
         tr.children[1].textContent = item.username || item.user_id || "";
         tr.children[2].textContent = item.role || "";
-        tr.children[3].textContent = item.current ? "yes" : "no";
+        tr.children[3].textContent = yesNo(item.current);
         tr.children[4].textContent = item.created_at ? (new Date(item.created_at)).toLocaleString() : "";
         tr.children[5].textContent = item.expires_at ? (new Date(item.expires_at)).toLocaleString() : "";
-        tr.querySelector("button[data-action='shorten']").onclick = () => updateAdminSessionTTL(item.id, 1);
-        tr.querySelector("button[data-action='extend']").onclick = () => updateAdminSessionTTL(item.id, 12);
-        tr.querySelector("button[data-action='revoke']").onclick = () => revokeAdminSession(item.id, item.current);
+        const shorten = tr.querySelector("button[data-action='shorten']");
+        const extend = tr.querySelector("button[data-action='extend']");
+        const revoke = tr.querySelector("button[data-action='revoke']");
+        revoke.textContent = translateText("Revoke");
+        shorten.onclick = () => updateAdminSessionTTL(item.id, item.tenant_id, 1, shorten);
+        extend.onclick = () => updateAdminSessionTTL(item.id, item.tenant_id, 12, extend);
+        revoke.onclick = () => revokeAdminSession(item.id, item.tenant_id, item.current, revoke);
         body.appendChild(tr);
       });
       root.innerHTML = "";
       root.appendChild(table);
     }
 
-    async function updateAdminSessionTTL(sessionID, expiresHours) {
+    async function updateAdminSessionTTL(sessionID, tenantID, expiresHours, button) {
       if (!sessionID) return;
-      try {
-        const out = await api("/api/v1/data/admin/sessions/" + encodeURIComponent(sessionID), {
+      return await withButtonBusy(button, "Updating", async () => { try {
+        const tenantQuery = tenantID || ($("tenant").value.trim() || "default");
+        const out = await api("/api/v1/data/admin/sessions/" + encodeURIComponent(sessionID) + "?tenant=" + encodeURIComponent(tenantQuery), {
           method: "PATCH",
           body: JSON.stringify({ expires_hours: expiresHours })
         });
@@ -5249,21 +6309,22 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         setStatus("Administrator session expiry updated", "ok");
       } catch (err) {
         setStatus(err.message, "err");
-      }
+      } });
     }
 
-    async function revokeAdminSession(sessionID, current) {
+    async function revokeAdminSession(sessionID, tenantID, current, button) {
       if (!sessionID) return;
-      const prompt = current ? "Revoke your current administrator session? You may need to sign in again." : "Revoke administrator session " + sessionID + "?";
+      const prompt = current ? translateText("Revoke your current administrator session? You may need to sign in again.") : confirmText(["Revoke administrator session", sessionID + "?"]);
       if (!confirm(prompt)) return;
-      try {
-        const out = await api("/api/v1/data/admin/sessions/" + encodeURIComponent(sessionID), { method: "DELETE" });
+      return await withButtonBusy(button, "Revoking", async () => { try {
+        const tenantQuery = tenantID || ($("tenant").value.trim() || "default");
+        const out = await api("/api/v1/data/admin/sessions/" + encodeURIComponent(sessionID) + "?tenant=" + encodeURIComponent(tenantQuery), { method: "DELETE" });
         setRaw(out);
         await loadAdminSessions(false);
         setStatus("Administrator session revoked", "ok");
       } catch (err) {
         setStatus(err.message, "err");
-      }
+      } });
     }
 
     async function loadManagedAccessKeys(showStatus = true, loadMore = false) {
@@ -5289,7 +6350,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         updateAdminSummary();
         if (showStatus) setStatus("Managed API keys loaded", "ok");
       } catch (err) {
-        $("accessKeys").innerHTML = "<p class='muted'>Managed key list requires data_admin with allow_admin.</p>";
+        $("accessKeys").innerHTML = "<p class='muted'>" + translateText("Managed key list requires data_admin with allow_admin.") + "</p>";
         if (showStatus) setStatus(err.message, "err");
       }
     }
@@ -5297,11 +6358,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderManagedAccessKeys() {
       const root = $("accessKeys");
       if (!state.accessKeys.length) {
-        root.innerHTML = "<p class='muted'>No managed API keys.</p>";
+        root.innerHTML = "<p class='muted'>" + translateText("No managed API keys.") + "</p>";
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>ID</th><th>User</th><th>Role</th><th>Status</th><th>Scopes</th><th>Prefix</th><th>Expires</th><th>Last used</th><th></th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["ID", "User", "Role", "Status", "Scopes", "Prefix", "Expires", "Last used", ""]);
       const body = table.querySelector("tbody");
       state.accessKeys.forEach(item => {
         const scopes = []
@@ -5319,12 +6380,19 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         tr.children[3].textContent = accessKeyStatusLabel(item);
         tr.children[4].textContent = scopes.slice(0, 8).join(", ") + (scopes.length > 8 ? " ..." : "");
         tr.children[5].textContent = item.key_prefix || "";
-        tr.children[6].textContent = item.expires_at ? (new Date(item.expires_at)).toLocaleString() : "never";
-        tr.children[7].textContent = item.last_used_at ? (new Date(item.last_used_at)).toLocaleString() + (item.last_used_ip ? " / " + item.last_used_ip : "") : "never";
-        tr.querySelector("button[data-action='load']").onclick = () => loadManagedAccessKeyIntoForm(item.id);
-        tr.querySelector("button[data-action='preview']").onclick = () => previewManagedAccessKey(item.id);
-        tr.querySelector("button[data-action='rotate']").onclick = () => rotateManagedAccessKey(item.id);
+        tr.children[6].textContent = item.expires_at ? (new Date(item.expires_at)).toLocaleString() : neverText();
+        tr.children[7].textContent = item.last_used_at ? (new Date(item.last_used_at)).toLocaleString() + (item.last_used_ip ? " / " + item.last_used_ip : "") : neverText();
+        const load = tr.querySelector("button[data-action='load']");
+        const preview = tr.querySelector("button[data-action='preview']");
+        const rotate = tr.querySelector("button[data-action='rotate']");
+        load.textContent = translateText("Load");
+        preview.textContent = translateText("Preview");
+        rotate.textContent = translateText("Rotate");
+        load.onclick = () => loadManagedAccessKeyIntoForm(item.id);
+        preview.onclick = () => previewManagedAccessKey(item.id);
+        rotate.onclick = () => rotateManagedAccessKey(item.id);
         const disableButton = tr.querySelector("button[data-action='disable']");
+        disableButton.textContent = translateText("Disable");
         disableButton.disabled = !item.enabled;
         disableButton.onclick = () => disableManagedAccessKey(item.id);
         body.appendChild(tr);
@@ -5337,9 +6405,9 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function accessKeyStatusLabel(item) {
       const status = item.status || (item.enabled ? "active" : "disabled");
       if (status === "expiring_soon") {
-        return "expiring soon" + (item.expires_in_days ? " (" + item.expires_in_days + "d)" : "");
+        return translateText("expiring soon") + (item.expires_in_days ? " (" + item.expires_in_days + "d)" : "");
       }
-      return status.replace("_", " ");
+      return translateText(status.replace("_", " "));
     }
 
     async function loadManagedAccessKeyIntoForm(keyID) {
@@ -5391,11 +6459,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     }
 
     async function rotateManagedAccessKey(keyID) {
-      if (!keyID || !confirm("Rotate API key " + keyID + "? The old secret will stop working.")) return;
+      if (!keyID || !confirm(confirmText(["Rotate API key", keyID + "?", "The old secret will stop working."]))) return;
       try {
         const out = await api("/api/v1/data/access/api-keys/" + encodeURIComponent(keyID) + "/rotate", { method: "POST", body: "{}" });
         $("accessKeySecret").classList.remove("hide");
-        $("accessKeySecret").textContent = "Rotated key " + out.policy.id + ". New secret is shown once: " + out.key;
+        $("accessKeySecret").textContent = translateText("Rotated key") + " " + out.policy.id + ". " + translateText("New secret is shown once:") + " " + out.key;
         state.lastAccessKeySecret = out.key || "";
         renderAgentHandoff(out.policy, state.lastAccessKeySecret);
         setRaw(out);
@@ -5471,19 +6539,19 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderAccessReview(review) {
       const findings = review.findings || [];
       if (!findings.length) {
-        $("accessKeys").innerHTML = "<p class='muted'>No access review findings for the current filter.</p>";
+        $("accessKeys").innerHTML = "<p class='muted'>" + translateText("No access review findings for the current filter.") + "</p>";
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<caption>Total keys: " + (review.total || 0) + " / findings: " + (review.filtered || findings.length) + "</caption><thead><tr><th>Severity</th><th>Key</th><th>User</th><th>Status</th><th>Findings</th><th>Recommended</th></tr></thead><tbody></tbody>";
+      table.innerHTML = "<caption>" + translateText("Total keys") + ": " + (review.total || 0) + " / " + translateText("findings") + ": " + (review.filtered || findings.length) + "</caption>" + tableHead(["Severity", "Key", "User", "Status", "Findings", "Recommended"]);
       const body = table.querySelector("tbody");
       findings.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td>";
-        tr.children[0].textContent = item.severity || "";
+        tr.children[0].textContent = translateText(item.severity || "");
         tr.children[1].textContent = item.key_id || "";
         tr.children[2].textContent = item.user_id || "";
-        tr.children[3].textContent = item.status || "";
+        tr.children[3].textContent = translateText(item.status || "");
         tr.children[4].textContent = (item.codes || []).join(", ");
         tr.children[5].textContent = item.recommended || "";
         body.appendChild(tr);
@@ -5588,12 +6656,51 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       }
     }
 
-    function handleLanguageChange() {
+    function handleLanguageChange(event) {
+      const lang = (event && event.target && event.target.value) || currentLanguage();
+      syncLanguageControls(lang);
       saveSettings();
       applyI18n(document.body);
       if (activeModuleName() === "access" && state.governanceEvidence) {
         loadGovernanceEvidencePack().catch(err => setStatus(err.message, "err"));
       }
+      renderHubRegistration(state.hubRegistration);
+      renderDataTenants();
+      if (state.adminAccounts.length) renderAdminAccounts();
+      if (state.adminSessions.length) renderAdminSessions();
+      if (state.accessKeys.length) renderManagedAccessKeys();
+      if (state.businessActions.length) renderBusinessActions();
+      if (state.businessRules.length) renderBusinessRules();
+      if (state.eventContracts.length) renderEventContracts();
+      if (state.connectors.length) renderConnectors();
+      if (state.connectorSyncRuns.length) renderConnectorSyncRuns(state.connectorSyncRuns);
+      if (state.businessViews.length) renderBusinessViews();
+      if (state.businessViewRecords.length) renderViewRecords(state.businessViewRecords);
+      if (state.dashboards.length) renderDashboards();
+      if (state.reports.length) renderReports();
+      if (state.qualityChecks.length) renderQualityChecks();
+      if (state.qualityRuns.length) renderQualityRuns(state.qualityRuns);
+      if (state.inboxItems.length) renderInbox(state.inboxItems);
+      if (state.inboxSummary && Object.keys(state.inboxSummary).length) renderInboxSummary(state.inboxSummary);
+      if (state.domains.length) renderDomains(state.domains);
+      if (state.relationships.length) renderRelationships(state.relationships);
+      if (state.datasets.length) renderDatasets();
+      if ((state.exportJobs || []).length) renderExportJobs(state.exportJobs);
+      if (state.records.length) renderRecords(state.records);
+      if (state.accessCapabilities) renderAccessCatalog(state.accessCapabilities);
+      if (state.accessPresets.length) renderAccessPresets();
+      if (state.schemaProposals.length) renderSchemaProposals();
+      if (state.importJobs.length) renderImportJobs(state.importJobs);
+      if (state.recordRevisions.length) renderRecordRevisions(state.recordRevisions);
+      if (state.relatedRecords.length) renderRelatedRecords(state.relatedRecords);
+      if (state.recordTimeline.length) renderRecordTimeline(state.recordTimeline);
+      if (state.approvals.length) renderApprovals(state.approvals);
+      if (state.auditLogs.length) renderAuditLogs(state.auditLogs);
+      if (state.dataEvents.length) renderDataEvents(state.dataEvents);
+      if (state.eventDeadLetters.length) renderEventDeadLetters(state.eventDeadLetters);
+      if (state.operationPlans.length) renderOperationPlans(state.operationPlans);
+      if (state.backups.length) renderBackups(state.backups);
+      if (state.stats && Object.keys(state.stats).length) renderStats(state.stats);
     }
 
     function renderGovernanceEvidenceSummary(pack) {
@@ -5607,13 +6714,12 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       }
       root.innerHTML = "";
       const header = document.createElement("div");
-      header.className = "row";
-      header.style.justifyContent = "space-between";
+      header.className = "row section-title-row";
       const title = document.createElement("h3");
-      title.textContent = "Evidence summary";
+      title.textContent = translateText("Evidence summary");
       const copy = document.createElement("button");
       copy.className = "small";
-      copy.textContent = "Copy summary";
+      copy.textContent = translateText("Copy summary");
       copy.dataset.testid = "copy-evidence-summary";
       copy.onclick = () => copyGovernanceEvidenceSummary(pack);
       header.appendChild(title);
@@ -5632,8 +6738,8 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         const item = document.createElement("div");
         item.className = "evidence-summary-item";
         item.innerHTML = "<div class='summary-label'></div><div class='evidence-summary-value'></div>";
-        item.children[0].textContent = row[0];
-        item.children[1].textContent = String(row[1]);
+        item.children[0].textContent = translateText(row[0]);
+        item.children[1].textContent = typeof row[1] === "string" ? translateText(row[1]) : String(row[1]);
         const value = item.children[1];
         if (row[0] === "Status") value.classList.add(summary.status === "ready" ? "ok" : "warn");
         if (row[0] === "Risk") value.classList.add(summary.risk_level === "low" ? "ok" : "warn");
@@ -5649,18 +6755,18 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         root.appendChild(preview);
       }
       const table = document.createElement("table");
-      table.innerHTML = "<caption>Governance controls</caption><thead><tr><th>Control</th><th>Status</th><th>Detail</th><th>Action</th></tr></thead><tbody></tbody>";
+      table.innerHTML = "<caption>" + translateText("Governance controls") + "</caption>" + tableHead(["Control", "Status", "Detail", "Action"]);
       const body = table.querySelector("tbody");
       controls.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.title || item.id || "";
-        tr.children[1].textContent = item.status || "";
+        tr.children[1].textContent = translateText(item.status || "");
         tr.children[2].textContent = item.detail || "";
         if (item.action_target) {
           const btn = document.createElement("button");
           btn.className = "small";
-          btn.textContent = item.recommended_action || "Open";
+          btn.textContent = translateText(item.recommended_action || "Open");
           btn.onclick = () => switchTab(item.action_target);
           tr.children[3].appendChild(btn);
         } else {
@@ -5673,7 +6779,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         const rec = document.createElement("div");
         rec.className = "recommendation-list";
         const heading = document.createElement("h3");
-        heading.textContent = "Recommendations";
+        heading.textContent = translateText("Recommendations");
         rec.appendChild(heading);
         recommendations.forEach(item => {
           const row = document.createElement("div");
@@ -5747,22 +6853,22 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderAccessRemediationPlan(plan) {
       const items = plan.items || [];
       if (!items.length) {
-        $("accessKeys").innerHTML = "<p class='muted'>No remediation actions for the current filter.</p>";
+        $("accessKeys").innerHTML = "<p class='muted'>" + translateText("No remediation actions for the current filter.") + "</p>";
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<caption>Suggested actions: " + (plan.total || items.length) + "</caption><thead><tr><th>Severity</th><th>Key</th><th>Action</th><th>Method</th><th>Endpoint</th><th>Reason</th><th>Destructive</th></tr></thead><tbody></tbody>";
+      table.innerHTML = "<caption>" + translateText("Suggested actions") + ": " + (plan.total || items.length) + "</caption>" + tableHead(["Severity", "Key", "Action", "Method", "Endpoint", "Reason", "Destructive"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td></td>";
-        tr.children[0].textContent = item.severity || "";
+        tr.children[0].textContent = translateText(item.severity || "");
         tr.children[1].textContent = item.key_id || "";
         tr.children[2].textContent = item.action || "";
         tr.children[3].textContent = item.method || "";
         tr.children[4].textContent = item.endpoint || "";
         tr.children[5].textContent = item.reason || "";
-        tr.children[6].textContent = item.destructive ? "yes" : "no";
+        tr.children[6].textContent = yesNo(item.destructive);
         body.appendChild(tr);
       });
       $("accessKeys").innerHTML = "";
@@ -5770,7 +6876,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     }
 
     async function disableManagedAccessKey(keyID) {
-      if (!keyID || !confirm("Disable API key " + keyID + "?")) return;
+      if (!keyID || !confirm(confirmText(["Disable API key", keyID + "?"]))) return;
       try {
         const out = await api("/api/v1/data/access/api-keys/" + encodeURIComponent(keyID), { method: "DELETE" });
         setRaw(out);
@@ -5830,21 +6936,23 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (!root) return;
       const items = state.schemaProposals || [];
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No schema proposals</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No schema proposals") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Status</th><th>ID</th><th>Suggested</th><th>Reason</th><th>Updated</th><th>Actions</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Status", "ID", "Suggested", "Reason", "Updated", "Actions"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td><button class='small'>Load</button></td>";
-        tr.children[0].textContent = item.status || "pending";
+        tr.children[0].textContent = translateText(item.status || "pending");
         tr.children[1].textContent = item.id || "";
         tr.children[2].textContent = String((item.suggested || []).length);
         tr.children[3].textContent = item.reason || "";
         tr.children[4].textContent = item.updated_at || item.created_at || "";
-        tr.querySelector("button").onclick = () => loadSchemaProposalToEditor(item);
+        const load = tr.querySelector("button");
+        load.textContent = translateText("Load");
+        load.onclick = () => loadSchemaProposalToEditor(item);
         body.appendChild(tr);
       });
       root.innerHTML = "";
@@ -5873,7 +6981,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         const dataset = requireDataset();
         const body = parseJSONField("schemaProposalJson", { fields: [] });
         body.confirm = true;
-        if (!confirm("Apply schema proposal to " + dataset + "?")) return;
+        if (!confirm(confirmText(["Apply schema proposal to", dataset + "?"]))) return;
         await api("/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/schema-proposals/apply", { method: "POST", body: JSON.stringify(body) });
         await loadFields();
         await loadSchemaProposals(false);
@@ -5917,18 +7025,18 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("bulkUpdateTable");
       const items = result.validations || [];
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No matched records</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No matched records") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>#</th><th>ID</th><th>Valid</th><th>Errors</th><th>Unknown fields</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["#", "ID", "Valid", "Errors", "Unknown fields"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = String(item.index || 0);
         tr.children[1].textContent = item.id || "";
-        tr.children[2].textContent = String(!!item.valid);
+        tr.children[2].textContent = yesNo(!!item.valid);
         tr.children[3].textContent = (item.errors || []).join("; ");
         tr.children[4].textContent = (item.unknown_fields || []).join(", ");
         body.appendChild(tr);
@@ -5943,7 +7051,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         const body = parseJSONField("bulkDeleteJson", {});
         body.dry_run = !!dryRun;
         body.confirm = !dryRun;
-        if (!dryRun && !confirm("Apply bulk delete to matched records?")) return;
+        if (!dryRun && !confirm(translateText("Apply bulk delete to matched records?"))) return;
         const result = await api("/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/records/bulk-delete", { method: "POST", body: JSON.stringify(body) });
         renderBulkDeleteResult(result || {});
         setStatus(dryRun ? "Bulk delete dry-run matched: " + (result.total || 0) : "Bulk delete applied: " + (result.deleted || 0), "ok");
@@ -5955,11 +7063,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("bulkDeleteTable");
       const items = result.records || [];
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No matched records</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No matched records") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>ID</th><th>Title</th><th>Data</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["ID", "Title", "Data"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
@@ -6054,21 +7162,21 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderImportJobs(items) {
       const root = $("importJobTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No import jobs</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No import jobs") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Created</th><th>Status</th><th>Kind</th><th>Total</th><th>Imported</th><th>Valid</th><th>Error</th><th>ID</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Created", "Status", "Kind", "Total", "Imported", "Valid", "Error", "ID"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.created_at || "";
-        tr.children[1].textContent = item.status || "";
-        tr.children[2].textContent = item.kind || "";
+        tr.children[1].textContent = translateText(item.status || "");
+        tr.children[2].textContent = translateText(item.kind || "");
         tr.children[3].textContent = String(item.total || 0);
         tr.children[4].textContent = String(item.imported || 0);
-        tr.children[5].textContent = String(!!item.valid);
+        tr.children[5].textContent = yesNo(!!item.valid);
         tr.children[6].textContent = item.error || "";
         tr.children[7].textContent = item.id || "";
         body.appendChild(tr);
@@ -6114,17 +7222,17 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderRecordRevisions(items) {
       const root = $("revisionTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No revisions</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No revisions") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Time</th><th>Action</th><th>User</th><th>Title</th><th>Data</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Time", "Action", "User", "Title", "Data"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.created_at || "";
-        tr.children[1].textContent = item.action || "";
+        tr.children[1].textContent = translateText(item.action || "");
         tr.children[2].textContent = item.created_by || "";
         tr.children[3].textContent = item.title || "";
         tr.children[4].textContent = JSON.stringify(item.data || {});
@@ -6135,7 +7243,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (state.recordRevisionHasMore && state.recordRevisionNextBeforeID) {
         const more = document.createElement("button");
         more.className = "small";
-        more.textContent = "Load more";
+        more.textContent = translateText("Load more");
         more.onclick = () => loadRecordRevisions(true);
         root.appendChild(more);
       }
@@ -6168,11 +7276,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderRelatedRecords(items) {
       const root = $("revisionTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No related records</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No related records") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Direction</th><th>Relationship</th><th>Record</th><th>Title</th><th>Missing</th><th>Data</th><th>Actions</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Direction", "Relationship", "Record", "Title", "Missing", "Data", "Actions"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const rel = item.relationship || {};
@@ -6188,13 +7296,13 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         const actionCell = tr.children[6];
         const inspect = document.createElement("button");
         inspect.className = "small";
-        inspect.textContent = "Inspect";
+        inspect.textContent = translateText("Inspect");
         inspect.onclick = () => setRaw(item);
         actionCell.appendChild(inspect);
         if (record.dataset_id && record.id) {
           const open = document.createElement("button");
           open.className = "small primary";
-          open.textContent = "Open";
+          open.textContent = translateText("Open");
           open.onclick = () => {
             state.selectedDataset = record.dataset_id;
             renderDatasets();
@@ -6210,7 +7318,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (state.relatedHasMore && state.relatedNextBeforeID) {
         const more = document.createElement("button");
         more.className = "small";
-        more.textContent = "Load more";
+        more.textContent = translateText("Load more");
         more.onclick = () => loadRelatedRecords(true);
         root.appendChild(more);
       }
@@ -6244,18 +7352,18 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderRecordTimeline(items) {
       const root = $("revisionTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No timeline items</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No timeline items") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Time</th><th>Type</th><th>Action</th><th>User</th><th>Source</th><th>Summary</th><th>Details</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Time", "Type", "Action", "User", "Source", "Summary", "Details"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.created_at || "";
-        tr.children[1].textContent = item.type || "";
-        tr.children[2].textContent = item.action || "";
+        tr.children[1].textContent = translateText(item.type || "");
+        tr.children[2].textContent = translateText(item.action || "");
         tr.children[3].textContent = item.user_id || "";
         tr.children[4].textContent = item.source || "";
         tr.children[5].textContent = item.summary || "";
@@ -6267,7 +7375,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (state.recordTimelineHasMore && state.recordTimelineNextBeforeID) {
         const more = document.createElement("button");
         more.className = "small";
-        more.textContent = "Load more";
+        more.textContent = translateText("Load more");
         more.onclick = () => loadRecordTimeline(true);
         root.appendChild(more);
       }
@@ -6308,23 +7416,23 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderApprovals(items) {
       const root = $("approvalTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No approvals</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No approvals") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>ID</th><th>Status</th><th>Kind</th><th>Priority</th><th>Assignee</th><th>Due</th><th>Summary</th><th>Reused</th><th>Created By</th><th>Reviewed By</th><th>Updated</th><th>Actions</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["ID", "Status", "Kind", "Priority", "Assignee", "Due", "Summary", "Reused", "Created By", "Reviewed By", "Updated", "Actions"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.id || "";
-        tr.children[1].textContent = item.status || "";
-        tr.children[2].textContent = item.kind || "";
-        tr.children[3].textContent = item.priority || "";
+        tr.children[1].textContent = translateText(item.status || "");
+        tr.children[2].textContent = translateText(item.kind || "");
+        tr.children[3].textContent = translateText(item.priority || "");
         tr.children[4].textContent = item.assigned_to || "";
         tr.children[5].textContent = item.due_at || "";
         tr.children[6].textContent = item.summary || "";
-        tr.children[7].textContent = item.reused ? "yes" : "";
+        tr.children[7].textContent = item.reused ? yesNo(true) : "";
         tr.children[8].textContent = item.created_by || "";
         tr.children[9].textContent = item.reviewed_by || "";
         tr.children[10].textContent = item.updated_at || item.created_at || "";
@@ -6332,11 +7440,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         if (item.status === "pending") {
           const approve = document.createElement("button");
           approve.className = "small";
-          approve.textContent = "Approve";
+          approve.textContent = translateText("Approve");
           approve.onclick = () => reviewApproval(item.id, "approve");
           const reject = document.createElement("button");
           reject.className = "small danger";
-          reject.textContent = "Reject";
+          reject.textContent = translateText("Reject");
           reject.onclick = () => reviewApproval(item.id, "reject");
           actions.appendChild(approve);
           actions.appendChild(document.createTextNode(" "));
@@ -6381,7 +7489,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       try {
         const dataset = requireDataset();
         if (!id) throw new Error("Record ID is required");
-        if (!confirm("Delete record " + id + "?")) return;
+        if (!confirm(confirmText(["Delete record", id + "?"]))) return;
         await api("/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/records/" + encodeURIComponent(id), { method: "DELETE" });
         if ($("recordId").value.trim() === id) clearRecordEditor();
         setStatus("Record deleted", "ok");
@@ -6398,7 +7506,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         const dataset = requireDataset();
         const id = $("recordId").value.trim();
         if (!id) throw new Error("Record ID is required");
-        if (!confirm("Restore deleted record " + id + "?")) return;
+        if (!confirm(confirmText(["Restore deleted record", id + "?"]))) return;
         const result = await api("/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/records/" + encodeURIComponent(id) + "/restore", { method: "POST", body: JSON.stringify({ confirm: true, reason: "web console restore record" }) });
         loadRecordToEditor(result);
         setStatus("Record restored", "ok");
@@ -6411,7 +7519,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (!shouldShow) return;
       const more = document.createElement("button");
       more.className = "small";
-      more.textContent = "Load more";
+      more.textContent = translateText("Load more");
       more.onclick = onClick;
       root.appendChild(more);
     }
@@ -6480,17 +7588,17 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderAuditLogs(items) {
       const root = $("auditTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No audit logs</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No audit logs") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Time</th><th>Action</th><th>User</th><th>Dataset</th><th>Target</th><th>Summary</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Time", "Action", "User", "Dataset", "Target", "Summary"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.created_at || "";
-        tr.children[1].textContent = item.action || "";
+        tr.children[1].textContent = translateText(item.action || "");
         tr.children[2].textContent = item.user_id || "";
         tr.children[3].textContent = item.dataset_id || "";
         tr.children[4].textContent = ((item.target_type || "") + ":" + (item.target_id || "")).replace(/^:/, "");
@@ -6558,17 +7666,17 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderDataEvents(items) {
       const root = $("eventTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No events</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No events") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Time</th><th>Status</th><th>Source</th><th>Event</th><th>Business Action</th><th>Dataset</th><th>Record</th><th>Idempotency Key</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Time", "Status", "Source", "Event", "Business Action", "Dataset", "Record", "Idempotency Key"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.applied_at || "";
-        tr.children[1].textContent = item.result_status || "";
+        tr.children[1].textContent = translateText(item.result_status || "");
         tr.children[2].textContent = item.source || "";
         tr.children[3].textContent = item.event_type || "";
         tr.children[4].textContent = item.business_action_id || "";
@@ -6604,23 +7712,25 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("deadLetterTable");
       if (!root) return;
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No open dead letters</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No open dead letters") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Time</th><th>Status</th><th>Source</th><th>Business Action</th><th>Dataset</th><th>Record</th><th>Error</th><th></th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Time", "Status", "Source", "Business Action", "Dataset", "Record", "Error", ""]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td><pre></pre></td><td><button>Retry</button><button>Resolve</button></td>";
         tr.children[0].textContent = item.created_at || "";
-        tr.children[1].textContent = item.status || "";
+        tr.children[1].textContent = translateText(item.status || "");
         tr.children[2].textContent = item.source || "";
         tr.children[3].textContent = item.business_action_id || "";
         tr.children[4].textContent = item.dataset_id || "";
         tr.children[5].textContent = item.record_id || "";
         tr.children[6].querySelector("pre").textContent = item.error || "";
         const buttons = tr.children[7].querySelectorAll("button");
+        buttons[0].textContent = translateText("Retry");
+        buttons[1].textContent = translateText("Resolve");
         buttons[0].onclick = () => retryDeadLetter(item.id);
         buttons[1].onclick = () => resolveDeadLetter(item.id);
         body.appendChild(tr);
@@ -6688,35 +7798,35 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderOperationPlans(items) {
       const root = $("operationPlanTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No operation plans</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No operation plans") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Created</th><th>Status</th><th>Operation</th><th>Dataset</th><th>Risk</th><th>Matched</th><th>Summary</th><th>Actions</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Created", "Status", "Operation", "Dataset", "Risk", "Matched", "Summary", "Actions"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.created_at || "";
-        tr.children[1].textContent = item.status || "";
+        tr.children[1].textContent = translateText(item.status || "");
         tr.children[2].textContent = item.operation || "";
         tr.children[3].textContent = item.dataset_id || "";
-        tr.children[4].textContent = item.risk_level || "";
+        tr.children[4].textContent = translateText(item.risk_level || "");
         tr.children[5].textContent = String((item.preview && item.preview.matched) || 0);
         tr.children[6].textContent = item.summary || "";
         const actions = tr.children[7];
         if (item.status === "pending") {
           const approve = document.createElement("button");
           approve.className = "small primary";
-          approve.textContent = "Approve";
+          approve.textContent = translateText("Approve");
           approve.onclick = () => reviewOperationPlan(item.id, "approve");
           const reject = document.createElement("button");
           reject.className = "small danger";
-          reject.textContent = "Reject";
+          reject.textContent = translateText("Reject");
           reject.onclick = () => reviewOperationPlan(item.id, "reject");
           const cancel = document.createElement("button");
           cancel.className = "small";
-          cancel.textContent = "Cancel";
+          cancel.textContent = translateText("Cancel");
           cancel.onclick = () => cancelOperationPlan(item.id);
           actions.appendChild(approve);
           actions.appendChild(document.createTextNode(" "));
@@ -6726,11 +7836,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         } else if (item.status === "approved") {
           const apply = document.createElement("button");
           apply.className = "small primary";
-          apply.textContent = "Apply";
+          apply.textContent = translateText("Apply");
           apply.onclick = () => applyOperationPlan(item.id);
           const cancel = document.createElement("button");
           cancel.className = "small";
-          cancel.textContent = "Cancel";
+          cancel.textContent = translateText("Cancel");
           cancel.onclick = () => cancelOperationPlan(item.id);
           actions.appendChild(apply);
           actions.appendChild(document.createTextNode(" "));
@@ -6752,7 +7862,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     }
 
     async function applyOperationPlan(id) {
-      if (!confirm("Apply operation plan " + id + "?")) return;
+      if (!confirm(confirmText(["Apply operation plan", id + "?"]))) return;
       try {
         await api("/api/v1/data/operation-plans/" + encodeURIComponent(id) + "/apply", { method: "POST", body: JSON.stringify({ confirm: true, reason: "web console apply" }) });
         setStatus("Operation plan applied", "ok");
@@ -6781,17 +7891,17 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const root = $("maintenanceResult");
       const items = result.tasks || [];
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No maintenance result</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No maintenance result") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Task</th><th>Status</th><th>Message</th><th>Duration ms</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Task", "Status", "Message", "Duration ms"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td><td></td><td></td>";
         tr.children[0].textContent = item.task || "";
-        tr.children[1].textContent = item.status || "";
+        tr.children[1].textContent = translateText(item.status || "");
         tr.children[2].textContent = item.message || "";
         tr.children[3].textContent = String(item.duration_ms || 0);
         body.appendChild(tr);
@@ -6818,12 +7928,12 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         ["Database bytes", String(stats.database_bytes || 0)]
       ];
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Metric", "Value"]);
       const body = table.querySelector("tbody");
       rows.forEach(row => {
         const tr = document.createElement("tr");
         tr.innerHTML = "<td></td><td></td>";
-        tr.children[0].textContent = row[0];
+        tr.children[0].textContent = translateText(row[0]);
         tr.children[1].textContent = row[1];
         body.appendChild(tr);
       });
@@ -6835,11 +7945,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderStatsDatasets(items) {
       const root = $("statsDatasetTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No datasets</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No datasets") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>Dataset</th><th>Title</th><th>Schema</th><th>Fields</th><th>Records</th><th>Updated</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["Dataset", "Title", "Schema", "Fields", "Records", "Updated"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
@@ -6884,11 +7994,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     function renderBackups(items) {
       const root = $("backupTable");
       if (!items.length) {
-        root.innerHTML = '<div class="empty">No backups</div>';
+        root.innerHTML = '<div class="empty">' + translateText("No backups") + '</div>';
         return;
       }
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>ID</th><th>Name</th><th>Size</th><th>SHA256</th><th>Created</th><th>Actions</th></tr></thead><tbody></tbody>";
+      table.innerHTML = tableHead(["ID", "Name", "Size", "SHA256", "Created", "Actions"]);
       const body = table.querySelector("tbody");
       items.forEach(item => {
         const tr = document.createElement("tr");
@@ -6903,11 +8013,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         const actions = tr.children[5];
         const download = document.createElement("button");
         download.className = "small";
-        download.textContent = "Download";
+        download.textContent = translateText("Download");
         download.onclick = () => downloadBackup(item.id);
         const restore = document.createElement("button");
         restore.className = "small danger";
-        restore.textContent = "Restore";
+        restore.textContent = translateText("Restore");
         restore.onclick = () => restoreBackup(item.id);
         actions.appendChild(download);
         actions.appendChild(document.createTextNode(" "));
@@ -6935,7 +8045,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     }
 
     async function restoreBackup(id) {
-      if (!confirm("Restore backup " + id + "? Current data will be replaced.")) return;
+      if (!confirm(confirmText(["Restore backup", id + "?", "Current data will be replaced."]))) return;
       try {
         await api("/api/v1/data/backups/" + encodeURIComponent(id) + "/restore", { method: "POST", body: JSON.stringify({ confirm: true, reason: "web console restore" }) });
         setStatus("Backup restored", "ok");
@@ -6943,9 +8053,28 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       } catch (err) { notifyError(err); }
     }
 
+    function syncTabAccessibility(name) {
+      document.querySelectorAll(".tab").forEach(btn => {
+        const selected = btn.dataset.tab === name;
+        const tabID = "module-tab-" + (btn.dataset.tab || "unknown");
+        if (!btn.id) btn.id = tabID;
+        btn.classList.toggle("active", selected);
+        btn.setAttribute("role", "tab");
+        btn.setAttribute("aria-selected", selected ? "true" : "false");
+        btn.setAttribute("aria-controls", btn.dataset.tab || "");
+        btn.tabIndex = selected ? 0 : -1;
+      });
+      document.querySelectorAll(".tab-panel").forEach(panel => {
+        const selected = panel.id === name;
+        panel.classList.toggle("hide", !selected);
+        panel.setAttribute("role", "tabpanel");
+        panel.setAttribute("aria-labelledby", "module-tab-" + panel.id);
+        panel.setAttribute("aria-hidden", selected ? "false" : "true");
+      });
+    }
+
     function switchTab(name) {
-      document.querySelectorAll(".tab").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === name));
-      document.querySelectorAll(".tab-panel").forEach(panel => panel.classList.toggle("hide", panel.id !== name));
+      syncTabAccessibility(name);
       updateModuleHeader(name);
       saveSettings();
       if (name === "inbox") loadInbox();
@@ -6966,6 +8095,20 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (name === "audit") listAuditLogs();
       if (name === "ops") loadStats();
       if (name === "access") loadAccessWorkspace(false);
+    }
+
+    function handleTabKeydown(event) {
+      if (!["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+      const tabs = Array.from(document.querySelectorAll(".tab"));
+      if (!tabs.length) return;
+      const current = Math.max(0, tabs.indexOf(document.activeElement));
+      let next = current;
+      if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = tabs.length - 1;
+      else next = (current + (event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+      event.preventDefault();
+      tabs[next].focus();
+      switchTab(tabs[next].dataset.tab);
     }
 
     $("saveAuth").onclick = checkConnection;
@@ -7101,6 +8244,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
 	$("refreshAdminSessions").onclick = () => loadAdminSessions(true);
 	$("createAdminAccount").onclick = createAdminAccount;
 	$("updateAdminAccount").onclick = updateAdminAccount;
+	$("syncHubTenants").onclick = syncHubTenants;
+	$("loadHubRegistration").onclick = () => loadHubRegistration(true);
+	$("saveHubRegistration").onclick = saveHubRegistration;
+	$("registerHub").onclick = registerHub;
+	$("syncTenantsFromHub").onclick = syncTenantsFromHub;
 	$("generateAgentHandoff").onclick = () => { renderAgentHandoff(currentAccessPolicyFromForm(), state.lastAccessKeySecret); setStatus("Agent handoff generated", "ok"); };
 	$("runAgentReadiness").onclick = runAgentReadinessCheck;
 	$("compareAccessPolicy").onclick = compareAccessPolicyChanges;
@@ -7120,13 +8268,19 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     $("accessGuideReview").onclick = reviewManagedAccessKeys;
     $("initializeAdmin").onclick = initializeAdmin;
     $("loginAdmin").onclick = loginAdmin;
+    $("refreshLoginTenants").onclick = refreshLoginTenantsFromHub;
+    $("signOut").onclick = signOut;
+    $("appLanguage").oninput = handleLanguageChange;
+    $("appLanguage").onchange = handleLanguageChange;
+    $("language").oninput = handleLanguageChange;
     $("accessKeyStatus").onchange = () => loadManagedAccessKeys(true);
     $("accessKeySearch").onkeydown = (event) => { if (event.key === "Enter") loadManagedAccessKeys(true); };
     $("accessKeyLimit").onkeydown = (event) => { if (event.key === "Enter") loadManagedAccessKeys(true); };
     $("runIntegrityCheck").onclick = () => runMaintenance(["integrity_check"]);
     $("runOptimize").onclick = () => runMaintenance(["integrity_check", "optimize"]);
-    $("runVacuum").onclick = () => { if (confirm("Run VACUUM now?")) runMaintenance(["integrity_check", "vacuum", "optimize"]); };
+    $("runVacuum").onclick = () => { if (confirm(translateText("Run VACUUM now?"))) runMaintenance(["integrity_check", "vacuum", "optimize"]); };
     $("tabs").onclick = (event) => { if (event.target.dataset.tab) switchTab(event.target.dataset.tab); };
+    $("tabs").onkeydown = handleTabKeydown;
     $("refreshOverview").onclick = async () => { await checkConnection(); await loadOverviewStats(false); await loadOverviewCapabilitiesData(false); await loadOverviewDomains(false); await loadOverviewAccessRisk(false); await loadOverviewWorkQueue(false); await loadOverviewIntegrationHealth(false); await loadOverviewActivity(false); switchTab("overview"); };
     $("refreshOverviewDomains").onclick = async () => { await loadOverviewDomains(true); };
     $("refreshOverviewAccessRisk").onclick = async () => { await loadOverviewAccessRisk(true); };
@@ -7147,9 +8301,13 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     });
     i18nObserver.observe(document.body, { childList: true, subtree: true });
     applyI18n(document.body);
-    if ($("token").value.trim() && savedSettings.active_tab && moduleMeta[savedSettings.active_tab]) {
-      switchTab(savedSettings.active_tab);
+    if ($("token").value.trim()) {
+      showAppShell();
+      if (savedSettings.active_tab && moduleMeta[savedSettings.active_tab]) switchTab(savedSettings.active_tab);
+      else { syncTabAccessibility("overview"); updateModuleHeader("overview"); }
     } else {
+      showAuthShell();
+      syncTabAccessibility("overview");
       updateModuleHeader("overview");
     }
     if ($("token").value.trim()) { loadOverviewStats(false); loadOverviewCapabilitiesData(false); loadOverviewDomains(false); loadOverviewAccessRisk(false); loadOverviewWorkQueue(false); loadOverviewIntegrationHealth(false); loadOverviewActivity(false); loadTemplates(); loadBusinessActions(); loadBusinessRules(); loadConnectors(); loadBusinessViews(); loadDashboards(); loadReports(); loadQualityChecks(); loadDatasets(); }

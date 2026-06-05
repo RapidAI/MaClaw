@@ -85,6 +85,7 @@ func NewResponsesAPIRequest(
 	if cfg.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	// Codex subscription headers for chatgpt.com/backend-api
 	if IsCodexSubscriptionEndpoint(cfg.URL) {
 		req.Header.Set("OpenAI-Beta", "responses=experimental")

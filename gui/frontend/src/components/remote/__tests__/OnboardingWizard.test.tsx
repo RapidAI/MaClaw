@@ -293,6 +293,28 @@ describe('OnboardingWizard registration', () => {
         expect(baseProps.onLLMConfigured).not.toHaveBeenCalled();
     });
 
+    it('localizes inactive redeem reasons in Chinese', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        RedeemHubLLMServiceMock.mockResolvedValue({
+            active: false,
+            skip_llm_config: false,
+            inactive_reasons: ['grant credits are exhausted'],
+        });
+
+        render(<OnboardingWizard {...baseProps} lang="zh-Hans" />);
+
+        if (!screen.queryByPlaceholderText('请输入服务兑换码（可选）')) {
+            fireEvent.click(screen.getByRole('button', { name: '下一步' }));
+        }
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.change(screen.getByPlaceholderText('请输入服务兑换码（可选）'), { target: { value: 'USEDUP' } });
+        fireEvent.click(screen.getByRole('button', { name: '注册' }));
+        fireEvent.click(screen.getByRole('button', { name: '确认注册' }));
+
+        expect(await screen.findByText(/授权额度已用尽/)).toBeTruthy();
+        expect(screen.queryByText(/grant credits are exhausted/)).toBeNull();
+    });
+
     it('skips LLM step when a period-limited grant is covered by another active official grant', async () => {
         ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
         RedeemHubLLMServiceMock.mockResolvedValue({
@@ -347,7 +369,8 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
-        expect(screen.getByText('Free trial')).toBeTruthy();
+        expect(screen.getByRole('button', { name: /Online mode/ }).getAttribute('aria-pressed')).toBe('true');
+        expect((screen.getByLabelText(/Free trial/) as HTMLInputElement).checked).toBe(true);
         fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
         expect(screen.getByText(/remaining bonus credits/)).toBeTruthy();
@@ -404,9 +427,15 @@ describe('OnboardingWizard registration', () => {
 
         expect(screen.getByLabelText(/Online mode/)).toBeTruthy();
         fireEvent.click(screen.getByLabelText(/Offline mode/));
-        expect(screen.getByText(/Hub registration will be skipped/i)).toBeTruthy();
-        expect(screen.getAllByText(/cannot access the public internet/i).length).toBeGreaterThan(0);
-        expect(screen.getAllByText(/web search/i).length).toBeGreaterThan(0);
+        expect(await screen.findByRole('dialog', { name: /Offline Mode Notice/i })).toBeTruthy();
+        expect(await screen.findByText(/classified or restricted networks/i)).toBeTruthy();
+        expect(screen.getByText(/web search will be limited/i)).toBeTruthy();
+        expect(screen.getByText(/Skip Hub registration and WeChat binding/i)).toBeTruthy();
+        fireEvent.keyDown(window, { key: 'Escape' });
+        await waitFor(() => {
+            expect(screen.queryByRole('dialog', { name: /Offline Mode Notice/i })).toBeNull();
+        });
+        expect(baseProps.onClose).not.toHaveBeenCalled();
 
         fireEvent.click(screen.getByRole('button', { name: 'Next' }));
         expect(await screen.findByText(/Pick a provider/)).toBeTruthy();
@@ -442,17 +471,21 @@ describe('OnboardingWizard registration', () => {
         expect(baseProps.onSaveField).toHaveBeenCalledWith({ onboarding_done: true });
     });
 
-    it('returns to the normal registration UI when offline mode is turned back off', () => {
+    it('returns to the normal registration UI when offline mode is turned back off', async () => {
         render(<OnboardingWizard {...baseProps} />);
 
         fireEvent.click(screen.getByLabelText(/Offline mode/));
         expect(screen.queryByPlaceholderText('name@example.com')).toBeNull();
-        expect(screen.getAllByText(/cannot access the public internet/i).length).toBeGreaterThan(0);
+        const offlineFreeTrial = screen.getByLabelText(/Free trial/) as HTMLInputElement;
+        expect(offlineFreeTrial.disabled).toBe(true);
+        expect(offlineFreeTrial.checked).toBe(false);
+        expect(await screen.findByText(/classified or restricted networks/i)).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: /I understand/i }));
 
         fireEvent.click(screen.getByLabelText(/Online mode/));
         expect(screen.getByPlaceholderText('name@example.com')).toBeTruthy();
-        expect(screen.getByText('Free trial')).toBeTruthy();
-        expect(screen.queryAllByText(/cannot access the public internet/i)).toHaveLength(0);
+        expect((screen.getByLabelText(/Free trial/) as HTMLInputElement).checked).toBe(true);
+        expect(screen.queryAllByText(/classified or restricted networks/i)).toHaveLength(0);
     });
 
     it('ignores stale Hub LLM status responses after switching to offline mode', async () => {
@@ -490,6 +523,7 @@ describe('OnboardingWizard registration', () => {
         await waitFor(() => {
             expect(screen.getByText(/Registration successful/)).toBeTruthy();
         });
+        expect(screen.getByRole('status').textContent).toMatch(/Registration successful/);
 
         expect(screen.queryByText(/not ready/i)).toBeNull();
         expect(screen.getByText(/Verifying free trial service/)).toBeTruthy();
@@ -610,6 +644,7 @@ describe('OnboardingWizard registration', () => {
         await waitFor(() => {
             expect(screen.getByText(/boom/)).toBeTruthy();
         });
+        expect(screen.getByRole('alert').textContent).toMatch(/boom/);
         expect(screen.getByRole('button', { name: 'Register' })).toBeTruthy();
         expect(baseProps.onRegistered).not.toHaveBeenCalled();
     });

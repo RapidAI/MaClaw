@@ -52,6 +52,12 @@ func ToolBash(args map[string]interface{}, onProgress func(string)) string {
 	if rejection, rejected := tool.RejectRawSSHCommand(command); rejected {
 		return rejection
 	}
+	if rejection, rejected := tool.RejectBroadBrowserKillCommand(command); rejected {
+		return rejection
+	}
+	if rejection, rejected := tool.RejectBrowserSideEffectHTTPCommand(command); rejected {
+		return rejection
+	}
 
 	timeout := ResolveBashTimeout(args, command)
 	workDir := ResolvePath(StringArg(args, "working_dir"))

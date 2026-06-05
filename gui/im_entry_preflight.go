@@ -37,7 +37,7 @@ func (h *IMMessageHandler) prepareIMMessagePreflight(msg *IMUserMessage, trimmed
 
 	h.extractSessionStartMemoryAsync(msg.UserID, result.EntriesBeforeClear)
 
-	if result.UnfinishedSlot == nil && !msg.IsBackground {
+	if shouldRecoverInFlightMarker(*msg, result.UnfinishedSlot, h.getSessionLoopCtx(msg.UserID)) {
 		if slot := h.recoverInterruptedTaskSlot(msg.UserID, result.EntriesBeforeClear); slot != nil {
 			result.UnfinishedSlot = slot
 		}
@@ -56,7 +56,7 @@ func (h *IMMessageHandler) prepareIMMessagePreflight(msg *IMUserMessage, trimmed
 	if h.app != nil && h.getSessionStarter() == nil {
 		h.ensureInteractionInfra()
 	}
-	if resp, handled, setsFreshTask := h.handleRecoverableSessionDecision(&result.Decision); handled {
+	if resp, handled, setsFreshTask := h.handleRecoverableSessionDecision(&result.Decision, msg.Lang); handled {
 		if setsFreshTask {
 			result.FreshTask = true
 		}

@@ -90,7 +90,7 @@ func TestRemoteSessionActionsDoNotInheritUnrelatedWorkflowPolicy(t *testing.T) {
 		t.Fatalf("SkipPhaseForm failed: %v", err)
 	}
 
-	if err := app.ensureWorkflowAllowsRemoteToolCall("create_session", map[string]interface{}{"tool": "codex"}); err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+	if err := app.ensureWorkflowAllowsRemoteToolCall(remoteSessionStartPolicyToolName, map[string]interface{}{"tool": "codex"}); err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
 		t.Fatalf("manual remote call must not inherit unrelated workflow policy: %v", err)
 	}
 }
@@ -230,6 +230,7 @@ func TestListRemoteToolMetadataReturnsKnownTools(t *testing.T) {
 		t.Fatalf("claude metadata = %#v, want installed and can_start", tools[0])
 	}
 	foundKilo := false
+	foundInstallableUninstalled := false
 	for _, tool := range tools {
 		if tool.Name == "kilo" {
 			foundKilo = true
@@ -240,9 +241,64 @@ func TestListRemoteToolMetadataReturnsKnownTools(t *testing.T) {
 				t.Fatal("expected kilo can_start=false when hidden")
 			}
 		}
+		if tool.Name == "codex" && !tool.Installed {
+			foundInstallableUninstalled = true
+			if !tool.CanStart {
+				t.Fatal("expected visible uninstalled codex to remain startable for on-demand install")
+			}
+			if tool.UnavailableReason == "" {
+				t.Fatal("expected uninstalled codex to keep unavailable reason for install hint")
+			}
+		}
 	}
 	if !foundKilo {
 		t.Fatal("expected kilo metadata to be present")
+	}
+	if !foundInstallableUninstalled {
+		t.Fatal("expected uninstalled codex metadata to be present")
+	}
+}
+
+func TestRemoteToolAutoInstallSupportedOnlyBuiltins(t *testing.T) {
+	for _, name := range []string{"claude", "codex", "opencode", "codebuddy", "iflow", "kilo"} {
+		if !remoteToolAutoInstallSupported(name) {
+			t.Fatalf("remoteToolAutoInstallSupported(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"browser", "custom-oem", "cursor", "gemini"} {
+		if remoteToolAutoInstallSupported(name) {
+			t.Fatalf("remoteToolAutoInstallSupported(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestEnsureRemoteLaunchToolInstalledRejectsRemovedTools(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+
+	for _, name := range []string{"gemini", "cursor"} {
+		if err := app.ensureRemoteLaunchToolInstalled(name, RemoteLaunchSourceDesktop); err == nil {
+			t.Fatalf("ensureRemoteLaunchToolInstalled(%q) error = nil, want not installed error", name)
+		}
+	}
+	if err := app.ensureRemoteLaunchToolInstalled("browser", RemoteLaunchSourceDesktop); err != nil {
+		t.Fatalf("ensureRemoteLaunchToolInstalled(browser) error = %v, want nil", err)
+	}
+}
+
+func TestInstallToolOnDemandUncheckedRejectsRemovedTools(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+
+	for _, name := range []string{"gemini", "cursor", "custom-oem"} {
+		err := app.installToolOnDemandUnchecked(name)
+		if err == nil || !strings.Contains(err.Error(), "automatic installation is not supported") {
+			t.Fatalf("installToolOnDemandUnchecked(%q) error = %v, want unsupported auto-install", name, err)
+		}
 	}
 }
 

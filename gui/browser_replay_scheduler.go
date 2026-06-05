@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
@@ -12,7 +11,7 @@ import (
 )
 
 // browserReplaySchedulerBridge wraps the scheduled task executor to handle
-// browser_replay type actions by spawning background replay tasks.
+// browser_replay type actions.
 type browserReplaySchedulerBridge struct {
 	loopMgr       *agent.BackgroundLoopManager
 	recorder      *browser.BrowserRecorder
@@ -21,56 +20,34 @@ type browserReplaySchedulerBridge struct {
 	statusC       chan agent.StatusEvent
 }
 
-// handleScheduledReplay checks if a scheduled task is a browser replay and executes it.
+// handleScheduledReplay rejects legacy browser replay schedules. Stable browser
+// automation uses browser(action="session_start") plus task_run in one session;
+// replay remains disabled because old flows can carry stale selectors and
+// coordinate-style actions.
 // Returns (result, err, handled). If handled is false, the caller should use the default executor.
 func (b *browserReplaySchedulerBridge) handleScheduledReplay(task *scheduler.ScheduledTask) (string, error, bool) {
-	if task == nil || b.loopMgr == nil {
+	if task == nil {
 		return "", nil, false
 	}
 
-	// Try to parse as ScheduledReplayAction
 	var action browser.ScheduledReplayAction
 	if err := json.Unmarshal([]byte(task.Action), &action); err != nil {
-		return "", nil, false // not a structured action, let default executor handle
+		return "", nil, false
 	}
 	if !normalizeScheduledActionTypeKind(action.Type).IsBrowserReplay() || action.FlowName == "" {
 		return "", nil, false
 	}
-
-	// Load the flow
-	flow, err := b.recorder.LoadFlow(action.FlowName)
-	if err != nil {
-		return "", fmt.Errorf("加载流程 %s 失败: %w", action.FlowName, err), true
-	}
-
-	desc := fmt.Sprintf("定时回放: %s", flow.Name)
-	loopCtx, waitCh := b.loopMgr.SpawnOrQueue(agent.SlotKindBrowser, "", desc, 1)
-
-	logger := func(msg string) {
-		log.Printf("[scheduled-replay] %s", msg)
-	}
-	loopMgrAdapter := &bgLoopMgrAdapter{mgr: b.loopMgr}
-
-	if loopCtx != nil {
-		go browser.RunReplayInBackground(loopCtx, flow, action.Overrides, b.replayer, b.activityStore, b.statusC, loopMgrAdapter, logger)
-		return fmt.Sprintf("定时回放 [%s] 已提交后台执行 (task_id=%s)", flow.Name, loopCtx.ID), nil, true
-	}
-
-	// Queued
-	go func() {
-		ctx := <-waitCh
-		browser.RunReplayInBackground(ctx, flow, action.Overrides, b.replayer, b.activityStore, b.statusC, loopMgrAdapter, logger)
-	}()
-	queuePos := b.loopMgr.QueueLength(agent.SlotKindBrowser)
-	return fmt.Sprintf("定时回放 [%s] 已排队（位置 %d）", flow.Name, queuePos), nil, true
+	return "", fmt.Errorf("browser_replay schedules are disabled; use browser(action=\"session_start\") plus browser(action=\"task_run\", session_id=...)"), true
 }
 
 // wrapExecutorWithReplay wraps an existing TaskExecutor to intercept browser_replay actions.
 func wrapExecutorWithReplay(original scheduler.TaskExecutor, bridge *browserReplaySchedulerBridge) scheduler.TaskExecutor {
 	return func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
-		result, err, handled := bridge.handleScheduledReplay(task)
-		if handled {
-			return result, err
+		if bridge != nil {
+			result, err, handled := bridge.handleScheduledReplay(task)
+			if handled {
+				return result, err
+			}
 		}
 		if original != nil {
 			return original(ctx, task)

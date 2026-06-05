@@ -301,7 +301,7 @@ Return ONLY the JSON object, no markdown, no commentary.`
 	userPrompt := fmt.Sprintf("[A] (%s) %s\n[B] (%s) %s",
 		a.Category, a.Content, b.Category, b.Content)
 
-	resp, err := llm.ChatCall([]map[string]string{
+	resp, err := chatCallWithContext(ctx, llm, []map[string]string{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": userPrompt},
 	})

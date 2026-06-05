@@ -61,54 +61,9 @@ claude --output-format stream-json --input-format stream-json --verbose --includ
 
 ---
 
-## 2. Cursor Agent — Stream JSON 单向协议
+## 2. OpenAI Codex — 双后端架构
 
-**启动参数：**
-```
-agent -p <message> --output-format stream-json --trust --workspace <cwd>
-```
-
-**可选参数：**
-- `--resume <sessionId>` — 恢复会话
-- `--model <model>` — 指定模型
-- `--yolo` — 自动批准所有操作
-- `--mode plan|ask` — 设置工作模式
-
-**安装方式：**
-```bash
-curl https://cursor.com/install -fsS | bash
-```
-
-**通信协议：** stdout 逐行 JSON（只读，每次消息启动新进程）
-
-**输出事件类型：**
-```json
-// 系统初始化（返回 session_id）
-{"type":"system","subtype":"init","session_id":"xxx"}
-
-// 思考中
-{"type":"thinking","subtype":"started|completed"}
-
-// 助手回复
-{"type":"assistant","text":"..."}
-
-// 工具调用
-{"type":"tool_call","name":"edit_file","input":{...},"id":"xxx"}
-
-// 工具结果
-{"type":"result","output":{...},"id":"xxx"}
-```
-
-**特点：**
-- 每次用户消息启动一个新的 `agent` 子进程（非持久连接）
-- 中断通过 `SIGTERM` 信号
-- 与 Claude Code 的 stream-json 格式高度兼容，可复用同一套解析逻辑
-
----
-
-## 3. OpenAI Codex — 双后端架构
-
-### 3a. App Server 模式（默认）
+### 2a. App Server 模式（默认）
 
 **启动方式：**
 ```
@@ -178,11 +133,11 @@ codex app-server
 
 **权限处理：** 服务端通过反向 RPC 请求（带 id 的 method 调用）向客户端请求权限。
 
-### 3b. MCP Server 模式
+### 2b. MCP Server 模式
 
 通过环境变量 `CODEX_USE_MCP_SERVER=1` 启用。使用标准 MCP 协议，调用 `startSession` / `continueSession`。
 
-### 3c. Exec 模式（一次性）
+### 2c. Exec 模式（一次性）
 
 **启动参数：**
 ```
@@ -209,58 +164,9 @@ codex exec --json <prompt>
 
 ---
 
-## 4. Gemini CLI — ACP (Agent Communication Protocol)
+## 3. OpenCode — HTTP Server + SSE + Hook 插件
 
-**启动参数：**
-```
-gemini --experimental-acp [--model <model>] [--yolo]
-```
-
-**通信协议：** stdin/stdout JSON-RPC（标准化 ACP 协议）
-
-**客户端→服务端：**
-```json
-// 初始化
-{"id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false},"terminal":false},"clientInfo":{"name":"hapi","version":"1.0.0"}}}
-
-// 创建会话
-{"id":2,"method":"session/new","params":{"cwd":"/path","mcpServers":[...]}}
-
-// 加载已有会话
-{"id":3,"method":"session/load","params":{"sessionId":"xxx","cwd":"/path","mcpServers":[...]}}
-
-// 发送提示
-{"id":4,"method":"session/prompt","params":{"sessionId":"xxx","prompt":[{"type":"text","text":"hello"}]}}
-
-// 取消提示（通知，无 id）
-{"method":"session/cancel","params":{"sessionId":"xxx"}}
-```
-
-**服务端→客户端（通知）：**
-```json
-// 会话更新（增量）
-{"method":"session/update","params":{"sessionId":"xxx","update":{...}}}
-```
-
-**权限处理：** 服务端通过反向 RPC 请求：
-```json
-// 服务端请求权限
-{"id":100,"method":"session/request_permission","params":{"sessionId":"xxx","toolCall":{"toolCallId":"xxx","title":"Run command","kind":"shell","rawInput":{...}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]}}
-
-// 客户端响应
-{"id":100,"result":{"outcome":{"outcome":"selected","optionId":"allow"}}}
-```
-
-**特点：**
-- prompt 请求无超时限制（`timeoutMs: Infinity`）
-- 有"静默期"机制：发送 prompt 前后等待 session/update 安静一段时间确保状态同步
-- 支持 `session/load` 恢复已有会话
-
----
-
-## 5. OpenCode — HTTP Server + SSE + Hook 插件
-
-### 5a. HTTP Server 模式
+### 3a. HTTP Server 模式
 
 **启动参数：**
 ```
@@ -278,7 +184,7 @@ event: <event_type>
 data: <json_payload>
 ```
 
-### 5b. Hook 插件模式（本地）
+### 3b. Hook 插件模式（本地）
 
 OpenCode 支持通过 hook 插件将事件 POST 到指定 URL。
 
@@ -309,7 +215,7 @@ OpenCode 支持通过 hook 插件将事件 POST 到指定 URL。
 
 ---
 
-## 6. Kilo — HTTP Server + SSE（OpenCode 分支）
+## 4. Kilo — HTTP Server + SSE（OpenCode 分支）
 
 与 OpenCode 协议完全相同，仅启动命令不同：
 
@@ -326,9 +232,8 @@ kilo serve --port <PORT>
 
 | 模式 | 工具 | 通信方式 |
 |------|------|----------|
-| Stream JSON 双向 | Claude Code, Cursor Agent, CodeBuddy | stdin/stdout 逐行 JSON |
+| Stream JSON 双向 | Claude Code, CodeBuddy | stdin/stdout 逐行 JSON |
 | JSON-RPC Lite | Codex App Server | stdin/stdout 逐行 JSON-RPC |
-| ACP (JSON-RPC) | Gemini CLI | stdin/stdout 标准 JSON-RPC |
 | JSONL 只读 | Codex Exec | stdout JSONL |
 | HTTP + SSE | OpenCode, Kilo | HTTP API + SSE 事件流 |
 

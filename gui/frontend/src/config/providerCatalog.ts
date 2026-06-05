@@ -7,9 +7,7 @@ export const subscriptionUrls: { [key: string]: string } = {
     "MiniMax": "https://platform.minimaxi.com/user-center/payment/coding-plan",
     "百度千帆": "https://cloud.baidu.com/product/codingplan.html",
     "Codex": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
-    "Gemini": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
     "DeepSeek": "https://platform.deepseek.com/api_keys",
-    "ChatFire": "https://api.chatfire.cn/register?aff=jira",
     "XiaoMi": "https://platform.xiaomimimo.com/#/console/api-keys",
     "摩尔线程": "https://code.mthreads.com/",
     "快手": "https://www.streamlake.com/marketing/coding-plan",
@@ -17,11 +15,11 @@ export const subscriptionUrls: { [key: string]: string } = {
 };
 
 // Known provider API endpoints database
-// Organized by protocol type: anthropic (Claude), gemini, openai (Codex)
+// Organized by protocol type: anthropic (Claude), openai (Codex)
 export interface ProviderEndpoint {
     name: string;
     url: string;
-    protocol: 'anthropic' | 'gemini' | 'openai';
+    protocol: 'anthropic' | 'openai';
     region: 'china' | 'global';
     description?: string;
 }
@@ -40,11 +38,7 @@ export const knownProviderEndpoints: ProviderEndpoint[] = [
     { name: "MiniMax", url: "https://api.minimaxi.com/anthropic", protocol: "anthropic", region: "china" },
     { name: "DeepSeek", url: "https://api.deepseek.com/anthropic", protocol: "anthropic", region: "china" },
     { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/anthropic", protocol: "anthropic", region: "china", description: "Tencent Cloud Claude-compatible endpoint" },
-    { name: "ChatFire", url: "https://api.chatfire.cn/v1", protocol: "anthropic", region: "china" },
     { name: "OpenRouter", url: "https://openrouter.ai/api", protocol: "anthropic", region: "global" },
-
-    // Gemini Protocol
-    { name: "Google Gemini Official", url: "https://generativelanguage.googleapis.com/v1beta", protocol: "gemini", region: "global", description: "Official Google Gemini API" },
 
     // OpenAI Protocol (Codex)
     { name: "OpenAI Official", url: "https://api.openai.com/v1", protocol: "openai", region: "global", description: "Official OpenAI API" },
@@ -70,7 +64,6 @@ export const recommendedModels: { [provider: string]: { id: string; note?: strin
     "Doubao": [{ id: "doubao-seed-code-preview-latest" }],
     "MiniMax": [{ id: "MiniMax-M2.1" }],
     "DeepSeek": [{ id: "deepseek-chat" }],
-    "ChatFire": [{ id: "sonnet" }, { id: "gpt-5.1-codex-mini" }, { id: "gpt-4o" }, { id: "gemini-2.5-pro" }],
     "XiaoMi": [{ id: "mimo-v2-flash" }],
     "摩尔线程": [{ id: "GLM-4.7" }],
     "快手": [{ id: "kat-coder-pro-v1" }],
@@ -96,19 +89,60 @@ export const recommendedModels: { [provider: string]: { id: string; note?: strin
     ],
 };
 
-// Localized display names for providers that use non-English ModelName identifiers
+// Localized display names for provider/model identifiers shown in the UI.
 const providerDisplayNames: { [lang: string]: { [key: string]: string } } = {
     "en": {
+        "Custom": "Custom",
         "摩尔线程": "MooreThreads",
-        "快手": "Kuaishou"
+        "快手": "Kuaishou",
+        "鎽╁皵绾跨▼": "MooreThreads",
+        "蹇墜": "Kuaishou"
     },
     "zh-Hans": {
+        "Claude Official": "原厂",
+        "OpenAI Official": "原厂",
+        "Custom": "自定义",
+        "GLM": "智谱",
+        "Kimi": "月之暗面",
+        "Doubao": "豆包",
+        "Doubao Codex": "豆包 Codex",
+        "iFlytek": "讯飞星火",
+        "MiniMax": "MiniMax",
+        "DeepSeek": "深度求索",
+        "DeepSeek Codex": "深度求索 Codex",
+        "Baidu Qianfan": "百度千帆",
+        "Tencent Cloud": "腾讯云",
+        "Aliyun": "阿里云",
+        "XiaoMi": "小米",
+        "Moore Threads": "摩尔线程",
+        "Kuaishou": "快手",
         "摩尔线程": "摩尔线程",
-        "快手": "快手"
+        "快手": "快手",
+        "鎽╁皵绾跨▼": "摩尔线程",
+        "蹇墜": "快手"
     },
     "zh-Hant": {
+        "Claude Official": "原廠",
+        "OpenAI Official": "原廠",
+        "Custom": "自訂",
+        "GLM": "智譜",
+        "Kimi": "月之暗面",
+        "Doubao": "豆包",
+        "Doubao Codex": "豆包 Codex",
+        "iFlytek": "訊飛星火",
+        "MiniMax": "MiniMax",
+        "DeepSeek": "深度求索",
+        "DeepSeek Codex": "深度求索 Codex",
+        "Baidu Qianfan": "百度千帆",
+        "Tencent Cloud": "騰訊雲",
+        "Aliyun": "阿里雲",
+        "XiaoMi": "小米",
+        "Moore Threads": "摩爾線程",
+        "Kuaishou": "快手",
         "摩尔线程": "摩爾線程",
-        "快手": "快手"
+        "快手": "快手",
+        "鎽╁皵绾跨▼": "摩爾線程",
+        "蹇墜": "快手"
     }
 };
 

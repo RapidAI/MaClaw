@@ -62,3 +62,27 @@ func TestPersistentConversationMemoryRedactsLegacySecretsOnLoad(t *testing.T) {
 		t.Fatalf("redaction should preserve valid tool-call group, got %#v", entries)
 	}
 }
+
+func TestPersistentConversationMemoryStripsRolePrefixLeakBeforeDisk(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "conversation.json")
+	cm := NewPersistentConversationMemory(storePath)
+	cm.Save("desktop-user", []ConversationEntry{
+		{
+			Role:             "assistant",
+			Content:          "safe answer\nBrowser: SECRET_BROWSER_CONTENT",
+			ReasoningContent: "thinking\nTool: SECRET_REASONING_CONTENT",
+		},
+	})
+	cm.Stop()
+
+	data, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read persisted memory: %v", err)
+	}
+	serialized := string(data)
+	for _, secret := range []string{"Browser:", "Tool:", "SECRET_BROWSER_CONTENT", "SECRET_REASONING_CONTENT"} {
+		if strings.Contains(serialized, secret) {
+			t.Fatalf("persisted conversation leaked role-prefixed content %q: %s", secret, serialized)
+		}
+	}
+}

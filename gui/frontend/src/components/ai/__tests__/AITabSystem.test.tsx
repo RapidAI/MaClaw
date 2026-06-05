@@ -296,6 +296,27 @@ describe('useAITabManager', () => {
             expect(result.current.tabState.tabs.find(t => t.id === tabId)?.avatarDataURL).toBe("data:image/jpeg;base64,/9j/");
         });
 
+        it('keeps live group tab availability tied to the primary VE, not secondary participants', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            act(() => {
+                const tab = result.current.createVETab("machine-a", "Agent A");
+                result.current.upgradeVETabToGroup(tab!.id, ["machine-a", "ve-machine-b"]);
+            });
+            act(() => {
+                runtimeEvents.handlers.get("ve:status_change")?.({ payload: { employee: { machine_id: "machine-b", online_status: "offline" } } });
+            });
+
+            const groupTab = result.current.tabState.tabs.find(t => t.id === "ve-machine-a");
+            expect(groupTab?.onlineStatus).toBe("online");
+
+            act(() => {
+                runtimeEvents.handlers.get("ve:status_change")?.({ payload: { employee: { machine_id: "machine-a", online_status: "offline" } } });
+            });
+
+            expect(result.current.tabState.tabs.find(t => t.id === "ve-machine-a")?.onlineStatus).toBe("offline");
+        });
+
         it('activates upgraded live group tab when reopening the same VE', () => {
             const { result } = renderHook(() => useAITabManager());
 

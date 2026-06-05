@@ -7,14 +7,12 @@ type remoteToolNameKind string
 const (
 	remoteToolNameUnknown   remoteToolNameKind = ""
 	remoteToolNameClaude    remoteToolNameKind = "claude"
-	remoteToolNameGemini    remoteToolNameKind = "gemini"
 	remoteToolNameCodex     remoteToolNameKind = "codex"
 	remoteToolNameOpencode  remoteToolNameKind = "opencode"
 	remoteToolNameCodeBuddy remoteToolNameKind = "codebuddy"
 	remoteToolNameIFlow     remoteToolNameKind = "iflow"
 	remoteToolNameKilo      remoteToolNameKind = "kilo"
 	remoteToolNameKiloCode  remoteToolNameKind = "kilocode"
-	remoteToolNameCursor    remoteToolNameKind = "cursor"
 	remoteToolNameBrowser   remoteToolNameKind = "browser"
 )
 
@@ -24,8 +22,6 @@ func normalizeRemoteToolNameKind(toolName string) remoteToolNameKind {
 		return remoteToolNameClaude
 	case remoteToolNameClaude:
 		return remoteToolNameClaude
-	case remoteToolNameGemini:
-		return remoteToolNameGemini
 	case remoteToolNameCodex:
 		return remoteToolNameCodex
 	case remoteToolNameOpencode:
@@ -38,8 +34,6 @@ func normalizeRemoteToolNameKind(toolName string) remoteToolNameKind {
 		return remoteToolNameKilo
 	case remoteToolNameKiloCode:
 		return remoteToolNameKiloCode
-	case remoteToolNameCursor:
-		return remoteToolNameCursor
 	case remoteToolNameBrowser:
 		return remoteToolNameBrowser
 	default:
@@ -65,15 +59,13 @@ func (kind remoteToolNameKind) IsDesktopRemoteLaunchCapableBuiltin() bool {
 }
 
 func (kind remoteToolNameKind) RequiresZipSkills() bool {
-	return kind == remoteToolNameGemini || kind == remoteToolNameCodex
+	return kind == remoteToolNameCodex
 }
 
 func (kind remoteToolNameKind) ConfigDirName() string {
 	switch kind {
 	case remoteToolNameClaude:
 		return ".claude"
-	case remoteToolNameGemini:
-		return ".gemini"
 	case remoteToolNameCodex:
 		return ".codex"
 	case remoteToolNameOpencode:

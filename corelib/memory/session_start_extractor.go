@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"log"
 	"strings"
 	"sync"
@@ -50,8 +51,22 @@ func NewSessionStartExtractor(store *Store, llm LLMChatCaller) *SessionStartExtr
 // This should be called early in handleIMMessageWithLoop with the entries
 // loaded from the previous session (before the new message is appended).
 func (e *SessionStartExtractor) MaybeExtractAsync(userID string, entries []ConversationMessage) {
+	go e.MaybeExtract(context.Background(), userID, entries)
+}
+
+// MaybeExtract performs session-start extraction on the caller's goroutine.
+// The caller owns scheduling and cancellation.
+func (e *SessionStartExtractor) MaybeExtract(ctx context.Context, userID string, entries []ConversationMessage) {
 	if e == nil || e.llm == nil || !e.llm.IsConfigured() {
 		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return
+	default:
 	}
 	if len(entries) < 6 {
 		return
@@ -87,10 +102,10 @@ func (e *SessionStartExtractor) MaybeExtractAsync(userID string, entries []Conve
 		return
 	}
 
-	go e.extract(userID, entries)
+	e.extract(ctx, userID, entries)
 }
 
-func (e *SessionStartExtractor) extract(userID string, entries []ConversationMessage) {
+func (e *SessionStartExtractor) extract(ctx context.Context, userID string, entries []ConversationMessage) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[session-start-extractor] panic recovered: %v", r)
@@ -143,12 +158,18 @@ func (e *SessionStartExtractor) extract(userID string, entries []ConversationMes
 	if strings.TrimSpace(conversationText) == "" {
 		return
 	}
+	select {
+	case <-ctx.Done():
+		log.Printf("[session-start-extractor] canceled before LLM for user %s: %v", userID, ctx.Err())
+		return
+	default:
+	}
 
 	// Call LLM to extract a structured session summary.
 	// This is a simpler prompt than KnowledgeExtractor: we want a
 	// single cohesive summary rather than individual knowledge points.
 	// Inspired by Codex's phase1 output: raw_memory + rollout_summary.
-	summary, err := e.llm.ChatCall([]map[string]string{
+	summary, err := chatCallWithContext(ctx, e.llm, []map[string]string{
 		{"role": "system", "content": sessionExtractionPrompt},
 		{"role": "user", "content": conversationText},
 	})

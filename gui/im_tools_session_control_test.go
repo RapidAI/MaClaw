@@ -61,7 +61,7 @@ func TestToolControlSessionUsesNormalizedAction(t *testing.T) {
 		"session_id": "s1",
 		"action":     " INTERRUPT ",
 	})
-	if !strings.Contains(got, "中断") || exec.interruptCalls != 1 {
-		t.Fatalf("control_session result = %q interruptCalls=%d", got, exec.interruptCalls)
+	if !strings.Contains(got, "control_session is disabled") || exec.interruptCalls != 0 {
+		t.Fatalf("control_session should be disabled, result = %q interruptCalls=%d", got, exec.interruptCalls)
 	}
 }

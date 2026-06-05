@@ -1,9 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -15,6 +19,50 @@ func findProviderByName(providers []corelib.MaclawLLMProvider, name string) (cor
 		}
 	}
 	return corelib.MaclawLLMProvider{}, false
+}
+
+func TestEnsureViewerTokenThrottlesRecoveryWhenHubOmitsToken(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var enrollCalls atomic.Int32
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/start" {
+			http.NotFound(w, r)
+			return
+		}
+		enrollCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":        "approved",
+			"user_id":       "u_123",
+			"email":         "user@example.com",
+			"machine_id":    "m_123",
+			"machine_token": "mt_123",
+		})
+	}))
+	defer hub.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	cfg := corelib.AppConfig{RemoteHubURL: hub.URL, RemoteEmail: "user@example.com"}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	_, firstErr := app.ensureViewerToken(cfg)
+	_, secondErr := app.ensureViewerToken(cfg)
+	if firstErr == nil || secondErr == nil {
+		t.Fatalf("ensureViewerToken errors = %v, %v; want both errors", firstErr, secondErr)
+	}
+	if !strings.Contains(secondErr.Error(), "recovery throttled") {
+		t.Fatalf("second error = %v, want throttled", secondErr)
+	}
+	if got := enrollCalls.Load(); got != 1 {
+		t.Fatalf("enroll calls = %d, want throttled to 1", got)
+	}
+	if next, ok := app.hubViewerTokenRecoveryNextAttempt.Load().(time.Time); !ok || time.Until(next) <= 0 {
+		t.Fatalf("expected future retry time, got %v ok=%v", next, ok)
+	}
 }
 
 func TestApplyHubLLMServiceStatusToConfig_RemovesProviderWhenUnauthorized(t *testing.T) {
@@ -393,6 +441,55 @@ func TestGetMaclawLLMPanelState_KeepsHubProviderWhenPeriodLimited(t *testing.T) 
 	}
 	if _, ok := findProviderByName(saved.MaclawLLMProviders, hubServiceProviderName); !ok {
 		t.Fatalf("saved config lost hub provider while period-limited: %+v", saved.MaclawLLMProviders)
+	}
+}
+
+func TestSyncHubLLMServiceStatusPatchesWithoutStaleOverwrite(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "owner@example.com"
+	cfg.RemoteViewerToken = "viewer-token"
+	cfg.LogDetailEnabled = true
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	changed, err := app.syncHubLLMServiceStatusToConfig(HubLLMServiceStatus{
+		Active:        true,
+		HubLLMBaseURL: "https://hub.example.com/api/llm/v1/",
+	}, false)
+	if err != nil {
+		t.Fatalf("syncHubLLMServiceStatusToConfig() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("syncHubLLMServiceStatusToConfig() changed = false, want true")
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.RemoteEmail != "owner@example.com" || !reloaded.LogDetailEnabled {
+		t.Fatalf("unrelated fields overwritten by Hub LLM service sync: %#v", reloaded)
+	}
+	provider, ok := findProviderByName(reloaded.MaclawLLMProviders, hubServiceProviderName)
+	if !ok {
+		t.Fatalf("hub provider missing after service sync: %+v", reloaded.MaclawLLMProviders)
+	}
+	if provider.URL != "https://hub.example.com/api/llm/v1" || provider.Key != "viewer-token" || !provider.IsHubService {
+		t.Fatalf("hub provider not normalized/applied: %+v", provider)
+	}
+	if _, ok := findProviderByName(reloaded.MaclawLLMProviders, "Custom1"); !ok {
+		t.Fatalf("custom provider removed by Hub LLM service sync: %+v", reloaded.MaclawLLMProviders)
 	}
 }
 

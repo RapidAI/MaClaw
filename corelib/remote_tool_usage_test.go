@@ -6,7 +6,6 @@ func TestIsRemoteCodingToolTokenUsageProvider(t *testing.T) {
 	for _, provider := range []string{
 		" Codex:gpt-5.4 ",
 		"CLAUDE:sonnet",
-		"Gemini:2.5-pro",
 		"remote:opencode",
 	} {
 		if !IsRemoteCodingToolTokenUsageProvider(provider) {

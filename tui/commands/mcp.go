@@ -20,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // applyMCPAuth sets authentication and custom headers on an MCP HTTP request.
@@ -775,6 +776,9 @@ func mcpCallTool(args []string) error {
 
 	if *server == "" || *tool == "" {
 		return NewUsageError("usage: mcp call-tool --server <name> --tool <name> [--args '{...}']")
+	}
+	if coretool.IsDisabledExternalCodingSessionTool(*tool) {
+		return fmt.Errorf("external coding-session tool %q is disabled", *tool)
 	}
 
 	store := NewFileConfigStore(ResolveDataDir())

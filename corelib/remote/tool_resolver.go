@@ -22,8 +22,6 @@ func ToolsDir() string {
 // 非 npm 安装的工具返回空字符串。
 func PackageName(toolName string) string {
 	switch NormalizeRemoteToolName(toolName) {
-	case "gemini":
-		return "@google/gemini-cli"
 	case "codex":
 		return "@openai/codex"
 	case "opencode":
@@ -67,10 +65,6 @@ func BinaryNames(toolName string) []string {
 		return []string{"iflow"}
 	case "kilo":
 		return []string{"kilo", "kilocode"}
-	case "cursor":
-		return []string{"cursor-agent", "agent"}
-	case "gemini":
-		return []string{"gemini"}
 	default:
 		return []string{base}
 	}

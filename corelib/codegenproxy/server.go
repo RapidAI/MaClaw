@@ -18,7 +18,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
+
+func setCodeGenUpstreamHeaders(req *http.Request, clientName string) {
+	if req != nil {
+		req.Header.Set(corelib.CodeGenClientNameHeader, corelib.NormalizeCodeGenClientName(clientName))
+	}
+}
 
 // Server is the local Anthropic→OpenAI protocol conversion proxy.
 type Server struct {
@@ -30,6 +38,7 @@ type Server struct {
 	mu          sync.RWMutex
 	upstreamURL string // CodeGen OpenAI-compatible base URL
 	apiKey      string // CodeGen access token
+	clientName  string // X-Codegen-Client-Name value for upstream CodeGen requests
 	clientKey   string // optional local proxy API key for OpenAI/Anthropic clients
 }
 
@@ -50,9 +59,16 @@ func NewServer(addr string) *Server {
 
 // SetUpstream configures the upstream CodeGen endpoint and API key.
 func (s *Server) SetUpstream(baseURL, apiKey string) {
+	s.SetUpstreamWithClientName(baseURL, apiKey, corelib.CodeGenClientName)
+}
+
+// SetUpstreamWithClientName configures the upstream CodeGen endpoint, API key,
+// and CodeGen client identity header.
+func (s *Server) SetUpstreamWithClientName(baseURL, apiKey, clientName string) {
 	s.mu.Lock()
 	s.upstreamURL = strings.TrimRight(baseURL, "/")
 	s.apiKey = apiKey
+	s.clientName = strings.TrimSpace(clientName)
 	s.mu.Unlock()
 }
 
@@ -66,10 +82,10 @@ func (s *Server) SetClientAPIKey(apiKey string) {
 	s.mu.Unlock()
 }
 
-func (s *Server) getConfig() (string, string, string) {
+func (s *Server) getConfig() (string, string, string, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.upstreamURL, s.apiKey, s.clientKey
+	return s.upstreamURL, s.apiKey, s.clientName, s.clientKey
 }
 
 // resolveAPIKey determines the API key to use for the upstream request.
@@ -162,7 +178,7 @@ func (s *Server) Addr() net.Addr {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	upURL, _, _ := s.getConfig()
+	upURL, _, _, _ := s.getConfig()
 	status := "ok"
 	if upURL == "" {
 		status = "not_configured"
@@ -179,7 +195,7 @@ func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModelsForProtocol(w http.ResponseWriter, r *http.Request, protocol string) {
-	upURL, fallbackKey, clientKey := s.getConfig()
+	upURL, fallbackKey, clientName, clientKey := s.getConfig()
 	if upURL == "" {
 		writeError(w, http.StatusServiceUnavailable, "upstream not configured")
 		return
@@ -194,6 +210,7 @@ func (s *Server) handleModelsForProtocol(w http.ResponseWriter, r *http.Request,
 	}
 	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, upURL+"/models", nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	setCodeGenUpstreamHeaders(req, clientName)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -231,7 +248,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	upURL, fallbackKey, clientKey := s.getConfig()
+	upURL, fallbackKey, clientName, clientKey := s.getConfig()
 	if upURL == "" {
 		writeError(w, http.StatusServiceUnavailable, "upstream not configured")
 		return
@@ -256,6 +273,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Accept", r.Header.Get("Accept"))
 	upReq.Header.Set("Authorization", "Bearer "+apiKey)
+	setCodeGenUpstreamHeaders(upReq, clientName)
 
 	upResp, err := s.client.Do(upReq)
 	if err != nil {
@@ -281,7 +299,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upURL, fallbackKey, clientKey := s.getConfig()
+	upURL, fallbackKey, clientName, clientKey := s.getConfig()
 	if upURL == "" {
 		writeError(w, http.StatusServiceUnavailable, "upstream not configured")
 		return
@@ -321,6 +339,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	upReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, upEndpoint, bytes.NewReader(reqData))
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Authorization", "Bearer "+apiKey)
+	setCodeGenUpstreamHeaders(upReq, clientName)
 
 	upResp, err := s.client.Do(upReq)
 	if err != nil {

@@ -122,8 +122,8 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 		Structure:   structure,
 	})
 
-	log.Printf("[interrupt] user=%s msg=%q action=%s conf=%.2f domain=%v reason=%s",
-		userID, truncateForLog(messageText, 30), decision.Action, decision.Confidence, domainMatch, decision.Reason)
+	log.Printf("[interrupt] user=%s msg_len=%d action=%s conf=%.2f domain=%v reason=%s",
+		userID, len([]rune(messageText)), decision.Action, decision.Confidence, domainMatch, decision.Reason)
 
 	switch decision.Action {
 	case progress.ActionReplace:
@@ -257,8 +257,8 @@ func (ih *imInterruptHandler) HandleCorrection(
 	originalAction progress.ScheduleAction,
 	correctionAction progress.ScheduleAction,
 ) progress.InterruptResult {
-	log.Printf("[correction] user=%s original=%s correction=%s msg=%q",
-		userID, originalAction, correctionAction, truncateForLog(messageText, 30))
+	log.Printf("[correction] user=%s original=%s correction=%s msg_len=%d",
+		userID, originalAction, correctionAction, len([]rune(messageText)))
 
 	switch correctionAction {
 	case progress.ActionReplace:

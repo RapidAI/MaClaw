@@ -162,9 +162,12 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 		[]float64{0.9, 0.8},
 		[]float64{0.03, 0},
 		[]string{"tool_a"},
-		nil, // no reranker result
-		0,   // skillMatchScore
-		nil, // matchedSkills
+		[]string{"screenshot"}, // suppressedNames
+		true,                   // browserPublishAffordance
+		false,                  // explicitScreenshotRequest
+		nil,                    // no reranker result
+		0,                      // skillMatchScore
+		nil,                    // matchedSkills
 	)
 
 	// Call again with bodyAware=false to verify both paths work.
@@ -177,6 +180,9 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 		[]float64{0.7},
 		[]float64{-0.02},
 		[]string{"tool_c"},
+		nil,                    // suppressedNames
+		false,                  // browserPublishAffordance
+		true,                   // explicitScreenshotRequest
 		[]string{"tool_c"},     // with reranker result
 		0.5,                    // skillMatchScore
 		[]string{"deploy-app"}, // matchedSkills
@@ -195,5 +201,11 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 	}
 	if !strings.Contains(content, "routing_hint +0.0300") || !strings.Contains(content, "routing_hint -0.0200") {
 		t.Error("log should contain routing hint adjustments")
+	}
+	if !strings.Contains(content, "Execution affordances: browser_publish=true explicit_screenshot=false") {
+		t.Error("log should contain execution affordances")
+	}
+	if !strings.Contains(content, "Suppressed tools (1): [screenshot]") {
+		t.Error("log should contain suppressed tools")
 	}
 }

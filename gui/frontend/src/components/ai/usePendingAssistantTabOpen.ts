@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useRef } from "react";
-import type { CreateGroupTabOptions } from "./useAITabManager";
+import type { CreateGroupTabOptions, CreateProjectTabOptions } from "./useAITabManager";
 import type { AITab, AITabState } from "./AITabTypes";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
@@ -14,6 +14,8 @@ export interface PendingProjectTabOpen {
     initialMessage?: string;
     /** If true, send initialMessage (or taskTitle) as the first message after tab creation */
     autoSend?: boolean;
+    /** Changes the preparation copy shown while the new project-backed agent session is being created. */
+    prepareMode?: "restore-context" | "new-agent";
 }
 
 export interface PendingHistoryDiscussionOpen {
@@ -62,7 +64,7 @@ interface PendingAssistantTabOpenOptions {
     lang?: string;
     createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string) => AITab | null;
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
-    createProjectTab: (projectPath: string, taskTitle: string) => AITab | null;
+    createProjectTab: (projectPath: string, taskTitle: string, options?: CreateProjectTabOptions) => AITab | null;
     activateTab?: (tabId: string) => void;
     getTabState?: (tabId: string) => AITabState | undefined;
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
@@ -206,7 +208,7 @@ export function usePendingAssistantTabOpen({
 
         // Capture request data and clear pending state synchronously.
         // The guard above prevents re-entry when pending becomes null.
-        const { projectPath, taskTitle, initialMessage, autoSend } = pendingProjectTabOpen;
+        const { projectPath, taskTitle, initialMessage, autoSend, prepareMode } = pendingProjectTabOpen;
         onProjectTabHandledRef.current?.();
 
         // Check if the tab already exists in the tab list BEFORE creating it.
@@ -217,8 +219,15 @@ export function usePendingAssistantTabOpen({
         // protection against duplicate autoSend.
         const tabExistedInList = hasProjectTabRef.current?.(projectPath) ?? false;
 
-        const tab = createProjectTabRef.current(projectPath, taskTitle);
+        const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode });
         if (!tab) return;
+        console.info("[usePendingAssistantTabOpen] project tab opened", {
+            projectPath,
+            tabId: tab.id,
+            taskTitle,
+            autoSend: !!autoSend,
+            tabExistedInList,
+        });
 
         // Async operations use refs — no stale closure, no dependency churn.
         (async () => {

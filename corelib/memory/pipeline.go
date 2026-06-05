@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -21,8 +22,13 @@ type PipelineResult struct {
 	Profiles      []ConsolidationResult         `json:"profiles,omitempty"`
 	Dormant       int                           `json:"dormant_marked"`
 	Candidates    *CandidateConsolidationResult `json:"candidates,omitempty"`
+	LLMCallsUsed  int                           `json:"llm_calls_used,omitempty"`
+	LLMCallsLeft  int                           `json:"llm_calls_left,omitempty"`
+	LLMBudgetHit  bool                          `json:"llm_budget_hit,omitempty"`
 	Duration      string                        `json:"duration"`
 }
+
+const defaultPipelineLLMCallBudget = 3
 
 // PromoteResult holds the outcome of an episodic-to-semantic promotion run.
 type PromoteResult struct {
@@ -58,6 +64,7 @@ type Pipeline struct {
 	triggerTimer *time.Timer
 	lastRun      time.Time
 	lastResult   *PipelineResult
+	startDelay   time.Duration
 }
 
 // NewPipeline creates a Pipeline. Any component can be nil (skipped).
@@ -85,6 +92,21 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 	defer p.runMu.Unlock()
 	start := time.Now()
 	result := &PipelineResult{}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	budget := NewLLMCallBudget(defaultPipelineLLMCallBudget)
+	ctx = WithLLMCallBudget(ctx, budget)
+	defer func() {
+		used, left, exhausted := budget.Snapshot()
+		result.LLMCallsUsed = used
+		result.LLMCallsLeft = left
+		result.LLMBudgetHit = exhausted || left <= 0
+		if result.LLMBudgetHit {
+			log.Printf("[pipeline] LLM budget exhausted used=%d left=%d", used, left)
+		}
+		log.Printf("[pipeline] done duration=%s llm_calls_used=%d llm_calls_left=%d llm_budget_hit=%v", result.Duration, used, left, result.LLMBudgetHit)
+	}()
 
 	// Step 0: Decay strengths and mark dormant entries.
 	p.store.mu.RLock()
@@ -145,11 +167,13 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 		cr, err := p.compressor.Compress(ctx)
 		if err == nil {
 			result.Compress = cr
+		} else if errors.Is(err, ErrLLMCallBudgetExhausted) {
+			log.Printf("[pipeline] compress stopped: %v", err)
 		}
 	}
 
 	// Step 3: Synthesize (combined promotion + reflection in a single LLM call).
-	if p.synthesizer != nil && ctx.Err() == nil {
+	if p.synthesizer != nil && ctx.Err() == nil && !llmCallBudgetDepleted(ctx) {
 		sr, err := p.synthesizer.Synthesize(ctx)
 		if err != nil {
 			log.Printf("[pipeline] synthesize error: %v", err)
@@ -164,7 +188,7 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 
 	// Step 4: Stratified consolidation (L2-L5).
 	// In multi-tenant mode, run consolidation per-user to maintain isolation.
-	if p.consolidator != nil && ctx.Err() == nil {
+	if p.consolidator != nil && ctx.Err() == nil && !llmCallBudgetDepleted(ctx) {
 		// Get all unique owner IDs (users with memories).
 		ownerIDs := p.store.UniqueOwnerIDs()
 
@@ -193,7 +217,7 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 	// Step 5: Profile consolidation (L5 persona). In multi-tenant mode, profile
 	// synthesis is also owner-scoped; otherwise one user's persona can absorb
 	// another user's summaries and reflections.
-	if p.profiler != nil && ctx.Err() == nil {
+	if p.profiler != nil && ctx.Err() == nil && !llmCallBudgetDepleted(ctx) {
 		ownerIDs := p.store.UniqueOwnerIDs()
 		if len(ownerIDs) == 0 {
 			ownerIDs = []string{""}
@@ -219,11 +243,7 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 		copy(entries, p.store.entries)
 		p.store.mu.RUnlock()
 
-		var llm LLMChatCaller
-		if p.compressor != nil {
-			llm = p.compressor.llm
-		}
-		themes := p.store.themeManager.Rebuild(entries, llm)
+		themes := p.store.themeManager.RebuildContext(ctx, entries, nil)
 		if len(themes) > 0 {
 			log.Printf("[pipeline] theme layer: %d themes discovered", len(themes))
 		}
@@ -245,12 +265,26 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 
 // Start begins the background maintenance loop (every 6 hours).
 func (p *Pipeline) Start() {
+	p.start(0)
+}
+
+// StartDelayed begins the background loop after an initial delay. The periodic
+// cadence is unchanged after the first cycle.
+func (p *Pipeline) StartDelayed(initialDelay time.Duration) {
+	p.start(initialDelay)
+}
+
+func (p *Pipeline) start(initialDelay time.Duration) {
+	if initialDelay < 0 {
+		initialDelay = 0
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.running {
 		return
 	}
 	p.running = true
+	p.startDelay = initialDelay
 	ctx, cancel := context.WithCancel(context.Background())
 	p.ctx = ctx
 	p.cancelFn = cancel
@@ -301,7 +335,22 @@ func (p *Pipeline) TriggerSoon(delay time.Duration) {
 }
 
 func (p *Pipeline) loop(ctx context.Context) {
-	// Run immediately on start.
+	initialDelay := p.initialDelay()
+	if initialDelay > 0 {
+		timer := time.NewTimer(initialDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		case <-timer.C:
+		}
+	}
+	// Run immediately after the optional startup delay.
 	p.RunOnce(ctx)
 
 	ticker := time.NewTicker(6 * time.Hour)
@@ -314,6 +363,20 @@ func (p *Pipeline) loop(ctx context.Context) {
 			p.RunOnce(ctx)
 		}
 	}
+}
+
+func (p *Pipeline) initialDelay() time.Duration {
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.startDelay
+}
+
+func llmCallBudgetDepleted(ctx context.Context) bool {
+	budget, ok := LLMCallBudgetFromContext(ctx)
+	return ok && budget.Depleted()
 }
 
 // Status returns the last run info.

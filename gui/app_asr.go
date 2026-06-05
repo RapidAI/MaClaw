@@ -25,12 +25,7 @@ func (a *App) GetASREnabled() bool {
 
 // SetASREnabled enables/disables ASR. Auto-downloads model if enabling.
 func (a *App) SetASREnabled(enabled bool) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.ASREnabled = enabled
-	if err := a.SaveConfig(cfg); err != nil {
+	if _, err := a.PatchConfigFields(map[string]interface{}{"asr_enabled": enabled}); err != nil {
 		return err
 	}
 	if enabled {
@@ -114,14 +109,7 @@ func (a *App) downloadASRModel(autoEnable bool) error {
 
 // autoEnableASR sets ASREnabled=true in config after successful download.
 func (a *App) autoEnableASR() {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return
-	}
-	if !cfg.ASREnabled {
-		cfg.ASREnabled = true
-		a.SaveConfig(cfg)
-	}
+	_, _ = a.PatchConfigFields(map[string]interface{}{"asr_enabled": true})
 }
 
 func (a *App) downloadASRFrom(url, destPath string, emitErrors bool) error {

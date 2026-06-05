@@ -20,6 +20,8 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     showHubCreditAction: boolean;
     openHubCreditsPage: () => void;
     openServiceRedeemPage?: () => void;
+    openLLMSettingsPage?: () => void;
+    openHubCardStorePage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
 };
@@ -90,25 +92,35 @@ export const SidebarSystemStatus = ({
     showHubCreditAction,
     openHubCreditsPage,
     openServiceRedeemPage,
+    openLLMSettingsPage,
+    openHubCardStorePage,
     codingAgentProgress = null,
     codingAgentTurnSnapshot = null,
 }: SidebarSystemStatusProps) => {
     const providerLabel = sidebarCurrentProviderTokenUsage.provider || textForLang(lang, 'Provider', '\u667a\u8c31\u7f16\u7a0b', '\u667a\u8b5c\u7de8\u7a0b');
+    const isOfficialProvider = !!sidebarCurrentProviderTokenUsage.isHubService;
+    const providerTitle = isOfficialProvider
+        ? textForLang(lang, 'View or redeem MaClaw Official service', '\u67e5\u770b\u6216\u5151\u6362 MaClaw \u5b98\u65b9\u670d\u52a1', '\u67e5\u770b\u6216\u514c\u63db MaClaw \u5b98\u65b9\u670d\u52d9')
+        : textForLang(lang, 'Configure LLM provider', '\u914d\u7f6e LLM \u670d\u52a1\u5546', '\u914d\u7f6e LLM \u670d\u52d9\u5546');
+    const providerActionTitle = `${providerLabel}${CREDIT_SEPARATOR}${providerTitle}`;
+    const openProviderTarget = isOfficialProvider ? openServiceRedeemPage : openLLMSettingsPage;
+    const cardStoreTitle = textForLang(lang, 'Open MaClaw card store', '\u6253\u5f00 MaClaw \u670d\u52a1\u5361\u5546\u5e97', '\u6253\u958b MaClaw \u670d\u52d9\u5361\u5546\u5e97');
     const localCacheRequests = sidebarCurrentProviderTokenUsage.localCacheRequests ?? 0;
     const localCacheHits = sidebarCurrentProviderTokenUsage.localCacheHits ?? 0;
-    const cacheRequests = localLLMCacheEnabled && !sidebarCurrentProviderTokenUsage.isHubService
+    const shouldDisplayCacheRate = !isOfficialProvider;
+    const cacheRequests = localLLMCacheEnabled && !isOfficialProvider
         ? localCacheRequests
         : sidebarCurrentProviderTokenUsage.requests ?? 0;
-    const cachedRequests = localLLMCacheEnabled && !sidebarCurrentProviderTokenUsage.isHubService
+    const cachedRequests = localLLMCacheEnabled && !isOfficialProvider
         ? localCacheHits
         : sidebarCurrentProviderTokenUsage.cachedRequests ?? 0;
     const cachedInput = sidebarCurrentProviderTokenUsage.cachedInput ?? 0;
     const cacheWrite = sidebarCurrentProviderTokenUsage.cacheWrite ?? 0;
-    const isLocalCacheRate = localLLMCacheEnabled && !sidebarCurrentProviderTokenUsage.isHubService;
-    const shouldShowCacheRate = cacheRequests > 0 || (localLLMCacheEnabled && !sidebarCurrentProviderTokenUsage.isHubService);
-    const cacheHitRate = cacheRequests > 0
-        ? Math.round((cachedRequests / cacheRequests) * 100)
-        : shouldShowCacheRate ? 0 : null;
+    const isLocalCacheRate = localLLMCacheEnabled && !isOfficialProvider;
+    const shouldShowCacheRate = shouldDisplayCacheRate && (cacheRequests > 0 || (localLLMCacheEnabled && !isOfficialProvider));
+    const cacheHitRate = shouldShowCacheRate
+        ? (cacheRequests > 0 ? Math.round((cachedRequests / cacheRequests) * 100) : 0)
+        : null;
     const cacheTitle = cacheHitRate === null
         ? ''
         : isLocalCacheRate
@@ -175,9 +187,34 @@ export const SidebarSystemStatus = ({
                 )}
 
                 <div className="sidebar-system-status__usage">
-                    <span className="sidebar-system-status__provider" title={providerLabel}>
-                        {providerLabel}
-                    </span>
+                    {isOfficialProvider && openHubCardStorePage && (
+                        <button
+                            type="button"
+                            className="sidebar-system-status__provider-cart"
+                            onClick={openHubCardStorePage}
+                            title={cardStoreTitle}
+                            aria-label={cardStoreTitle}
+                        >
+                            <svg className="sidebar-system-status__provider-cart-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M3 5h2.7l2.1 10.2a2 2 0 0 0 2 1.6h7.5a2 2 0 0 0 1.9-1.4l1.3-5.2H7.1" />
+                                <path d="M10 20h.1M17 20h.1" />
+                            </svg>
+                        </button>
+                    )}
+                    {openProviderTarget ? (
+                        <button
+                            type="button"
+                            className="sidebar-system-status__provider sidebar-system-status__provider--button"
+                            onClick={openProviderTarget}
+                            title={providerActionTitle}
+                        >
+                            {providerLabel}
+                        </button>
+                    ) : (
+                        <span className="sidebar-system-status__provider" title={providerLabel}>
+                            {providerLabel}
+                        </span>
+                    )}
                     {hubServicePeriodLimited && (
                         <button
                             type="button"

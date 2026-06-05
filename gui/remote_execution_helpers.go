@@ -44,7 +44,6 @@ func logLaunchEnv(prefix string, env map[string]string) {
 		"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
 		"ANTHROPIC_DEFAULT_SONNET_MODEL",
 		"OPENAI_API_KEY", "OPENAI_BASE_URL",
-		"GEMINI_API_KEY",
 		"PATH",
 	}
 	var parts []string
@@ -72,6 +71,32 @@ func logLaunchEnv(prefix string, env map[string]string) {
 	if len(parts) > 0 {
 		log.Printf("[%s] env: %s", prefix, strings.Join(parts, ", "))
 	}
+}
+
+func summarizeLaunchArgs(args []string) string {
+	totalBytes := 0
+	positional := 0
+	flags := make([]string, 0, len(args))
+	seenFlags := make(map[string]bool)
+	for _, arg := range args {
+		totalBytes += len(arg)
+		if !strings.HasPrefix(arg, "-") {
+			positional++
+			continue
+		}
+		flag := arg
+		if i := strings.Index(flag, "="); i >= 0 {
+			flag = flag[:i]
+		}
+		if !seenFlags[flag] {
+			seenFlags[flag] = true
+			flags = append(flags, flag)
+		}
+	}
+	if len(flags) == 0 {
+		return fmt.Sprintf("count=%d bytes=%d positional=%d", len(args), totalBytes, positional)
+	}
+	return fmt.Sprintf("count=%d bytes=%d positional=%d flags=%v", len(args), totalBytes, positional, flags)
 }
 
 // buildExecCmd creates an *exec.Cmd with the standard configuration used
@@ -160,8 +185,6 @@ func (rc *ReaderCoordinator) CloseWhenDone() {
 func (rc *ReaderCoordinator) Wait() {
 	rc.wg.Wait()
 }
-
-
 
 // --- Output Result Application ---
 

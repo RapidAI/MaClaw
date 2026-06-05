@@ -14,19 +14,38 @@ func (h *IMMessageHandler) finalizeIMAgentLoopResponse(msg IMUserMessage, loopCt
 	}
 	resp.ClearUI = resp.ClearUI || clearUIAfterContextSwitch
 
-	h.runEvidenceCollection(msg.UserID, msg.Text)
-	h.captureWorkflowDocAfterAgentLoop(msg, loopCtx, resp, workflowAgentLoop)
-
 	if confirmedResume {
 		resp.ConfirmedResume = true
 	}
 	finalizeStartedAt := time.Now()
 	resp = h.finalizeTraceResult(loopCtx, resp, firstNonEmptyTraceText(resp.Text, resp.TraceSummary), resp.Error)
 	resp.FinalizeTraceNanos = time.Since(finalizeStartedAt).Nanoseconds()
-	h.recordAgentLoopTerminalExperience(loopCtx, resp)
+	h.schedulePostLoopSideEffects(msg, loopCtx, resp, workflowAgentLoop)
 
 	h.maybeAttachVoiceSummary(resp, msg.Platform, isVoiceInputMessage(msg))
 	return resp
+}
+
+func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCtx *LoopContext, resp *IMAgentResponse, workflowAgentLoop bool) {
+	if h == nil {
+		return
+	}
+	respSnapshot := IMAgentResponse{}
+	if resp != nil {
+		respSnapshot = *resp
+	}
+	go func() {
+		startedAt := time.Now()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[post-loop] panic user=%s panic=%v", msg.UserID, r)
+			}
+			log.Printf("[post-loop] done user=%s duration=%s workflow=%v", msg.UserID, time.Since(startedAt).Round(time.Millisecond), workflowAgentLoop)
+		}()
+		h.runEvidenceCollection(msg.UserID, msg.Text)
+		h.captureWorkflowDocAfterAgentLoop(msg, loopCtx, &respSnapshot, workflowAgentLoop)
+		h.recordAgentLoopTerminalExperience(loopCtx, &respSnapshot)
+	}()
 }
 
 func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, loopCtx *LoopContext, resp *IMAgentResponse, workflowAgentLoop bool) {

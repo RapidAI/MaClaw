@@ -20,6 +20,9 @@ func promptSkillIndexEntries(skills []NLSkillDefinition, limit int) []NLSkillDef
 		if strings.TrimSpace(s.Name) == "" {
 			continue
 		}
+		if isShellBrowserAutomationSkill(s) {
+			continue
+		}
 		active = append(active, s)
 	}
 

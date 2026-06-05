@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib"
-	"runtime"
 	"strings"
 	"unicode"
 
@@ -56,18 +55,6 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		ConfigSelector:  func(cfg corelib.AppConfig) corelib.ToolConfig { return cfg.Claude },
 		ProviderFactory: func(app *App) ProviderAdapter { return NewClaudeAdapter(app) },
 	},
-	"gemini": {
-		Name:            "gemini",
-		DisplayName:     "Gemini",
-		BinaryName:      "gemini",
-		DefaultTitle:    "Gemini Session",
-		SupportsProxy:   true,
-		SupportsRemote:  true,
-		ReadinessHint:   "Checks Gemini CLI installation, API key, and ACP protocol readiness.",
-		SmokeHint:       "Runs registration, launch, real session start, and Hub visibility verification for Gemini (ACP mode).",
-		ConfigSelector:  func(cfg corelib.AppConfig) corelib.ToolConfig { return cfg.Gemini },
-		ProviderFactory: func(app *App) ProviderAdapter { return NewGeminiAdapter(app) },
-	},
 	"codex": {
 		Name:             "codex",
 		DisplayName:      "Codex",
@@ -94,18 +81,6 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		SmokeHint:             "Runs registration, PTY, launch, real session start, and Hub visibility verification for OpenCode.",
 		ConfigSelector:        func(cfg corelib.AppConfig) corelib.ToolConfig { return cfg.Opencode },
 		ProviderFactory:       func(app *App) ProviderAdapter { return NewOpencodeAdapter(app) },
-	},
-	"cursor": {
-		Name:            "cursor",
-		DisplayName:     "Cursor Agent",
-		BinaryName:      "cursor-agent",
-		DefaultTitle:    "Cursor Session",
-		SupportsProxy:   true,
-		SupportsRemote:  true,
-		ReadinessHint:   "Checks Cursor Agent CLI installation, SDK stream-json readiness, and remote capability.",
-		SmokeHint:       "Runs registration, launch, real session start, and Hub visibility verification for Cursor Agent (SDK mode).",
-		ConfigSelector:  func(cfg corelib.AppConfig) corelib.ToolConfig { return cfg.Cursor },
-		ProviderFactory: func(app *App) ProviderAdapter { return NewCursorAdapter(app) },
 	},
 	"codebuddy": {
 		Name:                  "codebuddy",
@@ -254,6 +229,15 @@ func remoteToolSupported(toolName string) bool {
 	return meta.SupportsRemote
 }
 
+func remoteToolAutoInstallSupported(toolName string) bool {
+	switch normalizeRemoteToolNameKind(toolName) {
+	case remoteToolNameClaude, remoteToolNameCodex, remoteToolNameOpencode, remoteToolNameCodeBuddy, remoteToolNameIFlow, remoteToolNameKilo:
+		return true
+	default:
+		return false
+	}
+}
+
 func remoteToolVisible(cfg corelib.AppConfig, toolName string) bool {
 	switch normalizeRemoteToolNameKind(toolName) {
 	case remoteToolNameClaude:
@@ -266,10 +250,6 @@ func remoteToolVisible(cfg corelib.AppConfig, toolName string) bool {
 		return cfg.ShowIFlow
 	case remoteToolNameKilo:
 		return cfg.ShowKilo
-	case remoteToolNameGemini:
-		return cfg.ShowGemini
-	case remoteToolNameCursor:
-		return cfg.ShowCursor && runtime.GOOS != "windows"
 	case remoteToolNameCodeBuddy:
 		return cfg.ShowCodeBuddy
 	case remoteToolNameBrowser:
@@ -285,7 +265,7 @@ func remoteToolVisible(cfg corelib.AppConfig, toolName string) bool {
 }
 
 func listRemoteToolMetadataForApp(app *App) []RemoteToolMetadataView {
-	order := []string{"claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "iflow", "kilo", "browser"}
+	order := []string{"claude", "codex", "opencode", "codebuddy", "iflow", "kilo", "browser"}
 	for _, et := range brand.Current().ExtraTools {
 		order = append(order, et.Name)
 	}
@@ -293,10 +273,8 @@ func listRemoteToolMetadataForApp(app *App) []RemoteToolMetadataView {
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		cfg = corelib.AppConfig{
-			ShowGemini:    true,
 			ShowCodex:     true,
 			ShowOpenCode:  true,
-			ShowCursor:    true,
 			ShowCodeBuddy: true,
 			ShowIFlow:     true,
 			ShowKilo:      true,
@@ -310,7 +288,8 @@ func listRemoteToolMetadataForApp(app *App) []RemoteToolMetadataView {
 		}
 		status := toolManager.GetToolStatus(name)
 		visible := remoteToolVisible(cfg, name)
-		canStart := visible && status.Installed && strings.TrimSpace(status.Path) != ""
+		installedReady := status.Installed && strings.TrimSpace(status.Path) != ""
+		canStart := visible && meta.SupportsRemote && (installedReady || remoteToolAutoInstallSupported(name))
 		if name == "browser" {
 			visible = true
 			status.Installed = true

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
@@ -61,31 +62,168 @@ func (c *SkillMarketClient) getSkillPurchaseMode() string {
 }
 
 func (c *SkillMarketClient) SubmitSkill(ctx context.Context, zipPath, email string) (string, error) {
+	bodyBytes, contentType, err := buildSkillSubmitMultipart(zipPath, email)
+	if err != nil {
+		return "", err
+	}
 	bases, err := c.app.resolveHubCenterCandidates(ctx, c.client)
 	if err != nil {
 		return "", err
 	}
+	return c.submitSkillToHubCenter(ctx, bases, bodyBytes, contentType)
+}
+
+func (c *SkillMarketClient) SubmitSkillToConfiguredTargets(ctx context.Context, zipPath, email string) (string, error) {
+	return c.SubmitSkillToConfiguredTargetsWithCompleted(ctx, zipPath, email, nil)
+}
+
+func (c *SkillMarketClient) SubmitSkillToConfiguredTargetsWithCompleted(ctx context.Context, zipPath, email string, completed map[string]string) (string, error) {
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		return "", err
+	}
+	bodyBytes, contentType, err := buildSkillSubmitMultipart(zipPath, email)
+	if err != nil {
+		return "", err
+	}
+	hasEnterpriseHub := strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) != ""
+	targets := cfg.CapabilityMarketPolicy.UploadTargets(hasEnterpriseHub)
+	if len(targets) == 0 {
+		return "", fmt.Errorf("enterprise Hub upload is selected but remote_hub_url or remote_viewer_token is not configured")
+	}
+	targetSet := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		targetSet[target] = true
+	}
+	results := map[string]string{}
+	for target, id := range normalizedSkillSubmitTargetResults(completed) {
+		if targetSet[target] {
+			results[target] = id
+		}
+	}
+	var errs []string
+	for _, target := range targets {
+		if strings.TrimSpace(results[target]) != "" {
+			continue
+		}
+		switch target {
+		case corelib.CapabilitySourceHubCenter:
+			bases, err := c.app.resolveHubCenterCandidates(ctx, c.client)
+			if err != nil {
+				errs = append(errs, "hubcenter: "+err.Error())
+				continue
+			}
+			id, err := c.submitSkillToHubCenter(ctx, bases, bodyBytes, contentType)
+			if err != nil {
+				errs = append(errs, "hubcenter: "+err.Error())
+				continue
+			}
+			results[target] = id
+		case corelib.CapabilitySourceEnterpriseHub:
+			id, err := c.submitSkillToEnterpriseHub(ctx, cfg, bodyBytes, contentType)
+			if err != nil {
+				errs = append(errs, "enterprise_hub: "+err.Error())
+				continue
+			}
+			results[target] = id
+		}
+	}
+	if len(errs) > 0 {
+		return "", &skillSubmitPartialError{Completed: results, Errs: errs}
+	}
+	if id := formatSkillSubmitTargetResults(results); id != "" {
+		return id, nil
+	}
+	return "", fmt.Errorf("no upload target completed")
+}
+
+type skillSubmitPartialError struct {
+	Completed map[string]string
+	Errs      []string
+}
+
+func (e *skillSubmitPartialError) Error() string {
+	if e == nil {
+		return "submit skill failed"
+	}
+	return "submit skill failed: " + strings.Join(e.Errs, "; ")
+}
+
+func normalizedSkillSubmitTargetResults(results map[string]string) map[string]string {
+	out := map[string]string{}
+	for target, id := range results {
+		target = corelib.NormalizeCapabilitySource(target)
+		id = strings.TrimSpace(id)
+		if target != "" && id != "" {
+			out[target] = id
+		}
+	}
+	return out
+}
+
+func formatSkillSubmitTargetResults(results map[string]string) string {
+	if id := strings.TrimSpace(results[corelib.CapabilitySourceHubCenter]); id != "" {
+		if enterpriseID := strings.TrimSpace(results[corelib.CapabilitySourceEnterpriseHub]); enterpriseID != "" {
+			return id + ";enterprise_hub=" + enterpriseID
+		}
+		return id
+	}
+	if id := strings.TrimSpace(results[corelib.CapabilitySourceEnterpriseHub]); id != "" {
+		return "enterprise_hub=" + id
+	}
+	return ""
+}
+
+func parseSkillSubmitTargetResults(submissionID string) map[string]string {
+	submissionID = strings.TrimSpace(submissionID)
+	if submissionID == "" {
+		return nil
+	}
+	results := map[string]string{}
+	parts := strings.Split(submissionID, ";")
+	for i, part := range parts {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			if i == 0 {
+				if id := strings.TrimSpace(part); id != "" {
+					results[corelib.CapabilitySourceHubCenter] = id
+				}
+			}
+			continue
+		}
+		key = corelib.NormalizeCapabilitySource(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			results[key] = value
+		}
+	}
+	return results
+}
+
+func buildSkillSubmitMultipart(zipPath, email string) ([]byte, string, error) {
 	f, err := os.Open(zipPath)
 	if err != nil {
-		return "", fmt.Errorf("open zip: %w", err)
+		return nil, "", fmt.Errorf("open zip: %w", err)
 	}
 	defer f.Close()
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 	fw, err := w.CreateFormFile("zip", filepath.Base(zipPath))
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if _, err := io.Copy(fw, f); err != nil {
-		return "", err
+		return nil, "", err
 	}
 	_ = w.WriteField("email", email)
 	contentType := w.FormDataContentType()
 	if err := w.Close(); err != nil {
-		return "", err
+		return nil, "", err
 	}
-	bodyBytes := buf.Bytes()
+	return buf.Bytes(), contentType, nil
+}
 
+func (c *SkillMarketClient) submitSkillToHubCenter(ctx context.Context, bases []string, bodyBytes []byte, contentType string) (string, error) {
 	authHeader := c.skillMarketAuthHeader()
 
 	var lastErr error
@@ -111,7 +249,7 @@ func (c *SkillMarketClient) SubmitSkill(ctx context.Context, zipPath, email stri
 			defer resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
 				body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-				err := fmt.Errorf("submit failed via %s (%d): %s", base, resp.StatusCode, strings.TrimSpace(string(body)))
+				err := fmt.Errorf("submit failed via %s (%d): body_len=%d", base, resp.StatusCode, len(body))
 				return shouldRetrySkillSubmitStatus(resp.StatusCode), err
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -120,6 +258,10 @@ func (c *SkillMarketClient) SubmitSkill(ctx context.Context, zipPath, email stri
 			return false, nil
 		}()
 		if reqErr == nil {
+			if strings.TrimSpace(result.SubmissionID) == "" {
+				lastErr = fmt.Errorf("submit response from %s missing submission_id", base)
+				continue
+			}
 			c.app.rememberHubCenterSelection(base, bases)
 			return result.SubmissionID, nil
 		}
@@ -138,6 +280,51 @@ func (c *SkillMarketClient) SubmitSkill(ctx context.Context, zipPath, email stri
 		return "", lastErr
 	}
 	return "", fmt.Errorf("no reachable hubcenter")
+}
+
+func (c *SkillMarketClient) submitSkillToEnterpriseHub(ctx context.Context, cfg corelib.AppConfig, bodyBytes []byte, contentType string) (string, error) {
+	base := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	token := strings.TrimSpace(cfg.RemoteViewerToken)
+	if base == "" || token == "" {
+		return "", fmt.Errorf("remote_hub_url or remote_viewer_token is not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/capabilities/skills/submit", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("submit failed via enterprise Hub (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		SubmissionID string `json:"submission_id"`
+		CapabilityID string `json:"capability_id"`
+		VersionKey   string `json:"version_key"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	id := firstNonEmptySkillMarket(result.SubmissionID, result.VersionKey, result.CapabilityID)
+	if id == "" {
+		return "", fmt.Errorf("enterprise Hub submit response missing submission_id, version_key, or capability_id")
+	}
+	return id, nil
+}
+
+func firstNonEmptySkillMarket(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (c *SkillMarketClient) skillMarketAuthHeader() string {
@@ -252,7 +439,7 @@ func (c *SkillMarketClient) SubmitRating(ctx context.Context, skillID, email str
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("rate failed (%d): %s", resp.StatusCode, string(body))
+		return fmt.Errorf("rate failed (%d): body_len=%d", resp.StatusCode, len(body))
 	}
 	c.app.rememberHubCenterSelection(base, discovered)
 	return nil

@@ -27,7 +27,14 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 		return "语音合成未启用。请在设置 → 语音合成中开启。"
 	}
 
-	platform := h.consumeRuntimePlatformFromToolArgsOrCurrent(args)
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "tts failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	}
+	platform := consumeRuntimePlatformFromToolArgs(args)
+	if platform == "" {
+		platform = h.runtimePlatformForOwnerOrCurrent(ownerID, hasRuntimeOwner)
+	}
 
 	// Desktop panel: async synthesis — return immediately, push audio when ready.
 	if shouldEmitDesktopTTSPlayback(platform) {

@@ -871,14 +871,9 @@ func (p *OpenAIProxy) forwardAnthropic(body map[string]interface{}) ([]byte, int
 
 	// 8. On upstream 4xx/5xx: wrap error in OpenAI format
 	if resp.StatusCode >= 400 {
-		// Truncate error body to prevent oversized error messages
-		errBodyStr := string(respBody)
-		if len(errBodyStr) > 1024 {
-			errBodyStr = errBodyStr[:1024] + "...(truncated)"
-		}
 		errResp := map[string]interface{}{
 			"error": map[string]interface{}{
-				"message": fmt.Sprintf("upstream error (HTTP %d): %s", resp.StatusCode, errBodyStr),
+				"message": fmt.Sprintf("upstream error (HTTP %d): body_len=%d", resp.StatusCode, len(respBody)),
 				"type":    "server_error",
 			},
 		}
@@ -941,14 +936,9 @@ func (p *OpenAIProxy) forwardResponses(body map[string]interface{}) ([]byte, int
 
 	// 8. On upstream 4xx/5xx: wrap error in OpenAI format
 	if resp.StatusCode >= 400 {
-		// Truncate error body to prevent oversized error messages
-		errBodyStr := string(respBody)
-		if len(errBodyStr) > 1024 {
-			errBodyStr = errBodyStr[:1024] + "...(truncated)"
-		}
 		errResp := map[string]interface{}{
 			"error": map[string]interface{}{
-				"message": fmt.Sprintf("upstream error (HTTP %d): %s", resp.StatusCode, errBodyStr),
+				"message": fmt.Sprintf("upstream error (HTTP %d): body_len=%d", resp.StatusCode, len(respBody)),
 				"type":    "server_error",
 			},
 		}

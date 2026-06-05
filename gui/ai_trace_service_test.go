@@ -43,6 +43,50 @@ func TestAITraceServiceStartAndGetTrace(t *testing.T) {
 	}
 }
 
+func TestAITraceServiceSanitizesRolePrefixStoredText(t *testing.T) {
+	svc := NewAITraceService()
+	_, run := svc.StartJobRun(TraceJobKindAIAssistant, "Browser leak", "desktop", "u1", "/project")
+
+	svc.AppendEvent(run.RunID, TraceEvent{
+		Kind:    "tool.executed",
+		Title:   "Visible title\nBrowser: SECRET_EVENT_TITLE",
+		Summary: "Visible summary\nBrowser: SECRET_EVENT_SUMMARY",
+	})
+	svc.AppendEvidence(run.RunID, EvidenceRecord{
+		SourceKind:     "browser_output",
+		Summary:        "Visible evidence\nBrowser: SECRET_EVIDENCE_SUMMARY",
+		ContentSnippet: "Browser: SECRET_EVIDENCE_SNIPPET",
+	})
+
+	view, ok := svc.GetTrace(run.RunID)
+	if !ok {
+		t.Fatal("expected trace view")
+	}
+	serialized := view.Events[0].Title + "\n" + view.Events[0].Summary + "\n" + view.Evidence[0].Summary + "\n" + view.Evidence[0].ContentSnippet
+	if strings.Contains(serialized, "Browser:") || strings.Contains(serialized, "SECRET_") {
+		t.Fatalf("trace stored role-prefix content: %q", serialized)
+	}
+	if view.Events[0].Summary != "Visible summary" || view.Evidence[0].Summary != "Visible evidence" || view.Evidence[0].ContentSnippet != "" {
+		t.Fatalf("unexpected sanitized trace fields: event=%q evidence=%q snippet=%q", view.Events[0].Summary, view.Evidence[0].Summary, view.Evidence[0].ContentSnippet)
+	}
+}
+
+func TestAITraceServiceReplaceRunSanitizesRolePrefixStoredText(t *testing.T) {
+	svc := NewAITraceService()
+	_, run := svc.StartJobRun(TraceJobKindAIAssistant, "Browser replace", "desktop", "u1", "/project")
+
+	svc.ReplaceRun(run.RunID, []TraceEvent{{Kind: "browser", Title: "Browser: SECRET_REPLACE_EVENT", Summary: "ok\nTool: SECRET_REPLACE_SUMMARY"}}, []EvidenceRecord{{SourceKind: "browser_output", Summary: "Browser: SECRET_REPLACE_EVIDENCE", ContentSnippet: "ok\nBrowser: SECRET_REPLACE_SNIPPET"}})
+
+	view, ok := svc.GetTrace(run.RunID)
+	if !ok {
+		t.Fatal("expected trace view")
+	}
+	serialized := view.Events[0].Title + "\n" + view.Events[0].Summary + "\n" + view.Evidence[0].Summary + "\n" + view.Evidence[0].ContentSnippet
+	if strings.Contains(serialized, "Browser:") || strings.Contains(serialized, "Tool:") || strings.Contains(serialized, "SECRET_") {
+		t.Fatalf("replace stored role-prefix content: %q", serialized)
+	}
+}
+
 func TestAITraceServiceRecallEvidencePrefersProjectAndMatches(t *testing.T) {
 	svc := NewAITraceService()
 	_, run1 := svc.StartJobRun(TraceJobKindRemoteSession, "Backend task", "remote", "u1", "/project-a")

@@ -30,12 +30,10 @@ func (a *App) GetMISDataConfig() (corelib.MISDataConfig, error) {
 }
 
 func (a *App) SaveMISDataConfig(next corelib.MISDataConfig) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.MISData = normalizeMISDataConfig(next)
-	return a.SaveConfig(cfg)
+	normalized := normalizeMISDataConfig(next)
+	return a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.MISData = normalized
+	})
 }
 
 func (a *App) TestMISDataConnection(next corelib.MISDataConfig) (MISDataConnectionStatus, error) {

@@ -10,7 +10,10 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 	if hasRuntimeOwner && ownerID == "" {
 		return "screenshot failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
 	}
-	platform := h.consumeRuntimePlatformFromToolArgsOrCurrent(args)
+	platform := consumeRuntimePlatformFromToolArgs(args)
+	if platform == "" {
+		platform = h.runtimePlatformForOwnerOrCurrent(ownerID, hasRuntimeOwner)
+	}
 	taskText := h.runtimeTaskTextForOwner(ownerID)
 	if !hasRuntimeOwner {
 		taskText, _ = h.currentRuntimeTaskTextOrLegacy()
@@ -70,18 +73,6 @@ func (h *IMMessageHandler) screenshotCooldownScope(ownerID string, hasRuntimeOwn
 	}
 	if h == nil {
 		return "", false
-	}
-	h.globalLoopMu.RLock()
-	ctx := h.currentLoopCtx
-	h.globalLoopMu.RUnlock()
-	if ctx == nil {
-		return "", false
-	}
-	if owner := strings.TrimSpace(ctx.Runtime.PolicyOwnerID); owner != "" {
-		return "owner:" + owner, true
-	}
-	if requestID := strings.TrimSpace(ctx.Runtime.RequestID); requestID != "" {
-		return "request:" + requestID, true
 	}
 	return "", false
 }

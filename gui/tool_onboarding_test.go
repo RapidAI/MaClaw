@@ -28,150 +28,6 @@ func testTempHomeWithRetryCleanup(t *testing.T) string {
 	return tmpHome
 }
 
-func TestEnsureGeminiOnboardingCreatesSettings(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("HOME", tmpHome)
-
-	app := &App{}
-	if err := ensureGeminiOnboardingComplete(app); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	configPath := filepath.Join(tmpHome, ".gemini", "settings.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("settings file not created: %v", err)
-	}
-
-	var config map[string]any
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
-
-	ui, ok := config["ui"].(map[string]any)
-	if !ok {
-		t.Fatal("ui section missing")
-	}
-	if ui["theme"] != "Default Dark" {
-		t.Errorf("theme = %v, want Default Dark", ui["theme"])
-	}
-}
-
-func TestEnsureGeminiOnboardingPreservesExisting(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("HOME", tmpHome)
-
-	dir := filepath.Join(tmpHome, ".gemini")
-	os.MkdirAll(dir, 0o755)
-	configPath := filepath.Join(dir, "settings.json")
-
-	existing := map[string]any{
-		"ui": map[string]any{
-			"theme":    "Solarized",
-			"hideTips": true,
-		},
-		"general": map[string]any{
-			"vimMode": true,
-		},
-	}
-	data, _ := json.MarshalIndent(existing, "", "  ")
-	os.WriteFile(configPath, data, 0o644)
-
-	app := &App{}
-	if err := ensureGeminiOnboardingComplete(app); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	updated, _ := os.ReadFile(configPath)
-	var config map[string]any
-	json.Unmarshal(updated, &config)
-
-	ui := config["ui"].(map[string]any)
-	if ui["theme"] != "Solarized" {
-		t.Errorf("theme was overwritten: got %v, want Solarized", ui["theme"])
-	}
-	if ui["hideTips"] != true {
-		t.Error("hideTips was lost")
-	}
-
-	general := config["general"].(map[string]any)
-	if general["vimMode"] != true {
-		t.Error("general.vimMode was lost")
-	}
-}
-
-func TestEnsureGeminiOnboardingIdempotent(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("HOME", tmpHome)
-
-	dir := filepath.Join(tmpHome, ".gemini")
-	os.MkdirAll(dir, 0o755)
-	configPath := filepath.Join(dir, "settings.json")
-
-	existing := map[string]any{
-		"selectedAuthType": "oauth-personal",
-		"ui": map[string]any{
-			"theme":                     "GitHub",
-			"autoThemeSwitching":        false,
-			"hideTips":                  true,
-			"showShortcutsHint":         false,
-			"dynamicWindowTitle":        false,
-			"showStatusInTitle":         false,
-			"hideWindowTitle":           true,
-			"showCompatibilityWarnings": false,
-			"showHomeDirectoryWarning":  false,
-		},
-	}
-	data, _ := json.MarshalIndent(existing, "", "  ")
-	os.WriteFile(configPath, data, 0o644)
-
-	beforeStat, _ := os.Stat(configPath)
-
-	app := &App{}
-	if err := ensureGeminiOnboardingComplete(app); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	afterStat, _ := os.Stat(configPath)
-	if !afterStat.ModTime().Equal(beforeStat.ModTime()) {
-		t.Error("file was rewritten even though no changes were needed")
-	}
-}
-
-func TestEnsureGeminiOnboardingHandlesCorruptFile(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("HOME", tmpHome)
-
-	dir := filepath.Join(tmpHome, ".gemini")
-	os.MkdirAll(dir, 0o755)
-	configPath := filepath.Join(dir, "settings.json")
-	os.WriteFile(configPath, []byte("not valid json{{{"), 0o644)
-
-	app := &App{}
-	if err := ensureGeminiOnboardingComplete(app); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	backupPath := configPath + ".bak"
-	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
-		t.Error("corrupt file was not backed up")
-	}
-
-	data, _ := os.ReadFile(configPath)
-	var config map[string]any
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Fatalf("new config is not valid JSON: %v", err)
-	}
-	ui := config["ui"].(map[string]any)
-	if ui["theme"] != "Default Dark" {
-		t.Errorf("theme = %v, want Default Dark", ui["theme"])
-	}
-}
-
 func TestEnsureToolOnboardingDispatch(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -188,12 +44,6 @@ func TestEnsureToolOnboardingDispatch(t *testing.T) {
 		t.Error("claude onboarding should have created .claude.json")
 	}
 
-	// Should handle gemini.
-	ensureToolOnboardingComplete(app, "gemini", "")
-	if _, err := os.Stat(filepath.Join(tmpHome, ".gemini", "settings.json")); os.IsNotExist(err) {
-		t.Error("gemini onboarding should have created settings.json")
-	}
-
 	// Should handle codebuddy.
 	ensureToolOnboardingComplete(app, "codebuddy", `D:\test`)
 	if _, err := os.Stat(filepath.Join(tmpHome, ".codebuddy.json")); os.IsNotExist(err) {
@@ -204,7 +54,6 @@ func TestEnsureToolOnboardingDispatch(t *testing.T) {
 	ensureToolOnboardingComplete(app, "codex", "")
 	ensureToolOnboardingComplete(app, "iflow", "")
 	ensureToolOnboardingComplete(app, "kilo", "")
-	ensureToolOnboardingComplete(app, "cursor", "")
 }
 
 func TestEnsureCodeBuddyOnboardingCreatesConfig(t *testing.T) {
@@ -286,9 +135,9 @@ func TestEnsureCodeBuddyOnboardingIdempotent(t *testing.T) {
 
 	configPath := filepath.Join(tmpHome, ".codebuddy.json")
 	existing := map[string]any{
-		"hasCompletedOnboarding":       true,
+		"hasCompletedOnboarding":        true,
 		"bypassPermissionsModeAccepted": true,
-		"theme":                        "dark",
+		"theme":                         "dark",
 		"projects": map[string]any{
 			"D:/test": map[string]any{
 				"hasTrustDialogAccepted": true,
@@ -397,54 +246,6 @@ func TestBackupToolConfigsRestoresExistingFile(t *testing.T) {
 	}
 	if restoredConfig["hasCompletedOnboarding"] != nil {
 		t.Error("hasCompletedOnboarding should not exist after restore")
-	}
-}
-
-func TestBackupToolConfigsGeminiRestore(t *testing.T) {
-	resetConfigBackupStates()
-	tmpHome := t.TempDir()
-	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("HOME", tmpHome)
-
-	dir := filepath.Join(tmpHome, ".gemini")
-	os.MkdirAll(dir, 0o755)
-	configPath := filepath.Join(dir, "settings.json")
-
-	original := map[string]any{
-		"ui": map[string]any{
-			"theme": "Monokai",
-		},
-		"auth": map[string]any{
-			"token": "google-oauth-token",
-		},
-	}
-	origData, _ := json.MarshalIndent(original, "", "  ")
-	os.WriteFile(configPath, origData, 0o644)
-
-	app := &App{}
-	restore := backupToolConfigs(app, "gemini")
-
-	// Onboarding should not change theme (already set), but let's
-	// simulate a scenario where it does by writing directly.
-	modified := map[string]any{
-		"ui": map[string]any{"theme": "Default Dark"},
-	}
-	modData, _ := json.MarshalIndent(modified, "", "  ")
-	os.WriteFile(configPath, modData, 0o644)
-
-	restore()
-
-	restored, _ := os.ReadFile(configPath)
-	var restoredConfig map[string]any
-	json.Unmarshal(restored, &restoredConfig)
-
-	ui := restoredConfig["ui"].(map[string]any)
-	if ui["theme"] != "Monokai" {
-		t.Errorf("theme not restored: got %v", ui["theme"])
-	}
-	auth := restoredConfig["auth"].(map[string]any)
-	if auth["token"] != "google-oauth-token" {
-		t.Errorf("auth token lost: got %v", auth["token"])
 	}
 }
 
@@ -570,9 +371,7 @@ func TestToolConfigPathsReturnsCorrectPaths(t *testing.T) {
 	}{
 		{"claude", false, ".claude.json"},
 		{"codebuddy", false, ".codebuddy.json"},
-		{"gemini", false, "settings.json"},
 		{"codex", true, ""},
-		{"cursor", true, ""},
 		{"unknown", true, ""},
 	}
 

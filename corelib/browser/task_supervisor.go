@@ -24,6 +24,10 @@ type BrowserTaskSupervisor struct {
 	// sessionFn returns the current browser CDP session.
 	sessionFn func() (*Session, error)
 
+	// agentSessionFn returns the stable browser agent session when task tools are
+	// invoked through browser-session-*.
+	agentSessionFn func() (*BrowserAgentSession, error)
+
 	idCounter int
 }
 
@@ -154,7 +158,7 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 
 	// Final success criteria verification
 	if len(spec.SuccessCriteria) > 0 {
-		_ = s.verifier.WaitForStable(3 * time.Second)
+		_ = s.verifier.WaitForStable(2 * time.Second)
 
 		result, err := s.verifier.Verify(spec.SuccessCriteria)
 		if err != nil {
@@ -282,8 +286,7 @@ func (s *BrowserTaskSupervisor) executeStepWithRetry(ctx context.Context, spec T
 
 		// Decide retry
 		failType := s.retrier.ClassifyFailure(err, currentStep)
-		snapshot := s.capturePageSnapshot()
-		decision := s.retrier.Decide(failType, currentStep, retry, snapshot)
+		decision := s.retrier.Decide(failType, currentStep, retry, nil)
 
 		if !decision.ShouldRetry {
 			return fmt.Errorf("step %d failed: %v (%s)", stepIdx+1, err, decision.Reason)
@@ -305,16 +308,25 @@ func (s *BrowserTaskSupervisor) executeStepWithRetry(ctx context.Context, spec T
 }
 
 func (s *BrowserTaskSupervisor) executeOneStep(ctx context.Context, step StepSpec, timeout time.Duration) error {
-	sess, err := s.sessionFn()
-	if err != nil {
-		return fmt.Errorf("browser session: %w", err)
-	}
-
 	stepCtx, stepCancel := context.WithTimeout(ctx, timeout)
 	defer stepCancel()
 
 	ch := make(chan error, 1)
 	go func() {
+		if s.agentSessionFn != nil {
+			agentSession, err := s.agentSessionFn()
+			if err != nil {
+				ch <- fmt.Errorf("browser session: %w", err)
+				return
+			}
+			ch <- s.doAgentStep(agentSession, step)
+			return
+		}
+		sess, err := s.sessionFn()
+		if err != nil {
+			ch <- fmt.Errorf("browser session: %w", err)
+			return
+		}
 		ch <- s.doStep(sess, step)
 	}()
 
@@ -326,6 +338,72 @@ func (s *BrowserTaskSupervisor) executeOneStep(ctx context.Context, step StepSpe
 			return fmt.Errorf("cancelled")
 		}
 		return fmt.Errorf("step timed out after %v", timeout)
+	}
+}
+
+func (s *BrowserTaskSupervisor) doAgentStep(agentSession *BrowserAgentSession, step StepSpec) error {
+	if agentSession == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	snapshotID := step.Params["snapshot_id"]
+	ref := step.Params["ref"]
+	selector := step.Params["selector"]
+	switch step.Action {
+	case "navigate":
+		url := step.Params["url"]
+		if url == "" {
+			return fmt.Errorf("navigate: missing url param")
+		}
+		_, err := agentSession.Navigate(url)
+		return err
+
+	case "click":
+		text := step.Params["text"]
+		if ref == "" && selector == "" && text != "" {
+			_, err := agentSession.ClickText(snapshotID, text)
+			return err
+		}
+		if ref == "" && selector == "" {
+			return fmt.Errorf("click: missing selector/ref/text param")
+		}
+		_, err := agentSession.Click(snapshotID, ref, selector)
+		return err
+
+	case "click_at":
+		return fmt.Errorf("click_at step is disabled in stable browser tasks; use click with ref/selector/text")
+
+	case "type":
+		text := step.Params["text"]
+		contentFormat := step.Params["content_format"]
+		_, err := agentSession.TypeContent(snapshotID, ref, selector, text, contentFormat)
+		return err
+
+	case "wait":
+		timeoutMS := 0
+		if v, ok := step.Params["duration_ms"]; ok {
+			fmt.Sscanf(v, "%d", &timeoutMS)
+		}
+		if timeoutMS <= 0 {
+			timeoutSec := 10
+			if v, ok := step.Params["timeout"]; ok {
+				fmt.Sscanf(v, "%d", &timeoutSec)
+			}
+			timeoutMS = timeoutSec * 1000
+		}
+		_, err := agentSession.Wait(snapshotID, ref, selector, timeoutMS)
+		return err
+
+	case "eval":
+		return fmt.Errorf("eval step is disabled in stable browser tasks; use observe/extract plus page-level actions")
+
+	case "scroll", "select":
+		if agentSession.session == nil {
+			return fmt.Errorf("browser session not connected")
+		}
+		return s.doStep(agentSession.session, step)
+
+	default:
+		return fmt.Errorf("unknown action: %s", step.Action)
 	}
 }
 
@@ -347,19 +425,16 @@ func (s *BrowserTaskSupervisor) doStep(sess *Session, step StepSpec) error {
 		return sess.Click(sel)
 
 	case "click_at":
-		sel := step.Params["selector"]
-		if sel == "" {
-			return fmt.Errorf("click_at: missing selector param")
-		}
-		return sess.ClickAt(sel)
+		return fmt.Errorf("click_at step is disabled in stable browser tasks; use click with selector")
 
 	case "type":
 		sel := step.Params["selector"]
 		text := step.Params["text"]
+		contentFormat := step.Params["content_format"]
 		if sel == "" {
 			return fmt.Errorf("type: missing selector param")
 		}
-		return sess.Type(sel, text)
+		return sess.TypeContent(sel, text, contentFormat)
 
 	case "wait":
 		sel := step.Params["selector"]
@@ -373,12 +448,7 @@ func (s *BrowserTaskSupervisor) doStep(sess *Session, step StepSpec) error {
 		return sess.WaitForSelector(sel, timeoutSec)
 
 	case "eval":
-		expr := step.Params["expression"]
-		if expr == "" {
-			return fmt.Errorf("eval: missing expression param")
-		}
-		_, err := sess.Eval(expr)
-		return err
+		return fmt.Errorf("eval step is disabled in stable browser tasks; use observe/extract plus page-level actions")
 
 	case "scroll":
 		dx, dy := 0, 500
@@ -423,21 +493,13 @@ func (s *BrowserTaskSupervisor) takeCheckpoint(state *TaskState, stepIdx int) {
 		state.StepTraces[len(state.StepTraces)-1].TabID = cp.TabID
 		state.StepTraces[len(state.StepTraces)-1].FrameID = cp.FrameID
 	}
-	// Only keep the last screenshot to save memory
-	imgB64, err := sess.Screenshot(false)
-	if err == nil {
-		cp.ScreenshotB64 = imgB64
-	}
-	// Cap checkpoints at 10, clear old screenshots to save memory
+	// Checkpoints are metadata-only on the hot path. Pixel capture is excluded
+	// from the stable browser mechanism; observe/extract use DOM state instead.
+	// Cap checkpoints at 10.
 	const maxCheckpoints = 10
 	state.Checkpoints = append(state.Checkpoints, cp)
 	if len(state.Checkpoints) > maxCheckpoints {
-		// Remove oldest, but first clear its screenshot
 		state.Checkpoints = state.Checkpoints[len(state.Checkpoints)-maxCheckpoints:]
-	}
-	// Only keep screenshot on the most recent checkpoint
-	for i := 0; i < len(state.Checkpoints)-1; i++ {
-		state.Checkpoints[i].ScreenshotB64 = ""
 	}
 }
 

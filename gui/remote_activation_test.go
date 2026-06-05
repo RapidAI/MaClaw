@@ -432,6 +432,267 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	}
 }
 
+func TestActivateRemote_SwitchesToHubProviderWhenRegisteredAccountHasOfficialService(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var hubURL string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/enroll/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":        "approved",
+				"user_id":       "u_456",
+				"email":         "user@example.com",
+				"sn":            "SN-2026-000456",
+				"machine_id":    "m_456",
+				"machine_token": "mt_456",
+				"viewer_token":  "viewer-token",
+			})
+		case "/api/llm/service/account":
+			if got := r.Header.Get("Authorization"); got != "Bearer viewer-token" {
+				t.Errorf("Authorization = %q, want viewer token", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": map[string]any{
+					"active":              true,
+					"service_group_ids":   []string{"official"},
+					"service_group_names": []string{"MaClaw官方服务"},
+					"available_models":    []string{"auto"},
+					"default_model":       "auto",
+					"hub_llm_base_url":    hubURL + "/api/llm/v1",
+					"credits_total":       100,
+					"credits_available":   100,
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	hubURL = hub.URL
+	defer hub.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:             hub.URL,
+		MaclawLLMCurrentProvider: "Custom1",
+		MaclawLLMUrl:             "https://custom.example.com/v1",
+		MaclawLLMKey:             "custom-key",
+		MaclawLLMModel:           "gpt-test",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:     "Custom1",
+			URL:      "https://custom.example.com/v1",
+			Key:      "custom-key",
+			Model:    "gpt-test",
+			Protocol: "openai",
+			IsCustom: true,
+		}},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if _, err := app.ActivateRemote("user@example.com", "", ""); err != nil {
+		t.Fatalf("ActivateRemote() error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.MaclawLLMCurrentProvider != hubServiceProviderName {
+		t.Fatalf("MaclawLLMCurrentProvider = %q, want %q", saved.MaclawLLMCurrentProvider, hubServiceProviderName)
+	}
+	provider, ok := findProviderByName(saved.MaclawLLMProviders, hubServiceProviderName)
+	if !ok {
+		t.Fatalf("saved providers missing hub provider: %+v", saved.MaclawLLMProviders)
+	}
+	if provider.URL != hub.URL+"/api/llm/v1" || provider.Key != "viewer-token" || provider.Model != hubServiceAutoModel || !provider.IsHubService {
+		t.Fatalf("unexpected hub provider: %+v", provider)
+	}
+	if saved.MaclawLLMUrl != provider.URL || saved.MaclawLLMKey != provider.Key || saved.MaclawLLMModel != provider.Model {
+		t.Fatalf("legacy fields not synced to hub provider: url=%q key=%q model=%q provider=%+v", saved.MaclawLLMUrl, saved.MaclawLLMKey, saved.MaclawLLMModel, provider)
+	}
+}
+
+func TestActivateRemote_RemovesStaleHubProviderWhenRegisteredAccountHasNoOfficialService(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var hubURL string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/enroll/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":        "approved",
+				"user_id":       "u_789",
+				"email":         "user@example.com",
+				"sn":            "SN-2026-000789",
+				"machine_id":    "m_789",
+				"machine_token": "mt_789",
+				"viewer_token":  "viewer-token-new",
+			})
+		case "/api/llm/service/account":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": map[string]any{
+					"active":           false,
+					"available_models": []string{"auto"},
+					"default_model":    "auto",
+					"hub_llm_base_url": hubURL + "/api/llm/v1",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	hubURL = hub.URL
+	defer hub.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:             hub.URL,
+		RemoteViewerToken:        "viewer-token-old",
+		MaclawLLMCurrentProvider: "Custom1",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: hubServiceProviderName, URL: "https://old-hub.example.com/api/llm/v1", Key: "viewer-token-old", Model: hubServiceAutoModel, Protocol: "openai", IsHubService: true},
+			{Name: "Custom1", URL: "https://custom.example.com/v1", Key: "custom-key", Model: "gpt-test", Protocol: "openai", IsCustom: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if _, err := app.ActivateRemote("user@example.com", "", ""); err != nil {
+		t.Fatalf("ActivateRemote() error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.MaclawLLMCurrentProvider != "Custom1" {
+		t.Fatalf("MaclawLLMCurrentProvider = %q, want Custom1", saved.MaclawLLMCurrentProvider)
+	}
+	if _, ok := findProviderByName(saved.MaclawLLMProviders, hubServiceProviderName); ok {
+		t.Fatalf("stale hub provider should be removed when account has no official service: %+v", saved.MaclawLLMProviders)
+	}
+}
+
+func TestActivateRemote_RemovesStaleHubProviderWhenOfficialServiceAuthorizationFails(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/enroll/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":        "approved",
+				"user_id":       "u_890",
+				"email":         "user@example.com",
+				"sn":            "SN-2026-000890",
+				"machine_id":    "m_890",
+				"machine_token": "mt_890",
+				"viewer_token":  "viewer-token-new",
+			})
+		case "/api/llm/service/account":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": "viewer token expired"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:             hub.URL,
+		RemoteViewerToken:        "viewer-token-old",
+		MaclawLLMCurrentProvider: "Custom1",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: hubServiceProviderName, URL: "https://old-hub.example.com/api/llm/v1", Key: "viewer-token-old", Model: hubServiceAutoModel, Protocol: "openai", IsHubService: true},
+			{Name: "Custom1", URL: "https://custom.example.com/v1", Key: "custom-key", Model: "gpt-test", Protocol: "openai", IsCustom: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if _, err := app.ActivateRemote("user@example.com", "", ""); err != nil {
+		t.Fatalf("ActivateRemote() error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.RemoteViewerToken != "viewer-token-new" {
+		t.Fatalf("RemoteViewerToken = %q, want new viewer token", saved.RemoteViewerToken)
+	}
+	if saved.MaclawLLMCurrentProvider != "Custom1" {
+		t.Fatalf("MaclawLLMCurrentProvider = %q, want Custom1", saved.MaclawLLMCurrentProvider)
+	}
+	if _, ok := findProviderByName(saved.MaclawLLMProviders, hubServiceProviderName); ok {
+		t.Fatalf("stale hub provider should be removed after authorization failure: %+v", saved.MaclawLLMProviders)
+	}
+}
+
+func TestActivateRemote_ClearsStaleViewerTokenAndHubProviderWhenEnrollOmitsViewerToken(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/enroll/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":        "approved",
+				"user_id":       "u_987",
+				"email":         "user@example.com",
+				"sn":            "SN-2026-000987",
+				"machine_id":    "m_987",
+				"machine_token": "mt_987",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:             hub.URL,
+		RemoteViewerToken:        "viewer-token-old",
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: hubServiceProviderName, URL: hub.URL + "/api/llm/v1", Key: "viewer-token-old", Model: hubServiceAutoModel, Protocol: "openai", IsHubService: true}},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if _, err := app.ActivateRemote("user@example.com", "", ""); err != nil {
+		t.Fatalf("ActivateRemote() error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.RemoteHubURL != hub.URL {
+		t.Fatalf("RemoteHubURL = %q, want %q", saved.RemoteHubURL, hub.URL)
+	}
+	if saved.RemoteViewerToken != "" {
+		t.Fatalf("RemoteViewerToken = %q, want cleared", saved.RemoteViewerToken)
+	}
+	if _, ok := findProviderByName(saved.MaclawLLMProviders, hubServiceProviderName); ok {
+		t.Fatalf("stale hub provider should be removed after registering different hub without viewer token: %+v", saved.MaclawLLMProviders)
+	}
+	if saved.MaclawLLMCurrentProvider != "" {
+		t.Fatalf("MaclawLLMCurrentProvider = %q, want cleared with stale hub provider", saved.MaclawLLMCurrentProvider)
+	}
+}
+
 func TestActivateRemote_ReturnsBeforeBackgroundHubConnect(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -600,6 +861,45 @@ func TestActivateRemote_TimesOutSlowEnrollRequest(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("ActivateRemote() took too long: %s", elapsed)
+	}
+}
+
+func TestSkillMarketAutoLoginThrottlesFailedMachineLogin(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/machine-login" {
+			http.NotFound(w, r)
+			return
+		}
+		calls.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Too many requests, please slow down"})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	app.acquireSkillMarketTokenAfterEnroll("user@example.com", "m_123", "viewer-token")
+	app.acquireSkillMarketTokenAfterEnroll("user@example.com", "m_123", "viewer-token")
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("machine-login calls = %d, want throttled to 1", got)
+	}
+	if next, ok := app.skillMarketAutoLoginNextAttempt.Load().(time.Time); !ok || time.Until(next) <= 0 {
+		t.Fatalf("expected future retry time, got %v ok=%v", next, ok)
+	}
+
+	app.skillMarketAutoLoginNextAttempt.Store(time.Now().Add(-time.Second))
+	app.acquireSkillMarketTokenAfterEnroll("user@example.com", "m_123", "viewer-token")
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("machine-login calls after retry window = %d, want 2", got)
 	}
 }
 

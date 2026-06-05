@@ -23,8 +23,10 @@ import {
     RedeemHubLLMService,
 } from "../../../wailsjs/go/main/App";
 import { PROVIDER_LOGOS } from "./providerLogos";
-import { HubRegisterButtonContent, HubStatusBadge } from "./HubConnectionStatus";
+import { localizeHubServiceReason, localizeHubServiceRedeemError } from "../../utils/hubServiceI18n";
+import { HubRegisterButtonContent } from "./HubConnectionStatus";
 import { OnboardingOfflineModeOption } from "./OnboardingOfflineModeOption";
+import { OfflineModeNoticeDialog } from "./OfflineModeNoticeDialog";
 import {
     getOnboardingFlow,
     getOnboardingStepDone,
@@ -43,13 +45,13 @@ import {
     wizardGhostButtonStyle,
     wizardGhostButtonBlockStyle,
     wizardSelectableChipStyle,
-    wizardOptionCardStyle,
     wizardBannerStyle,
     type HubLLMActiveGrant,
     type HubLLMServiceStatus,
     type LLMProvider,
     type Props,
 } from "./OnboardingWizardShared";
+import { KNOWN_USER_AGENTS, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, nextCustomAgentValue } from "./userAgent";
 
 export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant), [lang]);
@@ -68,6 +70,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [redeemCode, setRedeemCode] = useState("");
     const [freeTrial, setFreeTrial] = useState(true);
     const [offlineMode, setOfflineMode] = useState(false);
+    const [showOfflineModeNotice, setShowOfflineModeNotice] = useState(false);
     const onboardingFlow = useMemo(() => getOnboardingFlow({ brandId, freeTrial, offlineMode }), [brandId, freeTrial, offlineMode]);
     const isTigerclaw = onboardingFlow.isTigerclaw;
     const totalSteps = onboardingFlow.totalSteps;
@@ -183,11 +186,11 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         if (findGrant("expired")) {
             return t("服务兑换码已生效，但 MaClaw 官方授权已过期。请兑换新的授权或手动配置其它服务商。", "Service code redeemed, but MaClaw Official authorization has expired. Redeem a new grant or configure another provider manually.");
         }
-        const reason = (status?.inactive_reasons || []).filter(Boolean).join("; ");
+        const reason = (status?.inactive_reasons || []).map(reason => localizeHubServiceReason(reason, lang)).filter(Boolean).join("; ");
         return reason
             ? t(`服务兑换码已生效，但 MaClaw 官方暂不可用：${reason}`, `Service code redeemed, but MaClaw Official is unavailable: ${reason}`)
             : t("服务兑换码已生效，但 MaClaw 官方暂不可用。请在服务状态中查看原因。", "Service code redeemed, but MaClaw Official is unavailable. Check Service Status for details.");
-    }, [formatHubRetryDuration, hubGrantRetrySeconds, t]);
+    }, [formatHubRetryDuration, hubGrantRetrySeconds, lang, t]);
 
     useEffect(() => {
         GetMaclawLLMProviders().then(data => {
@@ -283,12 +286,16 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (e.key === "Escape") {
+                if (showOfflineModeNotice) {
+                    setShowOfflineModeNotice(false);
+                    return;
+                }
                 if (!showConfirm) onClose();
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onClose, showConfirm]);
+    }, [onClose, showConfirm, showOfflineModeNotice]);
 
     useEffect(() => {
         const allDone = isOnboardingComplete(onboardingFlow, { regDone: effectiveRegDone, llmDone, wxCompleted });
@@ -305,10 +312,11 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const handleOfflineModeToggle = useCallback((checked: boolean) => {
         setOfflineMode(checked);
         if (checked) {
+            setShowOfflineModeNotice(true);
             setFreeTrial(false);
             setFreeTrialVerified(false);
             setLlmDone(false);
-            setRegResult({ ok: true, tone: "warning", msg: t("已启用离网模式：将跳过 Hub 注册。请继续配置 LLM；离网模式无法访问外网，也无法进行网页搜索。", "Offline mode enabled: Hub registration will be skipped. Continue to LLM setup; offline mode cannot access the public internet or perform web search.", "已啟用離網模式：將跳過 Hub 註冊。請繼續配置 LLM；離網模式無法訪問外網，也無法進行網頁搜尋。") });
+            setRegResult(null);
             setHubConnecting(false);
         } else {
             setFreeTrial(true);
@@ -319,6 +327,17 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             setRegResult(null);
         }
     }, [freeTrialVerified, onLLMConfigured, t]);
+
+    const handleFreeTrialChange = useCallback((checked: boolean) => {
+        if (offlineMode) return;
+        setFreeTrial(checked);
+        if (!checked) {
+            setLlmDone(false);
+        } else if (freeTrialVerified) {
+            setLlmDone(true);
+            onLLMConfigured();
+        }
+    }, [freeTrialVerified, offlineMode, onLLMConfigured]);
 
     const updateField = useCallback((field: keyof LLMProvider, value: string) => {
         if (selectedIdx === null) return;
@@ -352,7 +371,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 setLlmDone(true);
                 onLLMConfigured();
             } else {
-                const testResult = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw", wire_api: sp.wire_api || "" });
+                const testResult = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: effectiveAgentType(sp), wire_api: sp.wire_api || "" });
                 const nextProviders = providers.map((provider, index) => index === selectedIdx
                     ? { ...provider, supports_vision: testResult.supports_vision }
                     : { ...provider });
@@ -522,7 +541,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         redeemNote = `\n${t("✅ 服务兑换码已激活，LLM 配置步骤已自动跳过", "✅ Service code redeemed. LLM configuration step skipped automatically.", "✅ 服務兌換碼已啟用，LLM 配置步驟已自動跳過")}`;
                     }
                 } catch (redeemError) {
-                    redeemNote = `\n${t("服务兑换码兑换失败，请稍后在服务状态中重试：", "Service redeem code failed. You can retry later in service status: ", "服務兌換碼兌換失敗，請稍後在服務狀態中重試：")}${String(redeemError)}`;
+                    const localizedRedeemError = localizeHubServiceRedeemError(redeemError, lang);
+                    redeemNote = `\n${t("服务兑换码兑换失败，请稍后在服务状态中重试：", "Service redeem code failed. You can retry later in service status: ", "服務兌換碼兌換失敗，請稍後在服務狀態中重試：")}${localizedRedeemError}`;
                 }
             }
             setHubConnecting(true);
@@ -653,13 +673,55 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
     // ── Step labels (memoized) ──
     const labels = useMemo(() => getOnboardingStepLabels(onboardingFlow, lang), [onboardingFlow, lang]);
+    const showRegistrationToast = !!regResult && !showConfirm && !showOfflineModeNotice && (isCurrentOnboardingStep(onboardingFlow, step, 'register') || isCurrentOnboardingStep(onboardingFlow, step, 'mode'));
+    const registrationToastTitle = regResultWarning ? t("需要处理", "Action needed", "需要處理") : regResult?.ok ? t("注册完成", "Registration successful", "註冊完成") : t("注册失败", "Registration failed", "註冊失敗");
+    const registrationToastDetail = (() => {
+        if (!regResult) return "";
+        if (!regResult.ok || regResultWarning) return regResult.msg;
+        const extraNote = regResult.msg.split("\n").slice(1).map(item => item.trim()).filter(Boolean).join(" ");
+        if (extraNote) return extraNote.replace(/^✅\s*/, "");
+        if (offlineMode) return t("已进入离线模式，可继续下一步", "Offline mode is ready. You can continue.", "已進入離線模式，可繼續下一步");
+        if (hubConnecting) return t("正在连接 Hub，可继续下一步", "Connecting to Hub. You can continue.", "正在連線 Hub，可繼續下一步");
+        if (freeTrial && freeTrialVerified && llmDone) return t("Hub 已连接，免费试用已激活，可继续下一步", "Hub connected. Free trial activated. You can continue.", "Hub 已連線，免費試用已啟用，可繼續下一步");
+        if (freeTrial && !llmDone) return t("Hub 已连接，正在验证免费试用服务", "Hub connected. Verifying free trial service.", "Hub 已連線，正在驗證免費試用服務");
+        return t("Hub 已连接，可继续下一步", "Hub connected. You can continue.", "Hub 已連線，可繼續下一步");
+    })();
+    const srOnlyStyle = { position: "absolute", width: 1, height: 1, padding: 0, margin: -1, overflow: "hidden", clip: "rect(0, 0, 0, 0)", whiteSpace: "nowrap", border: 0 } as const;
 
     return (
         <div style={{
             position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
             background: "rgba(0,0,0,0.3)", backdropFilter: "blur(3px)",
-            display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999,
+            display: "flex", alignItems: "center", justifyContent: "center", zIndex: 20000,
         }}>
+            {showRegistrationToast && regResult && (
+                <div style={{ position: "absolute", top: 116, left: "50%", transform: "translateX(-50%)", zIndex: 20001, width: "min(420px, calc(100vw - 36px))", maxHeight: "calc(100vh - 148px)", overflowY: "auto", boxSizing: "border-box" }} role={regResult.ok ? "status" : "alert"} aria-live="polite">
+                    <div style={{ ...wizardBannerStyle(regResultWarning ? "warning" : regResult.ok ? "success" : "error"), marginTop: 0, background: "var(--theme-surface)", border: `1px solid ${regResultWarning ? "rgba(245,158,11,0.65)" : regResult.ok ? "rgba(34,197,94,0.65)" : "rgba(239,68,68,0.65)"}`, borderLeft: `3px solid ${regResultWarning ? colors.warning : regResult.ok ? colors.success : colors.danger}`, boxShadow: "0 14px 36px rgba(0,0,0,0.28)" }}>
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                            <span aria-hidden="true" style={{ flexShrink: 0, fontSize: "1rem", lineHeight: 1.35 }}>
+                                {regResultWarning ? "⚠️" : regResult.ok ? "✅" : "❌"}
+                            </span>
+                            <div style={{ minWidth: 0 }}>
+                                <div style={{ color: colors.textPrimary, fontSize: "0.82rem", fontWeight: 800, lineHeight: 1.35 }}>
+                                    {registrationToastTitle}
+                                </div>
+                                <div style={{ marginTop: 2, color: regResult.ok && !regResultWarning ? colors.success : colors.textSecondary, fontSize: "0.74rem", fontWeight: 600, lineHeight: 1.45 }}>
+                                    {registrationToastDetail}
+                                    {regResult.ok && hubConnecting && !offlineMode && (
+                                        <>
+                                            <span style={srOnlyStyle}>{t("正在后台连接 Hub", "Connecting to Hub in the background", "正在後台連線 Hub")}</span>
+                                            <span style={srOnlyStyle}>{hubT("Hub connecting", "Hub 连接中", "Hub 連線中")}</span>
+                                        </>
+                                    )}
+                                    {regResult.ok && !hubConnecting && !offlineMode && (
+                                        <span style={srOnlyStyle}>{hubT("Hub connected", "Hub 已连接", "Hub 已連線")}</span>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
             <div style={{
                 background: "var(--theme-surface)", borderRadius: 16, width: 460, maxHeight: "90vh",
                 overflowY: "auto", boxShadow: "0 16px 48px rgba(15,23,42,0.22)",
@@ -904,12 +966,18 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     ? t("选择离网模式后，将跳过 Hub 注册并进入 LLM 配置。", "Offline mode skips Hub registration and continues to LLM setup.", "選擇離網模式後，將跳過 Hub 註冊並進入 LLM 配置。")
                                     : t("选择运行模式。正常联网模式下，注册设备邮箱到 Hub 后即可通过移动端操控。", "Choose a run mode. In online mode, register your email to the Hub for remote control.", "選擇運行模式。正常聯網模式下，註冊設備郵箱到 Hub 後即可通過移動端操控。")}
                             </p>
-                            <OnboardingOfflineModeOption offlineMode={offlineMode} onToggle={handleOfflineModeToggle} t={t} />
+                            <OnboardingOfflineModeOption
+                                offlineMode={offlineMode}
+                                freeTrial={freeTrial}
+                                onToggle={handleOfflineModeToggle}
+                                onFreeTrialChange={handleFreeTrialChange}
+                                t={t}
+                            />
                             {!offlineMode && (
                                 <>
-                            <div style={{ marginBottom: 10 }}>
-                                <label style={labelStyle}>{t("邮箱", "Email")} <span style={{ color: colors.danger }}>*</span></label>
-                                <input style={inputStyle} value={regEmail}
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                                <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>{t("邮箱", "Email")} <span style={{ color: colors.danger }}>*</span></label>
+                                <input style={{ ...inputStyle, flex: 1, minWidth: 0 }} value={regEmail}
                                     onChange={e => setRegEmail(e.target.value)}
                                     placeholder="name@example.com" spellCheck={false} />
                             </div>
@@ -927,34 +995,12 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     {invError && <div style={{ fontSize: "0.72rem", color: colors.danger, marginTop: 4 }}>{invError}</div>}
                                 </div>
                             )}
-                            <label style={{
-                                ...wizardOptionCardStyle, marginBottom: 10,
-                                border: `1px solid ${colors.border}`,
-                                background: freeTrial ? "var(--theme-info-bg)" : colors.surfaceMuted,
-                            }}>
-                                <input type="checkbox" checked={freeTrial} onChange={e => {
-                                    const checked = e.target.checked;
-                                    setFreeTrial(checked);
-                                    if (!checked) {
-                                        setLlmDone(false);
-                                    } else if (freeTrialVerified) {
-                                        // Re-checking: the Hub already confirmed the free trial is active.
-                                        setLlmDone(true);
-                                        onLLMConfigured();
-                                    }
-                                }} style={{ marginTop: 2 }} />
-                                <span style={{ lineHeight: 1.45 }}>
-                                    <strong>{t("免费试用", "Free trial", "免費試用")}</strong>
-                                    <br />
-                                    <span style={{ color: colors.textMuted }}>{t("使用 Hub 发放的新用户福利，跳过 LLM 配置。", "Use the Hub new-user benefit and skip LLM setup.", "使用 Hub 發放的新用戶福利，跳過 LLM 配置。")}</span>
-                                </span>
-                            </label>
-                            <div style={{ marginBottom: 10 }}>
-                                <label style={labelStyle}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                                <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>
                                     {t("服务兑换码", "Service redeem code", "服務兌換碼")} {" "}
                                     <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("可选", "optional", "可選")})</span>
                                 </label>
-                                <input style={inputStyle}
+                                <input style={{ ...inputStyle, flex: 1, minWidth: 0 }}
                                     value={redeemCode}
                                     onChange={e => setRedeemCode(e.target.value.trim().toUpperCase())}
                                     placeholder={t("请输入服务兑换码（可选）", "Enter service redeem code (optional)", "請輸入服務兌換碼（可選）")}
@@ -968,26 +1014,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                 <HubRegisterButtonContent regBusy={regBusy} regDone={regDone} hubConnecting={hubConnecting} t={hubT} />
                             </button>
                                 </>
-                            )}
-                            {regResult && (
-                                <div style={wizardBannerStyle(regResultWarning ? "warning" : regResult.ok ? "success" : "error")}>
-                                    {regResultWarning ? `⚠️ ${regResult.msg}` : regResult.ok ? `✅ ${regResult.msg}` : `❌ ${regResult.msg}`}
-                                    {regResult.ok && !offlineMode && (
-                                        <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, fontSize: "0.68rem", color: hubConnecting ? colors.primary : colors.success }}>
-                                            <HubStatusBadge connecting={hubConnecting} t={hubT} />
-                                        </div>
-                                    )}
-                                    {regResult.ok && !offlineMode && regDone && freeTrial && !llmDone && (
-                                        <div style={{ marginTop: 4, fontSize: "0.68rem", color: colors.primary }}>
-                                            ⏳ {t("正在验证免费试用服务...", "Verifying free trial service...", "正在驗證免費試用服務...")}
-                                        </div>
-                                    )}
-                                    {regResult.ok && !offlineMode && regDone && freeTrial && freeTrialVerified && llmDone && (
-                                        <div style={{ marginTop: 4, fontSize: "0.68rem", color: colors.success }}>
-                                            ✅ {t("免费试用已激活，LLM 配置已自动完成", "Free trial activated. LLM configured automatically.", "免費試用已啟用，LLM 配置已自動完成")}
-                                        </div>
-                                    )}
-                                </div>
                             )}
                         </div>
                     )}
@@ -1079,21 +1105,29 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                                     {/* User-Agent selection */}
                                                     <div style={{ marginBottom: 10 }}>
                                                         <label style={labelStyle}>User-Agent</label>
-                                                        <div style={{ display: "flex", gap: 6 }}>
-                                                            {(["openclaw", "claude-code/2.0.0"] as const).map(ua => {
-                                                                const active = (selectedProvider.agent_type || "openclaw") === ua;
+                                                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                                            {KNOWN_USER_AGENTS.map(ua => {
+                                                                const currentAgent = effectiveAgentType(selectedProvider);
+                                                                const active = currentAgent === ua;
                                                                 return (
                                                                     <button key={ua} onClick={() => updateField("agent_type", ua)} style={wizardSelectableChipStyle(active, "md")}>
                                                                         {ua}
                                                                     </button>
                                                                 );
                                                             })}
+                                                            {(() => {
+                                                                const currentAgent = effectiveAgentType(selectedProvider);
+                                                                const active = !isKnownUserAgent(currentAgent);
+                                                                return (
+                                                                    <button onClick={() => updateField("agent_type", active ? currentAgent : customAgentSeedForProvider(selectedProvider))} style={wizardSelectableChipStyle(active, "md")}>
+                                                                        {t("\u81ea\u5b9a\u4e49", "Custom", "\u81ea\u8a02")}
+                                                                    </button>
+                                                                );
+                                                            })()}
                                                         </div>
-                                                        <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
-                                                            {(selectedProvider.agent_type || "openclaw") === "claude-code/2.0.0"
-                                                                ? t("Kimi 等需要编程套餐身份的服务商", "For providers requiring Claude Coding Plan identity (e.g. Kimi)")
-                                                                : t("智谱龙虾等大多数服务商使用 OpenClaw 身份", "Most providers use OpenClaw identity (e.g. Zhipu Lobster)")}
-                                                        </p>
+                                                        {!isKnownUserAgent(effectiveAgentType(selectedProvider)) && (
+                                                            <input style={{ ...inputStyle, marginTop: 8 }} value={editableCustomAgentValue(selectedProvider)} onChange={e => updateField("agent_type", nextCustomAgentValue(selectedProvider, e.target.value))} placeholder={t("\u81ea\u5b9a\u4e49 User-Agent", "Custom User-Agent", "\u81ea\u8a02 User-Agent")} autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
+                                                        )}
                                                     </div>
                                                     <div style={{ marginBottom: 10 }}>
                                                         <label style={labelStyle}>API URL <span style={{ color: colors.danger }}>*</span></label>
@@ -1296,6 +1330,14 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 </div>
             </div>
 
+            {showOfflineModeNotice && (
+                <OfflineModeNoticeDialog
+                    t={t}
+                    onClose={() => setShowOfflineModeNotice(false)}
+                    onBackToOnline={() => { handleOfflineModeToggle(false); setShowOfflineModeNotice(false); }}
+                />
+            )}
+
             {/* ── Confirmation dialog ── */}
             {showConfirm && (
                 <div style={{
@@ -1320,9 +1362,9 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                 padding: "8px 10px", borderRadius: 8,
                                 background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.25)",
                             }}>
-                                {t("只有填写正确邮箱并完成邮件确认后，才可以获得剩余赠送 credits。",
+                                {t("只有填写正确邮箱并完成邮件确认后，才可以获得剩余赠送额度。",
                                     "Only a correct email address and email confirmation can unlock the remaining bonus credits.",
-                                    "只有填寫正確信箱並完成郵件確認後，才可以獲得剩餘贈送 credits。")}
+                                    "只有填寫正確信箱並完成郵件確認後，才可以獲得剩餘贈送額度。")}
                             </div>
                         )}
                         <div style={{

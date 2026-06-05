@@ -32,34 +32,39 @@ type SkillDiagEntry struct {
 
 // NLSkillDefinition is the Wails-facing view of a Skill.
 type NLSkillDefinition struct {
-	Name             string                      `json:"name"`
-	DirName          string                      `json:"dir_name,omitempty"`
-	Description      string                      `json:"description"`
-	Triggers         []string                    `json:"triggers"`
-	Steps            []corelib.NLSkillStep       `json:"steps"`
-	Status           string                      `json:"status"`
-	CreatedAt        time.Time                   `json:"created_at"`
-	Source           string                      `json:"source"`
-	SourceProject    string                      `json:"source_project"`
-	ExecutionClass   string                      `json:"execution_class,omitempty"`
-	HubSkillID       string                      `json:"hub_skill_id,omitempty"`
-	HubVersion       string                      `json:"hub_version,omitempty"`
-	Capability       *corelib.SkillCapabilityRef `json:"capability,omitempty"`
-	TrustLevel       string                      `json:"trust_level,omitempty"`
-	Type             string                      `json:"type,omitempty"`          // "executable" (default) | "knowledge"
-	Content          string                      `json:"content,omitempty"`       // Markdown content for knowledge-type skills
-	Publisher        string                      `json:"publisher,omitempty"`     // Plugin namespace publisher
-	Mode             string                      `json:"mode,omitempty"`          // "sequential" (default) | "interactive" | "api_workflow"
-	HasDocumentation bool                        `json:"has_documentation"`       // true if SKILL.md exists in skill directory
-	SkillDir         string                      `json:"-"`                       // skill directory path (internal use, not serialized to frontend)
-	Params           []corelib.NLSkillParam      `json:"params,omitempty"`        // parameter schema (explicit or synthesized)
-	RequiredArgs     []string                    `json:"required_args,omitempty"` // required template variables
-	UsageCount       int                         `json:"usage_count"`
-	SuccessCount     int                         `json:"success_count"`
-	FailureCount     int                         `json:"failure_count"`
-	SuccessRate      float64                     `json:"success_rate"` // computed: SuccessCount / UsageCount
-	LastUsedAt       *time.Time                  `json:"last_used_at,omitempty"`
-	LastError        string                      `json:"last_error,omitempty"`
+	Name                string                      `json:"name"`
+	DirName             string                      `json:"dir_name,omitempty"`
+	Description         string                      `json:"description"`
+	Triggers            []string                    `json:"triggers"`
+	Steps               []corelib.NLSkillStep       `json:"steps"`
+	Status              string                      `json:"status"`
+	CreatedAt           time.Time                   `json:"created_at"`
+	Source              string                      `json:"source"`
+	SourceProject       string                      `json:"source_project"`
+	ExecutionClass      string                      `json:"execution_class,omitempty"`
+	HubSkillID          string                      `json:"hub_skill_id,omitempty"`
+	HubVersion          string                      `json:"hub_version,omitempty"`
+	Capability          *corelib.SkillCapabilityRef `json:"capability,omitempty"`
+	TrustLevel          string                      `json:"trust_level,omitempty"`
+	Type                string                      `json:"type,omitempty"`          // "executable" (default) | "knowledge"
+	Content             string                      `json:"content,omitempty"`       // Markdown content for knowledge-type skills
+	Publisher           string                      `json:"publisher,omitempty"`     // Plugin namespace publisher
+	Mode                string                      `json:"mode,omitempty"`          // "sequential" (default) | "interactive" | "api_workflow"
+	HasDocumentation    bool                        `json:"has_documentation"`       // true if SKILL.md exists in skill directory
+	SkillDir            string                      `json:"-"`                       // skill directory path (internal use, not serialized to frontend)
+	Params              []corelib.NLSkillParam      `json:"params,omitempty"`        // parameter schema (explicit or synthesized)
+	RequiredArgs        []string                    `json:"required_args,omitempty"` // required template variables
+	RequiresGUI         bool                        `json:"requires_gui,omitempty"`
+	RequiresTools       []string                    `json:"requires_tools,omitempty"`
+	FallbackForTools    []string                    `json:"fallback_for_tools,omitempty"`
+	RequiresToolsets    []string                    `json:"requires_toolsets,omitempty"`
+	FallbackForToolsets []string                    `json:"fallback_for_toolsets,omitempty"`
+	UsageCount          int                         `json:"usage_count"`
+	SuccessCount        int                         `json:"success_count"`
+	FailureCount        int                         `json:"failure_count"`
+	SuccessRate         float64                     `json:"success_rate"` // computed: SuccessCount / UsageCount
+	LastUsedAt          *time.Time                  `json:"last_used_at,omitempty"`
+	LastError           string                      `json:"last_error,omitempty"`
 }
 
 // SkillExecutor manages and executes locally-defined NL Skills.
@@ -77,7 +82,7 @@ type SkillExecutor struct {
 	skillCacheKey string
 }
 
-const skillLoadCacheTTL = 30 * time.Second
+const skillLoadCacheTTL = 10 * time.Minute
 
 // NewSkillExecutor creates a new client-side Skill executor.
 func NewSkillExecutor(app *App, mcpRegistry *MCPRegistry, manager *RemoteSessionManager) *SkillExecutor {
@@ -126,7 +131,7 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 		}
 	}
 
-	fileSkills := e.scanFileSkills(cfg.ExternalSkillDirs)
+	fileSkills, fileSkillsReady := e.scanFileSkills(cfg.ExternalSkillDirs)
 	for _, fs := range fileSkills {
 		// Primary: match by directory path (stable identity).
 		// Fallback: match by Name (backward compat for config entries without SkillDir).
@@ -176,11 +181,13 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 		}
 	}
 
-	e.skillCacheMu.Lock()
-	e.skillCache = cloneSkillEntries(skills)
-	e.skillCacheAt = time.Now()
-	e.skillCacheKey = cacheKey
-	e.skillCacheMu.Unlock()
+	if fileSkillsReady {
+		e.skillCacheMu.Lock()
+		e.skillCache = cloneSkillEntries(skills)
+		e.skillCacheAt = time.Now()
+		e.skillCacheKey = cacheKey
+		e.skillCacheMu.Unlock()
+	}
 
 	return cloneSkillEntries(skills)
 }
@@ -212,18 +219,22 @@ func (e *SkillExecutor) invalidateSkillCache() {
 }
 
 // scanFileSkills returns file-based skill entries using the CachedSkillScanner
-// when available (async + 30s TTL cache), falling back to synchronous scan.
-func (e *SkillExecutor) scanFileSkills(externalDirs []string) []corelib.NLSkillEntry {
+// when available. If the app-level scanner is still warming up, it returns no
+// file skills and ready=false instead of starting a duplicate foreground scan.
+func (e *SkillExecutor) scanFileSkills(externalDirs []string) ([]corelib.NLSkillEntry, bool) {
 	if e.app != nil && e.app.cachedSkillScanner != nil {
 		cached := e.app.cachedSkillScanner.Get()
 		if cached != nil {
 			// cached is non-nil: scan completed (may be empty slice if no skills found).
-			return cached
+			return cached, true
 		}
-		// nil: scan not yet complete - fall through to synchronous scan.
+		// nil: scan not yet complete. Do not block the active agent loop with a
+		// full markdown scan; the background scanner will publish the cache soon.
+		log.Printf("[skill-cache] scan_not_ready using_config_skills_only external_dirs=%d", len(externalDirs))
+		return nil, false
 	}
-	// Fallback: CachedSkillScanner not available or scan not yet complete.
-	return skill.ScanAllSkillDirsWithExternal(externalDirs)
+	// Fallback for tests and minimal App wiring without CachedSkillScanner.
+	return skill.ScanAllSkillDirsWithExternal(externalDirs), true
 }
 
 func skillLoadCacheKey(skills []corelib.NLSkillEntry, externalDirs []string) string {
@@ -415,7 +426,7 @@ func (e *SkillExecutor) scanSkillYAMLFiles() []corelib.NLSkillEntry {
 // triggers, description, etc.) is always loaded from the YAML file at runtime
 // via loadSkills -> scanSkillYAMLFiles (directory-path identity matching).
 func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
-	cfg, err := e.app.LoadConfig()
+	_, err := e.app.LoadConfig()
 	if err != nil {
 		return err
 	}
@@ -446,8 +457,9 @@ func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 		}
 		filtered = append(filtered, s)
 	}
-	cfg.NLSkills = filtered
-	if err := e.app.SaveConfig(cfg); err != nil {
+	if err := e.app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.NLSkills = filtered
+	}); err != nil {
 		return err
 	}
 	e.invalidateSkillCache()
@@ -506,6 +518,9 @@ func (e *SkillExecutor) Register(entry corelib.NLSkillEntry) error {
 	if entry.Status == "" {
 		entry.Status = string(skillEntryStatusActive)
 	}
+	if isShellBrowserAutomationSkillEntry(entry) {
+		return browserAutomationSkillRejectedError(name)
+	}
 	if entry.CreatedAt == "" {
 		entry.CreatedAt = time.Now().Format(time.RFC3339)
 	}
@@ -533,6 +548,12 @@ func (e *SkillExecutor) Update(entry corelib.NLSkillEntry) error {
 	skills := e.loadSkills()
 	for i, s := range skills {
 		if s.Name == entry.Name {
+			if entry.Status == "" {
+				entry.Status = s.Status
+			}
+			if isShellBrowserAutomationSkillEntry(entry) {
+				return browserAutomationSkillRejectedError(entry.Name)
+			}
 			skills[i].Description = entry.Description
 			skills[i].Triggers = entry.Triggers
 			skills[i].Steps = entry.Steps
@@ -618,6 +639,9 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 	skills[idx].Steps = updated.Steps
 	skills[idx].HubVersion = updated.HubVersion
 	skills[idx].TrustLevel = updated.TrustLevel
+	if isShellBrowserAutomationSkillEntry(skills[idx]) {
+		return browserAutomationSkillRejectedError(skills[idx].Name)
+	}
 
 	return e.saveSkills(skills)
 }
@@ -736,30 +760,35 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			steps = []corelib.NLSkillStep{}
 		}
 		d := NLSkillDefinition{
-			Name:             s.Name,
-			DirName:          s.DirName,
-			Description:      s.Description,
-			Triggers:         triggers,
-			Steps:            steps,
-			Status:           s.Status,
-			Source:           s.Source,
-			SourceProject:    s.SourceProject,
-			ExecutionClass:   classifySkillExecutionClass(s),
-			HubSkillID:       s.HubSkillID,
-			HubVersion:       s.HubVersion,
-			TrustLevel:       s.TrustLevel,
-			Type:             s.Type,
-			Content:          s.Content,
-			Publisher:        s.Publisher,
-			Mode:             s.Mode,
-			HasDocumentation: (normalizeSkillTypeKind(s.Type).IsKnowledge() && s.Content != "") || (s.SkillDir != "" && hasSkillDocFile(s.SkillDir)),
-			SkillDir:         s.SkillDir,
-			Params:           s.Params,
-			RequiredArgs:     s.RequiredArgs,
-			UsageCount:       s.UsageCount,
-			SuccessCount:     s.SuccessCount,
-			FailureCount:     s.FailureCount,
-			LastError:        s.LastError,
+			Name:                s.Name,
+			DirName:             s.DirName,
+			Description:         s.Description,
+			Triggers:            triggers,
+			Steps:               steps,
+			Status:              s.Status,
+			Source:              s.Source,
+			SourceProject:       s.SourceProject,
+			ExecutionClass:      classifySkillExecutionClass(s),
+			HubSkillID:          s.HubSkillID,
+			HubVersion:          s.HubVersion,
+			TrustLevel:          s.TrustLevel,
+			Type:                s.Type,
+			Content:             s.Content,
+			Publisher:           s.Publisher,
+			Mode:                s.Mode,
+			HasDocumentation:    (normalizeSkillTypeKind(s.Type).IsKnowledge() && s.Content != "") || (s.SkillDir != "" && hasSkillDocFile(s.SkillDir)),
+			SkillDir:            s.SkillDir,
+			Params:              s.Params,
+			RequiredArgs:        s.RequiredArgs,
+			RequiresGUI:         s.RequiresGUI,
+			RequiresTools:       cloneStringSlice(s.RequiresTools),
+			FallbackForTools:    cloneStringSlice(s.FallbackForTools),
+			RequiresToolsets:    cloneStringSlice(s.RequiresToolsets),
+			FallbackForToolsets: cloneStringSlice(s.FallbackForToolsets),
+			UsageCount:          s.UsageCount,
+			SuccessCount:        s.SuccessCount,
+			FailureCount:        s.FailureCount,
+			LastError:           s.LastError,
 		}
 		if s.UsageCount > 0 {
 			d.SuccessRate = float64(s.SuccessCount) / float64(s.UsageCount)
@@ -788,6 +817,9 @@ func (e *SkillExecutor) AsRegisteredTools() []tool.RegisteredTool {
 	var result []tool.RegisteredTool
 	for _, s := range skills {
 		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
+			continue
+		}
+		if isShellBrowserAutomationSkillEntry(s) {
 			continue
 		}
 		body := e.readSkillBody(s)
@@ -866,6 +898,7 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 	if entry == nil {
 		return skillExecutionResult{Err: fmt.Errorf("skill entry is nil")}
 	}
+	ownerID := skillRunOwnerIDFromArgs(runArgs)
 	var results []string
 	var execErr error
 	lastSessionID := ""
@@ -882,6 +915,17 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 	preparedEntry.Steps = append([]corelib.NLSkillStep(nil), entry.Steps...)
 	preparedEntry.Params = append([]corelib.NLSkillParam(nil), entry.Params...)
 	skill.NormalizeSkillForRunner(&preparedEntry)
+	if isShellBrowserAutomationSkillEntry(preparedEntry) {
+		return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: browserAutomationSkillRejectedError(preparedEntry.Name)}
+	}
+	sourceSkillDir := preparedEntry.SkillDir
+	if workspace, cleanup, err := prepareSkillRunWorkspace("sync", preparedEntry.Name, preparedEntry.SkillDir); err != nil {
+		log.Printf("[skill-executor] owner=%q skill=%q workspace isolation unavailable dir=%q err=%v; using installed dir", ownerID, preparedEntry.Name, preparedEntry.SkillDir, err)
+	} else if workspace != "" {
+		log.Printf("[skill-executor] owner=%q skill=%q workspace=%s source_dir=%s", ownerID, preparedEntry.Name, workspace, preparedEntry.SkillDir)
+		preparedEntry.SkillDir = workspace
+		defer cleanup()
+	}
 	if skill.IsPipelineSkill(&preparedEntry) {
 		return e.executePipelineSkillDetailed(&preparedEntry, vars, runArgs)
 	}
@@ -901,10 +945,8 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 	}
 
 	// OpenAI proxy for skills requiring OPENAI_API_KEY.
-	// This synchronous path (used by capability_gap_detector and auto-install)
-	// also needs proxy support, mirroring the async SkillRunner.executeAsync path.
-	// Note: uses os.Setenv because executeBashStep inherits process env.
-	// Save/restore previous values to avoid clobbering user-set env vars.
+	// Keep proxy env in the per-run extraEnv map so concurrent skill executions
+	// never mutate process-wide environment variables.
 	proxyProbeSteps := skill.PrecheckExecutableSteps(executionSteps, vars)
 	proxyRequiredEnv := preparedEntry.RequiredEnv
 	if len(proxyProbeSteps) == 0 && len(executionSteps) > 0 {
@@ -934,30 +976,12 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 			return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: fmt.Errorf("skill requires OpenAI-compatible environment variables, but the GUI local proxy failed to start: %v [action: retry]", proxyErr)}
 		}
 		defer proxy.Stop()
-		// Save previous values for restore
-		prevKey, hadKey := os.LookupEnv("OPENAI_API_KEY")
-		prevURL, hadURL := os.LookupEnv("OPENAI_BASE_URL")
-		prevModel, hadModel := os.LookupEnv("OPENAI_MODEL")
-		os.Setenv("OPENAI_API_KEY", "sk-maclaw-local-proxy")
-		os.Setenv("OPENAI_BASE_URL", fmt.Sprintf("http://127.0.0.1:%d/v1", port))
-		os.Setenv("OPENAI_MODEL", proxyCfg.Model)
-		defer func() {
-			if hadKey {
-				os.Setenv("OPENAI_API_KEY", prevKey)
-			} else {
-				os.Unsetenv("OPENAI_API_KEY")
-			}
-			if hadURL {
-				os.Setenv("OPENAI_BASE_URL", prevURL)
-			} else {
-				os.Unsetenv("OPENAI_BASE_URL")
-			}
-			if hadModel {
-				os.Setenv("OPENAI_MODEL", prevModel)
-			} else {
-				os.Unsetenv("OPENAI_MODEL")
-			}
-		}()
+		if extraEnv == nil {
+			extraEnv = map[string]string{}
+		}
+		extraEnv["OPENAI_API_KEY"] = "sk-maclaw-local-proxy"
+		extraEnv["OPENAI_BASE_URL"] = fmt.Sprintf("http://127.0.0.1:%d/v1", port)
+		extraEnv["OPENAI_MODEL"] = proxyCfg.Model
 		log.Printf("[skill-executor] openai proxy started on port %d for skill %q", port, preparedEntry.Name)
 	}
 
@@ -1012,6 +1036,12 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 			skill.MergeExtraEnvParam(stepCopy.Params, extraEnv)
 		}
 		stepCopy = skill.PrepareResolvedStepEnv(stepCopy, preparedEntry.RequiredEnv, extraEnv)
+		stepCopy = remapSkillRunStepToWorkspace(stepCopy, sourceSkillDir, preparedEntry.SkillDir)
+		if stepCopy.Params == nil {
+			stepCopy.Params = map[string]interface{}{}
+		}
+		stepCopy.Params["_skill_run_id"] = "sync"
+		stepCopy.Params["_skill_owner_id"] = ownerID
 		restoreEnv := installSkillStepProcessEnv(stepCopy.Action, extraEnv)
 		result, err := func() (string, error) {
 			defer restoreEnv()
@@ -1084,6 +1114,20 @@ func skillExecutionRunArgs(userPrompt string) map[string]interface{} {
 
 func skillExecutionExtraEnv(runArgs map[string]interface{}) map[string]string {
 	return skill.ExtractRunExtraEnvFromArgs(runArgs)
+}
+
+func skillRunOwnerIDFromArgs(runArgs map[string]interface{}) string {
+	if len(runArgs) == 0 {
+		return ""
+	}
+	for _, key := range []string{"_skill_owner_id", registeredToolPolicyOwnerIDField} {
+		if value, ok := runArgs[key].(string); ok {
+			if ownerID := strings.TrimSpace(value); ownerID != "" {
+				return ownerID
+			}
+		}
+	}
+	return ""
 }
 
 // Execute runs a Skill by name. Steps are executed sequentially; if a step
@@ -1172,6 +1216,9 @@ func (e *SkillExecutor) executeSkillByNameDetailed(name string, runArgs map[stri
 	if target == nil {
 		return namedSkillExecutionResult{skillExecutionResult: skillExecutionResult{Err: fmt.Errorf("skill %q not found or disabled", name)}}
 	}
+	if isShellBrowserAutomationSkillEntry(*target) {
+		return namedSkillExecutionResult{skillExecutionResult: skillExecutionResult{Err: browserAutomationSkillRejectedError(name)}, Entry: target}
+	}
 
 	execResult := e.executeSkillStepsDetailed(target, runArgs)
 	return namedSkillExecutionResult{skillExecutionResult: execResult, Entry: target}
@@ -1185,6 +1232,9 @@ func (e *SkillExecutor) executePipelineSkillWithArgs(entry *corelib.NLSkillEntry
 func (e *SkillExecutor) executePipelineSkillDetailed(entry *corelib.NLSkillEntry, vars map[string]string, runArgs map[string]interface{}) skillExecutionResult {
 	if entry == nil {
 		return skillExecutionResult{Err: fmt.Errorf("skill entry is nil")}
+	}
+	if isShellBrowserAutomationSkillEntry(*entry) {
+		return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: browserAutomationSkillRejectedError(entry.Name)}
 	}
 	if len(entry.Pipeline) == 0 {
 		return skillExecutionResult{Err: fmt.Errorf("%s", skill.FormatNoExecutableStepsMessage(entry.Name, entry, skill.RunnerBackendGUI))}
@@ -1201,13 +1251,17 @@ func (e *SkillExecutor) executePipelineSkillDetailed(entry *corelib.NLSkillEntry
 		log.Printf("[skill-executor] pipeline requirement warning for %q: %s", entry.Name, warning.Message)
 	}
 	pipelineRunArgs := skill.WithPipelineRunStack(runArgs, entry.Name)
+	ownerID := skillRunOwnerIDFromArgs(runArgs)
+	if ownerID != "" {
+		pipelineRunArgs["_skill_owner_id"] = ownerID
+	}
 	runCtx := context.Background()
 	cancel := func() {}
 	if entry.GlobalTimeout > 0 {
 		runCtx, cancel = context.WithTimeout(runCtx, time.Duration(entry.GlobalTimeout)*time.Second)
 	}
 	defer cancel()
-	runner := &skill.PipelineRunner{Executor: skillExecutorPipelineExecutor{exec: e, baseRunArgs: pipelineRunArgs}}
+	runner := &skill.PipelineRunner{Executor: skillExecutorPipelineExecutor{exec: e, baseRunArgs: pipelineRunArgs, ownerID: ownerID}}
 	result, err := runner.Run(runCtx, entry.Pipeline, vars)
 	output := skill.FormatPipelineResult(result)
 	output = skill.PrefixOutputWithWarnings(output, prep.Warnings)
@@ -1233,6 +1287,7 @@ func (e *SkillExecutor) executePipelineSkillDetailed(entry *corelib.NLSkillEntry
 type skillExecutorPipelineExecutor struct {
 	exec        *SkillExecutor
 	baseRunArgs map[string]interface{}
+	ownerID     string
 }
 
 func (e skillExecutorPipelineExecutor) RunSubSkill(ctx context.Context, skillName string, params map[string]string) (map[string]string, string, error) {
@@ -1240,6 +1295,9 @@ func (e skillExecutorPipelineExecutor) RunSubSkill(ctx context.Context, skillNam
 		return nil, "", err
 	}
 	runArgs := skill.BuildPipelineSubSkillRunArgs(e.baseRunArgs, params)
+	if ownerID := strings.TrimSpace(e.ownerID); ownerID != "" {
+		runArgs["_skill_owner_id"] = ownerID
+	}
 	result := e.exec.executeSkillByNameDetailed(skillName, runArgs)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, result.Output, ctxErr
@@ -1295,9 +1353,15 @@ func (e *SkillExecutor) executeStep(step corelib.NLSkillStep, skillDescription s
 	case skillStepActionSendAndObserve:
 		return "", fmt.Errorf("external coding-session observe steps are disabled; coding tasks must run through CodingSubAgent")
 
+	case skillStepActionControlSession:
+		return "", fmt.Errorf("external coding-session control steps are disabled; coding tasks must run through CodingSubAgent")
+
 	case skillStepActionCallMCPTool:
 		serverRef, _ := step.Params["server_id"].(string)
 		toolName, _ := step.Params["tool_name"].(string)
+		if isDisabledExternalCodingSessionTool(toolName) {
+			return "", fmt.Errorf("external coding-session MCP target %q is disabled", toolName)
+		}
 		var args map[string]interface{}
 		switch v := step.Params["arguments"].(type) {
 		case map[string]interface{}:
@@ -1321,12 +1385,12 @@ func (e *SkillExecutor) executeStep(step corelib.NLSkillStep, skillDescription s
 			if e.app.localMCPManager == nil {
 				return "", fmt.Errorf("local MCP manager not initialized")
 			}
-			return e.app.localMCPManager.CallTool(resolvedID, toolName, args)
+			return e.app.localMCPManager.CallToolForOwner(strings.TrimSpace(nonEmptyStringFromAny(step.Params["_skill_owner_id"])), resolvedID, toolName, args)
 		}
 		if e.mcpRegistry == nil {
 			return "", fmt.Errorf("MCP registry not initialized")
 		}
-		return e.mcpRegistry.CallTool(resolvedID, toolName, args)
+		return e.mcpRegistry.CallToolForOwner(strings.TrimSpace(nonEmptyStringFromAny(step.Params["_skill_owner_id"])), resolvedID, toolName, args)
 
 	case skillStepActionSSH:
 		return e.executeSSHStep(step.Params)
@@ -1864,8 +1928,10 @@ func (a *App) AddExternalSkillDir(dir string) (int, error) {
 			return 0, fmt.Errorf("directory already added")
 		}
 	}
-	cfg.ExternalSkillDirs = append(cfg.ExternalSkillDirs, dir)
-	return count, a.SaveConfig(cfg)
+	nextDirs := append(append([]string(nil), cfg.ExternalSkillDirs...), dir)
+	return count, a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.ExternalSkillDirs = nextDirs
+	})
 }
 
 // RemoveExternalSkillDir removes an external skill directory from config (Wails binding).
@@ -1887,8 +1953,9 @@ func (a *App) RemoveExternalSkillDir(dir string) error {
 	if !found {
 		return fmt.Errorf("directory not found in config")
 	}
-	cfg.ExternalSkillDirs = filtered
-	return a.SaveConfig(cfg)
+	return a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.ExternalSkillDirs = filtered
+	})
 }
 
 // CreateNLSkill registers a new NL Skill definition (Wails binding).
@@ -2894,6 +2961,14 @@ func executeBashStep(command string, params map[string]interface{}, app *App) (s
 
 // copyDirContents copies src contents into dst without following links.
 func copyDirContents(src, dst string) error {
+	return copyDirContentsWithOptions(src, dst, false)
+}
+
+func copyDirContentsForSkillRun(src, dst string) error {
+	return copyDirContentsWithOptions(src, dst, true)
+}
+
+func copyDirContentsWithOptions(src, dst string, includeRuntimeArtifacts bool) error {
 	srcAbs, err := filepath.Abs(src)
 	if err != nil {
 		return err
@@ -2923,10 +2998,10 @@ func copyDirContents(src, dst string) error {
 			return nil
 		}
 		base := filepath.Base(path)
-		if entry.IsDir() && isSkillRuntimePackageDir(base) {
+		if !includeRuntimeArtifacts && entry.IsDir() && isSkillRuntimePackageDir(base) {
 			return filepath.SkipDir
 		}
-		if !entry.IsDir() && isSkillRuntimePackageFile(base) {
+		if !includeRuntimeArtifacts && !entry.IsDir() && isSkillRuntimePackageFile(base) {
 			return nil
 		}
 		target := filepath.Join(dstAbs, rel)

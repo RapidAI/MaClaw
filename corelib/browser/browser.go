@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -46,8 +49,8 @@ func GetSession(addr string) (*Session, error) {
 		if globalSession.client.IsAlive() {
 			return globalSession, nil
 		}
-		// Connection is dead — clean up and reconnect.
-		log.Printf("[browser] 检测到 CDP 连接已断开，正在自动重连...")
+		// Connection is dead; clean up and reconnect.
+		log.Printf("[browser] CDP connection is dead; reconnecting...")
 		globalSession.client.Close()
 		globalSession = nil
 	}
@@ -56,19 +59,19 @@ func GetSession(addr string) (*Session, error) {
 	if addr == "" {
 		discovered, err := DiscoverOrLaunch()
 		if err != nil {
-			return nil, fmt.Errorf("浏览器连接失败: %w", err)
+			return nil, fmt.Errorf("browser connection failed: %w", err)
 		}
 		addr = discovered
 	}
 
-	// Connect with retry — the browser may still be starting up or the port
+	// Connect with retry; the browser may still be starting up or the port
 	// may have changed after a restart.
 	const maxRetries = 3
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(attempt) * 2 * time.Second // 2s, 4s
-			log.Printf("[browser] CDP 连接重试 (%d/%d), 等待 %v...", attempt+1, maxRetries, backoff)
+			log.Printf("[browser] CDP retry (%d/%d), waiting %v...", attempt+1, maxRetries, backoff)
 			time.Sleep(backoff)
 			// Re-discover in case the port changed (e.g. browser restarted with port=0).
 			if newAddr, err := DiscoverCDPAddr(); err == nil {
@@ -84,14 +87,14 @@ func GetSession(addr string) (*Session, error) {
 		globalSession = session
 		return globalSession, nil
 	}
-	return nil, fmt.Errorf("CDP 连接失败 (重试 %d 次): %w", maxRetries, lastErr)
+	return nil, fmt.Errorf("CDP connection failed after %d retries: %w", maxRetries, lastErr)
 }
 
 // connectToAddr establishes a new CDP session to the given HTTP address.
 func connectToAddr(addr string) (*Session, error) {
 	targets, err := DiscoverTargets(addr)
 	if err != nil {
-		return nil, fmt.Errorf("无法获取浏览器页面列表 (%s): %w", addr, err)
+		return nil, fmt.Errorf("get browser targets (%s): %w", addr, err)
 	}
 
 	// Find the first "page" target.
@@ -106,31 +109,31 @@ func connectToAddr(addr string) (*Session, error) {
 		if len(targets) > 0 && targets[0].WebSocketDebugURL != "" {
 			wsURL = targets[0].WebSocketDebugURL
 		} else {
-			return nil, fmt.Errorf("浏览器已连接但未找到可调试的页面")
+			return nil, fmt.Errorf("browser connected but no debuggable page found")
 		}
 	}
 
 	client, err := ConnectCDP(wsURL)
 	if err != nil {
-		return nil, fmt.Errorf("CDP WebSocket 连接失败: %w", err)
+		return nil, fmt.Errorf("CDP WebSocket connection failed: %w", err)
 	}
 
 	// Enable Page and Runtime domains.
 	if _, err := client.Send("Page.enable", nil, 5*time.Second); err != nil {
 		client.Close()
-		return nil, fmt.Errorf("CDP Page.enable 失败: %w", err)
+		return nil, fmt.Errorf("CDP Page.enable failed: %w", err)
 	}
 	if _, err := client.Send("Runtime.enable", nil, 5*time.Second); err != nil {
 		client.Close()
-		return nil, fmt.Errorf("CDP Runtime.enable 失败: %w", err)
+		return nil, fmt.Errorf("CDP Runtime.enable failed: %w", err)
 	}
 	if _, err := client.Send("Network.enable", nil, 5*time.Second); err != nil {
 		client.Close()
-		return nil, fmt.Errorf("CDP Network.enable 失败: %w", err)
+		return nil, fmt.Errorf("CDP Network.enable failed: %w", err)
 	}
 	if _, err := client.Send("Log.enable", nil, 5*time.Second); err != nil {
 		client.Close()
-		return nil, fmt.Errorf("CDP Log.enable 失败: %w", err)
+		return nil, fmt.Errorf("CDP Log.enable failed: %w", err)
 	}
 
 	return &Session{client: client, addr: addr, activeTabID: activeTargetIDFromTargets(targets), activeFrameID: "main"}, nil
@@ -163,6 +166,9 @@ func CloseSession() {
 func (s *Session) Navigate(url string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if reused := s.switchToReusableNavigationTargetLocked(url); reused != "" {
+		return reused, nil
+	}
 
 	result, err := s.client.Send("Page.navigate", map[string]interface{}{
 		"url": url,
@@ -177,53 +183,315 @@ func (s *Session) Navigate(url string) (string, error) {
 	return string(result), nil
 }
 
+func (s *Session) switchToReusableNavigationTarget(rawURL string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.switchToReusableNavigationTargetLocked(rawURL)
+}
+
+func (s *Session) switchToReusableNavigationTargetLocked(rawURL string) string {
+	if s == nil || strings.TrimSpace(rawURL) == "" {
+		return ""
+	}
+	targetKey := normalizeReusableNavigationURL(rawURL)
+	if targetKey == "" || targetKey == "about:blank" || strings.HasPrefix(targetKey, "chrome://") {
+		return ""
+	}
+	pages, err := s.ListPages()
+	if err != nil {
+		return ""
+	}
+	oldActiveID := s.activeTabID
+	oldActiveBlank := false
+	for _, page := range pages {
+		if page.ID == oldActiveID && normalizeReusableNavigationURL(page.URL) == "about:blank" {
+			oldActiveBlank = true
+			break
+		}
+	}
+	for _, page := range pages {
+		if page.Type != "page" || page.ID == "" || page.WebSocketDebugURL == "" {
+			continue
+		}
+		if normalizeReusableNavigationURL(page.URL) != targetKey {
+			continue
+		}
+		if page.ID != s.activeTabID {
+			if err := s.switchPageLocked(page.ID); err != nil {
+				return ""
+			}
+			if oldActiveBlank && oldActiveID != "" && oldActiveID != page.ID {
+				s.closeTargetBestEffortLocked(oldActiveID)
+			}
+		}
+		payload := map[string]interface{}{"reused_target": true, "target_id": page.ID, "url": page.URL, "title": page.Title}
+		encoded, _ := json.Marshal(payload)
+		log.Printf("[browser] reused existing page target=%s url=%q", page.ID, page.URL)
+		return string(encoded)
+	}
+	return ""
+}
+
+func (s *Session) closeTargetBestEffort(targetID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeTargetBestEffortLocked(targetID)
+}
+
+func (s *Session) closeTargetBestEffortLocked(targetID string) {
+	if s == nil || s.client == nil || strings.TrimSpace(targetID) == "" {
+		return
+	}
+	if _, err := s.client.Send("Target.closeTarget", map[string]interface{}{"targetId": targetID}, 3*time.Second); err != nil {
+		log.Printf("[browser] close abandoned blank target failed target=%s err=%v", targetID, err)
+	}
+}
+
+func normalizeReusableNavigationURL(rawURL string) string {
+	return normalizePageURL(rawURL)
+}
+
+func normalizeDuplicatePageURL(rawURL string) string {
+	return normalizePageURL(rawURL)
+}
+
+func normalizePageURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" {
+		return normalizeLoosePageURL(rawURL)
+	}
+	parsed.Fragment = ""
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = normalizePageHost(parsed)
+	if parsed.Path != "/" {
+		parsed.Path = strings.TrimRight(parsed.Path, "/")
+	}
+	return parsed.String()
+}
+
+func normalizeLoosePageURL(rawURL string) string {
+	if idx := strings.Index(rawURL, "#"); idx >= 0 {
+		rawURL = rawURL[:idx]
+	}
+	return strings.TrimRight(rawURL, "/")
+}
+
+func normalizePageHost(parsed *url.URL) string {
+	hostname := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	if port == "" || (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
+		if strings.Contains(hostname, ":") {
+			return "[" + hostname + "]"
+		}
+		return hostname
+	}
+	return net.JoinHostPort(hostname, port)
+}
+
 // Click clicks an element matching the CSS selector.
 func (s *Session) Click(selector string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	js := fmt.Sprintf(`
-		(function() {
-			const el = document.querySelector(%q);
-			if (!el) return JSON.stringify({error: "元素未找到: " + %q});
-			el.scrollIntoView({block: "center"});
-			el.click();
-			return JSON.stringify({ok: true, tag: el.tagName, text: (el.textContent||"").substring(0,100)});
-		})()
-	`, selector, selector)
-
-	return s.evalCheck(js)
+	return s.clickAtLocked(selector)
 }
 
 // Type types text into an element matching the CSS selector.
 func (s *Session) Type(selector, text string) error {
+	return s.TypeContent(selector, text, BrowserContentFormatPlain)
+}
+
+// TypeContent types plain text or rich content into an element matching the CSS selector.
+func (s *Session) TypeContent(selector, text, contentFormat string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Focus the element first.
-	focusJS := fmt.Sprintf(`
-		(function() {
-			const el = document.querySelector(%q);
-			if (!el) return JSON.stringify({error: "元素未找到: " + %q});
-			el.focus();
-			el.value = "";
-			return JSON.stringify({ok: true});
-		})()
-	`, selector, selector)
-	if err := s.evalCheck(focusJS); err != nil {
+	if err := s.prepareEditableLocked(selector); err != nil {
 		return err
 	}
+	if normalizeBrowserContentFormat(contentFormat) == BrowserContentFormatMarkdown {
+		return s.insertMarkdownLocked(text)
+	}
+	return s.insertTextLocked(text)
+}
 
-	// Use Input.dispatchKeyEvent for each character to trigger JS event handlers.
+// TypeActive types text into the currently focused editable element.
+func (s *Session) TypeActive(text string) error {
+	return s.TypeActiveContent(text, BrowserContentFormatPlain)
+}
+
+// TypeActiveContent types plain text or rich content into the focused editable element.
+func (s *Session) TypeActiveContent(text, contentFormat string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.prepareActiveEditableLocked(); err != nil {
+		return err
+	}
+	if normalizeBrowserContentFormat(contentFormat) == BrowserContentFormatMarkdown {
+		return s.insertMarkdownLocked(text)
+	}
+	return s.insertTextLocked(text)
+}
+
+func (s *Session) prepareEditableLocked(selector string) error {
+	js := fmt.Sprintf(`
+		(function() {
+			let el = document.querySelector(%q);
+			if (!el) return JSON.stringify({error: "element not found: " + %q});
+			if (!(el.isContentEditable || el.tagName === "TEXTAREA" || el.tagName === "INPUT")) {
+				el = el.querySelector('textarea,input,[contenteditable="true"],[contenteditable="plaintext-only"],[contenteditable=""]') || el;
+			}
+			return window.__maclawPrepareEditable ? window.__maclawPrepareEditable(el) : (function(el) {
+				const editable = el.isContentEditable || el.tagName === "TEXTAREA" || el.tagName === "INPUT";
+				if (!editable) return JSON.stringify({error: "element is not editable: " + el.tagName});
+				el.focus();
+				if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+					el.value = "";
+				} else {
+					const range = document.createRange();
+					range.selectNodeContents(el);
+					const sel = window.getSelection();
+					sel.removeAllRanges();
+					sel.addRange(range);
+					document.execCommand("delete", false, null);
+					if ((el.textContent || "") !== "") el.textContent = "";
+				}
+				el.dispatchEvent(new InputEvent("input", {bubbles: true, cancelable: true, inputType: "deleteContentBackward"}));
+				return JSON.stringify({ok: true, tag: el.tagName, contentEditable: !!el.isContentEditable});
+			})(el);
+		})()
+	`, selector, selector)
+	return s.evalCheck(js)
+}
+
+func (s *Session) prepareActiveEditableLocked() error {
+	js := `
+		(function() {
+			let el = document.activeElement;
+			if (!el || el === document.body || el === document.documentElement) {
+				return JSON.stringify({error: "no focused editable element"});
+			}
+			if (!(el.isContentEditable || el.tagName === "TEXTAREA" || el.tagName === "INPUT")) {
+				el = el.querySelector('textarea,input,[contenteditable="true"],[contenteditable="plaintext-only"],[contenteditable=""]') || el;
+			}
+			const editable = el.isContentEditable || el.tagName === "TEXTAREA" || el.tagName === "INPUT";
+			if (!editable) return JSON.stringify({error: "focused element is not editable: " + el.tagName});
+			el.focus();
+			if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+				el.value = "";
+			} else {
+				const range = document.createRange();
+				range.selectNodeContents(el);
+				const sel = window.getSelection();
+				sel.removeAllRanges();
+				sel.addRange(range);
+				document.execCommand("delete", false, null);
+				if ((el.textContent || "") !== "") el.textContent = "";
+			}
+			el.dispatchEvent(new InputEvent("input", {bubbles: true, cancelable: true, inputType: "deleteContentBackward"}));
+			return JSON.stringify({ok: true, tag: el.tagName, contentEditable: !!el.isContentEditable});
+		})()
+	`
+	return s.evalCheck(js)
+}
+
+func (s *Session) insertMarkdownLocked(markdown string) error {
+	richHTML := browserMarkdownToHTML(markdown)
+	if strings.TrimSpace(richHTML) == "" {
+		return s.insertTextLocked(markdown)
+	}
+	plainJSON, _ := json.Marshal(markdown)
+	htmlJSON, _ := json.Marshal(richHTML)
+	js := fmt.Sprintf(`
+		(function() {
+			const el = document.activeElement;
+			if (!el || el === document.body || el === document.documentElement) {
+				return JSON.stringify({error: "no focused editable element"});
+			}
+			const plain = %s;
+			const html = %s;
+			if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+				el.value = plain;
+				el.dispatchEvent(new InputEvent("input", {bubbles: true, cancelable: true, inputType: "insertText", data: plain}));
+				return JSON.stringify({ok: true, mode: "plain-field"});
+			}
+			if (!el.isContentEditable) return JSON.stringify({error: "focused element is not contenteditable: " + el.tagName});
+			el.focus();
+			function clearEditable() {
+				const range = document.createRange();
+				range.selectNodeContents(el);
+				const selection = window.getSelection();
+				selection.removeAllRanges();
+				selection.addRange(range);
+				document.execCommand("delete", false, null);
+				if ((el.textContent || "") !== "") el.textContent = "";
+			}
+			function rawMarkdownStillVisible() {
+				const visible = (el.innerText || el.textContent || "").trim();
+				const source = plain.trim();
+				if (!visible || !source) return false;
+				const lines = source.split(/\n+/).map(s => s.trim()).filter(Boolean);
+				for (const line of lines) {
+					if (/^#{1,6}\s+/.test(line) && visible.includes(line)) return true;
+					if (/^[-*+]\s+/.test(line) && visible.includes(line)) return true;
+					if (/^\d+[.)]\s+/.test(line) && visible.includes(line)) return true;
+					if (/^>\s?/.test(line) && visible.includes(line)) return true;
+				}
+				if (/\*\*[^*]+\*\*/.test(source) && visible.includes("**")) return true;
+				if (/\[[^\]]+\]\(https?:\/\//.test(source) && visible.includes("](")) return true;
+				return false;
+			}
+			const before = el.textContent || "";
+			let pasted = false;
+			try {
+				const data = new DataTransfer();
+				data.setData("text/html", html);
+				data.setData("text/plain", plain);
+				const event = new ClipboardEvent("paste", {bubbles: true, cancelable: true, clipboardData: data});
+				el.dispatchEvent(event);
+				pasted = (el.textContent || "") !== before && !rawMarkdownStillVisible();
+			} catch (e) {}
+			if (!pasted || (el.textContent || "").trim() === "") {
+				if ((el.textContent || "") !== "") clearEditable();
+				document.execCommand("insertHTML", false, html);
+			}
+			if ((el.textContent || "").trim() === "") {
+				return JSON.stringify({error: "rich markdown insert produced empty content"});
+			}
+			if (rawMarkdownStillVisible()) {
+				return JSON.stringify({error: "rich markdown insert left raw markdown visible"});
+			}
+			el.dispatchEvent(new InputEvent("input", {bubbles: true, cancelable: true, inputType: "insertFromPaste", data: plain}));
+			return JSON.stringify({ok: true, mode: "rich-paste"});
+		})()
+	`, string(plainJSON), string(htmlJSON))
+	if err := s.evalCheck(js); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Session) insertTextLocked(text string) error {
+	if _, err := s.client.Send("Input.insertText", map[string]interface{}{"text": text}, DefaultCmdTimeout); err == nil {
+		return nil
+	}
 	for _, ch := range text {
-		s.client.Send("Input.dispatchKeyEvent", map[string]interface{}{
+		if _, err := s.client.Send("Input.dispatchKeyEvent", map[string]interface{}{
 			"type": "keyDown",
 			"text": string(ch),
-		}, DefaultCmdTimeout)
-		s.client.Send("Input.dispatchKeyEvent", map[string]interface{}{
+		}, DefaultCmdTimeout); err != nil {
+			return err
+		}
+		if _, err := s.client.Send("Input.dispatchKeyEvent", map[string]interface{}{
 			"type": "keyUp",
 			"text": string(ch),
-		}, DefaultCmdTimeout)
+		}, DefaultCmdTimeout); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -281,7 +549,7 @@ func (s *Session) GetText(selector string) (string, error) {
 	js := fmt.Sprintf(`
 		(function() {
 			const el = document.querySelector(%q);
-			if (!el) return JSON.stringify({error: "元素未找到: " + %q});
+			if (!el) return JSON.stringify({error: "element not found: " + %q});
 			return JSON.stringify({ok: true, text: el.innerText || el.textContent || ""});
 		})()
 	`, selector, selector)
@@ -301,7 +569,7 @@ func (s *Session) GetHTML(selector string) (string, error) {
 		js = fmt.Sprintf(`
 			(function() {
 				const el = document.querySelector(%q);
-				if (!el) return JSON.stringify({error: "元素未找到: " + %q});
+				if (!el) return JSON.stringify({error: "element not found: " + %q});
 				return JSON.stringify({ok: true, html: el.outerHTML.substring(0, 50000)});
 			})()
 		`, selector, selector)
@@ -361,9 +629,9 @@ func (s *Session) WaitForSelector(selector string, timeoutSec int) error {
 		if err == nil && result == "true" {
 			return nil
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("等待元素超时 (%ds): %s", timeoutSec, selector)
+	return fmt.Errorf("wait for selector timed out (%ds): %s", timeoutSec, selector)
 }
 
 // Scroll scrolls the page by the given delta (pixels). Positive = down.
@@ -389,7 +657,7 @@ func (s *Session) Select(selector, value string) error {
 	js := fmt.Sprintf(`
 		(function() {
 			const el = document.querySelector(%q);
-			if (!el) return JSON.stringify({error: "元素未找到: " + %q});
+			if (!el) return JSON.stringify({error: "element not found: " + %q});
 			el.value = %q;
 			el.dispatchEvent(new Event('change', {bubbles: true}));
 			return JSON.stringify({ok: true});
@@ -404,18 +672,62 @@ func (s *Session) ListPages() ([]TargetInfo, error) {
 	return DiscoverTargets(s.addr)
 }
 
-// ClickAt performs a real CDP-level mouse click (Input.dispatchMouseEvent) on an element.
-// Unlike Click() which uses JS el.click(), this triggers user gesture events,
-// can open file dialogs, and bypasses anti-automation detection.
-func (s *Session) ClickAt(selector string) error {
+// PruneDuplicatePages closes exact duplicate page targets in the managed
+// browser profile so retries keep one controlled tab instead of piling up tabs.
+func (s *Session) PruneDuplicatePages() int {
+	if s == nil || s.client == nil {
+		return 0
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	pages, err := s.ListPages()
+	if err != nil {
+		return 0
+	}
+	activeURL := ""
+	for _, page := range pages {
+		if page.ID == s.activeTabID {
+			activeURL = normalizeDuplicatePageURL(page.URL)
+			break
+		}
+	}
+	log.Printf("[browser] prune duplicate pages scan addr=%s active_tab=%s active_url=%q page_count=%d", s.addr, s.activeTabID, activeURL, len(pages))
+	seen := map[string]string{}
+	if activeURL != "" {
+		seen[activeURL] = s.activeTabID
+	}
+	closed := 0
+	for _, page := range pages {
+		if page.Type != "page" || page.ID == "" {
+			continue
+		}
+		if page.ID == s.activeTabID {
+			continue
+		}
+		key := normalizeDuplicatePageURL(page.URL)
+		if key == "" || key == "about:blank" || strings.HasPrefix(key, "chrome://") {
+			continue
+		}
+		if _, ok := seen[key]; !ok {
+			seen[key] = page.ID
+			continue
+		}
+		log.Printf("[browser] closing duplicate page target=%s url=%q kept_target=%s", page.ID, page.URL, seen[key])
+		if _, err := s.client.Send("Target.closeTarget", map[string]interface{}{"targetId": page.ID}, 3*time.Second); err == nil {
+			closed++
+		} else {
+			log.Printf("[browser] close duplicate page failed target=%s url=%q err=%v", page.ID, page.URL, err)
+		}
+	}
+	return closed
+}
 
+func (s *Session) clickAtLocked(selector string) error {
 	// Get element coordinates via JS.
 	js := fmt.Sprintf(`
 		(function() {
 			const el = document.querySelector(%q);
-			if (!el) return JSON.stringify({error: "元素未找到: " + %q});
+			if (!el) return JSON.stringify({error: "element not found: " + %q});
 			el.scrollIntoView({block: "center"});
 			const rect = el.getBoundingClientRect();
 			return JSON.stringify({x: rect.x + rect.width/2, y: rect.y + rect.height/2, tag: el.tagName});
@@ -493,7 +805,7 @@ func (s *Session) SetFiles(selector string, files []string) error {
 		NodeID int `json:"nodeId"`
 	}
 	if err := json.Unmarshal(nodeResult, &node); err != nil || node.NodeID == 0 {
-		return fmt.Errorf("元素未找到: %s", selector)
+		return fmt.Errorf("element not found: %s", selector)
 	}
 
 	// Set files.
@@ -586,8 +898,16 @@ func (s *Session) FrameSnapshots() []BrowserFrameSnapshot {
 
 // SwitchPage switches to a different page target by its target ID.
 func (s *Session) SwitchPage(targetID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.switchPageLocked(targetID)
+}
+
+func (s *Session) switchPageLocked(targetID string) error {
+	log.Printf("[browser] switch page requested addr=%s from=%s to=%s", s.addr, s.activeTabID, targetID)
 	targets, err := DiscoverTargets(s.addr)
 	if err != nil {
+		log.Printf("[browser] switch page discover failed addr=%s from=%s to=%s err=%v", s.addr, s.activeTabID, targetID, err)
 		return err
 	}
 	var wsURL string
@@ -598,33 +918,37 @@ func (s *Session) SwitchPage(targetID string) error {
 		}
 	}
 	if wsURL == "" {
-		return fmt.Errorf("目标 %s 未找到", targetID)
+		log.Printf("[browser] switch page target not found addr=%s from=%s to=%s targets=%d", s.addr, s.activeTabID, targetID, len(targets))
+		return fmt.Errorf("target %s not found", targetID)
 	}
 
 	client, err := ConnectCDP(wsURL)
 	if err != nil {
-		return fmt.Errorf("切换页面 CDP 连接失败: %w", err)
+		log.Printf("[browser] switch page CDP connect failed addr=%s from=%s to=%s err=%v", s.addr, s.activeTabID, targetID, err)
+		return fmt.Errorf("switch page CDP connection failed: %w", err)
 	}
 	if _, err := client.Send("Page.enable", nil, 5*time.Second); err != nil {
+		log.Printf("[browser] switch page Page.enable failed addr=%s from=%s to=%s err=%v", s.addr, s.activeTabID, targetID, err)
 		client.Close()
-		return fmt.Errorf("切换页面 Page.enable 失败: %w", err)
+		return fmt.Errorf("switch page Page.enable failed: %w", err)
 	}
 	if _, err := client.Send("Runtime.enable", nil, 5*time.Second); err != nil {
+		log.Printf("[browser] switch page Runtime.enable failed addr=%s from=%s to=%s err=%v", s.addr, s.activeTabID, targetID, err)
 		client.Close()
-		return fmt.Errorf("切换页面 Runtime.enable 失败: %w", err)
+		return fmt.Errorf("switch page Runtime.enable failed: %w", err)
 	}
 
-	// Swap client under lock.
-	s.mu.Lock()
+	oldTabID := s.activeTabID
 	old := s.client
 	s.client = client
 	s.activeTabID = targetID
 	s.activeFrameID = "main"
-	s.mu.Unlock()
 
 	if old != nil {
+		log.Printf("[browser] switch page closing old CDP client addr=%s old=%s new=%s", s.addr, oldTabID, targetID)
 		old.Close()
 	}
+	log.Printf("[browser] switch page complete addr=%s from=%s to=%s", s.addr, oldTabID, targetID)
 	return nil
 }
 
@@ -646,8 +970,7 @@ func (s *Session) lastErrorLines() []string {
 	return append([]string(nil), s.recentErrors...)
 }
 
-// ── internal helpers ──
-
+// internal helpers
 func (s *Session) evalCheck(js string) error {
 	result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
 		"expression":    js,
@@ -721,4 +1044,38 @@ func (s *Session) waitForLoad(timeout time.Duration) {
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
+}
+
+func (s *Session) WaitForStable(timeout, quiet time.Duration) error {
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	if quiet <= 0 {
+		quiet = 250 * time.Millisecond
+	}
+	deadline := time.Now().Add(timeout)
+	stableSince := time.Time{}
+	lastSig := ""
+	for time.Now().Before(deadline) {
+		result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
+			"expression":    `JSON.stringify({ready:document.readyState,url:location.href,text:(document.body&&(document.body.innerText||document.body.textContent)||'').length,active:document.activeElement&&(document.activeElement.tagName||'')})`,
+			"returnByValue": true,
+		}, 2*time.Second)
+		if err == nil {
+			sig := extractStringValue(result)
+			ready := strings.Contains(sig, `"ready":"complete"`) || strings.Contains(sig, `"ready":"interactive"`)
+			if ready && sig == lastSig {
+				if stableSince.IsZero() {
+					stableSince = time.Now()
+				} else if time.Since(stableSince) >= quiet {
+					return nil
+				}
+			} else {
+				lastSig = sig
+				stableSince = time.Time{}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("page not stable within %v", timeout)
 }

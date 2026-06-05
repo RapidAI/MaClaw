@@ -172,6 +172,12 @@ export function GroupParticipantPanel({
         .filter(Boolean)
         .sort()
         .join("\0"), [participants]);
+    const suppliedAvatarParticipantKey = useMemo(() => participants
+        .filter((p) => !p.isLocal && safeAvatarDataURL(p.avatarDataURL))
+        .map((p) => `${normalizeParticipantId(p.id)}=${safeAvatarDataURL(p.avatarDataURL)}`)
+        .filter(Boolean)
+        .sort()
+        .join("\0"), [participants]);
 
     // Context menu state
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; participant: Participant } | null>(null);
@@ -248,10 +254,36 @@ export function GroupParticipantPanel({
     }, [participantAliasMap]);
 
     useEffect(() => {
+        setParticipantAvatars(prev => {
+            let changed = false;
+            const next: Record<string, string> = {};
+            for (const [id, avatar] of Object.entries(prev)) {
+                if (participantAliasMap.has(id)) next[id] = avatar;
+                else changed = true;
+            }
+            return changed ? next : prev;
+        });
+    }, [participantAliasMap]);
+
+    useEffect(() => {
         let cancelled = false;
         if (!active) return () => { cancelled = true; };
+        setParticipantAvatars(prev => {
+            let changed = false;
+            const next = { ...prev };
+            for (const participant of participants) {
+                if (participant.isLocal) continue;
+                const avatar = safeAvatarDataURL(participant.avatarDataURL);
+                if (!avatar) continue;
+                for (const id of participantIdentityKeys(participant.id)) {
+                    if (next[id] === avatar) continue;
+                    next[id] = avatar;
+                    changed = true;
+                }
+            }
+            return changed ? next : prev;
+        });
         if (!missingAvatarParticipantKey) {
-            setParticipantAvatars({});
             return () => { cancelled = true; };
         }
         import("../../../wailsjs/go/main/App")
@@ -271,13 +303,22 @@ export function GroupParticipantPanel({
                         avatarsById[key] = avatar;
                     }
                 }
-                setParticipantAvatars(avatarsById);
+                setParticipantAvatars(prev => {
+                    let changed = false;
+                    const next = { ...prev };
+                    for (const [id, avatar] of Object.entries(avatarsById)) {
+                        if (next[id] === avatar) continue;
+                        next[id] = avatar;
+                        changed = true;
+                    }
+                    return changed ? next : prev;
+                });
             })
             .catch(() => {
-                if (!cancelled) setParticipantAvatars({});
+                // Keep the last good avatar set on transient backend failures to avoid UI flicker.
             });
         return () => { cancelled = true; };
-    }, [active, missingAvatarParticipantKey]);
+    }, [active, missingAvatarParticipantKey, suppliedAvatarParticipantKey]);
 
     // Merge prop data with status/avatar overlays without mutating the participant shape.
     const resolvedParticipants = useMemo(() => participants.map(p => {

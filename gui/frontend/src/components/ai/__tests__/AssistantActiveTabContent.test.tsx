@@ -125,6 +125,17 @@ describe("AssistantActiveTabContent", () => {
         expect((screen.getByTestId("participant-avatar-machine-a") as HTMLImageElement).getAttribute("src")).toBe(avatar);
     });
 
+    it("passes the primary digital employee tab status to the participant panel", () => {
+        const groupTab: AITab = { id: "group-live", type: "group", title: "Agent A", veId: "ve-machine-a", onlineStatus: "offline", participants: ["machine-a", "local-maclaw"], closable: true };
+
+        render(
+            <AssistantActiveTabContent activeTab={groupTab} tabs={[LOCAL_TAB, groupTab]} isLocalTabActive={false} isProjectTabActive={false} lang="en" theme={theme} getTabState={() => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 })} saveTabState={vi.fn()} />
+        );
+
+        expect(screen.getByTestId("participant-status-machine-a").style.background).toBe("rgb(107, 114, 128)");
+        expect(screen.getByTestId("participant-status-local-maclaw").style.background).toBe("rgb(34, 197, 94)");
+    });
+
     it("uses participant names across ve aliases in panel and mentions", () => {
         const groupTab: AITab = { id: "group-live", type: "group", title: "Agent A", veId: "ve-machine-a", participants: ["machine-a", "machine-b"], participantNames: { "ve-machine-b": "Contract Bot" }, closable: true };
 

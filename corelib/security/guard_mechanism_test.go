@@ -267,6 +267,20 @@ func TestPolicyEngine_DeveloperMode_AllowsEverything(t *testing.T) {
 	}
 }
 
+func TestPolicyEngine_NoneMode_AllowsRiskGuardrailsWithoutDeveloperMode(t *testing.T) {
+	pe := NewPolicyEngineWithMode("none")
+	if pe.Mode() != "none" {
+		t.Fatalf("Mode() = %q, want none", pe.Mode())
+	}
+	if pe.IsDeveloperMode() {
+		t.Fatal("none mode must not enable developer mode")
+	}
+	action := pe.Evaluate("bash", map[string]interface{}{"command": "sudo rm -rf /"}, RiskCritical)
+	if action != PolicyAllow {
+		t.Errorf("none mode: got %s, want allow", action)
+	}
+}
+
 func TestPolicyEngine_StandardMode_AsksRmRf(t *testing.T) {
 	pe := NewPolicyEngineWithMode("standard")
 	if pe.IsDeveloperMode() {

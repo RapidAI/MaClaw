@@ -179,7 +179,7 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("llm http %d: %s | req=%s", resp.StatusCode, truncateForError(body), truncateForError(data))
+		return "", fmt.Errorf("llm http %d: body_len=%d req_len=%d", resp.StatusCode, len(body), len(data))
 	}
 
 	var parsed *llm.Response
@@ -241,6 +241,7 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
 	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -248,7 +249,7 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	defer resp.Body.Close()
 	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("anthropic http %d: %s | req=%s", resp.StatusCode, truncateForError(payload), truncateForError(data))
+		return "", fmt.Errorf("anthropic http %d: body_len=%d req_len=%d", resp.StatusCode, len(payload), len(data))
 	}
 	var result struct {
 		Content []struct {
@@ -265,14 +266,6 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 		}
 	}
 	return "", fmt.Errorf("anthropic returned empty content")
-}
-
-func truncateForError(data []byte) string {
-	text := strings.TrimSpace(string(data))
-	if len(text) > 300 {
-		return text[:300] + "..."
-	}
-	return text
 }
 
 func truncateForDisplay(text string) string {

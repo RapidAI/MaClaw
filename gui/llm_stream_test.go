@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func TestGuiSSEIdleTimeoutIsConservative(t *testing.T) {
@@ -32,6 +34,18 @@ func TestClassifyResponsesAPIHTTPErrorUsesConfiguredProviderName(t *testing.T) {
 	}
 	if strings.Contains(got, "OpenAI 拒绝访问") || strings.Contains(got, "ChatGPT") {
 		t.Fatalf("responses error should not present protocol/product names as provider: %q", got)
+	}
+}
+
+func TestClassifyHTTPErrorDoesNotEchoUnknownBody(t *testing.T) {
+	body := []byte(`Browser: SECRET_CLASSIFY_BODY`)
+	openAI := classifyOpenAIHTTPError(418, body, "MaClaw官方")
+	if strings.Contains(openAI, "SECRET_CLASSIFY_BODY") || strings.Contains(openAI, "Browser:") {
+		t.Fatalf("OpenAI-compatible error echoed body: %q", openAI)
+	}
+	responses := classifyResponsesAPIHTTPError(418, body, "https://example.test/v1/responses", "gpt-test", "MaClaw官方")
+	if strings.Contains(responses, "SECRET_CLASSIFY_BODY") || strings.Contains(responses, "Browser:") {
+		t.Fatalf("Responses API error echoed body: %q", responses)
 	}
 }
 
@@ -75,6 +89,40 @@ func TestClassifyOpenAICompatibleHTTPErrorUsesConfiguredProviderName(t *testing.
 	}
 	if strings.Contains(got, "OpenAI 拒绝访问") {
 		t.Fatalf("normalized error should not present OpenAI as the provider: %q", got)
+	}
+}
+
+func TestClassifyOpenAICompatibleHTTPErrorUsesStructuredBody(t *testing.T) {
+	err := &llm.HTTPStatusError{StatusCode: 429, Body: []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"limit","retry_after_seconds":90}`)}
+	got, ok := classifyOpenAICompatibleHTTPError(err, "MaClaw\u5b98\u65b9")
+	if !ok {
+		t.Fatal("expected structured HTTP error to be classified")
+	}
+	if !strings.Contains(got, "\u5468\u671f\u9650\u6d41") || !strings.Contains(got, "2 \u5206\u949f") {
+		t.Fatalf("expected hub period-limit message from structured body, got %q", got)
+	}
+	if strings.Contains(got, "body_len") || strings.Contains(got, "limit") {
+		t.Fatalf("structured body should inform classification without being echoed: %q", got)
+	}
+}
+
+func TestClassifyOpenAICompatibleHTTPErrorParsesStatusWithoutColon(t *testing.T) {
+	got, ok := classifyOpenAICompatibleHTTPError(errors.New("HTTP 404 (endpoint=https://example.test/v1/chat/completions, body_len=0)"), "Custom1")
+	if !ok {
+		t.Fatal("expected HTTP status without colon to be classified")
+	}
+	if !strings.Contains(got, "Custom1") || !strings.Contains(got, "HTTP 404") {
+		t.Fatalf("unexpected classification: %q", got)
+	}
+}
+
+func TestIsLLMHTTPStatusErrorUsesStructuredStatus(t *testing.T) {
+	err := &llm.HTTPStatusError{StatusCode: 500, Body: []byte(`{"error":"server"}`)}
+	if !isLLMHTTPStatusError(err, 500) {
+		t.Fatal("expected structured HTTP 500 to match")
+	}
+	if isLLMHTTPStatusError(err, 400) {
+		t.Fatal("structured HTTP 500 should not match HTTP 400")
 	}
 }
 

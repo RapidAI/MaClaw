@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"log"
 	"strings"
 	"testing"
 )
@@ -170,7 +172,6 @@ func TestRolePrefixStreamFilter_FlushWithPendingPrefix(t *testing.T) {
 	}
 }
 
-
 func TestRolePrefixStreamFilter_FullwidthColon(t *testing.T) {
 	// Chinese LLMs sometimes use fullwidth colon (：U+FF1A).
 	var out strings.Builder
@@ -198,5 +199,33 @@ func TestRolePrefixStreamFilter_NoSpaceAfterColon(t *testing.T) {
 	want := "服务器整体运行健康。\n"
 	if out.String() != want {
 		t.Errorf("got %q, want %q", out.String(), want)
+	}
+}
+
+func TestRolePrefixStreamFilter_LogsDoNotIncludeSuppressedContent(t *testing.T) {
+	var logs bytes.Buffer
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+	})
+
+	const sensitive = "SECRET_BROWSER_DEBUG_PAYLOAD"
+	var out strings.Builder
+	f := newRolePrefixStreamFilter(func(s string) { out.WriteString(s) })
+	f.Write("正常内容。\nBrowser: " + sensitive + "\n")
+	f.Flush()
+
+	if !f.Halted() {
+		t.Fatal("should halt on Browser prefix")
+	}
+	if strings.Contains(out.String(), sensitive) {
+		t.Fatalf("suppressed content leaked to stream output: %q", out.String())
+	}
+	if strings.Contains(logs.String(), sensitive) {
+		t.Fatalf("suppressed content leaked to logs: %q", logs.String())
 	}
 }

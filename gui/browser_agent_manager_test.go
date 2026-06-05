@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,5 +44,17 @@ func TestBrowserAgentManagerListIncludesCurrentSnapshotFields(t *testing.T) {
 	}
 	if got.LastSnapshotID != "snap-browser-x" {
 		t.Fatalf("LastSnapshotID = %q", got.LastSnapshotID)
+	}
+}
+
+func TestBrowserTraceStoredTextDoesNotExposeBrowserContent(t *testing.T) {
+	got := browserTraceStoredText("browser.navigate", "Browser: SECRET_BROWSER_TEXT https://example.com/path?token=SECRET")
+	for _, leaked := range []string{"SECRET_BROWSER_TEXT", "SECRET", "Browser:", "https://example.com"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("browser trace stored text leaked %q: %s", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "browser.navigate text_len=") {
+		t.Fatalf("browser trace stored text missing metadata: %s", got)
 	}
 }

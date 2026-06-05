@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -87,6 +88,18 @@ type agentLoopToolPathResult struct {
 }
 
 func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions) agentLoopToolPathResult {
+	requestID, loopID := "", ""
+	if opts.Context != nil {
+		requestID = opts.Context.Runtime.RequestID
+		loopID = opts.Context.ID
+	}
+	logSlow := func(stage string, startedAt time.Time) {
+		if elapsed := time.Since(startedAt); elapsed >= 500*time.Millisecond {
+			log.Printf("[agent-loop-tool-path] slow stage=%s owner=%q request_id=%q loop=%q iteration=%d elapsed=%s tool_calls=%d",
+				stage, opts.UserID, requestID, loopID, opts.Iteration, elapsed.Round(time.Millisecond), len(opts.Choice.Message.ToolCalls))
+		}
+	}
+	stageStartedAt := time.Now()
 	totalToolCalls := opts.TotalToolCallsInLoop + h.startAgentLoopToolBranch(agentLoopToolBranchStartOptions{
 		Context:          opts.Context,
 		Iteration:        opts.Iteration,
@@ -133,6 +146,7 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 		Debug:                      opts.Debug,
 		StreamDone:                 opts.StreamDone,
 	})
+	logSlow("execute_tool_calls", stageStartedAt)
 	result.Conversation = toolCallResult.Conversation
 	result.History = toolCallResult.History
 	result.ToolExecElapsed = toolCallResult.ToolExecElapsed
@@ -144,34 +158,37 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 		return result
 	}
 
+	stageStartedAt = time.Now()
 	postToolResult := h.handleAgentLoopPostToolBranch(agentLoopPostToolBranchOptions{
-		Context:                opts.Context,
-		UserID:                 opts.UserID,
-		UserText:               opts.UserText,
-		Iteration:              opts.Iteration,
-		Platform:               opts.Platform,
-		GateConfig:             opts.GateConfig,
-		MessageContent:         opts.MessageContent,
-		LengthContinuationText: opts.LengthContinuationText,
-		ToolCalls:              opts.Choice.Message.ToolCalls,
-		ToolResults:            toolCallResult.ToolResults,
-		ToolOutcomes:           toolCallResult.ToolOutcomes,
-		ToolExecResults:        toolCallResult.ToolExecResults,
-		Conversation:           result.Conversation,
-		History:                result.History,
-		Phase:                  opts.Phase,
-		TrialState:             opts.TrialState,
-		CodingIterCount:        opts.CodingIterCount,
-		TotalToolCallsInLoop:   totalToolCalls,
-		PendingArtifacts:       toolCallResult.PendingArtifacts,
-		VisibleArtifacts:       opts.VisibleArtifacts,
-		SteeringDetector:       opts.SteeringDetector,
-		StreamDone:             opts.StreamDone,
-		LastCompressionSummary: opts.LastCompressionSummary,
-		RecordSystemMessages:   opts.RecordSystemMessages,
-		AttachLLMTelemetry:     opts.AttachLLMTelemetry,
-		AttachVisibleArtifacts: opts.AttachVisibleArtifacts,
+		Context:                    opts.Context,
+		UserID:                     opts.UserID,
+		UserText:                   opts.UserText,
+		Iteration:                  opts.Iteration,
+		Platform:                   opts.Platform,
+		GateConfig:                 opts.GateConfig,
+		MessageContent:             opts.MessageContent,
+		AssistantHadVisibleContent: assistantMessageHasVisibleContent(opts.Choice.Message.Content),
+		LengthContinuationText:     opts.LengthContinuationText,
+		ToolCalls:                  opts.Choice.Message.ToolCalls,
+		ToolResults:                toolCallResult.ToolResults,
+		ToolOutcomes:               toolCallResult.ToolOutcomes,
+		ToolExecResults:            toolCallResult.ToolExecResults,
+		Conversation:               result.Conversation,
+		History:                    result.History,
+		Phase:                      opts.Phase,
+		TrialState:                 opts.TrialState,
+		CodingIterCount:            opts.CodingIterCount,
+		TotalToolCallsInLoop:       totalToolCalls,
+		PendingArtifacts:           toolCallResult.PendingArtifacts,
+		VisibleArtifacts:           opts.VisibleArtifacts,
+		SteeringDetector:           opts.SteeringDetector,
+		StreamDone:                 opts.StreamDone,
+		LastCompressionSummary:     opts.LastCompressionSummary,
+		RecordSystemMessages:       opts.RecordSystemMessages,
+		AttachLLMTelemetry:         opts.AttachLLMTelemetry,
+		AttachVisibleArtifacts:     opts.AttachVisibleArtifacts,
 	})
+	logSlow("post_tool_branch", stageStartedAt)
 	result.Conversation = postToolResult.Conversation
 	result.History = postToolResult.History
 	result.MessageContent = postToolResult.MessageContent
@@ -223,6 +240,17 @@ type agentLoopToolCallsResult struct {
 }
 
 func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOptions) agentLoopToolCallsResult {
+	requestID, loopID := "", ""
+	if opts.Context != nil {
+		requestID = opts.Context.Runtime.RequestID
+		loopID = opts.Context.ID
+	}
+	logSlow := func(stage string, startedAt time.Time, tc llm.ToolCall) {
+		if elapsed := time.Since(startedAt); elapsed >= 500*time.Millisecond {
+			log.Printf("[agent-loop-tool-path] slow stage=%s owner=%q request_id=%q loop=%q iteration=%d tool=%q elapsed=%s",
+				stage, opts.UserID, requestID, loopID, opts.Iteration, strings.TrimSpace(tc.Function.Name), elapsed.Round(time.Millisecond))
+		}
+	}
 	result := agentLoopToolCallsResult{
 		Conversation:    opts.Conversation,
 		History:         opts.History,
@@ -255,7 +283,10 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 			RecordToolCall:   opts.RecordToolCall,
 			AdaptiveRetry:    opts.AdaptiveRetry,
 		})
+		logSlow("tool_exec", toolExecStartedAt, tc)
 		rawResult := execResult.Text
+
+		stageStartedAt := time.Now()
 		if opts.VisibleArtifacts != nil && opts.VisibleArtifacts.QRCodeURL == "" {
 			opts.VisibleArtifacts.QRCodeURL = extractWeixinQRCodeURLFromToolResult(rawResult)
 		}
@@ -274,7 +305,9 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 			rawResult = ExtractSubAgentContext(rawResult)
 		}
 		h.pinConditionalToolAfterSuccess(tc.Function.Name, execResult)
+		logSlow("post_exec_pre_observation", stageStartedAt, tc)
 
+		stageStartedAt = time.Now()
 		payloadObservation := parseToolPayloadResult(rawResult)
 		traceResult := payloadObservation.TraceResult
 		toolContent := payloadObservation.ToolContent
@@ -286,10 +319,14 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		result.ToolExecResults = append(result.ToolExecResults, execResult)
 		result.PendingArtifacts.ApplyObservation(payloadObservation)
 		h.recordAgentLoopToolUsage(opts.Context, opts.UserText, tc, execResult.Outcome, agentLoopToolUsageFollowUp(tcIdx, opts.ToolCalls, execResult.Outcome))
+		logSlow("record_usage", stageStartedAt, tc)
 
+		stageStartedAt = time.Now()
 		h.recordAgentLoopToolTrace(opts.Context, tc, traceResult, rawResult, execResult)
 		h.emitAgentLoopSteeringDocUpdate(opts.UserID, opts.SteeringDetector, tc.Function.Name, tc.Function.Arguments)
+		logSlow("trace_and_steering", stageStartedAt, tc)
 
+		stageStartedAt = time.Now()
 		truncated := truncateToolResultForTool(tc.Function.Name, toolContent)
 		// OpenHuman-inspired: check tool result for prompt injection attempts.
 		// Only check external-source tools (web_fetch, web_search, read_file, bash)
@@ -299,6 +336,9 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 				truncated = injectionWarning + truncated
 			}
 		}
+		logSlow("truncate_and_injection_scan", stageStartedAt, tc)
+
+		stageStartedAt = time.Now()
 		commitResult := h.commitAgentLoopToolResult(agentLoopToolCommitOptions{
 			UserID:                     opts.UserID,
 			ToolCall:                   tc,
@@ -315,6 +355,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 			ParallelGroupIndex:         tcIdx,
 			ParallelGroupTotal:         len(opts.ToolCalls),
 		})
+		logSlow("commit_tool_result", stageStartedAt, tc)
 		result.Conversation = commitResult.Conversation
 		result.History = commitResult.History
 		if commitResult.Response != nil {

@@ -140,7 +140,14 @@ func (a *App) GetMaclawLLMProviders() struct {
 			Current   string                      `json:"current"`
 		}{Providers: defaults, Current: defaults[0].Name}
 	}
-	providers := normalizeMaclawLLMProviders(a.syncedMaclawLLMProviders(cfg))
+	rawProviders := a.syncedMaclawLLMProviders(cfg)
+	missingTimeout := make(map[string]bool, len(rawProviders))
+	for _, provider := range rawProviders {
+		if provider.TimeoutSec <= 0 {
+			missingTimeout[canonicalHubServiceProviderName(strings.TrimSpace(provider.Name))] = true
+		}
+	}
+	providers := normalizeMaclawLLMProviders(rawProviders)
 	if len(providers) == 0 {
 		providers = defaultMaclawLLMProviders()
 		// Migrate legacy single-config if present
@@ -200,8 +207,8 @@ func (a *App) GetMaclawLLMProviders() struct {
 				providers[i].ContextLength = cl
 			}
 		}
-		if providers[i].TimeoutSec <= 0 {
-			if providers[i].Name == current && cfg.MaclawLLMTimeoutSec > 0 {
+		if providers[i].TimeoutSec <= 0 || (missingTimeout[canonicalHubServiceProviderName(providers[i].Name)] && canonicalHubServiceProviderName(providers[i].Name) == current && cfg.MaclawLLMTimeoutSec > 0) {
+			if canonicalHubServiceProviderName(providers[i].Name) == current && cfg.MaclawLLMTimeoutSec > 0 {
 				providers[i].TimeoutSec = cfg.MaclawLLMTimeoutSec
 			} else if ts, ok := defaultTimeout[providers[i].Name]; ok {
 				providers[i].TimeoutSec = ts
@@ -212,6 +219,9 @@ func (a *App) GetMaclawLLMProviders() struct {
 		providers[i] = markHubServiceProvider(normalizeMaclawLLMProvider(providers[i]))
 		if providers[i].Name == codegenProviderName && providers[i].AuthType == "sso" {
 			providers[i].Protocol = "openai"
+			if strings.TrimSpace(providers[i].AgentType) == "" || strings.EqualFold(strings.TrimSpace(providers[i].AgentType), "openclaw") {
+				providers[i].AgentType = corelib.CodeGenClientName
+			}
 			providers[i].URL = strings.TrimRight(strings.TrimSpace(providers[i].URL), "/")
 			providers[i].URL = strings.TrimSuffix(providers[i].URL, "/anthropic")
 			continue
@@ -402,7 +412,16 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 		}
 	}
 	persistStart := time.Now()
-	if err := a.SaveConfig(cfg); err != nil {
+	if err := a.PatchConfig(func(currentCfg *corelib.AppConfig) {
+		currentCfg.MaclawLLMUrl = cfg.MaclawLLMUrl
+		currentCfg.MaclawLLMKey = cfg.MaclawLLMKey
+		currentCfg.MaclawLLMModel = cfg.MaclawLLMModel
+		currentCfg.MaclawLLMProtocol = cfg.MaclawLLMProtocol
+		currentCfg.MaclawLLMContextLength = cfg.MaclawLLMContextLength
+		currentCfg.MaclawLLMTimeoutSec = cfg.MaclawLLMTimeoutSec
+		currentCfg.MaclawLLMProviders = cfg.MaclawLLMProviders
+		currentCfg.MaclawLLMCurrentProvider = cfg.MaclawLLMCurrentProvider
+	}); err != nil {
 		log.Printf("[LLM] SaveMaclawLLMProviders:save_config_failed after=%s err=%v", time.Since(persistStart), err)
 		return err
 	}
@@ -504,17 +523,14 @@ func (a *App) isProMode() bool {
 
 // SaveMaclawLLMConfig persists the MaClaw LLM configuration.
 func (a *App) SaveMaclawLLMConfig(llm corelib.MaclawLLMConfig) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	cfg.MaclawLLMUrl = strings.TrimRight(strings.TrimSpace(llm.URL), "/")
-	cfg.MaclawLLMKey = strings.TrimSpace(llm.Key)
-	cfg.MaclawLLMModel = strings.TrimSpace(llm.Model)
-	cfg.MaclawLLMProtocol = llm.Protocol
-	cfg.MaclawLLMContextLength = llm.ContextLength
-	cfg.MaclawLLMTimeoutSec = normalizeLLMTimeoutSec(llm.TimeoutSec)
-	if err := a.SaveConfig(cfg); err != nil {
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.MaclawLLMUrl = strings.TrimRight(strings.TrimSpace(llm.URL), "/")
+		cfg.MaclawLLMKey = strings.TrimSpace(llm.Key)
+		cfg.MaclawLLMModel = strings.TrimSpace(llm.Model)
+		cfg.MaclawLLMProtocol = llm.Protocol
+		cfg.MaclawLLMContextLength = llm.ContextLength
+		cfg.MaclawLLMTimeoutSec = normalizeLLMTimeoutSec(llm.TimeoutSec)
+	}); err != nil {
 		return err
 	}
 	a.refreshMemoryEvolutionLLM()
@@ -726,7 +742,8 @@ func (a *App) testOpenAILLM(url, key, model, userAgent string) (string, error) {
 	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	resp, err := doSimpleOpenAIRequest(context.Background(), cfg, messages, client, 30*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "provider-test"})
+	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 	if err != nil {
 		msg := err.Error()
 		msg = strings.TrimPrefix(msg, "HTTP 500: ")
@@ -749,7 +766,8 @@ func (a *App) testAnthropicLLM(url, key, model, userAgent string) (string, error
 	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	resp, err := doSimpleAnthropicRequest(context.Background(), cfg, messages, client, 30*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "provider-test"})
+	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 	if err != nil {
 		msg := err.Error()
 		msg = strings.TrimPrefix(msg, "HTTP 500: ")
@@ -773,8 +791,17 @@ func (a *App) testResponsesAPILLM(url, key, model, userAgent, providerName strin
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "provider-test"})
+	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
+	if acquireErr != nil {
+		return "", acquireErr
+	}
+	defer lease.Release()
+	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	lease.SetCancel(scheduledCancel)
+	defer scheduledCancel()
 
-	req, _, endpoint, err := llm.NewResponsesAPIRequest(ctx, cfg, messages, llm.ResponsesAPIRequestOptions{
+	req, _, endpoint, err := llm.NewResponsesAPIRequest(scheduledCtx, cfg, messages, llm.ResponsesAPIRequestOptions{
 		Stream: false,
 	})
 	if err != nil {
@@ -783,6 +810,7 @@ func (a *App) testResponsesAPILLM(url, key, model, userAgent, providerName strin
 	log.Printf("[LLM] TestResponsesAPI POST %s model=%s", endpoint, model)
 
 	resp, err := client.Do(req)
+	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
 		return "", fmt.Errorf("[%s] %w", endpoint, err)
 	}
@@ -791,10 +819,13 @@ func (a *App) testResponsesAPILLM(url, key, model, userAgent, providerName strin
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		msg := classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, model, cfg.ProviderName)
-		return "", fmt.Errorf("%s", msg)
+		err := fmt.Errorf("%s", msg)
+		globalLLMScheduler.ObserveResult(trace, err)
+		return "", err
 	}
 
 	parsed, err := llm.ParseNonStreamResponsesAPIResponse(resp)
+	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
 		return "", err
 	}
@@ -837,7 +868,8 @@ func probeVisionOpenAI(baseURL, key, model, imgB64, userAgent string) bool {
 		},
 	}
 	client := &http.Client{Timeout: 35 * time.Second}
-	resp, err := doSimpleOpenAIRequest(context.Background(), cfg, messages, client, 30*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "vision-probe"})
+	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 	if err != nil {
 		log.Printf("[LLM] vision probe OpenAI error: %v", err)
 		return false
@@ -914,7 +946,8 @@ func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
 		},
 	}
 	client := &http.Client{Timeout: 35 * time.Second}
-	resp, err := doSimpleAnthropicRequest(context.Background(), cfg, messages, client, 30*time.Second)
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "vision-probe"})
+	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 	if err != nil {
 		log.Printf("[LLM] vision probe Anthropic error: %v", err)
 		return false
@@ -935,6 +968,16 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 	client := &http.Client{Timeout: 35 * time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "vision-probe"})
+	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
+	if acquireErr != nil {
+		log.Printf("[LLM] vision probe ResponsesAPI scheduler error: %v", acquireErr)
+		return false
+	}
+	defer lease.Release()
+	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	lease.SetCancel(scheduledCancel)
+	defer scheduledCancel()
 
 	endpoint := strings.TrimRight(baseURL, "/")
 	endpoint = llm.BuildResponsesEndpoint(endpoint)
@@ -954,7 +997,7 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 		"stream": false,
 	}
 	data, _ := json.Marshal(reqBody)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(scheduledCtx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return false
 	}
@@ -964,6 +1007,7 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, userAgent)
 	if llm.IsCodexSubscriptionEndpoint(baseURL) {
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		if accountID, _ := oauth.ExtractAccountIDFromJWT(key); accountID != "" {
@@ -972,6 +1016,7 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 	}
 
 	resp, err := client.Do(req)
+	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
 		log.Printf("[LLM] vision probe ResponsesAPI error: %v", err)
 		return false
@@ -980,10 +1025,12 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("[LLM] vision probe ResponsesAPI: HTTP %d", resp.StatusCode)
+		globalLLMScheduler.ObserveResult(trace, fmt.Errorf("HTTP %d", resp.StatusCode))
 		return false
 	}
 
 	parsed, err := llm.ParseNonStreamResponsesAPIResponse(resp)
+	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil || len(parsed.Choices) == 0 {
 		return false
 	}
@@ -1026,13 +1073,8 @@ func (a *App) GetMaclawAgentMaxIterations() int {
 //   - n == 0: unlimited (stored as -1 internally)
 //   - n < 0: also unlimited (stored as 0 internally, treated same as not configured)
 func (a *App) SetMaclawAgentMaxIterations(n int) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	// Use the single source of truth for value normalization.
-	cfg.MaclawAgentMaxIterations = config.EffectiveMaxIterations(n)
-	return a.SaveConfig(cfg)
+	_, err := a.PatchConfigFields(map[string]interface{}{"maclaw_agent_max_iterations": n})
+	return err
 }
 
 func (a *App) GetSubAgentConcurrency() int {
@@ -1044,12 +1086,8 @@ func (a *App) GetSubAgentConcurrency() int {
 }
 
 func (a *App) SetSubAgentConcurrency(n int) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	cfg.SubAgentConcurrency = corelib.NormalizeSubAgentConcurrency(n)
-	return a.SaveConfig(cfg)
+	_, err := a.PatchConfigFields(map[string]interface{}{"subagent_concurrency": n})
+	return err
 }
 
 // MaclawLLMStatus represents the online/offline status of the MaClaw LLM agent.
@@ -1125,6 +1163,7 @@ func maclawLLMProbe(endpoint, key, userAgent string) (bool, error) {
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, userAgent)
 
 	resp, err := maclawLLMPingClient.Do(req)
 	if err != nil {
@@ -1176,12 +1215,8 @@ func (a *App) GetLLMTrajectoryLogging() bool {
 
 // SetLLMTrajectoryLogging enables or disables LLM trajectory logging.
 func (a *App) SetLLMTrajectoryLogging(enabled bool) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.LLMTrajectoryLogging = enabled
-	return a.SaveConfig(cfg)
+	_, err := a.PatchConfigFields(map[string]interface{}{"llm_trajectory_logging": enabled})
+	return err
 }
 
 // GetTrialReflectEnabled returns whether the assistant should use trial-and-reflect mode.
@@ -1195,12 +1230,8 @@ func (a *App) GetTrialReflectEnabled() bool {
 
 // SetTrialReflectEnabled enables or disables the assistant's trial-and-reflect mode.
 func (a *App) SetTrialReflectEnabled(enabled bool) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	cfg.TrialReflectEnabled = enabled
-	return a.SaveConfig(cfg)
+	_, err := a.PatchConfigFields(map[string]interface{}{"trial_reflect_enabled": enabled})
+	return err
 }
 
 // ---------------------------------------------------------------------------
@@ -1225,29 +1256,25 @@ func (a *App) AccumulateLLMTokenUsageWithCache(providerName string, inputTokens,
 	}
 	a.tokenUsageMu.Lock()
 	defer a.tokenUsageMu.Unlock()
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		log.Printf("[LLM] AccumulateLLMTokenUsage: load config: %v", err)
-		return
-	}
-	if cfg.LLMTokenUsage == nil {
-		cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
-	}
-	stat, ok := cfg.LLMTokenUsage[providerName]
-	if !ok {
-		stat = &corelib.TokenUsageStat{}
-		cfg.LLMTokenUsage[providerName] = stat
-	}
-	stat.InputTokens += int64(inputTokens)
-	stat.OutputTokens += int64(outputTokens)
-	stat.TotalTokens = stat.InputTokens + stat.OutputTokens
-	stat.CachedInputTokens += int64(cachedInputTokens)
-	stat.CacheWriteTokens += int64(cacheWriteTokens)
-	stat.Requests++
-	if cachedInputTokens > 0 {
-		stat.CachedRequests++
-	}
-	if err := a.SaveConfig(cfg); err != nil {
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		if cfg.LLMTokenUsage == nil {
+			cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
+		}
+		stat, ok := cfg.LLMTokenUsage[providerName]
+		if !ok || stat == nil {
+			stat = &corelib.TokenUsageStat{}
+			cfg.LLMTokenUsage[providerName] = stat
+		}
+		stat.InputTokens += int64(inputTokens)
+		stat.OutputTokens += int64(outputTokens)
+		stat.TotalTokens = stat.InputTokens + stat.OutputTokens
+		stat.CachedInputTokens += int64(cachedInputTokens)
+		stat.CacheWriteTokens += int64(cacheWriteTokens)
+		stat.Requests++
+		if cachedInputTokens > 0 {
+			stat.CachedRequests++
+		}
+	}); err != nil {
 		log.Printf("[LLM] AccumulateLLMTokenUsage: save config: %v", err)
 		return
 	}
@@ -1265,24 +1292,20 @@ func (a *App) AccumulateLLMLocalCacheRequest(providerName string, hit bool) {
 	}
 	a.tokenUsageMu.Lock()
 	defer a.tokenUsageMu.Unlock()
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		log.Printf("[LLM] AccumulateLLMLocalCacheRequest: load config: %v", err)
-		return
-	}
-	if cfg.LLMTokenUsage == nil {
-		cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
-	}
-	stat, ok := cfg.LLMTokenUsage[providerName]
-	if !ok || stat == nil {
-		stat = &corelib.TokenUsageStat{}
-		cfg.LLMTokenUsage[providerName] = stat
-	}
-	stat.LocalCacheRequests++
-	if hit {
-		stat.LocalCacheHits++
-	}
-	if err := a.SaveConfig(cfg); err != nil {
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		if cfg.LLMTokenUsage == nil {
+			cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
+		}
+		stat, ok := cfg.LLMTokenUsage[providerName]
+		if !ok || stat == nil {
+			stat = &corelib.TokenUsageStat{}
+			cfg.LLMTokenUsage[providerName] = stat
+		}
+		stat.LocalCacheRequests++
+		if hit {
+			stat.LocalCacheHits++
+		}
+	}); err != nil {
 		log.Printf("[LLM] AccumulateLLMLocalCacheRequest: save config: %v", err)
 		return
 	}
@@ -1336,19 +1359,16 @@ func isRemoteToolTokenUsageProvider(provider string) bool {
 // ResetLLMTokenUsage resets the token usage stats for a specific provider.
 // If provider is empty, resets all providers.
 func (a *App) ResetLLMTokenUsage(provider string) error {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return err
-	}
-	if cfg.LLMTokenUsage == nil {
-		return nil
-	}
-	if provider == "" {
-		cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
-	} else {
+	return a.PatchConfig(func(cfg *corelib.AppConfig) {
+		if cfg.LLMTokenUsage == nil {
+			return
+		}
+		if provider == "" {
+			cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
+			return
+		}
 		delete(cfg.LLMTokenUsage, provider)
-	}
-	return a.SaveConfig(cfg)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1402,7 +1422,7 @@ func (a *App) ensureCodeGenToken() error {
 		if provider.RefreshToken == "" {
 			return fmt.Errorf("CodeGen 认证已过期，请重新进行企业 SSO 登录")
 		}
-		result, err := oauth.RefreshCodeGenToken(provider.RefreshToken)
+		result, err := oauth.RefreshCodeGenTokenWithClientName(provider.RefreshToken, provider.UserAgent())
 		if err != nil {
 			log.Printf("[CodeGen] token refresh failed: %v", err)
 			return fmt.Errorf("CodeGen 认证已过期，请重新进行企业 SSO 登录")
@@ -1422,6 +1442,7 @@ func (a *App) ensureCodeGenToken() error {
 			AnthropicBaseURL: codegenAnthropicBaseURL(updated.URL),
 			ModelID:          updated.Model,
 			ProviderName:     codegenProviderName,
+			ClientName:       updated.UserAgent(),
 		})
 		for _, f := range tcResult.Failed {
 			log.Printf("[CodeGen] WriteAllToolConfigs: %s failed: %v", f.Tool, f.Error)
@@ -1442,7 +1463,14 @@ func (a *App) ensureCodeGenToken() error {
 				}
 			}
 			if changed {
-				_ = a.SaveConfig(cfg)
+				_ = a.PatchConfig(func(currentCfg *corelib.AppConfig) {
+					currentCfg.Claude = cfg.Claude
+					currentCfg.Codex = cfg.Codex
+					currentCfg.Opencode = cfg.Opencode
+					currentCfg.CodeBuddy = cfg.CodeBuddy
+					currentCfg.IFlow = cfg.IFlow
+					currentCfg.Kilo = cfg.Kilo
+				})
 			}
 		}
 		// 同步更新本地 Anthropic→OpenAI 代理的上游凭证
@@ -1452,7 +1480,7 @@ func (a *App) ensureCodeGenToken() error {
 
 	// 5. TokenExpiresAt == 0 → 用 API 调用验证 token 有效性
 	if provider.TokenExpiresAt == 0 && provider.Key != "" {
-		if !oauth.ValidateCodeGenToken(provider.Key) {
+		if !oauth.ValidateCodeGenTokenWithClientName(provider.Key, provider.UserAgent()) {
 			return fmt.Errorf("CodeGen 认证已失效，请重新进行企业 SSO 登录")
 		}
 	}
@@ -1525,7 +1553,15 @@ func (a *App) ensureCodeGenConfiguredModelAvailable() error {
 	if !changed {
 		return nil
 	}
-	if err := a.SaveConfig(cfg); err != nil {
+	if err := a.PatchConfig(func(currentCfg *corelib.AppConfig) {
+		currentCfg.MaclawLLMProviders = cfg.MaclawLLMProviders
+		currentCfg.Claude = cfg.Claude
+		currentCfg.Codex = cfg.Codex
+		currentCfg.Opencode = cfg.Opencode
+		currentCfg.CodeBuddy = cfg.CodeBuddy
+		currentCfg.IFlow = cfg.IFlow
+		currentCfg.Kilo = cfg.Kilo
+	}); err != nil {
 		return err
 	}
 	if cfg.MaclawLLMCurrentProvider == codegenProviderName {
@@ -1535,6 +1571,7 @@ func (a *App) ensureCodeGenConfiguredModelAvailable() error {
 			AnthropicBaseURL: codegenAnthropicBaseURL(codegenProvider.URL),
 			ModelID:          firstModel,
 			ProviderName:     codegenProviderName,
+			ClientName:       codegenProvider.UserAgent(),
 		})
 		for _, f := range result.Failed {
 			log.Printf("[CodeGen] startup model fallback tool file sync failed: %s: %v", f.Tool, f.Error)
@@ -1579,8 +1616,7 @@ func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
 	if result.Email != "" {
 		if appCfg, err := a.LoadConfig(); err == nil {
 			if appCfg.RemoteEmail == "" {
-				appCfg.RemoteEmail = result.Email
-				_ = a.SaveConfig(appCfg)
+				_, _ = a.PatchConfigFields(map[string]interface{}{"remote_email": result.Email})
 			}
 		}
 	}
@@ -1593,6 +1629,7 @@ func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
 		AnthropicBaseURL: codegenAnthropicBaseURL(result.BaseURL),
 		ModelID:          result.ModelID,
 		ProviderName:     codegenProviderName,
+		ClientName:       corelib.CodeGenClientName,
 	})
 
 	// 6. 将 CodeGen 注入到各编程工具的服务商列表中
@@ -1629,14 +1666,17 @@ func upsertCodeGenProvider(providers []corelib.MaclawLLMProvider, result oauth.C
 		URL:           result.BaseURL,
 		Key:           result.AccessToken,
 		Model:         result.ModelID,
-		Protocol:      "openai",   // AI 助手通过 OpenAI 协议接入 CodeGen
-		AgentType:     "openclaw", // MaClaw Agent 默认协议
-		AuthType:      "sso",      // 标识认证来源，区别于手动 API Key
+		Protocol:      "openai",                  // AI 助手通过 OpenAI 协议接入 CodeGen
+		AgentType:     corelib.CodeGenClientName, // TigerClaw CodeGen client identity
+		AuthType:      "sso",                     // 标识认证来源，区别于手动 API Key
 		ContextLength: result.ContextLength,
 	}
 	// 遍历查找并覆盖已有 CodeGen 条目
 	for i, p := range providers {
 		if p.Name == codegenProviderName {
+			if strings.TrimSpace(p.AgentType) != "" && !strings.EqualFold(strings.TrimSpace(p.AgentType), "openclaw") {
+				entry.AgentType = p.AgentType
+			}
 			updated := make([]corelib.MaclawLLMProvider, len(providers))
 			copy(updated, providers)
 			updated[i] = entry
@@ -1681,6 +1721,7 @@ func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
 		ModelUrl:  anthropicURL,
 		ApiKey:    result.AccessToken,
 		WireApi:   "anthropic",
+		AgentType: corelib.CodeGenClientName,
 	}
 	upsertModelInToolConfig(&cfg.Claude, claudeModel)
 
@@ -1691,6 +1732,7 @@ func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
 		ModelUrl:  openaiURL,
 		ApiKey:    result.AccessToken,
 		WireApi:   "responses",
+		AgentType: corelib.CodeGenClientName,
 	}
 	openaiToolConfigs := []*corelib.ToolConfig{
 		&cfg.Codex,
@@ -1703,8 +1745,15 @@ func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
 		upsertModelInToolConfig(tc, openaiModel)
 	}
 
-	if err := a.SaveConfig(cfg); err != nil {
-		log.Printf("[CodeGen SSO] injectCodeGenModelIntoToolConfigs: SaveConfig failed: %v", err)
+	if err := a.PatchConfig(func(currentCfg *corelib.AppConfig) {
+		currentCfg.Claude = cfg.Claude
+		currentCfg.Codex = cfg.Codex
+		currentCfg.Opencode = cfg.Opencode
+		currentCfg.CodeBuddy = cfg.CodeBuddy
+		currentCfg.IFlow = cfg.IFlow
+		currentCfg.Kilo = cfg.Kilo
+	}); err != nil {
+		log.Printf("[CodeGen SSO] injectCodeGenModelIntoToolConfigs: PatchConfig failed: %v", err)
 	}
 }
 
@@ -1728,6 +1777,7 @@ func codeGenToolTarget(provider corelib.MaclawLLMProvider, wireAPI string) corel
 		ModelUrl:  modelURL,
 		ApiKey:    provider.Key,
 		WireApi:   wireAPI,
+		AgentType: provider.UserAgent(),
 	}
 }
 
@@ -1737,6 +1787,10 @@ func updateCodeGenToolAPIKey(tc *corelib.ToolConfig, target corelib.ModelConfig)
 		if isCodeGenToolModel(m, target) {
 			if tc.Models[i].ApiKey != target.ApiKey {
 				tc.Models[i].ApiKey = target.ApiKey
+				changed = true
+			}
+			if strings.TrimSpace(target.AgentType) != "" && tc.Models[i].AgentType != target.AgentType {
+				tc.Models[i].AgentType = target.AgentType
 				changed = true
 			}
 		}
@@ -1763,6 +1817,7 @@ func ensureCodeGenToolModelAvailable(tc *corelib.ToolConfig, target corelib.Mode
 		tc.Models[i].ModelUrl = target.ModelUrl
 		tc.Models[i].ApiKey = target.ApiKey
 		tc.Models[i].WireApi = target.WireApi
+		tc.Models[i].AgentType = target.AgentType
 		if currentWasThisEntry {
 			tc.CurrentModel = target.ModelName
 		}
@@ -1787,7 +1842,7 @@ func upsertModelInToolConfig(tc *corelib.ToolConfig, model corelib.ModelConfig) 
 				changed = true
 				continue
 			}
-			if m.ModelName != model.ModelName || m.ModelId != model.ModelId || m.ModelUrl != model.ModelUrl || m.ApiKey != model.ApiKey || m.WireApi != model.WireApi {
+			if m.ModelName != model.ModelName || m.ModelId != model.ModelId || m.ModelUrl != model.ModelUrl || m.ApiKey != model.ApiKey || m.WireApi != model.WireApi || m.AgentType != model.AgentType {
 				changed = true
 			}
 			m.ModelName = model.ModelName
@@ -1795,6 +1850,7 @@ func upsertModelInToolConfig(tc *corelib.ToolConfig, model corelib.ModelConfig) 
 			m.ModelUrl = model.ModelUrl
 			m.ApiKey = model.ApiKey
 			m.WireApi = model.WireApi
+			m.AgentType = model.AgentType
 			updatedModels = append(updatedModels, m)
 			found = true
 			continue
@@ -1862,7 +1918,7 @@ func (a *App) FetchCodeGenModels() ([]CodeGenModelItem, error) {
 		return nil, fmt.Errorf("CodeGen SSO 未完成，请先完成企业认证")
 	}
 
-	models, _, err := oauth.FetchCodeGenModels(codeGenProvider.Key)
+	models, _, err := oauth.FetchCodeGenModelsWithClientName(codeGenProvider.Key, codeGenProvider.UserAgent())
 	if err != nil {
 		return nil, err
 	}
@@ -1885,6 +1941,7 @@ func (a *App) FetchCodeGenModels() ([]CodeGenModelItem, error) {
 func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error {
 	maclawModel = strings.TrimSpace(maclawModel)
 	claudeCodeModel = strings.TrimSpace(claudeCodeModel)
+	codegenAgent := corelib.CodeGenClientName
 	var codegenKey, codegenURL string
 
 	// 1. 更新 MaClaw CodeGen provider 的 model 字段
@@ -1895,6 +1952,7 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 			if data.Providers[i].Name == codegenProviderName {
 				codegenKey = data.Providers[i].Key
 				codegenURL = data.Providers[i].URL
+				codegenAgent = data.Providers[i].UserAgent()
 				data.Providers[i].Model = maclawModel
 				updated = true
 				break
@@ -1921,6 +1979,7 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 				if p.Name == codegenProviderName {
 					codegenKey = p.Key
 					codegenURL = p.URL
+					codegenAgent = p.UserAgent()
 					break
 				}
 			}
@@ -1937,6 +1996,7 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 				ModelUrl:  codegenAnthropicBaseURL(codegenURL),
 				ApiKey:    codegenKey,
 				WireApi:   "anthropic",
+				AgentType: codegenAgent,
 			}
 			if upsertModelInToolConfig(&cfg.Claude, claudeTargetEntry) {
 				changed = true
@@ -1956,6 +2016,7 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 				ModelUrl:  codegenURL,
 				ApiKey:    codegenKey,
 				WireApi:   "responses",
+				AgentType: codegenAgent,
 			}
 			toolConfigs := []*corelib.ToolConfig{
 				&cfg.Codex, &cfg.Opencode,
@@ -1969,7 +2030,14 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 		}
 
 		if changed {
-			if err := a.SaveConfig(cfg); err != nil {
+			if err := a.PatchConfig(func(currentCfg *corelib.AppConfig) {
+				currentCfg.Claude = cfg.Claude
+				currentCfg.Codex = cfg.Codex
+				currentCfg.Opencode = cfg.Opencode
+				currentCfg.CodeBuddy = cfg.CodeBuddy
+				currentCfg.IFlow = cfg.IFlow
+				currentCfg.Kilo = cfg.Kilo
+			}); err != nil {
 				log.Printf("[CodeGen] SaveCodeGenModelChoice: sync tool config model failed: %v", err)
 			} else if claudeEntry != nil && claudeEntry.ApiKey != "" {
 				if err := configfile.WriteClaudeSettings(claudeEntry.ApiKey, claudeEntry.ModelUrl, claudeEntry.ModelId); err != nil {
@@ -2056,8 +2124,7 @@ func (a *App) StartCodeGenSSOEmbedded() (CodeGenSSOEmbeddedResult, error) {
 		if result.Email != "" {
 			if appCfg, err := a.LoadConfig(); err == nil {
 				if appCfg.RemoteEmail == "" {
-					appCfg.RemoteEmail = result.Email
-					_ = a.SaveConfig(appCfg)
+					_, _ = a.PatchConfigFields(map[string]interface{}{"remote_email": result.Email})
 				}
 			}
 		}
@@ -2068,6 +2135,7 @@ func (a *App) StartCodeGenSSOEmbedded() (CodeGenSSOEmbeddedResult, error) {
 			AnthropicBaseURL: codegenAnthropicBaseURL(result.BaseURL),
 			ModelID:          result.ModelID,
 			ProviderName:     codegenProviderName,
+			ClientName:       corelib.CodeGenClientName,
 		})
 
 		// 将 CodeGen 注入到各编程工具的服务商列表中
@@ -2205,11 +2273,11 @@ func providerModelItemFromEntry(m providerModelEntry) (ProviderModelItem, bool) 
 //
 // 前端在 MaClaw LLM 配置面板和编程工具配置面板中调用此函数，
 // 让用户从服务商实际支持的模型中选择，而非手动输入模型名。
-func (a *App) FetchProviderModels(baseURL, apiKey, protocol string) ([]ProviderModelItem, error) {
-	return a.fetchProviderModels(baseURL, apiKey, protocol, true)
+func (a *App) FetchProviderModels(baseURL, apiKey, protocol, userAgent string) ([]ProviderModelItem, error) {
+	return a.fetchProviderModels(baseURL, apiKey, protocol, userAgent, true)
 }
 
-func (a *App) fetchProviderModels(baseURL, apiKey, protocol string, sortModels bool) ([]ProviderModelItem, error) {
+func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, sortModels bool) ([]ProviderModelItem, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	apiKey = strings.TrimSpace(apiKey)
 	protocol = strings.TrimSpace(protocol)
@@ -2241,7 +2309,7 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol string, sortModels b
 	var resp *http.Response
 	var err error
 	for _, endpoint := range candidates {
-		r, e := a.doFetchModelsRequest(client, endpoint, apiKey, protocol)
+		r, e := a.doFetchModelsRequest(client, endpoint, apiKey, protocol, userAgent)
 		if e != nil {
 			err = e
 			continue
@@ -2330,17 +2398,26 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol string, sortModels b
 
 // doFetchModelsRequest 发送 GET 请求到指定的 models 端点。
 // 提取为独立方法以支持 FetchProviderModels 中的 fallback 重试。
-func (a *App) doFetchModelsRequest(client *http.Client, endpoint, apiKey, protocol string) (*http.Response, error) {
+func (a *App) doFetchModelsRequest(client *http.Client, endpoint, apiKey, protocol, userAgent string) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("构建请求失败: %w", err)
 	}
+	ua := strings.TrimSpace(userAgent)
+	if ua == "" {
+		ua = "openclaw"
+	}
+	if corelib.IsCodeGenURL(endpoint) && strings.EqualFold(ua, "openclaw") {
+		ua = corelib.CodeGenClientName
+	}
+	req.Header.Set("User-Agent", ua)
 	if protocol == "anthropic" {
 		req.Header.Set("x-api-key", apiKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
 	} else {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, ua)
 	return client.Do(req)
 }
 

@@ -32,7 +32,7 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	basePromptElapsed := time.Since(promptBuildStart)
 
 	resumeStart := time.Now()
-	systemPrompt += h.buildResumeTraceContext(msg.UserID, msg.Text)
+	systemPrompt += h.buildResumeTraceContextWithLang(msg.UserID, msg.Text, msg.Lang)
 	resumeElapsed := time.Since(resumeStart)
 
 	if workflowAgentLoop && h.getWorkflowEngine() != nil {
@@ -442,8 +442,12 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 	opts := corememory.IMProactivePromptOptions(projectPath, strictProject)
 	opts.EventContext = firstLifecycleEventContext(eventContext)
 	opts.Recall.Provider = h.proactiveExperienceProviderForUser(userID)
-	promptContext, relevant := h.memoryStore.ProactiveContextForPrompt(msg, opts)
+	promptContext, relevant, ok := h.proactiveContextForPromptWithBudget(msg, opts, userID, projectPath, strictProject)
 	primaryRecallElapsed := time.Since(recallStart)
+	if !ok {
+		log.Printf("[proactive_recall] skipped slow recall user=%q userMsg=%d chars projectPath=%q strictProject=%v budget=%s elapsed=%v", userID, len(msg), projectPath, strictProject, imProactiveRecallBudget, primaryRecallElapsed)
+		return
+	}
 	log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, strictProject=%v, recalled=%d entries took=%v", len(msg), projectPath, strictProject, len(relevant), primaryRecallElapsed)
 	b.WriteString(promptContext)
 	if len(relevant) > 0 {
@@ -453,6 +457,35 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 	totalRecallElapsed := time.Since(recallStart)
 	if totalRecallElapsed > 200*time.Millisecond {
 		log.Printf("[proactive_recall] total_elapsed=%v (primary_recall=%v)", totalRecallElapsed, primaryRecallElapsed)
+	}
+}
+
+const imProactiveRecallBudget = 2 * time.Second
+
+type imProactiveRecallResult struct {
+	promptContext string
+	relevant      []corememory.Entry
+}
+
+func (h *IMMessageHandler) proactiveContextForPromptWithBudget(msg string, opts corememory.ProactivePromptOptions, userID string, projectPath string, strictProject bool) (string, []corememory.Entry, bool) {
+	if h == nil || h.memoryStore == nil {
+		return "", nil, true
+	}
+	startedAt := time.Now()
+	resultC := make(chan imProactiveRecallResult, 1)
+	go func() {
+		promptContext, relevant := h.memoryStore.ProactiveContextForPrompt(msg, opts)
+		resultC <- imProactiveRecallResult{promptContext: promptContext, relevant: relevant}
+	}()
+	select {
+	case result := <-resultC:
+		return result.promptContext, result.relevant, true
+	case <-time.After(imProactiveRecallBudget):
+		go func() {
+			result := <-resultC
+			log.Printf("[proactive_recall] late result user=%q projectPath=%q strictProject=%v recalled=%d elapsed=%v", userID, projectPath, strictProject, len(result.relevant), time.Since(startedAt).Round(time.Millisecond))
+		}()
+		return "", nil, false
 	}
 }
 
@@ -551,6 +584,9 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 	var matched []matchedKnowledgeSkill
 	for _, s := range skills {
 		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
+			continue
+		}
+		if isShellBrowserAutomationSkill(s) {
 			continue
 		}
 
@@ -689,7 +725,7 @@ func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
 		// Look up the skill to check its publisher.
 		h.getSkillExecutor().mu.RLock()
 		for _, s := range h.getSkillExecutor().loadSkills() {
-			if s.MatchesName(run.Skill) && s.Publisher != "" {
+			if s.MatchesName(run.Skill) && s.Publisher != "" && !isShellBrowserAutomationSkillEntry(s) {
 				activePublisher = s.Publisher
 				activeSkillName = s.Name
 				break
@@ -709,7 +745,7 @@ func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
 	h.getSkillExecutor().mu.RLock()
 	var siblings []string
 	for _, s := range h.getSkillExecutor().loadSkills() {
-		if s.Publisher == activePublisher && s.Name != activeSkillName && normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive {
+		if s.Publisher == activePublisher && s.Name != activeSkillName && normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive && !isShellBrowserAutomationSkillEntry(s) {
 			siblings = append(siblings, s.Name)
 		}
 	}

@@ -35,6 +35,387 @@ func TestWriteCodexConfigAvoidsOpenAIReservedProviderName(t *testing.T) {
 	}
 }
 
+func TestWriteCodexConfigAddsCodeGenClientNameHeader(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := WriteCodexConfigWithClientName("sk-test", "https://codegen.qianxin-inc.cn/api/v1", "codegen-model", "CodeGen", "responses", "custom-agent"); err != nil {
+		t.Fatalf("WriteCodexConfigWithClientName: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, `http_headers = { "X-Codegen-Client-Name" = "custom-agent" }`) {
+		t.Fatalf("missing CodeGen client name header:\n%s", content)
+	}
+}
+
+func TestWriteCodexConfigDefaultsOpenClawCodeGenClientNameToTigerclaw(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := WriteCodexConfigWithClientName("sk-test", "https://codegen.qianxin-inc.cn/api/v1", "codegen-model", "CodeGen", "responses", "openclaw"); err != nil {
+		t.Fatalf("WriteCodexConfigWithClientName: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, `"X-Codegen-Client-Name" = "openclaw"`) {
+		t.Fatalf("legacy openclaw CodeGen client name leaked into config.toml:\n%s", content)
+	}
+	if !strings.Contains(content, `"X-Codegen-Client-Name" = "tigerclaw"`) {
+		t.Fatalf("CodeGen client name did not default to tigerclaw:\n%s", content)
+	}
+}
+
+func TestWriteCodexConfigMergesCodeGenClientNameHeader(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatalf("create codex dir: %v", err)
+	}
+	configContent := `model_provider = "custom"
+model = "old-model"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://old.example/v1"
+wire_api = "responses"
+http_headers = { "X-Custom" = "keep" } # preserve me
+supports_websockets = false
+`
+	if err := AtomicWrite(CodexConfigPath(), []byte(configContent)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteCodexConfigWithClientName("sk-test", "https://codegen.qianxin-inc.cn/api/v1", "codegen-model", "custom", "responses", "custom-agent"); err != nil {
+		t.Fatalf("WriteCodexConfigWithClientName: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{`"X-Custom" = "keep"`, `"X-Codegen-Client-Name" = "custom-agent"`, `# preserve me`} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("config.toml missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestWriteCodexConfigReplacesCaseVariantCodeGenHeader(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatalf("create codex dir: %v", err)
+	}
+	configContent := `model_provider = "custom"
+model = "old-model"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://old.example/v1"
+wire_api = "responses"
+http_headers = { "x-codegen-client-name" = "old-agent", "X-Custom" = "keep" }
+supports_websockets = false
+`
+	if err := AtomicWrite(CodexConfigPath(), []byte(configContent)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteCodexConfigWithClientName("sk-test", "https://codegen.qianxin-inc.cn/api/v1", "codegen-model", "custom", "responses", "custom-agent"); err != nil {
+		t.Fatalf("WriteCodexConfigWithClientName: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{`"X-Codegen-Client-Name" = "custom-agent"`, `"X-Custom" = "keep"`} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("config.toml missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "x-codegen-client-name") || strings.Contains(content, "old-agent") {
+		t.Fatalf("case-variant CodeGen header was not replaced:\n%s", content)
+	}
+}
+
+func TestWriteCodexConfigRemovesStaleCodeGenHeaderForNonCodeGenURL(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := WriteCodexConfigWithClientName("sk-test", "https://codegen.qianxin-inc.cn/api/v1", "codegen-model", "custom", "responses", "custom-agent"); err != nil {
+		t.Fatalf("seed WriteCodexConfigWithClientName: %v", err)
+	}
+	if err := WriteCodexConfig("sk-test", "https://api.example.com/v1", "gpt-test", "custom", "responses"); err != nil {
+		t.Fatalf("WriteCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "http_headers") || strings.Contains(content, "X-Codegen-Client-Name") {
+		t.Fatalf("stale CodeGen header was not removed:\n%s", content)
+	}
+}
+
+func TestWriteCodexConfigPreservesNonCodeGenHTTPHeaders(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatalf("create codex dir: %v", err)
+	}
+	configContent := `model_provider = "custom"
+model = "old-model"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://old.example/v1"
+wire_api = "responses"
+http_headers = { "X-Custom" = "keep" }
+supports_websockets = false
+`
+	if err := AtomicWrite(CodexConfigPath(), []byte(configContent)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteCodexConfig("sk-test", "https://api.example.com/v1", "gpt-test", "custom", "responses"); err != nil {
+		t.Fatalf("WriteCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, `http_headers = { "X-Custom" = "keep" }`) {
+		t.Fatalf("custom http_headers were not preserved:\n%s", content)
+	}
+}
+
+func TestWriteCodexConfigRemovesOnlyCodeGenHTTPHeader(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatalf("create codex dir: %v", err)
+	}
+	configContent := `model_provider = "custom"
+model = "old-model"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://old.example/v1"
+wire_api = "responses"
+http_headers = { "X-Custom" = "keep", "X-Codegen-Client-Name" = "custom-agent" }
+supports_websockets = false
+`
+	if err := AtomicWrite(CodexConfigPath(), []byte(configContent)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteCodexConfig("sk-test", "https://api.example.com/v1", "gpt-test", "custom", "responses"); err != nil {
+		t.Fatalf("WriteCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "X-Codegen-Client-Name") {
+		t.Fatalf("CodeGen header was not removed:\n%s", content)
+	}
+	if !strings.Contains(content, `http_headers = { "X-Custom" = "keep" }`) {
+		t.Fatalf("custom http_headers were not preserved:\n%s", content)
+	}
+}
+
+func TestWriteCodexConfigPreservesHTTPHeaderCommentWhenRemovingCodeGenHeader(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatalf("create codex dir: %v", err)
+	}
+	configContent := `model_provider = "custom"
+model = "old-model"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://old.example/v1"
+wire_api = "responses"
+http_headers = { "X-Custom" = "keep", "X-Codegen-Client-Name" = "custom-agent" } # preserve me
+supports_websockets = false
+`
+	if err := AtomicWrite(CodexConfigPath(), []byte(configContent)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteCodexConfig("sk-test", "https://api.example.com/v1", "gpt-test", "custom", "responses"); err != nil {
+		t.Fatalf("WriteCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "X-Codegen-Client-Name") {
+		t.Fatalf("CodeGen header was not removed:\n%s", content)
+	}
+	if !strings.Contains(content, `http_headers = { "X-Custom" = "keep" } # preserve me`) {
+		t.Fatalf("custom http_headers comment was not preserved:\n%s", content)
+	}
+}
+
+func TestWriteCodexConfigHandlesBareHTTPHeaderKeys(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatalf("create codex dir: %v", err)
+	}
+	configContent := `model_provider = "custom"
+model = "old-model"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://old.example/v1"
+wire_api = "responses"
+http_headers = { X-Custom = 'keep', X-Codegen-Client-Name = "custom-agent" }
+supports_websockets = false
+`
+	if err := AtomicWrite(CodexConfigPath(), []byte(configContent)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteCodexConfig("sk-test", "https://api.example.com/v1", "gpt-test", "custom", "responses"); err != nil {
+		t.Fatalf("WriteCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "X-Codegen-Client-Name") {
+		t.Fatalf("CodeGen header was not removed:\n%s", content)
+	}
+	if !strings.Contains(content, `http_headers = { "X-Custom" = "keep" }`) {
+		t.Fatalf("bare custom http_headers were not preserved:\n%s", content)
+	}
+}
+
+func TestWriteCodexConfigPreservesHashInsideSingleQuotedHeaderValue(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatalf("create codex dir: %v", err)
+	}
+	configContent := `model_provider = "custom"
+model = "old-model"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://old.example/v1"
+wire_api = "responses"
+http_headers = { X-Custom = 'keep#literal', X-Codegen-Client-Name = "custom-agent" } # preserve me
+supports_websockets = false
+`
+	if err := AtomicWrite(CodexConfigPath(), []byte(configContent)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteCodexConfig("sk-test", "https://api.example.com/v1", "gpt-test", "custom", "responses"); err != nil {
+		t.Fatalf("WriteCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "X-Codegen-Client-Name") {
+		t.Fatalf("CodeGen header was not removed:\n%s", content)
+	}
+	if !strings.Contains(content, `http_headers = { "X-Custom" = "keep#literal" } # preserve me`) {
+		t.Fatalf("single-quoted header value with # was not preserved:\n%s", content)
+	}
+}
+
+func TestWriteCodexConfigPreservesBraceInsideHeaderValue(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatalf("create codex dir: %v", err)
+	}
+	configContent := `model_provider = "custom"
+model = "old-model"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://old.example/v1"
+wire_api = "responses"
+http_headers = { X-Custom = 'keep}', X-Codegen-Client-Name = "custom-agent" } # preserve me
+supports_websockets = false
+`
+	if err := AtomicWrite(CodexConfigPath(), []byte(configContent)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteCodexConfig("sk-test", "https://api.example.com/v1", "gpt-test", "custom", "responses"); err != nil {
+		t.Fatalf("WriteCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "X-Codegen-Client-Name") {
+		t.Fatalf("CodeGen header was not removed:\n%s", content)
+	}
+	if !strings.Contains(content, `http_headers = { "X-Custom" = "keep}" } # preserve me`) {
+		t.Fatalf("header value with } was not preserved:\n%s", content)
+	}
+}
+
 func TestCodexProviderKeyNormalizesKnownProviderNames(t *testing.T) {
 	cases := map[string]string{
 		"openai":                   "openai-compatible",

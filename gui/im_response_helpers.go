@@ -301,17 +301,27 @@ type IMResponseRecoverableSession struct {
 }
 
 func buildRecoverableSessionActions(sessionID string) []IMResponseAction {
+	lang, _ := agentViewCurrentLang.Load().(string)
+	return buildRecoverableSessionActionsWithLang(sessionID, lang)
+}
+
+func buildRecoverableSessionActionsWithLang(sessionID, lang string) []IMResponseAction {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil
 	}
 	return []IMResponseAction{
-		{Label: "Resume session", Command: "__resume_session__ " + sessionID, Style: "default"},
-		{Label: "Dismiss session", Command: "__dismiss_recoverable_session__ " + sessionID, Style: "danger"},
+		{Label: unfinishedSlotText(lang, "Resume session", "恢复会话", "恢復會話"), Command: "__resume_session__ " + sessionID, Style: "default"},
+		{Label: unfinishedSlotText(lang, "Dismiss session", "忽略会话", "忽略會話"), Command: "__dismiss_recoverable_session__ " + sessionID, Style: "danger"},
 	}
 }
 
 func buildRecoverableSessionPayload(session *RemoteSession) *IMResponseRecoverableSession {
+	lang, _ := agentViewCurrentLang.Load().(string)
+	return buildRecoverableSessionPayloadWithLang(session, lang)
+}
+
+func buildRecoverableSessionPayloadWithLang(session *RemoteSession, lang string) *IMResponseRecoverableSession {
 	if session == nil {
 		return nil
 	}
@@ -321,32 +331,60 @@ func buildRecoverableSessionPayload(session *RemoteSession) *IMResponseRecoverab
 		return nil
 	}
 	rc := session.ResumeContext
+	summary := strings.TrimSpace(firstNonEmptyTraceText(session.Summary.ProgressSummary, rc.LastProgress, session.Summary.LastResult, rc.LastOutput))
+	lastProgress := strings.TrimSpace(rc.LastProgress)
 	return &IMResponseRecoverableSession{
 		SessionID:       strings.TrimSpace(session.ID),
 		Tool:            strings.TrimSpace(session.Tool),
 		Title:           strings.TrimSpace(firstNonEmptyTraceText(session.Title, session.Summary.CurrentTask, rc.OriginalTask)),
-		Summary:         strings.TrimSpace(firstNonEmptyTraceText(session.Summary.ProgressSummary, rc.LastProgress, session.Summary.LastResult, rc.LastOutput)),
+		Summary:         localizedUnfinishedSlotSummary(summary, lang),
 		ProjectPath:     strings.TrimSpace(firstNonEmptyTraceText(session.ProjectPath, rc.ProjectPath)),
 		Status:          strings.TrimSpace(session.Status.String()),
 		ExitReason:      strings.TrimSpace(rc.ExitReason),
 		ResumeSessionID: strings.TrimSpace(rc.ResumeSessionID),
 		ResumeCount:     rc.ResumeCount,
-		LastProgress:    strings.TrimSpace(rc.LastProgress),
-		Actions:         buildRecoverableSessionActions(session.ID),
+		LastProgress:    localizedUnfinishedSlotSummary(lastProgress, lang),
+		Actions:         buildRecoverableSessionActionsWithLang(session.ID, lang),
 	}
 }
 
 func buildUnfinishedTaskPayload(slot *agent.UnfinishedTaskSlot) *IMResponseUnfinishedTask {
+	lang, _ := agentViewCurrentLang.Load().(string)
+	return buildUnfinishedTaskPayloadWithLang(slot, lang)
+}
+
+func buildUnfinishedTaskPayloadWithLang(slot *agent.UnfinishedTaskSlot, lang string) *IMResponseUnfinishedTask {
 	if slot == nil {
 		return nil
 	}
+	title := strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary))
+	if strings.TrimSpace(slot.LastTask) == "" {
+		title = localizedUnfinishedSlotSummary(title, lang)
+	}
 	return &IMResponseUnfinishedTask{
 		SlotID:      slot.SlotID,
-		Title:       strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary)),
-		Summary:     strings.TrimSpace(slot.Summary),
+		Title:       title,
+		Summary:     localizedUnfinishedSlotSummary(strings.TrimSpace(slot.Summary), lang),
 		ProjectPath: strings.TrimSpace(slot.ProjectPath),
 		Status:      strings.TrimSpace(slot.Status.String()),
-		Actions:     buildResumeSlotActions(slot),
+		Actions:     buildResumeSlotActionsWithLang(slot, lang),
+	}
+}
+
+func localizedUnfinishedSlotSummary(summary string, lang string) string {
+	switch strings.TrimSpace(summary) {
+	case "Previous task stopped making progress and was moved to recovery.":
+		return unfinishedSlotText(lang,
+			"Previous task stopped making progress and was moved to recovery.",
+			"上次任务停止推进，已移入恢复状态。",
+			"上次任務停止推進，已移入恢復狀態。")
+	case "The previous task stopped before completion.":
+		return unfinishedSlotText(lang,
+			"The previous task stopped before completion.",
+			"上次任务尚未完成就已停止。",
+			"上次任務尚未完成就已停止。")
+	default:
+		return summary
 	}
 }
 

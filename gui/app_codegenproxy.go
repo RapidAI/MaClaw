@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,10 +20,19 @@ var (
 
 const codegenProxyAddr = ":5001"
 
+func firstCodeGenClientName(names ...string) string {
+	for _, name := range names {
+		if strings.TrimSpace(name) != "" {
+			return corelib.NormalizeCodeGenClientName(name)
+		}
+	}
+	return corelib.CodeGenClientName
+}
+
 // StartCodeGenProxy starts the local Anthropic→OpenAI protocol conversion proxy
 // for CodeGen. This allows Claude Code to communicate with CodeGen's OpenAI API
 // via the Anthropic Messages protocol.
-func (a *App) StartCodeGenProxy(upstreamURL, apiKey string) (string, error) {
+func (a *App) StartCodeGenProxy(upstreamURL, apiKey string, clientName ...string) (string, error) {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": "start codegen proxy", "upstream_url": upstreamURL}); err != nil {
 		return "", err
 	}
@@ -31,7 +41,7 @@ func (a *App) StartCodeGenProxy(upstreamURL, apiKey string) (string, error) {
 
 	if codegenProxyServer != nil {
 		// Update upstream config on the running server
-		codegenProxyServer.SetUpstream(upstreamURL, apiKey)
+		codegenProxyServer.SetUpstreamWithClientName(upstreamURL, apiKey, firstCodeGenClientName(clientName...))
 		log.Printf("[codegen-proxy] upstream updated on running proxy: url=%s", upstreamURL)
 		return "already running (upstream updated)", nil
 	}
@@ -41,7 +51,7 @@ func (a *App) StartCodeGenProxy(upstreamURL, apiKey string) (string, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	srv := codegenproxy.NewServer(codegenProxyAddr)
-	srv.SetUpstream(upstreamURL, apiKey)
+	srv.SetUpstreamWithClientName(upstreamURL, apiKey, firstCodeGenClientName(clientName...))
 
 	startErr := make(chan error, 1)
 	go func() {
@@ -126,13 +136,13 @@ func (a *App) ensureCodeGenProxyIfNeeded() {
 		// Just update upstream in case credentials changed
 		codegenProxyMu.Lock()
 		if codegenProxyServer != nil {
-			codegenProxyServer.SetUpstream(codegenProvider.URL, codegenProvider.Key)
+			codegenProxyServer.SetUpstreamWithClientName(codegenProvider.URL, codegenProvider.Key, codegenProvider.UserAgent())
 		}
 		codegenProxyMu.Unlock()
 		return
 	}
 
-	result, err := a.StartCodeGenProxy(codegenProvider.URL, codegenProvider.Key)
+	result, err := a.StartCodeGenProxy(codegenProvider.URL, codegenProvider.Key, codegenProvider.UserAgent())
 	if err != nil {
 		log.Printf("[CodeGen Proxy] auto-start failed: %v", err)
 	} else {

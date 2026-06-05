@@ -111,6 +111,10 @@ type AdminStore interface {
 	DeleteAdminSession(ctx context.Context, tenantID, sessionID string) error
 	DeleteAdminSessionsForUser(ctx context.Context, tenantID, userID string) error
 	DeleteExpiredAdminSessions(ctx context.Context, now time.Time) error
+	UpsertDataTenants(ctx context.Context, tenants []DataTenantInfo, source string, now time.Time) ([]DataTenantInfo, error)
+	ListDataTenants(ctx context.Context) ([]DataTenantInfo, error)
+	GetHubRegistration(ctx context.Context) (*hubRegistrationRecord, error)
+	SaveHubRegistration(ctx context.Context, record hubRegistrationRecord) (*hubRegistrationRecord, error)
 	CreateBackup(ctx context.Context, in CreateBackupInput, actor string, now time.Time) (*BackupInfo, error)
 	ListBackups(ctx context.Context, in QueryBackupsInput) ([]BackupInfo, error)
 	GetBackup(ctx context.Context, backupID string) (*BackupInfo, error)

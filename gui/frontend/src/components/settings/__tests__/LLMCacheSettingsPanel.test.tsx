@@ -3,16 +3,15 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../../../../wailsjs/go/models";
-import { LoadConfig, SaveConfig } from "../../../../wailsjs/go/main/App";
+import { PatchConfigFields } from "../../../../wailsjs/go/main/App";
 import { LLMCacheSettingsPanel } from "../LLMCacheSettingsPanel";
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
-  LoadConfig: vi.fn(),
-  SaveConfig: vi.fn(async () => undefined),
+  PatchConfigFields: vi.fn(async (patch: Record<string, unknown>) => new main.AppConfig({ maclaw_llm_current_provider: "MaClaw Official", ...patch } as any)),
 }));
 
 beforeEach(() => {
-  (LoadConfig as any).mockResolvedValue(new main.AppConfig({ maclaw_llm_current_provider: "MaClaw Official" } as any));
+  (PatchConfigFields as any).mockResolvedValue(new main.AppConfig({ maclaw_llm_current_provider: "MaClaw Official" } as any));
 });
 
 afterEach(() => {
@@ -34,13 +33,11 @@ describe("LLMCacheSettingsPanel", () => {
 
     fireEvent.click(screen.getByText("保存"));
 
-    await waitFor(() => expect(SaveConfig).toHaveBeenCalledTimes(1));
-    expect(LoadConfig).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(PatchConfigFields).toHaveBeenCalledTimes(1));
     expect(showToastMessage).toHaveBeenCalledWith("保存成功");
   });
 
-  it("merges cache changes into the latest config before saving", async () => {
-    (LoadConfig as any).mockResolvedValue(new main.AppConfig({ maclaw_llm_current_provider: "MaClaw Official" } as any));
+  it("saves only cache settings as a config patch", async () => {
     const Harness = () => {
       const [cfg, setCfg] = useState<main.AppConfig | null>(new main.AppConfig({ maclaw_llm_current_provider: "stale", llm_prompt_cache: { enabled: true } } as any));
       return <LLMCacheSettingsPanel config={cfg} setConfig={setCfg} lang="en" />;
@@ -51,10 +48,10 @@ describe("LLMCacheSettingsPanel", () => {
 
     fireEvent.click(screen.getByText("Save"));
 
-    await waitFor(() => expect(SaveConfig).toHaveBeenCalledTimes(1));
-    const saved = (SaveConfig as any).mock.calls[0][0];
-    expect(saved.maclaw_llm_current_provider).toBe("MaClaw Official");
-    expect(saved.llm_prompt_cache.enabled).toBe(true);
+    await waitFor(() => expect(PatchConfigFields).toHaveBeenCalledTimes(1));
+    expect(PatchConfigFields).toHaveBeenCalledWith(expect.objectContaining({
+      llm_prompt_cache: expect.objectContaining({ enabled: true }),
+    }));
   });
 
   it("keeps cache enabled when optional sub-switches are omitted", async () => {
@@ -68,20 +65,18 @@ describe("LLMCacheSettingsPanel", () => {
 
     fireEvent.click(screen.getByText("Save"));
 
-    await waitFor(() => expect(SaveConfig).toHaveBeenCalledTimes(1));
-    const saved = (SaveConfig as any).mock.calls[0][0];
-    expect(saved.llm_prompt_cache.enabled).toBe(true);
-    expect(saved.llm_prompt_cache.openai_enabled).toBe(true);
-    expect(saved.llm_prompt_cache.anthropic_enabled).toBe(true);
-    expect(saved.llm_prompt_cache.stream_synthesis_enabled).toBe(true);
+    await waitFor(() => expect(PatchConfigFields).toHaveBeenCalledTimes(1));
+    const patch = (PatchConfigFields as any).mock.calls[0][0];
+    expect(patch.llm_prompt_cache.enabled).toBe(true);
+    expect(patch.llm_prompt_cache.openai_enabled).toBe(true);
+    expect(patch.llm_prompt_cache.anthropic_enabled).toBe(true);
+    expect(patch.llm_prompt_cache.stream_synthesis_enabled).toBe(true);
   });
 
-  it("keeps save successful when post-save reload fails", async () => {
+  it("updates config from patch response", async () => {
     const showToastMessage = vi.fn();
     const setConfig = vi.fn();
-    (LoadConfig as any)
-      .mockResolvedValueOnce(new main.AppConfig({ maclaw_llm_current_provider: "MaClaw Official" } as any))
-      .mockRejectedValueOnce(new Error("reload failed"));
+    (PatchConfigFields as any).mockResolvedValueOnce(new main.AppConfig({ maclaw_llm_current_provider: "MaClaw Official", llm_prompt_cache: { enabled: true } } as any));
     render(
       <LLMCacheSettingsPanel
         config={new main.AppConfig({ llm_prompt_cache: { enabled: true } } as any)}
@@ -93,7 +88,7 @@ describe("LLMCacheSettingsPanel", () => {
 
     fireEvent.click(screen.getByText("Save"));
 
-    await waitFor(() => expect(SaveConfig).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(PatchConfigFields).toHaveBeenCalledTimes(1));
     expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ maclaw_llm_current_provider: "MaClaw Official" }));
     expect(showToastMessage).toHaveBeenCalledWith("Saved successfully");
   });
@@ -108,12 +103,12 @@ describe("LLMCacheSettingsPanel", () => {
     fireEvent.click(screen.getByLabelText("Enable local LLM cache"));
     fireEvent.click(screen.getByText("Save"));
 
-    await waitFor(() => expect(SaveConfig).toHaveBeenCalledTimes(1));
-    const saved = (SaveConfig as any).mock.calls[0][0];
-    expect(saved.llm_prompt_cache.enabled).toBe(true);
-    expect(saved.llm_prompt_cache.openai_enabled).toBe(true);
-    expect(saved.llm_prompt_cache.anthropic_enabled).toBe(true);
-    expect(saved.llm_prompt_cache.stream_synthesis_enabled).toBe(true);
+    await waitFor(() => expect(PatchConfigFields).toHaveBeenCalledTimes(1));
+    const patch = (PatchConfigFields as any).mock.calls[0][0];
+    expect(patch.llm_prompt_cache.enabled).toBe(true);
+    expect(patch.llm_prompt_cache.openai_enabled).toBe(true);
+    expect(patch.llm_prompt_cache.anthropic_enabled).toBe(true);
+    expect(patch.llm_prompt_cache.stream_synthesis_enabled).toBe(true);
   });
 
   it("renders cache directory as a full-width text input", () => {

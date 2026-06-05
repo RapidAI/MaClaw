@@ -34,15 +34,12 @@ var veBlockedTools = map[string]bool{
 	"bash": true,
 
 	// --- Programming sessions ---
-	"create_session":     true,
-	"send_and_observe":   true,
 	"send_input":         true,
 	"list_sessions":      true,
 	"get_session_output": true,
 	"get_session_events": true,
 	"interrupt_session":  true,
 	"kill_session":       true,
-	"control_session":    true,
 	"parallel_execute":   true,
 
 	// --- Remote server operations ---
@@ -96,6 +93,12 @@ var veBlockedTools = map[string]bool{
 
 	// --- Background task management ---
 	"async_wait": true,
+}
+
+func init() {
+	for name := range disabledExternalCodingSessionTools {
+		veBlockedTools[name] = true
+	}
 }
 
 // veBlockedToolActions defines per-tool action restrictions.
@@ -177,6 +180,9 @@ func veSkillMCPOnlyGuard(skillName string, app *App) (bool, string) {
 // isVEToolBlocked checks if a tool is blocked in VE mode.
 func isVEToolBlocked(toolName string) bool {
 	name := strings.TrimSpace(toolName)
+	if strings.HasPrefix(name, "browser_") {
+		return true
+	}
 	return coretool.IsCodingSessionTool(name) || veBlockedTools[name]
 }
 

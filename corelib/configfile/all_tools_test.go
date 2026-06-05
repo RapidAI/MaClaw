@@ -2,9 +2,7 @@ package configfile
 
 import (
 	"errors"
-	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -98,6 +96,34 @@ func TestProperty_MultiToolWriteFaultIsolation(t *testing.T) {
 			t.Fatalf("Failed mismatch: got %v, want %v", gotFailed, expectFailed)
 		}
 	})
+}
+
+func TestWriteAllToolConfigsPassesCodeGenClientNameToCodex(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	result := WriteAllToolConfigs(ToolConfigParams{
+		Token:            "sk-test",
+		BaseURL:          "https://codegen.qianxin-inc.cn/api/v1",
+		AnthropicBaseURL: "https://codegen.qianxin-inc.cn/api/anthropic",
+		ModelID:          "codegen-model",
+		ProviderName:     "CodeGen",
+		ClientName:       "custom-agent",
+	})
+	for _, failure := range result.Failed {
+		if failure.Tool == "Codex" {
+			t.Fatalf("Codex config write failed: %v", failure.Error)
+		}
+	}
+
+	content, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	if !strings.Contains(string(content), `"X-Codegen-Client-Name" = "custom-agent"`) {
+		t.Fatalf("custom CodeGen client header missing from Codex config:\n%s", content)
+	}
 }
 
 func stringSlicesEqual(a, b []string) bool {
@@ -199,17 +225,7 @@ func TestProperty_ConfigWritePreservesExistingUserSettings(t *testing.T) {
 			testClaudePreservesUserSettings(rt, t, token, baseURL, modelID)
 		})
 
-		// --- Sub-property B: Gemini .env preserves user-defined env vars ---
-		t.Run("gemini_env", func(_ *testing.T) {
-			testGeminiEnvPreservesUserVars(rt, t, token, baseURL, modelID)
-		})
-
-		// --- Sub-property C: Gemini settings.json preserves user fields ---
-		t.Run("gemini_settings", func(_ *testing.T) {
-			testGeminiSettingsPreservesUserFields(rt, t, token, baseURL, modelID)
-		})
-
-		// --- Sub-property D: OpenCode opencode.json preserves user fields ---
+		// --- Sub-property B: OpenCode opencode.json preserves user fields ---
 		t.Run("opencode", func(_ *testing.T) {
 			testOpencodePreservesUserSettings(rt, t, token, baseURL, modelID)
 		})
@@ -297,107 +313,6 @@ func testClaudePreservesUserSettings(rt *rapid.T, t *testing.T, token, baseURL, 
 	// Verify new credentials were written.
 	if got, _ := env["ANTHROPIC_AUTH_TOKEN"].(string); got != token {
 		t.Fatalf("claude ANTHROPIC_AUTH_TOKEN: got %q, want %q", got, token)
-	}
-}
-
-func testGeminiEnvPreservesUserVars(rt *rapid.T, t *testing.T, token, baseURL, modelID string) {
-	envPath := GeminiEnvPath()
-
-	// Generate random user-defined env vars.
-	numUserVars := rapid.IntRange(1, 5).Draw(rt, "gemini_numUserVars")
-	userVars := make(map[string]string)
-	for i := 0; i < numUserVars; i++ {
-		key := rapid.StringMatching(`CUSTOM_[A-Z]{3,8}`).Draw(rt, "gemini_envKey")
-		val := rapid.StringMatching(`[a-zA-Z0-9]{4,16}`).Draw(rt, "gemini_envVal")
-		userVars[key] = val
-	}
-
-	// Build pre-existing .env content.
-	var sb strings.Builder
-	for k, v := range userVars {
-		fmt.Fprintf(&sb, "%s=%s\n", k, v)
-	}
-
-	// Write pre-existing .env to disk.
-	dir := filepath.Dir(envPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatalf("create gemini dir: %v", err)
-	}
-	if err := AtomicWrite(envPath, []byte(sb.String())); err != nil {
-		t.Fatalf("seed gemini .env: %v", err)
-	}
-
-	// Call the writer.
-	if err := WriteGeminiConfig(token, baseURL, modelID); err != nil {
-		t.Fatalf("WriteGeminiConfig: %v", err)
-	}
-
-	// Read back and verify user vars are preserved.
-	data, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatalf("read gemini .env: %v", err)
-	}
-	gotVars := parseEnvFile(string(data))
-
-	for k, wantVal := range userVars {
-		if gotVal, ok := gotVars[k]; !ok {
-			t.Fatalf("gemini .env missing user var %s", k)
-		} else if gotVal != wantVal {
-			t.Fatalf("gemini .env var %s: got %q, want %q", k, gotVal, wantVal)
-		}
-	}
-
-	// Verify new credentials were written.
-	if gotVars["GEMINI_API_KEY"] != token {
-		t.Fatalf("gemini GEMINI_API_KEY: got %q, want %q", gotVars["GEMINI_API_KEY"], token)
-	}
-}
-
-func testGeminiSettingsPreservesUserFields(rt *rapid.T, t *testing.T, token, baseURL, modelID string) {
-	settingsPath := GeminiSettingsPath()
-
-	// Generate random user-defined fields.
-	theme := rapid.StringMatching(`[A-Za-z ]{3,12}`).Draw(rt, "gemini_theme")
-	editorPref := rapid.StringMatching(`[a-z]{3,8}`).Draw(rt, "gemini_editor")
-
-	existing := map[string]interface{}{
-		"ui": map[string]interface{}{
-			"theme":  theme,
-			"editor": editorPref,
-		},
-		"customPlugin": rapid.StringMatching(`[a-z]{4,10}`).Draw(rt, "gemini_plugin"),
-	}
-
-	if err := AtomicWriteJSON(settingsPath, existing); err != nil {
-		t.Fatalf("seed gemini settings: %v", err)
-	}
-
-	// Call the writer.
-	if err := WriteGeminiConfig(token, baseURL, modelID); err != nil {
-		t.Fatalf("WriteGeminiConfig: %v", err)
-	}
-
-	// Read back and verify.
-	result, err := ReadGeminiSettings()
-	if err != nil {
-		t.Fatalf("ReadGeminiSettings: %v", err)
-	}
-
-	// Verify ui.theme preserved.
-	ui, _ := result["ui"].(map[string]interface{})
-	if ui == nil {
-		t.Fatalf("gemini settings ui is nil")
-	}
-	if got, _ := ui["theme"].(string); got != theme {
-		t.Fatalf("gemini ui.theme: got %q, want %q", got, theme)
-	}
-	if got, _ := ui["editor"].(string); got != editorPref {
-		t.Fatalf("gemini ui.editor: got %q, want %q", got, editorPref)
-	}
-
-	// Verify custom plugin preserved.
-	if _, ok := result["customPlugin"]; !ok {
-		t.Fatalf("gemini settings missing customPlugin")
 	}
 }
 

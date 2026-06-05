@@ -29,6 +29,7 @@ var (
 
 	// Reusable store for auto-recall to avoid open/close per message.
 	knowledgeAutoRecallStore   *knowledge.SQLiteStore
+	knowledgeAutoRecallDBPath  string
 	knowledgeAutoRecallStoreMu sync.Mutex
 
 	// One-time FTS rebuild flag for gse segmentation migration.
@@ -54,7 +55,8 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 		query = string(runes[:200])
 	}
 
-	store := h.getAutoRecallStore()
+	store, cleanupStore := h.getAutoRecallStoreForUse()
+	defer cleanupStore()
 	if store == nil {
 		return
 	}
@@ -139,35 +141,77 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 	}
 }
 
+func (h *IMMessageHandler) getAutoRecallStoreForUse() (*knowledge.SQLiteStore, func()) {
+	if h == nil || h.app == nil {
+		return nil, func() {}
+	}
+	return getAutoRecallStoreForAppUse(h.app, true)
+}
+
+func getAutoRecallStoreForAppUse(app *App, rebuildFTS bool) (*knowledge.SQLiteStore, func()) {
+	if app == nil {
+		return nil, func() {}
+	}
+	if strings.TrimSpace(app.testHomeDir) == "" {
+		return getAutoRecallStoreForApp(app, rebuildFTS), func() {}
+	}
+	store, err := app.openKnowledgeStore()
+	if err != nil {
+		log.Printf("[knowledge_auto_recall] getAutoRecallStoreForUse: open failed: %v", err)
+		return nil, func() {}
+	}
+	return store, func() { _ = store.Close() }
+}
+
 // getAutoRecallStore returns a reusable knowledge store for auto-recall.
 // The store is kept open across messages to avoid repeated open/close overhead (~5ms each).
 // It is lazily created. Invalidation is handled by CloseAutoRecallStore() which is called
 // by KnowledgeClearAll and app shutdown.
 func (h *IMMessageHandler) getAutoRecallStore() *knowledge.SQLiteStore {
+	if h == nil || h.app == nil {
+		return nil
+	}
+	return getAutoRecallStoreForApp(h.app, true)
+}
+
+func getAutoRecallStoreForApp(app *App, rebuildFTS bool) *knowledge.SQLiteStore {
+	if app == nil {
+		return nil
+	}
+	dbPath := app.knowledgeDBPath()
 	knowledgeAutoRecallStoreMu.Lock()
 	defer knowledgeAutoRecallStoreMu.Unlock()
 
 	if knowledgeAutoRecallStore != nil {
-		return knowledgeAutoRecallStore
+		if knowledgeAutoRecallDBPath == dbPath {
+			return knowledgeAutoRecallStore
+		}
+		_ = knowledgeAutoRecallStore.Close()
+		knowledgeAutoRecallStore = nil
+		knowledgeAutoRecallDBPath = ""
+		log.Printf("[knowledge_auto_recall] closed cached store for stale db path")
 	}
 
-	store, err := h.app.openKnowledgeStore()
+	store, err := app.openKnowledgeStore()
 	if err != nil {
 		log.Printf("[knowledge_auto_recall] getAutoRecallStore: open failed: %v", err)
 		return nil
 	}
 	knowledgeAutoRecallStore = store
+	knowledgeAutoRecallDBPath = dbPath
 	// Trigger FTS rebuild in background — does not block the current search.
 	// The current search will use LIKE fallback if FTS fails; once rebuild
 	// completes, subsequent searches will use the segmented FTS index.
-	go h.rebuildFTSInBackground(store)
+	if rebuildFTS {
+		go rebuildAutoRecallFTSInBackground(store)
+	}
 	return store
 }
 
 // rebuildFTSInBackground rebuilds the FTS index with gse segmentation.
 // Runs in a background goroutine so it doesn't block user requests.
 // Uses a persistent marker to avoid redundant rebuilds across restarts.
-func (h *IMMessageHandler) rebuildFTSInBackground(store *knowledge.SQLiteStore) {
+func rebuildAutoRecallFTSInBackground(store *knowledge.SQLiteStore) {
 	knowledgeFTSRebuildMu.Lock()
 	defer knowledgeFTSRebuildMu.Unlock()
 	if knowledgeFTSRebuilt {
@@ -200,6 +244,7 @@ func CloseAutoRecallStore() {
 	if knowledgeAutoRecallStore != nil {
 		knowledgeAutoRecallStore.Close()
 		knowledgeAutoRecallStore = nil
+		knowledgeAutoRecallDBPath = ""
 	}
 }
 
@@ -215,7 +260,8 @@ func (h *IMMessageHandler) hasKnowledgeSources() bool {
 		return atomic.LoadInt64(&knowledgeSourceCountCache) > 0
 	}
 	// Cache miss — lightweight single-query check via the reusable store
-	store := h.getAutoRecallStore()
+	store, cleanupStore := h.getAutoRecallStoreForUse()
+	defer cleanupStore()
 	if store == nil {
 		return false
 	}

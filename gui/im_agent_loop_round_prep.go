@@ -112,7 +112,7 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	conversation = autoCompressConversation(conversation, opts.Config, opts.HTTPClient)
 
 	effectiveTokenLimit := calibratedAgentLoopTokenLimit(opts.Config, conversation, opts.LastInputTokens, opts.LastOutputTokens)
-	conversation = trimConversation(conversation, effectiveTokenLimit, opts.ToolsTokenBudget, makeSummarizer(opts.Config, opts.HTTPClient))
+	conversation = trimConversation(conversation, effectiveTokenLimit, opts.ToolsTokenBudget, nil)
 
 	phase := derefAgentLoopPhase(opts.Phase)
 	conversation, systemMessagesStart := h.injectAgentLoopHarnessPrompts(

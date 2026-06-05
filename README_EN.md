@@ -244,7 +244,7 @@ Directly control native desktop applications (Notepad, Excel, Calculator, or any
 Programming is one of MaClaw's work capabilities, executed through coding workflows and external programming tools:
 
 *   **Structured process**: Requirements → Design → Task Breakdown → Per-task Execution → Integration
-*   **Multi-tool support**: Claude Code, Codex, Gemini CLI, OpenCode, CodeBuddy, Qoder CLI
+*   **Multi-tool support**: Claude Code, Codex, OpenCode, CodeBuddy, Qoder CLI
 *   **Coding SubAgent**: Clean-context executor — each task gets independent context, no history bloat
 *   **Swarm orchestration**: Large tasks split across multiple AI developers with automatic merging
 

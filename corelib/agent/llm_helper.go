@@ -10,8 +10,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -85,34 +83,15 @@ func waitSimpleLLMBackoff(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-// dumpLLMContext saves the request body to a temp file on HTTP 500.
+// dumpLLMContext reports LLM HTTP failures without persisting prompt/request
+// bodies. Those bodies may contain browser observations, screenshots OCR, or
+// user secrets, so writing them under ~/.maclaw would leak private context.
 func dumpLLMContext(statusCode int, respMsg string, requestBody []byte) error {
-	if statusCode != http.StatusInternalServerError {
-		return newLLMHTTPError(statusCode, respMsg)
-	}
 	ctxLen := len(requestBody)
-
-	// Use ~/.maclaw/temp if available, fallback to os.TempDir()
-	tempDir := os.TempDir()
-	if home, err := os.UserHomeDir(); err == nil {
-		maclawTmp := filepath.Join(home, ".maclaw", "temp")
-		if _, err := os.Stat(maclawTmp); err == nil {
-			tempDir = maclawTmp
-		} else {
-			// Try to create it if .maclaw exists
-			maclawDir := filepath.Join(home, ".maclaw")
-			if _, err := os.Stat(maclawDir); err == nil {
-				_ = os.MkdirAll(maclawTmp, 0o755)
-				tempDir = maclawTmp
-			}
-		}
+	if statusCode != http.StatusInternalServerError {
+		return newLLMHTTPError(statusCode, fmt.Sprintf("%s (context %d bytes)", respMsg, ctxLen))
 	}
-
-	dumpFile := filepath.Join(tempDir, fmt.Sprintf("llm_context_%d.json", time.Now().UnixMilli()))
-	if err := os.WriteFile(dumpFile, requestBody, 0644); err != nil {
-		return fmt.Errorf("HTTP %d (context %d bytes, dump failed: %v): %s", statusCode, ctxLen, err, respMsg)
-	}
-	return fmt.Errorf("HTTP %d (context %d bytes, dumped to %s): %s", statusCode, ctxLen, dumpFile, respMsg)
+	return fmt.Errorf("HTTP %d (context %d bytes, request body not dumped): %s", statusCode, ctxLen, respMsg)
 }
 
 // DoSimpleLLMRequest sends a simple chat completion request (no tool calling)
@@ -181,20 +160,13 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 		return nil, readErr
 	}
 	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
-		}
+		msg := fmt.Sprintf("llm request failed body_len=%d", len(body))
 		return nil, dumpLLMContext(resp.StatusCode, msg, data)
 	}
 
 	parsed, err := llm.ParseNonStreamOpenAIResponseBody(body)
 	if err != nil {
-		snippet := string(body)
-		if len(snippet) > 200 {
-			snippet = snippet[:200]
-		}
-		return nil, fmt.Errorf("parse response: %w (body prefix: %s)", err, snippet)
+		return nil, fmt.Errorf("parse response: %w (body_len=%d)", err, len(body))
 	}
 	if len(parsed.Choices) == 0 {
 		return nil, fmt.Errorf("no response from model")
@@ -248,6 +220,7 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
 	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -260,10 +233,7 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 		return nil, readErr
 	}
 	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
-		}
+		msg := fmt.Sprintf("llm request failed body_len=%d", len(body))
 		return nil, dumpLLMContext(resp.StatusCode, msg, data)
 	}
 

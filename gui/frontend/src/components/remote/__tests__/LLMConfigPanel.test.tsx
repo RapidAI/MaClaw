@@ -45,6 +45,7 @@ vi.mock('../../CustomDialog', () => ({
 }));
 
 import { LLMConfigPanel } from '../LLMConfigPanel';
+import { hubOfficialStatus } from '../LLMConfigPanelShared';
 
 describe('LLMConfigPanel test-and-save flow', () => {
     beforeEach(() => {
@@ -79,10 +80,10 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
         fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
-        fireEvent.click(screen.getByRole('button', { name: 'List' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Fetch' }));
 
         await waitFor(() => {
-            expect(FetchProviderModelsMock).toHaveBeenCalledWith('https://api.example.com/v1', 'secret', 'openai');
+            expect(FetchProviderModelsMock).toHaveBeenCalledWith('https://api.example.com/v1', 'secret', 'openai', 'openclaw');
         });
 
         fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'gpt-test' } });
@@ -109,6 +110,35 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         expect(TestMaclawLLMMock.mock.invocationCallOrder[0]).toBeLessThan(SaveMaclawLLMProvidersMock.mock.invocationCallOrder[0]);
         expect(await screen.findByText(/Vision support: enabled/)).toBeTruthy();
+    });
+
+    it('saves a custom User-Agent value', async () => {
+        TestMaclawLLMMock.mockResolvedValue({ message: 'hello', supports_vision: false });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Custom' }));
+        fireEvent.change(screen.getByPlaceholderText('Custom User-Agent'), { target: { value: 'myagent' } });
+        fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Fetch' }));
+
+        await waitFor(() => {
+            expect(FetchProviderModelsMock).toHaveBeenCalledWith('https://api.example.com/v1', 'secret', 'openai', 'myagent');
+        });
+        fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'gpt-test' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        await waitFor(() => {
+            expect(TestMaclawLLMMock).toHaveBeenCalledWith(expect.objectContaining({ agent_type: 'myagent' }));
+        });
+        await waitFor(() => {
+            expect(SaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+                [expect.objectContaining({ name: 'Custom1', agent_type: 'myagent' })],
+                'Custom1',
+            );
+        });
     });
 
     it('keeps MaClaw Official visible when official grants are period-limited', async () => {
@@ -310,6 +340,13 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(screen.queryByText('Credits exhausted')).toBeNull();
     });
 
+    it('localizes inactive Hub service reasons in Chinese', () => {
+        const t = (en: string, zhHans: string) => zhHans || en;
+        const status = hubOfficialStatus({ active: false, inactive_reasons: ['grant credits are exhausted'] }, 'zh-Hans', t);
+
+        expect(status.detail).toBe('授权额度已用尽。');
+    });
+
     it('does not save when detection fails', async () => {
         TestMaclawLLMMock.mockRejectedValue(new Error('boom'));
 
@@ -319,10 +356,10 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
         fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
-        fireEvent.click(screen.getByRole('button', { name: 'List' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Fetch' }));
 
         await waitFor(() => {
-            expect(FetchProviderModelsMock).toHaveBeenCalledWith('https://api.example.com/v1', 'secret', 'openai');
+            expect(FetchProviderModelsMock).toHaveBeenCalledWith('https://api.example.com/v1', 'secret', 'openai', 'openclaw');
         });
 
         fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'gpt-test' } });
@@ -352,14 +389,14 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Sign in with OpenAI' }));
 
-        expect((await screen.findByRole('status')).textContent).toMatch(/Connection failed, not saved/);
+        expect((await screen.findByRole('alert')).textContent).toMatch(/Connection failed, not saved/);
         expect(await screen.findByRole('button', { name: /Import from Codex CLI/i })).toBeTruthy();
 
         await act(async () => {
             vi.advanceTimersByTime(10000);
         });
         await waitFor(() => {
-            expect(screen.queryByRole('status')).toBeNull();
+            expect(screen.queryByRole('alert')).toBeNull();
         });
         expect(screen.getByRole('button', { name: /Import from Codex CLI/i })).toBeTruthy();
     });

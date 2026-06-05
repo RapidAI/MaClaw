@@ -121,6 +121,43 @@ func TestToolDelegateTaskCodingWorkflowBlockedByActiveDocOnlyWorkflow(t *testing
 	}
 }
 
+func TestToolDelegateTaskCodingWorkflowBlocksBrowserPublicationContext(t *testing.T) {
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		t.Fatal("browser publication context must reject delegate_task before CodingSubAgent starts")
+		return nil
+	}
+
+	h := testHandlerWithDelegateGate(intent.LabelBugFix, "")
+	got := h.toolDelegateTask(map[string]interface{}{
+		"agent":   "coding_workflow",
+		"request": "log into Zhihu and publish a post; submit failed",
+	})
+	if !strings.Contains(got, "browser publication") {
+		t.Fatalf("delegate result = %q, want browser publication rejection", got)
+	}
+}
+
+func TestToolDelegateTaskCodingWorkflowBlocksBugFixWithoutCodeEvidence(t *testing.T) {
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		t.Fatal("bug-fix delegation without code evidence must reject before CodingSubAgent starts")
+		return nil
+	}
+
+	h := testHandlerWithDelegateGate(intent.LabelBugFix, "")
+	got := h.toolDelegateTask(map[string]interface{}{
+		"agent":        "coding_workflow",
+		"request":      "repair the failing submit path",
+		"project_path": t.TempDir(),
+	})
+	if !strings.Contains(got, "no existing code project evidence") {
+		t.Fatalf("delegate result = %q, want code evidence rejection", got)
+	}
+}
+
 func TestToolDelegateTaskCodingWorkflowDoesNotInheritSingleActiveWorkflowPolicy(t *testing.T) {
 	original := runTaskWithSubAgent
 	defer func() { runTaskWithSubAgent = original }()

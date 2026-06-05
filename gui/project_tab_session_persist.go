@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,7 +68,8 @@ type TabSessionData struct {
 // ProjectTabSessionPersist handles reading and writing project tab sessions
 // to disk. It is safe for concurrent use.
 type ProjectTabSessionPersist struct {
-	mu sync.RWMutex
+	mu      sync.RWMutex
+	baseDir string
 }
 
 // NewProjectTabSessionPersist creates a new persistence handler.
@@ -75,10 +77,18 @@ func NewProjectTabSessionPersist() *ProjectTabSessionPersist {
 	return &ProjectTabSessionPersist{}
 }
 
+func NewProjectTabSessionPersistForBaseDir(baseDir string) *ProjectTabSessionPersist {
+	return &ProjectTabSessionPersist{baseDir: baseDir}
+}
+
 // sessionsDir returns the absolute path to the sessions directory,
 // creating it if it does not exist.
 func (p *ProjectTabSessionPersist) sessionsDir() (string, error) {
-	dir := filepath.Join(corelib.MaclawBaseDir(), "data", sessionsSubDir)
+	baseDir := strings.TrimSpace(p.baseDir)
+	if baseDir == "" {
+		baseDir = corelib.MaclawBaseDir()
+	}
+	dir := filepath.Join(baseDir, "data", sessionsSubDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create sessions dir: %w", err)
 	}

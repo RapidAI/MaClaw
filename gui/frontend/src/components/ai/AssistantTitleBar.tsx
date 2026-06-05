@@ -9,6 +9,7 @@ import { codingAgentCompactText, codingAgentDisplayText, codingAgentStatusClassN
 import { TTSLevelBars } from "./TTSLevelBars";
 import { VEAuthorizationRequestCenter } from "./VEAuthorizationDialog";
 import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from "../layout/WindowControlIcons";
+import { AssistantUpdateNotice, type AssistantUpdatePayload } from "./AssistantUpdateNotice";
 
 type WailsDragStyle = CSSProperties & { "--wails-draggable"?: "drag" | "no-drag" };
 
@@ -37,7 +38,9 @@ interface AssistantTitleBarProps {
     maximized: boolean;
     onClose: () => void;
     onHideWindow?: () => void;
+    onDismissAppUpdate?: (latestVersion: string) => void;
     onOpenKnowledge?: () => void;
+    onOpenAppUpdate?: () => void;
     onOpenTutorial?: () => void;
     onToggleMaximize?: () => void;
     projectSearchOpen: boolean;
@@ -52,6 +55,7 @@ interface AssistantTitleBarProps {
     ttsEnabled: boolean;
     ttsPlaying: boolean;
     toggleProjectSearch: () => void;
+    updateAvailable?: AssistantUpdatePayload | null;
 }
 
 const stopMouse = (handler: () => void) => (e: MouseEvent) => {
@@ -60,7 +64,7 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
     handler();
 };
 
-export function AssistantTitleBar({ clearHistory, codingAgentProgress, inline, lang, maximized, onClose, onHideWindow, onOpenKnowledge, onOpenTutorial, onToggleMaximize, projectSearchOpen, refreshNews, setThemeMode, setTtsEnabled, showMaximizeToggle, theme: t, themeMode, title, trialReflectEnabled, ttsEnabled, ttsPlaying, toggleProjectSearch }: AssistantTitleBarProps) {
+export function AssistantTitleBar({ clearHistory, codingAgentProgress, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onToggleMaximize, projectSearchOpen, refreshNews, setThemeMode, setTtsEnabled, showMaximizeToggle, theme: t, themeMode, title, trialReflectEnabled, ttsEnabled, ttsPlaying, toggleProjectSearch, updateAvailable }: AssistantTitleBarProps) {
     const toggleTts = () => setTtsEnabled(!ttsEnabled);
     const toggleTheme = () => setThemeMode(themeMode === "dark" ? "light" : "dark");
     const normalizedCodingAgentProgress = codingAgentProgress ? normalizeCodingAgentProgress(codingAgentProgress) : null;
@@ -78,6 +82,7 @@ export function AssistantTitleBar({ clearHistory, codingAgentProgress, inline, l
                 <div data-testid="ai-titlebar-tools-group" style={{ display: "flex", gap: "4px", alignItems: "center", minWidth: 0, paddingTop: 1 }}>
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(() => { void openCurrentTenantCardStore(); }) } : { onClick: () => { void openCurrentTenantCardStore(); } })} style={getTitleBarToolButtonStyle(t)} title={localizeText(lang, "Buy service redemption cards", "\u8d2d\u4e70\u670d\u52a1\u5151\u6362\u5361")}><span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1, transform: "translateY(-0.5px)" }}>{"\u{1F6D2}"}</span></button>
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(toggleProjectSearch) } : { onClick: toggleProjectSearch })} style={getTitleBarToolButtonStyle(t, projectSearchOpen ? "active" : "default")} title={localizeText(lang, "Search tasks", "\u641c\u7d22\u4efb\u52a1")}><span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1, transform: "translateY(-0.5px)" }}>{"\u{1F50D}"}</span></button>
+                    <AssistantUpdateNotice inline={inline} lang={lang} onDismissAppUpdate={onDismissAppUpdate} onOpenAppUpdate={onOpenAppUpdate} theme={t} themeMode={themeMode} updateAvailable={updateAvailable} />
                     <VEAuthorizationRequestCenter theme={t} lang={lang} inline={inline} />
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(toggleTts) } : { onClick: toggleTts })} style={{ ...getTitleBarToolButtonStyle(t, ttsEnabled ? "active" : "default"), position: "relative" }} title={ttsEnabled ? localizeText(lang, "Voice readback ON - click to disable", "\u8bed\u97f3\u64ad\u62a5\u5df2\u5f00\u542f\uff0c\u70b9\u51fb\u5173\u95ed") : localizeText(lang, "Voice readback OFF - click to enable", "\u8bed\u97f3\u64ad\u62a5\u5df2\u5173\u95ed\uff0c\u70b9\u51fb\u5f00\u542f")}><span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1, transform: "translateY(-0.5px)", opacity: ttsPlaying ? 0 : 1, transition: "opacity 150ms" }}>{ttsEnabled ? "\u{1F50A}" : "\u{1F507}"}</span>{ttsPlaying && <TTSLevelBars accentColor={t.headingColor} />}</button>
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(toggleTheme) } : { onClick: toggleTheme })} style={getTitleBarToolButtonStyle(t)} title={themeMode === "dark" ? localizeText(lang, "Switch to light mode", "\u5207\u6362\u5230\u666e\u901a\u6a21\u5f0f") : localizeText(lang, "Switch to dark mode", "\u5207\u6362\u5230\u6697\u9ed1\u6a21\u5f0f")}><span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1, transform: "translateY(-0.5px)" }}>{themeMode === "dark" ? "\u{1F319}" : "\u2600\uFE0F"}</span></button>

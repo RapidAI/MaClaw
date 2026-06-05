@@ -160,7 +160,7 @@ func (h *IMMessageHandler) commitAgentLoopAssistantTurn(opts agentLoopAssistantT
 
 func (h *IMMessageHandler) buildAgentLoopAssistantTurn(ctx *LoopContext, choice llm.Choice) agentLoopAssistantTurn {
 	msgContent := choice.Message.Content
-	msgReasoning := choice.Message.ReasoningContent
+	msgReasoning := stripRolePrefixHallucination(choice.Message.ReasoningContent)
 	if msgContent == "" && msgReasoning != "" {
 		msgContent = msgReasoning
 	}

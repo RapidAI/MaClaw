@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -181,12 +181,12 @@ func (g *GateIntentClassifier) Classify(text string, userID string) GateIntentRe
 			Degraded:   uicResult.Degraded,
 		}
 		if shouldAcceptGateResult(result) {
-			log.Printf("[GateIntentClassifier] classify(%q): UIC delegation intent=%s conf=%.2f layer=%d",
-				text, result.Intent, result.Confidence, result.Layer)
+			log.Printf("[GateIntentClassifier] classify: text_len=%d UIC delegation intent=%s conf=%.2f layer=%d",
+				len([]rune(text)), result.Intent, result.Confidence, result.Layer)
 			return result
 		}
-		log.Printf("[GateIntentClassifier] classify(%q): UIC inconclusive intent=%s conf=%.2f degraded=%v; escalating",
-			text, result.Intent, result.Confidence, result.Degraded)
+		log.Printf("[GateIntentClassifier] classify: text_len=%d UIC inconclusive intent=%s conf=%.2f degraded=%v; escalating",
+			len([]rune(text)), result.Intent, result.Confidence, result.Degraded)
 	}
 
 	// --- Fallback: local semantic pipeline when UIC is nil ---
@@ -195,30 +195,30 @@ func (g *GateIntentClassifier) Classify(text string, userID string) GateIntentRe
 	var hasLayer2 bool
 	if g.Ready() {
 		if result, ok := g.classifyByEmbedding(text); ok {
-			log.Printf("[GateIntentClassifier] classify(%q): layer=2 intent=%s conf=%.2f gap=%.2f reason=%s",
-				text, result.Intent, result.Confidence, result.Gap, result.Reason)
+			log.Printf("[GateIntentClassifier] classify: text_len=%d layer=2 intent=%s conf=%.2f gap=%.2f reason=%s",
+				len([]rune(text)), result.Intent, result.Confidence, result.Gap, result.Reason)
 			logTop2Scores(text, result.AllScores)
 			return result
 		} else if result.Intent.IsKnown() {
 			// Layer 2 returned an ambiguous result; save it for fallback.
 			layer2Result = result
 			hasLayer2 = true
-			log.Printf("[GateIntentClassifier] classify(%q): layer=2 ambiguous intent=%s conf=%.2f gap=%.2f, escalating to layer 3",
-				text, result.Intent, result.Confidence, result.Gap)
+			log.Printf("[GateIntentClassifier] classify: text_len=%d layer=2 ambiguous intent=%s conf=%.2f gap=%.2f, escalating to layer 3",
+				len([]rune(text)), result.Intent, result.Confidence, result.Gap)
 			logTop2Scores(text, result.AllScores)
 		}
 	}
 
 	// Layer 3: LLM refinement for ambiguous cases.
 	if g.llmConfig != nil && g.httpClient != nil {
-		if llmResult, err := g.classifyGateIntentWithLLM(text); err == nil && llmResult.Confidence >= 0.60 {
+		if llmResult, err := g.classifyGateIntentWithLLM(text, userID); err == nil && llmResult.Confidence >= 0.60 {
 			// Log when LLM result overrides Layer 2 result.
 			if hasLayer2 && llmResult.Intent != layer2Result.Intent {
-				log.Printf("[GateIntentClassifier] classify(%q): layer=3 overrides layer=2: semantic=%s(%.2f) -> llm=%s(%.2f)",
-					text, layer2Result.Intent, layer2Result.Confidence, llmResult.Intent, llmResult.Confidence)
+				log.Printf("[GateIntentClassifier] classify: text_len=%d layer=3 overrides layer=2: semantic=%s(%.2f) -> llm=%s(%.2f)",
+					len([]rune(text)), layer2Result.Intent, layer2Result.Confidence, llmResult.Intent, llmResult.Confidence)
 			} else {
-				log.Printf("[GateIntentClassifier] classify(%q): layer=3 intent=%s conf=%.2f reason=%s",
-					text, llmResult.Intent, llmResult.Confidence, llmResult.Reason)
+				log.Printf("[GateIntentClassifier] classify: text_len=%d layer=3 intent=%s conf=%.2f reason=%s",
+					len([]rune(text)), llmResult.Intent, llmResult.Confidence, llmResult.Reason)
 			}
 			return llmResult
 		}
@@ -226,8 +226,8 @@ func (g *GateIntentClassifier) Classify(text string, userID string) GateIntentRe
 
 	// Fall back to Layer 2 result if available and better than baseline.
 	if hasLayer2 && layer2Result.Confidence > 0.30 {
-		log.Printf("[GateIntentClassifier] classify(%q): fallback to layer=2 intent=%s conf=%.2f gap=%.2f",
-			text, layer2Result.Intent, layer2Result.Confidence, layer2Result.Gap)
+		log.Printf("[GateIntentClassifier] classify: text_len=%d fallback to layer=2 intent=%s conf=%.2f gap=%.2f",
+			len([]rune(text)), layer2Result.Intent, layer2Result.Confidence, layer2Result.Gap)
 		return layer2Result
 	}
 
@@ -238,8 +238,8 @@ func (g *GateIntentClassifier) Classify(text string, userID string) GateIntentRe
 		Layer:      1,
 		Reason:     "semantic classifiers unavailable or inconclusive",
 	}
-	log.Printf("[GateIntentClassifier] classify(%q): layer=semantic-unavailable intent=%s conf=%.2f reason=%s",
-		text, result.Intent, result.Confidence, result.Reason)
+	log.Printf("[GateIntentClassifier] classify: text_len=%d layer=semantic-unavailable intent=%s conf=%.2f reason=%s",
+		len([]rune(text)), result.Intent, result.Confidence, result.Reason)
 	return result
 }
 
@@ -352,7 +352,7 @@ func (g *GateIntentClassifier) classifyByEmbedding(text string) (GateIntentResul
 // It sends the user message to the configured LLM with a gate-specific system
 // prompt and parses the structured JSON response. The timeout is long enough
 // for remote LLM routing jitter while still keeping the gate bounded.
-func (g *GateIntentClassifier) classifyGateIntentWithLLM(text string) (GateIntentResult, error) {
+func (g *GateIntentClassifier) classifyGateIntentWithLLM(text, userID string) (GateIntentResult, error) {
 	if g.llmConfig == nil || g.httpClient == nil {
 		return GateIntentResult{}, fmt.Errorf("LLM config or HTTP client not available")
 	}
@@ -369,45 +369,27 @@ func (g *GateIntentClassifier) classifyGateIntentWithLLM(text string) (GateInten
 
 	const gateLLMTimeout = 30 * time.Second
 
-	// Create a child context with the gate timeout. DoSimpleLLMRequest
-	// creates its own internal context, so we wrap the call in a goroutine
-	// and select on our timeout context.
 	ctx, cancel := context.WithTimeout(context.Background(), gateLLMTimeout)
 	defer cancel()
-
-	type llmResult struct {
-		resp *agent.LLMSimpleResponse
-		err  error
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "gate-intent", OwnerID: userID})
+	resp, err := doSimpleLLMRequest(ctx, cfg, messages, g.httpClient, gateLLMTimeout)
+	if err != nil {
+		log.Printf("[GateIntentClassifier] LLM call failed: %v", err)
+		return GateIntentResult{}, fmt.Errorf("LLM call failed: %w", err)
 	}
-	ch := make(chan llmResult, 1)
-	go func() {
-		resp, err := agent.DoSimpleLLMRequest(cfg, messages, g.httpClient, gateLLMTimeout)
-		ch <- llmResult{resp, err}
-	}()
-
-	select {
-	case <-ctx.Done():
-		log.Printf("[GateIntentClassifier] LLM call timed out after %s", gateLLMTimeout)
-		return GateIntentResult{}, fmt.Errorf("LLM call timed out: %w", ctx.Err())
-	case result := <-ch:
-		if result.err != nil {
-			log.Printf("[GateIntentClassifier] LLM call failed: %v", result.err)
-			return GateIntentResult{}, fmt.Errorf("LLM call failed: %w", result.err)
-		}
-		if result.resp == nil || strings.TrimSpace(result.resp.Content) == "" {
-			return GateIntentResult{}, fmt.Errorf("LLM returned empty response")
-		}
-
-		parsed, err := parseGateLLMResponse(result.resp.Content)
-		if err != nil {
-			log.Printf("[GateIntentClassifier] LLM response parse failed: %v (body: %s)", err, result.resp.Content)
-			return GateIntentResult{}, fmt.Errorf("parse LLM response: %w", err)
-		}
-
-		log.Printf("[GateIntentClassifier] LLM result: intent=%s confidence=%.2f reason=%s",
-			parsed.Intent, parsed.Confidence, parsed.Reason)
-		return parsed, nil
+	if resp == nil || strings.TrimSpace(resp.Content) == "" {
+		return GateIntentResult{}, fmt.Errorf("LLM returned empty response")
 	}
+
+	parsed, err := parseGateLLMResponse(resp.Content)
+	if err != nil {
+		log.Printf("[GateIntentClassifier] LLM response parse failed: %v (body_len=%d)", err, len([]rune(resp.Content)))
+		return GateIntentResult{}, fmt.Errorf("parse LLM response: %w", err)
+	}
+
+	log.Printf("[GateIntentClassifier] LLM result: intent=%s confidence=%.2f reason=%s",
+		parsed.Intent, parsed.Confidence, parsed.Reason)
+	return parsed, nil
 }
 
 // parseGateLLMResponse parses the JSON response from the gate classification
@@ -484,8 +466,8 @@ func logTop2Scores(text string, allScores map[GateIntent]float64) {
 			top2Intent = intent
 		}
 	}
-	log.Printf("[GateIntentClassifier] scores(%q): top1=%s(%.3f) top2=%s(%.3f)",
-		text, top1Intent, top1Score, top2Intent, top2Score)
+	log.Printf("[GateIntentClassifier] scores: text_len=%d top1=%s(%.3f) top2=%s(%.3f)",
+		len([]rune(text)), top1Intent, top1Score, top2Intent, top2Score)
 }
 
 // DiagnoseScores returns the full scoring breakdown for all five categories.

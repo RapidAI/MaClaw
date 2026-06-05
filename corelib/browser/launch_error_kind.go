@@ -15,7 +15,7 @@ func classifyBrowserLaunchError(err error) browserLaunchErrorKind {
 	}
 	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "立即退出") || strings.Contains(msg, "绔嬪嵆閫€鍑") || strings.Contains(msg, "exited"):
+	case strings.Contains(msg, "\u7acb\u5373\u9000\u51fa") || strings.Contains(msg, "exited"):
 		return browserLaunchErrorExited
 	default:
 		return browserLaunchErrorUnknown

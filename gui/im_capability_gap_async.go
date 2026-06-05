@@ -14,9 +14,6 @@ func (h *IMMessageHandler) maybeStartAsyncCapabilityGapSearch(ctx *LoopContext, 
 	capturedUserText := userText
 	capturedUserID := userID
 	capturedPlatform := runtimePlatformFromLoopContext(ctx)
-	if capturedPlatform == "" && ctx == nil {
-		capturedPlatform = h.currentRuntimePlatform()
-	}
 	capturedPolicyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
 	go h.runAsyncCapabilityGapSearch(capturedUserText, capturedPlatform, capturedUserID, capturedPolicyOwnerID)
 }

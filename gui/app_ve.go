@@ -1364,15 +1364,12 @@ func (a *App) GetVEAllowedDirectories() ([]string, error) {
 // (the owner may add directories for drives not currently connected — Requirement 2.6).
 // Duplicate paths are silently removed (case-insensitive on Windows, Requirement 1.6).
 func (a *App) SetVEAllowedDirectories(dirs []string) error {
-	// Reload the latest config to avoid overwriting concurrent changes.
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
 	// Backend deduplication: defense-in-depth against bypassed frontend checks
 	// or direct config.json edits. Case-insensitive on Windows, slash-normalized.
-	cfg.VEAllowedDirectories = deduplicateVEDirs(dirs)
-	if err := a.SaveConfig(cfg); err != nil {
+	nextDirs := deduplicateVEDirs(dirs)
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.VEAllowedDirectories = nextDirs
+	}); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
 	return nil
