@@ -22,7 +22,7 @@ describe('aiAssistantProjectTabState', () => {
         expect(loadProjectTabMsgIds().size).toBe(0);
     });
 
-    it('merges chat message groups without duplicate ids', () => {
+    it('merges chat message groups without duplicate ids and keeps latest message data', () => {
         const merged = mergeChatMessages(
             [{ id: 'a', role: 'user', content: 'one' }, { id: 'b', role: 'assistant', content: 'two' }],
             [{ id: 'b', role: 'assistant', content: 'duplicate' }, { id: 'c', role: 'user', content: 'three' }],
@@ -30,6 +30,17 @@ describe('aiAssistantProjectTabState', () => {
         );
 
         expect(merged.map((message) => message.id)).toEqual(['a', 'b', 'c']);
-        expect(merged[1].content).toBe('two');
+        expect(merged[1].content).toBe('duplicate');
+    });
+
+    it('replaces a saved project placeholder with the live final assistant response', () => {
+        const merged = mergeChatMessages(
+            [{ id: 'assistant-1', role: 'assistant', content: '', requestId: 'req-1', sessionKey: 'desktop-user:D:/tasks/weather' }],
+            [{ id: 'assistant-1', role: 'assistant', content: 'weather done', requestId: 'req-1', sessionKey: 'desktop-user:D:/tasks/weather', fields: [{ label: 'status', value: 'ok' }] }],
+        );
+
+        expect(merged).toHaveLength(1);
+        expect(merged[0].content).toBe('weather done');
+        expect(merged[0].fields?.[0]?.value).toBe('ok');
     });
 });

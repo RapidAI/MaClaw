@@ -111,7 +111,7 @@ func TestTriggerMemoryPipelineWaitsForGlobalQuietPeriod(t *testing.T) {
 	app.memPipeline.Stop()
 	app.memPipeline = memory.NewMaintenance(app.memoryStore, nil, nil).Pipeline()
 
-	foregroundAgentLastDoneUnixNano.Store(time.Now().UnixNano())
+	setOwnerQuietPeriodForTest("test-global", time.Now())
 	app.triggerMemoryPipelineSoon(1 * time.Millisecond)
 	time.Sleep(30 * time.Millisecond)
 	_, lastRun, _ := app.memPipeline.Status()
@@ -119,7 +119,7 @@ func TestTriggerMemoryPipelineWaitsForGlobalQuietPeriod(t *testing.T) {
 		t.Fatal("memory pipeline ran during foreground quiet period")
 	}
 
-	foregroundAgentLastDoneUnixNano.Store(time.Now().Add(-foregroundAgentBackgroundQuietPeriod).UnixNano())
+	setOwnerQuietPeriodForTest("test-global", time.Now().Add(-foregroundAgentBackgroundQuietPeriod))
 	app.triggerMemoryPipelineSoon(1 * time.Millisecond)
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {

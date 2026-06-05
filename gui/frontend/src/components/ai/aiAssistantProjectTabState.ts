@@ -15,7 +15,7 @@ export function loadProjectTabMsgIds(): Set<string> {
 
 export function mergeChatMessages(...groups: Array<unknown[] | undefined>): ChatMessage[] {
     const merged: ChatMessage[] = [];
-    const seenIds = new Set<string>();
+    const indexById = new Map<string, number>();
     for (const group of groups) {
         if (!Array.isArray(group)) continue;
         for (const message of group) {
@@ -23,8 +23,12 @@ export function mergeChatMessages(...groups: Array<unknown[] | undefined>): Chat
             const chatMessage = message as ChatMessage;
             const id = typeof chatMessage.id === "string" ? chatMessage.id : "";
             if (id) {
-                if (seenIds.has(id)) continue;
-                seenIds.add(id);
+                const existingIndex = indexById.get(id);
+                if (existingIndex !== undefined) {
+                    merged[existingIndex] = chatMessage;
+                    continue;
+                }
+                indexById.set(id, merged.length);
             }
             merged.push(chatMessage);
         }

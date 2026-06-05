@@ -722,6 +722,47 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         () => Array.isArray(rawStreamingSessionKeys) ? rawStreamingSessionKeys.map(key => String(key || '').trim()).filter(Boolean) : [],
         [rawStreamingSessionKeys],
     );
+    useEffect(() => {
+        if (projectTabRoundsRef.current.size === 0 || !Array.isArray(rawBusySessionKeys)) return;
+        const busySet = new Set(busySessionKeys);
+        let changed = false;
+        for (const [roundKey, round] of Array.from(projectTabRoundsRef.current.entries())) {
+            const roundSessionKey = projectSessionKey(round.projectPath);
+            if (!roundSessionKey || busySet.has(roundSessionKey)) continue;
+            const newMessages = messages.slice(round.baseline).filter((message: ChatMessage) => messageBelongsToSessionOrLegacy(message, roundSessionKey));
+            if (newMessages.length > 0 && round.tabId) {
+                const existingState = getTabState(round.tabId);
+                const nextHistory = mergeChatMessages(existingState?.history, newMessages);
+                saveTabState(round.tabId, {
+                    ...existingState,
+                    history: nextHistory,
+                });
+                if (activeTabIdRef.current === round.tabId) {
+                    setProjectTabMessages(nextHistory);
+                }
+                for (const message of newMessages) {
+                    projectTabMsgIdsRef.current.add(message.id);
+                }
+                persistProjectTabMsgIds();
+            }
+            projectTabRoundsRef.current.delete(roundKey);
+            changed = true;
+            console.info("[AIAssistantPanel] project round session idle", {
+                tabId: round.tabId,
+                projectPath: round.projectPath,
+                sessionKey: roundSessionKey,
+                messageCount: newMessages.length,
+            });
+            logAIPanelDiagnostic({
+                event: "project_round_session_idle",
+                tabId: round.tabId || "",
+                projectPath: round.projectPath,
+                sessionKey: roundSessionKey,
+                messageCount: newMessages.length,
+            });
+        }
+        if (changed) setProjectTabRouteVersion(version => version + 1);
+    }, [busySessionKeys, getTabState, messages, persistProjectTabMsgIds, rawBusySessionKeys, saveTabState]);
     const hasExplicitBusySessionList = Array.isArray(rawBusySessionKeys);
     const hasExplicitStreamingSessionList = Array.isArray(rawStreamingSessionKeys);
     const panelSessionIsSending = panelSendInFlightSessionKeys.has(activeSessionKey);

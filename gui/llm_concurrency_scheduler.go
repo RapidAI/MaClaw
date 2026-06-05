@@ -20,7 +20,13 @@ const (
 )
 
 const (
-	defaultForegroundLLMConcurrency  = 2
+	// defaultForegroundLLMConcurrency is sized to support multiple concurrent
+	// foreground agent loops (one per desktop tab) without serialization. Each
+	// tab may issue up to 2 LLM requests per agent loop iteration (main LLM +
+	// lightweight intent/task-context call), so 4 slots covers 2 concurrent
+	// tabs with headroom. Under API pressure, ObserveResult halves this to the
+	// degraded limit via isForegroundLLMThrottleError.
+	defaultForegroundLLMConcurrency  = 4
 	defaultBackgroundLLMConcurrency  = 1
 	degradedForegroundLLMConcurrency = 1
 	degradedBackgroundLLMConcurrency = 0
@@ -159,6 +165,23 @@ func (s *llmConcurrencyScheduler) Dispatch() {
 	s.mu.Unlock()
 }
 
+// IsDegraded reports whether the scheduler is in fg-degraded mode (foreground
+// slot limit is reduced due to provider pressure). Used by callers that want
+// to preempt background LLM work only when foreground slots are scarce.
+//
+// Note: bgPaused (background slots reduced due to background-only 429) is NOT
+// considered degraded from the foreground perspective — fg slots remain at the
+// default 4, so there is no need to preempt background work.
+func (s *llmConcurrencyScheduler) IsForegroundDegraded() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _, fgDegraded, _ := s.limitsLocked()
+	return fgDegraded
+}
+
 func (s *llmConcurrencyScheduler) CancelActiveBackground(reason string) int {
 	if s == nil {
 		return 0
@@ -222,22 +245,26 @@ func (s *llmConcurrencyScheduler) ObserveResult(trace llm.RequestTrace, err erro
 	now := s.now()
 	until := now.Add(llmSchedulerDegradedCooldown)
 	priority := classifyLLMRequestPriority(trace)
+	throttleForeground := isForegroundLLMThrottleError(err)
 	s.mu.Lock()
-	if priority == llmPriorityBackground {
+	changed := false
+	if priority == llmPriorityBackground || !throttleForeground {
 		if until.After(s.bgPausedUntil) {
 			s.bgPausedUntil = until
+			changed = true
 		}
 	} else if until.After(s.degradedUntil) {
 		s.degradedUntil = until
+		changed = true
 	}
-	if until.After(s.degradedUntil) || until.After(s.bgPausedUntil) {
+	if changed {
 		s.scheduleRecoveryWakeLocked(now)
 	}
 	fgDegradedFor := s.degradedUntil.Sub(now)
 	bgPausedFor := s.bgPausedUntil.Sub(now)
 	s.dispatchLocked()
 	s.mu.Unlock()
-	log.Printf("[llm-scheduler] pressure priority=%s caller=%q owner=%q request_id=%q loop=%q iteration=%d fg_cooldown=%s bg_pause=%s err=%v", priority, trace.Caller, trace.OwnerID, trace.RequestID, trace.LoopID, trace.Iteration, nonNegativeDuration(fgDegradedFor).Round(time.Second), nonNegativeDuration(bgPausedFor).Round(time.Second), err)
+	log.Printf("[llm-scheduler] pressure priority=%s caller=%q owner=%q request_id=%q loop=%q iteration=%d throttle_foreground=%v fg_cooldown=%s bg_pause=%s err=%v", priority, trace.Caller, trace.OwnerID, trace.RequestID, trace.LoopID, trace.Iteration, throttleForeground, nonNegativeDuration(fgDegradedFor).Round(time.Second), nonNegativeDuration(bgPausedFor).Round(time.Second), err)
 }
 
 func (s *llmConcurrencyScheduler) dispatchLocked() {
@@ -294,7 +321,21 @@ func (s *llmConcurrencyScheduler) nextDispatchIndexLocked() int {
 			}
 		}
 	}
-	if bgLimit > 0 && s.activeFG == 0 && s.foregroundWorkLocked() == 0 && s.activeBG < bgLimit && !s.hasQueuedForegroundLocked() {
+	// Background LLM requests may run only when:
+	//   - no active foreground LLM request (activeFG == 0): avoids API pressure
+	//     from BG competing with in-flight FG calls
+	//   - no foreground LLM request queued: FG gets strict priority
+	//   - within the bg slot limit and not degraded/paused
+	//
+	// NOTE: we deliberately do NOT check foregroundWorkLocked() here. The
+	// global foreground-agent-work counter tracks which desktop tabs have an
+	// active agent loop, not whether a LLM request is in-flight. Blocking BG
+	// LLM on foregroundWork > 0 would starve background processing (memory
+	// extraction, knowledge archival) whenever ANY tab is running, which in
+	// a multi-tab session means background tasks never run. The activeFG == 0
+	// guard is sufficient: it ensures BG slots are only filled when no FG LLM
+	// request is competing for bandwidth right now.
+	if bgLimit > 0 && s.activeFG == 0 && s.activeBG < bgLimit && !s.hasQueuedForegroundLocked() {
 		for i, waiter := range s.queue {
 			if waiter.priority == llmPriorityBackground {
 				return i
@@ -308,6 +349,8 @@ func (s *llmConcurrencyScheduler) foregroundWorkLocked() int64 {
 	if s == nil || s.foregroundWork == nil {
 		return 0
 	}
+	// Used only for diagnostic logging (logWaitStill). Not part of dispatch
+	// decisions — see nextDispatchIndexLocked for the rationale.
 	return s.foregroundWork()
 }
 
@@ -431,4 +474,20 @@ func isProviderPressureLLMError(err error) bool {
 		strings.Contains(s, "overloaded") ||
 		strings.Contains(s, "service unavailable") ||
 		strings.Contains(s, "gateway timeout")
+}
+
+func isForegroundLLMThrottleError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var httpErr *llm.HTTPStatusError
+	if errors.As(err, &httpErr) && httpErr != nil {
+		return httpErr.StatusCode == http.StatusTooManyRequests
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "http 429") ||
+		strings.Contains(s, "too many requests") ||
+		strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "rate_limit") ||
+		strings.Contains(s, "overloaded")
 }

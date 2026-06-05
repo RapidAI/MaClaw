@@ -59,20 +59,47 @@ func TestLLMConcurrencySchedulerBlocksBackgroundWhileForegroundActive(t *testing
 	}
 }
 
-func TestLLMConcurrencySchedulerBlocksBackgroundWhileForegroundAgentWorkActive(t *testing.T) {
+func TestLLMConcurrencySchedulerIsForegroundDegradedOnlyOnThrottleErrors(t *testing.T) {
+	// 429/overloaded → fg degraded
 	s := newLLMConcurrencyScheduler()
-	s.foregroundWork = func() int64 { return 1 }
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if _, err := s.Acquire(ctx, llm.RequestTrace{Caller: "memory-maintenance"}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("background acquire err = %v, want deadline while foreground agent work active", err)
+	s.foregroundWork = func() int64 { return 0 }
+	if s.IsForegroundDegraded() {
+		t.Fatal("should not be degraded initially")
 	}
+	s.ObserveResult(llm.RequestTrace{Caller: "agent_loop", OwnerID: "owner-a"}, errors.New("HTTP 429 too many requests"))
+	if !s.IsForegroundDegraded() {
+		t.Fatal("should be fg-degraded after 429 on foreground caller")
+	}
+
+	// 503 on background caller → only bg paused, NOT fg degraded
+	s2 := newLLMConcurrencyScheduler()
+	s2.foregroundWork = func() int64 { return 0 }
+	s2.ObserveResult(llm.RequestTrace{Caller: "memory-maintenance"}, errors.New("HTTP 503 service unavailable"))
+	if s2.IsForegroundDegraded() {
+		t.Fatal("bg-only 503 should not cause fg degraded mode")
+	}
+}
+
+func TestLLMConcurrencySchedulerBackgroundRunsWhenForegroundAgentIdleNoLLMActive(t *testing.T) {
+	// foregroundWork > 0 (a tab has an active agent loop) but no foreground LLM
+	// request is in-flight. Background LLM should be dispatched immediately.
+	// Previously this was incorrectly blocked; the agent-loop activity counter
+	// must not gate LLM slot dispatch — only in-flight LLM slot usage matters.
+	s := newLLMConcurrencyScheduler()
+	s.foregroundWork = func() int64 { return 1 } // agent loop active, but no LLM in-flight
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	lease, err := s.Acquire(ctx, llm.RequestTrace{Caller: "memory-maintenance"})
+	if err != nil {
+		t.Fatalf("background LLM should not be blocked by foreground agent work alone: %v", err)
+	}
+	lease.Release()
 }
 
 func TestLLMConcurrencySchedulerDegradedLimitsForegroundToOne(t *testing.T) {
 	s := newLLMConcurrencyScheduler()
 	s.foregroundWork = func() int64 { return 0 }
-	s.ObserveResult(llm.RequestTrace{Caller: "agent_loop", OwnerID: "desktop-user"}, errors.New("HTTP 503 service unavailable"))
+	s.ObserveResult(llm.RequestTrace{Caller: "agent_loop", OwnerID: "desktop-user"}, errors.New("HTTP 429 too many requests"))
 
 	first, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "agent_loop", OwnerID: "desktop-user"})
 	if err != nil {
@@ -113,7 +140,7 @@ func TestLLMConcurrencySchedulerBackgroundPressurePausesOnlyBackground(t *testin
 func TestLLMConcurrencySchedulerForegroundPressureStillLimitsForeground(t *testing.T) {
 	s := newLLMConcurrencyScheduler()
 	s.foregroundWork = func() int64 { return 0 }
-	s.ObserveResult(llm.RequestTrace{Caller: "agent_loop", OwnerID: "owner-a"}, errors.New("HTTP 503 service unavailable"))
+	s.ObserveResult(llm.RequestTrace{Caller: "agent_loop", OwnerID: "owner-a"}, errors.New("HTTP 429 too many requests"))
 
 	first, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "agent_loop", OwnerID: "owner-a"})
 	if err != nil {
@@ -125,6 +152,29 @@ func TestLLMConcurrencySchedulerForegroundPressureStillLimitsForeground(t *testi
 	defer cancel()
 	if _, err := s.Acquire(ctx, llm.RequestTrace{Caller: "agent_loop", OwnerID: "owner-b"}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("second foreground acquire err = %v, want deadline", err)
+	}
+}
+
+func TestLLMConcurrencySchedulerForegroundServiceUnavailablePausesOnlyBackground(t *testing.T) {
+	s := newLLMConcurrencyScheduler()
+	s.foregroundWork = func() int64 { return 0 }
+	s.ObserveResult(llm.RequestTrace{Caller: "task-context", OwnerID: "owner-a"}, errors.New("HTTP 503 service unavailable"))
+
+	first, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "agent_loop", OwnerID: "owner-a"})
+	if err != nil {
+		t.Fatalf("first foreground acquire: %v", err)
+	}
+	defer first.Release()
+	second, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "agent_loop", OwnerID: "owner-b"})
+	if err != nil {
+		t.Fatalf("second foreground acquire should not be limited by HTTP 503: %v", err)
+	}
+	defer second.Release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := s.Acquire(ctx, llm.RequestTrace{Caller: "memory-maintenance"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("background acquire err = %v, want deadline while background paused", err)
 	}
 }
 
@@ -143,6 +193,21 @@ func TestProviderPressureDoesNotTreatLocalDeadlineAsCapacityPressure(t *testing.
 		if !isProviderPressureLLMError(err) {
 			t.Fatalf("%v should be provider pressure", err)
 		}
+	}
+}
+
+func TestForegroundThrottleErrorClassification(t *testing.T) {
+	if !isForegroundLLMThrottleError(errors.New("HTTP 429: too many requests")) {
+		t.Fatal("HTTP 429 should throttle foreground concurrency")
+	}
+	if !isForegroundLLMThrottleError(errors.New("server overloaded")) {
+		t.Fatal("overloaded should throttle foreground concurrency")
+	}
+	if isForegroundLLMThrottleError(errors.New("HTTP 503: service unavailable")) {
+		t.Fatal("HTTP 503 should pause background only, not serialize foreground agents")
+	}
+	if isForegroundLLMThrottleError(errors.New("HTTP 504: gateway timeout")) {
+		t.Fatal("HTTP 504 should pause background only, not serialize foreground agents")
 	}
 }
 
@@ -195,6 +260,100 @@ func TestLLMConcurrencySchedulerQueuedForegroundBeatsBackground(t *testing.T) {
 		(<-bgRelease)()
 	case <-time.After(time.Second):
 		t.Fatal("background did not dispatch after foreground drained")
+	}
+}
+
+func TestLLMConcurrencySchedulerFourForegroundTabsCanRunConcurrently(t *testing.T) {
+	// The slot limit was raised from 2→4 to support multiple desktop tabs.
+	// Verify that 4 FG requests all acquire slots immediately (no blocking),
+	// and the 5th must wait.
+	s := newLLMConcurrencyScheduler()
+	s.foregroundWork = func() int64 { return 0 }
+
+	leases := make([]*llmSchedulerLease, 4)
+	for i := range leases {
+		lease, err := s.Acquire(context.Background(), llm.RequestTrace{
+			Caller:  "agent_loop",
+			OwnerID: "tab-" + string(rune('a'+i)),
+		})
+		if err != nil {
+			t.Fatalf("tab-%c acquire err = %v, all 4 tabs should get slots immediately", 'a'+i, err)
+		}
+		leases[i] = lease
+	}
+
+	// 5th request must wait.
+	ctx5, cancel5 := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel5()
+	if _, err := s.Acquire(ctx5, llm.RequestTrace{Caller: "agent_loop", OwnerID: "tab-e"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("5th foreground acquire should block when all 4 slots are occupied")
+	}
+
+	for _, l := range leases {
+		l.Release()
+	}
+}
+
+func TestLLMConcurrencySchedulerBackgroundDispatchedWhenNoFGInFlight(t *testing.T) {
+	// Core new behavior: BG runs when activeFG == 0, regardless of foregroundWork.
+	// This is the scenario that was previously broken: agent loop active in tab
+	// but between LLM calls (no in-flight FG LLM).
+	s := newLLMConcurrencyScheduler()
+	s.foregroundWork = func() int64 { return 2 } // two agent loops active, no LLM in-flight
+
+	bgGot := make(chan struct{})
+	go func() {
+		lease, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "memory-maintenance"})
+		if err == nil {
+			close(bgGot)
+			lease.Release()
+		}
+	}()
+
+	select {
+	case <-bgGot:
+		// correct: BG runs even though foregroundWork > 0
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("background LLM was blocked by agent-loop activity counter (no FG LLM in-flight)")
+	}
+}
+
+func TestLLMConcurrencySchedulerBGPreemptedWhenFGEnqueuesAfterBGDispatched(t *testing.T) {
+	// BG gets dispatched (activeFG==0, no queued FG). Then a FG request arrives
+	// and preempts the active BG via cancel. After BG releases, FG gets the slot.
+	s := newLLMConcurrencyScheduler()
+	s.foregroundWork = func() int64 { return 0 }
+
+	bg, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "memory-maintenance"})
+	if err != nil {
+		t.Fatalf("bg acquire: %v", err)
+	}
+	bgCancelled := make(chan struct{}, 1)
+	bg.SetCancel(func() { close(bgCancelled) })
+
+	// FG arrives after BG is active — should preempt BG.
+	fgReady := make(chan *llmSchedulerLease, 1)
+	go func() {
+		l, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "agent_loop", OwnerID: "tab-a"})
+		if err == nil {
+			fgReady <- l
+		}
+	}()
+
+	select {
+	case <-bgCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("FG did not preempt active BG")
+	}
+
+	// BG releases its slot (cancel was called, simulating HTTP abort completing).
+	bg.Release()
+
+	select {
+	case l := <-fgReady:
+		l.Release()
+	case <-time.After(time.Second):
+		t.Fatal("FG was not dispatched after BG released")
 	}
 }
 

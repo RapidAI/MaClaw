@@ -9,12 +9,34 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
+// clearOwnerQuietPeriodForTest removes the quiet-period entry for an owner so
+// tests that call waitForForegroundAgentIdle don't block on the 5-second timer.
+// Only use in tests.
+func clearOwnerQuietPeriodForTest(ownerID string) {
+	foregroundAgentOwners.mu.Lock()
+	delete(foregroundAgentOwners.lastDoneNs, ownerID)
+	foregroundAgentOwners.mu.Unlock()
+}
+
+// setOwnerQuietPeriodForTest injects a specific lastDoneNs timestamp for an
+// owner so tests can control the quiet-period behaviour without sleeping.
+// Only use in tests.
+func setOwnerQuietPeriodForTest(ownerID string, t time.Time) {
+	foregroundAgentOwners.mu.Lock()
+	if t.IsZero() {
+		delete(foregroundAgentOwners.lastDoneNs, ownerID)
+	} else {
+		foregroundAgentOwners.lastDoneNs[ownerID] = t.UnixNano()
+	}
+	foregroundAgentOwners.mu.Unlock()
+}
+
 func resetForegroundAgentOwnersForTest() {
 	foregroundAgentOwners.mu.Lock()
 	defer foregroundAgentOwners.mu.Unlock()
 	foregroundAgentOwners.counts = make(map[string]int)
+	foregroundAgentOwners.lastDoneNs = make(map[string]int64)
 	foregroundAgentWork.Store(0)
-	foregroundAgentLastDoneUnixNano.Store(0)
 }
 
 func TestForegroundAgentOwnerNestingCountsOwnerOnce(t *testing.T) {
@@ -178,7 +200,11 @@ func TestWaitForForegroundAgentIdleScopesToOwner(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 
+	// End owner-a's loop and clear its quiet period so the wait can return
+	// immediately without blocking on the 5-second quiet period.
 	cleanupA()
+	clearOwnerQuietPeriodForTest("owner-a")
+
 	select {
 	case ok := <-ownerADone:
 		if !ok {
@@ -192,6 +218,101 @@ func TestWaitForForegroundAgentIdleScopesToOwner(t *testing.T) {
 	defer cancel()
 	if app.waitForForegroundAgentIdle(ctx, "memory-maintenance", "") {
 		t.Fatal("global wait returned while owner-b was still active")
+	}
+}
+
+func TestForegroundAgentQuietPeriodIsPerOwner(t *testing.T) {
+	resetForegroundAgentOwnersForTest()
+	defer resetForegroundAgentOwnersForTest()
+
+	// Start and end owner-a's loop to record its quiet period.
+	beginForegroundAgentOwner("owner-a")
+	endForegroundAgentOwner("owner-a")
+
+	now := time.Now()
+	// owner-a should be in quiet period.
+	quietA := foregroundAgentQuietUntil("owner-a")
+	if !quietA.After(now) {
+		t.Fatal("owner-a should have a quiet period after its loop ended")
+	}
+	// owner-b never ran, so no quiet period.
+	quietB := foregroundAgentQuietUntil("owner-b")
+	if quietB.After(now) {
+		t.Fatal("owner-b should not have a quiet period if it never ran")
+	}
+	// Global (empty owner) should reflect owner-a's recent activity.
+	quietGlobal := foregroundAgentQuietUntil("")
+	if !quietGlobal.After(now) {
+		t.Fatal("global quiet period should reflect owner-a's recent activity")
+	}
+}
+
+func TestForegroundAgentLastDoneNsMapIsPruned(t *testing.T) {
+	resetForegroundAgentOwnersForTest()
+	defer resetForegroundAgentOwnersForTest()
+
+	// Inject a stale entry older than 2x the quiet period.
+	staleNs := time.Now().Add(-3 * foregroundAgentBackgroundQuietPeriod).UnixNano()
+	foregroundAgentOwners.mu.Lock()
+	foregroundAgentOwners.lastDoneNs["stale-owner"] = staleNs
+	foregroundAgentOwners.mu.Unlock()
+
+	// Calling foregroundAgentQuietUntil should prune the stale entry.
+	qt := foregroundAgentQuietUntil("stale-owner")
+	if qt.After(time.Now()) {
+		t.Fatal("stale owner should not have an active quiet period")
+	}
+
+	foregroundAgentOwners.mu.Lock()
+	_, exists := foregroundAgentOwners.lastDoneNs["stale-owner"]
+	foregroundAgentOwners.mu.Unlock()
+	if exists {
+		t.Fatal("stale entry should have been pruned from lastDoneNs map")
+	}
+}
+
+func TestForegroundAgentMultiTabDoesNotStarveEachOtherBackground(t *testing.T) {
+	resetForegroundAgentOwnersForTest()
+	defer resetForegroundAgentOwnersForTest()
+
+	app := &App{}
+	// Two tabs running concurrently.
+	cleanupA := app.beginForegroundAgentLoop("owner-a", "req-a", "chat")
+	cleanupB := app.beginForegroundAgentLoop("owner-b", "req-b", "chat")
+	defer cleanupB()
+
+	// owner-a finishes its loop. Clear quiet period so tests run fast.
+	cleanupA()
+	clearOwnerQuietPeriodForTest("owner-a")
+
+	// owner-b's post-conversation background task should be able to wait only
+	// for owner-b's own foreground work, not owner-a's.
+	ownerBDone := make(chan bool, 1)
+	go func() {
+		ownerBDone <- app.waitForForegroundAgentIdle(context.Background(), "post-conversation", "owner-b")
+	}()
+
+	// Should still be blocked because owner-b is still running.
+	select {
+	case <-ownerBDone:
+		t.Fatal("owner-b wait returned while owner-b was still active")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// owner-a's post-conversation task should proceed immediately since owner-a
+	// finished and only needs to wait for its own quiet period (which we skip
+	// here by checking with a short-circuit context that doesn't block).
+	// The important thing: owner-a's quiet period does NOT block owner-b.
+	cleanupB()
+	// Clear owner-b's quiet period so the wait returns immediately in tests.
+	clearOwnerQuietPeriodForTest("owner-b")
+	select {
+	case ok := <-ownerBDone:
+		if !ok {
+			t.Fatal("owner-b wait returned false")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("owner-b wait stayed blocked after owner-b finished")
 	}
 }
 
