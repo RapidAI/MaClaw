@@ -83,6 +83,10 @@ type veOwnerLookup interface {
 	GetByID(ctx context.Context, id string) (*store.User, error)
 }
 
+type veMachineLookup interface {
+	GetByID(ctx context.Context, id string) (*store.Machine, error)
+}
+
 type veMachineEventSender interface {
 	SendToMachine(machineID string, msg any) error
 }
@@ -96,8 +100,127 @@ type veVisibilityResolver interface {
 }
 
 type veHistorySearchMatch struct {
-	Employee    digitalEmployeeEntry              `json:"employee"`
-	Discussions []coreliba2a.HubDiscussionSummary `json:"discussions"`
+	Employee    digitalEmployeeEntry         `json:"employee"`
+	Discussions []veHistoryDiscussionSummary `json:"discussions"`
+}
+
+type veHistoryDiscussionSummary struct {
+	coreliba2a.HubDiscussionSummary
+	CounterpartEmails []string `json:"counterpart_emails,omitempty"`
+}
+
+type veHistoryEmailResolver struct {
+	ctx           context.Context
+	tenantID      string
+	ownerLookup   veOwnerLookup
+	machineLookup veMachineLookup
+	machineEmails map[string]string
+	userEmails    map[string]string
+}
+
+func newVEHistoryEmailResolver(ctx context.Context, tenantID string, ownerLookup veOwnerLookup, machineLookup veMachineLookup) *veHistoryEmailResolver {
+	return &veHistoryEmailResolver{
+		ctx:           ctx,
+		tenantID:      tenantID,
+		ownerLookup:   ownerLookup,
+		machineLookup: machineLookup,
+		machineEmails: make(map[string]string),
+		userEmails:    make(map[string]string),
+	}
+}
+
+func decorateVEHistorySummaries(ctx context.Context, tenantID string, items []coreliba2a.HubDiscussionSummary, employee digitalEmployeeEntry, ownerLookup veOwnerLookup, machineLookup veMachineLookup) []veHistoryDiscussionSummary {
+	resolver := newVEHistoryEmailResolver(ctx, tenantID, ownerLookup, machineLookup)
+	out := make([]veHistoryDiscussionSummary, 0, len(items))
+	for _, item := range items {
+		out = append(out, veHistoryDiscussionSummary{
+			HubDiscussionSummary: item,
+			CounterpartEmails:    resolver.counterpartEmails(item.ParticipantIDs, employee),
+		})
+	}
+	return out
+}
+
+func (r *veHistoryEmailResolver) counterpartEmails(participantIDs []string, employee digitalEmployeeEntry) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 1)
+	for _, participantID := range participantIDs {
+		id := strings.TrimSpace(participantID)
+		if id == "" || veHistoryParticipantIsEmployee(id, employee) {
+			continue
+		}
+		email := r.participantEmail(id)
+		if email == "" {
+			email = id
+		}
+		key := strings.ToLower(email)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, email)
+	}
+	return out
+}
+
+func (r *veHistoryEmailResolver) participantEmail(participantID string) string {
+	if strings.Contains(participantID, "@") {
+		return participantID
+	}
+	if r == nil || r.machineLookup == nil || r.ownerLookup == nil {
+		return ""
+	}
+	machineKey := strings.ToLower(participantID)
+	if email, ok := r.machineEmails[machineKey]; ok {
+		return email
+	}
+	machine, err := r.machineLookup.GetByID(r.ctx, participantID)
+	if err != nil || machine == nil {
+		r.machineEmails[machineKey] = ""
+		return ""
+	}
+	if r.tenantID != "" && strings.TrimSpace(machine.TenantID) != "" && !strings.EqualFold(strings.TrimSpace(machine.TenantID), r.tenantID) {
+		r.machineEmails[machineKey] = ""
+		return ""
+	}
+	userID := strings.TrimSpace(machine.UserID)
+	if userID == "" {
+		r.machineEmails[machineKey] = ""
+		return ""
+	}
+	userKey := strings.ToLower(userID)
+	email, ok := r.userEmails[userKey]
+	if !ok {
+		user, err := r.ownerLookup.GetByID(r.ctx, userID)
+		if err != nil || user == nil || (r.tenantID != "" && strings.TrimSpace(user.TenantID) != "" && !strings.EqualFold(strings.TrimSpace(user.TenantID), r.tenantID)) {
+			email = ""
+		} else {
+			email = strings.TrimSpace(user.Email)
+		}
+		r.userEmails[userKey] = email
+	}
+	r.machineEmails[machineKey] = email
+	return email
+}
+
+func veHistoryParticipantIsEmployee(participantID string, employee digitalEmployeeEntry) bool {
+	for _, id := range []string{employee.ID, employee.MachineID, employee.PlatformEmployeeID} {
+		if groupDiscussionParticipantIdentityMatches(participantID, id) {
+			return true
+		}
+	}
+	return false
+}
+
+func veHistoryEmployeeForParticipants(registry digitalEmployeeRegistry, participantIDs []string) digitalEmployeeEntry {
+	for _, participantID := range participantIDs {
+		for _, employee := range registry.Employees {
+			if veHistoryParticipantIsEmployee(participantID, employee) {
+				return employee
+			}
+		}
+	}
+	return digitalEmployeeEntry{}
 }
 
 const (
@@ -1055,7 +1178,7 @@ func platformEmployeeCallbackHubStatus(action, status string) string {
 }
 
 // VEHistorySearchHandler handles GET /api/ve/history/search for admin review.
-func VEHistorySearchHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, ownerLookups ...veOwnerLookup) http.HandlerFunc {
+func VEHistorySearchHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, ownerLookup veOwnerLookup, machineLookups ...veMachineLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		system := veSystemSettingsForRequest(r, system)
 		if r.Method != http.MethodGet {
@@ -1068,7 +1191,7 @@ func VEHistorySearchHandler(system store.SystemSettingsRepository, groupSvc *Gro
 		}
 		query := strings.TrimSpace(r.URL.Query().Get("q"))
 		if query == "" {
-			writeJSON(w, http.StatusOK, map[string]any{"query": query, "matches": []veHistorySearchMatch{}, "discussions": []coreliba2a.HubDiscussionSummary{}})
+			writeJSON(w, http.StatusOK, map[string]any{"query": query, "matches": []veHistorySearchMatch{}, "discussions": []veHistoryDiscussionSummary{}})
 			return
 		}
 		limit := intQuery(r.URL.Query(), "limit")
@@ -1076,21 +1199,24 @@ func VEHistorySearchHandler(system store.SystemSettingsRepository, groupSvc *Gro
 			limit = 20
 		}
 		registry := loadVERegistry(r.Context(), system)
-		enrichVERegistryOwners(r.Context(), &registry, firstVEOwnerLookup(ownerLookups...))
+		enrichVERegistryOwners(r.Context(), &registry, ownerLookup)
 		matches := make([]veHistorySearchMatch, 0)
-		flattened := make([]coreliba2a.HubDiscussionSummary, 0)
+		flattened := make([]veHistoryDiscussionSummary, 0)
 		seenDiscussions := make(map[string]bool)
+		machineLookup := firstVEMachineLookup(machineLookups...)
+		tenantID := requestGroupDiscussionTenantID(r)
 		for _, employee := range registry.Employees {
 			if !veEmployeeMatchesQuery(employee, query) {
 				continue
 			}
-			items, err := groupSvc.ListDiscussionSummaries(requestGroupDiscussionTenantID(r), ListSessionsFilter{ParticipantID: employee.MachineID, Limit: limit})
+			items, err := groupSvc.ListDiscussionSummaries(tenantID, ListSessionsFilter{ParticipantID: employee.MachineID, Limit: limit})
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 				return
 			}
-			matches = append(matches, veHistorySearchMatch{Employee: employee, Discussions: items})
-			for _, item := range items {
+			decorated := decorateVEHistorySummaries(r.Context(), tenantID, items, employee, ownerLookup, machineLookup)
+			matches = append(matches, veHistorySearchMatch{Employee: employee, Discussions: decorated})
+			for _, item := range decorated {
 				if item.ID != "" {
 					if seenDiscussions[item.ID] {
 						continue
@@ -1109,7 +1235,7 @@ func VEHistorySearchHandler(system store.SystemSettingsRepository, groupSvc *Gro
 }
 
 // VEHistoryHandler handles GET /api/ve/{id}/history for admin review.
-func VEHistoryHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, ownerLookups ...veOwnerLookup) http.HandlerFunc {
+func VEHistoryHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, ownerLookup veOwnerLookup, machineLookups ...veMachineLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		system := veSystemSettingsForRequest(r, system)
 		if r.Method != http.MethodGet {
@@ -1122,7 +1248,7 @@ func VEHistoryHandler(system store.SystemSettingsRepository, groupSvc *GroupDisc
 		}
 		veID := strings.TrimSpace(r.PathValue("id"))
 		registry := loadVERegistry(r.Context(), system)
-		enrichVERegistryOwners(r.Context(), &registry, firstVEOwnerLookup(ownerLookups...))
+		enrichVERegistryOwners(r.Context(), &registry, ownerLookup)
 		idx := registry.findByIDOrMachineIDOrPlatformEmployeeID(veID)
 		if idx < 0 {
 			writeError(w, http.StatusNotFound, "VE_NOT_FOUND", "digital employee not found")
@@ -1133,18 +1259,20 @@ func VEHistoryHandler(system store.SystemSettingsRepository, groupSvc *GroupDisc
 		if limit <= 0 || limit > 50 {
 			limit = 20
 		}
-		items, err := groupSvc.ListDiscussionSummaries(requestGroupDiscussionTenantID(r), ListSessionsFilter{ParticipantID: employee.MachineID, Limit: limit})
+		tenantID := requestGroupDiscussionTenantID(r)
+		items, err := groupSvc.ListDiscussionSummaries(tenantID, ListSessionsFilter{ParticipantID: employee.MachineID, Limit: limit})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"employee": employee, "discussions": items})
+		writeJSON(w, http.StatusOK, map[string]any{"employee": employee, "discussions": decorateVEHistorySummaries(r.Context(), tenantID, items, employee, ownerLookup, firstVEMachineLookup(machineLookups...))})
 	}
 }
 
 // VEHistoryDetailHandler handles GET /api/ve/history/{id}/detail for admin preview.
-func VEHistoryDetailHandler(groupSvc *GroupDiscussionService) http.HandlerFunc {
+func VEHistoryDetailHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, ownerLookup veOwnerLookup, machineLookups ...veMachineLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := veSystemSettingsForRequest(r, system)
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 			return
@@ -1163,7 +1291,23 @@ func VEHistoryDetailHandler(groupSvc *GroupDiscussionService) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "DISCUSSION_NOT_FOUND", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, detail)
+		registry := loadVERegistry(r.Context(), system)
+		enrichVERegistryOwners(r.Context(), &registry, ownerLookup)
+		employee := veHistoryEmployeeForParticipants(registry, detail.Discussion.ParticipantIDs)
+		resolver := newVEHistoryEmailResolver(r.Context(), requestGroupDiscussionTenantID(r), ownerLookup, firstVEMachineLookup(machineLookups...))
+		discussion := veHistoryDiscussionSummary{
+			HubDiscussionSummary: detail.Discussion,
+			CounterpartEmails:    resolver.counterpartEmails(detail.Discussion.ParticipantIDs, employee),
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"discussion":       discussion,
+			"session":          detail.Session,
+			"messages":         detail.Messages,
+			"proposals":        detail.Proposals,
+			"reviews":          detail.Reviews,
+			"review_summaries": detail.ReviewSummaries,
+			"decision":         detail.Decision,
+		})
 	}
 }
 
@@ -1444,6 +1588,15 @@ func veEmployeeMatchesQuery(employee digitalEmployeeEntry, query string) bool {
 
 func firstVEOwnerLookup(ownerLookups ...veOwnerLookup) veOwnerLookup {
 	for _, lookup := range ownerLookups {
+		if lookup != nil {
+			return lookup
+		}
+	}
+	return nil
+}
+
+func firstVEMachineLookup(machineLookups ...veMachineLookup) veMachineLookup {
+	for _, lookup := range machineLookups {
 		if lookup != nil {
 			return lookup
 		}

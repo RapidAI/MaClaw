@@ -87,6 +87,7 @@
       previewLoadFailed: 'Load preview failed: {error}',
       messages: 'Messages',
       participants: 'Participants',
+      counterpartEmail: 'Counterpart Email',
       close: 'Close',
       loading: 'Loading...',
       searchNoMatch: 'No matching digital employees.',
@@ -171,6 +172,7 @@
       previewLoadFailed: '\u52a0\u8f7d\u9884\u89c8\u5931\u8d25\uff1a{error}',
       messages: '\u6d88\u606f',
       participants: '\u53c2\u4e0e\u8005',
+      counterpartEmail: '\u4ea4\u8c08\u5bf9\u65b9\u90ae\u7bb1',
       close: '\u5173\u95ed',
       loading: '\u52a0\u8f7d\u4e2d...',
       searchNoMatch: '\u672a\u627e\u5230\u5339\u914d\u7684\u6570\u5b57\u5458\u5de5\u3002',
@@ -281,14 +283,35 @@
     return truncate(String(value || '').replace(/\s+/g, ' ').trim(), maxLen);
   }
 
+  function historyCounterpartText(discussion) {
+    var emails = Array.isArray(discussion && discussion.counterpart_emails) ? discussion.counterpart_emails : [];
+    return emails.length ? emails.join(', ') : '-';
+  }
+
   function veEmployeeLabel(ve) {
     if (!ve) return '';
     var owner = ve.owner_email || ve.owner_user_id || '';
     return (ve.name || ve.id || '') + (owner ? ' / ' + owner : '');
   }
 
+  function veInitials(ve) {
+    var name = String((ve && (ve.name || ve.id)) || '').trim();
+    if (!name) return '?';
+    return (Array.from(name)[0] || '?').toUpperCase();
+  }
+
+  function renderVEAvatar(ve) {
+    var avatar = String((ve && ve.avatar_data_url) || '').trim();
+    var fallback = '<span class="ve-avatar-fallback">' + escapeHtml(veInitials(ve)) + '</span>';
+    if (!avatar) return '<span class="ve-avatar" aria-hidden="true">' + fallback + '</span>';
+    return '<span class="ve-avatar" aria-hidden="true">' +
+      '<img src="' + escapeHtml(avatar) + '" alt="" loading="lazy" decoding="async" onerror="this.hidden=true;this.nextElementSibling.hidden=false">' +
+      '<span class="ve-avatar-fallback" hidden>' + escapeHtml(veInitials(ve)) + '</span>' +
+      '</span>';
+  }
+
   function veListGridTemplate() {
-    return 'var(--ve-list-grid,minmax(110px,1fr) minmax(90px,.8fr) minmax(150px,1.15fr) minmax(150px,1fr) minmax(78px,.7fr) minmax(110px,.8fr) minmax(68px,.55fr) minmax(78px,.7fr) minmax(130px,.9fr) minmax(132px,1fr))';
+    return 'var(--ve-list-grid,minmax(150px,.95fr) minmax(92px,.65fr) minmax(150px,1fr) minmax(150px,.9fr) minmax(76px,.55fr) minmax(108px,.72fr) minmax(64px,.5fr) minmax(74px,.55fr) minmax(122px,.75fr) minmax(260px,1.45fr))';
   }
 
   function flattenSecurityGroupTree(node, depth, out, options) {
@@ -363,7 +386,7 @@
     var ownerText = ve.owner_email || ve.owner_user_id || '';
     var visibleText = formatVisibleDepartments(ve);
     return '<div class="row" style="grid-template-columns:' + veListGridTemplate() + '">' +
-      '<div><strong>' + escapeHtml(truncate(ve.name || '', 50)) + '</strong></div>' +
+      '<div class="ve-name-cell">' + renderVEAvatar(ve) + '<strong>' + escapeHtml(truncate(ve.name || '', 50)) + '</strong></div>' +
       '<div>' + formatEmployeeType(ve) + '</div>' +
       '<div class="item-meta">' + escapeHtml(truncate(ve.skill_description || '', 100)) + '</div>' +
       '<div class="item-meta" title="' + escapeHtml(ownerText) + '">' + escapeHtml(truncate(ownerText, 42)) + '</div>' +
@@ -372,12 +395,12 @@
       '<div>' + (ve.resident ? '<span class="badge ok">' + escapeHtml(vt('residentEmployee')) + '</span>' : '<span class="item-meta">-</span>') + '</div>' +
       '<div>' + formatOnlineStatus(ve.online_status) + '</div>' +
       '<div class="item-meta">' + escapeHtml(formatDate(ve.registered_at)) + '</div>' +
-      '<div style="display:flex;gap:4px;flex-wrap:wrap">' + visibilityBtn + historyBtn + actionButtons + '</div>' +
+      '<div class="ve-row-actions">' + visibilityBtn + historyBtn + actionButtons + '</div>' +
       '</div>';
   }
 
   function actionBtn(label, cls, onclick) {
-    return '<button class="' + escapeHtml(cls) + '" style="height:27px;font-size:11px;padding:0 8px" onclick="' + escapeHtml(onclick) + '">' + escapeHtml(label) + '</button>';
+    return '<button class="' + escapeHtml(cls) + '" style="height:27px;font-size:11px;padding:0 8px;min-width:0;white-space:nowrap" onclick="' + escapeHtml(onclick) + '">' + escapeHtml(label) + '</button>';
   }
 
   function renderPendingList(employees) {
@@ -443,39 +466,79 @@
       .replace('{quota}', String(veQuota));
   }
 
-  function renderVEHistoryList() {
-    var container = document.getElementById('veHistoryList');
-    if (!container) return;
+  function buildVEHistoryListHTML() {
     if (veHistoryLoading) {
-      container.innerHTML = '<div class="hint">' + escapeHtml(vt('loading')) + '</div>';
-      return;
+      return '<div class="hint">' + escapeHtml(vt('loading')) + '</div>';
     }
     if (!veHistoryEmployeeID && !veHistoryHint) {
-      container.innerHTML = '<div class="hint">' + escapeHtml(vt('historyDesc')) + '</div>';
-      return;
+      return '<div class="hint">' + escapeHtml(vt('historyDesc')) + '</div>';
     }
     if (veHistoryHint && !veHistoryDiscussions.length) {
-      container.innerHTML = '<div class="hint">' + escapeHtml(veHistoryHint) + '</div>';
-      return;
+      return '<div class="hint">' + escapeHtml(veHistoryHint) + '</div>';
     }
     var intro = '';
     if (veHistoryHint) intro = '<div class="hint" style="margin-bottom:8px">' + escapeHtml(veHistoryHint) + '</div>';
     else if (veHistoryEmployeeLabel) intro = '<div class="hint" style="margin-bottom:8px">' + escapeHtml(vt('selectedEmployee').replace('{name}', veHistoryEmployeeLabel)) + '</div>';
     if (!veHistoryDiscussions.length) {
-      container.innerHTML = intro + '<div class="hint">' + escapeHtml(vt('historyEmpty')) + '</div>';
-      return;
+      return intro + '<div class="hint">' + escapeHtml(vt('historyEmpty')) + '</div>';
     }
-    container.innerHTML = intro + veHistoryDiscussions.map(function(d) {
+    return intro + veHistoryDiscussions.map(function(d) {
       var idExpr = jsAttrString(d.id || '');
       var employeeMeta = d._employee_label ? ' - ' + escapeHtml(d._employee_label) : '';
+      var counterpart = historyCounterpartText(d);
       return '<div class="item" style="margin-bottom:8px;padding:10px 12px">' +
         '<div class="item-head"><div><div class="item-title">' + escapeHtml(truncate(discussionTitle(d), 90)) + '</div>' +
         '<div class="item-meta">' + escapeHtml(d.status || '-') + ' - ' + escapeHtml(formatDate(d.updated_at || d.created_at)) + employeeMeta + ' - ' + escapeHtml((d.participant_ids || []).join(', ')) + '</div></div>' +
         '<button class="btn-secondary" style="height:28px;font-size:11px;padding:0 8px" onclick="vePreviewHistory(' + idExpr + ')">' + escapeHtml(vt('preview')) + '</button></div>' +
+        '<div class="item-meta" style="margin-top:6px">' + escapeHtml(vt('counterpartEmail')) + ': ' + escapeHtml(counterpart) + '</div>' +
         (d.result_summary ? '<div class="item-meta" style="margin-top:6px">' + escapeHtml(vt('resultSummary')) + ': ' + escapeHtml(truncate(d.result_summary, 160)) + '</div>' : '') +
         '</div>';
     }).join('');
   }
+
+  function renderVEHistoryList() {
+    var container = document.getElementById('veHistoryList');
+    if (container) container.innerHTML = '';
+    renderVEHistoryDialog();
+  }
+
+  function ensureVEHistoryDialog() {
+    var overlay = document.getElementById('veHistoryDialogOverlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'veHistoryDialogOverlay';
+      overlay.className = 'session-modal-overlay';
+      overlay.onclick = function(event) { if (event.target === overlay) global.closeVEHistoryDialog(); };
+      document.body.appendChild(overlay);
+    }
+    return overlay;
+  }
+
+  function renderVEHistoryDialog() {
+    var overlay = document.getElementById('veHistoryDialogOverlay');
+    if (!overlay || String(overlay.className || '').indexOf('show') < 0) return;
+    overlay.innerHTML = '<div class="session-modal ve-history-dialog" role="dialog" aria-modal="true" aria-labelledby="veHistoryDialogTitle">' +
+      '<button class="close-btn" onclick="closeVEHistoryDialog()" aria-label="' + escapeHtml(vt('close')) + '">&times;</button>' +
+      '<h3 id="veHistoryDialogTitle">' + escapeHtml(vt('historyTitle')) + '</h3>' +
+      '<div class="item-meta" style="margin-bottom:10px">' + escapeHtml(vt('historyDesc')) + '</div>' +
+      '<div class="ve-history-dialog-list">' + buildVEHistoryListHTML() + '</div>' +
+      '</div>';
+  }
+
+  function openVEHistoryDialog() {
+    var overlay = ensureVEHistoryDialog();
+    overlay.classList.add('show');
+    if (String(overlay.className || '').indexOf('show') < 0) overlay.className = String(overlay.className || '') + ' show';
+    renderVEHistoryDialog();
+  }
+
+  global.closeVEHistoryDialog = function closeVEHistoryDialog() {
+    var overlay = document.getElementById('veHistoryDialogOverlay');
+    if (overlay) {
+      overlay.classList.remove('show');
+      overlay.className = String(overlay.className || '').replace(/\bshow\b/g, '').replace(/\s+/g, ' ').trim();
+    }
+  };
 
   function renderVELists() {
     renderPendingList(veListCache);
@@ -562,6 +625,7 @@
       renderVEHistoryList();
       return;
     }
+    openVEHistoryDialog();
     veHistoryEmployeeID = 'search';
     veHistoryEmployeeLabel = '';
     veHistoryDiscussions = [];
@@ -593,6 +657,7 @@
 
   global.veLoadHistoryForEmployees = async function veLoadHistoryForEmployees(employees) {
     employees = employees || [];
+    openVEHistoryDialog();
     veHistoryEmployeeID = employees.length === 1 ? (employees[0].id || '') : 'search';
     veHistoryEmployeeLabel = employees.length === 1 ? veEmployeeLabel(employees[0]) : '';
     veHistoryDiscussions = [];
@@ -741,11 +806,13 @@
       escapeHtml(vt('createdAt')) + ': ' + escapeHtml(formatDate(discussion.created_at)),
       escapeHtml(vt('updatedAt')) + ': ' + escapeHtml(formatDate(discussion.updated_at))
     ].join(' &nbsp; ');
+    var counterpart = historyCounterpartText(discussion);
     var resultHtml = discussion.result_summary ? '<div class="session-item"><div class="session-label">' + escapeHtml(vt('resultSummary')) + '</div><div class="session-value">' + escapeHtml(compactMessageText(discussion.result_summary, 900)) + '</div></div>' : '';
-    overlay.innerHTML = '<div class="session-modal" style="width:min(900px,calc(100% - 48px));max-height:86vh;overflow:auto">' +
+    overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="veHistoryPreviewTitle" style="width:min(900px,calc(100% - 48px));max-height:86vh;overflow:auto">' +
       '<button class="close-btn" onclick="closeVEHistoryPreview()" aria-label="' + escapeHtml(vt('close')) + '">&times;</button>' +
-      '<h3>' + escapeHtml(discussionTitle(discussion) || vt('historyTitle')) + '</h3>' +
+      '<h3 id="veHistoryPreviewTitle">' + escapeHtml(discussionTitle(discussion) || vt('historyTitle')) + '</h3>' +
       '<div class="item-meta" style="margin-bottom:6px">' + headerMeta + '</div>' +
+      '<div class="item-meta" style="margin-bottom:6px">' + escapeHtml(vt('counterpartEmail')) + ': ' + escapeHtml(counterpart) + '</div>' +
       '<div class="item-meta" style="margin-bottom:10px">' + escapeHtml(vt('participants')) + ': ' + escapeHtml(participants.join(', ') || '-') + '</div>' +
       resultHtml +
       '<div class="item-title" style="margin-bottom:8px">' + escapeHtml(vt('messages')) + '</div>' +

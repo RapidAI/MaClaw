@@ -35,6 +35,10 @@ type fakeVEOwnerLookup struct {
 	users map[string]*store.User
 }
 
+type fakeVEMachineLookup struct {
+	machines map[string]*store.Machine
+}
+
 type fakeVEMachineEventSender struct {
 	messages []sentVEMachineEvent
 }
@@ -64,6 +68,11 @@ func (f *fakeVEMachineEventSender) SendToMachine(machineID string, msg any) erro
 func (f fakeVEOwnerLookup) GetByID(ctx context.Context, id string) (*store.User, error) {
 	_ = ctx
 	return f.users[id], nil
+}
+
+func (f fakeVEMachineLookup) GetByID(ctx context.Context, id string) (*store.Machine, error) {
+	_ = ctx
+	return f.machines[id], nil
 }
 
 func (f fakeVEMachineAuth) AuthenticateMachine(ctx context.Context, machineID, rawToken string) (*auth.MachinePrincipal, error) {
@@ -1380,7 +1389,7 @@ func TestDigitalEmployeeHistoryAcceptsPlatformEmployeeIDCaseInsensitive(t *testi
 	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
 	req.SetPathValue("id", "PLATFORM-EMPLOYEE-1")
 	rec := httptest.NewRecorder()
-	VEHistoryHandler(settings, groupSvc).ServeHTTP(rec, req)
+	VEHistoryHandler(settings, groupSvc, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("Runtime conversation")) {
 		t.Fatalf("history by platform employee id status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -2030,7 +2039,14 @@ func TestDigitalEmployeeHistorySearchAndPreview(t *testing.T) {
 			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
 		},
 	}
-	owners := fakeVEOwnerLookup{users: map[string]*store.User{"user-a": {ID: "user-a", Email: "owner@example.com"}}}
+	owners := fakeVEOwnerLookup{users: map[string]*store.User{
+		"user-a": {ID: "user-a", TenantID: "tenant-a", Email: "owner@example.com"},
+		"user-h": {ID: "user-h", TenantID: "tenant-a", Email: "human@example.com"},
+	}}
+	machines := fakeVEMachineLookup{machines: map[string]*store.Machine{
+		"human-a":   {ID: "human-a", TenantID: "tenant-a", UserID: "user-h"},
+		"machine-a": {ID: "machine-a", TenantID: "tenant-a", UserID: "user-a"},
+	}}
 	if rr := doVEMachineJSON(t, VERegisterHandler(settings, authn, owners), http.MethodPost, "/api/ve/register", map[string]any{"name": "Legal Researcher"}, "machine-a", "machine-token"); rr.Code != http.StatusOK {
 		t.Fatalf("register status=%d body=%s", rr.Code, rr.Body.String())
 	}
@@ -2066,8 +2082,8 @@ func TestDigitalEmployeeHistorySearchAndPreview(t *testing.T) {
 	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
 	req.SetPathValue("id", "ve_machine-a")
 	rec := httptest.NewRecorder()
-	VEHistoryHandler(settings, groupSvc, owners).ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("Contract review")) || !bytes.Contains(rec.Body.Bytes(), []byte("owner@example.com")) {
+	VEHistoryHandler(settings, groupSvc, owners, machines).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("Contract review")) || !bytes.Contains(rec.Body.Bytes(), []byte("owner@example.com")) || !bytes.Contains(rec.Body.Bytes(), []byte("human@example.com")) {
 		t.Fatalf("history status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
@@ -2083,8 +2099,8 @@ func TestDigitalEmployeeHistorySearchAndPreview(t *testing.T) {
 	detailReq = detailReq.WithContext(tenantAdminContext(detailReq.Context(), "tenant-a"))
 	detailReq.SetPathValue("id", session.ID)
 	detailRec := httptest.NewRecorder()
-	VEHistoryDetailHandler(groupSvc).ServeHTTP(detailRec, detailReq)
-	if detailRec.Code != http.StatusOK || !bytes.Contains(detailRec.Body.Bytes(), []byte("Prefer a capped renewal.")) || !bytes.Contains(detailRec.Body.Bytes(), []byte("renewal.pdf")) {
+	VEHistoryDetailHandler(settings, groupSvc, owners, machines).ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK || !bytes.Contains(detailRec.Body.Bytes(), []byte("Prefer a capped renewal.")) || !bytes.Contains(detailRec.Body.Bytes(), []byte("renewal.pdf")) || !bytes.Contains(detailRec.Body.Bytes(), []byte("human@example.com")) {
 		t.Fatalf("detail status=%d body=%s", detailRec.Code, detailRec.Body.String())
 	}
 }

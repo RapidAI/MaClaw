@@ -117,7 +117,7 @@ function createMockGlobal() {
       if (url === '/api/ve/list') {
         return {
           employees: [
-            { id: 've-001', name: 'Test VE 1', employee_type: 'physical', skill_description: 'Python expert', access_policy: 'public', online_status: 'online', status: 'pending', registered_at: '2024-01-15T10:30:00Z' },
+            { id: 've-001', name: 'Test VE 1', employee_type: 'physical', avatar_data_url: 'data:image/png;base64,iVBORw0KGgo=', skill_description: 'Python expert', access_policy: 'public', online_status: 'online', status: 'pending', registered_at: '2024-01-15T10:30:00Z' },
             { id: 've-002', name: 'Test VE 2', employee_type: 'physical', skill_description: 'Go developer with extensive backend experience', access_policy: 'whitelist', visible_group_ids: ['dept-legal'], online_status: 'offline', status: 'active', registered_at: '2024-01-10T08:00:00Z' },
             { id: 've-003', name: 'Test VE 3', employee_type: 'physical', platform_id: 'maclawsrv', platform_employee_id: 'srv-user-1', skill_description: 'Data analyst', access_policy: 'per_request', online_status: 'online', status: 'active', resident: true, registered_at: '2024-01-12T14:00:00Z' },
             { id: 've-004', name: 'Test VE 4', runtime_provider_id: 'maclawsrv', skill_description: 'Runtime user', access_policy: 'public', online_status: 'online', status: 'active', registered_at: '2024-01-13T14:00:00Z' },
@@ -172,6 +172,12 @@ async function runTests() {
     var pendingList = g.document.elements['vePendingList'];
     assert(pendingList !== undefined, 'vePendingList element should exist');
     assertIncludes(pendingList.innerHTML, 'Test VE 1', 'Pending list should contain pending VE name');
+    assertIncludes(pendingList.innerHTML, 'class="ve-avatar"', 'Pending list should render avatar shell');
+    assertIncludes(pendingList.innerHTML, 'data:image/png;base64,iVBORw0KGgo=', 'Pending list should render avatar image data URL');
+    assertIncludes(pendingList.innerHTML, 'aria-hidden="true"', 'Avatar should be decorative because name text is adjacent');
+    assertIncludes(pendingList.innerHTML, 'loading="lazy"', 'Avatar image should lazy-load');
+    assertIncludes(pendingList.innerHTML, 'decoding="async"', 'Avatar image should decode asynchronously');
+    assertIncludes(pendingList.innerHTML, 'onerror="this.hidden=true;this.nextElementSibling.hidden=false"', 'Avatar image should fall back without layout shift');
     assertIncludes(pendingList.innerHTML, 'Python expert', 'Pending list should contain skill description');
     assertIncludes(pendingList.innerHTML, 'veApprove', 'Pending list should have approve button');
     assertIncludes(pendingList.innerHTML, 'veReject', 'Pending list should have reject button');
@@ -188,6 +194,7 @@ async function runTests() {
     var activeList = g.document.elements['veActiveList'];
     assert(activeList !== undefined, 'veActiveList element should exist');
     assertIncludes(activeList.innerHTML, 'Test VE 2', 'Active list should contain active VE');
+    assertIncludes(activeList.innerHTML, 've-avatar-fallback', 'Active list should render fallback avatar for VE without image');
     assertIncludes(activeList.innerHTML, 'Test VE 3', 'Active list should contain second active VE');
     assertIncludes(activeList.innerHTML, 'veDisable', 'Active list should have disable button');
     assertIncludes(activeList.innerHTML, 'veSetResident', 'Active list should have resident button');
@@ -654,10 +661,13 @@ async function runTests() {
     var ctx = loadVETab(g);
     g.document.elements['veHistorySearchInput'] = { value: 'owner@example.com', classList: { add: function() {}, remove: function() {} } };
     await ctx.veLoadHistorySearch('owner@example.com');
-    var list = g.document.elements['veHistoryList'];
-    assertIncludes(list.innerHTML, 'Contract review', 'History list should contain discussion title');
-    assertIncludes(list.innerHTML, 'Legal Researcher / owner@example.com', 'History list should show selected digital employee label');
-    assertIncludes(list.innerHTML, 'vePreviewHistory(&quot;disc-1&quot;)', 'History list should include an attribute-safe preview action');
+    var list = g.document.elements['veHistoryDialogOverlay'];
+    assertIncludes(list.innerHTML, 'Contract review', 'History dialog should contain discussion title');
+    assertIncludes(list.innerHTML, 'role="dialog"', 'History dialog should expose dialog role');
+    assertIncludes(list.innerHTML, 'aria-modal="true"', 'History dialog should be modal for assistive tech');
+    assertIncludes(list.innerHTML, 'aria-labelledby="veHistoryDialogTitle"', 'History dialog should label itself from title');
+    assertIncludes(list.innerHTML, 'Legal Researcher / owner@example.com', 'History dialog should show selected digital employee label');
+    assertIncludes(list.innerHTML, 'vePreviewHistory(&quot;disc-1&quot;)', 'History dialog should include an attribute-safe preview action');
   }
 
   // Test 21a: History list escapes merged employee labels
@@ -672,9 +682,9 @@ async function runTests() {
     };
     var ctx = loadVETab(g);
     await ctx.veLoadHistorySearch('owner@example.com');
-    var list = g.document.elements['veHistoryList'];
-    assertIncludes(list.innerHTML, '&lt;img src=x onerror=alert(1)&gt; / owner@example.com', 'History list should render escaped employee label text');
-    assertNotIncludes(list.innerHTML, '<img src=x onerror=alert(1)>', 'History list should not inject employee label HTML');
+    var list = g.document.elements['veHistoryDialogOverlay'];
+    assertIncludes(list.innerHTML, '&lt;img src=x onerror=alert(1)&gt; / owner@example.com', 'History dialog should render escaped employee label text');
+    assertNotIncludes(list.innerHTML, '<img src=x onerror=alert(1)>', 'History dialog should not inject employee label HTML');
   }
 
   // Test 21b: History search caps merged discussion list
@@ -697,7 +707,7 @@ async function runTests() {
     };
     var ctx = loadVETab(g);
     await ctx.veLoadHistorySearch('example.com');
-    var list = g.document.elements['veHistoryList'];
+    var list = g.document.elements['veHistoryDialogOverlay'];
     var count = (list.innerHTML.match(/vePreviewHistory/g) || []).length;
     assertEqual(count, 20, 'History search should render at most 20 merged discussions');
     assertIncludes(list.innerHTML, 'Beta 15', 'Newest discussions should be kept after capping');
@@ -732,6 +742,8 @@ async function runTests() {
     await ctx.vePreviewHistory('disc-1');
     var overlay = g.document.elements['veHistoryPreviewOverlay'];
     assertIncludes(overlay.innerHTML, 'notes.txt', 'Preview should show inline text attachment label');
+    assertIncludes(overlay.innerHTML, 'role="dialog"', 'Preview should expose dialog role');
+    assertIncludes(overlay.innerHTML, 'aria-labelledby="veHistoryPreviewTitle"', 'Preview should label itself from title');
     assertIncludes(overlay.innerHTML, 'data:text%2Fplain;base64,cmV2aWV3IG5vdGVz', 'Preview should expose inline text attachment as downloadable data URL');
     assertIncludes(overlay.innerHTML, 'data:text%2Fplain;base64,dXJsLXNhZmU=', 'Preview should normalize URL-safe inline text attachment data URL');
     assertIncludes(overlay.innerHTML, 'safe.pdf', 'Preview should show safe attachment label');

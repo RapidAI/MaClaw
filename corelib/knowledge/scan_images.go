@@ -167,12 +167,8 @@ func extractRefContext(fullText, matchText string) (before, after string) {
 	return before, after
 }
 
-// IsStandaloneImageKind returns true for image source kinds.
-func IsStandaloneImageKind(kind string) bool {
-	return kind == SourceKindImage
-}
-
 // ClassifyImageKind returns SourceKindImage if the file extension is a supported image.
+// Empty string if not an image extension.
 func ClassifyImageKind(ext string) string {
 	if IsImageExt(ext) {
 		return SourceKindImage

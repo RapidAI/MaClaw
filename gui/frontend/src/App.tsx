@@ -303,6 +303,8 @@ function App() {
     // --- Favorite Employees state ---
     const [favoriteEmployeeIds, setFavoriteEmployeeIds] = useState<string[]>([]);
     const [favoriteEmployeeNames, setFavoriteEmployeeNames] = useState<Record<string, string>>({});
+    const favoriteEmployeeIdsRef = useRef<string[]>([]);
+    const favoriteEmployeeNamesRef = useRef<Record<string, string>>({});
     const [veList, setVeList] = useState<VirtualEmployeeEntry[]>([]);
     const [digitalEmployeeFeatureStatus, setDigitalEmployeeFeatureStatus] = useState<any>({ visible: false, actual_count: 0 });
     const [showFavReplacePicker, setShowFavReplacePicker] = useState<{ ve: VirtualEmployeeEntry } | null>(null);
@@ -311,10 +313,12 @@ function App() {
     useEffect(() => {
         setFavoriteEmployeeIds(normalizeFavoriteEmployeeIds(config?.favorite_employees));
     }, [config?.favorite_employees]);
+    useEffect(() => { favoriteEmployeeIdsRef.current = favoriteEmployeeIds; }, [favoriteEmployeeIds]);
 
     useEffect(() => {
         setFavoriteEmployeeNames(normalizeFavoriteEmployeeNames((config as any)?.favorite_employee_names));
     }, [(config as any)?.favorite_employee_names]);
+    useEffect(() => { favoriteEmployeeNamesRef.current = favoriteEmployeeNames; }, [favoriteEmployeeNames]);
 
     // Fetch VE list for sidebar favorites resolution
     useEffect(() => {
@@ -459,7 +463,7 @@ function App() {
             const participantId = String(residentVE.machine_id || residentVE.id || '').trim();
             if (!participantId) return [];
             const customName = favoriteEmployeeNames[participantId] || favoriteEmployeeNames[residentVE.id] || (residentVE.machine_id ? favoriteEmployeeNames[residentVE.machine_id] : '');
-            return [{ veId: participantId, name: customName || residentVE.name || participantId.slice(0, 6), online: true, skillDescription: residentVE.skill_description || '', avatarDataURL: residentVE.avatar_data_url || '', resident: true, accessPolicy: residentVE.access_policy || '', registeredAt: residentVE.registered_at || '', machineId: residentVE.machine_id || '' }];
+            return [{ veId: participantId, name: customName || residentVE.name || participantId.slice(0, 6), online: true, skillDescription: residentVE.skill_description || '', avatarDataURL: residentVE.avatar_data_url || '', resident: true, accessPolicy: residentVE.access_policy || '', registeredAt: residentVE.registered_at || '', machineId: residentVE.machine_id || '', allowedDepartments: residentVE.whitelist || [] }];
         })() : [];
         const userSlots = userFavoriteEmployeeIds.flatMap(id => {
             if (isOwnVirtualEmployeeId(id, config?.remote_machine_id)) return [];
@@ -469,7 +473,7 @@ function App() {
             const participantId = String(ve?.machine_id || id).trim();
             if ([id, ve.id, ve.machine_id || '', participantId].some(alias => favoriteEmployeeIDInAliasSet(alias, residentEmployeeAliasSet))) return [];
             const customName = favoriteEmployeeNames[id] || favoriteEmployeeNames[participantId] || (ve?.id ? favoriteEmployeeNames[ve.id] : '');
-            return { veId: participantId, name: customName || ve?.name || id.slice(0, 6), online: isVirtualEmployeeOnline(ve), skillDescription: ve?.skill_description || '', avatarDataURL: ve?.avatar_data_url || '', accessPolicy: ve?.access_policy || '', registeredAt: ve?.registered_at || '', machineId: ve?.machine_id || '' };
+            return { veId: participantId, name: customName || ve?.name || id.slice(0, 6), online: isVirtualEmployeeOnline(ve), skillDescription: ve?.skill_description || '', avatarDataURL: ve?.avatar_data_url || '', accessPolicy: ve?.access_policy || '', registeredAt: ve?.registered_at || '', machineId: ve?.machine_id || '', allowedDepartments: ve?.whitelist || [] };
         });
         return [...residentSlots, ...userSlots];
     }, [userFavoriteEmployeeIds, veList, config?.remote_machine_id, favoriteEmployeeNames, residentEmployeeAliasSet]);
@@ -486,13 +490,19 @@ function App() {
     const saveFavoriteEmployeeConfig = useCallback(async (newList: string[], newNames: Record<string, string>, options?: { throwOnError?: boolean }) => {
         const normalized = normalizeFavoriteEmployeeIds(newList);
         const normalizedNames = normalizeFavoriteEmployeeNames(newNames);
+        const previousIds = favoriteEmployeeIdsRef.current;
+        const previousNames = favoriteEmployeeNamesRef.current;
         setFavoriteEmployeeIds(normalized);
         setFavoriteEmployeeNames(normalizedNames);
         try {
             const updated = await callBackend(() => PatchConfigFields({ favorite_employees: normalized, favorite_employee_names: normalizedNames }));
             setConfig(new main.AppConfig(updated));
         } catch (error) {
-            if (options?.throwOnError) throw error;
+            if (options?.throwOnError) {
+                setFavoriteEmployeeIds(previousIds);
+                setFavoriteEmployeeNames(previousNames);
+                throw error;
+            }
         }
     }, []);
 
@@ -552,12 +562,17 @@ function App() {
         saveFavoriteEmployeeConfig(nextIds, nextNames);
     }, [favoriteEmployeeIds, favoriteEmployeeNames, saveFavoriteEmployeeConfig, veList]);
 
-    const handleRenameFavoriteEmployee = useCallback((veId: string, name: string) => {
+    const handleRenameFavoriteEmployee = useCallback(async (veId: string, name: string) => {
         const nextName = name.trim();
         if (!nextName) return;
         const ve = veList.find(v => participantIdentityMatches(v.id, veId) || participantIdentityMatches(v.machine_id, veId));
         const favoriteId = favoriteEmployeeIds.find(id => participantIdentityMatches(id, veId) || participantIdentityMatches(id, ve?.id) || participantIdentityMatches(id, ve?.machine_id)) || veId;
-        return updateFavoriteEmployeeNames({ ...favoriteEmployeeNames, [favoriteId]: nextName });
+        await updateFavoriteEmployeeNames({ ...favoriteEmployeeNames, [favoriteId]: nextName });
+        setVeList(prev => prev.map(item => (
+            participantIdentityMatches(item.id, veId) || participantIdentityMatches(item.machine_id, veId) || participantIdentityMatches(item.id, ve?.id) || participantIdentityMatches(item.machine_id, ve?.machine_id)
+                ? { ...item, name: nextName }
+                : item
+        )));
     }, [favoriteEmployeeIds, favoriteEmployeeNames, updateFavoriteEmployeeNames, veList]);
 
     const handleReorderFavorites = useCallback((newOrder: string[]) => {
@@ -2786,6 +2801,7 @@ ${instruction}`;
                 onRemoveFavoriteEmployeeById={handleRemoveFavoriteEmployee}
                 onRemoveFavoriteEmployee={(ve) => handleRemoveFavoriteEmployee(ve.id)}
                 favoriteEmployeeIds={userFavoriteEmployeeIds}
+                favoriteEmployeeNames={favoriteEmployeeNames}
                 showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
             />
             <div className="main-container" data-ai-theme={aiThemeMode}>

@@ -85,6 +85,8 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     onRemoveFavoriteEmployee?: (ve: VirtualEmployeeEntry) => void;
     /** Authoritative favorite IDs from parent state (includes optimistic updates) */
     favoriteEmployeeIds?: string[];
+    favoriteEmployeeNames?: Record<string, string>;
+    onRenameEmployee?: (ve: VirtualEmployeeEntry, name: string) => void | Promise<void>;
     showCodingToolEntry?: boolean;
     digitalEmployeeFeatureStatus?: any;
     showDigitalEmployeeNavigation?: boolean;
@@ -145,6 +147,8 @@ export const SidebarAiPane = ({
     onSetFavoriteEmployee,
     onRemoveFavoriteEmployee,
     favoriteEmployeeIds = [],
+    favoriteEmployeeNames = {},
+    onRenameEmployee,
     showCodingToolEntry = false,
     digitalEmployeeFeatureStatus = null,
     showDigitalEmployeeNavigation,
@@ -170,7 +174,7 @@ export const SidebarAiPane = ({
                 {visibleTabs.length > 1 && <SidebarMiddleTabs active={middleTab} labels={tabLabels} onChange={setMiddleTab} visibleTabs={visibleTabs} />}
                 <div data-testid="sidebar-ai-content-slot" style={middleContentSlotStyle}>
                     {middleTab === 'tasks' && <SidebarRecentTasks lang={lang} themeMode={aiThemeMode} recentProjects={recentProjects} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeRecentProject={resumeRecentProject} assistantReady={assistantReady} onRecentTaskSwitchBlocked={onRecentTaskSwitchBlocked} createRecentTask={createRecentTask} refreshRecentProjects={refreshRecentProjects} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} />}
-                    {middleTab === 'employees' && showDigitalEmployeeTabs && <div style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} /></div>}
+                    {middleTab === 'employees' && showDigitalEmployeeTabs && <div style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}
                 </div>
                 <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} backgroundTaskCount={backgroundTaskCount} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openHubCardStorePage={openHubCardStorePage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} />

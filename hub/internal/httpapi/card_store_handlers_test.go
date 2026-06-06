@@ -84,6 +84,49 @@ func TestCardStoreConfigUsesPaymentFMDefaults(t *testing.T) {
 	if !ok || product.Price != 0.01 || product.Credits != 1 || !strings.Contains(strings.ToLower(product.Description), "testing") {
 		t.Fatalf("test product defaults not applied: %#v", product)
 	}
+	if product.Kind != "credits" || product.PeriodLimits != (llmservice.CreditPeriodLimits{}) {
+		t.Fatalf("test product should be a credits test card without period limits: %#v", product)
+	}
+}
+
+func TestCardStoreConfigAppliesDefaultPeriodLimits(t *testing.T) {
+	cfg := normalizeCardStoreConfig(cardStoreConfig{})
+	tests := []struct {
+		id   string
+		want llmservice.CreditPeriodLimits
+	}{
+		{id: "service_day", want: llmservice.CreditPeriodLimits{FiveHour: 50}},
+		{id: "service_week", want: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100}},
+		{id: "service_month", want: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200}},
+		{id: "service_quarter", want: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200, Monthly: 300}},
+		{id: "service_year", want: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200, Monthly: 300}},
+		{id: "credits_10000", want: llmservice.CreditPeriodLimits{}},
+		{id: "service_test_10", want: llmservice.CreditPeriodLimits{}},
+	}
+	for _, tc := range tests {
+		product, ok := findCardStoreProduct(cfg, tc.id)
+		if !ok {
+			t.Fatalf("missing product %s", tc.id)
+		}
+		if product.PeriodLimits != tc.want {
+			t.Fatalf("%s period limits = %#v, want %#v", tc.id, product.PeriodLimits, tc.want)
+		}
+	}
+}
+
+func TestCardStoreConfigKeepsCustomPeriodLimitsWhenDurationDefaults(t *testing.T) {
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Products: []cardStoreProduct{{
+		ID:           "service_month",
+		PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 60, Daily: 120, Weekly: 240, Monthly: 480},
+	}}})
+	product, ok := findCardStoreProduct(cfg, "service_month")
+	if !ok {
+		t.Fatal("missing service_month")
+	}
+	want := llmservice.CreditPeriodLimits{FiveHour: 60, Daily: 120, Weekly: 240}
+	if product.DurationDays != 30 || product.PeriodLimits != want {
+		t.Fatalf("service_month = days %d limits %#v, want days 30 limits %#v", product.DurationDays, product.PeriodLimits, want)
+	}
 }
 
 func TestGetCardStoreConfigReturnsCurrentHubNotifyURL(t *testing.T) {
@@ -663,6 +706,7 @@ func TestGetCardStoreProductsReturnsPublicManualChannels(t *testing.T) {
 	var body struct {
 		PaymentMode     string              `json:"payment_mode"`
 		PaymentChannels []map[string]string `json:"payment_channels"`
+		Products        []cardStoreProduct  `json:"products"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
@@ -672,6 +716,14 @@ func TestGetCardStoreProductsReturnsPublicManualChannels(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "2088000000000000") || strings.Contains(rec.Body.String(), "pay.example.com") || strings.Contains(rec.Body.String(), "Alice") {
 		t.Fatalf("public product response leaked payment details: %s", rec.Body.String())
+	}
+	day, ok := findCardStoreProduct(cardStoreConfig{Products: body.Products}, "service_day")
+	if !ok || day.PeriodLimits.FiveHour != 50 {
+		t.Fatalf("public day product missing period limits: %#v", day)
+	}
+	credits, ok := findCardStoreProduct(cardStoreConfig{Products: body.Products}, "credits_10000")
+	if !ok || credits.PeriodLimits != (llmservice.CreditPeriodLimits{}) {
+		t.Fatalf("public credits product should not have period limits: %#v", credits)
 	}
 }
 

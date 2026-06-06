@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
-import { participantIdentityMatches } from "./participantIdentity";
+import { participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
 export { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
@@ -20,6 +20,7 @@ export interface VirtualEmployeeEntry {
     online_status: "online" | "offline";
     resident?: boolean;
     registered_at?: string;
+    whitelist?: string[];
 }
 
 export interface VETabProps {
@@ -30,10 +31,14 @@ export interface VETabProps {
     listVirtualEmployees?: () => Promise<VirtualEmployeeEntry[]>;
     /** IDs of currently favorited employees */
     favoriteEmployeeIds?: string[];
+    /** Local display names keyed by any known employee identity */
+    favoriteEmployeeNames?: Record<string, string>;
     /** Called when user clicks "Set as Favorite" in context menu */
     onSetFavorite?: (ve: VirtualEmployeeEntry) => void;
     /** Called when user clicks "Remove from Favorite" in context menu */
     onRemoveFavorite?: (ve: VirtualEmployeeEntry) => void;
+    /** Called when user renames an employee from the list context menu */
+    onRenameEmployee?: (ve: VirtualEmployeeEntry, name: string) => void | Promise<void>;
 }
 
 // --- Helpers ---
@@ -116,20 +121,31 @@ function isFavoriteEmployee(ve: Pick<VirtualEmployeeEntry, "id" | "machine_id">,
     return favoriteEmployeeIds.some((favoriteId) => participantIdentityMatches(favoriteId, id) || participantIdentityMatches(favoriteId, machineId));
 }
 
+function displayNameForVirtualEmployee(ve: VirtualEmployeeEntry, index: number, lang: string | undefined, favoriteEmployeeNames: Record<string, string> | undefined): string {
+    const customName = participantNameForIdentity(favoriteEmployeeNames, ve.machine_id) || participantNameForIdentity(favoriteEmployeeNames, ve.id);
+    if (customName) return customName;
+    return readableVirtualEmployeeName(ve, index, lang);
+}
+
 // --- Component ---
 
-export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtualEmployees, favoriteEmployeeIds, onSetFavorite, onRemoveFavorite }: VETabProps) {
+export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtualEmployees, favoriteEmployeeIds, favoriteEmployeeNames, onSetFavorite, onRemoveFavorite, onRenameEmployee }: VETabProps) {
     const [employees, setEmployees] = useState<VirtualEmployeeEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [error, setError] = useState<string>("");
     const [query, setQuery] = useState("");
-    const [contextMenu, setContextMenu] = useState<{ x: number; y: number; ve: VirtualEmployeeEntry } | null>(null);
+    const [contextMenu, setContextMenu] = useState<{ x: number; y: number; ve: VirtualEmployeeEntry; displayName: string } | null>(null);
+    const [renamingEmployee, setRenamingEmployee] = useState<VirtualEmployeeEntry | null>(null);
+    const [renameValue, setRenameValue] = useState("");
+    const [renameSaving, setRenameSaving] = useState(false);
+    const [renameError, setRenameError] = useState("");
 
     const throttleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingRefreshRef = useRef(false);
     const mountedRef = useRef(true);
     const requestSeqRef = useRef(0);
+    const isZh = !lang || lang.startsWith("zh");
 
     // Resolve the list function - use injected or dynamically import Wails binding
     const listFnRef = useRef<(() => Promise<VirtualEmployeeEntry[]>) | null>(listVirtualEmployees || null);
@@ -241,6 +257,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
 
     // Clamp context menu position to viewport bounds
     const menuRef = useRef<HTMLDivElement>(null);
+    const renameInputRef = useRef<HTMLInputElement | null>(null);
     const [menuPos, setMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
     useEffect(() => {
         if (!contextMenu) return;
@@ -264,14 +281,54 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
         return () => cancelAnimationFrame(raf);
     }, [contextMenu]);
 
+    useEffect(() => {
+        if (!renamingEmployee) return;
+        const timer = window.setTimeout(() => renameInputRef.current?.focus(), 0);
+        return () => window.clearTimeout(timer);
+    }, [renamingEmployee]);
+
+    const openRenameDialog = useCallback((ve: VirtualEmployeeEntry) => {
+        const index = employees.findIndex((employee) => employee.id === ve.id);
+        setContextMenu(null);
+        setRenamingEmployee(ve);
+        setRenameValue(displayNameForVirtualEmployee(ve, index >= 0 ? index : 0, lang, favoriteEmployeeNames));
+        setRenameError("");
+        setRenameSaving(false);
+    }, [employees, favoriteEmployeeNames, lang]);
+
+    const saveRename = useCallback(async () => {
+        if (!renamingEmployee || renameSaving) return;
+        const nextName = renameValue.trim();
+        if (!nextName) return;
+        setRenameSaving(true);
+        setRenameError("");
+        try {
+            await onRenameEmployee?.(renamingEmployee, nextName);
+            setEmployees((prev) => prev.map((employee) => (
+                participantIdentityMatches(employee.id, renamingEmployee.id) || participantIdentityMatches(employee.machine_id, renamingEmployee.machine_id)
+                    ? { ...employee, name: nextName }
+                    : employee
+            )));
+            if (!mountedRef.current) return;
+            setRenamingEmployee(null);
+        } catch (error) {
+            if (!mountedRef.current) return;
+            console.error("Failed to rename digital employee:", error);
+            setRenameError(isZh ? "\u6539\u540d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002" : "Rename failed. Please try again.");
+        } finally {
+            if (mountedRef.current) setRenameSaving(false);
+        }
+    }, [isZh, onRenameEmployee, renameSaving, renameValue, renamingEmployee]);
+
     // --- Render ---
 
-    const isZh = !lang || lang.startsWith("zh");
     const onlineEmployees = employees.filter(isVirtualEmployeeOnline);
     const normalizedQuery = query.trim().toLowerCase();
     const visibleEmployees = normalizedQuery
-        ? onlineEmployees.filter((employee) => {
+        ? onlineEmployees.filter((employee, index) => {
+            const displayName = displayNameForVirtualEmployee(employee, index, lang, favoriteEmployeeNames);
             return [
+                displayName,
                 employee.name,
                 employee.skill_description,
                 employee.id,
@@ -394,22 +451,23 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
     return renderShell(
         <>
             {visibleEmployees.map((ve, index) => {
-                const displayName = readableVirtualEmployeeName(ve, index, lang);
+                const displayName = displayNameForVirtualEmployee(ve, index, lang, favoriteEmployeeNames);
+                const displayEmployee = { ...ve, name: displayName };
                 return (
                 <div
                     key={ve.id}
                     data-testid={`ve-item-${ve.id}`}
                     role="button"
                     tabIndex={0}
-                    onClick={() => onStartConversation(ve)}
+                    onClick={() => onStartConversation(displayEmployee)}
                     onKeyDown={(e) => {
                         if (e.key !== "Enter" && e.key !== " ") return;
                         e.preventDefault();
-                        onStartConversation(ve);
+                        onStartConversation(displayEmployee);
                     }}
                     onContextMenu={(e) => {
                         e.preventDefault();
-                        setContextMenu({ x: e.clientX, y: e.clientY, ve });
+                        setContextMenu({ x: e.clientX, y: e.clientY, ve, displayName });
                     }}
                     title={ve.skill_description || displayName}
                     style={{
@@ -502,7 +560,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     <div
                         data-testid="ve-menu-conversation"
                         role="menuitem"
-                        onClick={() => { onStartConversation(contextMenu.ve); setContextMenu(null); }}
+                        onClick={() => { onStartConversation({ ...contextMenu.ve, name: contextMenu.displayName }); setContextMenu(null); }}
                         style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", cursor: "pointer", fontSize: 13, color: theme.text }}
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
@@ -531,9 +589,87 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             <span>{isFav ? (isZh ? "取消常用" : "Remove from favorites") : (isZh ? "设为常用" : "Set as favorite")}</span>
                         </div>
                     )}
+                    {onRenameEmployee && (
+                        <div
+                            data-testid="ve-menu-rename"
+                            role="menuitem"
+                            onClick={() => openRenameDialog(contextMenu.ve)}
+                            style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                        >
+                            <span style={{ width: 16, textAlign: "center", fontSize: 14, flexShrink: 0 }}>✎</span>
+                            <span>{isZh ? "\u6539\u540d" : "Rename"}</span>
+                        </div>
+                    )}
                 </div>
                 );
             })()}
+            {renamingEmployee && (
+                <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="ve-rename-title"
+                    data-testid="ve-rename-dialog"
+                    onPointerDown={() => { if (!renameSaving) setRenamingEmployee(null); }}
+                    style={{
+                        position: "fixed",
+                        inset: 0,
+                        zIndex: 10000,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        background: "rgba(15, 23, 42, 0.32)",
+                    }}
+                >
+                    <form
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onSubmit={(e) => { e.preventDefault(); void saveRename(); }}
+                        style={{
+                            width: "min(360px, calc(100vw - 32px))",
+                            padding: 18,
+                            borderRadius: 8,
+                            border: `1px solid ${theme.divider}`,
+                            background: theme.bg,
+                            boxShadow: "0 18px 44px rgba(15, 23, 42, 0.24)",
+                        }}
+                    >
+                        <h2 id="ve-rename-title" style={{ margin: "0 0 14px", fontSize: 16, lineHeight: 1.3, color: theme.text }}>
+                            {isZh ? "\u6539\u540d\u6570\u5b57\u5458\u5de5" : "Rename digital employee"}
+                        </h2>
+                        <label style={{ display: "grid", gap: 8, fontSize: 13, fontWeight: 600, color: theme.text }}>
+                            {isZh ? "\u663e\u793a\u540d\u79f0" : "Display name"}
+                            <input
+                                ref={renameInputRef}
+                                value={renameValue}
+                                disabled={renameSaving}
+                                aria-invalid={renameError ? "true" : undefined}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                maxLength={32}
+                                data-testid="ve-rename-input"
+                                style={{
+                                    height: 44,
+                                    borderRadius: 8,
+                                    border: `1px solid ${theme.divider}`,
+                                    padding: "0 10px",
+                                    background: theme.fieldBg,
+                                    color: theme.text,
+                                    font: "inherit",
+                                }}
+                            />
+                            {renameError && <span role="alert" style={{ color: theme.errorText || "#dc2626", fontSize: 12, lineHeight: 1.4 }}>{renameError}</span>}
+                        </label>
+                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+                            <button type="button" onClick={() => setRenamingEmployee(null)} disabled={renameSaving} style={{ minWidth: 72, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.divider}`, background: theme.bg, color: theme.text, font: "inherit", fontWeight: 700 }}>
+                                {isZh ? "\u53d6\u6d88" : "Cancel"}
+                            </button>
+                            <button type="submit" disabled={!renameValue.trim() || renameSaving} data-testid="ve-rename-save" style={{ minWidth: 72, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.btnBorder || theme.divider}`, background: theme.btnColor || "#6366f1", color: "#fff", font: "inherit", fontWeight: 700, opacity: renameValue.trim() && !renameSaving ? 1 : 0.55 }}>
+                                {isZh ? "\u4fdd\u5b58" : "Save"}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            )}
         </>
     );
 }

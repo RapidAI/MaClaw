@@ -963,6 +963,46 @@ function Invoke-PscpUpload {
     }
 }
 
+function Invoke-RemoteNginxHubProxyFix {
+    param(
+        [string]$PlinkExe,
+        [string[]]$ConnectionArgs,
+        [pscustomobject]$Target
+    )
+
+    if (-not $Target.DeployHub) {
+        return
+    }
+    if (-not ($Target.PSObject.Properties.Name -contains 'NginxHubProxyPort')) {
+        return
+    }
+
+    $configPath = if ($Target.PSObject.Properties.Name -contains 'NginxConfigPath') { [string]$Target.NginxConfigPath } else { '' }
+    $serverName = if ($Target.PSObject.Properties.Name -contains 'NginxHubServerName') { [string]$Target.NginxHubServerName } else { '' }
+    $proxyPort = [string]$Target.NginxHubProxyPort
+    if ([string]::IsNullOrWhiteSpace($configPath) -or [string]::IsNullOrWhiteSpace($serverName) -or [string]::IsNullOrWhiteSpace($proxyPort)) {
+        return
+    }
+
+    $serverPattern = ($serverName -replace '\.', '\.')
+    $command = @"
+set -e
+if [ -f '$configPath' ]; then
+  cp -a '$configPath' '$configPath.bak.codex-nginx-proxy'
+  sed -i '/server_name[[:space:]]\+$serverPattern;/,/^}/s#proxy_pass http://127\.0\.0\.1:[0-9]\+;#proxy_pass http://127.0.0.1:$proxyPort;#' '$configPath'
+  nginx -t
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl reload nginx
+  else
+    nginx -s reload
+  fi
+fi
+"@
+
+    Write-Host ("Ensuring nginx proxy for {0} -> 127.0.0.1:{1} on {2}..." -f $serverName, $proxyPort, $Target.Host) -ForegroundColor Cyan
+    Invoke-Plink -PlinkExe $PlinkExe -ConnectionArgs $ConnectionArgs -CommandText $command
+}
+
 function Invoke-UrlStatusCheck {
     param(
         [string]$Url,
@@ -1146,6 +1186,9 @@ $targets = @(
         DeployHub = $true
         HubConfig = 'hub-maclaw.yaml'
         HubPublicUrl = 'https://hub.maclaw.top'
+        NginxConfigPath = '/etc/nginx/conf.d/maclaw.top.conf'
+        NginxHubServerName = 'hub.maclaw.top'
+        NginxHubProxyPort = '9399'
     },
     [pscustomobject]@{
         Name = 'hc-3'
@@ -1346,6 +1389,7 @@ try {
 
         Write-Host ("[9/9][{0}/{1}] Deploying uploaded binaries on {2}..." -f $targetIndex, $targets.Count, $target.Host) -ForegroundColor Cyan
         Invoke-Plink -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText $remoteCommand
+        Invoke-RemoteNginxHubProxyFix -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -Target $target
     }
 
     Write-Host ''

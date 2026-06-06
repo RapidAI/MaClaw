@@ -52,15 +52,16 @@ var cardStoreDefaultProductSpecs = []struct {
 	Price        float64
 	DurationDays int
 	Credits      float64
+	PeriodLimits llmservice.CreditPeriodLimits
 }{
-	{ID: "service_day", Kind: "service_card", Label: "Day Card", DurationDays: 1, Credits: 300},
-	{ID: "service_week", Kind: "service_card", Label: "Week Card", DurationDays: 7, Credits: 1200},
-	{ID: "service_month", Kind: "service_card", Label: "Month Card", DurationDays: 30, Credits: 5000},
-	{ID: "service_quarter", Kind: "service_card", Label: "Quarter Card", DurationDays: 91, Credits: 17000},
-	{ID: "service_year", Kind: "service_card", Label: "Year Card", DurationDays: 365, Credits: 70000},
+	{ID: "service_day", Kind: "service_card", Label: "Day Card", DurationDays: 1, Credits: 300, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 50}},
+	{ID: "service_week", Kind: "service_card", Label: "Week Card", DurationDays: 7, Credits: 1200, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100}},
+	{ID: "service_month", Kind: "service_card", Label: "Month Card", DurationDays: 30, Credits: 5000, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200}},
+	{ID: "service_quarter", Kind: "service_card", Label: "Quarter Card", DurationDays: 91, Credits: 17000, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200, Monthly: 300}},
+	{ID: "service_year", Kind: "service_card", Label: "Year Card", DurationDays: 365, Credits: 70000, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200, Monthly: 300}},
 	{ID: "credits_10000", Kind: "credits", Label: "10,000 Credits", DurationDays: 365, Credits: 10000},
 	{ID: "credits_50000", Kind: "credits", Label: "50,000 Credits", DurationDays: 365, Credits: 50000},
-	{ID: "service_test_10", Kind: "service_card", Label: "Test Card", Description: "Only for payment testing. Issues a 1-credit service exchange card.", Price: 0.01, DurationDays: 1, Credits: 1},
+	{ID: "service_test_10", Kind: "credits", Label: "Test Card", Description: "Only for recharge flow testing. Issues 1 credit.", Price: 0.01, DurationDays: 365, Credits: 1},
 }
 
 type cardStoreConfig struct {
@@ -1239,7 +1240,6 @@ func normalizeCardStoreConfig(cfg cardStoreConfig) cardStoreConfig {
 		product.Label = strings.TrimSpace(product.Label)
 		product.Description = strings.TrimSpace(product.Description)
 		product.ServiceGroupIDs = normalizeStringSlice(product.ServiceGroupIDs)
-		product.PeriodLimits = sanitizeLLMServiceCardPeriodLimits(product.DurationDays, product.PeriodLimits)
 		product.Price = roundMoney(product.Price)
 		byID[product.ID] = product
 	}
@@ -1247,9 +1247,12 @@ func normalizeCardStoreConfig(cfg cardStoreConfig) cardStoreConfig {
 	for _, spec := range cardStoreDefaultProductSpecs {
 		product, ok := byID[spec.ID]
 		if !ok {
-			product = cardStoreProduct{ID: spec.ID, Kind: spec.Kind, Label: spec.Label, Description: spec.Description, Enabled: true, Price: spec.Price, DurationDays: spec.DurationDays, Credits: spec.Credits}
+			product = cardStoreProduct{ID: spec.ID, Kind: spec.Kind, Label: spec.Label, Description: spec.Description, Enabled: true, Price: spec.Price, DurationDays: spec.DurationDays, Credits: spec.Credits, PeriodLimits: spec.PeriodLimits}
 		}
 		if product.Kind == "" {
+			product.Kind = spec.Kind
+		}
+		if spec.ID == "service_test_10" {
 			product.Kind = spec.Kind
 		}
 		if product.Label == "" {
@@ -1266,6 +1269,9 @@ func normalizeCardStoreConfig(cfg cardStoreConfig) cardStoreConfig {
 		}
 		if spec.ID == "service_test_10" && product.Credits == 10 {
 			product.Credits = spec.Credits
+		}
+		if product.PeriodLimits == (llmservice.CreditPeriodLimits{}) {
+			product.PeriodLimits = spec.PeriodLimits
 		}
 		product.PeriodLimits = sanitizeLLMServiceCardPeriodLimits(product.DurationDays, product.PeriodLimits)
 		products = append(products, product)

@@ -265,6 +265,7 @@ func normalizeFormatName(ext string) string {
 }
 
 // KindFromImageExt returns the image format kind string for a file extension.
+// Used by external callers that classify files by extension.
 func KindFromImageExt(ext string) string {
 	ext = strings.ToLower(strings.TrimSpace(ext))
 	if !strings.HasPrefix(ext, ".") {
@@ -286,11 +287,8 @@ func KindFromImageExt(ext string) string {
 	}
 }
 
-// imageNodeID generates an ID for a DOCX-extracted image node.
-// This is a convenience alias of NewID for readability.
-func imageNodeID() string {
-	return NewID("kdn")
-}
+// imageNodeID is unused — kept as documentation of the convention.
+// All image node ID generation uses NewID("kdn") directly.
 
 // getTextNodeContext extracts context text from text nodes around a given index.
 // Used by PPTX and PDF image extractors as well.

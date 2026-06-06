@@ -15,6 +15,8 @@ export interface FavoriteEmployeeSlot {
     registeredAt?: string;
     /** Machine ID of the owner (present for remote VEs) */
     machineId?: string;
+    /** Accessible department names (whitelist). Empty/undefined means no restriction. */
+    allowedDepartments?: string[];
 }
 
 interface FavoriteEmployeeButtonsProps {
@@ -59,6 +61,8 @@ const labels = {
         infoPolicyPerRequest: 'Approval required',
         infoClose: 'Close',
         infoNoDescription: 'No description available',
+        infoDepartments: 'Accessible Departments',
+        infoDepartmentsUnrestricted: 'Unrestricted',
     },
     zhHans: {
         startChat: '\u5f00\u59cb\u5bf9\u8bdd',
@@ -91,6 +95,8 @@ const labels = {
         infoPolicyPerRequest: '\u9700\u8981\u5ba1\u6279',
         infoClose: '\u5173\u95ed',
         infoNoDescription: '\u6682\u65e0\u6280\u80fd\u4ecb\u7ecd',
+        infoDepartments: '\u53ef\u8bbf\u95ee\u90e8\u95e8',
+        infoDepartmentsUnrestricted: '\u65e0\u9650\u5236',
     },
     zhHant: {
         startChat: '\u958b\u59cb\u5c0d\u8a71',
@@ -123,6 +129,8 @@ const labels = {
         infoPolicyPerRequest: '\u9700\u8981\u5be9\u6279',
         infoClose: '\u95dc\u9589',
         infoNoDescription: '\u66ab\u7121\u6280\u80fd\u4ecb\u7d39',
+        infoDepartments: '\u53ef\u5b58\u53d6\u90e8\u9580',
+        infoDepartmentsUnrestricted: '\u7121\u9650\u5236',
     },
 };
 
@@ -724,6 +732,16 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                                 </span>
                             </div>
                             )}
+
+                            {/* Accessible departments */}
+                            <div style={infoRowStyle}>
+                                <span style={infoLabelStyle}>{text.infoDepartments}</span>
+                                <span style={infoValueStyle}>
+                                    {viewInfoSlot.allowedDepartments && viewInfoSlot.allowedDepartments.length > 0
+                                        ? viewInfoSlot.allowedDepartments.join('\uff1b')
+                                        : text.infoDepartmentsUnrestricted}
+                                </span>
+                            </div>
 
                             {/* Registration time */}
                             {viewInfoSlot.registeredAt && (

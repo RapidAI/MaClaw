@@ -99,6 +99,7 @@ function renderVETab(overrides: Partial<VETabProps> = {}, listResult?: VirtualEm
     const onStartConversation = vi.fn();
     const onSetFavorite = vi.fn();
     const onRemoveFavorite = vi.fn();
+    const onRenameEmployee = vi.fn();
     const listFn = vi.fn().mockImplementation(() => {
         if (listResult instanceof Error) return Promise.reject(listResult);
         return Promise.resolve(listResult ?? sampleVEs);
@@ -109,6 +110,7 @@ function renderVETab(overrides: Partial<VETabProps> = {}, listResult?: VirtualEm
             onStartConversation={onStartConversation}
             onSetFavorite={onSetFavorite}
             onRemoveFavorite={onRemoveFavorite}
+            onRenameEmployee={onRenameEmployee}
             theme={mockTheme}
             lang="zh"
             listVirtualEmployees={listFn}
@@ -116,7 +118,7 @@ function renderVETab(overrides: Partial<VETabProps> = {}, listResult?: VirtualEm
         />
     );
 
-    return { ...result, onStartConversation, onSetFavorite, onRemoveFavorite, listFn };
+    return { ...result, onStartConversation, onSetFavorite, onRemoveFavorite, onRenameEmployee, listFn };
 }
 
 describe('VirtualEmployeeTab', () => {
@@ -307,6 +309,33 @@ describe('VirtualEmployeeTab', () => {
             expect(item.getAttribute("title")).toContain("1");
         });
 
+        it('uses local renamed display names in the main employee list', async () => {
+            renderVETab({ favoriteEmployeeNames: { "ve-1": "Dragon Bot" } });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(screen.getByTestId("ve-item-ve-1").textContent).toContain("Dragon Bot");
+            expect(screen.getByTestId("ve-item-ve-1").textContent).not.toContain("Translator");
+        });
+
+        it('opens conversations with local renamed display names', async () => {
+            const { onStartConversation } = renderVETab({ favoriteEmployeeNames: { "ve-1": "Dragon Bot" } });
+            await act(async () => { await Promise.resolve(); });
+
+            fireEvent.click(screen.getByTestId("ve-item-ve-1"));
+
+            expect(onStartConversation).toHaveBeenCalledWith(expect.objectContaining({ id: "ve-1", name: "Dragon Bot" }));
+        });
+
+        it('filters by local renamed display names', async () => {
+            renderVETab({ favoriteEmployeeNames: { "ve-1": "Dragon Bot" } });
+            await act(async () => { await Promise.resolve(); });
+
+            fireEvent.change(screen.getByTestId("ve-search-input"), { target: { value: "dragon" } });
+
+            expect(screen.getByTestId("ve-item-ve-1")).toBeTruthy();
+            expect(screen.queryByTestId("ve-item-ve-2")).toBeNull();
+        });
+
         it('shows green dot for online employees', async () => {
             renderVETab();
             await act(async () => { await Promise.resolve(); });
@@ -367,12 +396,36 @@ describe('VirtualEmployeeTab', () => {
             expect(onStartConversation).toHaveBeenCalledWith(sampleVEs[0]);
         });
 
+        it('starts context-menu conversations with local renamed display names', async () => {
+            const { onStartConversation } = renderVETab({ favoriteEmployeeNames: { "ve-1": "Dragon Bot" } });
+            await act(async () => { await Promise.resolve(); });
+
+            fireEvent.contextMenu(screen.getByTestId("ve-item-ve-1"));
+            fireEvent.click(screen.getByTestId("ve-menu-conversation"));
+
+            expect(onStartConversation).toHaveBeenCalledWith(expect.objectContaining({ id: "ve-1", name: "Dragon Bot" }));
+        });
+
         it('calls onSetFavorite from context menu "设为常用"', async () => {
             const { onSetFavorite } = renderVETab();
             await act(async () => { await Promise.resolve(); });
             fireEvent.contextMenu(screen.getByTestId("ve-item-ve-1"));
             fireEvent.click(screen.getByTestId("ve-menu-set-favorite"));
             expect(onSetFavorite).toHaveBeenCalledWith(sampleVEs[0]);
+        });
+
+        it('renames an employee from the context menu and updates the list label', async () => {
+            const { onRenameEmployee } = renderVETab();
+            await act(async () => { await Promise.resolve(); });
+
+            fireEvent.contextMenu(screen.getByTestId("ve-item-ve-1"));
+            fireEvent.click(screen.getByTestId("ve-menu-rename"));
+            fireEvent.change(screen.getByTestId("ve-rename-input"), { target: { value: "Docs Translator" } });
+            fireEvent.click(screen.getByTestId("ve-rename-save"));
+            await act(async () => { await Promise.resolve(); });
+
+            expect(onRenameEmployee).toHaveBeenCalledWith(sampleVEs[0], "Docs Translator");
+            expect(screen.getByTestId("ve-item-ve-1").textContent).toContain("Docs Translator");
         });
 
         it('does not show favorite action for resident employees', async () => {

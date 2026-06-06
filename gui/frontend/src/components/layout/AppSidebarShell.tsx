@@ -86,7 +86,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     onSetFavoriteEmployee?: (ve: VirtualEmployeeEntry) => void;
     onRemoveFavoriteEmployee?: (ve: VirtualEmployeeEntry) => void;
     onRemoveFavoriteEmployeeById?: (veId: string) => void;
-    favoriteEmployeeIds?: string[];
+    favoriteEmployeeIds?: string[]; favoriteEmployeeNames?: Record<string, string>;
     showCodingToolEntry?: boolean;
 }
 
@@ -161,7 +161,7 @@ export const AppSidebarShell = ({
     onSetFavoriteEmployee,
     onRemoveFavoriteEmployee,
     onRemoveFavoriteEmployeeById,
-    favoriteEmployeeIds = [],
+    favoriteEmployeeIds = [], favoriteEmployeeNames = {},
     showCodingToolEntry = false,
 }: AppSidebarShellProps) => (
 <>
@@ -247,7 +247,7 @@ export const AppSidebarShell = ({
                         onOpenVEConversation={onOpenVEConversation}
                         onSetFavoriteEmployee={onSetFavoriteEmployee}
                         onRemoveFavoriteEmployee={onRemoveFavoriteEmployee}
-                        favoriteEmployeeIds={favoriteEmployeeIds}
+                        favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onRenameEmployee={(ve, name) => onRenameFavoriteEmployee?.(String(ve.machine_id || ve.id || '').trim() || ve.id, name)}
                         showCodingToolEntry={showCodingToolEntry}
                         digitalEmployeeFeatureStatus={digitalEmployeeFeatureStatus}
                         showDigitalEmployeeNavigation={showDigitalEmployeeNavigation}
