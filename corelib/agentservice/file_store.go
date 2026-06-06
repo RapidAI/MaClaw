@@ -169,6 +169,14 @@ func (s *FileStore) ListMessages(sessionID string) ([]Message, error) {
 	return s.inner.ListMessages(sessionID)
 }
 
+func (s *FileStore) DeleteMessages(sessionID string, ids []string) (int, error) {
+	deleted, err := s.inner.DeleteMessages(sessionID, ids)
+	if err != nil || deleted == 0 {
+		return deleted, err
+	}
+	return deleted, s.flush()
+}
+
 func (s *FileStore) SaveRun(v Run) error {
 	if err := s.inner.SaveRun(v); err != nil {
 		return err

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
+import { participantIdentityMatches } from '../ai/participantIdentity';
 import { safeAvatarDataURL } from '../ai/virtualEmployeeAvatar';
+import { isVirtualEmployeeOnline } from '../ai/virtualEmployeeStatus';
 import { MAX_FAVORITE_EMPLOYEES } from './favoriteEmployees';
 
 interface FavoriteEmployeeSettingsPanelProps {
@@ -29,14 +31,16 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
         }
         return map;
     }, [veList]);
-    const favoriteIdSet = useMemo(() => new Set(favoriteEmployeeIds), [favoriteEmployeeIds]);
+    const isFavoriteIdentity = (ve: Pick<VirtualEmployeeEntry, 'id' | 'machine_id'>) => {
+        return favoriteEmployeeIds.some(id => participantIdentityMatches(id, ve.id) || participantIdentityMatches(id, ve.machine_id));
+    };
 
     const favoriteVEs = favoriteEmployeeIds.map(id => {
-        const ve = veById.get(id);
-        return { id, name: ve?.name || id.slice(0, 8), online: ve?.online_status === 'online', avatarDataURL: safeAvatarDataURL(ve?.avatar_data_url) };
+        const ve = veById.get(id) || veList.find(item => participantIdentityMatches(item.id, id) || participantIdentityMatches(item.machine_id, id));
+        return { id, name: ve?.name || id.slice(0, 8), online: isVirtualEmployeeOnline(ve), avatarDataURL: safeAvatarDataURL(ve?.avatar_data_url) };
     });
 
-    const availableVEs = veList.filter(ve => !favoriteIdSet.has(ve.id) && !favoriteIdSet.has(ve.machine_id || ''));
+    const availableVEs = veList.filter(ve => isVirtualEmployeeOnline(ve) && !ve.resident && !isFavoriteIdentity(ve));
 
     const handleDragStart = (index: number) => (e: React.DragEvent) => {
         dragSourceIndex.current = index;
@@ -157,9 +161,9 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
                                             {avatarDataURL ? (
                                                 <img className="favorite-employee-settings__avatar favorite-employee-settings__avatar--picker" src={avatarDataURL} alt="" />
                                             ) : (
-                                                <span className="favorite-employee-settings__picker-status" data-online={ve.online_status === 'online' ? 'true' : 'false'} aria-hidden="true" />
+                                                <span className="favorite-employee-settings__picker-status" data-online={isVirtualEmployeeOnline(ve) ? 'true' : 'false'} aria-hidden="true" />
                                             )}
-                                            <span className="favorite-employee-settings__sr-only">{ve.online_status === 'online' ? onlineLabel : offlineLabel}</span>
+                                            <span className="favorite-employee-settings__sr-only">{isVirtualEmployeeOnline(ve) ? onlineLabel : offlineLabel}</span>
                                             <span className="favorite-employee-settings__picker-name" title={ve.name}>{ve.name}</span>
                                         </button>
                                     );

@@ -56,6 +56,75 @@ func TestVirtualEmployeeEntryDecodesAccessLists(t *testing.T) {
 	}
 }
 
+func TestListVirtualEmployeesReturnsOnlineEmployeesOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ve/discoverable" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]any{
+			{"id": "ve-online", "machine_id": "machine-online", "name": "Online", "skill_description": "work", "access_policy": "public", "status": "active", "online_status": "online"},
+			{"id": "ve-spaced-online", "machine_id": "machine-spaced-online", "name": "Spaced Online", "skill_description": "work", "access_policy": "public", "status": "active", "online_status": " Online "},
+			{"id": "ve-offline", "machine_id": "machine-offline", "name": "Offline", "skill_description": "work", "access_policy": "public", "status": "active", "online_status": "offline"},
+			{"id": "ve-spaced-offline", "machine_id": "machine-spaced-offline", "name": "Spaced Offline", "skill_description": "work", "access_policy": "public", "status": "active", "online_status": " Offline "},
+			{"id": "ve-blank", "machine_id": "machine-blank", "name": "Blank", "skill_description": "work", "access_policy": "public", "status": "active"},
+		}})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-local",
+		RemoteMachineToken: "token-1",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	employees, err := app.ListVirtualEmployees()
+	if err != nil {
+		t.Fatalf("ListVirtualEmployees: %v", err)
+	}
+	got := map[string]bool{}
+	for _, employee := range employees {
+		got[employee.ID] = true
+	}
+	if len(employees) != 2 || !got["ve-online"] || !got["ve-spaced-online"] {
+		t.Fatalf("employees = %+v, want only online entries with status normalization", employees)
+	}
+}
+
+func TestDiscoverableVEParticipantIDsSkipsOfflineEmployees(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ve/discoverable" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]any{
+			{"id": "ve-online", "machine_id": "machine-online", "name": "Online", "skill_description": "work", "access_policy": "public", "status": "active", "online_status": "online"},
+			{"id": "ve-offline", "machine_id": "machine-offline", "name": "Offline", "skill_description": "work", "access_policy": "public", "status": "active", "online_status": "offline"},
+		}})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-local",
+		RemoteMachineToken: "token-1",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	ids := app.discoverableVEParticipantIDs()
+	if ids["machine-online"] != "machine-online" {
+		t.Fatalf("online employee missing from discoverable IDs: %#v", ids)
+	}
+	if got := ids["machine-offline"]; got != "" {
+		t.Fatalf("offline employee leaked into discoverable IDs as %q: %#v", got, ids)
+	}
+}
+
 func TestRegisterVirtualEmployeeRejectsInvalidAvatarBeforeHub(t *testing.T) {
 	hubCalls := int32(0)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

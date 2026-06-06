@@ -159,7 +159,7 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 			}
 		}
 	}
-	if isAllowedSkillSourceList("github", allowedSources) && ctx.Err() == nil {
+	if isAllowedSkillSourceList("github", allowedSources) && contextErr(ctx) == nil {
 		if ok, reason := s.allowSearchSource("github", "https://github.com", query); !ok {
 			errs = append(errs, fmt.Sprintf("github: %s", reason))
 		} else {
@@ -428,6 +428,25 @@ func mixedResultMatchesSkill(result MixedSkillSearchResult, skill corelib.NLSkil
 // SearchAndInstall searches and auto-installs the best matching skill.
 // Search order: SkillMarket, then ClawHub mirror, then GitHub.
 func (s *SkillSearcher) SearchAndInstall(ctx context.Context, query string) (*SkillSearchResult, error) {
+	return s.SearchAndInstallForTask(ctx, query, query)
+}
+
+// SearchAndInstallForTask searches with query, then validates candidate
+// capabilities against taskText. Retrieval text and user intent text can differ:
+// async capability repair may distill a short search query from a failure, while
+// compatibility must still reflect the original user action.
+func (s *SkillSearcher) SearchAndInstallForTask(ctx context.Context, query string, taskText string) (*SkillSearchResult, error) {
+	if err := contextErr(ctx); err != nil {
+		return nil, err
+	}
+	query = strings.TrimSpace(query)
+	taskText = strings.TrimSpace(taskText)
+	if query == "" {
+		return nil, nil
+	}
+	if taskText == "" {
+		taskText = query
+	}
 	allowedSources := []string(nil)
 	if s.app != nil {
 		allowedSources = s.app.GetAllowedSkillSources()
@@ -460,7 +479,11 @@ func (s *SkillSearcher) SearchAndInstall(ctx context.Context, query string) (*Sk
 		} else {
 			// Step 3: GitHub fallback
 			log.Printf("[skill-search] no ClawHub results for: %s, trying GitHub fallback...", query)
-			return s.searchGitHubFallback(ctx, query)
+			best, err := s.searchGitHubFallback(ctx, query, taskText)
+			if err != nil || best == nil {
+				return best, err
+			}
+			results = []SkillSearchResult{*best}
 		}
 	}
 	if len(results) == 0 {
@@ -486,9 +509,39 @@ func (s *SkillSearcher) SearchAndInstall(ctx context.Context, query string) (*Sk
 		results = filtered
 	}
 
+	results = filterSkillSearchResultsForIntent(taskText, results)
+	if len(results) == 0 {
+		log.Printf("[skill-search] no intent-compatible results for query: %s", query)
+		return nil, nil
+	}
+
 	// Choose the first result; results are already sorted by quality.
 	best := &results[0]
 	return best, nil
+}
+
+func contextErr(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
+}
+
+func filterSkillSearchResultsForIntent(query string, results []SkillSearchResult) []SkillSearchResult {
+	if len(results) == 0 {
+		return results
+	}
+	userIntent := extractUserIntentCategory(query)
+	filtered := results[:0]
+	for _, result := range results {
+		skillText := strings.TrimSpace(result.Name + " " + result.Description)
+		if isTaskCompatibleWithSkillCandidate(userIntent, query, skillText) {
+			filtered = append(filtered, result)
+		} else {
+			log.Printf("[skill-search] rejected intent-incompatible skill candidate %q for query intent %q", result.Name, userIntent)
+		}
+	}
+	return filtered
 }
 
 // searchClawHubMirror queries the ClawHub China mirror for skills.
@@ -515,16 +568,27 @@ func (s *SkillSearcher) searchClawHubMirror(ctx context.Context, query string) [
 }
 
 // searchGitHubFallback searches GitHub for skill.yaml files when SkillMarket
-// returns no results. Returns the first matching candidate as a SkillSearchResult.
-func (s *SkillSearcher) searchGitHubFallback(ctx context.Context, query string) (*SkillSearchResult, error) {
+// returns no results. It filters by task intent before choosing the top result.
+func (s *SkillSearcher) searchGitHubFallback(ctx context.Context, query string, taskText string) (*SkillSearchResult, error) {
+	if err := contextErr(ctx); err != nil {
+		return nil, err
+	}
 	gs := cskill.NewGitHubSearcher("")
 	candidates, err := gs.SearchGitHub(query)
 	if err != nil {
 		log.Printf("[skill-search] GitHub fallback error: %v", err)
 		return nil, nil
 	}
+	if err := contextErr(ctx); err != nil {
+		return nil, err
+	}
 	if len(candidates) == 0 {
 		log.Printf("[skill-search] GitHub fallback: no results for query: %s", query)
+		return nil, nil
+	}
+	candidates = filterGitHubSkillCandidatesForIntent(taskText, candidates)
+	if len(candidates) == 0 {
+		log.Printf("[skill-search] GitHub fallback: no intent-compatible results for query: %s", query)
 		return nil, nil
 	}
 	best := candidates[0]

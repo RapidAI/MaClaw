@@ -27,6 +27,8 @@ import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
 import type { AssistantUpdatePayload } from './components/ai/AssistantUpdateNotice';
 import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
+import { isVirtualEmployeeOnline } from './components/ai/virtualEmployeeStatus';
+import { participantIdentityKeys, participantIdentityMatches } from './components/ai/participantIdentity';
 import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureTabs } from './components/ai/digitalEmployeeFeature';
 import type { HistoryDiscussionSummary } from './components/layout/SidebarHistorySessions';
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
@@ -167,13 +169,30 @@ function favoriteEmployeeAliasIds(veId: string, veList: VirtualEmployeeEntry[]):
     const aliases = new Set<string>();
     const add = (value?: string) => {
         const id = String(value || '').trim();
-        if (id) aliases.add(id);
+        if (!id) return;
+        aliases.add(id);
+        participantIdentityKeys(id).forEach(key => aliases.add(key));
     };
     add(veId);
-    const ve = veList.find(v => v.id === veId || v.machine_id === veId);
+    const ve = veList.find(v => participantIdentityMatches(v.id, veId) || participantIdentityMatches(v.machine_id, veId));
     add(ve?.id);
     add(ve?.machine_id);
     return Array.from(aliases);
+}
+
+function favoriteEmployeeIDInAliasSet(id: string, aliases: Set<string>): boolean {
+    const normalized = String(id || '').trim();
+    if (!normalized) return false;
+    if (aliases.has(normalized)) return true;
+    return participantIdentityKeys(normalized).some(key => aliases.has(key));
+}
+
+function filterOnlineVirtualEmployees(list: VirtualEmployeeEntry[]): VirtualEmployeeEntry[] {
+    return Array.isArray(list) ? list.filter(isVirtualEmployeeOnline) : [];
+}
+
+function residentVirtualEmployeeAliases(ve: VirtualEmployeeEntry): string[] {
+    return favoriteEmployeeAliasIds(String(ve.machine_id || ve.id || '').trim() || ve.id, [ve]);
 }
 
 function App() {
@@ -302,17 +321,20 @@ function App() {
         if (!config?.remote_hub_url || !config?.remote_machine_id) return;
         let cancelled = false;
         let retryTimer: ReturnType<typeof setTimeout> | undefined;
+        let requestSeq = 0;
         const fetchVeList = () => {
+            const seq = requestSeq + 1;
+            requestSeq = seq;
             import("../wailsjs/go/main/App").then((mod) => {
-                if (cancelled) return;
+                if (cancelled || seq !== requestSeq) return;
                 if ((mod as any).ListVirtualEmployees) {
                     (mod as any).ListVirtualEmployees().then((list: VirtualEmployeeEntry[]) => {
-                        if (!cancelled && Array.isArray(list)) {
-                            setVeList(list);
+                        if (!cancelled && seq === requestSeq && Array.isArray(list)) {
+                            setVeList(filterOnlineVirtualEmployees(list));
                         }
                     }).catch(() => {
                         // Retry once after 5s on failure to handle transient Hub unavailability
-                        if (!cancelled && !retryTimer) {
+                        if (!cancelled && seq === requestSeq && !retryTimer) {
                             retryTimer = setTimeout(() => { retryTimer = undefined; fetchVeList(); }, 5000);
                         }
                     });
@@ -320,11 +342,13 @@ function App() {
             }).catch(() => {});
         };
         fetchVeList();
+        const refreshTimer = window.setInterval(fetchVeList, 30000);
         // Refresh on VE status changes
         const unsub1 = safeEventsOn("ve:list_update", fetchVeList);
         const unsub2 = safeEventsOn("ve:status_change", fetchVeList);
         return () => {
             cancelled = true;
+            window.clearInterval(refreshTimer);
             if (retryTimer) clearTimeout(retryTimer);
             if (typeof unsub1 === "function") unsub1(); else safeEventsOff("ve:list_update");
             if (typeof unsub2 === "function") unsub2(); else safeEventsOff("ve:status_change");
@@ -408,17 +432,56 @@ function App() {
         setPendingVEOpen(null);
         setPendingHistoryDiscussionOpen(null);
     }, [veAuthorized]);
+
+    const residentEmployeeAliasSet = useMemo(() => {
+        const aliases = new Set<string>();
+        veList.filter(ve => ve.resident).forEach(ve => {
+            residentVirtualEmployeeAliases(ve).forEach(alias => {
+                const normalized = String(alias || '').trim();
+                if (normalized) aliases.add(normalized);
+            });
+        });
+        return aliases;
+    }, [veList]);
+
+    const userFavoriteEmployeeIds = useMemo(() => {
+        return favoriteEmployeeIds.filter(id => !favoriteEmployeeIDInAliasSet(id, residentEmployeeAliasSet));
+    }, [favoriteEmployeeIds, residentEmployeeAliasSet]);
+
     // Resolve favorite IDs to display slots
     const favoriteEmployeeSlots = useMemo(() => {
-        return favoriteEmployeeIds.flatMap(id => {
+        const residentVE = veList.find(ve => {
+            if (!ve.resident || !isVirtualEmployeeOnline(ve)) return false;
+            if (isOwnVirtualEmployeeId(ve.id, config?.remote_machine_id) || isOwnVirtualEmployeeId(ve.machine_id || '', config?.remote_machine_id)) return false;
+            return true;
+        });
+        const residentSlots = residentVE ? (() => {
+            const participantId = String(residentVE.machine_id || residentVE.id || '').trim();
+            if (!participantId) return [];
+            const customName = favoriteEmployeeNames[participantId] || favoriteEmployeeNames[residentVE.id] || (residentVE.machine_id ? favoriteEmployeeNames[residentVE.machine_id] : '');
+            return [{ veId: participantId, name: customName || residentVE.name || participantId.slice(0, 6), online: true, skillDescription: residentVE.skill_description || '', avatarDataURL: residentVE.avatar_data_url || '', resident: true, accessPolicy: residentVE.access_policy || '', registeredAt: residentVE.registered_at || '', machineId: residentVE.machine_id || '' }];
+        })() : [];
+        const userSlots = userFavoriteEmployeeIds.flatMap(id => {
             if (isOwnVirtualEmployeeId(id, config?.remote_machine_id)) return [];
-            const ve = veList.find(v => v.id === id || v.machine_id === id);
+            const ve = veList.find(v => participantIdentityMatches(v.id, id) || participantIdentityMatches(v.machine_id, id));
+            if (!ve || !isVirtualEmployeeOnline(ve)) return [];
             if (ve && (isOwnVirtualEmployeeId(ve.id, config?.remote_machine_id) || isOwnVirtualEmployeeId(ve.machine_id || '', config?.remote_machine_id))) return [];
             const participantId = String(ve?.machine_id || id).trim();
+            if ([id, ve.id, ve.machine_id || '', participantId].some(alias => favoriteEmployeeIDInAliasSet(alias, residentEmployeeAliasSet))) return [];
             const customName = favoriteEmployeeNames[id] || favoriteEmployeeNames[participantId] || (ve?.id ? favoriteEmployeeNames[ve.id] : '');
-            return { veId: participantId, name: customName || ve?.name || id.slice(0, 6), online: ve?.online_status === 'online', skillDescription: ve?.skill_description || '', avatarDataURL: ve?.avatar_data_url || '' };
+            return { veId: participantId, name: customName || ve?.name || id.slice(0, 6), online: isVirtualEmployeeOnline(ve), skillDescription: ve?.skill_description || '', avatarDataURL: ve?.avatar_data_url || '', accessPolicy: ve?.access_policy || '', registeredAt: ve?.registered_at || '', machineId: ve?.machine_id || '' };
         });
-    }, [favoriteEmployeeIds, veList, config?.remote_machine_id, favoriteEmployeeNames]);
+        return [...residentSlots, ...userSlots];
+    }, [userFavoriteEmployeeIds, veList, config?.remote_machine_id, favoriteEmployeeNames, residentEmployeeAliasSet]);
+
+    const favoriteEmployeeReplaceSlots = useMemo(() => {
+        return userFavoriteEmployeeIds.map(id => {
+            const ve = veList.find(v => participantIdentityMatches(v.id, id) || participantIdentityMatches(v.machine_id, id));
+            const participantId = String(ve?.machine_id || id).trim();
+            const customName = favoriteEmployeeNames[id] || favoriteEmployeeNames[participantId] || (ve?.id ? favoriteEmployeeNames[ve.id] : '');
+            return { veId: participantId || id, name: customName || ve?.name || id.slice(0, 6) };
+        });
+    }, [userFavoriteEmployeeIds, favoriteEmployeeNames, veList]);
 
     const saveFavoriteEmployeeConfig = useCallback(async (newList: string[], newNames: Record<string, string>, options?: { throwOnError?: boolean }) => {
         const normalized = normalizeFavoriteEmployeeIds(newList);
@@ -442,41 +505,48 @@ function App() {
     }, [favoriteEmployeeIds, saveFavoriteEmployeeConfig]);
 
     const handleSetFavoriteEmployee = useCallback((ve: VirtualEmployeeEntry) => {
+        if (ve.resident) return;
         const favoriteId = String(ve.machine_id || ve.id || '').trim();
         if (!favoriteId) return;
-        if (favoriteEmployeeIds.some(id => id === favoriteId || id === ve.id || id === ve.machine_id)) return;
+        if (favoriteEmployeeIds.some(id => participantIdentityMatches(id, favoriteId) || participantIdentityMatches(id, ve.id) || participantIdentityMatches(id, ve.machine_id))) return;
         // Ensure the VE is in veList so favoriteEmployeeSlots can resolve it immediately.
         // Without this, if veList hasn't loaded yet or the fetch failed, the slot would
         // show a fallback name (id.slice(0,6)) instead of the actual VE name.
-        setVeList(prev => prev.some(v => v.id === ve.id || (!!v.machine_id && !!ve.machine_id && v.machine_id === ve.machine_id)) ? prev : [...prev, ve]);
-        if (favoriteEmployeeIds.length < MAX_FAVORITE_EMPLOYEES) {
-            updateFavoriteEmployees([...favoriteEmployeeIds, favoriteId]);
+        if (isVirtualEmployeeOnline(ve)) setVeList(prev => prev.some(v => v.id === ve.id || (!!v.machine_id && !!ve.machine_id && v.machine_id === ve.machine_id)) ? prev : [...prev, ve]);
+        if (userFavoriteEmployeeIds.length < MAX_FAVORITE_EMPLOYEES) {
+            updateFavoriteEmployees([...userFavoriteEmployeeIds, favoriteId]);
         } else {
             setShowFavReplacePicker({ ve });
         }
-    }, [favoriteEmployeeIds, updateFavoriteEmployees]);
+    }, [favoriteEmployeeIds, updateFavoriteEmployees, userFavoriteEmployeeIds]);
 
     const handleReplaceFavorite = useCallback((index: number) => {
         if (!showFavReplacePicker) return;
-        if (index < 0 || index >= favoriteEmployeeIds.length) {
+        if (index < 0 || index >= userFavoriteEmployeeIds.length) {
             setShowFavReplacePicker(null);
             return;
         }
         const ve = showFavReplacePicker.ve;
+        if (ve.resident) {
+            setShowFavReplacePicker(null);
+            return;
+        }
         // Ensure the VE is in veList for immediate resolution (same as handleSetFavoriteEmployee)
-        setVeList(prev => prev.some(v => v.id === ve.id || (!!v.machine_id && !!ve.machine_id && v.machine_id === ve.machine_id)) ? prev : [...prev, ve]);
-        const newList = [...favoriteEmployeeIds];
+        if (isVirtualEmployeeOnline(ve)) setVeList(prev => prev.some(v => v.id === ve.id || (!!v.machine_id && !!ve.machine_id && v.machine_id === ve.machine_id)) ? prev : [...prev, ve]);
+        const newList = [...userFavoriteEmployeeIds];
         const previousId = newList[index];
         newList[index] = String(ve.machine_id || ve.id || '').trim() || ve.id;
         const nextNames = { ...favoriteEmployeeNames };
         favoriteEmployeeAliasIds(previousId, veList).forEach(id => { delete nextNames[id]; });
         saveFavoriteEmployeeConfig(newList, nextNames);
         setShowFavReplacePicker(null);
-    }, [favoriteEmployeeIds, favoriteEmployeeNames, saveFavoriteEmployeeConfig, showFavReplacePicker, veList]);
+    }, [favoriteEmployeeNames, saveFavoriteEmployeeConfig, showFavReplacePicker, userFavoriteEmployeeIds, veList]);
 
     const handleRemoveFavoriteEmployee = useCallback((veId: string) => {
+        const target = veList.find(v => participantIdentityMatches(v.id, veId) || participantIdentityMatches(v.machine_id, veId));
+        if (target?.resident) return;
         const aliases = new Set(favoriteEmployeeAliasIds(veId, veList));
-        const nextIds = favoriteEmployeeIds.filter(id => !aliases.has(id));
+        const nextIds = favoriteEmployeeIds.filter(id => !favoriteEmployeeIDInAliasSet(id, aliases));
         const nextNames = { ...favoriteEmployeeNames };
         aliases.forEach(id => { delete nextNames[id]; });
         saveFavoriteEmployeeConfig(nextIds, nextNames);
@@ -485,17 +555,17 @@ function App() {
     const handleRenameFavoriteEmployee = useCallback((veId: string, name: string) => {
         const nextName = name.trim();
         if (!nextName) return;
-        const ve = veList.find(v => v.id === veId || v.machine_id === veId);
-        const favoriteId = favoriteEmployeeIds.find(id => id === veId || id === ve?.id || id === ve?.machine_id) || veId;
+        const ve = veList.find(v => participantIdentityMatches(v.id, veId) || participantIdentityMatches(v.machine_id, veId));
+        const favoriteId = favoriteEmployeeIds.find(id => participantIdentityMatches(id, veId) || participantIdentityMatches(id, ve?.id) || participantIdentityMatches(id, ve?.machine_id)) || veId;
         return updateFavoriteEmployeeNames({ ...favoriteEmployeeNames, [favoriteId]: nextName });
     }, [favoriteEmployeeIds, favoriteEmployeeNames, updateFavoriteEmployeeNames, veList]);
 
     const handleReorderFavorites = useCallback((newOrder: string[]) => {
-        updateFavoriteEmployees(newOrder);
-    }, [updateFavoriteEmployees]);
+        updateFavoriteEmployees(newOrder.filter(id => !favoriteEmployeeIDInAliasSet(id, residentEmployeeAliasSet)));
+    }, [residentEmployeeAliasSet, updateFavoriteEmployees]);
 
     const handleStartFavoriteVEConversation = useCallback((veId: string) => {
-        const ve = veList.find(v => v.id === veId || v.machine_id === veId);
+        const ve = veList.find(v => participantIdentityMatches(v.id, veId) || participantIdentityMatches(v.machine_id, veId));
         if (ve) {
             setPendingVEOpen(ve);
         } else {
@@ -2715,7 +2785,7 @@ ${instruction}`;
                 onSetFavoriteEmployee={handleSetFavoriteEmployee}
                 onRemoveFavoriteEmployeeById={handleRemoveFavoriteEmployee}
                 onRemoveFavoriteEmployee={(ve) => handleRemoveFavoriteEmployee(ve.id)}
-                favoriteEmployeeIds={favoriteEmployeeIds}
+                favoriteEmployeeIds={userFavoriteEmployeeIds}
                 showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
             />
             <div className="main-container" data-ai-theme={aiThemeMode}>
@@ -3002,10 +3072,10 @@ ${instruction}`;
                             {veNavigationAvailable && (
                                 <div className="settings-content settings-panel" hidden={settingsTab !== 'virtualEmployee'}>
                                     <div className="settings-ve-section">
-                                        <FavoriteEmployeeSettingsPanel
-                                            favoriteEmployeeIds={favoriteEmployeeIds}
+                                            <FavoriteEmployeeSettingsPanel
+                                            favoriteEmployeeIds={userFavoriteEmployeeIds}
                                             veList={veList}
-                                            onAdd={(veId) => handleSetFavoriteEmployee(veList.find(v => v.id === veId || v.machine_id === veId) || { id: veId, name: veId, skill_description: '', access_policy: 'public', status: 'active', online_status: 'online' })}
+                                            onAdd={(veId) => handleSetFavoriteEmployee(veList.find(v => participantIdentityMatches(v.id, veId) || participantIdentityMatches(v.machine_id, veId)) || { id: veId, name: veId, skill_description: '', access_policy: 'public', status: 'active', online_status: 'online' })}
                                             onRemove={handleRemoveFavoriteEmployee}
                                             onReorder={handleReorderFavorites}
                                             lang={lang}
@@ -3985,7 +4055,7 @@ ${instruction}`;
             {/* Favorite Employee Replace Picker */}
             {showFavReplacePicker && (
                 <FavoriteEmployeeReplacePicker
-                    currentSlots={favoriteEmployeeSlots.map(s => ({ veId: s.veId, name: s.name }))}
+                    currentSlots={favoriteEmployeeReplaceSlots}
                     newVeName={showFavReplacePicker.ve.name}
                     onReplace={handleReplaceFavorite}
                     onCancel={() => setShowFavReplacePicker(null)}

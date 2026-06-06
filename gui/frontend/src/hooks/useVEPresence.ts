@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../wailsjs/runtime";
 import type { VirtualEmployeeEntry } from "../components/ai/VirtualEmployeeTab";
+import { isVirtualEmployeeOnline } from "../components/ai/virtualEmployeeStatus";
 import type { VEOnlineStatus } from "../components/ai/VEStatusDot";
 
 // --- Constants ---
@@ -23,6 +24,10 @@ const TICK_INTERVAL = 15_000;          // 15s re-render tick for expiry check
 export interface VEPresenceInfo {
     hubStatus: "online" | "offline";
     fetchedAt: number;
+}
+
+function presenceLookupIDs(ve: Pick<VirtualEmployeeEntry, "id" | "machine_id">): string[] {
+    return Array.from(new Set([ve.id, ve.machine_id].map((id) => String(id || "").trim()).filter(Boolean)));
 }
 
 export interface UseVEPresenceReturn {
@@ -86,10 +91,13 @@ export function useVEPresence({ hubConfigured, listVirtualEmployees }: UseVEPres
             // Build presence map (mutate ref, no state update needed)
             const newMap = new Map<string, VEPresenceInfo>();
             for (const ve of (list || [])) {
-                newMap.set(ve.id, {
-                    hubStatus: ve.online_status === "online" ? "online" : "offline",
+                const info: VEPresenceInfo = {
+                    hubStatus: isVirtualEmployeeOnline(ve) ? "online" : "offline",
                     fetchedAt: now,
-                });
+                };
+                for (const id of presenceLookupIDs(ve)) {
+                    newMap.set(id, info);
+                }
             }
             presenceMapRef.current = newMap;
         } catch {

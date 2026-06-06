@@ -1059,3 +1059,7 @@ export function KnowledgeDeepCrawl(arg1:any):Promise<any>;
 export function KnowledgeDeepCrawlPreview(arg1:any):Promise<any>;
 
 export function KnowledgeDeepCrawlCancel():Promise<any>;
+
+export function KnowledgeGetImageAssetPaths(arg1:string):Promise<{[key:string]:string}>;
+
+export function KnowledgeOpenImageFile(arg1:string):Promise<void>;

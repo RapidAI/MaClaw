@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { participantIdentityMatches } from "./participantIdentity";
 export { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
+import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
 
 // --- Types ---
 
@@ -17,6 +18,7 @@ export interface VirtualEmployeeEntry {
     access_policy: "public" | "whitelist" | "blacklist" | "per_request";
     status: string;
     online_status: "online" | "offline";
+    resident?: boolean;
     registered_at?: string;
 }
 
@@ -119,12 +121,15 @@ function isFavoriteEmployee(ve: Pick<VirtualEmployeeEntry, "id" | "machine_id">,
 export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtualEmployees, favoriteEmployeeIds, onSetFavorite, onRemoveFavorite }: VETabProps) {
     const [employees, setEmployees] = useState<VirtualEmployeeEntry[]>([]);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
     const [error, setError] = useState<string>("");
+    const [query, setQuery] = useState("");
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; ve: VirtualEmployeeEntry } | null>(null);
 
     const throttleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingRefreshRef = useRef(false);
     const mountedRef = useRef(true);
+    const requestSeqRef = useRef(0);
 
     // Resolve the list function - use injected or dynamically import Wails binding
     const listFnRef = useRef<(() => Promise<VirtualEmployeeEntry[]>) | null>(listVirtualEmployees || null);
@@ -134,8 +139,14 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
             // Dynamically import to avoid hard dependency in tests
             import("../../../wailsjs/go/main/App").then((mod) => {
                 if (mountedRef.current) {
-                    listFnRef.current = (mod as any).ListVirtualEmployees;
-                    fetchList();
+                    const listFn = (mod as any).ListVirtualEmployees;
+                    if (typeof listFn === "function") {
+                        listFnRef.current = listFn;
+                        fetchList();
+                    } else {
+                        setError("hub_unavailable");
+                        setLoading(false);
+                    }
                 }
             }).catch(() => {
                 if (mountedRef.current) {
@@ -147,23 +158,32 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const fetchList = useCallback(() => {
+    const fetchList = useCallback((options?: { showLoading?: boolean }) => {
         const fn = listFnRef.current;
         if (!fn) return;
-        setLoading(true);
+        const requestSeq = requestSeqRef.current + 1;
+        requestSeqRef.current = requestSeq;
+        const showLoading = options?.showLoading !== false;
+        if (showLoading) setLoading(true);
+        else setRefreshing(true);
         fn()
             .then((result) => {
-                if (!mountedRef.current) return;
-                setEmployees(result || []);
+                if (!mountedRef.current || requestSeq !== requestSeqRef.current) return;
+                setEmployees(Array.isArray(result) ? result : []);
                 setError("");
             })
             .catch(() => {
-                if (!mountedRef.current) return;
-                setError("hub_unavailable");
-                setEmployees([]);
+                if (!mountedRef.current || requestSeq !== requestSeqRef.current) return;
+                if (showLoading) {
+                    setError("hub_unavailable");
+                    setEmployees([]);
+                }
             })
             .finally(() => {
-                if (mountedRef.current) setLoading(false);
+                if (mountedRef.current && requestSeq === requestSeqRef.current) {
+                    setLoading(false);
+                    setRefreshing(false);
+                }
             });
     }, []);
 
@@ -181,12 +201,12 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
             pendingRefreshRef.current = true;
             return;
         }
-        fetchList();
+        fetchList({ showLoading: false });
         throttleRef.current = setTimeout(() => {
             throttleRef.current = null;
             if (pendingRefreshRef.current) {
                 pendingRefreshRef.current = false;
-                fetchList();
+                fetchList({ showLoading: false });
             }
         }, 500);
     }, [fetchList]);
@@ -196,8 +216,10 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
         mountedRef.current = true;
         const unsub1 = EventsOn("ve:list_update", () => throttledRefresh());
         const unsub2 = EventsOn("ve:status_change", () => throttledRefresh());
+        const interval = window.setInterval(() => throttledRefresh(), 30000);
         return () => {
             mountedRef.current = false;
+            window.clearInterval(interval);
             if (throttleRef.current) {
                 clearTimeout(throttleRef.current);
                 throttleRef.current = null;
@@ -245,6 +267,103 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
     // --- Render ---
 
     const isZh = !lang || lang.startsWith("zh");
+    const onlineEmployees = employees.filter(isVirtualEmployeeOnline);
+    const normalizedQuery = query.trim().toLowerCase();
+    const visibleEmployees = normalizedQuery
+        ? onlineEmployees.filter((employee) => {
+            return [
+                employee.name,
+                employee.skill_description,
+                employee.id,
+                employee.machine_id || "",
+            ].some((value) => String(value || "").toLowerCase().includes(normalizedQuery));
+        })
+        : onlineEmployees;
+    const refreshLabel = isZh ? "\u5237\u65b0\u6570\u5b57\u5458\u5de5\u5217\u8868" : "Refresh digital employees";
+    const searchLabel = isZh ? "\u641c\u7d22\u6570\u5b57\u5458\u5de5" : "Search digital employees";
+    const searchPlaceholder = isZh ? "\u641c\u7d22\u540d\u79f0\u6216\u6280\u80fd" : "Search name or skill";
+    const emptyListText = employees.length > 0
+        ? (normalizedQuery && onlineEmployees.length > 0
+            ? (isZh ? "\u672a\u627e\u5230\u5339\u914d\u7684\u5728\u7ebf\u6570\u5b57\u5458\u5de5" : "No matching online digital employees")
+            : (isZh ? "\u6682\u65e0\u5728\u7ebf\u7684\u6570\u5b57\u5458\u5de5" : "No online digital employees"))
+        : (isZh ? "\u6682\u65e0\u53ef\u7528\u7684\u6570\u5b57\u5458\u5de5" : "No digital employees available");
+
+    const renderShell = (children: ReactNode, options?: { testId?: string; center?: boolean }) => (
+        <div style={{ position: "relative", overflow: "auto", height: "100%" }} data-testid={options?.testId || "ve-list-container"}>
+            <div
+                style={{
+                    position: "sticky",
+                    top: 0,
+                    zIndex: 2,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "6px 8px",
+                    background: theme.bg,
+                    borderBottom: `1px solid ${theme.divider}`,
+                }}
+            >
+                <input
+                    data-testid="ve-search-input"
+                    aria-label={searchLabel}
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder={searchPlaceholder}
+                    style={{
+                        flex: 1,
+                        minWidth: 0,
+                        height: 28,
+                        borderRadius: 6,
+                        border: `1px solid ${theme.divider}`,
+                        background: theme.fieldBg,
+                        color: theme.text,
+                        padding: "0 9px",
+                        fontSize: 12,
+                        outline: "none",
+                    }}
+                />
+                <button
+                    type="button"
+                    data-testid="ve-refresh-button"
+                    aria-label={refreshLabel}
+                    title={refreshLabel}
+                    disabled={refreshing}
+                    onClick={() => fetchList({ showLoading: false })}
+                    style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 6,
+                        border: `1px solid ${theme.divider}`,
+                        background: theme.bg,
+                        color: theme.textMuted,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                        cursor: refreshing ? "default" : "pointer",
+                        opacity: refreshing ? 0.62 : 0.96,
+                        transition: "background 0.15s, color 0.15s, opacity 0.15s",
+                    }}
+                    onMouseEnter={(e) => {
+                        if (refreshing) return;
+                        (e.currentTarget as HTMLElement).style.background = theme.fieldBg;
+                        (e.currentTarget as HTMLElement).style.color = theme.text;
+                    }}
+                    onMouseLeave={(e) => {
+                        (e.currentTarget as HTMLElement).style.background = theme.bg;
+                        (e.currentTarget as HTMLElement).style.color = theme.textMuted;
+                    }}
+                >
+                    <span aria-hidden="true" style={{ fontSize: 15, lineHeight: 1, transform: refreshing ? "rotate(20deg)" : undefined }}>
+                        {"\u21bb"}
+                    </span>
+                </button>
+            </div>
+            <div style={options?.center ? { display: "flex", alignItems: "center", justifyContent: "center", minHeight: "calc(100% - 41px)", padding: "0 12px 12px" } : undefined}>
+                {children}
+            </div>
+        </div>
+    );
 
     if (loading) {
         return (
@@ -255,24 +374,26 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
     }
 
     if (error === "hub_unavailable") {
-        return (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 12, color: theme.textMuted, fontSize: 12 }} data-testid="ve-empty-hub">
+        return renderShell(
+            <div style={{ color: theme.textMuted, fontSize: 12 }} data-testid="ve-empty-hub">
                 <span>{isZh ? "Hub \u4e0d\u53ef\u7528\uff0c\u65e0\u6cd5\u83b7\u53d6\u6570\u5b57\u5458\u5de5\u5217\u8868" : "Hub unavailable"}</span>
-            </div>
+            </div>,
+            { testId: "ve-error-container", center: true }
         );
     }
 
-    if (employees.length === 0) {
-        return (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 12, color: theme.textMuted, fontSize: 12 }} data-testid="ve-empty-list">
-                <span>{isZh ? "\u6682\u65e0\u53ef\u7528\u7684\u6570\u5b57\u5458\u5de5" : "No digital employees available"}</span>
-            </div>
+    if (visibleEmployees.length === 0) {
+        return renderShell(
+            <div style={{ color: theme.textMuted, fontSize: 12 }} data-testid="ve-empty-list">
+                <span>{emptyListText}</span>
+            </div>,
+            { testId: "ve-empty-container", center: true }
         );
     }
 
-    return (
-        <div style={{ position: "relative", overflow: "auto", height: "100%" }} data-testid="ve-list-container">
-            {employees.map((ve, index) => {
+    return renderShell(
+        <>
+            {visibleEmployees.map((ve, index) => {
                 const displayName = readableVirtualEmployeeName(ve, index, lang);
                 return (
                 <div
@@ -314,7 +435,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                 width: 8,
                                 height: 8,
                                 borderRadius: "50%",
-                                background: ve.online_status === "online" ? "#22c55e" : "#9ca3af",
+                                background: isVirtualEmployeeOnline(ve) ? "#22c55e" : "#9ca3af",
                                 border: `1.5px solid ${theme.bg}`,
                                 boxSizing: "border-box",
                             }}
@@ -358,7 +479,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
             {/* Context menu */}
             {contextMenu && (() => {
                 const isFav = isFavoriteEmployee(contextMenu.ve, favoriteEmployeeIds);
-                const hasFavAction = !!(onSetFavorite || onRemoveFavorite);
+                const hasFavAction = !contextMenu.ve.resident && !!(onSetFavorite || onRemoveFavorite);
                 return (
                 <div
                     ref={menuRef}
@@ -413,6 +534,6 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                 </div>
                 );
             })()}
-        </div>
+        </>
     );
 }

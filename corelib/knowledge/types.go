@@ -14,6 +14,7 @@ const (
 	SourceKindCSV              = "csv"
 	SourceKindMarkdown         = "markdown"
 	SourceKindText             = "text"
+	SourceKindImage            = "image"
 	SourceKindConversation     = "conversation"
 	SourceKindWorkflowArtifact = "workflow_artifact"
 
@@ -50,6 +51,29 @@ const (
 const DefaultMaxFileBytes int64 = 100 * 1024 * 1024
 
 var DefaultIncludeExts = []string{".docx", ".pdf", ".pptx", ".xlsx", ".csv", ".md", ".txt", ".doc", ".xls"}
+
+// ImageIncludeExts are image file extensions supported for knowledge import.
+// These are NOT in DefaultIncludeExts — they are only included when the user
+// explicitly enables "include images" (knowledge_include_images config or --include-images flag).
+var ImageIncludeExts = []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+// DocumentNode type constants for image nodes.
+const (
+	NodeTypeImage = "image" // image node extracted from document or imported standalone
+)
+
+// DocumentNode metadata keys for image nodes.
+const (
+	MetaImageAssetPath = "image_asset_path" // path to stored image asset (relative to knowledge_assets/)
+	MetaImageWidth     = "image_width"      // pixel width
+	MetaImageHeight    = "image_height"     // pixel height
+	MetaImageFormat    = "image_format"     // "png", "jpeg", "gif", "bmp", "webp"
+	MetaImageOCRText   = "ocr_text"         // OCR-extracted text from image
+	MetaImageRefSource = "ref_source_id"    // source ID of the document referencing this image
+	MetaImageRefNode   = "ref_node_id"      // node ID of the paragraph referencing this image
+	MetaImageIsVector  = "image_is_vector"  // "true" for EMF/WMF/SVG (skip OCR)
+	MetaImageAltText   = "image_alt_text"   // alt text from markdown/html/ooxml
+)
 
 // SaveStatusCreated indicates the source was newly created.
 const SaveStatusCreated = "created"
@@ -569,6 +593,7 @@ type ListSourcesOptions struct {
 	SearchScope     string   `json:"search_scope,omitempty"`
 	ProjectPath     string   `json:"project_path,omitempty"`
 	SourceIDs       []string `json:"source_ids,omitempty"`
+	SourceID        string   `json:"source_id,omitempty"`
 	Status          string   `json:"status,omitempty"`
 	Kind            string   `json:"kind,omitempty"`
 	SourceKinds     []string `json:"source_kinds,omitempty"`
@@ -763,6 +788,7 @@ type SearchOptions struct {
 	ResultTypes     []string `json:"result_types,omitempty"`
 	SourceKinds     []string `json:"source_kinds,omitempty"`
 	SourceIDs       []string `json:"source_ids,omitempty"`
+	SourceID        string   `json:"source_id,omitempty"`
 	Labels          []string `json:"labels,omitempty"`
 	Domain          string   `json:"domain,omitempty"`
 	Entity          string   `json:"entity,omitempty"`

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -961,8 +962,18 @@ func TestCoreAgentKnowledgeImportToolsExecuteAgainstStore(t *testing.T) {
 	importDirProps := map[string]interface{}{}
 	importFilesProps := map[string]interface{}{}
 	saveURLProps := map[string]interface{}{}
+	searchProps := map[string]interface{}{}
+	contextPackProps := map[string]interface{}{}
 	for _, tool := range tools {
 		switch tooldef.Name(tool) {
+		case "knowledge_search":
+			fn, _ := tool["function"].(map[string]interface{})
+			params, _ := fn["parameters"].(map[string]interface{})
+			searchProps, _ = params["properties"].(map[string]interface{})
+		case "knowledge_context_pack":
+			fn, _ := tool["function"].(map[string]interface{})
+			params, _ := fn["parameters"].(map[string]interface{})
+			contextPackProps, _ = params["properties"].(map[string]interface{})
 		case "knowledge_import_directory":
 			fn, _ := tool["function"].(map[string]interface{})
 			params, _ := fn["parameters"].(map[string]interface{})
@@ -992,6 +1003,16 @@ func TestCoreAgentKnowledgeImportToolsExecuteAgainstStore(t *testing.T) {
 	for _, prop := range []string{"url", "link", "href", "uri", "target"} {
 		if _, ok := saveURLProps[prop]; !ok {
 			t.Fatalf("knowledge_save_url schema missing %s in %#v", prop, saveURLProps)
+		}
+	}
+	for _, prop := range []string{"query", "search_scope", "project_path", "topic_hint", "context_terms", "result_types", "source_kinds", "source_ids", "source_id", "id", "labels", "domain", "include_disabled", "limit"} {
+		if _, ok := searchProps[prop]; !ok {
+			t.Fatalf("knowledge_search schema missing %s in %#v", prop, searchProps)
+		}
+	}
+	for _, prop := range []string{"query", "search_scope", "project_path", "topic_hint", "context_terms", "result_types", "source_kinds", "source_ids", "source_id", "id", "labels", "domain", "include_disabled", "max_items", "max_chars"} {
+		if _, ok := contextPackProps[prop]; !ok {
+			t.Fatalf("knowledge_context_pack schema missing %s in %#v", prop, contextPackProps)
 		}
 	}
 
@@ -1043,6 +1064,23 @@ func TestCoreAgentKnowledgeImportToolsExecuteAgainstStore(t *testing.T) {
 	imported := cb.ExecuteToolStructured("knowledge_import_directory", string(importArgs))
 	if imported.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(imported.Result, "imported=1") {
 		t.Fatalf("unexpected import result: outcome=%s result=%s", imported.Outcome, imported.Result)
+	}
+}
+
+func TestBuildSearchOptionsAcceptsSourceIDAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args map[string]interface{}
+		want []string
+	}{
+		{name: "source_id", args: map[string]interface{}{"query": "needle", "source_id": "ksrc_one"}, want: []string{"ksrc_one"}},
+		{name: "id", args: map[string]interface{}{"query": "needle", "id": "ksrc_two"}, want: []string{"ksrc_two"}},
+		{name: "source_ids_preferred", args: map[string]interface{}{"query": "needle", "source_ids": []interface{}{"ksrc_main"}, "source_id": "ksrc_alias"}, want: []string{"ksrc_main"}},
+	} {
+		opts := buildSearchOptions(tc.args, "tenant-a", "user-a")
+		if !reflect.DeepEqual(opts.SourceIDs, tc.want) {
+			t.Fatalf("%s SourceIDs = %#v, want %#v", tc.name, opts.SourceIDs, tc.want)
+		}
 	}
 }
 

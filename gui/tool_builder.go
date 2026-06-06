@@ -86,6 +86,9 @@ func (b *DynamicToolBuilder) attachExecutionContracts(defs []map[string]interfac
 		return defs
 	}
 	for _, def := range defs {
+		if _, ok := def["x_execution_contract"]; ok {
+			continue
+		}
 		name := extractToolName(def)
 		if contract := contracts[name]; len(contract) > 0 {
 			def["x_execution_contract"] = contract

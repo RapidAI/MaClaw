@@ -8,6 +8,7 @@
 import { useCallback, useRef, useState } from "react";
 import { isLocalParticipantId, localExecutorDisplayName, localExecutorParticipantID, looksLikeRawParticipantId, type LocalGroupExecutorRegistration } from "./localAIIdentity";
 import { addParticipantIdentityKeys } from "./participantIdentity";
+import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
 
 export type ActionFeedbackLevel = "info" | "success" | "error";
 
@@ -36,7 +37,6 @@ export interface AvailableVE {
     name: string;
     machineId?: string;
 }
-
 
 export interface AddResult {
     success: boolean;
@@ -173,7 +173,7 @@ export function useGroupSessionActions(options: UseGroupSessionActionsOptions = 
             const available: AvailableVE[] = (employees || [])
                 .filter((ve: any) => {
                     const candidateIds = participantIdentitySet([ve.id, ve.machine_id || ve.id]);
-                    return ![...candidateIds].some((id) => currentIds.has(id)) && ve.online_status === "online";
+                    return ![...candidateIds].some((id) => currentIds.has(id)) && isVirtualEmployeeOnline(ve);
                 })
                 .map((ve: any, index: number) => ({
                     id: ve.id,

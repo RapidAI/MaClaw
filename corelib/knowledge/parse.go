@@ -47,6 +47,11 @@ func ParseDocumentNodes(source Source, filePath, kind string) ([]DocumentNode, e
 		return parseDOCFallbackNodes(source, filePath)
 	case SourceKindXLS:
 		return parseXLSTextFallback(source, filePath)
+	case SourceKindImage:
+		// Standalone images have no text nodes from parsing.
+		// Image processing (asset save + description) is handled by
+		// ProcessStandaloneImage in the import pipeline.
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("%w: %s", errUnsupportedParser, kind)
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -1715,7 +1716,47 @@ func (a *App) toolKnowledgeSearch(args map[string]interface{}) string {
 		IncludeDisabled: knowledgeToolBoolArg(args, "include_disabled", false),
 	}
 	results, err := a.KnowledgeSearch(opts)
-	return knowledgeToolJSON(map[string]interface{}{"query": query, "count": len(results), "results": results}, err)
+
+	// Enrich image results with thumbnail data URLs for frontend inline rendering.
+	enrichedResults := a.enrichKnowledgeImageResults(results)
+
+	return knowledgeToolJSON(map[string]interface{}{"query": query, "count": len(enrichedResults), "results": enrichedResults}, err)
+}
+
+// enrichKnowledgeImageResults adds kb_image_thumb (base64 data URL) to image search results.
+// This allows the frontend to render inline image previews without additional API calls.
+func (a *App) enrichKnowledgeImageResults(results []knowledge.SearchResult) []interface{} {
+	assetBaseDir := filepath.Join(a.GetDataDir(), "knowledge_assets")
+	enriched := make([]interface{}, 0, len(results))
+	for _, r := range results {
+		if r.NodeType == knowledge.NodeTypeImage || r.Source.Kind == knowledge.SourceKindImage {
+			embed := knowledge.EmbedImageThumbForSearchResult(r, assetBaseDir)
+			if embed != nil {
+				// Create enriched map with all original fields + image data
+				enriched = append(enriched, map[string]interface{}{
+					"source":          r.Source,
+					"result_type":     r.ResultType,
+					"node_id":         r.NodeID,
+					"node_title":      r.NodeTitle,
+					"node_type":       r.NodeType,
+					"page":            r.Page,
+					"card_id":         r.CardID,
+					"card_title":      r.CardTitle,
+					"claim":           r.Claim,
+					"summary":         r.Summary,
+					"snippet":         r.Snippet,
+					"citation":        r.Citation,
+					"score":           r.Score,
+					"kb_image_thumb":  embed.DataURL,
+					"kb_image_path":   embed.OriginalPath,
+					"kb_image_id":     embed.AssetID,
+				})
+				continue
+			}
+		}
+		enriched = append(enriched, r)
+	}
+	return enriched
 }
 
 func (a *App) toolKnowledgeExplain(args map[string]interface{}) string {

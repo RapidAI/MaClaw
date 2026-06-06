@@ -3474,6 +3474,90 @@ body {
     white-space: pre-wrap;
 }
 
+/* --- Knowledge Search Hero --- */
+.knowledge-search-hero {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.knowledge-search-input-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 2px solid var(--theme-primary-soft);
+    border-radius: 8px;
+    padding: 4px 8px;
+    background: var(--theme-surface);
+    transition: border-color 0.15s;
+}
+.knowledge-search-input-wrapper:focus-within {
+    border-color: var(--theme-primary);
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+}
+.knowledge-search-icon {
+    font-size: 1.2rem;
+    flex-shrink: 0;
+}
+.knowledge-search-input--hero {
+    border: none !important;
+    background: transparent !important;
+    font-size: 1rem;
+    padding: 8px 4px;
+    flex: 1;
+}
+.knowledge-search-input--hero:focus {
+    outline: none;
+    box-shadow: none;
+}
+.knowledge-search-button {
+    flex-shrink: 0;
+    padding: 8px 16px;
+    border-radius: 6px;
+}
+.knowledge-search-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+.knowledge-input--compact {
+    width: auto;
+    min-width: 80px;
+    max-width: 160px;
+    padding: 5px 7px;
+    font-size: 0.76rem;
+}
+
+/* --- Knowledge Image Thumbnail in Results --- */
+.knowledge-row--image {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+}
+.knowledge-image-thumb {
+    flex-shrink: 0;
+    width: 64px;
+    height: 64px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--theme-border-subtle);
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+.knowledge-image-thumb:hover {
+    transform: scale(1.08);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+.knowledge-image-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.knowledge-chip--image {
+    margin-right: 4px;
+    font-size: 0.85rem;
+}
+
 @media (max-width: 640px) {
     .knowledge-import-choose-grid,
     .knowledge-import-config-grid { grid-template-columns: 1fr; }

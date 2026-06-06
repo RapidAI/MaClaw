@@ -33,6 +33,7 @@ type Store interface {
 	DeleteSession(string, string, string, string) error
 	SaveMessage(Message) error
 	ListMessages(string) ([]Message, error)
+	DeleteMessages(string, []string) (int, error)
 	SaveRun(Run) error
 	GetRun(string, string, string, string) (Run, error)
 	ListRuns(string, string, string) ([]Run, error)
@@ -483,6 +484,39 @@ func (s *MemoryStore) ListMessages(sessionID string) ([]Message, error) {
 	defer s.mu.RUnlock()
 	out := append([]Message(nil), s.messages[sessionID]...)
 	return out, nil
+}
+
+func (s *MemoryStore) DeleteMessages(sessionID string, ids []string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	want := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			want[id] = struct{}{}
+		}
+	}
+	if len(want) == 0 {
+		return 0, nil
+	}
+	items := s.messages[sessionID]
+	kept := items[:0]
+	deleted := 0
+	for _, item := range items {
+		if _, ok := want[item.ID]; ok {
+			deleted++
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if deleted == 0 {
+		return 0, nil
+	}
+	s.messages[sessionID] = append([]Message(nil), kept...)
+	return deleted, nil
 }
 
 func (s *MemoryStore) SaveRun(v Run) error {

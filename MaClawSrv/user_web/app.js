@@ -6,7 +6,7 @@ const I18N = {
     assistantTitle: "AI Assistant", assistantHint: "Instances share user-level config, tools, knowledge, memory, and security policy.", instancesTitle: "Assistant instances", instancesHint: "Runtime state and sessions stay per instance. Configuration stays shared by user.", new: "New", noInstances: "No instances", unknown: "unknown", readyState: "ready", notReady: "not ready", instanceName: "Instance name", instanceCreated: "Instance created",
     sessions: "Sessions", noSessions: "No sessions", firstMessage: "Send the first message to create a session.", selectedMissing: "Selected assistant instance was not found or is unavailable. Open it again from VE Platform or select another instance.", createFirst: "No instance yet. Create an assistant instance first.", noMessages: "No messages", typeMessage: "Type a message...", message: "Message", send: "Send", webSession: "Web session", run: "Run", waitingUser: "waiting for user", continueWaiting: "Continue waiting", cancel: "Cancel", runCancelled: "Run cancelled", sent: "Sent", runStatus: "Run status: {status}", llmManagedByHub: "LLM is not fully configured. Ask VE Platform to pass the Hub LLM endpoint and viewer token, or fill in System Settings.",
     settingsTitle: "System Settings", settingsHint: "User-scoped settings shared by all assistant instances.", sharedConfig: "Shared config", sharedConfigHint: "LLM, MCP, tools, skills, knowledge, and security policy are shared at user scope.", configResponse: "Config response", secretHint: "Masked value keeps the existing secret. Enter a new value only when rotating it.", valid: "Valid", needsAttention: "Needs attention", currentConfigOk: "Current shared config can start instances.", save: "Save", validate: "Validate", test: "Test", saved: "Saved", validated: "Validated", testPassed: "Test passed", testFailed: "Test failed", unset: "Unset", trueValue: "True", falseValue: "False",
-    groupLLM: "LLM", groupLLMHint: "Primary model providers and legacy fallback fields.", groupTools: "MCP & Tools", groupToolsHint: "MCP capability install, compact add, and search providers shared by every instance.", groupSkills: "Skills", groupSkillsHint: "Search, install, and view skills. Source details stay managed by the service.", installedSkills: "Installed skills", noSkills: "No skills installed", skillMarketSearch: "SkillMarket search", search: "Search", install: "Install", installed: "Installed", searchSkillsPlaceholder: "Search SkillMarket...", skillInstalled: "Skill installed", groupMemory: "Knowledge & Memory", groupMemoryHint: "Memory compression and knowledge context budget.", groupSecurity: "Security", groupSecurityHint: "User-level execution boundary and network policy.", groupChannels: "Channels", groupChannelsHint: "IM, bot, MaClaw third-party integration protocol, and voice channel settings.", groupUI: "UI & Runtime", groupUIHint: "User interface, pet, launch, proxy, and local runtime preferences.", groupAdvanced: "Advanced", groupAdvancedHint: "All remaining AppConfig fields exposed by the service schema.", numberInvalid: "{key} must be a valid {type}", jsonInvalid: "{key} must be valid JSON"
+    groupLLM: "LLM", groupLLMHint: "Primary model providers and legacy fallback fields.", groupTools: "MCP & Tools", groupToolsHint: "MCP capability install, compact add, and search providers shared by every instance.", groupSkills: "Skills", groupSkillsHint: "Search, install, and view skills. Source details stay managed by the service.", installedSkills: "Installed skills", noSkills: "No skills installed", skillMarketSearch: "SkillMarket search", search: "Search", install: "Install", installed: "Installed", searchSkillsPlaceholder: "Search SkillMarket...", skillInstalled: "Skill installed", groupMemory: "Knowledge & Memory", groupMemoryHint: "Memory compression and knowledge context budget.", groupSecurity: "Security", groupSecurityHint: "User-level execution boundary and network policy.", groupIM: "IM", groupIMHint: "User-scoped QQ, WeChat, Telegram, third-party integration, monitor, and history.", groupUI: "UI & Runtime", groupUIHint: "User interface, pet, launch, proxy, and local runtime preferences.", numberInvalid: "{key} must be a valid {type}", jsonInvalid: "{key} must be valid JSON"
   },
   zh: {
     userWorkspace: "用户工作台", assistantNav: "AI 助手", settingsNav: "系统设置", skipToMain: "跳到主要内容", appSections: "用户应用区域", userViews: "用户视图", notSignedIn: "未登录", logout: "退出", ready: "就绪", busy: "忙碌",
@@ -24,7 +24,7 @@ Object.assign(I18N.zh, {
   assistantTitle: "AI 助手", assistantHint: "多个实例共享用户级配置、工具、知识、记忆和安全策略。", instancesTitle: "助手实例", instancesHint: "运行状态和会话按实例保留，配置按用户共享。", new: "新建", noInstances: "暂无实例", unknown: "未知", readyState: "就绪", notReady: "未就绪", instanceName: "实例名称", instanceCreated: "实例已创建",
   sessions: "会话", noSessions: "暂无会话", firstMessage: "发送第一条消息后会自动创建会话。", selectedMissing: "选中的助手实例不存在或不可用。请从 VE Platform 重新打开，或选择其它实例。", createFirst: "还没有实例，请先创建助手实例。", noMessages: "暂无消息", typeMessage: "输入消息...", message: "消息", send: "发送", webSession: "网页会话", run: "运行", waitingUser: "等待用户", continueWaiting: "继续等待", cancel: "取消", runCancelled: "运行已取消", sent: "已发送", runStatus: "运行状态：{status}", llmManagedByHub: "LLM 未完成配置。请让 VE Platform 传入 Hub LLM 地址和 viewer token，或在系统设置里填写可用配置。",
   settingsTitle: "系统设置", settingsHint: "这些用户级设置会被所有助手实例共享。", sharedConfig: "共享配置", sharedConfigHint: "LLM、MCP、工具、技能、知识和安全策略按用户范围共享。", configResponse: "配置响应", secretHint: "显示为掩码时会保留现有密钥；只有需要轮换时才输入新值。", valid: "有效", needsAttention: "需要处理", currentConfigOk: "当前共享配置可以启动实例。", save: "保存", validate: "校验", test: "测试", saved: "已保存", validated: "已校验", testPassed: "测试通过", testFailed: "测试失败", unset: "未设置", trueValue: "是", falseValue: "否",
-  groupLLM: "LLM", groupLLMHint: "主模型服务商和旧版兜底字段。", groupTools: "MCP 与工具", groupToolsHint: "安装 MCP 能力、精简添加 MCP，并管理所有实例共享的搜索服务商。", groupSkills: "技能", groupSkillsHint: "搜索、安装、查看技能；来源细节由服务端管理。", groupMemory: "知识与记忆", groupMemoryHint: "记忆压缩和知识上下文预算。", groupSecurity: "安全", groupSecurityHint: "用户级执行边界和网络策略。", groupChannels: "渠道", groupChannelsHint: "IM、机器人、Maclaw 第三方接入协议和语音渠道设置。", groupUI: "界面与运行时", groupUIHint: "用户界面、宠物、启动、代理和本地运行偏好。", groupAdvanced: "高级", groupAdvancedHint: "服务 schema 暴露的其余 AppConfig 字段。", numberInvalid: "{key} 必须是有效的{type}", jsonInvalid: "{key} 必须是有效 JSON"
+  groupLLM: "LLM", groupLLMHint: "主模型服务商和旧版兜底字段。", groupTools: "MCP 与工具", groupToolsHint: "安装 MCP 能力、精简添加 MCP，并管理所有实例共享的搜索服务商。", groupSkills: "技能", groupSkillsHint: "搜索、安装、查看技能；来源细节由服务端管理。", groupMemory: "知识与记忆", groupMemoryHint: "记忆压缩和知识上下文预算。", groupSecurity: "安全", groupSecurityHint: "用户级执行边界和网络策略。", groupIM: "IM", groupIMHint: "当前用户隔离的 QQ、微信、Telegram、第三方接入、监看和历史交流。", groupUI: "界面与运行时", groupUIHint: "用户界面、宠物、启动、代理和本地运行偏好。", numberInvalid: "{key} 必须是有效的{type}", jsonInvalid: "{key} 必须是有效 JSON"
 });
 Object.assign(I18N.zh, {
   installedSkills: "\u5df2\u5b89\u88c5\u6280\u80fd",
@@ -37,21 +37,13 @@ Object.assign(I18N.zh, {
   skillInstalled: "\u6280\u80fd\u5df2\u5b89\u88c5"
 });
 Object.assign(I18N.en, {
-  channelOverview: "Channel overview",
-  channelOverviewHint: "Configure per-user IM, bot, MaClaw third-party integration protocol, and voice reply settings. Enterprise WeCom, Feishu, and DingTalk are connected in Hub tenant settings; user settings only control local handling or Hub routing.",
-  channelLocalModeHint: "Local mode: true = local runtime, false = Hub/remote routing, unset = service default.",
+  channelOverview: "IM",
+  channelOverviewHint: "Configure this user's QQ, WeChat, Telegram, and third-party IM access.",
   channelCredentialHint: "Secrets are masked after saving. Leave masked values unchanged unless rotating credentials.",
   channelQQ: "QQ Bot",
   channelTelegram: "Telegram Bot",
   channelWeixin: "Personal WeChat / iLink",
-  channelLansenger: "Lansenger",
   channelThirdParty: "MaClaw Third-party Integration Protocol",
-  channelHubManaged: "Enterprise IM managed by Hub tenant",
-  channelHubManagedHint: "Enterprise WeCom, Feishu, and DingTalk are connected once at tenant scope in Hub. This page only sets this user's local channels and routing preference.",
-  channelEnterpriseWeCom: "Enterprise WeCom",
-  channelFeishu: "Feishu",
-  channelDingTalk: "DingTalk",
-  channelVoice: "Voice / ASR / TTS",
   channelProtocolEndpoint: "Protocol endpoint",
   channelCopyEndpoint: "Copy endpoint",
   channelGenerateToken: "Generate token",
@@ -60,48 +52,96 @@ Object.assign(I18N.en, {
   channelTokenUnavailable: "Browser crypto API is unavailable.",
   channelEnabled: "Enabled",
   channelDisabled: "Disabled",
-  channelLocal: "Local",
-  channelHub: "Hub",
   channelAuto: "Auto",
   customValue: "Custom",
   selectAll: "Select all",
   clearSelection: "Clear"
 });
+Object.assign(I18N.en, {
+  imAuditTitle: "IM monitor and history",
+  imAuditHint: "View historical conversations for this MaClawSrv user only.",
+  imAuditPlatformAll: "All platforms",
+  imAuditKeyword: "Keyword",
+  imAuditContact: "Contact",
+  imAuditRefresh: "Refresh",
+  imAuditExport: "Export CSV",
+  imAuditCleanup: "Clean",
+  imAuditCleanupBefore: "Clean before",
+  imAuditCleanupDays: "days",
+  imAuditCleanupConfirm: "Delete IM history before {before}?",
+  imAuditCleaned: "Deleted {deleted} IM messages",
+  imAuditEmpty: "No IM history found",
+  imAuditLoadOlder: "Load older",
+  imAuditOpenSession: "Session",
+  imAuditOpen: "Open",
+  imAuditStats: "{messages} messages / {contacts} contacts / {platforms} platforms",
+  imAuditLoading: "Loading IM history..."
+});
+Object.assign(I18N.en, {
+  groupIM: "IM",
+  groupIMHint: "User-scoped QQ, WeChat, Telegram, third-party integration, monitor, and history.",
+  channelOverview: "IM",
+  channelOverviewHint: "Configure this user's QQ, WeChat, Telegram, and third-party IM access."
+});
 Object.assign(I18N.zh, {
-  channelOverview: "渠道总览",
-  channelOverviewHint: "配置当前用户的 IM、机器人、Maclaw 第三方接入协议和语音回复。企业版微信、飞书、钉钉由 Hub 租户设置统一接入；用户设置只控制本机处理或 Hub 路由。",
-  channelLocalModeHint: "本地模式：true = 本机运行时处理，false = Hub/远程路由，未设置 = 服务默认。",
-  channelCredentialHint: "密钥保存后会脱敏显示。显示为掩码时请保持不变，只有轮换凭据时才重新填写。",
+  groupIM: "\u0049\u004d",
+  groupIMHint: "\u5f53\u524d\u7528\u6237\u9694\u79bb\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram\u3001\u7b2c\u4e09\u65b9\u63a5\u5165\u3001\u76d1\u770b\u548c\u5386\u53f2\u4ea4\u6d41\u3002",
+  channelOverview: "\u0049\u004d",
+  channelOverviewHint: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram \u548c\u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002"
+});
+Object.assign(I18N.zh, {
+  imAuditTitle: "\u0049\u004d \u76d1\u770b\u4e0e\u5386\u53f2\u4ea4\u6d41",
+  imAuditHint: "\u4ec5\u67e5\u770b\u5f53\u524d MaClawSrv \u7528\u6237\u9694\u79bb\u8303\u56f4\u5185\u7684\u5386\u53f2\u4ea4\u6d41\u3002",
+  imAuditPlatformAll: "\u5168\u90e8\u5e73\u53f0",
+  imAuditKeyword: "\u5173\u952e\u8bcd",
+  imAuditContact: "\u8054\u7cfb\u4eba",
+  imAuditRefresh: "\u5237\u65b0",
+  imAuditExport: "\u5bfc\u51fa CSV",
+  imAuditCleanup: "\u6e05\u7406",
+  imAuditCleanupBefore: "\u6e05\u7406\u65e9\u4e8e",
+  imAuditCleanupDays: "\u5929",
+  imAuditCleanupConfirm: "\u5220\u9664 {before} \u4e4b\u524d\u7684 IM \u5386\u53f2\uff1f",
+  imAuditCleaned: "\u5df2\u5220\u9664 {deleted} \u6761 IM \u6d88\u606f",
+  imAuditEmpty: "\u6682\u65e0 IM \u5386\u53f2",
+  imAuditLoadOlder: "\u52a0\u8f7d\u66f4\u65e9",
+  imAuditOpenSession: "\u4f1a\u8bdd",
+  imAuditOpen: "\u6253\u5f00",
+  imAuditStats: "{messages} \u6761\u6d88\u606f / {contacts} \u4e2a\u8054\u7cfb\u4eba / {platforms} \u4e2a\u5e73\u53f0",
+  imAuditLoading: "\u6b63\u5728\u52a0\u8f7d IM \u5386\u53f2..."
+});
+Object.assign(I18N.zh, {
+  channelOverview: "\u0049\u004d",
+  channelOverviewHint: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram \u548c\u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002",
+  channelCredentialHint: "\u5bc6\u94a5\u4fdd\u5b58\u540e\u4f1a\u8131\u654f\u663e\u793a\u3002\u663e\u793a\u4e3a\u63a9\u7801\u65f6\u8bf7\u4fdd\u6301\u4e0d\u53d8\uff0c\u53ea\u6709\u8f6e\u6362\u51ed\u636e\u65f6\u624d\u91cd\u65b0\u586b\u5199\u3002",
   channelQQ: "QQ Bot",
   channelTelegram: "Telegram Bot",
-  channelWeixin: "个人微信 / iLink",
-  channelLansenger: "蓝信 Lansenger",
-  channelThirdParty: "Maclaw 第三方接入协议",
-  channelHubManaged: "Hub 租户统一接入的企业 IM",
-  channelHubManagedHint: "企业版微信、飞书、钉钉在 Hub 租户设置中统一接入；本页只配置当前用户的本地通道和路由偏好。",
-  channelEnterpriseWeCom: "企业版微信",
-  channelFeishu: "飞书",
-  channelDingTalk: "钉钉",
-  channelVoice: "语音 / ASR / TTS",
-  channelProtocolEndpoint: "协议接入地址",
-  channelCopyEndpoint: "复制接入地址",
-  channelGenerateToken: "生成 Token",
-  channelTokenGenerated: "Token 已生成，保存设置后生效。",
-  generateSecret: "生成",
-  channelTokenUnavailable: "当前浏览器不可用安全随机数。",
-  channelEnabled: "已启用",
-  channelDisabled: "未启用",
-  channelLocal: "本地",
-  channelHub: "Hub",
-  channelAuto: "自动",
+  channelWeixin: "\u4e2a\u4eba\u5fae\u4fe1 / iLink",
+  channelThirdParty: "Maclaw \u7b2c\u4e09\u65b9\u63a5\u5165\u534f\u8bae",
+  channelProtocolEndpoint: "\u534f\u8bae\u63a5\u5165\u5730\u5740",
+  channelCopyEndpoint: "\u590d\u5236\u63a5\u5165\u5730\u5740",
+  channelGenerateToken: "\u751f\u6210 Token",
+  channelTokenGenerated: "Token \u5df2\u751f\u6210\uff0c\u4fdd\u5b58\u8bbe\u7f6e\u540e\u751f\u6548\u3002",
+  generateSecret: "\u751f\u6210",
+  channelTokenUnavailable: "\u5f53\u524d\u6d4f\u89c8\u5668\u4e0d\u53ef\u7528\u5b89\u5168\u968f\u673a\u6570\u3002",
+  channelEnabled: "\u5df2\u542f\u7528",
+  channelDisabled: "\u672a\u542f\u7528",
+  channelAuto: "\u81ea\u52a8",
   customValue: "\u81ea\u5b9a\u4e49",
   selectAll: "\u5168\u9009",
   clearSelection: "\u6e05\u7a7a"
 });
-Object.assign(I18N.en, { loading: "Loading...", knowledgeImport: "Knowledge import", knowledgeImportHint: "Add text, documents, document archives, or crawled URLs to this user's knowledge base.", connectedKnowledge: "Connected knowledge", connectedKnowledgeHint: "Effective readable scopes for this user, including public knowledge bases attached by admins.", noConnectedKnowledge: "No extra connected knowledge", selfKnowledge: "Own knowledge", publicKnowledge: "Public knowledge", knowledgeScopeIDs: "Raw IDs", importText: "Text", importFile: "File or archive", importURL: "URL crawl", title: "Title", topicHint: "Topic hint", labels: "Labels", textToImport: "Text to import", chooseFiles: "Choose documents, ZIP, or RAR", urlsToImport: "URLs to import", crawlDepth: "Crawl depth", sameDomainOnly: "Same domain only", import: "Import", importing: "Importing...", importStarted: "Knowledge import started", importedKnowledge: "Knowledge import completed", importCompleted: "Knowledge import completed", importStillRunning: "Knowledge import still running", importTextPlaceholder: "Paste text...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "Template", insertTemplate: "Insert template", urlExample: "URL example", addURL: "Add URL", importJob: "Import job", importStatus: "Status", importSource: "Source", importTitle: "Title", importKind: "Kind", importFiles: "Files", importUrls: "URLs", importProcessed: "Processed", importImported: "Imported", importFailed: "Failed", importSkipped: "Skipped", importDuplicates: "Duplicates", importWarnings: "Warnings" });
-Object.assign(I18N.zh, { loading: "\u52a0\u8f7d\u4e2d...", knowledgeImport: "\u77e5\u8bc6\u5e93\u5bfc\u5165", knowledgeImportHint: "\u5c06\u6587\u672c\u3001\u5355\u6587\u6863\u3001\u6587\u6863\u538b\u7f29\u5305\u6216\u6307\u5b9a\u6df1\u5ea6\u7684 URL \u6293\u53d6\u7ed3\u679c\u5bfc\u5165\u5f53\u524d\u7528\u6237\u77e5\u8bc6\u5e93\u3002", connectedKnowledge: "\u5df2\u63a5\u5165\u77e5\u8bc6", connectedKnowledgeHint: "\u5f53\u524d\u7528\u6237\u53ef\u8bfb\u7684\u6709\u6548\u77e5\u8bc6\u8303\u56f4\uff0c\u5305\u62ec\u7ba1\u7406\u5458\u6302\u8f7d\u7684\u516c\u7528\u77e5\u8bc6\u5e93\u3002", noConnectedKnowledge: "\u6682\u65e0\u989d\u5916\u63a5\u5165\u77e5\u8bc6", selfKnowledge: "\u81ea\u6709\u77e5\u8bc6", publicKnowledge: "\u516c\u7528\u77e5\u8bc6", knowledgeScopeIDs: "\u539f\u59cb ID", importText: "\u6587\u672c", importFile: "\u6587\u4ef6/\u538b\u7f29\u5305", importURL: "URL \u679a\u4e3e", title: "\u6807\u9898", topicHint: "\u4e3b\u9898\u63d0\u793a", labels: "\u6807\u7b7e", textToImport: "\u5bfc\u5165\u6587\u672c", chooseFiles: "\u9009\u62e9\u6587\u6863\u3001ZIP \u6216 RAR", urlsToImport: "\u5bfc\u5165 URL", crawlDepth: "\u679a\u4e3e\u6df1\u5ea6", sameDomainOnly: "\u4ec5\u540c\u57df\u540d", import: "\u5bfc\u5165", importing: "\u5bfc\u5165\u4e2d...", importStarted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5f00\u59cb", importedKnowledge: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importCompleted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importStillRunning: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u4ecd\u5728\u8fd0\u884c", importTextPlaceholder: "\u7c98\u8d34\u8981\u5bfc\u5165\u7684\u6587\u672c...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "\u6a21\u677f", insertTemplate: "\u63d2\u5165\u6a21\u677f", urlExample: "URL \u793a\u4f8b", addURL: "\u6dfb\u52a0 URL", importJob: "\u5bfc\u5165\u4efb\u52a1", importStatus: "\u72b6\u6001", importSource: "\u6765\u6e90", importTitle: "\u6807\u9898", importKind: "\u7c7b\u578b", importFiles: "\u6587\u4ef6", importUrls: "URL", importProcessed: "\u5df2\u5904\u7406", importImported: "\u5df2\u5bfc\u5165", importFailed: "\u5931\u8d25", importSkipped: "\u8df3\u8fc7", importDuplicates: "\u91cd\u590d", importWarnings: "\u8b66\u544a" });
+Object.assign(I18N.en, { loading: "Loading...", knowledgeImport: "Knowledge import", knowledgeImportHint: "Add text, documents, document archives, or crawled URLs to this user's knowledge base.", connectedKnowledge: "Accessible knowledge bases", connectedKnowledgeHint: "Knowledge bases this user can read. Import only writes to the user's own knowledge base.", noConnectedKnowledge: "No accessible knowledge bases", selfKnowledge: "Own knowledge base", publicKnowledge: "Public knowledge base", otherUserKnowledge: "Other user's knowledge base", knowledgeOwner: "Owner", knowledgeTenant: "Tenant", knowledgeScopeIDs: "Raw IDs", knowledgeCurrentUser: "current user", knowledgePublicOwner: "public", importText: "Text", importFile: "File or archive", importURL: "URL crawl", title: "Title", topicHint: "Topic hint", labels: "Labels", textToImport: "Text to import", chooseFiles: "Choose documents, ZIP, or RAR", urlsToImport: "URLs to import", crawlDepth: "Crawl depth", sameDomainOnly: "Same domain only", import: "Import", importing: "Importing...", importStarted: "Knowledge import started", importedKnowledge: "Knowledge import completed", importCompleted: "Knowledge import completed", importStillRunning: "Knowledge import still running", importTextPlaceholder: "Paste text...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "Template", insertTemplate: "Insert template", urlExample: "URL example", addURL: "Add URL", importJob: "Import job", importStatus: "Status", importSource: "Source", importTitle: "Title", importKind: "Kind", importFiles: "Files", importUrls: "URLs", importProcessed: "Processed", importImported: "Imported", importFailed: "Failed", importSkipped: "Skipped", importDuplicates: "Duplicates", importWarnings: "Warnings" });
+Object.assign(I18N.zh, {
+  groupIM: "\u0049\u004d",
+  groupIMHint: "\u5f53\u524d\u7528\u6237\u9694\u79bb\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram\u3001\u7b2c\u4e09\u65b9\u63a5\u5165\u3001\u76d1\u770b\u548c\u5386\u53f2\u4ea4\u6d41\u3002",
+  channelOverview: "\u0049\u004d",
+  channelOverviewHint: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram \u548c\u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002"
+});
+Object.assign(I18N.zh, { loading: "\u52a0\u8f7d\u4e2d...", knowledgeImport: "\u77e5\u8bc6\u5e93\u5bfc\u5165", knowledgeImportHint: "\u5c06\u6587\u672c\u3001\u5355\u6587\u6863\u3001\u6587\u6863\u538b\u7f29\u5305\u6216\u6307\u5b9a\u6df1\u5ea6\u7684 URL \u6293\u53d6\u7ed3\u679c\u5bfc\u5165\u5f53\u524d\u7528\u6237\u77e5\u8bc6\u5e93\u3002", connectedKnowledge: "\u53ef\u8bbf\u95ee\u77e5\u8bc6\u5e93", connectedKnowledgeHint: "\u5f53\u524d\u7528\u6237\u53ef\u8bfb\u7684\u77e5\u8bc6\u5e93\u5217\u8868\u3002\u5bfc\u5165\u53ea\u5199\u5165\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\u3002", noConnectedKnowledge: "\u6682\u65e0\u53ef\u8bbf\u95ee\u77e5\u8bc6\u5e93", selfKnowledge: "\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93", publicKnowledge: "\u516c\u5171\u77e5\u8bc6\u5e93", otherUserKnowledge: "\u5176\u5b83\u7528\u6237\u7684\u77e5\u8bc6\u5e93", knowledgeOwner: "\u5c5e\u4e3b", knowledgeTenant: "\u79df\u6237", knowledgeScopeIDs: "\u539f\u59cb ID", knowledgeCurrentUser: "\u5f53\u524d\u7528\u6237", knowledgePublicOwner: "\u516c\u5171", importText: "\u6587\u672c", importFile: "\u6587\u4ef6/\u538b\u7f29\u5305", importURL: "URL \u679a\u4e3e", title: "\u6807\u9898", topicHint: "\u4e3b\u9898\u63d0\u793a", labels: "\u6807\u7b7e", textToImport: "\u5bfc\u5165\u6587\u672c", chooseFiles: "\u9009\u62e9\u6587\u6863\u3001ZIP \u6216 RAR", urlsToImport: "\u5bfc\u5165 URL", crawlDepth: "\u679a\u4e3e\u6df1\u5ea6", sameDomainOnly: "\u4ec5\u540c\u57df\u540d", import: "\u5bfc\u5165", importing: "\u5bfc\u5165\u4e2d...", importStarted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5f00\u59cb", importedKnowledge: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importCompleted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importStillRunning: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u4ecd\u5728\u8fd0\u884c", importTextPlaceholder: "\u7c98\u8d34\u8981\u5bfc\u5165\u7684\u6587\u672c...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "\u6a21\u677f", insertTemplate: "\u63d2\u5165\u6a21\u677f", urlExample: "URL \u793a\u4f8b", addURL: "\u6dfb\u52a0 URL", importJob: "\u5bfc\u5165\u4efb\u52a1", importStatus: "\u72b6\u6001", importSource: "\u6765\u6e90", importTitle: "\u6807\u9898", importKind: "\u7c7b\u578b", importFiles: "\u6587\u4ef6", importUrls: "URL", importProcessed: "\u5df2\u5904\u7406", importImported: "\u5df2\u5bfc\u5165", importFailed: "\u5931\u8d25", importSkipped: "\u8df3\u8fc7", importDuplicates: "\u91cd\u590d", importWarnings: "\u8b66\u544a" });
 Object.assign(I18N.en, { enterTextFirst: "Enter text before importing.", chooseFileFirst: "Choose at least one document or archive.", enterURLFirst: "Enter at least one URL.", customTopicRequired: "Enter the custom topic hint.", customLabelRequired: "Enter the custom labels.", customTitleRequired: "Enter the custom title.", importQueued: "Import submitted. Checking progress...", importProgress: "Checking progress {current}/{total}..." });
 Object.assign(I18N.zh, { enterTextFirst: "\u8bf7\u5148\u8f93\u5165\u8981\u5bfc\u5165\u7684\u6587\u672c\u3002", chooseFileFirst: "\u8bf7\u5148\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u6587\u6863\u6216\u538b\u7f29\u5305\u3002", enterURLFirst: "\u8bf7\u5148\u8f93\u5165\u81f3\u5c11\u4e00\u4e2a URL\u3002", customTopicRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u4e3b\u9898\u63d0\u793a\u3002", customLabelRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u6807\u7b7e\u3002", customTitleRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u6807\u9898\u3002", importQueued: "\u5bfc\u5165\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u67e5\u8be2\u8fdb\u5ea6...", importProgress: "\u6b63\u5728\u67e5\u8be2\u8fdb\u5ea6 {current}/{total}..." });
+Object.assign(I18N.en, { knowledgeNav: "Knowledge", knowledgeTitle: "Knowledge Base", knowledgeHint: "Import into your own knowledge base and search readable knowledge scopes.", knowledgeQuery: "Knowledge query", knowledgeQueryHint: "Search your own knowledge plus connected readable scopes. Other users' private knowledge is not queried.", knowledgeQueryPlaceholder: "Search knowledge...", knowledgeLimit: "Results", knowledgeNoResults: "No matching knowledge", knowledgeQueryFailed: "Knowledge query failed", knowledgeResultType: "Type", knowledgeResultScore: "Score" });
+Object.assign(I18N.zh, { knowledgeNav: "\u77e5\u8bc6\u5e93", knowledgeTitle: "\u77e5\u8bc6\u5e93", knowledgeHint: "\u5bfc\u5165\u5230\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\uff0c\u5e76\u67e5\u8be2\u81ea\u5df1\u53ef\u8bfb\u7684\u77e5\u8bc6\u8303\u56f4\u3002", knowledgeQuery: "\u77e5\u8bc6\u67e5\u8be2", knowledgeQueryHint: "\u4ec5\u641c\u7d22\u81ea\u6709\u77e5\u8bc6\u548c\u5df2\u5173\u8054\u7684\u53ef\u8bfb\u8303\u56f4\uff0c\u4e0d\u67e5\u5176\u5b83\u7528\u6237\u7684\u79c1\u6709\u77e5\u8bc6\u3002", knowledgeQueryPlaceholder: "\u641c\u7d22\u77e5\u8bc6...", knowledgeLimit: "\u7ed3\u679c\u6570", knowledgeNoResults: "\u672a\u627e\u5230\u5339\u914d\u77e5\u8bc6", knowledgeQueryFailed: "\u77e5\u8bc6\u67e5\u8be2\u5931\u8d25", knowledgeResultType: "\u7c7b\u578b", knowledgeResultScore: "\u5206\u6570" });
 Object.assign(I18N.en, { memoryManager: "Memory management", memoryManagerHint: "View, search, add, edit, and delete this user's long-term memory.", memorySearch: "Search memory", memoryCategory: "Category", memoryContent: "Memory content", memoryContentRequired: "Enter memory content.", memoryContentTooLong: "Memory content must be {max} characters or fewer.", memoryTags: "Tags", memoryTagsHint: "Comma or newline separated", memoryTagsTooMany: "Use {max} tags or fewer.", memoryTagTooLong: "Each tag must be {max} characters or fewer.", memoryRefresh: "Refresh", memoryClear: "Clear", memoryAdd: "Add memory", memoryUpdate: "Update memory", memoryCancelEdit: "Cancel edit", memoryEmpty: "No memory entries", memorySaved: "Memory saved", memoryDeleted: "Memory deleted", memoryUpdated: "Memory updated", memoryEdit: "Edit", memoryDelete: "Delete", memoryAllCategories: "All categories", memoryTotal: "Total", memoryAccessCount: "Access", memoryUpdatedAt: "Updated", memoryLoadMore: "Load more" });
 Object.assign(I18N.zh, { memoryManager: "\u8bb0\u5fc6\u7ba1\u7406", memoryManagerHint: "\u67e5\u770b\u3001\u641c\u7d22\u3001\u65b0\u589e\u3001\u7f16\u8f91\u548c\u5220\u9664\u5f53\u524d\u7528\u6237\u7684\u957f\u671f\u8bb0\u5fc6\u3002", memorySearch: "\u641c\u7d22\u8bb0\u5fc6", memoryCategory: "\u5206\u7c7b", memoryContent: "\u8bb0\u5fc6\u5185\u5bb9", memoryContentRequired: "\u8bf7\u8f93\u5165\u8bb0\u5fc6\u5185\u5bb9\u3002", memoryContentTooLong: "\u8bb0\u5fc6\u5185\u5bb9\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u5b57\u7b26\u3002", memoryTags: "\u6807\u7b7e", memoryTagsHint: "\u9017\u53f7\u6216\u6362\u884c\u5206\u9694", memoryTagsTooMany: "\u6807\u7b7e\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u3002", memoryTagTooLong: "\u5355\u4e2a\u6807\u7b7e\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u5b57\u7b26\u3002", memoryRefresh: "\u5237\u65b0", memoryClear: "\u6e05\u9664", memoryAdd: "\u6dfb\u52a0\u8bb0\u5fc6", memoryUpdate: "\u66f4\u65b0\u8bb0\u5fc6", memoryCancelEdit: "\u53d6\u6d88\u7f16\u8f91", memoryEmpty: "\u6682\u65e0\u8bb0\u5fc6\u6761\u76ee", memorySaved: "\u8bb0\u5fc6\u5df2\u4fdd\u5b58", memoryDeleted: "\u8bb0\u5fc6\u5df2\u5220\u9664", memoryUpdated: "\u8bb0\u5fc6\u5df2\u66f4\u65b0", memoryEdit: "\u7f16\u8f91", memoryDelete: "\u5220\u9664", memoryAllCategories: "\u5168\u90e8\u5206\u7c7b", memoryTotal: "\u603b\u6570", memoryAccessCount: "\u8bbf\u95ee", memoryUpdatedAt: "\u66f4\u65b0", memoryLoadMore: "\u52a0\u8f7d\u66f4\u591a" });
 Object.assign(I18N.en, { mcpManager: "MCP", mcpManagerHint: "Use capability marketplace first. Add manually by JSON or compact editor only when needed.", mcpMarketplace: "Capability Marketplace", mcpMarketplaceHint: "Search and install MCP capabilities from Hub/HubCenter. Manual config stays compact.", mcpInstalled: "Installed MCP", mcpNoServers: "No MCP servers", mcpManualAdd: "Add MCP", mcpModeMarket: "Marketplace", mcpModeRemote: "Remote HTTP", mcpModeLocal: "Local stdio", mcpModeJson: "JSON import", mcpName: "Name", mcpEndpoint: "Endpoint", mcpCommand: "Command", mcpArgs: "Args", mcpEnv: "Env", mcpHeaders: "Headers", mcpAuthType: "Auth", mcpSecret: "Secret", mcpAutoStart: "Auto start", mcpDisabled: "Disabled", mcpAdd: "Add", mcpEdit: "Edit", mcpSave: "Save MCP", mcpClose: "Close", mcpAddParam: "Add param", mcpParamName: "Param", mcpParamValue: "Value", mcpStart: "Start", mcpStop: "Stop", mcpCheck: "Check", mcpDelete: "Delete", mcpAdded: "MCP added", mcpUpdated: "MCP updated", mcpDeleted: "MCP deleted", mcpJson: "MCP JSON", mcpJsonHint: "Paste Claude-style mcpServers JSON or an array/object of MaClaw MCP entries.", mcpOpenGui: "Open MaClaw GUI > MCP > Marketplace for market install." });
@@ -153,20 +193,16 @@ Object.assign(FIELD_I18N.zh, {
   security_policy_mode: ["安全策略模式", "用户级工具和 Agent 执行安全策略模式。"], sandbox_mode: ["沙箱模式", "此用户的执行沙箱偏好。"], network_level: ["网络访问级别", "用户工具和 Agent 的网络访问级别。"], yolo_mode_allowed: ["允许 YOLO 模式", "允许此用户启用宽松工具执行模式。"]
 });
 Object.assign(FIELD_I18N.en, {
-  qqbot_enabled: ["Enable QQ Bot", "Enable the per-user QQ Bot channel."], qqbot_app_id: ["QQ Bot App ID", "QQ Bot application ID."], qqbot_app_secret: ["QQ Bot App Secret", "QQ Bot application secret."], qqbot_local_mode: ["QQ Bot local mode", "true = handle locally, false = route through Hub, unset = default."],
-  telegram_bot_enabled: ["Enable Telegram Bot", "Enable the per-user Telegram Bot channel."], telegram_bot_token: ["Telegram Bot Token", "BotFather token used by the Telegram Bot channel."], telegram_local_mode: ["Telegram local mode", "true = handle locally, false = route through Hub, unset = default."],
-  weixin_enabled: ["Enable personal WeChat", "Enable the per-user iLink/personal WeChat channel. Enterprise WeCom is configured in Hub tenant settings."], weixin_token: ["Personal WeChat Token", "iLink/personal WeChat session token."], weixin_base_url: ["Personal WeChat API Base URL", "iLink API base URL. Leave empty for default."], weixin_cdn_url: ["Personal WeChat CDN URL", "Media/CDN base URL. Leave empty for default."], weixin_account_id: ["Personal WeChat Account ID", "Bound personal WeChat account ID for diagnostics and routing."], weixin_local_mode: ["Personal WeChat local mode", "true = handle locally, false = route through Hub, unset = default."],
-  lansenger_enabled: ["Enable Lansenger", "Enable the Lansenger IM channel."], lansenger_app_id: ["Lansenger App ID", "Lansenger application ID."], lansenger_app_secret: ["Lansenger App Secret", "Lansenger application secret."], lansenger_gateway_url: ["Lansenger API URL", "API access URL, for example https://apigw.lx.qianxin.com."], lansenger_wss_url: ["Lansenger WSS URL", "Optional WebSocket access URL override."], lansenger_local_mode: ["Lansenger local mode", "true = handle locally, false = route through Hub, unset = default."],
-  thirdparty_gateway_enabled: ["Enable third-party integration protocol", "Enable MaClaw third-party integration protocol support for custom enterprise systems. Enterprise WeCom, Feishu, and DingTalk are connected in Hub tenant settings."], thirdparty_gateway_token: ["Integration Protocol Token", "Shared bearer token used when third-party systems call the MaClaw integration protocol."], thirdparty_gateway_host: ["Protocol Listen Host", "Host/IP bound by the MaClaw third-party integration protocol service."], thirdparty_gateway_port: ["Protocol Listen Port", "Port listened on by the MaClaw third-party integration protocol service."], thirdparty_gateway_local_mode: ["Third-party integration local mode", "true = handle locally, false = route through Hub, unset = default."],
-  asr_enabled: ["Enable ASR", "Enable speech recognition for voice messages."], tts_enabled: ["Enable TTS", "Enable text-to-speech replies."], tts_voice_id: ["TTS Voice", "Voice ID used for generated speech."], tts_auto_voice_summary: ["Auto voice summary", "Attach a short voice summary to IM replies."], audio_input_device: ["Audio input device", "Preferred microphone/input device."], audio_output_device: ["Audio output device", "Preferred speaker/output device."], voice_input_enabled: ["Voice input", "Enable voice input in supported channels."], voice_readback_enabled: ["Voice readback", "Read assistant replies aloud when supported."]
+  qqbot_enabled: ["Enable QQ Bot", "Enable this user's QQ Bot binding."], qqbot_app_id: ["QQ Bot App ID", "QQ Bot application ID."], qqbot_app_secret: ["QQ Bot App Secret", "QQ Bot application secret."],
+  telegram_bot_enabled: ["Enable Telegram Bot", "Enable this user's Telegram Bot binding."], telegram_bot_token: ["Telegram Bot Token", "BotFather token used by the Telegram Bot channel."],
+  weixin_enabled: ["Enable personal WeChat", "Enable this user's iLink/personal WeChat binding."], weixin_token: ["Personal WeChat Token", "iLink/personal WeChat session token."], weixin_account_id: ["Personal WeChat Account ID", "Bound personal WeChat account ID."],
+  thirdparty_gateway_enabled: ["Enable third-party access", "Enable MaClaw third-party IM access for this user."], thirdparty_gateway_token: ["Access Token", "Shared bearer token used when third-party systems call MaClawSrv."], thirdparty_gateway_host: ["Listen Host", "Host/IP bound by the third-party access service."], thirdparty_gateway_port: ["Listen Port", "Port listened on by the third-party access service."]
 });
 Object.assign(FIELD_I18N.zh, {
-  qqbot_enabled: ["启用 QQ Bot", "启用此用户的 QQ Bot 通道。"], qqbot_app_id: ["QQ Bot App ID", "QQ Bot 应用 ID。"], qqbot_app_secret: ["QQ Bot App Secret", "QQ Bot 应用密钥。"], qqbot_local_mode: ["QQ Bot 本地模式", "true = 本机处理，false = 走 Hub，未设置 = 默认。"],
-  telegram_bot_enabled: ["启用 Telegram Bot", "启用此用户的 Telegram Bot 通道。"], telegram_bot_token: ["Telegram Bot Token", "Telegram BotFather 颁发的机器人 Token。"], telegram_local_mode: ["Telegram 本地模式", "true = 本机处理，false = 走 Hub，未设置 = 默认。"],
-  weixin_enabled: ["启用个人微信", "启用此用户的 iLink/个人微信通道。企业版微信由 Hub 租户设置统一接入。"], weixin_token: ["个人微信 Token", "iLink/个人微信会话 Token。"], weixin_base_url: ["个人微信 API 地址", "iLink API 基础地址；留空使用默认。"], weixin_cdn_url: ["个人微信 CDN 地址", "媒体/CDN 基础地址；留空使用默认。"], weixin_account_id: ["个人微信账号 ID", "已绑定个人微信账号 ID，用于诊断和路由。"], weixin_local_mode: ["个人微信本地模式", "true = 本机处理，false = 走 Hub，未设置 = 默认。"],
-  lansenger_enabled: ["启用蓝信", "启用蓝信 Lansenger IM 通道。"], lansenger_app_id: ["蓝信 App ID", "蓝信应用 ID。"], lansenger_app_secret: ["蓝信 App Secret", "蓝信应用密钥。"], lansenger_gateway_url: ["蓝信 API 地址", "API 接入地址，例如 https://apigw.lx.qianxin.com。"], lansenger_wss_url: ["蓝信 WSS 地址", "可选 WebSocket 接入地址覆盖。"], lansenger_local_mode: ["蓝信本地模式", "true = 本机处理，false = 走 Hub，未设置 = 默认。"],
-  thirdparty_gateway_enabled: ["启用第三方接入协议", "启用 Maclaw 第三方接入协议支持，用于企业自定义系统接入。企业版微信、飞书、钉钉由 Hub 租户设置统一接入。"], thirdparty_gateway_token: ["接入协议 Token", "第三方系统调用 Maclaw 接入协议时使用的共享 Bearer Token。"], thirdparty_gateway_host: ["协议监听地址", "Maclaw 第三方接入协议服务绑定的 Host/IP。"], thirdparty_gateway_port: ["协议监听端口", "Maclaw 第三方接入协议服务监听端口。"], thirdparty_gateway_local_mode: ["第三方接入本地模式", "true = 本机处理，false = 走 Hub，未设置 = 默认。"],
-  asr_enabled: ["启用 ASR", "启用语音消息识别。"], tts_enabled: ["启用 TTS", "启用语音回复生成。"], tts_voice_id: ["TTS 音色", "生成语音时使用的音色 ID。"], tts_auto_voice_summary: ["自动语音摘要", "在 IM 回复中附加简短语音摘要。"], audio_input_device: ["音频输入设备", "优先使用的麦克风/输入设备。"], audio_output_device: ["音频输出设备", "优先使用的扬声器/输出设备。"], voice_input_enabled: ["语音输入", "在支持的渠道启用语音输入。"], voice_readback_enabled: ["语音朗读", "在支持的渠道朗读助手回复。"]
+  qqbot_enabled: ["\u542f\u7528 QQ Bot", "\u542f\u7528\u6b64\u7528\u6237\u7684 QQ Bot \u7ed1\u5b9a\u3002"], qqbot_app_id: ["QQ Bot App ID", "QQ Bot \u5e94\u7528 ID\u3002"], qqbot_app_secret: ["QQ Bot App Secret", "QQ Bot \u5e94\u7528\u5bc6\u94a5\u3002"],
+  telegram_bot_enabled: ["\u542f\u7528 Telegram Bot", "\u542f\u7528\u6b64\u7528\u6237\u7684 Telegram Bot \u7ed1\u5b9a\u3002"], telegram_bot_token: ["Telegram Bot Token", "Telegram BotFather \u9881\u53d1\u7684\u673a\u5668\u4eba Token\u3002"],
+  weixin_enabled: ["\u542f\u7528\u4e2a\u4eba\u5fae\u4fe1", "\u542f\u7528\u6b64\u7528\u6237\u7684 iLink/\u4e2a\u4eba\u5fae\u4fe1\u7ed1\u5b9a\u3002"], weixin_token: ["\u4e2a\u4eba\u5fae\u4fe1 Token", "iLink/\u4e2a\u4eba\u5fae\u4fe1\u4f1a\u8bdd Token\u3002"], weixin_account_id: ["\u4e2a\u4eba\u5fae\u4fe1\u8d26\u53f7 ID", "\u5df2\u7ed1\u5b9a\u4e2a\u4eba\u5fae\u4fe1\u8d26\u53f7 ID\u3002"],
+  thirdparty_gateway_enabled: ["\u542f\u7528\u7b2c\u4e09\u65b9\u63a5\u5165", "\u542f\u7528\u6b64\u7528\u6237\u7684 MaClaw \u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002"], thirdparty_gateway_token: ["\u63a5\u5165 Token", "\u7b2c\u4e09\u65b9\u7cfb\u7edf\u8c03\u7528 MaClawSrv \u65f6\u4f7f\u7528\u7684\u5171\u4eab Bearer Token\u3002"], thirdparty_gateway_host: ["\u76d1\u542c\u5730\u5740", "\u7b2c\u4e09\u65b9\u63a5\u5165\u670d\u52a1\u7ed1\u5b9a\u7684 Host/IP\u3002"], thirdparty_gateway_port: ["\u76d1\u542c\u7aef\u53e3", "\u7b2c\u4e09\u65b9\u63a5\u5165\u670d\u52a1\u76d1\u542c\u7aef\u53e3\u3002"]
 });
 Object.assign(FIELD_I18N.en, {
   audio_input_device_id: ["Audio input device", "Preferred microphone/input device."],
@@ -192,15 +228,22 @@ function fieldMeta(def = {}) { const tr = FIELD_I18N[locale]?.[def.key]; return 
 function configTypeName(type) { if (locale !== "zh") return type; return type === "integer" ? "整数" : type === "number" ? "数字" : type; }
 function configIssueLabel(issue = {}) { const key = String(issue.key || ""); const base = key.split(".")[0]; const meta = fieldMeta({ key: base, title: base }); const suffix = key.includes(".") ? ` / ${key.split(".").slice(1).join(".")}` : ""; return `${meta.title || key}${suffix}`; }
 function configIssueMessage(issue = {}) { const msg = String(issue.message || ""); if (locale !== "zh") return msg; const key = issue.key || ""; if (msg.includes("managed-by-hub")) return "仍然使用 VE Platform managed-by-hub 占位符，请从 VE Platform 重新打开并传入 Hub LLM 地址和 viewer token。"; if (msg.includes("Selected provider URL is required") || msg.includes("URL is required")) return "必须填写 LLM 服务地址。"; if (msg.includes("API key is required") || msg.includes("credential is required")) return "必须填写 LLM 访问令牌。"; if (msg.includes("Selected provider model is required") || msg.includes("model is required")) return "必须填写 LLM 模型；接入 VE Platform Hub 时填写 auto。"; if (msg.includes("selected provider") && msg.includes("was not found")) return "当前服务商不在 LLM 服务商列表中。"; if (key === "maclaw_llm_current_provider") return msg.replace("maclaw_llm_current_provider is required when multiple providers are configured", "配置多个服务商时必须选择当前服务商"); return msg; }
-const state = { token: "", me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
+const state = { token: "", me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, imAuditItems: [], imAuditContacts: [], imAuditStats: null, imAuditCleanupBefore: "", imAuditContactsPlatform: null, imAuditHasMore: false, imAuditNextBefore: "", imAuditLoading: false, imAuditLoaded: false, imAuditPlatform: "", imAuditQuery: "", imAuditContact: "", settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
 const saved = sessionStorage.getItem("maclaw.user.token") || "";
 const launchToken = params.get("launch_token") || "";
 const hasLaunchToken = params.has("launch_token");
 const secretURLKeys = ["token", "access_token", "api_key", "api_secret"];
 const rawURLSecret = secretURLKeys.some((key) => params.has(key) || location.hash.toLowerCase().includes(`${key}=`));
 state.token = hasLaunchToken || rawURLSecret ? "" : saved;
-state.view = params.get("view") === "settings" ? "settings" : "assistant";
+state.view = ["assistant", "knowledge", "settings"].includes(params.get("view")) ? params.get("view") : "assistant";
 state.instanceId = params.get("instance_id") || "";
+function normalizeSettingsTab(tab) {
+  tab = String(tab || "").trim().toLowerCase();
+  if (tab === "channels" || tab === "channels_more") return "im";
+  if (tab === "advanced") return "";
+  return ["llm", "tools", "skills", "memory", "security", "im", "ui"].includes(tab) ? tab : "";
+}
+state.settingsTab = normalizeSettingsTab(params.get("settings_tab"));
 if (state.token) sessionStorage.setItem("maclaw.user.token", state.token);
 if (rawURLSecret || hasLaunchToken) {
   secretURLKeys.forEach((key) => params.delete(key));
@@ -254,7 +297,7 @@ function messageIdentity(m) { return String(m?.id || "").trim(); }
 function hiddenMessageSet(key = panelMessageKey()) { return state.hiddenMessages[key] || (state.hiddenMessages[key] = new Set()); }
 function visibleMessages(messages) { const hidden = hiddenMessageSet(); return items(messages).filter((m) => !hidden.has(messageIdentity(m))); }
 function setTitle(title, hint) { $("pageTitle").textContent = title; $("pageHint").textContent = hint; document.title = `${title} - MaClawSrv`; }
-function initChrome() { document.documentElement.lang = locale === "zh" ? "zh-CN" : "en"; document.querySelector(".skip-link").textContent = t("skipToMain"); document.querySelector(".sidebar").setAttribute("aria-label", t("appSections")); document.querySelector(".nav").setAttribute("aria-label", t("userViews")); $("brandSubtitle").textContent = t("userWorkspace"); document.querySelector('[data-view="assistant"]').textContent = t("assistantNav"); document.querySelector('[data-view="settings"]').textContent = t("settingsNav"); $("logoutBtn").textContent = t("logout"); if (!state.me) $("identity").textContent = t("notSignedIn"); setBusy(state.busy); }
+function initChrome() { document.documentElement.lang = locale === "zh" ? "zh-CN" : "en"; document.querySelector(".skip-link").textContent = t("skipToMain"); document.querySelector(".sidebar").setAttribute("aria-label", t("appSections")); document.querySelector(".nav").setAttribute("aria-label", t("userViews")); $("brandSubtitle").textContent = t("userWorkspace"); document.querySelector('[data-view="assistant"]').textContent = t("assistantNav"); document.querySelector('[data-view="knowledge"]').textContent = t("knowledgeNav"); document.querySelector('[data-view="settings"]').textContent = t("settingsNav"); $("logoutBtn").textContent = t("logout"); if (!state.me) $("identity").textContent = t("notSignedIn"); setBusy(state.busy); }
 function updateNav() { document.querySelectorAll("[data-view]").forEach((b) => { const on = b.dataset.view === state.view; b.classList.toggle("active", on); b.setAttribute("aria-current", on ? "page" : "false"); }); }
 
 async function bootstrap() {
@@ -278,7 +321,7 @@ async function bootstrap() {
   } catch (e) { if (e.status === 401) renderMissingToken(t("sessionExpired")); else renderError(e); }
   finally { setBusy(false); }
 }
-async function render() { updateNav(); if (state.view === "settings") return renderSettings(); return renderAssistant(); }
+async function render() { updateNav(); if (state.view === "settings") return renderSettings(); if (state.view === "knowledge") return renderKnowledge(); return renderAssistant(); }
 function renderMissingToken(message = t("missingToken")) { setTitle(t("loginRequired"), t("loginHint")); $("content").innerHTML = `<section class="panel stack"><h2>${t("cannotStart")}</h2><p class="error">${esc(message)}</p></section>`; }
 function renderError(e) { $("content").innerHTML = `<section class="panel stack"><h2>${t("loadFailed")}</h2><p class="error">${esc(e.message)}</p><button id="retryBtn" type="button" class="primary">${t("retry")}</button></section>`; $("retryBtn").onclick = bootstrap; }
 function handleAPIError(e) { if (e && e.status === 401) { renderMissingToken(t("sessionExpired")); return true; } return false; }
@@ -306,6 +349,60 @@ async function renderAssistant() {
     $("sendBtn").disabled = true;
     renderEmptyChat(t("selectedMissing"), true);
   } else renderEmptyChat(t("createFirst"));
+}
+async function renderKnowledge() {
+  setTitle(t("knowledgeTitle"), t("knowledgeHint"));
+  $("content").innerHTML = `<section class="panel stack knowledge-page">${renderKnowledgeQuery()}${renderKnowledgeImporter()}</section>`;
+  bindKnowledgeQuery();
+  bindKnowledgeImporter();
+  loadKnowledgeAccessSummary();
+}
+function renderKnowledgeQuery() {
+  return `<div class="knowledge-search" role="search" aria-label="${esc(t("knowledgeQuery"))}"><div class="split"><div><strong>${esc(t("knowledgeQuery"))}</strong><span class="helper">${esc(t("knowledgeQueryHint"))}</span></div></div><form id="knowledgeSearchForm" class="knowledge-search-form"><label for="knowledgeQueryText">${esc(t("knowledgeQuery"))}<input id="knowledgeQueryText" type="search" placeholder="${esc(t("knowledgeQueryPlaceholder"))}" autocomplete="off"></label><label for="knowledgeQueryLimit">${esc(t("knowledgeLimit"))}<select id="knowledgeQueryLimit"><option value="5">5</option><option value="8" selected>8</option><option value="12">12</option><option value="20">20</option></select></label><button id="knowledgeSearchBtn" type="submit" class="primary">${esc(t("search"))}</button></form><div id="knowledgeSearchResults" class="knowledge-result-list" aria-live="polite"></div></div>`;
+}
+function bindKnowledgeQuery() {
+  const form = $("knowledgeSearchForm");
+  if (!form) return;
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    await searchKnowledge();
+  };
+}
+async function searchKnowledge() {
+  const query = $("knowledgeQueryText")?.value?.trim() || "";
+  const out = $("knowledgeSearchResults");
+  if (!query) return showKnowledgeFieldError("knowledgeQueryText", t("knowledgeQueryPlaceholder"));
+  clearKnowledgeFieldError("knowledgeQueryText");
+  try {
+    $("knowledgeSearchBtn").disabled = true;
+    out.innerHTML = `<div class="muted">${esc(t("loading"))}</div>`;
+    const rawLimit = Number($("knowledgeQueryLimit")?.value || 8);
+    const limit = [5, 8, 12, 20].includes(rawLimit) ? rawLimit : 8;
+    const resp = await api("/api/v1/knowledge/search", { method: "POST", body: JSON.stringify({ query, limit }) });
+    out.innerHTML = renderKnowledgeResults(items(resp.results || resp));
+  } catch (e) {
+    if (!handleAPIError(e)) out.innerHTML = `<div class="error">${esc(t("knowledgeQueryFailed"))}: ${esc(e.message)}</div>`;
+  } finally {
+    const btn = $("knowledgeSearchBtn");
+    if (btn) btn.disabled = false;
+  }
+}
+function renderKnowledgeResults(results) {
+  if (!results.length) return `<div class="muted">${esc(t("knowledgeNoResults"))}</div>`;
+  return results.map((r) => {
+    const source = r.source || {};
+    const title = r.node_title || r.card_title || source.title || r.subject || r.claim || r.citation || source.id || r.node_id || r.card_id || r.fact_id || t("unknown");
+    const text = r.snippet || r.summary || r.claim || [r.subject, r.predicate, r.object].filter(Boolean).join(" ");
+    const hasScore = r.score !== undefined && r.score !== null && String(r.score).trim() !== "";
+    const score = Number(r.score);
+    const meta = [
+      source.kind || r.result_type ? `${t("knowledgeResultType")}: ${source.kind || r.result_type}` : "",
+      hasScore && Number.isFinite(score) ? `${t("knowledgeResultScore")}: ${score.toFixed(2)}` : "",
+      source.id ? `${t("importSource")}: ${source.id}` : "",
+      r.citation || ""
+    ].filter(Boolean).join(" / ");
+    return `<article class="knowledge-result"><h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ""}${meta ? `<small>${esc(meta)}</small>` : ""}</article>`;
+  }).join("");
 }
 function bindComposerKeys() {
   const prompt = $("prompt");
@@ -1114,13 +1211,13 @@ function knowledgeDepthInput() {
   return `<select id="knowledgeURLDepth">${[0, 1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${n === 0 ? "selected" : ""}>${n}</option>`).join("")}</select>`;
 }
 function knowledgeTemplateInput() {
-  return `<div class="knowledge-picker-row"><select id="knowledgeTextTemplate" aria-label="${esc(t("knowledgeTemplate"))}"><option value="">${t("unset")}</option>${KNOWLEDGE_TEXT_TEMPLATES.map((tpl) => `<option value="${esc(tpl.id)}">${esc(tpl.label)}</option>`).join("")}</select><button id="insertKnowledgeTemplateBtn" type="button" class="secondary">${t("insertTemplate")}</button></div>`;
+  return `<div class="knowledge-picker-row"><select id="knowledgeTextTemplate" aria-label="${esc(t("knowledgeTemplate"))}"><option value="">${esc(t("unset"))}</option>${KNOWLEDGE_TEXT_TEMPLATES.map((tpl) => `<option value="${esc(tpl.id)}">${esc(tpl.label)}</option>`).join("")}</select><button id="insertKnowledgeTemplateBtn" type="button" class="secondary">${esc(t("insertTemplate"))}</button></div>`;
 }
 function knowledgeURLExampleInput() {
-  return `<div class="knowledge-picker-row"><select id="knowledgeURLExample" aria-label="${esc(t("urlExample"))}"><option value="">${t("unset")}</option>${KNOWLEDGE_URL_SUGGESTIONS.map((item) => `<option value="${esc(item.url)}">${esc(item.url)}</option>`).join("")}</select><button id="addKnowledgeURLBtn" type="button" class="secondary">${t("addURL")}</button></div>`;
+  return `<div class="knowledge-picker-row"><select id="knowledgeURLExample" aria-label="${esc(t("urlExample"))}"><option value="">${esc(t("unset"))}</option>${KNOWLEDGE_URL_SUGGESTIONS.map((item) => `<option value="${esc(item.url)}">${esc(item.url)}</option>`).join("")}</select><button id="addKnowledgeURLBtn" type="button" class="secondary">${esc(t("addURL"))}</button></div>`;
 }
 function renderKnowledgeImporter() {
-  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="split"><div><strong>${t("connectedKnowledge")}</strong><span class="helper">${t("connectedKnowledgeHint")}</span></div></div><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="split"><div><strong>${t("knowledgeImport")}</strong><span class="helper">${t("knowledgeImportHint")}</span></div></div><div class="knowledge-import-grid"><section><h3>${t("importText")}</h3><label for="knowledgeTextTitle">${t("title")}</label>${datalistTextInput("knowledgeTextTitle", KNOWLEDGE_TITLE_SUGGESTIONS)}<label for="knowledgeTextTopic">${t("topicHint")}</label>${datalistTextInput("knowledgeTextTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeTextLabels">${t("labels")}</label>${datalistTextInput("knowledgeTextLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeTextTemplate">${t("knowledgeTemplate")}</label>${knowledgeTemplateInput()}<label for="knowledgeTextBody">${t("textToImport")}</label><textarea id="knowledgeTextBody" placeholder="${esc(t("importTextPlaceholder"))}"></textarea><button id="knowledgeTextImportBtn" type="button" class="secondary">${t("import")}</button></section><section><h3>${t("importFile")}</h3><label for="knowledgeFileTopic">${t("topicHint")}</label>${datalistTextInput("knowledgeFileTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeFileLabels">${t("labels")}</label>${datalistTextInput("knowledgeFileLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeFileInput">${t("chooseFiles")}</label><input id="knowledgeFileInput" type="file" multiple accept=".doc,.docx,.pdf,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar"><button id="knowledgeFileImportBtn" type="button" class="secondary">${t("import")}</button></section><section><h3>${t("importURL")}</h3><label for="knowledgeURLTopic">${t("topicHint")}</label>${datalistTextInput("knowledgeURLTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeURLLabels">${t("labels")}</label>${datalistTextInput("knowledgeURLLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeURLExample">${t("urlExample")}</label>${knowledgeURLExampleInput()}<label for="knowledgeURLText">${t("urlsToImport")}</label><textarea id="knowledgeURLText" placeholder="${esc(t("importURLPlaceholder"))}"></textarea><label for="knowledgeURLDepth">${t("crawlDepth")}</label>${knowledgeDepthInput()}<label class="inline-check"><input id="knowledgeSameDomain" type="checkbox" checked>${t("sameDomainOnly")}</label><button id="knowledgeURLImportBtn" type="button" class="secondary">${t("import")}</button></section></div><div id="knowledgeImportProgress" class="knowledge-progress" role="status" aria-live="polite"></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
+  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="split"><div><strong>${esc(t("connectedKnowledge"))}</strong><span class="helper">${esc(t("connectedKnowledgeHint"))}</span></div></div><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="split"><div><strong>${esc(t("knowledgeImport"))}</strong><span class="helper">${esc(t("knowledgeImportHint"))}</span></div></div><div class="knowledge-import-grid"><section><h3>${esc(t("importText"))}</h3><label for="knowledgeTextTitle">${esc(t("title"))}</label>${datalistTextInput("knowledgeTextTitle", KNOWLEDGE_TITLE_SUGGESTIONS)}<label for="knowledgeTextTopic">${esc(t("topicHint"))}</label>${datalistTextInput("knowledgeTextTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeTextLabels">${esc(t("labels"))}</label>${datalistTextInput("knowledgeTextLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeTextTemplate">${esc(t("knowledgeTemplate"))}</label>${knowledgeTemplateInput()}<label for="knowledgeTextBody">${esc(t("textToImport"))}</label><textarea id="knowledgeTextBody" placeholder="${esc(t("importTextPlaceholder"))}"></textarea><button id="knowledgeTextImportBtn" type="button" class="secondary">${esc(t("import"))}</button></section><section><h3>${esc(t("importFile"))}</h3><label for="knowledgeFileTopic">${esc(t("topicHint"))}</label>${datalistTextInput("knowledgeFileTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeFileLabels">${esc(t("labels"))}</label>${datalistTextInput("knowledgeFileLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeFileInput">${esc(t("chooseFiles"))}</label><input id="knowledgeFileInput" type="file" multiple accept=".doc,.docx,.pdf,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar"><button id="knowledgeFileImportBtn" type="button" class="secondary">${esc(t("import"))}</button></section><section><h3>${esc(t("importURL"))}</h3><label for="knowledgeURLTopic">${esc(t("topicHint"))}</label>${datalistTextInput("knowledgeURLTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeURLLabels">${esc(t("labels"))}</label>${datalistTextInput("knowledgeURLLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeURLExample">${esc(t("urlExample"))}</label>${knowledgeURLExampleInput()}<label for="knowledgeURLText">${esc(t("urlsToImport"))}</label><textarea id="knowledgeURLText" placeholder="${esc(t("importURLPlaceholder"))}"></textarea><label for="knowledgeURLDepth">${esc(t("crawlDepth"))}</label>${knowledgeDepthInput()}<label class="inline-check"><input id="knowledgeSameDomain" type="checkbox" checked>${esc(t("sameDomainOnly"))}</label><button id="knowledgeURLImportBtn" type="button" class="secondary">${esc(t("import"))}</button></section></div><div id="knowledgeImportProgress" class="knowledge-progress" role="status" aria-live="polite"></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
 }
 function bindKnowledgeImporter() {
   if (!$('knowledgeTextImportBtn')) return;
@@ -1205,17 +1302,49 @@ function displayWithID(label, id) {
   if (!text || text === raw) return raw || "-";
   return `${text} (${raw})`;
 }
-function userKnowledgeScopeDisplay(scope, selfScope) {
+function userKnowledgeScopeKind(scope, access) {
+  const raw = String(scope.scope_type || "").toLowerCase();
+  if (["self", "public", "user"].includes(raw)) return raw;
+  if (String(scope.owner_id || "").startsWith("public:")) return "public";
+  if (String(scope.name || "") === "self") return "self";
+  if (String(scope.tenant_id || "") === String(access?.tenant_id || "") && String(scope.owner_id || "") === String(access?.user_id || "")) return "self";
+  return "user";
+}
+function userKnowledgeScopeTypeLabel(kind) {
+  if (kind === "self") return t("selfKnowledge");
+  if (kind === "public") return t("publicKnowledge");
+  return t("otherUserKnowledge");
+}
+function userKnowledgeTenantLabel(scope, tenantID) {
+  const selfTenantID = String(state.me?.tenant_id || state.me?.remote_tenant_id || "");
+  if (scope.tenant_name || scope.tenant) return scope.tenant_name || scope.tenant;
+  if (tenantID && tenantID === selfTenantID) return state.me?.tenant_name || state.me?.remote_tenant_name || tenantID;
+  return tenantID;
+}
+function userKnowledgeScopeDisplay(scope, kind) {
   const tenantID = String(scope.tenant_id || "");
   const ownerID = String(scope.owner_id || "");
-  const tenantLabel = scope.tenant_name || scope.tenant || state.me?.tenant_name || state.me?.remote_tenant_name || tenantID;
-  const ownerLabel = selfScope ? (state.me?.name || state.me?.email || state.me?.user_name || state.me?.user_id || ownerID) : (scope.owner_name || scope.user_name || scope.name || ownerID);
+  const tenantLabel = userKnowledgeTenantLabel(scope, tenantID);
+  const ownerName = String(scope.owner_name || scope.user_name || "").trim();
+  const selfName = state.me?.name || state.me?.user_name || "";
+  const selfEmail = state.me?.email || "";
+  const selfOwner = selfName && selfEmail ? `${selfName} / ${selfEmail}` : selfName || selfEmail || state.me?.user_id || ownerID;
+  const publicOwner = scope.owner_name || scope.name || t("knowledgePublicOwner");
+  const userOwner = ownerName || ownerID;
+  const ownerLabel = kind === "self" ? selfOwner : kind === "public" ? publicOwner : userOwner;
   return { tenant: displayWithID(tenantLabel, tenantID), owner: displayWithID(ownerLabel, ownerID) };
 }
 function renderKnowledgeAccessScopes(access) {
   const scopes = items(access?.scopes || []);
   if (!scopes.length) return `<p class="helper">${esc(t("noConnectedKnowledge"))}</p>`;
-  return scopes.map((scope) => { const publicScope = String(scope.owner_id || "").startsWith("public:"); const selfScope = String(scope.name || "") === "self"; const label = selfScope ? t("selfKnowledge") : (scope.name || (publicScope ? t("publicKnowledge") : t("connectedKnowledge"))); const type = selfScope ? t("selfKnowledge") : (publicScope ? t("publicKnowledge") : t("connectedKnowledge")); const display = userKnowledgeScopeDisplay(scope, selfScope); return `<div class="knowledge-scope-chip"><strong>${esc(label)}</strong><span>${esc(type)}</span><code>${esc(display.tenant)} / ${esc(display.owner)}</code><small>${esc(t("knowledgeScopeIDs"))}: ${esc(scope.tenant_id || "-")} / ${esc(scope.owner_id || "-")}</small></div>`; }).join("");
+  return scopes.map((scope) => {
+    const kind = userKnowledgeScopeKind(scope, access);
+    const type = userKnowledgeScopeTypeLabel(kind);
+    const label = String(scope.name || "").trim();
+    const title = label && label !== "self" ? label : type;
+    const display = userKnowledgeScopeDisplay(scope, kind);
+    return `<div class="knowledge-scope-chip knowledge-scope-${esc(kind)}"><div class="knowledge-scope-head"><strong>${esc(title)}</strong><span class="knowledge-scope-badge">${esc(type)}</span></div><dl class="knowledge-scope-meta"><div><dt>${esc(t("knowledgeOwner"))}</dt><dd>${esc(display.owner)}</dd></div><div><dt>${esc(t("knowledgeTenant"))}</dt><dd>${esc(display.tenant)}</dd></div></dl><small>${esc(t("knowledgeScopeIDs"))}: ${esc(scope.tenant_id || "-")} / ${esc(scope.owner_id || "-")}</small></div>`;
+  }).join("");
 }
 async function loadKnowledgeAccessSummary() {
   const el = $('knowledgeAccessSummary');
@@ -1305,7 +1434,9 @@ async function importKnowledgeURLs() {
   try {
     await runKnowledgeImport("knowledgeURLImportBtn", async () => {
       setKnowledgeImportStatus(t("importing"), true);
-      const out = await api("/api/v1/knowledge/import/urls", { method: "POST", body: JSON.stringify({ text, max_depth: Number($('knowledgeURLDepth')?.value || 0), same_domain_only: $('knowledgeSameDomain')?.checked !== false, topic_hint: topic, labels }) });
+      const rawDepth = Number($('knowledgeURLDepth')?.value || 0);
+      const maxDepth = [0, 1, 2, 3, 4, 5].includes(rawDepth) ? rawDepth : 0;
+      const out = await api("/api/v1/knowledge/import/urls", { method: "POST", body: JSON.stringify({ text, max_depth: maxDepth, same_domain_only: $('knowledgeSameDomain')?.checked !== false, topic_hint: topic, labels }) });
       setKnowledgeImportStatus(out); toast(t("importStarted")); toastKnowledgeImportResult(await watchKnowledgeImportJob(out.job_id));
     });
   } catch (e) { if (!handleAPIError(e)) toast(e.message); }
@@ -1392,13 +1523,10 @@ function updateConfigStatus(validation) { const el = $("cfgStatus"); if (!el) re
 function setConfigOutput(value) { const el = $("cfgOut"); if (el) el.textContent = pretty(value); }
 function setSettingsActionsDisabled(on) { ["saveCfg", "validateCfg", "testCfg"].forEach((id) => { const el = $(id); if (el) el.disabled = on; }); }
 const CHANNEL_CONFIG_KEYS = [
-  "qqbot_enabled", "qqbot_app_id", "qqbot_app_secret", "qqbot_local_mode",
-  "telegram_bot_enabled", "telegram_bot_token", "telegram_local_mode",
-  "weixin_enabled", "weixin_token", "weixin_base_url", "weixin_cdn_url", "weixin_account_id", "weixin_local_mode",
-  "lansenger_enabled", "lansenger_app_id", "lansenger_app_secret", "lansenger_gateway_url", "lansenger_wss_url", "lansenger_local_mode",
-  "thirdparty_gateway_enabled", "thirdparty_gateway_token", "thirdparty_gateway_host", "thirdparty_gateway_port", "thirdparty_gateway_local_mode",
-  "asr_enabled", "tts_enabled", "tts_voice_id", "tts_auto_voice_summary",
-  "audio_input_device_id", "audio_output_device_id", "pet_voice_input_enabled", "pet_voice_readback_enabled"
+  "qqbot_enabled", "qqbot_app_id", "qqbot_app_secret",
+  "telegram_bot_enabled", "telegram_bot_token",
+  "weixin_enabled", "weixin_token", "weixin_account_id",
+  "thirdparty_gateway_enabled", "thirdparty_gateway_token", "thirdparty_gateway_host", "thirdparty_gateway_port"
 ];
 const CONFIG_CHOICE_FIELDS = {
   default_proxy_protocol: ["http", "https", "socks5"],
@@ -1695,11 +1823,6 @@ function configBoolLabel(value) {
   if (value === false) return t("channelDisabled");
   return t("channelAuto");
 }
-function localModeLabel(value) {
-  if (value === true) return t("channelLocal");
-  if (value === false) return t("channelHub");
-  return t("channelAuto");
-}
 function thirdPartyProtocolEndpoint() {
   const host = String($("cfg_thirdparty_gateway_host")?.value || state.config?.thirdparty_gateway_host || "127.0.0.1").trim() || "127.0.0.1";
   const port = String($("cfg_thirdparty_gateway_port")?.value || state.config?.thirdparty_gateway_port || 18777).trim() || "18777";
@@ -1752,30 +1875,195 @@ function bindSecretGenerators() {
 function secretFieldMarkup(id, attrs, current, extra = "") {
   return `<div class="secret-input"><input id="${esc(id)}" ${attrs} type="password" autocomplete="new-password" spellcheck="false" value="${esc(current)}" ${extra}><button type="button" class="secondary" data-generate-secret="${esc(id)}">${esc(t("generateSecret"))}</button></div>`;
 }
-function channelCard(title, enabledKey, localModeKey, fields = []) {
+function configFieldMarkup(key, defs) {
+  const d = fieldMeta(defs[key] || { key, title: key, type: Array.isArray(state.config[key]) ? "array" : typeof state.config[key] === "boolean" ? "bool" : typeof state.config[key] === "number" ? "number" : "string" });
+  const label = `${esc(d.title || key)}${d.required ? " *" : ""}`;
+  return `<div class="field"><label for="cfg_${key}">${label}</label>${fieldInput(key, d)}<span class="helper">${esc(fieldHelper(d))}</span></div>`;
+}
+function thirdPartyProtocolTools() {
+  return `<div class="channel-protocol"><div><strong>${esc(t("channelProtocolEndpoint"))}</strong><code id="thirdPartyProtocolEndpoint">${esc(thirdPartyProtocolEndpoint())}</code></div><div class="row"><button type="button" class="secondary" id="copyThirdPartyEndpoint">${esc(t("channelCopyEndpoint"))}</button><button type="button" class="secondary" id="generateThirdPartyToken">${esc(t("channelGenerateToken"))}</button></div></div>`;
+}
+function renderIMBindingCard(title, enabledKey, keys, defs, extra = "") {
   const enabled = state.config?.[enabledKey];
-  const local = localModeKey ? state.config?.[localModeKey] : undefined;
-  const meta = fields.map((key) => {
-    const d = fieldMeta({ key, title: key });
-    const value = state.config?.[key];
-    const present = value !== undefined && value !== null && String(value).trim() !== "";
-    return `<span class="channel-chip ${present ? "on" : ""}">${esc(d.title || key)}</span>`;
+  return `<article class="im-config-card"><div class="split"><h3>${esc(title)}</h3><span class="badge ${enabled ? "ok" : ""}">${esc(configBoolLabel(enabled))}</span></div>${[enabledKey, ...keys].map((key) => configFieldMarkup(key, defs)).join("")}${extra}</article>`;
+}
+function renderIMConfigEditor(defs) {
+  return `<div class="channel-overview im-config-editor"><div class="split"><div><strong>${t("channelOverview")}</strong><span class="helper">${t("channelOverviewHint")}</span></div></div><div class="im-config-grid">${[
+    renderIMBindingCard(t("channelQQ"), "qqbot_enabled", ["qqbot_app_id", "qqbot_app_secret"], defs),
+    renderIMBindingCard(t("channelTelegram"), "telegram_bot_enabled", ["telegram_bot_token"], defs),
+    renderIMBindingCard(t("channelWeixin"), "weixin_enabled", ["weixin_token", "weixin_account_id"], defs),
+    renderIMBindingCard(t("channelThirdParty"), "thirdparty_gateway_enabled", ["thirdparty_gateway_token", "thirdparty_gateway_host", "thirdparty_gateway_port"], defs, thirdPartyProtocolTools())
+  ].join("")}</div>${renderIMAuditPanel()}<p class="helper">${t("channelCredentialHint")}</p></div>`;
+}
+function renderIMAuditPanel() {
+  const platforms = [["", t("imAuditPlatformAll")], ["qq", "QQ"], ["weixin", "WeChat"], ["telegram", "Telegram"], ["thirdparty", "Third-party"]];
+  const contactOptions = state.imAuditContacts.map((item) => {
+    const label = [item.display_name || item.contact_id, item.platform, item.message_count ? String(item.message_count) : ""].filter(Boolean).join(" / ");
+    return `<option value="${esc(item.contact_id || "")}" label="${esc(label)}"></option>`;
   }).join("");
-  return `<article class="channel-card"><div class="split"><h3>${esc(title)}</h3><span class="badge ${enabled ? "ok" : ""}">${esc(configBoolLabel(enabled))}</span></div><div class="row"><span class="pill">${esc(localModeKey ? localModeLabel(local) : t("channelAuto"))}</span>${meta}</div></article>`;
+  const rows = state.imAuditItems.length
+    ? `${state.imAuditItems.map(renderIMAuditRow).join("")}${state.imAuditLoading ? `<p class="helper">${esc(t("imAuditLoading"))}</p>` : ""}`
+    : state.imAuditLoading
+      ? `<p class="helper">${esc(t("imAuditLoading"))}</p>`
+      : `<p class="helper">${esc(t("imAuditEmpty"))}</p>`;
+  const stats = state.imAuditStats ? `<div class="memory-summary"><span class="memory-chip"><strong>${esc(t("imAuditStats", { messages: state.imAuditStats.messages || 0, contacts: state.imAuditStats.contacts || 0, platforms: state.imAuditStats.platforms || 0 }))}</strong></span></div>` : "";
+  const loadOlder = state.imAuditHasMore ? `<button type="button" class="secondary memory-load-more" id="imAuditLoadOlder" ${state.imAuditLoading ? "disabled" : ""}>${esc(t("imAuditLoadOlder"))}</button>` : "";
+  const cleanupDays = [7, 14, 30, 60, 90].map((days) => `<button type="button" class="secondary" data-im-audit-days="${days}">${days} ${esc(t("imAuditCleanupDays"))}</button>`).join("");
+  const busy = state.imAuditLoading ? "disabled" : "";
+  return `<section class="im-audit"><div class="split"><div><strong>${esc(t("imAuditTitle"))}</strong><span class="helper">${esc(t("imAuditHint"))}</span></div><div class="row"><button type="button" class="secondary" id="imAuditExport" ${busy}>${esc(t("imAuditExport"))}</button><button type="button" class="secondary" id="imAuditRefresh" ${busy}>${esc(t("imAuditRefresh"))}</button></div></div><div class="im-audit-filters"><select id="imAuditPlatform" aria-label="${esc(t("imAuditPlatformAll"))}">${platforms.map(([value, label]) => `<option value="${esc(value)}" ${value === state.imAuditPlatform ? "selected" : ""}>${esc(label)}</option>`).join("")}</select><input id="imAuditContact" type="search" list="imAuditContactOptions" placeholder="${esc(t("imAuditContact"))}" value="${esc(state.imAuditContact)}"><datalist id="imAuditContactOptions">${contactOptions}</datalist><input id="imAuditQuery" type="search" placeholder="${esc(t("imAuditKeyword"))}" value="${esc(state.imAuditQuery)}"></div><div class="im-audit-cleanup"><div class="row">${cleanupDays}</div><label for="imAuditCleanupBefore">${esc(t("imAuditCleanupBefore"))}<input id="imAuditCleanupBefore" type="datetime-local" value="${esc(state.imAuditCleanupBefore)}"></label><button type="button" class="secondary danger" id="imAuditCleanup" ${busy}>${esc(t("imAuditCleanup"))}</button></div>${stats}<div id="imAuditList" class="im-audit-list">${rows}</div>${loadOlder}</section>`;
 }
-function hubManagedChannelCard() {
-  return `<article class="channel-card managed"><div class="split"><h3>${esc(t("channelHubManaged"))}</h3><span class="badge ok">Hub</span></div><p class="helper">${esc(t("channelHubManagedHint"))}</p><div class="row"><span class="channel-chip on">${esc(t("channelEnterpriseWeCom"))}</span><span class="channel-chip on">${esc(t("channelFeishu"))}</span><span class="channel-chip on">${esc(t("channelDingTalk"))}</span></div></article>`;
+function renderIMAuditRow(item) {
+  const msg = item.message || item.Message || {};
+  const role = msg.role || "assistant";
+  const content = msg.content || msg.text || "";
+  const platform = item.platform || item.Platform || "";
+  const contact = item.contact_id || item.ContactID || "";
+  const sessionTitle = item.session_title || item.SessionTitle || item.session_id || item.SessionID || "";
+  const instanceName = item.instance_name || item.InstanceName || item.instance_id || item.InstanceID || "";
+  const created = msg.created_at || item.created_at || item.CreatedAt || "";
+  const when = created ? new Date(created).toLocaleString(locale === "en" ? "en-US" : "zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+  const idx = state.imAuditItems.indexOf(item);
+  return `<article class="im-audit-row"><div class="message-head"><div class="message-meta"><strong>${esc(role)}</strong>${platform ? `<span class="pill">${esc(platform)}</span>` : ""}${contact ? `<span class="message-time">${esc(contact)}</span>` : ""}${when ? `<span class="message-time">${esc(when)}</span>` : ""}</div>${idx >= 0 ? `<button type="button" class="secondary" data-im-audit-open="${idx}">${esc(t("imAuditOpen"))}</button>` : ""}</div><div class="md-content">${renderMarkdown(content, state.copySnippets)}</div><div class="message-details"><span>${esc(instanceName)}</span>${sessionTitle ? `<span>${esc(t("imAuditOpenSession"))}: ${esc(sessionTitle)}</span>` : ""}</div></article>`;
 }
-function renderChannelOverview() {
-  return `<div class="channel-overview"><div class="split"><div><strong>${t("channelOverview")}</strong><span class="helper">${t("channelOverviewHint")}</span></div></div><div class="channel-grid">${[
-    hubManagedChannelCard(),
-    channelCard(t("channelQQ"), "qqbot_enabled", "qqbot_local_mode", ["qqbot_app_id", "qqbot_app_secret"]),
-    channelCard(t("channelTelegram"), "telegram_bot_enabled", "telegram_local_mode", ["telegram_bot_token"]),
-    channelCard(t("channelWeixin"), "weixin_enabled", "weixin_local_mode", ["weixin_token", "weixin_base_url", "weixin_cdn_url", "weixin_account_id"]),
-    channelCard(t("channelLansenger"), "lansenger_enabled", "lansenger_local_mode", ["lansenger_app_id", "lansenger_app_secret", "lansenger_gateway_url", "lansenger_wss_url"]),
-    channelCard(t("channelThirdParty"), "thirdparty_gateway_enabled", "thirdparty_gateway_local_mode", ["thirdparty_gateway_token", "thirdparty_gateway_host", "thirdparty_gateway_port"]),
-    channelCard(t("channelVoice"), "tts_enabled", "", ["asr_enabled", "tts_voice_id", "tts_auto_voice_summary"])
-  ].join("")}</div><div class="channel-protocol"><div><strong>${esc(t("channelProtocolEndpoint"))}</strong><code id="thirdPartyProtocolEndpoint">${esc(thirdPartyProtocolEndpoint())}</code></div><div class="row"><button type="button" class="secondary" id="copyThirdPartyEndpoint">${esc(t("channelCopyEndpoint"))}</button><button type="button" class="secondary" id="generateThirdPartyToken">${esc(t("channelGenerateToken"))}</button></div></div><p class="helper">${t("channelLocalModeHint")}</p><p class="helper">${t("channelCredentialHint")}</p></div>`;
+async function loadIMAuditMessages(append = false) {
+  if (state.imAuditLoading || (append && !state.imAuditNextBefore)) return;
+  state.imAuditLoading = true;
+  if (state.view === "settings" && $("cfgTabs")) renderConfigFields();
+  try {
+    await loadIMAuditContacts(false);
+    const qs = new URLSearchParams({ limit: "100" });
+    if (state.imAuditPlatform) qs.set("platform", state.imAuditPlatform);
+    if (state.imAuditQuery) qs.set("q", state.imAuditQuery);
+    if (state.imAuditContact) qs.set("contact", state.imAuditContact);
+    if (append) qs.set("before", state.imAuditNextBefore);
+    const [out, stats] = await Promise.all([
+      api(`/api/v1/im-audit/messages?${qs.toString()}`),
+      api(`/api/v1/im-audit/stats?${imAuditQueryString()}`)
+    ]);
+    const nextItems = items(out);
+    state.imAuditItems = append ? state.imAuditItems.concat(nextItems) : nextItems;
+    state.imAuditHasMore = Boolean(out?.has_more);
+    state.imAuditNextBefore = String(out?.next_before || "");
+    state.imAuditStats = stats;
+    state.imAuditLoaded = true;
+  } catch (e) {
+    state.imAuditLoaded = false;
+    if (!handleAPIError(e)) toast(e.message);
+  } finally {
+    state.imAuditLoading = false;
+    if (state.view === "settings" && $("cfgTabs")) renderConfigFields();
+  }
+}
+function imAuditQueryString() {
+  const qs = new URLSearchParams();
+  if (state.imAuditPlatform) qs.set("platform", state.imAuditPlatform);
+  if (state.imAuditQuery) qs.set("q", state.imAuditQuery);
+  if (state.imAuditContact) qs.set("contact", state.imAuditContact);
+  return qs.toString();
+}
+async function exportIMAuditCSV() {
+  const query = imAuditQueryString();
+  const url = `/api/v1/im-audit/export.csv${query ? `?${query}` : ""}`;
+  try {
+    const resp = await fetch(url, { headers: headers(false) });
+    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+    const blob = await resp.blob();
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = `im-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(href);
+  } catch (e) {
+    if (!handleAPIError(e)) toast(e.message);
+  }
+}
+async function cleanupIMAuditMessages() {
+  const raw = String($("imAuditCleanupBefore")?.value || "").trim();
+  if (!raw) return;
+  state.imAuditCleanupBefore = raw;
+  const before = new Date(raw);
+  if (!Number.isFinite(before.getTime())) return toast(t("loadFailed"));
+  const label = before.toLocaleString(locale === "en" ? "en-US" : "zh-CN");
+  if (!confirm(t("imAuditCleanupConfirm", { before: label }))) return;
+  try {
+    const qs = imAuditQueryString();
+    const sep = qs ? `${qs}&` : "";
+    const out = await api(`/api/v1/im-audit/messages?${sep}before=${encodeURIComponent(before.toISOString())}&confirm=true`, { method: "DELETE" });
+    toast(t("imAuditCleaned", { deleted: out.deleted || 0 }));
+    state.imAuditLoaded = false;
+    state.imAuditContactsPlatform = null;
+    resetIMAuditPagination();
+    await loadIMAuditMessages();
+  } catch (e) {
+    if (!handleAPIError(e)) toast(e.message);
+  }
+}
+async function loadIMAuditContacts(force = false) {
+  if (!force && state.imAuditContactsPlatform === state.imAuditPlatform) return;
+  const qs = new URLSearchParams();
+  if (state.imAuditPlatform) qs.set("platform", state.imAuditPlatform);
+  const out = await api(`/api/v1/im-audit/contacts${qs.toString() ? `?${qs.toString()}` : ""}`);
+  state.imAuditContacts = items(out);
+  state.imAuditContactsPlatform = state.imAuditPlatform;
+}
+function resetIMAuditPagination() {
+  state.imAuditHasMore = false;
+  state.imAuditNextBefore = "";
+}
+function setIMAuditCleanupDays(days) {
+  const n = Number(days);
+  if (!Number.isFinite(n) || n <= 0) return;
+  const d = new Date(Date.now() - n * 24 * 60 * 60 * 1000);
+  const pad = (v) => String(v).padStart(2, "0");
+  state.imAuditCleanupBefore = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const el = $("imAuditCleanupBefore");
+  if (el) el.value = state.imAuditCleanupBefore;
+}
+async function openIMAuditSession(item) {
+  const instanceID = item?.instance_id || item?.InstanceID || "";
+  const sessionID = item?.session_id || item?.SessionID || "";
+  if (!instanceID || !sessionID) return;
+  resetRunState();
+  state.view = "assistant";
+  state.instanceId = instanceID;
+  state.sessionId = sessionID;
+  history.replaceState(null, "", `/app/?view=assistant&instance_id=${encodeURIComponent(instanceID)}`);
+  await refreshInstances();
+  await renderAssistant();
+}
+function bindIMAuditPanel() {
+  const refresh = $("imAuditRefresh");
+  if (!refresh) return;
+  const syncFilters = () => {
+    state.imAuditPlatform = $("imAuditPlatform")?.value || "";
+    state.imAuditContact = String($("imAuditContact")?.value || "").trim();
+    state.imAuditQuery = String($("imAuditQuery")?.value || "").trim();
+  };
+  refresh.onclick = () => { syncFilters(); resetIMAuditPagination(); loadIMAuditMessages(); };
+  const loadOlder = $("imAuditLoadOlder");
+  if (loadOlder) loadOlder.onclick = () => loadIMAuditMessages(true);
+  const exportBtn = $("imAuditExport");
+  if (exportBtn) exportBtn.onclick = () => { syncFilters(); exportIMAuditCSV(); };
+  const cleanupBtn = $("imAuditCleanup");
+  if (cleanupBtn) cleanupBtn.onclick = () => { syncFilters(); cleanupIMAuditMessages(); };
+  const cleanupBefore = $("imAuditCleanupBefore");
+  if (cleanupBefore) cleanupBefore.onchange = () => { state.imAuditCleanupBefore = cleanupBefore.value; };
+  document.querySelectorAll("[data-im-audit-days]").forEach((btn) => {
+    btn.onclick = () => setIMAuditCleanupDays(btn.dataset.imAuditDays);
+  });
+  ["imAuditPlatform", "imAuditContact", "imAuditQuery"].forEach((id) => {
+    const el = $(id);
+    if (!el) return;
+    el.onchange = () => { syncFilters(); resetIMAuditPagination(); if (id === "imAuditPlatform") state.imAuditContactsPlatform = null; loadIMAuditMessages(); };
+    el.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); syncFilters(); resetIMAuditPagination(); loadIMAuditMessages(); } };
+  });
+  document.querySelectorAll("[data-im-audit-open]").forEach((btn) => {
+    btn.onclick = () => openIMAuditSession(state.imAuditItems[Number(btn.dataset.imAuditOpen)]);
+  });
+  if (!state.imAuditLoaded && state.settingsTab === "im") loadIMAuditMessages();
 }
 function configGroups(defs) {
   const visibleDefs = defs.filter((x) => !HIDDEN_CONFIG_KEYS.has(x.key));
@@ -1787,25 +2075,23 @@ function configGroups(defs) {
     { id: "skills", title: t("groupSkills"), hint: t("groupSkillsHint"), keys: [] },
     { id: "memory", title: t("groupMemory"), hint: t("groupMemoryHint"), keys: ["memory_auto_compress", "memory_max_backups", "knowledge_skill_token_budget"] },
     { id: "security", title: t("groupSecurity"), hint: t("groupSecurityHint"), keys: ["security_policy_mode", "sandbox_mode", "network_level", "yolo_mode_allowed"] },
-    { id: "channels", title: t("groupChannels"), hint: t("groupChannelsHint"), keys: CHANNEL_CONFIG_KEYS },
+    { id: "im", title: t("groupIM"), hint: t("groupIMHint"), keys: CHANNEL_CONFIG_KEYS },
   ];
   const used = new Set(groups.flatMap((g) => g.keys));
   const rest = allKeys.filter((key) => !used.has(key));
   const pick = (pred) => rest.filter(pred);
   groups.push(
-    { id: "channels_more", title: t("groupChannels"), hint: t("groupChannelsHint"), keys: pick((key) => /^(qqbot|telegram|weixin|lansenger|thirdparty|asr_|tts_|audio_|voice_|noise_|speech_)/.test(key)) },
-    { id: "ui", title: t("groupUI"), hint: t("groupUIHint"), keys: pick((key) => /^(ui_|show_|hide_|pet_|floating_|default_|remote_|power_|screen_|workstation_|check_|pause_|env_|language$|active_tool$|current_project$|projects$|extra_tool_configs$)/.test(key)) },
-    { id: "advanced", title: t("groupAdvanced"), hint: t("groupAdvancedHint"), keys: [] }
+    { id: "ui", title: t("groupUI"), hint: t("groupUIHint"), keys: pick((key) => /^(ui_|show_|hide_|pet_|floating_|default_|remote_|power_|screen_|workstation_|check_|pause_|env_|language$|active_tool$|current_project$|projects$|extra_tool_configs$)/.test(key)) }
   );
-  const grouped = new Set(groups.flatMap((g) => g.keys));
-  groups[groups.length - 1].keys = rest.filter((key) => !grouped.has(key));
-  return groups.map((g) => ({ ...g, keys: g.keys.filter((key) => !HIDDEN_CONFIG_KEYS.has(key) && (byKey[key] || Object.prototype.hasOwnProperty.call(state.config || {}, key))) })).filter((g) => g.keys.length || ["tools", "skills", "memory", "channels"].includes(g.id));
+  return groups.map((g) => ({ ...g, keys: g.keys.filter((key) => !HIDDEN_CONFIG_KEYS.has(key) && (byKey[key] || Object.prototype.hasOwnProperty.call(state.config || {}, key))) })).filter((g) => g.keys.length || ["tools", "skills", "memory", "im"].includes(g.id));
 }
 function setActiveConfigTab(tab) {
+  tab = normalizeSettingsTab(tab);
   state.settingsTab = tab;
   document.querySelectorAll("[data-cfg-tab]").forEach((b) => { const on = b.dataset.cfgTab === tab; b.classList.toggle("active", on); b.setAttribute("aria-selected", on ? "true" : "false"); });
   document.querySelectorAll("[data-cfg-panel]").forEach((p) => { const off = p.dataset.cfgPanel !== tab; p.hidden = off; p.setAttribute("aria-hidden", off ? "true" : "false"); });
   if (tab === "memory" && $("memoryList")) loadMemoryEntries(false);
+  if (tab === "im" && $("imAuditList") && !state.imAuditLoaded) loadIMAuditMessages();
 }
 function bindChoiceCustomControls() {
   document.querySelectorAll(".choice-custom").forEach((box) => {
@@ -2223,21 +2509,20 @@ function renderConfigFields() {
   const groups = configGroups(state.schema);
   if (!groups.some((g) => g.id === state.settingsTab)) state.settingsTab = groups[0]?.id || "";
   $("cfgTabs").innerHTML = groups.map((group) => `<button id="cfg_tab_${esc(group.id)}" type="button" role="tab" class="cfg-tab ${group.id === state.settingsTab ? "active" : ""}" data-cfg-tab="${esc(group.id)}" aria-controls="cfg_panel_${esc(group.id)}" aria-selected="${group.id === state.settingsTab ? "true" : "false"}">${esc(group.title)}</button>`).join("");
-  $("cfgForm").innerHTML = groups.map((group) => `<fieldset id="cfg_panel_${esc(group.id)}" class="cfg-group" data-cfg-panel="${esc(group.id)}" role="tabpanel" aria-labelledby="cfg_tab_${esc(group.id)}" aria-hidden="${group.id === state.settingsTab ? "false" : "true"}" ${group.id === state.settingsTab ? "" : "hidden"}><legend>${esc(group.title)}</legend><p class="helper">${esc(group.hint)}</p>${group.id === "tools" ? renderMCPManager() + renderWebSearchManager() : ""}${group.id === "skills" ? renderSkillManager() : ""}${group.id === "memory" ? renderMemoryManager() + renderKnowledgeImporter() : ""}${group.id === "channels" ? renderChannelOverview() : ""}${group.keys.map((key) => {
-    const d = fieldMeta(defs[key] || { key, title: key, type: Array.isArray(state.config[key]) ? "array" : typeof state.config[key] === "boolean" ? "bool" : typeof state.config[key] === "number" ? "number" : "string" });
-    const label = `${esc(d.title || key)}${d.required ? " *" : ""}`;
-    return `<div class="field"><label for="cfg_${key}">${label}</label>${fieldInput(key, d)}<span class="helper">${esc(fieldHelper(d))}</span></div>`;
-  }).join("")}</fieldset>`).join("");
+  $("cfgForm").innerHTML = groups.map((group) => {
+    const special = group.id === "tools" ? renderMCPManager() + renderWebSearchManager() : group.id === "skills" ? renderSkillManager() : group.id === "memory" ? renderMemoryManager() : group.id === "im" ? renderIMConfigEditor(defs) : "";
+    const fields = group.id === "im" ? "" : group.keys.map((key) => configFieldMarkup(key, defs)).join("");
+    return `<fieldset id="cfg_panel_${esc(group.id)}" class="cfg-group" data-cfg-panel="${esc(group.id)}" role="tabpanel" aria-labelledby="cfg_tab_${esc(group.id)}" aria-hidden="${group.id === state.settingsTab ? "false" : "true"}" ${group.id === state.settingsTab ? "" : "hidden"}><legend>${esc(group.title)}</legend><p class="helper">${esc(group.hint)}</p>${special}${fields}</fieldset>`;
+  }).join("");
   bindSkillManager();
   bindMCPManager();
   bindWebSearchManager();
   bindMemoryManager();
-  bindKnowledgeImporter();
+  bindIMAuditPanel();
   bindChoiceCustomControls();
   bindChannelTools();
   bindSecretGenerators();
   bindAudioDeviceInputs();
-  loadKnowledgeAccessSummary();
   document.querySelectorAll("[data-cfg-tab]").forEach((b) => {
     b.onclick = () => setActiveConfigTab(b.dataset.cfgTab);
     b.onkeydown = (e) => { if (e.key === "ArrowRight") { e.preventDefault(); moveConfigTab(b, 1); } else if (e.key === "ArrowLeft") { e.preventDefault(); moveConfigTab(b, -1); } };

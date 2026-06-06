@@ -3,6 +3,7 @@ package main
 import (
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -194,9 +195,14 @@ func filterToolsForExecutionProfile(tools []map[string]interface{}, profile Exec
 	}
 	filtered := make([]map[string]interface{}, 0, budget)
 	seen := make(map[string]bool, budget)
+	explicitContracts := 0
 	for _, def := range tools {
 		contract := executionContractForTool(def)
-		if !contract.Explicit || !contractAllowedForLight(contract) || !contractMatchesExecutionProfile(contract, profile) || seen[contract.Name] {
+		if !contract.Explicit {
+			continue
+		}
+		explicitContracts++
+		if !contractAllowedForLight(contract) || !contractMatchesExecutionProfile(contract, profile) || seen[contract.Name] {
 			continue
 		}
 		filtered = append(filtered, def)
@@ -205,7 +211,7 @@ func filterToolsForExecutionProfile(tools []map[string]interface{}, profile Exec
 			break
 		}
 	}
-	if len(filtered) == 0 {
+	if len(filtered) == 0 && explicitContracts == 0 {
 		return tools
 	}
 	return filtered
@@ -246,14 +252,15 @@ func executionContractFromMetadata(name string, raw map[string]interface{}) Tool
 	contract := inferredExecutionContract(name)
 	contract.Explicit = true
 	if caps, ok := raw["capabilities"].([]string); ok {
-		contract.Capabilities = append([]string(nil), caps...)
+		contract.Capabilities = normalizedExecutionCapabilities(caps)
 	} else if caps, ok := raw["capabilities"].([]interface{}); ok {
-		contract.Capabilities = nil
+		values := make([]string, 0, len(caps))
 		for _, item := range caps {
 			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
-				contract.Capabilities = append(contract.Capabilities, strings.TrimSpace(s))
+				values = append(values, s)
 			}
 		}
+		contract.Capabilities = normalizedExecutionCapabilities(values)
 	}
 	if v, ok := raw["deterministic"].(bool); ok {
 		contract.Deterministic = v
@@ -326,7 +333,7 @@ func contractAllowedForLight(contract ToolExecutionContract) bool {
 		return false
 	}
 	for _, cap := range contract.Capabilities {
-		switch strings.TrimSpace(cap) {
+		switch normalizeExecutionCapability(cap) {
 		case "skill", "web", "current_data", "fetch", "mcp", "external_tool", "async_status", "time", "status":
 			return true
 		}
@@ -340,7 +347,7 @@ func contractMatchesExecutionProfile(contract ToolExecutionContract, profile Exe
 	}
 	required := make(map[string]bool, len(profile.RequiredCapabilities))
 	for _, cap := range profile.RequiredCapabilities {
-		cap = strings.TrimSpace(cap)
+		cap = normalizeExecutionCapability(cap)
 		if cap != "" {
 			required[cap] = true
 		}
@@ -349,11 +356,35 @@ func contractMatchesExecutionProfile(contract ToolExecutionContract, profile Exe
 		return true
 	}
 	for _, cap := range contract.Capabilities {
-		if required[strings.TrimSpace(cap)] {
+		if required[normalizeExecutionCapability(cap)] {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizedExecutionCapabilities(caps []string) []string {
+	if len(caps) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(caps))
+	seen := make(map[string]bool, len(caps))
+	for _, cap := range caps {
+		cap = normalizeExecutionCapability(cap)
+		if cap == "" || seen[cap] {
+			continue
+		}
+		seen[cap] = true
+		out = append(out, cap)
+	}
+	return out
+}
+
+func normalizeExecutionCapability(cap string) string {
+	parts := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(cap)), func(r rune) bool {
+		return r == '-' || r == '_' || r == '.' || unicode.IsSpace(r)
+	})
+	return strings.Join(parts, "_")
 }
 
 func executionProfileToolNames(tools []map[string]interface{}) string {

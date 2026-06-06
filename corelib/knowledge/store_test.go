@@ -726,6 +726,13 @@ func TestSQLiteStoreSaveText(t *testing.T) {
 	if len(sourceIDSources) != 1 || sourceIDSources[0].ID != unlabeled.ID {
 		t.Fatalf("unexpected source_ids sources: %#v", sourceIDSources)
 	}
+	singleSourceIDSources, err := store.ListSources(ctx, ListSourcesOptions{SourceID: unlabeled.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources source_id: %v", err)
+	}
+	if len(singleSourceIDSources) != 1 || singleSourceIDSources[0].ID != unlabeled.ID {
+		t.Fatalf("unexpected source_id sources: %#v", singleSourceIDSources)
+	}
 	backfillPreview, err := store.BackfillSourceAutoLabels(ctx, SourceAutoLabelBackfillRequest{
 		SourceIDs: []string{unlabeled.ID},
 		DryRun:    true,
@@ -2131,6 +2138,13 @@ func TestSQLiteStoreFactGraphFiltersAndSummaries(t *testing.T) {
 	}
 	if len(sourceScoped) == 0 || sourceScoped[0].Source.ID != source.ID {
 		t.Fatalf("expected source-scoped search hit, got %#v", sourceScoped)
+	}
+	sourceIDScoped, err := store.Search(ctx, SearchOptions{Query: "Project Alpha", SourceID: source.ID, ProjectPath: "D:/project", Limit: 10})
+	if err != nil {
+		t.Fatalf("source_id-scoped Search: %v", err)
+	}
+	if len(sourceIDScoped) == 0 || sourceIDScoped[0].Source.ID != source.ID {
+		t.Fatalf("expected source_id-scoped search hit, got %#v", sourceIDScoped)
 	}
 	otherScoped, err := store.Search(ctx, SearchOptions{Query: "Project Alpha", SourceIDs: []string{"ksrc_missing"}, ProjectPath: "D:/project", Limit: 10})
 	if err != nil {

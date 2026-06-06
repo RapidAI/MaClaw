@@ -283,6 +283,43 @@ func TestFilterToolsForExecutionProfileLightRequiresCapabilityMatch(t *testing.T
 	}
 }
 
+func TestFilterToolsForExecutionProfileLightKeepsMatchedSkillCapabilities(t *testing.T) {
+	tools := []map[string]interface{}{
+		toolDef("manage_skill", "manage skills", nil, nil),
+		toolDef("web_search", "search web", nil, nil),
+		toolDef("current_datetime", "clock", nil, nil),
+		toolDef("async_wait", "wait", nil, nil),
+	}
+	for _, def := range tools {
+		if contract := defaultExplicitExecutionContractMetadata(extractToolName(def)); len(contract) > 0 {
+			def["x_execution_contract"] = contract
+		}
+	}
+	tools[0]["x_execution_contract"] = map[string]interface{}{
+		"capabilities":            []interface{}{"Skill", "CURRENT-DATA"},
+		"requires_agent_planning": false,
+	}
+	profile := ExecutionProfile{
+		Layer:                string(executionLayerLight),
+		TaskType:             string(intent.LabelLiveData),
+		RequiredCapabilities: []string{"current_data", "time"},
+		ToolBudget:           8,
+	}
+	filtered := filterToolsForExecutionProfile(tools, profile)
+	names := map[string]bool{}
+	for _, def := range filtered {
+		names[extractToolName(def)] = true
+	}
+	for _, want := range []string{"manage_skill", "web_search", "current_datetime"} {
+		if !names[want] {
+			t.Fatalf("filtered tools missing %s: %v", want, executionProfileToolNames(filtered))
+		}
+	}
+	if names["async_wait"] {
+		t.Fatalf("filtered tools should not include async_wait: %v", executionProfileToolNames(filtered))
+	}
+}
+
 func TestFilterToolsForExecutionProfileLightWithoutExplicitContractsFallsBack(t *testing.T) {
 	tools := []map[string]interface{}{
 		toolDef("manage_skill", "manage skills", nil, nil),
@@ -292,6 +329,24 @@ func TestFilterToolsForExecutionProfileLightWithoutExplicitContractsFallsBack(t 
 	filtered := filterToolsForExecutionProfile(tools, profile)
 	if len(filtered) != len(tools) {
 		t.Fatalf("filtered len = %d, want fallback len %d", len(filtered), len(tools))
+	}
+}
+
+func TestFilterToolsForExecutionProfileLightDoesNotFallbackWhenExplicitContractsMismatch(t *testing.T) {
+	tools := []map[string]interface{}{
+		toolDef("manage_skill", "manage skills", nil, nil),
+		toolDef("async_wait", "wait", nil, nil),
+		toolDef("bash", "run shell", nil, nil),
+	}
+	for _, def := range tools {
+		if contract := defaultExplicitExecutionContractMetadata(extractToolName(def)); len(contract) > 0 {
+			def["x_execution_contract"] = contract
+		}
+	}
+	profile := ExecutionProfile{Layer: string(executionLayerLight), RequiredCapabilities: []string{"current_data"}, ToolBudget: 8}
+	filtered := filterToolsForExecutionProfile(tools, profile)
+	if len(filtered) != 0 {
+		t.Fatalf("filtered tools = %v, want no fallback when explicit contracts mismatch", executionProfileToolNames(filtered))
 	}
 }
 

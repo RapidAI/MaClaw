@@ -455,6 +455,8 @@ func kindForExt(ext string) string {
 		return SourceKindMarkdown
 	case ".txt", ".text":
 		return SourceKindText
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp":
+		return SourceKindImage
 	default:
 		return ""
 	}
@@ -462,7 +464,7 @@ func kindForExt(ext string) string {
 
 func isImmediatelyParsedKind(kind string) bool {
 	switch kind {
-	case SourceKindMarkdown, SourceKindText, SourceKindDOCX, SourceKindPDF, SourceKindPPTX, SourceKindXLSX, SourceKindCSV:
+	case SourceKindMarkdown, SourceKindText, SourceKindDOCX, SourceKindPDF, SourceKindPPTX, SourceKindXLSX, SourceKindCSV, SourceKindImage:
 		return true
 	default:
 		return false

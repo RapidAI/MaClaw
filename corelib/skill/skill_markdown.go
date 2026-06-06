@@ -818,6 +818,7 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 		Operations:              parsed.operations,
 		Params:                  parsed.params,
 		Pipeline:                parsed.pipeline,
+		Capabilities:            parsed.capabilities,
 		RequiresTools:           parsed.requiresTools,
 		FallbackForTools:        parsed.fallbackForTools,
 		RequiresToolsets:        parsed.requiresToolsets,
@@ -850,6 +851,7 @@ func buildMarkdownKnowledgeSkillEntry(parsed *parsedSkillMarkdown, opts Markdown
 		RequiresGUI:             requiresGUI,
 		Type:                    "knowledge",
 		Content:                 parsed.markdown,
+		Capabilities:            parsed.capabilities,
 		RequiresTools:           parsed.requiresTools,
 		FallbackForTools:        parsed.fallbackForTools,
 		RequiresToolsets:        parsed.requiresToolsets,
@@ -1135,6 +1137,7 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		Operations:              parsed.operations,
 		Params:                  parsed.params,
 		Pipeline:                parsed.pipeline,
+		Capabilities:            parsed.capabilities,
 		RequiresTools:           parsed.requiresTools,
 		FallbackForTools:        parsed.fallbackForTools,
 		RequiresToolsets:        parsed.requiresToolsets,
@@ -1493,6 +1496,7 @@ type parsedSkillMarkdown struct {
 	operations              []corelib.NLSkillOperation
 	params                  []corelib.NLSkillParam
 	pipeline                []corelib.SkillPipelineStep
+	capabilities            []string
 	requiresTools           []string
 	fallbackForTools        []string
 	requiresToolsets        []string
@@ -1561,6 +1565,7 @@ func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback strin
 		operations:              meta.operations,
 		params:                  meta.params,
 		pipeline:                meta.pipeline,
+		capabilities:            meta.capabilities,
 		requiresTools:           meta.requiresTools,
 		fallbackForTools:        meta.fallbackForTools,
 		requiresToolsets:        meta.requiresToolsets,
@@ -1688,6 +1693,7 @@ type skillFrontmatterMetadata struct {
 	requiredCredentialFiles []string
 	stateful                bool
 	skillType               string
+	capabilities            []string
 }
 
 // extractSkillMetadata extracts all typed skill metadata from a YAML
@@ -1728,6 +1734,7 @@ func extractSkillMetadata(yamlFM map[string]interface{}) skillFrontmatterMetadat
 	m.operations = convertSkillYAMLOperations(sf.Operations)
 	m.params = convertSkillYAMLParams(sf.Params)
 	m.pipeline = convertPipelineSteps(sf.Pipeline)
+	m.capabilities = sf.Capabilities
 	m.requiresTools = sf.RequiresTools
 	m.fallbackForTools = sf.FallbackForTools
 	m.requiresToolsets = sf.RequiresToolsets

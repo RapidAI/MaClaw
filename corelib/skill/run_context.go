@@ -447,6 +447,9 @@ func HydrateRunMetadata(dst, src *corelib.NLSkillEntry) {
 	if len(dst.RequiresNode) == 0 {
 		dst.RequiresNode = append([]string(nil), src.RequiresNode...)
 	}
+	if len(dst.Capabilities) == 0 {
+		dst.Capabilities = append([]string(nil), src.Capabilities...)
+	}
 	if len(dst.RequiresTools) == 0 {
 		dst.RequiresTools = append([]string(nil), src.RequiresTools...)
 	}

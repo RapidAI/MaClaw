@@ -1179,7 +1179,7 @@ func TestImportMarkdownSkillDir_MixedScriptsAndDirectBlocks(t *testing.T) {
 // --- Frontmatter: required_args and required_env parsing ---
 
 func TestParseSkillMarkdownDocument_ExtendedFrontmatter(t *testing.T) {
-	content := "---\nname: test-skill\nrequired_args: input, output\nrequires_env: API_KEY, SECRET\nshell: bash\n---\n\n# Test\n\nA test skill."
+	content := "---\nname: test-skill\nrequired_args: input, output\nrequires_env: API_KEY, SECRET\nshell: bash\ncapabilities:\n  - current_data\n  - weather\n---\n\n# Test\n\nA test skill."
 	parsed, err := parseSkillMarkdownDocument(content, "", "")
 	if err != nil {
 		t.Fatalf("parseSkillMarkdownDocument() error = %v", err)
@@ -1193,6 +1193,9 @@ func TestParseSkillMarkdownDocument_ExtendedFrontmatter(t *testing.T) {
 	if parsed.preferredShell != "bash" {
 		t.Fatalf("preferredShell = %q, want %q", parsed.preferredShell, "bash")
 	}
+	if len(parsed.capabilities) != 2 || parsed.capabilities[0] != "current_data" || parsed.capabilities[1] != "weather" {
+		t.Fatalf("capabilities = %v, want [current_data weather]", parsed.capabilities)
+	}
 }
 
 func TestImportMarkdownSkillDir_PropagatesExtendedFrontmatter(t *testing.T) {
@@ -1201,7 +1204,7 @@ func TestImportMarkdownSkillDir_PropagatesExtendedFrontmatter(t *testing.T) {
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	content := "---\nname: args-skill\nrequired_args: input, output\nrequires_env: MY_TOKEN\nshell: bash\n---\n\n# Args Skill\n\n```bash\necho hello\n```\n"
+	content := "---\nname: args-skill\nrequired_args: input, output\nrequires_env: MY_TOKEN\nshell: bash\ncapabilities:\n  - current_data\n  - weather\n---\n\n# Args Skill\n\n```bash\necho hello\n```\n"
 	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile(skill.md) error = %v", err)
 	}
@@ -1218,6 +1221,20 @@ func TestImportMarkdownSkillDir_PropagatesExtendedFrontmatter(t *testing.T) {
 	}
 	if entry.PreferredShell != "bash" {
 		t.Fatalf("PreferredShell = %q, want %q", entry.PreferredShell, "bash")
+	}
+	if len(entry.Capabilities) != 2 || entry.Capabilities[0] != "current_data" || entry.Capabilities[1] != "weather" {
+		t.Fatalf("Capabilities = %v, want [current_data weather]", entry.Capabilities)
+	}
+}
+
+func TestParseSkillMarkdownDocument_CSVCapabilities(t *testing.T) {
+	content := "---\nname: test-skill\ncapabilities: current_data, weather\n---\n\n# Test\n\nA test skill."
+	parsed, err := parseSkillMarkdownDocument(content, "", "")
+	if err != nil {
+		t.Fatalf("parseSkillMarkdownDocument() error = %v", err)
+	}
+	if len(parsed.capabilities) != 2 || parsed.capabilities[0] != "current_data" || parsed.capabilities[1] != "weather" {
+		t.Fatalf("capabilities = %v, want [current_data weather]", parsed.capabilities)
 	}
 }
 

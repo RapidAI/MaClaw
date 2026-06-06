@@ -210,9 +210,10 @@ type SkillRecommender interface {
 
 // SkillSummary is a lightweight view of an active Skill for routing.
 type SkillSummary struct {
-	Name        string
-	Triggers    []string
-	Description string
+	Name         string
+	Triggers     []string
+	Description  string
+	Capabilities []string
 
 	// Tool availability conditions (from NLSkillEntry).
 	RequiresTools       []string
@@ -368,6 +369,64 @@ func (r *Router) filterSkillsByConditions(matchedSkills []string, availableTools
 		}
 	}
 	return filtered
+}
+
+func (r *Router) matchedSkillCapabilities(matchedSkills []string) []string {
+	return matchedSkillCapabilitiesFromProvider(r.skillProvider, matchedSkills)
+}
+
+func (r *Router) enrichMatchedSkillTool(defs []map[string]interface{}, matchedSkills []string) []map[string]interface{} {
+	if len(matchedSkills) == 0 {
+		return defs
+	}
+	skillCapabilities := r.matchedSkillCapabilities(matchedSkills)
+	for i, def := range defs {
+		if ExtractToolName(def) == "manage_skill" {
+			out := append([]map[string]interface{}(nil), defs...)
+			out[i] = enrichRunSkillDescription(def, matchedSkills, skillCapabilities)
+			return out
+		}
+	}
+	return defs
+}
+
+func matchedSkillCapabilitiesFromProvider(provider SkillProvider, matchedSkills []string) []string {
+	if provider == nil || len(matchedSkills) == 0 {
+		return nil
+	}
+	wanted := make(map[string]bool, len(matchedSkills))
+	for _, name := range matchedSkills {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key != "" {
+			wanted[key] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	seen := map[string]bool{"skill": true}
+	caps := []string{"skill"}
+	for _, skill := range provider.ListActiveSkills() {
+		if !wanted[strings.ToLower(strings.TrimSpace(skill.Name))] {
+			continue
+		}
+		for _, cap := range skill.Capabilities {
+			cap = normalizeSkillCapability(cap)
+			if cap == "" || seen[cap] {
+				continue
+			}
+			seen[cap] = true
+			caps = append(caps, cap)
+		}
+	}
+	return caps
+}
+
+func normalizeSkillCapability(cap string) string {
+	parts := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(cap)), func(r rune) bool {
+		return r == '-' || r == '_' || r == '.' || unicode.IsSpace(r)
+	})
+	return strings.Join(parts, "_")
 }
 
 // SetRegistry sets the Registry used for dynamic builtin detection and tag-based scoring.
@@ -775,7 +834,10 @@ func uicToolNameActivatable(name string) bool {
 	return allConditionalKeepTools[name] || knowledgeWriteToolNames[name]
 }
 
-func coreRoutePriority(name string, condKeep, sessionTools map[string]bool) int {
+func coreRoutePriority(name string, condKeep, sessionTools, mustKeep map[string]bool) int {
+	if mustKeep[name] {
+		return 0
+	}
 	if condKeep[name] {
 		return 0
 	}
@@ -800,7 +862,7 @@ func coreRoutePriority(name string, condKeep, sessionTools map[string]bool) int 
 	}
 }
 
-func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, sessionTools map[string]bool) []map[string]interface{} {
+func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, sessionTools, mustKeep map[string]bool) []map[string]interface{} {
 	if len(core) <= MaxToolBudget {
 		return core
 	}
@@ -808,8 +870,8 @@ func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, sessionTools
 	sort.SliceStable(trimmed, func(i, j int) bool {
 		ni := ExtractToolName(trimmed[i])
 		nj := ExtractToolName(trimmed[j])
-		pi := coreRoutePriority(ni, condKeep, sessionTools)
-		pj := coreRoutePriority(nj, condKeep, sessionTools)
+		pi := coreRoutePriority(ni, condKeep, sessionTools, mustKeep)
+		pj := coreRoutePriority(nj, condKeep, sessionTools, mustKeep)
 		if pi != pj {
 			return pi < pj
 		}
@@ -824,6 +886,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	var condFilterOut map[string]bool
 	var cachedICResult *IntentResult
 	suppressedTools := map[string]bool{}
+	skillInstallEligible := true
 
 	if r.unifiedClassifier != nil {
 		// UIC path: use UnifiedIntentClassifier to determine which conditional
@@ -832,6 +895,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		condFilterOut = make(map[string]bool)
 
 		uicResult := r.unifiedClassifier.Classify(intent.MessageContext{Text: userMessage})
+		skillInstallEligible = uicSkillInstallEligible(uicResult)
 
 		// UIC activation: UIC returns a concrete, non-ambiguous top
 		// intent, including degraded embedding-only fusion results. Activate that
@@ -894,6 +958,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		if r.intentClassifier != nil {
 			result := r.intentClassifier.Classify(userMessage)
 			cachedICResult = &result
+			skillInstallEligible = intentClassifierSkillInstallEligible(result)
 		}
 
 		// Semantic intent enhancement: when local matching yields nothing but the
@@ -934,6 +999,9 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	if browserPublishAffordance {
 		condKeep["browser"] = true
 		delete(condFilterOut, "browser")
+	}
+	if !skillInstallEligible {
+		suppressedTools["search_and_install_skill"] = true
 	}
 
 	if condKeep["ssh"] {
@@ -1027,7 +1095,26 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 
-	core = trimCoreToolsToBudget(core, condKeep, r.sessionTools)
+	// Compute skill match before any early return so manage_skill's execution
+	// contract does not depend on dynamic candidate routing being active.
+	var skillScore float64
+	var matchedSkills []string
+	if r.skillProvider != nil {
+		skillScore, matchedSkills = r.skillMatchScore(userMessage)
+		if len(matchedSkills) > 0 {
+			availableTools := buildAvailableToolsMap(allTools)
+			matchedSkills = r.filterSkillsByConditions(matchedSkills, availableTools)
+			if len(matchedSkills) == 0 {
+				skillScore = 0
+			}
+		}
+	}
+	mustKeepCore := map[string]bool{}
+	if len(matchedSkills) > 0 {
+		mustKeepCore["manage_skill"] = true
+	}
+	core = trimCoreToolsToBudget(core, condKeep, r.sessionTools, mustKeepCore)
+	core = r.enrichMatchedSkillTool(core, matchedSkills)
 	remainingSlots := MaxToolBudget - len(core)
 	if len(candidates) == 0 || remainingSlots <= 0 {
 		return core
@@ -1076,24 +1163,6 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	// Three-signal scoring: retrieval + experience + priority + skill_match.
 	queryTokens := bm25.Tokenize(userMessage)
 	normScores := minMaxNormalize(scores)
-
-	// Compute skill match score (fourth signal).
-	var skillScore float64
-	var matchedSkills []string
-	if r.skillProvider != nil {
-		skillScore, matchedSkills = r.skillMatchScore(userMessage)
-
-		// Filter matched skills through tool availability conditions (AND logic).
-		// Build availableTools set from the current tool list.
-		if len(matchedSkills) > 0 {
-			availableTools := buildAvailableToolsMap(allTools)
-			matchedSkills = r.filterSkillsByConditions(matchedSkills, availableTools)
-			// If all matched skills were filtered out, reset skill score.
-			if len(matchedSkills) == 0 {
-				skillScore = 0
-			}
-		}
-	}
 
 	type scored struct {
 		index                 int
@@ -1220,16 +1289,6 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		resultNames[ExtractToolName(t)] = true
 	}
 
-	// Enhance manage_skill description with matched skill names.
-	if len(matchedSkills) > 0 && skillScore > 0.3 {
-		for i, t := range result {
-			if ExtractToolName(t) == "manage_skill" {
-				result[i] = enrichRunSkillDescription(t, matchedSkills)
-				break
-			}
-		}
-	}
-
 	for _, s := range scoredList {
 		if len(result) >= MaxToolBudget {
 			break
@@ -1247,7 +1306,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		resultNames[candidateNames[s.index]] = true
 	}
 
-	if r.recommender != nil {
+	if r.recommender != nil && skillInstallEligible {
 		if hint := r.matchRecommendations(bm25.Tokenize(userMessage)); hint != nil {
 			if name := ExtractToolName(hint); !resultNames[name] && !suppressedTools[name] {
 				result = append(result, hint)
@@ -1292,6 +1351,27 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, rankedRoutingHintAdjustments, selectedNames, suppressedNames, browserPublishAffordance, explicitScreenshotRequest, rerankerResult, skillScore, matchedSkills)
 
 	return result
+}
+
+func uicSkillInstallEligible(result intent.ClassificationResult) bool {
+	switch result.Primary {
+	case intent.LabelSSH, intent.LabelBrowser, intent.LabelSearch, intent.LabelLiveData,
+		intent.LabelNonCoding, intent.LabelCurrentTime, intent.LabelContinuation,
+		intent.LabelMaintenance, intent.LabelBugFix,
+		intent.LabelAmbiguous, intent.LabelUnknown:
+		return false
+	default:
+		return true
+	}
+}
+
+func intentClassifierSkillInstallEligible(result IntentResult) bool {
+	switch result.Intent {
+	case IntentSSH, IntentBrowser, IntentQuery, IntentShortCommand, IntentChat, IntentUnknown:
+		return false
+	default:
+		return true
+	}
 }
 
 func isExplicitScreenshotRequest(userMessage string) bool {
@@ -1403,7 +1483,7 @@ func ExtractToolDescription(def map[string]interface{}) string {
 
 // enrichRunSkillDescription returns a shallow copy of the run_skill tool
 // definition with matched skill names appended to the description.
-func enrichRunSkillDescription(def map[string]interface{}, skillNames []string) map[string]interface{} {
+func enrichRunSkillDescription(def map[string]interface{}, skillNames, skillCapabilities []string) map[string]interface{} {
 	fn, ok := def["function"].(map[string]interface{})
 	if !ok {
 		return def
@@ -1420,7 +1500,54 @@ func enrichRunSkillDescription(def map[string]interface{}, skillNames []string) 
 		newDef[k] = v
 	}
 	newDef["function"] = newFn
+	if len(skillCapabilities) > 0 {
+		newDef["x_execution_contract"] = mergeSkillExecutionContract(def["x_execution_contract"], skillCapabilities)
+	}
 	return newDef
+}
+
+func mergeSkillExecutionContract(existing interface{}, skillCapabilities []string) map[string]interface{} {
+	contract := map[string]interface{}{
+		"deterministic":           false,
+		"supports_direct":         false,
+		"requires_agent_planning": false,
+	}
+	if raw, ok := existing.(map[string]interface{}); ok {
+		for k, v := range raw {
+			contract[k] = v
+		}
+	}
+	contract["capabilities"] = mergeExecutionCapabilityValues(contract["capabilities"], skillCapabilities)
+	return contract
+}
+
+func mergeExecutionCapabilityValues(existing interface{}, additional []string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	add := func(cap string) {
+		cap = normalizeSkillCapability(cap)
+		if cap == "" || seen[cap] {
+			return
+		}
+		seen[cap] = true
+		out = append(out, cap)
+	}
+	switch caps := existing.(type) {
+	case []string:
+		for _, cap := range caps {
+			add(cap)
+		}
+	case []interface{}:
+		for _, item := range caps {
+			if cap, ok := item.(string); ok {
+				add(cap)
+			}
+		}
+	}
+	for _, cap := range additional {
+		add(cap)
+	}
+	return out
 }
 
 // writeRouteLog writes a detailed tool routing decision log to ~/.maclaw/logs/tool_route.log.

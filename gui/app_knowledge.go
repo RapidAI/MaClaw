@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net/http"
@@ -1412,4 +1413,75 @@ func (a *App) KnowledgeDeepCrawlCancel() error {
 
 	cancel()
 	return nil
+}
+
+// KnowledgeGetImageAssetPaths returns the thumbnail (as base64 data URL for WebView display),
+// preview path, and original image path for a knowledge source.
+// Returns: {"thumb_data_url": "data:image/jpeg;base64,...", "preview": "path", "original": "path"}
+// Empty map if the source has no image assets.
+func (a *App) KnowledgeGetImageAssetPaths(sourceID string) map[string]string {
+	result := map[string]string{}
+	if sourceID == "" {
+		return result
+	}
+	// Security: reject path traversal attempts in sourceID.
+	if strings.ContainsAny(sourceID, `/\`) || strings.Contains(sourceID, "..") {
+		return result
+	}
+	dataDir := a.GetDataDir()
+	baseDir := filepath.Join(dataDir, "knowledge_assets")
+	assetDir := filepath.Join(baseDir, sourceID)
+
+	// Double-check the resolved path is still within baseDir.
+	if !strings.HasPrefix(filepath.Clean(assetDir)+string(filepath.Separator), filepath.Clean(baseDir)+string(filepath.Separator)) {
+		return result
+	}
+
+	// Quick check: does the asset directory exist?
+	info, err := os.Stat(assetDir)
+	if err != nil || !info.IsDir() {
+		return result
+	}
+
+	// Thumbnail: read file and return as base64 data URL (for WebView display).
+	thumbPath := filepath.Join(assetDir, "thumb_120.jpg")
+	if thumbData, err := os.ReadFile(thumbPath); err == nil && len(thumbData) > 0 {
+		result["thumb_data_url"] = "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(thumbData)
+	}
+	// Preview and original: return file paths (for opening with system viewer).
+	previewPath := filepath.Join(assetDir, "preview_480.jpg")
+	if _, err := os.Stat(previewPath); err == nil {
+		result["preview"] = previewPath
+	}
+	// Find original (extension varies).
+	entries, err := os.ReadDir(assetDir)
+	if err == nil {
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "original") {
+				result["original"] = filepath.Join(assetDir, entry.Name())
+				break
+			}
+		}
+	}
+	return result
+}
+
+// KnowledgeOpenImageFile opens an image file with the system default viewer.
+// Security: only allows opening files within the knowledge_assets directory.
+func (a *App) KnowledgeOpenImageFile(path string) error {
+	if path == "" {
+		return fmt.Errorf("path is required")
+	}
+	// Security: validate the path is within knowledge_assets.
+	dataDir := a.GetDataDir()
+	allowedBase := filepath.Clean(filepath.Join(dataDir, "knowledge_assets"))
+	cleanPath := filepath.Clean(path)
+	if !strings.HasPrefix(cleanPath+string(filepath.Separator), allowedBase+string(filepath.Separator)) &&
+		!strings.HasPrefix(cleanPath, allowedBase+string(filepath.Separator)) {
+		return fmt.Errorf("access denied: path must be within knowledge assets directory")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("file not found: %s", path)
+	}
+	return a.OpenFileOrShowInFolder(path)
 }

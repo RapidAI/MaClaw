@@ -92,6 +92,10 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 			if err != nil || len(candidates) == 0 {
 				return skillInstallExecutionResult{Text: fmt.Sprintf("GitHub skill import failed: %v", err)}
 			}
+			candidates = filterGitHubSkillCandidatesForIntent(query, candidates)
+			if len(candidates) == 0 {
+				return skillInstallExecutionResult{Text: fmt.Sprintf("GitHub skill import failed: no intent-compatible candidate for %s", best.ID)}
+			}
 			imported, err = gs.ImportFromCandidate(candidates[0])
 			if err != nil {
 				return skillInstallExecutionResult{Text: fmt.Sprintf("GitHub skill import failed: %v", err)}

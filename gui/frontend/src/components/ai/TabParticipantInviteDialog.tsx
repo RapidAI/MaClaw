@@ -5,6 +5,7 @@ import { participantAddErrorText } from "./participantAddError";
 import { addParticipantIdentityKeys, participantIdentityKeys } from "./participantIdentity";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import { virtualEmployeeDisplayName, virtualEmployeeParticipantId } from "./VEGroupChat";
+import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
 
 type TabParticipantInviteDialogProps = {
     tab: AITab;
@@ -56,7 +57,7 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
             if (cancelled) return;
             setAvailable((all || []).filter((ve) => {
                 const keys = participantIdentityKeys(ve.id, ve.machine_id, virtualEmployeeParticipantId(ve));
-                return ve.online_status === "online" && !keys.some((key) => currentIds.has(key));
+                return isVirtualEmployeeOnline(ve) && !keys.some((key) => currentIds.has(key));
             }));
         }).catch(() => {
             if (!cancelled) {

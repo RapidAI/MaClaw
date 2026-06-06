@@ -204,9 +204,15 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"const next = Number(raw)",
 		"MCP & Tools",
 		"Knowledge & Memory",
-		"groupAdvanced",
+		"groupIM",
+		`id: "im"`,
+		`group.id === "im" ? renderIMConfigEditor(defs)`,
+		`function renderIMBindingCard`,
+		`function configFieldMarkup`,
+		`const fields = group.id === "im" ? ""`,
+		`normalizeSettingsTab(tab)`,
+		`["llm", "tools", "skills", "memory", "security", "im", "ui"].includes(tab) ? tab : ""`,
 		"const allKeys = [...new Set",
-		"groups[groups.length - 1].keys = rest.filter",
 		"security_policy_mode",
 		"CONFIG_CHOICE_FIELDS",
 		"GENERIC_CHOICE_FIELDS",
@@ -410,6 +416,17 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"web_search_current_provider",
 		"mcp_servers\", \"local_mcp_servers\", \"ssh_hosts\", \"skill_hub_urls\", \"external_skill_dirs\", \"skill_sources_allowed",
 		"skill_market_url",
+		"data-view=\"knowledge\"",
+		"function renderKnowledge()",
+		"function renderKnowledgeQuery()",
+		"id=\"knowledgeSearchForm\"",
+		"/api/v1/knowledge/search",
+		"knowledgeQueryHint",
+		"const rawLimit = Number",
+		"[5, 8, 12, 20].includes(rawLimit) ? rawLimit : 8",
+		"const hasScore = r.score !== undefined && r.score !== null",
+		"const score = Number(r.score)",
+		"hasScore && Number.isFinite(score)",
 		"function renderKnowledgeImporter()",
 		"function renderMemoryManager()",
 		"function renderMemorySummary(counts)",
@@ -476,7 +493,15 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"importWarnings",
 		"/api/v1/knowledge/access",
 		"knowledge-scope-chip",
-		"function userKnowledgeScopeDisplay(scope, selfScope)",
+		"function userKnowledgeScopeKind(scope, access)",
+		`String(scope.tenant_id || "") === String(access?.tenant_id || "")`,
+		"function userKnowledgeTenantLabel(scope, tenantID)",
+		"tenantID && tenantID === selfTenantID",
+		"function userKnowledgeScopeDisplay(scope, kind)",
+		"knowledge-scope-badge",
+		"otherUserKnowledge",
+		"knowledgeOwner",
+		"knowledgeTenant",
 		"knowledgeScopeIDs",
 		"displayWithID(tenantLabel, tenantID)",
 		"state.me?.tenant_name",
@@ -486,6 +511,8 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"/api/v1/knowledge/import/urls",
 		"/api/v1/knowledge/import/jobs/",
 		"<select id=\"knowledgeURLDepth\">",
+		"const rawDepth = Number",
+		"[0, 1, 2, 3, 4, 5].includes(rawDepth) ? rawDepth : 0",
 		"id=\"knowledgeTextImportBtn\" type=\"button\"",
 		"id=\"knowledgeFileImportBtn\" type=\"button\"",
 		"files.forEach((file) => form.append(\"file\", file))",
@@ -503,6 +530,38 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 	}
 	if strings.Contains(body, "Number.parseInt") {
 		t.Fatalf("user app should reject partial integer strings instead of parseInt truncation")
+	}
+	if strings.Contains(body, "renderMemoryManager() + renderKnowledgeImporter()") {
+		t.Fatalf("knowledge importer should stay in the knowledge tab, not the memory settings panel")
+	}
+	if strings.Contains(body, `id: "channels_more"`) || strings.Contains(body, `id: "advanced"`) || strings.Contains(body, `groups[groups.length - 1].keys = rest.filter`) {
+		t.Fatalf("user settings should hide channels_more and advanced schema tabs")
+	}
+	if strings.Contains(body, "groupChannels") || strings.Contains(body, "groupAdvanced") {
+		t.Fatalf("user settings should not keep legacy Channels or Advanced tab labels")
+	}
+	if strings.Contains(body, `"lansenger_enabled", "lansenger_app_id"`) || strings.Contains(body, `"asr_enabled", "tts_enabled"`) || strings.Contains(body, `"qqbot_enabled", "qqbot_app_id", "qqbot_app_secret", "qqbot_local_mode"`) {
+		t.Fatalf("IM settings should default to simple binding fields only")
+	}
+	if strings.Contains(body, `channelCard(t("channelLansenger")`) || strings.Contains(body, `channelCard(t("channelVoice")`) || strings.Contains(body, `function channelCard`) {
+		t.Fatalf("IM overview should only show QQ, WeChat, Telegram, and third-party access")
+	}
+	if strings.Contains(body, `function localModeLabel`) {
+		t.Fatalf("IM settings should not expose local/hub routing mode in user binding UI")
+	}
+	if strings.Contains(body, `hubManagedChannelCard(),`) {
+		t.Fatalf("per-user IM tab should not show Hub tenant enterprise IM as a user binding")
+	}
+	for _, needle := range []string{
+		`renderIMBindingCard(t("channelQQ"), "qqbot_enabled", ["qqbot_app_id", "qqbot_app_secret"], defs)`,
+		`renderIMBindingCard(t("channelTelegram"), "telegram_bot_enabled", ["telegram_bot_token"], defs)`,
+		`renderIMBindingCard(t("channelWeixin"), "weixin_enabled", ["weixin_token", "weixin_account_id"], defs)`,
+		`renderIMBindingCard(t("channelThirdParty"), "thirdparty_gateway_enabled", ["thirdparty_gateway_token", "thirdparty_gateway_host", "thirdparty_gateway_port"], defs, thirdPartyProtocolTools())`,
+		`const fields = group.id === "im" ? ""`,
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("IM binding editor missing marker %s", needle)
+		}
 	}
 	if strings.Contains(body, `keys: ["maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_model", "maclaw_llm_current_provider", "maclaw_llm_providers", "auxiliary_llm", "model_routes"]`) {
 		t.Fatalf("LLM settings tab should not render advanced provider route editors")
@@ -548,7 +607,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 			t.Fatalf("user settings should not keep raw skill/MCP editor marker %s", stale)
 		}
 	}
-	if strings.Contains(body, "[.,;:!?，。；：！？)]") {
+	if strings.Contains(body, "[.,;:!?\\uFF0C\\u3002\\uFF1B\\uFF1A\\uFF01\\uFF1F]") {
 		t.Fatalf("user app should balance closing delimiters before stripping them from bare URLs")
 	}
 	paramsIdx := strings.Index(body, "const params = new URLSearchParams")
@@ -568,7 +627,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	assertAdminSecurityHeaders(t, w.Result())
 	css := w.Body.String()
-	for _, needle := range []string{"@media (prefers-color-scheme: dark)", "@media (prefers-reduced-motion", ".skip-link", "min-height: 100dvh", ".run-panel", ".chat-toolbar", ".clear-panel-btn", ".tool-detail", ".messages-wrap", ".jump-latest", ".message-head", ".message-meta", ".message-time", ".message.pending", ".md-content.thinking", "@keyframes thinking-dots", ".copy-btn", ".sr-copy-area", ".md-content", ".md-content .md-code", ".md-content .md-code-head", ".md-content blockquote", ".md-content hr", ".md-content .md-table-wrap", "min-width: max-content", ".md-content .task-list-item", ".composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }", ".cfg-group", ".cfg-group[hidden] { display: none !important; }", ".cfg-tabs", ".cfg-output", ".object-list", ".object-row", ".kv-list", ".kv-pair", ".kv-pair.custom-key-active", ".kv-pair.custom-value-active", ".choice-lines", ".choice-select-stack", ".choice-actions", ".choice-custom", ".choice-custom:not(.custom-active) [data-choice-custom]", ".custom-lines", ".raw-json-editor", ".secret-input", ".mcp-inline-editor", ".mcp-param-row", ".mcp-param-row button", ".memory-manager", ".memory-toolbar", ".memory-summary", ".memory-chip", ".memory-entry", ".memory-tags", ".memory-load-more", ".channel-overview", ".channel-card.managed", ".channel-protocol", ".knowledge-access-summary", ".knowledge-scope-chip", ".knowledge-scope-chip small", ".knowledge-importer", ".knowledge-import-grid", ".knowledge-progress", ".knowledge-field-error", ".knowledge-field-help", "#issues .error", ".fields { display: block; }", "width: 100%; border: 1px solid var(--line)"} {
+	for _, needle := range []string{"@media (prefers-color-scheme: dark)", "@media (prefers-reduced-motion", ".skip-link", "min-height: 100dvh", ".run-panel", ".chat-toolbar", ".clear-panel-btn", ".tool-detail", ".messages-wrap", ".jump-latest", ".message-head", ".message-meta", ".message-time", ".message.pending", ".md-content.thinking", "@keyframes thinking-dots", ".copy-btn", ".sr-copy-area", ".md-content", ".md-content .md-code", ".md-content .md-code-head", ".md-content blockquote", ".md-content hr", ".md-content .md-table-wrap", "min-width: max-content", ".md-content .task-list-item", ".composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }", ".cfg-group", ".cfg-group[hidden] { display: none !important; }", ".cfg-tabs", ".cfg-output", ".object-list", ".object-row", ".kv-list", ".kv-pair", ".kv-pair.custom-key-active", ".kv-pair.custom-value-active", ".choice-lines", ".choice-select-stack", ".choice-actions", ".choice-custom", ".choice-custom:not(.custom-active) [data-choice-custom]", ".custom-lines", ".raw-json-editor", ".secret-input", ".mcp-inline-editor", ".mcp-param-row", ".mcp-param-row button", ".memory-manager", ".memory-toolbar", ".memory-summary", ".memory-chip", ".memory-entry", ".memory-tags", ".memory-load-more", ".channel-overview", ".im-config-grid", ".im-config-card", ".channel-protocol", ".knowledge-access-summary", ".knowledge-scope-chip", ".knowledge-scope-badge", ".knowledge-scope-meta", ".knowledge-scope-chip small", ".knowledge-importer", ".knowledge-import-grid", ".knowledge-progress", ".knowledge-field-error", ".knowledge-field-help", "#issues .error", ".fields { display: block; }", "width: 100%; border: 1px solid var(--line)"} {
 		if !strings.Contains(css, needle) {
 			t.Fatalf("user css missing marker %s", needle)
 		}
@@ -582,15 +641,22 @@ func TestUserWebIncludesChannelProtocolSettings(t *testing.T) {
 	}
 	body := string(bodyBytes)
 	for _, needle := range []string{
-		"Maclaw 第三方接入协议",
-		"企业版微信、飞书、钉钉由 Hub 租户设置统一接入",
-		"Hub 租户统一接入的企业 IM",
-		"function hubManagedChannelCard()",
-		"channelEnterpriseWeCom",
-		"channelFeishu",
-		"channelDingTalk",
-		"个人微信 / iLink",
-		"协议接入地址",
+		`channelThirdParty: "MaClaw Third-party Integration Protocol"`,
+		`channelOverviewHint: "Configure this user's QQ, WeChat, Telegram, and third-party IM access."`,
+		"function renderIMConfigEditor(defs)",
+		"function renderIMBindingCard",
+		`channelWeixin: "Personal WeChat / iLink"`,
+		`channelProtocolEndpoint: "Protocol endpoint"`,
+		"imAuditLoadOlder",
+		"data-im-audit-days",
+		"resetIMAuditPagination",
+		"cleanupBtn.onclick = () => { syncFilters(); cleanupIMAuditMessages(); }",
+		"if (state.imAuditLoading || (append && !state.imAuditNextBefore)) return;",
+		"state.imAuditLoaded = true;",
+		"state.imAuditLoaded = false;",
+		`const busy = state.imAuditLoading ? "disabled" : "";`,
+		`id="imAuditCleanup" ${busy}`,
+		`second: "2-digit"`,
 		"function thirdPartyProtocolEndpoint()",
 		"copyThirdPartyEndpoint",
 		"generateThirdPartyToken",
@@ -602,18 +668,22 @@ func TestUserWebIncludesChannelProtocolSettings(t *testing.T) {
 		}
 	}
 	for _, stale := range []string{
+		"function hubManagedChannelCard()",
 		"Third-party HTTP Gateway",
-		"第三方 HTTP 网关",
-		"启用第三方网关",
-		"第三方网关本地模式",
-		"微信网关",
+		"channelHubManaged",
+		"channelLocalModeHint",
+		"channelLansenger",
+		"channelVoice",
+		"lansenger_enabled:",
+		"asr_enabled:",
+		"thirdparty_gateway_local_mode:",
+		"qqbot_local_mode:",
 	} {
 		if strings.Contains(body, stale) {
-			t.Fatalf("user web still contains stale gateway wording %s", stale)
+			t.Fatalf("user web still contains stale IM wording %s", stale)
 		}
 	}
 }
-
 func TestUserWebRedirectsSlashlessApp(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {

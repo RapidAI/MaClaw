@@ -158,6 +158,12 @@ func TestCapabilityGapDetector_Resolve_NoCandidates(t *testing.T) {
 	}
 
 	app := &App{}
+	app.hubSecurityCache.mu.Lock()
+	app.hubSecurityCache.policy = &HubSecurityPolicy{
+		SkillSourcesRestricted: true,
+		SkillSourcesAllowed:    []string{},
+	}
+	app.hubSecurityCache.mu.Unlock()
 	hubClient := NewSkillHubClient(app)
 	executor := NewSkillExecutor(app, nil, nil)
 

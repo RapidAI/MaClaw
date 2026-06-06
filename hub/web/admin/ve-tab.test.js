@@ -60,13 +60,32 @@ function countOccurrences(str, substr) {
 // --- Setup mock DOM and globals ---
 function createMockDOM() {
   var elements = {};
+  function makeElement(id) {
+    return {
+      id: id || '',
+      innerHTML: '',
+      textContent: '',
+      value: '',
+      style: {},
+      classList: { add: function() {}, remove: function() {} },
+      querySelectorAll: function() { return []; }
+    };
+  }
   return {
     elements: elements,
     getElementById: function(id) {
       if (!elements[id]) {
-        elements[id] = { id: id, innerHTML: '', textContent: '', value: '', style: {}, classList: { add: function() {}, remove: function() {} } };
+        elements[id] = makeElement(id);
       }
       return elements[id];
+    },
+    createElement: function(tag) {
+      return makeElement(tag);
+    },
+    body: {
+      appendChild: function(el) {
+        if (el && el.id) elements[el.id] = el;
+      }
     },
     addEventListener: function() {},
     readyState: 'complete'
@@ -99,8 +118,8 @@ function createMockGlobal() {
         return {
           employees: [
             { id: 've-001', name: 'Test VE 1', employee_type: 'physical', skill_description: 'Python expert', access_policy: 'public', online_status: 'online', status: 'pending', registered_at: '2024-01-15T10:30:00Z' },
-            { id: 've-002', name: 'Test VE 2', employee_type: 'physical', skill_description: 'Go developer with extensive backend experience', access_policy: 'whitelist', online_status: 'offline', status: 'active', registered_at: '2024-01-10T08:00:00Z' },
-            { id: 've-003', name: 'Test VE 3', employee_type: 'physical', platform_id: 'maclawsrv', platform_employee_id: 'srv-user-1', skill_description: 'Data analyst', access_policy: 'per_request', online_status: 'online', status: 'active', registered_at: '2024-01-12T14:00:00Z' },
+            { id: 've-002', name: 'Test VE 2', employee_type: 'physical', skill_description: 'Go developer with extensive backend experience', access_policy: 'whitelist', visible_group_ids: ['dept-legal'], online_status: 'offline', status: 'active', registered_at: '2024-01-10T08:00:00Z' },
+            { id: 've-003', name: 'Test VE 3', employee_type: 'physical', platform_id: 'maclawsrv', platform_employee_id: 'srv-user-1', skill_description: 'Data analyst', access_policy: 'per_request', online_status: 'online', status: 'active', resident: true, registered_at: '2024-01-12T14:00:00Z' },
             { id: 've-004', name: 'Test VE 4', runtime_provider_id: 'maclawsrv', skill_description: 'Runtime user', access_policy: 'public', online_status: 'online', status: 'active', registered_at: '2024-01-13T14:00:00Z' },
             { id: 've-005', name: 'Test VE 5', runtime_provider_id: 'other-runtime', skill_description: 'Other runtime user', access_policy: 'public', online_status: 'online', status: 'active', registered_at: '2024-01-14T14:00:00Z' }
           ],
@@ -108,6 +127,9 @@ function createMockGlobal() {
           quota: 10,
           active_count: 4
         };
+      }
+      if (url === '/api/admin/security/groups') {
+        return { tree: { id: 'root', name: 'Root', children: [{ id: 'dept-legal', name: 'Legal', children: [{ id: 'dept-contract', name: 'Contracts', children: [] }] }] } };
       }
       return {};
     },
@@ -168,6 +190,8 @@ async function runTests() {
     assertIncludes(activeList.innerHTML, 'Test VE 2', 'Active list should contain active VE');
     assertIncludes(activeList.innerHTML, 'Test VE 3', 'Active list should contain second active VE');
     assertIncludes(activeList.innerHTML, 'veDisable', 'Active list should have disable button');
+    assertIncludes(activeList.innerHTML, 'veSetResident', 'Active list should have resident button');
+    assertIncludes(activeList.innerHTML, '\u5e38\u9a7b', 'Active list should display resident badge');
     assertNotIncludes(activeList.innerHTML, 'veApprove', 'Active list should not have approve button');
     assertNotIncludes(activeList.innerHTML, 'Test VE 1', 'Active list should not contain pending digital employees');
   }
@@ -200,6 +224,38 @@ async function runTests() {
     assertEqual(countOccurrences(activeList.innerHTML, '\u865a\u62df\u5458\u5de5'), 2, 'Active list should display platform and maclawsrv runtime employees as virtual');
     assertEqual(countOccurrences(activeList.innerHTML, '\u7269\u7406\u5458\u5de5'), 2, 'Active list should display GUI and non-maclawsrv runtime employees as physical');
     assertIncludes(activeList.innerHTML, 'var(--ve-list-grid', 'VE list should use responsive CSS grid variable');
+  }
+
+  // Test 3b: List displays visible departments
+  {
+    console.log('  Test: List displays visible departments and global visibility');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    await ctx.loadVEList();
+    var activeList = g.document.elements['veActiveList'];
+    assertIncludes(activeList.innerHTML, 'Legal', 'Active list should map visible group IDs to department names');
+    assertIncludes(activeList.innerHTML, '\u5168\u5c40\u53ef\u89c1', 'Active list should show global visibility when no department is set');
+    assertIncludes(activeList.innerHTML, 'veOpenVisibilityEditor', 'Active rows should include visibility edit action');
+  }
+
+  // Test 3c: Visibility save calls new endpoint
+  {
+    console.log('  Test: Visibility editor saves selected departments');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    g.document.elements['veVisibilityOverlay'] = {
+      querySelectorAll: function() {
+        return [{ value: 'dept-legal' }, { value: 'dept-contract' }];
+      },
+      classList: { add: function() {}, remove: function() {} }
+    };
+    g._apiCalls.length = 0;
+    await ctx.veSaveVisibility('ve-002');
+    var saveCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/ve-002/visibility'; });
+    assert(saveCall !== undefined, 'Should call visibility API');
+    assertEqual(saveCall.opts.method, 'PUT', 'Visibility save should use PUT');
+    var body = JSON.parse(saveCall.opts.body);
+    assertEqual(body.visible_group_ids.join(','), 'dept-legal,dept-contract', 'Visibility save should send selected department IDs');
   }
 
   // Test 4: Empty pending list shows hint
@@ -275,6 +331,20 @@ async function runTests() {
     assert(disableCall !== undefined, 'Should call disable API');
     assertEqual(disableCall.url, '/api/ve/ve-002/disable', 'Should call correct disable URL');
     assertEqual(disableCall.opts.method, 'POST', 'Should use POST method');
+  }
+
+  // Test 8a: Resident toggle calls correct API
+  {
+    console.log('  Test: Resident toggle calls PUT /api/ve/{id}/resident');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    g._apiCalls.length = 0;
+    await ctx.veSetResident('ve-002', true);
+    var residentCall = g._apiCalls.find(function(c) { return c.url.includes('/resident'); });
+    assert(residentCall !== undefined, 'Should call resident API');
+    assertEqual(residentCall.url, '/api/ve/ve-002/resident', 'Should call correct resident URL');
+    assertEqual(residentCall.opts.method, 'PUT', 'Should use PUT method');
+    assertEqual(residentCall.opts.body, JSON.stringify({ resident: true }), 'Should include resident flag in body');
   }
 
   // Test 9: Approve refreshes list

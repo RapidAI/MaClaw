@@ -42,6 +42,16 @@ const (
 	capCatAnalyze  capabilityCategory = "analyze"  // analyzes/extracts/parses/recognizes
 )
 
+type skillDomainCategory string
+
+const (
+	skillDomainUnknown   skillDomainCategory = "unknown"
+	skillDomainInfra     skillDomainCategory = "infra"
+	skillDomainAPIDesign skillDomainCategory = "api_design"
+	skillDomainWeather   skillDomainCategory = "weather"
+	skillDomainDocument  skillDomainCategory = "document"
+)
+
 // intentVerbsCJK maps Chinese action verbs (2+ characters) to intent categories.
 // Only multi-character verbs are included to avoid false positives from
 // single characters that appear as parts of compound words with different
@@ -65,6 +75,15 @@ var intentVerbsCJK = map[string]intentCategory{
 	"发给": intentCatSend,
 }
 
+var supplementalIntentVerbsCJK = map[string]intentCategory{
+	"记得": intentCatQuery,
+	"知道": intentCatQuery,
+	"回忆": intentCatQuery,
+	"看看": intentCatQuery,
+	"检查": intentCatQuery,
+	"确认": intentCatQuery,
+}
+
 // intentVerbsEN maps English action verbs to intent categories.
 // Matched as whole words (space-delimited) to avoid substring false positives.
 var intentVerbsEN = map[string]intentCategory{
@@ -72,7 +91,9 @@ var intentVerbsEN = map[string]intentCategory{
 	"count": intentCatQuery, "search": intentCatQuery, "find": intentCatQuery,
 	"list": intentCatQuery, "scan": intentCatQuery, "browse": intentCatQuery,
 	"read": intentCatQuery, "open": intentCatQuery, "view": intentCatQuery,
-	"stat": intentCatQuery, "check": intentCatQuery, "locate": intentCatQuery,
+	"stat": intentCatQuery, "check": intentCatQuery, "checks": intentCatQuery,
+	"checking": intentCatQuery, "locate": intentCatQuery,
+	"remember": intentCatQuery, "recall": intentCatQuery, "know": intentCatQuery,
 	// Generate
 	"generate": intentCatGenerate, "create": intentCatGenerate, "export": intentCatGenerate,
 	"convert": intentCatGenerate, "render": intentCatGenerate, "make": intentCatGenerate,
@@ -87,31 +108,31 @@ var intentVerbsEN = map[string]intentCategory{
 // Checked against the skill's Description field.
 var capabilityVerbs = map[string]capabilityCategory{
 	// Generate/convert capabilities
-	"convert":   capCatGenerate, "converts":  capCatGenerate,
-	"generate":  capCatGenerate, "generates": capCatGenerate,
-	"export":    capCatGenerate, "exports":   capCatGenerate,
-	"render":    capCatGenerate, "renders":   capCatGenerate,
-	"create":    capCatGenerate, "creates":   capCatGenerate,
-	"produce":   capCatGenerate, "produces":  capCatGenerate,
-	"transform": capCatGenerate, "build":     capCatGenerate,
+	"convert": capCatGenerate, "converts": capCatGenerate,
+	"generate": capCatGenerate, "generates": capCatGenerate,
+	"export": capCatGenerate, "exports": capCatGenerate,
+	"render": capCatGenerate, "renders": capCatGenerate,
+	"create": capCatGenerate, "creates": capCatGenerate,
+	"produce": capCatGenerate, "produces": capCatGenerate,
+	"transform": capCatGenerate, "build": capCatGenerate,
 	"转换": capCatGenerate, "生成": capCatGenerate, "导出": capCatGenerate,
 	"制作": capCatGenerate, "渲染": capCatGenerate,
 	// Query/search capabilities
-	"search":  capCatQuery, "searches": capCatQuery,
-	"find":    capCatQuery, "finds":    capCatQuery,
-	"list":    capCatQuery, "lists":    capCatQuery,
-	"count":   capCatQuery, "counts":   capCatQuery,
-	"query":   capCatQuery, "queries":  capCatQuery,
+	"search": capCatQuery, "searches": capCatQuery,
+	"find": capCatQuery, "finds": capCatQuery,
+	"list": capCatQuery, "lists": capCatQuery,
+	"count": capCatQuery, "counts": capCatQuery,
+	"query": capCatQuery, "queries": capCatQuery,
 	"搜索": capCatQuery, "查找": capCatQuery, "统计": capCatQuery,
 	// Analyze capabilities
-	"analyze":   capCatAnalyze, "analyzes":  capCatAnalyze,
-	"extract":   capCatAnalyze, "extracts":  capCatAnalyze,
-	"parse":     capCatAnalyze, "parses":    capCatAnalyze,
+	"analyze": capCatAnalyze, "analyzes": capCatAnalyze,
+	"extract": capCatAnalyze, "extracts": capCatAnalyze,
+	"parse": capCatAnalyze, "parses": capCatAnalyze,
 	"recognize": capCatAnalyze, "recognizes": capCatAnalyze,
-	"ocr":       capCatAnalyze,
-	"识别": capCatAnalyze, "解析": capCatAnalyze, "提取": capCatAnalyze,
+	"ocr": capCatAnalyze,
+	"识别":  capCatAnalyze, "解析": capCatAnalyze, "提取": capCatAnalyze,
 	// Modify capabilities
-	"edit":   capCatModify, "edits":    capCatModify,
+	"edit": capCatModify, "edits": capCatModify,
 	"modify": capCatModify, "modifies": capCatModify,
 	"修改": capCatModify, "编辑": capCatModify,
 }
@@ -168,10 +189,10 @@ var skillPreferenceCompatibleIntents = map[intentCategory]bool{
 // Returns intentCatUnknown if no recognizable verb is found.
 //
 // Two-pass strategy:
-//   1. CJK pass: scan for 2-char Chinese verbs at each rune position.
-//      Single-char verbs are excluded to avoid false positives from compound
-//      words (e.g. "数" in "数据" means "data", not "count").
-//   2. English pass: split on whitespace and match whole words.
+//  1. CJK pass: scan for 2-char Chinese verbs at each rune position.
+//     Single-char verbs are excluded to avoid false positives from compound
+//     words (e.g. "数" in "数据" means "data", not "count").
+//  2. English pass: split on whitespace and match whole words.
 //
 // Returns on first match — in Chinese, the verb typically appears before the
 // object ("统计 PDF 文件"), so first-match is correct.
@@ -186,6 +207,9 @@ func extractUserIntentCategory(text string) intentCategory {
 	for i := 0; i+2 <= len(runes); i++ {
 		twoChar := string(runes[i : i+2])
 		if cat, ok := intentVerbsCJK[twoChar]; ok {
+			return cat
+		}
+		if cat, ok := supplementalIntentVerbsCJK[twoChar]; ok {
 			return cat
 		}
 	}
@@ -254,7 +278,9 @@ func isDescriptionSeparator(r rune) bool {
 // Returns false (incompatible) when:
 // - User intent is clear AND skill capabilities are clear AND none match
 func isIntentCompatibleWithSkill(userText string, skillDescription string) bool {
-	return isIntentCategoryCompatibleWithSkill(extractUserIntentCategory(userText), skillDescription)
+	userIntent := extractUserIntentCategory(userText)
+	return isIntentCategoryCompatibleWithSkill(userIntent, skillDescription) &&
+		isTaskDomainCompatibleWithSkill(userIntent, userText, skillDescription)
 }
 
 // isIntentCategoryCompatibleWithSkill is the inner implementation that accepts
@@ -281,6 +307,75 @@ func isIntentCategoryCompatibleWithSkill(userIntent intentCategory, skillDescrip
 		}
 	}
 
+	return false
+}
+
+func isTaskCompatibleWithSkillCandidate(userIntent intentCategory, userText string, skillText string) bool {
+	return isIntentCategoryCompatibleWithSkill(userIntent, skillText) &&
+		isTaskDomainCompatibleWithSkill(userIntent, userText, skillText)
+}
+
+func isTaskDomainCompatibleWithSkill(userIntent intentCategory, userText string, skillText string) bool {
+	if userIntent != intentCatQuery {
+		return true
+	}
+	taskDomain := extractTaskDomain(userText)
+	if taskDomain == skillDomainUnknown {
+		return true
+	}
+	skillDomain := extractSkillDomain(skillText)
+	if skillDomain == skillDomainUnknown {
+		return true
+	}
+	return taskDomain == skillDomain
+}
+
+func extractTaskDomain(text string) skillDomainCategory {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return skillDomainUnknown
+	}
+	if containsAny(lower, "server", "status", "health", "ssh", "host", "uptime", "api2", "api1",
+		"服务器", "服务", "状态", "健康", "主机", "连接") {
+		return skillDomainInfra
+	}
+	if containsAny(lower, "weather", "forecast", "temperature", "天气", "气温", "预报") {
+		return skillDomainWeather
+	}
+	if containsAny(lower, "pdf", "ppt", "pptx", "document", "docx", "file", "文档", "文件") {
+		return skillDomainDocument
+	}
+	return skillDomainUnknown
+}
+
+func extractSkillDomain(text string) skillDomainCategory {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return skillDomainUnknown
+	}
+	if containsAny(lower, "api design", "design review", "design reviewer", "api reviewer", "openapi review",
+		"接口设计", "api设计", "设计评审") {
+		return skillDomainAPIDesign
+	}
+	if containsAny(lower, "server", "status", "health", "ssh", "host", "uptime", "monitor",
+		"服务器", "服务状态", "健康检查", "主机", "运维", "监控") {
+		return skillDomainInfra
+	}
+	if containsAny(lower, "weather", "forecast", "temperature", "天气", "气温", "预报") {
+		return skillDomainWeather
+	}
+	if containsAny(lower, "pdf", "ppt", "pptx", "document", "docx", "file", "文档", "文件") {
+		return skillDomainDocument
+	}
+	return skillDomainUnknown
+}
+
+func containsAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
 	return false
 }
 

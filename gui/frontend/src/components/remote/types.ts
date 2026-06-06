@@ -201,6 +201,7 @@ export interface RemoteActivationStatus {
     tenant_name?: string;
     machine_id?: string;
     sn?: string;
+    hub_url?: string;
 }
 
 export interface RemoteConnectionStatus {

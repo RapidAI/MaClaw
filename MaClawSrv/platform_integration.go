@@ -185,6 +185,7 @@ type platformSourceUserRequest struct {
 	Description       string                 `json:"description,omitempty"`
 	InstanceID        string                 `json:"instance_id,omitempty"`
 	Target            string                 `json:"target,omitempty"`
+	SettingsTab       string                 `json:"settings_tab,omitempty"`
 	DefaultLLM        string                 `json:"default_llm,omitempty"`
 	LLMServiceGroupID string                 `json:"llm_service_group_id,omitempty"`
 	LLMModel          string                 `json:"llm_model,omitempty"`
@@ -1119,6 +1120,10 @@ func (s *HTTPServer) handlePlatformSourceUserAssistantLink(w http.ResponseWriter
 	s.handlePlatformSourceUserLink(w, r, "assistant")
 }
 
+func (s *HTTPServer) handlePlatformSourceUserKnowledgeLink(w http.ResponseWriter, r *http.Request) {
+	s.handlePlatformSourceUserLink(w, r, "knowledge")
+}
+
 func (s *HTTPServer) handlePlatformSourceUserSettingsLink(w http.ResponseWriter, r *http.Request) {
 	s.handlePlatformSourceUserLink(w, r, "settings")
 }
@@ -1187,7 +1192,7 @@ func (s *HTTPServer) handlePlatformSourceUserLink(w http.ResponseWriter, r *http
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "web.launch_token.created", "web_launch_token", binding.Source.ID, map[string]string{"tenant_id": binding.Tenant.ID, "user_id": binding.User.ID, "source_user_id": binding.Source.ID, "instance_id": instanceID, "view": view, "launch_token_hash_prefix": shortWebLaunchTokenHash(launchTokenHash), "remote_ip": requestClientIP(r)})
-	launchURL := platformWebLaunchURL(r, launchToken, view, instanceID, binding)
+	launchURL := platformWebLaunchURL(r, launchToken, view, instanceID, strings.TrimSpace(in.SettingsTab), binding)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"url": launchURL, "launch_url": launchURL, "view": view, "expires_at": launchTokenExpiresAt, "access_expires_at": tok.ExpiresAt, "tenant_id": binding.Tenant.ID, "user_id": binding.User.ID, "source_user_id": binding.Source.ID, "instance_id": instanceID, "created_instance": createdInstance})
 }
@@ -1866,7 +1871,7 @@ func platformSourceUserRuntimeEmail(source platformSourceUser) string {
 	return local + "@ve-platform.local"
 }
 
-func platformWebLaunchURL(r *http.Request, launchToken, view, instanceID string, binding platformSourceUserBinding) string {
+func platformWebLaunchURL(r *http.Request, launchToken, view, instanceID, settingsTab string, binding platformSourceUserBinding) string {
 	scheme := platformLaunchScheme(r.Header.Get("X-Forwarded-Proto"))
 	host := platformLaunchHost(firstPlatformNonEmpty(r.Header.Get("X-Forwarded-Host"), r.Host))
 	q := url.Values{}
@@ -1878,7 +1883,25 @@ func platformWebLaunchURL(r *http.Request, launchToken, view, instanceID string,
 	if instanceID != "" {
 		q.Set("instance_id", instanceID)
 	}
+	settingsTab = normalizePlatformSettingsTab(settingsTab)
+	if view == "settings" && settingsTab != "" {
+		q.Set("settings_tab", settingsTab)
+	}
 	return scheme + "://" + host + "/app/?" + q.Encode()
+}
+
+func normalizePlatformSettingsTab(tab string) string {
+	tab = strings.ToLower(strings.TrimSpace(tab))
+	switch tab {
+	case "channels", "channels_more":
+		return "im"
+	case "advanced":
+		return ""
+	case "llm", "tools", "skills", "memory", "security", "im", "ui":
+		return tab
+	default:
+		return ""
+	}
 }
 
 func platformLaunchScheme(value string) string {

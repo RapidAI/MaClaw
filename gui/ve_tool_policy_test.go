@@ -16,6 +16,7 @@ func TestIsVEToolBlocked_BlockedTools(t *testing.T) {
 		"create_session", "send_and_observe", "send_input",
 		"control_session", "interrupt_session", "kill_session",
 		"parallel_execute", "craft_tool",
+		"install_skill_hub", "search_and_install_skill",
 		"passthrough_task", "switch_llm_provider",
 		"knowledge_save_url", "knowledge_save_urls", "knowledge_save_text",
 		"knowledge_import_directory", "knowledge_import_files",
@@ -31,7 +32,7 @@ func TestIsVEToolBlocked_AllowedTools(t *testing.T) {
 	allowed := []string{
 		"read_file", "list_directory", "web_search", "web_fetch",
 		"memory", "call_mcp_tool", "list_mcp_tools",
-		"manage_skill", "run_skill", "install_skill_hub", // allowed with guards/policy
+		"manage_skill", "run_skill", // allowed with guards/policy
 	}
 	for _, name := range allowed {
 		if isVEToolBlocked(name) {
@@ -66,11 +67,12 @@ func TestIsVEToolActionBlocked_NormalizesToolAndAction(t *testing.T) {
 	}
 }
 
-func TestIsVEToolActionBlocked_ManageSkillInstallRunAllowed(t *testing.T) {
-	for _, action := range []string{"install", "run"} {
-		if isVEToolActionBlocked("manage_skill", action) {
-			t.Errorf("manage_skill action %q should be allowed in VE mode", action)
-		}
+func TestIsVEToolActionBlocked_ManageSkillInstallBlockedRunAllowed(t *testing.T) {
+	if !isVEToolActionBlocked("manage_skill", "install") {
+		t.Error("manage_skill install should be blocked in VE mode")
+	}
+	if isVEToolActionBlocked("manage_skill", "run") {
+		t.Error("manage_skill run should be allowed in VE mode")
 	}
 }
 
@@ -490,6 +492,8 @@ func buildFullToolList() []map[string]interface{} {
 		"ssh",
 		"browser",
 		"create_session",
+		"install_skill_hub",
+		"search_and_install_skill",
 		// Always allowed tools (not in veBlockedTools)
 		"web_search",
 		"web_fetch",

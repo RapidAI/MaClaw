@@ -4,7 +4,7 @@ REM =========================================================================
 REM  deploy_maclawsrv.cmd - Deploy MaClawSrv service
 REM
 REM  Builds a Linux/amd64 maclawsrv binary locally, uploads it to
-REM  www.driverdevelop.com, installs it under /data/soft/maclaw_srv, and
+REM  the selected remote host, installs it under /data/soft/maclaw_srv, and
 REM  restarts the remote service. The SSH password is requested at runtime
 REM  unless REMOTE_PASS is already set.
 REM =========================================================================
@@ -14,10 +14,31 @@ set "ROOT_DIR_TRIM=%ROOT_DIR:~0,-1%"
 set "POWERSHELL=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 set "PROMPT_SCRIPT=%ROOT_DIR%prompt_password.ps1"
 
-if not defined REMOTE_HOST set "REMOTE_HOST=www.driverdevelop.com"
+set "DEPLOY_TARGET=driverdevelop"
+if /I "%~1"=="hub" (
+  set "DEPLOY_TARGET=hub"
+  shift
+)
+if /I "%~1"=="hub.maclaw.top" (
+  set "DEPLOY_TARGET=hub"
+  shift
+)
+if not defined REMOTE_HOST (
+  if /I "%DEPLOY_TARGET%"=="hub" (
+    set "REMOTE_HOST=hub.maclaw.top"
+  ) else (
+    set "REMOTE_HOST=www.driverdevelop.com"
+  )
+)
 if not defined REMOTE_PORT set "REMOTE_PORT=22"
 if not defined REMOTE_USER set "REMOTE_USER=root"
-if not defined REMOTE_HOSTKEY set "REMOTE_HOSTKEY=ssh-ed25519 255 SHA256:i4dErlVhnE3VDG7s6lOJ/cg3wfyqf1bgRXSqIddwuog"
+if not defined REMOTE_HOSTKEY (
+  if /I "%REMOTE_HOST%"=="hub.maclaw.top" (
+    set "REMOTE_HOSTKEY=ssh-ed25519 255 SHA256:yoyEXbuT2kezyG9Y8cJDZplBMZgaPAN7+sureAkVRVE"
+  ) else (
+    set "REMOTE_HOSTKEY=ssh-ed25519 255 SHA256:i4dErlVhnE3VDG7s6lOJ/cg3wfyqf1bgRXSqIddwuog"
+  )
+)
 if not defined REMOTE_TMP_DIR set "REMOTE_TMP_DIR=/tmp/maclawsrv_deploy"
 if not defined MACLAWSRV_DEPLOY_DIR set "MACLAWSRV_DEPLOY_DIR=/data/soft/maclaw_srv"
 if not defined MACLAWSRV_PORT set "MACLAWSRV_PORT=18080"
@@ -48,9 +69,11 @@ goto :main
 :usage
 echo Usage:
 echo   deploy_maclawsrv.cmd
+echo   deploy_maclawsrv.cmd hub
 echo.
 echo Optional environment overrides:
 echo   REMOTE_HOST=www.driverdevelop.com
+echo   REMOTE_HOST=hub.maclaw.top
 echo   REMOTE_USER=root
 echo   REMOTE_PORT=22
 echo   REMOTE_PASS=...

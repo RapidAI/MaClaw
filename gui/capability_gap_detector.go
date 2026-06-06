@@ -4,8 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/security"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,8 +12,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -136,12 +137,19 @@ var gapKeywords = []string{
 // detection entirely to avoid false positives from informational uses of
 // keywords like "无法" or "不支持".
 func (d *CapabilityGapDetector) Detect(llmResponse string) bool {
+	return d.DetectWithContext(context.Background(), llmResponse)
+}
+
+func (d *CapabilityGapDetector) DetectWithContext(ctx context.Context, llmResponse string) bool {
+	if contextErr(ctx) != nil {
+		return false
+	}
 	trimmed := strings.TrimSpace(llmResponse)
 	if utf8.RuneCountInString(trimmed) > 500 {
 		return false
 	}
 	if d.isLLMConfigured() {
-		return d.llmDetectGap(llmResponse)
+		return d.llmDetectGapWithContext(ctx, llmResponse)
 	}
 	// When UIC is available, skip gapKeywords fallback — rely solely on
 	// LLM-based detection (which is unavailable here). The UIC already
@@ -223,6 +231,10 @@ func (d *CapabilityGapDetector) Resolve(
 		gs := cskill.NewGitHubSearcher("")
 		ghCandidates, ghErr := gs.SearchGitHub(query)
 		if ghErr != nil || len(ghCandidates) == 0 {
+			return "", "", nil
+		}
+		ghCandidates = filterGitHubSkillCandidatesForIntent(userMessage, ghCandidates)
+		if len(ghCandidates) == 0 {
 			return "", "", nil
 		}
 		// Import the first candidate.
@@ -339,6 +351,7 @@ func (d *CapabilityGapDetector) Resolve(
 	}
 
 	// Step 3: Select best matching Skill.
+	candidates = filterHubSkillMetaForIntent(userMessage, candidates)
 	chosen := d.llmSelectBestSkill(ctx, userMessage, candidates)
 	if chosen == nil {
 		return "", "", nil
@@ -504,13 +517,20 @@ func (d *CapabilityGapDetector) isLLMConfigured() bool {
 // doLLMChat sends a chat completion request following the same pattern as
 // IMMessageHandler.doLLMRequest.
 func (d *CapabilityGapDetector) doLLMChat(messages []map[string]interface{}) (string, error) {
+	return d.doLLMChatWithContext(context.Background(), messages)
+}
+
+func (d *CapabilityGapDetector) doLLMChatWithContext(ctx context.Context, messages []map[string]interface{}) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Convert []map[string]interface{} to []interface{} for the shared helper
 	msgs := make([]interface{}, len(messages))
 	for i, m := range messages {
 		msgs[i] = m
 	}
 
-	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "capability-gap"})
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "capability-gap"})
 	result, err := doSimpleLLMRequest(ctx, d.llmConfig, msgs, d.client, 30*time.Second)
 	if err != nil {
 		return "", err
@@ -520,12 +540,22 @@ func (d *CapabilityGapDetector) doLLMChat(messages []map[string]interface{}) (st
 
 // llmDetectGap asks the LLM whether the response indicates a capability gap.
 func (d *CapabilityGapDetector) llmDetectGap(llmResponse string) bool {
+	return d.llmDetectGapWithContext(context.Background(), llmResponse)
+}
+
+func (d *CapabilityGapDetector) llmDetectGapWithContext(ctx context.Context, llmResponse string) bool {
+	if contextErr(ctx) != nil {
+		return false
+	}
 	messages := []map[string]interface{}{
 		{"role": "system", "content": "你是一个判断助手。用户会给你一段 AI 助手的回复，请判断这段回复是否表明 AI 助手缺少某种能力或工具来完成用户的请求。只回答 yes 或 no。"},
 		{"role": "user", "content": llmResponse},
 	}
-	answer, err := d.doLLMChat(messages)
+	answer, err := d.doLLMChatWithContext(ctx, messages)
 	if err != nil {
+		if contextErr(ctx) != nil {
+			return false
+		}
 		// Fallback to heuristic on LLM error.
 		lower := strings.ToLower(llmResponse)
 		for _, kw := range gapKeywords {
@@ -542,6 +572,9 @@ func (d *CapabilityGapDetector) llmDetectGap(llmResponse string) bool {
 // user message and conversation history. Returns userMessage directly if LLM
 // is not configured or the call fails.
 func (d *CapabilityGapDetector) extractCapabilityQuery(ctx context.Context, userMessage string, history []map[string]interface{}) string {
+	if contextErr(ctx) != nil {
+		return ""
+	}
 	if !d.isLLMConfigured() {
 		return userMessage
 	}
@@ -554,8 +587,11 @@ func (d *CapabilityGapDetector) extractCapabilityQuery(ctx context.Context, user
 		{"role": "system", "content": "你是一个搜索查询提炼助手。将用户的请求转化为简短的搜索关键词。只返回关键词，不要其他内容。"},
 		{"role": "user", "content": prompt},
 	}
-	answer, err := d.doLLMChat(messages)
+	answer, err := d.doLLMChatWithContext(ctx, messages)
 	if err != nil || strings.TrimSpace(answer) == "" {
+		if contextErr(ctx) != nil {
+			return ""
+		}
 		return userMessage
 	}
 	return answer
@@ -565,6 +601,9 @@ func (d *CapabilityGapDetector) extractCapabilityQuery(ctx context.Context, user
 // Returns the first candidate if LLM is not configured or the call fails.
 func (d *CapabilityGapDetector) llmSelectBestSkill(ctx context.Context, userMessage string, candidates []HubSkillMeta) *HubSkillMeta {
 	if len(candidates) == 0 {
+		return nil
+	}
+	if contextErr(ctx) != nil {
 		return nil
 	}
 	if !d.isLLMConfigured() {
@@ -585,8 +624,11 @@ func (d *CapabilityGapDetector) llmSelectBestSkill(ctx context.Context, userMess
 		{"role": "system", "content": "你是一个工具选择助手。根据用户请求从候选列表中选择最匹配的工具。只返回序号数字，不要其他内容。"},
 		{"role": "user", "content": prompt},
 	}
-	answer, err := d.doLLMChat(messages)
+	answer, err := d.doLLMChatWithContext(ctx, messages)
 	if err != nil {
+		if contextErr(ctx) != nil {
+			return nil
+		}
 		return &candidates[0]
 	}
 
@@ -597,6 +639,40 @@ func (d *CapabilityGapDetector) llmSelectBestSkill(ctx context.Context, userMess
 		return &candidates[idx-1]
 	}
 	return &candidates[0]
+}
+
+func filterHubSkillMetaForIntent(userMessage string, candidates []HubSkillMeta) []HubSkillMeta {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	userIntent := extractUserIntentCategory(userMessage)
+	filtered := candidates[:0]
+	for _, candidate := range candidates {
+		skillText := strings.TrimSpace(candidate.Name + " " + candidate.Description)
+		if isTaskCompatibleWithSkillCandidate(userIntent, userMessage, skillText) {
+			filtered = append(filtered, candidate)
+		} else {
+			log.Printf("[capability-gap] rejected intent-incompatible hub skill candidate %q for query intent %q", candidate.Name, userIntent)
+		}
+	}
+	return filtered
+}
+
+func filterGitHubSkillCandidatesForIntent(userMessage string, candidates []cskill.GitHubSkillCandidate) []cskill.GitHubSkillCandidate {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	userIntent := extractUserIntentCategory(userMessage)
+	filtered := candidates[:0]
+	for _, candidate := range candidates {
+		skillText := strings.TrimSpace(candidate.RepoFullName + " " + candidate.Description)
+		if isTaskCompatibleWithSkillCandidate(userIntent, userMessage, skillText) {
+			filtered = append(filtered, candidate)
+		} else {
+			log.Printf("[capability-gap] rejected intent-incompatible github skill candidate %q for query intent %q", candidate.RepoFullName, userIntent)
+		}
+	}
+	return filtered
 }
 
 // autoRate evaluates the execution result via LLM and submits a 1-5 rating.

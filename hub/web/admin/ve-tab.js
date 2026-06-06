@@ -30,6 +30,18 @@
       employeeTypePhysical: 'Physical Employee',
       skillDesc: 'Skill Description',
       accessPolicy: 'Access Policy',
+      visibleDepartments: 'Visible Departments',
+      residentEmployee: 'Resident',
+      setResident: 'Set Resident',
+      clearResident: 'Clear Resident',
+      residentSaved: 'Resident digital employee saved.',
+      residentSaveFailed: 'Save resident digital employee failed: {error}',
+      globalVisible: 'Global',
+      editVisibility: 'Visibility',
+      saveVisibility: 'Save Visibility',
+      visibilitySaved: 'Visible departments saved.',
+      visibilitySaveFailed: 'Save visible departments failed: {error}',
+      noDepartments: 'No departments available.',
       onlineStatus: 'Online Status',
       registeredAt: 'Registered At',
       actions: 'Actions',
@@ -102,6 +114,18 @@
       employeeTypePhysical: '\u7269\u7406\u5458\u5de5',
       skillDesc: '\u6280\u80fd\u63cf\u8ff0',
       accessPolicy: '\u8bbf\u95ee\u7b56\u7565',
+      visibleDepartments: '\u53ef\u89c1\u90e8\u95e8',
+      residentEmployee: '\u5e38\u9a7b',
+      setResident: '\u8bbe\u7f6e\u5e38\u9a7b',
+      clearResident: '\u53d6\u6d88\u5e38\u9a7b',
+      residentSaved: '\u5e38\u9a7b\u6570\u5b57\u5458\u5de5\u5df2\u4fdd\u5b58\u3002',
+      residentSaveFailed: '\u4fdd\u5b58\u5e38\u9a7b\u6570\u5b57\u5458\u5de5\u5931\u8d25\uff1a{error}',
+      globalVisible: '\u5168\u5c40\u53ef\u89c1',
+      editVisibility: '\u53ef\u89c1\u90e8\u95e8',
+      saveVisibility: '\u4fdd\u5b58\u53ef\u89c1\u90e8\u95e8',
+      visibilitySaved: '\u53ef\u89c1\u90e8\u95e8\u5df2\u4fdd\u5b58\u3002',
+      visibilitySaveFailed: '\u4fdd\u5b58\u53ef\u89c1\u90e8\u95e8\u5931\u8d25\uff1a{error}',
+      noDepartments: '\u6682\u65e0\u53ef\u7528\u90e8\u95e8\u3002',
       onlineStatus: '\u5728\u7ebf\u72b6\u6001',
       registeredAt: '\u6ce8\u518c\u65f6\u95f4',
       actions: '\u64cd\u4f5c',
@@ -176,6 +200,10 @@
   var veHistoryDiscussions = [];
   var veHistoryLoading = false;
   var veHistoryHint = '';
+  var veSecurityGroupsLoaded = false;
+  var veSecurityGroupsLoadPromise = null;
+  var veSecurityGroupTree = null;
+  var veSecurityGroupMap = Object.create(null);
 
   // --- Helpers ---
   function formatAccessPolicy(policy) {
@@ -260,7 +288,56 @@
   }
 
   function veListGridTemplate() {
-    return 'var(--ve-list-grid,minmax(110px,1fr) minmax(90px,.8fr) minmax(150px,1.15fr) minmax(150px,1fr) minmax(78px,.7fr) minmax(78px,.7fr) minmax(130px,.9fr) minmax(118px,1fr))';
+    return 'var(--ve-list-grid,minmax(110px,1fr) minmax(90px,.8fr) minmax(150px,1.15fr) minmax(150px,1fr) minmax(78px,.7fr) minmax(110px,.8fr) minmax(68px,.55fr) minmax(78px,.7fr) minmax(130px,.9fr) minmax(132px,1fr))';
+  }
+
+  function flattenSecurityGroupTree(node, depth, out, options) {
+    out = out || [];
+    options = options || {};
+    if (!node) return out;
+    var id = String(node.id || '').trim();
+    var skipRoot = options.skipRoot && !depth;
+    if (id && !skipRoot) out.push({ id: id, name: String(node.name || id), depth: depth || 0 });
+    (node.children || []).forEach(function(child) {
+      flattenSecurityGroupTree(child, skipRoot ? 0 : (depth || 0) + 1, out, options);
+    });
+    return out;
+  }
+
+  function updateSecurityGroupMap(tree) {
+    veSecurityGroupMap = Object.create(null);
+    flattenSecurityGroupTree(tree, 0, []).forEach(function(group) {
+      veSecurityGroupMap[group.id] = group;
+    });
+  }
+
+  async function ensureVESecurityGroupsLoaded(force) {
+    if (veSecurityGroupsLoaded && !force) return;
+    if (veSecurityGroupsLoadPromise) return veSecurityGroupsLoadPromise;
+    veSecurityGroupsLoadPromise = (async function() {
+      var data = await api('/api/admin/security/groups');
+      veSecurityGroupTree = data && data.tree ? data.tree : null;
+      updateSecurityGroupMap(veSecurityGroupTree);
+      veSecurityGroupsLoaded = true;
+    })();
+    try {
+      await veSecurityGroupsLoadPromise;
+    } finally {
+      veSecurityGroupsLoadPromise = null;
+    }
+  }
+
+  function visibleGroupIDs(ve) {
+    return (ve && Array.isArray(ve.visible_group_ids)) ? ve.visible_group_ids.filter(function(id) { return String(id || '').trim(); }) : [];
+  }
+
+  function formatVisibleDepartments(ve) {
+    var ids = visibleGroupIDs(ve);
+    if (!ids.length) return vt('globalVisible');
+    return ids.map(function(id) {
+      var group = veSecurityGroupMap[id];
+      return group ? group.name : id;
+    }).join(', ');
   }
 
   // --- Rendering ---
@@ -271,6 +348,8 @@
       '<div>' + vt('skillDesc') + '</div>' +
       '<div>' + vt('ownerEmail') + '</div>' +
       '<div>' + vt('accessPolicy') + '</div>' +
+      '<div>' + vt('visibleDepartments') + '</div>' +
+      '<div>' + vt('residentEmployee') + '</div>' +
       '<div>' + vt('onlineStatus') + '</div>' +
       '<div>' + vt('registeredAt') + '</div>' +
       '<div>' + vt('actions') + '</div>' +
@@ -280,16 +359,20 @@
   function renderVERow(ve, actionButtons) {
     var veIDExpr = JSON.stringify(ve.id || '');
     var historyBtn = actionBtn(vt('openHistory'), 'btn-ghost', 'veLoadHistory(' + veIDExpr + ')');
+    var visibilityBtn = actionBtn(vt('editVisibility'), 'btn-secondary', 'veOpenVisibilityEditor(' + veIDExpr + ')');
     var ownerText = ve.owner_email || ve.owner_user_id || '';
+    var visibleText = formatVisibleDepartments(ve);
     return '<div class="row" style="grid-template-columns:' + veListGridTemplate() + '">' +
       '<div><strong>' + escapeHtml(truncate(ve.name || '', 50)) + '</strong></div>' +
       '<div>' + formatEmployeeType(ve) + '</div>' +
       '<div class="item-meta">' + escapeHtml(truncate(ve.skill_description || '', 100)) + '</div>' +
       '<div class="item-meta" title="' + escapeHtml(ownerText) + '">' + escapeHtml(truncate(ownerText, 42)) + '</div>' +
       '<div><span class="badge info">' + escapeHtml(formatAccessPolicy(ve.access_policy)) + '</span></div>' +
+      '<div class="item-meta" title="' + escapeHtml(visibleText) + '">' + escapeHtml(truncate(visibleText, 42)) + '</div>' +
+      '<div>' + (ve.resident ? '<span class="badge ok">' + escapeHtml(vt('residentEmployee')) + '</span>' : '<span class="item-meta">-</span>') + '</div>' +
       '<div>' + formatOnlineStatus(ve.online_status) + '</div>' +
       '<div class="item-meta">' + escapeHtml(formatDate(ve.registered_at)) + '</div>' +
-      '<div style="display:flex;gap:4px;flex-wrap:wrap">' + historyBtn + actionButtons + '</div>' +
+      '<div style="display:flex;gap:4px;flex-wrap:wrap">' + visibilityBtn + historyBtn + actionButtons + '</div>' +
       '</div>';
   }
 
@@ -329,8 +412,9 @@
 
     container.innerHTML = header + active.map(function(ve) {
       var veIDExpr = JSON.stringify(ve.id || '');
+      var residentBtn = actionBtn(ve.resident ? vt('clearResident') : vt('setResident'), ve.resident ? 'btn-secondary' : 'btn-primary', 'veSetResident(' + veIDExpr + ',' + (ve.resident ? 'false' : 'true') + ')');
       var disableBtn = actionBtn(vt('disable'), 'btn-danger', 'veDisable(' + veIDExpr + ')');
-      return renderVERow(ve, disableBtn);
+      return renderVERow(ve, residentBtn + disableBtn);
     }).join('');
   }
 
@@ -416,6 +500,11 @@
       veGroupConfigLoaded = true;
       veQuota = data.quota || 0;
       veActiveCount = data.active_count || 0;
+      try {
+        await ensureVESecurityGroupsLoaded(true);
+      } catch (groupErr) {
+        // Keep the employee list usable; unknown group IDs are shown as-is.
+      }
       renderVELists();
       renderGroupConfig();
       renderAutoApproveConfig();
@@ -669,6 +758,84 @@
     overlay.classList.add('show');
   }
 
+  function renderVEVisibilityOptions(ve) {
+    var selected = Object.create(null);
+    visibleGroupIDs(ve).forEach(function(id) { selected[id] = true; });
+    var groups = flattenSecurityGroupTree(veSecurityGroupTree, 0, [], { skipRoot: true });
+    if (!groups.length) return '<div class="hint">' + escapeHtml(vt('noDepartments')) + '</div>';
+    return '<div style="display:flex;flex-direction:column;gap:6px;max-height:46vh;overflow:auto;margin:10px 0">' + groups.map(function(group) {
+      var checked = selected[group.id] ? ' checked' : '';
+      var pad = Math.min(group.depth || 0, 8) * 14;
+      return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0 4px ' + pad + 'px">' +
+        '<input type="checkbox" class="ve-visible-group-option" value="' + escapeHtml(group.id) + '"' + checked + '>' +
+        '<span>' + escapeHtml(group.name) + '</span>' +
+        '</label>';
+    }).join('') + '</div>';
+  }
+
+  function showVEVisibilityEditor(ve) {
+    var overlay = document.getElementById('veVisibilityOverlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'veVisibilityOverlay';
+      overlay.className = 'session-modal-overlay';
+      overlay.onclick = function(event) { if (event.target === overlay) global.closeVEVisibilityEditor(); };
+      document.body.appendChild(overlay);
+    }
+    var title = (ve && (ve.name || ve.id)) || vt('editVisibility');
+    overlay.innerHTML = '<div class="session-modal" style="width:min(560px,calc(100% - 48px));max-height:86vh;overflow:auto">' +
+      '<button class="close-btn" onclick="closeVEVisibilityEditor()" aria-label="' + escapeHtml(vt('close')) + '">&times;</button>' +
+      '<h3>' + escapeHtml(vt('visibleDepartments')) + '</h3>' +
+      '<div class="item-meta" style="margin-bottom:8px">' + escapeHtml(title) + '</div>' +
+      renderVEVisibilityOptions(ve) +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">' +
+      '<button class="btn-ghost" onclick="closeVEVisibilityEditor()">' + escapeHtml(vt('close')) + '</button>' +
+      '<button class="btn-primary" onclick="veSaveVisibility(' + jsAttrString(ve && ve.id) + ')">' + escapeHtml(vt('saveVisibility')) + '</button>' +
+      '</div></div>';
+    overlay.classList.add('show');
+  }
+
+  global.closeVEVisibilityEditor = function closeVEVisibilityEditor() {
+    var overlay = document.getElementById('veVisibilityOverlay');
+    if (overlay) overlay.classList.remove('show');
+  };
+
+  global.veOpenVisibilityEditor = async function veOpenVisibilityEditor(veID) {
+    var employee = veListCache.find(function(ve) { return ve.id === veID; }) || null;
+    if (!employee) return;
+    try {
+      await ensureVESecurityGroupsLoaded(true);
+      showVEVisibilityEditor(employee);
+    } catch (err) {
+      var msg = vt('visibilitySaveFailed').replace('{error}', err.message);
+      setOutput(msg);
+      showToast(msg, 'error');
+    }
+  };
+
+  global.veSaveVisibility = async function veSaveVisibility(veID) {
+    var overlay = document.getElementById('veVisibilityOverlay');
+    var ids = [];
+    if (overlay) {
+      overlay.querySelectorAll('.ve-visible-group-option:checked').forEach(function(input) {
+        ids.push(input.value);
+      });
+    }
+    try {
+      await api('/api/ve/' + encodeURIComponent(veID) + '/visibility', {
+        method: 'PUT',
+        body: JSON.stringify({ visible_group_ids: ids })
+      });
+      showToast(vt('visibilitySaved'), 'success');
+      global.closeVEVisibilityEditor();
+      await global.loadVEList();
+    } catch (err) {
+      var msg = vt('visibilitySaveFailed').replace('{error}', err.message);
+      setOutput(msg);
+      showToast(msg, 'error');
+    }
+  };
+
   global.veApprove = async function veApprove(veID) {
     if (!confirm(vt('approve') + '?')) return;
     try {
@@ -707,6 +874,21 @@
       await global.loadVEList();
     } catch (err) {
       var msg = vt('disableFailed').replace('{error}', err.message);
+      setOutput(msg);
+      showToast(msg, 'error');
+    }
+  };
+
+  global.veSetResident = async function veSetResident(veID, resident) {
+    try {
+      await api('/api/ve/' + encodeURIComponent(veID) + '/resident', {
+        method: 'PUT',
+        body: JSON.stringify({ resident: !!resident })
+      });
+      showToast(vt('residentSaved'), 'success');
+      await global.loadVEList();
+    } catch (err) {
+      var msg = vt('residentSaveFailed').replace('{error}', err.message);
       setOutput(msg);
       showToast(msg, 'error');
     }

@@ -214,6 +214,7 @@ type SkillYAMLFile struct {
 	Params           []SkillYAMLParam     `yaml:"params,omitempty"`            // parameter schema (aliases, CLI flags, defaults)
 	Type             string               `yaml:"type,omitempty"`              // "executable" (default) | "knowledge"
 	Content          string               `yaml:"content,omitempty"`           // Markdown content for knowledge-type skills
+	Capabilities     []string             `yaml:"capabilities,omitempty"`      // semantic execution capabilities, e.g. current_data
 	// Tool availability conditions
 	RequiresTools       []string `yaml:"requires_tools,omitempty"`
 	FallbackForTools    []string `yaml:"fallback_for_tools,omitempty"`
@@ -365,7 +366,7 @@ func normalizeSkillYAMLRaw(raw map[string]any) map[string]any {
 	copyRawAlias(normalized, "required_env", "requires_env", "required_environment", "env")
 	copyRawAlias(normalized, "required_args", "requires_args", "inputs", "input")
 	copyRawAlias(normalized, "shell", "preferred_shell")
-	for _, key := range []string{"required_env", "required_args", "triggers", "platforms", "requires_tools", "fallback_for_tools", "requires_toolsets", "fallback_for_toolsets", "required_credential_files"} {
+	for _, key := range []string{"required_env", "required_args", "triggers", "platforms", "capabilities", "requires_tools", "fallback_for_tools", "requires_toolsets", "fallback_for_toolsets", "required_credential_files"} {
 		if values := yamlStringList(normalized[key]); len(values) > 0 {
 			normalized[key] = values
 		}
@@ -1340,6 +1341,9 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				if len(sf.RequiresTools) > 0 {
 					parsed.RequiresTools = sf.RequiresTools
 				}
+				if len(sf.Capabilities) > 0 {
+					parsed.Capabilities = sf.Capabilities
+				}
 				if len(sf.FallbackForTools) > 0 {
 					parsed.FallbackForTools = sf.FallbackForTools
 				}
@@ -1441,6 +1445,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			RequiredArgs:            sf.RequiredArgs,
 			RequiredEnv:             sf.RequiredEnv,
 			PreferredShell:          sf.PreferredShell,
+			Capabilities:            sf.Capabilities,
 			RequiresTools:           sf.RequiresTools,
 			FallbackForTools:        sf.FallbackForTools,
 			RequiresToolsets:        sf.RequiresToolsets,

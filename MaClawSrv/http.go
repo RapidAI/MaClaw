@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"io"
@@ -288,6 +289,7 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/platform/source-users/{sourceUserId}/assistant-instances", s.withPlatformAdmin(s.handlePlatformSourceUserAssistantInstances))
 	s.mux.HandleFunc("POST /api/platform/source-users/{sourceUserId}/assistant-instances", s.withPlatformAdmin(s.handlePlatformCreateSourceUserAssistantInstance))
 	s.mux.HandleFunc("POST /api/platform/source-users/{sourceUserId}/assistant-link", s.withPlatformAdmin(s.handlePlatformSourceUserAssistantLink))
+	s.mux.HandleFunc("POST /api/platform/source-users/{sourceUserId}/knowledge-link", s.withPlatformAdmin(s.handlePlatformSourceUserKnowledgeLink))
 	s.mux.HandleFunc("POST /api/platform/source-users/{sourceUserId}/settings-link", s.withPlatformAdmin(s.handlePlatformSourceUserSettingsLink))
 	s.mux.HandleFunc("POST /api/platform/virtual-employees/{employeeId}/knowledge/imports", s.withPlatformAdmin(s.handlePlatformKnowledgeImport))
 	s.mux.HandleFunc("POST /api/platform/virtual-employees/{employeeId}/migrations/imports", s.withPlatformAdmin(s.handlePlatformMigrationImport))
@@ -340,6 +342,11 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("PUT /api/v1/config", s.withPrincipal(s.handleUpdateConfig))
 	s.mux.HandleFunc("POST /api/v1/config/validate", s.withPrincipal(s.handleValidateConfig))
 	s.mux.HandleFunc("POST /api/v1/config/test", s.withPrincipal(s.handleTestConfig))
+	s.mux.HandleFunc("GET /api/v1/im-audit/contacts", s.withPrincipal(s.handleListIMAuditContacts))
+	s.mux.HandleFunc("GET /api/v1/im-audit/messages", s.withPrincipal(s.handleListIMAuditMessages))
+	s.mux.HandleFunc("GET /api/v1/im-audit/stats", s.withPrincipal(s.handleGetIMAuditStats))
+	s.mux.HandleFunc("GET /api/v1/im-audit/export.csv", s.withPrincipal(s.handleExportIMAuditCSV))
+	s.mux.HandleFunc("DELETE /api/v1/im-audit/messages", s.withPrincipal(s.handleDeleteIMAuditMessages))
 	s.mux.HandleFunc("GET /api/v1/memory", s.withPrincipal(s.handleListMemory))
 	s.mux.HandleFunc("POST /api/v1/memory", s.withPrincipal(s.handleCreateMemory))
 	s.mux.HandleFunc("PUT /api/v1/memory/{id}", s.withPrincipal(s.handleUpdateMemory))
@@ -442,6 +449,11 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/public-libraries/{libraryId}", s.withAdmin(s.handleAdminKnowledgeAccessAttachPublicLibrary))
 	s.mux.HandleFunc("DELETE /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/public-libraries/{libraryId}", s.withAdmin(s.handleAdminKnowledgeAccessDetachPublicLibrary))
 	s.mux.HandleFunc("GET /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/resolve", s.withAdmin(s.handleAdminKnowledgeAccessResolveUser))
+
+	// Knowledge base image asset endpoints
+	s.mux.HandleFunc("GET /api/v1/knowledge/sources/{sourceId}/thumbnail", s.withPrincipal(s.handleKnowledgeSourceThumbnail))
+	s.mux.HandleFunc("GET /api/v1/knowledge/sources/{sourceId}/image", s.withPrincipal(s.handleKnowledgeSourceImage))
+	s.mux.HandleFunc("POST /api/v1/knowledge/import/image", s.withPrincipal(s.handleKnowledgeImportImage))
 
 	// Skill source control admin API (global / tenant / user).
 	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/available", s.withAdmin(s.handleSkillSourcesAvailable))
@@ -2532,6 +2544,137 @@ func (s *HTTPServer) handleTestConfig(w http.ResponseWriter, r *http.Request, p 
 	writeJSON(w, http.StatusOK, sanitizeConfigTestResultForAPI(s.svc.DataRoot(), out))
 }
 
+func (s *HTTPServer) handleListIMAuditMessages(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	in, ok := parseIMAuditQuery(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.svc.ListIMAuditMessages(r.Context(), p, in)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	page, err := parsePageQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	items, meta := paginateIMAuditMessages(out, page)
+	writeJSON(w, http.StatusOK, listResponse(items, meta))
+}
+
+func parseIMAuditQuery(w http.ResponseWriter, r *http.Request) (agentservice.ListIMAuditMessagesInput, bool) {
+	since, err := parseOptionalTimeQuery(r, "since")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return agentservice.ListIMAuditMessagesInput{}, false
+	}
+	until, err := parseOptionalTimeQuery(r, "until")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return agentservice.ListIMAuditMessagesInput{}, false
+	}
+	role, ok := parseMessageRole(r.URL.Query().Get("role"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid role"})
+		return agentservice.ListIMAuditMessagesInput{}, false
+	}
+	return agentservice.ListIMAuditMessagesInput{
+		Platform: strings.TrimSpace(r.URL.Query().Get("platform")),
+		Contact:  strings.TrimSpace(r.URL.Query().Get("contact")),
+		Query:    strings.TrimSpace(r.URL.Query().Get("q")),
+		Role:     role,
+		Since:    since,
+		Until:    until,
+	}, true
+}
+
+func (s *HTTPServer) handleListIMAuditContacts(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	out, err := s.svc.ListIMAuditContacts(r.Context(), p, strings.TrimSpace(r.URL.Query().Get("platform")))
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+}
+
+func (s *HTTPServer) handleGetIMAuditStats(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	in, ok := parseIMAuditQuery(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.svc.GetIMAuditStats(r.Context(), p, in)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *HTTPServer) handleExportIMAuditCSV(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	in, ok := parseIMAuditQuery(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.svc.ListIMAuditMessages(r.Context(), p, in)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="im-audit.csv"`)
+	w.WriteHeader(http.StatusOK)
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"created_at", "platform", "contact_id", "role", "content", "instance_id", "instance_name", "session_id", "session_title", "message_id"})
+	for _, item := range out {
+		_ = cw.Write([]string{
+			csvSafeCell(item.CreatedAt.Format(time.RFC3339Nano)),
+			csvSafeCell(item.Platform),
+			csvSafeCell(item.ContactID),
+			csvSafeCell(string(item.Message.Role)),
+			csvSafeCell(item.Message.Content),
+			csvSafeCell(item.InstanceID),
+			csvSafeCell(item.InstanceName),
+			csvSafeCell(item.SessionID),
+			csvSafeCell(item.SessionTitle),
+			csvSafeCell(item.Message.Metadata["im_message_id"]),
+		})
+	}
+	cw.Flush()
+}
+
+func csvSafeCell(value string) string {
+	if trimmed := strings.TrimLeft(value, " \t\r\n"); trimmed != "" {
+		switch trimmed[0] {
+		case '=', '+', '-', '@':
+			return "'" + value
+		}
+	}
+	return value
+}
+
+func (s *HTTPServer) handleDeleteIMAuditMessages(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if err := requireAdminConfirmation(r, "IM history cleanup"); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	in, ok := parseIMAuditQuery(w, r)
+	if !ok {
+		return
+	}
+	before, err := parseRequiredTimeQuery(r, "before")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	out, err := s.svc.DeleteIMAuditMessagesBefore(r.Context(), p, in, before)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *HTTPServer) handleListMemory(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
 	offset, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset")))
@@ -3937,6 +4080,17 @@ func parseOptionalTimeQuery(r *http.Request, key string) (*time.Time, error) {
 	return &v, nil
 }
 
+func parseRequiredTimeQuery(r *http.Request, key string) (time.Time, error) {
+	value, err := parseOptionalTimeQuery(r, key)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if value == nil {
+		return time.Time{}, errors.New(key + " is required")
+	}
+	return *value, nil
+}
+
 func validateOptionalTimeRange(since, until *time.Time) error {
 	if since != nil && until != nil && since.After(*until) {
 		return errors.New("since must be before or equal to until")
@@ -4185,6 +4339,25 @@ func paginateMessages(items []agentservice.Message, page pageQuery) ([]agentserv
 		}
 		return window[0].CreatedAt
 	})
+}
+
+func paginateIMAuditMessages(items []agentservice.IMAuditMessage, page pageQuery) ([]agentservice.IMAuditMessage, pageMeta) {
+	filtered := make([]agentservice.IMAuditMessage, 0, len(items))
+	for _, item := range items {
+		if page.Before.IsZero() || item.CreatedAt.Before(page.Before) {
+			filtered = append(filtered, item)
+		}
+	}
+	limit := page.Limit
+	if limit > len(filtered) {
+		limit = len(filtered)
+	}
+	window := filtered[:limit]
+	meta := pageMeta{Limit: page.Limit, HasMore: len(filtered) > limit}
+	if meta.HasMore && len(window) > 0 {
+		meta.NextBefore = window[len(window)-1].CreatedAt.Format(time.RFC3339Nano)
+	}
+	return window, meta
 }
 
 func paginateRuns(items []agentservice.Run, page pageQuery) ([]agentservice.Run, pageMeta) {

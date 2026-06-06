@@ -201,6 +201,45 @@ export interface UseAITabManagerResult {
 }
 
 const PROJECT_TABS_STORAGE_KEY = "ai_assistant_project_tabs";
+const PROJECT_TAB_HISTORY_STORAGE_KEY = "ai_assistant_project_tab_histories";
+
+/** Maximum number of messages to persist per tab (keep localStorage bounded). */
+const MAX_PERSISTED_HISTORY_PER_TAB = 50;
+
+/** Persist project tab conversation histories to localStorage. Debounced externally. */
+function persistProjectTabHistories(tabStates: Map<string, AITabState>, tabs: AITab[]) {
+    try {
+        const projectTabs = tabs.filter(t => t.type === "project" && t.projectPath);
+        const serialized: Record<string, unknown[]> = {};
+        for (const tab of projectTabs) {
+            const state = tabStates.get(tab.id);
+            if (state && Array.isArray(state.history) && state.history.length > 0) {
+                // Keep only the last N messages to avoid localStorage bloat
+                serialized[tab.id] = state.history.slice(-MAX_PERSISTED_HISTORY_PER_TAB);
+            }
+        }
+        if (Object.keys(serialized).length === 0) {
+            localStorage.removeItem(PROJECT_TAB_HISTORY_STORAGE_KEY);
+        } else {
+            localStorage.setItem(PROJECT_TAB_HISTORY_STORAGE_KEY, JSON.stringify(serialized));
+        }
+    } catch {
+        // localStorage full or unavailable — silently skip
+    }
+}
+
+/** Load persisted project tab conversation histories from localStorage. */
+function loadPersistedProjectTabHistories(): Record<string, unknown[]> {
+    try {
+        const raw = localStorage.getItem(PROJECT_TAB_HISTORY_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return {};
+        return parsed as Record<string, unknown[]>;
+    } catch {
+        return {};
+    }
+}
 
 /** Persist project tabs to localStorage for cross-session recovery. */
 function persistProjectTabs(tabs: AITab[]) {
@@ -455,6 +494,25 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
 
     // Store tab states (history, scroll, input) keyed by tab ID
     const tabStatesRef = useRef<Map<string, AITabState>>(new Map());
+
+    // On mount, hydrate tabStatesRef with persisted conversation histories.
+    const hydratedRef = useRef(false);
+    if (!hydratedRef.current) {
+        hydratedRef.current = true;
+        const histories = loadPersistedProjectTabHistories();
+        for (const [tabId, history] of Object.entries(histories)) {
+            if (Array.isArray(history) && history.length > 0) {
+                tabStatesRef.current.set(tabId, { history, scrollTop: 0, inputText: "" });
+            }
+        }
+    }
+
+    // Flush pending history to localStorage on page unload (app closing/restarting).
+    useEffect(() => {
+        const flush = () => persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
+        window.addEventListener("beforeunload", flush);
+        return () => window.removeEventListener("beforeunload", flush);
+    }, []);
 
     const activeTab = tabState.tabs.find(t => t.id === tabState.activeTabId) || tabState.tabs[0];
 
@@ -715,6 +773,14 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         evictClosedTabStates(tabStatesRef.current, openTabIds, "group-", 32);
     }, [updateTabState]);
 
+    const historyPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const scheduleHistoryPersist = useCallback(() => {
+        if (historyPersistTimerRef.current) clearTimeout(historyPersistTimerRef.current);
+        historyPersistTimerRef.current = setTimeout(() => {
+            persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
+        }, 2000);
+    }, []);
+
     const clearTabConversation = useCallback((tabId: string) => {
         tabStatesRef.current.set(tabId, {
             history: [],
@@ -726,7 +792,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             ...prev,
             tabs: prev.tabs.map(t => t.id === tabId ? { ...t, discussionId: undefined, conversationResetSeq: (t.conversationResetSeq || 0) + 1 } : t),
         }));
-    }, [updateTabState]);
+        // Persist the cleared state so it doesn't resurrect after restart
+        scheduleHistoryPersist();
+    }, [scheduleHistoryPersist, updateTabState]);
 
     const saveTabState = useCallback((tabId: string, state: Partial<AITabState>) => {
         const openTab = tabStateRef.current.tabs.find(t => t.id === tabId);
@@ -738,7 +806,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             inputText: "",
         };
         tabStatesRef.current.set(tabId, { ...existing, ...state });
-    }, []);
+        // Debounce-persist history for project tabs
+        if (openTab && openTab.type === "project" && state.history) {
+            scheduleHistoryPersist();
+        }
+    }, [scheduleHistoryPersist]);
 
     const getTabState = useCallback((tabId: string): AITabState | undefined => {
         return tabStatesRef.current.get(tabId);

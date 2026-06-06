@@ -69,9 +69,12 @@ var veBlockedTools = map[string]bool{
 	"open":         true,
 
 	// --- Skill execution ---
-	// run_skill/manage_skill/install_skill_hub are allowed; source policy and
-	// skill-level safety checks still run in the normal execution path.
-	"craft_tool": true, // generates and executes arbitrary scripts
+	// run_skill/manage_skill read-only actions are allowed; installation is a
+	// registry mutation and must not be inherited by VE sessions as a read-like
+	// tool.
+	"install_skill_hub":        true,
+	"search_and_install_skill": true,
+	"craft_tool":               true, // generates and executes arbitrary scripts
 
 	// --- Passthrough tasks (arbitrary script execution) ---
 	"passthrough_task": true,
@@ -112,9 +115,10 @@ var veBlockedToolActions = map[string]map[string]bool{
 		// "recall" is allowed
 	},
 	"manage_skill": {
-		// list/search/status are read-only. install/run are allowed for
-		// maclawsrv digital employees; source and runtime policy still apply.
-		// Higher-risk lifecycle mutation actions stay blocked here.
+		// list/search/status are read-only. run is guarded by
+		// veSkillMCPOnlyGuard. Installation and higher-risk lifecycle mutation
+		// actions stay blocked here.
+		"install":                  true,
 		"uninstall":                true,
 		"upload":                   true,
 		"validate":                 true,

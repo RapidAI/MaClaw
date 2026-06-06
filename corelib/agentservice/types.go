@@ -312,6 +312,56 @@ type ListMessagesInput struct {
 	Until *time.Time  `json:"until,omitempty"`
 }
 
+type IMAuditMessage struct {
+	Message      Message           `json:"message"`
+	SessionID    string            `json:"session_id"`
+	SessionTitle string            `json:"session_title,omitempty"`
+	InstanceID   string            `json:"instance_id"`
+	InstanceName string            `json:"instance_name,omitempty"`
+	Platform     string            `json:"platform,omitempty"`
+	ContactID    string            `json:"contact_id,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+}
+
+type IMAuditContact struct {
+	Platform      string    `json:"platform"`
+	ContactID     string    `json:"contact_id"`
+	DisplayName   string    `json:"display_name,omitempty"`
+	MessageCount  int       `json:"message_count"`
+	LastMessageAt time.Time `json:"last_message_at"`
+}
+
+type IMAuditStats struct {
+	Messages      int            `json:"messages"`
+	Contacts      int            `json:"contacts"`
+	Platforms     int            `json:"platforms"`
+	ByPlatform    map[string]int `json:"by_platform"`
+	LastMessageAt *time.Time     `json:"last_message_at,omitempty"`
+}
+
+type DeleteIMAuditMessagesOutput struct {
+	Deleted int       `json:"deleted"`
+	Before  time.Time `json:"before"`
+}
+
+type ListIMAuditMessagesInput struct {
+	Platform string      `json:"platform,omitempty"`
+	Contact  string      `json:"contact,omitempty"`
+	Query    string      `json:"q,omitempty"`
+	Role     MessageRole `json:"role,omitempty"`
+	Since    *time.Time  `json:"since,omitempty"`
+	Until    *time.Time  `json:"until,omitempty"`
+}
+
+type IMMessageMetadataInput struct {
+	Platform  string            `json:"platform"`
+	ContactID string            `json:"contact_id,omitempty"`
+	MessageID string            `json:"message_id,omitempty"`
+	UserName  string            `json:"user_name,omitempty"`
+	Extra     map[string]string `json:"extra,omitempty"`
+}
+
 type ListRunsInput struct {
 	Status         RunStatus `json:"status,omitempty"`
 	SessionID      string    `json:"session_id,omitempty"`

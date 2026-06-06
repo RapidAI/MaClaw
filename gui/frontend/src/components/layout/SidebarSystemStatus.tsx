@@ -132,12 +132,23 @@ export const SidebarSystemStatus = ({
     const backgroundTaskLabel = textForLang(lang, 'Background tasks', '\u540e\u53f0\u4efb\u52a1', '\u5f8c\u53f0\u4efb\u52d9');
     const isChineseLang = lang === 'zh-Hans' || lang === 'zh-Hant' || lang === 'zh';
     const backgroundTaskText = `${backgroundTaskLabel}${isChineseLang ? '\uff1a ' : ': '}${backgroundTaskCount}`;
-    const renderStatusSignal = (label: string, on: boolean) => (
-        <span className="sidebar-system-status__signal" data-online={on ? 'true' : 'false'} title={`${STATUS_DOT} ${label} ${on ? onlineText : offlineText}`}>
+    const renderStatusSignal = (label: string, on: boolean, extraTitle?: string) => (
+        <span className="sidebar-system-status__signal" data-online={on ? 'true' : 'false'} title={extraTitle || `${STATUS_DOT} ${label} ${on ? onlineText : offlineText}`}>
             <span className="sidebar-system-status__dot" aria-hidden="true" />
             <span className="sidebar-system-status__signal-label">{label}</span>
         </span>
     );
+    const hubOn = !!remoteActivationStatus?.activated;
+    const hubTooltipLines: string[] = [`${STATUS_DOT} HUB ${hubOn ? onlineText : offlineText}`];
+    if (hubOn) {
+        const hubEmail = remoteActivationStatus?.email;
+        const hubURL = remoteActivationStatus?.hub_url;
+        const hubTenant = remoteActivationStatus?.tenant_name;
+        if (hubEmail) hubTooltipLines.push(`${textForLang(lang, 'Email', '\u90ae\u7bb1', '\u90f5\u7bb1')}: ${hubEmail}`);
+        if (hubURL) hubTooltipLines.push(`${textForLang(lang, 'Server', '\u670d\u52a1\u5668', '\u4f3a\u670d\u5668')}: ${hubURL}`);
+        if (hubTenant) hubTooltipLines.push(`${textForLang(lang, 'Tenant', '\u79df\u6237', '\u79df\u6236')}: ${hubTenant}`);
+    }
+    const hubTooltip = hubTooltipLines.join('\n');
     const hubCreditStatus = String(sidebarHubCredits?.status || '').toLowerCase();
     const hubServicePeriodLimited = !!sidebarHubCredits && hubCreditStatus === 'period_limited';
     const hubServiceStoppedByPeriodLimit = hubServicePeriodLimited && sidebarHubCredits?.serviceActive === false;
@@ -175,7 +186,7 @@ export const SidebarSystemStatus = ({
             <div className="sidebar-system-status__panel">
                 <div className="sidebar-system-status__signals" aria-label="System status">
                     {renderStatusSignal('LLM', maclawLLMOnline)}
-                    {renderStatusSignal('HUB', !!remoteActivationStatus?.activated)}
+                    {renderStatusSignal('HUB', hubOn, hubTooltip)}
                     {renderStatusSignal('IM', imOnline)}
                     <span className="sidebar-system-status__signal sidebar-system-status__background-tasks" title={backgroundTaskText}>
                         <span className="sidebar-system-status__signal-label">{backgroundTaskText}</span>

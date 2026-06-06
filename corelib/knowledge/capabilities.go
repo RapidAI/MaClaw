@@ -57,6 +57,7 @@ func Capabilities() KnowledgeCapabilities {
 				Status:        "supported",
 				Refreshable:   true,
 				DefaultImport: true,
+				Notes:         "Embedded images are extracted from word/media/ and processed via OCR/Vision.",
 			},
 			{
 				Kind:          SourceKindPDF,
@@ -66,7 +67,7 @@ func Capabilities() KnowledgeCapabilities {
 				Status:        "supported",
 				Refreshable:   true,
 				DefaultImport: true,
-				Notes:         "Text PDFs are supported; OCR for scanned image PDFs is a later enhancement.",
+				Notes:         "Text PDFs are supported; OCR for scanned image PDFs is a later enhancement. Embedded images extracted via pdfcpu (if available).",
 			},
 			{
 				Kind:          SourceKindPPTX,
@@ -76,7 +77,7 @@ func Capabilities() KnowledgeCapabilities {
 				Status:        "supported",
 				Refreshable:   true,
 				DefaultImport: true,
-				Notes:         "Extracts text, tables, and notes from each slide.",
+				Notes:         "Extracts text, tables, and notes from each slide. Embedded images from ppt/media/ are extracted and processed via OCR/Vision.",
 			},
 			{
 				Kind:          SourceKindXLSX,
@@ -132,6 +133,16 @@ func Capabilities() KnowledgeCapabilities {
 				Status:        "supported",
 				Refreshable:   false,
 				DefaultImport: false,
+			},
+			{
+				Kind:          SourceKindImage,
+				Extensions:    []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"},
+				Parser:        "image_asset_ocr_vision",
+				SearchUnit:    "image nodes/cards/facts",
+				Status:        "supported",
+				Refreshable:   false,
+				DefaultImport: false,
+				Notes:         "Image files are imported when --include-images is enabled. Description via Vision LLM (if configured) or RapidOCR + context inference.",
 			},
 		},
 	}

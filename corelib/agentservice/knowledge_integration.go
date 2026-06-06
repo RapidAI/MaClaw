@@ -540,6 +540,14 @@ func buildSearchOptions(args map[string]interface{}, tenantID, userID string) kn
 	if v, ok := args["source_ids"]; ok {
 		opts.SourceIDs = toStringSlice(v)
 	}
+	if len(opts.SourceIDs) == 0 {
+		for _, key := range []string{"source_id", "id"} {
+			if v, ok := args[key]; ok {
+				opts.SourceIDs = toStringSlice(v)
+				break
+			}
+		}
+	}
 	if v, ok := args["labels"]; ok {
 		opts.Labels = toStringSlice(v)
 	}

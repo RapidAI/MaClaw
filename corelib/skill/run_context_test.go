@@ -995,6 +995,7 @@ func TestHydrateRunMetadataCopiesRuntimeFields(t *testing.T) {
 		RequiredArgs:     []string{"city"},
 		RequiredEnv:      []string{"API_KEY"},
 		RequiresPython:   []string{"requests"},
+		Capabilities:     []string{"current_data"},
 		RequiresTools:    []string{"browser"},
 		FallbackForTools: []string{"web_fetch"},
 		Pipeline:         []corelib.SkillPipelineStep{{Skill: "next"}},
@@ -1009,7 +1010,7 @@ func TestHydrateRunMetadataCopiesRuntimeFields(t *testing.T) {
 
 	HydrateRunMetadata(dst, src)
 
-	if len(dst.Steps) != 1 || len(dst.Params) != 1 || dst.RequiredArgs[0] != "city" || dst.RequiredEnv[0] != "API_KEY" || dst.Platforms[0] != "windows" || dst.RequiresTools[0] != "browser" || dst.FallbackForTools[0] != "web_fetch" || dst.Pipeline[0].Skill != "next" || dst.References[0].Filename != "guide.md" || dst.Mode != "api_workflow" || dst.PreferredShell != "powershell" || dst.ProducesArtifact || dst.RequiresGUI || !dst.Stateful {
+	if len(dst.Steps) != 1 || len(dst.Params) != 1 || dst.RequiredArgs[0] != "city" || dst.RequiredEnv[0] != "API_KEY" || dst.Platforms[0] != "windows" || dst.Capabilities[0] != "current_data" || dst.RequiresTools[0] != "browser" || dst.FallbackForTools[0] != "web_fetch" || dst.Pipeline[0].Skill != "next" || dst.References[0].Filename != "guide.md" || dst.Mode != "api_workflow" || dst.PreferredShell != "powershell" || dst.ProducesArtifact || dst.RequiresGUI || !dst.Stateful {
 		t.Fatalf("HydrateRunMetadata() = %#v", dst)
 	}
 }

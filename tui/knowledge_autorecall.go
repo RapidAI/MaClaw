@@ -93,7 +93,15 @@ func (app *TUIApp) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string)
 		if len([]rune(text)) > 200 {
 			text = string([]rune(text)[:200]) + "..."
 		}
-		b.WriteString(fmt.Sprintf("- [%s] %s\n", source, text))
+		// Annotate image results with [图片] prefix and asset path hint
+		if r.NodeType == knowledge.NodeTypeImage || r.Source.Kind == knowledge.SourceKindImage {
+			b.WriteString(fmt.Sprintf("- [图片] [%s] %s\n", source, text))
+			if r.Citation != "" {
+				b.WriteString(fmt.Sprintf("  (图片路径: %s, 可用 send_file 发送给用户)\n", r.Citation))
+			}
+		} else {
+			b.WriteString(fmt.Sprintf("- [%s] %s\n", source, text))
+		}
 		injected++
 	}
 }

@@ -23,6 +23,9 @@ type SQLiteStore struct {
 	distiller      CardDistiller
 	importProgress ImportProgressFunc
 	embedder       embedding.Embedder
+	imageAssets    *ImageAssetManager
+	imageDescriber ImageDescriber
+	imageDescSem   chan struct{} // semaphore for concurrent image description calls
 }
 
 // SetEmbedder sets the embedding model for vector search.
@@ -64,6 +67,32 @@ func (s *SQLiteStore) SetImportProgressCallback(callback ImportProgressFunc) {
 	if s != nil {
 		s.importProgress = callback
 	}
+}
+
+// SetImageAssetManager sets the image asset manager for storing extracted images.
+func (s *SQLiteStore) SetImageAssetManager(mgr *ImageAssetManager) {
+	if s != nil {
+		s.imageAssets = mgr
+	}
+}
+
+// SetImageDescriber sets the image description provider (Vision LLM + OCR).
+func (s *SQLiteStore) SetImageDescriber(describer ImageDescriber) {
+	if s != nil {
+		s.imageDescriber = describer
+		// Initialize concurrency semaphore for image description (max 2 concurrent).
+		if s.imageDescSem == nil {
+			s.imageDescSem = make(chan struct{}, 2)
+		}
+	}
+}
+
+// ImageAssets returns the configured image asset manager (may be nil).
+func (s *SQLiteStore) ImageAssets() *ImageAssetManager {
+	if s == nil {
+		return nil
+	}
+	return s.imageAssets
 }
 
 func (s *SQLiteStore) Close() error {
@@ -469,7 +498,7 @@ func (s *SQLiteStore) ListSources(ctx context.Context, opts ListSourcesOptions) 
 			args = append(args, opts.ProjectPath)
 		}
 	}
-	sourceIDs := normalizeSearchStrings(opts.SourceIDs)
+	sourceIDs := normalizeSearchStrings(append(append([]string{}, opts.SourceIDs...), opts.SourceID))
 	if len(sourceIDs) == 1 {
 		where = append(where, "id = ?")
 		args = append(args, sourceIDs[0])
@@ -2939,7 +2968,7 @@ func appendSearchFilters(where []string, args []interface{}, sourceAlias string,
 			args = append(args, kind)
 		}
 	}
-	sourceIDs := normalizeSearchStrings(opts.SourceIDs)
+	sourceIDs := normalizeSearchStrings(append(append([]string{}, opts.SourceIDs...), opts.SourceID))
 	if len(sourceIDs) == 1 {
 		where = append(where, prefix+"id = ?")
 		args = append(args, sourceIDs[0])
@@ -3527,6 +3556,11 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				}
 			}
 			if len(nodes) > 0 {
+				// Extract embedded images from the document (DOCX/PPTX/PDF).
+				if imageNodes := s.ExtractAndProcessDocumentImages(ctx, source, item.FilePath, item.Kind, nodes); len(imageNodes) > 0 {
+					nodes = append(nodes, imageNodes...)
+					source.NodeCount = len(nodes)
+				}
 				emitStepProgress(item, "indexing", 4, 5)
 				if err := insertDocumentNodes(ctx, tx, nodes); err != nil {
 					source.Status = StatusFailed
@@ -3561,6 +3595,46 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					continue
 				}
 				source = nextSource
+			} else if item.Kind == SourceKindImage && parseErr == nil {
+				// Standalone image: no text nodes from parsing, process as image.
+				emitStepProgress(item, "processing image", 4, 5)
+				imageNodes := s.ProcessStandaloneImage(ctx, source, item.FilePath, nil)
+				if len(imageNodes) > 0 {
+					if err := insertDocumentNodes(ctx, tx, imageNodes); err != nil {
+						source.Status = StatusFailed
+						source.ErrorMessage = err.Error()
+						if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+							return result, saveErr
+						}
+						item.Status = ItemStatusFailed
+						item.ErrorMessage = err.Error()
+						failed++
+						if err := insertImportItem(ctx, tx, item); err != nil {
+							return result, err
+						}
+						markImportItemProcessed(i, item)
+						continue
+					}
+					source.NodeCount = len(imageNodes)
+					emitStepProgress(item, "distilling", 5, 5)
+					nextSource, err := s.DistillAndSaveCardsWithMode(ctx, tx, source, imageNodes, req.DistillMode)
+					if err != nil {
+						source.Status = StatusFailed
+						source.ErrorMessage = err.Error()
+						if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+							return result, saveErr
+						}
+						item.Status = ItemStatusFailed
+						item.ErrorMessage = err.Error()
+						failed++
+						if err := insertImportItem(ctx, tx, item); err != nil {
+							return result, err
+						}
+						markImportItemProcessed(i, item)
+						continue
+					}
+					source = nextSource
+				}
 			}
 		}
 

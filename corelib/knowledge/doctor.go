@@ -329,6 +329,60 @@ func (s *SQLiteStore) Doctor(ctx context.Context) (DoctorResult, error) {
 	if count := stats.ImportItemsByStatus[ItemStatusSkippedDuplicate]; count > 0 {
 		add("info", "duplicate_files", "Duplicate files were skipped", "Hash de-duplication avoided storing the same content multiple times.", count, "No action is needed unless the duplicate should belong to a different project scope.")
 	}
+
+	// --- Image asset health checks ---
+	if s.imageAssets != nil {
+		imageSourceWhere := "s.kind = ? AND s.status IN (?, ?, ?)"
+		imageSourceCount, _ := s.doctorSourceCount(ctx, imageSourceWhere, SourceKindImage, StatusParsed, StatusDistilled, StatusStale)
+		if imageSourceCount > 0 {
+			// Check for missing original image files
+			missingAssets := 0
+			missingThumbCount := 0
+			rows, err := s.db.QueryContext(ctx, `SELECT n.source_id, n.metadata FROM document_nodes n WHERE n.type = ?`, NodeTypeImage)
+			if err == nil {
+				for rows.Next() {
+					var sourceID, metadataJSON string
+					if err := rows.Scan(&sourceID, &metadataJSON); err != nil {
+						continue
+					}
+					// Check asset path exists
+					assetPath := extractMetadataValue(metadataJSON, MetaImageAssetPath)
+					if assetPath != "" {
+						if _, err := os.Stat(assetPath); os.IsNotExist(err) {
+							missingAssets++
+						}
+					}
+					// Check thumbnail exists
+					thumbPath := s.imageAssets.ThumbPath(sourceID)
+					if _, err := os.Stat(thumbPath); os.IsNotExist(err) {
+						missingThumbCount++
+					}
+				}
+				rows.Close()
+			}
+			if missingAssets > 0 {
+				add("warning", "missing_image_assets", "Some image assets are missing from disk",
+					"Image source entries exist in the database but the original image files were deleted or moved externally.",
+					missingAssets, "Re-import the images or delete the affected sources.")
+			}
+			if missingThumbCount > 0 {
+				add("info", "missing_image_thumbnails", "Some image thumbnails are missing",
+					"Thumbnails can be regenerated from original images.",
+					missingThumbCount, "Run knowledge maintenance or re-import to regenerate thumbnails.")
+			}
+
+			// Check for image nodes without description (OCR/Vision not run)
+			emptyDescWhere := "n.type = ? AND (n.text IS NULL OR length(trim(n.text)) < 10)"
+			var emptyDescCount int
+			_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM document_nodes n WHERE `+emptyDescWhere, NodeTypeImage).Scan(&emptyDescCount)
+			if emptyDescCount > 0 {
+				add("info", "images_without_description", "Some images have no description",
+					"These images were imported but OCR/Vision description was not generated. They are searchable only by filename and context.",
+					emptyDescCount, "Configure Vision LLM or ensure RapidOCR is available, then re-process affected images.")
+			}
+		}
+	}
+
 	if result.Score < 0 {
 		result.Score = 0
 	}
@@ -517,4 +571,21 @@ func appendLimited(values []string, value string, limit int) []string {
 		return values
 	}
 	return append(values, value)
+}
+
+// extractMetadataValue extracts a key's value from a JSON metadata string.
+// Used for quick field extraction without full JSON unmarshal.
+func extractMetadataValue(metadataJSON, key string) string {
+	// Simple string search for "key":"value" pattern.
+	searchKey := `"` + key + `":"`
+	idx := strings.Index(metadataJSON, searchKey)
+	if idx < 0 {
+		return ""
+	}
+	start := idx + len(searchKey)
+	end := strings.Index(metadataJSON[start:], `"`)
+	if end < 0 {
+		return ""
+	}
+	return metadataJSON[start : start+end]
 }

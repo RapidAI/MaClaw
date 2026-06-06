@@ -153,6 +153,7 @@ type skillHubDownloadEnvelope struct {
 	Steps        []corelib.NLSkillStep `json:"steps,omitempty"`
 	Type         string                `json:"type,omitempty"`
 	Content      string                `json:"content,omitempty"`
+	Capabilities []string              `json:"capabilities,omitempty"`
 	AgentSkillMD string                `json:"agent_skill_md,omitempty"`
 }
 
@@ -979,7 +980,7 @@ func skillEntryFromHubDownloadPayload(payload skillHubDownloadEnvelope, sourcePr
 	if strings.TrimSpace(payload.Name) == "" {
 		return nil, fmt.Errorf("skill download response missing name")
 	}
-	return &corelib.NLSkillEntry{Name: payload.Name, Description: payload.Description, Triggers: payload.Triggers, Steps: payload.Steps, Status: "active", CreatedAt: time.Now().Format(time.RFC3339), Source: firstNonEmpty(payload.Source, defaultSource), SourceProject: sourceProject, HubSkillID: payload.ID, HubVersion: payload.Version, TrustLevel: payload.TrustLevel, Type: payload.Type, Content: payload.Content}, nil
+	return &corelib.NLSkillEntry{Name: payload.Name, Description: payload.Description, Triggers: payload.Triggers, Steps: payload.Steps, Status: "active", CreatedAt: time.Now().Format(time.RFC3339), Source: firstNonEmpty(payload.Source, defaultSource), SourceProject: sourceProject, HubSkillID: payload.ID, HubVersion: payload.Version, TrustLevel: payload.TrustLevel, Type: payload.Type, Content: payload.Content, Capabilities: payload.Capabilities}, nil
 }
 
 func submitSkillArchive(ctx context.Context, baseURL, email, fileName string, archive []byte, authToken string) (string, error) {
@@ -1108,7 +1109,7 @@ func writeEntryToSkillDir(dir string, entry corelib.NLSkillEntry) error {
 	if err := secureMkdirAll(dir); err != nil {
 		return err
 	}
-	sf := &skill.SkillYAMLFile{Name: entry.Name, Description: entry.Description, Triggers: entry.Triggers, Status: firstNonEmpty(entry.Status, "active"), Platforms: entry.Platforms, RequiresGUI: entry.RequiresGUI, Type: entry.Type, Content: entry.Content, Mode: entry.Mode, ExecMode: entry.ExecMode, GlobalTimeout: entry.GlobalTimeout, RequiredArgs: entry.RequiredArgs, RequiredEnv: entry.RequiredEnv, PreferredShell: entry.PreferredShell, RequiresTools: entry.RequiresTools, FallbackForTools: entry.FallbackForTools, RequiresToolsets: entry.RequiresToolsets, FallbackForToolsets: entry.FallbackForToolsets, RequiredCredentialFiles: entry.RequiredCredentialFiles}
+	sf := &skill.SkillYAMLFile{Name: entry.Name, Description: entry.Description, Triggers: entry.Triggers, Status: firstNonEmpty(entry.Status, "active"), Platforms: entry.Platforms, RequiresGUI: entry.RequiresGUI, Type: entry.Type, Content: entry.Content, Mode: entry.Mode, ExecMode: entry.ExecMode, GlobalTimeout: entry.GlobalTimeout, RequiredArgs: entry.RequiredArgs, RequiredEnv: entry.RequiredEnv, PreferredShell: entry.PreferredShell, Capabilities: entry.Capabilities, RequiresTools: entry.RequiresTools, FallbackForTools: entry.FallbackForTools, RequiresToolsets: entry.RequiresToolsets, FallbackForToolsets: entry.FallbackForToolsets, RequiredCredentialFiles: entry.RequiredCredentialFiles}
 	for _, op := range entry.Operations {
 		sf.Operations = append(sf.Operations, skill.SkillYAMLOperation{Name: op.Name, Description: op.Description, Params: op.Params, Labels: op.Labels})
 	}
@@ -1309,7 +1310,7 @@ func loadSkillFromExtractedDir(skillDir string) (*corelib.NLSkillEntry, string, 
 		if err != nil {
 			return nil, "", err
 		}
-		entry := &corelib.NLSkillEntry{Name: firstNonEmpty(strings.TrimSpace(parsed.Name), filepath.Base(skillDir)), DirName: filepath.Base(skillDir), Description: parsed.Description, Triggers: parsed.Triggers, Status: firstNonEmpty(parsed.Status, "active"), Source: "file", Platforms: parsed.Platforms, RequiresGUI: parsed.RequiresGUI, Type: parsed.Type, Content: parsed.Content, Mode: parsed.Mode, ExecMode: parsed.ExecMode, GlobalTimeout: parsed.GlobalTimeout, RequiredArgs: parsed.RequiredArgs, RequiredEnv: parsed.RequiredEnv, PreferredShell: parsed.PreferredShell, RequiresTools: parsed.RequiresTools, FallbackForTools: parsed.FallbackForTools, RequiresToolsets: parsed.RequiresToolsets, FallbackForToolsets: parsed.FallbackForToolsets, RequiredCredentialFiles: parsed.RequiredCredentialFiles, CreatedAt: time.Now().Format(time.RFC3339)}
+		entry := &corelib.NLSkillEntry{Name: firstNonEmpty(strings.TrimSpace(parsed.Name), filepath.Base(skillDir)), DirName: filepath.Base(skillDir), Description: parsed.Description, Triggers: parsed.Triggers, Status: firstNonEmpty(parsed.Status, "active"), Source: "file", Platforms: parsed.Platforms, RequiresGUI: parsed.RequiresGUI, Type: parsed.Type, Content: parsed.Content, Mode: parsed.Mode, ExecMode: parsed.ExecMode, GlobalTimeout: parsed.GlobalTimeout, RequiredArgs: parsed.RequiredArgs, RequiredEnv: parsed.RequiredEnv, PreferredShell: parsed.PreferredShell, Capabilities: parsed.Capabilities, RequiresTools: parsed.RequiresTools, FallbackForTools: parsed.FallbackForTools, RequiresToolsets: parsed.RequiresToolsets, FallbackForToolsets: parsed.FallbackForToolsets, RequiredCredentialFiles: parsed.RequiredCredentialFiles, CreatedAt: time.Now().Format(time.RFC3339)}
 		for _, op := range parsed.Operations {
 			entry.Operations = append(entry.Operations, corelib.NLSkillOperation{Name: op.Name, Description: op.Description, Params: op.Params, Labels: op.Labels})
 		}
@@ -1320,6 +1321,7 @@ func loadSkillFromExtractedDir(skillDir string) (*corelib.NLSkillEntry, string, 
 			if markdownEntry, err := skill.ImportMarkdownSkillDir(skillDir, skill.MarkdownSkillOptions{NameFallback: entry.Name, DescriptionFallback: entry.Description, Triggers: entry.Triggers, Source: "file", SkillDir: skillDir}); err == nil {
 				markdownEntry.Platforms = entry.Platforms
 				markdownEntry.RequiresGUI = entry.RequiresGUI
+				markdownEntry.Capabilities = entry.Capabilities
 				return markdownEntry, yamlPath, nil
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,11 +23,13 @@ const (
 )
 
 var defaultLegacySearchURL = "https://html.duckduckgo.com/html/"
+var defaultMojeekSearchURL = "https://www.mojeek.com/search"
 
 var (
-	searchTimeout         = 15 * time.Second
-	providerSearchTimeout = 6 * time.Second
-	fallbackSearchTimeout = 8 * time.Second
+	searchTimeout               = 15 * time.Second
+	providerSearchTimeout       = 6 * time.Second
+	fallbackSearchTimeout       = 8 * time.Second
+	directEndpointSearchTimeout = 3 * time.Second
 )
 
 // SearchResult represents a single search result.
@@ -36,6 +39,12 @@ type SearchResult struct {
 	Snippet string `json:"snippet"`
 }
 
+type directSearchEndpoint struct {
+	Name          string
+	FailureDomain string
+	Search        func(context.Context, string, int) ([]SearchResult, error)
+}
+
 // Search performs the legacy direct web search and returns results.
 func Search(query string, maxResults int) ([]SearchResult, error) {
 	query, maxResults, ctx, cancel, err := prepareSearch(query, maxResults)
@@ -43,7 +52,7 @@ func Search(query string, maxResults int) ([]SearchResult, error) {
 		return nil, err
 	}
 	defer cancel()
-	results, err := searchDirectLegacy(ctx, query, maxResults)
+	results, err := searchDirectFallbackChain(ctx, query, maxResults, "")
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
@@ -69,23 +78,23 @@ func SearchWithProvider(query string, maxResults int, provider corelib.WebSearch
 	switch provider.Type {
 	case "brave":
 		if provider.Key == "" {
-			return searchDirectLegacy(ctx, query, maxResults)
+			return searchDirectFallbackChain(ctx, query, maxResults, "")
 		}
 		results, err = searchBrave(providerCtx, provider, query, maxResults)
 	case "serper":
 		if provider.Key == "" {
-			return searchDirectLegacy(ctx, query, maxResults)
+			return searchDirectFallbackChain(ctx, query, maxResults, "")
 		}
 		results, err = searchSerper(providerCtx, provider, query, maxResults)
 	case "tinyfish":
 		if provider.Key == "" {
-			return searchDirectLegacy(ctx, query, maxResults)
+			return searchDirectFallbackChain(ctx, query, maxResults, "")
 		}
 		results, err = searchTinyFish(providerCtx, provider, query, maxResults)
 	case "duckduckgo":
 		results, err = searchDuckDuckGo(providerCtx, provider, query, maxResults)
 	default:
-		return searchDirectLegacy(ctx, query, maxResults)
+		return searchDirectFallbackChain(ctx, query, maxResults, "")
 	}
 	if err == nil && len(results) > 0 {
 		return results, nil
@@ -151,7 +160,7 @@ func fallbackDirectSearch(ctx context.Context, query string, maxResults int, pro
 	fallbackCtx, cancel := context.WithTimeout(ctx, fallbackSearchTimeout)
 	defer cancel()
 
-	results, fallbackErr := searchDirectLegacy(fallbackCtx, query, maxResults)
+	results, fallbackErr := searchDirectFallbackChain(fallbackCtx, query, maxResults, providerFailureDomain(provider))
 	if fallbackErr == nil && len(results) > 0 {
 		return results, nil
 	}
@@ -168,6 +177,62 @@ func fallbackDirectSearch(ctx context.Context, query string, maxResults int, pro
 		return nil, fmt.Errorf("%s provider and direct fallback returned no results", providerNameForError(provider))
 	}
 	return providerResults, nil
+}
+
+func searchDirectFallbackChain(ctx context.Context, query string, maxResults int, skipFailureDomain string) ([]SearchResult, error) {
+	var failures []string
+	for _, endpoint := range directSearchEndpoints() {
+		if skipFailureDomain != "" && endpoint.FailureDomain == skipFailureDomain {
+			continue
+		}
+		endpointCtx, cancel := directEndpointContext(ctx)
+		results, err := endpoint.Search(endpointCtx, query, maxResults)
+		cancel()
+		if err == nil && len(results) > 0 {
+			return results, nil
+		}
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s failed: %v", endpoint.Name, err))
+		} else {
+			failures = append(failures, fmt.Sprintf("%s returned no results", endpoint.Name))
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	if len(failures) == 0 {
+		return nil, fmt.Errorf("no direct fallback endpoints available")
+	}
+	return nil, errors.New(strings.Join(failures, "; "))
+}
+
+func directEndpointContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if directEndpointSearchTimeout <= 0 {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, directEndpointSearchTimeout)
+}
+
+func directSearchEndpoints() []directSearchEndpoint {
+	return []directSearchEndpoint{
+		{Name: "duckduckgo-html", FailureDomain: "duckduckgo", Search: searchDirectLegacy},
+		{Name: "mojeek-html", FailureDomain: "mojeek", Search: searchMojeekDirect},
+	}
+}
+
+func providerFailureDomain(provider corelib.WebSearchProvider) string {
+	switch provider.Type {
+	case "duckduckgo":
+		return "duckduckgo"
+	case "brave":
+		return "brave"
+	case "serper":
+		return "serper"
+	case "tinyfish":
+		return "tinyfish"
+	default:
+		return ""
+	}
 }
 
 func providerNameForError(provider corelib.WebSearchProvider) string {
@@ -565,6 +630,36 @@ func searchDirectLegacy(ctx context.Context, query string, maxResults int) ([]Se
 	return parseDDGResults(string(body), maxResults), nil
 }
 
+// searchMojeekDirect scrapes Mojeek HTML as a provider-diverse direct fallback.
+func searchMojeekDirect(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
+	searchURL := defaultMojeekSearchURL + "?q=" + url.QueryEscape(query)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", pickUserAgent())
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Mojeek returned HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return nil, err
+	}
+
+	return parseMojeekResults(string(body), maxResults), nil
+}
+
 // parseDDGResults extracts search results from DuckDuckGo HTML lite response.
 func parseDDGResults(html string, maxResults int) []SearchResult {
 	var results []SearchResult
@@ -591,6 +686,7 @@ func parseDDGResults(html string, maxResults int) []SearchResult {
 		}
 		// DuckDuckGo wraps URLs in redirect: //duckduckgo.com/l/?uddg=...
 		href = resolveDDGURL(href)
+		href = normalizeSearchResultURL(href)
 
 		// Extract title (text between > and </a>)
 		title := extractTagText(remaining, "a")
@@ -624,6 +720,71 @@ func parseDDGResults(html string, maxResults int) []SearchResult {
 	return results
 }
 
+// parseMojeekResults extracts search results from Mojeek's HTML response.
+func parseMojeekResults(html string, maxResults int) []SearchResult {
+	var results []SearchResult
+	remaining := html
+	lowerRemaining := strings.ToLower(html)
+	for len(results) < maxResults {
+		idx := strings.Index(lowerRemaining, `<a `)
+		if idx < 0 {
+			break
+		}
+		contextBefore := remaining[:idx]
+		remaining = remaining[idx:]
+		lowerRemaining = lowerRemaining[idx:]
+		openEnd := strings.Index(remaining, ">")
+		if openEnd < 0 {
+			break
+		}
+		anchorOpen := remaining[:openEnd+1]
+
+		href := normalizeSearchResultURL(extractAttr(anchorOpen, "href"))
+		title := cleanHTML(extractTagText(remaining, "a"))
+		if href != "" && title != "" && isSearchResultAnchor(contextBefore, anchorOpen) && !looksLikeSearchChromeURL(href) {
+			results = append(results, SearchResult{
+				Title: title,
+				URL:   href,
+			})
+		}
+
+		if len(remaining) > 6 {
+			remaining = remaining[6:]
+			lowerRemaining = lowerRemaining[6:]
+		} else {
+			break
+		}
+	}
+	return results
+}
+
+func isSearchResultAnchor(contextBefore, anchorOpen string) bool {
+	class := strings.ToLower(extractAttr(anchorOpen, "class"))
+	if strings.Contains(class, "result") || strings.Contains(class, "title") || class == "ob" {
+		return true
+	}
+	if len(contextBefore) > 240 {
+		contextBefore = contextBefore[len(contextBefore)-240:]
+	}
+	contextBefore = strings.ToLower(contextBefore)
+	resultMarkers := []string{
+		`class="result`,
+		`class='result`,
+		`class="r1`,
+		`class='r1`,
+		`class="ob`,
+		`class='ob`,
+		`id="results`,
+		`id='results`,
+	}
+	for _, marker := range resultMarkers {
+		if strings.Contains(contextBefore, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveDDGURL extracts the actual URL from DuckDuckGo's redirect wrapper.
 func resolveDDGURL(href string) string {
 	if strings.Contains(href, "uddg=") {
@@ -640,19 +801,110 @@ func resolveDDGURL(href string) string {
 	return href
 }
 
+func normalizeSearchResultURL(href string) string {
+	href = strings.TrimSpace(cleanHTML(href))
+	if href == "" {
+		return ""
+	}
+	if strings.HasPrefix(href, "//") {
+		href = "https:" + href
+	}
+	u, err := url.Parse(href)
+	if err != nil || !u.IsAbs() {
+		return ""
+	}
+	switch u.Scheme {
+	case "http", "https":
+		return u.String()
+	default:
+		return ""
+	}
+}
+
+func looksLikeSearchChromeURL(href string) bool {
+	u, err := url.Parse(href)
+	if err != nil {
+		return true
+	}
+	if u.Host == "" {
+		return true
+	}
+	host := strings.ToLower(u.Hostname())
+	if !isSearchProviderHost(host) {
+		return false
+	}
+	path := strings.ToLower(u.Path)
+	switch {
+	case strings.Contains(path, "/search"):
+		return true
+	case strings.Contains(path, "/preferences"):
+		return true
+	default:
+		return false
+	}
+}
+
+func isSearchProviderHost(host string) bool {
+	switch {
+	case host == "mojeek.com" || strings.HasSuffix(host, ".mojeek.com"):
+		return true
+	case host == "duckduckgo.com" || strings.HasSuffix(host, ".duckduckgo.com"):
+		return true
+	default:
+		return false
+	}
+}
+
 // extractAttr extracts the value of the given attribute from the current position.
 func extractAttr(s, attr string) string {
-	key := attr + `="`
-	idx := strings.Index(s, key)
+	key := attr + `=`
+	lower := strings.ToLower(s)
+	idx := indexHTMLAttr(lower, strings.ToLower(key))
 	if idx < 0 || idx > 200 {
 		return ""
 	}
 	start := idx + len(key)
-	end := strings.Index(s[start:], `"`)
-	if end < 0 {
+	if start >= len(s) {
 		return ""
 	}
+	quote := s[start]
+	if quote == '"' || quote == '\'' {
+		start++
+		end := strings.IndexByte(s[start:], quote)
+		if end < 0 {
+			return ""
+		}
+		return s[start : start+end]
+	}
+	end := strings.IndexAny(s[start:], " >\t\r\n")
+	if end < 0 {
+		return s[start:]
+	}
 	return s[start : start+end]
+}
+
+func indexHTMLAttr(s, key string) int {
+	searchFrom := 0
+	for {
+		idx := strings.Index(s[searchFrom:], key)
+		if idx < 0 {
+			return -1
+		}
+		idx += searchFrom
+		if idx == 0 || isHTMLAttrBoundary(s[idx-1]) {
+			return idx
+		}
+		searchFrom = idx + len(key)
+	}
+}
+
+func isHTMLAttrBoundary(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\r', '\n', '<', '/', '\'':
+		return true
+	default:
+		return ch == '"'
+	}
 }
 
 // extractTagText extracts text content from the first occurrence of <tag...>text</tag>.
@@ -664,11 +916,12 @@ func extractTagText(s, tag string) string {
 	}
 	start := gt + 1
 	endTag := "</" + tag + ">"
-	end := strings.Index(s[start:], endTag)
+	tail := s[start:]
+	end := strings.Index(strings.ToLower(tail), strings.ToLower(endTag))
 	if end < 0 {
 		return ""
 	}
-	return s[start : start+end]
+	return tail[:end]
 }
 
 // cleanHTML strips HTML tags and decodes common entities.

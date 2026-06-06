@@ -309,7 +309,22 @@ func newMultiKnowledgeStore(store *knowledge.SQLiteStore, access *knowledgeAcces
 	return &multiKnowledgeStore{store: store, access: access}
 }
 
+func (s *multiKnowledgeStore) resolveScopes(ctx context.Context, tenantID, ownerID string) []knowledgeScope {
+	tenantID = strings.TrimSpace(tenantID)
+	ownerID = strings.TrimSpace(ownerID)
+	if tenantID == "" || ownerID == "" {
+		return nil
+	}
+	if s.access == nil {
+		return []knowledgeScope{{TenantID: tenantID, OwnerID: ownerID, Name: "self"}}
+	}
+	return s.access.ResolveForUser(ctx, tenantID, ownerID)
+}
+
 func (s *multiKnowledgeStore) Search(ctx context.Context, opts knowledge.SearchOptions) ([]knowledge.SearchResult, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("knowledge store is not configured")
+	}
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 8
@@ -319,7 +334,7 @@ func (s *multiKnowledgeStore) Search(ctx context.Context, opts knowledge.SearchO
 	}
 	requestTenantID := strings.TrimSpace(opts.TenantID)
 	requestOwnerID := strings.TrimSpace(opts.OwnerID)
-	scopes := s.access.ResolveForUser(ctx, requestTenantID, requestOwnerID)
+	scopes := s.resolveScopes(ctx, requestTenantID, requestOwnerID)
 	merged := make([]knowledge.SearchResult, 0, limit)
 	seen := make(map[string]struct{})
 	for _, scope := range scopes {
@@ -351,6 +366,9 @@ func (s *multiKnowledgeStore) Search(ctx context.Context, opts knowledge.SearchO
 }
 
 func (s *multiKnowledgeStore) ContextPack(ctx context.Context, opts knowledge.ContextPackOptions) (knowledge.ContextPackResult, error) {
+	if s == nil || s.store == nil {
+		return knowledge.ContextPackResult{}, fmt.Errorf("knowledge store is not configured")
+	}
 	query := strings.TrimSpace(opts.Query)
 	if query == "" {
 		return knowledge.ContextPackResult{Query: query, Notes: []string{"local_context_pack_no_llm"}}, nil

@@ -18,6 +18,7 @@ import (
 	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	securitypkg "github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -40,6 +41,11 @@ type fakeVEMachineEventSender struct {
 
 type fakeVEMachinePresence struct {
 	infos map[string]*device.MachineRuntimeInfo
+}
+
+type fakeVEVisibilityResolver struct {
+	paths map[string][]string
+	err   error
 }
 
 type sentVEMachineEvent struct {
@@ -75,6 +81,15 @@ func (f fakeVEMachineAuth) AuthenticateMachine(ctx context.Context, machineID, r
 func (f fakeVEMachinePresence) GetMachineInfo(ctx context.Context, machineID string) (*device.MachineRuntimeInfo, error) {
 	_ = ctx
 	return f.infos[machineID], nil
+}
+
+func (f fakeVEVisibilityResolver) RequesterGroupPath(ctx context.Context, tenantID, userID string) ([]string, error) {
+	_ = ctx
+	_ = tenantID
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.paths[userID], nil
 }
 
 func TestDigitalEmployeeRegisterApproveAndDiscover(t *testing.T) {
@@ -427,8 +442,8 @@ func TestDiscoverableShowsActiveMaClawSrvRuntimeEmployeeOnline(t *testing.T) {
 	if byID["ve_srv"].OnlineStatus != veOnlineStatusOnline {
 		t.Fatalf("MaClawSrv runtime employee online_status = %q, want online; body=%s", byID["ve_srv"].OnlineStatus, discoverRR.Body.String())
 	}
-	if byID["ve_physical"].OnlineStatus != veOnlineStatusOffline {
-		t.Fatalf("physical employee without heartbeat online_status = %q, want offline", byID["ve_physical"].OnlineStatus)
+	if _, ok := byID["ve_physical"]; ok {
+		t.Fatalf("physical employee without heartbeat should be hidden from discoverable list: %s", discoverRR.Body.String())
 	}
 }
 
@@ -471,11 +486,131 @@ func TestDiscoverableUsesRuntimePresenceForPhysicalEmployees(t *testing.T) {
 	for _, emp := range out.Employees {
 		byID[emp.ID] = emp
 	}
-	if byID["ve_stale_online"].OnlineStatus != veOnlineStatusOffline {
-		t.Fatalf("stale physical online_status = %q, want offline; body=%s", byID["ve_stale_online"].OnlineStatus, discoverRR.Body.String())
+	if _, ok := byID["ve_stale_online"]; ok {
+		t.Fatalf("stale physical employee should be hidden from discoverable list: %s", discoverRR.Body.String())
 	}
 	if byID["ve_live_online"].OnlineStatus != veOnlineStatusOnline {
 		t.Fatalf("live physical online_status = %q, want online; body=%s", byID["ve_live_online"].OnlineStatus, discoverRR.Body.String())
+	}
+}
+
+func TestDiscoverableFiltersByVisibleGroups(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 4)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_global", MachineID: "machine-global", Name: "Global", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_legal", MachineID: "machine-legal", Name: "Legal", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, VisibleGroupIDs: []string{"dept-legal"}},
+		{ID: "ve_finance", MachineID: "machine-finance", Name: "Finance", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, VisibleGroupIDs: []string{"dept-finance"}},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-gui": {TenantID: "tenant-a", UserID: "user-gui", MachineID: "machine-gui"},
+		},
+	}
+	visibility := fakeVEVisibilityResolver{paths: map[string][]string{
+		"user-gui": []string{"root", "dept-legal", "dept-legal-child"},
+	}}
+
+	discoverRR := doVEMachineJSON(t, VEDiscoverableHandler(settings, authn, visibility), http.MethodGet, "/api/ve/discoverable", nil, "machine-gui", "machine-token")
+	if discoverRR.Code != http.StatusOK {
+		t.Fatalf("discover status=%d body=%s", discoverRR.Code, discoverRR.Body.String())
+	}
+	var out struct {
+		Employees []digitalEmployeeEntry `json:"employees"`
+	}
+	if err := json.Unmarshal(discoverRR.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode discover: %v", err)
+	}
+	byID := map[string]bool{}
+	for _, employee := range out.Employees {
+		byID[employee.ID] = true
+	}
+	if !byID["ve_global"] || !byID["ve_legal"] {
+		t.Fatalf("expected global and matching group employees, got %#v body=%s", byID, discoverRR.Body.String())
+	}
+	if byID["ve_finance"] {
+		t.Fatalf("non-matching group employee leaked: %s", discoverRR.Body.String())
+	}
+}
+
+func TestDiscoverableKeepsGlobalEmployeesWhenVisibilityResolverFails(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 4)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_global", MachineID: "machine-global", Name: "Global", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_legal", MachineID: "machine-legal", Name: "Legal", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, VisibleGroupIDs: []string{"dept-legal"}},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-gui": {TenantID: "tenant-a", UserID: "user-gui", MachineID: "machine-gui"},
+		},
+	}
+	visibility := fakeVEVisibilityResolver{err: errors.New("group lookup failed")}
+
+	discoverRR := doVEMachineJSON(t, VEDiscoverableHandler(settings, authn, visibility), http.MethodGet, "/api/ve/discoverable", nil, "machine-gui", "machine-token")
+	if discoverRR.Code != http.StatusOK {
+		t.Fatalf("discover status=%d body=%s", discoverRR.Code, discoverRR.Body.String())
+	}
+	var out struct {
+		Employees []digitalEmployeeEntry `json:"employees"`
+	}
+	if err := json.Unmarshal(discoverRR.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode discover: %v", err)
+	}
+	byID := map[string]bool{}
+	for _, employee := range out.Employees {
+		byID[employee.ID] = true
+	}
+	if !byID["ve_global"] {
+		t.Fatalf("global employee should remain visible: %s", discoverRR.Body.String())
+	}
+	if byID["ve_legal"] {
+		t.Fatalf("restricted employee leaked when resolver failed: %s", discoverRR.Body.String())
+	}
+}
+
+func TestVERegistryHasVisibleGroupRestrictions(t *testing.T) {
+	if veRegistryHasVisibleGroupRestrictions(digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_global", Status: veStatusActive, VisibleGroupIDs: nil},
+		{ID: "ve_blank", Status: veStatusActive, VisibleGroupIDs: []string{"  "}},
+		{ID: "ve_pending", Status: veStatusPending, VisibleGroupIDs: []string{"dept-legal"}},
+	}}) {
+		t.Fatal("blank or non-active visible groups should not be treated as restricted")
+	}
+	if !veRegistryHasVisibleGroupRestrictions(digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_restricted", Status: veStatusActive, VisibleGroupIDs: []string{"dept-legal"}},
+	}}) {
+		t.Fatal("non-empty visible group should be treated as restricted")
+	}
+}
+
+func TestVESecurityVisibilityResolverRejectsCrossTenantUserLookup(t *testing.T) {
+	resolver := veSecurityVisibilityResolver{
+		users: fakeVEOwnerLookup{users: map[string]*store.User{
+			"user-a": {ID: "user-a", TenantID: "tenant-b", Email: "user@example.com"},
+		}},
+	}
+	if _, err := resolver.RequesterGroupPath(context.Background(), "tenant-a", "user-a"); err == nil {
+		t.Fatal("expected tenant mismatch to reject user lookup")
+	}
+}
+
+func TestVESecurityVisibilityResolverRejectsMissingRequesterEmail(t *testing.T) {
+	resolver := veSecurityVisibilityResolver{
+		users: fakeVEOwnerLookup{users: map[string]*store.User{}},
+	}
+	if _, err := resolver.RequesterGroupPath(context.Background(), "tenant-a", "user-a"); err == nil {
+		t.Fatal("expected missing requester email to be rejected")
 	}
 }
 
@@ -503,7 +638,7 @@ func TestVEAdminListIncludesEmployeeTypes(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/ve/list", nil)
 	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
 	rec := httptest.NewRecorder()
-	VEAdminListHandler(settings).ServeHTTP(rec, req)
+	VEAdminListHandler(settings, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -537,10 +672,517 @@ func TestVEAdminListIncludesEmployeeTypes(t *testing.T) {
 	}
 }
 
+func TestVEAdminListUsesRuntimePresenceForPhysicalEmployees(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 3)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_stale_online", MachineID: "machine-stale", EmployeeType: veEmployeeTypePhysical, Name: "Stale Online", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_live_online", MachineID: "machine-live", EmployeeType: veEmployeeTypePhysical, Name: "Live Online", Status: veStatusActive, OnlineStatus: veOnlineStatusOffline},
+		{ID: "ve_srv", MachineID: "ve_srv", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "srv-user-1", Name: "Runtime Employee", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+	}}
+	data, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	if err := tenantSystem.Set(context.Background(), veRegistryKey, string(data)); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	presence := fakeVEMachinePresence{infos: map[string]*device.MachineRuntimeInfo{
+		"machine-live": {MachineID: "machine-live", Online: true},
+	}}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/list", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	rec := httptest.NewRecorder()
+	VEAdminListHandler(settings, presence).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Employees []digitalEmployeeEntry `json:"employees"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	byID := map[string]digitalEmployeeEntry{}
+	for _, emp := range out.Employees {
+		byID[emp.ID] = emp
+	}
+	if byID["ve_stale_online"].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("stale physical online_status = %q, want offline; body=%s", byID["ve_stale_online"].OnlineStatus, rec.Body.String())
+	}
+	if byID["ve_live_online"].OnlineStatus != veOnlineStatusOnline {
+		t.Fatalf("live physical online_status = %q, want online; body=%s", byID["ve_live_online"].OnlineStatus, rec.Body.String())
+	}
+	if byID["ve_srv"].OnlineStatus != veOnlineStatusOnline {
+		t.Fatalf("runtime employee online_status = %q, want online", byID["ve_srv"].OnlineStatus)
+	}
+}
+
+func TestVEAdminVisibilityHandlerUpdatesVisibleGroups(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	securitySvc, _ := newSecurityHandlerTestService(t, "ve-visibility.db")
+	securityCtx := securitypkg.WithTenant(t.Context(), "tenant-a")
+	root, err := securitySvc.GetGroupTree(securityCtx)
+	if err != nil || root == nil {
+		t.Fatalf("load security root: %v", err)
+	}
+	legal, err := securitySvc.CreateGroup(securityCtx, "Legal", root.ID)
+	if err != nil {
+		t.Fatalf("create legal group: %v", err)
+	}
+	finance, err := securitySvc.CreateGroup(securityCtx, "Finance", root.ID)
+	if err != nil {
+		t.Fatalf("create finance group: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_legal", MachineID: "machine-legal", Name: "Legal", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	reqBody, err := json.Marshal(map[string][]string{"visible_group_ids": []string{" " + legal.ID + " ", legal.ID, finance.ID}})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/ve/ve_legal/visibility", strings.NewReader(string(reqBody)))
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "ve_legal")
+	rec := httptest.NewRecorder()
+	VEAdminVisibilityHandler(settings, securitySvc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("visibility status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	got := updated.Employees[0].VisibleGroupIDs
+	want := []string{legal.ID, finance.ID}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("visible groups = %#v, want %#v", got, want)
+	}
+
+	clearReq := httptest.NewRequest(http.MethodPut, "/api/ve/ve_legal/visibility", strings.NewReader(`{"visible_group_ids":[]}`))
+	clearReq = clearReq.WithContext(tenantAdminContext(clearReq.Context(), "tenant-a"))
+	clearReq.SetPathValue("id", "ve_legal")
+	clearRec := httptest.NewRecorder()
+	VEAdminVisibilityHandler(settings, nil).ServeHTTP(clearRec, clearReq)
+	if clearRec.Code != http.StatusOK {
+		t.Fatalf("clear visibility status=%d body=%s", clearRec.Code, clearRec.Body.String())
+	}
+	updated = loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees[0].VisibleGroupIDs) != 0 {
+		t.Fatalf("clear visible groups = %#v, want empty", updated.Employees[0].VisibleGroupIDs)
+	}
+}
+
+func TestVEAdminVisibilityHandlerRejectsGroupsWithoutSecurityService(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_legal", MachineID: "machine-legal", Name: "Legal", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/ve/ve_legal/visibility", strings.NewReader(`{"visible_group_ids":["dept-legal"]}`))
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "ve_legal")
+	rec := httptest.NewRecorder()
+	VEAdminVisibilityHandler(settings, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("visibility without security service status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVEAdminVisibilityHandlerRejectsUnknownGroupWithoutMutating(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	securitySvc, _ := newSecurityHandlerTestService(t, "ve-visibility-unknown.db")
+	securityCtx := securitypkg.WithTenant(t.Context(), "tenant-a")
+	root, err := securitySvc.GetGroupTree(securityCtx)
+	if err != nil || root == nil {
+		t.Fatalf("load security root: %v", err)
+	}
+	legal, err := securitySvc.CreateGroup(securityCtx, "Legal", root.ID)
+	if err != nil {
+		t.Fatalf("create legal group: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_legal", MachineID: "machine-legal", Name: "Legal", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, VisibleGroupIDs: []string{legal.ID}},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/ve/ve_legal/visibility", strings.NewReader(`{"visible_group_ids":["missing-group"]}`))
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "ve_legal")
+	rec := httptest.NewRecorder()
+	VEAdminVisibilityHandler(settings, securitySvc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown group status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	got := updated.Employees[0].VisibleGroupIDs
+	if len(got) != 1 || got[0] != legal.ID {
+		t.Fatalf("visible groups mutated after validation failure: %#v", got)
+	}
+}
+
+func TestVEAdminVisibilityHandlerRejectsRootGroupWithoutMutating(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	securitySvc, _ := newSecurityHandlerTestService(t, "ve-visibility-root.db")
+	securityCtx := securitypkg.WithTenant(t.Context(), "tenant-a")
+	root, err := securitySvc.GetGroupTree(securityCtx)
+	if err != nil || root == nil {
+		t.Fatalf("load security root: %v", err)
+	}
+	legal, err := securitySvc.CreateGroup(securityCtx, "Legal", root.ID)
+	if err != nil {
+		t.Fatalf("create legal group: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_legal", MachineID: "machine-legal", Name: "Legal", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, VisibleGroupIDs: []string{legal.ID}},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	reqBody, err := json.Marshal(map[string][]string{"visible_group_ids": []string{root.ID}})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/ve/ve_legal/visibility", strings.NewReader(string(reqBody)))
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "ve_legal")
+	rec := httptest.NewRecorder()
+	VEAdminVisibilityHandler(settings, securitySvc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("root group status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	got := updated.Employees[0].VisibleGroupIDs
+	if len(got) != 1 || got[0] != legal.ID {
+		t.Fatalf("visible groups mutated after root validation failure: %#v", got)
+	}
+}
+
+func TestVEAdminVisibilityHandlerReturnsNotFoundBeforeGroupValidation(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	securitySvc, _ := newSecurityHandlerTestService(t, "ve-visibility-not-found.db")
+	req := httptest.NewRequest(http.MethodPut, "/api/ve/missing/visibility", strings.NewReader(`{"visible_group_ids":["missing-group"]}`))
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "missing")
+	rec := httptest.NewRecorder()
+	VEAdminVisibilityHandler(settings, securitySvc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing employee visibility status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVEAdminVisibilityHandlerAcceptsVisibleDepartmentAlias(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	securitySvc, _ := newSecurityHandlerTestService(t, "ve-visibility-alias.db")
+	securityCtx := securitypkg.WithTenant(t.Context(), "tenant-a")
+	root, err := securitySvc.GetGroupTree(securityCtx)
+	if err != nil || root == nil {
+		t.Fatalf("load security root: %v", err)
+	}
+	legal, err := securitySvc.CreateGroup(securityCtx, "Legal", root.ID)
+	if err != nil {
+		t.Fatalf("create legal group: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_legal", MachineID: "machine-legal", Name: "Legal", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	reqBody, err := json.Marshal(map[string][]string{"visible_department_ids": []string{legal.ID}})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/ve/ve_legal/visibility", strings.NewReader(string(reqBody)))
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "ve_legal")
+	rec := httptest.NewRecorder()
+	VEAdminVisibilityHandler(settings, securitySvc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("visibility alias status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	got := updated.Employees[0].VisibleGroupIDs
+	if len(got) != 1 || got[0] != legal.ID {
+		t.Fatalf("visible department alias groups = %#v, want %#v", got, []string{legal.ID})
+	}
+}
+
+func TestVEAdminVisibilityHandlerPrefersVisibleGroupIDsOverAlias(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	securitySvc, _ := newSecurityHandlerTestService(t, "ve-visibility-prefer-groups.db")
+	securityCtx := securitypkg.WithTenant(t.Context(), "tenant-a")
+	root, err := securitySvc.GetGroupTree(securityCtx)
+	if err != nil || root == nil {
+		t.Fatalf("load security root: %v", err)
+	}
+	legal, err := securitySvc.CreateGroup(securityCtx, "Legal", root.ID)
+	if err != nil {
+		t.Fatalf("create legal group: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_legal", MachineID: "machine-legal", Name: "Legal", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, VisibleGroupIDs: []string{legal.ID}},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	reqBody, err := json.Marshal(map[string][]string{
+		"visible_group_ids":      []string{},
+		"visible_department_ids": []string{legal.ID},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/ve/ve_legal/visibility", strings.NewReader(string(reqBody)))
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "ve_legal")
+	rec := httptest.NewRecorder()
+	VEAdminVisibilityHandler(settings, securitySvc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("visibility status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if got := updated.Employees[0].VisibleGroupIDs; len(got) != 0 {
+		t.Fatalf("visible_group_ids should win over alias and clear groups, got %#v", got)
+	}
+}
+
+func TestVEAdminVisibilityHandlerRejectsMissingVisibilityFieldWithoutMutating(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	securitySvc, _ := newSecurityHandlerTestService(t, "ve-visibility-missing-field.db")
+	securityCtx := securitypkg.WithTenant(t.Context(), "tenant-a")
+	root, err := securitySvc.GetGroupTree(securityCtx)
+	if err != nil || root == nil {
+		t.Fatalf("load security root: %v", err)
+	}
+	legal, err := securitySvc.CreateGroup(securityCtx, "Legal", root.ID)
+	if err != nil {
+		t.Fatalf("create legal group: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_legal", MachineID: "machine-legal", Name: "Legal", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, VisibleGroupIDs: []string{legal.ID}},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/ve/ve_legal/visibility", strings.NewReader(`{}`))
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "ve_legal")
+	rec := httptest.NewRecorder()
+	VEAdminVisibilityHandler(settings, securitySvc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing visibility field status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if got := updated.Employees[0].VisibleGroupIDs; len(got) != 1 || got[0] != legal.ID {
+		t.Fatalf("visible groups mutated after missing field: %#v", got)
+	}
+}
+
+func TestVESettingsPreservesVisibleGroups(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_machine-a", MachineID: "machine-a", OwnerUserID: "user-a", Name: "Old", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, VisibleGroupIDs: []string{"dept-legal"}, Resident: true},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+		},
+	}
+
+	rr := doVEMachineJSON(t, VESettingsHandler(settings, authn), http.MethodPut, "/api/ve/settings", map[string]any{
+		"name":              "Updated",
+		"skill_description": "Updated skill",
+		"access_policy":     "public",
+	}, "machine-a", "machine-token")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("settings status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	got := updated.Employees[0].VisibleGroupIDs
+	if len(got) != 1 || got[0] != "dept-legal" {
+		t.Fatalf("visible groups = %#v, want preserved dept-legal", got)
+	}
+	if !updated.Employees[0].Resident {
+		t.Fatalf("resident flag should be preserved")
+	}
+}
+
+func TestVESettingsReturnsNormalizedResidentFlag(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_machine-a", MachineID: "machine-a", OwnerUserID: "user-a", Name: "First", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, Resident: true},
+		{ID: "ve_machine-b", MachineID: "machine-b", OwnerUserID: "user-b", Name: "Second", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, Resident: true},
+	}}
+	rawRegistry, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	if err := tenantSystem.Set(context.Background(), veRegistryKey, string(rawRegistry)); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-b": {TenantID: "tenant-a", UserID: "user-b", MachineID: "machine-b"},
+		},
+	}
+
+	rr := doVEMachineJSON(t, VESettingsHandler(settings, authn), http.MethodPut, "/api/ve/settings", map[string]any{
+		"name":              "Updated Second",
+		"skill_description": "Updated skill",
+		"access_policy":     "public",
+	}, "machine-b", "machine-token")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("settings status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Employee digitalEmployeeEntry `json:"employee"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Employee.Resident {
+		t.Fatalf("response should reflect normalized non-resident second entry: %s", rr.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if !updated.Employees[0].Resident || updated.Employees[1].Resident {
+		t.Fatalf("registry resident flags not normalized: %+v", updated.Employees)
+	}
+}
+
 func TestExplicitPhysicalEmployeeTypeWinsOverLegacyPlatformFields(t *testing.T) {
 	entry := digitalEmployeeEntry{EmployeeType: veEmployeeTypePhysical, PlatformID: "maclawsrv", PlatformEmployeeID: "srv-user-2", RuntimeProviderID: maclawSrvRuntimePlatformID}
 	if got := inferVEEmployeeType(entry); got != veEmployeeTypePhysical {
 		t.Fatalf("explicit physical employee type should win over stale platform fields, got %q", got)
+	}
+}
+
+func TestVEAdminResidentHandlerEnforcesSingleActiveResidentPerTenant(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_a", MachineID: "machine-a", Name: "A", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_b", MachineID: "machine-b", Name: "B", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	setResident := func(id string, resident bool) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]bool{"resident": resident})
+		req := httptest.NewRequest(http.MethodPut, "/api/ve/"+id+"/resident", strings.NewReader(string(body)))
+		req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		VEAdminResidentHandler(settings).ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := setResident("ve_a", true); rec.Code != http.StatusOK {
+		t.Fatalf("set ve_a resident status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := setResident("ve_b", true); rec.Code != http.StatusOK {
+		t.Fatalf("set ve_b resident status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if updated.Employees[0].Resident || !updated.Employees[1].Resident {
+		t.Fatalf("expected only ve_b resident, got %+v", updated.Employees)
+	}
+	if rec := setResident("ve_b", false); rec.Code != http.StatusOK {
+		t.Fatalf("clear ve_b resident status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated = loadVERegistry(context.Background(), tenantSystem)
+	if updated.Employees[0].Resident || updated.Employees[1].Resident {
+		t.Fatalf("expected no resident after clear, got %+v", updated.Employees)
+	}
+}
+
+func TestVEAdminResidentHandlerRejectsInactiveEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID:           "ve_pending",
+		MachineID:    "machine-pending",
+		Name:         "Pending",
+		Status:       veStatusPending,
+		OnlineStatus: veOnlineStatusOnline,
+	}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/ve/ve_pending/resident", strings.NewReader(`{"resident":true}`))
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "ve_pending")
+	rec := httptest.NewRecorder()
+	VEAdminResidentHandler(settings).ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected conflict for pending resident, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if updated.Employees[0].Resident {
+		t.Fatalf("pending employee should not be resident: %+v", updated.Employees[0])
+	}
+}
+
+func TestVEAdminResidentHandlerIsScopedPerTenant(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	for _, tenantID := range []string{"tenant-a", "tenant-b"} {
+		tenantSystem := scopedSystemSettingsForTenant(tenantID, settings)
+		registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+			ID:           "ve_" + tenantID,
+			MachineID:    "machine-" + tenantID,
+			Name:         tenantID,
+			Status:       veStatusActive,
+			OnlineStatus: veOnlineStatusOnline,
+		}}}
+		if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+			t.Fatalf("seed %s registry: %v", tenantID, err)
+		}
+	}
+
+	setResident := func(tenantID, id string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/api/ve/"+id+"/resident", strings.NewReader(`{"resident":true}`))
+		req = req.WithContext(tenantAdminContext(req.Context(), tenantID))
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		VEAdminResidentHandler(settings).ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := setResident("tenant-a", "ve_tenant-a"); rec.Code != http.StatusOK {
+		t.Fatalf("set tenant-a resident status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := setResident("tenant-b", "ve_tenant-b"); rec.Code != http.StatusOK {
+		t.Fatalf("set tenant-b resident status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	for _, tenantID := range []string{"tenant-a", "tenant-b"} {
+		updated := loadVERegistry(context.Background(), scopedSystemSettingsForTenant(tenantID, settings))
+		if len(updated.Employees) != 1 || !updated.Employees[0].Resident {
+			t.Fatalf("%s should keep its own resident, got %+v", tenantID, updated.Employees)
+		}
 	}
 }
 
@@ -1332,7 +1974,7 @@ func TestVEAdminListUsesDefaultTenantAuthorization(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/ve/list", nil)
 	req = req.WithContext(tenantAdminContext(req.Context(), store.DefaultTenantID))
 	rec := httptest.NewRecorder()
-	VEAdminListHandler(settings).ServeHTTP(rec, req)
+	VEAdminListHandler(settings, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
 	}

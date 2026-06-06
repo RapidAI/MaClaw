@@ -48,12 +48,33 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if _, ok := doc.Paths["/api/v1/instances"]; !ok {
 		t.Fatalf("expected instance path in openapi doc")
 	}
+	if _, ok := doc.Paths["/api/v1/knowledge/search"]; !ok {
+		t.Fatalf("expected knowledge search path in openapi doc")
+	}
+	if _, ok := doc.Paths["/api/v1/knowledge/import/url"]; !ok {
+		t.Fatalf("expected knowledge single URL import path in openapi doc")
+	}
+	knowledgeAccessPath, ok := doc.Paths["/api/v1/knowledge/access"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected knowledge access path in openapi doc")
+	}
+	knowledgeAccessGet, ok := knowledgeAccessPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected knowledge access GET operation in openapi doc")
+	}
+	knowledgeAccessDesc, _ := knowledgeAccessGet["description"].(string)
+	for _, marker := range []string{"scope_type", "tenant_name", "owner_name"} {
+		if !strings.Contains(knowledgeAccessDesc, marker) {
+			t.Fatalf("expected knowledge access OpenAPI description to mention %s: %q", marker, knowledgeAccessDesc)
+		}
+	}
 	for _, path := range []string{
 		"/api/platform/virtual-employees/{employeeId}/config",
 		"/api/platform/source-users/runtime-status",
 		"/api/platform/source-users/{sourceUserId}/runtime-status",
 		"/api/platform/source-users/{sourceUserId}/assistant-instances",
 		"/api/platform/source-users/{sourceUserId}/assistant-link",
+		"/api/platform/source-users/{sourceUserId}/knowledge-link",
 		"/api/platform/source-users/{sourceUserId}/settings-link",
 	} {
 		if _, ok := doc.Paths[path]; !ok {
@@ -62,6 +83,32 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	}
 	if _, ok := doc.Components.SecuritySchemes["bearerAuth"]; !ok {
 		t.Fatalf("expected bearerAuth security scheme")
+	}
+	imAuditPath, ok := doc.Paths["/api/v1/im-audit/messages"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected IM audit messages path object")
+	}
+	deleteIMAudit, ok := imAuditPath["delete"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected DELETE IM audit operation")
+	}
+	imAuditParams, ok := deleteIMAudit["parameters"].([]any)
+	if !ok {
+		t.Fatalf("expected IM audit delete parameters")
+	}
+	imAuditParamNames := map[string]bool{}
+	for _, item := range imAuditParams {
+		param, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := param["name"].(string)
+		imAuditParamNames[name] = true
+	}
+	for _, name := range []string{"platform", "contact", "q", "role", "since", "until", "before", "confirm"} {
+		if !imAuditParamNames[name] {
+			t.Fatalf("expected IM audit delete parameter %q in OpenAPI: %#v", name, imAuditParams)
+		}
 	}
 	runsPath, ok := doc.Paths["/api/v1/instances/{instanceId}/runs"].(map[string]any)
 	if !ok {
@@ -3572,6 +3619,45 @@ func TestPaginateMessagesReturnsNewestWindowChronologically(t *testing.T) {
 	}
 }
 
+func TestPaginateIMAuditMessagesReturnsNewestFirst(t *testing.T) {
+	base := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
+	items := []agentservice.IMAuditMessage{
+		{Message: agentservice.Message{ID: "msg_3"}, CreatedAt: base.Add(3 * time.Minute)},
+		{Message: agentservice.Message{ID: "msg_2"}, CreatedAt: base.Add(2 * time.Minute)},
+		{Message: agentservice.Message{ID: "msg_1"}, CreatedAt: base.Add(1 * time.Minute)},
+	}
+
+	page, err := parsePageQuery(httptest.NewRequest("GET", "/im-audit/messages?limit=2", nil))
+	if err != nil {
+		t.Fatalf("parsePageQuery: %v", err)
+	}
+	got, meta := paginateIMAuditMessages(items, page)
+
+	if len(got) != 2 || got[0].Message.ID != "msg_3" || got[1].Message.ID != "msg_2" {
+		t.Fatalf("unexpected IM audit page: %#v", got)
+	}
+	if !meta.HasMore || meta.NextBefore != got[1].CreatedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("unexpected IM audit meta: %#v", meta)
+	}
+}
+
+func TestCSVSafeCellEscapesSpreadsheetFormulas(t *testing.T) {
+	cases := map[string]string{
+		"=cmd":       "'=cmd",
+		"+cmd":       "'+cmd",
+		"-cmd":       "'-cmd",
+		"@cmd":       "'@cmd",
+		" \t=cmd":    "' \t=cmd",
+		"plain text": "plain text",
+		"":           "",
+	}
+	for in, want := range cases {
+		if got := csvSafeCell(in); got != want {
+			t.Fatalf("csvSafeCell(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestParsePageQueryCapsLimitAndValidatesBefore(t *testing.T) {
 	page, err := parsePageQuery(httptest.NewRequest("GET", "/instances?limit=999", nil))
 	if err != nil {
@@ -3583,6 +3669,263 @@ func TestParsePageQueryCapsLimitAndValidatesBefore(t *testing.T) {
 
 	if _, err := parsePageQuery(httptest.NewRequest("GET", "/instances?before=not-time", nil)); err == nil {
 		t.Fatalf("expected invalid before error")
+	}
+}
+
+func TestIMAuditMessagesAreUserScopedAndFilterable(t *testing.T) {
+	const tokenSecret = "test-token-secret-0123456789012345"
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: tokenSecret}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	principalA := agentservice.Principal{TenantID: tenant.ID, UserID: userA.ID}
+	principalB := agentservice.Principal{TenantID: tenant.ID, UserID: userB.ID}
+	if _, err := svc.UpdateUserConfig(ctx, principalA, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig A: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(ctx, principalB, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig B: %v", err)
+	}
+	instA, err := svc.CreateInstance(ctx, principalA, agentservice.CreateInstanceInput{Name: "Instance A"})
+	if err != nil {
+		t.Fatalf("CreateInstance A: %v", err)
+	}
+	instB, err := svc.CreateInstance(ctx, principalB, agentservice.CreateInstanceInput{Name: "Instance B"})
+	if err != nil {
+		t.Fatalf("CreateInstance B: %v", err)
+	}
+	sessA, err := svc.CreateSession(ctx, principalA, instA.ID, agentservice.CreateSessionInput{Title: "WeChat session", Metadata: map[string]string{"im_platform": "weixin", "contact_id": "wx-alice"}})
+	if err != nil {
+		t.Fatalf("CreateSession A: %v", err)
+	}
+	sessATelegram, err := svc.CreateSession(ctx, principalA, instA.ID, agentservice.CreateSessionInput{Title: "Telegram session A", Metadata: map[string]string{"im_platform": "telegram", "contact_id": "tg-alice"}})
+	if err != nil {
+		t.Fatalf("CreateSession A telegram: %v", err)
+	}
+	sessB, err := svc.CreateSession(ctx, principalB, instB.ID, agentservice.CreateSessionInput{Title: "Telegram session", Metadata: map[string]string{"im_platform": "telegram", "contact_id": "tg-bob"}})
+	if err != nil {
+		t.Fatalf("CreateSession B: %v", err)
+	}
+	if _, _, err := svc.PostMessage(ctx, principalA, instA.ID, sessA.ID, agentservice.PostMessageInput{Content: "hello from alice", Metadata: map[string]string{"im_platform": "weixin", "contact_id": "wx-alice"}}); err != nil {
+		t.Fatalf("PostMessage A: %v", err)
+	}
+	if _, _, err := svc.PostMessage(ctx, principalA, instA.ID, sessA.ID, agentservice.PostMessageInput{Content: "newer from alice", Metadata: map[string]string{"im_platform": "weixin", "contact_id": "wx-alice"}}); err != nil {
+		t.Fatalf("PostMessage A newer: %v", err)
+	}
+	if _, _, err := svc.PostMessage(ctx, principalA, instA.ID, sessA.ID, agentservice.PostMessageInput{Content: "=HYPERLINK(\"https://example.invalid\",\"alice\")", Metadata: map[string]string{"im_platform": "weixin", "contact_id": "wx-alice"}}); err != nil {
+		t.Fatalf("PostMessage A formula: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if _, _, err := svc.PostMessage(ctx, principalA, instA.ID, sessA.ID, agentservice.PostMessageInput{Content: "newest from alice", Metadata: map[string]string{"im_platform": "weixin", "contact_id": "wx-alice"}}); err != nil {
+		t.Fatalf("PostMessage A newest: %v", err)
+	}
+	webSess, err := svc.CreateSession(ctx, principalA, instA.ID, agentservice.CreateSessionInput{Title: "Web session"})
+	if err != nil {
+		t.Fatalf("CreateSession web: %v", err)
+	}
+	if _, _, err := svc.PostMessage(ctx, principalA, instA.ID, webSess.ID, agentservice.PostMessageInput{Content: "plain web chat"}); err != nil {
+		t.Fatalf("PostMessage web: %v", err)
+	}
+	if _, _, err := svc.PostMessage(ctx, principalA, instA.ID, sessATelegram.ID, agentservice.PostMessageInput{Content: "keep user A telegram", Metadata: map[string]string{"im_platform": "telegram", "contact_id": "tg-alice"}}); err != nil {
+		t.Fatalf("PostMessage A telegram: %v", err)
+	}
+	if _, _, err := svc.PostMessage(ctx, principalB, instB.ID, sessB.ID, agentservice.PostMessageInput{Content: "secret from bob", Metadata: map[string]string{"im_platform": "telegram", "contact_id": "tg-bob"}}); err != nil {
+		t.Fatalf("PostMessage B: %v", err)
+	}
+	tokenA, _, err := agentservice.NewTokenManager(tokenSecret, time.Hour).Issue(principalA)
+	if err != nil {
+		t.Fatalf("Issue token A: %v", err)
+	}
+	tokenB, _, err := agentservice.NewTokenManager(tokenSecret, time.Hour).Issue(principalB)
+	if err != nil {
+		t.Fatalf("Issue token B: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/im-audit/messages?platform=weixin&q=alice&role=user&limit=10", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("im audit status = %d body = %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Items []agentservice.IMAuditMessage `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode im audit: %v", err)
+	}
+	if len(out.Items) == 0 {
+		t.Fatalf("expected user A messages, got none")
+	}
+	if !strings.Contains(out.Items[0].Message.Content, "newest from alice") {
+		t.Fatalf("IM audit should list newest messages first, got %#v", out.Items)
+	}
+	for _, item := range out.Items {
+		if item.Message.UserID != userA.ID {
+			t.Fatalf("IM audit leaked other user message: %#v", item)
+		}
+		if item.Platform != "weixin" {
+			t.Fatalf("platform = %q, want weixin", item.Platform)
+		}
+		if strings.Contains(item.Message.Content, "bob") {
+			t.Fatalf("IM audit leaked user B content: %#v", item)
+		}
+		if strings.Contains(item.Message.Content, "plain web chat") {
+			t.Fatalf("IM audit included non-IM web content: %#v", item)
+		}
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/im-audit/messages?platform=telegram&q=bob&limit=10", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("im audit telegram status = %d body = %s", w.Code, w.Body.String())
+	}
+	out.Items = nil
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode telegram im audit: %v", err)
+	}
+	if len(out.Items) != 0 {
+		t.Fatalf("expected no user B messages for user A token, got %#v", out.Items)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/im-audit/contacts?platform=weixin", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("im audit contacts status = %d body = %s", w.Code, w.Body.String())
+	}
+	var contacts struct {
+		Items []agentservice.IMAuditContact `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&contacts); err != nil {
+		t.Fatalf("decode im audit contacts: %v", err)
+	}
+	if len(contacts.Items) != 1 || contacts.Items[0].Platform != "weixin" || contacts.Items[0].ContactID != "wx-alice" || contacts.Items[0].MessageCount == 0 {
+		t.Fatalf("unexpected contacts: %#v", contacts.Items)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/im-audit/stats?platform=weixin", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("im audit stats status = %d body = %s", w.Code, w.Body.String())
+	}
+	var stats agentservice.IMAuditStats
+	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+		t.Fatalf("decode im audit stats: %v", err)
+	}
+	if stats.Messages == 0 || stats.Contacts != 1 || stats.ByPlatform["weixin"] == 0 || stats.ByPlatform["telegram"] != 0 {
+		t.Fatalf("unexpected stats: %#v", stats)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/im-audit/export.csv?platform=weixin", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("im audit csv status = %d body = %s", w.Code, w.Body.String())
+	}
+	csvBody := w.Body.String()
+	if !strings.Contains(csvBody, "hello from alice") || strings.Contains(csvBody, "secret from bob") || strings.Contains(csvBody, "plain web chat") {
+		t.Fatalf("unexpected CSV body: %s", csvBody)
+	}
+	if strings.Contains(csvBody, ",=HYPERLINK") || !strings.Contains(csvBody, `"'=HYPERLINK(""https://example.invalid"",""alice"")"`) {
+		t.Fatalf("IM audit CSV should escape spreadsheet formulas: %s", csvBody)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/im-audit/messages?platform=weixin&before="+url.QueryEscape(time.Now().Add(time.Hour).Format(time.RFC3339Nano)), nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("delete without confirm status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	deleteBefore := time.Now().Add(time.Hour).Round(0)
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/im-audit/messages?platform=weixin&q=alice&role=user&before="+url.QueryEscape(deleteBefore.Format(time.RFC3339Nano))+"&confirm=true", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body = %s", w.Code, w.Body.String())
+	}
+	var deleted agentservice.DeleteIMAuditMessagesOutput
+	if err := json.NewDecoder(w.Body).Decode(&deleted); err != nil {
+		t.Fatalf("decode delete output: %v", err)
+	}
+	if deleted.Deleted == 0 {
+		t.Fatalf("expected user A IM messages to be deleted")
+	}
+	events, err := svc.ListAuditEvents(ctx, agentservice.ListAuditEventsInput{TenantID: tenant.ID, UserID: userA.ID, Action: "im_audit.messages_deleted"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents im delete: %v", err)
+	}
+	if len(events) != 1 || events[0].Metadata["platform"] != "weixin" || events[0].Metadata["query"] != "alice" || events[0].Metadata["role"] != string(agentservice.MessageRoleUser) || events[0].Metadata["deleted"] == "" || events[0].Metadata["before"] != deleteBefore.Format(time.RFC3339Nano) {
+		t.Fatalf("IM delete audit metadata should include filters and delete count: %#v", events)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/im-audit/messages?platform=weixin&q=alice&role=user&limit=10", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("im audit after delete status = %d body = %s", w.Code, w.Body.String())
+	}
+	out.Items = nil
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode im audit after delete: %v", err)
+	}
+	if len(out.Items) != 0 {
+		t.Fatalf("expected user A IM messages deleted, got %#v", out.Items)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/im-audit/messages?platform=telegram&q=keep&limit=10", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("user A telegram after filtered delete status = %d body = %s", w.Code, w.Body.String())
+	}
+	out.Items = nil
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode user A telegram after filtered delete: %v", err)
+	}
+	if len(out.Items) == 0 || !strings.Contains(out.Items[0].Message.Content, "keep user A telegram") {
+		t.Fatalf("expected filtered IM cleanup to keep other platforms, got %#v", out.Items)
+	}
+	webMessages, err := svc.ListMessages(ctx, principalA, instA.ID, webSess.ID, agentservice.ListMessagesInput{})
+	if err != nil {
+		t.Fatalf("ListMessages web: %v", err)
+	}
+	if len(webMessages) == 0 || webMessages[0].Content != "plain web chat" {
+		t.Fatalf("expected non-IM web message to remain, got %#v", webMessages)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/im-audit/messages?platform=telegram&q=bob&limit=10", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenB)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("user B im audit after user A delete status = %d body = %s", w.Code, w.Body.String())
+	}
+	out.Items = nil
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode user B im audit after user A delete: %v", err)
+	}
+	if len(out.Items) == 0 || !strings.Contains(out.Items[0].Message.Content, "secret from bob") {
+		t.Fatalf("expected user B IM message to remain, got %#v", out.Items)
 	}
 }
 

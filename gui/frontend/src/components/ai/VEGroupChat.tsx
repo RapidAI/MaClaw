@@ -19,6 +19,7 @@ import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { participantAddErrorText } from "./participantAddError";
 import { addParticipantIdentityKeys, participantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
+import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
 
 // --- Types ---
 
@@ -277,7 +278,7 @@ export function ParticipantSelector({
             currentParticipants.forEach((p) => addParticipantIdentityKeys(currentIds, p.id));
             const filtered = (all || []).filter((ve) => {
                 const keys = participantIdentityKeys(ve.id, ve.machine_id, virtualEmployeeParticipantId(ve));
-                return !keys.some((key) => currentIds.has(key)) && ve.online_status === "online";
+                return !keys.some((key) => currentIds.has(key)) && isVirtualEmployeeOnline(ve);
             });
             if (!mountedRef.current) return;
             setAvailable(filtered);

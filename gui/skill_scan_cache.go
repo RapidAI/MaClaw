@@ -166,6 +166,7 @@ func skillContentHash(skill *corelib.NLSkillEntry) (string, error) {
 		Content                 string                     `json:"content,omitempty"`
 		Platforms               []string                   `json:"platforms,omitempty"`
 		RequiresGUI             bool                       `json:"requires_gui,omitempty"`
+		Capabilities            []string                   `json:"capabilities,omitempty"`
 		RequiresTools           []string                   `json:"requires_tools,omitempty"`
 		FallbackForTools        []string                   `json:"fallback_for_tools,omitempty"`
 		RequiresToolsets        []string                   `json:"requires_toolsets,omitempty"`
@@ -193,6 +194,7 @@ func skillContentHash(skill *corelib.NLSkillEntry) (string, error) {
 		Content:                 skill.Content,
 		Platforms:               skill.Platforms,
 		RequiresGUI:             skill.RequiresGUI,
+		Capabilities:            skill.Capabilities,
 		RequiresTools:           skill.RequiresTools,
 		FallbackForTools:        skill.FallbackForTools,
 		RequiresToolsets:        skill.RequiresToolsets,

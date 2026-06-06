@@ -181,6 +181,40 @@ export function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] 
 
 function renderMarkdownLine(text: string, key: string | number, t: Theme): React.ReactNode {
     const trimmed = text.trimStart();
+
+    // KB_IMAGE marker: render as inline clickable thumbnail
+    const kbImageMatch = trimmed.match(/\[KB_IMAGE:([^|]+)\|([^|]+)\|([^\]]*)\]/);
+    if (kbImageMatch) {
+        const [, assetId, dataUrl, originalPath] = kbImageMatch;
+        return (
+            <div key={key} style={{ margin: "6px 0" }}>
+                <img
+                    src={dataUrl}
+                    alt={assetId}
+                    title={originalPath ? `Click to open: ${originalPath}` : assetId}
+                    loading="lazy"
+                    style={{
+                        maxWidth: "120px",
+                        maxHeight: "120px",
+                        borderRadius: "6px",
+                        border: `1px solid ${t.divider}`,
+                        cursor: originalPath ? "pointer" : "default",
+                        transition: "transform 0.15s",
+                    }}
+                    onClick={() => {
+                        if (originalPath) {
+                            import('../../../wailsjs/go/main/App').then(mod => {
+                                mod.KnowledgeOpenImageFile(originalPath).catch(() => {});
+                            });
+                        }
+                    }}
+                    onMouseEnter={(e) => { (e.target as HTMLElement).style.transform = "scale(1.05)"; }}
+                    onMouseLeave={(e) => { (e.target as HTMLElement).style.transform = ""; }}
+                />
+            </div>
+        );
+    }
+
     const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
     if (headingMatch) {
         const level = headingMatch[1].length;
@@ -776,8 +810,8 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                         const shouldOpen = isLastAssistant && isStreaming;
                         return (
                             <details key={shouldOpen ? "reasoning-open" : "reasoning-closed"} open={shouldOpen || undefined} style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
-                                <summary style={{ cursor: "pointer", opacity: 0.7 }}>💭 {lang === "en" ? "Thinking..." : "思考中..."}</summary>
-                                <div style={{ padding: "4px 8px", opacity: 0.6, maxHeight: "200px", overflow: "auto" }}>
+                                <summary style={{ cursor: "pointer", opacity: 0.8 }}>💭 {lang === "en" ? "Thinking..." : "思考过程 ..."}</summary>
+                                <div style={{ padding: "4px 8px", color: t.text, opacity: 0.75, maxHeight: "200px", overflow: "auto" }}>
                                     {renderContentWithCodeBlocks(msg.reasoning.length > 500 ? msg.reasoning.slice(-500) : msg.reasoning, t)}
                                 </div>
                             </details>

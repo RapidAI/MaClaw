@@ -86,6 +86,8 @@ import {
     KnowledgeUpdateSourceLabels,
     KnowledgeDeepCrawl,
     KnowledgeDeepCrawlPreview,
+    KnowledgeGetImageAssetPaths,
+    KnowledgeOpenImageFile,
     SelectKnowledgeDirectory,
     SelectKnowledgeFiles,
 } from '../../../wailsjs/go/main/App';
@@ -1660,18 +1662,30 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
 
             {activeTab === 'search' && (
                 <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-search" aria-labelledby="knowledge-tab-search">
-                    <PanelBlock title={t('Search', '检索')}>
-                        <div className="knowledge-compact-grid">
-                            <input className="knowledge-input" value={searchForm.query} onChange={event => setSearchForm({ ...searchForm, query: event.target.value })} placeholder={t('Ask or search knowledge', '输入问题或关键词')} />
-                            <select className="knowledge-input" value={searchForm.resultType} onChange={event => setSearchForm({ ...searchForm, resultType: event.target.value })}><option value="all">{t('All result types', '全部结果类型')}</option><option value="node">node</option><option value="card">card</option><option value="fact">fact</option></select>
-                            <input className="knowledge-input" value={searchForm.sourceKind} onChange={event => setSearchForm({ ...searchForm, sourceKind: event.target.value })} placeholder={t('Source kind', '来源类型')} />
-                            <input className="knowledge-input" value={searchForm.domain} onChange={event => setSearchForm({ ...searchForm, domain: event.target.value })} placeholder={t('Domain', '域名')} />
-                            <input className="knowledge-input" value={searchForm.labels} onChange={event => setSearchForm({ ...searchForm, labels: event.target.value })} placeholder={t('Labels', '标签')} />
-                            <input className="knowledge-input" type="number" value={searchForm.limit} onChange={event => setSearchForm({ ...searchForm, limit: Number(event.target.value) })} />
-                        </div>
-                        <label className="knowledge-checkbox"><input type="checkbox" checked={searchForm.includeDisabled} onChange={event => setSearchForm({ ...searchForm, includeDisabled: event.target.checked })} /> {t('Include disabled sources', '包含已禁用来源')}</label>
-                        <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={runSearch}>{busy === 'search' ? t('Searching...', '检索中...') : t('Search', '检索')}</button>
-                    </PanelBlock>
+                    <div className="knowledge-search-hero">
+                            <div className="knowledge-search-input-wrapper">
+                                <span className="knowledge-search-icon">🔍</span>
+                                <input
+                                    className="knowledge-input knowledge-search-input--hero"
+                                    value={searchForm.query}
+                                    onChange={event => setSearchForm({ ...searchForm, query: event.target.value })}
+                                    onKeyDown={event => { if (event.key === 'Enter' && searchForm.query.trim()) { event.preventDefault(); void runSearch(); } }}
+                                    placeholder={t('Search knowledge base...', '搜索知识库...')}
+                                    autoFocus
+                                />
+                                <button type="button" className="knowledge-button knowledge-button--primary knowledge-search-button" disabled={!!busy} onClick={runSearch}>
+                                    {busy === 'search' ? t('Searching...', '检索中...') : t('Search', '检索')}
+                                </button>
+                            </div>
+                            <div className="knowledge-search-filters">
+                                <select className="knowledge-input knowledge-input--compact" value={searchForm.resultType} onChange={event => setSearchForm({ ...searchForm, resultType: event.target.value })}><option value="all">{t('All types', '全部类型')}</option><option value="node">node</option><option value="card">card</option><option value="fact">fact</option></select>
+                                <input className="knowledge-input knowledge-input--compact" value={searchForm.sourceKind} onChange={event => setSearchForm({ ...searchForm, sourceKind: event.target.value })} placeholder={t('Kind', '类型')} />
+                                <input className="knowledge-input knowledge-input--compact" value={searchForm.domain} onChange={event => setSearchForm({ ...searchForm, domain: event.target.value })} placeholder={t('Domain', '域名')} />
+                                <input className="knowledge-input knowledge-input--compact" value={searchForm.labels} onChange={event => setSearchForm({ ...searchForm, labels: event.target.value })} placeholder={t('Labels', '标签')} />
+                                <input className="knowledge-input knowledge-input--compact" type="number" value={searchForm.limit} onChange={event => setSearchForm({ ...searchForm, limit: Number(event.target.value) })} title={t('Max results', '最大结果数')} style={{ width: 60 }} />
+                                <label className="knowledge-checkbox"><input type="checkbox" checked={searchForm.includeDisabled} onChange={event => setSearchForm({ ...searchForm, includeDisabled: event.target.checked })} /> {t('Disabled', '含禁用')}</label>
+                            </div>
+                    </div>
                     <div className="knowledge-two-column">
                         <PanelBlock title={`${t('Results', '结果')} (${searchResults.length})`}>
                             <ResultList results={searchResults} empty={t('No results yet.', '暂无检索结果。')} query={searchForm.query} />
@@ -1820,18 +1834,73 @@ function highlightText(text: string, regex: RegExp | null): React.ReactNode {
     })}</>;
 }
 
+function ImageResultThumbnail({ sourceID, nodeID, title }: { sourceID: string; nodeID: string; title: string }) {
+    const [thumbPath, setThumbPath] = useState('');
+    const [originalPath, setOriginalPath] = useState('');
+
+    useEffect(() => {
+        if (!sourceID) return;
+        // Try with the full node-qualified ID first (embedded images use sourceID_nodeID),
+        // then fall back to sourceID alone (standalone images).
+        const ids = nodeID ? [sourceID + '_' + nodeID, sourceID] : [sourceID];
+        let cancelled = false;
+        (async () => {
+            for (const id of ids) {
+                try {
+                    const paths = await KnowledgeGetImageAssetPaths(id);
+                    if (cancelled) return;
+                    if (paths && (paths.thumb_data_url || paths.original)) {
+                        setThumbPath(paths.thumb_data_url || '');
+                        setOriginalPath(paths.original || paths.preview || '');
+                        return;
+                    }
+                } catch { /* continue to next id */ }
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [sourceID, nodeID]);
+
+    if (!thumbPath) return null;
+
+    const handleClick = async () => {
+        if (originalPath) {
+            try {
+                await KnowledgeOpenImageFile(originalPath);
+            } catch (e) {
+                console.warn('[knowledge-image] open failed:', e);
+            }
+        }
+    };
+
+    return (
+        <div className="knowledge-image-thumb" onClick={handleClick} title={title + ' (click to open)'}>
+            <img src={thumbPath} alt={title} loading="lazy" />
+        </div>
+    );
+}
+
 function ResultList({ results, empty, query }: { results: SearchResult[]; empty: string; query?: string }) {
     if (!results.length) return <div className="knowledge-empty">{empty}</div>;
     const regex = buildHighlightRegex((query || '').trim());
-    return <div className="knowledge-list">{results.map((result, index) => (
-        <div key={`${result.result_type || 'result'}-${result.node_id || result.card_id || result.fact_id || index}`} className="knowledge-row">
-            <div className="knowledge-row-main">
-                <strong>{highlightText(result.card_title || result.node_title || result.subject || result.source?.title || result.source?.relative_path || 'Result', regex)}</strong>
-                <span className="knowledge-muted-line">{[result.result_type, result.source?.kind, result.source?.relative_path || result.source?.uri, result.score ? `score ${result.score.toFixed(3)}` : ''].filter(Boolean).join(' · ')}</span>
-                <span>{highlightText(result.summary || result.claim || result.snippet || [result.subject, result.predicate, result.object].filter(Boolean).join(' '), regex)}</span>
+    return <div className="knowledge-list">{results.map((result, index) => {
+        const isImage = result.node_type === 'image' || result.source?.kind === 'image';
+        const sourceLabel = result.card_title || result.node_title || result.subject || result.source?.title || result.source?.relative_path || 'Result';
+        return (
+            <div key={`${result.result_type || 'result'}-${result.node_id || result.card_id || result.fact_id || index}`} className={`knowledge-row ${isImage ? 'knowledge-row--image' : ''}`}>
+                {isImage && (
+                    <ImageResultThumbnail sourceID={result.source?.id || ''} nodeID={result.node_id || ''} title={sourceLabel} />
+                )}
+                <div className="knowledge-row-main">
+                    <strong>
+                        {isImage && <span className="knowledge-chip knowledge-chip--image">🖼️</span>}
+                        {highlightText(sourceLabel, regex)}
+                    </strong>
+                    <span className="knowledge-muted-line">{[result.result_type, result.source?.kind, result.source?.relative_path || result.source?.uri, result.score ? `score ${result.score.toFixed(3)}` : ''].filter(Boolean).join(' · ')}</span>
+                    <span>{highlightText(result.summary || result.claim || result.snippet || [result.subject, result.predicate, result.object].filter(Boolean).join(' '), regex)}</span>
+                </div>
             </div>
-        </div>
-    ))}</div>;
+        );
+    })}</div>;
 }
 
 function ExecutionSummary({ t, result, context }: {

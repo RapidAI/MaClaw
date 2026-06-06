@@ -2090,3 +2090,11 @@ export function KnowledgeDeepCrawlPreview(arg1) {
 export function KnowledgeDeepCrawlCancel() {
   return window['go']['main']['App']['KnowledgeDeepCrawlCancel']();
 }
+
+export function KnowledgeGetImageAssetPaths(arg1) {
+  return window['go']['main']['App']['KnowledgeGetImageAssetPaths'](arg1);
+}
+
+export function KnowledgeOpenImageFile(arg1) {
+  return window['go']['main']['App']['KnowledgeOpenImageFile'](arg1);
+}

@@ -49,9 +49,21 @@ describe('FavoriteEmployeeButtons', () => {
         render(<FavoriteEmployeeButtons slots={slots} veAuthorized onStartConversation={vi.fn()} onReorder={vi.fn()} onRemove={onRemove} />);
 
         fireEvent.contextMenu(screen.getByTestId('fav-ve-ve-1'), { clientX: 20, clientY: 30 });
-        fireEvent.click(screen.getByRole('menuitem', { name: 'Remove' }));
+        fireEvent.click(screen.getByRole('menuitem', { name: /Remove from Favorites/ }));
 
         expect(onRemove).toHaveBeenCalledWith('ve-1');
+    });
+
+    it('does not remove a resident digital employee', () => {
+        const onRemove = vi.fn();
+        render(<FavoriteEmployeeButtons slots={[{ ...slots[0], resident: true }]} veAuthorized onStartConversation={vi.fn()} onReorder={vi.fn()} onRemove={onRemove} />);
+
+        fireEvent.contextMenu(screen.getByTestId('fav-ve-ve-1'), { clientX: 20, clientY: 30 });
+        const remove = screen.getByRole('menuitem', { name: /Remove from Favorites/ }) as HTMLButtonElement;
+
+        expect(remove.disabled).toBe(true);
+        fireEvent.click(remove);
+        expect(onRemove).not.toHaveBeenCalled();
     });
 
     it('renames a favorite digital employee with the custom dialog', () => {
@@ -60,7 +72,7 @@ describe('FavoriteEmployeeButtons', () => {
         render(<FavoriteEmployeeButtons slots={slots} veAuthorized onStartConversation={vi.fn()} onReorder={vi.fn()} onRename={onRename} />);
 
         fireEvent.contextMenu(screen.getByTestId('fav-ve-ve-1'), { clientX: 20, clientY: 30 });
-        fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+        fireEvent.click(screen.getByRole('menuitem', { name: /Rename/ }));
         const input = screen.getByLabelText('Display name');
         fireEvent.change(input, { target: { value: 'Lab Lead' } });
         fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -76,7 +88,7 @@ describe('FavoriteEmployeeButtons', () => {
         render(<FavoriteEmployeeButtons slots={slots} veAuthorized onStartConversation={vi.fn()} onReorder={vi.fn()} onRename={onRename} />);
 
         fireEvent.contextMenu(screen.getByTestId('fav-ve-ve-1'), { clientX: 20, clientY: 30 });
-        fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+        fireEvent.click(screen.getByRole('menuitem', { name: /Rename/ }));
         fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Lab Lead' } });
         fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
@@ -94,7 +106,7 @@ describe('FavoriteEmployeeButtons', () => {
         render(<FavoriteEmployeeButtons slots={slots} veAuthorized onStartConversation={vi.fn()} onReorder={vi.fn()} onRename={onRename} />);
 
         fireEvent.contextMenu(screen.getByTestId('fav-ve-ve-1'), { clientX: 20, clientY: 30 });
-        fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+        fireEvent.click(screen.getByRole('menuitem', { name: /Rename/ }));
         fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Lab Lead' } });
         fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
@@ -111,7 +123,7 @@ describe('FavoriteEmployeeButtons', () => {
         const { unmount } = render(<FavoriteEmployeeButtons slots={slots} veAuthorized onStartConversation={vi.fn()} onReorder={vi.fn()} onRename={onRename} />);
 
         fireEvent.contextMenu(screen.getByTestId('fav-ve-ve-1'), { clientX: 20, clientY: 30 });
-        fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+        fireEvent.click(screen.getByRole('menuitem', { name: /Rename/ }));
         fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Lab Lead' } });
         fireEvent.click(screen.getByRole('button', { name: 'Save' }));
         unmount();
@@ -123,12 +135,12 @@ describe('FavoriteEmployeeButtons', () => {
     });
 
     it('localizes the favorite context menu and offline state', () => {
-        render(<FavoriteEmployeeButtons slots={slots} veAuthorized lang="zh-Hans" onStartConversation={vi.fn()} onReorder={vi.fn()} onRemove={vi.fn()} />);
+        render(<FavoriteEmployeeButtons slots={slots} veAuthorized lang="zh-Hans" onStartConversation={vi.fn()} onReorder={vi.fn()} onRemove={vi.fn()} onRename={vi.fn()} />);
 
         expect(screen.getByRole('button', { name: 'Analyst \u79bb\u7ebf' })).toBeTruthy();
         fireEvent.contextMenu(screen.getByTestId('fav-ve-ve-1'), { clientX: 20, clientY: 30 });
 
-        expect(screen.getByRole('menuitem', { name: '\u6539\u540d' })).toBeTruthy();
-        expect(screen.getByRole('menuitem', { name: '\u79fb\u9664' })).toBeTruthy();
+        expect(screen.getByRole('menuitem', { name: /\u6539\u540d/ })).toBeTruthy();
+        expect(screen.getByRole('menuitem', { name: /\u4ece\u5e38\u7528\u4e2d\u79fb\u9664/ })).toBeTruthy();
     });
 });

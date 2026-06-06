@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -8,11 +9,80 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
+type knowledgeAccessScopeView struct {
+	TenantID   string `json:"tenant_id"`
+	OwnerID    string `json:"owner_id"`
+	Name       string `json:"name,omitempty"`
+	ScopeType  string `json:"scope_type"`
+	TenantName string `json:"tenant_name,omitempty"`
+	OwnerName  string `json:"owner_name,omitempty"`
+}
+
+type knowledgeAccessResolvedView struct {
+	TenantID           string                     `json:"tenant_id"`
+	UserID             string                     `json:"user_id"`
+	CrossTenantEnabled bool                       `json:"cross_tenant_enabled"`
+	Scopes             []knowledgeAccessScopeView `json:"scopes"`
+}
+
 func (s *HTTPServer) handleKnowledgeAccessGetMe(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	if !s.requireKnowledge(w) {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.knowledgeMgr.Access().ResolveResponse(r.Context(), p.TenantID, p.UserID))
+	tenantID := strings.TrimSpace(p.TenantID)
+	userID := strings.TrimSpace(p.UserID)
+	resolved := knowledgeAccessResolved{TenantID: tenantID, UserID: userID, Scopes: []knowledgeScope{{TenantID: tenantID, OwnerID: userID, Name: "self"}}}
+	if access := s.knowledgeMgr.Access(); access != nil {
+		resolved = access.ResolveResponse(r.Context(), tenantID, userID)
+	}
+	writeJSON(w, http.StatusOK, s.knowledgeAccessResolvedView(r.Context(), resolved, tenantID, userID))
+}
+
+func (s *HTTPServer) knowledgeAccessResolvedView(ctx context.Context, resolved knowledgeAccessResolved, selfTenantID, selfUserID string) knowledgeAccessResolvedView {
+	view := knowledgeAccessResolvedView{
+		TenantID:           resolved.TenantID,
+		UserID:             resolved.UserID,
+		CrossTenantEnabled: resolved.CrossTenantEnabled,
+		Scopes:             make([]knowledgeAccessScopeView, 0, len(resolved.Scopes)),
+	}
+	for _, scope := range resolved.Scopes {
+		view.Scopes = append(view.Scopes, s.knowledgeAccessScopeView(ctx, scope, selfTenantID, selfUserID))
+	}
+	return view
+}
+
+func (s *HTTPServer) knowledgeAccessScopeView(ctx context.Context, scope knowledgeScope, selfTenantID, selfUserID string) knowledgeAccessScopeView {
+	tenantID := strings.TrimSpace(scope.TenantID)
+	ownerID := strings.TrimSpace(scope.OwnerID)
+	name := strings.TrimSpace(scope.Name)
+	out := knowledgeAccessScopeView{TenantID: tenantID, OwnerID: ownerID, Name: name, ScopeType: "user"}
+	if s.svc != nil {
+		if tenant, err := s.svc.GetTenant(ctx, tenantID); err == nil && tenant != nil {
+			out.TenantName = strings.TrimSpace(tenant.Name)
+		}
+	}
+	if isPublicKnowledgeScope(scope) {
+		out.ScopeType = "public"
+		if access := s.knowledgeMgr.Access(); access != nil {
+			libraryID := strings.TrimPrefix(ownerID, publicKnowledgeOwnerPrefix)
+			if library, ok, err := access.GetPublicLibrary(ctx, libraryID); err == nil && ok {
+				if out.Name == "" {
+					out.Name = strings.TrimSpace(library.Name)
+				}
+				out.OwnerName = strings.TrimSpace(library.Name)
+			}
+		}
+		return out
+	}
+	if tenantID == strings.TrimSpace(selfTenantID) && ownerID == strings.TrimSpace(selfUserID) {
+		out.ScopeType = "self"
+	}
+	if s.svc != nil {
+		if user, err := s.svc.GetUser(ctx, tenantID, ownerID); err == nil && user != nil {
+			out.OwnerName = strings.TrimSpace(user.Name)
+		}
+	}
+	return out
 }
 
 func (s *HTTPServer) handleAdminKnowledgeAccessGetCrossTenant(w http.ResponseWriter, r *http.Request) {

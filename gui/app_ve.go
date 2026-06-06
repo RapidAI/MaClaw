@@ -46,6 +46,7 @@ type VirtualEmployeeEntry struct {
 	AccessPolicy     string   `json:"access_policy"`
 	Status           string   `json:"status"`
 	OnlineStatus     string   `json:"online_status"`
+	Resident         bool     `json:"resident,omitempty"`
 	RegisteredAt     string   `json:"registered_at,omitempty"`
 	Whitelist        []string `json:"whitelist,omitempty"`
 	Blacklist        []string `json:"blacklist,omitempty"`
@@ -201,7 +202,17 @@ func (a *App) ListVirtualEmployees() ([]VirtualEmployeeEntry, error) {
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("decode digital employee list: %w", err)
 	}
-	return filterOwnVirtualEmployees(resp.Employees, groupDiscussionAgentID(cfg)), nil
+	return filterOnlineVirtualEmployees(filterOwnVirtualEmployees(resp.Employees, groupDiscussionAgentID(cfg))), nil
+}
+
+func filterOnlineVirtualEmployees(employees []VirtualEmployeeEntry) []VirtualEmployeeEntry {
+	out := make([]VirtualEmployeeEntry, 0, len(employees))
+	for _, employee := range employees {
+		if strings.EqualFold(strings.TrimSpace(employee.OnlineStatus), "online") {
+			out = append(out, employee)
+		}
+	}
+	return out
 }
 
 // InitiateVEConversation starts or resumes a conversation with a digital employee.
@@ -1243,7 +1254,7 @@ func (a *App) loadDiscoverableVEEntries(hubURL, token string) ([]VirtualEmployee
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, err
 	}
-	employees := filterOwnVirtualEmployees(resp.Employees, localID)
+	employees := filterOnlineVirtualEmployees(filterOwnVirtualEmployees(resp.Employees, localID))
 	if cacheKey != "\x00\x00" {
 		a.veDiscoverableCache.Store(cacheKey, veDiscoverableCacheEntry{expiresAt: time.Now().Add(veDiscoverableCacheTTL), employees: cloneVirtualEmployeeEntries(employees)})
 	}

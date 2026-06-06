@@ -118,6 +118,30 @@ func TestAppConfigSubAgentConcurrencyDefaultsAndClamps(t *testing.T) {
 	}
 }
 
+func TestAppConfigProjectsDefaultToValidArray(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "missing", raw: `{}`},
+		{name: "null", raw: `{"projects":null}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg AppConfig
+			if err := json.Unmarshal([]byte(tt.raw), &cfg); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if cfg.Projects == nil || len(cfg.Projects) != 1 {
+				t.Fatalf("Projects = %#v, want one default project", cfg.Projects)
+			}
+			if cfg.Projects[0].Id != "default" || cfg.CurrentProject != "default" {
+				t.Fatalf("default project mismatch: current=%q projects=%#v", cfg.CurrentProject, cfg.Projects)
+			}
+		})
+	}
+}
+
 func TestAppConfigSecurityBoolDefaults(t *testing.T) {
 	var cfg AppConfig
 	if err := json.Unmarshal([]byte(`{}`), &cfg); err != nil {

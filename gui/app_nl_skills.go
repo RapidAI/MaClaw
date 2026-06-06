@@ -55,6 +55,7 @@ type NLSkillDefinition struct {
 	Params              []corelib.NLSkillParam      `json:"params,omitempty"`        // parameter schema (explicit or synthesized)
 	RequiredArgs        []string                    `json:"required_args,omitempty"` // required template variables
 	RequiresGUI         bool                        `json:"requires_gui,omitempty"`
+	Capabilities        []string                    `json:"capabilities,omitempty"`
 	RequiresTools       []string                    `json:"requires_tools,omitempty"`
 	FallbackForTools    []string                    `json:"fallback_for_tools,omitempty"`
 	RequiresToolsets    []string                    `json:"requires_toolsets,omitempty"`
@@ -272,6 +273,7 @@ func cloneSkillEntries(in []corelib.NLSkillEntry) []corelib.NLSkillEntry {
 		out[i].Params = cloneSkillParams(out[i].Params)
 		out[i].RequiredArgs = cloneStringSlice(out[i].RequiredArgs)
 		out[i].Platforms = cloneStringSlice(out[i].Platforms)
+		out[i].Capabilities = cloneStringSlice(out[i].Capabilities)
 		out[i].RequiresTools = cloneStringSlice(out[i].RequiresTools)
 		out[i].FallbackForTools = cloneStringSlice(out[i].FallbackForTools)
 		out[i].RequiresToolsets = cloneStringSlice(out[i].RequiresToolsets)
@@ -781,6 +783,7 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			Params:              s.Params,
 			RequiredArgs:        s.RequiredArgs,
 			RequiresGUI:         s.RequiresGUI,
+			Capabilities:        cloneStringSlice(s.Capabilities),
 			RequiresTools:       cloneStringSlice(s.RequiresTools),
 			FallbackForTools:    cloneStringSlice(s.FallbackForTools),
 			RequiresToolsets:    cloneStringSlice(s.RequiresToolsets),
@@ -2436,6 +2439,9 @@ func applyImportedSkillDefinitionFields(entry *corelib.NLSkillEntry, sf *skill.S
 	if sf.PreferredShell != "" {
 		entry.PreferredShell = sf.PreferredShell
 	}
+	if len(sf.Capabilities) > 0 {
+		entry.Capabilities = sf.Capabilities
+	}
 	if len(sf.RequiresTools) > 0 {
 		entry.RequiresTools = sf.RequiresTools
 	}
@@ -2821,6 +2827,7 @@ func buildSkillYAMLFileFromPackageEntry(entry *corelib.NLSkillEntry) *skill.Skil
 		PreferredShell:          entry.PreferredShell,
 		Type:                    entry.Type,
 		Content:                 entry.Content,
+		Capabilities:            append([]string(nil), entry.Capabilities...),
 		RequiresTools:           append([]string(nil), entry.RequiresTools...),
 		FallbackForTools:        append([]string(nil), entry.FallbackForTools...),
 		RequiresToolsets:        append([]string(nil), entry.RequiresToolsets...),

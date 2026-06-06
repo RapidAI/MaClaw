@@ -13,6 +13,23 @@ type mockSkillProvider struct {
 
 func (m *mockSkillProvider) ListActiveSkills() []SkillSummary { return m.skills }
 
+func testStringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func toolNamesForTest(defs []map[string]interface{}) []string {
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, ExtractToolName(def))
+	}
+	return names
+}
+
 func TestRouter_SkillProvider_FourSignalScoring(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)
@@ -138,7 +155,7 @@ func TestRouter_SkillMatchScore_NilProvider(t *testing.T) {
 
 func TestRouter_EnrichRunSkillDescription(t *testing.T) {
 	def := makeToolDef("run_skill", "Execute a skill by name")
-	enriched := enrichRunSkillDescription(def, []string{"deploy-app", "backup-db"})
+	enriched := enrichRunSkillDescription(def, []string{"deploy-app", "backup-db"}, []string{"skill", "current_data"})
 
 	desc := ExtractToolDescription(enriched)
 	if !strings.Contains(desc, "deploy-app") {
@@ -156,6 +173,225 @@ func TestRouter_EnrichRunSkillDescription(t *testing.T) {
 	if strings.Contains(origDesc, "deploy-app") {
 		t.Error("original definition should not be modified")
 	}
+	contract, ok := enriched["x_execution_contract"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected execution contract for skill capabilities")
+	}
+	caps, ok := contract["capabilities"].([]string)
+	if !ok || len(caps) != 2 || caps[1] != "current_data" {
+		t.Fatalf("capabilities = %#v, want [skill current_data]", contract["capabilities"])
+	}
+}
+
+func TestRouter_EnrichRunSkillDescriptionMergesExistingExecutionContract(t *testing.T) {
+	def := makeToolDef("manage_skill", "Execute a skill by name")
+	def["x_execution_contract"] = map[string]interface{}{
+		"capabilities":            []interface{}{"Skill", "ASYNC-Status"},
+		"deterministic":           true,
+		"supports_direct":         true,
+		"requires_agent_planning": true,
+	}
+
+	enriched := enrichRunSkillDescription(def, []string{"live-skill"}, []string{"skill", "current_data"})
+	contract, ok := enriched["x_execution_contract"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected execution contract")
+	}
+	if contract["deterministic"] != true || contract["supports_direct"] != true || contract["requires_agent_planning"] != true {
+		t.Fatalf("existing contract flags were not preserved: %#v", contract)
+	}
+	caps, ok := contract["capabilities"].([]string)
+	if !ok {
+		t.Fatalf("capabilities = %#v, want []string", contract["capabilities"])
+	}
+	for _, want := range []string{"skill", "async_status", "current_data"} {
+		if !testStringSliceContains(caps, want) {
+			t.Fatalf("capabilities = %#v, missing %q", caps, want)
+		}
+	}
+}
+
+func TestRouter_MatchedSkillCapabilities(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{Name: "Weather Query", Triggers: []string{"Weather Query"}, Description: "weather lookup", Capabilities: []string{"CURRENT-DATA", "weather-live"}},
+	}})
+	caps := router.matchedSkillCapabilities([]string{"Weather Query"})
+	if !testStringSliceContains(caps, "skill") || !testStringSliceContains(caps, "current_data") || !testStringSliceContains(caps, "weather_live") {
+		t.Fatalf("capabilities = %#v, want normalized skill/current_data/weather_live", caps)
+	}
+}
+
+func TestRouter_MatchedSkillCapabilitiesIncludesSkillWhenNoDeclaredCapabilities(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{Name: "Plain Skill", Triggers: []string{"plain"}, Description: "plain skill"},
+	}})
+	caps := router.matchedSkillCapabilities([]string{"Plain Skill"})
+	if len(caps) != 1 || caps[0] != "skill" {
+		t.Fatalf("capabilities = %#v, want [skill]", caps)
+	}
+}
+
+func TestRouter_RouteEnrichesMatchedSkillExecutionContract(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{Name: "Weather Query", Triggers: []string{"weather", "forecast", "current data"}, Description: "weather forecast current data lookup", Capabilities: []string{"current_data", "weather"}},
+	}})
+	tools := []map[string]interface{}{
+		makeToolDef("manage_skill", "Skill management"),
+		makeToolDef("web_search", "Search the web"),
+		makeToolDef("bash", "Run shell"),
+	}
+	for i := 0; i < 30; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	score, matched := router.skillMatchScore("Weather Query weather forecast current data")
+	if score <= 0.3 || len(matched) == 0 {
+		t.Fatalf("skill score = %.4f matched=%v, want stable match", score, matched)
+	}
+	result := router.Route("Weather Query weather forecast current data", tools)
+	for _, def := range result {
+		if ExtractToolName(def) != "manage_skill" {
+			continue
+		}
+		contract, ok := def["x_execution_contract"].(map[string]interface{})
+		if !ok {
+			t.Fatal("manage_skill missing execution contract")
+		}
+		caps, ok := contract["capabilities"].([]string)
+		if !ok || !testStringSliceContains(caps, "skill") || !testStringSliceContains(caps, "current_data") {
+			t.Fatalf("capabilities = %#v, want skill/current_data", contract["capabilities"])
+		}
+		return
+	}
+	t.Fatalf("manage_skill missing from routed tools: %#v", result)
+}
+
+func TestRouter_RouteEnrichesMatchedSkillExecutionContractBelowLegacyThreshold(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	skills := make([]SkillSummary, 32)
+	for i := range skills {
+		skills[i] = SkillSummary{
+			Name:         fmt.Sprintf("shared-skill-%d", i),
+			Triggers:     []string{"shared"},
+			Description:  "shared lookup",
+			Capabilities: []string{"current_data"},
+		}
+	}
+	router.SetSkillProvider(&mockSkillProvider{skills: skills})
+	tools := []map[string]interface{}{
+		makeToolDef("manage_skill", "Skill management"),
+		makeToolDef("web_search", "Search the web"),
+		makeToolDef("bash", "Run shell"),
+	}
+	for i := 0; i < 30; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	score, matched := router.skillMatchScore("shared")
+	if score <= 0 || score > 0.3 || len(matched) == 0 {
+		t.Fatalf("skill score = %.4f matched=%v, want low positive match", score, matched)
+	}
+	result := router.Route("shared", tools)
+	for _, def := range result {
+		if ExtractToolName(def) != "manage_skill" {
+			continue
+		}
+		contract, ok := def["x_execution_contract"].(map[string]interface{})
+		if !ok {
+			t.Fatal("manage_skill missing execution contract for low-score matched skill")
+		}
+		caps, ok := contract["capabilities"].([]string)
+		if !ok || !testStringSliceContains(caps, "current_data") {
+			t.Fatalf("capabilities = %#v, want current_data", contract["capabilities"])
+		}
+		return
+	}
+	t.Fatalf("manage_skill missing from routed tools: %#v", result)
+}
+
+func TestRouter_RouteEnrichesMatchedSkillWhenNoDynamicCandidates(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{Name: "live-skill", Triggers: []string{"live"}, Description: "live lookup", Capabilities: []string{"current_data"}},
+	}})
+	tools := []map[string]interface{}{
+		makeToolDef("manage_skill", "Skill management"),
+		makeToolDef("bash", "Run shell"),
+	}
+
+	result := router.Route("live", tools)
+	for _, def := range result {
+		if ExtractToolName(def) != "manage_skill" {
+			continue
+		}
+		contract, ok := def["x_execution_contract"].(map[string]interface{})
+		if !ok {
+			t.Fatal("manage_skill missing execution contract when route returns core only")
+		}
+		caps, ok := contract["capabilities"].([]string)
+		if !ok || !testStringSliceContains(caps, "current_data") {
+			t.Fatalf("capabilities = %#v, want current_data", contract["capabilities"])
+		}
+		return
+	}
+	t.Fatalf("manage_skill missing from routed tools: %#v", result)
+}
+
+func TestRouter_RouteEnrichesSkillOnlyExecutionContract(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{Name: "Plain Skill", Triggers: []string{"plain"}, Description: "plain skill"},
+	}})
+	tools := []map[string]interface{}{
+		makeToolDef("manage_skill", "Skill management"),
+		makeToolDef("bash", "Run shell"),
+	}
+
+	result := router.Route("plain", tools)
+	for _, def := range result {
+		if ExtractToolName(def) != "manage_skill" {
+			continue
+		}
+		contract, ok := def["x_execution_contract"].(map[string]interface{})
+		if !ok {
+			t.Fatal("manage_skill missing execution contract for skill-only match")
+		}
+		caps, ok := contract["capabilities"].([]string)
+		if !ok || len(caps) != 1 || caps[0] != "skill" {
+			t.Fatalf("capabilities = %#v, want [skill]", contract["capabilities"])
+		}
+		return
+	}
+	t.Fatalf("manage_skill missing from routed tools: %#v", result)
+}
+
+func TestRouter_RouteKeepsMatchedSkillWhenCoreOverBudget(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{Name: "Plain Skill", Triggers: []string{"plain"}, Description: "plain skill"},
+	}})
+	router.sessionTools = map[string]bool{}
+	tools := []map[string]interface{}{makeToolDef("manage_skill", "Skill management")}
+	for i := 0; i < MaxToolBudget+4; i++ {
+		name := fmt.Sprintf("session_tool_%d", i)
+		router.sessionTools[name] = true
+		tools = append(tools, makeToolDef(name, "session tool"))
+	}
+
+	result := router.Route("plain", tools)
+	for _, def := range result {
+		if ExtractToolName(def) != "manage_skill" {
+			continue
+		}
+		if _, ok := def["x_execution_contract"].(map[string]interface{}); !ok {
+			t.Fatal("manage_skill kept but missing execution contract")
+		}
+		return
+	}
+	t.Fatalf("manage_skill trimmed despite matched skill: %v", toolNamesForTest(result))
 }
 
 func TestDynamicToolBuilder_SkillProvider(t *testing.T) {
@@ -183,16 +419,90 @@ func TestDynamicToolBuilder_SkillProvider(t *testing.T) {
 
 	result := builder.Build("帮我部署应用")
 
-	// manage_skill should have enriched description if score > 0.3.
+	// manage_skill should have enriched description when a skill is matched.
 	for _, def := range result {
 		if ExtractToolName(def) == "manage_skill" {
 			desc := ExtractToolDescription(def)
 			t.Logf("manage_skill description: %s", desc)
-			if score > 0.3 && !strings.Contains(desc, "deploy-app") {
-				t.Errorf("manage_skill description should contain deploy-app when score > 0.3, got: %s", desc)
+			if len(names) > 0 && !strings.Contains(desc, "deploy-app") {
+				t.Errorf("manage_skill description should contain deploy-app when skill matched, score=%.4f got: %s", score, desc)
 			}
 			return
 		}
 	}
 	t.Error("manage_skill should be in the build result")
+}
+
+func TestDynamicToolBuilder_EnrichesMatchedSkillBelowLegacyThreshold(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(RegisteredTool{Name: "bash", Description: "run shell", Category: CategoryBuiltin})
+	reg.Register(RegisteredTool{Name: "manage_skill", Description: "Skill management", Category: CategoryBuiltin})
+	for i := 0; i < 30; i++ {
+		reg.Register(RegisteredTool{
+			Name:        fmt.Sprintf("filler_%d", i),
+			Description: fmt.Sprintf("filler tool %d", i),
+			Category:    CategoryNonCode,
+		})
+	}
+
+	builder := NewDynamicToolBuilder(reg)
+	skills := make([]SkillSummary, 32)
+	for i := range skills {
+		skills[i] = SkillSummary{
+			Name:         fmt.Sprintf("shared-skill-%d", i),
+			Triggers:     []string{"shared"},
+			Description:  "shared lookup",
+			Capabilities: []string{"current_data"},
+		}
+	}
+	builder.SetSkillProvider(&mockSkillProvider{skills: skills})
+
+	score, matched := builder.builderSkillMatchScore("shared")
+	if score <= 0 || score > 0.3 || len(matched) == 0 {
+		t.Fatalf("skill score = %.4f matched=%v, want low positive match", score, matched)
+	}
+	result := builder.Build("shared")
+	for _, def := range result {
+		if ExtractToolName(def) != "manage_skill" {
+			continue
+		}
+		contract, ok := def["x_execution_contract"].(map[string]interface{})
+		if !ok {
+			t.Fatal("manage_skill missing execution contract for low-score matched skill")
+		}
+		caps, ok := contract["capabilities"].([]string)
+		if !ok || !testStringSliceContains(caps, "current_data") {
+			t.Fatalf("capabilities = %#v, want current_data", contract["capabilities"])
+		}
+		return
+	}
+	t.Fatalf("manage_skill missing from build result: %#v", result)
+}
+
+func TestDynamicToolBuilder_EnrichesMatchedSkillWithoutRouting(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(RegisteredTool{Name: "bash", Description: "run shell", Category: CategoryBuiltin})
+	reg.Register(RegisteredTool{Name: "manage_skill", Description: "Skill management", Category: CategoryBuiltin})
+
+	builder := NewDynamicToolBuilder(reg)
+	builder.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{Name: "live-skill", Triggers: []string{"live"}, Description: "live lookup", Capabilities: []string{"current_data"}},
+	}})
+
+	result := builder.Build("live")
+	for _, def := range result {
+		if ExtractToolName(def) != "manage_skill" {
+			continue
+		}
+		contract, ok := def["x_execution_contract"].(map[string]interface{})
+		if !ok {
+			t.Fatal("manage_skill missing execution contract when builder skips routing")
+		}
+		caps, ok := contract["capabilities"].([]string)
+		if !ok || !testStringSliceContains(caps, "current_data") {
+			t.Fatalf("capabilities = %#v, want current_data", contract["capabilities"])
+		}
+		return
+	}
+	t.Fatalf("manage_skill missing from build result: %#v", result)
 }

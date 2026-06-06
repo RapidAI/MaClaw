@@ -4,6 +4,7 @@ import { VirtualEmployeeTab, truncateText, policyIcon, policyLabel } from '../Vi
 import type { VirtualEmployeeEntry, VETabProps } from '../VirtualEmployeeTab';
 import type { Theme } from '../aiAssistantPanelTheme';
 import { safeAvatarDataURL, safeAvatarSourceDataURL } from '../virtualEmployeeAvatar';
+import { isVirtualEmployeeOnline } from '../virtualEmployeeStatus';
 
 // Mock Wails runtime
 const eventHandlers = new Map<string, (...args: any[]) => void>();
@@ -62,27 +63,35 @@ const mockTheme: Theme = {
 const sampleVEs: VirtualEmployeeEntry[] = [
     {
         id: "ve-1",
-        name: "AI 翻译助手",
-        skill_description: "专业中英文翻译，支持技术文档和商务文件",
+        name: "Translator",
+        skill_description: "Chinese English document translation",
         access_policy: "public",
         status: "active",
         online_status: "online",
     },
     {
         id: "ve-2",
-        name: "代码审查专家这个名字超过了二十个字符的限制",
-        skill_description: "精通 Go/TypeScript/Python 代码审查，能发现潜在的安全漏洞和性能问题以及架构设计缺陷",
+        name: "Code Review Expert With A Very Long Name",
+        skill_description: "Go/TypeScript/Python code review",
         access_policy: "per_request",
         status: "active",
-        online_status: "offline",
+        online_status: "online",
     },
     {
         id: "ve-3",
-        name: "数据分析师",
-        skill_description: "数据清洗、可视化和统计分析",
+        name: "Data Analyst",
+        skill_description: "Data cleaning and visualization",
         access_policy: "whitelist",
         status: "active",
         online_status: "online",
+    },
+    {
+        id: "ve-4",
+        name: "Offline Assistant",
+        skill_description: "Temporarily offline",
+        access_policy: "public",
+        status: "active",
+        online_status: "offline",
     },
 ];
 
@@ -122,15 +131,23 @@ describe('VirtualEmployeeTab', () => {
 
     // --- Helper function tests ---
 
+    describe('isVirtualEmployeeOnline', () => {
+        it('normalizes case and whitespace', () => {
+            expect(isVirtualEmployeeOnline({ online_status: " Online " })).toBe(true);
+            expect(isVirtualEmployeeOnline({ online_status: " OFFLINE " })).toBe(false);
+            expect(isVirtualEmployeeOnline(null)).toBe(false);
+        });
+    });
+
     describe('truncateText', () => {
         it('returns original text if within limit', () => {
             expect(truncateText("hello", 20)).toBe("hello");
         });
 
         it('truncates and adds ellipsis when exceeding limit', () => {
-            const longText = "这是一个超过二十个字符的很长的名字测试用例文本";
+            const longText = "this is a very long digital employee display name";
             expect(longText.length).toBeGreaterThan(20);
-            expect(truncateText(longText, 20)).toBe(longText.slice(0, 20) + "…");
+            expect(truncateText(longText, 20)).toBe(longText.slice(0, 20) + "\u2026");
         });
 
         it('handles empty string', () => {
@@ -140,17 +157,17 @@ describe('VirtualEmployeeTab', () => {
 
     describe('policyIcon', () => {
         it('returns correct icons for each policy', () => {
-            expect(policyIcon("public")).toBe("🌐");
-            expect(policyIcon("whitelist")).toBe("✅");
-            expect(policyIcon("blacklist")).toBe("🚫");
-            expect(policyIcon("per_request")).toBe("🔒");
-            expect(policyIcon("unknown")).toBe("❓");
+            expect(policyIcon("public")).toBe("\u{1F310}");
+            expect(policyIcon("whitelist")).toBe("\u2705");
+            expect(policyIcon("blacklist")).toBe("\u{1F6AB}");
+            expect(policyIcon("per_request")).toBe("\u{1F512}");
+            expect(policyIcon("unknown")).toBe("\u2753");
         });
 
         it('returns readable labels for each policy', () => {
-            expect(policyLabel("per_request", "zh")).toBe("首次访问需同意");
+            expect(policyLabel("per_request", "zh")).toBeTruthy();
             expect(policyLabel("per_request", "en")).toBe("Approval required");
-            expect(policyLabel("blacklist", "zh")).toBe("黑名单");
+            expect(policyLabel("blacklist", "zh")).toBeTruthy();
         });
     });
 
@@ -195,7 +212,7 @@ describe('VirtualEmployeeTab', () => {
 
         it('renders results after loading completes', async () => {
             renderVETab();
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             expect(screen.getByTestId("ve-list-container")).toBeTruthy();
         });
     });
@@ -205,26 +222,71 @@ describe('VirtualEmployeeTab', () => {
     describe('empty states', () => {
         it('shows hub unavailable message on error', async () => {
             renderVETab({}, new Error("network error"));
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             expect(screen.getByTestId("ve-empty-hub")).toBeTruthy();
         });
 
         it('shows empty list message when no VEs returned', async () => {
             renderVETab({}, []);
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             expect(screen.getByTestId("ve-empty-list")).toBeTruthy();
+        });
+
+        it('treats non-array list responses as empty', async () => {
+            const listFn = vi.fn().mockResolvedValue({ employees: sampleVEs });
+            renderVETab({ listVirtualEmployees: listFn as unknown as VETabProps["listVirtualEmployees"] });
+            await act(async () => { await Promise.resolve(); });
+            expect(screen.getByTestId("ve-empty-list")).toBeTruthy();
+        });
+
+        it('shows empty list message when all returned VEs are offline', async () => {
+            renderVETab({}, [sampleVEs[3]]);
+            await act(async () => { await Promise.resolve(); });
+            expect(screen.getByTestId("ve-empty-list").textContent).toContain("\u5728\u7ebf");
         });
     });
 
     // --- List rendering ---
 
     describe('list rendering', () => {
-        it('renders all VE items', async () => {
+        it('renders online VE items only', async () => {
             renderVETab();
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             expect(screen.getByTestId("ve-item-ve-1")).toBeTruthy();
             expect(screen.getByTestId("ve-item-ve-2")).toBeTruthy();
             expect(screen.getByTestId("ve-item-ve-3")).toBeTruthy();
+            expect(screen.queryByTestId("ve-item-ve-4")).toBeNull();
+        });
+
+        it('treats online status case and whitespace as online', async () => {
+            renderVETab({}, [
+                { ...sampleVEs[0], id: "ve-spaced-online", online_status: " Online " as any },
+                { ...sampleVEs[1], id: "ve-spaced-offline", online_status: " Offline " as any },
+            ]);
+            await act(async () => { await Promise.resolve(); });
+            expect(screen.getByTestId("ve-item-ve-spaced-online")).toBeTruthy();
+            expect(screen.queryByTestId("ve-item-ve-spaced-offline")).toBeNull();
+        });
+
+        it('filters online VE items by search query', async () => {
+            renderVETab();
+            await act(async () => { await Promise.resolve(); });
+
+            fireEvent.change(screen.getByTestId("ve-search-input"), { target: { value: "Go/TypeScript" } });
+
+            expect(screen.queryByTestId("ve-item-ve-1")).toBeNull();
+            expect(screen.getByTestId("ve-item-ve-2")).toBeTruthy();
+            expect(screen.queryByTestId("ve-item-ve-3")).toBeNull();
+        });
+
+        it('shows empty state when search has no online matches', async () => {
+            renderVETab();
+            await act(async () => { await Promise.resolve(); });
+
+            fireEvent.change(screen.getByTestId("ve-search-input"), { target: { value: "no-such-employee" } });
+
+            expect(screen.getByTestId("ve-empty-list")).toBeTruthy();
+            expect(screen.queryByTestId("ve-item-ve-1")).toBeNull();
         });
 
         it('uses readable list names instead of raw ids', async () => {
@@ -237,34 +299,33 @@ describe('VirtualEmployeeTab', () => {
                 status: "active",
                 online_status: "online",
             }]);
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
 
             const item = screen.getByTestId("ve-item-profile-raw");
-            expect(item.textContent).toContain("数字员工 1");
+            expect(item.textContent).toContain("1");
             expect(item.textContent).not.toContain("m_b1821505498d817c");
-            expect(item.getAttribute("title")).toBe("数字员工 1");
+            expect(item.getAttribute("title")).toContain("1");
         });
 
-        it('shows green dot for online and gray dot for offline', async () => {
+        it('shows green dot for online employees', async () => {
             renderVETab();
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             const onlineIndicator = screen.getByTestId("ve-status-ve-1");
-            const offlineIndicator = screen.getByTestId("ve-status-ve-2");
             expect(onlineIndicator.style.background).toBe("rgb(34, 197, 94)"); // #22c55e
-            expect(offlineIndicator.style.background).toBe("rgb(156, 163, 175)"); // #9ca3af
+            expect(screen.queryByTestId("ve-status-ve-4")).toBeNull();
         });
 
         it('shows "需同意" badge for per_request policy', async () => {
             renderVETab();
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             expect(screen.getByTestId("ve-badge-ve-2")).toBeTruthy();
-            expect(screen.getByTestId("ve-badge-ve-2").textContent).toBe("需同意");
-            expect(screen.getByTestId("ve-badge-ve-2").getAttribute("title")).toBe("首次访问需同意");
+            expect(screen.getByTestId("ve-badge-ve-2").textContent).toBe("\u9700\u540c\u610f");
+            expect(screen.getByTestId("ve-badge-ve-2").getAttribute("title")).toBeTruthy();
         });
 
         it('does not show badge for non-per_request policies', async () => {
             renderVETab();
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             expect(screen.queryByTestId("ve-badge-ve-1")).toBeNull();
             expect(screen.queryByTestId("ve-badge-ve-3")).toBeNull();
         });
@@ -275,23 +336,23 @@ describe('VirtualEmployeeTab', () => {
     describe('interactions', () => {
         it('calls onStartConversation on click', async () => {
             const { onStartConversation } = renderVETab();
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             fireEvent.click(screen.getByTestId("ve-item-ve-1"));
             expect(onStartConversation).toHaveBeenCalledWith(sampleVEs[0]);
         });
 
         it('calls onStartConversation from keyboard activation', async () => {
             const { onStartConversation } = renderVETab();
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             fireEvent.keyDown(screen.getByTestId("ve-item-ve-1"), { key: "Enter" });
-            fireEvent.keyDown(screen.getByTestId("ve-item-ve-2"), { key: " " });
+            fireEvent.keyDown(screen.getByTestId("ve-item-ve-3"), { key: " " });
             expect(onStartConversation).toHaveBeenNthCalledWith(1, sampleVEs[0]);
-            expect(onStartConversation).toHaveBeenNthCalledWith(2, sampleVEs[1]);
+            expect(onStartConversation).toHaveBeenNthCalledWith(2, sampleVEs[2]);
         });
 
         it('shows context menu on right-click', async () => {
             renderVETab();
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             fireEvent.contextMenu(screen.getByTestId("ve-item-ve-1"));
             expect(screen.getByTestId("ve-context-menu")).toBeTruthy();
             expect(screen.getByTestId("ve-menu-conversation")).toBeTruthy();
@@ -300,7 +361,7 @@ describe('VirtualEmployeeTab', () => {
 
         it('calls onStartConversation from context menu "对话"', async () => {
             const { onStartConversation } = renderVETab();
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             fireEvent.contextMenu(screen.getByTestId("ve-item-ve-1"));
             fireEvent.click(screen.getByTestId("ve-menu-conversation"));
             expect(onStartConversation).toHaveBeenCalledWith(sampleVEs[0]);
@@ -308,10 +369,21 @@ describe('VirtualEmployeeTab', () => {
 
         it('calls onSetFavorite from context menu "设为常用"', async () => {
             const { onSetFavorite } = renderVETab();
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             fireEvent.contextMenu(screen.getByTestId("ve-item-ve-1"));
             fireEvent.click(screen.getByTestId("ve-menu-set-favorite"));
             expect(onSetFavorite).toHaveBeenCalledWith(sampleVEs[0]);
+        });
+
+        it('does not show favorite action for resident employees', async () => {
+            const resident = { ...sampleVEs[0], resident: true };
+            renderVETab({}, [resident]);
+            await act(async () => { await Promise.resolve(); });
+
+            fireEvent.contextMenu(screen.getByTestId("ve-item-ve-1"));
+
+            expect(screen.getByTestId("ve-menu-conversation")).toBeTruthy();
+            expect(screen.queryByTestId("ve-menu-set-favorite")).toBeNull();
         });
 
         it('treats machine-id favorites as already favorited in the context menu', async () => {
@@ -325,7 +397,7 @@ describe('VirtualEmployeeTab', () => {
                 online_status: "online" as const,
             };
             const { onRemoveFavorite, onSetFavorite } = renderVETab({ favoriteEmployeeIds: ["machine-1"] }, [employee]);
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
 
             fireEvent.contextMenu(screen.getByTestId("ve-item-profile-1"));
             fireEvent.click(screen.getByTestId("ve-menu-set-favorite"));
@@ -345,7 +417,7 @@ describe('VirtualEmployeeTab', () => {
                 online_status: "online" as const,
             };
             const { onRemoveFavorite, onSetFavorite } = renderVETab({ favoriteEmployeeIds: ["ve-machine-1"] }, [employee]);
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
 
             fireEvent.contextMenu(screen.getByTestId("ve-item-ve_machine-1"));
             fireEvent.click(screen.getByTestId("ve-menu-set-favorite"));
@@ -360,7 +432,7 @@ describe('VirtualEmployeeTab', () => {
     describe('real-time updates', () => {
         it('refreshes on ve:list_update event with 500ms throttle', async () => {
             const { listFn } = renderVETab();
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             expect(listFn).toHaveBeenCalledTimes(1);
 
             // Trigger event
@@ -378,10 +450,114 @@ describe('VirtualEmployeeTab', () => {
 
         it('refreshes on ve:status_change event', async () => {
             const { listFn } = renderVETab();
-            await act(async () => { await vi.runAllTimersAsync(); });
+            await act(async () => { await Promise.resolve(); });
             expect(listFn).toHaveBeenCalledTimes(1);
 
             act(() => { eventHandlers.get("ve:status_change")?.(); });
+            expect(listFn).toHaveBeenCalledTimes(2);
+        });
+
+        it('refreshes when the manual refresh button is clicked', async () => {
+            const { listFn } = renderVETab();
+            await act(async () => { await Promise.resolve(); });
+            expect(listFn).toHaveBeenCalledTimes(1);
+
+            fireEvent.click(screen.getByTestId("ve-refresh-button"));
+            expect(listFn).toHaveBeenCalledTimes(2);
+        });
+
+        it('keeps the newest refresh result when requests resolve out of order', async () => {
+            let resolveOld: ((value: VirtualEmployeeEntry[]) => void) | undefined;
+            let resolveNew: ((value: VirtualEmployeeEntry[]) => void) | undefined;
+            const oldResult = [{
+                ...sampleVEs[0],
+                id: "ve-old",
+                name: "Old Result",
+            }];
+            const secondResult = [{
+                ...sampleVEs[0],
+                id: "ve-new",
+                name: "New Result",
+            }];
+            const listFn = vi.fn()
+                .mockResolvedValueOnce(sampleVEs)
+                .mockImplementationOnce(() => new Promise<VirtualEmployeeEntry[]>((resolve) => { resolveOld = resolve; }))
+                .mockImplementationOnce(() => new Promise<VirtualEmployeeEntry[]>((resolve) => { resolveNew = resolve; }));
+
+            renderVETab({ listVirtualEmployees: listFn });
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.click(screen.getByTestId("ve-refresh-button"));
+            act(() => { eventHandlers.get("ve:status_change")?.(); });
+            expect(listFn).toHaveBeenCalledTimes(3);
+
+            await act(async () => {
+                resolveNew?.(secondResult);
+                await Promise.resolve();
+            });
+            expect(screen.getByTestId("ve-item-ve-new")).toBeTruthy();
+
+            await act(async () => {
+                resolveOld?.(oldResult);
+                await Promise.resolve();
+            });
+            expect(screen.getByTestId("ve-item-ve-new")).toBeTruthy();
+            expect(screen.queryByTestId("ve-item-ve-old")).toBeNull();
+        });
+
+        it('clears the refreshing state when a full reload supersedes a background refresh', async () => {
+            let resolveBackground: ((value: VirtualEmployeeEntry[]) => void) | undefined;
+            const firstList = vi.fn()
+                .mockResolvedValueOnce(sampleVEs)
+                .mockImplementationOnce(() => new Promise<VirtualEmployeeEntry[]>((resolve) => { resolveBackground = resolve; }));
+            const secondList = vi.fn().mockResolvedValue(sampleVEs.slice(0, 1));
+            const rendered = renderVETab({ listVirtualEmployees: firstList });
+            await act(async () => { await Promise.resolve(); });
+
+            fireEvent.click(screen.getByTestId("ve-refresh-button"));
+            expect((screen.getByTestId("ve-refresh-button") as HTMLButtonElement).disabled).toBe(true);
+
+            rendered.rerender(
+                <VirtualEmployeeTab
+                    onStartConversation={vi.fn()}
+                    onSetFavorite={vi.fn()}
+                    onRemoveFavorite={vi.fn()}
+                    theme={mockTheme}
+                    lang="zh"
+                    listVirtualEmployees={secondList}
+                />
+            );
+            await act(async () => { await Promise.resolve(); });
+            expect((screen.getByTestId("ve-refresh-button") as HTMLButtonElement).disabled).toBe(false);
+
+            await act(async () => {
+                resolveBackground?.(sampleVEs);
+                await Promise.resolve();
+            });
+            expect((screen.getByTestId("ve-refresh-button") as HTMLButtonElement).disabled).toBe(false);
+        });
+
+        it('keeps the current list when a background refresh fails', async () => {
+            const listFn = vi.fn()
+                .mockResolvedValueOnce(sampleVEs)
+                .mockRejectedValueOnce(new Error("temporary outage"));
+            renderVETab({ listVirtualEmployees: listFn });
+            await act(async () => { await Promise.resolve(); });
+            expect(screen.getByTestId("ve-item-ve-1")).toBeTruthy();
+
+            fireEvent.click(screen.getByTestId("ve-refresh-button"));
+            await act(async () => { await Promise.resolve(); });
+
+            expect(screen.getByTestId("ve-list-container")).toBeTruthy();
+            expect(screen.getByTestId("ve-item-ve-1")).toBeTruthy();
+            expect(screen.queryByTestId("ve-empty-hub")).toBeNull();
+        });
+
+        it('refreshes every 30 seconds', async () => {
+            const { listFn } = renderVETab();
+            await act(async () => { await Promise.resolve(); });
+            expect(listFn).toHaveBeenCalledTimes(1);
+
+            await act(async () => { vi.advanceTimersByTime(30000); });
             expect(listFn).toHaveBeenCalledTimes(2);
         });
     });

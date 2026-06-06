@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	uicintent "github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
 // TestRouter_Route_NoDuplicateToolNames verifies the invariant:
@@ -97,6 +98,107 @@ func TestRouter_Route_RecommendationHintRespectsSuppression(t *testing.T) {
 	}
 	if seen["search_and_install_skill"] != 0 {
 		t.Fatalf("search_and_install_skill hint should respect SSH suppression, got %d in %#v", seen["search_and_install_skill"], seen)
+	}
+}
+
+func TestRouter_Route_RecommendationHintBlockedForQueryIntent(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	router.SetRecommender(&alwaysMatchRecommender{})
+	ic := NewIntentClassifier(embedding.NoopEmbedder{})
+	defer ic.Close()
+	ic.SetLLMFunc(func(prompt string) (string, error) { return IntentQuery, nil })
+	router.SetIntentClassifier(ic)
+
+	tools := make([]map[string]interface{}, 0, MaxToolBudget*2)
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "description for "+name))
+	}
+	for i := 0; i < MaxToolBudget; i++ {
+		tools = append(tools, makeToolDef(
+			"pdf_candidate_"+string(rune('a'+i%26))+string(rune('0'+i/26)),
+			"PDF conversion document workflow",
+		))
+	}
+	tools = append(tools, makeToolDef("search_and_install_skill", "hub installer PDF conversion"))
+
+	result := router.Route("What is PDF conversion?", tools)
+	seen := make(map[string]int, len(result))
+	for _, td := range result {
+		seen[ExtractToolName(td)]++
+	}
+	if seen["search_and_install_skill"] != 0 {
+		t.Fatalf("query intent should not receive search_and_install_skill hint, got %d in %#v", seen["search_and_install_skill"], seen)
+	}
+}
+
+func TestRouter_Route_SearchInstallBlockedForUICMaintenanceIntent(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	router.SetRecommender(&alwaysMatchRecommender{})
+	router.SetUnifiedClassifier(uicintent.New(uicintent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"maintenance","score":0.95},{"skill":"coding","score":0.20}]}`, nil
+		},
+	}))
+
+	tools := make([]map[string]interface{}, 0, MaxToolBudget*2)
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "description for "+name))
+	}
+	for i := 0; i < MaxToolBudget; i++ {
+		tools = append(tools, makeToolDef(
+			"maintenance_candidate_"+string(rune('a'+i%26))+string(rune('0'+i/26)),
+			"maintenance workflow",
+		))
+	}
+	tools = append(tools, makeToolDef("search_and_install_skill", "hub installer maintenance helper"))
+
+	result := router.Route("review/fix/optimize", tools)
+	for _, td := range result {
+		if ExtractToolName(td) == "search_and_install_skill" {
+			t.Fatalf("UIC maintenance intent should not receive search_and_install_skill, got %#v", result)
+		}
+	}
+}
+
+func TestSkillInstallEligibilityBlocksLookupAndInfrastructureIntents(t *testing.T) {
+	for _, tc := range []struct {
+		intent string
+		want   bool
+	}{
+		{intent: IntentQuery, want: false},
+		{intent: IntentSSH, want: false},
+		{intent: IntentBrowser, want: false},
+		{intent: IntentShortCommand, want: false},
+		{intent: IntentUnknown, want: false},
+		{intent: IntentCoding, want: true},
+		{intent: IntentContent, want: true},
+	} {
+		if got := intentClassifierSkillInstallEligible(IntentResult{Intent: tc.intent}); got != tc.want {
+			t.Fatalf("intentClassifierSkillInstallEligible(%q) = %v, want %v", tc.intent, got, tc.want)
+		}
+	}
+
+	for _, tc := range []struct {
+		label uicintent.IntentLabel
+		want  bool
+	}{
+		{label: uicintent.LabelSearch, want: false},
+		{label: uicintent.LabelLiveData, want: false},
+		{label: uicintent.LabelSSH, want: false},
+		{label: uicintent.LabelBrowser, want: false},
+		{label: uicintent.LabelNonCoding, want: false},
+		{label: uicintent.LabelUnknown, want: false},
+		{label: uicintent.LabelMaintenance, want: false},
+		{label: uicintent.LabelBugFix, want: false},
+		{label: uicintent.LabelCoding, want: true},
+		{label: uicintent.LabelOffice, want: true},
+	} {
+		if got := uicSkillInstallEligible(uicintent.ClassificationResult{Primary: tc.label}); got != tc.want {
+			t.Fatalf("uicSkillInstallEligible(%q) = %v, want %v", tc.label, got, tc.want)
+		}
 	}
 }
 

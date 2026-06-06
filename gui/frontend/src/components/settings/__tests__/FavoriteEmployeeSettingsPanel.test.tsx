@@ -18,6 +18,7 @@ describe('FavoriteEmployeeSettingsPanel', () => {
         render(<FavoriteEmployeeSettingsPanel favoriteEmployeeIds={[]} veList={veList} onAdd={onAdd} onRemove={vi.fn()} onReorder={vi.fn()} lang="en" />);
 
         fireEvent.click(screen.getByRole('button', { name: /Add Favorite/i }));
+        expect(screen.queryByRole('button', { name: 'Analyst' })).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: 'Researcher' }));
 
         expect(onAdd).toHaveBeenCalledWith('ve-1');
@@ -52,5 +53,23 @@ describe('FavoriteEmployeeSettingsPanel', () => {
         fireEvent.click(screen.getAllByRole('button', { name: /Add Favorite/i })[1]);
         fireEvent.click(screen.getByRole('button', { name: 'Machine Bot' }));
         expect(onAdd).toHaveBeenCalledWith('machine-1');
+    });
+
+    it('does not offer resident employees as user-managed favorites', () => {
+        const onAdd = vi.fn();
+        render(<FavoriteEmployeeSettingsPanel favoriteEmployeeIds={[]} veList={[...veList, { ...veList[0], id: 've-resident', name: 'Resident Bot', resident: true }]} onAdd={onAdd} onRemove={vi.fn()} onReorder={vi.fn()} lang="en" />);
+
+        fireEvent.click(screen.getByRole('button', { name: /Add Favorite/i }));
+
+        expect(screen.queryByRole('button', { name: 'Resident Bot' })).toBeNull();
+    });
+
+    it('does not offer equivalent favorite aliases as addable employees', () => {
+        render(<FavoriteEmployeeSettingsPanel favoriteEmployeeIds={['ve-machine-1']} veList={veListWithMachines} onAdd={vi.fn()} onRemove={vi.fn()} onReorder={vi.fn()} lang="en" />);
+
+        expect(screen.getByText('Machine Bot')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: /Add Favorite/i }));
+
+        expect(screen.queryByRole('button', { name: 'Machine Bot' })).toBeNull();
     });
 });

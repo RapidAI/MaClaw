@@ -25,6 +25,7 @@ func (p *skillExecutorProvider) ListActiveSkills() []tool.SkillSummary {
 			Name:                s.Name,
 			Triggers:            s.Triggers,
 			Description:         s.Description,
+			Capabilities:        s.Capabilities,
 			RequiresTools:       s.RequiresTools,
 			FallbackForTools:    s.FallbackForTools,
 			RequiresToolsets:    s.RequiresToolsets,

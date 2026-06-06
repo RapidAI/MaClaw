@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/tui/commands"
 )
 
 // toolKnowledgeSearch performs an FTS search against the knowledge store.
@@ -43,7 +45,9 @@ func (app *TUIApp) toolKnowledgeSearch(args map[string]interface{}) string {
 	if len(results) == 0 {
 		return "No results found in knowledge base."
 	}
-	return formatKnowledgeSearchResults(results)
+	// Pass asset base dir for inline image thumbnail embedding.
+	assetDir := filepath.Join(commands.ResolveDataDir(), "knowledge_assets")
+	return formatKnowledgeSearchResults(results, assetDir)
 }
 
 // toolKnowledgeContextPack builds a citation-backed context bundle under a character budget.
@@ -170,7 +174,13 @@ func (app *TUIApp) toolKnowledgeSaveURL(args map[string]interface{}) string {
 }
 
 // formatKnowledgeSearchResults formats search results for LLM consumption.
-func formatKnowledgeSearchResults(results []knowledge.SearchResult) string {
+// When assetBaseDir is non-empty, image results include inline thumbnail markers
+// that the frontend can parse and render as images.
+func formatKnowledgeSearchResults(results []knowledge.SearchResult, assetBaseDir ...string) string {
+	baseDir := ""
+	if len(assetBaseDir) > 0 {
+		baseDir = assetBaseDir[0]
+	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Found %d results:\n\n", len(results)))
 	for i, r := range results {
@@ -185,7 +195,26 @@ func formatKnowledgeSearchResults(results []knowledge.SearchResult) string {
 		if text == "" {
 			text = "(no snippet)"
 		}
-		b.WriteString(fmt.Sprintf("%d. [%.2f] %s\n   %s\n", i+1, r.Score, source, text))
+
+		// Image result: annotate with [图片] prefix + inline thumbnail
+		if r.NodeType == knowledge.NodeTypeImage || r.Source.Kind == knowledge.SourceKindImage {
+			prefix := "[图片] "
+			b.WriteString(fmt.Sprintf("%d. [%.2f] %s%s\n   %s\n", i+1, r.Score, prefix, source, text))
+			// Embed inline thumbnail marker (frontend renders as image)
+			if baseDir != "" {
+				if embed := knowledge.EmbedImageThumbForSearchResult(r, baseDir); embed != nil {
+					b.WriteString("   ")
+					b.WriteString(knowledge.FormatKBImageMarker(embed))
+					b.WriteString("\n")
+				}
+			}
+			if r.Citation != "" {
+				b.WriteString(fmt.Sprintf("   图片路径: %s\n", r.Citation))
+			}
+			b.WriteString("   提示: 使用 send_file 工具可将此图片发送给用户，或图片已通过上方标记显示给用户\n")
+		} else {
+			b.WriteString(fmt.Sprintf("%d. [%.2f] %s\n   %s\n", i+1, r.Score, source, text))
+		}
 	}
 	return b.String()
 }

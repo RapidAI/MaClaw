@@ -4456,16 +4456,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	if config.EnvCheckInterval < 2 || config.EnvCheckInterval > 30 {
 		config.EnvCheckInterval = 7 // Default to 7 days
 	}
-	// Ensure Projects is never nil — frontend depends on it being a valid array.
-	if config.Projects == nil {
-		home, _ := os.UserHomeDir()
-		config.Projects = []corelib.ProjectConfig{
-			{Id: "default", Name: "Project 1", Path: home, YoloMode: false},
-		}
-		if config.CurrentProject == "" {
-			config.CurrentProject = "default"
-		}
-	}
 	// Ensure defaults for new fields
 	if config.Claude.CurrentModel == "" && len(config.Claude.Models) > 0 {
 		config.Claude.CurrentModel = config.Claude.Models[0].ModelName

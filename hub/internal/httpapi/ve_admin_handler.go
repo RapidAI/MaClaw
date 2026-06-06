@@ -16,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -40,6 +41,8 @@ type digitalEmployeeEntry struct {
 	AccessPolicy       string   `json:"access_policy"`
 	Whitelist          []string `json:"whitelist,omitempty"`
 	Blacklist          []string `json:"blacklist,omitempty"`
+	VisibleGroupIDs    []string `json:"visible_group_ids,omitempty"`
+	Resident           bool     `json:"resident,omitempty"`
 	Status             string   `json:"status"`
 	OnlineStatus       string   `json:"online_status"`
 	RegisteredAt       string   `json:"registered_at,omitempty"`
@@ -88,6 +91,10 @@ type veMachinePresenceGetter interface {
 	GetMachineInfo(ctx context.Context, machineID string) (*device.MachineRuntimeInfo, error)
 }
 
+type veVisibilityResolver interface {
+	RequesterGroupPath(ctx context.Context, tenantID, userID string) ([]string, error)
+}
+
 type veHistorySearchMatch struct {
 	Employee    digitalEmployeeEntry              `json:"employee"`
 	Discussions []coreliba2a.HubDiscussionSummary `json:"discussions"`
@@ -111,7 +118,7 @@ const (
 )
 
 // VEAdminListHandler handles GET /api/ve/list.
-func VEAdminListHandler(system store.SystemSettingsRepository, ownerLookups ...veOwnerLookup) http.HandlerFunc {
+func VEAdminListHandler(system store.SystemSettingsRepository, presenceGetter veMachinePresenceGetter, ownerLookups ...veOwnerLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		system := veSystemSettingsForRequest(r, system)
 		cfg := loadVEGroupConfig(r.Context(), system)
@@ -119,6 +126,9 @@ func VEAdminListHandler(system store.SystemSettingsRepository, ownerLookups ...v
 		enrichVERegistryOwners(r.Context(), &registry, firstVEOwnerLookup(ownerLookups...))
 		enrichVERegistryEmployeeTypes(&registry)
 		employees := registry.Employees
+		for i := range employees {
+			employees[i] = applyVEDiscoverablePresence(r.Context(), employees[i], presenceGetter)
+		}
 		sort.SliceStable(employees, func(i, j int) bool {
 			return employees[i].RegisteredAt > employees[j].RegisteredAt
 		})
@@ -219,6 +229,8 @@ func VERegisterHandler(system store.SystemSettingsRepository, authenticator veMa
 			previous := registry.Employees[idx]
 			entry.ID = previous.ID
 			entry.OwnerEmail = firstNonEmptyVE(entry.OwnerEmail, previous.OwnerEmail)
+			entry.VisibleGroupIDs = normalizeVEStringList(previous.VisibleGroupIDs)
+			entry.Resident = previous.Resident
 			if req.AvatarDataURL == nil {
 				entry.AvatarDataURL = previous.AvatarDataURL
 			}
@@ -232,7 +244,10 @@ func VERegisterHandler(system store.SystemSettingsRepository, authenticator veMa
 			entry.ID = veIDForMachine(principal.MachineID)
 			entry.Status = veRegistrationStatus(autoApprove, authz, registry.Employees, "")
 			registry.Employees = append(registry.Employees, entry)
+			idx = len(registry.Employees) - 1
 		}
+		normalizeVERegistryResidentFlags(&registry)
+		entry = registry.Employees[idx]
 		if err := saveVERegistry(r.Context(), system, registry); err != nil {
 			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
 			return
@@ -276,8 +291,12 @@ func VESettingsHandler(system store.SystemSettingsRepository, authenticator veMa
 		entry.Status = firstNonEmptyVE(previous.Status, veStatusPending)
 		entry.RegisteredAt = previous.RegisteredAt
 		entry.OnlineStatus = veOnlineStatusOnline
+		entry.VisibleGroupIDs = normalizeVEStringList(previous.VisibleGroupIDs)
+		entry.Resident = previous.Resident
 		entry.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		registry.Employees[idx] = entry
+		normalizeVERegistryResidentFlags(&registry)
+		entry = registry.Employees[idx]
 		if err := saveVERegistry(r.Context(), system, registry); err != nil {
 			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
 			return
@@ -309,7 +328,7 @@ func VEStatusHandler(system store.SystemSettingsRepository, authenticator veMach
 	}
 }
 
-func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator veMachineAuthenticator, presenceGetters ...veMachinePresenceGetter) http.HandlerFunc {
+func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator veMachineAuthenticator, options ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := authenticateVEMachine(w, r, authenticator)
 		if !ok {
@@ -327,14 +346,25 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 		registry := loadVERegistry(r.Context(), system)
 		employees := make([]digitalEmployeeEntry, 0, len(registry.Employees))
 		accessID := veRequesterAccessID(principal)
+		presenceGetter, visibilityResolver := veDiscoverableOptions(options...)
+		requesterGroupPath, requesterGroupPathResolved := []string(nil), false
+		if veRegistryHasVisibleGroupRestrictions(registry) {
+			requesterGroupPath, requesterGroupPathResolved = requesterVEGroupPath(r.Context(), visibilityResolver, principal)
+		}
 		for _, entry := range registry.Employees {
 			if entry.Status != veStatusActive || groupDiscussionParticipantIdentityMatches(entry.MachineID, principal.MachineID) {
+				continue
+			}
+			if !veVisibleToRequester(entry, requesterGroupPath, requesterGroupPathResolved) {
 				continue
 			}
 			if !veAccessAllowed(entry, accessID) {
 				continue
 			}
-			entry = applyVEDiscoverablePresence(r.Context(), entry, firstVEMachinePresenceGetter(presenceGetters...))
+			entry = applyVEDiscoverablePresence(r.Context(), entry, presenceGetter)
+			if !strings.EqualFold(strings.TrimSpace(entry.OnlineStatus), veOnlineStatusOnline) {
+				continue
+			}
 			employees = append(employees, entry)
 		}
 		sort.SliceStable(employees, func(i, j int) bool { return employees[i].Name < employees[j].Name })
@@ -343,6 +373,99 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 			"max_group_participants": cfg.MaxGroupParticipants,
 		})
 	}
+}
+
+func veRegistryHasVisibleGroupRestrictions(registry digitalEmployeeRegistry) bool {
+	for _, entry := range registry.Employees {
+		if entry.Status == veStatusActive && len(normalizeVEStringList(entry.VisibleGroupIDs)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func veDiscoverableOptions(options ...any) (veMachinePresenceGetter, veVisibilityResolver) {
+	var presenceGetter veMachinePresenceGetter
+	var visibilityResolver veVisibilityResolver
+	for _, option := range options {
+		if option == nil {
+			continue
+		}
+		if getter, ok := option.(veMachinePresenceGetter); ok && presenceGetter == nil {
+			presenceGetter = getter
+		}
+		if resolver, ok := option.(veVisibilityResolver); ok && visibilityResolver == nil {
+			visibilityResolver = resolver
+		}
+	}
+	return presenceGetter, visibilityResolver
+}
+
+func requesterVEGroupPath(ctx context.Context, resolver veVisibilityResolver, principal *auth.MachinePrincipal) ([]string, bool) {
+	if resolver == nil || principal == nil {
+		return nil, false
+	}
+	path, err := resolver.RequesterGroupPath(ctx, principal.TenantID, principal.UserID)
+	if err != nil {
+		return nil, false
+	}
+	return normalizeVEStringList(path), true
+}
+
+func veVisibleToRequester(entry digitalEmployeeEntry, requesterGroupPath []string, requesterGroupPathResolved bool) bool {
+	visibleGroups := normalizeVEStringList(entry.VisibleGroupIDs)
+	if len(visibleGroups) == 0 {
+		return true
+	}
+	if !requesterGroupPathResolved {
+		return false
+	}
+	for _, groupID := range visibleGroups {
+		if containsVEValue(requesterGroupPath, groupID) {
+			return true
+		}
+	}
+	return false
+}
+
+type veSecurityVisibilityResolver struct {
+	securitySvc *security.SecurityService
+	users       veOwnerLookup
+}
+
+func (r veSecurityVisibilityResolver) RequesterGroupPath(ctx context.Context, tenantID, userID string) ([]string, error) {
+	if r.securitySvc == nil {
+		return nil, fmt.Errorf("security service is not configured")
+	}
+	email := strings.TrimSpace(userID)
+	if r.users != nil && strings.TrimSpace(userID) != "" {
+		user, err := r.users.GetByID(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("lookup requester user: %w", err)
+		}
+		if user == nil || strings.TrimSpace(user.Email) == "" {
+			return nil, fmt.Errorf("requester user email not found")
+		}
+		if store.NormalizeTenantID(user.TenantID) != store.NormalizeTenantID(tenantID) {
+			return nil, fmt.Errorf("requester user tenant mismatch")
+		}
+		email = strings.TrimSpace(user.Email)
+	}
+	if email == "" {
+		return nil, fmt.Errorf("requester email is empty")
+	}
+	groupID, groupPath, _, _, err := r.securitySvc.GetUserPolicyView(security.WithTenant(ctx, tenantID), email)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(groupPath)+1)
+	for _, item := range groupPath {
+		ids = append(ids, item.ID)
+	}
+	if groupID != "" {
+		ids = append(ids, groupID)
+	}
+	return ids, nil
 }
 
 func applyVEDiscoverablePresence(ctx context.Context, entry digitalEmployeeEntry, getter veMachinePresenceGetter) digitalEmployeeEntry {
@@ -359,15 +482,6 @@ func applyVEDiscoverablePresence(ctx context.Context, entry digitalEmployeeEntry
 		entry.OnlineStatus = veOnlineStatusOffline
 	}
 	return entry
-}
-
-func firstVEMachinePresenceGetter(getters ...veMachinePresenceGetter) veMachinePresenceGetter {
-	for _, getter := range getters {
-		if getter != nil {
-			return getter
-		}
-	}
-	return nil
 }
 
 // VEInitiateHandler handles POST /api/ve/{id}/initiate for a machine-owned direct discussion.
@@ -722,10 +836,12 @@ func VEAdminActionHandler(system store.SystemSettingsRepository, action string, 
 			}
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			entry.Status = veStatusRejected
+			entry.Resident = false
 			entry.RejectReason = strings.TrimSpace(req.Reason)
 			entry.RejectedAt = now
 		case "disable":
 			entry.Status = veStatusDisabled
+			entry.Resident = false
 			entry.DisabledAt = now
 		default:
 			writeError(w, http.StatusBadRequest, "INVALID_ACTION", "unknown digital employee action")
@@ -740,6 +856,156 @@ func VEAdminActionHandler(system store.SystemSettingsRepository, action string, 
 		emitVEAdminActionEvent(firstVEMachineEventSender(senders...), action, entry)
 		postPlatformEmployeeActionCallback(r.Context(), baseSystem, tenantID, action, entry)
 		writeJSON(w, http.StatusOK, map[string]any{"employee": entry})
+	}
+}
+
+func VEAdminResidentHandler(system store.SystemSettingsRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PUT")
+			return
+		}
+		system := veSystemSettingsForRequest(r, system)
+		veID := strings.TrimSpace(r.PathValue("id"))
+		if veID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
+			return
+		}
+		var req struct {
+			Resident *bool `json:"resident"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+			return
+		}
+		if req.Resident == nil {
+			writeError(w, http.StatusBadRequest, "INVALID_RESIDENT", "resident is required")
+			return
+		}
+		registry := loadVERegistry(r.Context(), system)
+		idx := registry.findByIDOrMachineIDOrPlatformEmployeeID(veID)
+		if idx < 0 {
+			writeError(w, http.StatusNotFound, "VE_NOT_FOUND", "digital employee not found")
+			return
+		}
+		entry := registry.Employees[idx]
+		if *req.Resident && entry.Status != veStatusActive {
+			writeError(w, http.StatusConflict, "VE_NOT_ACTIVE", "only active digital employee can be resident")
+			return
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		if *req.Resident {
+			for i := range registry.Employees {
+				nextResident := i == idx
+				if registry.Employees[i].Resident != nextResident {
+					registry.Employees[i].Resident = nextResident
+					registry.Employees[i].UpdatedAt = now
+				}
+			}
+		} else if registry.Employees[idx].Resident {
+			registry.Employees[idx].Resident = false
+			registry.Employees[idx].UpdatedAt = now
+		}
+		normalizeVERegistryResidentFlags(&registry)
+		entry = registry.Employees[idx]
+		if err := saveVERegistry(r.Context(), system, registry); err != nil {
+			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"employee": entry})
+	}
+}
+
+func VEAdminVisibilityHandler(system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PUT")
+			return
+		}
+		system := veSystemSettingsForRequest(r, system)
+		veID := strings.TrimSpace(r.PathValue("id"))
+		if veID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
+			return
+		}
+		var req struct {
+			VisibleGroupIDs      *[]string `json:"visible_group_ids"`
+			VisibleDepartmentIDs *[]string `json:"visible_department_ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+			return
+		}
+		visibleGroupIDs := []string(nil)
+		if req.VisibleGroupIDs != nil {
+			visibleGroupIDs = normalizeVEStringList(*req.VisibleGroupIDs)
+		} else if req.VisibleDepartmentIDs != nil {
+			visibleGroupIDs = normalizeVEStringList(*req.VisibleDepartmentIDs)
+		} else {
+			writeError(w, http.StatusBadRequest, "INVALID_VISIBLE_GROUPS", "visible_group_ids is required")
+			return
+		}
+		registry := loadVERegistry(r.Context(), system)
+		idx := registry.findByIDOrMachineIDOrPlatformEmployeeID(veID)
+		if idx < 0 {
+			writeError(w, http.StatusNotFound, "VE_NOT_FOUND", "digital employee not found")
+			return
+		}
+		if err := validateVEVisibleGroupIDs(securityRequestContext(r), securitySvc, visibleGroupIDs); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_VISIBLE_GROUPS", err.Error())
+			return
+		}
+		entry := registry.Employees[idx]
+		entry.VisibleGroupIDs = visibleGroupIDs
+		entry.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		registry.Employees[idx] = entry
+		if err := saveVERegistry(r.Context(), system, registry); err != nil {
+			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"employee": entry})
+	}
+}
+
+func validateVEVisibleGroupIDs(ctx context.Context, securitySvc *security.SecurityService, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if securitySvc == nil {
+		return fmt.Errorf("security service is not configured")
+	}
+	tree, err := securitySvc.GetGroupTree(ctx)
+	if err != nil {
+		return fmt.Errorf("load security groups: %w", err)
+	}
+	valid := map[string]struct{}{}
+	collectVEVisibleDepartmentIDs(tree, valid)
+	for _, id := range ids {
+		if _, ok := valid[id]; !ok {
+			return fmt.Errorf("unknown group id %q", id)
+		}
+	}
+	return nil
+}
+
+func collectVEVisibleDepartmentIDs(root *security.GroupTreeNode, out map[string]struct{}) {
+	if root == nil {
+		return
+	}
+	for _, child := range root.Children {
+		collectVEGroupTreeIDs(child, out)
+	}
+}
+
+func collectVEGroupTreeIDs(node *security.GroupTreeNode, out map[string]struct{}) {
+	if node == nil {
+		return
+	}
+	if strings.TrimSpace(node.ID) != "" {
+		out[strings.TrimSpace(node.ID)] = struct{}{}
+	}
+	for _, child := range node.Children {
+		collectVEGroupTreeIDs(child, out)
 	}
 }
 
@@ -1274,7 +1540,9 @@ func loadVERegistry(ctx context.Context, system store.SystemSettingsRepository) 
 	onlineChanged := normalizeVERegistryOnlineStatuses(&registry)
 	typeChanged := enrichVERegistryEmployeeTypes(&registry)
 	avatarChanged := normalizeVERegistryAvatarDataURLs(&registry)
-	if onlineChanged || typeChanged || avatarChanged {
+	visibilityChanged := normalizeVERegistryVisibleGroupIDs(&registry)
+	residentChanged := normalizeVERegistryResidentFlags(&registry)
+	if onlineChanged || typeChanged || avatarChanged || visibilityChanged || residentChanged {
 		_ = saveVERegistry(ctx, system, registry)
 	}
 	return registry
@@ -1284,11 +1552,38 @@ func saveVERegistry(ctx context.Context, system store.SystemSettingsRepository, 
 	normalizeVERegistryOnlineStatuses(&registry)
 	enrichVERegistryEmployeeTypes(&registry)
 	normalizeVERegistryAvatarDataURLs(&registry)
+	normalizeVERegistryVisibleGroupIDs(&registry)
+	normalizeVERegistryResidentFlags(&registry)
 	data, err := json.Marshal(registry)
 	if err != nil {
 		return err
 	}
 	return system.Set(ctx, veRegistryKey, string(data))
+}
+
+func normalizeVERegistryResidentFlags(registry *digitalEmployeeRegistry) bool {
+	if registry == nil {
+		return false
+	}
+	changed := false
+	seenResident := false
+	for idx := range registry.Employees {
+		if registry.Employees[idx].Status != veStatusActive && registry.Employees[idx].Resident {
+			registry.Employees[idx].Resident = false
+			changed = true
+			continue
+		}
+		if !registry.Employees[idx].Resident {
+			continue
+		}
+		if seenResident {
+			registry.Employees[idx].Resident = false
+			changed = true
+			continue
+		}
+		seenResident = true
+	}
+	return changed
 }
 
 func normalizeVERegistryAvatarDataURLs(registry *digitalEmployeeRegistry) bool {
@@ -1314,6 +1609,33 @@ func normalizeVERegistryAvatarDataURLs(registry *digitalEmployeeRegistry) bool {
 		}
 	}
 	return changed
+}
+
+func normalizeVERegistryVisibleGroupIDs(registry *digitalEmployeeRegistry) bool {
+	if registry == nil {
+		return false
+	}
+	changed := false
+	for idx := range registry.Employees {
+		normalized := normalizeVEStringList(registry.Employees[idx].VisibleGroupIDs)
+		if !equalVEStringList(registry.Employees[idx].VisibleGroupIDs, normalized) {
+			registry.Employees[idx].VisibleGroupIDs = normalized
+			changed = true
+		}
+	}
+	return changed
+}
+
+func equalVEStringList(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func loadVEAccessRequests(ctx context.Context, system store.SystemSettingsRepository) digitalEmployeeAccessRequestStore {

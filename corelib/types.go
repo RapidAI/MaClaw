@@ -278,6 +278,7 @@ type NLSkillEntry struct {
 	RequiresGUI   bool                `json:"requires_gui,omitempty"` // Linux 下是否需要 GUI 环境
 
 	// Tool availability conditions
+	Capabilities        []string `json:"capabilities,omitempty"`
 	RequiresTools       []string `json:"requires_tools,omitempty"`
 	FallbackForTools    []string `json:"fallback_for_tools,omitempty"`
 	RequiresToolsets    []string `json:"requires_toolsets,omitempty"`

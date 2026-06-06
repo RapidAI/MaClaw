@@ -168,6 +168,11 @@ func (b *DynamicToolBuilder) BuildAll() []map[string]interface{} {
 // userMessage is used for relevance scoring when filtering is active.
 func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} {
 	tools := b.registry.ListAvailable()
+	var skillScore float64
+	var matchedSkills []string
+	if b.skillProvider != nil {
+		skillScore, matchedSkills = b.builderSkillMatchScore(userMessage)
+	}
 	if len(tools) <= b.maxDirectTools {
 		out := make([]map[string]interface{}, 0, len(tools))
 		for _, t := range tools {
@@ -177,7 +182,11 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 			if t.Description == "" {
 				continue // skip backward-compat aliases
 			}
-			out = append(out, RegisteredToolToDef(t))
+			def := RegisteredToolToDef(t)
+			if t.Name == "manage_skill" && len(matchedSkills) > 0 {
+				def = enrichRunSkillDescription(def, matchedSkills, b.matchedSkillCapabilities(matchedSkills))
+			}
+			out = append(out, def)
 		}
 		return out
 	}
@@ -244,13 +253,6 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	// Multi-signal scoring: retrieval + contextual experience + outcome + priority + skill_match.
 	queryTokens := bm25.Tokenize(userMessage)
 	normScores := minMaxNormalize(bm25Scores)
-
-	// Compute skill match score (fourth signal).
-	var skillScore float64
-	var matchedSkills []string
-	if b.skillProvider != nil {
-		skillScore, matchedSkills = b.builderSkillMatchScore(userMessage)
-	}
 
 	type scored struct {
 		tool  RegisteredTool
@@ -354,8 +356,8 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	for _, t := range builtins {
 		def := RegisteredToolToDef(t)
 		// Enhance manage_skill description with matched skill names.
-		if t.Name == "manage_skill" && len(matchedSkills) > 0 && skillScore > 0.3 {
-			def = enrichRunSkillDescription(def, matchedSkills)
+		if t.Name == "manage_skill" && len(matchedSkills) > 0 {
+			def = enrichRunSkillDescription(def, matchedSkills, b.matchedSkillCapabilities(matchedSkills))
 		}
 		out = append(out, def)
 	}
@@ -366,6 +368,10 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		out = append(out, RegisteredToolToDef(scoredList[i].tool))
 	}
 	return out
+}
+
+func (b *DynamicToolBuilder) matchedSkillCapabilities(matchedSkills []string) []string {
+	return matchedSkillCapabilitiesFromProvider(b.skillProvider, matchedSkills)
 }
 
 // RegisteredToolToDef converts a RegisteredTool to an OpenAI function calling definition.

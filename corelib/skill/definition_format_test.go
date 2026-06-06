@@ -1,6 +1,9 @@
 package skill
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestSkillDefinitionFileRejectsJSONFormat(t *testing.T) {
 	if _, err := ParseSkillDefinitionFile([]byte(`{"name":"json-tool"}`), "json"); err == nil {
@@ -8,5 +11,34 @@ func TestSkillDefinitionFileRejectsJSONFormat(t *testing.T) {
 	}
 	if _, err := FormatSkillDefinitionFile(&SkillYAMLFile{Name: "json-tool"}, "json"); err == nil {
 		t.Fatal("FormatSkillDefinitionFile(json) should reject retired JSON skill definitions")
+	}
+}
+
+func TestSkillYAMLFileRoundTripsCapabilities(t *testing.T) {
+	want := []string{"current_data", "weather"}
+	data, err := FormatSkillYAMLFile(&SkillYAMLFile{
+		Name:         "weather-query",
+		Capabilities: want,
+	})
+	if err != nil {
+		t.Fatalf("FormatSkillYAMLFile() error = %v", err)
+	}
+	parsed, err := ParseSkillYAMLFile(data)
+	if err != nil {
+		t.Fatalf("ParseSkillYAMLFile() error = %v", err)
+	}
+	if !reflect.DeepEqual(parsed.Capabilities, want) {
+		t.Fatalf("Capabilities = %#v, want %#v", parsed.Capabilities, want)
+	}
+}
+
+func TestParseSkillYAMLFileAcceptsCSVCapabilities(t *testing.T) {
+	parsed, err := ParseSkillYAMLFile([]byte("name: weather-query\ncapabilities: current_data, weather\n"))
+	if err != nil {
+		t.Fatalf("ParseSkillYAMLFile() error = %v", err)
+	}
+	want := []string{"current_data", "weather"}
+	if !reflect.DeepEqual(parsed.Capabilities, want) {
+		t.Fatalf("Capabilities = %#v, want %#v", parsed.Capabilities, want)
 	}
 }

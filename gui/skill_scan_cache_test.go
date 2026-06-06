@@ -119,6 +119,29 @@ func TestSkillContentHashIncludesSecurityRelevantMetadata(t *testing.T) {
 		t.Fatal("operation metadata mutation did not change skill hash")
 	}
 }
+
+func TestSkillContentHashIncludesCapabilities(t *testing.T) {
+	dir := t.TempDir()
+	entry := &corelib.NLSkillEntry{
+		Name:         "live-skill",
+		Description:  "Looks up live data.",
+		SkillDir:     dir,
+		Capabilities: []string{"current_data"},
+	}
+	before, err := skillContentHash(entry)
+	if err != nil {
+		t.Fatalf("skillContentHash() error = %v", err)
+	}
+	entry.Capabilities = []string{"current_data", "weather"}
+	after, err := skillContentHash(entry)
+	if err != nil {
+		t.Fatalf("skillContentHash() after capabilities error = %v", err)
+	}
+	if after == before {
+		t.Fatal("capability mutation did not change skill hash")
+	}
+}
+
 func TestSkillScanCacheDoesNotHidePostScanContentMutation(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "skill.md"), []byte("# demo\n"), 0o644); err != nil {

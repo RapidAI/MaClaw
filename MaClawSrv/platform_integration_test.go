@@ -735,7 +735,7 @@ func TestPlatformVirtualEmployeeSourceUserRepairsLegacyServiceGroupModelOnProvis
 		t.Fatalf("read-only runtime status should not repair legacy model, got %#v", cfg.AppConfig.MaclawLLMModel)
 	}
 
-	payload := map[string]any{"tenant_id": "tenant-001", "source_user": map[string]any{"id": "emp-001", "account_type": "virtual_employee", "provider": "virtualemployee-platform", "is_virtual_employee": true}}
+	payload := map[string]any{"tenant_id": "tenant-001", "settings_tab": "Channels", "source_user": map[string]any{"id": "emp-001", "account_type": "virtual_employee", "provider": "virtualemployee-platform", "is_virtual_employee": true}}
 	body, _ := json.Marshal(payload)
 	req = httptest.NewRequest(http.MethodPost, "/api/platform/source-users/emp-001/settings-link", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -744,6 +744,60 @@ func TestPlatformVirtualEmployeeSourceUserRepairsLegacyServiceGroupModelOnProvis
 	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("settings link status=%d body=%s", w.Code, w.Body.String())
+	}
+	var linkOut struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&linkOut); err != nil {
+		t.Fatalf("decode settings link: %v", err)
+	}
+	launchURL, err := url.Parse(linkOut.URL)
+	if err != nil {
+		t.Fatalf("parse settings link URL %q: %v", linkOut.URL, err)
+	}
+	if launchURL.Query().Get("settings_tab") != "im" {
+		t.Fatalf("settings link should target IM tab: %s", linkOut.URL)
+	}
+	blockedPayload := map[string]any{"tenant_id": "tenant-001", "settings_tab": "advanced", "source_user": map[string]any{"id": "emp-001", "account_type": "virtual_employee", "provider": "virtualemployee-platform", "is_virtual_employee": true}}
+	blockedBody, _ := json.Marshal(blockedPayload)
+	req = httptest.NewRequest(http.MethodPost, "/api/platform/source-users/emp-001/settings-link", bytes.NewReader(blockedBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("advanced settings link status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&linkOut); err != nil {
+		t.Fatalf("decode advanced settings link: %v", err)
+	}
+	launchURL, err = url.Parse(linkOut.URL)
+	if err != nil {
+		t.Fatalf("parse advanced settings link URL %q: %v", linkOut.URL, err)
+	}
+	if launchURL.Query().Get("settings_tab") != "" {
+		t.Fatalf("advanced settings tab should be hidden from launch URL: %s", linkOut.URL)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/platform/source-users/emp-001/knowledge-link", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("knowledge link status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&linkOut); err != nil {
+		t.Fatalf("decode knowledge link: %v", err)
+	}
+	launchURL, err = url.Parse(linkOut.URL)
+	if err != nil {
+		t.Fatalf("parse knowledge link URL %q: %v", linkOut.URL, err)
+	}
+	if launchURL.Query().Get("view") != "knowledge" {
+		t.Fatalf("knowledge link should target knowledge view: %s", linkOut.URL)
+	}
+	if launchURL.Query().Get("settings_tab") != "" {
+		t.Fatalf("knowledge link should not carry settings_tab: %s", linkOut.URL)
 	}
 	cfg, err = svc.GetUserConfig(t.Context(), principal)
 	if err != nil {
@@ -754,6 +808,25 @@ func TestPlatformVirtualEmployeeSourceUserRepairsLegacyServiceGroupModelOnProvis
 	}
 	if len(cfg.AppConfig.MaclawLLMProviders) != 1 || cfg.AppConfig.MaclawLLMProviders[0].Model != "auto" {
 		t.Fatalf("legacy provider service-group model should be repaired to auto, got %#v", cfg.AppConfig.MaclawLLMProviders)
+	}
+}
+
+func TestNormalizePlatformSettingsTab(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{in: "Channels", want: "im"},
+		{in: "channels_more", want: "im"},
+		{in: "IM", want: "im"},
+		{in: "security", want: "security"},
+		{in: "advanced", want: ""},
+		{in: "unknown", want: ""},
+		{in: " ../im ", want: ""},
+	} {
+		if got := normalizePlatformSettingsTab(tc.in); got != tc.want {
+			t.Fatalf("normalizePlatformSettingsTab(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

@@ -237,6 +237,14 @@ type AppConfig struct {
 	SSHHosts []SSHHostEntry `json:"ssh_hosts,omitempty"`
 	// Knowledge Skill token budget.
 	KnowledgeSkillTokenBudget int `json:"knowledge_skill_token_budget"`
+	// KnowledgeVisionLLM — optional Vision LLM for high-quality image descriptions
+	// in the knowledge base. When configured and verified, used instead of OCR for
+	// generating image descriptions during import.
+	KnowledgeVisionLLM KnowledgeVisionLLMConfig `json:"knowledge_vision_llm,omitempty"`
+	// KnowledgeIncludeImages — when true, directory imports include image files
+	// (.png/.jpg/.jpeg/.gif/.webp/.bmp). Default false to avoid importing
+	// decorative images that pollute the knowledge base.
+	KnowledgeIncludeImages bool `json:"knowledge_include_images,omitempty"`
 	// AuxiliaryLLM — lightweight LLM for background tasks (compression,
 	// skill repair, session search summarization). When configured, used
 	// in preference to the main LLM to reduce cost and latency.
@@ -709,6 +717,7 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 
 	// Post-unmarshal normalization (not default-value logic, just clamping/validation).
 	c.SubAgentConcurrency = NormalizeSubAgentConcurrency(c.SubAgentConcurrency)
+	c.ensureDefaultProject()
 	c.applyGroupDiscussionFieldDefaults()
 	c.LLMPromptCache = c.LLMPromptCache.WithDefaults()
 	c.CapabilityMarketPolicy = c.CapabilityMarketPolicy.WithDefaults()
@@ -736,6 +745,25 @@ func AppConfigDefaults() AppConfig {
 		IMProgressNudgeEnabled: boolPtrValue(true),
 		GroupDiscussion:        defaultGroupDiscussionConfig(),
 		LLMPromptCache:         DefaultLLMPromptCacheConfig(),
+		Projects:               defaultProjects(),
+		CurrentProject:         "default",
+	}
+}
+
+func (c *AppConfig) ensureDefaultProject() {
+	if c.Projects != nil {
+		return
+	}
+	c.Projects = defaultProjects()
+	if strings.TrimSpace(c.CurrentProject) == "" {
+		c.CurrentProject = "default"
+	}
+}
+
+func defaultProjects() []ProjectConfig {
+	home, _ := os.UserHomeDir()
+	return []ProjectConfig{
+		{Id: "default", Name: "Project 1", Path: home, YoloMode: false},
 	}
 }
 
@@ -829,6 +857,45 @@ type ModelRouteConfig struct {
 	Key      string `json:"key,omitempty"`      // API key override
 	Protocol string `json:"protocol,omitempty"` // protocol override
 	Provider string `json:"provider,omitempty"` // provider name (display only)
+}
+
+// KnowledgeVisionLLMConfig is the configuration for the optional Vision LLM
+// used by the knowledge base to generate high-quality image descriptions.
+// Uses OpenAI-compatible /v1/chat/completions endpoint with image_url content blocks.
+//
+// Resolution priority:
+//  1. Main LLM supports vision (SupportsVision=true) → auto-derive config, no separate setup needed
+//  2. This config explicitly set + verified → use it
+//  3. Neither available → fall back to OCR + context inference
+type KnowledgeVisionLLMConfig struct {
+	Enabled     bool   `json:"enabled"`
+	BaseURL     string `json:"base_url,omitempty"`
+	APIKey      string `json:"api_key,omitempty"`
+	Model       string `json:"model,omitempty"`
+	MaxTokens   int    `json:"max_tokens,omitempty"`
+	TimeoutSec  int    `json:"timeout_sec,omitempty"`
+	Verified    bool   `json:"verified,omitempty"`
+	FromMainLLM bool   `json:"from_main_llm,omitempty"` // true when auto-derived from main LLM
+}
+
+// NewKnowledgeVisionLLMConfigFromMainLLM creates a config derived from the main LLM
+// when it supports vision. Auto-verified because the main LLM has already been tested.
+func NewKnowledgeVisionLLMConfigFromMainLLM(url, key, model string) KnowledgeVisionLLMConfig {
+	return KnowledgeVisionLLMConfig{
+		Enabled:     true,
+		BaseURL:     url,
+		APIKey:      key,
+		Model:       model,
+		MaxTokens:   500,
+		TimeoutSec:  30,
+		Verified:    true,
+		FromMainLLM: true,
+	}
+}
+
+// IsConfigured returns true if the Vision LLM has enough configuration to attempt a call.
+func (c KnowledgeVisionLLMConfig) IsConfigured() bool {
+	return c.Enabled && c.BaseURL != "" && c.APIKey != "" && c.Model != ""
 }
 
 // SSHHostEntry describes a preconfigured SSH remote host.

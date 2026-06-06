@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -178,6 +183,146 @@ func TestMultiKnowledgeStoreDefaultsToOwnScopeAndCanReadConfiguredSameTenantScop
 	}
 	if !foundUserB {
 		t.Fatalf("expected configured user-b knowledge scope in results: %#v", withTeam)
+	}
+}
+
+func TestKnowledgeManagerAgentStoreLazilySearchesAuthorizedScopes(t *testing.T) {
+	ctx := context.Background()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "agent direct own retrieval", Title: "own", TenantID: "tenant-a", OwnerID: "user-a"}); err != nil {
+		t.Fatalf("SaveText user-a: %v", err)
+	}
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "agent direct team retrieval", Title: "team", TenantID: "tenant-a", OwnerID: "user-b"}); err != nil {
+		t.Fatalf("SaveText user-b: %v", err)
+	}
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "agent direct private retrieval", Title: "private", TenantID: "tenant-a", OwnerID: "user-c"}); err != nil {
+		t.Fatalf("SaveText user-c: %v", err)
+	}
+
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	if err := access.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: "tenant-a", OwnerID: "user-b", Name: "team"}}}); err != nil {
+		t.Fatalf("SetUser: %v", err)
+	}
+	km := &knowledgeStoreManager{store: store, access: access}
+
+	results, err := km.AgentStore().Search(ctx, knowledge.SearchOptions{Query: "agent direct", TenantID: "tenant-a", OwnerID: "user-a", Limit: 10})
+	if err != nil {
+		t.Fatalf("AgentStore Search: %v", err)
+	}
+	if !hasKnowledgeResultOwner(results, "user-a") || !hasKnowledgeResultOwner(results, "user-b") {
+		t.Fatalf("expected own and authorized team knowledge in agent search: %#v", results)
+	}
+	if hasKnowledgeResultOwner(results, "user-c") {
+		t.Fatalf("agent search leaked unauthorized owner: %#v", results)
+	}
+}
+
+func TestKnowledgeManagerAgentStoreWithoutAccessFallsBackToSelfScope(t *testing.T) {
+	ctx := context.Background()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "self fallback marker", Title: "self", TenantID: "tenant-a", OwnerID: "user-a"}); err != nil {
+		t.Fatalf("SaveText user-a: %v", err)
+	}
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "self fallback marker", Title: "other", TenantID: "tenant-a", OwnerID: "user-b"}); err != nil {
+		t.Fatalf("SaveText user-b: %v", err)
+	}
+
+	km := &knowledgeStoreManager{store: store}
+	results, err := km.AgentStore().Search(ctx, knowledge.SearchOptions{Query: "self fallback", TenantID: "tenant-a", OwnerID: "user-a", Limit: 10})
+	if err != nil {
+		t.Fatalf("AgentStore Search without access: %v", err)
+	}
+	if !hasKnowledgeResultOwner(results, "user-a") {
+		t.Fatalf("expected self knowledge result without access service: %#v", results)
+	}
+	if hasKnowledgeResultOwner(results, "user-b") {
+		t.Fatalf("fallback search leaked other owner without access service: %#v", results)
+	}
+}
+
+func TestKnowledgeManagerAgentStoreRefreshesStaleAccess(t *testing.T) {
+	ctx := context.Background()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "stale access team marker", Title: "team", TenantID: "tenant-a", OwnerID: "user-b"}); err != nil {
+		t.Fatalf("SaveText user-b: %v", err)
+	}
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	if err := access.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: "tenant-a", OwnerID: "user-b", Name: "team"}}}); err != nil {
+		t.Fatalf("SetUser: %v", err)
+	}
+
+	km := &knowledgeStoreManager{store: store, access: access, agent: newMultiKnowledgeStore(store, nil)}
+	results, err := km.AgentStore().Search(ctx, knowledge.SearchOptions{Query: "stale access", TenantID: "tenant-a", OwnerID: "user-a", Limit: 10})
+	if err != nil {
+		t.Fatalf("AgentStore Search: %v", err)
+	}
+	if !hasKnowledgeResultOwner(results, "user-b") {
+		t.Fatalf("expected refreshed agent store to use access scopes: %#v", results)
+	}
+}
+
+func TestKnowledgeManagerAgentStoreRefreshesReplacedAccess(t *testing.T) {
+	ctx := context.Background()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "replacement access marker", Title: "team", TenantID: "tenant-a", OwnerID: "user-b"}); err != nil {
+		t.Fatalf("SaveText user-b: %v", err)
+	}
+
+	oldAccess := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "old_access.json")))
+	newAccess := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "new_access.json")))
+	if err := newAccess.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: "tenant-a", OwnerID: "user-b", Name: "team"}}}); err != nil {
+		t.Fatalf("SetUser: %v", err)
+	}
+	km := &knowledgeStoreManager{store: store, access: newAccess, agent: newMultiKnowledgeStore(store, oldAccess)}
+
+	results, err := km.AgentStore().Search(ctx, knowledge.SearchOptions{Query: "replacement access", TenantID: "tenant-a", OwnerID: "user-a", Limit: 10})
+	if err != nil {
+		t.Fatalf("AgentStore Search: %v", err)
+	}
+	if !hasKnowledgeResultOwner(results, "user-b") {
+		t.Fatalf("expected replaced agent store to use current access service: %#v", results)
+	}
+}
+
+func TestListReadableKnowledgeSourcesWithoutAccessFallsBackToSelfScope(t *testing.T) {
+	ctx := context.Background()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "list self marker", Title: "self", TenantID: "tenant-a", OwnerID: "user-a"}); err != nil {
+		t.Fatalf("SaveText user-a: %v", err)
+	}
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "list other marker", Title: "other", TenantID: "tenant-a", OwnerID: "user-b"}); err != nil {
+		t.Fatalf("SaveText user-b: %v", err)
+	}
+
+	server := &HTTPServer{knowledgeMgr: &knowledgeStoreManager{store: store}}
+	sources, err := server.listReadableKnowledgeSources(ctx, agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"})
+	if err != nil {
+		t.Fatalf("listReadableKnowledgeSources: %v", err)
+	}
+	if len(sources) != 1 || sources[0].OwnerID != "user-a" {
+		t.Fatalf("expected only self source without access service, got %#v", sources)
 	}
 }
 
@@ -413,11 +558,17 @@ func TestCanAccessSourceRequiresOwnership(t *testing.T) {
 	if !server.canAccessSource(knowledge.Source{TenantID: "tenant-a", OwnerID: "user-a"}, principal) {
 		t.Fatalf("expected owner to manage own source")
 	}
+	if !server.canAccessSource(knowledge.Source{TenantID: " tenant-a ", OwnerID: " user-a "}, principal) {
+		t.Fatalf("expected ownership check to trim scope fields")
+	}
 	if server.canAccessSource(knowledge.Source{TenantID: "tenant-a", OwnerID: "user-b"}, principal) {
 		t.Fatalf("same-tenant non-owner source should not be manageable")
 	}
 	if server.canAccessSource(knowledge.Source{TenantID: "tenant-a"}, principal) {
 		t.Fatalf("tenant shared source should not be user-manageable")
+	}
+	if server.canAccessSource(knowledge.Source{}, agentservice.Principal{}) {
+		t.Fatalf("empty source and empty principal should not be manageable")
 	}
 }
 
@@ -579,6 +730,511 @@ func TestKnowledgeAccessGetMeDefaultsToSelfScope(t *testing.T) {
 	}
 	if len(got.Scopes) != 1 || got.Scopes[0].TenantID != tenant.ID || got.Scopes[0].OwnerID != user.ID {
 		t.Fatalf("expected self scope only, got %#v", got)
+	}
+}
+
+func TestKnowledgeAccessGetMeWithoutAccessServiceFallsBackToSelfScope(t *testing.T) {
+	ctx := context.Background()
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "knowledge-access-no-service-key", APISecret: "secret"}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "knowledge-access-no-service-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/knowledge/access", nil)
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("knowledge access status = %d body = %s", w.Code, w.Body.String())
+	}
+	var got knowledgeAccessResolvedView
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if len(got.Scopes) != 1 || got.Scopes[0].ScopeType != "self" || got.Scopes[0].TenantID != tenant.ID || got.Scopes[0].OwnerID != user.ID {
+		t.Fatalf("expected self scope view without access service, got %#v", got)
+	}
+}
+
+func TestKnowledgeAccessGetMeClassifiesReadableKnowledgeOwners(t *testing.T) {
+	ctx := context.Background()
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant A"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A", Email: "a@example.test"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B", Email: "b@example.test"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: userA.ID, Name: "API", APIKey: "knowledge-access-owner-key", APISecret: "secret"}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "knowledge-access-owner-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	library, err := access.CreatePublicLibrary(ctx, tenant.ID, "Policies")
+	if err != nil {
+		t.Fatalf("CreatePublicLibrary: %v", err)
+	}
+	if err := access.SetUser(ctx, tenant.ID, userA.ID, &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{
+		{TenantID: tenant.ID, OwnerID: userB.ID, Name: "team"},
+		{TenantID: tenant.ID, OwnerID: library.OwnerID, Name: library.Name},
+	}}); err != nil {
+		t.Fatalf("SetUser: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{access: access})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/knowledge/access", nil)
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("knowledge access status = %d body = %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Scopes []knowledgeAccessScopeView `json:"scopes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	assertScope := func(scopeType, ownerID, ownerName string) {
+		t.Helper()
+		for _, scope := range got.Scopes {
+			if scope.ScopeType == scopeType && scope.OwnerID == ownerID && scope.OwnerName == ownerName && scope.TenantName == tenant.Name {
+				return
+			}
+		}
+		t.Fatalf("missing %s scope owner=%s name=%q in %#v", scopeType, ownerID, ownerName, got.Scopes)
+	}
+	assertScope("self", userA.ID, userA.Name)
+	assertScope("user", userB.ID, userB.Name)
+	assertScope("public", library.OwnerID, library.Name)
+	if strings.Contains(w.Body.String(), "b@example.test") {
+		t.Fatalf("knowledge access response should not expose other users' email: %s", w.Body.String())
+	}
+}
+
+func TestKnowledgeSearchHTTPEnforcesPrincipalOverRequestScope(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: userA.ID, Name: "API", APIKey: "knowledge-search-key", APISecret: "secret"}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "knowledge-search-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	sqlStore, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer sqlStore.Close()
+	ownSource, err := sqlStore.SaveText(ctx, knowledge.TextSaveRequest{Text: "principal needle own runbook", Title: "own", TenantID: tenant.ID, OwnerID: userA.ID})
+	if err != nil {
+		t.Fatalf("SaveText user A: %v", err)
+	}
+	secondOwnSource, err := sqlStore.SaveText(ctx, knowledge.TextSaveRequest{Text: "principal needle own secondary runbook", Title: "own secondary", TenantID: tenant.ID, OwnerID: userA.ID})
+	if err != nil {
+		t.Fatalf("SaveText second user A: %v", err)
+	}
+	if _, err := sqlStore.SaveText(ctx, knowledge.TextSaveRequest{Text: "principal needle private runbook", Title: "private", TenantID: tenant.ID, OwnerID: userB.ID}); err != nil {
+		t.Fatalf("SaveText user B: %v", err)
+	}
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	km := &knowledgeStoreManager{store: sqlStore, access: access, agent: newMultiKnowledgeStore(sqlStore, access)}
+	server := NewHTTPServer(svc, "admin-secret", km)
+
+	body := []byte(`{"query":"principal needle","tenant_id":"other-tenant","owner_id":"` + userB.ID + `","limit":10}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/knowledge/search", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("knowledge search status = %d body = %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Results []knowledge.SearchResult `json:"results"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if !hasKnowledgeResultOwner(got.Results, userA.ID) {
+		t.Fatalf("expected own knowledge result, got %#v", got.Results)
+	}
+	if hasKnowledgeResultOwner(got.Results, userB.ID) {
+		t.Fatalf("search leaked request owner knowledge despite principal enforcement: %#v", got.Results)
+	}
+
+	body = []byte(`{"query":"principal needle","source_id":"` + secondOwnSource.ID + `","limit":10}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/knowledge/search", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("knowledge source_id search status = %d body = %s", w.Code, w.Body.String())
+	}
+	got.Results = nil
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal source_id response: %v", err)
+	}
+	if len(got.Results) == 0 {
+		t.Fatalf("expected source_id-scoped results")
+	}
+	for _, result := range got.Results {
+		if result.Source.ID != secondOwnSource.ID {
+			t.Fatalf("source_id search returned unexpected source %s (own primary %s): %#v", result.Source.ID, ownSource.ID, got.Results)
+		}
+	}
+}
+
+func TestKnowledgeReadHTTPHandlesMissingStore(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "knowledge-missing-store-key", APISecret: "secret"}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "knowledge-missing-store-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{})
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+		want   int
+	}{
+		{method: http.MethodPost, path: "/api/v1/knowledge/search", body: `{"query":"needle"}`, want: http.StatusServiceUnavailable},
+		{method: http.MethodPost, path: "/api/v1/knowledge/context-pack", body: `{"query":"needle"}`, want: http.StatusServiceUnavailable},
+		{method: http.MethodGet, path: "/api/v1/knowledge/sources/ksrc_missing/thumbnail", want: http.StatusNotFound},
+		{method: http.MethodGet, path: "/api/v1/knowledge/sources/ksrc_missing/image", want: http.StatusNotFound},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		if tc.body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != tc.want {
+			t.Fatalf("%s %s status = %d body = %s, want %d", tc.method, tc.path, w.Code, w.Body.String(), tc.want)
+		}
+	}
+}
+
+func TestKnowledgeImportTextHTTPEnforcesPrincipalOwner(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: userA.ID, Name: "API", APIKey: "knowledge-import-key", APISecret: "secret"}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "knowledge-import-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	sqlStore, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer sqlStore.Close()
+	km := &knowledgeStoreManager{store: sqlStore, access: newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json"))), agent: newMultiKnowledgeStore(sqlStore, nil)}
+	server := NewHTTPServer(svc, "admin-secret", km)
+
+	body := []byte(`{"text":"principal owned import text","title":"owned","tenant_id":"other-tenant","owner_id":"` + userB.ID + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/knowledge/import/text", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("knowledge text import status = %d body = %s", w.Code, w.Body.String())
+	}
+	own, err := sqlStore.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: tenant.ID, OwnerID: userA.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources own: %v", err)
+	}
+	if len(own) != 1 || own[0].OwnerID != userA.ID || own[0].TenantID != tenant.ID {
+		t.Fatalf("expected text import to write current principal scope, got %#v", own)
+	}
+	other, err := sqlStore.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: tenant.ID, OwnerID: userB.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources other: %v", err)
+	}
+	if len(other) != 0 {
+		t.Fatalf("text import wrote request owner scope: %#v", other)
+	}
+}
+
+func TestKnowledgeImportEndpointsUsePrincipalScope(t *testing.T) {
+	data, err := os.ReadFile("http_knowledge.go")
+	if err != nil {
+		t.Fatalf("ReadFile http_knowledge.go: %v", err)
+	}
+	body := string(data)
+	for _, tc := range []struct {
+		name string
+		next string
+		want []string
+	}{
+		{name: "func (s *HTTPServer) handleKnowledgeImportFile", next: "func isKnowledgeArchivePath", want: []string{"OwnerID:   p.UserID", "TenantID:  p.TenantID"}},
+		{name: "func (s *HTTPServer) handleKnowledgeImportURL", next: "func (s *HTTPServer) handleKnowledgeImportURLs", want: []string{"OwnerID:   p.UserID", "TenantID:  p.TenantID"}},
+		{name: "func (s *HTTPServer) handleKnowledgeImportURLs", next: "func (s *HTTPServer) handleKnowledgeImportText", want: []string{"OwnerID:   p.UserID", "TenantID:  p.TenantID", "OwnerID:        p.UserID", "TenantID:       p.TenantID"}},
+	} {
+		block := knowledgeHandlerBlock(t, body, tc.name, tc.next)
+		for _, needle := range tc.want {
+			if !strings.Contains(block, needle) {
+				t.Fatalf("%s missing principal-scope marker %q", tc.name, needle)
+			}
+		}
+	}
+	if strings.Contains(body, `OwnerID:   req.OwnerID`) || strings.Contains(body, `TenantID:  req.TenantID`) {
+		t.Fatalf("knowledge import endpoints must not trust request owner_id/tenant_id")
+	}
+}
+
+func knowledgeHandlerBlock(t *testing.T, body, start, next string) string {
+	t.Helper()
+	startAt := strings.Index(body, start)
+	if startAt < 0 {
+		t.Fatalf("missing handler %q", start)
+	}
+	endAt := len(body)
+	if next != "" {
+		rel := strings.Index(body[startAt+len(start):], next)
+		if rel < 0 {
+			t.Fatalf("missing next handler marker %q", next)
+		}
+		endAt = startAt + len(start) + rel
+	}
+	return body[startAt:endAt]
+}
+
+func TestKnowledgeImageAssetEndpointsEnforceReadAccess(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: userA.ID, Name: "API", APIKey: "knowledge-image-key", APISecret: "secret"}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "knowledge-image-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+
+	sqlStore, err := knowledge.NewSQLiteStore(filepath.Join(dataRoot, "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer sqlStore.Close()
+	assets, err := knowledge.NewImageAssetManager(dataRoot)
+	if err != nil {
+		t.Fatalf("NewImageAssetManager: %v", err)
+	}
+	sqlStore.SetImageAssetManager(assets)
+	source, err := sqlStore.SaveText(ctx, knowledge.TextSaveRequest{Text: "private image source", Title: "private image", TenantID: tenant.ID, OwnerID: userB.ID})
+	if err != nil {
+		t.Fatalf("SaveText user B: %v", err)
+	}
+	writeKnowledgeImageAsset(t, assets, source.ID)
+
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(dataRoot, "knowledge_access.json")))
+	km := &knowledgeStoreManager{store: sqlStore, access: access, agent: newMultiKnowledgeStore(sqlStore, access)}
+	server := NewHTTPServer(svc, "admin-secret", km)
+
+	for _, path := range []string{
+		"/api/v1/knowledge/sources/" + source.ID + "/thumbnail",
+		"/api/v1/knowledge/sources/" + source.ID + "/image",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s unauthorized status = %d body = %s", path, w.Code, w.Body.String())
+		}
+	}
+
+	if err := access.SetUser(ctx, tenant.ID, userA.ID, &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: tenant.ID, OwnerID: userB.ID, Name: "team"}}}); err != nil {
+		t.Fatalf("SetUser: %v", err)
+	}
+	for _, path := range []string{
+		"/api/v1/knowledge/sources/" + source.ID + "/thumbnail",
+		"/api/v1/knowledge/sources/" + source.ID + "/image",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s authorized status = %d body = %s", path, w.Code, w.Body.String())
+		}
+		if w.Body.Len() == 0 {
+			t.Fatalf("%s authorized response was empty", path)
+		}
+	}
+}
+
+func TestKnowledgeImportImageRejectsOversizedFile(t *testing.T) {
+	oldMax := knowledgeMaxUploadSize
+	knowledgeMaxUploadSize = 8
+	defer func() { knowledgeMaxUploadSize = oldMax }()
+
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "knowledge-image-upload-key", APISecret: "secret"}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "knowledge-image-upload-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	sqlStore, err := knowledge.NewSQLiteStore(filepath.Join(dataRoot, "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer sqlStore.Close()
+	km := &knowledgeStoreManager{store: sqlStore, access: newKnowledgeAccessService(newFileKVStore(filepath.Join(dataRoot, "knowledge_access.json"))), agent: newMultiKnowledgeStore(sqlStore, nil)}
+	server := NewHTTPServer(svc, "admin-secret", km)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("image", "too-large.png")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := part.Write([]byte("123456789")); err != nil {
+		t.Fatalf("Write part: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close multipart: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/knowledge/import/image", &body)
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("oversized image status = %d body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "too large") {
+		t.Fatalf("oversized image response should mention size, got %s", w.Body.String())
+	}
+}
+
+func writeKnowledgeImageAsset(t *testing.T, assets *knowledge.ImageAssetManager, sourceID string) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	imagePath := filepath.Join(t.TempDir(), "source.png")
+	f, err := os.Create(imagePath)
+	if err != nil {
+		t.Fatalf("Create image fixture: %v", err)
+	}
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		t.Fatalf("Encode image fixture: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close image fixture: %v", err)
+	}
+	if _, err := assets.SaveImageFromPath(sourceID, imagePath); err != nil {
+		t.Fatalf("SaveImageFromPath: %v", err)
 	}
 }
 

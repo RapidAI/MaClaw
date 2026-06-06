@@ -294,7 +294,7 @@ const LLM_SERVICE_I18N = {
     grants: '\u751f\u6548\u6388\u6743',
     navLabel: '\u6a21\u578b\u670d\u52a1',
     navDesc: '\u6a21\u578b\u670d\u52a1\u7ec4\u4e0e\u7ed1\u5b9a',
-    serviceCardsNavLabel: '\u670d\u52a1\u5151\u6362\u5361\u7ba1\u7406',
+    serviceCardsNavLabel: '\u670d\u52a1\u5151\u6362\u5361',
     serviceCardsNavDesc: '\u53d1\u884c\u4e0e\u5151\u6362\u72b6\u6001',
     tabTitle: '\u6a21\u578b\u670d\u52a1',
     tabSubtitle: '\u6a21\u578b\u670d\u52a1\u7ec4\u3001\u7ed1\u5b9a\u4e0e\u8bca\u65ad',

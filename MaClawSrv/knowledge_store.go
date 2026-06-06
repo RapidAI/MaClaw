@@ -360,11 +360,33 @@ func (m *knowledgeStoreManager) Store() *knowledge.SQLiteStore {
 
 // AgentStore returns the authorization-aware knowledge store used by agents and read APIs.
 func (m *knowledgeStoreManager) AgentStore() *multiKnowledgeStore {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.store == nil {
+		return m.agent
+	}
+	if m.access == nil && strings.TrimSpace(m.dataRoot) != "" {
+		m.access = newKnowledgeAccessService(newFileKVStore(filepath.Join(m.dataRoot, "knowledge_access.json")))
+	}
+	if m.agent == nil || m.agent.store != m.store || m.agent.access != m.access {
+		m.agent = newMultiKnowledgeStore(m.store, m.access)
+	}
 	return m.agent
 }
 
 // Access returns the service that controls cross-user readable knowledge scopes.
 func (m *knowledgeStoreManager) Access() *knowledgeAccessService {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.access == nil && strings.TrimSpace(m.dataRoot) != "" {
+		m.access = newKnowledgeAccessService(newFileKVStore(filepath.Join(m.dataRoot, "knowledge_access.json")))
+	}
 	return m.access
 }
 

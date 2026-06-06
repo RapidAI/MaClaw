@@ -45,6 +45,37 @@ func TestDynamicToolBuilder_AttachesExecutionContract(t *testing.T) {
 	}
 }
 
+func TestDynamicToolBuilder_DoesNotOverwriteRoutedExecutionContract(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(RegisteredTool{
+		Name:        "manage_skill",
+		Description: "manage skills",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		ExecutionContract: map[string]interface{}{
+			"capabilities":            []interface{}{"skill"},
+			"requires_agent_planning": false,
+		},
+	})
+	b := NewDynamicToolBuilder(r)
+	defs := []map[string]interface{}{toolDef("manage_skill", "manage skills", nil, nil)}
+	defs[0]["x_execution_contract"] = map[string]interface{}{
+		"capabilities":            []string{"skill", "current_data"},
+		"requires_agent_planning": false,
+	}
+
+	out := b.attachExecutionContracts(defs)
+
+	contract, ok := out[0]["x_execution_contract"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing execution contract: %#v", out[0])
+	}
+	caps, ok := contract["capabilities"].([]string)
+	if !ok || len(caps) != 2 || caps[1] != "current_data" {
+		t.Fatalf("execution contract overwritten: %#v", contract)
+	}
+}
+
 func TestDynamicToolBuilder_Build_UnderThreshold(t *testing.T) {
 	r := NewToolRegistry()
 	for i := 0; i < 15; i++ {
