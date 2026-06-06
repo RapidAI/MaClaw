@@ -84,7 +84,7 @@ func TestCardStoreConfigUsesPaymentFMDefaults(t *testing.T) {
 	if !ok || product.Price != 0.01 || product.Credits != 1 || !strings.Contains(strings.ToLower(product.Description), "testing") {
 		t.Fatalf("test product defaults not applied: %#v", product)
 	}
-	if product.Kind != "credits" || product.PeriodLimits != (llmservice.CreditPeriodLimits{}) {
+	if product.Kind != "credits" || product.DurationDays != 365 || product.PeriodLimits != (llmservice.CreditPeriodLimits{}) {
 		t.Fatalf("test product should be a credits test card without period limits: %#v", product)
 	}
 }
@@ -95,11 +95,11 @@ func TestCardStoreConfigAppliesDefaultPeriodLimits(t *testing.T) {
 		id   string
 		want llmservice.CreditPeriodLimits
 	}{
-		{id: "service_day", want: llmservice.CreditPeriodLimits{FiveHour: 50}},
-		{id: "service_week", want: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100}},
-		{id: "service_month", want: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200}},
-		{id: "service_quarter", want: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200, Monthly: 300}},
-		{id: "service_year", want: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200, Monthly: 300}},
+		{id: "service_day", want: llmservice.CreditPeriodLimits{FiveHour: 150}},
+		{id: "service_week", want: llmservice.CreditPeriodLimits{FiveHour: 300, Daily: 600}},
+		{id: "service_month", want: llmservice.CreditPeriodLimits{FiveHour: 600, Daily: 1200, Weekly: 2400}},
+		{id: "service_quarter", want: llmservice.CreditPeriodLimits{FiveHour: 1200, Daily: 2400, Weekly: 4800, Monthly: 10000}},
+		{id: "service_year", want: llmservice.CreditPeriodLimits{FiveHour: 2400, Daily: 4800, Weekly: 9600, Monthly: 40000}},
 		{id: "credits_10000", want: llmservice.CreditPeriodLimits{}},
 		{id: "service_test_10", want: llmservice.CreditPeriodLimits{}},
 	}
@@ -111,6 +111,23 @@ func TestCardStoreConfigAppliesDefaultPeriodLimits(t *testing.T) {
 		if product.PeriodLimits != tc.want {
 			t.Fatalf("%s period limits = %#v, want %#v", tc.id, product.PeriodLimits, tc.want)
 		}
+	}
+}
+
+func TestCardStoreConfigNormalizesLegacyTestProductAsCredits(t *testing.T) {
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Products: []cardStoreProduct{{
+		ID:           "service_test_10",
+		Kind:         "service_card",
+		DurationDays: 1,
+		Credits:      10,
+		PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100},
+	}}})
+	product, ok := findCardStoreProduct(cfg, "service_test_10")
+	if !ok {
+		t.Fatal("missing service_test_10")
+	}
+	if product.Kind != "credits" || product.DurationDays != 365 || product.Credits != 1 || product.PeriodLimits != (llmservice.CreditPeriodLimits{}) {
+		t.Fatalf("legacy test product normalization failed: %#v", product)
 	}
 }
 
@@ -718,7 +735,7 @@ func TestGetCardStoreProductsReturnsPublicManualChannels(t *testing.T) {
 		t.Fatalf("public product response leaked payment details: %s", rec.Body.String())
 	}
 	day, ok := findCardStoreProduct(cardStoreConfig{Products: body.Products}, "service_day")
-	if !ok || day.PeriodLimits.FiveHour != 50 {
+	if !ok || day.PeriodLimits.FiveHour != 150 {
 		t.Fatalf("public day product missing period limits: %#v", day)
 	}
 	credits, ok := findCardStoreProduct(cardStoreConfig{Products: body.Products}, "credits_10000")

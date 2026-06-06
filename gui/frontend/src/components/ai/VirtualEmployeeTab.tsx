@@ -137,6 +137,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
     const [query, setQuery] = useState("");
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; ve: VirtualEmployeeEntry; displayName: string } | null>(null);
     const [renamingEmployee, setRenamingEmployee] = useState<VirtualEmployeeEntry | null>(null);
+    const [viewInfoVE, setViewInfoVE] = useState<{ ve: VirtualEmployeeEntry; displayName: string } | null>(null);
     const [renameValue, setRenameValue] = useState("");
     const [renameSaving, setRenameSaving] = useState(false);
     const [renameError, setRenameError] = useState("");
@@ -602,6 +603,18 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             <span>{isZh ? "\u6539\u540d" : "Rename"}</span>
                         </div>
                     )}
+                    {/* 查看信息 */}
+                    <div
+                        data-testid="ve-menu-view-info"
+                        role="menuitem"
+                        onClick={() => { setViewInfoVE({ ve: contextMenu.ve, displayName: contextMenu.displayName }); setContextMenu(null); }}
+                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                    >
+                        <span style={{ width: 16, textAlign: "center", fontSize: 14, flexShrink: 0 }}>ℹ️</span>
+                        <span>{isZh ? "\u67e5\u770b\u4fe1\u606f" : "View Info"}</span>
+                    </div>
                 </div>
                 );
             })()}
@@ -668,6 +681,161 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             </button>
                         </div>
                     </form>
+                </div>
+            )}
+            {/* Info dialog */}
+            {viewInfoVE && (
+                <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="ve-info-title"
+                    data-testid="ve-info-dialog"
+                    onPointerDown={() => setViewInfoVE(null)}
+                    style={{
+                        position: "fixed",
+                        inset: 0,
+                        zIndex: 10000,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        background: "rgba(15, 23, 42, 0.32)",
+                    }}
+                >
+                    <div
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => { if (e.key === "Escape") setViewInfoVE(null); }}
+                        tabIndex={-1}
+                        style={{
+                            width: "min(400px, calc(100vw - 32px))",
+                            maxHeight: "calc(100vh - 64px)",
+                            overflow: "auto",
+                            padding: 24,
+                            borderRadius: 12,
+                            border: `1px solid ${theme.divider}`,
+                            background: theme.bg,
+                            boxShadow: "0 18px 44px rgba(15, 23, 42, 0.24)",
+                            outline: "none",
+                        }}
+                    >
+                        {/* Large avatar + name */}
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, marginBottom: 20 }}>
+                            <div style={{ position: "relative" }}>
+                                {safeAvatarDataURL(viewInfoVE.ve.avatar_data_url) ? (
+                                    <img
+                                        src={safeAvatarDataURL(viewInfoVE.ve.avatar_data_url)!}
+                                        alt={viewInfoVE.displayName}
+                                        style={{ width: 72, height: 72, borderRadius: "50%", objectFit: "cover", display: "block", border: `3px solid ${theme.divider}` }}
+                                    />
+                                ) : (
+                                    <span style={{
+                                        width: 72, height: 72, borderRadius: "50%",
+                                        display: "inline-flex", alignItems: "center", justifyContent: "center",
+                                        background: "rgba(99, 102, 241, 0.12)", color: "#6366f1",
+                                        fontSize: 28, fontWeight: 700,
+                                        border: `3px solid ${theme.divider}`,
+                                    }}>
+                                        {viewInfoVE.displayName.trim().slice(0, 2).toUpperCase() || "D"}
+                                    </span>
+                                )}
+                                <span style={{
+                                    position: "absolute", bottom: 2, right: 2,
+                                    width: 14, height: 14, borderRadius: "50%",
+                                    background: isVirtualEmployeeOnline(viewInfoVE.ve) ? "#22c55e" : "#9ca3af",
+                                    border: `2.5px solid ${theme.bg}`,
+                                }} />
+                            </div>
+                            <h2 id="ve-info-title" style={{ margin: 0, fontSize: 18, fontWeight: 700, color: theme.text, textAlign: "center" }}>
+                                {viewInfoVE.displayName}
+                            </h2>
+                            {viewInfoVE.ve.resident && (
+                                <span style={{ fontSize: 11, color: theme.btnColor || "#6366f1", background: theme.fieldBg, padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
+                                    {isZh ? "\u5e38\u9a7b" : "Resident"}
+                                </span>
+                            )}
+                        </div>
+
+                        {/* Info rows */}
+                        <div style={{ display: "grid", gap: 12 }}>
+                            {/* Status */}
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u72b6\u6001" : "Status"}</span>
+                                <span style={{ fontSize: 13, color: isVirtualEmployeeOnline(viewInfoVE.ve) ? "#22c55e" : "#9ca3af", fontWeight: 600 }}>
+                                    ● {isVirtualEmployeeOnline(viewInfoVE.ve) ? (isZh ? "\u5728\u7ebf" : "Online") : (isZh ? "\u79bb\u7ebf" : "Offline")}
+                                </span>
+                            </div>
+
+                            {/* Source */}
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u6765\u6e90" : "Source"}</span>
+                                <span style={{ fontSize: 13, color: theme.text }}>
+                                    {viewInfoVE.ve.machine_id
+                                        ? (isZh ? "\u865a\u62df\u5458\u5de5\uff08\u8fdc\u7a0b\uff09" : "Virtual Employee (Remote)")
+                                        : (isZh ? "\u672c\u673a\u5458\u5de5" : "Local Employee")}
+                                </span>
+                            </div>
+
+                            {/* Access policy */}
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u8bbf\u95ee\u7b56\u7565" : "Access Policy"}</span>
+                                <span style={{ fontSize: 13, color: theme.text }}>
+                                    {policyLabel(viewInfoVE.ve.access_policy, lang)}
+                                </span>
+                            </div>
+
+                            {/* Accessible departments */}
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u53ef\u8bbf\u95ee\u90e8\u95e8" : "Departments"}</span>
+                                <span style={{ fontSize: 13, color: theme.text }}>
+                                    {viewInfoVE.ve.whitelist && viewInfoVE.ve.whitelist.length > 0
+                                        ? viewInfoVE.ve.whitelist.join('\uff1b')
+                                        : (isZh ? "\u65e0\u9650\u5236" : "Unrestricted")}
+                                </span>
+                            </div>
+
+                            {/* Registration time */}
+                            {viewInfoVE.ve.registered_at && (
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u6ce8\u518c\u65f6\u95f4" : "Registered"}</span>
+                                <span style={{ fontSize: 13, color: theme.text }}>
+                                    {(() => { try { const d = new Date(viewInfoVE.ve.registered_at!); return isNaN(d.getTime()) ? viewInfoVE.ve.registered_at : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }); } catch { return viewInfoVE.ve.registered_at; } })()}
+                                </span>
+                            </div>
+                            )}
+
+                            {/* ID */}
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>ID</span>
+                                <span style={{ fontSize: 11, color: theme.text, fontFamily: "monospace", opacity: 0.7, wordBreak: "break-all" }}>
+                                    {viewInfoVE.ve.machine_id || viewInfoVE.ve.id}
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* Skill description */}
+                        <div style={{ marginTop: 16 }}>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, marginBottom: 6 }}>{isZh ? "\u6280\u80fd\u4ecb\u7ecd" : "Skill"}</div>
+                            <div style={{
+                                fontSize: 13, lineHeight: 1.6, color: theme.text,
+                                padding: "10px 12px", borderRadius: 8,
+                                background: theme.fieldBg,
+                                border: `1px solid ${theme.divider}`,
+                                whiteSpace: "pre-wrap", wordBreak: "break-word",
+                            }}>
+                                {viewInfoVE.ve.skill_description || (isZh ? "\u6682\u65e0\u6280\u80fd\u4ecb\u7ecd" : "No description available")}
+                            </div>
+                        </div>
+
+                        {/* Close button */}
+                        <div style={{ display: "flex", justifyContent: "center", marginTop: 20 }}>
+                            <button
+                                type="button"
+                                onClick={() => setViewInfoVE(null)}
+                                style={{ minWidth: 100, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.divider}`, background: theme.bg, color: theme.text, font: "inherit", fontWeight: 700, cursor: "pointer" }}
+                            >
+                                {isZh ? "\u5173\u95ed" : "Close"}
+                            </button>
+                        </div>
+                    </div>
                 </div>
             )}
         </>

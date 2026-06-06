@@ -128,6 +128,7 @@
     let lastProductsData = null;
     let checkoutResultBody = null;
     let checkoutResultPaid = false;
+    let productAlignQueued = false;
     let tenantId = urlParams.get('tenant_id') || localStorage.getItem('card_store_tenant_id') || '';
     let registeredEmail = normalizeEmail(urlParams.get('email') || localStorage.getItem('card_store_email') || '');
     let secondaryEmail = normalizeEmail(localStorage.getItem('card_store_secondary_email') || '');
@@ -164,10 +165,11 @@
     function fallbackPeriodLimits(product) {
       if (isCredits(product)) return {};
       const days = Number(product.duration_days || 0);
-      if (days >= 91) return { five_hour: 50, daily: 100, weekly: 200, monthly: 300 };
-      if (days >= 30) return { five_hour: 50, daily: 100, weekly: 200 };
-      if (days >= 7) return { five_hour: 50, daily: 100 };
-      if (days > 0) return { five_hour: 50 };
+      if (days >= 365) return { five_hour: 2400, daily: 4800, weekly: 9600, monthly: 40000 };
+      if (days >= 91) return { five_hour: 1200, daily: 2400, weekly: 4800, monthly: 10000 };
+      if (days >= 30) return { five_hour: 600, daily: 1200, weekly: 2400 };
+      if (days >= 7) return { five_hour: 300, daily: 600 };
+      if (days > 0) return { five_hour: 150 };
       return {};
     }
     function periodLimitValue(limits, keys) {
@@ -204,9 +206,71 @@
     function productMeta(product) {
       if (isTestProduct(product)) return '';
       const scenario = productScenario(product);
-      return '<div class="product-meta"><section class="product-meta-section"><h4>' + esc(t('periodLimitLabel')) + '</h4><div class="period-limit-tags">' + periodLimitTags(product) + '</div></section>'
+      const limitSection = isCredits(product) ? '' : '<section class="product-meta-section product-meta-section--limit"><h4>' + esc(t('periodLimitLabel')) + '</h4><div class="period-limit-tags">' + periodLimitTags(product) + '</div></section>';
+      return '<div class="product-meta">' + limitSection
         + (scenario ? '<section class="product-meta-section product-meta-section--scenario"><h4>' + esc(t('usageScenarioLabel')) + '</h4><p>' + esc(scenario) + '</p></section>' : '')
         + '</div>';
+    }
+    function alignProductSectionRows(cards, selector) {
+      const rows = [];
+      cards.forEach(card => {
+        const section = card.querySelector(selector);
+        if (!section) return;
+        const top = Math.round(card.offsetTop);
+        let row = rows.find(item => Math.abs(item.top - top) < 8);
+        if (!row) {
+          row = { top, sections: [] };
+          rows.push(row);
+        }
+        row.sections.push(section);
+      });
+      rows.forEach(row => {
+        const height = Math.max(...row.sections.map(section => Math.ceil(section.getBoundingClientRect().height)));
+        row.sections.forEach(section => { section.style.minHeight = height + 'px'; });
+      });
+    }
+    function alignProductSectionTops(cards, selector) {
+      const rows = [];
+      cards.forEach(card => {
+        const section = card.querySelector(selector);
+        if (!section) return;
+        const top = Math.round(card.offsetTop);
+        let row = rows.find(item => Math.abs(item.top - top) < 8);
+        if (!row) {
+          row = { top, sections: [] };
+          rows.push(row);
+        }
+        row.sections.push({ node: section, offset: section.offsetTop });
+      });
+      rows.forEach(row => {
+        const target = Math.max(...row.sections.map(section => section.offset));
+        row.sections.forEach(section => {
+          const shift = target - section.offset;
+          if (shift > 0) section.node.style.marginTop = shift + 'px';
+        });
+      });
+    }
+    function alignProductRows() {
+      productAlignQueued = false;
+      const cards = Array.from(productsRoot.querySelectorAll('.product'));
+      cards.forEach(card => {
+        const limit = card.querySelector('.product-meta-section--limit');
+        if (limit) limit.style.minHeight = '';
+        const scenario = card.querySelector('.product-meta-section--scenario');
+        if (scenario) {
+          scenario.style.minHeight = '';
+          scenario.style.marginTop = '';
+        }
+      });
+      if (window.innerWidth <= 980) return;
+      alignProductSectionRows(cards, '.product-meta-section--limit');
+      alignProductSectionTops(cards, '.product-meta-section--scenario');
+      alignProductSectionRows(cards, '.product-meta-section--scenario');
+    }
+    function queueProductAlignment() {
+      if (productAlignQueued) return;
+      productAlignQueued = true;
+      requestAnimationFrame(alignProductRows);
     }
     function applyI18n() {
       document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
@@ -318,7 +382,7 @@
         const desc = descText ? '<p class="product-desc">' + esc(descText) + '</p>' : '';
         const channelSelect = paymentMethodSelect(data.payment_channels || [], product.id);
         const payBlock = channelSelect ? '<div class="product-payment">' + channelSelect + '</div>' : '';
-        card.innerHTML = svgCard(product) + '<div class="product-body"><div><span class="pill">' + (isCredits(product) ? t('creditsCard') : t('serviceCard')) + '</span><h3>' + esc(label(product)) + '</h3><p>' + esc(formatDuration(product)) + '</p>' + desc + productMeta(product) + '</div>' + payBlock + '<div class="buy-row"><div class="price">' + money(product.price) + '</div><button type="button">' + t('buy') + '</button></div><div class="code-box" hidden></div><div class="msg" aria-live="polite"></div></div>';
+        card.innerHTML = svgCard(product) + '<div class="product-body"><div class="product-content"><span class="pill">' + (isCredits(product) ? t('creditsCard') : t('serviceCard')) + '</span><h3>' + esc(label(product)) + '</h3><p>' + esc(formatDuration(product)) + '</p>' + desc + productMeta(product) + '</div>' + payBlock + '<div class="buy-row"><div class="price">' + money(product.price) + '</div><button type="button">' + t('buy') + '</button></div><div class="code-box" hidden></div><div class="msg" aria-live="polite"></div></div>';
         const btn = card.querySelector('button');
         const msg = card.querySelector('.msg');
         const codeBox = card.querySelector('.code-box');
@@ -373,6 +437,7 @@
         productsRoot.appendChild(card);
       });
       if (!productsRoot.children.length) productsRoot.innerHTML = '<div class="empty">' + t('emptyProducts') + '</div>';
+      queueProductAlignment();
     }
     function openBuyerEmailDialog() {
       return new Promise(resolve => {
@@ -645,6 +710,9 @@
     });
     document.getElementById('accountBtn').addEventListener('click', () => { void openBuyerEmailDialog(); });
     document.getElementById('reloadBtn').addEventListener('click', loadProducts);
+    window.addEventListener('resize', queueProductAlignment);
+    window.addEventListener('load', queueProductAlignment);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(queueProductAlignment).catch(() => {});
     applyI18n();
     drawRecoverCaptcha();
     updateTenantChip();

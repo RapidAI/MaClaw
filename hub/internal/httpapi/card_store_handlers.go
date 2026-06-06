@@ -54,11 +54,11 @@ var cardStoreDefaultProductSpecs = []struct {
 	Credits      float64
 	PeriodLimits llmservice.CreditPeriodLimits
 }{
-	{ID: "service_day", Kind: "service_card", Label: "Day Card", DurationDays: 1, Credits: 300, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 50}},
-	{ID: "service_week", Kind: "service_card", Label: "Week Card", DurationDays: 7, Credits: 1200, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100}},
-	{ID: "service_month", Kind: "service_card", Label: "Month Card", DurationDays: 30, Credits: 5000, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200}},
-	{ID: "service_quarter", Kind: "service_card", Label: "Quarter Card", DurationDays: 91, Credits: 17000, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200, Monthly: 300}},
-	{ID: "service_year", Kind: "service_card", Label: "Year Card", DurationDays: 365, Credits: 70000, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100, Weekly: 200, Monthly: 300}},
+	{ID: "service_day", Kind: "service_card", Label: "Day Card", DurationDays: 1, Credits: 300, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 150}},
+	{ID: "service_week", Kind: "service_card", Label: "Week Card", DurationDays: 7, Credits: 1200, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 300, Daily: 600}},
+	{ID: "service_month", Kind: "service_card", Label: "Month Card", DurationDays: 30, Credits: 5000, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 600, Daily: 1200, Weekly: 2400}},
+	{ID: "service_quarter", Kind: "service_card", Label: "Quarter Card", DurationDays: 91, Credits: 17000, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 1200, Daily: 2400, Weekly: 4800, Monthly: 10000}},
+	{ID: "service_year", Kind: "service_card", Label: "Year Card", DurationDays: 365, Credits: 70000, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 2400, Daily: 4800, Weekly: 9600, Monthly: 40000}},
 	{ID: "credits_10000", Kind: "credits", Label: "10,000 Credits", DurationDays: 365, Credits: 10000},
 	{ID: "credits_50000", Kind: "credits", Label: "50,000 Credits", DurationDays: 365, Credits: 50000},
 	{ID: "service_test_10", Kind: "credits", Label: "Test Card", Description: "Only for recharge flow testing. Issues 1 credit.", Price: 0.01, DurationDays: 365, Credits: 1},
@@ -1254,6 +1254,8 @@ func normalizeCardStoreConfig(cfg cardStoreConfig) cardStoreConfig {
 		}
 		if spec.ID == "service_test_10" {
 			product.Kind = spec.Kind
+			product.DurationDays = spec.DurationDays
+			product.PeriodLimits = llmservice.CreditPeriodLimits{}
 		}
 		if product.Label == "" {
 			product.Label = spec.Label
