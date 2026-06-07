@@ -1,4 +1,8 @@
-export const MAX_FAVORITE_EMPLOYEES = 12;
+/** Total sidebar slots for favorite employees (resident + user-configured). */
+export const MAX_FAVORITE_EMPLOYEES = 10;
+
+/** User-configurable favorite slots (1 slot is always reserved for resident). */
+export const MAX_USER_FAVORITES = 9;
 
 export function normalizeFavoriteEmployeeIds(value: unknown): string[] {
     if (!Array.isArray(value)) return [];
@@ -9,7 +13,7 @@ export function normalizeFavoriteEmployeeIds(value: unknown): string[] {
         if (!id || seen.has(id)) continue;
         seen.add(id);
         result.push(id);
-        if (result.length >= MAX_FAVORITE_EMPLOYEES) break;
+        if (result.length >= MAX_USER_FAVORITES) break;
     }
     return result;
 }

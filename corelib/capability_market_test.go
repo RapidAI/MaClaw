@@ -3,8 +3,11 @@ package corelib
 import "testing"
 
 func TestDecideCapabilityInstallEnterpriseOnlyInstallCreatesImportForFreeExternal(t *testing.T) {
+	policy := DefaultCapabilityMarketPolicy()
+	enterpriseOnly := true
+	policy.EnterpriseOnlyInstall = &enterpriseOnly
 	decision := DecideCapabilityInstall(CapabilityInstallDecisionInput{
-		Policy:            DefaultCapabilityMarketPolicy(),
+		Policy:            policy,
 		Source:            CapabilitySourceHubCenter,
 		Pricing:           CapabilityPricingFree,
 		ExternalInstallOK: true,

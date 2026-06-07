@@ -42,8 +42,8 @@ func TestAdminCapabilityMarketPolicyDefaults(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !resp.Policy.EffectiveEnterpriseOnlyInstall() {
-		t.Fatalf("enterprise_only_install should default to true")
+	if resp.Policy.EffectiveEnterpriseOnlyInstall() {
+		t.Fatalf("enterprise_only_install should default to false")
 	}
 	if resp.Policy.EffectiveEnterpriseOnlySearch() {
 		t.Fatalf("enterprise_only_search should default to false")
@@ -72,8 +72,8 @@ func TestAdminCapabilityMarketPolicyUpdatePersistsDefaults(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &saved); err != nil {
 		t.Fatalf("decode saved policy: %v", err)
 	}
-	if !saved.EffectiveEnterpriseOnlyInstall() {
-		t.Fatalf("enterprise_only_install should be defaulted before persist")
+	if saved.EffectiveEnterpriseOnlyInstall() {
+		t.Fatalf("enterprise_only_install should default to false when not explicitly set")
 	}
 	if !saved.EffectiveEnterpriseOnlySearch() {
 		t.Fatalf("enterprise_only_search should be saved as true")

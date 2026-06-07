@@ -282,8 +282,9 @@ type AppConfig struct {
 	// all messages bypass workflow interception and go directly to the normal
 	// agent loop. Default: true (enabled).
 	WorkflowEnabled *bool `json:"workflow_enabled,omitempty"`
-	// FavoriteEmployees stores the IDs of up to 12 pinned digital employees
-	// shown as quick-access buttons in the sidebar nav rail. Order matters.
+	// FavoriteEmployees stores the IDs of up to 9 user-configured pinned digital
+	// employees shown as quick-access buttons in the sidebar nav rail. Order matters.
+	// One additional slot is always reserved for the resident employee (total 10 slots).
 	FavoriteEmployees []string `json:"favorite_employees,omitempty"`
 	// FavoriteEmployeeNames stores user-defined display names for pinned digital employees.
 	FavoriteEmployeeNames map[string]string `json:"favorite_employee_names,omitempty"`
@@ -491,7 +492,7 @@ type CapabilityResourceTypePolicy struct {
 }
 
 func DefaultCapabilityMarketPolicy() CapabilityMarketPolicy {
-	enterpriseOnlyInstall := true
+	enterpriseOnlyInstall := false
 	enterpriseOnlySearch := false
 	managedEnabled := true
 	reinstallIfRemoved := true
@@ -625,7 +626,7 @@ func firstNonEmptyCapabilityPolicyString(values ...string) string {
 
 func (p CapabilityMarketPolicy) EffectiveEnterpriseOnlyInstall() bool {
 	if p.EnterpriseOnlyInstall == nil {
-		return true
+		return false
 	}
 	return *p.EnterpriseOnlyInstall
 }

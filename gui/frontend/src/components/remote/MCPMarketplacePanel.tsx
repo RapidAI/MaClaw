@@ -279,7 +279,7 @@ function effectiveEnterpriseOnlySearch(policy: CapabilityMarketPolicyView | null
 }
 
 function effectiveEnterpriseOnlyInstall(policy: CapabilityMarketPolicyView | null): boolean {
-    return policy?.enterprise_only_install !== false;
+    return policy?.enterprise_only_install === true;
 }
 
 function capabilityTitle(item: HubCapabilitySummary | undefined, fallback: string): string {

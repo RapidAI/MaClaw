@@ -123,6 +123,8 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+    align-items: center;
+    text-align: center;
 }
 
 .about-hero-card__title {
@@ -145,6 +147,7 @@
     flex-wrap: wrap;
     gap: 8px;
     margin-top: 10px;
+    justify-content: center;
 }
 
 .about-version-badge,
@@ -193,6 +196,7 @@
     flex-wrap: wrap;
     gap: 8px;
     align-items: center;
+    justify-content: center;
     font-size: 0.8rem;
     color: var(--theme-text-muted);
 }

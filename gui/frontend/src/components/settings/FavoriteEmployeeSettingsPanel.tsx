@@ -3,7 +3,7 @@ import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import { participantIdentityMatches } from '../ai/participantIdentity';
 import { safeAvatarDataURL } from '../ai/virtualEmployeeAvatar';
 import { isVirtualEmployeeOnline } from '../ai/virtualEmployeeStatus';
-import { MAX_FAVORITE_EMPLOYEES } from './favoriteEmployees';
+import { MAX_USER_FAVORITES } from './favoriteEmployees';
 
 interface FavoriteEmployeeSettingsPanelProps {
     favoriteEmployeeIds: string[];
@@ -85,7 +85,7 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
         <div ref={rootRef} className="favorite-employee-settings" data-testid="fav-employee-settings" onKeyDown={handleKeyDown}>
             <h3 className="favorite-employee-settings__title">{isZh ? '常用数字员工' : 'Favorite Employees'}</h3>
             <p className="favorite-employee-settings__hint">
-                {isZh ? '最多设置 12 个常用数字员工，显示在左侧导航栏中。拖动调整顺序。' : 'Pin up to 12 digital employees to the sidebar. Drag to reorder.'}
+                {isZh ? `最多设置 ${MAX_USER_FAVORITES} 个常用数字员工，显示在左侧导航栏中。拖动调整顺序。` : `Pin up to ${MAX_USER_FAVORITES} digital employees to the sidebar. Drag to reorder.`}
             </p>
 
             {/* Current favorites list */}
@@ -129,7 +129,7 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
             )}
 
             {/* Add button */}
-            {favoriteVEs.length < MAX_FAVORITE_EMPLOYEES && (
+            {favoriteVEs.length < MAX_USER_FAVORITES && (
                 <div className="favorite-employee-settings__add-wrap">
                     <button
                         className="favorite-employee-settings__add"

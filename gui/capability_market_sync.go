@@ -60,15 +60,29 @@ func (a *App) TriggerHubManagedCapabilitySync(reason string) {
 			// Detect "hub doesn't support marketplace" (404 on the endpoint).
 			// Cache the result keyed by hub URL; this is a permanent condition
 			// for a given hub version at a given URL.
+			//
+			// Two detection paths:
+			// 1. listManagedDeployments itself returns 404 (original check)
+			// 2. listManagedDeployments succeeds but ALL subsequent API calls
+			//    (getCapability, inventory, updates) return 404 — the hub has
+			//    the deployments endpoint but not the detail/update endpoints.
+			shouldDisable := false
 			for _, e := range status.Errors {
 				if isCapabilityMarketplaceUnsupportedError(e) {
-					cfg, _ := a.LoadConfig()
-					probeURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
-					a.hubMarketplace404URL.Store(probeURL)
-					a.hubMarketplaceUnsupported.Store(true)
-					log.Printf("[capability-market] hub %s does not support marketplace API (404), disabling sync until hub URL changes", probeURL)
-					return
+					shouldDisable = true
+					break
 				}
+			}
+			if !shouldDisable && allErrorsAreMarketplace404(status.Errors, status) {
+				shouldDisable = true
+			}
+			if shouldDisable {
+				cfg, _ := a.LoadConfig()
+				probeURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+				a.hubMarketplace404URL.Store(probeURL)
+				a.hubMarketplaceUnsupported.Store(true)
+				log.Printf("[capability-market] hub %s does not support marketplace API (404), disabling sync until hub URL changes", probeURL)
+				return
 			}
 			nextAttempt := time.Now().Add(capabilityManagedSyncRetryDelay(status.Errors))
 			a.capabilitySyncNextAttempt.Store(nextAttempt)
@@ -107,6 +121,11 @@ func isCapabilitySyncImmediateReason(reason string) bool {
 }
 
 func capabilityManagedSyncRetryDelay(errs []string) time.Duration {
+	// Escalate delay when all errors are 404 — the hub likely doesn't support
+	// the marketplace detail API and the condition won't resolve on its own.
+	if errorsAllContain404(errs) {
+		return 30 * time.Minute
+	}
 	return capabilityManagedSyncMinRetry
 }
 
@@ -114,6 +133,55 @@ func isCapabilityMarketplaceUnsupportedError(errText string) bool {
 	errText = strings.TrimSpace(errText)
 	lower := strings.ToLower(errText)
 	return strings.Contains(lower, "managed deployments") && strings.Contains(lower, "status=404")
+}
+
+// errorsAllContain404 returns true if errs is non-empty and every entry
+// contains "status=404". Shared by allErrorsAreMarketplace404 and
+// capabilityManagedSyncRetryDelay.
+func errorsAllContain404(errs []string) bool {
+	if len(errs) == 0 {
+		return false
+	}
+	for _, e := range errs {
+		if !strings.Contains(strings.ToLower(strings.TrimSpace(e)), "status=404") {
+			return false
+		}
+	}
+	return true
+}
+
+// allErrorsAreMarketplace404 checks whether every error in the list is a
+// marketplace 404 AND there were no successful operations (no installs, no
+// updates, no inventory reports). This indicates the hub's capability detail
+// endpoints are globally unavailable — not just a single decommissioned
+// capability.
+//
+// Excluded: inventory report 404s are expected on some hub versions and should
+// not trigger the circuit breaker by themselves.
+func allErrorsAreMarketplace404(errs []string, status CapabilitySyncStatus) bool {
+	if len(errs) == 0 {
+		return false
+	}
+	// If any operation succeeded, the API is partially working — individual
+	// capability 404s are legitimate "not found" responses, not API-level
+	// incompatibility.
+	if status.ManagedInstalled > 0 || status.Updated > 0 || status.InventoryReported > 0 || status.RecommendedCount > 0 {
+		return false
+	}
+	// Filter out inventory report 404s — those are expected on some hub
+	// versions and shouldn't contribute to the "all 404" signal.
+	relevant := 0
+	for _, e := range errs {
+		lower := strings.ToLower(strings.TrimSpace(e))
+		if strings.HasPrefix(lower, "inventory report failed:") {
+			continue // expected 404, ignore
+		}
+		relevant++
+		if !strings.Contains(lower, "status=404") {
+			return false
+		}
+	}
+	return relevant > 0
 }
 
 func (a *App) SyncHubManagedCapabilities() CapabilitySyncStatus {

@@ -275,6 +275,14 @@ function makeLocalizeHubError(localizeText: Props["localizeText"]) {
             fn: () => localizeText("HubCenter URL not configured", "HubCenter 地址未配置", "HubCenter 位址未配置"),
         },
         {
+            re: /hubcenter client not initialized/,
+            fn: () => localizeText("HubCenter client not initialized", "HubCenter 客户端未初始化", "HubCenter 客戶端未初始化"),
+        },
+        {
+            re: /hub marketplace client is not configured/,
+            fn: () => localizeText("Hub marketplace client is not configured. Check your Hub URL and viewer token.", "Hub 能力市场客户端未配置，请检查 Hub 地址和查看令牌。", "Hub 能力市場客戶端未配置，請檢查 Hub 位址和查看令牌。"),
+        },
+        {
             re: /missing github install ref/,
             fn: () => localizeText("Missing GitHub install reference", "缺少 GitHub 安装引用", "缺少 GitHub 安裝引用"),
         },
@@ -283,12 +291,76 @@ function makeLocalizeHubError(localizeText: Props["localizeText"]) {
             fn: () => localizeText("Invalid GitHub install reference", "GitHub 安装引用无效", "GitHub 安裝引用無效"),
         },
         {
+            re: /enterprise policy only allows installing skills from enterprise Hub/,
+            fn: () => localizeText(
+                "Enterprise policy only allows installing skills from enterprise Hub.",
+                "企业策略仅允许从企业 Hub 安装技能。",
+                "企業策略僅允許從企業 Hub 安裝技能。",
+            ),
+        },
+        {
             re: /当前企业策略不允许从该能力市场安装此 Skill|Your organization policy does not allow installing this skill from this capability marketplace|skill source .*allowed sources|skill source .*not allowed by policy/,
             fn: () => localizeText(
                 "Your organization policy does not allow installing this Skill from this capability marketplace.",
                 "当前企业策略不允许从该能力市场安装此 Skill。",
                 "目前企業策略不允許從此能力市場安裝此 Skill。",
             ),
+        },
+        {
+            re: /enterprise capability id is required/,
+            fn: () => localizeText("Enterprise capability ID is required", "企业能力 ID 不能为空", "企業能力 ID 不能為空"),
+        },
+        {
+            re: /skill ([^ ]+) has no steps and no SKILL\.md/,
+            fn: (m) => localizeText(
+                `Skill "${m[1]}" has no executable steps and no SKILL.md definition file.`,
+                `技能「${m[1]}」没有可执行步骤，也没有 SKILL.md 定义文件。`,
+                `技能「${m[1]}」沒有可執行步驟，也沒有 SKILL.md 定義檔案。`,
+            ),
+        },
+        {
+            re: /skill search blocked by security policy/,
+            fn: () => localizeText(
+                "Skill search blocked by security policy.",
+                "技能搜索被安全策略阻止。",
+                "技能搜尋被安全策略阻止。",
+            ),
+        },
+        {
+            re: /skill security scan rejected installation/,
+            fn: () => localizeText(
+                "Installation rejected by security scan.",
+                "安全扫描拒绝了此次安装。",
+                "安全掃描拒絕了此次安裝。",
+            ),
+        },
+        {
+            re: /skill security scan requires user approval and installation was rejected/,
+            fn: () => localizeText(
+                "Installation was rejected after security review.",
+                "安全审查后安装被拒绝。",
+                "安全審查後安裝被拒絕。",
+            ),
+        },
+        {
+            re: /network access is disabled by Hub security policy/,
+            fn: () => localizeText(
+                "Network access is disabled by Hub security policy.",
+                "网络访问已被 Hub 安全策略禁用。",
+                "網路存取已被 Hub 安全策略停用。",
+            ),
+        },
+        {
+            re: /network access is restricted by Hub security policy/,
+            fn: () => localizeText(
+                "Network access is restricted by Hub security policy.",
+                "网络访问被 Hub 安全策略限制。",
+                "網路存取被 Hub 安全策略限制。",
+            ),
+        },
+        {
+            re: /machine not registered/,
+            fn: () => localizeText("Machine not registered. Please activate remote connection first.", "设备未注册，请先激活远程连接。", "裝置未註冊，請先啟用遠端連線。"),
         },
         {
             re: /unsupported skill source/,
@@ -666,7 +738,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 setHubRecommendations(Array.isArray(recs) ? recs : []);
             }
         } catch (err) {
-            setHubError(localizeHubError(String(err)));
+            showToast(localizeHubError(String(err)), "error");
         } finally {
             setInstallingSkills((prev) => {
                 const next = new Set(prev);
@@ -688,7 +760,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 `技能「${skillName}」更新成功`,
             ));
         } catch (err) {
-            setHubError(localizeHubError(String(err)));
+            showToast(localizeHubError(String(err)), "error");
         } finally {
             setUpdatingSkills((prev) => {
                 const next = new Set(prev);

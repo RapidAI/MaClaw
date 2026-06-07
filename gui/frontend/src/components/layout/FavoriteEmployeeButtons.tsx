@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react';
 import { safeAvatarDataURL } from '../ai/virtualEmployeeAvatar';
-import { MAX_FAVORITE_EMPLOYEES } from '../settings/favoriteEmployees';
+import { MAX_USER_FAVORITES } from '../settings/favoriteEmployees';
 
 export interface FavoriteEmployeeSlot {
     veId: string;
@@ -325,7 +325,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
         }
     };
 
-    const isFull = slots.filter(slot => !slot.resident).length >= MAX_FAVORITE_EMPLOYEES;
+    const isFull = slots.filter(slot => !slot.resident).length >= MAX_USER_FAVORITES;
     const canMoveContextUp = !!contextMenu && contextMenu.index > 0 && !contextMenu.slot.resident && !slots[contextMenu.index - 1]?.resident;
     const canMoveContextDown = !!contextMenu && contextMenu.index < slots.length - 1 && !contextMenu.slot.resident && !slots[contextMenu.index + 1]?.resident;
 

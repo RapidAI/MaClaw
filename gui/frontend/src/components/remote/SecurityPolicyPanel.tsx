@@ -316,7 +316,7 @@ function PolicySelect({ label, desc, value, options, labels, disabled, onChange 
     return (
         <div className="form-group" style={{ marginBottom: "12px", ...(disabled ? { opacity: 0.6, pointerEvents: "none" as const } : {}) }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-                <div>
+                <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
                     <label className="form-label" style={{ fontSize: "0.82rem", marginBottom: 0 }}>{label}</label>
                     <div style={{ fontSize: "0.72rem", color: colors.textMuted }}>{desc}</div>
                 </div>
@@ -324,7 +324,7 @@ function PolicySelect({ label, desc, value, options, labels, disabled, onChange 
                     value={value}
                     disabled={disabled}
                     onChange={(event) => onChange(event.target.value)}
-                    style={{ width: "148px", height: "32px", fontSize: "0.8rem", borderRadius: "6px", border: `1px solid ${colors.border}`, padding: "0 8px", background: colors.surface, color: colors.text }}
+                    style={{ flex: "0 0 148px", width: "148px", height: "32px", fontSize: "0.8rem", borderRadius: "6px", border: `1px solid ${colors.border}`, padding: "0 8px", background: colors.surface, color: colors.text }}
                 >
                     {options.map((option, index) => (
                         <option key={option} value={option}>{labels[index]}</option>
@@ -345,13 +345,13 @@ function PolicyToggle({ label, desc, value, disabled, onChange }: {
     return (
         <div className="form-group" style={{ marginBottom: "10px", ...(disabled ? { opacity: 0.6, pointerEvents: "none" as const } : {}) }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-                <div>
+                <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
                     <label className="form-label" style={{ fontSize: "0.82rem", marginBottom: 0 }}>{label}</label>
                     <div style={{ fontSize: "0.72rem", color: colors.textMuted }}>{desc}</div>
                 </div>
                 <button
                     className={value ? "btn-primary" : "btn-secondary"}
-                    style={{ minWidth: "60px", height: "28px", fontSize: "0.75rem", padding: "0 10px" }}
+                    style={{ flex: "0 0 60px", minWidth: "60px", height: "28px", fontSize: "0.75rem", padding: "0 10px" }}
                     disabled={disabled}
                     onClick={() => onChange(!value)}
                 >
@@ -377,7 +377,7 @@ function PolicyTextList({ label, desc, value, disabled, placeholder, onChange }:
     return (
         <div className="form-group" style={{ marginBottom: "12px", ...(disabled ? { opacity: 0.6, pointerEvents: "none" as const } : {}) }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-                <div>
+                <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
                     <label className="form-label" style={{ fontSize: "0.82rem", marginBottom: 0 }}>{label}</label>
                     <div style={{ fontSize: "0.72rem", color: colors.textMuted }}>{desc}</div>
                 </div>
@@ -387,7 +387,7 @@ function PolicyTextList({ label, desc, value, disabled, placeholder, onChange }:
                     placeholder={placeholder || "api.example.com, *.corp.local"}
                     onChange={(event) => setDraft(event.target.value)}
                     onBlur={(event) => onChange(parse(event.target.value))}
-                    style={{ width: "220px", height: "32px", fontSize: "0.8rem", borderRadius: "6px", border: `1px solid ${colors.border}`, padding: "0 8px", background: colors.surface, color: colors.text }}
+                    style={{ flex: "0 0 220px", width: "220px", height: "32px", fontSize: "0.8rem", borderRadius: "6px", border: `1px solid ${colors.border}`, padding: "0 8px", background: colors.surface, color: colors.text }}
                 />
             </div>
         </div>

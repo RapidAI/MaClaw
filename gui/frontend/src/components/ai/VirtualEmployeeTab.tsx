@@ -347,7 +347,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
         : (isZh ? "\u6682\u65e0\u53ef\u7528\u7684\u6570\u5b57\u5458\u5de5" : "No digital employees available");
 
     const renderShell = (children: ReactNode, options?: { testId?: string; center?: boolean }) => (
-        <div style={{ position: "relative", overflow: "auto", height: "100%" }} data-testid={options?.testId || "ve-list-container"}>
+        <div style={{ position: "relative", overflow: "auto", height: "100%", minWidth: 0, width: "100%" }} data-testid={options?.testId || "ve-list-container"}>
             <div
                 style={{
                     position: "sticky",
@@ -359,6 +359,8 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     padding: "6px 8px",
                     background: theme.bg,
                     borderBottom: `1px solid ${theme.divider}`,
+                    boxSizing: "border-box",
+                    width: "100%",
                 }}
             >
                 <input

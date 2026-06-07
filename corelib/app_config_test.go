@@ -455,8 +455,8 @@ func TestCapabilityMarketPolicyDefaults(t *testing.T) {
 	}
 
 	policy := cfg.CapabilityMarketPolicy
-	if !policy.EffectiveEnterpriseOnlyInstall() {
-		t.Fatal("enterprise_only_install should default to true")
+	if policy.EffectiveEnterpriseOnlyInstall() {
+		t.Fatal("enterprise_only_install should default to false")
 	}
 	if policy.EffectiveEnterpriseOnlySearch() {
 		t.Fatal("enterprise_only_search should default to false")

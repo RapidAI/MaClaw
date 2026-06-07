@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -36,6 +37,75 @@ func TestCapabilityMarketplaceUnsupportedErrorIgnoresInventory404(t *testing.T) 
 	}
 	if isCapabilityMarketplaceUnsupportedError("hub marketplace request failed: status=404 body=map[]") {
 		t.Fatal("capability detail 404 should not disable marketplace sync")
+	}
+}
+
+func TestAllErrorsAreMarketplace404(t *testing.T) {
+	emptyStatus := CapabilitySyncStatus{}
+
+	// All errors are 404, no successes — should trigger circuit breaker
+	if !allErrorsAreMarketplace404([]string{
+		"hub marketplace request failed: status=404 body_fields=3",
+		"hub marketplace request failed: status=404 body_fields=2",
+	}, emptyStatus) {
+		t.Fatal("all-404 errors with no successes should trigger circuit breaker")
+	}
+	// Single 404 error, no successes — should trigger
+	if !allErrorsAreMarketplace404([]string{"hub marketplace request failed: status=404 body_fields=3"}, emptyStatus) {
+		t.Fatal("single 404 error with no successes should trigger circuit breaker")
+	}
+	// All 404 but some operations succeeded — should NOT trigger (API partially works)
+	partialSuccess := CapabilitySyncStatus{RecommendedCount: 3}
+	if allErrorsAreMarketplace404([]string{
+		"hub marketplace request failed: status=404 body_fields=3",
+	}, partialSuccess) {
+		t.Fatal("404 with partial success should not trigger circuit breaker")
+	}
+	// Mixed errors (some 404, some not) — should NOT trigger
+	if allErrorsAreMarketplace404([]string{
+		"hub marketplace request failed: status=404 body_fields=3",
+		"download skill failed: unexpected EOF",
+	}, emptyStatus) {
+		t.Fatal("mixed errors should not trigger circuit breaker")
+	}
+	// Non-404 errors — should NOT trigger
+	if allErrorsAreMarketplace404([]string{"hub marketplace request failed: status=500 body_fields=1"}, emptyStatus) {
+		t.Fatal("non-404 errors should not trigger circuit breaker")
+	}
+	// Empty errors — should NOT trigger
+	if allErrorsAreMarketplace404([]string{}, emptyStatus) {
+		t.Fatal("empty error list should not trigger circuit breaker")
+	}
+	// Only inventory report 404 — should NOT trigger (inventory 404 is expected)
+	if allErrorsAreMarketplace404([]string{
+		"inventory report failed: hub marketplace request failed: status=404 body_fields=3",
+	}, emptyStatus) {
+		t.Fatal("inventory-only 404 should not trigger circuit breaker")
+	}
+	// Capability 404 + inventory report 404 — should trigger (capability 404 is relevant)
+	if !allErrorsAreMarketplace404([]string{
+		"hub marketplace request failed: status=404 body_fields=3",
+		"inventory report failed: hub marketplace request failed: status=404 body_fields=2",
+	}, emptyStatus) {
+		t.Fatal("capability 404 with inventory 404 should still trigger circuit breaker")
+	}
+}
+
+func TestCapabilityManagedSyncRetryDelayEscalatesFor404(t *testing.T) {
+	// Non-404 errors get the minimum retry delay
+	if got := capabilityManagedSyncRetryDelay([]string{"download skill failed: unexpected EOF"}); got != capabilityManagedSyncMinRetry {
+		t.Fatalf("non-404 retry delay = %s, want %s", got, capabilityManagedSyncMinRetry)
+	}
+	// All-404 errors get an escalated 30-minute delay
+	if got := capabilityManagedSyncRetryDelay([]string{"hub marketplace request failed: status=404 body_fields=3"}); got != 30*time.Minute {
+		t.Fatalf("all-404 retry delay = %s, want 30m", got)
+	}
+	// Mixed errors (not all 404) get the minimum delay
+	if got := capabilityManagedSyncRetryDelay([]string{
+		"hub marketplace request failed: status=404 body_fields=3",
+		"network timeout",
+	}); got != capabilityManagedSyncMinRetry {
+		t.Fatalf("mixed retry delay = %s, want %s", got, capabilityManagedSyncMinRetry)
 	}
 }
 

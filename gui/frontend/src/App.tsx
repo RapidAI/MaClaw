@@ -58,7 +58,7 @@ import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops } from './components/layout/backgroundTaskCount';
 import { FavoriteEmployeeSettingsPanel } from './components/settings/FavoriteEmployeeSettingsPanel';
-import { MAX_FAVORITE_EMPLOYEES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
+import { MAX_USER_FAVORITES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
 import { VirtualEmployeeSettingsPanel } from './components/settings/VirtualEmployeeSettingsPanel';
 import { MainTopHeader } from './components/layout/MainTopHeader';
 import { AppStatusMessageBar } from './components/layout/AppStatusMessageBar';
@@ -632,7 +632,7 @@ function App() {
         // Without this, if veList hasn't loaded yet or the fetch failed, the slot would
         // show a fallback name (id.slice(0,6)) instead of the actual VE name.
         if (isVirtualEmployeeOnline(ve)) setVeList(prev => prev.some(v => v.id === ve.id || (!!v.machine_id && !!ve.machine_id && v.machine_id === ve.machine_id)) ? prev : [...prev, ve]);
-        if (userFavoriteEmployeeIds.length < MAX_FAVORITE_EMPLOYEES) {
+        if (userFavoriteEmployeeIds.length < MAX_USER_FAVORITES) {
             updateFavoriteEmployees([...userFavoriteEmployeeIds, favoriteId]);
         } else {
             setShowFavReplacePicker({ ve });

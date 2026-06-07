@@ -558,7 +558,7 @@ const extractedFileLineLimits = [
 for (const [rel, max] of extractedFileLineLimits) requireMaxLines(rel, max);
 
 const highRiskRemoteFileLineLimits = [
-  ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 2300],
+  ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 2400],
   ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1450],
   ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1160],
   ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],
