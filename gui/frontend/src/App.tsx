@@ -1150,7 +1150,7 @@ function App() {
             }
         };
         const doneHandler = () => {
-            void callBackend(() => ResizeWindow(867, 554));
+            void callBackend(() => ResizeWindow(1156, 739));
             setIsLoading(false);
             setIsManualCheck(false);
         };

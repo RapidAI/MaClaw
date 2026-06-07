@@ -1,4 +1,4 @@
-export const MAX_FAVORITE_EMPLOYEES = 6;
+export const MAX_FAVORITE_EMPLOYEES = 12;
 
 export function normalizeFavoriteEmployeeIds(value: unknown): string[] {
     if (!Array.isArray(value)) return [];

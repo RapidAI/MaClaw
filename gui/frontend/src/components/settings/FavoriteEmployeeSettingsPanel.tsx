@@ -85,7 +85,7 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
         <div ref={rootRef} className="favorite-employee-settings" data-testid="fav-employee-settings" onKeyDown={handleKeyDown}>
             <h3 className="favorite-employee-settings__title">{isZh ? '常用数字员工' : 'Favorite Employees'}</h3>
             <p className="favorite-employee-settings__hint">
-                {isZh ? '最多设置 6 个常用数字员工，显示在左侧导航栏中。拖动调整顺序。' : 'Pin up to 6 digital employees to the sidebar. Drag to reorder.'}
+                {isZh ? '最多设置 12 个常用数字员工，显示在左侧导航栏中。拖动调整顺序。' : 'Pin up to 12 digital employees to the sidebar. Drag to reorder.'}
             </p>
 
             {/* Current favorites list */}

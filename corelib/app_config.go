@@ -282,7 +282,7 @@ type AppConfig struct {
 	// all messages bypass workflow interception and go directly to the normal
 	// agent loop. Default: true (enabled).
 	WorkflowEnabled *bool `json:"workflow_enabled,omitempty"`
-	// FavoriteEmployees stores the IDs of up to 5 pinned digital employees
+	// FavoriteEmployees stores the IDs of up to 12 pinned digital employees
 	// shown as quick-access buttons in the sidebar nav rail. Order matters.
 	FavoriteEmployees []string `json:"favorite_employees,omitempty"`
 	// FavoriteEmployeeNames stores user-defined display names for pinned digital employees.
