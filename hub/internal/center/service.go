@@ -1187,6 +1187,109 @@ func (s *Service) SyncUserRoute(ctx context.Context, email string, tenantIDOpt .
 	return lastErr
 }
 
+// SyncInvitationCodesToCenter registers newly generated invitation codes with
+// HubCenter so that it can route clients providing these codes to this Hub.
+func (s *Service) SyncInvitationCodesToCenter(ctx context.Context, codes []string, tenantID string) error {
+	if s == nil || len(codes) == 0 {
+		return nil
+	}
+	record, err := s.loadRegistration(ctx)
+	if err != nil {
+		return err
+	}
+	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
+		return nil
+	}
+	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
+	if err != nil {
+		return err
+	}
+	if len(baseURLs) == 0 {
+		return nil // no hub center configured, skip silently
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"hub_secret": record.HubSecret,
+		"codes":      codes,
+		"tenant_id":  tenantID,
+	})
+	if err != nil {
+		return err
+	}
+
+	var lastErr error
+	for _, baseURL := range baseURLs {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/invitation-codes/sync", bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := s.client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
+		lastErr = fmt.Errorf("hub center invitation-codes sync failed with status %d", resp.StatusCode)
+	}
+	return lastErr
+}
+
+// DeleteInvitationCodesFromCenter removes consumed/deleted invitation codes
+// from HubCenter's routing table.
+func (s *Service) DeleteInvitationCodesFromCenter(ctx context.Context, codes []string) error {
+	if s == nil || len(codes) == 0 {
+		return nil
+	}
+	record, err := s.loadRegistration(ctx)
+	if err != nil {
+		return err
+	}
+	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
+		return nil
+	}
+	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
+	if err != nil {
+		return err
+	}
+	if len(baseURLs) == 0 {
+		return nil
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"hub_secret": record.HubSecret,
+		"codes":      codes,
+	})
+	if err != nil {
+		return err
+	}
+
+	var lastErr error
+	for _, baseURL := range baseURLs {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/invitation-codes/sync", bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := s.client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
+		lastErr = fmt.Errorf("hub center invitation-codes delete failed with status %d", resp.StatusCode)
+	}
+	return lastErr
+}
+
 func (s *Service) AllowsUserRoute(ctx context.Context, email string, tenantIDOpt ...string) (bool, string, error) {
 	if s == nil {
 		return true, "", nil

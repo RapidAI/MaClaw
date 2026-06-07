@@ -90,21 +90,22 @@ const hubInstanceSelectColumnsH = `h.id, h.installation_id, h.hub_origin, h.defa
 
 func NewStore(p *Provider) *store.Store {
 	return &store.Store{
-		Admins:           &adminRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		System:           &systemRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		AdminAudit:       &adminAuditRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		FailureLogs:      &failureEventLogRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Hubs:             &hubRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		HubUserLinks:     &hubUserLinkRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		HubDomainRoutes:  &hubDomainRouteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		BlockedEmails:    &blockedEmailRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		BlockedIPs:       &blockedIPRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		HASyncOps:        &haSyncOpRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		HAPeerCursors:    &haPeerCursorRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		HAEntityVersions: &haEntityVersionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		HAHeartbeatSync:  &haHeartbeatSyncStateRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Gossip:           &gossipRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		News:             &newsRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Admins:               &adminRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		System:               &systemRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		AdminAudit:           &adminAuditRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		FailureLogs:          &failureEventLogRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Hubs:                 &hubRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		HubUserLinks:         &hubUserLinkRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		HubDomainRoutes:      &hubDomainRouteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		BlockedEmails:        &blockedEmailRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		BlockedIPs:           &blockedIPRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		InvitationCodeRoutes: &invitationCodeRouteRepo{db: p.Write, readDB: p.Read},
+		HASyncOps:            &haSyncOpRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		HAPeerCursors:        &haPeerCursorRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		HAEntityVersions:     &haEntityVersionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		HAHeartbeatSync:      &haHeartbeatSyncStateRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Gossip:               &gossipRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		News:                 &newsRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 	}
 }
 
@@ -2454,4 +2455,70 @@ func (r *failureEventLogRepo) List(ctx context.Context, filter store.FailureEven
 		items = append(items, &item)
 	}
 	return items, total, rows.Err()
+}
+
+// ── InvitationCodeRoute repository ──
+
+type invitationCodeRouteRepo struct {
+	db     *sql.DB
+	readDB *sql.DB
+}
+
+func (r *invitationCodeRouteRepo) Upsert(ctx context.Context, code string, hubID string, tenantID string) error {
+	code = strings.TrimSpace(strings.ToUpper(code))
+	if code == "" {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO invitation_code_routes (code, hub_id, tenant_id, created_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(code) DO UPDATE SET hub_id = excluded.hub_id, tenant_id = excluded.tenant_id
+	`, code, hubID, tenantID, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+func (r *invitationCodeRouteRepo) GetByCode(ctx context.Context, code string) (*store.InvitationCodeRoute, error) {
+	code = strings.TrimSpace(strings.ToUpper(code))
+	var item store.InvitationCodeRoute
+	var createdAt string
+	err := r.readDB.QueryRowContext(ctx, `SELECT code, hub_id, tenant_id, created_at FROM invitation_code_routes WHERE code = ?`, code).
+		Scan(&item.Code, &item.HubID, &item.TenantID, &createdAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	item.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	return &item, nil
+}
+
+func (r *invitationCodeRouteRepo) DeleteByCode(ctx context.Context, code string) error {
+	code = strings.TrimSpace(strings.ToUpper(code))
+	_, err := r.db.ExecContext(ctx, `DELETE FROM invitation_code_routes WHERE code = ?`, code)
+	return err
+}
+
+func (r *invitationCodeRouteRepo) DeleteByHubID(ctx context.Context, hubID string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM invitation_code_routes WHERE hub_id = ?`, hubID)
+	return err
+}
+
+func (r *invitationCodeRouteRepo) ListAll(ctx context.Context) ([]*store.InvitationCodeRoute, error) {
+	rows, err := r.readDB.QueryContext(ctx, `SELECT code, hub_id, tenant_id, created_at FROM invitation_code_routes`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*store.InvitationCodeRoute
+	for rows.Next() {
+		var item store.InvitationCodeRoute
+		var createdAt string
+		if err := rows.Scan(&item.Code, &item.HubID, &item.TenantID, &createdAt); err != nil {
+			return nil, err
+		}
+		item.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		items = append(items, &item)
+	}
+	return items, rows.Err()
 }

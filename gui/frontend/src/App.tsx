@@ -10,7 +10,6 @@ import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalle
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
-import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
 import { WebSearchConfigPanel } from './components/remote/WebSearchConfigPanel';
 import { SecurityPolicyPanel } from './components/remote/SecurityPolicyPanel';
 import { useRemotePanel } from './components/remote/useRemotePanel';
@@ -3076,22 +3075,6 @@ ${instruction}`;
                                 />
                             </div>
 
-                            <div className="settings-content settings-panel" hidden={settingsTab !== 'remote'}>
-                                <RemoteSettingsPanel
-                                    config={config}
-                                    saveRemoteConfigField={saveRemoteConfigField}
-                                    translate={translate}
-                                    remoteBusy={remoteBusy}
-                                    remoteActivationStatus={remoteActivationStatus}
-                                    activateRemoteWithEmail={activateRemoteWithEmail}
-                                    clearRemoteActivationState={clearRemoteActivationState}
-                                    invitationCodeRequired={invitationCodeRequired}
-                                    invitationCode={invitationCode}
-                                    setInvitationCode={setInvitationCode}
-                                    invitationCodeError={invitationCodeError}
-                                />
-                            </div>
-
                             <div className="settings-content settings-panel" hidden={settingsTab !== 'searchEngine'}>
                                 <WebSearchConfigPanel lang={lang} />
                             </div>
@@ -3279,6 +3262,14 @@ ${instruction}`;
                             onShowInstallLog={() => setShowInstallLog(true)}
                             onOpenBugReport={() => safeBrowserOpenURL("https://github.com/rapidai/maclaw/issues/new")}
                             onOpenGithub={() => BrowserOpenURL(MACLAW_CODE_REPOSITORY_URL)}
+                            onRegister={() => setShowMaclawLLMPopup(true)}
+                            onClearRegistration={async () => {
+                                await clearRemoteActivationState();
+                                // Clear onboarding_done flag so onboarding can be re-triggered
+                                const c = { ...config, onboarding_done: false } as any;
+                                setConfig(c);
+                                await SaveConfig(c);
+                            }}
                         />
                     )}
                 </div>

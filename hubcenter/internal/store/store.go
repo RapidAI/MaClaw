@@ -173,6 +173,13 @@ type BlockedIP struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type InvitationCodeRoute struct {
+	Code      string    `json:"code"`
+	HubID     string    `json:"hub_id"`
+	TenantID  string    `json:"tenant_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type HASyncOp struct {
 	Seq           int64     `json:"seq"`
 	OpID          string    `json:"op_id"`
@@ -299,6 +306,14 @@ type BlockedIPRepository interface {
 	List(ctx context.Context) ([]*BlockedIP, error)
 }
 
+type InvitationCodeRouteRepository interface {
+	Upsert(ctx context.Context, code string, hubID string, tenantID string) error
+	GetByCode(ctx context.Context, code string) (*InvitationCodeRoute, error)
+	DeleteByCode(ctx context.Context, code string) error
+	DeleteByHubID(ctx context.Context, hubID string) error
+	ListAll(ctx context.Context) ([]*InvitationCodeRoute, error)
+}
+
 type HASyncOpRepository interface {
 	Append(ctx context.Context, op *HASyncOp) error
 	ListAfterSeq(ctx context.Context, afterSeq int64, limit int) ([]*HASyncOp, error)
@@ -386,19 +401,20 @@ type NewsRepository interface {
 }
 
 type Store struct {
-	Admins           AdminUserRepository
-	System           SystemSettingsRepository
-	AdminAudit       AdminAuditRepository
-	FailureLogs      FailureEventLogRepository
-	Hubs             HubRepository
-	HubUserLinks     HubUserLinkRepository
-	HubDomainRoutes  HubDomainRouteRepository
-	BlockedEmails    BlockedEmailRepository
-	BlockedIPs       BlockedIPRepository
-	HASyncOps        HASyncOpRepository
-	HAPeerCursors    HAPeerCursorRepository
-	HAEntityVersions HAEntityVersionRepository
-	HAHeartbeatSync  HAHeartbeatSyncStateRepository
-	Gossip           GossipRepository
-	News             NewsRepository
+	Admins               AdminUserRepository
+	System               SystemSettingsRepository
+	AdminAudit           AdminAuditRepository
+	FailureLogs          FailureEventLogRepository
+	Hubs                 HubRepository
+	HubUserLinks         HubUserLinkRepository
+	HubDomainRoutes      HubDomainRouteRepository
+	BlockedEmails        BlockedEmailRepository
+	BlockedIPs           BlockedIPRepository
+	InvitationCodeRoutes InvitationCodeRouteRepository
+	HASyncOps            HASyncOpRepository
+	HAPeerCursors        HAPeerCursorRepository
+	HAEntityVersions     HAEntityVersionRepository
+	HAHeartbeatSync      HAHeartbeatSyncStateRepository
+	Gossip               GossipRepository
+	News                 NewsRepository
 }

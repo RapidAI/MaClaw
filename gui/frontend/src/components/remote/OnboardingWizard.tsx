@@ -58,6 +58,21 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const t = useCallback((zh: string, en: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant), [lang]);
     const hubT = useCallback((en: string, zhHans: string, zhHant?: string) => localizeText(lang, en, zhHans, zhHant ?? zhHans), [lang]);
 
+    // Track the app-level theme mode so the portal (rendered outside #App) can
+    // inherit dark-mode CSS variables. Uses MutationObserver for live updates.
+    const [portalTheme, setPortalTheme] = useState<'light' | 'dark'>(() => {
+        return (document.getElementById("App") as HTMLElement)?.dataset?.aiTheme as 'light' | 'dark' || "light";
+    });
+    useEffect(() => {
+        const appEl = document.getElementById("App");
+        if (!appEl) return;
+        const sync = () => setPortalTheme((appEl.dataset.aiTheme as 'light' | 'dark') || "light");
+        sync();
+        const observer = new MutationObserver(sync);
+        observer.observe(appEl, { attributes: true, attributeFilter: ["data-ai-theme"] });
+        return () => observer.disconnect();
+    }, []);
+
     // 品牌显示名称（动态替换硬编码的 "MaClaw"）
     const displayName = brandDisplayName || 'MaClaw';
 
@@ -520,7 +535,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         const trimmedRedeemCode = redeemCode.trim();
         onSaveField({ remote_email: regEmail.trim() });
         try {
-            const result = await ActivateRemote(regEmail.trim(), invCode.trim(), "");
+            const result = await ActivateRemote(regEmail.trim(), invCode.trim().toUpperCase(), "");
             if (result?.vip_flag) setVipFlag(true);
             let redeemNote = "";
             if (trimmedRedeemCode) {
@@ -566,6 +581,12 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 setInvRequired(true);
                 setInvError(t("用户已失效，请使用新的邀请码", "Expired, use a new invitation code"));
                 setRegResult({ ok: false, msg: t("邀请码已过期", "Invitation code expired") });
+            } else if (errMsg.includes("INVITATION_CODE_NOT_ROUTED")) {
+                setInvError(t("邀请码无效或未注册，请检查后重试", "Invitation code not recognized. Please check and try again."));
+                setRegResult({ ok: false, msg: t("邀请码无法路由", "Invitation code not routed") });
+            } else if (errMsg.includes("INVITATION_CODE_HUB_OFFLINE")) {
+                setInvError(t("邀请码对应的服务器当前不可用，请稍后重试", "The server for this invitation code is currently offline. Please try again later."));
+                setRegResult({ ok: false, msg: t("目标服务器离线", "Target server offline") });
             } else {
                 setRegResult({ ok: false, msg: errMsg });
             }
@@ -694,7 +715,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
             background: "rgba(0,0,0,0.3)", backdropFilter: "blur(3px)",
             display: "flex", alignItems: "center", justifyContent: "center", zIndex: 20000,
-        }}>
+        }} data-ai-theme={portalTheme}>
             {showRegistrationToast && regResult && (
                 <div style={{ position: "absolute", top: 116, left: "50%", transform: "translateX(-50%)", zIndex: 20001, width: "min(420px, calc(100vw - 36px))", maxHeight: "calc(100vh - 148px)", overflowY: "auto", boxSizing: "border-box" }} role={regResult.ok ? "status" : "alert"} aria-live="polite">
                     <div style={{ ...wizardBannerStyle(regResultWarning ? "warning" : regResult.ok ? "success" : "error"), marginTop: 0, background: "var(--theme-surface)", border: `1px solid ${regResultWarning ? "rgba(245,158,11,0.65)" : regResult.ok ? "rgba(34,197,94,0.65)" : "rgba(239,68,68,0.65)"}`, borderLeft: `3px solid ${regResultWarning ? colors.warning : regResult.ok ? colors.success : colors.danger}`, boxShadow: "0 14px 36px rgba(0,0,0,0.28)" }}>
@@ -965,7 +986,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {offlineMode
                                     ? t("选择离网模式后，将跳过 Hub 注册并进入 LLM 配置。", "Offline mode skips Hub registration and continues to LLM setup.", "選擇離網模式後，將跳過 Hub 註冊並進入 LLM 配置。")
-                                    : t("选择运行模式。正常联网模式下，注册设备邮箱到 Hub 后即可通过移动端操控。", "Choose a run mode. In online mode, register your email to the Hub for remote control.", "選擇運行模式。正常聯網模式下，註冊設備郵箱到 Hub 後即可通過移動端操控。")}
+                                    : t("选择运行模式。正常联网模式下，注册设备邮箱到 Hub 后即可使用所有功能。", "Choose a run mode. In online mode, register your email to the Hub to unlock all features.", "選擇運行模式。正常聯網模式下，註冊設備郵箱到 Hub 後即可使用所有功能。")}
                             </p>
                             <OnboardingOfflineModeOption
                                 offlineMode={offlineMode}
@@ -982,20 +1003,20 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     onChange={e => setRegEmail(e.target.value)}
                                     placeholder="name@example.com" spellCheck={false} />
                             </div>
-                            {invRequired && (
-                                <div style={{ marginBottom: 10 }}>
-                                    <label style={labelStyle}>
-                                        {t("邀请码", "Invitation Code")}{" "}
-                                        <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("可选", "optional")})</span>
-                                    </label>
-                                    <input style={{ ...inputStyle, ...(invError ? { borderColor: colors.danger } : {}) }}
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                                <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>
+                                    {t("邀请码", "Invitation Code")}{" "}
+                                    <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("可选", "optional")})</span>
+                                </label>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                    <input style={{ ...inputStyle, width: "100%", ...(invError ? { borderColor: colors.danger } : {}) }}
                                         value={invCode}
                                         onChange={e => { setInvCode(e.target.value.toUpperCase()); setInvError(""); }}
-                                        placeholder={t("请输入邀请码", "Enter invitation code")}
-                                        maxLength={10} spellCheck={false} />
+                                        placeholder={t("请输入邀请码（可选）", "Enter invitation code (optional)", "請輸入邀請碼（可選）")}
+                                        maxLength={20} spellCheck={false} />
                                     {invError && <div style={{ fontSize: "0.72rem", color: colors.danger, marginTop: 4 }}>{invError}</div>}
                                 </div>
-                            )}
+                            </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                                 <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>
                                     {t("服务兑换码", "Service redeem code", "服務兌換碼")} {" "}

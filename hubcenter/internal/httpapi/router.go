@@ -19,9 +19,10 @@ import (
 )
 
 type EntryResolveRequest struct {
-	Email    string `json:"email"`
-	Domain   string `json:"domain,omitempty"`
-	TenantID string `json:"tenant_id,omitempty"`
+	Email          string `json:"email"`
+	Domain         string `json:"domain,omitempty"`
+	TenantID       string `json:"tenant_id,omitempty"`
+	InvitationCode string `json:"invitation_code,omitempty"`
 }
 
 type AdminRouteQueryRequest struct {
@@ -238,6 +239,60 @@ func HubUserLinkDeleteHandler(service *hubs.Service) http.HandlerFunc {
 	}
 }
 
+type HubInvitationCodeSyncRequest struct {
+	HubSecret string   `json:"hub_secret"`
+	Codes     []string `json:"codes"`
+	TenantID  string   `json:"tenant_id"`
+}
+
+func HubInvitationCodeSyncHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hubID := r.PathValue("id")
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
+			return
+		}
+		var req HubInvitationCodeSyncRequest
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		if err := service.SyncInvitationCodes(r.Context(), hubID, req.HubSecret, req.Codes, req.TenantID); err != nil {
+			if errors.Is(err, hubs.ErrHubUnauthorized) {
+				writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "INVITATION_CODE_SYNC_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "synced": len(req.Codes)})
+	}
+}
+
+func HubInvitationCodeDeleteHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hubID := r.PathValue("id")
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
+			return
+		}
+		var req HubInvitationCodeSyncRequest
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		if err := service.DeleteInvitationCodes(r.Context(), hubID, req.HubSecret, req.Codes); err != nil {
+			if errors.Is(err, hubs.ErrHubUnauthorized) {
+				writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "INVITATION_CODE_DELETE_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
 func ConfirmHubRegistrationHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")
@@ -265,7 +320,7 @@ func EntryResolveHandler(service *entry.Service) http.HandlerFunc {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		resp, err := service.ResolveByEmailFromIP(r.Context(), req.Email, clientIPFromRequest(r))
+		resp, err := service.ResolveByEmailFromIP(r.Context(), req.Email, clientIPFromRequest(r), req.InvitationCode)
 		if err != nil {
 			if errors.Is(err, entry.ErrIPBlocked) {
 				writeError(w, http.StatusForbidden, "IP_BLOCKED", err.Error())
@@ -375,6 +430,29 @@ func AdminRouteQueryHandler(service *entry.Service) http.HandlerFunc {
 	}
 }
 
+func AdminInvitationCodeQueryHandler(service *entry.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Code string `json:"code"`
+		}
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		code := strings.TrimSpace(strings.ToUpper(req.Code))
+		if code == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Invitation code is required")
+			return
+		}
+		result, err := service.LookupInvitationCodeRoute(r.Context(), code)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "INVITATION_CODE_QUERY_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
 func externalizeAdminResolveResult(resp *entry.ResolveResult) {
 	if resp == nil {
 		return
@@ -399,6 +477,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/admin/failure-logs", RequireAdmin(adminService, ListFailureLogsHandler(failureLogs)))
 	mux.HandleFunc("GET /api/admin/routing/diagnostics", RequireAdmin(adminService, AdminRoutingDiagnosticsHandler(entryService)))
 	mux.HandleFunc("POST /api/admin/routing/query", RequireAdmin(adminService, AdminRouteQueryHandler(entryService)))
+	mux.HandleFunc("POST /api/admin/routing/invitation-code-query", RequireAdmin(adminService, AdminInvitationCodeQueryHandler(entryService)))
 	mux.HandleFunc("GET /api/admin/server/config", RequireAdmin(adminService, GetAdminServerConfigHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/server/config", RequireAdmin(adminService, UpdateAdminServerConfigHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/ha/status", RequireAdmin(adminService, AdminHAStatusHandler(haSvc)))
@@ -439,6 +518,8 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/hubs/{id}/heartbeat", HubHeartbeatHandler(hubService, haSvc))
 	mux.HandleFunc("POST /api/hubs/{id}/user-links/sync", HubUserLinkSyncHandler(hubService))
 	mux.HandleFunc("DELETE /api/hubs/{id}/user-links/sync", HubUserLinkDeleteHandler(hubService))
+	mux.HandleFunc("POST /api/hubs/{id}/invitation-codes/sync", HubInvitationCodeSyncHandler(hubService))
+	mux.HandleFunc("DELETE /api/hubs/{id}/invitation-codes/sync", HubInvitationCodeDeleteHandler(hubService))
 	mux.HandleFunc("GET /hub-registration/confirm", ConfirmHubRegistrationHandler(hubService))
 	mux.HandleFunc("POST /api/entry/resolve", EntryResolveHandler(entryService))
 	mux.HandleFunc("POST /api/entry/resolve-domain", EntryResolveDomainHandler(entryService))

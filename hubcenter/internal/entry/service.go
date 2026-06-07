@@ -2,6 +2,7 @@ package entry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -70,11 +71,12 @@ type RoutingDiagnostics struct {
 type Service struct {
 	hubs          store.HubRepository
 	links         store.HubUserLinkRepository
-	routes        store.HubDomainRouteRepository
-	blockedEmails store.BlockedEmailRepository
-	blockedIPs    store.BlockedIPRepository
-	settings      store.SystemSettingsRepository
-	snapshot      atomic.Pointer[routeSnapshot]
+	routes               store.HubDomainRouteRepository
+	blockedEmails        store.BlockedEmailRepository
+	blockedIPs           store.BlockedIPRepository
+	invitationCodeRoutes store.InvitationCodeRouteRepository
+	settings             store.SystemSettingsRepository
+	snapshot             atomic.Pointer[routeSnapshot]
 }
 
 func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, routes store.HubDomainRouteRepository, blockedEmails store.BlockedEmailRepository, blockedIPs store.BlockedIPRepository, settingsOpt ...store.SystemSettingsRepository) *Service {
@@ -85,10 +87,27 @@ func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, rou
 	return &Service{hubs: hubs, links: links, routes: routes, blockedEmails: blockedEmails, blockedIPs: blockedIPs, settings: settings}
 }
 
+func (s *Service) SetInvitationCodeRoutes(repo store.InvitationCodeRouteRepository) {
+	s.invitationCodeRoutes = repo
+}
+
 func (s *Service) Rebuild(ctx context.Context) error {
 	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, s.settings, false)
 	if err != nil {
 		return err
+	}
+	// Load invitation code → (hub_id, tenant_id) routes into the snapshot for code-based routing.
+	if s.invitationCodeRoutes != nil {
+		codeRoutes, err := s.invitationCodeRoutes.ListAll(ctx)
+		if err == nil && len(codeRoutes) > 0 {
+			snap.invitationCodeRoutes = make(map[string]invitationCodeTarget, len(codeRoutes))
+			for _, route := range codeRoutes {
+				snap.invitationCodeRoutes[strings.ToUpper(strings.TrimSpace(route.Code))] = invitationCodeTarget{
+					HubID:    route.HubID,
+					TenantID: route.TenantID,
+				}
+			}
+		}
 	}
 	s.snapshot.Store(snap)
 	return nil
@@ -100,6 +119,100 @@ func (s *Service) SnapshotStats() RouteSnapshotStats {
 		return RouteSnapshotStats{}
 	}
 	return snap.stats()
+}
+
+// InvitationCodeRouteResult contains the lookup result for an invitation code.
+type InvitationCodeRouteResult struct {
+	Found      bool   `json:"found"`
+	Code       string `json:"code"`
+	HubID      string `json:"hub_id,omitempty"`
+	HubName    string `json:"hub_name,omitempty"`
+	HubURL     string `json:"hub_url,omitempty"`
+	HubStatus  string `json:"hub_status,omitempty"`
+	TenantID   string `json:"tenant_id,omitempty"`
+	TenantName string `json:"tenant_name,omitempty"`
+	Message    string `json:"message,omitempty"`
+}
+
+// LookupInvitationCodeRoute queries the invitation code routing table and returns
+// the hub and tenant information associated with the code.
+func (s *Service) LookupInvitationCodeRoute(ctx context.Context, code string) (*InvitationCodeRouteResult, error) {
+	code = strings.TrimSpace(strings.ToUpper(code))
+	if code == "" {
+		return &InvitationCodeRouteResult{Code: code, Message: "Invitation code is required"}, nil
+	}
+
+	// First check the in-memory snapshot (fast path).
+	snap := s.snapshot.Load()
+	if snap != nil && snap.invitationCodeRoutes != nil {
+		if target, ok := snap.invitationCodeRoutes[code]; ok {
+			if hub, exists := snap.activeHubsByID[target.HubID]; exists {
+				return &InvitationCodeRouteResult{
+					Found:      true,
+					Code:       code,
+					HubID:      hub.ID,
+					HubName:    hub.Name,
+					HubURL:     hub.BaseURL,
+					HubStatus:  hub.Status,
+					TenantID:   target.TenantID,
+					TenantName: tenantNameForHub(hub, target.TenantID),
+				}, nil
+			}
+			// Hub exists in route table but not in active hubs (maybe disabled/offline).
+			return &InvitationCodeRouteResult{
+				Found:    true,
+				Code:     code,
+				HubID:    target.HubID,
+				TenantID: target.TenantID,
+				Message:  "Hub is registered but currently not active",
+			}, nil
+		}
+	}
+
+	// Fallback: query the repository directly (in case snapshot is stale).
+	if s.invitationCodeRoutes != nil {
+		route, err := s.invitationCodeRoutes.GetByCode(ctx, code)
+		if err != nil {
+			return nil, err
+		}
+		if route != nil {
+			result := &InvitationCodeRouteResult{Found: true, Code: code, HubID: route.HubID, TenantID: route.TenantID}
+			// Try to get hub details.
+			hub, _ := s.hubs.GetByID(ctx, route.HubID)
+			if hub != nil {
+				result.HubName = hub.Name
+				result.HubURL = hub.BaseURL
+				result.HubStatus = hub.Status
+				result.TenantName = tenantNameForHub(hub, route.TenantID)
+			}
+			return result, nil
+		}
+	}
+
+	return &InvitationCodeRouteResult{Found: false, Code: code, Message: "Invitation code not found in routing table"}, nil
+}
+
+// tenantNameForHub extracts the tenant display name from a hub's capabilities JSON.
+func tenantNameForHub(hub *store.HubInstance, tenantID string) string {
+	if hub == nil || tenantID == "" || tenantID == "tenant_default" {
+		return ""
+	}
+	if strings.TrimSpace(hub.CapabilitiesJSON) == "" {
+		return ""
+	}
+	var caps map[string]any
+	if err := json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps); err != nil {
+		return ""
+	}
+	names, ok := caps["tenant_names"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	name, ok := names[tenantID]
+	if !ok || name == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(name))
 }
 
 func (s *Service) RoutingDiagnostics(ctx context.Context) (RoutingDiagnostics, error) {
@@ -175,7 +288,7 @@ func (s *Service) ResolveByEmail(ctx context.Context, email string) (*ResolveRes
 	return s.ResolveByEmailFromIP(ctx, email, "")
 }
 
-func (s *Service) ResolveByEmailFromIP(ctx context.Context, email string, clientIP string) (*ResolveResult, error) {
+func (s *Service) ResolveByEmailFromIP(ctx context.Context, email string, clientIP string, invitationCode ...string) (*ResolveResult, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
 	if email == "" {
 		return &ResolveResult{Email: email, Mode: "none", Message: "Email is required"}, nil
@@ -189,7 +302,11 @@ func (s *Service) ResolveByEmailFromIP(ctx context.Context, email string, client
 	if snap == nil {
 		return &ResolveResult{Email: email, Mode: "none", Message: "No available hubs found"}, nil
 	}
-	return snap.resolve(email, clientIP)
+	code := ""
+	if len(invitationCode) > 0 {
+		code = strings.TrimSpace(invitationCode[0])
+	}
+	return snap.resolve(email, clientIP, code)
 }
 
 func (s *Service) ResolveAdminByEmail(ctx context.Context, email string) (*ResolveResult, error) {

@@ -34,6 +34,10 @@ const baseProps = {
         aboutIdentityTitle: 'Hub Identity',
         aboutIdentityDesc: 'Current tenant and registered instance on Hub.',
         aboutNotRegistered: 'Not registered',
+        aboutRegisterBtn: 'Register',
+        aboutClearBtn: 'Clear',
+        aboutRegisterHub: 'Register to Hub',
+        aboutClearRegistration: 'Clear registration and re-register',
         aboutTenantName: 'Tenant',
         aboutRegisteredName: 'Registered Name',
         aboutHubUrl: 'Hub URL',
@@ -61,6 +65,8 @@ const baseProps = {
     onShowInstallLog: vi.fn(),
     onOpenBugReport: vi.fn(),
     onOpenGithub: vi.fn(),
+    onRegister: vi.fn(),
+    onClearRegistration: vi.fn(),
 };
 
 describe('AboutPanel', () => {

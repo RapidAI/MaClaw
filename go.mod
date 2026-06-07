@@ -5,7 +5,7 @@ go 1.25.5
 require (
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/VantageDataChat/GoExcel v0.0.0-20260217221828-9e17ca484c06
-	github.com/VantageDataChat/GoPDF2 v0.0.0-20260403061807-87cb97c2bda2
+	github.com/VantageDataChat/GoPDF2 v0.0.0-20260405225922-b95b4bfad327
 	github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10

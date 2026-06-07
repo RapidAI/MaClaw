@@ -55,9 +55,15 @@ const PromptKnowledgeBaseRules = `
 
 // KnowledgeAutoRecallHeader is the section header and instruction text injected
 // before auto-recall results in the system prompt.
-const KnowledgeAutoRecallHeader = "\n## \u77e5\u8bc6\u5e93\u53c2\u8003\uff08\u81ea\u52a8\u68c0\u7d22\uff09\n" +
-	"\u4ee5\u4e0b\u6761\u76ee\u662f\u4ece\u77e5\u8bc6\u5e93\u81ea\u52a8\u68c0\u7d22\u7684\u521d\u6b65\u7ed3\u679c\uff08\u53ef\u80fd\u4e0d\u5b8c\u6574\uff09\u3002\u8bf7\u81ea\u7136\u5f15\u7528\u76f8\u5173\u5185\u5bb9\u56de\u7b54\uff0c\u6807\u6ce8\u6765\u6e90\u3002\n" +
-	"\u91cd\u8981\uff1a\u5982\u679c\u4ee5\u4e0b\u6761\u76ee\u4e0d\u8db3\u4ee5\u5b8c\u6574\u56de\u7b54\u7528\u6237\u95ee\u9898\uff08\u5c24\u5176\u662f\u6570\u91cf/\u5217\u8868/\u8be6\u60c5\u7c7b\u95ee\u9898\uff09\uff0c\u5fc5\u987b\u4e3b\u52a8\u8c03\u7528 knowledge_search \u6216 knowledge_context_pack \u6df1\u5165\u68c0\u7d22\u540e\u518d\u56de\u7b54\uff0c\u4e0d\u8981\u4ec5\u51ed\u521d\u6b65\u7ed3\u679c\u5c31\u8bf4\u201c\u672a\u63d0\u53ca\u201d\u3002\n\n"
+const KnowledgeAutoRecallHeader = "\n## 知识库参考（自动检索）\n" +
+	"以下条目是从知识库自动检索的初步结果（可能不完整）。请自然引用相关内容回答，标注来源。\n" +
+	"重要：如果以下条目不足以完整回答用户问题（尤其是数量/列表/详情类问题），必须主动调用 knowledge_search 或 knowledge_context_pack 深入检索后再回答，不要仅凭初步结果就说\u201c未提及\u201d。\n\n" +
+	"### 信息源优先级（严格遵守）\n" +
+	"回答用户问题时，按以下顺序逐级查找，前一级有确切答案则直接回答，不要并行调用后续级别：\n" +
+	"1. **记忆（memory recall）** — 已保存的对话记录和用户事实\n" +
+	"2. **知识库（knowledge_search / knowledge_context_pack）** — 已导入的文档、PDF、网页等本地资料\n" +
+	"3. **网络搜索（web_search）** — 仅当记忆和知识库均无法回答时才使用\n" +
+	"禁止在第一轮就并行调用 web_search 和 knowledge_search。先查本地来源（记忆+知识库），确认不足后再搜网络。\n\n"
 
 // KnowledgeAutoRecallMaxQueryRunes limits the user message length used for auto-recall FTS query.
 const KnowledgeAutoRecallMaxQueryRunes = 200

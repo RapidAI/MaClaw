@@ -98,7 +98,9 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	mailer := mail.New(*cfg, systemSettings)
 	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, systemSettings, mailer, cfg.Server.PublicBaseURL)
 	hubService.SetFailureEventRecorder(failureRecorder)
+	hubService.SetInvitationCodeRoutes(st.InvitationCodeRoutes)
 	entryService := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, systemSettings)
+	entryService.SetInvitationCodeRoutes(st.InvitationCodeRoutes)
 	hubService.SetRouteSnapshotRefresher(entryService)
 	if err := entryService.Rebuild(context.Background()); err != nil {
 		return nil, err

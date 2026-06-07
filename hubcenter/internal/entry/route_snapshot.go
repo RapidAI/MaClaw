@@ -57,13 +57,21 @@ type resolvedCandidate struct {
 }
 
 type routeSnapshot struct {
-	blockedEmails   map[string]struct{}
-	blockedIPs      map[string]struct{}
-	defaultHubIDs   map[string]string
-	adminUserRoutes map[string]struct{}
-	emailRoutes     map[string][]snapshotCandidate
-	domainRoutes    map[string][]snapshotCandidate
-	publicHubs      []snapshotCandidate
+	blockedEmails        map[string]struct{}
+	blockedIPs           map[string]struct{}
+	defaultHubIDs        map[string]string
+	adminUserRoutes      map[string]struct{}
+	emailRoutes          map[string][]snapshotCandidate
+	domainRoutes         map[string][]snapshotCandidate
+	publicHubs           []snapshotCandidate
+	activeHubsByID       map[string]*store.HubInstance    // all active hubs indexed by ID
+	invitationCodeRoutes map[string]invitationCodeTarget  // invitation_code → (hub_id, tenant_id)
+}
+
+// invitationCodeTarget holds the routing target for an invitation code.
+type invitationCodeTarget struct {
+	HubID    string
+	TenantID string
 }
 
 type registrationPolicyConfig struct {
@@ -182,13 +190,15 @@ func buildRouteSnapshotFromItems(hubItems []*store.HubInstance, linkItems []*sto
 	}
 
 	snap := &routeSnapshot{
-		blockedEmails:   map[string]struct{}{},
-		blockedIPs:      map[string]struct{}{},
-		defaultHubIDs:   map[string]string{},
-		adminUserRoutes: map[string]struct{}{},
-		emailRoutes:     map[string][]snapshotCandidate{},
-		domainRoutes:    map[string][]snapshotCandidate{},
-		publicHubs:      make([]snapshotCandidate, 0),
+		blockedEmails:        map[string]struct{}{},
+		blockedIPs:           map[string]struct{}{},
+		defaultHubIDs:        map[string]string{},
+		adminUserRoutes:      map[string]struct{}{},
+		emailRoutes:          map[string][]snapshotCandidate{},
+		domainRoutes:         map[string][]snapshotCandidate{},
+		publicHubs:           make([]snapshotCandidate, 0),
+		activeHubsByID:       activeHubs,
+		invitationCodeRoutes: nil, // populated by entry.Service.Rebuild after snapshot is built
 	}
 
 	for _, item := range blockedEmailItems {
@@ -594,7 +604,7 @@ func compareSnapshotCandidate(a, b snapshotCandidate) bool {
 	return a.hub.ID < b.hub.ID
 }
 
-func (s *routeSnapshot) resolve(email string, clientIP string) (*ResolveResult, error) {
+func (s *routeSnapshot) resolve(email string, clientIP string, invitationCode ...string) (*ResolveResult, error) {
 	if _, blocked := s.blockedIPs[strings.TrimSpace(clientIP)]; blocked {
 		return nil, ErrIPBlocked
 	}
@@ -629,7 +639,31 @@ func (s *routeSnapshot) resolve(email string, clientIP string) (*ResolveResult, 
 		}
 	}
 
-	return buildResolveResult(email, resultsByHub, "No available hubs found"), nil
+	// When an invitation code is provided, resolve it to the specific Hub that
+	// issued it via the invitation code route table (populated when Hub syncs
+	// codes to HubCenter). This is the primary invitation-code routing mechanism.
+	// The actual code validation happens on the Hub side during enrollment.
+	code := ""
+	if len(invitationCode) > 0 {
+		code = strings.TrimSpace(strings.ToUpper(invitationCode[0]))
+	}
+	if code != "" && s.invitationCodeRoutes != nil {
+		if target, ok := s.invitationCodeRoutes[code]; ok {
+			if hub, exists := s.activeHubsByID[target.HubID]; exists {
+				merge(snapshotCandidate{hub: hub, tenantID: target.TenantID, rank: rankDefaultLink, routePriority: 0})
+			} else {
+				// Invitation code is valid but the target hub is currently offline/disabled.
+				return &ResolveResult{Email: email, Mode: "none", Message: "INVITATION_CODE_HUB_OFFLINE"}, nil
+			}
+		}
+	}
+
+	noMatchMsg := "No available hubs found"
+	if code != "" && len(resultsByHub) == 0 {
+		noMatchMsg = "INVITATION_CODE_NOT_ROUTED"
+	}
+
+	return buildResolveResult(email, resultsByHub, noMatchMsg), nil
 }
 
 func (s *routeSnapshot) resolveAdminEmail(email string) *ResolveResult {

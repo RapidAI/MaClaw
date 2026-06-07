@@ -11242,3 +11242,32 @@ body {
 .terminal-output::-webkit-scrollbar-thumb:active {
     background: var(--theme-text-secondary);
 }
+
+/* ── Onboarding Wizard dark theme ──
+ * The OnboardingWizard uses createPortal(... , document.body) and renders
+ * outside #App, so it cannot inherit dark-theme CSS variables from
+ * #App[data-ai-theme='dark']. Duplicate the variables on its own
+ * data-ai-theme attribute. Keep in sync with the #App dark theme block.
+ */
+[data-ai-theme='dark'] {
+    --theme-primary: #818cf8;
+    --theme-primary-strong: #6366f1;
+    --theme-primary-soft: rgba(129, 140, 248, 0.18);
+    --theme-page-bg: #0b1220;
+    --theme-surface: #111827;
+    --theme-surface-muted: #0f172a;
+    --theme-text-primary: #e5e7eb;
+    --theme-text-secondary: #cbd5e1;
+    --theme-text-muted: #94a3b8;
+    --theme-border: #334155;
+    --theme-border-subtle: #1e293b;
+    --theme-success: #4ade80;
+    --theme-success-bg: rgba(34, 197, 94, 0.12);
+    --theme-warning: #f59e0b;
+    --theme-warning-bg: rgba(245, 158, 11, 0.12);
+    --theme-danger: #f87171;
+    --theme-danger-bg: rgba(239, 68, 68, 0.12);
+    --theme-link-color: #a5b4fc;
+    --theme-info-bg: rgba(99, 102, 241, 0.14);
+    --theme-on-primary: #ffffff;
+}

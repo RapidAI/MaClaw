@@ -31,9 +31,17 @@ var (
 	ErrCodeNotFound          = errors.New("invitation code not found")
 )
 
+// CenterSyncer is an optional callback invoked when invitation codes are
+// generated or consumed, to sync them to HubCenter for routing.
+type CenterSyncer interface {
+	SyncInvitationCodesToCenter(ctx context.Context, codes []string, tenantID string) error
+	DeleteInvitationCodesFromCenter(ctx context.Context, codes []string) error
+}
+
 type Service struct {
 	repo     store.InvitationCodeRepository
 	settings store.SystemSettingsRepository
+	syncer   CenterSyncer
 
 	vipLookupMu    sync.RWMutex
 	vipLookupCache map[string]vipLookupCacheEntry
@@ -46,6 +54,10 @@ type vipLookupCacheEntry struct {
 
 func NewService(repo store.InvitationCodeRepository, settings store.SystemSettingsRepository) *Service {
 	return &Service{repo: repo, settings: settings, vipLookupCache: make(map[string]vipLookupCacheEntry)}
+}
+
+func (s *Service) SetCenterSyncer(syncer CenterSyncer) {
+	s.syncer = syncer
 }
 
 // GenerateCodes generates count invitation codes (1-50) and stores them.
@@ -107,6 +119,17 @@ func (s *Service) GenerateCodesForTenant(ctx context.Context, tenantID string, c
 		}
 		codes = append(codes, created)
 	}
+
+	// Sync newly generated codes to HubCenter for routing (fire-and-forget).
+	if s.syncer != nil && len(codes) > 0 {
+		codeStrings := make([]string, len(codes))
+		for i, c := range codes {
+			codeStrings[i] = c.Code
+		}
+		syncTenantID := tenantID
+		go s.syncer.SyncInvitationCodesToCenter(context.Background(), codeStrings, syncTenantID)
+	}
+
 	return codes, nil
 }
 
@@ -129,7 +152,16 @@ func (s *Service) ValidateAndConsumeForTenant(ctx context.Context, tenantID stri
 		return ErrInvalidInvitationCode
 	}
 
-	return s.repo.MarkUsed(ctx, item.ID, email, time.Now())
+	if err := s.repo.MarkUsed(ctx, item.ID, email, time.Now()); err != nil {
+		return err
+	}
+
+	// Remove consumed code from HubCenter routing table (fire-and-forget).
+	if s.syncer != nil {
+		go s.syncer.DeleteInvitationCodesFromCenter(context.Background(), []string{code})
+	}
+
+	return nil
 }
 
 // UnbindCode clears the binding of an invitation code, resetting it to unused.

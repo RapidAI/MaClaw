@@ -301,18 +301,19 @@ type UserRegistrationReport struct {
 type Service struct {
 	registrationMu sync.Mutex
 
-	hubs          store.HubRepository
-	links         store.HubUserLinkRepository
-	routes        store.HubDomainRouteRepository
-	blockedEmails BlockedEmailRepository
-	blockedIPs    BlockedIPRepository
-	settings      store.SystemSettingsRepository
-	mailer        mail.Mailer
-	publicBaseURL string
-	client        *http.Client
-	sync          syncRecorder
-	refresher     routeSnapshotRefresher
-	recorder      *diagnostics.FailureEventRecorder
+	hubs                 store.HubRepository
+	links                store.HubUserLinkRepository
+	routes               store.HubDomainRouteRepository
+	blockedEmails        BlockedEmailRepository
+	blockedIPs           BlockedIPRepository
+	invitationCodeRoutes store.InvitationCodeRouteRepository
+	settings             store.SystemSettingsRepository
+	mailer               mail.Mailer
+	publicBaseURL        string
+	client               *http.Client
+	sync                 syncRecorder
+	refresher            routeSnapshotRefresher
+	recorder             *diagnostics.FailureEventRecorder
 }
 
 func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, routes store.HubDomainRouteRepository, blockedEmails BlockedEmailRepository, blockedIPs BlockedIPRepository, settings store.SystemSettingsRepository, mailer mail.Mailer, publicBaseURL string) *Service {
@@ -339,6 +340,80 @@ func (s *Service) SetRouteSnapshotRefresher(refresher routeSnapshotRefresher) {
 
 func (s *Service) SetFailureEventRecorder(recorder *diagnostics.FailureEventRecorder) {
 	s.recorder = recorder
+}
+
+func (s *Service) SetInvitationCodeRoutes(repo store.InvitationCodeRouteRepository) {
+	s.invitationCodeRoutes = repo
+}
+
+// verifyHubSecret validates that the hub exists, is active, and the secret matches.
+func (s *Service) verifyHubSecret(ctx context.Context, hubID, rawSecret string) error {
+	hubID = strings.TrimSpace(hubID)
+	if hubID == "" || rawSecret == "" {
+		return ErrHubUnauthorized
+	}
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil {
+		return err
+	}
+	if hub == nil {
+		return ErrHubUnauthorized
+	}
+	if hub.HubSecretHash != hashToken(rawSecret) {
+		return ErrHubUnauthorized
+	}
+	if hub.IsDisabled || hub.Status == "disabled" {
+		return ErrHubUnauthorized
+	}
+	return nil
+}
+
+// SyncInvitationCodes registers invitation codes for routing to this hub.
+// Called by Hub when new codes are generated.
+func (s *Service) SyncInvitationCodes(ctx context.Context, hubID, hubSecret string, codes []string, tenantID string) error {
+	if err := s.verifyHubSecret(ctx, hubID, hubSecret); err != nil {
+		return err
+	}
+	if s.invitationCodeRoutes == nil {
+		return nil
+	}
+	for _, code := range codes {
+		code = strings.TrimSpace(strings.ToUpper(code))
+		if code == "" {
+			continue
+		}
+		if err := s.invitationCodeRoutes.Upsert(ctx, code, hubID, tenantID); err != nil {
+			return fmt.Errorf("upsert invitation code route: %w", err)
+		}
+	}
+	if s.refresher != nil {
+		s.refresher.Rebuild(ctx)
+	}
+	return nil
+}
+
+// DeleteInvitationCodes removes invitation code routes for this hub.
+// Called by Hub when codes are consumed/deleted.
+func (s *Service) DeleteInvitationCodes(ctx context.Context, hubID, hubSecret string, codes []string) error {
+	if err := s.verifyHubSecret(ctx, hubID, hubSecret); err != nil {
+		return err
+	}
+	if s.invitationCodeRoutes == nil {
+		return nil
+	}
+	for _, code := range codes {
+		code = strings.TrimSpace(strings.ToUpper(code))
+		if code == "" {
+			continue
+		}
+		if err := s.invitationCodeRoutes.DeleteByCode(ctx, code); err != nil {
+			return fmt.Errorf("delete invitation code route: %w", err)
+		}
+	}
+	if s.refresher != nil {
+		s.refresher.Rebuild(ctx)
+	}
+	return nil
 }
 
 func (s *Service) recordFailure(ctx context.Context, category, eventCode, message, entityID, email, clientIP string, details map[string]any) {
@@ -2605,6 +2680,10 @@ func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
 	}
 	if err := s.hubs.DeleteByID(ctx, hubID); err != nil {
 		return err
+	}
+	// Clean up invitation code routes associated with this hub.
+	if s.invitationCodeRoutes != nil {
+		_ = s.invitationCodeRoutes.DeleteByHubID(ctx, hubID)
 	}
 	if err := s.deleteHubRegistrationPolicy(ctx, hubID); err != nil {
 		return err

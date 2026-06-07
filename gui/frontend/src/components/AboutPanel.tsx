@@ -49,6 +49,8 @@ type AboutPanelProps = {
     onShowInstallLog: () => void;
     onOpenBugReport: () => void;
     onOpenGithub: () => void;
+    onRegister: () => void;
+    onClearRegistration: () => void;
 };
 
 const MarkdownLink = ({ node, ...props }: any) => (
@@ -75,6 +77,8 @@ export function AboutPanel({
     onShowInstallLog,
     onOpenBugReport,
     onOpenGithub,
+    onRegister,
+    onClearRegistration,
 }: AboutPanelProps) {
     const slogan = brandInfo?.slogan || t("slogan");
     const author = brandInfo?.author || 'Dr. Daniel';
@@ -197,9 +201,25 @@ export function AboutPanel({
                                 {t("aboutIdentityDesc")}
                             </p>
                         </div>
-                        <span className={`about-status-pill ${hasRegisteredMachine ? 'is-online' : ''}`}>
-                            {hasRegisteredMachine ? t("remoteActivated") : t("aboutNotRegistered")}
-                        </span>
+                        {hasRegisteredMachine ? (
+                            <button
+                                className="about-status-pill is-online"
+                                style={{ cursor: 'pointer', border: 'none', background: 'rgba(239,68,68,0.12)', color: '#ef4444' }}
+                                onClick={onClearRegistration}
+                                title={t("aboutClearRegistration")}
+                            >
+                                {t("aboutClearBtn")}
+                            </button>
+                        ) : (
+                            <button
+                                className="about-status-pill"
+                                style={{ cursor: 'pointer', border: 'none', background: 'rgba(59,130,246,0.12)', color: '#3b82f6' }}
+                                onClick={onRegister}
+                                title={t("aboutRegisterHub")}
+                            >
+                                {t("aboutRegisterBtn")}
+                            </button>
+                        )}
                     </div>
                     <dl className="about-identity-table">
                         <div className="about-identity-row">

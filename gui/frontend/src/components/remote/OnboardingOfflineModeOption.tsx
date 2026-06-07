@@ -72,7 +72,7 @@ export function OnboardingOfflineModeOption({ offlineMode, freeTrial, onToggle, 
 
             <div id="onboarding-run-mode-note" style={{ color: colors.textMuted, fontSize: "0.72rem", lineHeight: 1.45 }}>
                 {!offlineMode
-                    ? t("注册 Hub，可使用远程控制、微信绑定、联网搜索和 Hub 服务。", "Register Hub to use remote control, WeChat binding, web search, and Hub services.", "註冊 Hub，可使用遠端控制、微信綁定、聯網搜尋和 Hub 服務。")
+                    ? t("注册 Hub，可使用联网搜索、微信绑定、远程控制和 Hub 服务等所有功能。", "Register Hub to unlock all features including web search, WeChat binding, remote control, and Hub services.", "註冊 Hub，可使用聯網搜尋、微信綁定、遠端控制和 Hub 服務等所有功能。")
                     : t("跳过 Hub 注册和微信绑定；配置并测试通过 LLM 后即可完成初始化。", "Skip Hub registration and WeChat binding. Onboarding finishes after LLM setup is tested and saved.", "跳過 Hub 註冊和微信綁定；配置並測試通過 LLM 後即可完成初始化。")}
             </div>
         </div>

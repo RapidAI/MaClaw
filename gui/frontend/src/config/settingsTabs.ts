@@ -1,4 +1,4 @@
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'remote' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'security' | 'im' | 'system';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'security' | 'im' | 'system';
 
 export interface SettingsTabOption {
     id: SettingsTabId;
@@ -36,11 +36,6 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
             id: 'pet' as const,
             label: textForLang(lang, 'Pet', '宠物', '寵物'),
             desc: textForLang(lang, 'Desktop pet appearance, actions, and interaction settings', '桌面宠物形象、动作与交互设置', '桌面寵物形象、動作與互動設定'),
-        },
-        {
-            id: 'remote' as const,
-            label: textForLang(lang, 'Remote', '远程注册', '遠端註冊'),
-            desc: textForLang(lang, 'Server addresses only', '仅配置远程服务器地址', '僅設定遠端伺服器位址'),
         },
         {
             id: 'searchEngine' as const,

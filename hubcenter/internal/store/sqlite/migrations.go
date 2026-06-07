@@ -301,6 +301,9 @@ func RunMigrations(db *sql.DB) error {
 	if err := ensureFailureLogsTenantIDColumn(db); err != nil {
 		return err
 	}
+	if err := ensureInvitationCodeRoutesTable(db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -958,4 +961,20 @@ func hubInstanceColumnExists(db *sql.DB, target string) (bool, error) {
 		return false, fmt.Errorf("iterate hub_instances columns: %w", err)
 	}
 	return false, nil
+}
+
+func ensureInvitationCodeRoutesTable(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS invitation_code_routes (
+		code TEXT NOT NULL,
+		hub_id TEXT NOT NULL,
+		tenant_id TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		PRIMARY KEY(code)
+	)`); err != nil {
+		return fmt.Errorf("create invitation_code_routes table: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_invitation_code_routes_hub_id ON invitation_code_routes(hub_id)`); err != nil {
+		return fmt.Errorf("create invitation_code_routes hub_id index: %w", err)
+	}
+	return nil
 }

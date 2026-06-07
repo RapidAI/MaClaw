@@ -13,7 +13,7 @@ import (
 
 	excelread "github.com/RapidAI/CodeClaw/corelib/excel"
 	"github.com/RapidAI/CodeClaw/corelib/pptx"
-	"github.com/ledongthuc/pdf"
+	gopdf2 "github.com/VantageDataChat/GoPDF2"
 )
 
 var errUnsupportedParser = errors.New("knowledge parser is not available for this file type")
@@ -448,24 +448,40 @@ func pptxShapeText(shape pptx.Shape) string {
 }
 
 func parsePDFNodes(source Source, filePath string) ([]DocumentNode, error) {
-	f, reader, err := pdf.Open(filePath)
+	pdfData, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	nodes := make([]DocumentNode, 0)
-	fonts := make(map[string]*pdf.Font)
-	for i := 1; i <= reader.NumPage(); i++ {
-		page := reader.Page(i)
-		for _, name := range page.Fonts() {
-			if _, ok := fonts[name]; !ok {
-				font := page.Font(name)
-				fonts[name] = &font
-			}
+	// Determine number of pages
+	numPages, err := gopdf2.GetSourcePDFPageCountFromBytes(pdfData)
+	if err != nil {
+		// Fallback: try extracting all text as single page
+		allText, err2 := gopdf2.ExtractAllPagesText(pdfData)
+		if err2 != nil {
+			return nil, fmt.Errorf("pdf parse failed: %w (fallback: %v)", err, err2)
 		}
-		text, err := page.GetPlainText(fonts)
+		allText = strings.TrimSpace(trimNodeText(allText))
+		if allText == "" {
+			return nil, fmt.Errorf("pdf has no readable text")
+		}
+		nodes = append(nodes, DocumentNode{
+			ID:         NewID("kdn"),
+			SourceID:   source.ID,
+			Type:       "page",
+			Title:      fmt.Sprintf("%s p.1", source.Title),
+			Text:       allText,
+			Page:       1,
+			Metadata:   map[string]string{"relative_path": source.RelativePath, "format": "pdf"},
+			TokenCount: estimateTokens(allText),
+		})
+		return nodes, nil
+	}
+
+	for i := 0; i < numPages; i++ {
+		text, err := gopdf2.ExtractPageText(pdfData, i)
 		if err != nil {
-			return nil, err
+			continue
 		}
 		text = strings.TrimSpace(trimNodeText(text))
 		if text == "" {
@@ -480,9 +496,9 @@ func parsePDFNodes(source Source, filePath string) ([]DocumentNode, error) {
 			if seg == "" {
 				continue
 			}
-			title := fmt.Sprintf("%s p.%d", source.Title, i)
+			title := fmt.Sprintf("%s p.%d", source.Title, i+1)
 			if len(segments) > 1 {
-				title = fmt.Sprintf("%s p.%d.%d", source.Title, i, segIdx+1)
+				title = fmt.Sprintf("%s p.%d.%d", source.Title, i+1, segIdx+1)
 			}
 			nodes = append(nodes, DocumentNode{
 				ID:         NewID("kdn"),
@@ -490,7 +506,7 @@ func parsePDFNodes(source Source, filePath string) ([]DocumentNode, error) {
 				Type:       "page",
 				Title:      title,
 				Text:       seg,
-				Page:       i,
+				Page:       i + 1,
 				Metadata:   map[string]string{"relative_path": source.RelativePath, "format": "pdf"},
 				TokenCount: estimateTokens(seg),
 			})

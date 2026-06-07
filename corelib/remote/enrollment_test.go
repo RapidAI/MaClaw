@@ -259,7 +259,7 @@ func TestResolveHubs_ReturnsParsedResult(t *testing.T) {
 	}()
 
 	client := NewEnrollmentClient()
-	result, usedCenter, _, err := client.ResolveHubs(context.Background(), "u@example.com", center.URL, nil)
+	result, usedCenter, _, err := client.ResolveHubs(context.Background(), "u@example.com", "", center.URL, nil)
 	if err != nil {
 		t.Fatalf("ResolveHubs failed: %v", err)
 	}

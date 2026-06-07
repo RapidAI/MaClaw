@@ -75,6 +75,7 @@ type HubCenterResolveResult struct {
 // HubCenterResolveHub describes a single hub returned by the resolve endpoint.
 type HubCenterResolveHub struct {
 	HubID          string `json:"hub_id"`
+	TenantID       string `json:"tenant_id,omitempty"`
 	Name           string `json:"name"`
 	BaseURL        string `json:"base_url"`
 	PWAURL         string `json:"pwa_url"`
@@ -111,7 +112,7 @@ func NewHubHTTPClient() *http.Client {
 
 // ResolveHubs queries HubCenter for available hubs matching the given email.
 // This is the resolve-only path used by ListRemoteHubs. Enroll() calls this internally.
-func (c *EnrollmentClient) ResolveHubs(ctx context.Context, email string, hubCenterURL string, hubCenterURLs []string) (*HubCenterResolveResult, string, []string, error) {
+func (c *EnrollmentClient) ResolveHubs(ctx context.Context, email string, invitationCode string, hubCenterURL string, hubCenterURLs []string) (*HubCenterResolveResult, string, []string, error) {
 	httpClient := c.httpClient()
 	email = strings.TrimSpace(email)
 	if email == "" {
@@ -133,6 +134,9 @@ func (c *EnrollmentClient) ResolveHubs(ctx context.Context, email string, hubCen
 	}
 
 	payload := map[string]string{"email": email}
+	if strings.TrimSpace(invitationCode) != "" {
+		payload["invitation_code"] = strings.TrimSpace(invitationCode)
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, "", nil, err
@@ -191,6 +195,7 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	hubURL := strings.TrimRight(strings.TrimSpace(cfg.HubURL), "/")
 	var discoveredURLs []string
 	var usedCenterURL string
+	var resolvedTenantID string // tenant_id from invitation code routing
 
 	if hubURL == "" {
 		log.Printf("[enrollment] resolving hub for email=%s", email)
@@ -199,9 +204,10 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 			return nil, fmt.Errorf("hub resolution failed: %w", err)
 		}
 		hubURL = resolved.hubURL
+		resolvedTenantID = resolved.tenantID
 		discoveredURLs = resolved.discoveredURLs
 		usedCenterURL = resolved.usedCenterURL
-		log.Printf("[enrollment] resolved hub=%s center=%s duration=%s", hubURL, usedCenterURL, time.Since(start))
+		log.Printf("[enrollment] resolved hub=%s tenant=%s center=%s duration=%s", hubURL, resolvedTenantID, usedCenterURL, time.Since(start))
 	}
 
 	// --- Step 3: Ensure client_id ---
@@ -231,6 +237,11 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	}
 	if cfg.Mobile != "" {
 		body["mobile"] = strings.TrimSpace(cfg.Mobile)
+	}
+	// When the hub was resolved via invitation code routing, pass the target
+	// tenant_id so Hub's enrollment handler places the user in the correct tenant.
+	if resolvedTenantID != "" {
+		body["tenant_id"] = resolvedTenantID
 	}
 
 	data, err := json.Marshal(body)
@@ -314,24 +325,26 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 // resolveResult holds the output of hub center discovery + resolve.
 type resolveResult struct {
 	hubURL         string
+	tenantID       string // tenant_id from invitation code routing (empty if not code-routed)
 	usedCenterURL  string
 	discoveredURLs []string
 }
 
 // resolveHubURL discovers the best HubCenter, then resolves the hub for the given email.
 func (c *EnrollmentClient) resolveHubURL(ctx context.Context, httpClient *http.Client, email string, cfg EnrollConfig) (*resolveResult, error) {
-	result, usedCenter, ordered, err := c.ResolveHubs(ctx, email, cfg.HubCenterURL, cfg.HubCenterURLs)
+	result, usedCenter, ordered, err := c.ResolveHubs(ctx, email, cfg.InvitationCode, cfg.HubCenterURL, cfg.HubCenterURLs)
 	if err != nil {
 		return nil, err
 	}
 
-	hubURL, err := PickBestHub(*result)
+	hubURL, tenantID, err := PickBestHubWithTenant(*result)
 	if err != nil {
 		return nil, err
 	}
 
 	return &resolveResult{
 		hubURL:         hubURL,
+		tenantID:       tenantID,
 		usedCenterURL:  usedCenter,
 		discoveredURLs: ordered,
 	}, nil
@@ -342,19 +355,26 @@ func (c *EnrollmentClient) resolveHubURL(ctx context.Context, httpClient *http.C
 // Hubs with non-online status are skipped as a defensive measure against
 // stale snapshots on the HubCenter side.
 func PickBestHub(result HubCenterResolveResult) (string, error) {
+	url, _, err := PickBestHubWithTenant(result)
+	return url, err
+}
+
+// PickBestHubWithTenant selects the best hub URL and its associated tenant_id.
+// The tenant_id is non-empty when the hub was resolved via invitation code routing.
+func PickBestHubWithTenant(result HubCenterResolveResult) (string, string, error) {
 	if len(result.Hubs) == 0 {
 		msg := result.Message
 		if msg == "" {
 			msg = "no available hubs found"
 		}
-		return "", fmt.Errorf("%s", msg)
+		return "", "", fmt.Errorf("%s", msg)
 	}
 
 	// Prefer the default hub (if online).
 	if result.DefaultHubID != "" {
 		for _, hub := range result.Hubs {
 			if hub.HubID == result.DefaultHubID && strings.TrimSpace(hub.BaseURL) != "" && isHubOnline(hub.Status) {
-				return strings.TrimRight(hub.BaseURL, "/"), nil
+				return strings.TrimRight(hub.BaseURL, "/"), hub.TenantID, nil
 			}
 		}
 	}
@@ -362,7 +382,7 @@ func PickBestHub(result HubCenterResolveResult) (string, error) {
 	// Fallback: first online hub with a non-empty BaseURL.
 	for _, hub := range result.Hubs {
 		if strings.TrimSpace(hub.BaseURL) != "" && isHubOnline(hub.Status) {
-			return strings.TrimRight(hub.BaseURL, "/"), nil
+			return strings.TrimRight(hub.BaseURL, "/"), hub.TenantID, nil
 		}
 	}
 
@@ -370,11 +390,11 @@ func PickBestHub(result HubCenterResolveResult) (string, error) {
 	// This handles the case where HubCenter doesn't populate the Status field.
 	for _, hub := range result.Hubs {
 		if strings.TrimSpace(hub.BaseURL) != "" {
-			return strings.TrimRight(hub.BaseURL, "/"), nil
+			return strings.TrimRight(hub.BaseURL, "/"), hub.TenantID, nil
 		}
 	}
 
-	return "", fmt.Errorf("hub center did not return a usable hub url")
+	return "", "", fmt.Errorf("hub center did not return a usable hub url")
 }
 
 // isHubOnline returns true if the hub status indicates it's operational.

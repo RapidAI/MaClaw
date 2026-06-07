@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ type EnrollStartRequest struct {
 	HeartbeatIntervalSec int    `json:"heartbeat_interval_sec"`
 	ClientID             string `json:"client_id"`
 	InvitationCode       string `json:"invitation_code"`
+	TenantID             string `json:"tenant_id"`
 	GroupID              string `json:"group_id"`
 }
 
@@ -60,10 +62,19 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
 			return
 		}
-		tenantID, err := tenantIDForEmailRequest(r, identity, req.Email)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
-			return
+		// If client explicitly provides tenant_id (from invitation code routing via HubCenter),
+		// use it directly. This is only trusted when paired with an invitation code —
+		// the code validation on the target tenant serves as the authorization check.
+		var tenantID string
+		var err error
+		if strings.TrimSpace(req.TenantID) != "" && strings.TrimSpace(req.InvitationCode) != "" {
+			tenantID = strings.TrimSpace(req.TenantID)
+		} else {
+			tenantID, err = tenantIDForEmailRequest(r, identity, req.Email)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
+				return
+			}
 		}
 		ctx := auth.WithTenant(r.Context(), tenantID)
 

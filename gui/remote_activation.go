@@ -423,6 +423,7 @@ func (a *App) ListRemoteHubs(centerURL string, email string) ([]RemoteHubCenterH
 	result, usedCenter, ordered, err := enrollClient.ResolveHubs(
 		context.Background(),
 		email,
+		"", // no invitation code for hub listing
 		strings.TrimSpace(centerURL),
 		cfg.HubCenterBaseURLs(defaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs),
 	)
