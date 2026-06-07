@@ -8,21 +8,15 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
-// knowledgeAutoRecallMaxQueryRunes limits the user message length used for auto-recall.
-const knowledgeAutoRecallMaxQueryRunes = 200
 
-// knowledgeAutoRecallScoreThreshold is the minimum score for injection.
-const knowledgeAutoRecallScoreThreshold = 0.3
-
-// knowledgeAutoRecallMaxSnippets is the maximum number of snippets to inject.
-const knowledgeAutoRecallMaxSnippets = 3
 
 // appendKnowledgeAutoRecall searches the knowledge base and injects relevant
-// results into the system prompt. Mirrors the logic in
-// corelib/agentservice/knowledge_integration.go.
+// results into the system prompt. Uses shared constants from corelib/agent/prompt_blocks.go
+// to stay in sync with GUI and agentservice (maclawsrv).
 func (app *TUIApp) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string) {
 	if app.knowledgeStore == nil || userMsg == "" {
 		return
@@ -30,9 +24,9 @@ func (app *TUIApp) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string)
 
 	// Truncate user message to 200 runes for the FTS query.
 	query := userMsg
-	if utf8.RuneCountInString(query) > knowledgeAutoRecallMaxQueryRunes {
+	if utf8.RuneCountInString(query) > agent.KnowledgeAutoRecallMaxQueryRunes {
 		runes := []rune(query)
-		query = string(runes[:knowledgeAutoRecallMaxQueryRunes])
+		query = string(runes[:agent.KnowledgeAutoRecallMaxQueryRunes])
 	}
 
 	// Execute search with 3-second timeout.
@@ -41,34 +35,28 @@ func (app *TUIApp) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string)
 
 	results, err := app.knowledgeStore.Search(ctx, knowledge.SearchOptions{
 		Query: query,
-		Limit: 5,
+		Limit: agent.KnowledgeAutoRecallSearchLimit,
 	})
 	if err != nil {
 		log.Printf("[knowledge_auto_recall] search error: %v", err)
 		return
 	}
 	if len(results) == 0 {
+		// FTS returned nothing — could be empty KB or no match. Stay silent.
 		return
 	}
 
 	// Determine max snippets to inject based on top score.
 	topScore := results[0].Score
-	var maxInject int
-	switch {
-	case topScore >= 3.0:
-		maxInject = knowledgeAutoRecallMaxSnippets
-	case topScore >= 1.0:
-		maxInject = 2
-	case topScore >= knowledgeAutoRecallScoreThreshold:
-		maxInject = 1
-	default:
+	maxInject := agent.KnowledgeAutoRecallMaxInject(topScore)
+	if maxInject == 0 {
+		// Results exist but scores too low — hint the LLM to try deeper search.
+		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
 		return
 	}
 
-	// Write section header.
-	b.WriteString("\n## 知识库参考（自动检索）\n")
-	b.WriteString("以下内容来自知识库，与当前问题可能相关。请自然引用相关内容；不相关则忽略。\n")
-	b.WriteString("如需更多信息，可调用 knowledge_search 或 knowledge_context_pack 深入检索。\n\n")
+	// Write section header (shared with GUI and agentservice).
+	b.WriteString(agent.KnowledgeAutoRecallHeader)
 
 	// Inject qualifying snippets.
 	injected := 0
@@ -76,7 +64,7 @@ func (app *TUIApp) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string)
 		if injected >= maxInject {
 			break
 		}
-		if r.Score < knowledgeAutoRecallScoreThreshold {
+		if r.Score < agent.KnowledgeAutoRecallScoreThreshold {
 			break
 		}
 		source := r.Source.Title
@@ -90,8 +78,8 @@ func (app *TUIApp) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string)
 		if text == "" {
 			continue
 		}
-		if len([]rune(text)) > 200 {
-			text = string([]rune(text)[:200]) + "..."
+		if len([]rune(text)) > agent.KnowledgeAutoRecallSnippetMaxRunes {
+			text = string([]rune(text)[:agent.KnowledgeAutoRecallSnippetMaxRunes]) + "..."
 		}
 		// Annotate image results with [图片] prefix and asset path hint
 		if r.NodeType == knowledge.NodeTypeImage || r.Source.Kind == knowledge.SourceKindImage {

@@ -43,7 +43,7 @@ func (app *TUIApp) toolKnowledgeSearch(args map[string]interface{}) string {
 		return fmt.Sprintf("Error: knowledge search failed: %v", err)
 	}
 	if len(results) == 0 {
-		return "No results found in knowledge base."
+		return knowledge.EmptySearchResultMessage
 	}
 	// Pass asset base dir for inline image thumbnail embedding.
 	assetDir := filepath.Join(commands.ResolveDataDir(), "knowledge_assets")
@@ -95,18 +95,9 @@ func (app *TUIApp) toolKnowledgeContextPack(args map[string]interface{}) string 
 		return fmt.Sprintf("Error: knowledge context pack failed: %v", err)
 	}
 	if len(result.Items) == 0 {
-		return "No relevant knowledge found for context pack."
+		return knowledge.EmptyContextPackMessage
 	}
-
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Knowledge context pack (%d items, %d chars):\n\n", result.Count, result.CharacterCount))
-	for i, item := range result.Items {
-		b.WriteString(fmt.Sprintf("%d. [%s] %s\n", i+1, item.ResultType, item.Text))
-		if item.Citation != "" {
-			b.WriteString(fmt.Sprintf("   Citation: %s\n", item.Citation))
-		}
-	}
-	return b.String()
+	return knowledge.FormatContextPackForLLM(result)
 }
 
 // toolKnowledgeSaveText persists the provided text as a new source in the knowledge store.
@@ -183,6 +174,7 @@ func formatKnowledgeSearchResults(results []knowledge.SearchResult, assetBaseDir
 	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Found %d results:\n\n", len(results)))
+	b.WriteString(knowledge.SearchResultsHeader)
 	for i, r := range results {
 		source := r.Source.Title
 		if source == "" {

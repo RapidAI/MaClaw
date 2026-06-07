@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
@@ -47,12 +48,12 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 		return
 	}
 
-	// Truncate long messages to first 200 chars for FTS query —
+	// Truncate long messages to first N chars for FTS query —
 	// long pastes (code, logs) produce noisy tokens that hurt precision.
 	query := msg
-	if utf8.RuneCountInString(query) > 200 {
+	if utf8.RuneCountInString(query) > agent.KnowledgeAutoRecallMaxQueryRunes {
 		runes := []rune(query)
-		query = string(runes[:200])
+		query = string(runes[:agent.KnowledgeAutoRecallMaxQueryRunes])
 	}
 
 	store, cleanupStore := h.getAutoRecallStoreForUse()
@@ -70,7 +71,7 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 	// search is not a performance concern.
 	results, err := store.Search(ctx, knowledge.SearchOptions{
 		Query: query,
-		Limit: 5,
+		Limit: agent.KnowledgeAutoRecallSearchLimit,
 	})
 	queryDuration := time.Since(queryStart)
 
@@ -80,39 +81,31 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 	}
 	if len(results) == 0 {
 		log.Printf("[knowledge_auto_recall] no results for query=%d chars (took %s)", len(msg), queryDuration)
+		// hasKnowledgeSources() pre-check above guarantees the KB is non-empty,
+		// but FTS found zero matches. Hint the LLM to try knowledge_search.
+		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
 		return
 	}
 
 	// Dynamic threshold + injection count based on top score.
-	// LIKE fallback produces score=2.0 for confirmed substring matches.
-	// FTS on properly segmented index produces score 1.0+ for multi-doc corpora,
-	// but only ~0.4 for single-doc corpora (BM25 IDF≈0 when N=1).
-	// Threshold 0.3 ensures single-doc matches are still injected.
+	// Uses shared constants from corelib/agent/prompt_blocks.go.
 	topScore := results[0].Score
-	var maxInject int
-	switch {
-	case topScore >= 3.0:
-		maxInject = 3
-	case topScore >= 1.0:
-		maxInject = 2
-	case topScore >= 0.3:
-		maxInject = 1
-	default:
+	maxInject := agent.KnowledgeAutoRecallMaxInject(topScore)
+	if maxInject == 0 {
 		log.Printf("[knowledge_auto_recall] below threshold: topScore=%.2f, results=%d, query=%d chars (took %s)",
 			topScore, len(results), len(msg), queryDuration)
+		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
 		return
 	}
 
-	b.WriteString("\n## 知识库参考（自动检索）\n")
-	b.WriteString("以下内容来自你的知识库，与当前问题可能相关。请自然引用相关内容；不相关则忽略。\n")
-	b.WriteString("如需更多信息，可调用 knowledge_search 或 knowledge_context_pack 深入检索。\n\n")
+	b.WriteString(agent.KnowledgeAutoRecallHeader)
 
 	injected := 0
 	for _, r := range results {
 		if injected >= maxInject {
 			break
 		}
-		if r.Score < 0.3 {
+		if r.Score < agent.KnowledgeAutoRecallScoreThreshold {
 			break
 		}
 		source := r.Source.Title
@@ -126,8 +119,8 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 		if text == "" {
 			continue
 		}
-		if len([]rune(text)) > 200 {
-			text = string([]rune(text)[:200]) + "..."
+		if len([]rune(text)) > agent.KnowledgeAutoRecallSnippetMaxRunes {
+			text = string([]rune(text)[:agent.KnowledgeAutoRecallSnippetMaxRunes]) + "..."
 		}
 		b.WriteString(fmt.Sprintf("- [%s] %s\n", source, text))
 		log.Printf("[knowledge_auto_recall] injecting #%d: score=%.2f type=%s source=%q snippet=%d chars",

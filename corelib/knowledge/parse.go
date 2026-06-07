@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 
 	excelread "github.com/RapidAI/CodeClaw/corelib/excel"
@@ -470,21 +471,192 @@ func parsePDFNodes(source Source, filePath string) ([]DocumentNode, error) {
 		if text == "" {
 			continue
 		}
-		nodes = append(nodes, DocumentNode{
-			ID:         NewID("kdn"),
-			SourceID:   source.ID,
-			Type:       "page",
-			Title:      fmt.Sprintf("%s p.%d", source.Title, i),
-			Text:       text,
-			Page:       i,
-			Metadata:   map[string]string{"relative_path": source.RelativePath, "format": "pdf"},
-			TokenCount: estimateTokens(text),
-		})
+		// For long pages (e.g. publications lists in resumes), split into
+		// sub-segments so that each item can become an independent card with
+		// its own Claim, improving FTS recall for individual entries.
+		segments := splitPDFPageIntoSegments(text)
+		for segIdx, seg := range segments {
+			seg = strings.TrimSpace(seg)
+			if seg == "" {
+				continue
+			}
+			title := fmt.Sprintf("%s p.%d", source.Title, i)
+			if len(segments) > 1 {
+				title = fmt.Sprintf("%s p.%d.%d", source.Title, i, segIdx+1)
+			}
+			nodes = append(nodes, DocumentNode{
+				ID:         NewID("kdn"),
+				SourceID:   source.ID,
+				Type:       "page",
+				Title:      title,
+				Text:       seg,
+				Page:       i,
+				Metadata:   map[string]string{"relative_path": source.RelativePath, "format": "pdf"},
+				TokenCount: estimateTokens(seg),
+			})
+		}
 	}
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("pdf has no readable text")
 	}
 	return nodes, nil
+}
+
+// splitPDFPageIntoSegments splits a long PDF page text into smaller segments.
+// Short pages (< 2000 runes) are returned as-is. Long pages are split at
+// paragraph boundaries (double newlines) or, if the text looks like a list
+// (numbered/bulleted items, academic citation patterns), at list-item boundaries.
+func splitPDFPageIntoSegments(text string) []string {
+	const minSegmentRunes = 2000
+	if len([]rune(text)) < minSegmentRunes {
+		return []string{text}
+	}
+
+	// Try splitting by double-newline paragraphs first.
+	paragraphs := strings.Split(text, "\n\n")
+	if len(paragraphs) >= 3 {
+		merged := mergePDFParagraphs(paragraphs, targetTextNodeRunes)
+		// Post-check: if any merged segment still looks like a list and is long,
+		// sub-split it by list items for finer-grained cards.
+		return refineLargeListSegments(merged)
+	}
+
+	// If no double-newline structure, try splitting by single newlines
+	// when lines look like list items (academic papers, numbered entries).
+	lines := strings.Split(text, "\n")
+	if looksLikeListContent(lines) {
+		return splitListIntoChunks(lines, targetTextNodeRunes)
+	}
+
+	// Fallback: return as single segment.
+	return []string{text}
+}
+
+// refineLargeListSegments checks each segment and further splits segments that
+// are both long (> 2000 runes) and look like list content.
+func refineLargeListSegments(segments []string) []string {
+	const refinementThreshold = 2000
+	result := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		if len([]rune(seg)) <= refinementThreshold {
+			result = append(result, seg)
+			continue
+		}
+		lines := strings.Split(seg, "\n")
+		if looksLikeListContent(lines) {
+			subSegments := splitListIntoChunks(lines, targetTextNodeRunes)
+			result = append(result, subSegments...)
+		} else {
+			result = append(result, seg)
+		}
+	}
+	return result
+}
+
+// looksLikeListContent checks if the majority of lines look like list items
+// (numbered entries, bullet points, or academic citation patterns like "[J]", "et al.").
+func looksLikeListContent(lines []string) bool {
+	if len(lines) < 4 {
+		return false
+	}
+	listLikeCount := 0
+	nonEmpty := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		nonEmpty++
+		if isListItemLine(line) {
+			listLikeCount++
+		}
+	}
+	if nonEmpty == 0 {
+		return false
+	}
+	return float64(listLikeCount)/float64(nonEmpty) >= 0.4
+}
+
+var listItemPatterns = regexp.MustCompile(`^(?:\d+[\.\)）]\s|[-•·]\s|\[\d+\]\s|[A-Z]\.\s)`)
+var academicCitationHints = []string{"[J]", "[C]", "[M]", "[D]", "[P]", "et al.", "et al,", "doi:", "DOI:", "pp.", "vol.", "Vol."}
+
+func isListItemLine(line string) bool {
+	if listItemPatterns.MatchString(line) {
+		return true
+	}
+	for _, hint := range academicCitationHints {
+		if strings.Contains(line, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+// mergePDFParagraphs merges short paragraphs into segments of roughly targetRunes each.
+func mergePDFParagraphs(paragraphs []string, targetRunes int) []string {
+	var segments []string
+	var current strings.Builder
+	currentRunes := 0
+
+	for _, para := range paragraphs {
+		para = strings.TrimSpace(para)
+		if para == "" {
+			continue
+		}
+		paraRunes := len([]rune(para))
+		if currentRunes > 0 && currentRunes+paraRunes > targetRunes {
+			segments = append(segments, current.String())
+			current.Reset()
+			currentRunes = 0
+		}
+		if current.Len() > 0 {
+			current.WriteString("\n\n")
+		}
+		current.WriteString(para)
+		currentRunes += paraRunes
+	}
+	if current.Len() > 0 {
+		segments = append(segments, current.String())
+	}
+	if len(segments) == 0 {
+		return []string{strings.Join(paragraphs, "\n\n")}
+	}
+	return segments
+}
+
+// splitListIntoChunks groups list-like lines into chunks of roughly targetRunes each.
+func splitListIntoChunks(lines []string, targetRunes int) []string {
+	var segments []string
+	var current strings.Builder
+	currentRunes := 0
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if current.Len() > 0 {
+				current.WriteString("\n")
+			}
+			continue
+		}
+		lineRunes := len([]rune(line))
+		if currentRunes > 0 && currentRunes+lineRunes > targetRunes {
+			segments = append(segments, current.String())
+			current.Reset()
+			currentRunes = 0
+		}
+		if current.Len() > 0 {
+			current.WriteString("\n")
+		}
+		current.WriteString(line)
+		currentRunes += lineRunes
+	}
+	if current.Len() > 0 {
+		segments = append(segments, current.String())
+	}
+	if len(segments) == 0 {
+		return []string{strings.Join(lines, "\n")}
+	}
+	return segments
 }
 
 func parseSpreadsheetNodes(source Source, filePath string, kind string) ([]DocumentNode, error) {

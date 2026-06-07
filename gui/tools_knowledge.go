@@ -17,7 +17,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 	}
 	registry.Register(RegisteredTool{
 		Name:        "knowledge_search",
-		Description: "Search MaClaw local knowledge base without calling an LLM. Use when the user asks about saved URLs, imported documents, project knowledge, saved local corpus, or asks to recall stored knowledge. Query is local SQLite/FTS over knowledge cards, facts, and source nodes.",
+		Description: knowledge.KnowledgeSearchToolDescription,
 		Category:    ToolCategoryBuiltin,
 		Tags:        []string{"knowledge", "memory", "search", "local", "brain", "recall"},
 		Priority:    10,
@@ -87,7 +87,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 	})
 	registry.Register(RegisteredTool{
 		Name:        "knowledge_context_pack",
-		Description: "Build a compact, citation-backed local knowledge context pack without calling an LLM. Use before answering from saved knowledge or a saved local corpus when the agent needs a prompt-ready bundle of ranked cards, facts, and source nodes under a character budget. This is not raw chunk RAG.",
+		Description: knowledge.KnowledgeContextPackToolDescription,
 		Category:    ToolCategoryBuiltin,
 		Tags:        []string{"knowledge", "context", "citation", "local", "brain", "recall"},
 		Priority:    10,
@@ -1720,7 +1720,13 @@ func (a *App) toolKnowledgeSearch(args map[string]interface{}) string {
 	// Enrich image results with thumbnail data URLs for frontend inline rendering.
 	enrichedResults := a.enrichKnowledgeImageResults(results)
 
-	return knowledgeToolJSON(map[string]interface{}{"query": query, "count": len(enrichedResults), "results": enrichedResults}, err)
+	response := map[string]interface{}{"query": query, "count": len(enrichedResults), "results": enrichedResults}
+	if len(enrichedResults) == 0 && err == nil {
+		response["guidance"] = knowledge.EmptySearchResultMessage
+	} else if len(enrichedResults) > 0 {
+		response["guidance"] = knowledge.SearchResultsHeader
+	}
+	return knowledgeToolJSON(response, err)
 }
 
 // enrichKnowledgeImageResults adds kb_image_thumb (base64 data URL) to image search results.
@@ -1884,7 +1890,11 @@ func (a *App) toolKnowledgeContextPack(args map[string]interface{}) string {
 		MaxChars: maxChars,
 	}
 	pack, err := a.KnowledgeContextPack(opts)
-	return knowledgeToolJSON(map[string]interface{}{"context_pack": pack}, err)
+	response := map[string]interface{}{"context_pack": pack}
+	if err == nil && len(pack.Items) == 0 {
+		response["guidance"] = knowledge.EmptyContextPackMessage
+	}
+	return knowledgeToolJSON(response, err)
 }
 
 func (a *App) toolKnowledgeFactGraph(args map[string]interface{}) string {

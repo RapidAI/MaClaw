@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -245,4 +246,124 @@ func containsExactFact(facts []Fact, subject, predicate, object string) bool {
 		}
 	}
 	return false
+}
+
+
+func TestBuildCardsForNodesListSplitting(t *testing.T) {
+	source := Source{ID: "s1", Kind: SourceKindPDF, Title: "resume-academic", SourceTrust: 0.9}
+	// Simulate a publications page with academic citations.
+	text := `代表性论文：
+1. Ma X, Zhang Y, et al. A novel prompt-tuning method incorporating scenario-specific concepts into a unified model[J]. Expert Systems with Applications, 2024.
+2. Ma X, Li W, et al. Enhancing Source Code Classification Effectiveness via Prompt Learning Incorporating Grounding Features[J]. Empirically, 2024.
+3. Ma X, et al. PromptSQL: Knowledge-based Prompts for Code Generation[C]. AAAI 2023.
+4. Ma X, et al. Dynamic Soft Prompt for Few-Shot Active Learning[J]. NeurIPS 2023.
+5. Zhang Y, Ma X, et al. Cross-lingual Transfer via Multilingual Co-training[J]. ACL 2023.`
+
+	nodes := []DocumentNode{{
+		ID:       "n1",
+		SourceID: source.ID,
+		Type:     "page",
+		Title:    "resume-academic p.2",
+		Text:     text,
+	}}
+
+	cards := BuildCardsForNodes(source, nodes)
+	// With 5 academic citation lines + 1 header line (6 lines, >40% list items),
+	// list splitting should produce multiple cards instead of 1.
+	if len(cards) < 2 {
+		t.Fatalf("expected list splitting to produce >=2 cards, got %d", len(cards))
+	}
+
+	// Verify that individual paper titles appear in card Claims, not just the header.
+	foundPaper := false
+	for _, card := range cards {
+		if strings.Contains(card.Claim, "novel prompt-tuning") || strings.Contains(card.Claim, "PromptSQL") || strings.Contains(card.Claim, "Dynamic Soft Prompt") {
+			foundPaper = true
+			break
+		}
+	}
+	if !foundPaper {
+		claims := make([]string, len(cards))
+		for i, c := range cards {
+			claims[i] = c.Claim
+		}
+		t.Fatalf("expected paper titles in card Claims, got: %v", claims)
+	}
+
+	// Verify the "list_item" tag is present.
+	hasListTag := false
+	for _, card := range cards {
+		for _, tag := range card.Tags {
+			if tag == "list_item" {
+				hasListTag = true
+				break
+			}
+		}
+	}
+	if !hasListTag {
+		t.Fatal("expected 'list_item' tag on list-derived cards")
+	}
+}
+
+func TestBuildCardsForNodesNoListSplittingForProse(t *testing.T) {
+	source := Source{ID: "s1", Kind: SourceKindPDF, Title: "guide", SourceTrust: 0.9}
+	// Normal prose text should NOT trigger list splitting.
+	text := `MacLaw is an AI-powered development environment. It provides tools for
+developers to focus on what matters: designing systems, exploring solutions,
+and making decisions. The system uses a combination of retrieval and generation
+to produce high-quality answers. It supports multiple languages and frameworks.`
+
+	nodes := []DocumentNode{{
+		ID:       "n1",
+		SourceID: source.ID,
+		Type:     "page",
+		Title:    "guide p.1",
+		Text:     text,
+	}}
+
+	cards := BuildCardsForNodes(source, nodes)
+	if len(cards) != 1 {
+		t.Fatalf("expected 1 card for prose text, got %d", len(cards))
+	}
+	// Verify no "list_item" tag.
+	for _, tag := range cards[0].Tags {
+		if tag == "list_item" {
+			t.Fatal("unexpected 'list_item' tag on prose-derived card")
+		}
+	}
+}
+
+func TestSplitPDFPageIntoSegments(t *testing.T) {
+	// Short page: no splitting.
+	short := "Hello world. This is a short page."
+	segs := splitPDFPageIntoSegments(short)
+	if len(segs) != 1 || segs[0] != short {
+		t.Fatalf("short page should not be split, got %d segments", len(segs))
+	}
+
+	// Long page with double-newline paragraphs — each para must be large enough
+	// that multiple paras exceed targetTextNodeRunes (6000).
+	var longParas strings.Builder
+	for i := 0; i < 5; i++ {
+		// Each paragraph ~2000 runes → total ~10000, forces split into 2+ segments.
+		longParas.WriteString(strings.Repeat("段落内容测试文字填充。", 200))
+		if i < 4 {
+			longParas.WriteString("\n\n")
+		}
+	}
+	segs = splitPDFPageIntoSegments(longParas.String())
+	if len(segs) < 2 {
+		t.Fatalf("long paragraph page should be split, got %d segments (total runes=%d)", len(segs), len([]rune(longParas.String())))
+	}
+
+	// Long page with list items (no double-newlines).
+	// Need total > targetTextNodeRunes (6000) to force splitting into 2+ chunks.
+	var longList strings.Builder
+	for i := 0; i < 80; i++ {
+		longList.WriteString(fmt.Sprintf("%d. A comprehensive study on advanced transformer architectures for multilingual natural language understanding et al. [J]. International Journal of Artificial Intelligence Research, 2024.\n", i+1))
+	}
+	segs = splitPDFPageIntoSegments(longList.String())
+	if len(segs) < 2 {
+		t.Fatalf("long list page should be split, got %d segments (total runes=%d)", len(segs), len([]rune(longList.String())))
+	}
 }

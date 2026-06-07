@@ -40,11 +40,59 @@ const PromptCorePrinciples = `
 const PromptKnowledgeBaseRules = `
 ## 知识库外脑规则
 - 回答优先级：当用户提问且「知识库参考（自动检索）」section 中有相关内容时，**必须优先使用知识库内容回答**，并标注"根据知识库中的资料"。绝不要忽略知识库内容而给无依据答案。
-- 主动深入检索：如果自动检索的片段不够详细或需要更精确的查询，可主动调用 knowledge_search 或 knowledge_context_pack 工具深入检索知识库。knowledge_search 执行全文搜索返回排名结果；knowledge_context_pack 构建带引用的上下文包，适合需要多源综合的复杂问题。
+- ⚠️ 主动深入检索（最高优先级）：自动检索只注入前几条结果（可能不完整）。对于数量/列表/详情类问题（如"有几本书"、"列出所有专利"、"详细经历"），**必须先调用 knowledge_search 或 knowledge_context_pack 做完整检索，拿到所有相关条目后再回答**。绝不要仅凭自动注入的几条片段就回答数量或列表问题。
 - 来源透明：回答中明确区分哪些信息来自知识库、哪些来自记忆、哪些来自网络搜索或工具结果。不要把模型训练数据当作事实依据。
 - 写入限制：仅当用户明确要求保存信息到知识库时（如"保存到知识库"、"记住这份资料"、"加入外脑"、"归档这个网页"、"以后可查"、"导入这份文档/目录"等），才调用知识库写入或导入工具。公共网页用 knowledge_save_url；纯文本/笔记用 knowledge_save_text；本地文件用 knowledge_import_files；本地目录用 knowledge_import_directory。
 - 不要因为用户只是让你"看看这个链接/总结这个文件/搜索资料"就自动写入知识库；除非用户明确表达保存、记住、录入、归档或以后复用的意图。
 `
+
+// PromptEvidenceBoundFactualRules hardens knowledge-backed virtual employees
+// against fabricating facts when the source material is partial or silent.
+
+// --- Knowledge Auto-Recall shared constants ---
+// These constants define the shared behavior for knowledge auto-recall injection
+// across all hosts (GUI/TUI/maclawsrv). Modify here → all platforms pick up changes.
+
+// KnowledgeAutoRecallHeader is the section header and instruction text injected
+// before auto-recall results in the system prompt.
+const KnowledgeAutoRecallHeader = "\n## \u77e5\u8bc6\u5e93\u53c2\u8003\uff08\u81ea\u52a8\u68c0\u7d22\uff09\n" +
+	"\u4ee5\u4e0b\u6761\u76ee\u662f\u4ece\u77e5\u8bc6\u5e93\u81ea\u52a8\u68c0\u7d22\u7684\u521d\u6b65\u7ed3\u679c\uff08\u53ef\u80fd\u4e0d\u5b8c\u6574\uff09\u3002\u8bf7\u81ea\u7136\u5f15\u7528\u76f8\u5173\u5185\u5bb9\u56de\u7b54\uff0c\u6807\u6ce8\u6765\u6e90\u3002\n" +
+	"\u91cd\u8981\uff1a\u5982\u679c\u4ee5\u4e0b\u6761\u76ee\u4e0d\u8db3\u4ee5\u5b8c\u6574\u56de\u7b54\u7528\u6237\u95ee\u9898\uff08\u5c24\u5176\u662f\u6570\u91cf/\u5217\u8868/\u8be6\u60c5\u7c7b\u95ee\u9898\uff09\uff0c\u5fc5\u987b\u4e3b\u52a8\u8c03\u7528 knowledge_search \u6216 knowledge_context_pack \u6df1\u5165\u68c0\u7d22\u540e\u518d\u56de\u7b54\uff0c\u4e0d\u8981\u4ec5\u51ed\u521d\u6b65\u7ed3\u679c\u5c31\u8bf4\u201c\u672a\u63d0\u53ca\u201d\u3002\n\n"
+
+// KnowledgeAutoRecallMaxQueryRunes limits the user message length used for auto-recall FTS query.
+const KnowledgeAutoRecallMaxQueryRunes = 200
+
+// KnowledgeAutoRecallScoreThreshold is the minimum FTS score for injection.
+const KnowledgeAutoRecallScoreThreshold = 0.3
+
+// KnowledgeAutoRecallSearchLimit is the number of candidates to retrieve from the store.
+const KnowledgeAutoRecallSearchLimit = 8
+
+// KnowledgeAutoRecallSnippetMaxRunes is the max rune length per injected snippet.
+const KnowledgeAutoRecallSnippetMaxRunes = 400
+
+// KnowledgeAutoRecallNoMatchHint is injected when the knowledge base has content
+// but auto-recall found no matching results. This ensures the LLM knows it should
+// use knowledge_search/knowledge_context_pack for deeper retrieval rather than
+// assuming the knowledge base has nothing relevant.
+const KnowledgeAutoRecallNoMatchHint = "\n[知识库提示] 知识库中有已导入的文档资料，但自动检索未匹配到直接相关条目。" +
+	"如果用户的问题可能涉及已导入的文档内容（如简历、论文、资料等），请主动调用 knowledge_search 或 knowledge_context_pack 工具" +
+	"用不同关键词深入检索，不要直接说\u201c知识库中没有\u201d。\n"
+
+// KnowledgeAutoRecallMaxInject returns the maximum number of results to inject
+// based on the top score of search results.
+func KnowledgeAutoRecallMaxInject(topScore float64) int {
+	switch {
+	case topScore >= 3.0:
+		return 5
+	case topScore >= 1.0:
+		return 3
+	case topScore >= KnowledgeAutoRecallScoreThreshold:
+		return 2
+	default:
+		return 0
+	}
+}
 
 // PromptEvidenceBoundFactualRules hardens knowledge-backed virtual employees
 // against fabricating facts when the source material is partial or silent.

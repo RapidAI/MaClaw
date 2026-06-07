@@ -66,12 +66,12 @@ Implementation proceeds bottom-up: foundational types and data models first, the
     - When density > 0.15, expanded entry count SHALL equal `min(24, max(12, floor(matchingEntries * 0.4)))`
     - **Validates: Requirements 2.3**
 
-  - [-]* 3.3 Write property test: Expanded token budget cap (Property 5)
+  - [x]* 3.3 Write property test: Expanded token budget cap (Property 5)
     - **Property 5: Expanded token budget cap**
     - Total estimated tokens of all injected entries SHALL not exceed 5000 tokens
     - **Validates: Requirements 2.4**
 
-  - [-]* 3.4 Write property test: Expansion preserves existing filters (Property 6)
+  - [x]* 3.4 Write property test: Expansion preserves existing filters (Property 6)
     - **Property 6: Expansion preserves existing filters**
     - All returned entries SHALL satisfy OwnerID isolation, category exclusion, and project scope filtering
     - **Validates: Requirements 2.6**
@@ -86,17 +86,17 @@ Implementation proceeds bottom-up: foundational types and data models first, the
     - Apply same multi-signal fusion scoring, OwnerID isolation, category exclusion
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7_
 
-  - [-]* 4.2 Write property test: Exhaustive mode respects caps (Property 7)
+  - [x]* 4.2 Write property test: Exhaustive mode respects caps (Property 7)
     - **Property 7: Exhaustive mode respects caps**
     - Result SHALL contain at most 100 entries AND sum of tokens SHALL not exceed 15000
     - **Validates: Requirements 3.2, 3.3**
 
-  - [-]* 4.3 Write property test: Exhaustive mode preserves scoring order (Property 8)
+  - [x]* 4.3 Write property test: Exhaustive mode preserves scoring order (Property 8)
     - **Property 8: Exhaustive mode preserves scoring order**
     - Entries SHALL be ordered by multi-signal fusion score, higher first
     - **Validates: Requirements 3.5**
 
-  - [-]* 4.4 Write property test: Exhaustive mode respects owner and category filters (Property 9)
+  - [x]* 4.4 Write property test: Exhaustive mode respects owner and category filters (Property 9)
     - **Property 9: Exhaustive mode respects owner and category filters**
     - All entries SHALL match OwnerID and category filters
     - **Validates: Requirements 3.6, 3.7**
@@ -111,17 +111,17 @@ Implementation proceeds bottom-up: foundational types and data models first, the
     - Handle query change: discard cached candidates, re-score with new query, reset position
     - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8_
 
-  - [ ]* 5.2 Write property test: Scroll session sequential access without overlap (Property 10)
+  - [x]* 5.2 Write property test: Scroll session sequential access without overlap (Property 10)
     - **Property 10: Scroll session sequential access without overlap**
     - Returned entry sets SHALL be non-overlapping and concatenation forms a prefix of initial scored candidate list
     - **Validates: Requirements 4.2, 4.3**
 
-  - [ ]* 5.3 Write property test: Scroll session cache bounded at 200 (Property 11)
+  - [x]* 5.3 Write property test: Scroll session cache bounded at 200 (Property 11)
     - **Property 11: Scroll session cache bounded at 200**
     - Cached scored candidates SHALL not exceed 200
     - **Validates: Requirements 4.6, 6.2**
 
-  - [ ]* 5.4 Write property test: Scroll session exhaustion signal (Property 12)
+  - [x]* 5.4 Write property test: Scroll session exhaustion signal (Property 12)
     - **Property 12: Scroll session exhaustion signal**
     - Once all candidates returned, next Advance SHALL return `session_exhausted: true` with empty entries
     - **Validates: Requirements 4.7**
@@ -139,7 +139,7 @@ Implementation proceeds bottom-up: foundational types and data models first, the
     - Complete indexing within 500ms for conversations up to 100 entries per page
     - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7_
 
-  - [ ]* 7.2 Write unit tests for PageIndex
+  - [x]* 7.2 Write unit tests for PageIndex
     - Test FIFO eviction at 20 pages → keeps most recent 15
     - Test dedup via SHA-256 fingerprint
     - Test recency boost scoring
@@ -157,7 +157,7 @@ Implementation proceeds bottom-up: foundational types and data models first, the
     - Alias match boost: +2.0 additive (below tagExactMatchBoost +5.0, above baseline)
     - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6_
 
-  - [ ]* 8.2 Write unit tests for AliasIndex
+  - [x]* 8.2 Write unit tests for AliasIndex
     - Test bidirectional mapping registration
     - Test Expand returns correct aliases
     - Test FIFO eviction at 1000 capacity
@@ -177,7 +177,7 @@ Implementation proceeds bottom-up: foundational types and data models first, the
     - Log stage reached and elapsed time with `[perf]` format
     - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5_
 
-  - [ ]* 9.2 Write unit tests for StagedRecallPipeline
+  - [x]* 9.2 Write unit tests for StagedRecallPipeline
     - Test BM25 stage completes within 200ms
     - Test partial results returned on timeout
     - Test `[partial recall - deep search skipped]` annotation when partial
@@ -196,12 +196,12 @@ Implementation proceeds bottom-up: foundational types and data models first, the
     - Add response fields: `cursor`, `has_more`, `page`, `truncated`, `total_matching`, `session_exhausted` (only when activated)
     - _Requirements: 1.1, 1.2, 1.4, 3.1, 3.8, 4.1, 5.5, 5.6, 11.2_
 
-  - [ ]* 11.2 Write property test: Backward compatibility — no new fields without new params (Property 13)
+  - [x]* 11.2 Write property test: Backward compatibility — no new fields without new params (Property 13)
     - **Property 13: Backward compatibility — no new fields without new params**
     - Without `cursor`, `mode=exhaustive`, or `session=true`, response SHALL not contain new fields
     - **Validates: Requirements 5.1, 5.3, 5.4, 5.5**
 
-  - [ ]* 11.3 Write unit tests for HandleTool error cases
+  - [x]* 11.3 Write unit tests for HandleTool error cases
     - Test invalid/expired cursor → error message
     - Test cursor belongs to different user → "cursor not found"
     - Test exhaustive+cursor → mutual exclusion error
@@ -219,7 +219,7 @@ Implementation proceeds bottom-up: foundational types and data models first, the
     - Deduplicate page-indexed entries vs long-term memory entries (substring containment, min 20 chars)
     - _Requirements: 2.1, 2.2, 2.5, 7.3, 7.4, 9.1, 9.3, 11.3_
 
-  - [ ]* 12.2 Write unit tests for ProactiveContextForPrompt extensions
+  - [x]* 12.2 Write unit tests for ProactiveContextForPrompt extensions
     - Test adaptive expansion triggers at density > 0.15
     - Test staged recall returns partial results on timeout
     - Test page index results deduplicated against memory entries
@@ -236,7 +236,7 @@ Implementation proceeds bottom-up: foundational types and data models first, the
     - Expose `Store.PageIndex()` and `Store.ScrollSessions()` accessors for host lifecycle hooks
     - _Requirements: 8.3, 8.6, 11.1, 11.6_
 
-  - [ ]* 13.2 Write integration tests for Store wiring
+  - [x]* 13.2 Write integration tests for Store wiring
     - Test AliasIndex rebuilt on store load
     - Test alias expansion produces additional BM25 hits
     - Test PageIndex accessible via Store accessor
@@ -254,15 +254,15 @@ Implementation proceeds bottom-up: foundational types and data models first, the
 - [x] 15. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 16. Backward compatibility and performance verification
-  - [ ]* 16.1 Write backward compatibility tests
+- [x] 16. Backward compatibility and performance verification
+  - [x]* 16.1 Write backward compatibility tests
     - Test `RecallDynamic` output unchanged when no new params
     - Test `RecallForProject` output unchanged
     - Test `RecallByMode` routing unchanged
     - Test response format has no new fields for standard recalls
     - _Requirements: 5.1, 5.2, 5.3, 5.4_
 
-  - [ ]* 16.2 Write concurrency and performance tests
+  - [x]* 16.2 Write concurrency and performance tests
     - Test concurrent paginated recalls don't corrupt cursor state (race detector)
     - Test paginated recall < 500ms P95 for 1000 entries
     - Test exhaustive recall < 2000ms P95 for 1000 entries

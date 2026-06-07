@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -504,7 +506,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "knowledge_search",
-			Description: "Search the local knowledge base (documents, URLs, saved text). Returns ranked knowledge cards, facts, and source citations without calling an LLM. Use when the user asks about saved knowledge, imported documents, or previously stored information.",
+			Description: knowledge.KnowledgeSearchToolDescription,
 			Enabled:     c.knowledgeStore != nil,
 			DisabledReason: func() string {
 				if c.knowledgeStore == nil {
@@ -535,7 +537,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "knowledge_context_pack",
-			Description: "Build a compact, citation-backed knowledge context pack from the local knowledge base. Use before answering from stored knowledge when you need a prompt-ready bundle of ranked cards and facts under a character budget.",
+			Description: knowledge.KnowledgeContextPackToolDescription,
 			Enabled:     c.knowledgeStore != nil,
 			DisabledReason: func() string {
 				if c.knowledgeStore == nil {
@@ -957,11 +959,15 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 	}
 }
 
-func (c *coreAgentCallbacks) OnToken(string)      {}
-func (c *coreAgentCallbacks) OnProgress(string)   {}
-func (c *coreAgentCallbacks) OnToolCall(string)   {}
-func (c *coreAgentCallbacks) OnToolResult(string) {}
-func (c *coreAgentCallbacks) ShouldStop() bool    { return c.ctx != nil && c.ctx.Err() != nil }
+func (c *coreAgentCallbacks) OnToken(string)    {}
+func (c *coreAgentCallbacks) OnProgress(string) {}
+func (c *coreAgentCallbacks) OnToolCall(name string) {
+	log.Printf("[tool-call] start name=%q loop=%s owner=%s", name, c.loopID, c.principal.UserID)
+}
+func (c *coreAgentCallbacks) OnToolResult(name string) {
+	log.Printf("[tool-call] done name=%q loop=%s owner=%s", name, c.loopID, c.principal.UserID)
+}
+func (c *coreAgentCallbacks) ShouldStop() bool { return c.ctx != nil && c.ctx.Err() != nil }
 
 func (c *coreAgentCallbacks) canUseLocalBash() bool {
 	if !c.allowLocalBash {

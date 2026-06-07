@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
@@ -37,14 +38,11 @@ func (e *CoreAgentExecutor) SetKnowledgeStore(store KnowledgeStore) {
 	e.knowledgeStore = store
 }
 
-// knowledgeAutoRecallMaxQueryRunes limits the user message length used for auto-recall.
-const knowledgeAutoRecallMaxQueryRunes = 200
 
-// knowledgeAutoRecallScoreThreshold is the minimum score for injection.
-const knowledgeAutoRecallScoreThreshold = 0.3
 
 // appendKnowledgeAutoRecall searches the knowledge base and injects relevant
-// results into the system prompt. Mirrors gui/im_knowledge_auto_recall.go logic.
+// results into the system prompt. Uses shared constants from corelib/agent/prompt_blocks.go
+// to stay in sync with GUI and TUI implementations.
 func (c *coreAgentCallbacks) parentContext() context.Context {
 	if c != nil && c.ctx != nil {
 		return c.ctx
@@ -57,9 +55,9 @@ func (c *coreAgentCallbacks) appendKnowledgeAutoRecall(b *strings.Builder, userM
 	}
 
 	query := userMsg
-	if utf8.RuneCountInString(query) > knowledgeAutoRecallMaxQueryRunes {
+	if utf8.RuneCountInString(query) > agent.KnowledgeAutoRecallMaxQueryRunes {
 		runes := []rune(query)
-		query = string(runes[:knowledgeAutoRecallMaxQueryRunes])
+		query = string(runes[:agent.KnowledgeAutoRecallMaxQueryRunes])
 	}
 
 	ctx, cancel := context.WithTimeout(c.parentContext(), 3*time.Second)
@@ -69,47 +67,45 @@ func (c *coreAgentCallbacks) appendKnowledgeAutoRecall(b *strings.Builder, userM
 		Query:    query,
 		OwnerID:  c.principal.UserID,
 		TenantID: c.principal.TenantID,
-		Limit:    5,
+		Limit:    agent.KnowledgeAutoRecallSearchLimit,
 	})
 	if err != nil {
 		log.Printf("[knowledge_auto_recall] search error: %v", err)
 		return
 	}
 	if len(results) == 0 {
+		// FTS returned nothing. This could mean the knowledge base is empty OR
+		// the query terms don't match any indexed content. Without a cheap
+		// existence check we cannot distinguish the two cases, so stay silent
+		// to avoid confusing users with an empty knowledge base.
 		return
 	}
 
 	topScore := results[0].Score
-	var maxInject int
-	switch {
-	case topScore >= 3.0:
-		maxInject = 3
-	case topScore >= 1.0:
-		maxInject = 2
-	case topScore >= knowledgeAutoRecallScoreThreshold:
-		maxInject = 1
-	default:
+	maxInject := agent.KnowledgeAutoRecallMaxInject(topScore)
+	if maxInject == 0 {
+		// Results exist but scores are below injection threshold. The knowledge
+		// base definitely has content — hint the LLM to try deeper search.
+		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
 		return
 	}
 
-	b.WriteString("\n## 知识库参考（自动检索） / evidence\n")
-	b.WriteString("以下条目是来自知识库的依据。只使用相关条目回答，回答时标注来源/引用；依据中没有的事实必须说“材料中未提及”或“无法确认”。\n")
-	b.WriteString("数量/列表类问题必须先枚举有依据的项目，再给总数；如需更多依据，可调用 knowledge_search 或 knowledge_context_pack。\n\n")
+	b.WriteString(agent.KnowledgeAutoRecallHeader)
 
 	injected := 0
 	for _, r := range results {
 		if injected >= maxInject {
 			break
 		}
-		if r.Score < knowledgeAutoRecallScoreThreshold {
+		if r.Score < agent.KnowledgeAutoRecallScoreThreshold {
 			break
 		}
 		text := knowledgeSnippet(r)
 		if text == "" {
 			continue
 		}
-		if len([]rune(text)) > 200 {
-			text = string([]rune(text)[:200]) + "..."
+		if len([]rune(text)) > agent.KnowledgeAutoRecallSnippetMaxRunes {
+			text = string([]rune(text)[:agent.KnowledgeAutoRecallSnippetMaxRunes]) + "..."
 		}
 		b.WriteString(fmt.Sprintf("- Source: %s; Citation: %s; Evidence: %s\n", knowledgeSourceLabel(r), knowledgeCitationLabel(r), text))
 		injected++
@@ -117,31 +113,11 @@ func (c *coreAgentCallbacks) appendKnowledgeAutoRecall(b *strings.Builder, userM
 }
 
 func knowledgeSourceLabel(r knowledge.SearchResult) string {
-	for _, value := range []string{r.Source.Title, r.Source.RelativePath, r.Source.URI, r.Source.ID} {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return "unknown source"
+	return knowledge.FormatSourceLabel(r)
 }
 
 func knowledgeCitationLabel(r knowledge.SearchResult) string {
-	parts := make([]string, 0, 4)
-	if strings.TrimSpace(r.Citation) != "" {
-		parts = append(parts, strings.TrimSpace(r.Citation))
-	}
-	if r.Page > 0 {
-		parts = append(parts, fmt.Sprintf("page %d", r.Page))
-	}
-	for _, value := range []string{r.SheetName, r.RowRange, r.ColRange, r.NodeTitle} {
-		if strings.TrimSpace(value) != "" {
-			parts = append(parts, strings.TrimSpace(value))
-		}
-	}
-	if len(parts) == 0 {
-		return "source item"
-	}
-	return strings.Join(parts, ", ")
+	return knowledge.FormatCitationLabel(r)
 }
 
 // knowledgeSnippet extracts the best display text from a search result.
@@ -156,6 +132,19 @@ func knowledgeSnippet(r knowledge.SearchResult) string {
 		if r.Subject != "" && r.Predicate != "" {
 			return r.Subject + " " + r.Predicate + " " + r.Object
 		}
+	}
+	if r.ResultType == "node" {
+		// For raw document nodes, prefer snippet (FTS highlight) over full text.
+		if r.Snippet != "" {
+			return r.Snippet
+		}
+		if r.Summary != "" {
+			return r.Summary
+		}
+		if r.Claim != "" {
+			return r.Claim
+		}
+		return ""
 	}
 	if r.Snippet != "" {
 		return r.Snippet
@@ -187,7 +176,7 @@ func (c *coreAgentCallbacks) executeKnowledgeSearch(args map[string]interface{})
 		return fmt.Sprintf("Error: knowledge search failed: %v", err)
 	}
 	if len(results) == 0 {
-		return "No results found in knowledge base."
+		return knowledge.EmptySearchResultMessage
 	}
 	return formatSearchResults(results)
 }
@@ -212,18 +201,9 @@ func (c *coreAgentCallbacks) executeKnowledgeContextPack(args map[string]interfa
 		return fmt.Sprintf("Error: knowledge context pack failed: %v", err)
 	}
 	if len(result.Items) == 0 {
-		return "No relevant knowledge found for context pack."
+		return knowledge.EmptyContextPackMessage
 	}
-	// Format as structured text
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Knowledge context pack (%d items, %d chars):\n\n", result.Count, result.CharacterCount))
-	for i, item := range result.Items {
-		b.WriteString(fmt.Sprintf("%d. [%s] %s\n", i+1, item.ResultType, item.Text))
-		if item.Citation != "" {
-			b.WriteString(fmt.Sprintf("   Citation: %s\n", item.Citation))
-		}
-	}
-	return b.String()
+	return knowledge.FormatContextPackForLLM(result)
 }
 
 func (c *coreAgentCallbacks) executeKnowledgeSaveURL(args map[string]interface{}) string {
@@ -560,31 +540,7 @@ func buildSearchOptions(args map[string]interface{}, tenantID, userID string) kn
 }
 
 func formatSearchResults(results []knowledge.SearchResult) string {
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Found %d results:\n\n", len(results)))
-	b.WriteString("Use these as evidence only. Cite Source/Citation when answering, and say material is not mentioned or cannot be confirmed when no result supports a fact.\n\n")
-	for i, r := range results {
-		b.WriteString(fmt.Sprintf("### Result %d (score: %.2f, type: %s)\n", i+1, r.Score, r.ResultType))
-		if r.CardTitle != "" {
-			b.WriteString(fmt.Sprintf("**Title**: %s\n", r.CardTitle))
-		}
-		if r.Claim != "" {
-			b.WriteString(fmt.Sprintf("**Claim**: %s\n", r.Claim))
-		}
-		if r.Summary != "" {
-			b.WriteString(fmt.Sprintf("**Summary**: %s\n", r.Summary))
-		}
-		if r.Snippet != "" && r.Snippet != r.Claim && r.Snippet != r.Summary {
-			b.WriteString(fmt.Sprintf("**Snippet**: %s\n", r.Snippet))
-		}
-		if r.Subject != "" {
-			b.WriteString(fmt.Sprintf("**Fact**: %s %s %s\n", r.Subject, r.Predicate, r.Object))
-		}
-		b.WriteString(fmt.Sprintf("**Source**: %s\n", knowledgeSourceLabel(r)))
-		b.WriteString(fmt.Sprintf("**Citation**: %s\n", knowledgeCitationLabel(r)))
-		b.WriteString("\n")
-	}
-	return b.String()
+	return knowledge.FormatSearchResultsForLLM(results)
 }
 
 func stringArg(args map[string]interface{}, key string) string {

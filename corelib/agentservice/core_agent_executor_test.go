@@ -249,7 +249,7 @@ func TestKnowledgeSearchResultsRequireEvidenceCitation(t *testing.T) {
 		Score:    2.5,
 	}})
 
-	for _, want := range []string{"Use these as evidence only", "**Source**: 材料原文", "**Citation**: section 3, page 7", "马勇博士共有 3 项发明专利"} {
+	for _, want := range []string{"Use these results as evidence", "**Source**: 材料原文", "**Citation**: section 3, page 7", "马勇博士共有 3 项发明专利"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("formatted search results missing %q: %s", want, out)
 		}

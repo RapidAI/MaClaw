@@ -7,6 +7,7 @@ import (
 	"testing/quick"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
@@ -50,7 +51,7 @@ func TestProperty1_AutoRecallThresholdAndCount(t *testing.T) {
 		// Count qualifying results (score >= threshold).
 		qualifyingCount := 0
 		for _, r := range results {
-			if r.Score >= knowledgeAutoRecallScoreThreshold {
+			if r.Score >= agent.KnowledgeAutoRecallScoreThreshold {
 				qualifyingCount++
 			}
 		}
@@ -61,10 +62,10 @@ func TestProperty1_AutoRecallThresholdAndCount(t *testing.T) {
 			topScore := results[0].Score
 			switch {
 			case topScore >= 3.0:
-				expectedMaxInject = knowledgeAutoRecallMaxSnippets
+				expectedMaxInject = agent.KnowledgeAutoRecallMaxInject(3.0)
 			case topScore >= 1.0:
 				expectedMaxInject = 2
-			case topScore >= knowledgeAutoRecallScoreThreshold:
+			case topScore >= agent.KnowledgeAutoRecallScoreThreshold:
 				expectedMaxInject = 1
 			default:
 				expectedMaxInject = 0
@@ -91,8 +92,8 @@ func TestProperty1_AutoRecallThresholdAndCount(t *testing.T) {
 
 		// 2. Injected count <= maxSnippets (3).
 		injectedCount := countInjectedSnippets(output)
-		if injectedCount > knowledgeAutoRecallMaxSnippets {
-			t.Logf("injected %d > max %d", injectedCount, knowledgeAutoRecallMaxSnippets)
+		if injectedCount > agent.KnowledgeAutoRecallMaxInject(3.0) {
+			t.Logf("injected %d > max %d", injectedCount, agent.KnowledgeAutoRecallMaxInject(3.0))
 			return false
 		}
 
@@ -131,9 +132,9 @@ func TestProperty2_QueryTruncation(t *testing.T) {
 
 		// Apply the same truncation logic as appendKnowledgeAutoRecall.
 		query := msg
-		if utf8.RuneCountInString(query) > knowledgeAutoRecallMaxQueryRunes {
+		if utf8.RuneCountInString(query) > agent.KnowledgeAutoRecallMaxQueryRunes {
 			runes := []rune(query)
-			query = string(runes[:knowledgeAutoRecallMaxQueryRunes])
+			query = string(runes[:agent.KnowledgeAutoRecallMaxQueryRunes])
 		}
 
 		runeCount := utf8.RuneCountInString(query)
@@ -141,13 +142,13 @@ func TestProperty2_QueryTruncation(t *testing.T) {
 
 		// Property checks:
 		// 1. Result always has at most 200 runes.
-		if runeCount > knowledgeAutoRecallMaxQueryRunes {
-			t.Logf("query has %d runes > %d", runeCount, knowledgeAutoRecallMaxQueryRunes)
+		if runeCount > agent.KnowledgeAutoRecallMaxQueryRunes {
+			t.Logf("query has %d runes > %d", runeCount, agent.KnowledgeAutoRecallMaxQueryRunes)
 			return false
 		}
 
 		// 2. Short messages (<=200 runes) are passed unchanged.
-		if originalRuneCount <= knowledgeAutoRecallMaxQueryRunes {
+		if originalRuneCount <= agent.KnowledgeAutoRecallMaxQueryRunes {
 			if query != msg {
 				t.Logf("short message was modified: original=%d runes", originalRuneCount)
 				return false
@@ -155,9 +156,9 @@ func TestProperty2_QueryTruncation(t *testing.T) {
 		}
 
 		// 3. Long messages (>200 runes) are truncated to exactly 200 runes.
-		if originalRuneCount > knowledgeAutoRecallMaxQueryRunes {
-			if runeCount != knowledgeAutoRecallMaxQueryRunes {
-				t.Logf("long message truncated to %d runes, expected %d", runeCount, knowledgeAutoRecallMaxQueryRunes)
+		if originalRuneCount > agent.KnowledgeAutoRecallMaxQueryRunes {
+			if runeCount != agent.KnowledgeAutoRecallMaxQueryRunes {
+				t.Logf("long message truncated to %d runes, expected %d", runeCount, agent.KnowledgeAutoRecallMaxQueryRunes)
 				return false
 			}
 		}
@@ -224,10 +225,10 @@ func simulateAutoRecallInjection(results []knowledge.SearchResult) string {
 	var maxInject int
 	switch {
 	case topScore >= 3.0:
-		maxInject = knowledgeAutoRecallMaxSnippets
+		maxInject = agent.KnowledgeAutoRecallMaxInject(3.0)
 	case topScore >= 1.0:
 		maxInject = 2
-	case topScore >= knowledgeAutoRecallScoreThreshold:
+	case topScore >= agent.KnowledgeAutoRecallScoreThreshold:
 		maxInject = 1
 	default:
 		return ""
@@ -243,7 +244,7 @@ func simulateAutoRecallInjection(results []knowledge.SearchResult) string {
 		if injected >= maxInject {
 			break
 		}
-		if r.Score < knowledgeAutoRecallScoreThreshold {
+		if r.Score < agent.KnowledgeAutoRecallScoreThreshold {
 			break
 		}
 		text := tuiKnowledgeSnippet(r)

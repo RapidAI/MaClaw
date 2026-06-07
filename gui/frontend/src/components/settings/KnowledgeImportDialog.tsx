@@ -447,7 +447,7 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExt
                             </div>
 
                             {/* Log */}
-                            <ImportLog entries={logEntries} done={step === 'done'} t={t} />
+                            <ImportLog entries={logEntries} done={step === 'done'} hasActiveFile={!!job?.result?.current_file} t={t} />
 
                             {/* Done actions */}
                             {step === 'done' && (
@@ -469,7 +469,7 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExt
     );
 }
 
-function ImportLog({ entries, done, t }: { entries: LogEntry[]; done?: boolean; t: TFunc }) {
+function ImportLog({ entries, done, hasActiveFile, t }: { entries: LogEntry[]; done?: boolean; hasActiveFile?: boolean; t: TFunc }) {
     const bottomRef = useRef<HTMLDivElement>(null);
     useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [entries.length]);
     const maxVisible = 150;
@@ -478,7 +478,10 @@ function ImportLog({ entries, done, t }: { entries: LogEntry[]; done?: boolean; 
 
     if (!entries.length) {
         if (done) return null;
-        return <div className="knowledge-import-log-empty">{t('Waiting for progress...', '等待处理...')}</div>;
+        if (hasActiveFile) {
+            return <div className="knowledge-import-log-empty">{t('Processing...', '正在导入...')}</div>;
+        }
+        return <div className="knowledge-import-log-empty">{t('Waiting to start...', '等待开始...')}</div>;
     }
 
     return (

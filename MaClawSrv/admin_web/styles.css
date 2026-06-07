@@ -432,6 +432,10 @@ textarea:focus-visible {
   gap: 12px;
 }
 
+.client-search-detail[hidden] {
+  display: none;
+}
+
 .client-search-detail h3 {
   margin: 0 0 4px;
   font-size: 16px;

@@ -123,6 +123,14 @@ func BuildCardsForNodes(source Source, nodes []DocumentNode) []Card {
 		if text == "" {
 			continue
 		}
+		// Check if the ORIGINAL text (with newlines preserved) contains
+		// list-structured content. normalizeWhitespace collapses newlines to
+		// spaces, which destroys list structure detection.
+		rawText := strings.TrimSpace(node.Text)
+		if listCards := buildCardsForListNode(source, node, rawText, now); len(listCards) > 0 {
+			cards = append(cards, listCards...)
+			continue
+		}
 		claim := firstMeaningfulSentence(text)
 		if claim == "" {
 			claim = truncateRunes(text, cardClaimRunes)
@@ -151,6 +159,112 @@ func BuildCardsForNodes(source Source, nodes []DocumentNode) []Card {
 		})
 	}
 	return cards
+}
+
+// buildCardsForListNode checks if a node's text has list structure (numbered items,
+// academic citations, bullet points) and generates one card per item group.
+// Returns nil if the text does not have recognizable list structure.
+func buildCardsForListNode(source Source, node DocumentNode, text string, now time.Time) []Card {
+	lines := strings.Split(text, "\n")
+	if len(lines) < 4 {
+		return nil
+	}
+	// Count lines that look like list items.
+	listLineCount := 0
+	nonEmptyCount := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		nonEmptyCount++
+		if isDistillListItemLine(line) {
+			listLineCount++
+		}
+	}
+	if nonEmptyCount == 0 {
+		return nil
+	}
+	// Require at least 40% of non-empty lines to look like list items.
+	if float64(listLineCount)/float64(nonEmptyCount) < 0.4 {
+		return nil
+	}
+
+	// Group consecutive list items into cards. Each card covers 1-3 items
+	// to maintain context while keeping claims focused.
+	const maxItemsPerCard = 3
+	var cards []Card
+	var currentItems []string
+
+	flushItems := func() {
+		if len(currentItems) == 0 {
+			return
+		}
+		itemText := strings.Join(currentItems, "\n")
+		claim := currentItems[0] // First item as claim
+		if len(claim) > cardClaimRunes {
+			claim = truncateRunes(claim, cardClaimRunes)
+		}
+		summary := truncateRunes(itemText, cardSummaryRunes)
+		title := fallbackText(node.Title, source.Title)
+		entities := extractEntities(title + " " + claim)
+		cards = append(cards, Card{
+			ID:          NewID("kcard"),
+			SourceID:    source.ID,
+			NodeID:      node.ID,
+			Title:       title,
+			Claim:       claim,
+			Summary:     summary,
+			Entities:    entities,
+			Topics:      topicsForSource(source),
+			Tags:        []string{source.Kind, node.Type, "list_item"},
+			ProjectPath: source.ProjectPath,
+			OwnerID:     source.OwnerID,
+			TenantID:    source.TenantID,
+			Confidence:  0.60,
+			Importance:  importanceForNode(node),
+			SourceTrust: source.SourceTrust,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		})
+		currentItems = nil
+	}
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if isDistillListItemLine(line) {
+			if len(currentItems) >= maxItemsPerCard {
+				flushItems()
+			}
+			currentItems = append(currentItems, line)
+		} else {
+			// Non-list line (section header like "代表性论文：").
+			// Flush any accumulated list items, but do NOT include this line
+			// in the next card's items — it's context, not a searchable entry.
+			// It will naturally be part of the node's overall text for the
+			// document_nodes FTS index.
+			if len(currentItems) > 0 {
+				flushItems()
+			}
+			// Skip non-list lines — they don't become card claims.
+		}
+	}
+	flushItems()
+
+	// Only return list cards if we generated at least 2 (otherwise not worth splitting).
+	if len(cards) < 2 {
+		return nil
+	}
+	return cards
+}
+
+// isDistillListItemLine delegates to the shared isListItemLine from parse.go
+// (same package) — single source of truth for list-item detection patterns.
+func isDistillListItemLine(line string) bool {
+	return isListItemLine(line)
 }
 
 func NormalizeDistillMode(mode string) string {
