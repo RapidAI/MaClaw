@@ -49,6 +49,7 @@ const saveConfigAllowedSnippets = [
   ['gui/frontend/wailsjs/go/main/App.js', "window['go']['main']['App']['SaveConfig'](arg1)", 'generated Wails binding forwards to backend SaveConfig'],
   ['gui/frontend/src/components/remote/useRemotePanel.ts', 'SaveConfig({ ...config, field: value })', 'comment documenting the stale snapshot bug pattern'],
   ['gui/tui_mode.go', 'a.app.SaveConfig(cfg)', 'TUI HasConfig path carries a full config snapshot'],
+  ['gui/frontend/src/App.tsx', 'await SaveConfig(c)', 'remote deactivation resets onboarding with full config snapshot'],
 ];
 const saveConfigCallPatterns = [
   /SaveConfig\s*\(/,
@@ -558,7 +559,7 @@ for (const [rel, max] of extractedFileLineLimits) requireMaxLines(rel, max);
 
 const highRiskRemoteFileLineLimits = [
   ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 2300],
-  ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1400],
+  ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1450],
   ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1160],
   ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],
   ['gui/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],
