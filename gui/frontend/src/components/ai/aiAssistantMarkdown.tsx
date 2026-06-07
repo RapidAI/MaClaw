@@ -811,8 +811,8 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                         return (
                             <details key={shouldOpen ? "reasoning-open" : "reasoning-closed"} open={shouldOpen || undefined} style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
                                 <summary style={{ cursor: "pointer", opacity: 0.8 }}>💭 {lang === "en" ? "Thinking..." : "思考过程 ..."}</summary>
-                                <div style={{ padding: "4px 8px", color: t.text, opacity: 0.75, maxHeight: "200px", overflow: "auto" }}>
-                                    {renderContentWithCodeBlocks(msg.reasoning.length > 500 ? msg.reasoning.slice(-500) : msg.reasoning, t)}
+                                <div style={{ padding: "4px 8px", color: t.text, opacity: 0.75, maxHeight: "400px", overflow: "auto" }}>
+                                    {renderContentWithCodeBlocks(msg.reasoning, t)}
                                 </div>
                             </details>
                         );

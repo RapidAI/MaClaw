@@ -131,6 +131,7 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		if skills := deps.SkillLister(); len(skills) > 0 {
 			retrieved.WriteString("\n## Registered Skills\n")
 			retrieved.WriteString("Call with manage_skill(action=\"run\", name=\"SkillName\", args={...}).\n")
+			retrieved.WriteString("⚠️ Do NOT pre-check dependencies (Python/Node/etc.) with bash before running a Skill. The Skill Runner has built-in dependency checks and returns actionable error messages if something is missing.\n")
 			for _, s := range skills {
 				fmt.Fprintf(&retrieved, "- %s: %s\n", s.Name, s.Description)
 			}
