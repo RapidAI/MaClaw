@@ -232,7 +232,7 @@
 }
 
 .about-identity-row:last-child .about-identity-item {
-    padding: 0;
+    padding: 4px 0;
 }
 
 .about-identity-item {
