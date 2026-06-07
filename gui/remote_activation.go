@@ -396,6 +396,7 @@ func (a *App) ClearRemoteActivation() error {
 		cfg.RemoteMachineToken = ""
 		cfg.RemoteViewerToken = ""
 		cfg.RemoteNickname = ""
+		cfg.RemoteHubURL = ""
 	}); err != nil {
 		return err
 	}

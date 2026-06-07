@@ -647,23 +647,29 @@ func (s *routeSnapshot) resolve(email string, clientIP string, invitationCode ..
 	if len(invitationCode) > 0 {
 		code = strings.TrimSpace(strings.ToUpper(invitationCode[0]))
 	}
-	if code != "" && s.invitationCodeRoutes != nil {
-		if target, ok := s.invitationCodeRoutes[code]; ok {
-			if hub, exists := s.activeHubsByID[target.HubID]; exists {
-				merge(snapshotCandidate{hub: hub, tenantID: target.TenantID, rank: rankDefaultLink, routePriority: 0})
-			} else {
-				// Invitation code is valid but the target hub is currently offline/disabled.
-				return &ResolveResult{Email: email, Mode: "none", Message: "INVITATION_CODE_HUB_OFFLINE"}, nil
-			}
+	if code != "" {
+		if s.invitationCodeRoutes == nil {
+			// Invitation code routing not initialized — cannot route by code.
+			return &ResolveResult{Email: email, Mode: "none", Message: "INVITATION_CODE_NOT_ROUTED"}, nil
 		}
+		target, ok := s.invitationCodeRoutes[code]
+		if !ok {
+			// Code not found in routing table — invalid or not yet synced.
+			return &ResolveResult{Email: email, Mode: "none", Message: "INVITATION_CODE_NOT_ROUTED"}, nil
+		}
+		hub, exists := s.activeHubsByID[target.HubID]
+		if !exists {
+			// Code is valid but target hub is offline/disabled.
+			return &ResolveResult{Email: email, Mode: "none", Message: "INVITATION_CODE_HUB_OFFLINE"}, nil
+		}
+		// Code found — return ONLY the target hub as the candidate.
+		// Do NOT fall through to public hubs, which would cause mis-routing.
+		codeResult := map[string]resolvedCandidate{}
+		s.mergeCandidate(codeResult, email, snapshotCandidate{hub: hub, tenantID: target.TenantID, rank: rankDefaultLink, routePriority: 0})
+		return buildResolveResult(email, codeResult, ""), nil
 	}
 
-	noMatchMsg := "No available hubs found"
-	if code != "" && len(resultsByHub) == 0 {
-		noMatchMsg = "INVITATION_CODE_NOT_ROUTED"
-	}
-
-	return buildResolveResult(email, resultsByHub, noMatchMsg), nil
+	return buildResolveResult(email, resultsByHub, "No available hubs found"), nil
 }
 
 func (s *routeSnapshot) resolveAdminEmail(email string) *ResolveResult {
