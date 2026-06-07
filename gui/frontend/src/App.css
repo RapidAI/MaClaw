@@ -2795,7 +2795,7 @@ body {
 
 /* Digital Employee Settings Panel */
 .ve-settings-panel {
-    max-width: 600px;
+    max-width: 720px;
     margin: 0 auto;
 }
 
@@ -2943,7 +2943,7 @@ body {
 
 .ve-avatar-editor__sliders label {
     display: grid;
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: 52px minmax(0, 1fr);
     align-items: center;
     gap: 8px;
     color: var(--theme-text-muted);
@@ -3635,7 +3635,7 @@ body {
 
 .ve-form-row > .ve-form-label {
     flex-shrink: 0;
-    width: 72px;
+    width: 90px;
     text-align: right;
 }
 
