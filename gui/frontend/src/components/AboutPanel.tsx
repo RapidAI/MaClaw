@@ -258,9 +258,6 @@ export function AboutPanel({
                     <div className="about-card-heading">
                         <div>
                             <div style={remoteSectionTitleStyle}>{t("quickActionsTitle")}</div>
-                            <p className="about-actions-card__desc" style={remoteBodyTextStyle}>
-                                {t("quickActionsDesc")}
-                            </p>
                         </div>
                     </div>
                     <div className="about-action-grid">

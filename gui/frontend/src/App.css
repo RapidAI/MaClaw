@@ -229,11 +229,10 @@
 
 .about-identity-row:last-child {
     border-bottom: none;
-    margin-top: -10px;
 }
 
 .about-identity-row:last-child .about-identity-item {
-    padding: 2px 0;
+    padding: 0;
 }
 
 .about-identity-item {
