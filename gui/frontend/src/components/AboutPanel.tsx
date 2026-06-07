@@ -184,6 +184,7 @@ export function AboutPanel({
                         <div className="about-version-row">
                             <span className="about-version-badge">{t("version")} {appVersion}</span>
                             <span className="about-build-badge">{t("buildLabel")} {buildNumber}</span>
+                            <button className="btn-link about-update-inline-button" onClick={onCheckUpdate}>{t("onlineUpdate")}</button>
                         </div>
                         <div className="about-meta-inline">
                             <span>{t("author")}: {author}</span>
@@ -266,7 +267,6 @@ export function AboutPanel({
                     </div>
                     <div className="about-action-grid">
                         <button className="btn-link about-action-button" onClick={onOpenWebsite}>{t("officialWebsite")}</button>
-                        <button className="btn-link about-action-button" onClick={onCheckUpdate}>{t("onlineUpdate")}</button>
                         <button className="btn-link about-action-button" onClick={onShowInstallLog}>{t("installLog")}</button>
                         <button className="btn-link about-action-button" onClick={() => setShowHealthDialog(true)}>{t("memoryHealth")}</button>
                         <button className="btn-link about-action-button" onClick={() => setShowSecurityEvents(true)}>{t("securityEvents")}</button>

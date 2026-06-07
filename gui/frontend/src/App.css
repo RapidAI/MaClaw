@@ -168,6 +168,25 @@
     color: var(--theme-text-secondary);
 }
 
+.about-update-inline-button {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 5px 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    border: 1px solid rgba(20, 184, 166, 0.4);
+    background: rgba(20, 184, 166, 0.1);
+    color: #14b8a6;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+}
+
+.about-update-inline-button:hover {
+    background: rgba(20, 184, 166, 0.2);
+    border-color: rgba(20, 184, 166, 0.6);
+}
+
 .about-meta-inline {
     margin-top: 8px;
     display: flex;
@@ -210,6 +229,12 @@
 
 .about-identity-row:last-child {
     border-bottom: none;
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+.about-identity-row:last-child .about-identity-item {
+    padding: 3px 0;
 }
 
 .about-identity-item {
