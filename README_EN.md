@@ -2,7 +2,7 @@
 
 [📖 User Manual](UserManual_EN.md) | [❓ FAQ](faq_en.md) | [English](README_EN.md) | [中文](README.md)
 
-**MaClaw** is a **general-purpose, self-evolving agent platform** — your personal digital work companion. It understands your intent, remembers your preferences, autonomously plans and executes complex tasks. Whether you're writing a business plan, conducting competitive analysis, reviewing contracts, developing software, or managing remote servers, it walks you through the entire process from requirements to deliverables. Built with Wails, Go, and React, it integrates **structured workflows, knowledge base (external brain), long-term memory, extensible skills, and multi-channel collaboration**, and replaces traditional enterprise MIS fixed-form entries through **Agent Dynamic UI + Structured Data Management**.
+**MaClaw** is a **general-purpose, self-evolving agent platform** — your personal digital work companion. It understands your intent, remembers your preferences, autonomously plans and executes complex tasks. Whether you're writing a business plan, conducting competitive analysis, reviewing contracts, developing software, or managing remote servers, it walks you through the entire process from requirements to deliverables. Built with Wails, Go, and React, it integrates **structured workflows, knowledge base (external brain), long-term memory, extensible skills, and multi-channel collaboration**, and replaces traditional enterprise MIS fixed-form entries through **Agent Dynamic UI + Structured Data Management**. The Enterprise Edition provides **Digital Workers** — digital twins of physical users and cloud-native virtual employees — running 24/7 to replace repetitive positions and reduce labor costs.
 
 > Not just chat — it does the work. You share the idea, it delivers the result. It has its own knowledge base — documents and web pages you import become its "external brain", enabling it to work with knowledge at hand.
 
@@ -157,14 +157,6 @@ Create automated tasks that run on a schedule:
 *   Daily/weekly/monthly scheduling with one-time task support
 *   Natural language task descriptions, auto-executed at the scheduled time
 *   Pause, resume, and delete tasks
-
-### AgentNet — P2P Agent Network
-
-Decentralized agent collaboration network (experimental):
-
-*   Node discovery, knowledge publishing and search, credit system
-*   Cross-node task delegation, Swarm collaboration
-*   Reputation system, dispute arbitration, DAG task orchestration
 
 ### Audit Logging
 
