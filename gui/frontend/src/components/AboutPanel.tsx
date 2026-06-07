@@ -183,7 +183,6 @@ export function AboutPanel({
                         <p className="about-hero-card__slogan">{slogan}</p>
                         <div className="about-version-row">
                             <span className="about-version-badge">{t("version")} {appVersion}</span>
-                            <span className="about-build-badge">{t("buildLabel")} {buildNumber}</span>
                             <button className="btn-link about-update-inline-button" onClick={onCheckUpdate}>{t("onlineUpdate")}</button>
                         </div>
                         <div className="about-meta-inline">
@@ -197,7 +196,6 @@ export function AboutPanel({
                 <section className="about-identity-card" style={remoteCardStyle}>
                     <div className="about-card-heading">
                         <div>
-                            <div style={remoteSectionTitleStyle}>{t("aboutIdentityTitle")}</div>
                             <p className="about-actions-card__desc" style={remoteBodyTextStyle}>
                                 {t("aboutIdentityDesc")}
                             </p>

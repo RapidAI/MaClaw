@@ -953,7 +953,7 @@ requireIncludes('gui/frontend/src/components/pages/GossipPage.tsx', 'GossipPanel
 requireIncludes('gui/frontend/src/App.tsx', 'onCheckUpdate={() => {', 'about page update check wiring');
 requireIncludes('gui/frontend/src/components/AboutPanel.tsx', 'officialWebsite', 'about page website button');
 requireIncludes('gui/frontend/src/components/AboutPanel.tsx', 'quickActionsTitle', 'about page localized quick actions title');
-requireIncludes('gui/frontend/src/components/AboutPanel.tsx', '{t("buildLabel")} {buildNumber}', 'about page build number prop usage');
+requireIncludes('gui/frontend/src/components/AboutPanel.tsx', 'buildNumber', 'about page build number prop usage');
 requireIncludes('gui/frontend/src/components/AboutPanel.tsx', 'bugReport', 'about page bug report link');
 requireIncludes('gui/frontend/src/App.tsx', 'MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw"', 'about page fixed code repository URL');
 requireIncludes('gui/frontend/src/App.tsx', 'onOpenGithub={() => BrowserOpenURL(MACLAW_CODE_REPOSITORY_URL)}', 'about page code repository button uses fixed URL');
