@@ -368,6 +368,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                     <div style={{ position: 'relative', width: '28px', height: '28px' }}>
                         {avatarDataURL ? (
                             <img
+                                key={avatarDataURL}
                                 src={avatarDataURL}
                                 alt=""
                                 data-testid={`fav-ve-avatar-${slot.veId}`}

@@ -99,7 +99,7 @@ func (c *coreAgentCallbacks) resolveWebSearchProvider() corelib.WebSearchProvide
 		return corelib.WebSearchProvider{Type: "searxng"}
 	}
 	for _, p := range c.appCfg.WebSearchProviders {
-		if strings.EqualFold(strings.TrimSpace(p.Type), current) {
+		if strings.EqualFold(strings.TrimSpace(p.Name), current) || strings.EqualFold(strings.TrimSpace(p.Type), current) {
 			return p
 		}
 	}

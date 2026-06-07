@@ -264,21 +264,37 @@ const (
 	MsgTUIAgentMaxRoundsReached              = "msg.tui_agent_max_rounds_reached"
 
 	// Workflow engine – user-facing messages
-	MsgWorkflowStarted         = "msg.workflow_started"        // %s type, %s phase
-	MsgWorkflowInputRequired   = "msg.workflow_input_required" // %s description
-	MsgWorkflowInputFormats    = "msg.workflow_input_formats"  // %s formats
-	MsgWorkflowInputPasteHint  = "msg.workflow_input_paste_hint"
-	MsgWorkflowCompleted       = "msg.workflow_completed"     // %d phase count
-	MsgWorkflowPhaseAdvance    = "msg.workflow_phase_advance" // %d current, %d total, %s name
-	MsgWorkflowInputWaiting    = "msg.workflow_input_waiting" // %s hint
-	MsgWorkflowInputPasteAlt   = "msg.workflow_input_paste_alt"
-	MsgWorkflowCancelled       = "msg.workflow_cancelled"
-	MsgWorkflowPhaseCannotSkip = "msg.workflow_phase_cannot_skip" // %s phase name
-	MsgWorkflowAwaitingReview  = "msg.workflow_awaiting_review"   // %s phase name
-	MsgWorkflowSupplementAck   = "msg.workflow_supplement_ack"    // %s phase name
-	MsgWorkflowHandleError     = "msg.workflow_handle_error"      // %v error
-	MsgWorkflowStartError      = "msg.workflow_start_error"       // %v error
-	MsgWorkflowUnderstandError = "msg.workflow_understand_error"
+	MsgWorkflowStarted              = "msg.workflow_started"        // %s type, %s phase
+	MsgWorkflowInputRequired        = "msg.workflow_input_required" // %s description
+	MsgWorkflowInputFormats         = "msg.workflow_input_formats"  // %s formats
+	MsgWorkflowInputPasteHint       = "msg.workflow_input_paste_hint"
+	MsgWorkflowCompleted            = "msg.workflow_completed"     // %d phase count
+	MsgWorkflowPhaseAdvance         = "msg.workflow_phase_advance" // %d current, %d total, %s name
+	MsgWorkflowInputWaiting         = "msg.workflow_input_waiting" // %s hint
+	MsgWorkflowInputPasteAlt        = "msg.workflow_input_paste_alt"
+	MsgWorkflowCancelled            = "msg.workflow_cancelled"
+	MsgWorkflowPhaseCannotSkip      = "msg.workflow_phase_cannot_skip"      // %s phase name
+	MsgWorkflowAwaitingReview       = "msg.workflow_awaiting_review"        // %s phase name
+	MsgWorkflowReviewExecutionBlock = "msg.workflow_review_execution_block" // %s phase name
+	MsgWorkflowSupplementAck        = "msg.workflow_supplement_ack"         // %s phase name
+	MsgWorkflowHandleError          = "msg.workflow_handle_error"           // %v error
+	MsgWorkflowStartError           = "msg.workflow_start_error"            // %v error
+	MsgWorkflowUnavailable          = "msg.workflow_unavailable"
+	MsgWorkflowPrepareProjectError  = "msg.workflow_prepare_project_error" // %v error
+	MsgWorkflowFormSaveError        = "msg.workflow_form_save_error"       // %v error
+	MsgWorkflowFormPanelPrompt      = "msg.workflow_form_panel_prompt"
+	MsgWorkflowFormPhaseStale       = "msg.workflow_form_phase_stale"
+	MsgWorkflowFormNoActive         = "msg.workflow_form_no_active"
+	MsgWorkflowFormStale            = "msg.workflow_form_stale"
+	MsgWorkflowFormPhaseChanged     = "msg.workflow_form_phase_changed"
+	MsgWorkflowFormSubmitError      = "msg.workflow_form_submit_error"
+	MsgWorkflowFormContinueError    = "msg.workflow_form_continue_error"
+	MsgWorkflowFormGenerating       = "msg.workflow_form_generating"
+	MsgWorkflowFormSubmitted        = "msg.workflow_form_submitted"
+	MsgWorkflowInputHandleError     = "msg.workflow_input_handle_error" // %v error
+	MsgWorkflowRepairError          = "msg.workflow_repair_error"       // %v error
+	MsgWorkflowUnderstandError      = "msg.workflow_understand_error"
+	MsgWorkflowUnderstandStartError = "msg.workflow_understand_start_error" // %v error
 
 	// Workflow confirmation UI – pre-start confirmation panel
 	MsgWorkflowConfirmText      = "msg.workflow_confirm_text"
@@ -292,6 +308,20 @@ const (
 	MsgWorkflowConfirmRisk1     = "msg.workflow_confirm_risk1"
 	MsgWorkflowConfirmRevision1 = "msg.workflow_confirm_revision1"
 	MsgWorkflowConfirmRevision2 = "msg.workflow_confirm_revision2"
+
+	// Workflow initiation UI – published workflow start flow
+	MsgWorkflowInitiationExtractedConfirm = "msg.workflow_initiation_extracted_confirm" // %s data
+	MsgWorkflowInitiationMissingFields    = "msg.workflow_initiation_missing_fields"    // %s workflow name, %s fields
+	MsgWorkflowInitiationNoMatch          = "msg.workflow_initiation_no_match"
+	MsgWorkflowInitiationNoMatchList      = "msg.workflow_initiation_no_match_list" // %s workflow list
+	MsgWorkflowInitiationCancelled        = "msg.workflow_initiation_cancelled"     // %s workflow name
+	MsgWorkflowInitiationUpdatedConfirm   = "msg.workflow_initiation_updated_confirm"
+	MsgWorkflowInitiationConfirmHelp      = "msg.workflow_initiation_confirm_help"
+	MsgWorkflowInitiationHubConnectError  = "msg.workflow_initiation_hub_connect_error"
+	MsgWorkflowInitiationNetworkError     = "msg.workflow_initiation_network_error"
+	MsgWorkflowInitiationCreateFailed     = "msg.workflow_initiation_create_failed" // %d status
+	MsgWorkflowInitiationStarted          = "msg.workflow_initiation_started"       // %s workflow number
+	MsgWorkflowInitiationUnset            = "msg.workflow_initiation_unset"
 
 	// Confirmation card – section labels (shared by all confirmation types)
 	MsgConfirmLabelTitle          = "msg.confirm_label_title"
@@ -584,21 +614,37 @@ var translations = map[string]map[string]string{
 		MsgTUIAgentTruncated:                     "\n...(已截断)",
 		MsgTUIAgentMaxRoundsReached:              "(已达到最大推理轮次)",
 		// Workflow
-		MsgWorkflowStarted:         "🚀 工作流已启动：%s\n📋 当前阶段：%s",
-		MsgWorkflowInputRequired:   "\n\n📎 需要输入：%s",
-		MsgWorkflowInputFormats:    "（支持格式：%s）",
-		MsgWorkflowInputPasteHint:  "\n也可以直接粘贴文档内容，或提供网址由系统自动抓取。",
-		MsgWorkflowCompleted:       "🎉 工作流已完成！所有 %d 个阶段均已完成。",
-		MsgWorkflowPhaseAdvance:    "✅ 进入阶段 %d/%d：%s",
-		MsgWorkflowInputWaiting:    "📎 %s",
-		MsgWorkflowInputPasteAlt:   "\n\n也可以直接将文档内容粘贴到对话框中，提供本地文件路径，或提供网址由系统自动抓取。",
-		MsgWorkflowCancelled:       "当前工作流已取消。",
-		MsgWorkflowPhaseCannotSkip: "当前阶段 %q 不可跳过。请确认、补充修改意见或取消工作流。",
-		MsgWorkflowAwaitingReview:  "当前工作流正在等待阶段 %q 的审阅。请确认以继续、补充修改意见、跳过（如允许）或取消工作流。",
-		MsgWorkflowSupplementAck:   "收到补充意见，正在更新当前阶段：%s。",
-		MsgWorkflowHandleError:     "⚠️ 工作流处理出错: %v",
-		MsgWorkflowStartError:      "⚠️ 启动工作流失败: %v",
-		MsgWorkflowUnderstandError: "⚠️ 内部理解步骤临时失败，请再发一次补充，或直接说「开工」继续当前任务。",
+		MsgWorkflowStarted:              "🚀 工作流已启动：%s\n📋 当前阶段：%s",
+		MsgWorkflowInputRequired:        "\n\n📎 需要输入：%s",
+		MsgWorkflowInputFormats:         "（支持格式：%s）",
+		MsgWorkflowInputPasteHint:       "\n也可以直接粘贴文档内容，或提供网址由系统自动抓取。",
+		MsgWorkflowCompleted:            "🎉 工作流已完成！所有 %d 个阶段均已完成。",
+		MsgWorkflowPhaseAdvance:         "✅ 进入阶段 %d/%d：%s",
+		MsgWorkflowInputWaiting:         "📎 %s",
+		MsgWorkflowInputPasteAlt:        "\n\n也可以直接将文档内容粘贴到对话框中，提供本地文件路径，或提供网址由系统自动抓取。",
+		MsgWorkflowCancelled:            "当前工作流已取消。",
+		MsgWorkflowPhaseCannotSkip:      "当前阶段 %q 不可跳过。请确认、补充修改意见或取消工作流。",
+		MsgWorkflowAwaitingReview:       "当前工作流正在等待阶段 %q 的审阅。请确认以继续、补充修改意见、跳过（如允许）或取消工作流。",
+		MsgWorkflowReviewExecutionBlock: "当前工作流阶段 %q 尚未确认。确认前不能创建目录、写代码或运行命令。请确认以继续，或提供当前文档的修改意见。",
+		MsgWorkflowSupplementAck:        "收到补充意见，正在更新当前阶段：%s。",
+		MsgWorkflowHandleError:          "⚠️ 工作流处理出错: %v",
+		MsgWorkflowStartError:           "⚠️ 启动工作流失败: %v",
+		MsgWorkflowUnavailable:          "⚠️ 工作流引擎暂不可用，请稍后重试。",
+		MsgWorkflowPrepareProjectError:  "⚠️ 准备工作流项目目录失败：%v",
+		MsgWorkflowFormSaveError:        "⚠️ 工作流表单状态保存失败：%v",
+		MsgWorkflowFormPanelPrompt:      "请在右侧面板填写工作流信息表单并提交。",
+		MsgWorkflowFormPhaseStale:       "该工作流表单阶段已不是当前版本，请重新打开当前工作流表单。",
+		MsgWorkflowFormNoActive:         "当前没有可用的活动工作流。",
+		MsgWorkflowFormStale:            "该工作流表单已不是当前版本，请重新打开当前工作流表单。",
+		MsgWorkflowFormPhaseChanged:     "工作流阶段已变化，请刷新后提交当前表单。",
+		MsgWorkflowFormSubmitError:      "表单提交失败。",
+		MsgWorkflowFormContinueError:    "工作流继续执行失败。",
+		MsgWorkflowFormGenerating:       "信息已提交，正在生成工作流输出...",
+		MsgWorkflowFormSubmitted:        "表单已提交。",
+		MsgWorkflowInputHandleError:     "⚠️ 工作流输入处理失败：%v",
+		MsgWorkflowRepairError:          "⚠️ 工作流修复失败：%v",
+		MsgWorkflowUnderstandError:      "⚠️ 内部理解步骤临时失败，请再发一次补充，或直接说「开工」继续当前任务。",
+		MsgWorkflowUnderstandStartError: "⚠️ 工作流理解服务暂时不可用，无法可靠进入工作流：%v",
 		// Workflow confirmation UI
 		MsgWorkflowConfirmText:      "该请求匹配到工作流模式。可以启动工作流进行分阶段执行，或选择直接执行。",
 		MsgWorkflowConfirmNilText:   "请确认是否启动工作流。",
@@ -611,6 +657,19 @@ var translations = map[string]map[string]string{
 		MsgWorkflowConfirmRisk1:     "工作流模式会增加规划/审阅阶段，简单任务可能不需要",
 		MsgWorkflowConfirmRevision1: "简单任务建议选择直接执行",
 		MsgWorkflowConfirmRevision2: "如果匹配的工作流类型不对，可以回复调整",
+		// Workflow initiation UI
+		MsgWorkflowInitiationExtractedConfirm: "已提取信息：\n%s\n确认发起？",
+		MsgWorkflowInitiationMissingFields:    "📋 %s\n\n还需要以下信息：\n%s\n\n请补充上述信息。",
+		MsgWorkflowInitiationNoMatch:          "未找到匹配的审批工作流。请确认工作流名称后重试。",
+		MsgWorkflowInitiationNoMatchList:      "未找到匹配的审批工作流。当前可用的工作流：\n%s\n\n请指定要发起的工作流名称。",
+		MsgWorkflowInitiationCancelled:        "已取消「%s」的发起流程。",
+		MsgWorkflowInitiationUpdatedConfirm:   "已更新信息：\n%s\n确认发起？",
+		MsgWorkflowInitiationConfirmHelp:      "请回复「确认」发起审批，「取消」放弃，或告诉我需要修改的内容。",
+		MsgWorkflowInitiationHubConnectError:  "❌ 无法连接到 Hub。",
+		MsgWorkflowInitiationNetworkError:     "❌ 网络请求失败。",
+		MsgWorkflowInitiationCreateFailed:     "❌ 创建审批失败（HTTP %d）。",
+		MsgWorkflowInitiationStarted:          "✅ 审批已发起，单号：%s",
+		MsgWorkflowInitiationUnset:            "（未填写）",
 		// Confirmation card labels
 		MsgConfirmLabelTitle:          "执行前确认",
 		MsgConfirmLabelStatus:         "状态",
@@ -886,21 +945,37 @@ var translations = map[string]map[string]string{
 		MsgTUIAgentTruncated:                     "\n...(truncated)",
 		MsgTUIAgentMaxRoundsReached:              "(maximum reasoning rounds reached)",
 		// Workflow
-		MsgWorkflowStarted:         "🚀 Workflow started: %s\n📋 Current phase: %s",
-		MsgWorkflowInputRequired:   "\n\n📎 Input required: %s",
-		MsgWorkflowInputFormats:    " (supported formats: %s)",
-		MsgWorkflowInputPasteHint:  "\nYou can also paste the document content directly or provide a URL for automatic fetching.",
-		MsgWorkflowCompleted:       "🎉 Workflow completed! All %d phases finished.",
-		MsgWorkflowPhaseAdvance:    "✅ Entering phase %d/%d: %s",
-		MsgWorkflowInputWaiting:    "📎 %s",
-		MsgWorkflowInputPasteAlt:   "\n\nYou can also paste the document content directly, provide a local file path, or provide a URL for automatic fetching.",
-		MsgWorkflowCancelled:       "Current workflow has been cancelled.",
-		MsgWorkflowPhaseCannotSkip: "Current phase %q cannot be skipped. Please confirm, provide supplements, or cancel the workflow.",
-		MsgWorkflowAwaitingReview:  "Current workflow is waiting for review at phase %q. Please confirm to continue, provide supplements, skip (if allowed), or cancel the workflow.",
-		MsgWorkflowSupplementAck:   "Received your supplement. Updating current phase: %s.",
-		MsgWorkflowHandleError:     "⚠️ Workflow error: %v",
-		MsgWorkflowStartError:      "⚠️ Failed to start workflow: %v",
-		MsgWorkflowUnderstandError: "⚠️ Internal understanding step failed temporarily. Please resend your input, or say \"start\" to continue.",
+		MsgWorkflowStarted:              "🚀 Workflow started: %s\n📋 Current phase: %s",
+		MsgWorkflowInputRequired:        "\n\n📎 Input required: %s",
+		MsgWorkflowInputFormats:         " (supported formats: %s)",
+		MsgWorkflowInputPasteHint:       "\nYou can also paste the document content directly or provide a URL for automatic fetching.",
+		MsgWorkflowCompleted:            "🎉 Workflow completed! All %d phases finished.",
+		MsgWorkflowPhaseAdvance:         "✅ Entering phase %d/%d: %s",
+		MsgWorkflowInputWaiting:         "📎 %s",
+		MsgWorkflowInputPasteAlt:        "\n\nYou can also paste the document content directly, provide a local file path, or provide a URL for automatic fetching.",
+		MsgWorkflowCancelled:            "Current workflow has been cancelled.",
+		MsgWorkflowPhaseCannotSkip:      "Current phase %q cannot be skipped. Please confirm, provide supplements, or cancel the workflow.",
+		MsgWorkflowAwaitingReview:       "Current workflow is waiting for review at phase %q. Please confirm to continue, provide supplements, skip (if allowed), or cancel the workflow.",
+		MsgWorkflowReviewExecutionBlock: "Current workflow phase %q has not been confirmed yet. I cannot create directories, write code, or run commands before this review is confirmed. Please confirm to continue, or provide changes for the current document.",
+		MsgWorkflowSupplementAck:        "Received your supplement. Updating current phase: %s.",
+		MsgWorkflowHandleError:          "⚠️ Workflow error: %v",
+		MsgWorkflowStartError:           "⚠️ Failed to start workflow: %v",
+		MsgWorkflowUnavailable:          "⚠️ Workflow engine is unavailable. Please try again later.",
+		MsgWorkflowPrepareProjectError:  "⚠️ Failed to prepare workflow project directory: %v",
+		MsgWorkflowFormSaveError:        "⚠️ Workflow form state could not be saved: %v",
+		MsgWorkflowFormPanelPrompt:      "Please fill in the workflow information form in the right-side panel and submit it.",
+		MsgWorkflowFormPhaseStale:       "The workflow form phase is no longer current. Please reopen the current workflow form.",
+		MsgWorkflowFormNoActive:         "No active workflow is available.",
+		MsgWorkflowFormStale:            "The workflow form is no longer current. Please reopen the current workflow form.",
+		MsgWorkflowFormPhaseChanged:     "The workflow phase has changed. Please refresh and submit the current form.",
+		MsgWorkflowFormSubmitError:      "Form submission failed.",
+		MsgWorkflowFormContinueError:    "Workflow continuation failed.",
+		MsgWorkflowFormGenerating:       "Information submitted. Generating the workflow output now...",
+		MsgWorkflowFormSubmitted:        "Form submitted.",
+		MsgWorkflowInputHandleError:     "⚠️ Workflow input handling failed: %v",
+		MsgWorkflowRepairError:          "⚠️ Workflow repair failed: %v",
+		MsgWorkflowUnderstandError:      "⚠️ Internal understanding step failed temporarily. Please resend your input, or say \"start\" to continue.",
+		MsgWorkflowUnderstandStartError: "⚠️ Workflow understanding service is temporarily unavailable, so workflow mode cannot start reliably: %v",
 		// Workflow confirmation UI
 		MsgWorkflowConfirmText:      "This request matches workflow mode. Start the workflow for staged execution, or choose direct execution for a simple agent loop.",
 		MsgWorkflowConfirmNilText:   "Please confirm whether to start the workflow.",
@@ -913,6 +988,19 @@ var translations = map[string]map[string]string{
 		MsgWorkflowConfirmRisk1:     "Workflow mode may add planning/review phases that are unnecessary for simple tasks",
 		MsgWorkflowConfirmRevision1: "Choose direct execution for a simple task",
 		MsgWorkflowConfirmRevision2: "Reply with adjustments if the matched workflow type is wrong",
+		// Workflow initiation UI
+		MsgWorkflowInitiationExtractedConfirm: "Extracted information:\n%s\nConfirm initiation?",
+		MsgWorkflowInitiationMissingFields:    "📋 %s\n\nThe following information is still required:\n%s\n\nPlease provide the missing information.",
+		MsgWorkflowInitiationNoMatch:          "No matching approval workflow was found. Please check the workflow name and try again.",
+		MsgWorkflowInitiationNoMatchList:      "No matching approval workflow was found. Available workflows:\n%s\n\nPlease specify the workflow name to initiate.",
+		MsgWorkflowInitiationCancelled:        "Cancelled the initiation flow for %q.",
+		MsgWorkflowInitiationUpdatedConfirm:   "Updated information:\n%s\nConfirm initiation?",
+		MsgWorkflowInitiationConfirmHelp:      "Reply \"confirm\" to initiate approval, \"cancel\" to abandon it, or tell me what to change.",
+		MsgWorkflowInitiationHubConnectError:  "❌ Unable to connect to Hub.",
+		MsgWorkflowInitiationNetworkError:     "❌ Network request failed.",
+		MsgWorkflowInitiationCreateFailed:     "❌ Failed to create approval (HTTP %d).",
+		MsgWorkflowInitiationStarted:          "✅ Approval initiated. Number: %s",
+		MsgWorkflowInitiationUnset:            "(not filled)",
 		// Confirmation card labels
 		MsgConfirmLabelTitle:          "Pre-execution confirmation",
 		MsgConfirmLabelStatus:         "Status",

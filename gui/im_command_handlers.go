@@ -15,9 +15,6 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 	if commandKind == imCommandReset {
 		h.memory.Clear(msg.UserID)
 		h.clearPerUserSessionState(msg.UserID)
-		if h.confirmationStore != nil {
-			h.confirmationStore.clear(msg.UserID)
-		}
 		h.flushEvidenceOnSessionEnd(msg.UserID)
 		resp := &IMAgentResponse{Text: localizedIMConversationResetMessage(responseLang), ClearUI: true}
 		if ctx := h.getSessionLoopCtx(msg.UserID); ctx != nil {

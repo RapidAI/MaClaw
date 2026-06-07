@@ -87,7 +87,10 @@ func (h *IMMessageHandler) toolListMCPTools(args map[string]interface{}) string 
 }
 
 func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
-	ownerID, _ := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	ownerID, explicitRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if explicitRuntimeOwner && ownerID == "" {
+		return "MCP call failed: runtime owner is missing; isolated runtime will not fall back to desktop owner"
+	}
 	serverRef, _ := args["server_id"].(string)
 	toolName, _ := args["tool_name"].(string)
 	if isDisabledExternalCodingSessionTool(toolName) {
@@ -1384,6 +1387,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		ProjectPath: projectPath,
 		ContextHint: h.buildMemoryContextHintForUser(ownerID),
 		OwnerID:     ownerID,
+		LoopID:      h.currentLoopIDForUser(ownerID),
 		AfterWrite: func() {
 			if h.app != nil {
 				h.app.triggerMemoryPipelineSoon(45 * time.Second)
@@ -1443,6 +1447,16 @@ func (h *IMMessageHandler) buildMemoryContextHintForUser(userID string) string {
 		sb.WriteString(" ")
 	}
 	return sb.String()
+}
+
+// currentLoopIDForUser returns the active agent loop ID for the given user,
+// or empty string if no loop is running. Used to populate ToolOptions.LoopID
+// for scroll session scoping.
+func (h *IMMessageHandler) currentLoopIDForUser(userID string) string {
+	if ctx := h.getSessionLoopCtx(userID); ctx != nil {
+		return ctx.ID
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------

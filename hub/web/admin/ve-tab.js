@@ -22,8 +22,12 @@
       panelDesc: 'Review pending registrations, manage active digital employees, and configure group chat limits.',
       pendingTitle: 'Pending Approval',
       activeTitle: 'Active Employees',
+      deletedTitle: 'Deleted Employees (History Retained)',
+      inactiveTitle: 'Disabled Employees',
       emptyPending: 'No pending registration requests.',
       emptyActive: 'No active digital employees.',
+      emptyDeleted: 'No deleted digital employees with retained history.',
+      emptyInactive: 'No disabled or stale digital employees.',
       name: 'Name',
       employeeType: 'Employee Type',
       employeeTypeVirtual: 'Virtual Employee',
@@ -42,12 +46,16 @@
       visibilitySaved: 'Visible departments saved.',
       visibilitySaveFailed: 'Save visible departments failed: {error}',
       noDepartments: 'No departments available.',
+      departmentTreeHint: 'Select one or more departments from the organization tree. Leave empty for global visibility.',
       onlineStatus: 'Online Status',
       registeredAt: 'Registered At',
       actions: 'Actions',
       approve: 'Approve',
       reject: 'Reject',
       disable: 'Disable',
+      purge: 'Clear',
+      forcePurge: 'Force Delete',
+      forcePurgePasswordPrompt: 'Enter administrator password to permanently delete this employee and related history:',
       online: 'Online',
       offline: 'Offline',
       policyPublic: 'Public',
@@ -71,6 +79,10 @@
       rejectFailed: 'Reject failed: {error}',
       disableSuccess: 'Digital employee disabled.',
       disableFailed: 'Disable failed: {error}',
+      purgeSuccess: 'Digital employee record cleared from Hub.',
+      purgeFailed: 'Clear failed: {error}',
+      forcePurgeSuccess: 'Digital employee and related history deleted.',
+      forcePurgeFailed: 'Force delete failed: {error}',
       loadFailed: 'Load digital employees failed: {error}',
       refresh: 'Refresh',
       quotaInfo: 'Active: {active} / Quota: {quota}',
@@ -107,8 +119,12 @@
       panelDesc: '\u5ba1\u6838\u5f85\u5ba1\u6279\u6ce8\u518c\u3001\u7ba1\u7406\u5df2\u6fc0\u6d3b\u6570\u5b57\u5458\u5de5\u3001\u914d\u7f6e\u7fa4\u804a\u4e0a\u9650\u3002',
       pendingTitle: '\u5f85\u5ba1\u6279',
       activeTitle: '\u5df2\u6fc0\u6d3b',
+      deletedTitle: '\u5df2\u5220\u9664\uff08\u4fdd\u7559\u5386\u53f2\uff09',
+      inactiveTitle: '\u5df2\u505c\u7528',
       emptyPending: '\u6682\u65e0\u5f85\u5ba1\u6279\u7684\u6ce8\u518c\u8bf7\u6c42\u3002',
       emptyActive: '\u6682\u65e0\u5df2\u6fc0\u6d3b\u7684\u6570\u5b57\u5458\u5de5\u3002',
+      emptyDeleted: '\u6682\u65e0\u5df2\u5220\u9664\u4e14\u4fdd\u7559\u5386\u53f2\u7684\u6570\u5b57\u5458\u5de5\u3002',
+      emptyInactive: '\u6682\u65e0\u5df2\u505c\u7528\u6216\u6b8b\u7559\u7684\u6570\u5b57\u5458\u5de5\u3002',
       name: '\u540d\u79f0',
       employeeType: '\u6570\u5b57\u5458\u5de5\u7c7b\u578b',
       employeeTypeVirtual: '\u865a\u62df\u5458\u5de5',
@@ -127,12 +143,16 @@
       visibilitySaved: '\u53ef\u89c1\u90e8\u95e8\u5df2\u4fdd\u5b58\u3002',
       visibilitySaveFailed: '\u4fdd\u5b58\u53ef\u89c1\u90e8\u95e8\u5931\u8d25\uff1a{error}',
       noDepartments: '\u6682\u65e0\u53ef\u7528\u90e8\u95e8\u3002',
+      departmentTreeHint: '\u4ece\u7ec4\u7ec7\u673a\u6784\u6811\u4e2d\u9009\u62e9\u4e00\u4e2a\u6216\u591a\u4e2a\u90e8\u95e8\uff0c\u4e0d\u9009\u8868\u793a\u5168\u5c40\u53ef\u89c1\u3002',
       onlineStatus: '\u5728\u7ebf\u72b6\u6001',
       registeredAt: '\u6ce8\u518c\u65f6\u95f4',
       actions: '\u64cd\u4f5c',
       approve: '\u901a\u8fc7',
       reject: '\u62d2\u7edd',
       disable: '\u7981\u7528',
+      purge: '\u6e05\u9664',
+      forcePurge: '\u5f3a\u5236\u5220\u9664',
+      forcePurgePasswordPrompt: '\u8f93\u5165\u7ba1\u7406\u5458\u5bc6\u7801\uff0c\u6c38\u4e45\u5220\u9664\u8be5\u6570\u5b57\u5458\u5de5\u53ca\u76f8\u5173\u5386\u53f2\uff1a',
       online: '\u5728\u7ebf',
       offline: '\u79bb\u7ebf',
       policyPublic: '\u516c\u5f00',
@@ -156,6 +176,10 @@
       rejectFailed: '\u62d2\u7edd\u5931\u8d25\uff1a{error}',
       disableSuccess: '\u6570\u5b57\u5458\u5de5\u5df2\u7981\u7528\u3002',
       disableFailed: '\u7981\u7528\u5931\u8d25\uff1a{error}',
+      purgeSuccess: '\u6570\u5b57\u5458\u5de5\u8bb0\u5f55\u5df2\u4ece Hub \u6e05\u9664\u3002',
+      purgeFailed: '\u6e05\u9664\u5931\u8d25\uff1a{error}',
+      forcePurgeSuccess: '\u6570\u5b57\u5458\u5de5\u53ca\u76f8\u5173\u5386\u53f2\u5df2\u5220\u9664\u3002',
+      forcePurgeFailed: '\u5f3a\u5236\u5220\u9664\u5931\u8d25\uff1a{error}',
       loadFailed: '\u52a0\u8f7d\u6570\u5b57\u5458\u5de5\u5217\u8868\u5931\u8d25\uff1a{error}',
       refresh: '\u5237\u65b0',
       quotaInfo: '\u5df2\u6fc0\u6d3b\uff1a{active} / \u914d\u989d\uff1a{quota}',
@@ -351,7 +375,15 @@
   }
 
   function visibleGroupIDs(ve) {
-    return (ve && Array.isArray(ve.visible_group_ids)) ? ve.visible_group_ids.filter(function(id) { return String(id || '').trim(); }) : [];
+    var seen = Object.create(null);
+    var ids = [];
+    ((ve && Array.isArray(ve.visible_group_ids)) ? ve.visible_group_ids : []).forEach(function(raw) {
+      var id = String(raw || '').trim();
+      if (!id || seen[id]) return;
+      seen[id] = true;
+      ids.push(id);
+    });
+    return ids;
   }
 
   function formatVisibleDepartments(ve) {
@@ -438,6 +470,48 @@
       var residentBtn = actionBtn(ve.resident ? vt('clearResident') : vt('setResident'), ve.resident ? 'btn-secondary' : 'btn-primary', 'veSetResident(' + veIDExpr + ',' + (ve.resident ? 'false' : 'true') + ')');
       var disableBtn = actionBtn(vt('disable'), 'btn-danger', 'veDisable(' + veIDExpr + ')');
       return renderVERow(ve, residentBtn + disableBtn);
+    }).join('');
+  }
+
+  function isDeletedVEWithHistory(ve) {
+    return !!(ve && (ve.runtime_missing || ve.history_retained));
+  }
+
+  function renderDeletedList(employees) {
+    var deleted = filterVEForQuery(employees).filter(isDeletedVEWithHistory);
+    var container = document.getElementById('veDeletedList');
+    if (!container) return;
+
+    var header = renderVEListHeader();
+    if (!deleted.length) {
+      container.innerHTML = header + '<div class="hint">' + escapeHtml(vt('emptyDeleted')) + '</div>';
+      return;
+    }
+
+    container.innerHTML = header + deleted.map(function(ve) {
+      var veIDExpr = JSON.stringify(ve.id || ve.platform_employee_id || ve.machine_id || '');
+      var purgeBtn = actionBtn(vt('purge'), 'btn-danger', 'vePurge(' + veIDExpr + ')');
+      var forcePurgeBtn = actionBtn(vt('forcePurge'), 'btn-danger', 'veForcePurge(' + veIDExpr + ')');
+      return renderVERow(ve, purgeBtn + forcePurgeBtn);
+    }).join('');
+  }
+
+  function renderInactiveList(employees) {
+    var inactive = filterVEForQuery(employees).filter(function(e) { return e.status !== 'active' && e.status !== 'pending' && !isDeletedVEWithHistory(e); });
+    var container = document.getElementById('veInactiveList');
+    if (!container) return;
+
+    var header = renderVEListHeader();
+    if (!inactive.length) {
+      container.innerHTML = header + '<div class="hint">' + escapeHtml(vt('emptyInactive')) + '</div>';
+      return;
+    }
+
+    container.innerHTML = header + inactive.map(function(ve) {
+      var veIDExpr = JSON.stringify(ve.id || ve.platform_employee_id || ve.machine_id || '');
+      var purgeBtn = actionBtn(vt('purge'), 'btn-danger', 'vePurge(' + veIDExpr + ')');
+      var forcePurgeBtn = actionBtn(vt('forcePurge'), 'btn-danger', 'veForcePurge(' + veIDExpr + ')');
+      return renderVERow(ve, purgeBtn + forcePurgeBtn);
     }).join('');
   }
 
@@ -543,6 +617,8 @@
   function renderVELists() {
     renderPendingList(veListCache);
     renderActiveList(veListCache);
+    renderDeletedList(veListCache);
+    renderInactiveList(veListCache);
   }
 
   async function ensureVEGroupConfigLoaded() {
@@ -828,16 +904,31 @@
   function renderVEVisibilityOptions(ve) {
     var selected = Object.create(null);
     visibleGroupIDs(ve).forEach(function(id) { selected[id] = true; });
-    var groups = flattenSecurityGroupTree(veSecurityGroupTree, 0, [], { skipRoot: true });
-    if (!groups.length) return '<div class="hint">' + escapeHtml(vt('noDepartments')) + '</div>';
-    return '<div style="display:flex;flex-direction:column;gap:6px;max-height:46vh;overflow:auto;margin:10px 0">' + groups.map(function(group) {
-      var checked = selected[group.id] ? ' checked' : '';
-      var pad = Math.min(group.depth || 0, 8) * 14;
-      return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0 4px ' + pad + 'px">' +
-        '<input type="checkbox" class="ve-visible-group-option" value="' + escapeHtml(group.id) + '"' + checked + '>' +
-        '<span>' + escapeHtml(group.name) + '</span>' +
-        '</label>';
-    }).join('') + '</div>';
+    var roots = veSecurityGroupTree && Array.isArray(veSecurityGroupTree.children) ? veSecurityGroupTree.children : [];
+    if (!roots.length) return '<div class="hint">' + escapeHtml(vt('noDepartments')) + '</div>';
+    return '<div class="hint" style="margin:8px 0 10px">' + escapeHtml(vt('departmentTreeHint')) + '</div>' +
+      '<div class="ve-department-tree" role="tree" aria-label="' + escapeHtml(vt('visibleDepartments')) + '" style="max-height:46vh;overflow:auto;margin:10px 0;padding:8px;border:1px solid var(--border,#d8dee9);border-radius:10px;background:var(--panel-muted,#f8fafc)">' +
+      roots.map(function(node) { return renderVEVisibilityTreeNode(node, selected, 0); }).join('') +
+      '</div>';
+  }
+
+  function renderVEVisibilityTreeNode(node, selected, depth) {
+    if (!node) return '';
+    var id = String(node.id || '').trim();
+    if (!id) return '';
+    var name = String(node.name || id);
+    var children = Array.isArray(node.children) ? node.children.filter(function(child) { return child && String(child.id || '').trim(); }) : [];
+    var checked = selected[id] ? ' checked' : '';
+    var pad = Math.min(depth || 0, 10) * 18;
+    var branch = children.length ? '<span aria-hidden="true" style="width:14px;color:var(--text-muted,#64748b);font-size:13px;line-height:1">&rsaquo;</span>' : '<span aria-hidden="true" style="width:14px"></span>';
+    return '<div role="treeitem" aria-checked="' + (selected[id] ? 'true' : 'false') + '"' + (children.length ? ' aria-expanded="true"' : '') + ' aria-level="' + ((depth || 0) + 1) + '" style="margin:2px 0">' +
+      '<label style="display:flex;align-items:center;gap:8px;min-height:32px;padding:3px 8px 3px ' + (8 + pad) + 'px;border-radius:8px;cursor:pointer;color:var(--text,#1f2937)">' +
+      branch +
+      '<input type="checkbox" class="ve-visible-group-option" value="' + escapeHtml(id) + '"' + checked + ' style="width:16px;height:16px;flex:0 0 auto">' +
+      '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(name) + '</span>' +
+      '</label>' +
+      (children.length ? '<div role="group">' + children.map(function(child) { return renderVEVisibilityTreeNode(child, selected, (depth || 0) + 1); }).join('') + '</div>' : '') +
+      '</div>';
   }
 
   function showVEVisibilityEditor(ve) {
@@ -859,7 +950,19 @@
       '<button class="btn-ghost" onclick="closeVEVisibilityEditor()">' + escapeHtml(vt('close')) + '</button>' +
       '<button class="btn-primary" onclick="veSaveVisibility(' + jsAttrString(ve && ve.id) + ')">' + escapeHtml(vt('saveVisibility')) + '</button>' +
       '</div></div>';
+    bindVEVisibilityTreeState(overlay);
     overlay.classList.add('show');
+  }
+
+  function bindVEVisibilityTreeState(overlay) {
+    if (!overlay || typeof overlay.querySelectorAll !== 'function') return;
+    overlay.querySelectorAll('.ve-visible-group-option').forEach(function(input) {
+      if (!input || typeof input.addEventListener !== 'function') return;
+      input.addEventListener('change', function() {
+        var item = typeof input.closest === 'function' ? input.closest('[role="treeitem"]') : null;
+        if (item && typeof item.setAttribute === 'function') item.setAttribute('aria-checked', input.checked ? 'true' : 'false');
+      });
+    });
   }
 
   global.closeVEVisibilityEditor = function closeVEVisibilityEditor() {
@@ -941,6 +1044,80 @@
       await global.loadVEList();
     } catch (err) {
       var msg = vt('disableFailed').replace('{error}', err.message);
+      setOutput(msg);
+      showToast(msg, 'error');
+    }
+  };
+
+  global.vePurge = async function vePurge(veID) {
+    if (!confirm(vt('purge') + '?')) return;
+    try {
+      await api('/api/ve/' + encodeURIComponent(veID), { method: 'DELETE' });
+      showToast(vt('purgeSuccess'), 'success');
+      await global.loadVEList();
+    } catch (err) {
+      var msg = vt('purgeFailed').replace('{error}', err.message);
+      setOutput(msg);
+      showToast(msg, 'error');
+    }
+  };
+
+  function promptVEAdminPassword(message) {
+    if (!document || !document.createElement || !document.body) {
+      return Promise.resolve(prompt(message));
+    }
+    var probe = document.createElement('button');
+    if (!probe || typeof probe.addEventListener !== 'function') {
+      return Promise.resolve(prompt(message));
+    }
+    return new Promise(function(resolve) {
+      var overlay = document.createElement('div');
+      overlay.className = 'modal-overlay show';
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.42);display:flex;align-items:center;justify-content:center;padding:18px';
+      overlay.innerHTML = '<div class="modal" role="dialog" aria-modal="true" style="width:min(420px,100%);background:var(--panel,#fff);border:1px solid var(--border,#d8dee9);border-radius:12px;padding:16px;box-shadow:0 18px 60px rgba(15,23,42,.22)">' +
+        '<div class="item-title" style="margin-bottom:8px">' + escapeHtml(vt('forcePurge')) + '</div>' +
+        '<div class="item-meta" style="margin-bottom:12px">' + escapeHtml(message) + '</div>' +
+        '<input id="veForcePurgePasswordInput" type="password" autocomplete="current-password" style="width:100%;height:36px;margin-bottom:12px">' +
+        '<div class="actions" style="justify-content:flex-end;gap:8px">' +
+        '<button type="button" class="btn-ghost" id="veForcePurgeCancelBtn">' + escapeHtml(vt('close')) + '</button>' +
+        '<button type="button" class="btn-danger" id="veForcePurgeConfirmBtn">' + escapeHtml(vt('forcePurge')) + '</button>' +
+        '</div></div>';
+      var done = function(value) {
+        if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        resolve(value);
+      };
+      document.body.appendChild(overlay);
+      var input = overlay.querySelector ? overlay.querySelector('#veForcePurgePasswordInput') : null;
+      var cancel = overlay.querySelector ? overlay.querySelector('#veForcePurgeCancelBtn') : null;
+      var ok = overlay.querySelector ? overlay.querySelector('#veForcePurgeConfirmBtn') : null;
+      if (cancel) cancel.addEventListener('click', function() { done(null); });
+      if (ok) ok.addEventListener('click', function() { done(input ? input.value : ''); });
+      if (input) {
+        input.addEventListener('keydown', function(event) {
+          if (event.key === 'Enter') done(input.value);
+          if (event.key === 'Escape') done(null);
+        });
+        input.focus();
+      }
+    });
+  }
+
+  global.veForcePurge = async function veForcePurge(veID) {
+    var password = await promptVEAdminPassword(vt('forcePurgePasswordPrompt'));
+    if (password === null) return;
+    if (!password) {
+      showToast(vt('forcePurgeFailed').replace('{error}', 'admin_password is required'), 'error');
+      return;
+    }
+    try {
+      await api('/api/ve/' + encodeURIComponent(veID) + '/force-delete', {
+        method: 'POST',
+        body: JSON.stringify({ admin_password: password })
+      });
+      showToast(vt('forcePurgeSuccess'), 'success');
+      await global.loadVEList();
+    } catch (err) {
+      var msg = vt('forcePurgeFailed').replace('{error}', err.message);
       setOutput(msg);
       showToast(msg, 'error');
     }
@@ -1055,6 +1232,8 @@
     setText('veSaveConfigBtn', vt('saveConfig'));
     setText('vePendingTitle', vt('pendingTitle'));
     setText('veActiveTitle', vt('activeTitle'));
+    setText('veDeletedTitle', vt('deletedTitle'));
+    setText('veInactiveTitle', vt('inactiveTitle'));
     setText('veHistoryTitle', vt('historyTitle'));
     setText('veHistoryDesc', vt('historyDesc'));
     setText('veRefreshBtn', vt('refresh'));

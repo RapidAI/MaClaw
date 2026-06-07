@@ -16,6 +16,27 @@ func TestNormalizeQRLoginStatusAcceptsScannedSpellings(t *testing.T) {
 	}
 }
 
+func TestNormalizeQRLoginStatusAcceptsWaitAliases(t *testing.T) {
+	for _, raw := range []QRLoginStatus{"wait", "waiting", "pending", "polling", "timeout", " WAITING "} {
+		if got := NormalizeQRLoginStatus(raw); got != QRLoginStatusWait {
+			t.Fatalf("NormalizeQRLoginStatus(%q) = %q, want %q", raw, got, QRLoginStatusWait)
+		}
+	}
+}
+
+func TestIsQRLoginWaitMessage(t *testing.T) {
+	for _, message := range []string{"timeout", " TIMEOUT "} {
+		if !IsQRLoginWaitMessage(message) {
+			t.Fatalf("IsQRLoginWaitMessage(%q) = false, want true", message)
+		}
+	}
+	for _, message := range []string{"", "timed out", "expired", "server returned timeout"} {
+		if IsQRLoginWaitMessage(message) {
+			t.Fatalf("IsQRLoginWaitMessage(%q) = true, want false", message)
+		}
+	}
+}
+
 func TestNormalizeQRLoginStatusAcceptsConfirmAlias(t *testing.T) {
 	for _, raw := range []QRLoginStatus{"confirm", "success", "connected", "done", "ok"} {
 		if got := NormalizeQRLoginStatus(raw); got != QRLoginStatusConfirmed {
@@ -158,6 +179,71 @@ func TestPollQRStatusInternalTimeoutKeepsWaiting(t *testing.T) {
 	}
 	if result == nil || result.Message != "timeout" {
 		t.Fatalf("result = %+v, want timeout wait result", result)
+	}
+}
+
+func TestPollQRStatusMessageTimeoutKeepsWaiting(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ret":0,"message":"timeout"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	result, status, err := PollQRStatus(context.Background(), server.URL, "token")
+	if err != nil {
+		t.Fatalf("PollQRStatus returned err on message timeout: %v", err)
+	}
+	if status != QRLoginStatusWait {
+		t.Fatalf("status = %q, want %q", status, QRLoginStatusWait)
+	}
+	if result == nil || result.Message != "timeout" {
+		t.Fatalf("result = %+v, want timeout wait result", result)
+	}
+}
+
+func TestGatewayReportsConnectedOnlyAfterSuccessfulPoll(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ilink/bot/getupdates" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ret":0,"get_updates_buf":"next","msgs":[],"longpolling_timeout_ms":10}`))
+	}))
+	t.Cleanup(server.Close)
+
+	statuses := make(chan string, 4)
+	gateway := NewGateway(Config{Token: "token", BaseURL: server.URL}, func(IncomingMessage) {})
+	gateway.SetStatusCallback(func(status string) { statuses <- status })
+	if err := gateway.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = gateway.Stop()
+	})
+
+	select {
+	case status := <-statuses:
+		if status != "connecting" {
+			t.Fatalf("first status = %q, want connecting", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for connecting status")
+	}
+	select {
+	case status := <-statuses:
+		t.Fatalf("status before successful poll = %q, want no connected status", status)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case status := <-statuses:
+		if status != "connected" {
+			t.Fatalf("status after successful poll = %q, want connected", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for connected status")
 	}
 }
 

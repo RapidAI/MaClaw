@@ -143,6 +143,8 @@ type SidebarProviderStateWire = {
     Current?: string;
 } | null;
 
+const VE_EVENT_PROFILE_OVERRIDE_TTL_MS = 60_000;
+
 function virtualEmployeeIdForMachine(machineId: string): string {
     const cleaned = String(machineId || '').trim().replace(/[\\/ ]/g, '_');
     return cleaned ? `ve_${cleaned}` : '';
@@ -189,6 +191,104 @@ function favoriteEmployeeIDInAliasSet(id: string, aliases: Set<string>): boolean
 
 function filterOnlineVirtualEmployees(list: VirtualEmployeeEntry[]): VirtualEmployeeEntry[] {
     return Array.isArray(list) ? list.filter(isVirtualEmployeeOnline) : [];
+}
+
+type VirtualEmployeeEventPatch = Partial<VirtualEmployeeEntry> & { id?: string; machine_id?: string };
+
+function readStringField(source: Record<string, any>, ...keys: string[]): string | undefined {
+    for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(source, key)) return String(source[key] || '').trim();
+    }
+    return undefined;
+}
+
+function readArrayField(source: Record<string, any>, ...keys: string[]): string[] | undefined {
+    for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(source, key)) return Array.isArray(source[key]) ? source[key] : [];
+    }
+    return undefined;
+}
+
+function virtualEmployeeFromEventPayload(eventData: any): VirtualEmployeeEventPatch | null {
+    const payload = eventData?.payload && typeof eventData.payload === 'object' ? eventData.payload : eventData;
+    const employee = payload?.employee || payload?.Employee || payload?.virtual_employee || payload?.ve;
+    if (!employee || typeof employee !== 'object') return null;
+    const id = readStringField(employee, 'id', 'ID') || '';
+    const machineId = readStringField(employee, 'machine_id', 'MachineID') || '';
+    if (!id && !machineId) return null;
+    const patch: VirtualEmployeeEventPatch = { id, machine_id: machineId };
+    const name = readStringField(employee, 'name', 'Name');
+    if (name !== undefined) patch.name = name;
+    const skillDescription = readStringField(employee, 'skill_description', 'SkillDescription');
+    if (skillDescription !== undefined) patch.skill_description = skillDescription;
+    const avatarDataURL = readStringField(employee, 'avatar_data_url', 'AvatarDataURL');
+    if (avatarDataURL !== undefined) patch.avatar_data_url = avatarDataURL;
+    const rawPolicy = readStringField(employee, 'access_policy', 'AccessPolicy');
+    if (rawPolicy !== undefined) patch.access_policy = rawPolicy === 'whitelist' || rawPolicy === 'blacklist' || rawPolicy === 'per_request' ? rawPolicy : 'public';
+    const status = readStringField(employee, 'status', 'Status');
+    if (status !== undefined) patch.status = status;
+    const rawOnlineStatus = readStringField(employee, 'online_status', 'OnlineStatus')?.toLowerCase();
+    if (rawOnlineStatus !== undefined) patch.online_status = rawOnlineStatus === 'offline' ? 'offline' : 'online';
+    if (Object.prototype.hasOwnProperty.call(employee, 'resident') || Object.prototype.hasOwnProperty.call(employee, 'Resident')) {
+        patch.resident = Boolean(employee.resident || employee.Resident);
+    }
+    const registeredAt = readStringField(employee, 'registered_at', 'RegisteredAt');
+    if (registeredAt !== undefined) patch.registered_at = registeredAt;
+    const whitelist = readArrayField(employee, 'whitelist', 'Whitelist');
+    if (whitelist !== undefined) patch.whitelist = whitelist;
+    return patch;
+}
+
+function completeVirtualEmployeeEntry(next: VirtualEmployeeEventPatch): VirtualEmployeeEntry {
+    const id = String(next.id || next.machine_id || '').trim();
+    return {
+        id,
+        machine_id: next.machine_id,
+        name: next.name || id.slice(0, 8),
+        skill_description: next.skill_description || '',
+        avatar_data_url: next.avatar_data_url,
+        access_policy: next.access_policy || 'public',
+        status: next.status || 'active',
+        online_status: next.online_status || 'online',
+        resident: next.resident,
+        registered_at: next.registered_at,
+        whitelist: next.whitelist,
+    };
+}
+
+function mergeVirtualEmployeeEntry(current: VirtualEmployeeEntry, next: VirtualEmployeeEventPatch): VirtualEmployeeEntry {
+    const merged = { ...current };
+    (['id', 'machine_id', 'name', 'skill_description', 'avatar_data_url', 'access_policy', 'status', 'online_status', 'resident', 'registered_at', 'whitelist'] as const).forEach((key) => {
+        if (next[key] !== undefined) (merged as any)[key] = next[key];
+    });
+    return merged;
+}
+
+function mergeVirtualEmployeeList(prev: VirtualEmployeeEntry[], next: VirtualEmployeeEventPatch): VirtualEmployeeEntry[] {
+    if (!next) return prev;
+    const nextId = String(next.id || '').trim();
+    const nextMachineId = String(next.machine_id || '').trim();
+    const index = prev.findIndex(item => participantIdentityMatches(item.id, nextId) || participantIdentityMatches(item.machine_id, nextId) || participantIdentityMatches(item.id, nextMachineId) || participantIdentityMatches(item.machine_id, nextMachineId));
+    if (index < 0) return next.online_status === 'offline' ? prev : [...prev, completeVirtualEmployeeEntry(next)];
+    const merged = [...prev];
+    merged[index] = mergeVirtualEmployeeEntry(merged[index], next);
+    return merged;
+}
+
+function virtualEmployeeOverrideKey(employee: VirtualEmployeeEventPatch): string {
+    return String(employee.machine_id || employee.id || '').trim();
+}
+
+function applyVirtualEmployeeOverrides(list: VirtualEmployeeEntry[], overrides: Map<string, { employee: VirtualEmployeeEventPatch; expiresAt: number }>, now = Date.now()): VirtualEmployeeEntry[] {
+    let next = list;
+    overrides.forEach((entry, key) => {
+        if (entry.expiresAt <= now) {
+            overrides.delete(key);
+            return;
+        }
+        next = mergeVirtualEmployeeList(next, entry.employee);
+    });
+    return next;
 }
 
 function residentVirtualEmployeeAliases(ve: VirtualEmployeeEntry): string[] {
@@ -306,6 +406,7 @@ function App() {
     const favoriteEmployeeIdsRef = useRef<string[]>([]);
     const favoriteEmployeeNamesRef = useRef<Record<string, string>>({});
     const [veList, setVeList] = useState<VirtualEmployeeEntry[]>([]);
+    const veEventProfileOverridesRef = useRef<Map<string, { employee: VirtualEmployeeEventPatch; expiresAt: number }>>(new Map());
     const [digitalEmployeeFeatureStatus, setDigitalEmployeeFeatureStatus] = useState<any>({ visible: false, actual_count: 0 });
     const [showFavReplacePicker, setShowFavReplacePicker] = useState<{ ve: VirtualEmployeeEntry } | null>(null);
 
@@ -326,6 +427,15 @@ function App() {
         let cancelled = false;
         let retryTimer: ReturnType<typeof setTimeout> | undefined;
         let requestSeq = 0;
+        const applyVEEvent = (eventData: any) => {
+            const employee = virtualEmployeeFromEventPayload(eventData);
+            if (employee) {
+                const key = virtualEmployeeOverrideKey(employee);
+                if (key) veEventProfileOverridesRef.current.set(key, { employee, expiresAt: Date.now() + VE_EVENT_PROFILE_OVERRIDE_TTL_MS });
+                setVeList(prev => mergeVirtualEmployeeList(prev, employee));
+            }
+            fetchVeList();
+        };
         const fetchVeList = () => {
             const seq = requestSeq + 1;
             requestSeq = seq;
@@ -334,7 +444,7 @@ function App() {
                 if ((mod as any).ListVirtualEmployees) {
                     (mod as any).ListVirtualEmployees().then((list: VirtualEmployeeEntry[]) => {
                         if (!cancelled && seq === requestSeq && Array.isArray(list)) {
-                            setVeList(filterOnlineVirtualEmployees(list));
+                            setVeList(applyVirtualEmployeeOverrides(filterOnlineVirtualEmployees(list), veEventProfileOverridesRef.current));
                         }
                     }).catch(() => {
                         // Retry once after 5s on failure to handle transient Hub unavailability
@@ -348,8 +458,8 @@ function App() {
         fetchVeList();
         const refreshTimer = window.setInterval(fetchVeList, 30000);
         // Refresh on VE status changes
-        const unsub1 = safeEventsOn("ve:list_update", fetchVeList);
-        const unsub2 = safeEventsOn("ve:status_change", fetchVeList);
+        const unsub1 = safeEventsOn("ve:list_update", applyVEEvent);
+        const unsub2 = safeEventsOn("ve:status_change", applyVEEvent);
         return () => {
             cancelled = true;
             window.clearInterval(refreshTimer);

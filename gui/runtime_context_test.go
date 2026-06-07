@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -304,6 +305,148 @@ func TestToolRuntimePolicyOwnerArgDoesNotLeakToGenericTool(t *testing.T) {
 	}
 }
 
+func TestRegisteredToolRuntimeOwnerMetadataCarriesOwner(t *testing.T) {
+	handler := &IMMessageHandler{registry: NewToolRegistry()}
+	var seenOwner string
+	if err := handler.registry.Register(RegisteredTool{
+		Name:                  "custom_owner_tool",
+		RuntimePolicyOwnerArg: true,
+		Handler: func(args map[string]interface{}) string {
+			seenOwner = consumeRuntimePolicyOwnerIDFromToolArgs(args)
+			return "ok"
+		},
+	}); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	result := handler.executeToolDetailedWithRuntimeState("remote:mobile", true, "", "custom_owner_tool", `{}`, "", nil)
+	if result.Text != "ok" {
+		t.Fatalf("tool result = %+v, want ok", result)
+	}
+	if seenOwner != "remote:mobile" {
+		t.Fatalf("metadata owner = %q, want remote:mobile", seenOwner)
+	}
+}
+
+func TestRegisteredToolRuntimePlatformMetadataCarriesPlatform(t *testing.T) {
+	handler := &IMMessageHandler{registry: NewToolRegistry()}
+	var seenPlatform string
+	if err := handler.registry.Register(RegisteredTool{
+		Name:               "custom_platform_tool",
+		RuntimePlatformArg: true,
+		Handler: func(args map[string]interface{}) string {
+			seenPlatform = consumeRuntimePlatformFromToolArgs(args)
+			return "ok"
+		},
+	}); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	result := handler.executeToolDetailedWithRuntimeState("", false, "weixin", "custom_platform_tool", `{}`, "", nil)
+	if result.Text != "ok" {
+		t.Fatalf("tool result = %+v, want ok", result)
+	}
+	if seenPlatform != "weixin" {
+		t.Fatalf("metadata platform = %q, want weixin", seenPlatform)
+	}
+}
+
+func TestOwnerAwareToolEmptyRuntimeOwnerFailsClosedBeforeHandler(t *testing.T) {
+	handler := &IMMessageHandler{registry: NewToolRegistry()}
+	called := false
+	if err := handler.registry.Register(RegisteredTool{
+		Name: "memory",
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "ok"
+		},
+	}); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	result := handler.executeToolDetailedWithRuntimeState("", true, "", "memory", `{}`, "", nil)
+	if called {
+		t.Fatal("owner-aware handler should not run when runtime owner is explicitly empty")
+	}
+	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected || !strings.Contains(result.Text, "runtime owner is missing") {
+		t.Fatalf("empty runtime owner result = %+v, want fail closed", result)
+	}
+}
+
+func TestRuntimeOwnerAwareToolListIncludesMergedPrimaryTools(t *testing.T) {
+	for _, name := range []string{
+		"bash",
+		"manage_skill",
+		"run_skill",
+		"install_skill_hub",
+		"search_and_install_skill",
+		"memory",
+		"compress_context",
+		"delegate_task",
+		"agent_status",
+		"async_wait",
+		"set_max_iterations",
+		"group_discussion",
+		"screenshot",
+		"call_mcp_tool",
+		"browser",
+		"browser_session_start",
+		"browser_connect",
+		"tts",
+	} {
+		if !toolAcceptsRuntimePolicyOwnerArg(name) {
+			t.Fatalf("%s must accept hidden runtime owner args", name)
+		}
+	}
+}
+
+func TestRuntimePlatformAwareToolListIncludesPlatformTools(t *testing.T) {
+	for _, name := range []string{
+		"manage_skill",
+		"install_skill_hub",
+		"search_and_install_skill",
+		"screenshot",
+		"tts",
+	} {
+		if !toolAcceptsRuntimePlatformArg(name) {
+			t.Fatalf("%s must accept hidden runtime platform args", name)
+		}
+	}
+}
+
+func TestToolRegistryPopulatesDefaultRuntimeMetadata(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{Name: "browser"}); err != nil {
+		t.Fatalf("Register browser failed: %v", err)
+	}
+	if err := registry.Register(RegisteredTool{Name: "tts"}); err != nil {
+		t.Fatalf("Register tts failed: %v", err)
+	}
+	browserTool, ok := registry.Get("browser")
+	if !ok || browserTool == nil || !browserTool.RuntimePolicyOwnerArg {
+		t.Fatalf("browser runtime owner metadata = %#v", browserTool)
+	}
+	ttsTool, ok := registry.Get("tts")
+	if !ok || ttsTool == nil || !ttsTool.RuntimePolicyOwnerArg || !ttsTool.RuntimePlatformArg {
+		t.Fatalf("tts runtime metadata = %#v", ttsTool)
+	}
+}
+
+func TestRegisteredToolRuntimeMetadataIsInternalOnly(t *testing.T) {
+	data, err := json.Marshal(RegisteredTool{
+		Name:                  "custom_owner_tool",
+		RuntimePolicyOwnerArg: true,
+		RuntimePlatformArg:    true,
+	})
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	raw := string(data)
+	if strings.Contains(raw, "runtime_policy_owner") || strings.Contains(raw, "runtime_platform") {
+		t.Fatalf("runtime metadata leaked into JSON: %s", raw)
+	}
+}
+
 func TestAgentLoopToolCarriesRuntimePlatformToOwnerAwareInstallTool(t *testing.T) {
 	handler := &IMMessageHandler{registry: NewToolRegistry()}
 	var seenOwner, seenPlatform string
@@ -386,6 +529,17 @@ func TestManageSkillCarriesRuntimeOwnerAndPlatform(t *testing.T) {
 	}
 	if seenOwner != "remote:mobile" || seenPlatform != "weixin" {
 		t.Fatalf("runtime fields = owner %q platform %q, want remote:mobile/weixin", seenOwner, seenPlatform)
+	}
+}
+
+func TestManageSkillEmptyRuntimeOwnerFailsClosedAtMergedEntry(t *testing.T) {
+	handler := &IMMessageHandler{}
+	got := handler.toolManageSkill(map[string]interface{}{
+		"action":                         "list",
+		registeredToolPolicyOwnerIDField: "",
+	}, nil)
+	if !strings.Contains(got, "runtime owner is missing") {
+		t.Fatalf("manage_skill empty runtime owner = %q, want fail closed", got)
 	}
 }
 

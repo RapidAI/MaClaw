@@ -58,6 +58,10 @@ func classifyManageSkillAction(action string) manageSkillAction {
 
 // toolManageSkill dispatches the merged manage_skill tool to individual handlers.
 func (h *IMMessageHandler) toolManageSkill(args map[string]interface{}, onProgress tool.ProgressCallback) string {
+	ownerID, explicitRuntimeOwner := runtimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if explicitRuntimeOwner && ownerID == "" {
+		return "manage_skill failed: runtime owner is missing; isolated runtime will not fall back to desktop owner"
+	}
 	action := stringVal(args, "action")
 	switch classifyManageSkillAction(action) {
 	case manageSkillActionList:

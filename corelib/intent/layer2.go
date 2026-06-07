@@ -91,7 +91,7 @@ func defaultAnchors() []intentAnchor {
 			Texts: []string{
 				// Chinese (non-coding tasks) — from gateAnchors non_coding
 				"翻译文档",
-				"搜索论文",
+				"整理会议纪要",
 				"总结这篇文章",
 				"帮我整理资料",
 				"生成PDF报告",
@@ -99,7 +99,7 @@ func defaultAnchors() []intentAnchor {
 				// English (non-coding tasks) — from gateAnchors non_coding
 				"summarize this article",
 				"translate this document",
-				"search for papers on AI",
+				"organize meeting notes into a concise summary",
 				"organize these notes",
 				"help me write a report",
 				"draft a project proposal document",

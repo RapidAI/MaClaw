@@ -133,6 +133,19 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// Removing the summarizer from the critical path saves 6.5s per compaction.
 	trimmed := trimHistoryWithSummary(history, nil, memorySink, dynamicLimit, dynamicTokenLimit)
 	h.memory.Save(userID, trimmed)
+
+	// Index compacted entries for cross-page recall (Requirement 7).
+	// When entries are removed by trimming, index them in the PageIndex so
+	// the Recall Engine can still find file paths, decisions, etc.
+	if len(trimmed) < len(history) && h.memoryStore != nil {
+		if pi := h.memoryStore.PageIdx(); pi != nil {
+			removedEntries := computeRemovedEntries(history, trimmed)
+			if len(removedEntries) > 0 {
+				_ = pi.IndexCompactedPage(userID, removedEntries)
+			}
+		}
+	}
+
 	if resp != nil {
 		resp.MemorySaveNanos = time.Since(startedAt).Nanoseconds()
 		h.updatePendingUserReplyFromHistory(userID, trimmed, resp)
@@ -635,4 +648,44 @@ func extractToolCallMeta(raw interface{}) []session.ToolCallMeta {
 		}
 	}
 	return metas
+}
+
+// computeRemovedEntries returns entries from original that are not present in
+// trimmed. Uses a simple heuristic: entries in original[:len(original)-len(trimmed)]
+// that are not found in trimmed (by content identity) are considered removed.
+// This is an approximation suitable for IndexCompactedPage — exact tracking
+// is not needed because the PageIndex does its own content-level deduplication.
+func computeRemovedEntries(original, trimmed []agent.ConversationEntry) []memory.Entry {
+	// Build a set of content fingerprints from trimmed entries.
+	kept := make(map[string]struct{}, len(trimmed))
+	for _, e := range trimmed {
+		if text, ok := e.Content.(string); ok && text != "" {
+			// Use first 100 runes as fingerprint to avoid huge map keys.
+			r := []rune(text)
+			if len(r) > 100 {
+				r = r[:100]
+			}
+			kept[string(r)] = struct{}{}
+		}
+	}
+
+	var removed []memory.Entry
+	for _, e := range original {
+		text, ok := e.Content.(string)
+		if !ok || text == "" {
+			continue
+		}
+		r := []rune(text)
+		fp := r
+		if len(fp) > 100 {
+			fp = fp[:100]
+		}
+		if _, found := kept[string(fp)]; !found {
+			removed = append(removed, memory.Entry{
+				Content:  text,
+				Category: memory.Category("conversation_" + e.Role),
+			})
+		}
+	}
+	return removed
 }

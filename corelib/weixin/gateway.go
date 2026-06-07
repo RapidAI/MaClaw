@@ -763,7 +763,6 @@ func (g *Gateway) apiPost(ctx context.Context, endpoint string, body []byte, tim
 
 func (g *Gateway) pollLoop(ctx context.Context) {
 	defer g.wg.Done()
-	g.emitStatus("connected")
 	wl := GetWxLog()
 	wl.Log("gw.pollLoop", "---", "-", "STARTED baseURL=%s", g.config.baseURL())
 
@@ -837,6 +836,7 @@ func (g *Gateway) pollLoop(ctx context.Context) {
 		}
 
 		consecutiveFailures = 0
+		g.emitStatus("connected")
 
 		// Save sync buf
 		if resp.GetUpdatesBuf != "" {
@@ -2407,6 +2407,9 @@ func PollQRStatus(ctx context.Context, baseURL, qrcodeToken string) (*QRLoginRes
 		return nil, QRLoginStatusUnknown, &qrLoginServerError{Op: "get_qrcode_status", Message: firstNonEmpty(status.Message, "server returned an error")}
 	}
 	normalizedStatus := NormalizeQRLoginStatus(status.Status)
+	if normalizedStatus == QRLoginStatusUnknown && IsQRLoginWaitMessage(status.Message) {
+		normalizedStatus = QRLoginStatusWait
+	}
 	if strings.TrimSpace(status.Message) == "" {
 		status.Message = qrStatusDefaultMessage(normalizedStatus)
 	}

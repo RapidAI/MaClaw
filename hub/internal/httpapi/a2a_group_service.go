@@ -1014,6 +1014,87 @@ func (s *GroupDiscussionService) RemoveDiscussionMessage(tenantID, sessionID, me
 	return err
 }
 
+func (s *GroupDiscussionService) DeleteSessionsByParticipants(tenantID string, participantIDs []string) (int, error) {
+	if s == nil {
+		return 0, nil
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	ids := normalizeVEStringList(participantIDs)
+	if tenantID == "" || len(ids) == 0 {
+		return 0, nil
+	}
+	sessionIDs := make([]string, 0)
+	s.mu.RLock()
+	if tenantSessions := s.sessions[tenantID]; tenantSessions != nil {
+		for sessionID, session := range tenantSessions {
+			if groupDiscussionSessionHasAnyParticipant(session, ids) {
+				sessionIDs = append(sessionIDs, sessionID)
+			}
+		}
+	}
+	s.mu.RUnlock()
+	deletedSessionIDs := map[string]struct{}{}
+	for _, sessionID := range sessionIDs {
+		deletedSessionIDs[sessionID] = struct{}{}
+	}
+	if s.db != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), groupDiscussionPersistenceTimeout)
+		defer cancel()
+		for _, sessionID := range sessionIDs {
+			if _, err := s.db.ExecContext(ctx, `DELETE FROM a2a_group_sessions WHERE tenant_id = ? AND session_id = ?`, tenantID, sessionID); err != nil {
+				return len(sessionIDs), err
+			}
+			if _, err := s.db.ExecContext(ctx, `DELETE FROM a2a_group_invites WHERE tenant_id = ? AND session_id = ?`, tenantID, sessionID); err != nil {
+				return len(sessionIDs), err
+			}
+		}
+		for _, id := range ids {
+			if _, err := s.db.ExecContext(ctx, `DELETE FROM a2a_group_invites WHERE tenant_id = ? AND (to_id = ? OR from_id = ?)`, tenantID, id, id); err != nil {
+				return len(sessionIDs), err
+			}
+		}
+	}
+	s.mu.Lock()
+	if tenantSessions := s.sessions[tenantID]; tenantSessions != nil {
+		for _, sessionID := range sessionIDs {
+			delete(tenantSessions, sessionID)
+		}
+	}
+	if tenantInvites := s.invites[tenantID]; tenantInvites != nil {
+		for inviteID, record := range tenantInvites {
+			_, sessionDeleted := deletedSessionIDs[record.SessionID]
+			if sessionDeleted || groupDiscussionInviteMatchesAnyParticipant(record, ids) {
+				delete(tenantInvites, inviteID)
+			}
+		}
+	}
+	s.mu.Unlock()
+	return len(sessionIDs), nil
+}
+
+func groupDiscussionSessionHasAnyParticipant(session *corea2a.Session, participantIDs []string) bool {
+	if session == nil {
+		return false
+	}
+	for _, participant := range session.Participants {
+		for _, id := range participantIDs {
+			if groupDiscussionParticipantIdentityMatches(participant.ID, id) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func groupDiscussionInviteMatchesAnyParticipant(record groupInviteRecord, participantIDs []string) bool {
+	for _, id := range participantIDs {
+		if groupDiscussionParticipantIdentityMatches(record.Invite.ToID, id) || groupDiscussionParticipantIdentityMatches(record.Invite.FromID, id) {
+			return true
+		}
+	}
+	return false
+}
+
 func rebuildGroupDiscussionDerivedMessageState(session *corea2a.Session) {
 	if session == nil {
 		return

@@ -47,6 +47,10 @@ func CoreAgentProactivePromptOptions() ProactivePromptOptions {
 			Footer:   "\uff08\u4ee5\u4e0a\u8bb0\u5fc6\u662f\u6839\u636e\u5f53\u524d\u6d88\u606f\u5b9e\u65f6\u53ec\u56de\u7684\u6700\u65b0\u7ed3\u679c\u3002\u8bf7\u76f4\u63a5\u4f7f\u7528\u4ee5\u4e0a\u4fe1\u606f\u3002\uff09",
 			MaxRunes: defaultPromptMaxRunes,
 		},
+
+		PageIndexEnabled:      true,
+		PageIndexMaxTokens:    800,
+		PartialResultsEnabled: true,
 	}
 }
 
@@ -75,6 +79,10 @@ func IMProactivePromptOptions(projectPath string, strictProject bool) ProactiveP
 		},
 		IncludeDerivedFacts: true,
 		DerivedFactLimit:    5,
+
+		PageIndexEnabled:      true,
+		PageIndexMaxTokens:    800,
+		PartialResultsEnabled: true,
 	}
 }
 

@@ -76,7 +76,7 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 				html = strings.ReplaceAll(html, "MaClaw", brandName)
 				js = strings.ReplaceAll(js, "MaClaw", brandName)
 			}
-			injection := "\n<script>\n" + js + "\n</script>\n"
+			injection := "\n<script>\n" + escapeInlineScript(js) + "\n</script>\n"
 			if strings.Contains(html, `<script src="admin.js"></script>`) {
 				html = strings.Replace(html, `<script src="admin.js"></script>`, injection, 1)
 			} else if strings.Contains(html, `<script src="/admin/admin.js"></script>`) {
@@ -97,6 +97,22 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 
 	mux.HandleFunc("GET "+routePrefix, serve)
 	mux.HandleFunc("GET "+routePrefix+"/{rest...}", serve)
+}
+
+func escapeInlineScript(js string) string {
+	var out strings.Builder
+	searchStart := 0
+	for {
+		idx := strings.Index(strings.ToLower(js[searchStart:]), "</script")
+		if idx < 0 {
+			out.WriteString(js[searchStart:])
+			return out.String()
+		}
+		idx += searchStart
+		out.WriteString(js[searchStart:idx])
+		out.WriteString("<\\/script")
+		searchStart = idx + len("</script")
+	}
 }
 
 func registerBindStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {

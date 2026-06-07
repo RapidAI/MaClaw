@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
@@ -38,6 +40,8 @@ const (
 	cardStorePaymentModeFM          = "payment_fm"
 	cardStorePaymentModeManual      = "personal_semimanual"
 	cardStorePaymentModeAlipay      = "alipay_direct"
+	cardStoreRecoverDailyIPLimit    = 10
+	cardStoreRecoverDailyEmailLimit = 2
 	defaultAlipayGatewayURL         = "https://openapi.alipay.com/gateway.do"
 	cardStoreStatusPersonalCreated  = "personal_created"
 	cardStoreStatusPersonalOpened   = "personal_opened"
@@ -1255,6 +1259,7 @@ func normalizeCardStoreConfig(cfg cardStoreConfig) cardStoreConfig {
 		if spec.ID == "service_test_10" {
 			product.Kind = spec.Kind
 			product.DurationDays = spec.DurationDays
+			product.Credits = spec.Credits
 			product.PeriodLimits = llmservice.CreditPeriodLimits{}
 		}
 		if product.Label == "" {
@@ -1267,9 +1272,6 @@ func normalizeCardStoreConfig(cfg cardStoreConfig) cardStoreConfig {
 			product.DurationDays = spec.DurationDays
 		}
 		if product.Credits <= 0 {
-			product.Credits = spec.Credits
-		}
-		if spec.ID == "service_test_10" && product.Credits == 10 {
 			product.Credits = spec.Credits
 		}
 		if product.PeriodLimits == (llmservice.CreditPeriodLimits{}) {
@@ -2667,6 +2669,94 @@ func GetCardStoreOrderHandler(system store.SystemSettingsRepository) http.Handle
 	}
 }
 
+type cardStoreRecoverRateLimiter struct {
+	mu     sync.Mutex
+	day    string
+	ips    map[string]int
+	emails map[string]int
+}
+
+var globalCardStoreRecoverRateLimiter = &cardStoreRecoverRateLimiter{}
+
+func cardStoreRecoverClientIP(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	remote := cardStoreRecoverRemoteIP(r.RemoteAddr)
+	if remote != nil && (remote.IsLoopback() || remote.IsPrivate()) {
+		if forwarded := cardStoreRecoverForwardedIP(r); forwarded != "" {
+			return forwarded
+		}
+	}
+	if remote != nil {
+		return remote.String()
+	}
+	return strings.TrimSpace(r.RemoteAddr)
+}
+
+func cardStoreRecoverRemoteIP(remoteAddr string) net.IP {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	if remoteAddr == "" {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		remoteAddr = strings.TrimSpace(host)
+	}
+	return net.ParseIP(remoteAddr)
+}
+
+func cardStoreRecoverForwardedIP(r *http.Request) string {
+	for _, key := range []string{"X-Forwarded-For", "X-Real-IP"} {
+		value := strings.TrimSpace(r.Header.Get(key))
+		if value == "" {
+			continue
+		}
+		if key == "X-Forwarded-For" && strings.Contains(value, ",") {
+			value = strings.TrimSpace(strings.Split(value, ",")[0])
+		}
+		if ip := net.ParseIP(value); ip != nil {
+			return ip.String()
+		}
+	}
+	return ""
+}
+
+func (l *cardStoreRecoverRateLimiter) allow(ip, email string, now time.Time) (bool, string) {
+	if l == nil {
+		return true, ""
+	}
+	day := now.UTC().Format("2006-01-02")
+	ip = strings.TrimSpace(ip)
+	email = normalizeCardStoreEmail(email)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.day != day {
+		l.day = day
+		l.ips = map[string]int{}
+		l.emails = map[string]int{}
+	}
+	if l.ips == nil {
+		l.ips = map[string]int{}
+	}
+	if l.emails == nil {
+		l.emails = map[string]int{}
+	}
+	if ip != "" {
+		l.ips[ip]++
+	}
+	if email != "" {
+		l.emails[email]++
+	}
+	if ip != "" && l.ips[ip] > cardStoreRecoverDailyIPLimit {
+		return false, "ip"
+	}
+	if email != "" && l.emails[email] > cardStoreRecoverDailyEmailLimit {
+		return false, "email"
+	}
+	return true, ""
+}
+
 func RecoverCardStoreCodesHandler(system store.SystemSettingsRepository, mailer cardStoreMailer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req cardStoreRecoverRequest
@@ -2677,6 +2767,14 @@ func RecoverCardStoreCodesHandler(system store.SystemSettingsRepository, mailer 
 		email := normalizeCardStoreEmail(req.Email)
 		if !validCardStoreEmail(email) {
 			writeError(w, http.StatusBadRequest, "CARD_STORE_EMAIL_INVALID", "valid email is required")
+			return
+		}
+		if ok, scope := globalCardStoreRecoverRateLimiter.allow(cardStoreRecoverClientIP(r), email, time.Now()); !ok {
+			message := "Too many recovery requests. Please try again tomorrow."
+			if scope == "email" {
+				message = "This email has reached today's recovery limit."
+			}
+			writeErrorWithFields(w, http.StatusTooManyRequests, "CARD_STORE_RECOVER_RATE_LIMITED", message, map[string]any{"scope": scope})
 			return
 		}
 		tenantID := store.NormalizeTenantID(req.TenantID)

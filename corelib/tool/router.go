@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -28,6 +29,7 @@ const (
 
 var logDetailEnabled atomic.Bool
 var routeLogPathOverride atomic.Value
+var routeLogMu sync.Mutex
 
 func init() {
 	logDetailEnabled.Store(false)
@@ -283,6 +285,10 @@ func (r *Router) RefreshSkillIndex() {
 // skillMatchScore computes the best skill match score for the given user message.
 // Returns a score in [0,1] and the names of the top matched skills.
 func (r *Router) skillMatchScore(userMessage string) (float64, []string) {
+	return r.skillMatchScoreWithCapabilityConstraint(userMessage, nil, false)
+}
+
+func (r *Router) skillMatchScoreWithCapabilityConstraint(userMessage string, requiredCapabilities []string, constrained bool) (float64, []string) {
 	if r.skillProvider == nil {
 		return 0, nil
 	}
@@ -308,6 +314,19 @@ func (r *Router) skillMatchScore(userMessage string) (float64, []string) {
 		return 0, nil
 	}
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].score > sorted[j].score })
+
+	if constrained {
+		filtered := sorted[:0]
+		for _, item := range sorted {
+			if skillMatchesCapabilityConstraint(r.skillProvider, item.name, requiredCapabilities) {
+				filtered = append(filtered, item)
+			}
+		}
+		sorted = filtered
+		if len(sorted) == 0 {
+			return 0, nil
+		}
+	}
 
 	// Normalize: clamp raw BM25 score to [0,1] using sigmoid-like mapping.
 	// Raw BM25 scores vary widely; a score > 1.0 indicates strong match.
@@ -375,11 +394,10 @@ func (r *Router) matchedSkillCapabilities(matchedSkills []string) []string {
 	return matchedSkillCapabilitiesFromProvider(r.skillProvider, matchedSkills)
 }
 
-func (r *Router) enrichMatchedSkillTool(defs []map[string]interface{}, matchedSkills []string) []map[string]interface{} {
+func (r *Router) enrichMatchedSkillTool(defs []map[string]interface{}, matchedSkills, skillCapabilities []string) []map[string]interface{} {
 	if len(matchedSkills) == 0 {
 		return defs
 	}
-	skillCapabilities := r.matchedSkillCapabilities(matchedSkills)
 	for i, def := range defs {
 		if ExtractToolName(def) == "manage_skill" {
 			out := append([]map[string]interface{}(nil), defs...)
@@ -420,6 +438,68 @@ func matchedSkillCapabilitiesFromProvider(provider SkillProvider, matchedSkills 
 		}
 	}
 	return caps
+}
+
+func skillMatchesCapabilityConstraint(provider SkillProvider, skillName string, requiredCapabilities []string) bool {
+	if provider == nil {
+		return true
+	}
+	required := make(map[string]bool, len(requiredCapabilities))
+	for _, cap := range requiredCapabilities {
+		cap = normalizeSkillCapability(cap)
+		if cap != "" {
+			required[cap] = true
+		}
+	}
+	if len(required) == 0 {
+		return false
+	}
+	for _, skill := range provider.ListActiveSkills() {
+		if skill.Name != skillName {
+			continue
+		}
+		caps := skill.Capabilities
+		if len(caps) == 0 {
+			caps = []string{"skill"}
+		}
+		for _, cap := range caps {
+			if required[normalizeSkillCapability(cap)] {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+func skillCapabilityConstraintForUIC(result intent.ClassificationResult) ([]string, bool) {
+	if !uicResultUsableForToolActivation(result) || result.Confidence < 0.50 {
+		return nil, false
+	}
+	switch result.Primary {
+	case intent.LabelLiveData:
+		return []string{"current_data", "weather", "finance", "time", "web"}, true
+	case intent.LabelCurrentTime:
+		return []string{"time"}, true
+	case intent.LabelSearch:
+		return []string{"web", "search"}, true
+	case intent.LabelSSH:
+		return []string{"ssh", "remote", "server"}, true
+	case intent.LabelBrowser:
+		return []string{"browser", "browser_automation", "web"}, true
+	case intent.LabelBusinessData:
+		return []string{"business_data", "mis", "data"}, true
+	case intent.LabelOffice:
+		return []string{"office", "document"}, true
+	case intent.LabelDocumentDelivery:
+		return []string{"document", "file", "delivery", "send"}, true
+	case intent.LabelKnowledgeWrite:
+		return []string{"knowledge", "memory"}, true
+	case intent.LabelCoding, intent.LabelBugFix, intent.LabelMaintenance:
+		return []string{"coding", "code", "development"}, true
+	default:
+		return nil, false
+	}
 }
 
 func normalizeSkillCapability(cap string) string {
@@ -836,7 +916,7 @@ func uicToolNameActivatable(name string) bool {
 
 func coreRoutePriority(name string, condKeep, sessionTools, mustKeep map[string]bool) int {
 	if mustKeep[name] {
-		return 0
+		return -1
 	}
 	if condKeep[name] {
 		return 0
@@ -863,7 +943,7 @@ func coreRoutePriority(name string, condKeep, sessionTools, mustKeep map[string]
 }
 
 func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, sessionTools, mustKeep map[string]bool) []map[string]interface{} {
-	if len(core) <= MaxToolBudget {
+	if len(core) <= MaxToolBudget && len(mustKeep) == 0 {
 		return core
 	}
 	trimmed := append([]map[string]interface{}(nil), core...)
@@ -877,6 +957,9 @@ func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, sessionTools
 		}
 		return ni < nj
 	})
+	if len(trimmed) <= MaxToolBudget {
+		return trimmed
+	}
 	return trimmed[:MaxToolBudget]
 }
 
@@ -885,6 +968,8 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	var condKeep map[string]bool
 	var condFilterOut map[string]bool
 	var cachedICResult *IntentResult
+	var skillRequiredCapabilities []string
+	var skillCapabilityConstrained bool
 	suppressedTools := map[string]bool{}
 	skillInstallEligible := true
 
@@ -896,6 +981,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 
 		uicResult := r.unifiedClassifier.Classify(intent.MessageContext{Text: userMessage})
 		skillInstallEligible = uicSkillInstallEligible(uicResult)
+		skillRequiredCapabilities, skillCapabilityConstrained = skillCapabilityConstraintForUIC(uicResult)
 
 		// UIC activation: UIC returns a concrete, non-ambiguous top
 		// intent, including degraded embedding-only fusion results. Activate that
@@ -1045,6 +1131,29 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		suppressedTools["git_push"] = true
 	}
 
+	// Compute skill match before generic fallback suppression so a concrete
+	// matched skill is not removed by broad SSH/browser fallback guards.
+	var skillScore float64
+	var matchedSkills []string
+	if r.skillProvider != nil {
+		skillScore, matchedSkills = r.skillMatchScoreWithCapabilityConstraint(userMessage, skillRequiredCapabilities, skillCapabilityConstrained)
+		if len(matchedSkills) > 0 {
+			availableTools := buildAvailableToolsMap(allTools)
+			matchedSkills = r.filterSkillsByConditions(matchedSkills, availableTools)
+			if len(matchedSkills) == 0 {
+				skillScore = 0
+			}
+		}
+	}
+	hasMatchedSkill := len(matchedSkills) > 0
+
+	if condKeep["ssh"] && hasMatchedSkill {
+		delete(suppressedTools, "manage_skill")
+	}
+	if browserSessionActive && hasMatchedSkill {
+		delete(suppressedTools, "manage_skill")
+	}
+
 	// --- Browser diagnostic: log how browser tools entered condKeep ---
 	{
 		var browserInKeep []string
@@ -1095,26 +1204,15 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 
-	// Compute skill match before any early return so manage_skill's execution
-	// contract does not depend on dynamic candidate routing being active.
-	var skillScore float64
-	var matchedSkills []string
-	if r.skillProvider != nil {
-		skillScore, matchedSkills = r.skillMatchScore(userMessage)
-		if len(matchedSkills) > 0 {
-			availableTools := buildAvailableToolsMap(allTools)
-			matchedSkills = r.filterSkillsByConditions(matchedSkills, availableTools)
-			if len(matchedSkills) == 0 {
-				skillScore = 0
-			}
-		}
-	}
+	// Skill match has already been computed before suppression so manage_skill's
+	// execution contract does not depend on dynamic candidate routing being active.
 	mustKeepCore := map[string]bool{}
 	if len(matchedSkills) > 0 {
 		mustKeepCore["manage_skill"] = true
 	}
+	matchedSkillCapabilities := r.matchedSkillCapabilities(matchedSkills)
 	core = trimCoreToolsToBudget(core, condKeep, r.sessionTools, mustKeepCore)
-	core = r.enrichMatchedSkillTool(core, matchedSkills)
+	core = r.enrichMatchedSkillTool(core, matchedSkills, matchedSkillCapabilities)
 	remainingSlots := MaxToolBudget - len(core)
 	if len(candidates) == 0 || remainingSlots <= 0 {
 		return core
@@ -1348,7 +1446,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	}
 	sort.Strings(suppressedNames)
 
-	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, rankedRoutingHintAdjustments, selectedNames, suppressedNames, browserPublishAffordance, explicitScreenshotRequest, rerankerResult, skillScore, matchedSkills)
+	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, rankedRoutingHintAdjustments, selectedNames, suppressedNames, browserPublishAffordance, explicitScreenshotRequest, rerankerResult, skillScore, matchedSkills, matchedSkillCapabilities, skillCapabilityConstrained, skillRequiredCapabilities)
 
 	return result
 }
@@ -1489,7 +1587,7 @@ func enrichRunSkillDescription(def map[string]interface{}, skillNames, skillCapa
 		return def
 	}
 	desc, _ := fn["description"].(string)
-	suffix := " 可用 Skill: " + strings.Join(skillNames, ", ")
+	suffix := " 可用 Skill: " + strings.Join(skillNames, ", ") + ". Matched local Skill(s): " + strings.Join(skillNames, ", ") + `. Prefer manage_skill(action="run", name=<matched skill>) before generic fallback tools when the user request matches one.`
 	newFn := make(map[string]interface{}, len(fn))
 	for k, v := range fn {
 		newFn[k] = v
@@ -1567,6 +1665,9 @@ func writeRouteLog(
 	rerankerResult []string,
 	skillMatchScore float64,
 	matchedSkills []string,
+	matchedSkillCapabilities []string,
+	skillCapabilityConstrained bool,
+	skillRequiredCapabilities []string,
 ) {
 	if !logDetailEnabled.Load() {
 		return
@@ -1575,6 +1676,8 @@ func writeRouteLog(
 	if !ok {
 		return
 	}
+	routeLogMu.Lock()
+	defer routeLogMu.Unlock()
 	logDir := filepath.Dir(logPath)
 	os.MkdirAll(logDir, 0755)
 
@@ -1640,10 +1743,69 @@ func writeRouteLog(
 	}
 
 	// Skill match info
-	if skillMatchScore > 0 || len(matchedSkills) > 0 {
+	if skillMatchScore > 0 || len(matchedSkills) > 0 || skillCapabilityConstrained {
 		fmt.Fprintf(f, "Skill match: score=%.4f matched=%v\n", skillMatchScore, matchedSkills)
+		if skillCapabilityConstrained {
+			fmt.Fprintf(f, "Skill capability constraint: %v\n", skillRequiredCapabilities)
+		}
+		if len(matchedSkillCapabilities) > 0 {
+			fmt.Fprintf(f, "Skill capabilities: %v\n", matchedSkillCapabilities)
+		}
 	}
 
+	fmt.Fprintln(f, "---")
+}
+
+// WriteToolExposureLog appends the final tool exposure state after downstream
+// filters such as execution profile or workflow policy have run.
+func WriteToolExposureLog(
+	stage string,
+	userMessage string,
+	requestID string,
+	userID string,
+	profileLayer string,
+	profileTask string,
+	beforeCount int,
+	toolNames []string,
+) {
+	if !logDetailEnabled.Load() {
+		return
+	}
+	logPath, ok := routeLogPath()
+	if !ok {
+		return
+	}
+	routeLogMu.Lock()
+	defer routeLogMu.Unlock()
+	logDir := filepath.Dir(logPath)
+	os.MkdirAll(logDir, 0755)
+
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	if info, e := f.Stat(); e == nil && info.Size() > 5*1024*1024 {
+		f.Truncate(0)
+		f.Seek(0, 0)
+		fmt.Fprintln(f, "[log truncated: exceeded 5MB]")
+	}
+
+	now := time.Now().Format("2006-01-02 15:04:05")
+	msgPreview := userMessage
+	if len([]rune(msgPreview)) > 100 {
+		msgPreview = string([]rune(msgPreview)[:100]) + "..."
+	}
+	fmt.Fprintf(f, "\n=== Tool Exposure [%s] ===\n", now)
+	fmt.Fprintf(f, "Stage: %s\n", strings.TrimSpace(stage))
+	fmt.Fprintf(f, "Message: %s\n", msgPreview)
+	fmt.Fprintf(f, "Request: %s | User: %s\n", requestID, userID)
+	fmt.Fprintf(f, "Profile: layer=%s task=%s\n", profileLayer, profileTask)
+	fmt.Fprintf(f, "Tools: before=%d after=%d\n", beforeCount, len(toolNames))
+	for _, name := range toolNames {
+		fmt.Fprintf(f, "  - %s\n", name)
+	}
 	fmt.Fprintln(f, "---")
 }
 

@@ -272,6 +272,33 @@ func TestHandleMCPToolAgentViewSubmitWithoutOwnerDoesNotUseCurrentRuntime(t *tes
 	}
 }
 
+func TestHandleMCPToolAgentViewSubmitEmptyRuntimeOwnerFailsClosed(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "mcp-agent-view-empty-owner-doc-only-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	h.currentLoopCtx = &LoopContext{Runtime: RuntimeContext{RequestID: "req-current", PolicyOwnerID: userID}}
+
+	resp := h.handleMCPToolAgentViewSubmit(map[string]interface{}{
+		mcpAgentViewCallArgsField: map[string]interface{}{
+			"server_id":                      "fs",
+			"tool_name":                      "write_file",
+			"arguments":                      map[string]interface{}{"path": "out.txt", "content": "x"},
+			registeredToolPolicyOwnerIDField: "",
+		},
+	})
+	if resp == nil || !strings.Contains(resp.Text, "runtime owner is missing") || !strings.Contains(resp.Error, "runtime owner is missing") {
+		t.Fatalf("expected empty runtime owner rejection, got %#v", resp)
+	}
+	if strings.Contains(resp.Text, "not allowed by the current workflow tool policy") || strings.Contains(resp.Error, "not allowed by the current workflow tool policy") {
+		t.Fatalf("empty MCP task panel owner should fail closed before inheriting current runtime policy, got %#v", resp)
+	}
+}
+
 func TestBuildMCPToolAgentViewCarriesRuntimePolicyOwner(t *testing.T) {
 	schema := map[string]interface{}{
 		"type":       "object",

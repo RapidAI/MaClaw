@@ -46,11 +46,13 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	beforeProfileFilter := len(tools)
 	tools = filterToolsForExecutionProfile(tools, profile)
 	if profile.IsLight() {
+		tool.WriteToolExposureLog("execution_profile", userText, requestID, userID, profile.Layer, profile.TaskType, beforeProfileFilter, agentLoopToolNamesForLog(tools))
 		log.Printf("[exec-profile] layer=%s task=%s request_id=%q user=%q confidence=%.2f reason=%q tool_budget=%d iteration_budget=%d routed_before=%d routed_after=%d tools=%q",
 			profile.Layer, profile.TaskType, requestID, userID, profile.Confidence, profile.Reason, profile.ToolBudget, profile.IterationBudget, beforeProfileFilter, len(tools), executionProfileToolNames(tools))
 	}
 
 	browserBeforeWF := len(browserDiagExtractNames(tools))
+	beforeWorkflowFilter := len(tools)
 	workflowFilterPolicy := workflowToolFilterNone
 	workflowFilterSkipped := false
 	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
@@ -66,6 +68,9 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		workflowFilterPolicy = workflowToolFilterSkippedConfirmBypass
 		workflowFilterSkipped = true
 	}
+	if profile.IsLight() || workflowFilterPolicy != workflowToolFilterNone {
+		tool.WriteToolExposureLog("workflow_filter", userText, requestID, userID, profile.Layer, profile.TaskType, beforeWorkflowFilter, agentLoopToolNamesForLog(tools))
+	}
 	BrowserDiagCP2_WorkflowFilter(browserBeforeWF, tools, workflowFilterPolicy.String(), workflowFilterSkipped)
 
 	toolsForLLM := stripExecutionContractMetadataForLLM(tools)
@@ -79,6 +84,19 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		BrowserBeforeWF:  browserBeforeWF,
 		BrowserPinned:    browserSessionPinned,
 	}
+}
+
+func agentLoopToolNamesForLog(tools []map[string]interface{}) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(tools))
+	for _, def := range tools {
+		if name := tool.ExtractToolName(def); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func ensureWorkflowRequiredTools(policy workflow.ToolFilterPolicy, routed, allTools []map[string]interface{}) []map[string]interface{} {

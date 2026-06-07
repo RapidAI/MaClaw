@@ -79,6 +79,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 		if len(skills) > 0 {
 			b.WriteString("\n## 已注册 Skill\n")
 			b.WriteString("调用方式：manage_skill(action=\"run\", name=\"Skill名称\", args={...})\n")
+			b.WriteString("⚠️ **Skill 运行规则**：直接调用 manage_skill(action=\"run\") 即可。禁止事先用 bash 检测 Python/Node 等依赖——Skill Runner 内置依赖预检，缺少依赖时会返回明确的安装指引。只有 Runner 报错后才需要根据错误信息处理。\n")
 			for _, s := range skills {
 				if normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive {
 					b.WriteString(fmt.Sprintf("- %s: %s", s.Name, s.Description))

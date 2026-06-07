@@ -61,15 +61,49 @@ function countOccurrences(str, substr) {
 function createMockDOM() {
   var elements = {};
   function makeElement(id) {
-    return {
+    var listeners = {};
+    var el = {
       id: id || '',
-      innerHTML: '',
+      _innerHTML: '',
       textContent: '',
       value: '',
+      type: '',
       style: {},
       classList: { add: function() {}, remove: function() {} },
+      parentNode: null,
+      addEventListener: function(event, handler) {
+        listeners[event] = listeners[event] || [];
+        listeners[event].push(handler);
+      },
+      click: function() {
+        (listeners.click || []).forEach(function(handler) { handler({ type: 'click' }); });
+      },
+      focus: function() {},
+      querySelector: function(selector) {
+        if (selector && selector.charAt(0) === '#') return elements[selector.slice(1)] || null;
+        return null;
+      },
       querySelectorAll: function() { return []; }
     };
+    Object.defineProperty(el, 'innerHTML', {
+      get: function() { return el._innerHTML; },
+      set: function(value) {
+        el._innerHTML = String(value || '');
+        var idRe = /<([a-zA-Z0-9]+)[^>]*\sid="([^"]+)"[^>]*>/g;
+        var match;
+        while ((match = idRe.exec(el._innerHTML))) {
+          var child = makeElement(match[2]);
+          child.parentNode = el;
+          var tag = match[1].toLowerCase();
+          if (tag === 'input') {
+            var typeMatch = match[0].match(/\stype="([^"]+)"/);
+            child.type = typeMatch ? typeMatch[1] : 'text';
+          }
+          elements[child.id] = child;
+        }
+      }
+    });
+    return el;
   }
   return {
     elements: elements,
@@ -85,6 +119,11 @@ function createMockDOM() {
     body: {
       appendChild: function(el) {
         if (el && el.id) elements[el.id] = el;
+        if (el) el.parentNode = this;
+      },
+      removeChild: function(el) {
+        if (el && el.id && elements[el.id] === el) delete elements[el.id];
+        if (el) el.parentNode = null;
       }
     },
     addEventListener: function() {},
@@ -118,10 +157,13 @@ function createMockGlobal() {
         return {
           employees: [
             { id: 've-001', name: 'Test VE 1', employee_type: 'physical', avatar_data_url: 'data:image/png;base64,iVBORw0KGgo=', skill_description: 'Python expert', access_policy: 'public', online_status: 'online', status: 'pending', registered_at: '2024-01-15T10:30:00Z' },
-            { id: 've-002', name: 'Test VE 2', employee_type: 'physical', skill_description: 'Go developer with extensive backend experience', access_policy: 'whitelist', visible_group_ids: ['dept-legal'], online_status: 'offline', status: 'active', registered_at: '2024-01-10T08:00:00Z' },
+            { id: 've-002', name: 'Test VE 2', employee_type: 'physical', skill_description: 'Go developer with extensive backend experience', access_policy: 'whitelist', visible_group_ids: [' dept-legal ', 'dept-legal'], online_status: 'offline', status: 'active', registered_at: '2024-01-10T08:00:00Z' },
             { id: 've-003', name: 'Test VE 3', employee_type: 'physical', platform_id: 'maclawsrv', platform_employee_id: 'srv-user-1', skill_description: 'Data analyst', access_policy: 'per_request', online_status: 'online', status: 'active', resident: true, registered_at: '2024-01-12T14:00:00Z' },
             { id: 've-004', name: 'Test VE 4', runtime_provider_id: 'maclawsrv', skill_description: 'Runtime user', access_policy: 'public', online_status: 'online', status: 'active', registered_at: '2024-01-13T14:00:00Z' },
-            { id: 've-005', name: 'Test VE 5', runtime_provider_id: 'other-runtime', skill_description: 'Other runtime user', access_policy: 'public', online_status: 'online', status: 'active', registered_at: '2024-01-14T14:00:00Z' }
+            { id: 've-005', name: 'Test VE 5', runtime_provider_id: 'other-runtime', skill_description: 'Other runtime user', access_policy: 'public', online_status: 'online', status: 'active', registered_at: '2024-01-14T14:00:00Z' },
+            { id: 've-006', name: 'Deleted Runtime Worker', platform_id: 'maclawsrv', platform_employee_id: 'deleted-employee', skill_description: 'Stale runtime user', access_policy: 'public', online_status: 'offline', status: 'disabled', runtime_missing: true, history_retained: true, registered_at: '2024-01-15T14:00:00Z' },
+            { id: 've-007', name: 'Disabled Physical Worker', employee_type: 'physical', skill_description: 'Disabled local user', access_policy: 'public', online_status: 'offline', status: 'disabled', registered_at: '2024-01-16T14:00:00Z' },
+            { id: 've-008', name: 'Deleted Without History Flag', employee_type: 'physical', skill_description: 'No retained history marker', access_policy: 'public', online_status: 'offline', status: 'deleted', registered_at: '2024-01-17T14:00:00Z' }
           ],
           group_config: { max_group_participants: 5, auto_approve: true },
           quota: 10,
@@ -203,6 +245,38 @@ async function runTests() {
     assertNotIncludes(activeList.innerHTML, 'Test VE 1', 'Active list should not contain pending digital employees');
   }
 
+  // Test 2a: Deleted list renders deleted employees with retained history
+  {
+    console.log('  Test: Deleted list renders deleted employees with history actions');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    await ctx.loadVEList();
+    var deletedList = g.document.elements['veDeletedList'];
+    assert(deletedList !== undefined, 'veDeletedList element should exist');
+    assertIncludes(deletedList.innerHTML, 'Deleted Runtime Worker', 'Deleted list should contain deleted runtime VE');
+    assertIncludes(deletedList.innerHTML, 'veLoadHistory', 'Deleted list should keep history action');
+    assertIncludes(deletedList.innerHTML, 'vePurge', 'Deleted list should have clear button');
+    assertIncludes(deletedList.innerHTML, 'veForcePurge', 'Deleted list should have force delete button');
+    assertNotIncludes(deletedList.innerHTML, 'Disabled Physical Worker', 'Deleted list should not contain ordinary disabled employees');
+    assertNotIncludes(deletedList.innerHTML, 'Deleted Without History Flag', 'Deleted list should require retained-history marker');
+  }
+
+  // Test 2b: Inactive list renders ordinary disabled employees
+  {
+    console.log('  Test: Inactive list renders ordinary disabled employees separately');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    await ctx.loadVEList();
+    var inactiveList = g.document.elements['veInactiveList'];
+    assert(inactiveList !== undefined, 'veInactiveList element should exist');
+    assertIncludes(inactiveList.innerHTML, 'Disabled Physical Worker', 'Inactive list should contain ordinary disabled VE');
+    assertIncludes(inactiveList.innerHTML, 'Deleted Without History Flag', 'Inactive list should contain deleted status without retained-history marker');
+    assertIncludes(inactiveList.innerHTML, 'vePurge', 'Inactive list should have clear button');
+    assertIncludes(inactiveList.innerHTML, 'veForcePurge', 'Inactive list should have force delete button');
+    assertNotIncludes(inactiveList.innerHTML, 'Deleted Runtime Worker', 'Inactive list should not contain deleted runtime VE');
+    assertNotIncludes(inactiveList.innerHTML, 'Test VE 2', 'Inactive list should not contain active digital employees');
+  }
+
   // Test 3: List displays all required fields
   {
     console.log('  Test: List displays name, skill_description, access_policy, online_status, registered_at');
@@ -245,7 +319,26 @@ async function runTests() {
     assertIncludes(activeList.innerHTML, 'veOpenVisibilityEditor', 'Active rows should include visibility edit action');
   }
 
-  // Test 3c: Visibility save calls new endpoint
+  // Test 3c: Visibility editor renders organization tree
+  {
+    console.log('  Test: Visibility editor renders organization tree with selected departments');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    await ctx.loadVEList();
+    await ctx.veOpenVisibilityEditor('ve-002');
+    var overlay = g.document.elements['veVisibilityOverlay'];
+    assert(overlay !== undefined, 'Visibility overlay should exist');
+    assertIncludes(overlay.innerHTML, 'role="tree"', 'Visibility editor should render organization tree');
+    assertIncludes(overlay.innerHTML, 'role="treeitem"', 'Visibility editor should render department tree items');
+    assertIncludes(overlay.innerHTML, 'Legal', 'Visibility tree should include parent department');
+    assertIncludes(overlay.innerHTML, 'Contracts', 'Visibility tree should include child department');
+    assertIncludes(overlay.innerHTML, 'value="dept-legal" checked', 'Visibility tree should preselect existing visible department');
+    assertIncludes(overlay.innerHTML, 'aria-expanded="true"', 'Visibility tree should mark expanded parent departments');
+    assertIncludes(overlay.innerHTML, 'aria-level="2"', 'Visibility tree should preserve child hierarchy level');
+    assertNotIncludes(overlay.innerHTML, 'value="root"', 'Visibility tree should not allow selecting the organization root');
+  }
+
+  // Test 3d: Visibility save calls new endpoint
   {
     console.log('  Test: Visibility editor saves selected departments');
     var g = createMockGlobal();
@@ -352,6 +445,38 @@ async function runTests() {
     assertEqual(residentCall.url, '/api/ve/ve-002/resident', 'Should call correct resident URL');
     assertEqual(residentCall.opts.method, 'PUT', 'Should use PUT method');
     assertEqual(residentCall.opts.body, JSON.stringify({ resident: true }), 'Should include resident flag in body');
+  }
+
+  // Test 8b: Purge calls correct API
+  {
+    console.log('  Test: Clear calls DELETE /api/ve/{id}');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    g._apiCalls.length = 0;
+    await ctx.vePurge('ve-006');
+    var purgeCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/ve-006'; });
+    assert(purgeCall !== undefined, 'Should call clear API');
+    assertEqual(purgeCall.opts.method, 'DELETE', 'Should use DELETE method');
+  }
+
+  // Test 8c: Force purge calls correct API with admin password
+  {
+    console.log('  Test: Force delete calls POST /api/ve/{id}/force-delete with admin password');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    g._apiCalls.length = 0;
+    var pending = ctx.veForcePurge('ve-006');
+    var passwordInput = g.document.elements['veForcePurgePasswordInput'];
+    var confirmButton = g.document.elements['veForcePurgeConfirmBtn'];
+    assert(passwordInput !== undefined, 'Force delete should render password input');
+    assertEqual(passwordInput.type, 'password', 'Force delete password input should be masked');
+    passwordInput.value = 'admin-secret';
+    confirmButton.click();
+    await pending;
+    var forceCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/ve-006/force-delete'; });
+    assert(forceCall !== undefined, 'Should call force delete API');
+    assertEqual(forceCall.opts.method, 'POST', 'Should use POST method');
+    assertEqual(JSON.parse(forceCall.opts.body).admin_password, 'admin-secret', 'Should send admin password in body');
   }
 
   // Test 9: Approve refreshes list

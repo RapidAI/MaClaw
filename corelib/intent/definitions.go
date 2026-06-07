@@ -24,7 +24,7 @@ func DefaultDefinitions() []IntentDefinition {
 			MayTriggerWorkflow: true, // coding workflow (needs → design → tasks → implement → review)
 			WorkflowTypes:      []string{"coding"},
 			TreeText: "用户要从零创建软件/应用/游戏/工具/脚本，需要完整开发流程。" +
-				"关键信号：开发、创建、实现、写代码、编程、游戏、前端、后端。",
+				"语义判据：用户目标是创建、实现或修改软件系统、代码、游戏、前端或后端能力。",
 			EmbedTexts: []string{
 				"开发一个贪吃蛇游戏",
 				"写一个爬虫程序",
@@ -47,7 +47,7 @@ func DefaultDefinitions() []IntentDefinition {
 			Label:  LabelBugFix,
 			Domain: "编码开发 (Coding)",
 			TreeText: "用户要修复已有代码的 bug、调试崩溃、排查错误、解决异常。" +
-				"关键信号：修复、调试、debug、报错、崩溃、白屏、闪退、卡住。",
+				"语义判据：用户目标是定位并修复已有代码或应用的异常、错误、崩溃或不可用状态。",
 			EmbedTexts: []string{
 				"有bug，一直显示加载中",
 				"修复崩溃问题",
@@ -70,7 +70,7 @@ func DefaultDefinitions() []IntentDefinition {
 			Label:  LabelMaintenance,
 			Domain: "编码开发 (Coding)",
 			TreeText: "用户要重构、优化、清理、升级已有代码，不添加新功能。" +
-				"关键信号：重构、优化、清理、升级、改善、refactor、optimize。",
+				"语义判据：用户目标是在已有代码或系统上做结构、性能、依赖或质量改进。",
 			EmbedTexts: []string{
 				"重构这个函数",
 				"优化性能",
@@ -91,7 +91,7 @@ func DefaultDefinitions() []IntentDefinition {
 			Label:  LabelSSH,
 			Domain: "远程操作 (Remote)",
 			TreeText: "用户要连接远程服务器、执行命令、查看日志、管理服务、操作远端主机。" +
-				"关键信号：服务器、SSH、日志、docker、nginx、systemctl、远程、端口、进程。",
+				"语义判据：用户目标需要操作远程主机、服务进程、端口、容器、反向代理或服务器日志。",
 			EmbedTexts: []string{
 				"登录服务器查看日志",
 				"连接远程服务器",
@@ -112,7 +112,7 @@ func DefaultDefinitions() []IntentDefinition {
 			Label:  LabelBrowser,
 			Domain: "浏览器自动化 (Browser)",
 			TreeText: "用户要自动化浏览器操作：导航网页、点击元素、填写表单、截图网页、录制/回放浏览器操作。" +
-				"关键信号：浏览器、browser、chrome、playwright、录制、回放、点击按钮、填写表单。",
+				"语义判据：用户目标需要驱动网页、浏览器会话、录制回放、点击控件或填写网页表单。",
 			EmbedTexts: []string{
 				"打开浏览器访问这个网站",
 				"帮我在网页上点击购买按钮",
@@ -143,7 +143,7 @@ func DefaultDefinitions() []IntentDefinition {
 			Label:  LabelSearch,
 			Domain: "内容处理 (Content)",
 			TreeText: "用户要在网上搜索信息、文档、论文、解决方案。" +
-				"关键信号：搜索、search、查找、google、论文、paper。",
+				"语义判据：用户目标是获取相对稳定的网上资料、文档、论文、背景信息或解决方案。",
 			EmbedTexts: []string{
 				"搜索一下最新的AI论文",
 				"帮我在网上查找这个问题的解决方案",
@@ -163,13 +163,13 @@ func DefaultDefinitions() []IntentDefinition {
 		{
 			Label:  LabelNonCoding,
 			Domain: "内容处理 (Content)",
-			TreeText: "用户要翻译、总结、整理、写文档、查天气等非编码任务，" +
+			TreeText: "用户要翻译、总结、整理、写文档等非编码内容处理任务，" +
 				"或执行步骤明确的技术操作（逆向工程、模型转换、格式提取、数据迁移、环境部署等）。" +
 				"共同特征：产出物由输入内容或操作步骤决定，不需要多阶段设计决策。" +
-				"关键信号：翻译、总结、摘要、整理、查天气、写邮件、截图、提取、转换、迁移、部署。",
+				"语义判据：用户目标是单阶段内容处理、格式转换、信息整理或明确步骤的技术操作。",
 			EmbedTexts: []string{
 				"翻译文档",
-				"搜索论文",
+				"整理会议纪要",
 				"总结这篇文章",
 				"帮我整理资料",
 				"生成PDF报告",
@@ -178,7 +178,7 @@ func DefaultDefinitions() []IntentDefinition {
 				"帮我把数据从MySQL迁移到PostgreSQL",
 				"summarize this article",
 				"translate this document",
-				"search for papers on AI",
+				"organize meeting notes into a concise summary",
 				"organize these notes",
 				"help me write a report",
 				"draft a project proposal document",
@@ -231,7 +231,7 @@ func DefaultDefinitions() []IntentDefinition {
 			Label:  LabelDocumentDelivery,
 			Domain: "内容处理 (Content)",
 			TreeText: "用户要打开、发送、导出文件/文档。" +
-				"关键信号：发送文件、打开文件、导出、附件、发给我。",
+				"语义判据：用户目标是交付、打开、导出或发送具体文件/文档产物。",
 			EmbedTexts: []string{
 				"把这个文件发送给我",
 				"打开桌面上的PDF文件",

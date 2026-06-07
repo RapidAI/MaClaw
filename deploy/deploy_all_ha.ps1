@@ -991,7 +991,7 @@ if [ -f '$configPath' ]; then
   cp -a '$configPath' '$configPath.bak.codex-nginx-proxy'
   sed -i '/server_name[[:space:]]\+$serverPattern;/,/^}/s#proxy_pass http://127\.0\.0\.1:[0-9]\+;#proxy_pass http://127.0.0.1:$proxyPort;#' '$configPath'
   nginx -t
-  if command -v systemctl >/dev/null 2>&1; then
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
     systemctl reload nginx
   else
     nginx -s reload

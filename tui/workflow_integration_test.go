@@ -289,6 +289,35 @@ func TestClearCommandCancelsUnderstandingSession(t *testing.T) {
 	}
 }
 
+func TestClearCommandClearsPendingWorkflowStart(t *testing.T) {
+	llm := &tuiWorkflowTestLLM{
+		response: `{"intent":{"category":"contract_review","summary":"review contract","confidence":0.9,"ready":true},"reply":"Please confirm starting contract review.","ready":true}`,
+	}
+	app := newWorkflowTestApp(llm)
+	if got := app.handleWorkflowInterception("review contract"); got == "" {
+		t.Fatal("expected pending workflow start reply")
+	}
+	if app.pendingWorkflowStart == nil {
+		t.Fatal("expected pending workflow start")
+	}
+
+	model := &tuiModel{app: app}
+	model.handleSlashCommand("/clear")
+
+	if app.pendingWorkflowStart != nil {
+		t.Fatal("/clear should remove pending workflow start")
+	}
+	// The next input should not be consumed by the stale pending start. Make a
+	// fresh IUM pass reject so any non-empty response would come from stale state.
+	llm.response = `{"intent":{"category":"none","summary":"plain start","ready":true},"reply":"","ready":true}`
+	if got := app.handleWorkflowInterception("start"); got != "" {
+		t.Fatalf("stale pending workflow start should not consume post-clear input, got %q", got)
+	}
+	if app.workflowEngine.HasActiveWorkflow("tui-user") {
+		t.Fatal("post-clear start command must not start stale pending workflow")
+	}
+}
+
 func TestTUIOpsMaintenanceControlledPhaseFiltersTools(t *testing.T) {
 	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
 	state, err := app.workflowEngine.StartWorkflow("tui-user", workflow.StructuredIntent{

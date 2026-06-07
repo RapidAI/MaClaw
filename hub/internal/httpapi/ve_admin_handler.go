@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -50,6 +52,8 @@ type digitalEmployeeEntry struct {
 	DisabledAt         string   `json:"disabled_at,omitempty"`
 	RejectedAt         string   `json:"rejected_at,omitempty"`
 	RejectReason       string   `json:"reject_reason,omitempty"`
+	RuntimeMissing     bool     `json:"runtime_missing,omitempty"`
+	HistoryRetained    bool     `json:"history_retained,omitempty"`
 }
 
 type digitalEmployeeRegistry struct {
@@ -243,14 +247,20 @@ const (
 // VEAdminListHandler handles GET /api/ve/list.
 func VEAdminListHandler(system store.SystemSettingsRepository, presenceGetter veMachinePresenceGetter, ownerLookups ...veOwnerLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		baseSystem := globalSystemSettings(system)
 		system := veSystemSettingsForRequest(r, system)
+		tenantID := RequestTenantID(r)
 		cfg := loadVEGroupConfig(r.Context(), system)
 		registry := loadVERegistry(r.Context(), system)
 		enrichVERegistryOwners(r.Context(), &registry, firstVEOwnerLookup(ownerLookups...))
 		enrichVERegistryEmployeeTypes(&registry)
+		runtimePresence := emptyMacLawSrvRuntimePresence()
+		if veRegistryHasMacLawSrvRuntimeEmployees(registry, false) {
+			runtimePresence = loadMacLawSrvRuntimePresence(r.Context(), baseSystem, tenantID)
+		}
 		employees := registry.Employees
 		for i := range employees {
-			employees[i] = applyVEDiscoverablePresence(r.Context(), employees[i], presenceGetter)
+			employees[i] = applyVEDiscoverablePresence(r.Context(), employees[i], presenceGetter, runtimePresence)
 		}
 		sort.SliceStable(employees, func(i, j int) bool {
 			return employees[i].RegisteredAt > employees[j].RegisteredAt
@@ -301,7 +311,7 @@ func VEAdminConfigHandler(system store.SystemSettingsRepository, senders ...veMa
 				return
 			}
 			if cfg.AutoApprove {
-				approved, err := autoApprovePendingVERegistrations(r.Context(), system)
+				approved, err := autoApprovePendingVERegistrations(r.Context(), system, baseSystem, tenantID)
 				if err != nil {
 					writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
 					return
@@ -457,6 +467,7 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 		if !ok {
 			return
 		}
+		baseSystem := globalSystemSettings(system)
 		system := veSystemSettingsForMachine(system, principal)
 		cfg := loadVEGroupConfig(r.Context(), system)
 		if !veAuthorizationActive(loadVEDigitalEmployeeAuthorization(r.Context(), system)) {
@@ -474,6 +485,10 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 		if veRegistryHasVisibleGroupRestrictions(registry) {
 			requesterGroupPath, requesterGroupPathResolved = requesterVEGroupPath(r.Context(), visibilityResolver, principal)
 		}
+		runtimePresence := emptyMacLawSrvRuntimePresence()
+		if veRegistryHasMacLawSrvRuntimeEmployees(registry, true) {
+			runtimePresence = loadMacLawSrvRuntimePresence(r.Context(), baseSystem, principal.TenantID)
+		}
 		for _, entry := range registry.Employees {
 			if entry.Status != veStatusActive || groupDiscussionParticipantIdentityMatches(entry.MachineID, principal.MachineID) {
 				continue
@@ -484,7 +499,7 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 			if !veAccessAllowed(entry, accessID) {
 				continue
 			}
-			entry = applyVEDiscoverablePresence(r.Context(), entry, presenceGetter)
+			entry = applyVEDiscoverablePresence(r.Context(), entry, presenceGetter, runtimePresence)
 			if !strings.EqualFold(strings.TrimSpace(entry.OnlineStatus), veOnlineStatusOnline) {
 				continue
 			}
@@ -591,7 +606,185 @@ func (r veSecurityVisibilityResolver) RequesterGroupPath(ctx context.Context, te
 	return ids, nil
 }
 
-func applyVEDiscoverablePresence(ctx context.Context, entry digitalEmployeeEntry, getter veMachinePresenceGetter) digitalEmployeeEntry {
+type macLawSrvRuntimePresence struct {
+	Loaded   bool
+	Reported map[string]bool
+	Ready    map[string]bool
+}
+
+type cachedMacLawSrvRuntimePresence struct {
+	presence  macLawSrvRuntimePresence
+	expiresAt time.Time
+}
+
+const macLawSrvRuntimePresenceCacheMaxItems = 128
+
+var macLawSrvRuntimePresenceCache = struct {
+	sync.Mutex
+	items map[string]cachedMacLawSrvRuntimePresence
+}{items: map[string]cachedMacLawSrvRuntimePresence{}}
+
+var macLawSrvRuntimeReportHTTPClient = &http.Client{Timeout: time.Second}
+
+func loadMacLawSrvRuntimePresence(ctx context.Context, system store.SystemSettingsRepository, tenantID string) macLawSrvRuntimePresence {
+	runtime, ok := loadMacLawSrvRuntimeRegistry(ctx, system).findForTenant(tenantID)
+	if !ok || strings.TrimSpace(runtime.BaseURL) == "" {
+		return emptyMacLawSrvRuntimePresence()
+	}
+	cacheKey := macLawSrvRuntimePresenceCacheKey(runtime, tenantID)
+	if cached, ok := getCachedMacLawSrvRuntimePresence(cacheKey, time.Now()); ok {
+		return cached
+	}
+	report, err := fetchMacLawSrvRuntimeReport(ctx, runtime)
+	if err != nil {
+		presence := emptyMacLawSrvRuntimePresence()
+		setCachedMacLawSrvRuntimePresence(cacheKey, presence, time.Now().Add(1*time.Second))
+		return presence
+	}
+	presence := macLawSrvRuntimePresence{Loaded: true, Reported: map[string]bool{}, Ready: map[string]bool{}}
+	for _, user := range report.Users {
+		employeeID := strings.TrimSpace(user.EmployeeID)
+		if employeeID == "" {
+			continue
+		}
+		key := strings.ToLower(employeeID)
+		presence.Reported[key] = true
+		presence.Ready[key] = strings.EqualFold(strings.TrimSpace(user.RuntimeStatus), "ready")
+	}
+	setCachedMacLawSrvRuntimePresence(cacheKey, presence, time.Now().Add(2*time.Second))
+	return presence
+}
+
+func macLawSrvRuntimePresenceCacheKey(runtime macLawSrvRuntimeEntry, tenantID string) string {
+	secretHash := ""
+	if secret := strings.TrimSpace(runtime.AdminSecret); secret != "" {
+		sum := sha256.Sum256([]byte(secret))
+		secretHash = base64.RawURLEncoding.EncodeToString(sum[:])
+	}
+	return strings.TrimRight(strings.TrimSpace(runtime.BaseURL), "/") + "\x00" + strings.TrimSpace(tenantID) + "\x00" + secretHash
+}
+
+func getCachedMacLawSrvRuntimePresence(key string, now time.Time) (macLawSrvRuntimePresence, bool) {
+	macLawSrvRuntimePresenceCache.Lock()
+	defer macLawSrvRuntimePresenceCache.Unlock()
+	cached, ok := macLawSrvRuntimePresenceCache.items[key]
+	if !ok || !cached.expiresAt.After(now) {
+		if ok {
+			delete(macLawSrvRuntimePresenceCache.items, key)
+		}
+		return emptyMacLawSrvRuntimePresence(), false
+	}
+	return copyMacLawSrvRuntimePresence(cached.presence), true
+}
+
+func setCachedMacLawSrvRuntimePresence(key string, presence macLawSrvRuntimePresence, expiresAt time.Time) {
+	macLawSrvRuntimePresenceCache.Lock()
+	defer macLawSrvRuntimePresenceCache.Unlock()
+	now := time.Now()
+	for cachedKey, cached := range macLawSrvRuntimePresenceCache.items {
+		if !cached.expiresAt.After(now) {
+			delete(macLawSrvRuntimePresenceCache.items, cachedKey)
+		}
+	}
+	if len(macLawSrvRuntimePresenceCache.items) >= macLawSrvRuntimePresenceCacheMaxItems {
+		var oldestKey string
+		var oldestTime time.Time
+		for cachedKey, cached := range macLawSrvRuntimePresenceCache.items {
+			if oldestKey == "" || cached.expiresAt.Before(oldestTime) {
+				oldestKey = cachedKey
+				oldestTime = cached.expiresAt
+			}
+		}
+		if oldestKey != "" {
+			delete(macLawSrvRuntimePresenceCache.items, oldestKey)
+		}
+	}
+	macLawSrvRuntimePresenceCache.items[key] = cachedMacLawSrvRuntimePresence{presence: copyMacLawSrvRuntimePresence(presence), expiresAt: expiresAt}
+}
+
+func copyMacLawSrvRuntimePresence(src macLawSrvRuntimePresence) macLawSrvRuntimePresence {
+	dst := macLawSrvRuntimePresence{
+		Loaded:   src.Loaded,
+		Reported: map[string]bool{},
+		Ready:    map[string]bool{},
+	}
+	for key, value := range src.Reported {
+		dst.Reported[key] = value
+	}
+	for key, value := range src.Ready {
+		dst.Ready[key] = value
+	}
+	return dst
+}
+
+func emptyMacLawSrvRuntimePresence() macLawSrvRuntimePresence {
+	return macLawSrvRuntimePresence{Reported: map[string]bool{}, Ready: map[string]bool{}}
+}
+
+type macLawSrvRuntimeReport struct {
+	Users []macLawSrvRuntimeReportUser `json:"users"`
+}
+
+type macLawSrvRuntimeReportUser struct {
+	EmployeeID    string `json:"employee_id"`
+	RuntimeStatus string `json:"runtime_status"`
+	RuntimeUserID string `json:"runtime_user_id"`
+	VirtualEmail  string `json:"virtual_email"`
+}
+
+type macLawSrvRuntimeReportWire struct {
+	Users *[]macLawSrvRuntimeReportUser `json:"users"`
+}
+
+func fetchMacLawSrvRuntimeReport(ctx context.Context, runtime macLawSrvRuntimeEntry) (macLawSrvRuntimeReport, error) {
+	var report macLawSrvRuntimeReport
+	baseURL := strings.TrimRight(strings.TrimSpace(runtime.BaseURL), "/")
+	if baseURL == "" {
+		return report, fmt.Errorf("maclawsrv runtime base url is empty")
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, baseURL+"/api/platform/runtime/report", nil)
+	if err != nil {
+		return report, err
+	}
+	if secret := strings.TrimSpace(runtime.AdminSecret); secret != "" {
+		req.Header.Set("Authorization", "Bearer "+secret)
+	}
+	resp, err := macLawSrvRuntimeReportHTTPClient.Do(req)
+	if err != nil {
+		return report, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return report, fmt.Errorf("maclawsrv runtime report status %d", resp.StatusCode)
+	}
+	var wire macLawSrvRuntimeReportWire
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&wire); err != nil {
+		return report, err
+	}
+	if wire.Users == nil {
+		return report, fmt.Errorf("maclawsrv runtime report missing users")
+	}
+	report.Users = *wire.Users
+	return report, nil
+}
+
+func applyVEDiscoverablePresence(ctx context.Context, entry digitalEmployeeEntry, getter veMachinePresenceGetter, runtimePresence macLawSrvRuntimePresence) digitalEmployeeEntry {
+	if isMacLawSrvRuntimeEmployee(entry) {
+		entry.OnlineStatus = veOnlineStatusOffline
+		reported, ready := macLawSrvRuntimePresenceState(entry, runtimePresence)
+		if ready {
+			entry.OnlineStatus = veOnlineStatusOnline
+		}
+		if runtimePresence.Loaded && !reported {
+			entry.Status = veStatusDisabled
+			entry.RuntimeMissing = true
+			entry.HistoryRetained = true
+		}
+		return entry
+	}
 	if getter == nil || inferVEEmployeeType(entry) != veEmployeeTypePhysical {
 		return entry
 	}
@@ -605,6 +798,74 @@ func applyVEDiscoverablePresence(ctx context.Context, entry digitalEmployeeEntry
 		entry.OnlineStatus = veOnlineStatusOffline
 	}
 	return entry
+}
+
+func macLawSrvRuntimePresenceState(entry digitalEmployeeEntry, runtimePresence macLawSrvRuntimePresence) (bool, bool) {
+	reported := false
+	ready := false
+	for _, id := range []string{entry.PlatformEmployeeID, entry.ID, entry.MachineID} {
+		key := strings.ToLower(strings.TrimSpace(id))
+		if key == "" {
+			continue
+		}
+		reported = reported || runtimePresence.Reported[key]
+		ready = ready || runtimePresence.Ready[key]
+	}
+	return reported, ready
+}
+
+func verifyMacLawSrvRuntimeReadyForActivation(ctx context.Context, system store.SystemSettingsRepository, tenantID string, entry digitalEmployeeEntry) (digitalEmployeeEntry, bool, string, string) {
+	if !isMacLawSrvRuntimeEmployee(entry) {
+		return entry, true, "", ""
+	}
+	presence := loadMacLawSrvRuntimePresence(ctx, system, tenantID)
+	if !presence.Loaded {
+		entry.OnlineStatus = veOnlineStatusOffline
+		return entry, true, "", ""
+	}
+	reported, ready := macLawSrvRuntimePresenceState(entry, presence)
+	entry = applyVEDiscoverablePresence(ctx, entry, nil, presence)
+	if !reported {
+		return entry, false, "VE_RUNTIME_MISSING", "digital employee runtime is not registered"
+	}
+	if !ready {
+		return entry, false, "VE_NOT_ONLINE", "digital employee runtime is not online"
+	}
+	return entry, true, "", ""
+}
+
+func macLawSrvRuntimeMissingForPurge(ctx context.Context, system store.SystemSettingsRepository, tenantID string, entry digitalEmployeeEntry) bool {
+	if !isMacLawSrvRuntimeEmployee(entry) {
+		return false
+	}
+	presence := loadMacLawSrvRuntimePresence(ctx, system, tenantID)
+	if !presence.Loaded {
+		return false
+	}
+	reported, _ := macLawSrvRuntimePresenceState(entry, presence)
+	return !reported
+}
+
+func isMacLawSrvRuntimeEmployee(entry digitalEmployeeEntry) bool {
+	if normalizeVEEmployeeType(entry.EmployeeType) == veEmployeeTypePhysical {
+		return false
+	}
+	if strings.TrimSpace(entry.PlatformEmployeeID) == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(entry.PlatformID), maclawSrvRuntimePlatformID) || strings.EqualFold(strings.TrimSpace(entry.RuntimeProviderID), maclawSrvRuntimePlatformID)
+}
+
+func veRegistryHasMacLawSrvRuntimeEmployees(registry digitalEmployeeRegistry, activeOnly bool) bool {
+	for _, entry := range registry.Employees {
+		if activeOnly && entry.Status != veStatusActive {
+			continue
+		}
+		if isMacLawSrvRuntimeEmployee(entry) {
+			return true
+		}
+	}
+	return false
 }
 
 // VEInitiateHandler handles POST /api/ve/{id}/initiate for a machine-owned direct discussion.
@@ -622,6 +883,7 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 			writeError(w, http.StatusInternalServerError, "GROUP_DISCUSSION_UNAVAILABLE", "group discussion service is unavailable")
 			return
 		}
+		baseSystem := globalSystemSettings(system)
 		system := veSystemSettingsForMachine(system, principal)
 		if !requireVEDigitalEmployeeAuthorization(w, r, system) {
 			return
@@ -638,8 +900,17 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 			return
 		}
 		target := registry.Employees[idx]
+		runtimePresence := emptyMacLawSrvRuntimePresence()
+		if isMacLawSrvRuntimeEmployee(target) {
+			runtimePresence = loadMacLawSrvRuntimePresence(r.Context(), baseSystem, principal.TenantID)
+			target = applyVEDiscoverablePresence(r.Context(), target, nil, runtimePresence)
+		}
 		if target.Status != veStatusActive {
 			writeError(w, http.StatusConflict, "VE_NOT_ACTIVE", "digital employee is not active")
+			return
+		}
+		if runtimePresence.Loaded && isMacLawSrvRuntimeEmployee(target) && target.OnlineStatus != veOnlineStatusOnline {
+			writeError(w, http.StatusConflict, "VE_NOT_ONLINE", "digital employee runtime is not online")
 			return
 		}
 		if groupDiscussionParticipantIdentityMatches(target.MachineID, principal.MachineID) {
@@ -945,6 +1216,14 @@ func VEAdminActionHandler(system store.SystemSettingsRepository, action string, 
 				writeError(w, http.StatusForbidden, "VE_AUTHORIZATION_INACTIVE", "digital employee authorization is inactive")
 				return
 			}
+			if checked, ok, code, message := verifyMacLawSrvRuntimeReadyForActivation(r.Context(), baseSystem, tenantID, entry); !ok {
+				registry.Employees[idx] = checked
+				_ = saveVERegistry(r.Context(), system, registry)
+				writeError(w, http.StatusConflict, code, message)
+				return
+			} else {
+				entry = checked
+			}
 			quota := veAuthorizedQuota(authz)
 			if countVEByStatus(registry.Employees, veStatusActive) >= quota && entry.Status != veStatusActive {
 				writeError(w, http.StatusConflict, "VE_QUOTA_EXCEEDED", "digital employee quota exceeded")
@@ -966,6 +1245,22 @@ func VEAdminActionHandler(system store.SystemSettingsRepository, action string, 
 			entry.Status = veStatusDisabled
 			entry.Resident = false
 			entry.DisabledAt = now
+		case "delete":
+			if entry.Status == veStatusActive && !macLawSrvRuntimeMissingForPurge(r.Context(), baseSystem, tenantID, entry) {
+				writeError(w, http.StatusConflict, "VE_DELETE_ACTIVE_FORBIDDEN", "active digital employee must be disabled before clearing")
+				return
+			}
+			removed := entry
+			registry.Employees = append(registry.Employees[:idx], registry.Employees[idx+1:]...)
+			normalizeVERegistryResidentFlags(&registry)
+			if err := saveVERegistry(r.Context(), system, registry); err != nil {
+				writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
+				return
+			}
+			emitVEAdminActionEvent(firstVEMachineEventSender(senders...), action, removed)
+			postPlatformEmployeeActionCallback(r.Context(), baseSystem, tenantID, action, removed)
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "employee": removed})
+			return
 		default:
 			writeError(w, http.StatusBadRequest, "INVALID_ACTION", "unknown digital employee action")
 			return
@@ -982,13 +1277,82 @@ func VEAdminActionHandler(system store.SystemSettingsRepository, action string, 
 	}
 }
 
+func VEAdminForceDeleteHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, admins *auth.AdminService, senders ...veMachineEventSender) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		if admins == nil {
+			writeError(w, http.StatusServiceUnavailable, "ADMIN_AUTH_UNAVAILABLE", "admin authentication is unavailable")
+			return
+		}
+		admin := AdminFromContext(r.Context())
+		if admin == nil || strings.TrimSpace(admin.Username) == "" {
+			writeError(w, http.StatusForbidden, "TENANT_ADMIN_REQUIRED", "tenant admin authorization required")
+			return
+		}
+		var req struct {
+			AdminPassword string `json:"admin_password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+			return
+		}
+		if strings.TrimSpace(req.AdminPassword) == "" {
+			writeError(w, http.StatusBadRequest, "ADMIN_PASSWORD_REQUIRED", "admin_password is required")
+			return
+		}
+		tenantID := RequestTenantID(r)
+		if _, err := admins.VerifyScopedCredentials(r.Context(), admin.Username, req.AdminPassword, tenantID); err != nil {
+			writeError(w, http.StatusUnauthorized, "INVALID_ADMIN_PASSWORD", "admin password is incorrect")
+			return
+		}
+		baseSystem := globalSystemSettings(system)
+		system := veSystemSettingsForRequest(r, system)
+		veID := strings.TrimSpace(r.PathValue("id"))
+		if veID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
+			return
+		}
+		registry := loadVERegistry(r.Context(), system)
+		idx := registry.findByIDOrMachineIDOrPlatformEmployeeID(veID)
+		if idx < 0 {
+			writeError(w, http.StatusNotFound, "VE_NOT_FOUND", "digital employee not found")
+			return
+		}
+		removed := registry.Employees[idx]
+		participantIDs := []string{removed.MachineID, removed.ID, removed.PlatformEmployeeID}
+		deletedHistory := 0
+		if groupSvc != nil {
+			var err error
+			deletedHistory, err = groupSvc.DeleteSessionsByParticipants(tenantID, participantIDs)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "VE_HISTORY_DELETE_FAILED", err.Error())
+				return
+			}
+		}
+		registry.Employees = append(registry.Employees[:idx], registry.Employees[idx+1:]...)
+		normalizeVERegistryResidentFlags(&registry)
+		if err := saveVERegistry(r.Context(), system, registry); err != nil {
+			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
+			return
+		}
+		emitVEAdminActionEvent(firstVEMachineEventSender(senders...), "force_delete", removed)
+		postPlatformEmployeeActionCallback(r.Context(), baseSystem, tenantID, "delete", removed)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "employee": removed, "deleted_history_sessions": deletedHistory})
+	}
+}
+
 func VEAdminResidentHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PUT")
 			return
 		}
+		baseSystem := globalSystemSettings(system)
 		system := veSystemSettingsForRequest(r, system)
+		tenantID := RequestTenantID(r)
 		veID := strings.TrimSpace(r.PathValue("id"))
 		if veID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
@@ -1015,6 +1379,16 @@ func VEAdminResidentHandler(system store.SystemSettingsRepository) http.HandlerF
 		if *req.Resident && entry.Status != veStatusActive {
 			writeError(w, http.StatusConflict, "VE_NOT_ACTIVE", "only active digital employee can be resident")
 			return
+		}
+		if *req.Resident {
+			if checked, ok, code, message := verifyMacLawSrvRuntimeReadyForActivation(r.Context(), baseSystem, tenantID, entry); !ok {
+				registry.Employees[idx] = checked
+				_ = saveVERegistry(r.Context(), system, registry)
+				writeError(w, http.StatusConflict, code, message)
+				return
+			} else {
+				registry.Employees[idx] = checked
+			}
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		if *req.Resident {
@@ -1164,6 +1538,8 @@ func platformEmployeeCallbackHubStatus(action, status string) string {
 		return "failed"
 	case "disable":
 		return "disabled"
+	case "delete":
+		return "deleted"
 	}
 	switch strings.TrimSpace(status) {
 	case veStatusActive:
@@ -1180,7 +1556,9 @@ func platformEmployeeCallbackHubStatus(action, status string) string {
 // VEHistorySearchHandler handles GET /api/ve/history/search for admin review.
 func VEHistorySearchHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, ownerLookup veOwnerLookup, machineLookups ...veMachineLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		baseSystem := globalSystemSettings(system)
 		system := veSystemSettingsForRequest(r, system)
+		requestTenantID := RequestTenantID(r)
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 			return
@@ -1200,6 +1578,10 @@ func VEHistorySearchHandler(system store.SystemSettingsRepository, groupSvc *Gro
 		}
 		registry := loadVERegistry(r.Context(), system)
 		enrichVERegistryOwners(r.Context(), &registry, ownerLookup)
+		runtimePresence := emptyMacLawSrvRuntimePresence()
+		if veRegistryHasMacLawSrvRuntimeEmployees(registry, false) {
+			runtimePresence = loadMacLawSrvRuntimePresence(r.Context(), baseSystem, requestTenantID)
+		}
 		matches := make([]veHistorySearchMatch, 0)
 		flattened := make([]veHistoryDiscussionSummary, 0)
 		seenDiscussions := make(map[string]bool)
@@ -1209,6 +1591,7 @@ func VEHistorySearchHandler(system store.SystemSettingsRepository, groupSvc *Gro
 			if !veEmployeeMatchesQuery(employee, query) {
 				continue
 			}
+			employee = applyVEDiscoverablePresence(r.Context(), employee, nil, runtimePresence)
 			items, err := groupSvc.ListDiscussionSummaries(tenantID, ListSessionsFilter{ParticipantID: employee.MachineID, Limit: limit})
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
@@ -1237,7 +1620,9 @@ func VEHistorySearchHandler(system store.SystemSettingsRepository, groupSvc *Gro
 // VEHistoryHandler handles GET /api/ve/{id}/history for admin review.
 func VEHistoryHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, ownerLookup veOwnerLookup, machineLookups ...veMachineLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		baseSystem := globalSystemSettings(system)
 		system := veSystemSettingsForRequest(r, system)
+		requestTenantID := RequestTenantID(r)
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 			return
@@ -1255,6 +1640,9 @@ func VEHistoryHandler(system store.SystemSettingsRepository, groupSvc *GroupDisc
 			return
 		}
 		employee := registry.Employees[idx]
+		if isMacLawSrvRuntimeEmployee(employee) {
+			employee = applyVEDiscoverablePresence(r.Context(), employee, nil, loadMacLawSrvRuntimePresence(r.Context(), baseSystem, requestTenantID))
+		}
 		limit := intQuery(r.URL.Query(), "limit")
 		if limit <= 0 || limit > 50 {
 			limit = 20
@@ -1500,7 +1888,7 @@ func veRegistrationStatus(autoApprove bool, authz *corelib.DigitalEmployeeAuthor
 	return veStatusPending
 }
 
-func autoApprovePendingVERegistrations(ctx context.Context, system store.SystemSettingsRepository) ([]digitalEmployeeEntry, error) {
+func autoApprovePendingVERegistrations(ctx context.Context, system, baseSystem store.SystemSettingsRepository, tenantID string) ([]digitalEmployeeEntry, error) {
 	authz := loadVEDigitalEmployeeAuthorization(ctx, system)
 	if !veAuthorizationActive(authz) {
 		return nil, nil
@@ -1517,6 +1905,13 @@ func autoApprovePendingVERegistrations(ctx context.Context, system store.SystemS
 		}
 		if registry.Employees[i].Status != veStatusPending {
 			continue
+		}
+		if checked, ok, _, _ := verifyMacLawSrvRuntimeReadyForActivation(ctx, baseSystem, tenantID, registry.Employees[i]); !ok {
+			registry.Employees[i] = checked
+			changed = true
+			continue
+		} else {
+			registry.Employees[i] = checked
 		}
 		registry.Employees[i].Status = veStatusActive
 		registry.Employees[i].UpdatedAt = now
@@ -1919,30 +2314,12 @@ func normalizeVERegistryOnlineStatuses(registry *digitalEmployeeRegistry) bool {
 	changed := false
 	for i := range registry.Employees {
 		status := strings.TrimSpace(registry.Employees[i].OnlineStatus)
-		if shouldNormalizeVirtualRuntimeEmployeeOnline(registry.Employees[i], status) {
-			registry.Employees[i].OnlineStatus = veOnlineStatusOnline
-			changed = true
-			continue
-		}
-		if status == "" {
+		if status == "" || (status != veOnlineStatusOnline && status != veOnlineStatusOffline) {
 			registry.Employees[i].OnlineStatus = veOnlineStatusOffline
 			changed = true
 		}
 	}
 	return changed
-}
-
-func shouldNormalizeVirtualRuntimeEmployeeOnline(entry digitalEmployeeEntry, status string) bool {
-	if entry.Status != veStatusActive {
-		return false
-	}
-	if status == "platform" {
-		return true
-	}
-	if status != "" {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(entry.PlatformID), maclawSrvRuntimePlatformID) || strings.EqualFold(strings.TrimSpace(entry.RuntimeProviderID), maclawSrvRuntimePlatformID)
 }
 
 func (r digitalEmployeeRegistry) findByMachineID(machineID string) int {

@@ -23,8 +23,28 @@ if /I "%~1"=="hub.maclaw.top" (
   set "DEPLOY_TARGET=hub"
   shift
 )
+if /I "%~1"=="mypapers" (
+  set "DEPLOY_TARGET=mypapers"
+  shift
+)
+if /I "%~1"=="maclawsrv.mypapers.top" (
+  set "DEPLOY_TARGET=mypapers"
+  shift
+)
+if /I "%~1"=="maclaw" (
+  set "DEPLOY_TARGET=maclaw"
+  shift
+)
+if /I "%~1"=="maclawsrv.maclaw.top" (
+  set "DEPLOY_TARGET=maclaw"
+  shift
+)
 if not defined REMOTE_HOST (
-  if /I "%DEPLOY_TARGET%"=="hub" (
+  if /I "%DEPLOY_TARGET%"=="mypapers" (
+    set "REMOTE_HOST=maclawsrv.mypapers.top"
+  ) else if /I "%DEPLOY_TARGET%"=="maclaw" (
+    set "REMOTE_HOST=maclawsrv.maclaw.top"
+  ) else if /I "%DEPLOY_TARGET%"=="hub" (
     set "REMOTE_HOST=hub.maclaw.top"
   ) else (
     set "REMOTE_HOST=www.driverdevelop.com"
@@ -33,7 +53,9 @@ if not defined REMOTE_HOST (
 if not defined REMOTE_PORT set "REMOTE_PORT=22"
 if not defined REMOTE_USER set "REMOTE_USER=root"
 if not defined REMOTE_HOSTKEY (
-  if /I "%REMOTE_HOST%"=="hub.maclaw.top" (
+  if /I "%REMOTE_HOST%"=="maclawsrv.maclaw.top" (
+    set "REMOTE_HOSTKEY=ssh-ed25519 255 SHA256:yoyEXbuT2kezyG9Y8cJDZplBMZgaPAN7+sureAkVRVE"
+  ) else if /I "%REMOTE_HOST%"=="hub.maclaw.top" (
     set "REMOTE_HOSTKEY=ssh-ed25519 255 SHA256:yoyEXbuT2kezyG9Y8cJDZplBMZgaPAN7+sureAkVRVE"
   ) else (
     set "REMOTE_HOSTKEY=ssh-ed25519 255 SHA256:i4dErlVhnE3VDG7s6lOJ/cg3wfyqf1bgRXSqIddwuog"
@@ -70,10 +92,14 @@ goto :main
 echo Usage:
 echo   deploy_maclawsrv.cmd
 echo   deploy_maclawsrv.cmd hub
+echo   deploy_maclawsrv.cmd mypapers
+echo   deploy_maclawsrv.cmd maclaw
 echo.
 echo Optional environment overrides:
 echo   REMOTE_HOST=www.driverdevelop.com
 echo   REMOTE_HOST=hub.maclaw.top
+echo   REMOTE_HOST=maclawsrv.mypapers.top
+echo   REMOTE_HOST=maclawsrv.maclaw.top
 echo   REMOTE_USER=root
 echo   REMOTE_PORT=22
 echo   REMOTE_PASS=...

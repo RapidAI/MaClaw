@@ -14,6 +14,7 @@ import (
 )
 
 const webLaunchTokenTTL = 2 * time.Minute
+const webAccessCredentialSlidingTTL = 15 * time.Minute
 
 type webLaunchTokenRecord struct {
 	AccessToken     string
@@ -113,6 +114,22 @@ func (s *HTTPServer) handleWebLaunchExchange(w http.ResponseWriter, r *http.Requ
 	s.recordWebLaunchExchanged(r, rec)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"access_token": rec.AccessToken, "token_type": "bearer", "expires_at": rec.AccessExpiresAt})
+}
+
+func (s *HTTPServer) handleWebAccessTokenRefresh(w http.ResponseWriter, r *http.Request) {
+	setUserSecurityHeaders(w)
+	token := bearerToken(r.Header.Get("Authorization"))
+	if token == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": agentservice.ErrUnauthorized.Error()})
+		return
+	}
+	out, err := s.svc.RefreshToken(r.Context(), token, webAccessCredentialSlidingTTL)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"access_token": out.AccessToken, "token_type": "bearer", "expires_at": out.ExpiresAt})
 }
 
 func (s *HTTPServer) recordWebLaunchExchanged(r *http.Request, rec webLaunchTokenRecord) {

@@ -102,6 +102,13 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return nil, fmt.Errorf("LLM not configured")
 	}
+	if h.app != nil {
+		if reason, skip := h.app.shouldSkipLightweightLLM(cfg); skip {
+			err := fmt.Errorf("%s LLM endpoint temporarily unavailable after recent network failure: %s", req.Tag, reason)
+			log.Printf("[%s] skipped due to recent endpoint network failure: %v", req.Tag, err)
+			return nil, err
+		}
+	}
 
 	// Build minimal message list: system + user only.
 	messages := []interface{}{

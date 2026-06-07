@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	securitypkg "github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
 
 func tenantAdminContext(ctx context.Context, tenantID string) context.Context {
@@ -415,6 +417,19 @@ func TestDigitalEmployeeDiscoverableExcludesOwnMachineCaseInsensitive(t *testing
 func TestDiscoverableShowsActiveMaClawSrvRuntimeEmployeeOnline(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ok",
+			"users":  []map[string]any{{"employee_id": "srv-user-1", "runtime_status": "ready"}},
+		})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
 	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
 	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
 		{ID: "ve_srv", MachineID: "ve_srv", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "srv-user-1", Name: "Srv Employee", Status: veStatusActive},
@@ -724,8 +739,205 @@ func TestVEAdminListUsesRuntimePresenceForPhysicalEmployees(t *testing.T) {
 	if byID["ve_live_online"].OnlineStatus != veOnlineStatusOnline {
 		t.Fatalf("live physical online_status = %q, want online; body=%s", byID["ve_live_online"].OnlineStatus, rec.Body.String())
 	}
-	if byID["ve_srv"].OnlineStatus != veOnlineStatusOnline {
-		t.Fatalf("runtime employee online_status = %q, want online", byID["ve_srv"].OnlineStatus)
+	if byID["ve_srv"].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("runtime employee without runtime report online_status = %q, want offline", byID["ve_srv"].OnlineStatus)
+	}
+	if byID["ve_srv"].Status != veStatusActive {
+		t.Fatalf("runtime employee without runtime report status = %q, want active", byID["ve_srv"].Status)
+	}
+}
+
+func TestVEAdminListUsesMacLawSrvRuntimeReportForVirtualEmployees(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 3)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ok",
+			"users": []map[string]any{
+				{"employee_id": "live-employee", "runtime_status": "ready"},
+				{"employee_id": "attention-employee", "runtime_status": "attention"},
+			},
+		})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_live", MachineID: "ve_live", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "live-employee", Name: "Live Runtime", Status: veStatusActive, OnlineStatus: veOnlineStatusOffline},
+		{ID: "ve_attention", MachineID: "ve_attention", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "attention-employee", Name: "Attention Runtime", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_deleted", MachineID: "ve_deleted", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "deleted-employee", Name: "Deleted Runtime", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/list", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	rec := httptest.NewRecorder()
+	VEAdminListHandler(settings, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Employees []digitalEmployeeEntry `json:"employees"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	byID := map[string]digitalEmployeeEntry{}
+	for _, emp := range out.Employees {
+		byID[emp.ID] = emp
+	}
+	if byID["ve_live"].OnlineStatus != veOnlineStatusOnline {
+		t.Fatalf("live runtime online_status = %q, want online; body=%s", byID["ve_live"].OnlineStatus, rec.Body.String())
+	}
+	if byID["ve_deleted"].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("deleted runtime online_status = %q, want offline; body=%s", byID["ve_deleted"].OnlineStatus, rec.Body.String())
+	}
+	if byID["ve_deleted"].Status != veStatusDisabled {
+		t.Fatalf("deleted runtime status = %q, want disabled; body=%s", byID["ve_deleted"].Status, rec.Body.String())
+	}
+	if !byID["ve_deleted"].RuntimeMissing || !byID["ve_deleted"].HistoryRetained {
+		t.Fatalf("deleted runtime should be marked runtime_missing/history_retained: %+v", byID["ve_deleted"])
+	}
+	if byID["ve_attention"].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("attention runtime online_status = %q, want offline; body=%s", byID["ve_attention"].OnlineStatus, rec.Body.String())
+	}
+	if byID["ve_attention"].Status != veStatusActive {
+		t.Fatalf("attention runtime status = %q, want active; body=%s", byID["ve_attention"].Status, rec.Body.String())
+	}
+}
+
+func TestVEAdminListKeepsExplicitPhysicalMacLawSrvEmployeePhysical(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID:                 "ve_physical",
+		MachineID:          "machine-physical",
+		EmployeeType:       veEmployeeTypePhysical,
+		PlatformID:         maclawSrvRuntimePlatformID,
+		PlatformEmployeeID: "stale-platform-employee",
+		RuntimeProviderID:  maclawSrvRuntimePlatformID,
+		Name:               "Physical Worker",
+		Status:             veStatusActive,
+		OnlineStatus:       veOnlineStatusOnline,
+	}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/list", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	rec := httptest.NewRecorder()
+	VEAdminListHandler(settings, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Employees []digitalEmployeeEntry `json:"employees"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(out.Employees) != 1 || out.Employees[0].Status != veStatusActive || out.Employees[0].EmployeeType != veEmployeeTypePhysical {
+		t.Fatalf("explicit physical employee should not be disabled by runtime report: %#v body=%s", out.Employees, rec.Body.String())
+	}
+}
+
+func TestVEAdminListSkipsMacLawSrvRuntimeReportWithoutRuntimeEmployees(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	runtimeCalled := false
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runtimeCalled = true
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_physical", MachineID: "machine-physical", EmployeeType: veEmployeeTypePhysical, Name: "Physical", Status: veStatusActive, OnlineStatus: veOnlineStatusOffline},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/list", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	rec := httptest.NewRecorder()
+	VEAdminListHandler(settings, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if runtimeCalled {
+		t.Fatalf("runtime report was called for registry without MaClawSrv runtime employees")
+	}
+}
+
+func TestMacLawSrvRuntimePresenceCacheCopiesAndEvicts(t *testing.T) {
+	macLawSrvRuntimePresenceCache.Lock()
+	macLawSrvRuntimePresenceCache.items = map[string]cachedMacLawSrvRuntimePresence{}
+	macLawSrvRuntimePresenceCache.Unlock()
+	t.Cleanup(func() {
+		macLawSrvRuntimePresenceCache.Lock()
+		macLawSrvRuntimePresenceCache.items = map[string]cachedMacLawSrvRuntimePresence{}
+		macLawSrvRuntimePresenceCache.Unlock()
+	})
+
+	key := "runtime\x00tenant-a"
+	presence := macLawSrvRuntimePresence{Loaded: true, Reported: map[string]bool{"emp-1": true}, Ready: map[string]bool{"emp-1": true}}
+	setCachedMacLawSrvRuntimePresence(key, presence, time.Now().Add(time.Minute))
+	presence.Ready["emp-1"] = false
+	cached, ok := getCachedMacLawSrvRuntimePresence(key, time.Now())
+	if !ok || !cached.Ready["emp-1"] {
+		t.Fatalf("cache did not isolate stored presence: ok=%v cached=%#v", ok, cached)
+	}
+	cached.Ready["emp-1"] = false
+	cachedAgain, ok := getCachedMacLawSrvRuntimePresence(key, time.Now())
+	if !ok || !cachedAgain.Ready["emp-1"] {
+		t.Fatalf("cache did not isolate returned presence: ok=%v cached=%#v", ok, cachedAgain)
+	}
+
+	for i := 0; i < macLawSrvRuntimePresenceCacheMaxItems+10; i++ {
+		setCachedMacLawSrvRuntimePresence(fmt.Sprintf("runtime-%03d\x00tenant-a", i), macLawSrvRuntimePresence{Loaded: true, Reported: map[string]bool{"emp": true}, Ready: map[string]bool{"emp": true}}, time.Now().Add(time.Duration(i+1)*time.Second))
+	}
+	macLawSrvRuntimePresenceCache.Lock()
+	size := len(macLawSrvRuntimePresenceCache.items)
+	macLawSrvRuntimePresenceCache.Unlock()
+	if size > macLawSrvRuntimePresenceCacheMaxItems {
+		t.Fatalf("cache size = %d, want <= %d", size, macLawSrvRuntimePresenceCacheMaxItems)
+	}
+}
+
+func TestMacLawSrvRuntimePresenceCacheKeyIncludesSecretFingerprint(t *testing.T) {
+	base := macLawSrvRuntimeEntry{BaseURL: "https://runtime.example/", AdminSecret: "secret-a"}
+	same := macLawSrvRuntimeEntry{BaseURL: "https://runtime.example", AdminSecret: "secret-a"}
+	rotated := macLawSrvRuntimeEntry{BaseURL: "https://runtime.example", AdminSecret: "secret-b"}
+
+	key := macLawSrvRuntimePresenceCacheKey(base, "tenant-a")
+	if key != macLawSrvRuntimePresenceCacheKey(same, "tenant-a") {
+		t.Fatalf("cache key should normalize equivalent base URLs")
+	}
+	if key == macLawSrvRuntimePresenceCacheKey(rotated, "tenant-a") {
+		t.Fatalf("cache key should change after admin secret rotation")
+	}
+	if strings.Contains(key, "secret-a") {
+		t.Fatalf("cache key leaked admin secret: %q", key)
 	}
 }
 
@@ -1129,6 +1341,47 @@ func TestVEAdminResidentHandlerEnforcesSingleActiveResidentPerTenant(t *testing.
 	}
 }
 
+func TestVEAdminResidentHandlerRejectsMissingMacLawSrvRuntimeEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID:                 "ve_deleted",
+		MachineID:          "ve_deleted",
+		PlatformID:         maclawSrvRuntimePlatformID,
+		PlatformEmployeeID: "deleted-employee",
+		RuntimeProviderID:  maclawSrvRuntimePlatformID,
+		Name:               "Deleted Runtime Worker",
+		Status:             veStatusActive,
+		OnlineStatus:       veOnlineStatusOnline,
+	}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/ve/ve_deleted/resident", strings.NewReader(`{"resident":true}`))
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "ve_deleted")
+	rec := httptest.NewRecorder()
+	VEAdminResidentHandler(settings).ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !bytes.Contains(rec.Body.Bytes(), []byte("VE_RUNTIME_MISSING")) {
+		t.Fatalf("resident missing runtime status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 || updated.Employees[0].Status != veStatusDisabled || updated.Employees[0].OnlineStatus != veOnlineStatusOffline || updated.Employees[0].Resident {
+		t.Fatalf("missing runtime employee should be disabled/offline/non-resident: %#v", updated.Employees)
+	}
+}
+
 func TestVEAdminResidentHandlerRejectsInactiveEmployee(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
@@ -1364,6 +1617,89 @@ func TestDigitalEmployeeInitiateAcceptsPlatformEmployeeID(t *testing.T) {
 	}
 }
 
+func TestDigitalEmployeeInitiateRejectsMissingMacLawSrvRuntimeEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID:                 "ve_deleted",
+		MachineID:          "ve_deleted",
+		PlatformID:         maclawSrvRuntimePlatformID,
+		PlatformEmployeeID: "deleted-employee",
+		RuntimeProviderID:  maclawSrvRuntimePlatformID,
+		Name:               "Deleted Runtime Worker",
+		AccessPolicy:       "public",
+		Status:             veStatusActive,
+		OnlineStatus:       veOnlineStatusOnline,
+	}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	authn := fakeVEMachineAuth{token: "machine-token", principals: map[string]*auth.MachinePrincipal{"machine-gui": {TenantID: "tenant-a", UserID: "user-gui", MachineID: "machine-gui"}}}
+	req := httptest.NewRequest(http.MethodPost, "/api/ve/deleted-employee/initiate", nil)
+	req.Header.Set("X-Machine-ID", "machine-gui")
+	req.Header.Set("Authorization", "Bearer machine-token")
+	req.SetPathValue("id", "deleted-employee")
+	rec := httptest.NewRecorder()
+	VEInitiateHandler(settings, NewGroupDiscussionService(), authn).ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !bytes.Contains(rec.Body.Bytes(), []byte("VE_NOT_ACTIVE")) {
+		t.Fatalf("missing runtime employee initiate status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDigitalEmployeeInitiateRejectsNonReadyMacLawSrvRuntimeEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ok",
+			"users":  []map[string]any{{"employee_id": "attention-employee", "runtime_status": "attention"}},
+		})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID:                 "ve_attention",
+		MachineID:          "ve_attention",
+		PlatformID:         maclawSrvRuntimePlatformID,
+		PlatformEmployeeID: "attention-employee",
+		RuntimeProviderID:  maclawSrvRuntimePlatformID,
+		Name:               "Attention Runtime Worker",
+		AccessPolicy:       "public",
+		Status:             veStatusActive,
+		OnlineStatus:       veOnlineStatusOnline,
+	}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	authn := fakeVEMachineAuth{token: "machine-token", principals: map[string]*auth.MachinePrincipal{"machine-gui": {TenantID: "tenant-a", UserID: "user-gui", MachineID: "machine-gui"}}}
+	req := httptest.NewRequest(http.MethodPost, "/api/ve/attention-employee/initiate", nil)
+	req.Header.Set("X-Machine-ID", "machine-gui")
+	req.Header.Set("Authorization", "Bearer machine-token")
+	req.SetPathValue("id", "attention-employee")
+	rec := httptest.NewRecorder()
+	VEInitiateHandler(settings, NewGroupDiscussionService(), authn).ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !bytes.Contains(rec.Body.Bytes(), []byte("VE_NOT_ONLINE")) {
+		t.Fatalf("non-ready runtime employee initiate status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestDigitalEmployeeHistoryAcceptsPlatformEmployeeIDCaseInsensitive(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	enableVEDigitalEmployeeAuthorization(t, settings, 2)
@@ -1392,6 +1728,44 @@ func TestDigitalEmployeeHistoryAcceptsPlatformEmployeeIDCaseInsensitive(t *testi
 	VEHistoryHandler(settings, groupSvc, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("Runtime conversation")) {
 		t.Fatalf("history by platform employee id status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDigitalEmployeeHistoryReflectsMissingMacLawSrvRuntimeEmployeeOffline(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID:                 "ve_deleted",
+		MachineID:          "ve_deleted",
+		PlatformID:         maclawSrvRuntimePlatformID,
+		PlatformEmployeeID: "deleted-employee",
+		RuntimeProviderID:  maclawSrvRuntimePlatformID,
+		Name:               "Deleted Runtime Worker",
+		Status:             veStatusActive,
+		OnlineStatus:       veOnlineStatusOnline,
+	}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/deleted-employee/history?limit=5", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "deleted-employee")
+	rec := httptest.NewRecorder()
+	VEHistoryHandler(settings, groupSvc, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte(`"status":"disabled"`)) || !bytes.Contains(rec.Body.Bytes(), []byte(`"online_status":"offline"`)) {
+		t.Fatalf("history should reflect runtime absence status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1896,6 +2270,277 @@ func TestDigitalEmployeeAdminActionEmitsMachineEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestDigitalEmployeeAdminApproveRejectsMissingMacLawSrvRuntimeEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID:                 "ve_deleted",
+		MachineID:          "ve_deleted",
+		PlatformID:         maclawSrvRuntimePlatformID,
+		PlatformEmployeeID: "deleted-employee",
+		RuntimeProviderID:  maclawSrvRuntimePlatformID,
+		Name:               "Deleted Runtime Worker",
+		Status:             veStatusPending,
+		OnlineStatus:       veOnlineStatusOnline,
+	}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/ve/ve_deleted/approve", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "ve_deleted")
+	rec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "approve").ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !bytes.Contains(rec.Body.Bytes(), []byte("VE_RUNTIME_MISSING")) {
+		t.Fatalf("approve missing runtime status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 || updated.Employees[0].Status != veStatusDisabled || updated.Employees[0].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("missing runtime employee should be marked disabled/offline: %#v", updated.Employees)
+	}
+}
+
+func TestDigitalEmployeeAdminApproveRejectsNonReadyMacLawSrvRuntimeEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ok",
+			"users":  []map[string]any{{"employee_id": "attention-employee", "runtime_status": "attention"}},
+		})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID:                 "ve_attention",
+		MachineID:          "ve_attention",
+		PlatformID:         maclawSrvRuntimePlatformID,
+		PlatformEmployeeID: "attention-employee",
+		RuntimeProviderID:  maclawSrvRuntimePlatformID,
+		Name:               "Attention Runtime Worker",
+		Status:             veStatusPending,
+		OnlineStatus:       veOnlineStatusOnline,
+	}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/ve/ve_attention/approve", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "ve_attention")
+	rec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "approve").ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !bytes.Contains(rec.Body.Bytes(), []byte("VE_NOT_ONLINE")) {
+		t.Fatalf("approve non-ready runtime status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 || updated.Employees[0].Status != veStatusPending || updated.Employees[0].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("non-ready runtime employee should stay pending/offline: %#v", updated.Employees)
+	}
+}
+
+func TestVEAdminActionDeleteRemovesDigitalEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := saveVERegistry(context.Background(), tenantSystem, digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_keep", MachineID: "machine-keep", Name: "Keep", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, RegisteredAt: now},
+		{ID: "ve_ghost", MachineID: "machine-ghost", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "deleted-employee", Name: "Deleted Runtime Worker", Status: veStatusDisabled, OnlineStatus: veOnlineStatusOffline, Resident: true, RegisteredAt: now},
+	}}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/ve/deleted-employee", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "deleted-employee")
+	rec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "delete").ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 {
+		t.Fatalf("employees len=%d, want 1: %#v", len(updated.Employees), updated.Employees)
+	}
+	if updated.Employees[0].ID != "ve_keep" {
+		t.Fatalf("remaining employee=%q, want ve_keep", updated.Employees[0].ID)
+	}
+	if updated.findByIDOrMachineIDOrPlatformEmployeeID("deleted-employee") >= 0 {
+		t.Fatal("deleted platform employee still found")
+	}
+}
+
+func TestVEAdminActionDeleteRejectsActivePhysicalEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	if err := saveVERegistry(context.Background(), tenantSystem, digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID: "ve_active", MachineID: "machine-active", EmployeeType: veEmployeeTypePhysical, Name: "Active Worker", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline,
+	}}}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/ve/ve_active", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "ve_active")
+	rec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "delete").ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict || !bytes.Contains(rec.Body.Bytes(), []byte("VE_DELETE_ACTIVE_FORBIDDEN")) {
+		t.Fatalf("delete active status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 || updated.Employees[0].ID != "ve_active" {
+		t.Fatalf("active employee should remain: %#v", updated.Employees)
+	}
+}
+
+func TestVEAdminActionDeleteAllowsActiveMissingMacLawSrvRuntimeEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	if err := saveVERegistry(context.Background(), tenantSystem, digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID: "ve_ghost", MachineID: "machine-ghost", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "deleted-employee", Name: "Deleted Runtime Worker", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline,
+	}}}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/ve/deleted-employee", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "deleted-employee")
+	rec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "delete").ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete missing runtime status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 0 {
+		t.Fatalf("missing runtime employee should be removed: %#v", updated.Employees)
+	}
+}
+
+func newVEAdminForceDeleteTestServices(t *testing.T) (*store.Store, *auth.AdminService, func()) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "force-delete.db")
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: dbPath, WAL: true, BusyTimeoutMS: 5000, MaxReadOpenConns: 2, MaxReadIdleConns: 1, MaxWriteOpenConns: 1, MaxWriteIdleConns: 1})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		_ = provider.Close()
+		t.Fatalf("run migrations: %v", err)
+	}
+	st := sqlite.NewStore(provider)
+	admins := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
+	cleanup := func() { _ = provider.Close() }
+	return st, admins, cleanup
+}
+
+func TestVEAdminForceDeleteRejectsWrongAdminPassword(t *testing.T) {
+	st, admins, cleanup := newVEAdminForceDeleteTestServices(t)
+	defer cleanup()
+	ctx := context.Background()
+	if _, err := admins.CreateTenantAdmin(ctx, "tenant-a", "tenant-admin", "correct-password", "tenant-admin@example.com", "Tenant Admin", "tenant_admin"); err != nil {
+		t.Fatalf("create tenant admin: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", st.System)
+	if err := saveVERegistry(ctx, tenantSystem, digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_ghost", MachineID: "machine-ghost", Name: "Ghost", Status: veStatusDisabled, OnlineStatus: veOnlineStatusOffline}}}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/ve/ve_ghost/force-delete", strings.NewReader(`{"admin_password":"wrong-password"}`))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "admin-tenant", Username: "tenant-admin", Scope: "tenant", TenantID: "tenant-a"}))
+	req.SetPathValue("id", "ve_ghost")
+	rec := httptest.NewRecorder()
+	VEAdminForceDeleteHandler(st.System, NewGroupDiscussionService(), admins).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized || !bytes.Contains(rec.Body.Bytes(), []byte("INVALID_ADMIN_PASSWORD")) {
+		t.Fatalf("wrong password status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(ctx, tenantSystem)
+	if len(updated.Employees) != 1 {
+		t.Fatalf("wrong password should not delete registry: %#v", updated.Employees)
+	}
+}
+
+func TestVEAdminForceDeleteRemovesRegistryAndHistory(t *testing.T) {
+	st, admins, cleanup := newVEAdminForceDeleteTestServices(t)
+	defer cleanup()
+	ctx := context.Background()
+	if _, err := admins.CreateTenantAdmin(ctx, "tenant-a", "tenant-admin", "correct-password", "tenant-admin@example.com", "Tenant Admin", "tenant_admin"); err != nil {
+		t.Fatalf("create tenant admin: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", st.System)
+	if err := saveVERegistry(ctx, tenantSystem, digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_ghost", MachineID: "machine-ghost", PlatformEmployeeID: "deleted-employee", Name: "Ghost", Status: veStatusDisabled, OnlineStatus: veOnlineStatusOffline}}}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	if _, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "ghost history", Participants: []corea2a.Participant{{ID: "owner", RoleCode: "initiator"}, {ID: "machine-ghost", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority}); err != nil {
+		t.Fatalf("create ghost session: %v", err)
+	}
+	if _, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "keep history", Participants: []corea2a.Participant{{ID: "owner", RoleCode: "initiator"}, {ID: "other-machine", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority}); err != nil {
+		t.Fatalf("create keep session: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/ve/ve_ghost/force-delete", strings.NewReader(`{"admin_password":"correct-password"}`))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "admin-tenant", Username: "tenant-admin", Scope: "tenant", TenantID: "tenant-a"}))
+	req.SetPathValue("id", "ve_ghost")
+	rec := httptest.NewRecorder()
+	VEAdminForceDeleteHandler(st.System, groupSvc, admins).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("force delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(ctx, tenantSystem)
+	if len(updated.Employees) != 0 {
+		t.Fatalf("force delete should remove registry: %#v", updated.Employees)
+	}
+	ghostHistory, err := groupSvc.ListDiscussionSummaries("tenant-a", ListSessionsFilter{ParticipantID: "machine-ghost"})
+	if err != nil {
+		t.Fatalf("list ghost history: %v", err)
+	}
+	if len(ghostHistory) != 0 {
+		t.Fatalf("force delete should remove ghost history: %#v", ghostHistory)
+	}
+	keepHistory, err := groupSvc.ListDiscussionSummaries("tenant-a", ListSessionsFilter{ParticipantID: "other-machine"})
+	if err != nil {
+		t.Fatalf("list keep history: %v", err)
+	}
+	if len(keepHistory) != 1 {
+		t.Fatalf("force delete should keep unrelated history: %#v", keepHistory)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"deleted_history_sessions":1`)) {
+		t.Fatalf("force delete response should include deleted history count: %s", rec.Body.String())
+	}
+}
+
 func TestDigitalEmployeeAuthorizationBlocksRegisterAndDiscovery(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	authn := fakeVEMachineAuth{
@@ -2382,6 +3027,47 @@ func TestDigitalEmployeeConfigAutoApprovesPendingWithinQuota(t *testing.T) {
 	}
 }
 
+func TestDigitalEmployeeConfigAutoApproveSkipsMissingMacLawSrvRuntimeEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID:                 "ve_deleted",
+		MachineID:          "ve_deleted",
+		PlatformID:         maclawSrvRuntimePlatformID,
+		PlatformEmployeeID: "deleted-employee",
+		RuntimeProviderID:  maclawSrvRuntimePlatformID,
+		Status:             veStatusPending,
+		OnlineStatus:       veOnlineStatusOnline,
+	}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, seed); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	reqBody, _ := json.Marshal(map[string]any{"max_group_participants": 5, "auto_approve": true})
+	req := httptest.NewRequest(http.MethodPut, "/api/ve/config", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	rec := httptest.NewRecorder()
+	VEAdminConfigHandler(settings).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save config status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 || updated.Employees[0].Status != veStatusDisabled || updated.Employees[0].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("missing runtime employee should not be auto-approved: %#v", updated.Employees)
+	}
+}
+
 func TestDigitalEmployeeFileRelayRoutesRequireAuthenticatedParticipant(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 	globalToken := issueHubAdminToken(t, router)
@@ -2753,7 +3439,7 @@ func setVERegistrationPayload(t *testing.T, settings *testSystemSettingsRepo, pa
 	}
 }
 
-func TestLoadVERegistryNormalizesLegacyPlatformOnlineStatus(t *testing.T) {
+func TestLoadVERegistryNormalizesLegacyPlatformOnlineStatusOffline(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive, OnlineStatus: "platform"}}}
 	data, err := json.Marshal(registry)
@@ -2764,8 +3450,8 @@ func TestLoadVERegistryNormalizesLegacyPlatformOnlineStatus(t *testing.T) {
 		t.Fatalf("seed registry: %v", err)
 	}
 	loaded := loadVERegistry(context.Background(), settings)
-	if len(loaded.Employees) != 1 || loaded.Employees[0].OnlineStatus != veOnlineStatusOnline {
-		t.Fatalf("legacy online status was not normalized: %#v", loaded.Employees)
+	if len(loaded.Employees) != 1 || loaded.Employees[0].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("legacy online status was not normalized to offline: %#v", loaded.Employees)
 	}
 	raw, err := settings.Get(context.Background(), veRegistryKey)
 	if err != nil {

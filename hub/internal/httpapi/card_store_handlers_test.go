@@ -47,6 +47,14 @@ func (m *cardStoreTestMailer) Send(_ context.Context, to []string, subject strin
 	return nil
 }
 
+func resetCardStoreRecoverRateLimiterForTest() {
+	globalCardStoreRecoverRateLimiter.mu.Lock()
+	defer globalCardStoreRecoverRateLimiter.mu.Unlock()
+	globalCardStoreRecoverRateLimiter.day = ""
+	globalCardStoreRecoverRateLimiter.ips = nil
+	globalCardStoreRecoverRateLimiter.emails = nil
+}
+
 func newAlipayTestKeys(t *testing.T) (string, string) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -119,7 +127,7 @@ func TestCardStoreConfigNormalizesLegacyTestProductAsCredits(t *testing.T) {
 		ID:           "service_test_10",
 		Kind:         "service_card",
 		DurationDays: 1,
-		Credits:      10,
+		Credits:      999,
 		PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 50, Daily: 100},
 	}}})
 	product, ok := findCardStoreProduct(cfg, "service_test_10")
@@ -143,6 +151,129 @@ func TestCardStoreConfigKeepsCustomPeriodLimitsWhenDurationDefaults(t *testing.T
 	want := llmservice.CreditPeriodLimits{FiveHour: 60, Daily: 120, Weekly: 240}
 	if product.DurationDays != 30 || product.PeriodLimits != want {
 		t.Fatalf("service_month = days %d limits %#v, want days 30 limits %#v", product.DurationDays, product.PeriodLimits, want)
+	}
+}
+
+func TestRecoverCardStoreCodesRateLimitsByEmailPerDay(t *testing.T) {
+	resetCardStoreRecoverRateLimiterForTest()
+	defer resetCardStoreRecoverRateLimiterForTest()
+	handler := RecoverCardStoreCodesHandler(newTestLLMServiceSystemSettings(), nil)
+	for i := 0; i < cardStoreRecoverDailyEmailLimit; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/card-store/recover", strings.NewReader(`{"email":"buyer@example.com"}`))
+		req.RemoteAddr = "127.0.0.1:1234"
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d", i+1))
+		handler(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("recover request %d status = %d, body = %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/card-store/recover", strings.NewReader(`{"email":"buyer@example.com"}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.99")
+	handler(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("third email recover status = %d, want 429, body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["code"] != "CARD_STORE_RECOVER_RATE_LIMITED" || body["scope"] != "email" {
+		t.Fatalf("rate limit body = %#v", body)
+	}
+}
+
+func TestRecoverCardStoreCodesRateLimitsByIPPerDay(t *testing.T) {
+	resetCardStoreRecoverRateLimiterForTest()
+	defer resetCardStoreRecoverRateLimiterForTest()
+	handler := RecoverCardStoreCodesHandler(newTestLLMServiceSystemSettings(), nil)
+	for i := 0; i < cardStoreRecoverDailyIPLimit; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/card-store/recover", strings.NewReader(fmt.Sprintf(`{"email":"buyer%d@example.com"}`, i)))
+		req.RemoteAddr = "127.0.0.1:1234"
+		req.Header.Set("X-Forwarded-For", "198.51.100.10")
+		handler(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("recover request %d status = %d, body = %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/card-store/recover", strings.NewReader(`{"email":"overflow@example.com"}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "198.51.100.10")
+	handler(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("eleventh IP recover status = %d, want 429, body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["code"] != "CARD_STORE_RECOVER_RATE_LIMITED" || body["scope"] != "ip" {
+		t.Fatalf("rate limit body = %#v", body)
+	}
+}
+
+func TestRecoverCardStoreCodesEmailLimitedRequestsStillCountTowardIP(t *testing.T) {
+	resetCardStoreRecoverRateLimiterForTest()
+	defer resetCardStoreRecoverRateLimiterForTest()
+	handler := RecoverCardStoreCodesHandler(newTestLLMServiceSystemSettings(), nil)
+	var last map[string]any
+	for i := 0; i < cardStoreRecoverDailyIPLimit+1; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/card-store/recover", strings.NewReader(`{"email":"buyer@example.com"}`))
+		req.RemoteAddr = "127.0.0.1:1234"
+		req.Header.Set("X-Forwarded-For", "198.51.100.20")
+		handler(rec, req)
+		last = map[string]any{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &last); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if last["code"] != "CARD_STORE_RECOVER_RATE_LIMITED" || last["scope"] != "ip" {
+		t.Fatalf("eleventh repeated email recover should hit IP scope, body = %#v", last)
+	}
+}
+
+func TestRecoverCardStoreCodesIgnoresSpoofedForwardedForFromPublicRemote(t *testing.T) {
+	resetCardStoreRecoverRateLimiterForTest()
+	defer resetCardStoreRecoverRateLimiterForTest()
+	handler := RecoverCardStoreCodesHandler(newTestLLMServiceSystemSettings(), nil)
+	for i := 0; i < cardStoreRecoverDailyIPLimit; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/card-store/recover", strings.NewReader(fmt.Sprintf(`{"email":"buyer%d@example.com"}`, i)))
+		req.RemoteAddr = "203.0.113.10:1234"
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("198.51.100.%d", i+1))
+		handler(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("recover request %d status = %d, body = %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/card-store/recover", strings.NewReader(`{"email":"overflow@example.com"}`))
+	req.RemoteAddr = "203.0.113.10:1234"
+	req.Header.Set("X-Forwarded-For", "198.51.100.250")
+	handler(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("spoofed forwarded-for should not bypass public remote IP limit, status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCardStoreRecoverRateLimiterResetsNextDay(t *testing.T) {
+	limiter := &cardStoreRecoverRateLimiter{}
+	now := time.Date(2026, 6, 6, 23, 59, 0, 0, time.UTC)
+	for i := 0; i < cardStoreRecoverDailyEmailLimit; i++ {
+		if ok, scope := limiter.allow("203.0.113.7", "buyer@example.com", now); !ok {
+			t.Fatalf("request %d limited with scope %q", i+1, scope)
+		}
+	}
+	if ok, scope := limiter.allow("203.0.113.7", "buyer@example.com", now); ok || scope != "email" {
+		t.Fatalf("same day extra request = ok %v scope %q, want email limit", ok, scope)
+	}
+	if ok, scope := limiter.allow("203.0.113.7", "buyer@example.com", now.Add(2*time.Minute)); !ok {
+		t.Fatalf("next day request limited with scope %q", scope)
 	}
 }
 
@@ -734,9 +865,18 @@ func TestGetCardStoreProductsReturnsPublicManualChannels(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "2088000000000000") || strings.Contains(rec.Body.String(), "pay.example.com") || strings.Contains(rec.Body.String(), "Alice") {
 		t.Fatalf("public product response leaked payment details: %s", rec.Body.String())
 	}
-	day, ok := findCardStoreProduct(cardStoreConfig{Products: body.Products}, "service_day")
-	if !ok || day.PeriodLimits.FiveHour != 150 {
-		t.Fatalf("public day product missing period limits: %#v", day)
+	defaultLimits := map[string]llmservice.CreditPeriodLimits{
+		"service_day":     {FiveHour: 150},
+		"service_week":    {FiveHour: 300, Daily: 600},
+		"service_month":   {FiveHour: 600, Daily: 1200, Weekly: 2400},
+		"service_quarter": {FiveHour: 1200, Daily: 2400, Weekly: 4800, Monthly: 10000},
+		"service_year":    {FiveHour: 2400, Daily: 4800, Weekly: 9600, Monthly: 40000},
+	}
+	for id, want := range defaultLimits {
+		product, ok := findCardStoreProduct(cardStoreConfig{Products: body.Products}, id)
+		if !ok || product.PeriodLimits != want {
+			t.Fatalf("public %s product period limits = %#v, want %#v", id, product.PeriodLimits, want)
+		}
 	}
 	credits, ok := findCardStoreProduct(cardStoreConfig{Products: body.Products}, "credits_10000")
 	if !ok || credits.PeriodLimits != (llmservice.CreditPeriodLimits{}) {

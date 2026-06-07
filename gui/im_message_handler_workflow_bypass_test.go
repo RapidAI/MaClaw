@@ -108,3 +108,32 @@ func TestShouldBypassWorkflowForClassification_DoesNotBypassDegradedCoding(t *te
 		t.Fatalf("degraded coding without workflow_type should fall through for deeper workflow understanding")
 	}
 }
+
+func TestShouldEscapeActiveUnderstandingForClassification_KeepsWorkflowCapableLabels(t *testing.T) {
+	cases := []intent.IntentLabel{
+		intent.LabelOffice,
+		intent.LabelCoding,
+		intent.LabelWorkflowTask,
+	}
+	for _, label := range cases {
+		result := intent.ClassificationResult{Primary: label, Confidence: 0.88, Layer: 23}
+		if shouldEscapeActiveUnderstandingForClassification(result, true, 0.70) {
+			t.Fatalf("%s can belong to an active workflow clarification and must not escape understanding", label)
+		}
+	}
+}
+
+func TestShouldEscapeActiveUnderstandingForClassification_EscapesDirectExecution(t *testing.T) {
+	cases := []intent.IntentLabel{
+		intent.LabelSSH,
+		intent.LabelMaintenance,
+		intent.LabelBugFix,
+		intent.LabelNonCoding,
+	}
+	for _, label := range cases {
+		result := intent.ClassificationResult{Primary: label, Confidence: 0.88, Layer: 23}
+		if !shouldEscapeActiveUnderstandingForClassification(result, false, 0.70) {
+			t.Fatalf("%s should escape active understanding for normal agent/tool handling", label)
+		}
+	}
+}

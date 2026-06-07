@@ -12,6 +12,11 @@ type ToolOptions struct {
 	ContextHint string
 	OwnerID     string
 	AfterWrite  func()
+
+	// LoopID identifies the current agent loop execution for scroll session
+	// scoping. Hosts set this field; corelib manages the session lifecycle.
+	// Zero value (empty string) means no scroll session association.
+	LoopID string
 }
 
 // ToolRecallResult is the shared recall outcome used by GUI, TUI, and server agents.
@@ -243,12 +248,87 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		if query == "" {
 			return "missing query parameter"
 		}
+
+		// Parse new multi-page recall parameters.
+		cursor := toolStringArg(args, "cursor")
+		mode := toolStringArg(args, "mode")
+		session := toolBoolArg(args, "session", false)
+
+		// Validate mutually exclusive combinations.
+		if mode == "exhaustive" && cursor != "" {
+			return "cannot combine exhaustive mode with cursor pagination"
+		}
+		if session && cursor != "" {
+			return "cannot combine session mode with cursor pagination"
+		}
+
 		projectPath := firstNonEmptyMemoryToolString(opts.ProjectPath, toolStringArg(args, "project_path"), toolStringArg(args, "project"))
-		recall, err := store.RecallByMode(query, Category(toolStringArg(args, "category")), toolStringArg(args, "mode"), projectPath, toolIntArg(args, "limit", 0), opts.OwnerID)
+		category := Category(toolStringArg(args, "category"))
+		debug := toolBoolArg(args, "debug", false)
+
+		// --- Dispatch: cursor=xxx → CursorPaginator.NextPage ---
+		if cursor != "" {
+			paginator := store.Paginator()
+			if paginator == nil {
+				return "pagination not available"
+			}
+			result, err := paginator.NextPage(cursor)
+			if err != nil {
+				return err.Error()
+			}
+			return formatPaginatedResultForTool(store, query, result, debug)
+		}
+
+		// --- Dispatch: mode=exhaustive → Store.RecallExhaustive ---
+		if mode == "exhaustive" {
+			exhaustiveResult := store.RecallExhaustive(query, category, projectPath, opts.OwnerID)
+			return formatExhaustiveResultForTool(store, query, exhaustiveResult, debug)
+		}
+
+		// --- Dispatch: session=true → ScrollSessionManager.GetOrCreate + Advance ---
+		if session {
+			loopID := opts.LoopID
+			if loopID == "" {
+				loopID = "default"
+			}
+			sessions := store.ScrollSessions()
+			if sessions == nil {
+				return "scroll sessions not available"
+			}
+			sessions.GetOrCreate(loopID, store, query, category, projectPath, opts.OwnerID)
+			result, err := sessions.Advance(loopID, perPageTokenBudget, opts.OwnerID)
+			if err != nil {
+				return err.Error()
+			}
+			return formatScrollResultForTool(store, query, result, debug)
+		}
+
+		// --- Dispatch: no new params + pagination context → CursorPaginator.FirstPage ---
+		// When no cursor/mode/session/limit/debug params are given and a LoopID
+		// is available (indicating scroll session capability), use CursorPaginator
+		// for the initial page. This provides has_more/cursor in the response
+		// for subsequent NextPage calls.
+		// Without LoopID, fall through to RecallByMode for backward-compatible
+		// behavior (preserves trace recording and debug output).
+		modeParam := toolStringArg(args, "mode")
+		limitParam := toolIntArg(args, "limit", 0)
+		if modeParam == "" && limitParam == 0 && !debug && opts.LoopID != "" {
+			if paginator := store.Paginator(); paginator != nil {
+				result, err := paginator.FirstPage(store, query, category, projectPath, opts.OwnerID)
+				if err == nil && result != nil && len(result.Entries) > 0 {
+					return formatPaginatedResultForTool(store, query, result, debug)
+				}
+				// If FirstPage returns no results or errors, fall through to
+				// RecallDynamic for backward-compatible behavior.
+			}
+		}
+
+		// --- Default: existing RecallDynamic ---
+		recall, err := store.RecallByMode(query, category, modeParam, projectPath, limitParam, opts.OwnerID)
 		if err != nil {
 			return err.Error()
 		}
-		return FormatRecallResultForTool(store, query, recall, toolBoolArg(args, "debug", false), true)
+		return FormatRecallResultForTool(store, query, recall, debug, true)
 
 	case MemoryToolActionSave:
 		content := toolStringArg(args, "content")
@@ -338,6 +418,94 @@ func FormatRecallResultForTool(store *Store, query string, recall ToolRecallResu
 	if touch && store != nil {
 		ids := make([]string, 0, len(recall.Entries))
 		for _, e := range recall.Entries {
+			ids = append(ids, e.ID)
+		}
+		store.TouchAccess(ids)
+	}
+	return b.String()
+}
+
+// formatPaginatedResultForTool formats a PaginatedResult for the memory tool
+// response. Only includes cursor/has_more/page fields when pagination is active.
+func formatPaginatedResultForTool(store *Store, query string, result *PaginatedResult, debug bool) string {
+	if result == nil || len(result.Entries) == 0 {
+		return "No relevant memories found."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Recalled %d relevant memories (page %d)\n", len(result.Entries), result.Page)
+	for _, e := range result.Entries {
+		b.WriteString(FormatRecallEntryForTool(e))
+		b.WriteByte('\n')
+	}
+	// Response fields: only when activated.
+	fmt.Fprintf(&b, "has_more: %v\n", result.HasMore)
+	fmt.Fprintf(&b, "page: %d\n", result.Page)
+	if result.HasMore && result.Cursor != "" {
+		fmt.Fprintf(&b, "cursor: %s\n", result.Cursor)
+		b.WriteString(BuildHasMoreHint(result.Cursor))
+		b.WriteByte('\n')
+	}
+	if store != nil {
+		ids := make([]string, 0, len(result.Entries))
+		for _, e := range result.Entries {
+			ids = append(ids, e.ID)
+		}
+		store.TouchAccess(ids)
+	}
+	return b.String()
+}
+
+// formatExhaustiveResultForTool formats an ExhaustiveResult for the memory tool
+// response. Only includes truncated/total_matching fields when caps are hit.
+func formatExhaustiveResultForTool(store *Store, query string, result *ExhaustiveResult, debug bool) string {
+	if result == nil || len(result.Entries) == 0 {
+		return "No relevant memories found."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Recalled %d relevant memories (exhaustive mode)\n", len(result.Entries))
+	for _, e := range result.Entries {
+		b.WriteString(FormatRecallEntryForTool(e))
+		b.WriteByte('\n')
+	}
+	// Response fields: only when truncated.
+	if result.Truncated {
+		fmt.Fprintf(&b, "truncated: true\n")
+		fmt.Fprintf(&b, "total_matching: %d\n", result.TotalMatching)
+		b.WriteString(BuildTruncatedHint(result.TotalMatching))
+		b.WriteByte('\n')
+	}
+	if store != nil {
+		ids := make([]string, 0, len(result.Entries))
+		for _, e := range result.Entries {
+			ids = append(ids, e.ID)
+		}
+		store.TouchAccess(ids)
+	}
+	return b.String()
+}
+
+// formatScrollResultForTool formats a ScrollResult for the memory tool response.
+// Only includes session_exhausted field when session=true is activated.
+func formatScrollResultForTool(store *Store, query string, result *ScrollResult, debug bool) string {
+	if result == nil {
+		return "No relevant memories found."
+	}
+	if result.SessionExhausted {
+		return "session_exhausted: true\n" + HintSessionExhausted
+	}
+	if len(result.Entries) == 0 {
+		return "No relevant memories found."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Recalled %d relevant memories (scroll session)\n", len(result.Entries))
+	for _, e := range result.Entries {
+		b.WriteString(FormatRecallEntryForTool(e))
+		b.WriteByte('\n')
+	}
+	fmt.Fprintf(&b, "session_exhausted: false\n")
+	if store != nil {
+		ids := make([]string, 0, len(result.Entries))
+		for _, e := range result.Entries {
 			ids = append(ids, e.ID)
 		}
 		store.TouchAccess(ids)

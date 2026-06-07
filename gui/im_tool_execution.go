@@ -555,14 +555,17 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeState(policyUserID stri
 			return toolExecutionResult{Text: "[system rejected] " + reason, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 		}
 	}
-	acceptsRuntimeOwner := toolAcceptsRuntimePolicyOwnerArg(name)
+	acceptsRuntimeOwner := h.registeredToolAcceptsRuntimePolicyOwnerArg(name)
 	if acceptsRuntimeOwner {
 		log.Printf("[tool-runtime] tool=%q owner=%q explicit_runtime=%v platform=%q", name, policyUserID, hasRuntimeOwner, strings.TrimSpace(runtimePlatform))
+	}
+	if hasRuntimeOwner && policyUserID == "" && acceptsRuntimeOwner {
+		return toolExecutionResult{Text: fmt.Sprintf("%s failed: runtime owner is missing; isolated runtime will not fall back to desktop loop", name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
 	if hasRuntimeOwner && acceptsRuntimeOwner {
 		args[registeredToolPolicyOwnerIDField] = policyUserID
 	}
-	if platform := strings.TrimSpace(runtimePlatform); platform != "" && toolAcceptsRuntimePlatformArg(name) {
+	if platform := strings.TrimSpace(runtimePlatform); platform != "" && h.registeredToolAcceptsRuntimePlatformArg(name) {
 		args[registeredToolRuntimePlatformField] = platform
 	}
 	if name == "set_nickname" && strings.TrimSpace(userText) != "" {
@@ -707,6 +710,24 @@ func (h *IMMessageHandler) consumeRuntimePlatformFromToolArgsOrCurrent(args map[
 		return platform
 	}
 	return ""
+}
+
+func (h *IMMessageHandler) registeredToolAcceptsRuntimePolicyOwnerArg(name string) bool {
+	if h != nil && h.registry != nil {
+		if tool, ok := h.registry.Get(strings.TrimSpace(name)); ok && tool != nil {
+			return tool.RuntimePolicyOwnerArg
+		}
+	}
+	return toolAcceptsRuntimePolicyOwnerArg(name)
+}
+
+func (h *IMMessageHandler) registeredToolAcceptsRuntimePlatformArg(name string) bool {
+	if h != nil && h.registry != nil {
+		if tool, ok := h.registry.Get(strings.TrimSpace(name)); ok && tool != nil {
+			return tool.RuntimePlatformArg
+		}
+	}
+	return toolAcceptsRuntimePlatformArg(name)
 }
 
 func toolAcceptsRuntimePolicyOwnerArg(name string) bool {

@@ -113,7 +113,7 @@ func TestHandleWorkflowEngineResponseActivatesOrchestratorOnFirstAgentLoop(t *te
 }
 
 func TestHandleWorkflowEngineResponseBlocksWhenProjectPathCannotBePrepared(t *testing.T) {
-	app := &App{testHomeDir: t.TempDir()}
+	app := &App{testHomeDir: t.TempDir(), CurrentLanguage: "en"}
 	projectPath := filepath.Join(t.TempDir(), "project-file")
 	if err := os.WriteFile(projectPath, []byte("not a directory"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -135,7 +135,7 @@ func TestHandleWorkflowEngineResponseBlocksWhenProjectPathCannotBePrepared(t *te
 
 	got := h.handleWorkflowEngineResponse(engine, "u1", resp, "desktop")
 
-	if got == nil || !strings.Contains(got.Error, "failed to prepare workflow project directory") {
+	if got == nil || !strings.Contains(got.Error, "Failed to prepare workflow project directory") {
 		t.Fatalf("expected project directory preparation error, got %#v", got)
 	}
 	if orch := h.getTaskOrchestratorReadOnly("u1"); orch != nil && orch.IsActive() {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -508,19 +509,19 @@ func workflowHasPendingPhaseForm(engine *workflow.WorkflowEngine, userID string)
 
 func isWorkflowFormDirectRunCommand(text string) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(text))
-	trimmed = strings.Trim(trimmed, " .。!！")
+	trimmed = strings.Trim(trimmed, " .\u3002!\uff01")
 	switch trimmed {
-	case "直接写", "直接执行", "直接做", "直接开始", "直接生成", "开工", "开始", "启动", "继续", "跳过", "跳过表单", "不用填", "不填了", "go", "go ahead", "start", "continue", "skip", "skip form":
+	case "\u76f4\u63a5\u5199", "\u76f4\u63a5\u6267\u884c", "\u76f4\u63a5\u505a", "\u76f4\u63a5\u5f00\u59cb", "\u76f4\u63a5\u751f\u6210", "\u5f00\u5de5", "\u5f00\u59cb", "\u542f\u52a8", "\u7ee7\u7eed", "\u8df3\u8fc7", "\u8df3\u8fc7\u8868\u5355", "\u4e0d\u7528\u586b", "\u4e0d\u586b\u4e86", "go", "go ahead", "start", "continue", "skip", "skip form":
 		return true
 	}
-	return strings.Contains(trimmed, "不用填") || strings.Contains(trimmed, "跳过表单") || strings.Contains(trimmed, "直接") && (strings.Contains(trimmed, "做") || strings.Contains(trimmed, "写") || strings.Contains(trimmed, "执行") || strings.Contains(trimmed, "生成"))
+	return strings.Contains(trimmed, "\u4e0d\u7528\u586b") || strings.Contains(trimmed, "\u8df3\u8fc7\u8868\u5355") || strings.Contains(trimmed, "\u76f4\u63a5") && (strings.Contains(trimmed, "\u505a") || strings.Contains(trimmed, "\u5199") || strings.Contains(trimmed, "\u6267\u884c") || strings.Contains(trimmed, "\u751f\u6210"))
 }
 
 func isWorkflowCancelText(text string) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(text))
-	trimmed = strings.Trim(trimmed, " .。!！")
+	trimmed = strings.Trim(trimmed, " .\u3002!\uff01")
 	switch trimmed {
-	case "/cancel", "cancel", "abort", "stop", "quit", "取消", "停止", "放弃", "退出":
+	case "/cancel", "cancel", "abort", "stop", "quit", "\u53d6\u6d88", "\u505c\u6b62", "\u653e\u5f03", "\u9000\u51fa":
 		return true
 	}
 	return false
@@ -604,8 +605,9 @@ func buildWorkflowConfirmationResponse(item *pendingConfirmation, lang string) *
 
 func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pending *pendingConfirmation, platform string) pendingExecutionConfirmationResult {
 	engine := h.getWorkflowEngine()
+	lang := h.getWorkflowLang()
 	if engine == nil || pending == nil {
-		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: "Workflow engine is unavailable; please try again."}}
+		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.T(i18n.MsgWorkflowUnavailable, lang)}}
 	}
 	wfIntent := workflow.StructuredIntent{
 		Category:    workflow.WorkflowType(strings.TrimSpace(pending.WorkflowType)),
@@ -623,14 +625,14 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 		projectPath = h.workflowStartProjectPath()
 	}
 	if preparedPath, err := h.ensureWorkflowProjectPath(projectPath); err != nil {
-		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: fmt.Sprintf("failed to prepare workflow project directory: %v", err)}}
+		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, lang, err)}}
 	} else {
 		projectPath = preparedPath
 	}
 	state, err := engine.StartWorkflowWithOptions(userID, wfIntent, workflow.WorkflowStartOptions{ProjectPath: projectPath})
 	if err != nil {
 		log.Printf("[WorkflowInterception] confirmed StartWorkflow error for user %s: %v", userID, err)
-		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: fmt.Sprintf("failed to start workflow: %v", err)}}
+		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowStartError, lang, err)}}
 	}
 	resp := h.handlePostStartWorkflow(engine, userID, firstNonEmptyTraceText(pending.ResumeText, pending.OriginalText), state, pending.WorkflowStartReply, platform)
 	if resp != nil {
@@ -759,28 +761,17 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform str
 	// labels mean the normal agent loop should execute directly.
 	_, workflowLoopPending := h.workflowAgentLoopMarker.Load(userID)
 	activeFormGate := workflowHasPendingPhaseForm(engine, userID)
+	activeWorkflow := engine.GetActiveWorkflow(userID) != nil
+	understanding := engine.GetUnderstanding()
+	activeUnderstanding := understanding != nil && understanding.HasActiveSession(userID)
 	formDirectRun := activeFormGate && isWorkflowFormDirectRunCommand(text)
 	if activeFormGate && !formDirectRun && !isWorkflowCancelText(text) && normalizeIMMessagePlatformKind(platform).IsDesktop() {
 		h.workflowAgentLoopMarker.Delete(userID)
 		log.Printf("[WorkflowInterception] bypassing pending desktop workflow form for chat input: user=%s text_len=%d", userID, len([]rune(text)))
 		return nil
 	}
-	if !workflowLoopPending && !formDirectRun && h.shouldBypassWorkflowForIntent(userID, text, activeFormGate) && !engine.IsAwaitingReview(userID) {
-		if engine.GetActiveWorkflow(userID) != nil {
-			h.stashedPhasePrompt.Delete(userID)
-			h.workflowAgentLoopMarker.Delete(userID)
-			log.Printf("[WorkflowInterception] bypassing active workflow by UIC intent: user=%s text_len=%d", userID, len([]rune(text)))
-		} else if understanding := engine.GetUnderstanding(); understanding != nil && understanding.HasActiveSession(userID) {
-			// UIC determined this message is NOT a workflow task, but there's an
-			// active understanding session that would trap it. Cancel the session
-			// so the message falls through to the normal agent loop (which has tools).
-			// This prevents the IUM LLM (which has no tools) from receiving messages
-			// it cannot handle (e.g., file paths, operational commands).
-			understanding.CancelSession(userID)
-			log.Printf("[WorkflowInterception] bypassing active understanding session by UIC intent: user=%s text_len=%d", userID, len([]rune(text)))
-		} else {
-			log.Printf("[WorkflowInterception] bypassing workflow start by UIC intent: user=%s text_len=%d", userID, len([]rune(text)))
-		}
+	if !activeWorkflow && !activeUnderstanding && !workflowLoopPending && !formDirectRun && h.shouldBypassWorkflowForIntent(userID, text, activeFormGate) && !engine.IsAwaitingReview(userID) {
+		log.Printf("[WorkflowInterception] bypassing workflow start by UIC intent: user=%s text_len=%d", userID, len([]rune(text)))
 		return nil
 	}
 
@@ -805,7 +796,7 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform str
 	//   responses and should go to handleActiveUnderstanding.
 	// - Only after the first round (len(Rounds) > 0). Start() always records
 	//   round 0, so this is always true for active sessions.
-	if understanding := engine.GetUnderstanding(); understanding != nil && understanding.HasActiveSession(userID) {
+	if understanding != nil && activeUnderstanding {
 		sess := understanding.GetSession(userID)
 		trimmedText := strings.TrimSpace(text)
 		isLongEnough := utf8.RuneCountInString(trimmedText) >= 10
@@ -814,11 +805,9 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform str
 			if uic != nil {
 				result := uic.Classify(intent.MessageContext{Text: text, UserID: userID})
 				threshold := uic.GetWorkflowRejectThreshold()
-				isConfident := result.Confidence >= threshold
-				hasConcreteType := isConcreteWorkflowType(result.WorkflowType)
-				if !(hasConcreteType && isConfident) {
+				if shouldEscapeActiveUnderstandingForClassification(result, uic.IsWorkflowCandidate(result.Primary), threshold) {
 					understanding.CancelSession(userID)
-					log.Printf("[WorkflowInterception] escaping understanding session (UIC not confident, rounds=%d): user=%s intent=%s conf=%.2f wf=%s threshold=%.2f text_len=%d",
+					log.Printf("[WorkflowInterception] escaping understanding session (UIC direct-execution intent, rounds=%d): user=%s intent=%s conf=%.2f wf=%s threshold=%.2f text_len=%d",
 						len(sess.Rounds), userID, result.Primary, result.Confidence, result.WorkflowType, threshold, len([]rune(text)))
 					return nil
 				}
@@ -836,7 +825,7 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform str
 	const shortMsgWorkflowThreshold = 10
 	if utf8.RuneCountInString(strings.TrimSpace(text)) < shortMsgWorkflowThreshold {
 		// Still check for active workflow/understanding; short messages may be responses
-		// "缂備胶铏庨崣搴ㄥ窗濞戙埄鏁? or "缂傚倸鍊风紞鈧柛娑卞灡閺? may be responses to an active workflow session.
+		// Short confirmations or continuation messages may be responses to an active workflow session.
 		if engine.GetActiveWorkflow(userID) != nil {
 			return h.handleActiveWorkflow(engine, userID, text, platform, messageAttachments)
 		}
@@ -885,7 +874,7 @@ func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string, cl
 
 	// Short message optimization: skip L2 embedding + L3 tree classification
 	// for messages with fewer than 10 runes. These are typically continuation
-	// signals ("缂傚倸鍊风紞鈧柛娑卞灡閺?, "ok", "闁诲孩顔栭崰鎺楀磻閹惧灈鍋?) or very short commands that don't benefit
+	// signals (for example "continue" or "ok") or very short commands that do not benefit
 	// from expensive semantic classification. L1 keyword matching in the
 	// QuickFilter.Classify path is preserved for fast-path intent detection.
 	const shortMessageThreshold = 10
@@ -974,6 +963,27 @@ func shouldBypassWorkflowForClassification(result intent.ClassificationResult, i
 	}
 }
 
+func shouldEscapeActiveUnderstandingForClassification(result intent.ClassificationResult, isWorkflowCandidate bool, rejectThreshold float64) bool {
+	if isConcreteWorkflowType(result.WorkflowType) {
+		return false
+	}
+	if rejectThreshold <= 0 {
+		rejectThreshold = intent.DefaultWorkflowRejectThreshold
+	}
+	if result.Confidence < rejectThreshold {
+		return false
+	}
+
+	switch result.Primary {
+	case intent.LabelContinuation, intent.LabelWorkflowTask, intent.LabelAmbiguous, intent.LabelUnknown, intent.LabelCoding, intent.LabelOffice:
+		return false
+	case intent.LabelBugFix, intent.LabelMaintenance, intent.LabelSSH:
+		return true
+	default:
+		return !isWorkflowCandidate
+	}
+}
+
 func (h *IMMessageHandler) recentContextResolvesToNonWorkflow(uic *intent.UnifiedIntentClassifier, userID string, history []string, threshold float64) bool {
 	if uic == nil || len(history) == 0 {
 		return false
@@ -1044,49 +1054,14 @@ func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine,
 	if workflowHasPendingPhaseForm(engine, userID) && isWorkflowFormDirectRunCommand(text) {
 		if err := engine.SkipPhaseForm(userID); err != nil {
 			log.Printf("[WorkflowEngine] SkipPhaseForm direct-run failed: user=%s err=%v", userID, err)
-			return &IMAgentResponse{Text: fmt.Sprintf(avTr("Workflow form state could not be saved: %v", "工作流表单状态保存失败：%v"), err)}
+			return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowFormSaveError, h.getWorkflowLang(), err)}
 		}
 		log.Printf("[WorkflowEngine] skipped pending workflow form by direct-run command: user=%s text_len=%d", userID, len([]rune(text)))
 	}
 
-	// Cross-type task detection via UIC.
-	//
-	// Before delegating to the engine, check if the message is a completely
-	// different type of workflow task. The UIC (UnifiedIntentClassifier)
-	// maps messages to workflow types via semantic embedding and LLM tree
-	// tree reasoning, the same mechanism handleNeedsUnderstanding uses to
-	// decide which workflow to start.
-	//
-	// This MUST run before HandleInput because HandleInput has multiple
-	// branches (PendingConfirm, WaitingForInput, default) and cross-type
-	// detection needs to work regardless of which branch would fire.
-	//
-	// When the UIC determines a workflow type that DIFFERS from the active
-	// workflow with sufficient confidence, the user has moved on. Cancel
-	// the current workflow and re-route through the full pipeline.
-	if uic := h.getUnifiedClassifier(); uic != nil {
-		ws := engine.GetActiveWorkflow(userID)
-		if ws != nil {
-			uicResult := uic.Classify(intent.MessageContext{
-				Text:   text,
-				UserID: userID,
-			})
-			if isConcreteWorkflowType(uicResult.WorkflowType) &&
-				normalizeWorkflowType(uicResult.WorkflowType) != ws.Type &&
-				uicResult.Confidence >= 0.70 {
-				log.Printf("[WorkflowInterception] cross-type replacement: user=%s "+
-					"active=%s uic_workflow=%s intent=%s conf=%.2f -"+
-					"cancelling active workflow and re-routing",
-					userID, ws.Type, uicResult.WorkflowType,
-					uicResult.Primary, uicResult.Confidence)
-				_ = engine.CancelWorkflow(userID)
-				return h.handleWorkflowInterception(userID, text, platform, attachments)
-			}
-		}
-	}
-
-	// Only after global replacement/cancel checks do we treat free text as the
-	// durable source material for input-gated workflows.
+	// Active workflow state owns the message. UIC workflow_type is only a
+	// candidate hint for starting new workflows; it must not cancel or replace
+	// an already-active workflow.
 	if resp, handled := h.submitWorkflowInputIfWaiting(engine, userID, text, attachments, platform); handled {
 		return resp
 	}
@@ -1094,7 +1069,7 @@ func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine,
 	resp, err := engine.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[WorkflowInterception] HandleInput error for user %s: %v", userID, err)
-		return &IMAgentResponse{Error: fmt.Sprintf("workflow handling failed: %v", err)}
+		return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowHandleError, h.getWorkflowLang(), err)}
 	}
 	if resp == nil {
 		return nil
@@ -1185,7 +1160,7 @@ func (h *IMMessageHandler) workflowFormResponse(engine *workflow.WorkflowEngine,
 		}
 		if err := engine.SkipPhaseForm(userID); err != nil {
 			log.Printf("[WorkflowEngine] SkipPhaseForm failed: user=%s err=%v", userID, err)
-			return &IMAgentResponse{Text: fmt.Sprintf(avTr("Workflow form state could not be saved: %v", "工作流表单状态保存失败：%v"), err)}
+			return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowFormSaveError, h.getWorkflowLang(), err)}
 		}
 		if strings.TrimSpace(resp.Text) != "" {
 			guidance = strings.TrimSpace(resp.Text) + "\n\n" + guidance
@@ -1193,7 +1168,7 @@ func (h *IMMessageHandler) workflowFormResponse(engine *workflow.WorkflowEngine,
 		return &IMAgentResponse{Text: strings.TrimSpace(guidance)}
 	}
 	h.emitWorkflowPhaseForm(userID, resp.FormSchema, phaseID)
-	text := avTr("Please fill in the workflow information form in the right-side panel and submit it.", "请在右侧面板填写工作流信息表单并提交。")
+	text := i18n.T(i18n.MsgWorkflowFormPanelPrompt, h.getWorkflowLang())
 	if strings.TrimSpace(resp.Text) != "" {
 		text = strings.TrimSpace(resp.Text) + "\n\n" + text
 	}
@@ -1219,7 +1194,7 @@ func (h *IMMessageHandler) submitWorkflowInputIfWaiting(engine *workflow.Workflo
 	resp, err := engine.SubmitInputPayload(userID, payload)
 	if err != nil {
 		log.Printf("[WorkflowInterception] SubmitInputPayload error for user %s: %v", userID, err)
-		return &IMAgentResponse{Error: fmt.Sprintf("workflow input handling failed: %v", err)}, true
+		return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowInputHandleError, h.getWorkflowLang(), err)}, true
 	}
 	if resp.ShowForm && resp.FormSchema != nil {
 		return h.workflowFormResponse(engine, userID, platform, resp), true
@@ -1370,28 +1345,24 @@ func (h *IMMessageHandler) workflowReviewPending(userID string, background bool)
 
 func detectWorkflowReviewIntentFast(text string) (workflow.ReviewIntent, bool) {
 	trimmed := strings.ToLower(strings.TrimSpace(text))
-	trimmed = strings.Trim(trimmed, " \t\r\n.。!！?？,，;；:：")
+	trimmed = strings.Trim(trimmed, " \t\r\n.\u3002!\uff01\uff1f?")
 	if trimmed == "" {
 		return workflow.ReviewIntentOther, false
 	}
 	switch trimmed {
 	case "\u786e\u8ba4", "\u786e\u8ba4\u901a\u8fc7", "\u901a\u8fc7", "\u540c\u610f", "\u53ef\u4ee5", "\u6ca1\u95ee\u9898", "\u6ca1\u610f\u89c1", "\u7ee7\u7eed", "\u7ee7\u7eed\u63a8\u8fdb", "\u5f00\u5de5", "\u5f00\u59cb", "\u5f00\u59cb\u5427", "\u6267\u884c", "\u8d70\u8d77", "\u597d", "\u597d\u7684", "\u5f00\u59cb\u7f16\u7801", "\u5f00\u59cb\u7f16\u7801\u5427", "\u5f00\u59cb\u5199\u4ee3\u7801", "\u5f00\u59cb\u5b9e\u73b0", "\u5f00\u59cb\u5f00\u53d1", "\u5f00\u59cb\u6267\u884c", "\u786e\u8ba4\u5f00\u59cb\u7f16\u7801", "\u786e\u8ba4\u5f00\u59cb\u5b9e\u73b0":
 		return workflow.ReviewIntentConfirm, true
-	case "\u8df3\u8fc7":
+	case "\u8df3\u8fc7", "skip", "skip it":
 		return workflow.ReviewIntentSkip, true
-	case "\u53d6\u6d88", "\u505c\u6b62", "\u7ec8\u6b62", "\u653e\u5f03":
+	case "\u53d6\u6d88", "\u505c\u6b62", "\u7ec8\u6b62", "\u653e\u5f03", "cancel", "stop", "abort", "quit":
 		return workflow.ReviewIntentCancel, true
 	}
 	if looksLikeWorkflowReviewApproval(trimmed) {
 		return workflow.ReviewIntentConfirm, true
 	}
 	switch trimmed {
-	case "确认", "确认通过", "通过", "同意", "可以", "没问题", "没意见", "继续", "继续推进", "开工", "开始", "开始吧", "执行", "走起", "好", "好的", "ok", "okay", "yes", "y", "go", "go ahead", "start", "continue", "proceed", "approved", "approve", "confirmed", "confirm":
+	case "ok", "okay", "yes", "y", "go", "go ahead", "start", "continue", "proceed", "approved", "approve", "confirmed", "confirm":
 		return workflow.ReviewIntentConfirm, true
-	case "跳过", "skip", "skip it":
-		return workflow.ReviewIntentSkip, true
-	case "取消", "停止", "终止", "放弃", "cancel", "stop", "abort", "quit":
-		return workflow.ReviewIntentCancel, true
 	}
 	return workflow.ReviewIntentOther, false
 }
@@ -1412,22 +1383,19 @@ func detectWorkflowReviewBlockedExecutionIntent(text string) bool {
 	if _, ok := detectWorkflowReviewIntentFast(trimmed); ok {
 		return false
 	}
-	utf8DocumentTargets := []string{"\u6587\u6863", "\u9700\u6c42", "\u8bbe\u8ba1", "\u65b9\u6848", "\u4efb\u52a1", "\u8ba1\u5212", "\u62a5\u544a", "document", "doc", "requirements", "design", "plan"}
-	for _, marker := range []string{"\u5199\u4ee3\u7801", "\u7f16\u5199\u4ee3\u7801", "\u5f00\u59cb\u7f16\u7801", "\u7f16\u7801", "\u5b9e\u73b0\u4ee3\u7801", "\u6539\u4ee3\u7801", "\u8dd1\u4ee3\u7801", "build", "compile", "cmake", "npm", "git", "bash", "powershell", "\u547d\u4ee4", "\u811a\u672c", "\u521b\u5efa\u76ee\u5f55", "\u65b0\u5efa\u76ee\u5f55", "\u521b\u5efa\u6587\u4ef6\u5939", "\u65b0\u5efa\u6587\u4ef6\u5939", "mkdir", "d:\\\\", "c:\\\\", "src/", "assets/"} {
+	documentTargets := []string{"\u6587\u6863", "\u9700\u6c42", "\u8bbe\u8ba1", "\u65b9\u6848", "\u4efb\u52a1", "\u8ba1\u5212", "\u62a5\u544a", "document", "doc", "requirements", "design", "plan"}
+	executionMarkers := []string{
+		"\u5199\u4ee3\u7801", "\u7f16\u5199\u4ee3\u7801", "\u5f00\u59cb\u7f16\u7801", "\u7f16\u7801", "\u5b9e\u73b0\u4ee3\u7801", "\u6539\u4ee3\u7801", "\u8dd1\u4ee3\u7801",
+		"build", "compile", "cmake", "npm", "git", "bash", "powershell",
+		"\u547d\u4ee4", "\u811a\u672c", "\u521b\u5efa\u76ee\u5f55", "\u65b0\u5efa\u76ee\u5f55", "\u521b\u5efa\u6587\u4ef6\u5939", "\u65b0\u5efa\u6587\u4ef6\u5939",
+		"mkdir", "d:\\\\", "c:\\\\", "src/", "assets/",
+	}
+	for _, marker := range executionMarkers {
 		if strings.Contains(trimmed, marker) {
 			return true
 		}
 	}
-	if (strings.Contains(trimmed, "\u521b\u5efa") || strings.Contains(trimmed, "\u65b0\u5efa")) && !containsAnyWorkflowReviewMarker(trimmed, utf8DocumentTargets) {
-		return true
-	}
-	documentTargets := []string{"文档", "需求", "设计", "方案", "任务", "计划", "报告", "document", "doc", "requirements", "design", "plan"}
-	for _, marker := range []string{"写代码", "编写代码", "开始编码", "编码", "实现代码", "改代码", "跑代码", "build", "compile", "cmake", "npm", "git", "bash", "powershell", "命令", "脚本", "创建目录", "新建目录", "创建文件夹", "新建文件夹", "mkdir", "d:\\", "c:\\", "src/", "assets/"} {
-		if strings.Contains(trimmed, marker) {
-			return true
-		}
-	}
-	if (strings.Contains(trimmed, "创建") || strings.Contains(trimmed, "新建")) && !containsAnyWorkflowReviewMarker(trimmed, documentTargets) {
+	if (strings.Contains(trimmed, "\u521b\u5efa") || strings.Contains(trimmed, "\u65b0\u5efa")) && !containsAnyWorkflowReviewMarker(trimmed, documentTargets) {
 		return true
 	}
 	return false
@@ -1546,11 +1514,7 @@ func (h *IMMessageHandler) workflowReviewExecutionBlockedResponse(engine *workfl
 	if phaseName == "" {
 		return nil
 	}
-	text := fmt.Sprintf(avTr(
-		"Current workflow phase %q has not been confirmed yet. I cannot create directories, write code, or run commands before this review is confirmed. Please confirm to continue, or provide changes for the current document.",
-		"当前工作流阶段 %q 还未确认。确认前不能创建目录、写代码或运行命令。请先确认继续，或提出当前文档的修改意见。",
-	), phaseName)
-	return &IMAgentResponse{Text: text}
+	return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowReviewExecutionBlock, h.getWorkflowLang(), phaseName)}
 }
 
 func (h *IMMessageHandler) workflowReviewPhaseName(engine *workflow.WorkflowEngine, userID string) string {
@@ -1572,16 +1536,15 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 	if understanding == nil {
 		return nil
 	}
+	understanding.SetUserLanguage(userID, h.getWorkflowLang())
 
 	reply, ready, cancelled, intent, err := understanding.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[WorkflowInterception] understanding HandleInput error for user %s: %v", userID, err)
-		// The understanding LLM failed (timeout, network error, contract breach).
-		// The session is already cleaned up by HandleInput for contract breaches,
-		// and we cancel it here for other errors. Fall through to the normal
-		// agent loop which has full tool access and conversation context.
-		understanding.CancelSession(userID)
-		return nil
+		if errors.Is(err, workflow.ErrIntentUnderstandingContractBreach) {
+			return nil
+		}
+		return &IMAgentResponse{Text: i18n.T(i18n.MsgWorkflowUnderstandError, h.getWorkflowLang())}
 	}
 	if cancelled {
 		lang := h.getWorkflowLang()
@@ -1605,12 +1568,12 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 		projectPath, prepErr := h.prepareWorkflowProjectPath()
 		if prepErr != nil {
 			log.Printf("[WorkflowInterception] prepare workflow project directory failed for user %s: %v", userID, prepErr)
-			return &IMAgentResponse{Error: fmt.Sprintf("failed to prepare workflow project directory: %v", prepErr)}
+			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, h.getWorkflowLang(), prepErr)}
 		}
 		state, err := engine.StartWorkflowWithOptions(userID, *intent, workflow.WorkflowStartOptions{ProjectPath: projectPath})
 		if err != nil {
 			log.Printf("[WorkflowInterception] StartWorkflow error for user %s: %v", userID, err)
-			return &IMAgentResponse{Error: fmt.Sprintf("failed to start workflow: %v", err)}
+			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowStartError, h.getWorkflowLang(), err)}
 		}
 		return h.handlePostStartWorkflow(engine, userID, text, state, reply, "")
 	}
@@ -1628,6 +1591,9 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 		// No understanding manager; fall through to normal agent loop.
 		return nil
 	}
+	understanding.SetUserLanguage(userID, h.getWorkflowLang())
+	var uicForUnderstanding *intent.UnifiedIntentClassifier
+	var uicResultForUnderstanding *intent.ClassificationResult
 
 	// Unified classification: UIC fusion produces both IntentLabel and WorkflowType.
 	//
@@ -1650,10 +1616,12 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 	// The "accept" power belongs to IUM (deep semantic confirmation) or the
 	// user (via confirmation panel after IUM confirms).
 	if uic := h.getUnifiedClassifier(); uic != nil {
+		uicForUnderstanding = uic
 		uicResult := uic.Classify(intent.MessageContext{
 			Text:   text,
 			UserID: userID,
 		})
+		uicResultForUnderstanding = &uicResult
 
 		// UIC says no workflow - check if it's a confident non-workflow signal.
 		//
@@ -1695,6 +1663,9 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 	result, err := understanding.Start(userID, text)
 	if err != nil {
 		log.Printf("[WorkflowInterception] understanding Start error for user %s: %v", userID, err)
+		if shouldSurfaceWorkflowUnderstandingStartError(uicForUnderstanding, uicResultForUnderstanding) {
+			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowUnderstandStartError, h.getWorkflowLang(), err)}
+		}
 		return nil
 	}
 
@@ -1726,12 +1697,12 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 		projectPath, prepErr := h.prepareWorkflowProjectPath()
 		if prepErr != nil {
 			log.Printf("[WorkflowInterception] prepare workflow project directory failed for user %s: %v", userID, prepErr)
-			return &IMAgentResponse{Error: fmt.Sprintf("failed to prepare workflow project directory: %v", prepErr)}
+			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, h.getWorkflowLang(), prepErr)}
 		}
 		state, err := engine.StartWorkflowWithOptions(userID, *result.Intent, workflow.WorkflowStartOptions{ProjectPath: projectPath})
 		if err != nil {
 			log.Printf("[WorkflowInterception] IUM-driven StartWorkflow error for user %s: %v", userID, err)
-			return &IMAgentResponse{Error: fmt.Sprintf("failed to start workflow: %v", err)}
+			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowStartError, h.getWorkflowLang(), err)}
 		}
 		return h.handlePostStartWorkflow(engine, userID, text, state, result.Reply, platform)
 	}
@@ -1740,6 +1711,26 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 	// session has been created. The user will go through multi-round clarification
 	// before the workflow actually starts.
 	return &IMAgentResponse{Text: result.Reply}
+}
+
+func shouldSurfaceWorkflowUnderstandingStartError(uic *intent.UnifiedIntentClassifier, result *intent.ClassificationResult) bool {
+	if uic == nil || result == nil {
+		return false
+	}
+	if isConcreteWorkflowType(result.WorkflowType) {
+		return result.Confidence >= 0.50
+	}
+	if result.Primary == intent.LabelUnknown || result.Primary == intent.LabelAmbiguous || result.Primary == intent.LabelContinuation {
+		return false
+	}
+	if !uic.IsWorkflowCandidate(result.Primary) {
+		return false
+	}
+	threshold := uic.GetWorkflowRejectThreshold()
+	if threshold <= 0 {
+		threshold = intent.DefaultWorkflowRejectThreshold
+	}
+	return result.Confidence >= threshold
 }
 
 // getUnifiedClassifier returns the UIC instance if available, or nil.

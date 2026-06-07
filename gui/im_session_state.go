@@ -10,10 +10,9 @@ package main
 // bugs: when a new sync.Map field is added to IMMessageHandler, it only
 // needs to be cleaned up here.
 //
-// NOTE: This method only clears ephemeral per-message state. It does NOT:
+// NOTE: This method only clears ephemeral per-message/session state. It does NOT:
 //   - Clear conversation memory (caller decides: memory.clear vs clearConversationAndDismissSlot)
-//   - Clear confirmation store (only /new does this)
-//   - Cancel workflows (only /new does this)
+//   - Decide whether reset is allowed (caller decides command/task boundary)
 //   - Flush evidence (only /new and /exit do this)
 //   - Reset workflow adapter state (only /exit does this)
 //
@@ -23,6 +22,13 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 	// a stale workflow survives dismiss/clear and hijacks subsequent messages
 	// via QuickFilter.HasActiveWorkflow → FilterActiveWorkflow.
 	h.cancelWorkflowForUser(userID)
+
+	// Clear page index for cross-page recall (Requirement 7).
+	if h.memoryStore != nil {
+		if pi := h.memoryStore.PageIdx(); pi != nil {
+			pi.Clear(userID)
+		}
+	}
 
 	// Pending interaction state.
 	h.pendingAskUser.Delete(userID)
@@ -47,6 +53,9 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 	h.workflowReviewExperienceContext.Delete(userID)
 	h.stashedPhasePrompt.Delete(userID)
 	h.workflowOriginalRequest.Delete(userID)
+	if h.confirmationStore != nil {
+		h.confirmationStore.clear(userID)
+	}
 
 	// Task execution orchestrator: deactivate to prevent stale orchestrator
 	// state from routing the next message to SubAgent after a session reset.

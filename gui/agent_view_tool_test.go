@@ -319,6 +319,33 @@ func TestHandleRegisteredToolAgentViewSubmitKeepsOwnerForOwnerAwareTool(t *testi
 	}
 }
 
+func TestHandleRegisteredToolAgentViewSubmitKeepsOwnerForMetadataOwnerAwareTool(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	var seenOwner string
+	if err := h.registry.Register(RegisteredTool{
+		Name:                  "custom_owner_tool",
+		Required:              []string{"value"},
+		RuntimePolicyOwnerArg: true,
+		Handler: func(args map[string]interface{}) string {
+			seenOwner = consumeRuntimePolicyOwnerIDFromToolArgs(args)
+			return "captured"
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := h.handleRegisteredToolAgentViewSubmit("custom_owner_tool", map[string]interface{}{
+		registeredToolAgentViewArgsField: map[string]interface{}{registeredToolPolicyOwnerIDField: "remote:mobile"},
+		"value":                          "x",
+	})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+	if seenOwner != "remote:mobile" {
+		t.Fatalf("metadata owner-aware registered tool owner = %q, want remote:mobile", seenOwner)
+	}
+}
+
 func TestHandleRegisteredToolAgentViewSubmitEmptyOwnerAwareRuntimeOwnerFailsClosed(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	called := false

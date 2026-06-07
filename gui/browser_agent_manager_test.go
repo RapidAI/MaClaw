@@ -58,3 +58,13 @@ func TestBrowserTraceStoredTextDoesNotExposeBrowserContent(t *testing.T) {
 		t.Fatalf("browser trace stored text missing metadata: %s", got)
 	}
 }
+
+func TestBrowserAgentManagerStartEmptyRuntimeOwnerFailsClosed(t *testing.T) {
+	mgr := NewBrowserAgentManager(&App{})
+	_, err := mgr.Start(map[string]interface{}{
+		registeredToolPolicyOwnerIDField: "",
+	})
+	if err == nil || !strings.Contains(err.Error(), "runtime owner is missing") {
+		t.Fatalf("Start empty runtime owner err = %v, want fail closed", err)
+	}
+}

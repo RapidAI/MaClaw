@@ -168,6 +168,9 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 		nil,                    // no reranker result
 		0,                      // skillMatchScore
 		nil,                    // matchedSkills
+		nil,                    // matchedSkillCapabilities
+		false,                  // skillCapabilityConstrained
+		nil,                    // skillRequiredCapabilities
 	)
 
 	// Call again with bodyAware=false to verify both paths work.
@@ -180,12 +183,15 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 		[]float64{0.7},
 		[]float64{-0.02},
 		[]string{"tool_c"},
-		nil,                    // suppressedNames
-		false,                  // browserPublishAffordance
-		true,                   // explicitScreenshotRequest
-		[]string{"tool_c"},     // with reranker result
-		0.5,                    // skillMatchScore
-		[]string{"deploy-app"}, // matchedSkills
+		nil,                      // suppressedNames
+		false,                    // browserPublishAffordance
+		true,                     // explicitScreenshotRequest
+		[]string{"tool_c"},       // with reranker result
+		0.5,                      // skillMatchScore
+		[]string{"deploy-app"},   // matchedSkills
+		[]string{"skill"},        // matchedSkillCapabilities
+		true,                     // skillCapabilityConstrained
+		[]string{"current_data"}, // skillRequiredCapabilities
 	)
 
 	data, err := os.ReadFile(logPath)
@@ -207,5 +213,49 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 	}
 	if !strings.Contains(content, "Suppressed tools (1): [screenshot]") {
 		t.Error("log should contain suppressed tools")
+	}
+	if !strings.Contains(content, "Skill capabilities: [skill]") {
+		t.Error("log should contain skill capabilities")
+	}
+	if !strings.Contains(content, "Skill capability constraint: [current_data]") {
+		t.Error("log should contain skill capability constraint")
+	}
+}
+
+func TestWriteToolExposureLog(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "tool_route.log")
+	routeLogPathOverride.Store(logPath)
+	defer routeLogPathOverride.Store("")
+	SetLogDetailEnabled(true)
+	defer SetLogDetailEnabled(false)
+
+	WriteToolExposureLog(
+		"execution_profile",
+		"live lookup",
+		"req-1",
+		"user-1",
+		"light",
+		"live_data",
+		12,
+		[]string{"manage_skill", "web_search"},
+	)
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("cannot read log file: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		"=== Tool Exposure",
+		"Stage: execution_profile",
+		"Request: req-1 | User: user-1",
+		"Profile: layer=light task=live_data",
+		"Tools: before=12 after=2",
+		"  - manage_skill",
+		"  - web_search",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("exposure log missing %q:\n%s", want, content)
+		}
 	}
 }

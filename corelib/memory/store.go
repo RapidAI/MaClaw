@@ -61,6 +61,12 @@ type Store struct {
 	// --- Multi-hop inference engine ---
 	inferenceEngine *InferenceEngine // rule-based multi-hop fact reasoning
 
+	// --- Multi-page recall components ---
+	cursorPaginator  *CursorPaginator      // cursor-based pagination state
+	scrollSessions   *ScrollSessionManager  // per-loop scroll-through recall sessions
+	pageIndex        *PageIndex             // cross-page context retrieval index
+	aliasIndex       *AliasIndex            // bidirectional alias mappings for query expansion
+
 	// lastRebuildDone is closed when the most recent background index rebuild
 	// (from replaceEntriesAndRebuildAsync) completes. Used by WaitRebuild and
 	// Stop to drain in-flight goroutines before closing the backend.
@@ -92,6 +98,24 @@ func (s *Store) SetExperienceEventSink(sink lifecycle.EventSink) {
 	s.mu.Lock()
 	s.eventSink = sink
 	s.mu.Unlock()
+}
+
+// Paginator returns the store's CursorPaginator for cursor-based pagination.
+// Used by HandleTool to dispatch paginated recall requests.
+func (s *Store) Paginator() *CursorPaginator {
+	if s == nil {
+		return nil
+	}
+	return s.cursorPaginator
+}
+
+// ScrollSessions returns the store's ScrollSessionManager for scroll-through
+// recall within agent loops. Hosts call Destroy(loopID) on agent loop exit.
+func (s *Store) ScrollSessions() *ScrollSessionManager {
+	if s == nil {
+		return nil
+	}
+	return s.scrollSessions
 }
 
 type queryEmbeddingCacheEntry struct {
@@ -133,6 +157,10 @@ func NewStore(path string) (*Store, error) {
 		semanticGraph:  NewSemanticGraph(),
 		entityIndex:    NewEntityIndex(),
 		themeManager:   NewThemeManager(),
+		cursorPaginator: NewCursorPaginator(),
+		scrollSessions:  NewScrollSessionManager(),
+		pageIndex:       NewPageIndex(),
+		aliasIndex:      NewAliasIndex(),
 		queryEmbCache:  make(map[string]queryEmbeddingCacheEntry),
 		queryEmbFlight: make(map[string]*queryEmbeddingFlight),
 	}
@@ -212,6 +240,24 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 		ctxExpanded := ExpandQuery(contextHint)
 		if len(ctxExpanded.Entities) > 0 {
 			entry.Tags = mergeTags(entry.Tags, ctxExpanded.Entities)
+			// Register aliases: each entity from contextHint is a potential alias
+			// for other entities in the same context. This bridges the write-recall
+			// semantic gap (e.g., user says "4090服务器" in context while saving
+			// entry about "api.rapidai.tech").
+			if s.aliasIndex != nil && len(ctxExpanded.Entities) > 1 {
+				for _, entity := range ctxExpanded.Entities {
+					// Register this entity with all other entities as aliases.
+					var others []string
+					for _, other := range ctxExpanded.Entities {
+						if normalize(other) != normalize(entity) {
+							others = append(others, other)
+						}
+					}
+					if len(others) > 0 {
+						s.aliasIndex.Register(entity, others)
+					}
+				}
+			}
 		}
 	}
 
@@ -627,6 +673,17 @@ func (s *Store) Delete(id string) error {
 // Returns nil if the store has not been initialized.
 func (s *Store) ProjectIndex() *ProjectIndex {
 	return s.projIndex
+}
+
+// PageIdx returns the PageIndex for cross-page context retrieval.
+// Hosts use this to call IndexCompactedPage on compaction and Clear on session reset.
+func (s *Store) PageIdx() *PageIndex {
+	return s.pageIndex
+}
+
+// AliasIdx returns the AliasIndex for write-recall semantic gap bridging.
+func (s *Store) AliasIdx() *AliasIndex {
+	return s.aliasIndex
 }
 
 // List returns entries filtered by category and keyword.
@@ -1626,6 +1683,9 @@ func (s *Store) rebuildDerivedIndexesLocked(syncGraphLinks bool) bool {
 	if s.projIndex != nil {
 		s.projIndex.Rebuild(s.entries)
 	}
+	if s.aliasIndex != nil {
+		s.aliasIndex.Rebuild(s.entries)
+	}
 	s.rebuildThemeLayerLocked()
 	return graphLinksChanged
 }
@@ -1675,6 +1735,9 @@ func (s *Store) rebuildDerivedIndexesOutsideLock(snapshot []Entry, syncGraphLink
 	}
 	if s.projIndex != nil {
 		s.projIndex.Rebuild(snapshot)
+	}
+	if s.aliasIndex != nil {
+		s.aliasIndex.Rebuild(snapshot)
 	}
 	if s.semanticGraph != nil {
 		s.semanticGraph.Rebuild(snapshot)
@@ -1861,7 +1924,19 @@ func (s *Store) recallDynamicCore(query string, category Category, projectPath s
 func (s *Store) recallDynamicCoreWithOptions(query string, category Category, projectPath string, opts recallFilterOptions, ownerID ...string) []Entry {
 	// Query Expand: extract entities for multi-query BM25 + tokens for tag matching.
 	expanded := ExpandQuery(query)
-	bm25Scores := s.multiQueryBM25(query, expanded.Entities)
+
+	// Alias expansion: augment entities with known aliases from the AliasIndex.
+	// This bridges the write-recall semantic gap by adding alternative terms
+	// that were registered during SaveWithContext.
+	aliasExpanded := expanded.Entities
+	if s.aliasIndex != nil && len(expanded.Entities) > 0 {
+		aliases := s.aliasIndex.Expand(expanded.Entities)
+		if len(aliases) > 0 {
+			aliasExpanded = append(append([]string(nil), expanded.Entities...), aliases...)
+		}
+	}
+
+	bm25Scores := s.multiQueryBM25(query, aliasExpanded)
 	vecScores := s.vecIndex.score(s.queryEmbeddingCached(query))
 	semanticScores := map[string]float64{}
 	semanticHitDebug := map[string]SemanticSearchHit{}
@@ -1984,6 +2059,24 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 		}
 	}
 
+	// Alias match boost: when alias expansion produced additional entities
+	// that match an entry's tag, apply a moderate boost (+2.0). This is
+	// below tagExactMatchBoost (+5.0) but above baseline.
+	if s.aliasIndex != nil && len(aliasExpanded) > len(expanded.Entities) {
+		// Only the alias-derived entities (not the original ones).
+		aliasOnly := aliasExpanded[len(expanded.Entities):]
+		for i := range candidates {
+			boost := tagExactMatchBoost(candidates[i].entry, aliasOnly)
+			if boost > 0 {
+				// Cap to AliasMatchBoost per entry (below tag boost).
+				if boost > AliasMatchBoost {
+					boost = AliasMatchBoost
+				}
+				candidates[i].score += boost
+			}
+		}
+	}
+
 	// OpenHuman-inspired: apply stability boost/penalty.
 	// Stable knowledge (+2.0) is more reliable; volatile knowledge (-1.0) may be outdated.
 	for i := range candidates {
@@ -2038,6 +2131,138 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 	s.lastRecallTrace = newRecallTrace(query, category, projectPath, expanded, bm25Scores, vecScores, semanticScores, candidates, result)
 	s.mu.Unlock()
 	return result
+}
+
+// recallScoredForPagination runs the full multi-signal scoring pipeline
+// (BM25 + Vector + Semantic Graph + Tag matching + Memory Stream Score)
+// but returns the complete sorted []recallScored list instead of applying
+// entry/token limits. Used by CursorPaginator to cache the full candidate
+// set for subsequent page slicing.
+func (s *Store) recallScoredForPagination(query string, category Category, projectPath string, ownerID string) []recallScored {
+	// Query Expand: extract entities for multi-query BM25 + tokens for tag matching.
+	expanded := ExpandQuery(query)
+	bm25Scores := s.multiQueryBM25(query, expanded.Entities)
+	vecScores := s.vecIndex.score(s.queryEmbeddingCached(query))
+	semanticScores := map[string]float64{}
+	if s.semanticGraph != nil {
+		temporalMode, asOf := semanticTemporalOptionsFromQuery(query)
+		for _, hit := range s.semanticGraph.SearchWithOptions(expanded.Entities, SemanticSearchOptions{
+			Now:             time.Now(),
+			AsOf:            asOf,
+			OwnerID:         ownerID,
+			ProjectPath:     projectPath,
+			RelationHints:   semanticRelationHintsFromQuery(query, expanded),
+			SeedWeights:     semanticSeedWeightsFromEntities(expanded.Entities),
+			MaxHits:         30,
+			MaxVisitedFacts: 500,
+			TemporalMode:    temporalMode,
+		}) {
+			semanticScores[hit.EntryID] = hit.Score
+		}
+	}
+
+	// Multi-hop inference: derive implicit facts.
+	if s.inferenceEngine != nil && len(expanded.Entities) > 0 {
+		derivedFacts := s.inferenceEngine.Infer(expanded.Entities, InferenceOptions{
+			Now:             time.Now(),
+			OwnerID:         ownerID,
+			ProjectPath:     projectPath,
+			MaxDerived:      10,
+			MinConfidence:   0.50,
+			MaxVisitedFacts: 200,
+		})
+		for _, df := range derivedFacts {
+			for _, sf := range df.SourceFacts {
+				if sf.EntryID != "" {
+					semanticScores[sf.EntryID] += df.Confidence * 1.5
+				}
+			}
+		}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	projectLower := semanticNormalizeProjectPath(projectPath)
+	now := time.Now()
+
+	type rawCandidate struct {
+		entry Entry
+		bm25  float64
+		vec   float64
+		sem   float64
+	}
+	var raw []rawCandidate
+
+	for _, e := range s.entries {
+		if !e.IsActive() {
+			continue
+		}
+		if !recallDynamicEntryAllowedWithExclusions(e, category, projectLower, ownerID, proactiveRecallExcludeCategories) {
+			continue
+		}
+		b := bm25Scores[e.ID]
+		v := 0.0
+		if vs, ok := vecScores[e.ID]; ok {
+			v = vs
+		}
+		raw = append(raw, rawCandidate{entry: e, bm25: b, vec: v, sem: semanticScores[e.ID]})
+	}
+
+	// Three-way RRF fusion.
+	bm25Arr := make([]float64, len(raw))
+	vecArr := make([]float64, len(raw))
+	entryArr := make([]Entry, len(raw))
+	for i, c := range raw {
+		bm25Arr[i] = c.bm25
+		vecArr[i] = c.vec
+		entryArr[i] = c.entry
+	}
+	rrfScores := rrfFuseScores(bm25Arr, vecArr, entryArr, projectLower, expanded.QueryTokens)
+
+	var candidates []recallScored
+	for i, c := range raw {
+		fusedRelevance := rrfScores[i]
+		if c.sem > 0 {
+			fusedRelevance += c.sem
+		}
+		sc := memoryStreamScore(c.entry, fusedRelevance, c.bm25, projectLower, now)
+		candidates = append(candidates, recallScored{entry: c.entry, score: sc})
+	}
+
+	// Tag exact match boost.
+	if len(expanded.Entities) > 0 {
+		for i := range candidates {
+			boost := tagExactMatchBoost(candidates[i].entry, expanded.Entities)
+			candidates[i].score += boost
+		}
+	}
+
+	// Stability boost/penalty.
+	for i := range candidates {
+		candidates[i].score += candidates[i].entry.Stability.StabilityBoost()
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
+	// 1-hop graph expansion.
+	candidates = s.graphExpand(candidates, graphExpandSeeds)
+
+	// Re-apply visibility filters after graph expansion.
+	candidates = filterRecallDynamicCandidatesWithExclusions(candidates, category, projectLower, ownerID, proactiveRecallExcludeCategories)
+
+	return candidates
+}
+
+// recallScoredForScroll executes the full multi-signal scoring pipeline and
+// returns scored candidates for scroll session caching. Uses the tool recall
+// exclusion list (less restrictive than proactive recall). Accepts variadic
+// ownerID to match RecallDynamic's signature.
+func (s *Store) recallScoredForScroll(query string, category Category, projectPath string, ownerID ...string) []recallScored {
+	filterOwner := firstOwnerID(ownerID...)
+	return s.recallScoredForPagination(query, category, projectPath, filterOwner)
 }
 
 // RecallDynamicStrict performs project-isolated recall for Project Tab scenarios.

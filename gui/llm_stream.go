@@ -771,6 +771,9 @@ func (h *IMMessageHandler) doLLMRequestStream(
 		resp, err = h.doOpenAILLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
 	}
 	globalLLMScheduler.ObserveResult(trace, err)
+	if h.app != nil {
+		h.app.observeLLMEndpointResult(cfg, err)
+	}
 	if err != nil || responseHasToolCalls(resp) {
 		tokenBuffer.Discard()
 	} else {

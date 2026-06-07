@@ -1281,17 +1281,8 @@ func PlatformEmployeeRegisterHandler(system store.SystemSettingsRepository, tena
 			writeError(w, http.StatusBadRequest, "LLM_SERVICE_GROUP_ENTITLEMENT_FAILED", err.Error())
 			return
 		}
-		if err := ensurePlatformEmployeeLLMEntitlement(r.Context(), tenantSystem, email, firstNonEmpty(req.LLMServiceGroupID, req.DefaultLLM)); err != nil {
-			writeError(w, http.StatusBadRequest, "LLM_SERVICE_GROUP_ENTITLEMENT_FAILED", err.Error())
-			return
-		}
-		if runtimeBaseURL != "" {
-			if err := upsertMacLawSrvRuntimeRegistry(r.Context(), system, tenantID, runtimeBaseURL, req.RuntimeAPIKey); err != nil {
-				writeError(w, http.StatusInternalServerError, "MACLAWSRV_RUNTIME_REGISTRY_SAVE_FAILED", err.Error())
-				return
-			}
-		}
 		userID := ""
+		createdUser := false
 		existing, err := users.GetByTenantEmail(r.Context(), tenantID, email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "USER_LOOKUP_FAILED", err.Error())
@@ -1306,25 +1297,71 @@ func PlatformEmployeeRegisterHandler(system store.SystemSettingsRepository, tena
 				writeError(w, http.StatusConflict, "USER_CREATE_FAILED", err.Error())
 				return
 			}
+			createdUser = true
 		}
 		reg := loadVERegistry(r.Context(), tenantSystem)
+		previousReg := digitalEmployeeRegistry{Employees: append([]digitalEmployeeEntry(nil), reg.Employees...)}
 		machineIDSource := platformEmployeeMachineIDSource(reg, req.EmployeeID, platformEmployeeID)
 		machineID := "ve_" + strings.Trim(machineIDSource, "_")
 		veID := "ve_" + strings.TrimPrefix(machineID, "ve_")
-		veEntry := digitalEmployeeEntry{ID: veID, MachineID: machineID, EmployeeType: veEmployeeTypeVirtual, PlatformID: entry.PlatformID, PlatformEmployeeID: platformEmployeeID, RuntimeProviderID: runtimeProviderID, OwnerUserID: userID, OwnerEmail: email, Name: name, SkillDescription: strings.TrimSpace(req.SkillDescription), AvatarDataURL: avatarDataURL, AccessPolicy: "public", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, RegisteredAt: time.Now().UTC().Format(time.RFC3339), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+		veEntry := digitalEmployeeEntry{ID: veID, MachineID: machineID, EmployeeType: veEmployeeTypeVirtual, PlatformID: entry.PlatformID, PlatformEmployeeID: platformEmployeeID, RuntimeProviderID: runtimeProviderID, OwnerUserID: userID, OwnerEmail: email, Name: name, SkillDescription: strings.TrimSpace(req.SkillDescription), AvatarDataURL: avatarDataURL, AccessPolicy: "public", Status: veStatusActive, OnlineStatus: veOnlineStatusOffline, RegisteredAt: time.Now().UTC().Format(time.RFC3339), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+		registryIndex := -1
 		if i := findPlatformEmployeeRegistrationIndex(reg, veID, machineID, entry.PlatformID, platformEmployeeID); i >= 0 {
-			veEntry.RegisteredAt = reg.Employees[i].RegisteredAt
+			veEntry = mergePlatformEmployeeRegistration(reg.Employees[i], veEntry)
 			reg.Employees[i] = veEntry
+			registryIndex = i
 		} else {
 			reg.Employees = append(reg.Employees, veEntry)
+			registryIndex = len(reg.Employees) - 1
+		}
+		normalizeVERegistryResidentFlags(&reg)
+		if registryIndex >= 0 && registryIndex < len(reg.Employees) {
+			veEntry = reg.Employees[registryIndex]
 		}
 		if err := saveVERegistry(r.Context(), tenantSystem, reg); err != nil {
+			if createdUser {
+				if delErr := users.DeleteByTenantEmail(r.Context(), tenantID, email); delErr != nil {
+					log.Printf("[platform-employee-register] rollback created user failed tenant=%s email=%s err=%v", tenantID, email, delErr)
+				}
+			}
 			writeError(w, http.StatusInternalServerError, "VE_REGISTRY_SAVE_FAILED", err.Error())
 			return
 		}
-		resp := map[string]any{"ok": true, "employee": veEntry, "hub_employee_id": veEntry.ID, "hub_account_id": userID, "hub_tenant_id": tenantID, "platform_id": entry.PlatformID}
+		rollbackRegistration := func() {
+			if err := saveVERegistry(r.Context(), tenantSystem, previousReg); err != nil {
+				log.Printf("[platform-employee-register] rollback registry failed tenant=%s employee=%s err=%v", tenantID, platformEmployeeID, err)
+			}
+			if createdUser {
+				if err := users.DeleteByTenantEmail(r.Context(), tenantID, email); err != nil {
+					log.Printf("[platform-employee-register] rollback created user failed tenant=%s email=%s err=%v", tenantID, email, err)
+				}
+			}
+		}
+		var previousRuntimeReg macLawSrvRuntimeRegistry
+		runtimeChanged := false
+		if runtimeBaseURL != "" {
+			previousRuntimeReg = loadMacLawSrvRuntimeRegistry(r.Context(), system)
+			if err := upsertMacLawSrvRuntimeRegistry(r.Context(), system, tenantID, runtimeBaseURL, req.RuntimeAPIKey); err != nil {
+				rollbackRegistration()
+				writeError(w, http.StatusInternalServerError, "MACLAWSRV_RUNTIME_REGISTRY_SAVE_FAILED", err.Error())
+				return
+			}
+			runtimeChanged = true
+		}
+		if err := ensurePlatformEmployeeLLMEntitlement(r.Context(), tenantSystem, email, firstNonEmpty(req.LLMServiceGroupID, req.DefaultLLM)); err != nil {
+			if runtimeChanged {
+				if restoreErr := saveMacLawSrvRuntimeRegistry(r.Context(), system, previousRuntimeReg); restoreErr != nil {
+					log.Printf("[platform-employee-register] rollback runtime registry failed tenant=%s employee=%s err=%v", tenantID, platformEmployeeID, restoreErr)
+				}
+			}
+			rollbackRegistration()
+			writeError(w, http.StatusBadRequest, "LLM_SERVICE_GROUP_ENTITLEMENT_FAILED", err.Error())
+			return
+		}
+		hubAccountID := firstNonEmpty(veEntry.OwnerUserID, userID)
+		resp := map[string]any{"ok": true, "employee": veEntry, "hub_employee_id": veEntry.ID, "hub_account_id": hubAccountID, "hub_tenant_id": tenantID, "platform_id": entry.PlatformID}
 		if len(identities) > 0 && identities[0] != nil {
-			if viewerToken, err := identities[0].IssueViewerTokenForUser(r.Context(), userID); err == nil && strings.TrimSpace(viewerToken) != "" {
+			if viewerToken, err := identities[0].IssueViewerTokenForUser(r.Context(), hubAccountID); err == nil && strings.TrimSpace(viewerToken) != "" {
 				resp["viewer_token"] = viewerToken
 				resp["hub_llm_viewer_token"] = viewerToken
 				resp["access_token"] = viewerToken
@@ -1332,6 +1369,28 @@ func PlatformEmployeeRegisterHandler(system store.SystemSettingsRepository, tena
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+func mergePlatformEmployeeRegistration(previous, next digitalEmployeeEntry) digitalEmployeeEntry {
+	next.RegisteredAt = firstNonEmpty(previous.RegisteredAt, next.RegisteredAt)
+	next.Status = firstNonEmpty(previous.Status, next.Status)
+	next.OnlineStatus = firstNonEmpty(previous.OnlineStatus, next.OnlineStatus)
+	if next.Status == veStatusDisabled {
+		next.DisabledAt = previous.DisabledAt
+	}
+	if next.Status == veStatusRejected {
+		next.RejectReason = previous.RejectReason
+		next.RejectedAt = previous.RejectedAt
+	}
+	if strings.TrimSpace(next.AvatarDataURL) == "" {
+		next.AvatarDataURL = previous.AvatarDataURL
+	}
+	next.AccessPolicy = firstNonEmpty(previous.AccessPolicy, next.AccessPolicy)
+	next.Whitelist = normalizeVEStringList(previous.Whitelist)
+	next.Blacklist = normalizeVEStringList(previous.Blacklist)
+	next.VisibleGroupIDs = normalizeVEStringList(previous.VisibleGroupIDs)
+	next.Resident = previous.Resident
+	return next
 }
 
 func platformEmployeeMachineIDSource(reg digitalEmployeeRegistry, employeeID, platformEmployeeID string) string {
@@ -1572,6 +1631,8 @@ func PlatformEmployeeStatusHandler(system store.SystemSettingsRepository, tenant
 			HubEmployeeID      string `json:"hub_employee_id"`
 			HubAccountID       string `json:"hub_account_id"`
 			PlatformID         string `json:"platform_id"`
+			DeleteVERegistry   bool   `json:"delete_ve_registry"`
+			VERegistryStatus   string `json:"ve_registry_status"`
 		}
 		if err := json.Unmarshal(body, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -1589,6 +1650,7 @@ func PlatformEmployeeStatusHandler(system store.SystemSettingsRepository, tenant
 			return
 		}
 		status := normalizePlatformEmployeeStatus(req.ServiceStatus)
+		deleteRegistry := platformEmployeeStatusDeletesVERegistry(req.DeleteVERegistry, req.VERegistryStatus)
 		tenantID := strings.TrimSpace(req.HubTenantID)
 		var updated bool
 		var err error
@@ -1598,6 +1660,12 @@ func PlatformEmployeeStatusHandler(system store.SystemSettingsRepository, tenant
 				return
 			}
 			employeeEntry, found := platformEmployeeInTenant(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID)
+			if deleteRegistry {
+				if matchedEntry, matched := platformEmployeeInTenantForDelete(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID, req.HubEmployeeID, req.HubAccountID); matched {
+					employeeEntry = matchedEntry
+					found = true
+				}
+			}
 			if !found {
 				writeError(w, http.StatusNotFound, "EMPLOYEE_NOT_FOUND", "platform employee was not found in Hub registry")
 				return
@@ -1610,11 +1678,24 @@ func PlatformEmployeeStatusHandler(system store.SystemSettingsRepository, tenant
 				writeError(w, http.StatusForbidden, "EMPLOYEE_IDENTITY_MISMATCH", "hub_account_id does not match the registered platform employee")
 				return
 			}
-			updated, err = updatePlatformEmployeeStatusInTenant(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID, status)
+			if deleteRegistry {
+				updated, err = deletePlatformEmployeeInTenant(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID, req.HubEmployeeID, req.HubAccountID)
+			} else {
+				updated, err = updatePlatformEmployeeStatusInTenant(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID, status)
+			}
 		} else {
-			tenantID, updated, err = updatePlatformEmployeeStatus(r.Context(), system, tenants, entry.PlatformID, platformEmployeeID, status)
+			if deleteRegistry {
+				tenantID, updated, err = deletePlatformEmployee(r.Context(), system, tenants, entry.PlatformID, platformEmployeeID, req.HubEmployeeID, req.HubAccountID)
+			} else {
+				tenantID, updated, err = updatePlatformEmployeeStatus(r.Context(), system, tenants, entry.PlatformID, platformEmployeeID, status)
+			}
 		}
 		if err != nil {
+			var runtimeActivationErr platformEmployeeRuntimeActivationError
+			if errors.As(err, &runtimeActivationErr) {
+				writeError(w, http.StatusConflict, runtimeActivationErr.code, runtimeActivationErr.message)
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "EMPLOYEE_STATUS_UPDATE_FAILED", err.Error())
 			return
 		}
@@ -1622,8 +1703,15 @@ func PlatformEmployeeStatusHandler(system store.SystemSettingsRepository, tenant
 			writeError(w, http.StatusNotFound, "EMPLOYEE_NOT_FOUND", "platform employee was not found in Hub registry")
 			return
 		}
+		if deleteRegistry {
+			status = "deleted"
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "employee_id": platformEmployeeID, "hub_tenant_id": tenantID, "service_status": req.ServiceStatus, "hub_status": status})
 	}
+}
+
+func platformEmployeeStatusDeletesVERegistry(deleteVERegistry bool, veRegistryStatus string) bool {
+	return deleteVERegistry || strings.EqualFold(strings.TrimSpace(veRegistryStatus), "deleted") || strings.EqualFold(strings.TrimSpace(veRegistryStatus), "removed")
 }
 
 func PlatformEmployeeDeleteHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, users store.UserRepository) http.HandlerFunc {
@@ -1652,18 +1740,33 @@ func PlatformEmployeeDeleteHandler(system store.SystemSettingsRepository, tenant
 			return
 		}
 		tenantID := strings.TrimSpace(req.HubTenantID)
-		if tenantID == "" {
-			writeError(w, http.StatusBadRequest, "TENANT_REQUIRED", "hub_tenant_id is required")
-			return
-		}
-		if !platformTenantIDAllowed(r.Context(), tenants, tenantID) {
-			writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", "Hub tenant not found")
-			return
-		}
-		employeeEntry, found := platformEmployeeInTenant(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID)
-		if !found {
-			writeError(w, http.StatusNotFound, "EMPLOYEE_NOT_FOUND", "platform employee was not found in Hub registry")
-			return
+		var employeeEntry digitalEmployeeEntry
+		var found bool
+		if tenantID != "" {
+			if !platformTenantIDAllowed(r.Context(), tenants, tenantID) {
+				writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", "Hub tenant not found")
+				return
+			}
+			employeeEntry, found = platformEmployeeInTenant(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID)
+			if matchedEntry, matched := platformEmployeeInTenantForDelete(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID, req.HubEmployeeID, req.HubAccountID); matched {
+				employeeEntry = matchedEntry
+				found = true
+			}
+			if !found {
+				writeError(w, http.StatusNotFound, "EMPLOYEE_NOT_FOUND", "platform employee was not found in Hub registry")
+				return
+			}
+		} else {
+			var lookupErr error
+			tenantID, employeeEntry, found, lookupErr = platformEmployeeForProvider(r.Context(), system, tenants, entry.PlatformID, platformEmployeeID, req.HubEmployeeID, req.HubAccountID)
+			if lookupErr != nil {
+				writeError(w, http.StatusInternalServerError, "EMPLOYEE_LOOKUP_FAILED", lookupErr.Error())
+				return
+			}
+			if !found {
+				writeError(w, http.StatusNotFound, "EMPLOYEE_NOT_FOUND", "platform employee was not found in Hub registry")
+				return
+			}
 		}
 		if strings.TrimSpace(req.HubEmployeeID) != "" && strings.TrimSpace(req.HubEmployeeID) != firstNonEmpty(employeeEntry.ID, employeeEntry.MachineID) {
 			writeError(w, http.StatusForbidden, "EMPLOYEE_IDENTITY_MISMATCH", "hub_employee_id does not match the registered platform employee")
@@ -1694,7 +1797,7 @@ func PlatformEmployeeDeleteHandler(system store.SystemSettingsRepository, tenant
 			}
 			userDeleted = true
 		}
-		removed, err := deletePlatformEmployeeInTenant(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID)
+		removed, err := deletePlatformEmployeeInTenant(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID, req.HubEmployeeID, req.HubAccountID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "EMPLOYEE_DELETE_FAILED", err.Error())
 			return
@@ -1703,7 +1806,7 @@ func PlatformEmployeeDeleteHandler(system store.SystemSettingsRepository, tenant
 			writeError(w, http.StatusNotFound, "EMPLOYEE_NOT_FOUND", "platform employee was not found in Hub registry")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "employee_id": platformEmployeeID, "hub_tenant_id": tenantID, "hub_employee_id": firstNonEmpty(employeeEntry.ID, employeeEntry.MachineID), "hub_account_id": employeeEntry.OwnerUserID, "user_deleted": userDeleted})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "employee_id": platformEmployeeID, "hub_tenant_id": tenantID, "hub_employee_id": firstNonEmpty(employeeEntry.ID, employeeEntry.MachineID), "hub_account_id": employeeEntry.OwnerUserID, "user_deleted": userDeleted, "ve_registry_deleted": true})
 	}
 }
 
@@ -1803,17 +1906,21 @@ func normalizePlatformEmployeeStatus(status string) string {
 	}
 }
 
-func updatePlatformEmployeeStatus(ctx context.Context, system store.SystemSettingsRepository, tenants store.TenantRepository, platformID, platformEmployeeID, status string) (string, bool, error) {
-	platformID = strings.TrimSpace(platformID)
-	platformEmployeeID = strings.TrimSpace(platformEmployeeID)
-	if platformEmployeeID == "" {
-		return "", false, nil
-	}
+type platformEmployeeRuntimeActivationError struct {
+	code    string
+	message string
+}
+
+func (e platformEmployeeRuntimeActivationError) Error() string {
+	return e.message
+}
+
+func platformTenantIDsForProviderUpdate(ctx context.Context, system store.SystemSettingsRepository, tenants store.TenantRepository) (map[string]struct{}, error) {
 	tenantIDs := map[string]struct{}{}
 	if tenants != nil {
 		items, err := tenants.List(ctx)
 		if err != nil {
-			return "", false, err
+			return nil, err
 		}
 		for _, item := range items {
 			if isPlatformTenantActive(item) {
@@ -1834,6 +1941,19 @@ func updatePlatformEmployeeStatus(ctx context.Context, system store.SystemSettin
 			}
 		}
 	}
+	return tenantIDs, nil
+}
+
+func updatePlatformEmployeeStatus(ctx context.Context, system store.SystemSettingsRepository, tenants store.TenantRepository, platformID, platformEmployeeID, status string) (string, bool, error) {
+	platformID = strings.TrimSpace(platformID)
+	platformEmployeeID = strings.TrimSpace(platformEmployeeID)
+	if platformEmployeeID == "" {
+		return "", false, nil
+	}
+	tenantIDs, err := platformTenantIDsForProviderUpdate(ctx, system, tenants)
+	if err != nil {
+		return "", false, err
+	}
 	for tenantID := range tenantIDs {
 		tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
 		registry := loadVERegistry(ctx, tenantSystem)
@@ -1846,6 +1966,17 @@ func updatePlatformEmployeeStatus(ctx context.Context, system store.SystemSettin
 			if !platformEmployeeIDMatchesEntry(*emp, platformEmployeeID) {
 				continue
 			}
+			if status == veStatusActive {
+				checked, ready, code, message := verifyMacLawSrvRuntimeReadyForActivation(ctx, system, tenantID, *emp)
+				if !ready {
+					registry.Employees[i] = checked
+					if err := saveVERegistry(ctx, tenantSystem, registry); err != nil {
+						return tenantID, false, err
+					}
+					return tenantID, false, platformEmployeeRuntimeActivationError{code: code, message: message}
+				}
+				*emp = checked
+			}
 			emp.Status = status
 			if status == veStatusDisabled {
 				now := time.Now().UTC().Format(time.RFC3339)
@@ -1853,7 +1984,13 @@ func updatePlatformEmployeeStatus(ctx context.Context, system store.SystemSettin
 				emp.OnlineStatus = veOnlineStatusOffline
 			} else if status == veStatusActive {
 				emp.DisabledAt = ""
-				emp.OnlineStatus = veOnlineStatusOnline
+				if isMacLawSrvRuntimeEmployee(*emp) {
+					if emp.OnlineStatus != veOnlineStatusOnline {
+						emp.OnlineStatus = veOnlineStatusOffline
+					}
+				} else {
+					emp.OnlineStatus = veOnlineStatusOnline
+				}
 			}
 			emp.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 			changed = true
@@ -1867,6 +2004,96 @@ func updatePlatformEmployeeStatus(ctx context.Context, system store.SystemSettin
 		}
 	}
 	return "", false, nil
+}
+
+func deletePlatformEmployee(ctx context.Context, system store.SystemSettingsRepository, tenants store.TenantRepository, platformID, platformEmployeeID, hubEmployeeID, hubAccountID string) (string, bool, error) {
+	platformEmployeeID = strings.TrimSpace(platformEmployeeID)
+	if platformEmployeeID == "" {
+		return "", false, nil
+	}
+	tenantIDs, err := platformTenantIDsForProviderUpdate(ctx, system, tenants)
+	if err != nil {
+		return "", false, err
+	}
+	for tenantID := range tenantIDs {
+		if _, found := platformEmployeeInTenantForDelete(ctx, system, tenantID, platformID, platformEmployeeID, hubEmployeeID, hubAccountID); !found {
+			continue
+		}
+		removed, err := deletePlatformEmployeeInTenant(ctx, system, tenantID, platformID, platformEmployeeID, hubEmployeeID, hubAccountID)
+		if err != nil {
+			return tenantID, false, err
+		}
+		if removed {
+			return tenantID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func platformEmployeeForProvider(ctx context.Context, system store.SystemSettingsRepository, tenants store.TenantRepository, platformID, platformEmployeeID, hubEmployeeID, hubAccountID string) (string, digitalEmployeeEntry, bool, error) {
+	platformEmployeeID = strings.TrimSpace(platformEmployeeID)
+	if platformEmployeeID == "" {
+		return "", digitalEmployeeEntry{}, false, nil
+	}
+	tenantIDs, err := platformTenantIDsForProviderUpdate(ctx, system, tenants)
+	if err != nil {
+		return "", digitalEmployeeEntry{}, false, err
+	}
+	for tenantID := range tenantIDs {
+		employeeEntry, found := platformEmployeeInTenantForDelete(ctx, system, tenantID, platformID, platformEmployeeID, hubEmployeeID, hubAccountID)
+		if found {
+			return tenantID, employeeEntry, true, nil
+		}
+	}
+	return "", digitalEmployeeEntry{}, false, nil
+}
+
+func platformEmployeeInTenantForDelete(ctx context.Context, system store.SystemSettingsRepository, tenantID, platformID, platformEmployeeID, hubEmployeeID, hubAccountID string) (digitalEmployeeEntry, bool) {
+	platformID = strings.TrimSpace(platformID)
+	platformEmployeeID = strings.TrimSpace(platformEmployeeID)
+	if tenantID == "" || platformEmployeeID == "" {
+		return digitalEmployeeEntry{}, false
+	}
+	registry := loadVERegistry(ctx, scopedSystemSettingsForTenant(tenantID, system))
+	var best digitalEmployeeEntry
+	bestScore := -1
+	for _, employee := range registry.Employees {
+		if platformID != "" && !strings.EqualFold(strings.TrimSpace(employee.PlatformID), platformID) {
+			continue
+		}
+		if !platformEmployeeIDMatchesEntry(employee, platformEmployeeID) {
+			continue
+		}
+		score := platformEmployeeDeleteLookupScore(employee, hubEmployeeID, hubAccountID)
+		if score > bestScore {
+			best = employee
+			bestScore = score
+		}
+	}
+	return best, bestScore >= 0
+}
+
+func platformEmployeeDeleteLookupMatches(entry digitalEmployeeEntry, hubEmployeeID, hubAccountID string) bool {
+	return platformEmployeeDeleteLookupScore(entry, hubEmployeeID, hubAccountID) >= 0
+}
+
+func platformEmployeeDeleteLookupScore(entry digitalEmployeeEntry, hubEmployeeID, hubAccountID string) int {
+	hubEmployeeID = strings.TrimSpace(hubEmployeeID)
+	hubAccountID = strings.TrimSpace(hubAccountID)
+	entryHubEmployeeID := firstNonEmpty(entry.ID, entry.MachineID)
+	entryHubAccountID := strings.TrimSpace(entry.OwnerUserID)
+	score := 0
+	if hubEmployeeID != "" && hubEmployeeID != entryHubEmployeeID {
+		return -1
+	} else if hubEmployeeID != "" {
+		score += 2
+	}
+	if hubAccountID != "" && entryHubAccountID != "" && hubAccountID != entryHubAccountID {
+		return -1
+	} else if hubAccountID != "" && entryHubAccountID != "" {
+		score++
+	}
+	return score
 }
 
 func updatePlatformEmployeeStatusInTenant(ctx context.Context, system store.SystemSettingsRepository, tenantID, platformID, platformEmployeeID, status string) (bool, error) {
@@ -1886,6 +2113,17 @@ func updatePlatformEmployeeStatusInTenant(ctx context.Context, system store.Syst
 		if !platformEmployeeIDMatchesEntry(*emp, platformEmployeeID) {
 			continue
 		}
+		if status == veStatusActive {
+			checked, ready, code, message := verifyMacLawSrvRuntimeReadyForActivation(ctx, system, tenantID, *emp)
+			if !ready {
+				registry.Employees[i] = checked
+				if err := saveVERegistry(ctx, tenantSystem, registry); err != nil {
+					return false, err
+				}
+				return false, platformEmployeeRuntimeActivationError{code: code, message: message}
+			}
+			*emp = checked
+		}
 		emp.Status = status
 		if status == veStatusDisabled {
 			now := time.Now().UTC().Format(time.RFC3339)
@@ -1893,7 +2131,13 @@ func updatePlatformEmployeeStatusInTenant(ctx context.Context, system store.Syst
 			emp.OnlineStatus = veOnlineStatusOffline
 		} else if status == veStatusActive {
 			emp.DisabledAt = ""
-			emp.OnlineStatus = veOnlineStatusOnline
+			if isMacLawSrvRuntimeEmployee(*emp) {
+				if emp.OnlineStatus != veOnlineStatusOnline {
+					emp.OnlineStatus = veOnlineStatusOffline
+				}
+			} else {
+				emp.OnlineStatus = veOnlineStatusOnline
+			}
 		}
 		emp.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		if err := saveVERegistry(ctx, tenantSystem, registry); err != nil {
@@ -1904,7 +2148,7 @@ func updatePlatformEmployeeStatusInTenant(ctx context.Context, system store.Syst
 	return false, nil
 }
 
-func deletePlatformEmployeeInTenant(ctx context.Context, system store.SystemSettingsRepository, tenantID, platformID, platformEmployeeID string) (bool, error) {
+func deletePlatformEmployeeInTenant(ctx context.Context, system store.SystemSettingsRepository, tenantID, platformID, platformEmployeeID, hubEmployeeID, hubAccountID string) (bool, error) {
 	tenantID = strings.TrimSpace(tenantID)
 	platformID = strings.TrimSpace(platformID)
 	platformEmployeeID = strings.TrimSpace(platformEmployeeID)
@@ -1913,6 +2157,8 @@ func deletePlatformEmployeeInTenant(ctx context.Context, system store.SystemSett
 	}
 	tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
 	registry := loadVERegistry(ctx, tenantSystem)
+	bestIndex := -1
+	bestScore := -1
 	for i := range registry.Employees {
 		emp := registry.Employees[i]
 		if platformID != "" && !strings.EqualFold(strings.TrimSpace(emp.PlatformID), platformID) {
@@ -1921,13 +2167,21 @@ func deletePlatformEmployeeInTenant(ctx context.Context, system store.SystemSett
 		if !platformEmployeeIDMatchesEntry(emp, platformEmployeeID) {
 			continue
 		}
-		registry.Employees = append(registry.Employees[:i], registry.Employees[i+1:]...)
-		if err := saveVERegistry(ctx, tenantSystem, registry); err != nil {
-			return false, err
+		score := platformEmployeeDeleteLookupScore(emp, hubEmployeeID, hubAccountID)
+		if score > bestScore {
+			bestIndex = i
+			bestScore = score
 		}
-		return true, nil
 	}
-	return false, nil
+	if bestIndex < 0 {
+		return false, nil
+	}
+	registry.Employees = append(registry.Employees[:bestIndex], registry.Employees[bestIndex+1:]...)
+	normalizeVERegistryResidentFlags(&registry)
+	if err := saveVERegistry(ctx, tenantSystem, registry); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func authenticatePlatformRequest(w http.ResponseWriter, r *http.Request, system store.SystemSettingsRepository) (platformProviderEntry, []byte, bool) {
@@ -2267,7 +2521,7 @@ type employeeDeliveryTarget struct {
 }
 
 func (s platformAwareMachineSender) SendToMachine(machineID string, msg any) error {
-	deliveryTarget, ok := s.findPlatformEmployee(context.Background(), machineID, "")
+	deliveryTarget, ok := s.findPlatformEmployee(context.Background(), machineID, "", false)
 	if ok {
 		log.Printf("[ve-platform-delivery] suppress websocket event for platform employee machine=%s employee=%s tenant=%s kind=%s msg_type=%v", machineID, deliveryTarget.entry.ID, deliveryTarget.tenantID, deliveryTarget.kind, platformA2AMessageType(msg))
 		return nil
@@ -2280,7 +2534,7 @@ func (s platformAwareMachineSender) SendToMachine(machineID string, msg any) err
 
 func (s platformAwareMachineSender) DiscussionInviteAutoAccepts(tenantID, targetID string) (bool, error) {
 	targetID = strings.TrimSpace(targetID)
-	deliveryTarget, ok := s.findPlatformEmployee(context.Background(), targetID, tenantID)
+	deliveryTarget, ok := s.findPlatformEmployee(context.Background(), targetID, tenantID, true)
 	if !ok {
 		return false, nil
 	}
@@ -2293,6 +2547,8 @@ func (s platformAwareMachineSender) DiscussionInviteAutoAccepts(tenantID, target
 		return true, nil
 	case "platform_inactive":
 		return false, fmt.Errorf("platform employee %s is not active", targetID)
+	case "platform_not_ready":
+		return false, fmt.Errorf("platform employee %s runtime is not online", targetID)
 	default:
 		return false, fmt.Errorf("MaClawSrv runtime is not configured for platform employee %s", targetID)
 	}
@@ -2304,7 +2560,8 @@ func (s platformAwareMachineSender) SendDiscussionMessage(session *corea2a.Sessi
 	if session != nil {
 		tenantID = session.TenantID
 	}
-	deliveryTarget, ok := s.findPlatformEmployee(context.Background(), targetID, tenantID)
+	executable := shouldExecutePlatformDiscussionMessage(msg.Kind)
+	deliveryTarget, ok := s.findPlatformEmployee(context.Background(), targetID, tenantID, executable)
 	if !ok {
 		return false, nil, nil
 	}
@@ -2312,7 +2569,7 @@ func (s platformAwareMachineSender) SendDiscussionMessage(session *corea2a.Sessi
 		log.Printf("[ve-platform-delivery] suppress platform-to-platform discussion execution session=%s from=%s target=%s tenant=%s employee=%s msg_id=%s msg_kind=%s", groupDiscussionSessionID(session), msg.FromID, targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, msg.ID, msg.Kind)
 		return true, nil, nil
 	}
-	if !shouldExecutePlatformDiscussionMessage(msg.Kind) {
+	if !executable {
 		log.Printf("[ve-platform-delivery] suppress non-executable discussion message session=%s from=%s target=%s tenant=%s employee=%s msg_id=%s msg_kind=%s", groupDiscussionSessionID(session), msg.FromID, targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, msg.ID, msg.Kind)
 		return true, nil, nil
 	}
@@ -2332,6 +2589,10 @@ func (s platformAwareMachineSender) SendDiscussionMessage(session *corea2a.Sessi
 		log.Printf("[ve-platform-delivery] reject inactive platform employee session=%s target=%s tenant=%s employee=%s status=%s", groupDiscussionSessionID(session), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, deliveryTarget.entry.Status)
 		return true, nil, fmt.Errorf("platform employee %s is not active", targetID)
 	}
+	if deliveryTarget.kind == "platform_not_ready" {
+		log.Printf("[ve-platform-delivery] reject not-ready platform employee session=%s target=%s tenant=%s employee=%s status=%s online_status=%s", groupDiscussionSessionID(session), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, deliveryTarget.entry.Status, deliveryTarget.entry.OnlineStatus)
+		return true, nil, fmt.Errorf("platform employee %s runtime is not online", targetID)
+	}
 	log.Printf("[ve-platform-delivery] runtime missing session=%s target=%s tenant=%s employee=%s platform_employee=%s runtime_provider=%s", groupDiscussionSessionID(session), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), deliveryTarget.entry.RuntimeProviderID)
 	return true, nil, fmt.Errorf("MaClawSrv runtime is not configured for platform employee %s", targetID)
 }
@@ -2342,7 +2603,8 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 	if session != nil {
 		tenantID = session.TenantID
 	}
-	deliveryTarget, ok := s.findPlatformEmployee(context.Background(), targetID, tenantID)
+	executable := shouldExecutePlatformDiscussionMessage(msg.Kind)
+	deliveryTarget, ok := s.findPlatformEmployee(context.Background(), targetID, tenantID, executable)
 	if !ok {
 		return false, nil
 	}
@@ -2350,7 +2612,7 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 		log.Printf("[ve-platform-delivery] suppress async platform-to-platform discussion execution session=%s from=%s target=%s tenant=%s employee=%s msg_id=%s msg_kind=%s", groupDiscussionSessionID(session), msg.FromID, targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, msg.ID, msg.Kind)
 		return true, nil
 	}
-	if !shouldExecutePlatformDiscussionMessage(msg.Kind) {
+	if !executable {
 		log.Printf("[ve-platform-delivery] suppress async non-executable discussion message session=%s from=%s target=%s tenant=%s employee=%s msg_id=%s msg_kind=%s", groupDiscussionSessionID(session), msg.FromID, targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, msg.ID, msg.Kind)
 		return true, nil
 	}
@@ -2386,6 +2648,10 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 		log.Printf("[ve-platform-delivery] reject inactive platform employee session=%s target=%s tenant=%s employee=%s status=%s", groupDiscussionSessionID(session), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, deliveryTarget.entry.Status)
 		return true, fmt.Errorf("platform employee %s is not active", targetID)
 	}
+	if deliveryTarget.kind == "platform_not_ready" {
+		log.Printf("[ve-platform-delivery] reject not-ready platform employee session=%s target=%s tenant=%s employee=%s status=%s online_status=%s", groupDiscussionSessionID(session), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, deliveryTarget.entry.Status, deliveryTarget.entry.OnlineStatus)
+		return true, fmt.Errorf("platform employee %s runtime is not online", targetID)
+	}
 	log.Printf("[ve-platform-delivery] runtime missing session=%s target=%s tenant=%s employee=%s platform_employee=%s runtime_provider=%s", groupDiscussionSessionID(session), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), deliveryTarget.entry.RuntimeProviderID)
 	return true, fmt.Errorf("MaClawSrv runtime is not configured for platform employee %s", targetID)
 }
@@ -2404,7 +2670,7 @@ func (s platformAwareMachineSender) isPlatformDiscussionOrigin(fromID, tenantID 
 	if fromID == "" {
 		return false
 	}
-	_, ok := s.findPlatformEmployee(context.Background(), fromID, tenantID)
+	_, ok := s.findPlatformEmployee(context.Background(), fromID, tenantID, false)
 	return ok
 }
 
@@ -2627,7 +2893,11 @@ func isMacLawSrvRuntimeProvider(provider platformProviderEntry, entry digitalEmp
 	return strings.EqualFold(strings.TrimSpace(provider.PlatformID), maclawSrvRuntimePlatformID) || strings.EqualFold(strings.TrimSpace(entry.PlatformID), maclawSrvRuntimePlatformID) || strings.EqualFold(strings.TrimSpace(entry.RuntimeProviderID), maclawSrvRuntimePlatformID)
 }
 
-func (s platformAwareMachineSender) findPlatformEmployee(ctx context.Context, machineID, tenantHint string) (employeeDeliveryTarget, bool) {
+func isMacLawSrvRuntimeDeliveryEmployee(entry digitalEmployeeEntry) bool {
+	return isPlatformRuntimeEmployeeEntry(entry) && isMacLawSrvRuntimeProvider(platformProviderEntry{}, entry)
+}
+
+func (s platformAwareMachineSender) findPlatformEmployee(ctx context.Context, machineID, tenantHint string, checkRuntimePresence bool) (employeeDeliveryTarget, bool) {
 	machineID = strings.TrimSpace(machineID)
 	if machineID == "" || s.system == nil {
 		return employeeDeliveryTarget{}, false
@@ -2681,7 +2951,20 @@ func (s platformAwareMachineSender) findPlatformEmployee(ctx context.Context, ma
 		if runtimeProviderID := strings.TrimSpace(entry.RuntimeProviderID); runtimeProviderID != "" && !strings.EqualFold(runtimeProviderID, maclawSrvRuntimePlatformID) {
 			continue
 		}
-		if isMacLawSrvRuntimeProvider(platformProviderEntry{}, entry) {
+		isMacLawSrvDeliveryEmployee := isMacLawSrvRuntimeDeliveryEmployee(entry)
+		if checkRuntimePresence && isMacLawSrvDeliveryEmployee {
+			presence := loadMacLawSrvRuntimePresence(ctx, s.system, tenantID)
+			if presence.Loaded {
+				entry = applyVEDiscoverablePresence(ctx, entry, nil, presence)
+				if !strings.EqualFold(strings.TrimSpace(entry.Status), veStatusActive) {
+					return employeeDeliveryTarget{entry: entry, tenantID: tenantID, kind: "platform_inactive"}, true
+				}
+				if !strings.EqualFold(strings.TrimSpace(entry.OnlineStatus), veOnlineStatusOnline) {
+					return employeeDeliveryTarget{entry: entry, tenantID: tenantID, kind: "platform_not_ready"}, true
+				}
+			}
+		}
+		if isMacLawSrvDeliveryEmployee {
 			if runtime, ok := runtimes.findForTenant(tenantID); ok && strings.TrimSpace(entry.PlatformEmployeeID) != "" {
 				return employeeDeliveryTarget{entry: entry, runtime: runtime, tenantID: tenantID, kind: maclawSrvRuntimePlatformID}, true
 			}
@@ -2689,7 +2972,7 @@ func (s platformAwareMachineSender) findPlatformEmployee(ctx context.Context, ma
 		if runtime, ok := runtimes.findForTenant(tenantID); ok && strings.TrimSpace(entry.PlatformID) != "" && strings.TrimSpace(entry.PlatformEmployeeID) != "" {
 			return employeeDeliveryTarget{entry: entry, runtime: runtime, tenantID: tenantID, kind: maclawSrvRuntimePlatformID}, true
 		}
-		if isMacLawSrvRuntimeProvider(platformProviderEntry{}, entry) && strings.TrimSpace(entry.PlatformEmployeeID) != "" {
+		if isMacLawSrvDeliveryEmployee && strings.TrimSpace(entry.PlatformEmployeeID) != "" {
 			return employeeDeliveryTarget{entry: entry, tenantID: tenantID, kind: maclawSrvRuntimePlatformID}, true
 		}
 		if strings.TrimSpace(entry.PlatformID) != "" || strings.TrimSpace(entry.PlatformEmployeeID) != "" || strings.TrimSpace(entry.RuntimeProviderID) != "" {

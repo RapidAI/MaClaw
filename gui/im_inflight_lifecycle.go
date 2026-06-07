@@ -9,6 +9,7 @@ type imInFlightLifecycle struct {
 	handler          *IMMessageHandler
 	userID           string
 	userText         string
+	loopID           string
 	markerSet        bool
 	preserveOnFinish bool
 }
@@ -47,4 +48,11 @@ func (l *imInFlightLifecycle) Cleanup() {
 	log.Printf("[InFlightTask] clear user=%q", l.userID)
 	l.handler.clearInFlightTask(l.userID)
 	_ = l.handler.memory.FlushNow()
+
+	// Destroy scroll session for this agent loop (Requirement 4.5).
+	if l.loopID != "" && l.handler.memoryStore != nil {
+		if ss := l.handler.memoryStore.ScrollSessions(); ss != nil {
+			ss.Destroy(l.loopID, l.userID)
+		}
+	}
 }

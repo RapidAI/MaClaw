@@ -33,7 +33,7 @@ func TestAdminWebServesEmbeddedShell(t *testing.T) {
 	if strings.Contains(body, "style=") || strings.Contains(body, "\uFFFD") {
 		t.Fatalf("admin app asset contains CSP-hostile inline style or replacement char")
 	}
-	if w.Code != http.StatusOK || !strings.Contains(body, "/api/v1/admin/bootstrap/status") || !strings.Contains(body, "createTenant") || !strings.Contains(body, "delete-check") || !strings.Contains(body, "createCredential") || !strings.Contains(body, "rotate-secret") || !strings.Contains(body, "createSnapshot") || !strings.Contains(body, "/api/v1/admin/audit-events") || !strings.Contains(body, "/api/v1/admin/security/summary") || !strings.Contains(body, "/api/v1/admin/security/risk-events") || !strings.Contains(body, "riskEventsTable") || !strings.Contains(body, "riskDetailTarget") || !strings.Contains(body, "overviewOut") || !strings.Contains(body, "sandboxOut") || !strings.Contains(body, "t(\"view\")") || !strings.Contains(body, "t(\"empty\")") || !strings.Contains(body, "riskCountChips") || !strings.Contains(body, "riskKindCounts") || !strings.Contains(body, "riskSeverityCounts") || !strings.Contains(body, "bindRiskCountChips") || !strings.Contains(body, "data-risk-kind") || !strings.Contains(body, "data-risk-severity") || !strings.Contains(body, "loadRiskEventsFromFilters") || !strings.Contains(body, "validRiskTimeRange") || !strings.Contains(body, "validRiskLimit") || !strings.Contains(body, "invalidRiskLimit") || !strings.Contains(body, "generatedAt") || !strings.Contains(body, "risks.generated_at") || !strings.Contains(body, "risks.filters") || !strings.Contains(body, "limit=${limit}") || !strings.Contains(body, "min=\"1\"") || !strings.Contains(body, "max=\"500\"") || !strings.Contains(body, "since must be before or equal to until") || !strings.Contains(body, "riskSeverity") || !strings.Contains(body, "riskKind") || !strings.Contains(body, "riskKindOptions") || !strings.Contains(body, "riskKindOptions(risks.kind_counts)") || !strings.Contains(body, "riskEventsList") || !strings.Contains(body, "loadRisks") || !strings.Contains(body, "clearRiskFilters") || !strings.Contains(body, "setRiskTimePreset") || !strings.Contains(body, "data-risk-preset") || !strings.Contains(body, "toLocalDateTimeInput") || !strings.Contains(body, "${riskFilterSummary(security)}") || !strings.Contains(body, "riskFilterSummary") || !strings.Contains(body, "riskFilterStatus") || !strings.Contains(body, "all risks") || !strings.Contains(body, "goToRiskOps") || !strings.Contains(body, "pendingRiskFilter") || !strings.Contains(body, "applyPendingRiskFilter") || !strings.Contains(body, "/api/v1/admin/support-bundle") || !strings.Contains(body, "serviceSupportBundle") || !strings.Contains(body, "serviceSupportBundleDownload") || !strings.Contains(body, "/api/v1/admin/runtime/gc") || !strings.Contains(body, "runRuntimeGC") || !strings.Contains(body, "/api/v1/admin/runtime/goroutines") || !strings.Contains(body, "viewGoroutines") || !strings.Contains(body, "downloadGoroutines") || !strings.Contains(body, "/api/v1/admin/runtime/profiles/heap") || !strings.Contains(body, "viewHeapProfile") || !strings.Contains(body, "downloadHeapProfile") || !strings.Contains(body, "/api/v1/admin/jobs") || !strings.Contains(body, "last_sandbox_report") || !strings.Contains(body, "data-job-cancel") || !strings.Contains(body, "/api/v1/admin/logs/errors/recent") || !strings.Contains(body, "/api/v1/admin/logs/search") || !strings.Contains(body, "/download?${q}") || !strings.Contains(body, "downloadLog") || !strings.Contains(body, "rotateLog") || !strings.Contains(body, "/rotate?confirm=true") || !strings.Contains(body, "searchAllLogs") || !strings.Contains(body, "recentLogTable") || !strings.Contains(body, "logIncludeWarn") || !strings.Contains(body, "logQuery") || !strings.Contains(body, "logLineTable") || !strings.Contains(body, "sandboxReportsTable") || !strings.Contains(body, "sandboxEventsTable") || !strings.Contains(body, "loadSandboxEventsFromFilters") || !strings.Contains(body, "sandboxEventStatus") || !strings.Contains(body, "sandboxProfilesTable") || !strings.Contains(body, "data-sandbox-profile-delete") || !strings.Contains(body, "deleteSandboxProfileConfirm") || !strings.Contains(body, "/api/v1/admin/sandbox/profiles") || !strings.Contains(body, "/api/v1/admin/sandbox/events") || !strings.Contains(body, "/api/v1/admin/sandbox/support-bundle") || !strings.Contains(body, "sandboxSupportBundle") || !strings.Contains(body, "sandboxSupportBundleView") || !strings.Contains(body, "sandboxSupportBundleDownload") || !strings.Contains(body, "support-bundle?download=true") || !strings.Contains(body, "b.security_risks") || !strings.Contains(body, "b.redactions") || !strings.Contains(body, "b.recent_log_errors") || !strings.Contains(body, "t(\"redactions\")") || !strings.Contains(body, "t(\"dataRoot\")") || !strings.Contains(body, "t(\"overviewHint\")") || !strings.Contains(body, "t(\"sandboxHint\")") || !strings.Contains(body, "t(\"logsHint\")") || !strings.Contains(body, "t(\"sources\")") || !strings.Contains(body, "t(\"open\")") || !strings.Contains(body, "t(\"lines\")") || !strings.Contains(body, "t(\"createTenant\")") || !strings.Contains(body, "t(\"knowledgeAccess\")") || !strings.Contains(body, "t(\"skillSources\")") || !strings.Contains(body, "t(\"restartRequired\")") || !strings.Contains(body, "t(\"warnings\")") || !strings.Contains(body, "t(\"configHint\")") || !strings.Contains(body, "t(\"tenantsHint\")") || !strings.Contains(body, "t(\"accountsHint\")") || !strings.Contains(body, "t(\"knowledgeHint\")") || !strings.Contains(body, "t(\"opsHint\")") || !strings.Contains(body, "t(\"manualApply\")") || !strings.Contains(body, "t(\"willExecute\")") || !strings.Contains(body, "loadLocales") || !strings.Contains(body, "/api/v1/admin/i18n/locales") || !strings.Contains(body, "state.locales") || !strings.Contains(body, "out.default_locale") || !strings.Contains(body, "localeOptions") || !strings.Contains(body, "state.me?.admin?.locale") || !strings.Contains(body, "b.data_root_name") || !strings.Contains(body, "b.data_root_redacted") || !strings.Contains(body, "bundle.security_risks?.recent") || !strings.Contains(body, "riskFilterSummary(risks)") || !strings.Contains(body, "data-sandbox-report-delete") || !strings.Contains(body, "deleteSandboxReportConfirm") || !strings.Contains(body, "landlock") || !strings.Contains(body, "/api/v1/admin/service-config/environment") || !strings.Contains(body, "/api/v1/admin/service-config/diff") || !strings.Contains(body, "environment:envResp") || !strings.Contains(body, "diff:diffResp") || !strings.Contains(body, "clearCfgDraft") || !strings.Contains(body, "draft?confirm=true") || !strings.Contains(body, "buildConfigValues") || !strings.Contains(body, "cfgUse_") || !strings.Contains(body, "f.sensitive?\"\"") || !strings.Contains(body, "/api/v1/admin/knowledge-access/cross-tenant") || !strings.Contains(body, "/api/v1/admin/skill-sources/global") || !strings.Contains(body, "clearTenantKnowledge") || !strings.Contains(body, "/api/v1/admin/sandbox/install") || !strings.Contains(body, "installSandboxRun") || !strings.Contains(body, "/api/v1/admin/sandbox/switch") || !strings.Contains(body, "/api/v1/admin/sandbox/rollback") || !strings.Contains(body, "rollbackSandbox") || !strings.Contains(body, "sandboxRollbackConfirm") || !strings.Contains(body, "SNAPSHOT SECRETS") || !strings.Contains(body, "EXPORT SECRETS") || !strings.Contains(body, "IMPORT STATE") || !strings.Contains(body, "RESTORE SNAPSHOT") || !strings.Contains(body, "data-snapshot-restore-run") || !strings.Contains(body, "INSTALL SANDBOX") || !strings.Contains(body, "DISABLE SANDBOX") || !strings.Contains(body, "clearKnowledgeConfirm") || !strings.Contains(body, "deleteTenantConfirm") || !strings.Contains(body, "useSecret") || !strings.Contains(body, "auditActorUser") || !strings.Contains(body, "actor_user_id") || strings.Contains(body, "confirm_unsafe:mode===\"none\"") {
+	if w.Code != http.StatusOK || !strings.Contains(body, "/api/v1/admin/bootstrap/status") || !strings.Contains(body, "createTenant") || !strings.Contains(body, "delete-check") || !strings.Contains(body, "createCredential") || !strings.Contains(body, "rotate-secret") || !strings.Contains(body, "createSnapshot") || !strings.Contains(body, "/api/v1/admin/audit-events") || !strings.Contains(body, "/api/v1/admin/security/summary") || !strings.Contains(body, "/api/v1/admin/security/risk-events") || !strings.Contains(body, "riskEventsTable") || !strings.Contains(body, "riskDetailTarget") || !strings.Contains(body, "overviewOut") || !strings.Contains(body, "sandboxOut") || !strings.Contains(body, "t(\"view\")") || !strings.Contains(body, "t(\"empty\")") || !strings.Contains(body, "riskCountChips") || !strings.Contains(body, "riskKindCounts") || !strings.Contains(body, "riskSeverityCounts") || !strings.Contains(body, "bindRiskCountChips") || !strings.Contains(body, "data-risk-kind") || !strings.Contains(body, "data-risk-severity") || !strings.Contains(body, "loadRiskEventsFromFilters") || !strings.Contains(body, "validRiskTimeRange") || !strings.Contains(body, "validRiskLimit") || !strings.Contains(body, "invalidRiskLimit") || !strings.Contains(body, "generatedAt") || !strings.Contains(body, "risks.generated_at") || !strings.Contains(body, "risks.filters") || !strings.Contains(body, "limit=${limit}") || !strings.Contains(body, "min=\"1\"") || !strings.Contains(body, "max=\"500\"") || !strings.Contains(body, "riskTimeRangeInvalid") || !strings.Contains(body, "riskSeverity") || !strings.Contains(body, "riskKind") || !strings.Contains(body, "riskKindOptions") || !strings.Contains(body, "riskKindOptions(risks.kind_counts)") || !strings.Contains(body, "riskEventsList") || !strings.Contains(body, "loadRisks") || !strings.Contains(body, "clearRiskFilters") || !strings.Contains(body, "setRiskTimePreset") || !strings.Contains(body, "data-risk-preset") || !strings.Contains(body, "toLocalDateTimeInput") || !strings.Contains(body, "${riskFilterSummary(security)}") || !strings.Contains(body, "riskFilterSummary") || !strings.Contains(body, "riskFilterStatus") || !strings.Contains(body, "all risks") || !strings.Contains(body, "goToRiskOps") || !strings.Contains(body, "pendingRiskFilter") || !strings.Contains(body, "applyPendingRiskFilter") || !strings.Contains(body, "/api/v1/admin/support-bundle") || !strings.Contains(body, "serviceSupportBundle") || !strings.Contains(body, "serviceSupportBundleDownload") || !strings.Contains(body, "/api/v1/admin/runtime/gc") || !strings.Contains(body, "runRuntimeGC") || !strings.Contains(body, "/api/v1/admin/runtime/goroutines") || !strings.Contains(body, "viewGoroutines") || !strings.Contains(body, "downloadGoroutines") || !strings.Contains(body, "/api/v1/admin/runtime/profiles/heap") || !strings.Contains(body, "viewHeapProfile") || !strings.Contains(body, "downloadHeapProfile") || !strings.Contains(body, "/api/v1/admin/jobs") || !strings.Contains(body, "last_sandbox_report") || !strings.Contains(body, "data-job-cancel") || !strings.Contains(body, "/api/v1/admin/logs/errors/recent") || !strings.Contains(body, "/api/v1/admin/logs/search") || !strings.Contains(body, "/download?${q}") || !strings.Contains(body, "downloadLog") || !strings.Contains(body, "rotateLog") || !strings.Contains(body, "/rotate?confirm=true") || !strings.Contains(body, "searchAllLogs") || !strings.Contains(body, "recentLogTable") || !strings.Contains(body, "logIncludeWarn") || !strings.Contains(body, "logQuery") || !strings.Contains(body, "logLineTable") || !strings.Contains(body, "sandboxReportsTable") || !strings.Contains(body, "sandboxEventsTable") || !strings.Contains(body, "loadSandboxEventsFromFilters") || !strings.Contains(body, "sandboxEventStatus") || !strings.Contains(body, "sandboxProfilesTable") || !strings.Contains(body, "data-sandbox-profile-delete") || !strings.Contains(body, "deleteSandboxProfileConfirm") || !strings.Contains(body, "/api/v1/admin/sandbox/profiles") || !strings.Contains(body, "/api/v1/admin/sandbox/events") || !strings.Contains(body, "/api/v1/admin/sandbox/support-bundle") || !strings.Contains(body, "sandboxSupportBundle") || !strings.Contains(body, "sandboxSupportBundleView") || !strings.Contains(body, "sandboxSupportBundleDownload") || !strings.Contains(body, "support-bundle?download=true") || !strings.Contains(body, "b.security_risks") || !strings.Contains(body, "b.redactions") || !strings.Contains(body, "b.recent_log_errors") || !strings.Contains(body, "t(\"redactions\")") || !strings.Contains(body, "t(\"dataRoot\")") || !strings.Contains(body, "t(\"overviewHint\")") || !strings.Contains(body, "t(\"sandboxHint\")") || !strings.Contains(body, "t(\"logsHint\")") || !strings.Contains(body, "t(\"sources\")") || !strings.Contains(body, "t(\"open\")") || !strings.Contains(body, "t(\"lines\")") || !strings.Contains(body, "t(\"createTenant\")") || !strings.Contains(body, "t(\"knowledgeAccess\")") || !strings.Contains(body, "t(\"skillSources\")") || !strings.Contains(body, "t(\"restartRequired\")") || !strings.Contains(body, "t(\"warnings\")") || !strings.Contains(body, "t(\"configHint\")") || !strings.Contains(body, "t(\"tenantsHint\")") || !strings.Contains(body, "t(\"accountsHint\")") || !strings.Contains(body, "t(\"knowledgeHint\")") || !strings.Contains(body, "t(\"opsHint\")") || !strings.Contains(body, "t(\"manualApply\")") || !strings.Contains(body, "t(\"willExecute\")") || !strings.Contains(body, "loadLocales") || !strings.Contains(body, "/api/v1/admin/i18n/locales") || !strings.Contains(body, "state.locales") || !strings.Contains(body, "out.default_locale") || !strings.Contains(body, "localeOptions") || !strings.Contains(body, "state.me?.admin?.locale") || !strings.Contains(body, "b.data_root_name") || !strings.Contains(body, "b.data_root_redacted") || !strings.Contains(body, "bundle.security_risks?.recent") || !strings.Contains(body, "riskFilterSummary(risks)") || !strings.Contains(body, "data-sandbox-report-delete") || !strings.Contains(body, "deleteSandboxReportConfirm") || !strings.Contains(body, "landlock") || !strings.Contains(body, "/api/v1/admin/service-config/environment") || !strings.Contains(body, "/api/v1/admin/service-config/diff") || !strings.Contains(body, "environment:envResp") || !strings.Contains(body, "diff:diffResp") || !strings.Contains(body, "clearCfgDraft") || !strings.Contains(body, "draft?confirm=true") || !strings.Contains(body, "buildConfigValues") || !strings.Contains(body, "cfgUse_") || !strings.Contains(body, "f.sensitive?\"\"") || !strings.Contains(body, "/api/v1/admin/knowledge-access/cross-tenant") || !strings.Contains(body, "/api/v1/admin/skill-sources/global") || !strings.Contains(body, "clearTenantKnowledge") || !strings.Contains(body, "/api/v1/admin/sandbox/install") || !strings.Contains(body, "installSandboxRun") || !strings.Contains(body, "/api/v1/admin/sandbox/switch") || !strings.Contains(body, "/api/v1/admin/sandbox/rollback") || !strings.Contains(body, "rollbackSandbox") || !strings.Contains(body, "sandboxRollbackConfirm") || !strings.Contains(body, "SNAPSHOT SECRETS") || !strings.Contains(body, "EXPORT SECRETS") || !strings.Contains(body, "IMPORT STATE") || !strings.Contains(body, "RESTORE SNAPSHOT") || !strings.Contains(body, "data-snapshot-restore-run") || !strings.Contains(body, "INSTALL SANDBOX") || !strings.Contains(body, "DISABLE SANDBOX") || !strings.Contains(body, "clearKnowledgeConfirm") || !strings.Contains(body, "deleteTenantConfirm") || !strings.Contains(body, "useSecret") || !strings.Contains(body, "auditActorUser") || !strings.Contains(body, "actor_user_id") || strings.Contains(body, "confirm_unsafe:mode===\"none\"") {
 		t.Fatalf("admin app asset missing expected admin API wiring = %d body = %s", w.Code, body)
 	}
 }
@@ -75,6 +75,179 @@ func TestAdminWebIncludesTenantAuditShortcuts(t *testing.T) {
 	for _, needle := range []string{"data-tenant-audit", "data-user-audit", "showTenantAudit", "/api/v1/admin/audit-events?${q}"} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("admin web missing %s", needle)
+		}
+	}
+}
+
+func TestAdminWebTenantUserPageContracts(t *testing.T) {
+	bodyBytes, err := fs.ReadFile(adminWebFS, "admin_web/app.js")
+	if err != nil {
+		t.Fatalf("read admin app: %v", err)
+	}
+	body := string(bodyBytes)
+	for _, needle := range []string{
+		`function userTenantRows(users,tenants)`,
+		`tenant_name:displayWithID`,
+		`function actionKey(...parts)`,
+		`function actionParts(value)`,
+		`function userSearchColumns(){ return ["tenant_name","name","email","status","delete_protected","id"]; }`,
+		`function tenantUserColumns(){ return ["name","email","status","delete_protected","id"]; }`,
+		`function renderTenantUserSearch(rows)`,
+		`tenantUserSearchResults`,
+		`userSearchQuery`,
+		`data-tenant-users`,
+		`function showTenantUsersModal(tenant,rows)`,
+		`tenant-users-modal`,
+		`data-user-credentials`,
+		`apiCredentials`,
+		`credentialHelp`,
+		`credentialModalOut`,
+		`showAdminResult(t("deleteCheck")`,
+		`showAdminResult(t("retirePlan")`,
+		`clearTransientAdminModals`,
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("admin tenant/user page missing marker %s", needle)
+		}
+	}
+	for _, forbidden := range []string{
+		`id="tenantOut"`,
+		`["tenant_id","id","name","email","status","delete_protected"]`,
+		`.content:has(#createTenant)`,
+		`data-user-credentials="${esc(x.tenant_id)}:${esc(x.id)}"`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("admin tenant/user page still exposes deprecated marker %s", forbidden)
+		}
+	}
+}
+
+func TestAdminWebClientConfigProxyScopeControls(t *testing.T) {
+	bodyBytes, err := fs.ReadFile(adminWebFS, "admin_web/app.js")
+	if err != nil {
+		t.Fatalf("read admin app: %v", err)
+	}
+	body := string(bodyBytes)
+	for _, needle := range []string{
+		"clientProxyCodingTools",
+		"default_proxy_scope_coding_tools",
+		"readClientConfigFormBase",
+		"function renderClientSearchProviderPicker",
+		"data-client-search-provider",
+		"data-client-search-key",
+		"function readClientSearchProviders",
+		"function renderClientSecurityModeTabs",
+		"data-client-security-mode",
+		"function bindClientSecurityModeTabs",
+		"securityGuardrails",
+		"cfg.web_search_providers=providers",
+		"cfg.web_search_current_provider=selectedProvider?.type",
+		`cfg.security_policy_mode=$("clientSecurityMode").value`,
+		"searchProviderHelp",
+		`Object.assign(en, { experienceDefaults: "User Interface" })`,
+		`Object.assign(zh, { experienceDefaults: "用户界面" })`,
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("admin client config missing proxy scope marker %s", needle)
+		}
+	}
+	for _, stale := range []string{
+		`id="clientSearchProviders"`,
+		`JSON.parse($("clientSearchProviders").value`,
+		`t("webSearchProviders")}</label><textarea`,
+		`id="clientUIMode"`,
+		`id="clientWorkingDir"`,
+		`id="clientVectorSearch"`,
+		`id="clientASR"`,
+		`id="clientTTS"`,
+		`id="clientIMProgress"`,
+		`cfg.ui_mode=$("clientUIMode").value`,
+		`cfg.working_directory=$("clientWorkingDir").value.trim()`,
+		`cfg.vector_search_enabled=$("clientVectorSearch").checked`,
+		`cfg.asr_enabled=$("clientASR").checked`,
+		`cfg.tts_enabled=$("clientTTS").checked`,
+		`cfg.im_progress_nudge_enabled=$("clientIMProgress").checked`,
+		`> Vector search</label>`,
+		`> ASR</label>`,
+		`> TTS</label>`,
+		`> IM progress nudges</label>`,
+		`<select id="clientSecurityMode">`,
+		`<label for="clientSecurityMode">${t("mode")}</label><select`,
+	} {
+		if strings.Contains(body, stale) {
+			t.Fatalf("admin client config should not expose retired raw/experience control marker %s", stale)
+		}
+	}
+}
+
+func TestAdminWebLocalizesAdminTableColumns(t *testing.T) {
+	bodyBytes, err := fs.ReadFile(adminWebFS, "admin_web/app.js")
+	if err != nil {
+		t.Fatalf("read admin app: %v", err)
+	}
+	body := string(bodyBytes)
+	for _, needle := range []string{
+		`username:"username"`,
+		`display_name:"displayName"`,
+		`role:"role"`,
+		`status:"status"`,
+		`locale:"language"`,
+		`last_login_at:"lastLoginAt"`,
+		`active:"activeState"`,
+		`created_at:"createdAt"`,
+		`expires_at:"expiresAt"`,
+		`remote_ip:"remoteIP"`,
+		`id:"genericID"`,
+		`email:"email"`,
+		`key:"configKey"`,
+		`user_id:"userID"`,
+		`next_run_at:"nextRunAt"`,
+		`last_error:"lastError"`,
+		`report_id:"reportID"`,
+		`effective_backend:"effectiveBackend"`,
+		`resource_type:"resourceType"`,
+		`resource_id:"resourceID"`,
+		`smoke_status:"smokeStatus"`,
+		`size_bytes:"sizeBytes"`,
+		`modified_at:"modifiedAt"`,
+		`delete_protected:"deleteProtectedColumn"`,
+		`api_key_hint:"apiKeyHint"`,
+		`profile:"profile"`,
+		`raw:"raw"`,
+		`reason:"reason"`,
+		`summary:"summary"`,
+		`latest_source_at:"latestSourceAt"`,
+		`source_count:"sourceCount"`,
+		`distilled_sources:"distilledSources"`,
+		`function cellText(col,raw)`,
+		`function optionLabel(value,col="status")`,
+		`function localizedOptions(values,col="status")`,
+		`active:name==="active"?"activeState":"activeStatus"`,
+		`suspended:"suspendedStatus"`,
+		`pending:"jobPending"`,
+		`running:"jobRunning"`,
+		`succeeded:"jobSucceeded"`,
+		`pass:"statusPass"`,
+		`warn:"statusWarn"`,
+		`high:"severityHigh"`,
+		`medium:"severityMedium"`,
+		`low:"severityLow"`,
+		`localizedOptions(["pending","running","succeeded","failed","canceled"])`,
+		`localizedOptions(["auto","landlock","bwrap","nsjail","none"],"mode")`,
+		`localizedOptions(["true","false"],"strict")`,
+		`localizedOptions(["bwrap","landlock","nsjail"],"backend")`,
+		`localizedOptions(["default","disabled","host"],"network")`,
+		`localizedOptions(["error","warn","info"],"level")`,
+		`localizedOptions(["pass","warn","fail"])`,
+		`localizedOptions(["high","medium","low"],"severity")`,
+		`t("riskTimeRangeInvalid")`,
+		`t("requiresPrivilege")`,
+		`t("redactedState")`,
+		`owner:"owner"`,
+		`operator:"operator"`,
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("admin app missing localized table marker %s", needle)
 		}
 	}
 }
@@ -300,7 +473,7 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 		`document.title=`,
 		`document.onkeydown=(e)=>`,
 		`buttons[n-1]?.click()`,
-		`const sections = ["overview","sandbox","logs","config","tenants","accounts","knowledge","ops"]`,
+		`const sections = ["overview","sandbox","logs","config","clientConfig","tenants","accounts","knowledge","ops"]`,
 		`const initialSection = sections.includes(location.hash.slice(1))`,
 		`function setSection(id, updateHash=true)`,
 		`function setAuthShell(on,target="loginPanel")`,
@@ -372,7 +545,7 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
 	css := w.Body.String()
-	for _, needle := range []string{".skip-link", ".badge-on::before", ".badge-off::before", ".modal-backdrop", ".modal-actions", ".app-shell.auth-only .sidebar", ".app-shell.auth-only .topbar", ".app-shell.auth-only #content", ".admin-auth-shell", ".auth-locale"} {
+	for _, needle := range []string{".skip-link", ".badge-on::before", ".badge-off::before", ".modal-backdrop", ".modal-actions", ".app-shell.auth-only .sidebar", ".app-shell.auth-only .topbar", ".app-shell.auth-only #content", ".admin-auth-shell", ".auth-locale", ".client-search-layout", ".client-search-provider.active", ".client-search-detail", ".client-mode-tabs", ".client-mode-tab.active"} {
 		if !strings.Contains(css, needle) {
 			t.Fatalf("admin css missing accessibility marker %s", needle)
 		}

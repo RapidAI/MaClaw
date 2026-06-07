@@ -32,7 +32,7 @@ func (h *IMMessageHandler) handleMCPToolAgentViewSubmit(data map[string]interfac
 	if toolArgs == nil {
 		toolArgs = map[string]interface{}{}
 	}
-	policyOwnerID := runtimePolicyOwnerIDFromToolArgs(callArgs)
+	policyOwnerID, explicitRuntimeOwner := runtimePolicyOwnerIDFromToolArgsWithPresence(callArgs)
 
 	serverRef := strings.TrimSpace(fmt.Sprint(callArgs["server_id"]))
 	toolName := strings.TrimSpace(fmt.Sprint(callArgs["tool_name"]))
@@ -61,7 +61,10 @@ func (h *IMMessageHandler) handleMCPToolAgentViewSubmit(data map[string]interfac
 		return &IMAgentResponse{Text: "MCP tool parameters need correction. Review the task panel.", Error: strings.Join(validationErrors, "; "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	callArgs["arguments"] = toolArgs
-	policyOwnerID = consumeRuntimePolicyOwnerIDFromToolArgs(callArgs)
+	policyOwnerID, explicitRuntimeOwner = consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(callArgs)
+	if explicitRuntimeOwner && policyOwnerID == "" {
+		return &IMAgentResponse{Text: "MCP tool execution failed: runtime owner is missing; isolated runtime will not fall back to desktop loop.", Error: "runtime owner is missing", ResponseSource: imResponseSourceAgentViewSubmit.String()}
+	}
 	if rejection := h.registeredToolWorkflowPolicyRejectionForOwner(policyOwnerID, "call_mcp_tool", callArgs); rejection != nil {
 		return rejection
 	}

@@ -79,6 +79,7 @@ type coreAgentCallbacks struct {
 	knowledgeStore             KnowledgeStore
 	mcpProvider                MCPToolProvider
 	skillProvider              SkillToolProvider
+	loopID                     string
 	promptStats                agent.PromptBundleTokenStats
 	promptStableCacheKey       string
 }
@@ -115,6 +116,7 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		knowledgeStore:       e.knowledgeStore,
 		mcpProvider:          e.mcpProvider,
 		skillProvider:        e.skillProvider,
+		loopID:              fmt.Sprintf("srv:%s:%s", req.Session.ID, req.Principal.UserID),
 		sshDeps: sshtool.SSHToolDeps{
 			Manager:   sshResources.mgr,
 			BGTaskMgr: sshResources.bg,
@@ -914,6 +916,7 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 			ProjectPath: c.workspace,
 			ContextHint: c.userText,
 			OwnerID:     memoryOwnerIDForPrincipal(c.principal),
+			LoopID:      c.loopID,
 		}), Outcome: agent.ToolExecutionOutcomeOK}
 	case "read_file":
 		return agent.ToolExecutionResult{Result: c.executeReadFile(args), Outcome: agent.ToolExecutionOutcomeOK}

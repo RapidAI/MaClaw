@@ -97,7 +97,7 @@ func ProductionCases() []CalibrationCase {
 		{Message: "summarize this article", ExpectedLabel: LabelNonCoding},
 		{Message: "translate this document to Chinese", ExpectedLabel: LabelNonCoding},
 		{Message: "截屏桌面文件", ExpectedLabel: LabelNonCoding, Note: "#37 screenshot task"},
-		{Message: "搜索论文", ExpectedLabel: LabelNonCoding},
+		{Message: "搜索论文", ExpectedLabel: LabelSearch, Note: "paper lookup is external information retrieval, not local content processing"},
 
 		// =====================================================================
 		// Document delivery

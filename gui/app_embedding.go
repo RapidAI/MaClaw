@@ -670,12 +670,16 @@ func (a *App) buildIntentLLMFunc() tool.LLMClassifyFunc {
 		if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 			return "", fmt.Errorf("LLM not configured")
 		}
+		if reason, skip := a.shouldSkipLightweightLLM(cfg); skip {
+			return "", fmt.Errorf("intent-classifier LLM endpoint temporarily unavailable after recent network failure: %s", reason)
+		}
 		messages := []interface{}{
 			map[string]string{"role": "user", "content": prompt},
 		}
 		client := &http.Client{Timeout: 35 * time.Second}
 		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "intent-classifier"})
 		resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
+		a.observeLLMEndpointResult(cfg, err)
 		if err != nil {
 			return "", err
 		}
@@ -695,6 +699,9 @@ func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 		if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 			return "", fmt.Errorf("LLM not configured")
 		}
+		if reason, skip := a.shouldSkipLightweightLLM(cfg); skip {
+			return "", fmt.Errorf("unified-intent-classifier LLM endpoint temporarily unavailable after recent network failure: %s", reason)
+		}
 		messages := []interface{}{
 			map[string]string{"role": "system", "content": systemPrompt},
 			map[string]string{"role": "user", "content": userText},
@@ -702,6 +709,7 @@ func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 		client := &http.Client{Timeout: 35 * time.Second}
 		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "unified-intent-classifier"})
 		resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
+		a.observeLLMEndpointResult(cfg, err)
 		if err != nil {
 			return "", err
 		}

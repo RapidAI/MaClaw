@@ -6,7 +6,7 @@ const I18N = {
     assistantTitle: "AI Assistant", assistantHint: "Instances share user-level config, tools, knowledge, memory, and security policy.", instancesTitle: "Assistant instances", instancesHint: "Runtime state and sessions stay per instance. Configuration stays shared by user.", new: "New", noInstances: "No instances", unknown: "unknown", readyState: "ready", notReady: "not ready", instanceName: "Instance name", instanceCreated: "Instance created",
     sessions: "Sessions", noSessions: "No sessions", firstMessage: "Send the first message to create a session.", selectedMissing: "Selected assistant instance was not found or is unavailable. Open it again from VE Platform or select another instance.", createFirst: "No instance yet. Create an assistant instance first.", noMessages: "No messages", typeMessage: "Type a message...", message: "Message", send: "Send", webSession: "Web session", run: "Run", waitingUser: "waiting for user", continueWaiting: "Continue waiting", cancel: "Cancel", runCancelled: "Run cancelled", sent: "Sent", runStatus: "Run status: {status}", llmManagedByHub: "LLM is not fully configured. Ask VE Platform to pass the Hub LLM endpoint and viewer token, or fill in System Settings.",
     settingsTitle: "System Settings", settingsHint: "User-scoped settings shared by all assistant instances.", sharedConfig: "Shared config", sharedConfigHint: "LLM, MCP, tools, skills, knowledge, and security policy are shared at user scope.", configResponse: "Config response", secretHint: "Masked value keeps the existing secret. Enter a new value only when rotating it.", valid: "Valid", needsAttention: "Needs attention", currentConfigOk: "Current shared config can start instances.", save: "Save", validate: "Validate", test: "Test", saved: "Saved", validated: "Validated", testPassed: "Test passed", testFailed: "Test failed", unset: "Unset", trueValue: "True", falseValue: "False",
-    groupLLM: "LLM", groupLLMHint: "Primary model providers and legacy fallback fields.", groupTools: "MCP & Tools", groupToolsHint: "MCP capability install, compact add, and search providers shared by every instance.", groupSkills: "Skills", groupSkillsHint: "Search, install, and view skills. Source details stay managed by the service.", installedSkills: "Installed skills", noSkills: "No skills installed", skillMarketSearch: "SkillMarket search", search: "Search", install: "Install", installed: "Installed", searchSkillsPlaceholder: "Search SkillMarket...", skillInstalled: "Skill installed", groupMemory: "Knowledge & Memory", groupMemoryHint: "Memory compression and knowledge context budget.", groupSecurity: "Security", groupSecurityHint: "User-level execution boundary and network policy.", groupIM: "IM", groupIMHint: "User-scoped QQ, WeChat, Telegram, third-party integration, monitor, and history.", groupUI: "UI & Runtime", groupUIHint: "User interface, pet, launch, proxy, and local runtime preferences.", numberInvalid: "{key} must be a valid {type}", jsonInvalid: "{key} must be valid JSON"
+    groupLLM: "LLM", groupLLMHint: "Primary model providers and legacy fallback fields.", groupTools: "MCP & Tools", groupToolsHint: "MCP capability install, compact add, and search providers shared by every instance.", groupSkills: "Skills", groupSkillsHint: "Search, install, and view skills. Source details stay managed by the service.", installedSkills: "Installed skills", noSkills: "No skills installed", skillMarketSearch: "SkillMarket search", search: "Search", install: "Install", installed: "Installed", searchSkillsPlaceholder: "Search SkillMarket...", skillInstalled: "Skill installed", previous: "Previous", nextPage: "Next", pageStatus: "Page {page} / {pages}", groupMemory: "Knowledge & Memory", groupMemoryHint: "Memory compression and knowledge context budget.", groupSecurity: "Security", groupSecurityHint: "User-level execution boundary and network policy.", groupIM: "IM", groupIMHint: "User-scoped QQ, WeChat, Telegram, third-party integration, monitor, and history.", numberInvalid: "{key} must be a valid {type}", jsonInvalid: "{key} must be valid JSON"
   },
   zh: {
     userWorkspace: "用户工作台", assistantNav: "AI 助手", settingsNav: "系统设置", skipToMain: "跳到主要内容", appSections: "用户应用区域", userViews: "用户视图", notSignedIn: "未登录", logout: "退出", ready: "就绪", busy: "忙碌",
@@ -18,13 +18,25 @@ const I18N = {
   }
 };
 const params = new URLSearchParams(location.search);
+Object.assign(I18N.en, {
+  groupInterface: "User Interface",
+  groupInterfaceHint: "Preferred display language.",
+  groupProxy: "Proxy",
+  groupProxyHint: "Default proxy endpoint, credentials, bypass list, and proxy scopes."
+});
+Object.assign(I18N.zh, {
+  groupInterface: "\u7528\u6237\u754c\u9762",
+  groupInterfaceHint: "\u9996\u9009\u754c\u9762\u8bed\u8a00\u3002",
+  groupProxy: "\u4ee3\u7406",
+  groupProxyHint: "\u9ed8\u8ba4\u4ee3\u7406\u5730\u5740\u3001\u51ed\u636e\u3001\u8df3\u8fc7\u5217\u8868\u548c\u4ee3\u7406\u8303\u56f4\u3002"
+});
 Object.assign(I18N.zh, {
   userWorkspace: "用户工作台", assistantNav: "AI 助手", settingsNav: "系统设置", skipToMain: "跳到主要内容", appSections: "用户应用区域", userViews: "用户视图", notSignedIn: "未登录", logout: "退出", ready: "就绪", busy: "忙碌",
   loginRequired: "需要登录", loginHint: "请从 VE Platform 的 MaClawSrv 用户入口打开本页。", cannotStart: "无法启动用户应用", missingToken: "缺少短期访问令牌。", rawSecretRejected: "URL 中不接受原始密钥。请从 VE Platform 重新打开本页。", sessionExpired: "会话已过期，请从 VE Platform 重新打开本页。", loadFailed: "加载失败", retry: "重试",
   assistantTitle: "AI 助手", assistantHint: "多个实例共享用户级配置、工具、知识、记忆和安全策略。", instancesTitle: "助手实例", instancesHint: "运行状态和会话按实例保留，配置按用户共享。", new: "新建", noInstances: "暂无实例", unknown: "未知", readyState: "就绪", notReady: "未就绪", instanceName: "实例名称", instanceCreated: "实例已创建",
   sessions: "会话", noSessions: "暂无会话", firstMessage: "发送第一条消息后会自动创建会话。", selectedMissing: "选中的助手实例不存在或不可用。请从 VE Platform 重新打开，或选择其它实例。", createFirst: "还没有实例，请先创建助手实例。", noMessages: "暂无消息", typeMessage: "输入消息...", message: "消息", send: "发送", webSession: "网页会话", run: "运行", waitingUser: "等待用户", continueWaiting: "继续等待", cancel: "取消", runCancelled: "运行已取消", sent: "已发送", runStatus: "运行状态：{status}", llmManagedByHub: "LLM 未完成配置。请让 VE Platform 传入 Hub LLM 地址和 viewer token，或在系统设置里填写可用配置。",
   settingsTitle: "系统设置", settingsHint: "这些用户级设置会被所有助手实例共享。", sharedConfig: "共享配置", sharedConfigHint: "LLM、MCP、工具、技能、知识和安全策略按用户范围共享。", configResponse: "配置响应", secretHint: "显示为掩码时会保留现有密钥；只有需要轮换时才输入新值。", valid: "有效", needsAttention: "需要处理", currentConfigOk: "当前共享配置可以启动实例。", save: "保存", validate: "校验", test: "测试", saved: "已保存", validated: "已校验", testPassed: "测试通过", testFailed: "测试失败", unset: "未设置", trueValue: "是", falseValue: "否",
-  groupLLM: "LLM", groupLLMHint: "主模型服务商和旧版兜底字段。", groupTools: "MCP 与工具", groupToolsHint: "安装 MCP 能力、精简添加 MCP，并管理所有实例共享的搜索服务商。", groupSkills: "技能", groupSkillsHint: "搜索、安装、查看技能；来源细节由服务端管理。", groupMemory: "知识与记忆", groupMemoryHint: "记忆压缩和知识上下文预算。", groupSecurity: "安全", groupSecurityHint: "用户级执行边界和网络策略。", groupIM: "IM", groupIMHint: "当前用户隔离的 QQ、微信、Telegram、第三方接入、监看和历史交流。", groupUI: "界面与运行时", groupUIHint: "用户界面、宠物、启动、代理和本地运行偏好。", numberInvalid: "{key} 必须是有效的{type}", jsonInvalid: "{key} 必须是有效 JSON"
+  groupLLM: "LLM", groupLLMHint: "主模型服务商和旧版兜底字段。", groupTools: "MCP 与工具", groupToolsHint: "安装 MCP 能力、精简添加 MCP，并管理所有实例共享的搜索服务商。", groupSkills: "技能", groupSkillsHint: "搜索、安装、查看技能；来源细节由服务端管理。", groupMemory: "知识与记忆", groupMemoryHint: "记忆压缩和知识上下文预算。", groupSecurity: "安全", groupSecurityHint: "用户级执行边界和网络策略。", groupIM: "IM", groupIMHint: "当前用户隔离的 QQ、微信、Telegram、第三方接入、监看和历史交流。", numberInvalid: "{key} 必须是有效的{type}", jsonInvalid: "{key} 必须是有效 JSON"
 });
 Object.assign(I18N.zh, {
   installedSkills: "\u5df2\u5b89\u88c5\u6280\u80fd",
@@ -34,25 +46,74 @@ Object.assign(I18N.zh, {
   install: "\u5b89\u88c5",
   installed: "\u5df2\u5b89\u88c5",
   searchSkillsPlaceholder: "\u641c\u7d22 SkillMarket...",
-  skillInstalled: "\u6280\u80fd\u5df2\u5b89\u88c5"
+  skillInstalled: "\u6280\u80fd\u5df2\u5b89\u88c5",
+  previous: "\u4e0a\u4e00\u9875",
+  nextPage: "\u4e0b\u4e00\u9875",
+  pageStatus: "\u7b2c {page} / {pages} \u9875"
 });
 Object.assign(I18N.en, {
   channelOverview: "IM",
-  channelOverviewHint: "Configure this user's QQ, WeChat, Telegram, and third-party IM access.",
+  channelOverviewHint: "Configure this user's QQ, WeChat, Telegram, Lansenger, and third-party IM access.",
   channelCredentialHint: "Secrets are masked after saving. Leave masked values unchanged unless rotating credentials.",
   channelQQ: "QQ Bot",
   channelTelegram: "Telegram Bot",
   channelWeixin: "Personal WeChat / iLink",
+  channelLansenger: "Lansenger",
   channelThirdParty: "MaClaw Third-party Integration Protocol",
   channelProtocolEndpoint: "Protocol endpoint",
   channelCopyEndpoint: "Copy endpoint",
   channelGenerateToken: "Generate token",
+  showSecret: "Show",
+  hideSecret: "Hide",
   channelTokenGenerated: "Token generated. Save settings to apply it.",
-  generateSecret: "Generate",
+  weixinQRBind: "Scan to bind",
+  weixinQRHint: "Use WeChat to scan this QR code. Credentials are saved to this MaClawSrv user after confirmation.",
+  weixinQRLoading: "Generating QR code...",
+  weixinQRWaiting: "Waiting for scan...",
+  weixinQRScanned: "Scanned. Confirm on phone.",
+  weixinQRConfirmed: "WeChat bound.",
+  weixinQRExpired: "QR code expired. Generate a new one.",
+  weixinQRError: "WeChat QR login failed.",
+  weixinBoundAccount: "Bound account",
+  weixinRuntimeStatus: "Runtime status",
+  weixinRuntimeStarting: "Starting",
+  weixinRuntimeConnected: "Connected",
+  weixinRuntimeDisconnected: "Disconnected",
+  weixinRuntimeError: "Runtime error",
+  weixinRebind: "Rebind",
+  weixinNotBound: "No WeChat account bound",
+  generateSecret: "Generate secret",
   channelTokenUnavailable: "Browser crypto API is unavailable.",
   channelEnabled: "Enabled",
   channelDisabled: "Disabled",
   channelAuto: "Auto",
+  channelRunning: "Enabled",
+  channelReady: "Configured",
+  channelIncomplete: "Needs config",
+  channelSaveStart: "Save and start",
+  channelDisconnect: "Disconnect",
+  channelRestart: "Restart channel",
+  channelSavedStarted: "Saved. Channel is enabled.",
+  channelDisconnected: "Disconnected.",
+  imChannelTabQQ: "QQ Bot",
+  imChannelTabTelegram: "Telegram Bot",
+  imChannelTabWeixin: "WeChat",
+  imChannelTabLansenger: "Lansenger",
+  imChannelTabThirdParty: "Third-party Access",
+  imWatchHistory: "Watch history",
+  imQQDescription: "Configure this user's own QQ Bot credentials and start the QQ channel.",
+  imTelegramDescription: "Configure this user's Telegram Bot token and start the Telegram channel.",
+  imWeixinDescription: "Scan to bind personal WeChat. After confirmation, MaClawSrv saves credentials and enables the channel.",
+  imLansengerDescription: "Configure this user's Lansenger app credentials and start the Lansenger channel.",
+  imThirdPartyDescription: "Expose this user's HTTP message gateway for third-party software.",
+  imMissingRequired: "Complete required fields before starting.",
+  imWeixinStartScan: "Scan WeChat first, then startup is saved after confirmation.",
+  imCancelQR: "Cancel QR login",
+  imGetAppID: "Get AppID",
+  imTutorial: "Tutorial",
+  imOpenDocs: "Open docs",
+  imProgressHints: "Show progress hints",
+  imProgressHintsDesc: "When off, IM only shows the first progress note and the final result.",
   customValue: "Custom",
   selectAll: "Select all",
   clearSelection: "Clear"
@@ -79,15 +140,15 @@ Object.assign(I18N.en, {
 });
 Object.assign(I18N.en, {
   groupIM: "IM",
-  groupIMHint: "User-scoped QQ, WeChat, Telegram, third-party integration, monitor, and history.",
+  groupIMHint: "User-scoped QQ, WeChat, Telegram, Lansenger, third-party integration, monitor, and history.",
   channelOverview: "IM",
-  channelOverviewHint: "Configure this user's QQ, WeChat, Telegram, and third-party IM access."
+  channelOverviewHint: "Configure this user's QQ, WeChat, Telegram, Lansenger, and third-party IM access."
 });
 Object.assign(I18N.zh, {
   groupIM: "\u0049\u004d",
-  groupIMHint: "\u5f53\u524d\u7528\u6237\u9694\u79bb\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram\u3001\u7b2c\u4e09\u65b9\u63a5\u5165\u3001\u76d1\u770b\u548c\u5386\u53f2\u4ea4\u6d41\u3002",
+  groupIMHint: "\u5f53\u524d\u7528\u6237\u9694\u79bb\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram\u3001\u84dd\u4fe1\u3001\u7b2c\u4e09\u65b9\u63a5\u5165\u3001\u76d1\u770b\u548c\u5386\u53f2\u4ea4\u6d41\u3002",
   channelOverview: "\u0049\u004d",
-  channelOverviewHint: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram \u548c\u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002"
+  channelOverviewHint: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram\u3001\u84dd\u4fe1\u548c\u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002"
 });
 Object.assign(I18N.zh, {
   imAuditTitle: "\u0049\u004d \u76d1\u770b\u4e0e\u5386\u53f2\u4ea4\u6d41",
@@ -111,21 +172,67 @@ Object.assign(I18N.zh, {
 });
 Object.assign(I18N.zh, {
   channelOverview: "\u0049\u004d",
-  channelOverviewHint: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram \u548c\u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002",
+  channelOverviewHint: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram\u3001\u84dd\u4fe1\u548c\u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002",
   channelCredentialHint: "\u5bc6\u94a5\u4fdd\u5b58\u540e\u4f1a\u8131\u654f\u663e\u793a\u3002\u663e\u793a\u4e3a\u63a9\u7801\u65f6\u8bf7\u4fdd\u6301\u4e0d\u53d8\uff0c\u53ea\u6709\u8f6e\u6362\u51ed\u636e\u65f6\u624d\u91cd\u65b0\u586b\u5199\u3002",
   channelQQ: "QQ Bot",
   channelTelegram: "Telegram Bot",
   channelWeixin: "\u4e2a\u4eba\u5fae\u4fe1 / iLink",
+  channelLansenger: "\u84dd\u4fe1",
   channelThirdParty: "Maclaw \u7b2c\u4e09\u65b9\u63a5\u5165\u534f\u8bae",
   channelProtocolEndpoint: "\u534f\u8bae\u63a5\u5165\u5730\u5740",
   channelCopyEndpoint: "\u590d\u5236\u63a5\u5165\u5730\u5740",
   channelGenerateToken: "\u751f\u6210 Token",
+  showSecret: "\u67e5\u770b",
+  hideSecret: "\u9690\u85cf",
   channelTokenGenerated: "Token \u5df2\u751f\u6210\uff0c\u4fdd\u5b58\u8bbe\u7f6e\u540e\u751f\u6548\u3002",
-  generateSecret: "\u751f\u6210",
+  weixinQRBind: "\u626b\u7801\u7ed1\u5b9a",
+  weixinQRHint: "\u4f7f\u7528\u5fae\u4fe1\u626b\u63cf\u4e8c\u7ef4\u7801\uff0c\u786e\u8ba4\u540e\u51ed\u636e\u4fdd\u5b58\u5230\u5f53\u524d MaClawSrv \u7528\u6237\u3002",
+  weixinQRLoading: "\u6b63\u5728\u751f\u6210\u4e8c\u7ef4\u7801...",
+  weixinQRWaiting: "\u7b49\u5f85\u626b\u7801...",
+  weixinQRScanned: "\u5df2\u626b\u7801\uff0c\u8bf7\u5728\u624b\u673a\u4e0a\u786e\u8ba4\u3002",
+  weixinQRConfirmed: "\u5fae\u4fe1\u5df2\u7ed1\u5b9a\u3002",
+  weixinQRExpired: "\u4e8c\u7ef4\u7801\u5df2\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u751f\u6210\u3002",
+  weixinQRError: "\u5fae\u4fe1\u626b\u7801\u767b\u5f55\u5931\u8d25\u3002",
+  weixinBoundAccount: "\u5df2\u7ed1\u5b9a\u8d26\u53f7",
+  weixinRuntimeStatus: "\u8fd0\u884c\u72b6\u6001",
+  weixinRuntimeStarting: "\u542f\u52a8\u4e2d",
+  weixinRuntimeConnected: "\u5df2\u8fde\u63a5",
+  weixinRuntimeDisconnected: "\u672a\u8fde\u63a5",
+  weixinRuntimeError: "\u8fd0\u884c\u9519\u8bef",
+  weixinRebind: "\u91cd\u65b0\u7ed1\u5b9a",
+  weixinNotBound: "\u5c1a\u672a\u7ed1\u5b9a\u5fae\u4fe1\u8d26\u53f7",
+  generateSecret: "\u751f\u6210\u5bc6\u94a5",
   channelTokenUnavailable: "\u5f53\u524d\u6d4f\u89c8\u5668\u4e0d\u53ef\u7528\u5b89\u5168\u968f\u673a\u6570\u3002",
   channelEnabled: "\u5df2\u542f\u7528",
   channelDisabled: "\u672a\u542f\u7528",
   channelAuto: "\u81ea\u52a8",
+  channelRunning: "\u5df2\u542f\u7528",
+  channelReady: "\u5df2\u914d\u7f6e",
+  channelIncomplete: "\u5f85\u914d\u7f6e",
+  channelSaveStart: "\u4fdd\u5b58\u5e76\u542f\u52a8",
+  channelDisconnect: "\u65ad\u5f00",
+  channelRestart: "\u91cd\u542f\u901a\u9053",
+  channelSavedStarted: "\u5df2\u4fdd\u5b58\uff0c\u901a\u9053\u5df2\u542f\u7528\u3002",
+  channelDisconnected: "\u5df2\u65ad\u5f00\u3002",
+  imChannelTabQQ: "QQ Bot",
+  imChannelTabTelegram: "Telegram Bot",
+  imChannelTabWeixin: "\u5fae\u4fe1",
+  imChannelTabLansenger: "\u84dd\u4fe1",
+  imChannelTabThirdParty: "\u7b2c\u4e09\u65b9\u63a5\u5165",
+  imWatchHistory: "\u76d1\u770b\u5386\u53f2",
+  imQQDescription: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u81ea\u5df1\u7684 QQ Bot \u51ed\u636e\uff0c\u5e76\u542f\u52a8 QQ \u901a\u9053\u3002",
+  imTelegramDescription: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684 Telegram Bot Token\uff0c\u5e76\u542f\u52a8 Telegram \u901a\u9053\u3002",
+  imWeixinDescription: "\u626b\u7801\u7ed1\u5b9a\u4e2a\u4eba\u5fae\u4fe1\uff0c\u786e\u8ba4\u540e MaClawSrv \u4fdd\u5b58\u51ed\u636e\u5e76\u542f\u7528\u901a\u9053\u3002",
+  imLansengerDescription: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684\u84dd\u4fe1\u5e94\u7528\u51ed\u636e\uff0c\u5e76\u542f\u52a8\u84dd\u4fe1\u901a\u9053\u3002",
+  imThirdPartyDescription: "\u4e3a\u5f53\u524d\u7528\u6237\u5f00\u653e HTTP \u6d88\u606f\u63a5\u5165\u7aef\u53e3\uff0c\u4f9b\u7b2c\u4e09\u65b9\u8f6f\u4ef6\u8fde\u63a5\u3002",
+  imMissingRequired: "\u8bf7\u5148\u8865\u5168\u5fc5\u586b\u9879\uff0c\u518d\u542f\u52a8\u3002",
+  imWeixinStartScan: "\u8bf7\u5148\u626b\u7801\u7ed1\u5b9a\u5fae\u4fe1\uff0c\u786e\u8ba4\u540e\u4f1a\u81ea\u52a8\u4fdd\u5b58\u5e76\u542f\u7528\u3002",
+  imCancelQR: "\u53d6\u6d88\u626b\u7801",
+  imGetAppID: "\u83b7\u53d6 AppID",
+  imTutorial: "\u6559\u7a0b",
+  imOpenDocs: "\u6253\u5f00\u63a5\u5165\u6587\u6863",
+  imProgressHints: "\u663e\u793a\u8fdb\u5ea6\u63d0\u793a",
+  imProgressHintsDesc: "\u5173\u95ed\u540e\uff0cIM \u53ea\u663e\u793a\u7b2c\u4e00\u6761\u8fdb\u5ea6\u63d0\u793a\u548c\u6700\u7ec8\u7ed3\u679c\u3002",
   customValue: "\u81ea\u5b9a\u4e49",
   selectAll: "\u5168\u9009",
   clearSelection: "\u6e05\u7a7a"
@@ -146,8 +253,8 @@ Object.assign(I18N.en, { memoryManager: "Memory management", memoryManagerHint: 
 Object.assign(I18N.zh, { memoryManager: "\u8bb0\u5fc6\u7ba1\u7406", memoryManagerHint: "\u67e5\u770b\u3001\u641c\u7d22\u3001\u65b0\u589e\u3001\u7f16\u8f91\u548c\u5220\u9664\u5f53\u524d\u7528\u6237\u7684\u957f\u671f\u8bb0\u5fc6\u3002", memorySearch: "\u641c\u7d22\u8bb0\u5fc6", memoryCategory: "\u5206\u7c7b", memoryContent: "\u8bb0\u5fc6\u5185\u5bb9", memoryContentRequired: "\u8bf7\u8f93\u5165\u8bb0\u5fc6\u5185\u5bb9\u3002", memoryContentTooLong: "\u8bb0\u5fc6\u5185\u5bb9\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u5b57\u7b26\u3002", memoryTags: "\u6807\u7b7e", memoryTagsHint: "\u9017\u53f7\u6216\u6362\u884c\u5206\u9694", memoryTagsTooMany: "\u6807\u7b7e\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u3002", memoryTagTooLong: "\u5355\u4e2a\u6807\u7b7e\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u5b57\u7b26\u3002", memoryRefresh: "\u5237\u65b0", memoryClear: "\u6e05\u9664", memoryAdd: "\u6dfb\u52a0\u8bb0\u5fc6", memoryUpdate: "\u66f4\u65b0\u8bb0\u5fc6", memoryCancelEdit: "\u53d6\u6d88\u7f16\u8f91", memoryEmpty: "\u6682\u65e0\u8bb0\u5fc6\u6761\u76ee", memorySaved: "\u8bb0\u5fc6\u5df2\u4fdd\u5b58", memoryDeleted: "\u8bb0\u5fc6\u5df2\u5220\u9664", memoryUpdated: "\u8bb0\u5fc6\u5df2\u66f4\u65b0", memoryEdit: "\u7f16\u8f91", memoryDelete: "\u5220\u9664", memoryAllCategories: "\u5168\u90e8\u5206\u7c7b", memoryTotal: "\u603b\u6570", memoryAccessCount: "\u8bbf\u95ee", memoryUpdatedAt: "\u66f4\u65b0", memoryLoadMore: "\u52a0\u8f7d\u66f4\u591a" });
 Object.assign(I18N.en, { mcpManager: "MCP", mcpManagerHint: "Use capability marketplace first. Add manually by JSON or compact editor only when needed.", mcpMarketplace: "Capability Marketplace", mcpMarketplaceHint: "Search and install MCP capabilities from Hub/HubCenter. Manual config stays compact.", mcpInstalled: "Installed MCP", mcpNoServers: "No MCP servers", mcpManualAdd: "Add MCP", mcpModeMarket: "Marketplace", mcpModeRemote: "Remote HTTP", mcpModeLocal: "Local stdio", mcpModeJson: "JSON import", mcpName: "Name", mcpEndpoint: "Endpoint", mcpCommand: "Command", mcpArgs: "Args", mcpEnv: "Env", mcpHeaders: "Headers", mcpAuthType: "Auth", mcpSecret: "Secret", mcpAutoStart: "Auto start", mcpDisabled: "Disabled", mcpAdd: "Add", mcpEdit: "Edit", mcpSave: "Save MCP", mcpClose: "Close", mcpAddParam: "Add param", mcpParamName: "Param", mcpParamValue: "Value", mcpStart: "Start", mcpStop: "Stop", mcpCheck: "Check", mcpDelete: "Delete", mcpAdded: "MCP added", mcpUpdated: "MCP updated", mcpDeleted: "MCP deleted", mcpJson: "MCP JSON", mcpJsonHint: "Paste Claude-style mcpServers JSON or an array/object of MaClaw MCP entries.", mcpOpenGui: "Open MaClaw GUI > MCP > Marketplace for market install." });
 Object.assign(I18N.zh, { mcpManager: "MCP", mcpManagerHint: "\u4f18\u5148\u4ece\u80fd\u529b\u5e02\u573a\u9009\uff1b\u53ea\u6709\u5fc5\u8981\u65f6\u518d\u7528 JSON \u6216\u7cbe\u7b80\u7f16\u8f91\u754c\u9762\u6dfb\u52a0 MCP \u914d\u7f6e\u3002", mcpMarketplace: "\u80fd\u529b\u5e02\u573a", mcpMarketplaceHint: "\u641c\u7d22\u5e76\u5b89\u88c5 Hub/HubCenter MCP \u80fd\u529b\uff1b\u624b\u52a8\u914d\u7f6e\u4fdd\u6301\u7cbe\u7b80\u3002", mcpInstalled: "\u5df2\u5b89\u88c5 MCP", mcpNoServers: "\u6682\u65e0 MCP \u670d\u52a1", mcpManualAdd: "\u6dfb\u52a0 MCP", mcpModeMarket: "\u80fd\u529b\u5e02\u573a", mcpModeRemote: "\u8fdc\u7a0b HTTP", mcpModeLocal: "\u672c\u5730 stdio", mcpModeJson: "JSON \u5bfc\u5165", mcpName: "\u540d\u79f0", mcpEndpoint: "\u63a5\u5165\u5730\u5740", mcpCommand: "\u547d\u4ee4", mcpArgs: "\u53c2\u6570", mcpEnv: "\u73af\u5883\u53d8\u91cf", mcpHeaders: "Headers", mcpAuthType: "\u8ba4\u8bc1", mcpSecret: "\u5bc6\u94a5", mcpAutoStart: "\u81ea\u52a8\u542f\u52a8", mcpDisabled: "\u7981\u7528", mcpAdd: "\u6dfb\u52a0", mcpEdit: "\u7f16\u8f91", mcpSave: "\u4fdd\u5b58 MCP", mcpClose: "\u6536\u8d77", mcpAddParam: "\u6dfb\u52a0\u53c2\u6570", mcpParamName: "\u53c2\u6570", mcpParamValue: "\u503c", mcpStart: "\u542f\u52a8", mcpStop: "\u505c\u6b62", mcpCheck: "\u68c0\u67e5", mcpDelete: "\u5220\u9664", mcpAdded: "MCP \u5df2\u6dfb\u52a0", mcpUpdated: "MCP \u5df2\u66f4\u65b0", mcpDeleted: "MCP \u5df2\u5220\u9664", mcpJson: "MCP JSON", mcpJsonHint: "\u7c98\u8d34 Claude \u98ce\u683c mcpServers JSON\uff0c\u6216 MaClaw MCP \u6761\u76ee\u6570\u7ec4/\u5bf9\u8c61\u3002", mcpOpenGui: "\u8bf7\u5728 MaClaw GUI > MCP > \u80fd\u529b\u5e02\u573a\u5b8c\u6210\u5e02\u573a\u5b89\u88c5\u3002" });
-Object.assign(I18N.en, { webSearchManager: "Web search", webSearchHint: "Choose current search service and add a provider from common presets. Details stay grouped.", webSearchNoProviders: "No search provider", webSearchCurrent: "Current search service", webSearchAdd: "Add search service", webSearchProviderName: "Name", webSearchProviderType: "Type", webSearchBaseURL: "Base URL", webSearchKey: "Key", webSearchDelete: "Delete" });
-Object.assign(I18N.zh, { webSearchManager: "\u8054\u7f51\u641c\u7d22\u670d\u52a1", webSearchHint: "\u9009\u62e9\u5f53\u524d\u641c\u7d22\u670d\u52a1\uff0c\u5e76\u4ece\u5e38\u7528\u9884\u8bbe\u6dfb\u52a0 provider\u3002\u7ec6\u8282\u4fdd\u6301\u6210\u7ec4\u3002", webSearchNoProviders: "\u6682\u65e0\u641c\u7d22\u670d\u52a1", webSearchCurrent: "\u5f53\u524d\u641c\u7d22\u670d\u52a1", webSearchAdd: "\u6dfb\u52a0\u641c\u7d22\u670d\u52a1", webSearchProviderName: "\u540d\u79f0", webSearchProviderType: "\u7c7b\u578b", webSearchBaseURL: "Base URL", webSearchKey: "Key", webSearchDelete: "\u5220\u9664" });
+Object.assign(I18N.en, { webSearchManager: "Web search", webSearchHint: "Search service is managed by the administrator in Admin Web Client Config. This page only shows the effective provider.", webSearchNoProviders: "No search provider", webSearchCurrent: "Current search service", webSearchManagedByAdmin: "Managed by administrator", webSearchProviderCount: "{count} configured", webSearchProviderType: "Type" });
+Object.assign(I18N.zh, { webSearchManager: "\u8054\u7f51\u641c\u7d22\u670d\u52a1", webSearchHint: "\u641c\u7d22\u670d\u52a1\u7531\u7ba1\u7406\u5458\u5728\u540e\u53f0\u300c\u5ba2\u6237\u7aef\u914d\u7f6e\u300d\u7edf\u4e00\u8bbe\u7f6e\uff0c\u6b64\u5904\u4ec5\u663e\u793a\u5f53\u524d\u751f\u6548 provider\u3002", webSearchNoProviders: "\u6682\u65e0\u641c\u7d22\u670d\u52a1", webSearchCurrent: "\u5f53\u524d\u641c\u7d22\u670d\u52a1", webSearchManagedByAdmin: "\u7531\u7ba1\u7406\u5458\u7edf\u4e00\u914d\u7f6e", webSearchProviderCount: "\u5df2\u914d\u7f6e {count} \u4e2a", webSearchProviderType: "\u7c7b\u578b" });
 const FIELD_I18N = {
   en: {
     maclaw_llm_url: ["LLM URL", "Legacy flat LLM endpoint URL."], maclaw_llm_key: ["LLM API Key", "Legacy flat API key or bearer token."], maclaw_llm_model: ["LLM Model", "Legacy flat default model. Use auto for VE Platform Hub LLM endpoints; service groups are platform metadata, not model names."], maclaw_llm_current_provider: ["Current Provider", "Selected provider name from maclaw_llm_providers."], maclaw_llm_providers: ["LLM Providers", "Provider list. When configured, MaClawSrv prefers the selected provider over legacy flat fields."],
@@ -168,21 +275,32 @@ const HIDDEN_CONFIG_KEYS = new Set([
   "claude", "codex", "opencode", "codebuddy", "iflow", "kilo",
   "projects", "current_project", "active_tool", "default_tool", "default_tool_provider",
   "show_codex", "show_opencode", "show_codebuddy", "show_iflow", "show_kilo",
-  "extra_tool_configs", "default_proxy_scope_coding_tools", "use_windows_terminal", "nl_skills", "llm_token_usage",
+  "extra_tool_configs", "use_windows_terminal", "nl_skills", "llm_token_usage",
   "mcp_servers", "local_mcp_servers", "ssh_hosts", "skill_hub_urls", "external_skill_dirs", "skill_sources_allowed", "web_search_providers", "web_search_current_provider",
+  "default_proxy_enabled", "default_proxy_protocol", "default_proxy_host", "default_proxy_port", "default_proxy_username", "default_proxy_password", "default_proxy_bypass", "default_proxy_scope_maclaw", "default_proxy_scope_coding_tools", "default_proxy_scope_agent",
+  "hub_security_centralized", "security_policy_mode", "network_level", "network_allowlist",
+  "language", "ui_mode", "working_directory", "vector_search_enabled", "tts_enabled", "asr_enabled", "im_progress_nudge_enabled",
+  "thirdparty_gateway_host", "thirdparty_gateway_port",
   "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec", "maclaw_llm_current_provider", "maclaw_llm_providers", "llm_prompt_cache", "auxiliary_llm", "model_routes",
   "remote_user_id", "remote_tenant_id", "remote_tenant_name", "remote_machine_id", "remote_machine_name",
   "remote_machine_token", "remote_viewer_token", "skill_market_session_token", "remote_client_id", "remote_sn",
   "env_check_done", "last_env_check_time", "onboarding_done", "floating_btn_x", "floating_btn_y",
   "floating_btn_position_set", "noise_floor_calibrated", "speech_level_calibrated"
 ]);
-const CLEARED_USER_COMPLEX_CONFIG_KEYS = new Set([
-  "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec", "maclaw_llm_current_provider", "maclaw_llm_providers", "llm_prompt_cache", "auxiliary_llm", "model_routes",
-]);
-function stripUserComplexConfig(config) {
-  const next = { ...(config || {}) };
-  CLEARED_USER_COMPLEX_CONFIG_KEYS.forEach((key) => delete next[key]);
-  return next;
+const ADMIN_MANAGED_CONFIG_KEYS = [
+  "web_search_providers", "web_search_current_provider",
+  "default_proxy_enabled", "default_proxy_protocol", "default_proxy_host", "default_proxy_port", "default_proxy_username", "default_proxy_password", "default_proxy_bypass", "default_proxy_scope_maclaw", "default_proxy_scope_coding_tools", "default_proxy_scope_agent",
+  "mcp_servers", "local_mcp_servers", "ssh_hosts", "skill_hub_urls", "external_skill_dirs", "skill_sources_allowed",
+  "hub_security_centralized", "security_policy_mode", "network_level", "network_allowlist",
+  "language", "ui_mode", "working_directory", "vector_search_enabled", "tts_enabled", "asr_enabled", "im_progress_nudge_enabled"
+];
+function userConfigDraft(config) {
+  return { ...(config || {}) };
+}
+function stripAdminManagedConfig(config) {
+  const out = { ...(config || {}) };
+  ADMIN_MANAGED_CONFIG_KEYS.forEach((key) => delete out[key]);
+  return out;
 }
 const requestedLocale = (params.get("lang") || localStorage.getItem("maclaw.user.lang") || document.documentElement.lang || navigator.language || "zh-CN").toLowerCase();
 Object.assign(FIELD_I18N.zh, {
@@ -196,31 +314,61 @@ Object.assign(FIELD_I18N.en, {
   qqbot_enabled: ["Enable QQ Bot", "Enable this user's QQ Bot binding."], qqbot_app_id: ["QQ Bot App ID", "QQ Bot application ID."], qqbot_app_secret: ["QQ Bot App Secret", "QQ Bot application secret."],
   telegram_bot_enabled: ["Enable Telegram Bot", "Enable this user's Telegram Bot binding."], telegram_bot_token: ["Telegram Bot Token", "BotFather token used by the Telegram Bot channel."],
   weixin_enabled: ["Enable personal WeChat", "Enable this user's iLink/personal WeChat binding."], weixin_token: ["Personal WeChat Token", "iLink/personal WeChat session token."], weixin_account_id: ["Personal WeChat Account ID", "Bound personal WeChat account ID."],
-  thirdparty_gateway_enabled: ["Enable third-party access", "Enable MaClaw third-party IM access for this user."], thirdparty_gateway_token: ["Access Token", "Shared bearer token used when third-party systems call MaClawSrv."], thirdparty_gateway_host: ["Listen Host", "Host/IP bound by the third-party access service."], thirdparty_gateway_port: ["Listen Port", "Port listened on by the third-party access service."]
+  lansenger_enabled: ["Enable Lansenger", "Enable this user's Lansenger binding."], lansenger_app_id: ["Lansenger App ID", "Lansenger application ID."], lansenger_app_secret: ["Lansenger App Secret", "Lansenger application secret."], lansenger_gateway_url: ["Lansenger API Gateway", "Lansenger API gateway base URL."], lansenger_wss_url: ["Lansenger WebSocket URL", "Optional Lansenger WebSocket gateway override."],
+  thirdparty_gateway_enabled: ["Enable third-party access", "Enable MaClaw third-party IM access for this user."], thirdparty_gateway_token: ["Access Token", "Unique bearer token used to route third-party messages to this user."], thirdparty_gateway_host: ["Gateway Host", "Service-level MaClawSrv gateway host."], thirdparty_gateway_port: ["Gateway Port", "Service-level MaClawSrv gateway port."]
 });
 Object.assign(FIELD_I18N.zh, {
   qqbot_enabled: ["\u542f\u7528 QQ Bot", "\u542f\u7528\u6b64\u7528\u6237\u7684 QQ Bot \u7ed1\u5b9a\u3002"], qqbot_app_id: ["QQ Bot App ID", "QQ Bot \u5e94\u7528 ID\u3002"], qqbot_app_secret: ["QQ Bot App Secret", "QQ Bot \u5e94\u7528\u5bc6\u94a5\u3002"],
   telegram_bot_enabled: ["\u542f\u7528 Telegram Bot", "\u542f\u7528\u6b64\u7528\u6237\u7684 Telegram Bot \u7ed1\u5b9a\u3002"], telegram_bot_token: ["Telegram Bot Token", "Telegram BotFather \u9881\u53d1\u7684\u673a\u5668\u4eba Token\u3002"],
   weixin_enabled: ["\u542f\u7528\u4e2a\u4eba\u5fae\u4fe1", "\u542f\u7528\u6b64\u7528\u6237\u7684 iLink/\u4e2a\u4eba\u5fae\u4fe1\u7ed1\u5b9a\u3002"], weixin_token: ["\u4e2a\u4eba\u5fae\u4fe1 Token", "iLink/\u4e2a\u4eba\u5fae\u4fe1\u4f1a\u8bdd Token\u3002"], weixin_account_id: ["\u4e2a\u4eba\u5fae\u4fe1\u8d26\u53f7 ID", "\u5df2\u7ed1\u5b9a\u4e2a\u4eba\u5fae\u4fe1\u8d26\u53f7 ID\u3002"],
-  thirdparty_gateway_enabled: ["\u542f\u7528\u7b2c\u4e09\u65b9\u63a5\u5165", "\u542f\u7528\u6b64\u7528\u6237\u7684 MaClaw \u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002"], thirdparty_gateway_token: ["\u63a5\u5165 Token", "\u7b2c\u4e09\u65b9\u7cfb\u7edf\u8c03\u7528 MaClawSrv \u65f6\u4f7f\u7528\u7684\u5171\u4eab Bearer Token\u3002"], thirdparty_gateway_host: ["\u76d1\u542c\u5730\u5740", "\u7b2c\u4e09\u65b9\u63a5\u5165\u670d\u52a1\u7ed1\u5b9a\u7684 Host/IP\u3002"], thirdparty_gateway_port: ["\u76d1\u542c\u7aef\u53e3", "\u7b2c\u4e09\u65b9\u63a5\u5165\u670d\u52a1\u76d1\u542c\u7aef\u53e3\u3002"]
+  lansenger_enabled: ["\u542f\u7528\u84dd\u4fe1", "\u542f\u7528\u6b64\u7528\u6237\u7684\u84dd\u4fe1\u7ed1\u5b9a\u3002"], lansenger_app_id: ["\u84dd\u4fe1 App ID", "\u84dd\u4fe1\u5e94\u7528 ID\u3002"], lansenger_app_secret: ["\u84dd\u4fe1 App Secret", "\u84dd\u4fe1\u5e94\u7528\u5bc6\u94a5\u3002"], lansenger_gateway_url: ["\u84dd\u4fe1 API Gateway", "\u84dd\u4fe1 API \u7f51\u5173\u5730\u5740\u3002"], lansenger_wss_url: ["\u84dd\u4fe1 WebSocket \u5730\u5740", "\u53ef\u9009\u7684\u84dd\u4fe1 WebSocket \u7f51\u5173\u5730\u5740\u3002"],
+  thirdparty_gateway_enabled: ["\u542f\u7528\u7b2c\u4e09\u65b9\u63a5\u5165", "\u542f\u7528\u6b64\u7528\u6237\u7684 MaClaw \u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002"], thirdparty_gateway_token: ["\u63a5\u5165 Token", "\u6b64\u7528\u6237\u4e13\u5c5e Bearer Token\uff0c\u7528\u4e8e\u5c06\u7b2c\u4e09\u65b9\u6d88\u606f\u8def\u7531\u5230\u8be5\u7528\u6237\u3002"], thirdparty_gateway_host: ["\u7f51\u5173\u5730\u5740", "MaClawSrv \u670d\u52a1\u7ea7\u7b2c\u4e09\u65b9\u7f51\u5173\u5730\u5740\u3002"], thirdparty_gateway_port: ["\u7f51\u5173\u7aef\u53e3", "MaClawSrv \u670d\u52a1\u7ea7\u7b2c\u4e09\u65b9\u7f51\u5173\u7aef\u53e3\u3002"]
+});
+Object.assign(FIELD_I18N.en, {
+  im_progress_nudge_enabled: ["Show progress hints", "When off, IM only shows the first progress note and the final result."]
+});
+Object.assign(FIELD_I18N.zh, {
+  im_progress_nudge_enabled: ["\u663e\u793a\u8fdb\u5ea6\u63d0\u793a", "\u5173\u95ed\u540e\uff0cIM \u53ea\u663e\u793a\u7b2c\u4e00\u6761\u8fdb\u5ea6\u63d0\u793a\u548c\u6700\u7ec8\u7ed3\u679c\u3002"]
 });
 Object.assign(FIELD_I18N.en, {
   audio_input_device_id: ["Audio input device", "Preferred microphone/input device."],
-  audio_output_device_id: ["Audio output device", "Preferred speaker/output device."],
-  pet_voice_input_enabled: ["Voice input", "Enable voice input in supported channels."],
-  pet_voice_readback_enabled: ["Voice readback", "Read assistant replies aloud when supported."],
-  working_directory: ["Working directory", "Default workspace used by assistant tasks."],
-  data_dir: ["Data directory", "Local MaClaw data directory. Changes take effect after restart."],
-  local_needle_model_path: ["Local Needle model path", "Optional local Needle model artifact path."]
+  audio_output_device_id: ["Audio output device", "Preferred speaker/output device."]
 });
 Object.assign(FIELD_I18N.zh, {
   audio_input_device_id: ["\u97f3\u9891\u8f93\u5165\u8bbe\u5907", "\u4f18\u5148\u4f7f\u7528\u7684\u9ea6\u514b\u98ce/\u8f93\u5165\u8bbe\u5907\u3002"],
-  audio_output_device_id: ["\u97f3\u9891\u8f93\u51fa\u8bbe\u5907", "\u4f18\u5148\u4f7f\u7528\u7684\u626c\u58f0\u5668/\u8f93\u51fa\u8bbe\u5907\u3002"],
-  pet_voice_input_enabled: ["\u8bed\u97f3\u8f93\u5165", "\u5728\u652f\u6301\u7684\u6e20\u9053\u542f\u7528\u8bed\u97f3\u8f93\u5165\u3002"],
-  pet_voice_readback_enabled: ["\u8bed\u97f3\u6717\u8bfb", "\u5728\u652f\u6301\u7684\u6e20\u9053\u6717\u8bfb\u52a9\u624b\u56de\u590d\u3002"],
-  working_directory: ["\u5de5\u4f5c\u76ee\u5f55", "\u52a9\u624b\u4efb\u52a1\u9ed8\u8ba4\u4f7f\u7528\u7684\u5de5\u4f5c\u533a\u3002"],
-  data_dir: ["\u6570\u636e\u76ee\u5f55", "MaClaw \u672c\u5730\u6570\u636e\u76ee\u5f55\uff0c\u91cd\u542f\u540e\u751f\u6548\u3002"],
-  local_needle_model_path: ["Local Needle \u6a21\u578b\u8def\u5f84", "\u53ef\u9009\u7684\u672c\u5730 Needle \u6a21\u578b\u6587\u4ef6\u8def\u5f84\u3002"]
+  audio_output_device_id: ["\u97f3\u9891\u8f93\u51fa\u8bbe\u5907", "\u4f18\u5148\u4f7f\u7528\u7684\u626c\u58f0\u5668/\u8f93\u51fa\u8bbe\u5907\u3002"]
+});
+Object.assign(FIELD_I18N.en, {
+  language: ["Language", "Preferred interface language."],
+  screen_dim_timeout_min: ["Screen dim timeout", "Minutes before the screen dim preference applies. Zero disables it."],
+  ui_mode: ["Interface mode", "Preferred web interface density."],
+  ui_zoom_factor: ["Interface zoom", "Preferred interface scale."],
+  show_tray_icon: ["Show tray icon", "Show MaClaw in the system tray when supported."],
+  default_proxy_enabled: ["Default proxy", "Use the configured proxy for supported outbound traffic."],
+  default_proxy_protocol: ["Proxy protocol", "Protocol used by the default proxy."],
+  default_proxy_host: ["Proxy host", "Host or IP address of the default proxy."],
+  default_proxy_port: ["Proxy port", "Port of the default proxy."],
+  default_proxy_username: ["Proxy username", "Optional proxy username."],
+  default_proxy_password: ["Proxy password", "Optional proxy password. Masked values keep the current secret."],
+  default_proxy_bypass: ["Proxy bypass", "Hosts or patterns that should not use the proxy."],
+  default_proxy_scope_maclaw: ["Proxy MaClaw", "Whether MaClaw app requests use the default proxy."],
+  default_proxy_scope_agent: ["Proxy agents", "Whether agent/tool requests use the default proxy."]
+});
+Object.assign(FIELD_I18N.zh, {
+  language: ["\u8bed\u8a00", "\u9996\u9009\u754c\u9762\u8bed\u8a00\u3002"],
+  screen_dim_timeout_min: ["\u5c4f\u5e55\u53d8\u6697\u65f6\u95f4", "\u5c4f\u5e55\u53d8\u6697\u504f\u597d\u7684\u5206\u949f\u6570\uff0c0 \u8868\u793a\u5173\u95ed\u3002"],
+  ui_mode: ["\u754c\u9762\u6a21\u5f0f", "\u7f51\u9875\u754c\u9762\u7684\u663e\u793a\u5bc6\u5ea6\u3002"],
+  ui_zoom_factor: ["\u754c\u9762\u7f29\u653e", "\u754c\u9762\u663e\u793a\u6bd4\u4f8b\u3002"],
+  show_tray_icon: ["\u663e\u793a\u6258\u76d8\u56fe\u6807", "\u652f\u6301\u65f6\u5728\u7cfb\u7edf\u6258\u76d8\u663e\u793a MaClaw\u3002"],
+  default_proxy_enabled: ["\u9ed8\u8ba4\u4ee3\u7406", "\u652f\u6301\u7684\u51fa\u7ad9\u8bf7\u6c42\u4f7f\u7528\u4ee3\u7406\u3002"],
+  default_proxy_protocol: ["\u4ee3\u7406\u534f\u8bae", "\u9ed8\u8ba4\u4ee3\u7406\u4f7f\u7528\u7684\u534f\u8bae\u3002"],
+  default_proxy_host: ["\u4ee3\u7406\u5730\u5740", "\u9ed8\u8ba4\u4ee3\u7406\u7684 Host \u6216 IP\u3002"],
+  default_proxy_port: ["\u4ee3\u7406\u7aef\u53e3", "\u9ed8\u8ba4\u4ee3\u7406\u7684\u7aef\u53e3\u3002"],
+  default_proxy_username: ["\u4ee3\u7406\u7528\u6237\u540d", "\u53ef\u9009\u7684\u4ee3\u7406\u7528\u6237\u540d\u3002"],
+  default_proxy_password: ["\u4ee3\u7406\u5bc6\u7801", "\u53ef\u9009\u7684\u4ee3\u7406\u5bc6\u7801\uff0c\u63a9\u7801\u503c\u4f1a\u4fdd\u7559\u73b0\u6709\u5bc6\u7801\u3002"],
+  default_proxy_bypass: ["\u4ee3\u7406\u8df3\u8fc7\u5217\u8868", "\u4e0d\u8d70\u4ee3\u7406\u7684\u4e3b\u673a\u6216\u5339\u914d\u89c4\u5219\u3002"],
+  default_proxy_scope_maclaw: ["MaClaw \u4f7f\u7528\u4ee3\u7406", "MaClaw \u5e94\u7528\u8bf7\u6c42\u662f\u5426\u4f7f\u7528\u9ed8\u8ba4\u4ee3\u7406\u3002"],
+  default_proxy_scope_agent: ["Agent \u4f7f\u7528\u4ee3\u7406", "Agent/\u5de5\u5177\u8bf7\u6c42\u662f\u5426\u4f7f\u7528\u9ed8\u8ba4\u4ee3\u7406\u3002"]
 });
 const locale = requestedLocale.startsWith("en") ? "en" : "zh";
 const t = (key, vars = {}) => Object.entries(vars).reduce((s, [k, v]) => s.replaceAll(`{${k}}`, String(v)), (I18N[locale] || I18N.zh)[key] || key);
@@ -228,8 +376,12 @@ function fieldMeta(def = {}) { const tr = FIELD_I18N[locale]?.[def.key]; return 
 function configTypeName(type) { if (locale !== "zh") return type; return type === "integer" ? "整数" : type === "number" ? "数字" : type; }
 function configIssueLabel(issue = {}) { const key = String(issue.key || ""); const base = key.split(".")[0]; const meta = fieldMeta({ key: base, title: base }); const suffix = key.includes(".") ? ` / ${key.split(".").slice(1).join(".")}` : ""; return `${meta.title || key}${suffix}`; }
 function configIssueMessage(issue = {}) { const msg = String(issue.message || ""); if (locale !== "zh") return msg; const key = issue.key || ""; if (msg.includes("managed-by-hub")) return "仍然使用 VE Platform managed-by-hub 占位符，请从 VE Platform 重新打开并传入 Hub LLM 地址和 viewer token。"; if (msg.includes("Selected provider URL is required") || msg.includes("URL is required")) return "必须填写 LLM 服务地址。"; if (msg.includes("API key is required") || msg.includes("credential is required")) return "必须填写 LLM 访问令牌。"; if (msg.includes("Selected provider model is required") || msg.includes("model is required")) return "必须填写 LLM 模型；接入 VE Platform Hub 时填写 auto。"; if (msg.includes("selected provider") && msg.includes("was not found")) return "当前服务商不在 LLM 服务商列表中。"; if (key === "maclaw_llm_current_provider") return msg.replace("maclaw_llm_current_provider is required when multiple providers are configured", "配置多个服务商时必须选择当前服务商"); return msg; }
-const state = { token: "", me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, imAuditItems: [], imAuditContacts: [], imAuditStats: null, imAuditCleanupBefore: "", imAuditContactsPlatform: null, imAuditHasMore: false, imAuditNextBefore: "", imAuditLoading: false, imAuditLoaded: false, imAuditPlatform: "", imAuditQuery: "", imAuditContact: "", settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
+const TOKEN_REFRESH_GRACE_MS = 2 * 60 * 1000;
+const TOKEN_REFRESH_ACTIVITY_WINDOW_MS = 10 * 60 * 1000;
+const TOKEN_REFRESH_RECHECK_MS = 60 * 1000;
+const state = { token: "", tokenExpiresAt: 0, tokenRefreshTimer: 0, tokenRefreshPromise: null, lastActivityAt: 0, me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", skillPage: 1, mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, imAuditItems: [], imAuditContacts: [], imAuditStats: null, imAuditCleanupBefore: "", imAuditContactsPlatform: null, imAuditHasMore: false, imAuditNextBefore: "", imAuditLoading: false, imAuditLoaded: false, imAuditPlatform: "", imAuditQuery: "", imAuditContact: "", imAuditOpen: false, imSubTab: "qq", imRuntimes: {}, weixinRuntime: null, weixinQRCodeURL: "", weixinQRToken: "", weixinQRStatus: "", weixinQRMessage: "", weixinQRPollTimer: 0, imStartingKey: "", settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
 const saved = sessionStorage.getItem("maclaw.user.token") || "";
+const savedExpiry = sessionStorage.getItem("maclaw.user.token_expires_at") || "";
 const launchToken = params.get("launch_token") || "";
 const hasLaunchToken = params.has("launch_token");
 const secretURLKeys = ["token", "access_token", "api_key", "api_secret"];
@@ -240,11 +392,12 @@ state.instanceId = params.get("instance_id") || "";
 function normalizeSettingsTab(tab) {
   tab = String(tab || "").trim().toLowerCase();
   if (tab === "channels" || tab === "channels_more") return "im";
+  if (tab === "ui") return "interface";
+  if (tab === "runtime" || tab === "pet" || tab === "startup" || tab === "local_runtime") return "";
   if (tab === "advanced") return "";
-  return ["llm", "tools", "skills", "memory", "security", "im", "ui"].includes(tab) ? tab : "";
+  return ["llm", "tools", "skills", "memory", "security", "im", "interface", "proxy"].includes(tab) ? tab : "";
 }
 state.settingsTab = normalizeSettingsTab(params.get("settings_tab"));
-if (state.token) sessionStorage.setItem("maclaw.user.token", state.token);
 if (rawURLSecret || hasLaunchToken) {
   secretURLKeys.forEach((key) => params.delete(key));
   params.delete("launch_token");
@@ -256,10 +409,89 @@ function esc(v) { return String(v ?? "").replace(/[&<>'"]/g, (c) => ({ "&": "&am
 function pretty(v) { return JSON.stringify(v, null, 2); }
 function setBusy(on) { state.busy = on; document.body.classList.toggle("is-fetching", on); $("statusBadge").textContent = on ? t("busy") : t("ready"); }
 function toast(msg) { const el = $("toast"); el.textContent = msg; el.classList.remove("hidden"); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.add("hidden"), 3600); }
+function stopTokenRefreshTimer() { if (state.tokenRefreshTimer) { clearTimeout(state.tokenRefreshTimer); state.tokenRefreshTimer = 0; } }
+function parseTokenExpiry(expiresAt) { const ms = Date.parse(String(expiresAt || "")); return Number.isFinite(ms) ? ms : 0; }
+if (state.token) state.tokenExpiresAt = parseTokenExpiry(savedExpiry);
+function tokenExpiresInMs() { return state.tokenExpiresAt ? state.tokenExpiresAt - Date.now() : 0; }
+function hasRecentUserActivity() { return !!state.lastActivityAt && (Date.now() - state.lastActivityAt) <= TOKEN_REFRESH_ACTIVITY_WINDOW_MS; }
+function onTokenRefreshTimer() {
+  state.tokenRefreshTimer = 0;
+  if (!state.token || !state.tokenExpiresAt) return;
+  const untilExpiry = tokenExpiresInMs();
+  if (untilExpiry <= 0) return;
+  if (!hasRecentUserActivity()) {
+    scheduleTokenRefresh(Math.min(Math.max(untilExpiry - 1000, 1000), TOKEN_REFRESH_RECHECK_MS));
+    return;
+  }
+  void refreshAccessToken("timer").catch((e) => {
+    if (e?.status !== 401 && state.token) {
+      scheduleTokenRefresh(Math.min(Math.max(tokenExpiresInMs() - 1000, 1000), TOKEN_REFRESH_RECHECK_MS));
+    }
+  });
+}
+function scheduleTokenRefresh(delayMs) {
+  stopTokenRefreshTimer();
+  if (!state.token || !state.tokenExpiresAt) return;
+  const untilExpiry = tokenExpiresInMs();
+  if (untilExpiry <= 0) return;
+  const delay = typeof delayMs === "number" ? delayMs : Math.max(untilExpiry - TOKEN_REFRESH_GRACE_MS, 1000);
+  state.tokenRefreshTimer = window.setTimeout(onTokenRefreshTimer, delay);
+}
+function applyAccessToken(token, expiresAt) {
+  state.token = String(token || "").trim();
+  state.tokenExpiresAt = parseTokenExpiry(expiresAt);
+  if (state.token) {
+    sessionStorage.setItem("maclaw.user.token", state.token);
+    if (state.tokenExpiresAt) sessionStorage.setItem("maclaw.user.token_expires_at", new Date(state.tokenExpiresAt).toISOString());
+    else sessionStorage.removeItem("maclaw.user.token_expires_at");
+  } else {
+    sessionStorage.removeItem("maclaw.user.token");
+    sessionStorage.removeItem("maclaw.user.token_expires_at");
+  }
+  scheduleTokenRefresh();
+}
+function clearAccessToken() {
+  resetRunState(); resetWeixinQRLogin(); sessionStorage.removeItem("maclaw.user.token"); sessionStorage.removeItem("maclaw.user.token_expires_at");
+  stopTokenRefreshTimer();
+  state.tokenRefreshPromise = null;
+  state.token = "";
+  state.tokenExpiresAt = 0;
+  state.lastActivityAt = 0;
+}
+async function refreshAccessToken(reason = "activity", force = false) {
+  if (!state.token) throw new Error("missing launch token");
+  if (state.tokenRefreshPromise) return state.tokenRefreshPromise;
+  if (!force && state.tokenExpiresAt && tokenExpiresInMs() > TOKEN_REFRESH_GRACE_MS) return { skipped: true, reason };
+  state.tokenRefreshPromise = (async () => {
+    const resp = await fetch("/api/v1/web/refresh", { method: "POST", headers: headers(false) });
+    const text = await resp.text();
+    let data = {};
+    if (text) { try { data = JSON.parse(text); } catch { data = { raw: text }; } }
+    if (!resp.ok) {
+      const err = new Error(apiErrorMessage(data, `${resp.status} ${resp.statusText}`));
+      err.status = resp.status;
+      if (resp.status === 401) clearAccessToken();
+      throw err;
+    }
+    if (!data.access_token) throw new Error("missing refreshed access token");
+    applyAccessToken(data.access_token || "", data.expires_at);
+    return data;
+  })();
+  try {
+    return await state.tokenRefreshPromise;
+  } finally {
+    state.tokenRefreshPromise = null;
+  }
+}
+function markUserActivity() {
+  state.lastActivityAt = Date.now();
+  if (state.token && state.tokenExpiresAt && tokenExpiresInMs() <= TOKEN_REFRESH_GRACE_MS) void refreshAccessToken("activity");
+}
 function headers(json = true) { const h = { Authorization: `Bearer ${state.token}` }; if (json) h["Content-Type"] = "application/json"; return h; }
 function apiErrorMessage(data, fallback) {
   const msg = data.error || data.message || fallback;
   const text = `${msg} ${data.raw || ""}`.toLowerCase();
+  if (text.includes("qrcode token is not active")) return t("weixinQRExpired");
   return text.includes("managed-by-hub") || text.includes("viewer authentication failed") || text.includes("unauthorized") ? t("llmManagedByHub") : msg;
 }
 async function api(path, opt = {}) {
@@ -271,10 +503,16 @@ async function api(path, opt = {}) {
   if (!resp.ok) {
     const err = new Error(apiErrorMessage(data, `${resp.status} ${resp.statusText}`));
     err.status = resp.status;
-    if (resp.status === 401) { resetRunState(); sessionStorage.removeItem("maclaw.user.token"); state.token = ""; }
+    if (resp.status === 401) clearAccessToken();
     throw err;
   }
   return data;
+}
+async function authorizedObjectURL(path) {
+  if (!state.token) throw new Error("missing launch token");
+  const resp = await fetch(path, { headers: headers(false) });
+  if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+  return URL.createObjectURL(await resp.blob());
 }
 function closeRunStream() { if (state.runStream) { state.runStream.abort(); state.runStream = null; } }
 function resetRunState() { closeRunStream(); state.currentRun = null; }
@@ -285,9 +523,8 @@ async function exchangeLaunchToken() {
   let data = {};
   if (text) { try { data = JSON.parse(text); } catch { data = { raw: text }; } }
   if (!resp.ok) { const err = new Error(data.error || data.message || `${resp.status} ${resp.statusText}`); err.status = resp.status; throw err; }
-  state.token = data.access_token || "";
-  if (!state.token) throw new Error("missing exchanged access token");
-  sessionStorage.setItem("maclaw.user.token", state.token);
+  if (!data.access_token) throw new Error("missing exchanged access token");
+  applyAccessToken(data.access_token, data.expires_at);
 }
 function items(resp) { return Array.isArray(resp?.items) ? resp.items : Array.isArray(resp) ? resp : []; }
 function activeInstance() { return state.instanceId ? (state.instances.find((x) => x.id === state.instanceId) || null) : (state.instances[0] || null); }
@@ -305,13 +542,13 @@ async function bootstrap() {
     initChrome();
     setBusy(true);
     if (rawURLSecret) {
-      sessionStorage.removeItem("maclaw.user.token");
-      state.token = "";
+      clearAccessToken();
       renderMissingToken(t("rawSecretRejected"));
       return;
     }
     await exchangeLaunchToken();
     if (!state.token) { renderMissingToken(); return; }
+    await refreshAccessToken("bootstrap", !state.tokenExpiresAt);
     const [me, inst] = await Promise.all([api("/api/v1/me"), api("/api/v1/instances")]);
     state.me = me;
     state.instances = items(inst);
@@ -358,7 +595,7 @@ async function renderKnowledge() {
   loadKnowledgeAccessSummary();
 }
 function renderKnowledgeQuery() {
-  return `<div class="knowledge-search" role="search" aria-label="${esc(t("knowledgeQuery"))}"><div class="split"><div><strong>${esc(t("knowledgeQuery"))}</strong><span class="helper">${esc(t("knowledgeQueryHint"))}</span></div></div><form id="knowledgeSearchForm" class="knowledge-search-form"><label for="knowledgeQueryText">${esc(t("knowledgeQuery"))}<input id="knowledgeQueryText" type="search" placeholder="${esc(t("knowledgeQueryPlaceholder"))}" autocomplete="off"></label><label for="knowledgeQueryLimit">${esc(t("knowledgeLimit"))}<select id="knowledgeQueryLimit"><option value="5">5</option><option value="8" selected>8</option><option value="12">12</option><option value="20">20</option></select></label><button id="knowledgeSearchBtn" type="submit" class="primary">${esc(t("search"))}</button></form><div id="knowledgeSearchResults" class="knowledge-result-list" aria-live="polite"></div></div>`;
+  return `<div class="knowledge-search" role="search" aria-label="${esc(t("knowledgeQuery"))}"><div class="split"><div><strong>${esc(t("knowledgeQuery"))}</strong><span class="helper">${esc(t("knowledgeQueryHint"))}</span></div></div><form id="knowledgeSearchForm" class="knowledge-search-form"><label class="knowledge-search-main" for="knowledgeQueryText">${esc(t("knowledgeQuery"))}<input id="knowledgeQueryText" type="search" placeholder="${esc(t("knowledgeQueryPlaceholder"))}" autocomplete="off"></label><label class="knowledge-search-limit" for="knowledgeQueryLimit">${esc(t("knowledgeLimit"))}<select id="knowledgeQueryLimit"><option value="5">5</option><option value="8" selected>8</option><option value="12">12</option><option value="20">20</option></select></label><button id="knowledgeSearchBtn" type="submit" class="primary">${esc(t("search"))}</button></form><div id="knowledgeSearchResults" class="knowledge-result-list" aria-live="polite"></div></div>`;
 }
 function bindKnowledgeQuery() {
   const form = $("knowledgeSearchForm");
@@ -845,14 +1082,16 @@ async function renderSettings() {
   setTitle(t("settingsTitle"), t("settingsHint"));
   try {
     setBusy(true);
-    const [schema, cfgResp, skillsResp, mcpResp] = await Promise.all([api("/api/v1/config/schema"), api("/api/v1/config"), api("/api/v1/skills"), api("/api/v1/mcp/servers")]);
+    const [schema, cfgResp, skillsResp, mcpResp, wxStatus, imStatus] = await Promise.all([api("/api/v1/config/schema"), api("/api/v1/config"), api("/api/v1/skills"), api("/api/v1/mcp/servers"), api("/api/v1/im/weixin/status").catch(() => null), api("/api/v1/im/status").catch(() => null)]);
     state.schema = items(schema);
-    state.config = stripUserComplexConfig(cfgResp.app_config);
+    state.config = userConfigDraft(cfgResp.app_config);
     state.skills = items(skillsResp);
     state.mcpServers = items(mcpResp);
+    state.weixinRuntime = wxStatus;
+    state.imRuntimes = imStatus?.items || {};
     const validation = await api("/api/v1/config/validate", { method: "POST", body: JSON.stringify({ app_config: state.config }) });
     const valid = validation.valid ? "ok" : "error";
-    $("content").innerHTML = `<section class="panel stack settings-panel"><div class="split"><div><h2>${t("sharedConfig")}</h2><p class="helper">${t("sharedConfigHint")}</p></div><span id="cfgStatus" class="badge ${valid}">${validation.valid ? t("valid") : t("needsAttention")}</span></div><div id="issues" class="stack"></div><div id="cfgTabs" class="cfg-tabs" role="tablist" aria-label="${esc(t("sharedConfig"))}"></div><form id="cfgForm" class="fields"></form><div class="row action-row"><button id="saveCfg" type="button" class="primary">${t("save")}</button><button id="validateCfg" type="button" class="secondary">${t("validate")}</button><button id="testCfg" type="button" class="secondary">${t("test")}</button></div><details class="cfg-output"><summary>${t("configResponse")}</summary><pre id="cfgOut" class="code"></pre></details></section>`;
+    $("content").innerHTML = `<section class="panel stack settings-panel"><div class="settings-head"><div><h2>${t("sharedConfig")}</h2><p class="helper">${t("sharedConfigHint")}</p></div><div class="settings-actions"><span id="cfgStatus" class="badge ${valid}">${validation.valid ? t("valid") : t("needsAttention")}</span><button id="saveCfg" type="button" class="primary">${t("save")}</button><button id="validateCfg" type="button" class="secondary">${t("validate")}</button><button id="testCfg" type="button" class="secondary">${t("test")}</button></div></div><div id="issues" class="stack"></div><div id="cfgTabs" class="cfg-tabs" role="tablist" aria-label="${esc(t("sharedConfig"))}"></div><form id="cfgForm" class="fields"></form><details class="cfg-output"><summary>${t("configResponse")}</summary><pre id="cfgOut" class="code"></pre></details></section>`;
     renderIssues(validation); renderConfigFields();
     $("saveCfg").onclick = saveConfig; $("validateCfg").onclick = validateConfig; $("testCfg").onclick = testConfig;
     setConfigOutput({ me: state.me, app_config: state.config });
@@ -860,15 +1099,33 @@ async function renderSettings() {
   finally { setBusy(false); }
 }
 function skillMarketURL() { return String(state.config?.remote_hubcenter_url || items(state.config?.remote_hubcenter_urls)[0] || "").trim(); }
+const SKILL_PAGE_SIZE = 20;
+function skillName(s) { return s.name || s.Name || t("unknown"); }
+function skillDescription(s) { return s.description || s.Description || ""; }
+function skillSource(s) { return s.source || s.Source || "local"; }
+function renderSkillCard(s, options = {}) {
+  const name = skillName(s);
+  const desc = skillDescription(s);
+  const status = s.status || s.Status || "active";
+  const action = options.action || `<span class="pill">${esc(status)}</span>`;
+  const source = options.source ? `<span class="skill-source">${esc(options.source)}</span>` : "";
+  return `<article class="skill-card"><div class="skill-card-head"><strong title="${esc(name)}">${esc(name)}</strong>${action}</div>${source}<p>${esc(desc || name)}</p></article>`;
+}
 function renderSkillManager() {
-  const installed = items(state.skills).map((s) => `<div class="skill-row"><div><strong>${esc(s.name || s.Name || t("unknown"))}</strong><span class="helper">${esc(s.description || s.Description || "")}</span></div><span class="pill">${esc(s.status || s.Status || "active")}</span></div>`).join("") || `<p class="helper">${t("noSkills")}</p>`;
-  const installedNames = new Set(items(state.skills).map((s) => String(s.name || s.Name || "").toLowerCase()).filter(Boolean));
+  const skills = items(state.skills);
+  const totalPages = Math.max(1, Math.ceil(skills.length / SKILL_PAGE_SIZE));
+  state.skillPage = Math.min(Math.max(1, Number(state.skillPage || 1)), totalPages);
+  const start = (state.skillPage - 1) * SKILL_PAGE_SIZE;
+  const installed = skills.slice(start, start + SKILL_PAGE_SIZE).map((s) => renderSkillCard(s)).join("") || `<p class="helper">${t("noSkills")}</p>`;
+  const pager = skills.length > SKILL_PAGE_SIZE ? `<div class="skill-pager"><button type="button" class="secondary" data-skill-page="prev" ${state.skillPage <= 1 ? "disabled" : ""}>${esc(t("previous"))}</button><span class="helper">${esc(t("pageStatus", { page: state.skillPage, pages: totalPages }))}</span><button type="button" class="secondary" data-skill-page="next" ${state.skillPage >= totalPages ? "disabled" : ""}>${esc(t("nextPage"))}</button></div>` : "";
+  const installedNames = new Set(skills.map((s) => String(skillName(s)).toLowerCase()).filter(Boolean));
   const results = items(state.skillResults).map((s) => {
-    const alreadyInstalled = Boolean(s.installed) || installedNames.has(String(s.name || "").toLowerCase());
+    const alreadyInstalled = Boolean(s.installed) || installedNames.has(String(skillName(s)).toLowerCase());
     const installAttrs = alreadyInstalled ? "disabled aria-disabled=\"true\"" : `data-install-skill="${esc(s.id || "")}" data-install-source="${esc(s.source || "skillmarket")}"`;
-    return `<div class="skill-row"><div><strong>${esc(s.name || t("unknown"))}</strong><span class="helper">${esc([s.source, s.description].filter(Boolean).join(" - "))}</span></div><button type="button" class="secondary" ${installAttrs}>${alreadyInstalled ? t("installed") : t("install")}</button></div>`;
+    const action = `<button type="button" class="secondary" ${installAttrs}>${alreadyInstalled ? esc(t("installed")) : esc(t("install"))}</button>`;
+    return renderSkillCard(s, { action, source: skillSource(s) });
   }).join("");
-  return `<div class="skill-manager"><div class="split"><div><strong>${t("installedSkills")}</strong><span class="helper">/api/v1/skills</span></div><span class="pill">${items(state.skills).length}</span></div><div class="list">${installed}</div><div id="skillSearchForm" class="skill-search" role="search"><input id="skillSearchInput" type="search" value="${esc(state.skillQuery)}" placeholder="${t("searchSkillsPlaceholder")}" aria-label="${t("skillMarketSearch")}"><button id="skillSearchBtn" type="button" class="secondary">${t("search")}</button></div><div id="skillSearchResults" class="list">${results}</div></div>`;
+  return `<div class="skill-manager"><div class="split skill-manager-head"><div><strong>${t("installedSkills")}</strong><span class="helper">/api/v1/skills</span></div><span class="pill">${skills.length}</span></div><div class="skill-grid">${installed}</div>${pager}<div id="skillSearchForm" class="skill-search" role="search"><input id="skillSearchInput" type="search" value="${esc(state.skillQuery)}" placeholder="${t("searchSkillsPlaceholder")}" aria-label="${t("skillMarketSearch")}"><button id="skillSearchBtn" type="button" class="secondary">${t("search")}</button></div><div id="skillSearchResults" class="skill-grid skill-result-grid">${results}</div></div>`;
 }
 function bindSkillManager() {
   const form = $("skillSearchForm");
@@ -876,6 +1133,12 @@ function bindSkillManager() {
   const input = $("skillSearchInput");
   $("skillSearchBtn").onclick = searchSkills;
   input.onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); searchSkills(e); } };
+  document.querySelectorAll("[data-skill-page]").forEach((b) => {
+    b.onclick = () => {
+      state.skillPage += b.dataset.skillPage === "next" ? 1 : -1;
+      renderConfigFields();
+    };
+  });
   document.querySelectorAll("[data-install-skill]").forEach((b) => { b.onclick = () => installSkill(b.dataset.installSkill, b.dataset.installSource); });
 }
 async function searchSkills(e) {
@@ -1071,57 +1334,22 @@ async function importMCPJSON() {
   finally { setBusy(false); }
 }
 function webSearchProviders() { return items(state.config?.web_search_providers).map((p) => p && typeof p === "object" ? p : {}); }
-function webSearchTypeOptions(current = "") {
-  const all = Object.keys(WEB_SEARCH_PROVIDER_TYPES);
-  const value = current && !all.includes(current) ? current : "";
-  return `${all.map((type) => `<option value="${esc(type)}" ${current === type ? "selected" : ""}>${esc(type)}</option>`).join("")}${value ? `<option value="${esc(value)}" selected>${esc(value)}</option>` : ""}`;
-}
-function webSearchProviderRow(provider, index) {
-  const type = provider.type || "duckduckgo";
-  return `<div class="mcp-row web-search-row" data-web-search-row="${index}"><div class="web-search-fields"><label>${t("webSearchProviderName")}<input data-web-search-field="name" value="${esc(provider.name || "")}" placeholder="${esc(WEB_SEARCH_PROVIDER_TYPES[type]?.name || type)}"></label><label>${t("webSearchProviderType")}<select data-web-search-field="type">${webSearchTypeOptions(type)}</select></label><label>${t("webSearchBaseURL")}<input data-web-search-field="base_url" value="${esc(provider.base_url || "")}" placeholder="${esc(WEB_SEARCH_PROVIDER_TYPES[type]?.base_url || "")}"></label><label>${t("webSearchKey")}<input data-web-search-field="key" type="password" autocomplete="new-password" placeholder="${provider.key ? esc(t("secretHint")) : ""}"></label></div><button type="button" class="secondary" data-web-search-delete>${t("webSearchDelete")}</button></div>`;
+function webSearchProviderLabel(provider) { return String(provider?.name || provider?.type || "").trim(); }
+function currentWebSearchProvider() {
+  const providers = webSearchProviders();
+  const current = String(state.config?.web_search_current_provider || "").trim();
+  return providers.find((p) => webSearchProviderLabel(p) === current || String(p.type || "").trim() === current) || providers[0] || null;
 }
 function renderWebSearchManager() {
   const providers = webSearchProviders();
-  const current = state.config?.web_search_current_provider || "";
-  const currentOptions = providers.map((p) => p.name).filter(Boolean).map((name) => `<option value="${esc(name)}" ${current === name ? "selected" : ""}>${esc(name)}</option>`).join("");
-  const rows = providers.map(webSearchProviderRow).join("") || `<p class="helper">${t("webSearchNoProviders")}</p>`;
-  return `<div class="mcp-manager web-search-manager" data-web-search-manager><div class="split"><div><strong>${t("webSearchManager")}</strong><span class="helper">${t("webSearchHint")}</span></div><span class="pill">${providers.length}</span></div><div class="mcp-mode-row"><label for="webSearchCurrentProvider">${t("webSearchCurrent")}</label><select id="webSearchCurrentProvider"><option value="">${t("unset")}</option>${currentOptions}</select></div><div id="webSearchProviderRows" class="list">${rows}</div><div class="mcp-mode-row"><label for="webSearchAddType">${t("webSearchAdd")}</label><select id="webSearchAddType">${webSearchTypeOptions("duckduckgo")}</select><button id="webSearchAddBtn" type="button" class="secondary">${t("webSearchAdd")}</button></div></div>`;
+  const provider = currentWebSearchProvider();
+  const label = webSearchProviderLabel(provider) || t("webSearchNoProviders");
+  const type = provider?.type ? `<span class="helper">${esc(t("webSearchProviderType"))}: ${esc(provider.type)}</span>` : "";
+  return `<div class="mcp-manager web-search-manager" data-web-search-manager data-web-search-readonly="true"><div class="split"><div><strong>${t("webSearchManager")}</strong><span class="helper">${t("webSearchHint")}</span></div><span class="pill">${esc(t("webSearchProviderCount", { count: providers.length }))}</span></div><div class="mcp-row web-search-readonly"><div><span class="helper">${esc(t("webSearchCurrent"))}</span><strong>${esc(label)}</strong>${type}</div><span class="pill">${esc(t("webSearchManagedByAdmin"))}</span></div></div>`;
 }
 function bindWebSearchManager() {
   const manager = document.querySelector("[data-web-search-manager]");
   if (!manager) return;
-  manager.querySelectorAll("[data-web-search-delete]").forEach((button) => { button.onclick = () => { button.closest("[data-web-search-row]")?.remove(); refreshWebSearchCurrentOptions(); }; });
-  manager.querySelectorAll('[data-web-search-field="type"]').forEach((select) => {
-    select.onchange = () => {
-      const row = select.closest("[data-web-search-row]");
-      const preset = WEB_SEARCH_PROVIDER_TYPES[select.value] || {};
-      const name = row?.querySelector('[data-web-search-field="name"]');
-      const base = row?.querySelector('[data-web-search-field="base_url"]');
-      if (name && !name.value.trim()) name.placeholder = preset.name || select.value;
-      if (base && !base.value.trim()) base.placeholder = preset.base_url || "";
-    };
-  });
-  manager.querySelectorAll('[data-web-search-field="name"]').forEach((input) => { input.oninput = refreshWebSearchCurrentOptions; });
-  const addBtn = $("webSearchAddBtn");
-  if (addBtn) addBtn.onclick = addWebSearchProviderRow;
-}
-function addWebSearchProviderRow() {
-  const rows = $("webSearchProviderRows");
-  if (!rows) return;
-  const type = $("webSearchAddType")?.value || "duckduckgo";
-  const preset = WEB_SEARCH_PROVIDER_TYPES[type] || { name: type, base_url: "" };
-  const index = Math.max(-1, ...[...document.querySelectorAll("[data-web-search-row]")].map((row) => Number(row.dataset.webSearchRow || 0))) + 1;
-  rows.querySelector(".helper")?.remove();
-  rows.insertAdjacentHTML("beforeend", webSearchProviderRow({ name: preset.name, type, base_url: preset.base_url }, index));
-  bindWebSearchManager();
-  refreshWebSearchCurrentOptions();
-}
-function refreshWebSearchCurrentOptions() {
-  const select = $("webSearchCurrentProvider");
-  if (!select) return;
-  const current = select.value;
-  const names = [...document.querySelectorAll('[data-web-search-field="name"]')].map((el) => String(el.value || el.placeholder || "").trim()).filter(Boolean);
-  select.innerHTML = `<option value="">${t("unset")}</option>${names.map((name) => `<option value="${esc(name)}" ${current === name ? "selected" : ""}>${esc(name)}</option>`).join("")}`;
 }
 const KNOWLEDGE_TOPIC_SUGGESTIONS = ["project", "runbook", "api", "policy", "security", "troubleshooting", "design", "meeting-notes"];
 const KNOWLEDGE_LABEL_SUGGESTIONS = ["docs", "ops", "security", "product", "engineering", "faq", "reference", "archive"];
@@ -1216,8 +1444,34 @@ function knowledgeTemplateInput() {
 function knowledgeURLExampleInput() {
   return `<div class="knowledge-picker-row"><select id="knowledgeURLExample" aria-label="${esc(t("urlExample"))}"><option value="">${esc(t("unset"))}</option>${KNOWLEDGE_URL_SUGGESTIONS.map((item) => `<option value="${esc(item.url)}">${esc(item.url)}</option>`).join("")}</select><button id="addKnowledgeURLBtn" type="button" class="secondary">${esc(t("addURL"))}</button></div>`;
 }
+function knowledgeField(forID, label, control, extraClass = "") {
+  return `<div class="knowledge-field ${esc(extraClass)}"><label for="${esc(forID)}">${esc(label)}</label>${control}</div>`;
+}
 function renderKnowledgeImporter() {
-  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="split"><div><strong>${esc(t("connectedKnowledge"))}</strong><span class="helper">${esc(t("connectedKnowledgeHint"))}</span></div></div><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="split"><div><strong>${esc(t("knowledgeImport"))}</strong><span class="helper">${esc(t("knowledgeImportHint"))}</span></div></div><div class="knowledge-import-grid"><section><h3>${esc(t("importText"))}</h3><label for="knowledgeTextTitle">${esc(t("title"))}</label>${datalistTextInput("knowledgeTextTitle", KNOWLEDGE_TITLE_SUGGESTIONS)}<label for="knowledgeTextTopic">${esc(t("topicHint"))}</label>${datalistTextInput("knowledgeTextTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeTextLabels">${esc(t("labels"))}</label>${datalistTextInput("knowledgeTextLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeTextTemplate">${esc(t("knowledgeTemplate"))}</label>${knowledgeTemplateInput()}<label for="knowledgeTextBody">${esc(t("textToImport"))}</label><textarea id="knowledgeTextBody" placeholder="${esc(t("importTextPlaceholder"))}"></textarea><button id="knowledgeTextImportBtn" type="button" class="secondary">${esc(t("import"))}</button></section><section><h3>${esc(t("importFile"))}</h3><label for="knowledgeFileTopic">${esc(t("topicHint"))}</label>${datalistTextInput("knowledgeFileTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeFileLabels">${esc(t("labels"))}</label>${datalistTextInput("knowledgeFileLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeFileInput">${esc(t("chooseFiles"))}</label><input id="knowledgeFileInput" type="file" multiple accept=".doc,.docx,.pdf,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar"><button id="knowledgeFileImportBtn" type="button" class="secondary">${esc(t("import"))}</button></section><section><h3>${esc(t("importURL"))}</h3><label for="knowledgeURLTopic">${esc(t("topicHint"))}</label>${datalistTextInput("knowledgeURLTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeURLLabels">${esc(t("labels"))}</label>${datalistTextInput("knowledgeURLLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeURLExample">${esc(t("urlExample"))}</label>${knowledgeURLExampleInput()}<label for="knowledgeURLText">${esc(t("urlsToImport"))}</label><textarea id="knowledgeURLText" placeholder="${esc(t("importURLPlaceholder"))}"></textarea><label for="knowledgeURLDepth">${esc(t("crawlDepth"))}</label>${knowledgeDepthInput()}<label class="inline-check"><input id="knowledgeSameDomain" type="checkbox" checked>${esc(t("sameDomainOnly"))}</label><button id="knowledgeURLImportBtn" type="button" class="secondary">${esc(t("import"))}</button></section></div><div id="knowledgeImportProgress" class="knowledge-progress" role="status" aria-live="polite"></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
+  const textFields = [
+    knowledgeField("knowledgeTextTitle", t("title"), datalistTextInput("knowledgeTextTitle", KNOWLEDGE_TITLE_SUGGESTIONS)),
+    knowledgeField("knowledgeTextTopic", t("topicHint"), datalistTextInput("knowledgeTextTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)),
+    knowledgeField("knowledgeTextLabels", t("labels"), datalistTextInput("knowledgeTextLabels", KNOWLEDGE_LABEL_SUGGESTIONS)),
+    knowledgeField("knowledgeTextTemplate", t("knowledgeTemplate"), knowledgeTemplateInput(), "knowledge-span-2"),
+    knowledgeField("knowledgeTextBody", t("textToImport"), `<textarea id="knowledgeTextBody" placeholder="${esc(t("importTextPlaceholder"))}"></textarea>`, "knowledge-span-2"),
+    `<button id="knowledgeTextImportBtn" type="button" class="secondary knowledge-span-2">${esc(t("import"))}</button>`
+  ].join("");
+  const fileFields = [
+    knowledgeField("knowledgeFileTopic", t("topicHint"), datalistTextInput("knowledgeFileTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)),
+    knowledgeField("knowledgeFileLabels", t("labels"), datalistTextInput("knowledgeFileLabels", KNOWLEDGE_LABEL_SUGGESTIONS)),
+    knowledgeField("knowledgeFileInput", t("chooseFiles"), `<input id="knowledgeFileInput" type="file" multiple accept=".doc,.docx,.pdf,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar">`, "knowledge-span-2"),
+    `<button id="knowledgeFileImportBtn" type="button" class="secondary knowledge-span-2">${esc(t("import"))}</button>`
+  ].join("");
+  const urlFields = [
+    knowledgeField("knowledgeURLTopic", t("topicHint"), datalistTextInput("knowledgeURLTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)),
+    knowledgeField("knowledgeURLLabels", t("labels"), datalistTextInput("knowledgeURLLabels", KNOWLEDGE_LABEL_SUGGESTIONS)),
+    knowledgeField("knowledgeURLExample", t("urlExample"), knowledgeURLExampleInput(), "knowledge-span-2"),
+    knowledgeField("knowledgeURLText", t("urlsToImport"), `<textarea id="knowledgeURLText" placeholder="${esc(t("importURLPlaceholder"))}"></textarea>`, "knowledge-span-2"),
+    knowledgeField("knowledgeURLDepth", t("crawlDepth"), knowledgeDepthInput()),
+    `<label class="inline-check knowledge-check"><input id="knowledgeSameDomain" type="checkbox" checked>${esc(t("sameDomainOnly"))}</label>`,
+    `<button id="knowledgeURLImportBtn" type="button" class="secondary knowledge-span-2">${esc(t("import"))}</button>`
+  ].join("");
+  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="split"><div><strong>${esc(t("connectedKnowledge"))}</strong><span class="helper">${esc(t("connectedKnowledgeHint"))}</span></div></div><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="split"><div><strong>${esc(t("knowledgeImport"))}</strong><span class="helper">${esc(t("knowledgeImportHint"))}</span></div></div><div class="knowledge-import-grid"><section><h3>${esc(t("importText"))}</h3><div class="knowledge-import-fields">${textFields}</div></section><section><h3>${esc(t("importFile"))}</h3><div class="knowledge-import-fields">${fileFields}</div></section><section><h3>${esc(t("importURL"))}</h3><div class="knowledge-import-fields">${urlFields}</div></section></div><div id="knowledgeImportProgress" class="knowledge-progress" role="status" aria-live="polite"></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
 }
 function bindKnowledgeImporter() {
   if (!$('knowledgeTextImportBtn')) return;
@@ -1273,7 +1527,7 @@ function knowledgeProgressText(value) {
   if (value.progress_text) return value.progress_text;
   const status = String(value.status || "").toLowerCase();
   if (["pending", "queued", "running"].includes(status)) return t("importQueued");
-  if (status === "succeeded") return t("importCompleted");
+  if (status === "succeeded" || status === "completed") return t("importCompleted");
   if (status === "failed" || status === "canceled") return `${t("importFailed")}: ${value.error || status}`;
   return "";
 }
@@ -1379,9 +1633,18 @@ async function runKnowledgeImport(buttonID, task) {
 }
 function toastKnowledgeImportResult(job) {
   const status = String(job?.status || "").toLowerCase();
-  if (status === "succeeded") toast(t("importCompleted"));
+  if (status === "succeeded" || status === "completed") toast(t("importCompleted"));
   else if (status === "failed" || status === "canceled") toast(`${t("importFailed")}: ${job?.error || status}`);
   else toast(t("importStillRunning"));
+}
+async function finishKnowledgeImport(out) {
+  setKnowledgeImportStatus(out, true);
+  const jobID = String(out?.job_id || out?.id || "").trim();
+  if (!jobID) { toastKnowledgeImportResult(out); return out; }
+  toast(t("importStarted"));
+  const finalJob = await watchKnowledgeImportJob(jobID);
+  toastKnowledgeImportResult(finalJob || out);
+  return finalJob || out;
 }
 async function importKnowledgeText() {
   clearKnowledgeImportErrors();
@@ -1397,7 +1660,7 @@ async function importKnowledgeText() {
     await runKnowledgeImport("knowledgeTextImportBtn", async () => {
       setKnowledgeImportStatus(t("importing"), true);
       const out = await api("/api/v1/knowledge/import/text", { method: "POST", body: JSON.stringify({ text, title, topic_hint: topic, labels }) });
-      setKnowledgeImportStatus(out); toast(t("importedKnowledge"));
+      await finishKnowledgeImport(out);
     });
   } catch (e) { if (!handleAPIError(e)) toast(e.message); }
 }
@@ -1419,7 +1682,7 @@ async function importKnowledgeFiles() {
       const resp = await fetch("/api/v1/knowledge/import/file", { method: "POST", headers: headers(false), body: form });
       const out = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(apiErrorMessage(out, `${resp.status} ${resp.statusText}`));
-      setKnowledgeImportStatus(out); toast(t("importStarted")); toastKnowledgeImportResult(await watchKnowledgeImportJob(out.job_id));
+      await finishKnowledgeImport(out);
     });
   } catch (e) { if (!handleAPIError(e)) toast(e.message); }
 }
@@ -1437,7 +1700,7 @@ async function importKnowledgeURLs() {
       const rawDepth = Number($('knowledgeURLDepth')?.value || 0);
       const maxDepth = [0, 1, 2, 3, 4, 5].includes(rawDepth) ? rawDepth : 0;
       const out = await api("/api/v1/knowledge/import/urls", { method: "POST", body: JSON.stringify({ text, max_depth: maxDepth, same_domain_only: $('knowledgeSameDomain')?.checked !== false, topic_hint: topic, labels }) });
-      setKnowledgeImportStatus(out); toast(t("importStarted")); toastKnowledgeImportResult(await watchKnowledgeImportJob(out.job_id));
+      await finishKnowledgeImport(out);
     });
   } catch (e) { if (!handleAPIError(e)) toast(e.message); }
 }
@@ -1521,27 +1784,46 @@ function bindMemoryManager() {
 function renderIssues(validation) { $("issues").innerHTML = (validation.issues || []).map((i) => `<p class="error"><strong>${esc(configIssueLabel(i))}</strong><span>${esc(configIssueMessage(i))}</span></p>`).join("") || `<p class="ok">${t("currentConfigOk")}</p>`; }
 function updateConfigStatus(validation) { const el = $("cfgStatus"); if (!el) return; const valid = validation.valid ? "ok" : "error"; el.className = `badge ${valid}`; el.textContent = validation.valid ? t("valid") : t("needsAttention"); }
 function setConfigOutput(value) { const el = $("cfgOut"); if (el) el.textContent = pretty(value); }
-function setSettingsActionsDisabled(on) { ["saveCfg", "validateCfg", "testCfg"].forEach((id) => { const el = $(id); if (el) el.disabled = on; }); }
+function setSettingsActionsDisabled(on) {
+  ["saveCfg", "validateCfg", "testCfg"].forEach((id) => { const el = $(id); if (el) el.disabled = on; });
+  document.querySelectorAll("[data-save-start-im], [data-disconnect-im]").forEach((el) => { el.disabled = on; });
+}
 const CHANNEL_CONFIG_KEYS = [
+  "im_progress_nudge_enabled",
   "qqbot_enabled", "qqbot_app_id", "qqbot_app_secret",
   "telegram_bot_enabled", "telegram_bot_token",
   "weixin_enabled", "weixin_token", "weixin_account_id",
-  "thirdparty_gateway_enabled", "thirdparty_gateway_token", "thirdparty_gateway_host", "thirdparty_gateway_port"
+  "lansenger_enabled", "lansenger_app_id", "lansenger_app_secret", "lansenger_gateway_url", "lansenger_wss_url",
+  "thirdparty_gateway_enabled", "thirdparty_gateway_token"
 ];
+const IM_ENABLED_KEYS = new Set(["qqbot_enabled", "telegram_bot_enabled", "weixin_enabled", "lansenger_enabled", "thirdparty_gateway_enabled"]);
+const PLAIN_TEXT_CONFIG_FIELDS = new Set(["qqbot_app_id", "lansenger_app_id"]);
+const IM_REQUIRED_FIELDS = {
+  qqbot_enabled: ["qqbot_app_id", "qqbot_app_secret"],
+  telegram_bot_enabled: ["telegram_bot_token"],
+  weixin_enabled: ["weixin_token", "weixin_account_id"],
+  lansenger_enabled: ["lansenger_app_id", "lansenger_app_secret", "lansenger_gateway_url"],
+  thirdparty_gateway_enabled: ["thirdparty_gateway_token"]
+};
+const NON_GENERATABLE_SECRET_KEYS = new Set(["qqbot_app_secret", "lansenger_app_secret"]);
+const IM_RUNTIME_PLATFORMS = {
+  qqbot_enabled: "qq",
+  telegram_bot_enabled: "telegram",
+  lansenger_enabled: "lansenger",
+  thirdparty_gateway_enabled: "thirdparty"
+};
+const IM_DOC_LINKS = {
+  qq: "https://q.qq.com/qqbot/openclaw/login.html",
+  telegram: "https://open-claw.bot/docs/channels/telegram/"
+};
 const CONFIG_CHOICE_FIELDS = {
   default_proxy_protocol: ["http", "https", "socks5"],
-  default_launch_mode: ["local", "remote"],
   language: ["zh-CN", "en-US"],
   skill_purchase_mode: ["auto", "free_only"],
   ui_mode: ["lite", "pro"],
   security_policy_mode: ["none", "standard", "relaxed", "strict", "developer"],
   sandbox_mode: ["none", "os", "docker"],
-  network_level: ["none", "intranet", "allowlist", "full"],
-  pet_skin: ["clawmate", "mini-claw", "dev-claw", "focus-claw"],
-  pet_interaction_mode: ["quiet", "balanced", "active"],
-  pet_conversation_mode: ["text-first", "voice-turn", "continuous"],
-  pet_readback_mode: ["off", "summary", "full", "done-only"],
-  pet_motion_sound_preset: ["classic", "bubble", "chime", "synth", "soft"]
+  network_level: ["none", "intranet", "allowlist", "full"]
 };
 const GENERIC_CHOICE_FIELDS = {
   mode: ["auto", "local", "remote", "enabled", "disabled", "standard", "strict", "relaxed"],
@@ -1556,21 +1838,15 @@ const CONFIG_NUMBER_CHOICE_FIELDS = {
   subagent_concurrency: [1, 2, 3, 4],
   memory_max_backups: [0, 5, 10, 20, 50],
   knowledge_skill_token_budget: [0, 4000, 8000, 12000, 20000, 32000],
-  remote_heartbeat_sec: [5, 10, 30, 60, 120, 300],
   screen_dim_timeout_min: [0, 3, 5, 10, 15, 30, 60],
-  env_check_interval: [2, 7, 14, 30],
-  pet_size: [56, 72, 88, 104, 120],
-  pet_continuous_timeout_sec: [5, 10, 30, 60, 120],
   ui_zoom_factor: [0, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 2],
   chat_font_size: [12, 13, 14, 16, 18, 20, 24],
   auto_fetch_interval_min: [0, 5, 10, 20, 30, 60],
   thirdparty_gateway_port: [0, 8080, 18080, 28080, 38080],
-  local_needle_min_confidence: [0, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
   daily_llm_budget_usd: [0, 1, 3, 5, 10, 20, 50]
 };
 const CONFIG_ARRAY_CHOICE_FIELDS = {};
 const CONFIG_LINE_ARRAY_FIELDS = new Set([
-  "remote_hubcenter_urls",
   "network_allowlist",
   "auto_fetch_rss_feeds",
   "auto_fetch_watch_dirs",
@@ -1581,7 +1857,6 @@ const CONFIG_STRING_LINE_FIELDS = new Set([
   "default_proxy_bypass"
 ]);
 const CONFIG_LINE_ARRAY_SUGGESTION_FIELDS = {
-  remote_hubcenter_urls: ["https://hubcenter.example.com", "https://hub.example.com"],
   network_allowlist: ["localhost", "127.0.0.1", "::1", "*.local", "*.corp.example.com", "api.openai.com", "api.anthropic.com"],
   auto_fetch_rss_feeds: ["https://github.blog/feed/", "https://openai.com/news/rss.xml"],
   auto_fetch_watch_dirs: ["~/Downloads", "~/Documents", "D:/workprj"],
@@ -1614,13 +1889,6 @@ const LLM_URL_SUGGESTIONS = [
   "http://localhost:1234/v1"
 ];
 const LLM_MODEL_SUGGESTIONS = ["auto", "gpt-4o", "claude-sonnet-4-20250514", "glm-5-turbo", "glm-5.1", "kimi-for-coding", "MiniMax-M2.7", "qwen2.5-coder:32b", "deepseek-coder-v2", "llama3.1"];
-const WEB_SEARCH_PROVIDER_TYPES = {
-  duckduckgo: { name: "DuckDuckGo", base_url: "" },
-  brave: { name: "Brave Search", base_url: "https://api.search.brave.com" },
-  serper: { name: "Serper", base_url: "https://google.serper.dev" },
-  tinyfish: { name: "TinyFish", base_url: "" },
-  searxng: { name: "SearXNG", base_url: "http://localhost:8080" }
-};
 const CONFIG_OBJECT_LIST_FIELDS = {};
 const CONFIG_OBJECT_FIELDS = {
   mis_data: {
@@ -1712,11 +1980,6 @@ const CONFIG_SUGGESTION_FIELDS = {
   tts_voice_id: ["default", "zf_xiaobei", "zf_xiaoni", "zm_yunjian", "zm_yunxi"],
   default_proxy_host: ["127.0.0.1", "localhost"],
   default_proxy_port: ["7890", "7897", "1080", "3128", "8080"],
-  working_directory: ["~/.maclaw/workspace", "~/workspace", "D:/workprj"],
-  data_dir: ["~/.maclaw", "D:/workprj/aicoder/data"],
-  local_needle_model_path: ["~/.maclaw/models/needle", "models/needle"],
-  remote_hub_url: ["https://hub.example.com"],
-  remote_hubcenter_url: ["https://hubcenter.example.com"],
   lansenger_gateway_url: ["https://apigw.lx.qianxin.com"],
   lansenger_wss_url: ["wss://apigw.lx.qianxin.com/ws", "wss://gateway.example.com/ws"],
   weixin_base_url: ["https://api.weixin.qq.com"],
@@ -1787,34 +2050,22 @@ function genericNumberOptions(key) {
 const CONFIG_CHOICE_LABELS = {
   en: {
     default_proxy_protocol: { http: "HTTP", https: "HTTPS", socks5: "SOCKS5" },
-    default_launch_mode: { local: "Local", remote: "Remote" },
     language: { "zh-CN": "Simplified Chinese", "en-US": "English" },
     skill_purchase_mode: { auto: "Auto", free_only: "Free only" },
     ui_mode: { lite: "Lite", pro: "Pro" },
     security_policy_mode: { none: "Off", standard: "Standard", relaxed: "Relaxed", strict: "Strict", developer: "Developer" },
     sandbox_mode: { none: "Off", os: "OS sandbox", docker: "Docker" },
     network_level: { none: "Offline", intranet: "Intranet only", allowlist: "Allowlist", full: "Full network" },
-    pet_skin: { clawmate: "Clawmate", "mini-claw": "Mini claw", "dev-claw": "Dev claw", "focus-claw": "Focus claw" },
-    pet_interaction_mode: { quiet: "Quiet", balanced: "Balanced", active: "Active" },
-    pet_conversation_mode: { "text-first": "Text first", "voice-turn": "Voice turn", continuous: "Continuous" },
-    pet_readback_mode: { off: "Off", summary: "Summary", full: "Full", "done-only": "Done only" },
-    pet_motion_sound_preset: { classic: "Classic", bubble: "Bubble", chime: "Chime", synth: "Synth", soft: "Soft" },
     memory_category: { self_identity: "Self identity", user_fact: "User fact", preference: "Preference", project_knowledge: "Project knowledge", instruction: "Instruction", conversation_summary: "Conversation summary", session_checkpoint: "Session checkpoint", task_artifact: "Task artifact", profile: "Profile" }
   },
   zh: {
     default_proxy_protocol: { http: "HTTP", https: "HTTPS", socks5: "SOCKS5" },
-    default_launch_mode: { local: "\u672c\u5730", remote: "\u8fdc\u7a0b" },
     language: { "zh-CN": "\u7b80\u4f53\u4e2d\u6587", "en-US": "\u82f1\u6587" },
     skill_purchase_mode: { auto: "\u81ea\u52a8", free_only: "\u4ec5\u514d\u8d39" },
     ui_mode: { lite: "\u7b80\u6d01", pro: "\u4e13\u4e1a" },
     security_policy_mode: { none: "\u5173\u95ed", standard: "\u6807\u51c6", relaxed: "\u5bbd\u677e", strict: "\u4e25\u683c", developer: "\u5f00\u53d1\u8005" },
     sandbox_mode: { none: "\u5173\u95ed", os: "\u7cfb\u7edf\u6c99\u7bb1", docker: "Docker" },
     network_level: { none: "\u79bb\u7ebf", intranet: "\u4ec5\u5185\u7f51", allowlist: "\u5141\u8bb8\u5217\u8868", full: "\u5b8c\u6574\u7f51\u7edc" },
-    pet_skin: { clawmate: "Clawmate", "mini-claw": "Mini Claw", "dev-claw": "Dev Claw", "focus-claw": "Focus Claw" },
-    pet_interaction_mode: { quiet: "\u5b89\u9759", balanced: "\u5e73\u8861", active: "\u6d3b\u8dc3" },
-    pet_conversation_mode: { "text-first": "\u6587\u5b57\u4f18\u5148", "voice-turn": "\u8bed\u97f3\u8f6e\u6b21", continuous: "\u8fde\u7eed\u5bf9\u8bdd" },
-    pet_readback_mode: { off: "\u5173\u95ed", summary: "\u6458\u8981", full: "\u5b8c\u6574", "done-only": "\u4ec5\u5b8c\u6210\u65f6" },
-    pet_motion_sound_preset: { classic: "\u7ecf\u5178", bubble: "\u6c14\u6ce1", chime: "\u63d0\u793a\u97f3", synth: "\u5408\u6210", soft: "\u67d4\u548c" },
     memory_category: { self_identity: "\u81ea\u6211\u8ba4\u77e5", user_fact: "\u7528\u6237\u4e8b\u5b9e", preference: "\u504f\u597d", project_knowledge: "\u9879\u76ee\u77e5\u8bc6", instruction: "\u6307\u4ee4", conversation_summary: "\u5bf9\u8bdd\u6458\u8981", session_checkpoint: "\u4f1a\u8bdd\u68c0\u67e5\u70b9", task_artifact: "\u4efb\u52a1\u4ea7\u7269", profile: "\u7528\u6237\u753b\u50cf" }
   }
 };
@@ -1824,32 +2075,44 @@ function configBoolLabel(value) {
   return t("channelAuto");
 }
 function thirdPartyProtocolEndpoint() {
-  const host = String($("cfg_thirdparty_gateway_host")?.value || state.config?.thirdparty_gateway_host || "127.0.0.1").trim() || "127.0.0.1";
-  const port = String($("cfg_thirdparty_gateway_port")?.value || state.config?.thirdparty_gateway_port || 18777).trim() || "18777";
-  return `http://${host}:${port}/api/im-gateway/v1`;
+  return `${thirdPartyEndpointBase()}/api/im-gateway/v1`;
+}
+function thirdPartyEndpointBase() {
+  const origin = String(window.location.origin || "").trim().replace(/\/+$/, "");
+  if (origin && origin !== "null") return origin;
+  const protocol = String(window.location.protocol || "http:").replace(/:+$/, "") || "http";
+  const host = String(window.location.host || "").trim();
+  return host ? `${protocol}://${host}` : "http://127.0.0.1";
 }
 function updateThirdPartyEndpoint() {
   const el = $("thirdPartyProtocolEndpoint");
   if (el) el.textContent = thirdPartyProtocolEndpoint();
 }
-function generateThirdPartyToken() {
-  const input = $("cfg_thirdparty_gateway_token");
-  if (!input || !window.crypto?.getRandomValues) { toast(t("channelTokenUnavailable")); return; }
-  const bytes = new Uint8Array(32);
-  window.crypto.getRandomValues(bytes);
-  input.value = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  toast(t("channelTokenGenerated"));
-}
 function bindChannelTools() {
+  document.querySelectorAll("[data-im-subtab]").forEach((button) => {
+    button.onclick = () => setActiveIMSubTab(button.dataset.imSubtab || "");
+  });
+  document.querySelectorAll("[data-im-watch-history]").forEach((button) => {
+    button.onclick = () => {
+      state.imAuditPlatform = String(button.dataset.imWatchHistory || "").trim();
+      state.imAuditContact = "";
+      state.imAuditQuery = "";
+      resetIMAuditPagination();
+      state.imAuditOpen = true;
+      const shell = document.querySelector(".im-audit-shell");
+      if (shell) shell.open = true;
+      loadIMAuditMessages();
+    };
+  });
   const copy = $("copyThirdPartyEndpoint");
   if (copy) copy.onclick = () => copyTextImproved(thirdPartyProtocolEndpoint(), copy);
-  const generate = $("generateThirdPartyToken");
-  if (generate) generate.onclick = generateThirdPartyToken;
-  ["cfg_thirdparty_gateway_host", "cfg_thirdparty_gateway_port"].forEach((id) => {
-    const el = $(id);
-    if (el) el.addEventListener("input", updateThirdPartyEndpoint);
-  });
   updateThirdPartyEndpoint();
+  document.querySelectorAll("[data-save-start-im]").forEach((button) => {
+    button.onclick = () => saveAndStartIM(button.dataset.saveStartIm || "");
+  });
+  document.querySelectorAll("[data-disconnect-im]").forEach((button) => {
+    button.onclick = () => disconnectIM(button.dataset.disconnectIm || "");
+  });
 }
 function randomSecretValue() {
   if (!window.crypto?.getRandomValues) return "";
@@ -1871,38 +2134,196 @@ function bindSecretGenerators() {
       toast(t("channelTokenGenerated"));
     };
   });
+  document.querySelectorAll("[data-toggle-secret]").forEach((button) => {
+    button.onclick = () => {
+      const input = $(button.dataset.toggleSecret || "");
+      if (!input) return;
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      button.textContent = show ? t("hideSecret") : t("showSecret");
+    };
+  });
 }
-function secretFieldMarkup(id, attrs, current, extra = "") {
-  return `<div class="secret-input"><input id="${esc(id)}" ${attrs} type="password" autocomplete="new-password" spellcheck="false" value="${esc(current)}" ${extra}><button type="button" class="secondary" data-generate-secret="${esc(id)}">${esc(t("generateSecret"))}</button></div>`;
+function secretGenerateLabel(id) {
+  return /token/i.test(String(id || "")) ? t("channelGenerateToken") : t("generateSecret");
+}
+function secretFieldMarkup(id, attrs, current, extra = "", canGenerate = true) {
+  const key = String(id || "").replace(/^cfg_/, "");
+  const generate = canGenerate && !NON_GENERATABLE_SECRET_KEYS.has(key) ? `<button type="button" class="secondary" data-generate-secret="${esc(id)}">${esc(secretGenerateLabel(id))}</button>` : "";
+  const reveal = key === "thirdparty_gateway_token" ? `<button type="button" class="secondary" data-toggle-secret="${esc(id)}">${esc(t("showSecret"))}</button>` : "";
+  return `<div class="secret-input"><input id="${esc(id)}" ${attrs} type="password" autocomplete="new-password" spellcheck="false" value="${esc(current)}" ${extra}>${generate}${reveal}</div>`;
 }
 function configFieldMarkup(key, defs) {
   const d = fieldMeta(defs[key] || { key, title: key, type: Array.isArray(state.config[key]) ? "array" : typeof state.config[key] === "boolean" ? "bool" : typeof state.config[key] === "number" ? "number" : "string" });
   const label = `${esc(d.title || key)}${d.required ? " *" : ""}`;
   return `<div class="field"><label for="cfg_${key}">${label}</label>${fieldInput(key, d)}<span class="helper">${esc(fieldHelper(d))}</span></div>`;
 }
-function thirdPartyProtocolTools() {
-  return `<div class="channel-protocol"><div><strong>${esc(t("channelProtocolEndpoint"))}</strong><code id="thirdPartyProtocolEndpoint">${esc(thirdPartyProtocolEndpoint())}</code></div><div class="row"><button type="button" class="secondary" id="copyThirdPartyEndpoint">${esc(t("channelCopyEndpoint"))}</button><button type="button" class="secondary" id="generateThirdPartyToken">${esc(t("channelGenerateToken"))}</button></div></div>`;
+function renderIMToggleField(enabledKey, defs) {
+  const d = fieldMeta(defs[enabledKey] || { key: enabledKey, title: enabledKey, type: "bool" });
+  return `<div class="im-enable-row"><div><strong>${esc(d.title || enabledKey)}</strong><span class="helper">${esc(fieldHelper(d))}</span></div>${boolRadioInput(enabledKey, esc(fieldValue(enabledKey, d)))}</div>`;
 }
-function renderIMBindingCard(title, enabledKey, keys, defs, extra = "") {
+function hasConfigValue(key) {
+  return String(state.config?.[key] ?? "").trim() !== "";
+}
+function imStatus(enabledKey) {
   const enabled = state.config?.[enabledKey];
-  return `<article class="im-config-card"><div class="split"><h3>${esc(title)}</h3><span class="badge ${enabled ? "ok" : ""}">${esc(configBoolLabel(enabled))}</span></div>${[enabledKey, ...keys].map((key) => configFieldMarkup(key, defs)).join("")}${extra}</article>`;
+  const configured = (IM_REQUIRED_FIELDS[enabledKey] || []).every(hasConfigValue);
+  if (enabledKey === "weixin_enabled" && enabled === true && configured) return weixinRuntimeBadge();
+  const platform = IM_RUNTIME_PLATFORMS[enabledKey];
+  if (enabled === true && configured && platform) return imRuntimeBadge(platform);
+  if (enabled === true && configured) return { label: t("channelRunning"), cls: "ok" };
+  if (enabled === true) return { label: t("channelIncomplete"), cls: "warn" };
+  return { label: t("channelDisabled"), cls: "" };
+}
+function imRuntimeBadge(platform) {
+  const info = state.imRuntimes?.[platform] || {};
+  const runtime = String(info.status || "").trim();
+  const detail = String(info.last_error || "").trim();
+  const withDetail = (label) => detail ? `${label}: ${detail}` : label;
+  if (runtime === "connected") return { label: t("weixinRuntimeConnected"), cls: "ok" };
+  if (runtime === "connecting" || runtime === "reconnecting") return { label: t("weixinRuntimeStarting"), cls: "warn" };
+  if (runtime === "error" || runtime === "session_expired") return { label: withDetail(t("weixinRuntimeError")), cls: "warn" };
+  if (!runtime || runtime === "disabled" || runtime === "disconnected") return { label: withDetail(t("weixinRuntimeDisconnected")), cls: "warn" };
+  return { label: withDetail(t("channelRunning")), cls: "ok" };
+}
+function weixinRuntimeBadge() {
+  const runtime = String(state.weixinRuntime?.runtime || state.weixinRuntime?.status || "").trim();
+  if (runtime === "connected") return { label: t("weixinRuntimeConnected"), cls: "ok" };
+  if (runtime === "connecting" || runtime === "reconnecting") return { label: t("weixinRuntimeStarting"), cls: "warn" };
+  if (runtime === "error" || runtime === "session_expired") return { label: t("weixinRuntimeError"), cls: "warn" };
+  return { label: t("weixinRuntimeDisconnected"), cls: "warn" };
+}
+function renderIMCardStatus(enabledKey) {
+  const status = imStatus(enabledKey);
+  return `<span class="badge ${esc(status.cls)}">${esc(status.label)}</span>`;
+}
+function renderIMCardActions(enabledKey) {
+  const busy = state.imStartingKey === enabledKey ? "disabled" : "";
+  if (state.config?.[enabledKey] === true && imRequiredFieldsReady(enabledKey)) {
+    return `<div class="im-card-actions"><button type="button" class="secondary danger" data-disconnect-im="${esc(enabledKey)}" ${busy}>${esc(t("channelDisconnect"))}</button></div>`;
+  }
+  return `<div class="im-card-actions"><button type="button" class="primary" data-save-start-im="${esc(enabledKey)}" ${busy}>${esc(t("channelSaveStart"))}</button></div>`;
+}
+function renderIMLinkAction(href, label) {
+  return `<a class="secondary im-link-action" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
+}
+function thirdPartyDocsURL() {
+  const base = String(state.config?.remote_hub_url || "").trim().replace(/\/+$/, "");
+  return base ? `${base}/connector` : "/connector";
+}
+function thirdPartyProtocolTools() {
+  return `<div class="channel-protocol"><div><strong>${esc(t("channelProtocolEndpoint"))}</strong><code id="thirdPartyProtocolEndpoint">${esc(thirdPartyProtocolEndpoint())}</code></div><div class="channel-protocol-actions"><button type="button" class="secondary" id="copyThirdPartyEndpoint">${esc(t("channelCopyEndpoint"))}</button></div></div>`;
+}
+function normalizeIMSubTab(tab) {
+  tab = String(tab || "").trim().toLowerCase();
+  return ["qq", "telegram", "weixin", "lansenger", "thirdparty"].includes(tab) ? tab : "qq";
+}
+function setActiveIMSubTab(tab) {
+  state.imSubTab = normalizeIMSubTab(tab);
+  renderConfigFields();
+}
+function imSubTabs() {
+  return [
+    ["qq", t("imChannelTabQQ")],
+    ["telegram", t("imChannelTabTelegram")],
+    ["weixin", t("imChannelTabWeixin")],
+    ["lansenger", t("imChannelTabLansenger")],
+    ["thirdparty", t("imChannelTabThirdParty")]
+  ];
+}
+function renderIMSubTabs() {
+  return `<div class="im-subtabs" role="tablist" aria-label="${esc(t("channelOverview"))}">${imSubTabs().map(([id, label]) => {
+    const on = normalizeIMSubTab(state.imSubTab) === id;
+    return `<button type="button" role="tab" class="im-subtab ${on ? "active" : ""}" data-im-subtab="${esc(id)}" aria-selected="${on ? "true" : "false"}">${esc(label)}</button>`;
+  }).join("")}</div>`;
+}
+function renderIMProgressHintSettings(defs) {
+  const key = "im_progress_nudge_enabled";
+  const d = fieldMeta(defs[key] || { key, title: t("imProgressHints"), description: t("imProgressHintsDesc"), type: "bool" });
+  const enabled = state.config?.[key] !== false;
+  const name = "cfg_im_progress_nudge_enabled";
+  const control = `<div id="${esc(name)}" class="bool-radio bool-radio-two" data-bool-group="true" data-key="${esc(key)}" data-type="bool" role="radiogroup" aria-label="${esc(d.title || key)}"><label><input type="radio" name="${esc(name)}" value="true" ${enabled ? "checked" : ""}><span>${esc(t("trueValue"))}</span></label><label><input type="radio" name="${esc(name)}" value="false" ${enabled ? "" : "checked"}><span>${esc(t("falseValue"))}</span></label></div>`;
+  return `<section class="im-progress-settings"><div><strong>${esc(d.title || t("imProgressHints"))}</strong><span class="helper">${esc(d.description || t("imProgressHintsDesc"))}</span></div>${control}</section>`;
+}
+function renderIMChannelShell(title, description, enabledKey, platform, defs, body, extraActions = "", actionOverride = null) {
+  const actions = actionOverride === null ? renderIMCardActions(enabledKey) : actionOverride;
+  return `<section class="im-channel-panel" aria-label="${esc(title)}"><div class="im-channel-toolbar"><div><h3>${esc(title)}</h3><p>${esc(description)}</p></div><div class="im-channel-actions">${renderIMCardStatus(enabledKey)}${extraActions}<button type="button" class="secondary" data-im-watch-history="${esc(platform)}">${esc(t("imWatchHistory"))}</button>${actions}</div></div>${renderIMToggleField(enabledKey, defs)}${body}</section>`;
+}
+function renderQQIMPanel(defs) {
+  return renderIMChannelShell(t("channelQQ"), t("imQQDescription"), "qqbot_enabled", "qq", defs, `<div class="im-field-grid im-field-grid-two">${["qqbot_app_id", "qqbot_app_secret"].map((key) => configFieldMarkup(key, defs)).join("")}</div>`, renderIMLinkAction(IM_DOC_LINKS.qq, t("imGetAppID")));
+}
+function renderTelegramIMPanel(defs) {
+  return renderIMChannelShell(t("channelTelegram"), t("imTelegramDescription"), "telegram_bot_enabled", "telegram", defs, `<div class="im-field-grid">${configFieldMarkup("telegram_bot_token", defs)}</div>`, renderIMLinkAction(IM_DOC_LINKS.telegram, t("imTutorial")));
+}
+function renderWeixinIMPanel(defs) {
+  const account = String(state.config?.weixin_account_id || "").trim();
+  const runtime = weixinRuntimeBadge();
+  const runtimeText = state.weixinRuntime?.last_error ? `${runtime.label}: ${state.weixinRuntime.last_error}` : runtime.label;
+  const accountLine = account ? `<div class="weixin-account-status"><div><strong>${esc(t("weixinBoundAccount"))}</strong><code>${esc(account)}</code></div><div><strong>${esc(t("weixinRuntimeStatus"))}</strong><span class="badge ${esc(runtime.cls)}">${esc(runtimeText)}</span></div></div>` : `<span class="helper">${esc(t("weixinNotBound"))}</span>`;
+  return renderIMChannelShell(t("channelWeixin"), t("imWeixinDescription"), "weixin_enabled", "weixin", defs, `${accountLine}${renderWeixinQRTools()}`, "", renderWeixinActions(account));
+}
+function renderThirdPartyIMPanel(defs) {
+  return renderIMChannelShell(t("channelThirdParty"), t("imThirdPartyDescription"), "thirdparty_gateway_enabled", "thirdparty", defs, `<div class="im-field-grid">${configFieldMarkup("thirdparty_gateway_token", defs)}</div>${thirdPartyProtocolTools()}`, renderIMLinkAction(thirdPartyDocsURL(), t("imOpenDocs")));
+}
+function renderLansengerIMPanel(defs) {
+  return renderIMChannelShell(t("channelLansenger"), t("imLansengerDescription"), "lansenger_enabled", "lansenger", defs, `<div class="im-field-grid im-field-grid-two">${["lansenger_app_id", "lansenger_app_secret", "lansenger_gateway_url", "lansenger_wss_url"].map((key) => configFieldMarkup(key, defs)).join("")}</div>`);
+}
+function renderActiveIMPanel(defs) {
+  const tab = normalizeIMSubTab(state.imSubTab);
+  if (tab === "telegram") return renderTelegramIMPanel(defs);
+  if (tab === "weixin") return renderWeixinIMPanel(defs);
+  if (tab === "lansenger") return renderLansengerIMPanel(defs);
+  if (tab === "thirdparty") return renderThirdPartyIMPanel(defs);
+  return renderQQIMPanel(defs);
+}
+function renderWeixinQRTools() {
+  const status = normalizeWeixinQRStatus(state.weixinQRStatus);
+  const bound = Boolean(String(state.config?.weixin_account_id || "").trim()) && !state.weixinQRToken && !state.weixinQRCodeURL;
+  const statusText = status === "confirmed" ? t("weixinQRConfirmed") : status === "scaned" ? t("weixinQRScanned") : status === "expired" ? t("weixinQRExpired") : status === "error" ? t("weixinQRError") : state.weixinQRToken ? t("weixinQRWaiting") : t("weixinQRHint");
+  const message = normalizeWeixinQRMessage(status, state.weixinQRMessage, statusText);
+  const qr = state.weixinQRCodeURL ? `<div class="weixin-qr-box"><img src="${esc(state.weixinQRCodeURL)}" alt="${esc(t("weixinQRBind"))}"><span class="helper">${esc(message)}</span></div>` : `<span class="helper">${esc(message)}</span>`;
+  const busy = status === "loading" ? "disabled" : "";
+  const cancel = state.weixinQRToken || state.weixinQRCodeURL ? `<button type="button" class="secondary danger" id="cancelWeixinQRLogin">${esc(t("imCancelQR"))}</button>` : "";
+  if (bound) return "";
+  return `<div class="weixin-qr-tools"><div><strong>${esc(t("weixinQRBind"))}</strong>${qr}</div><div class="weixin-qr-actions"><button type="button" class="secondary" id="startWeixinQRLogin" ${busy}>${esc(status === "loading" ? t("weixinQRLoading") : t("weixinQRBind"))}</button>${cancel}</div></div>`;
+}
+function normalizeWeixinQRStatus(status) {
+  const s = String(status || "").trim().toLowerCase();
+  if (["wait", "waiting", "pending", "polling", "timeout"].includes(s)) return "wait";
+  if (["scaned", "scanned", "scan"].includes(s)) return "scaned";
+  if (["confirmed", "confirm", "success", "succeeded", "connected", "done", "ok"].includes(s)) return "confirmed";
+  if (["expired", "expire"].includes(s)) return "expired";
+  if (["error", "failed", "fail"].includes(s)) return "error";
+  return s;
+}
+function normalizeWeixinQRMessage(status, message, fallback) {
+  const text = String(message || "").trim();
+  if (!text) return fallback || "";
+  const normalizedStatus = normalizeWeixinQRStatus(status);
+  if ((normalizedStatus === "wait" || !normalizedStatus) && /^timeout$/i.test(text)) return t("weixinQRWaiting");
+  return text;
+}
+function renderWeixinActions(boundAccount) {
+  const busy = state.imStartingKey === "weixin_enabled" ? "disabled" : "";
+  if (!boundAccount) return "";
+  if (state.config?.weixin_enabled === true) {
+    return `<div class="im-card-actions"><button type="button" class="secondary danger" data-disconnect-im="weixin_enabled" ${busy}>${esc(t("channelDisconnect"))}</button></div>`;
+  }
+  return `<div class="im-card-actions"><button type="button" class="primary" data-save-start-im="weixin_enabled" ${busy}>${esc(t("channelSaveStart"))}</button></div>`;
 }
 function renderIMConfigEditor(defs) {
-  return `<div class="channel-overview im-config-editor"><div class="split"><div><strong>${t("channelOverview")}</strong><span class="helper">${t("channelOverviewHint")}</span></div></div><div class="im-config-grid">${[
-    renderIMBindingCard(t("channelQQ"), "qqbot_enabled", ["qqbot_app_id", "qqbot_app_secret"], defs),
-    renderIMBindingCard(t("channelTelegram"), "telegram_bot_enabled", ["telegram_bot_token"], defs),
-    renderIMBindingCard(t("channelWeixin"), "weixin_enabled", ["weixin_token", "weixin_account_id"], defs),
-    renderIMBindingCard(t("channelThirdParty"), "thirdparty_gateway_enabled", ["thirdparty_gateway_token", "thirdparty_gateway_host", "thirdparty_gateway_port"], defs, thirdPartyProtocolTools())
-  ].join("")}</div>${renderIMAuditPanel()}<p class="helper">${t("channelCredentialHint")}</p></div>`;
+  state.imSubTab = normalizeIMSubTab(state.imSubTab);
+  return `<div class="channel-overview im-config-editor"><div class="im-section-head"><div><strong>${t("channelOverview")}</strong><span class="helper">${t("channelOverviewHint")}</span></div></div>${renderIMProgressHintSettings(defs)}${renderIMSubTabs()}${renderActiveIMPanel(defs)}<details class="im-audit-shell" ${state.imAuditOpen ? "open" : ""}><summary>${esc(t("imAuditTitle"))}</summary>${renderIMAuditPanel()}</details><p class="helper">${t("channelCredentialHint")}</p></div>`;
 }
 function renderIMAuditPanel() {
-  const platforms = [["", t("imAuditPlatformAll")], ["qq", "QQ"], ["weixin", "WeChat"], ["telegram", "Telegram"], ["thirdparty", "Third-party"]];
+  const platforms = [["", t("imAuditPlatformAll")], ["qq", "QQ"], ["weixin", "WeChat"], ["telegram", "Telegram"], ["lansenger", "Lansenger"], ["thirdparty", "Third-party"]];
   const contactOptions = state.imAuditContacts.map((item) => {
     const label = [item.display_name || item.contact_id, item.platform, item.message_count ? String(item.message_count) : ""].filter(Boolean).join(" / ");
     return `<option value="${esc(item.contact_id || "")}" label="${esc(label)}"></option>`;
   }).join("");
-  const rows = state.imAuditItems.length
-    ? `${state.imAuditItems.map(renderIMAuditRow).join("")}${state.imAuditLoading ? `<p class="helper">${esc(t("imAuditLoading"))}</p>` : ""}`
+  const displayItems = orderedIMAuditItems();
+  const rows = displayItems.length
+    ? `${displayItems.map(renderIMAuditRow).join("")}${state.imAuditLoading ? `<p class="helper">${esc(t("imAuditLoading"))}</p>` : ""}`
     : state.imAuditLoading
       ? `<p class="helper">${esc(t("imAuditLoading"))}</p>`
       : `<p class="helper">${esc(t("imAuditEmpty"))}</p>`;
@@ -1911,6 +2332,15 @@ function renderIMAuditPanel() {
   const cleanupDays = [7, 14, 30, 60, 90].map((days) => `<button type="button" class="secondary" data-im-audit-days="${days}">${days} ${esc(t("imAuditCleanupDays"))}</button>`).join("");
   const busy = state.imAuditLoading ? "disabled" : "";
   return `<section class="im-audit"><div class="split"><div><strong>${esc(t("imAuditTitle"))}</strong><span class="helper">${esc(t("imAuditHint"))}</span></div><div class="row"><button type="button" class="secondary" id="imAuditExport" ${busy}>${esc(t("imAuditExport"))}</button><button type="button" class="secondary" id="imAuditRefresh" ${busy}>${esc(t("imAuditRefresh"))}</button></div></div><div class="im-audit-filters"><select id="imAuditPlatform" aria-label="${esc(t("imAuditPlatformAll"))}">${platforms.map(([value, label]) => `<option value="${esc(value)}" ${value === state.imAuditPlatform ? "selected" : ""}>${esc(label)}</option>`).join("")}</select><input id="imAuditContact" type="search" list="imAuditContactOptions" placeholder="${esc(t("imAuditContact"))}" value="${esc(state.imAuditContact)}"><datalist id="imAuditContactOptions">${contactOptions}</datalist><input id="imAuditQuery" type="search" placeholder="${esc(t("imAuditKeyword"))}" value="${esc(state.imAuditQuery)}"></div><div class="im-audit-cleanup"><div class="row">${cleanupDays}</div><label for="imAuditCleanupBefore">${esc(t("imAuditCleanupBefore"))}<input id="imAuditCleanupBefore" type="datetime-local" value="${esc(state.imAuditCleanupBefore)}"></label><button type="button" class="secondary danger" id="imAuditCleanup" ${busy}>${esc(t("imAuditCleanup"))}</button></div>${stats}<div id="imAuditList" class="im-audit-list">${rows}</div>${loadOlder}</section>`;
+}
+function imAuditCreatedAtMs(item) {
+  const msg = item?.message || item?.Message || {};
+  const raw = msg.created_at || item?.created_at || item?.CreatedAt || "";
+  const ms = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(ms) ? ms : 0;
+}
+function orderedIMAuditItems() {
+  return state.imAuditItems.map((item, idx) => ({ item, idx, ts: imAuditCreatedAtMs(item) })).sort((a, b) => a.ts !== b.ts ? a.ts - b.ts : a.idx - b.idx).map((x) => x.item);
 }
 function renderIMAuditRow(item) {
   const msg = item.message || item.Message || {};
@@ -2022,6 +2452,92 @@ function setIMAuditCleanupDays(days) {
   const el = $("imAuditCleanupBefore");
   if (el) el.value = state.imAuditCleanupBefore;
 }
+function clearWeixinQRPoll() {
+  if (state.weixinQRPollTimer) clearTimeout(state.weixinQRPollTimer);
+  state.weixinQRPollTimer = 0;
+}
+function revokeWeixinQRCodeURL() {
+  if (state.weixinQRCodeURL && state.weixinQRCodeURL.startsWith("blob:")) URL.revokeObjectURL(state.weixinQRCodeURL);
+  state.weixinQRCodeURL = "";
+}
+function resetWeixinQRLogin() {
+  clearWeixinQRPoll();
+  revokeWeixinQRCodeURL();
+  state.weixinQRToken = "";
+  state.weixinQRStatus = "";
+  state.weixinQRMessage = "";
+}
+function scheduleWeixinQRPoll() {
+  clearWeixinQRPoll();
+  if (!state.weixinQRToken) return;
+  state.weixinQRPollTimer = setTimeout(() => pollWeixinQRLogin(), 1600);
+}
+async function startWeixinQRLogin() {
+  try {
+    clearWeixinQRPoll();
+    state.weixinQRStatus = "loading";
+    state.weixinQRMessage = t("weixinQRLoading");
+    renderConfigFields();
+    const out = await api("/api/v1/im/weixin/qr/start", { method: "POST", body: "{}" });
+    revokeWeixinQRCodeURL();
+    const imageURL = String(out.qrcode_image_url || "");
+    state.weixinQRCodeURL = imageURL ? await authorizedObjectURL(imageURL) : String(out.qrcode_url || "");
+    state.weixinQRToken = String(out.qrcode_token || "");
+    state.weixinQRStatus = "wait";
+    state.weixinQRMessage = t("weixinQRWaiting");
+    renderConfigFields();
+    scheduleWeixinQRPoll();
+  } catch (e) {
+    state.weixinQRStatus = "error";
+    state.weixinQRMessage = e.message || t("weixinQRError");
+    renderConfigFields();
+    if (!handleAPIError(e)) toast(state.weixinQRMessage);
+  }
+}
+async function pollWeixinQRLogin() {
+  if (!state.weixinQRToken) return;
+  try {
+    const out = await api("/api/v1/im/weixin/qr/poll", { method: "POST", body: JSON.stringify({ qrcode_token: state.weixinQRToken }) });
+    state.weixinQRStatus = normalizeWeixinQRStatus(out.status);
+    state.weixinQRMessage = normalizeWeixinQRMessage(state.weixinQRStatus, out.message || out.error, "");
+    if (out.retryable && (state.weixinQRStatus === "wait" || state.weixinQRStatus === "error" || !state.weixinQRStatus)) {
+      state.weixinQRStatus = "wait";
+      state.weixinQRMessage = t("weixinQRWaiting");
+      renderConfigFields();
+      scheduleWeixinQRPoll();
+      return;
+    }
+    if (state.weixinQRStatus === "confirmed") {
+      state.weixinQRMessage = out.account_id ? `${t("weixinQRConfirmed")} ${out.account_id}` : t("weixinQRConfirmed");
+      state.weixinQRToken = "";
+      revokeWeixinQRCodeURL();
+      clearWeixinQRPoll();
+      const cfgResp = await api("/api/v1/config");
+      state.config = userConfigDraft(cfgResp.app_config);
+      await loadWeixinRuntimeStatus();
+      toast(t("weixinQRConfirmed"));
+      renderConfigFields();
+      return;
+    }
+    if (state.weixinQRStatus === "expired" || state.weixinQRStatus === "error") {
+      state.weixinQRToken = "";
+      revokeWeixinQRCodeURL();
+      clearWeixinQRPoll();
+      renderConfigFields();
+      return;
+    }
+    renderConfigFields();
+    scheduleWeixinQRPoll();
+  } catch (e) {
+    state.weixinQRStatus = "error";
+    state.weixinQRMessage = e.message || t("weixinQRError");
+    state.weixinQRToken = "";
+    revokeWeixinQRCodeURL();
+    clearWeixinQRPoll();
+    renderConfigFields();
+    if (!handleAPIError(e)) toast(state.weixinQRMessage);
+  }
+}
 async function openIMAuditSession(item) {
   const instanceID = item?.instance_id || item?.InstanceID || "";
   const sessionID = item?.session_id || item?.SessionID || "";
@@ -2035,6 +2551,8 @@ async function openIMAuditSession(item) {
   await renderAssistant();
 }
 function bindIMAuditPanel() {
+  const shell = document.querySelector(".im-audit-shell");
+  if (shell) shell.ontoggle = () => { state.imAuditOpen = shell.open; };
   const refresh = $("imAuditRefresh");
   if (!refresh) return;
   const syncFilters = () => {
@@ -2065,6 +2583,95 @@ function bindIMAuditPanel() {
   });
   if (!state.imAuditLoaded && state.settingsTab === "im") loadIMAuditMessages();
 }
+function bindWeixinQRTools() {
+  const btn = $("startWeixinQRLogin");
+  if (btn) btn.onclick = startWeixinQRLogin;
+  const cancel = $("cancelWeixinQRLogin");
+  if (cancel) cancel.onclick = () => { resetWeixinQRLogin(); renderConfigFields(); };
+}
+async function loadWeixinRuntimeStatus() {
+  try {
+    state.weixinRuntime = await api("/api/v1/im/weixin/status");
+  } catch (e) {
+    if (e?.status === 401) throw e;
+  }
+  return state.weixinRuntime;
+}
+async function loadIMRuntimeStatuses() {
+  try {
+    const out = await api("/api/v1/im/status");
+    state.imRuntimes = out?.items || {};
+  } catch (e) {
+    if (e?.status === 401) throw e;
+  }
+  return state.imRuntimes;
+}
+function setBoolControlValue(key, value) {
+  const box = $(`cfg_${key}`);
+  if (box?.dataset?.boolGroup === "true") {
+    const radio = box.querySelector(`input[value="${value ? "true" : "false"}"]`);
+    if (radio) radio.checked = true;
+    return;
+  }
+  const el = $(`cfg_${key}`);
+  if (el) el.value = value ? "true" : "false";
+}
+async function saveAndStartIM(enabledKey) {
+  if (!enabledKey || state.imStartingKey) return;
+  if (enabledKey === "weixin_enabled" && !imRequiredFieldsReady(enabledKey)) {
+    toast(t("imWeixinStartScan"));
+    await startWeixinQRLogin();
+    return;
+  }
+  if (enabledKey === "thirdparty_gateway_enabled" && !String($("cfg_thirdparty_gateway_token")?.value || state.config?.thirdparty_gateway_token || "").trim()) {
+    const token = randomSecretValue();
+    const input = $("cfg_thirdparty_gateway_token");
+    if (input && token) input.value = token;
+  }
+  const missing = missingIMRequiredFields(enabledKey);
+  if (missing.length) {
+    toast(t("imMissingRequired"));
+    const first = $(`cfg_${missing[0]}`);
+    if (first?.focus) first.focus();
+    return;
+  }
+  state.imStartingKey = enabledKey;
+  setBoolControlValue(enabledKey, true);
+  try {
+    const saved = await saveConfig({ toastMessage: t("channelSavedStarted") });
+    if (!saved) return;
+    if (enabledKey === "weixin_enabled" && imRequiredFieldsReady(enabledKey)) {
+      await api("/api/v1/im/weixin/restart", { method: "POST", body: "{}" });
+      await loadWeixinRuntimeStatus();
+      renderConfigFields();
+    }
+  } finally {
+    state.imStartingKey = "";
+    renderConfigFields();
+  }
+}
+async function disconnectIM(enabledKey) {
+  if (!enabledKey || state.imStartingKey) return;
+  state.imStartingKey = enabledKey;
+  setBoolControlValue(enabledKey, false);
+  try {
+    await saveConfig({ toastMessage: t("channelDisconnected") });
+  } finally {
+    state.imStartingKey = "";
+    renderConfigFields();
+  }
+}
+function imCurrentFieldValue(key) {
+  const el = $(`cfg_${key}`);
+  if (el?.dataset?.boolGroup === "true") return el.querySelector("input:checked")?.value || "";
+  return String(el?.value ?? state.config?.[key] ?? "").trim();
+}
+function missingIMRequiredFields(enabledKey) {
+  return (IM_REQUIRED_FIELDS[enabledKey] || []).filter((key) => !imCurrentFieldValue(key));
+}
+function imRequiredFieldsReady(enabledKey) {
+  return missingIMRequiredFields(enabledKey).length === 0;
+}
 function configGroups(defs) {
   const visibleDefs = defs.filter((x) => !HIDDEN_CONFIG_KEYS.has(x.key));
   const byKey = Object.fromEntries(visibleDefs.map((x) => [x.key, x]));
@@ -2080,8 +2687,11 @@ function configGroups(defs) {
   const used = new Set(groups.flatMap((g) => g.keys));
   const rest = allKeys.filter((key) => !used.has(key));
   const pick = (pred) => rest.filter(pred);
+  const interfaceKeys = pick((key) => key === "language");
+  const proxyKeys = pick((key) => /^(default_proxy_)/.test(key));
   groups.push(
-    { id: "ui", title: t("groupUI"), hint: t("groupUIHint"), keys: pick((key) => /^(ui_|show_|hide_|pet_|floating_|default_|remote_|power_|screen_|workstation_|check_|pause_|env_|language$|active_tool$|current_project$|projects$|extra_tool_configs$)/.test(key)) }
+    { id: "interface", title: t("groupInterface"), hint: t("groupInterfaceHint"), keys: interfaceKeys },
+    { id: "proxy", title: t("groupProxy"), hint: t("groupProxyHint"), keys: proxyKeys }
   );
   return groups.map((g) => ({ ...g, keys: g.keys.filter((key) => !HIDDEN_CONFIG_KEYS.has(key) && (byKey[key] || Object.prototype.hasOwnProperty.call(state.config || {}, key))) })).filter((g) => g.keys.length || ["tools", "skills", "memory", "im"].includes(g.id));
 }
@@ -2440,6 +3050,12 @@ async function bindAudioDeviceInputs() {
     });
   } catch {}
 }
+function boolRadioInput(key, value) {
+  const name = `cfg_${key}`;
+  const on = value === "true";
+  const options = [["true", t("trueValue")], ["false", t("falseValue")]];
+  return `<div id="${esc(name)}" class="bool-radio bool-radio-two" data-bool-group="true" data-key="${esc(key)}" data-type="bool" role="radiogroup" aria-label="${esc(fieldMeta({ key, title: key }).title || key)}">${options.map(([val, label]) => `<label><input type="radio" name="${esc(name)}" value="${esc(val)}" ${on === (val === "true") ? "checked" : ""}><span>${esc(label)}</span></label>`).join("")}</div>`;
+}
 function fieldInput(key, def) {
   const value = esc(fieldValue(key, def));
   const secret = def.secret || isLikelySecretKey(key);
@@ -2450,15 +3066,17 @@ function fieldInput(key, def) {
   if (def.type === "array" && CONFIG_LINE_ARRAY_FIELDS.has(key)) return lineArrayInput(key);
   if (def.type === "array") return genericArrayInput(key);
   if (def.type === "object") return genericObjectInput(key);
+  if (def.type === "bool" && IM_ENABLED_KEYS.has(key)) return boolRadioInput(key, value);
   if (def.type === "bool") return `<select id="cfg_${key}" data-key="${esc(key)}" data-type="bool"><option value="" ${value === "" ? "selected" : ""}>${t("unset")}</option><option value="true" ${value === "true" ? "selected" : ""}>${t("trueValue")}</option><option value="false" ${value === "false" ? "selected" : ""}>${t("falseValue")}</option></select>`;
   if ((def.type === "integer" || def.type === "number") && CONFIG_NUMBER_CHOICE_FIELDS[key]) return numberChoiceInput(key, fieldValue(key, def), def.type);
   if ((def.type === "integer" || def.type === "number") && genericNumberOptions(key).length) return numberChoiceInput(key, fieldValue(key, def), def.type);
   if (def.type === "integer" || def.type === "number") return numberChoiceCustomMarkup(`cfg_${key}`, `data-key="${esc(key)}" data-type="${esc(def.type)}"`, fieldValue(key, def), COMMON_NUMBER_FALLBACK_SUGGESTIONS);
+  if (PLAIN_TEXT_CONFIG_FIELDS.has(key)) return `<input id="cfg_${key}" data-key="${esc(key)}" data-type="string" value="${value}" autocomplete="off" spellcheck="false">`;
   if (CONFIG_CHOICE_FIELDS[key] || providerChoiceOptions(key) || genericChoiceOptions(key).length) return stringChoiceInput(key, fieldValue(key, def));
   if (CONFIG_JSON_STRING_OBJECT_FIELDS[key]) return jsonStringObjectInput(key);
   if (CONFIG_STRING_LINE_FIELDS.has(key)) return stringLineInput(key);
   if (key === "audio_input_device_id" || key === "audio_output_device_id") return audioDeviceInput(key, fieldValue(key, def));
-  if (secret) return secretFieldMarkup(`cfg_${key}`, `data-key="${esc(key)}" data-type="string"`, fieldValue(key, def));
+  if (secret) return secretFieldMarkup(`cfg_${key}`, `data-key="${esc(key)}" data-type="string"`, fieldValue(key, def), "", !NON_GENERATABLE_SECRET_KEYS.has(key));
   if (CONFIG_SUGGESTION_FIELDS[key] || genericSuggestionOptions(key).length) return suggestionInput(key, def, fieldValue(key, def));
   return choiceCustomMarkup(`cfg_${key}`, `data-key="${esc(key)}" data-type="string-choice-custom"`, fieldValue(key, def), COMMON_TEXT_FALLBACK_SUGGESTIONS);
 }
@@ -2475,6 +3093,9 @@ function parseConfigNumber(key, value, integer) {
   return next;
 }
 function objectElementValue(el) {
+  if (el?.dataset?.boolGroup === "true") {
+    return String(el.querySelector("input[type='radio']:checked")?.value || "").trim();
+  }
   if (el?.dataset?.listKind === "kv") {
     const out = {};
     el.querySelectorAll(".kv-pair").forEach((pair) => {
@@ -2519,6 +3140,7 @@ function renderConfigFields() {
   bindWebSearchManager();
   bindMemoryManager();
   bindIMAuditPanel();
+  bindWeixinQRTools();
   bindChoiceCustomControls();
   bindChannelTools();
   bindSecretGenerators();
@@ -2529,7 +3151,7 @@ function renderConfigFields() {
   });
 }
 function collectConfig() {
-  const next = stripUserComplexConfig(state.config);
+  const next = stripAdminManagedConfig(userConfigDraft(state.config));
   const setObjectPath = (target, field, value) => {
     if (!field.includes(".")) { target[field] = value; return; }
     const parts = field.split(".");
@@ -2624,27 +3246,7 @@ function collectConfig() {
     const out = [...rows.keys()].sort((a, b) => a - b).filter((row) => visibleRows.has(row)).map((row) => rows.get(row)).filter((item) => Object.keys(item).length);
     if (out.length) next[key] = out; else delete next[key];
   });
-  const webSearchBox = document.querySelector("[data-web-search-manager]");
-  if (webSearchBox) {
-    const existing = webSearchProviders();
-    const providers = [...webSearchBox.querySelectorAll("[data-web-search-row]")].map((row) => {
-      const index = Number(row.dataset.webSearchRow || 0);
-      const out = { ...(existing[index] || {}) };
-      row.querySelectorAll("[data-web-search-field]").forEach((el) => {
-        const field = el.dataset.webSearchField || "";
-        const value = String(el.value || "").trim();
-        if (field === "key" && !value) return;
-        if (value) out[field] = value; else delete out[field];
-      });
-      if (!out.name) out.name = WEB_SEARCH_PROVIDER_TYPES[out.type || ""]?.name || out.type || "";
-      return out;
-    }).filter((item) => item.name || item.type || item.base_url || item.key);
-    if (providers.length) next.web_search_providers = providers; else delete next.web_search_providers;
-    const names = new Set(providers.map((p) => p.name).filter(Boolean));
-    const current = String($("webSearchCurrentProvider")?.value || "").trim();
-    if (current && names.has(current)) next.web_search_current_provider = current;
-    else delete next.web_search_current_provider;
-  }
+  ADMIN_MANAGED_CONFIG_KEYS.forEach((key) => delete next[key]);
   document.querySelectorAll("[data-key]").forEach((el) => {
     const key = el.dataset.key; const type = el.dataset.type || "string";
     if (type === "array" || type === "object") {
@@ -2680,7 +3282,8 @@ function collectConfig() {
       const value = objectElementValue(el);
       if (el.dataset.unsetEmpty === "true" && value === "") delete next[key]; else next[key] = value;
     } else if (type === "bool") {
-      if (el.value === "") delete next[key]; else next[key] = el.value === "true";
+      const value = objectElementValue(el);
+      if (value === "") delete next[key]; else next[key] = value === "true";
     } else if (type === "integer") {
       const parsed = parseConfigNumber(key, objectElementValue(el), true); if (parsed === undefined) delete next[key]; else next[key] = parsed;
     } else if (type === "number") {
@@ -2690,10 +3293,51 @@ function collectConfig() {
   });
   return next;
 }
-async function saveConfig() { try { setBusy(true); setSettingsActionsDisabled(true); const next = collectConfig(); const out = await api("/api/v1/config", { method: "PUT", body: JSON.stringify({ app_config: next }) }); state.config = out.app_config || next; const validation = await api("/api/v1/config/validate", { method: "POST", body: JSON.stringify({ app_config: state.config }) }); try { await refreshInstances(); } catch (refreshErr) { if (refreshErr.status === 401) throw refreshErr; } updateConfigStatus(validation); renderIssues(validation); renderConfigFields(); setConfigOutput(out); toast(t("saved")); } catch (e) { if (!handleAPIError(e)) toast(e.message); } finally { setSettingsActionsDisabled(false); setBusy(false); } }
+function refreshSettingsAfterSave() {
+  const savedConfig = state.config;
+  Promise.all([
+    api("/api/v1/config/validate", { method: "POST", body: JSON.stringify({ app_config: savedConfig }) }),
+    refreshInstances(),
+    loadWeixinRuntimeStatus(),
+    loadIMRuntimeStatuses()
+  ]).then(([validation]) => {
+    if (state.view !== "settings" || state.config !== savedConfig) return;
+    updateConfigStatus(validation);
+    renderIssues(validation);
+    renderConfigFields();
+  }).catch((e) => {
+    if (e?.status === 401) handleAPIError(e);
+  });
+}
+async function saveConfig(options = {}) {
+  try {
+    setBusy(true);
+    setSettingsActionsDisabled(true);
+    const next = collectConfig();
+    const out = await api("/api/v1/config", { method: "PUT", body: JSON.stringify({ app_config: next }) });
+    state.config = out.app_config || next;
+    updateConfigStatus({ valid: true });
+    renderIssues({ valid: true, issues: [] });
+    renderConfigFields();
+    setConfigOutput(out);
+    toast(options.toastMessage || t("saved"));
+    refreshSettingsAfterSave();
+    return true;
+  } catch (e) {
+    if (!handleAPIError(e)) toast(e.message);
+    return false;
+  } finally {
+    setSettingsActionsDisabled(false);
+    setBusy(false);
+  }
+}
 async function validateConfig() { try { setBusy(true); setSettingsActionsDisabled(true); const out = await api("/api/v1/config/validate", { method: "POST", body: JSON.stringify({ app_config: collectConfig() }) }); updateConfigStatus(out); renderIssues(out); setConfigOutput(out); toast(t("validated")); } catch (e) { if (!handleAPIError(e)) toast(e.message); } finally { setSettingsActionsDisabled(false); setBusy(false); } }
 async function testConfig() { try { setBusy(true); setSettingsActionsDisabled(true); const out = await api("/api/v1/config/test", { method: "POST", body: JSON.stringify({ app_config: collectConfig() }) }); setConfigOutput(out); toast(out.success ? t("testPassed") : t("testFailed")); } catch (e) { if (!handleAPIError(e)) toast(e.message); } finally { setSettingsActionsDisabled(false); setBusy(false); } }
 
-document.querySelectorAll("[data-view]").forEach((b) => b.onclick = () => { if (state.view !== b.dataset.view) resetRunState(); state.view = b.dataset.view; history.replaceState(null, "", `/app/?view=${state.view}${state.instanceId ? `&instance_id=${encodeURIComponent(state.instanceId)}` : ""}`); render(); });
-$("logoutBtn").onclick = () => { resetRunState(); sessionStorage.removeItem("maclaw.user.token"); state.token = ""; renderMissingToken(); };
+document.querySelectorAll("[data-view]").forEach((b) => b.onclick = () => { if (state.view !== b.dataset.view) { resetRunState(); if (state.view === "settings") resetWeixinQRLogin(); } state.view = b.dataset.view; history.replaceState(null, "", `/app/?view=${state.view}${state.instanceId ? `&instance_id=${encodeURIComponent(state.instanceId)}` : ""}`); render(); });
+$("logoutBtn").onclick = () => { clearAccessToken(); renderMissingToken(); };
+["pointerdown", "keydown", "input", "focus"].forEach((eventName) => document.addEventListener(eventName, markUserActivity, true));
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") markUserActivity(); });
+window.addEventListener("beforeunload", clearWeixinQRPoll);
+markUserActivity();
 bootstrap();

@@ -1475,6 +1475,21 @@ func TestToolCallMCPToolRejectsDisabledExternalCodingSessionTargets(t *testing.T
 	}
 }
 
+func TestToolCallMCPToolEmptyRuntimeOwnerFailsClosed(t *testing.T) {
+	handler := &IMMessageHandler{
+		currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-current", PolicyOwnerID: "desktop-owner"}},
+	}
+	out := handler.toolCallMCPTool(map[string]interface{}{
+		"server_id":                      "external",
+		"tool_name":                      "search",
+		"arguments":                      map[string]interface{}{"q": "demo"},
+		registeredToolPolicyOwnerIDField: "",
+	})
+	if !strings.Contains(out, "runtime owner is missing") {
+		t.Fatalf("call_mcp_tool empty runtime owner = %q, want fail closed", out)
+	}
+}
+
 func TestPreCheckToolArgsForAgentLoopRejectsDisabledMCPExternalCodingSessionTargets(t *testing.T) {
 	handler := &IMMessageHandler{}
 	result := handler.preCheckMCPToolArgsForAgentLoop(map[string]interface{}{

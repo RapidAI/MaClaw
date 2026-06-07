@@ -15,6 +15,7 @@ package main
 // These can be added incrementally without changing the architecture.
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -160,6 +161,7 @@ func (app *TUIApp) initWorkflowEngine() *workflow.WorkflowEngine {
 		client: &http.Client{},
 	}
 	understanding := workflow.NewIntentUnderstandingManager(store, llmCaller, registry)
+	understanding.SetLanguage(app.workflowLang())
 	engine := workflow.NewWorkflowEngine(registry, understanding, store, callbacks)
 
 	return engine
@@ -407,14 +409,15 @@ func (app *TUIApp) handleActiveUnderstandingTUI(text string) string {
 	if understanding == nil {
 		return ""
 	}
+	understanding.SetUserLanguage(userID, app.workflowLang())
 
 	reply, ready, cancelled, intent, err := understanding.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[TUI-workflow] understanding HandleInput error: %v", err)
-		// The understanding LLM failed: clean up the broken session and fall
-		// through to the normal agent loop (return empty string).
-		understanding.CancelSession(userID)
-		return ""
+		if errors.Is(err, workflow.ErrIntentUnderstandingContractBreach) {
+			return ""
+		}
+		return i18n.T(i18n.MsgWorkflowUnderstandError, app.workflowLang())
 	}
 	if cancelled {
 		return i18n.T(i18n.MsgWorkflowCancelled, app.workflowLang())
@@ -442,6 +445,7 @@ func (app *TUIApp) handleNeedsUnderstandingTUI(text string) string {
 	if understanding == nil {
 		return ""
 	}
+	understanding.SetUserLanguage(userID, app.workflowLang())
 
 	result, err := understanding.Start(userID, text)
 	if err != nil {

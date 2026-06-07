@@ -8,9 +8,9 @@ type SidebarMiddleTabsProps = {
 };
 
 export const SidebarMiddleTabs = ({ active, labels, onChange, visibleTabs = ['tasks', 'employees', 'history'] }: SidebarMiddleTabsProps) => (
-    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${visibleTabs.length}, minmax(0, 1fr))`, gap: '4px', padding: '8px 8px 0', flexShrink: 0 }}>
+    <div style={{ display: 'flex', borderBottom: '1px solid var(--theme-border)', padding: '0 8px', flexShrink: 0 }}>
         {visibleTabs.map(tab => (
-            <button key={tab} type="button" onClick={() => onChange(tab)} title={labels[tab]} style={{ border: '1px solid var(--theme-border)', borderRadius: '6px', background: active === tab ? 'var(--theme-primary)' : 'var(--theme-surface)', color: active === tab ? '#fff' : 'var(--theme-text-primary)', cursor: 'pointer', fontSize: '0.68rem', fontWeight: 700, padding: '5px 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <button key={tab} type="button" onClick={() => onChange(tab)} title={labels[tab]} style={{ flex: 1, border: 'none', borderBottom: active === tab ? '2px solid var(--theme-primary)' : '2px solid transparent', marginBottom: '-1px', background: 'transparent', color: active === tab ? 'var(--theme-primary)' : 'var(--theme-text-secondary)', cursor: 'pointer', fontSize: '0.72rem', fontWeight: active === tab ? 700 : 500, padding: '8px 4px 6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', transition: 'color 150ms, border-color 150ms' }}>
                 {labels[tab]}
             </button>
         ))}

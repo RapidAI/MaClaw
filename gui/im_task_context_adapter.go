@@ -17,6 +17,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
+func guiTaskContextConfig() agent.TaskContextConfig {
+	return agent.DefaultTaskContextConfig()
+}
+
 // taskContextLLMAdapter adapts IMMessageHandler.LLMClassify to the
 // agent.TaskLLMClassifier interface.
 type taskContextLLMAdapter struct {
@@ -48,7 +52,7 @@ func (a *taskContextLLMAdapter) ClassifyWithContext(ctx context.Context, systemP
 // initTaskContextManager creates and wires the TaskContextManager and
 // TaskArchive into the IMMessageHandler. Called during handler setup.
 func (h *IMMessageHandler) initTaskContextManager() {
-	config := agent.DefaultTaskContextConfig()
+	config := guiTaskContextConfig()
 
 	// Determine archive storage path.
 	archivePath := ""

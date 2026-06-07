@@ -76,8 +76,13 @@ func WorkflowApproverDirectoryHandler(securitySvc *security.SecurityService, ide
 		registry := loadVERegistry(r.Context(), tenantSystem)
 		enrichVERegistryOwners(r.Context(), &registry, identity.UsersRepo())
 		enrichVERegistryEmployeeTypes(&registry)
+		runtimePresence := emptyMacLawSrvRuntimePresence()
+		if veRegistryHasMacLawSrvRuntimeEmployees(registry, true) {
+			runtimePresence = loadMacLawSrvRuntimePresence(r.Context(), globalSystemSettings(system), tenantID)
+		}
 		employees := make([]digitalEmployeeEntry, 0, len(registry.Employees))
 		for _, entry := range registry.Employees {
+			entry = applyVEDiscoverablePresence(r.Context(), entry, devices, runtimePresence)
 			if strings.EqualFold(strings.TrimSpace(entry.Status), veStatusActive) {
 				employees = append(employees, entry)
 			}

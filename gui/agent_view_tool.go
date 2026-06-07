@@ -139,13 +139,13 @@ func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, 
 		return &IMAgentResponse{Text: "Tool parameters need correction. Review the task panel.", Error: strings.Join(validationErrors, "; "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	policyOwnerID, explicitRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
-	if explicitRuntimeOwner && policyOwnerID == "" && toolAcceptsRuntimePolicyOwnerArg(toolName) {
+	if explicitRuntimeOwner && policyOwnerID == "" && h.registeredToolAcceptsRuntimePolicyOwnerArg(toolName) {
 		return &IMAgentResponse{Text: "Tool execution failed: runtime owner is missing; isolated runtime will not fall back to desktop loop.", Error: "runtime owner is missing", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	if rejection := h.registeredToolWorkflowPolicyRejectionForOwner(policyOwnerID, toolName, args); rejection != nil {
 		return rejection
 	}
-	if policyOwnerID != "" && toolAcceptsRuntimePolicyOwnerArg(toolName) {
+	if policyOwnerID != "" && h.registeredToolAcceptsRuntimePolicyOwnerArg(toolName) {
 		args[registeredToolPolicyOwnerIDField] = policyOwnerID
 	}
 

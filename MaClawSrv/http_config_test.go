@@ -192,6 +192,72 @@ func TestUserConfigLLMPromptCacheHiddenAndPreserved(t *testing.T) {
 	}
 }
 
+func TestUserConfigAPIVisibleSavePreservesHiddenProviderLLMFields(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(agentservice.Principal{TenantID: tenant.ID, UserID: user.ID})
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{
+		MaclawLLMUrl:             "https://flat.example/v1",
+		MaclawLLMKey:             "flat-key",
+		MaclawLLMModel:           "flat-model",
+		MaclawLLMProtocol:        "anthropic",
+		MaclawLLMContextLength:   200000,
+		MaclawLLMTimeoutSec:      300,
+		MaclawLLMCurrentProvider: "hub-llm",
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "hub-llm", URL: "https://provider.example/v1", Key: "provider-key", Model: "auto"}},
+		AuxiliaryLLM:             corelib.AuxiliaryLLMConfig{URL: "https://aux.example/v1", Key: "aux-key", Model: "aux-model"},
+		ModelRoutes:              map[string]corelib.ModelRouteConfig{"intent": {Model: "intent-model", Key: "intent-key"}},
+	}); err != nil {
+		t.Fatalf("seed provider LLM config: %v", err)
+	}
+	server := NewHTTPServer(svc, "root-admin-secret", nil)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(`{"app_config":{"memory_max_backups":12}}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update config status = %d body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, hidden := range []string{"maclaw_llm_providers", "auxiliary_llm", "model_routes", "llm_prompt_cache"} {
+		if strings.Contains(body, hidden) {
+			t.Fatalf("user visible update response should not expose hidden %s: %s", hidden, body)
+		}
+	}
+	for _, want := range []string{`"memory_max_backups":12`, `"maclaw_llm_url":"https://provider.example/v1"`, `"maclaw_llm_key":"******"`, `"maclaw_llm_model":"auto"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("user visible update response missing %s body = %s", want, body)
+		}
+	}
+
+	raw, err := svc.GetRawUserConfig(context.Background(), principal)
+	if err != nil {
+		t.Fatalf("GetRawUserConfig after visible save: %v", err)
+	}
+	if raw.AppConfig.MemoryMaxBackups != 12 {
+		t.Fatalf("visible memory edit was not applied: %#v", raw.AppConfig)
+	}
+	if raw.AppConfig.MaclawLLMProtocol != "anthropic" || raw.AppConfig.MaclawLLMContextLength != 200000 || raw.AppConfig.MaclawLLMTimeoutSec != 300 || raw.AppConfig.MaclawLLMCurrentProvider != "hub-llm" || len(raw.AppConfig.MaclawLLMProviders) != 1 || raw.AppConfig.MaclawLLMProviders[0].Key != "provider-key" || !raw.AppConfig.AuxiliaryLLM.IsConfigured() || raw.AppConfig.AuxiliaryLLM.Key != "aux-key" || raw.AppConfig.ModelRoutes["intent"].Key != "intent-key" {
+		t.Fatalf("visible config save should preserve hidden provider LLM fields, got %#v", raw.AppConfig)
+	}
+}
+
 func TestUserMemoryManagementAPI(t *testing.T) {
 	dataRoot := t.TempDir()
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
@@ -515,6 +581,127 @@ func TestUserVisibleConfigCandidatePreservesHiddenComplexLLMFields(t *testing.T)
 	}
 }
 
+func TestUserConfigHiddenRetiredSettingsTabsAreNotExposedAndArePreserved(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{
+		MaclawLLMUrl:             "https://llm.example/v1",
+		MaclawLLMKey:             "key",
+		MaclawLLMModel:           "model",
+		MemoryMaxBackups:         4,
+		HideStartupPopup:         true,
+		PowerOptimization:        true,
+		WorkstationMode:          true,
+		CheckUpdateOnStartup:     true,
+		PauseEnvCheck:            true,
+		EnvCheckInterval:         33,
+		PetEnabled:               true,
+		PetSkin:                  "focus-claw",
+		UseWindowsTerminal:       true,
+		RemoteHubURL:             "https://hub.example",
+		RemoteMachineToken:       "remote-secret",
+		SkillMarketSessionToken:  "skill-session-secret",
+		OnboardingDone:           true,
+		DefaultLaunchMode:        "remote",
+		WorkingDirectory:         "D:/work",
+		DataDir:                  "D:/data",
+		LocalNeedleEnabled:       true,
+		LocalNeedleModelPath:     "models/needle",
+		LocalNeedleMinConfidence: 0.87,
+	}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "root-admin-secret", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get config status = %d body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, hidden := range []string{"hide_startup_popup", "power_optimization", "workstation_mode", "check_update_on_startup", "pause_env_check", "env_check_interval", "pet_enabled", "pet_skin", "use_windows_terminal", "remote_hub_url", "remote_machine_token", "skill_market_session_token", "onboarding_done", "default_launch_mode", "working_directory", "data_dir", "local_needle_enabled", "local_needle_model_path", "local_needle_min_confidence"} {
+		if strings.Contains(body, hidden) {
+			t.Fatalf("user config response should not expose removed settings tab field %s: %s", hidden, body)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(`{"app_config":{"memory_max_backups":9}}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update config status = %d body = %s", w.Code, w.Body.String())
+	}
+	raw, err := svc.GetRawUserConfig(context.Background(), principal)
+	if err != nil {
+		t.Fatalf("GetRawUserConfig: %v", err)
+	}
+	if raw.AppConfig.MemoryMaxBackups != 9 {
+		t.Fatalf("visible edit was not applied: %#v", raw.AppConfig)
+	}
+	if !raw.AppConfig.HideStartupPopup || !raw.AppConfig.PowerOptimization || !raw.AppConfig.WorkstationMode || !raw.AppConfig.CheckUpdateOnStartup || !raw.AppConfig.PauseEnvCheck || raw.AppConfig.EnvCheckInterval != 33 || !raw.AppConfig.PetEnabled || raw.AppConfig.PetSkin != "focus-claw" || !raw.AppConfig.UseWindowsTerminal || raw.AppConfig.RemoteHubURL != "https://hub.example" || raw.AppConfig.RemoteMachineToken != "remote-secret" || raw.AppConfig.SkillMarketSessionToken != "skill-session-secret" || !raw.AppConfig.OnboardingDone || raw.AppConfig.DefaultLaunchMode != "remote" || raw.AppConfig.WorkingDirectory != "" || raw.AppConfig.DataDir != "D:/data" || !raw.AppConfig.LocalNeedleEnabled || raw.AppConfig.LocalNeedleModelPath != "models/needle" || raw.AppConfig.LocalNeedleMinConfidence != 0.87 {
+		t.Fatalf("removed settings tab fields should be preserved, got %#v", raw.AppConfig)
+	}
+
+	emptyUser, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "Empty User"})
+	if err != nil {
+		t.Fatalf("CreateUser empty: %v", err)
+	}
+	next, err := server.userVisibleConfigUpdate(context.Background(), agentservice.Principal{TenantID: tenant.ID, UserID: emptyUser.ID}, corelib.AppConfig{
+		HideStartupPopup:   true,
+		PetEnabled:         true,
+		UseWindowsTerminal: true,
+		RemoteMachineToken: "should-not-save",
+		OnboardingDone:     true,
+		DefaultLaunchMode:  "remote",
+		WorkingDirectory:   "D:/hidden",
+		LocalNeedleEnabled: true,
+		MemoryMaxBackups:   5,
+	})
+	if err != nil {
+		t.Fatalf("userVisibleConfigUpdate no existing: %v", err)
+	}
+	if next.HideStartupPopup || next.PetEnabled || next.UseWindowsTerminal || next.RemoteMachineToken != "" || next.OnboardingDone || next.DefaultLaunchMode != "" || next.WorkingDirectory != "" || next.LocalNeedleEnabled {
+		t.Fatalf("new user visible update should not accept removed tab fields: %#v", next)
+	}
+	if next.MemoryMaxBackups != 5 {
+		t.Fatalf("visible field should still be accepted: %#v", next)
+	}
+
+	visibleNext, err := server.userVisibleConfigUpdate(context.Background(), agentservice.Principal{TenantID: tenant.ID, UserID: emptyUser.ID}, corelib.AppConfig{
+		Language:            "en-US",
+		UIMode:              "pro",
+		UIZoomFactor:        1.25,
+		DefaultProxyEnabled: true,
+		DefaultProxyHost:    "127.0.0.1",
+		DefaultProxyPort:    "7890",
+	})
+	if err != nil {
+		t.Fatalf("userVisibleConfigUpdate visible interface/proxy: %v", err)
+	}
+	if visibleNext.Language != "" || visibleNext.UIMode != "" || visibleNext.UIZoomFactor != 1.25 || visibleNext.DefaultProxyEnabled || visibleNext.DefaultProxyHost != "" || visibleNext.DefaultProxyPort != "" {
+		t.Fatalf("admin-managed interface/proxy fields should be stripped while visible user fields remain editable: %#v", visibleNext)
+	}
+}
+
 func TestUserConfigResponseProjectsStoredProviderLLMFields(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
@@ -675,14 +862,26 @@ func TestUserConfigSchemaFiltersComplexLLMFields(t *testing.T) {
 		{Key: "local_mcp_servers"},
 		{Key: "ssh_hosts"},
 		{Key: "claude"},
+		{Key: "pet_enabled"},
+		{Key: "hide_startup_popup"},
+		{Key: "default_launch_mode"},
+		{Key: "working_directory"},
+		{Key: "data_dir"},
+		{Key: "local_needle_enabled"},
+		{Key: "remote_machine_token"},
+		{Key: "default_proxy_host"},
+		{Key: "ui_mode"},
 	})
 
 	for _, def := range defs {
 		if _, hidden := userHiddenConfigKeys[def.Key]; hidden {
 			t.Fatalf("schema should not expose hidden user config field %q", def.Key)
 		}
+		if isUserWebRetiredSettingsKey(def.Key) {
+			t.Fatalf("schema should not expose removed settings tab field %q", def.Key)
+		}
 	}
-	if len(defs) != 1 || defs[0].Key != "maclaw_llm_url" {
-		t.Fatalf("schema should keep simple LLM fields only, got %#v", defs)
+	if len(defs) != 3 || defs[0].Key != "maclaw_llm_url" || defs[1].Key != "default_proxy_host" || defs[2].Key != "ui_mode" {
+		t.Fatalf("schema should keep visible simple fields only, got %#v", defs)
 	}
 }

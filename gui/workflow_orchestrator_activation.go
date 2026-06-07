@@ -1,11 +1,11 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
@@ -102,7 +102,7 @@ func (h *IMMessageHandler) activateWorkflowTaskOrchestrator(engine *workflow.Wor
 	preparedPath, err := h.ensureWorkflowProjectPath(projectPath)
 	if err != nil {
 		log.Printf("[WorkflowInterception] failed to prepare orchestrator project directory: user=%s project=%s err=%v", userID, projectPath, err)
-		return false, &IMAgentResponse{Error: fmt.Sprintf("failed to prepare workflow project directory: %v", err)}
+		return false, &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, h.getWorkflowLang(), err)}
 	}
 	projectPath = preparedPath
 	taskOrch.Activate(tasks, resp.RequirementsContext, resp.DesignContext, projectPath, "")
@@ -118,7 +118,7 @@ func (h *IMMessageHandler) repairInvalidCodingTaskBreakdownExecution(engine *wor
 	repairResp, err := engine.ReopenPhaseForRevision(userID, workflow.PhaseCodingTaskBreakdown, invalidCodingTaskBreakdownFeedbackText())
 	if err != nil {
 		log.Printf("[WorkflowInterception] failed to reopen invalid coding task breakdown: user=%s err=%v", userID, err)
-		return &IMAgentResponse{Error: fmt.Sprintf("workflow repair failed: %v", err)}, true
+		return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowRepairError, h.getWorkflowLang(), err)}, true
 	}
 	if repairResp != nil && repairResp.PhasePrompt != "" {
 		h.stashedPhasePrompt.Store(userID, repairResp.PhasePrompt)

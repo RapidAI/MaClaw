@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -20,16 +21,26 @@ const (
 	defaultSerperSearchURL   = "https://google.serper.dev/search"
 	defaultTinyFishSearchURL = "https://api.search.tinyfish.ai"
 	defaultTinyFishFetchURL  = "https://api.fetch.tinyfish.ai"
+	defaultTavilySearchURL   = "https://api.tavily.com/search"
 )
 
 var defaultLegacySearchURL = "https://html.duckduckgo.com/html/"
 var defaultMojeekSearchURL = "https://www.mojeek.com/search"
+var defaultBingSearchURL = "https://cn.bing.com/search"
+var defaultBaiduSearchURL = "https://www.baidu.com/s"
 
 var (
-	searchTimeout               = 15 * time.Second
+	searchTimeout               = 25 * time.Second
 	providerSearchTimeout       = 6 * time.Second
-	fallbackSearchTimeout       = 8 * time.Second
-	directEndpointSearchTimeout = 3 * time.Second
+	fallbackSearchTimeout       = 20 * time.Second
+	directEndpointSearchTimeout = 5 * time.Second
+)
+
+// lastGoodEndpoint caches the name of the most recently successful direct
+// search endpoint so subsequent searches try it first (adaptive ordering).
+var (
+	lastGoodEndpointMu   sync.Mutex
+	lastGoodEndpointName string
 )
 
 // SearchResult represents a single search result.
@@ -91,6 +102,11 @@ func SearchWithProvider(query string, maxResults int, provider corelib.WebSearch
 			return searchDirectFallbackChain(ctx, query, maxResults, "")
 		}
 		results, err = searchTinyFish(providerCtx, provider, query, maxResults)
+	case "tavily":
+		if provider.Key == "" {
+			return searchDirectFallbackChain(ctx, query, maxResults, "")
+		}
+		results, err = searchTavily(providerCtx, provider, query, maxResults)
 	case "duckduckgo":
 		results, err = searchDuckDuckGo(providerCtx, provider, query, maxResults)
 	default:
@@ -180,8 +196,9 @@ func fallbackDirectSearch(ctx context.Context, query string, maxResults int, pro
 }
 
 func searchDirectFallbackChain(ctx context.Context, query string, maxResults int, skipFailureDomain string) ([]SearchResult, error) {
+	endpoints := orderedDirectSearchEndpoints()
 	var failures []string
-	for _, endpoint := range directSearchEndpoints() {
+	for _, endpoint := range endpoints {
 		if skipFailureDomain != "" && endpoint.FailureDomain == skipFailureDomain {
 			continue
 		}
@@ -189,6 +206,7 @@ func searchDirectFallbackChain(ctx context.Context, query string, maxResults int
 		results, err := endpoint.Search(endpointCtx, query, maxResults)
 		cancel()
 		if err == nil && len(results) > 0 {
+			recordGoodEndpoint(endpoint.Name)
 			return results, nil
 		}
 		if err != nil {
@@ -215,9 +233,41 @@ func directEndpointContext(parent context.Context) (context.Context, context.Can
 
 func directSearchEndpoints() []directSearchEndpoint {
 	return []directSearchEndpoint{
+		{Name: "bing-cn", FailureDomain: "bing", Search: searchBingDirect},
+		{Name: "baidu", FailureDomain: "baidu", Search: searchBaiduDirect},
 		{Name: "duckduckgo-html", FailureDomain: "duckduckgo", Search: searchDirectLegacy},
 		{Name: "mojeek-html", FailureDomain: "mojeek", Search: searchMojeekDirect},
 	}
+}
+
+// orderedDirectSearchEndpoints returns the endpoint list with the last known
+// good endpoint moved to the front for faster success on repeat queries.
+func orderedDirectSearchEndpoints() []directSearchEndpoint {
+	all := directSearchEndpoints()
+	lastGoodEndpointMu.Lock()
+	good := lastGoodEndpointName
+	lastGoodEndpointMu.Unlock()
+	if good == "" {
+		return all
+	}
+	// Move the last-good endpoint to front.
+	ordered := make([]directSearchEndpoint, 0, len(all))
+	var rest []directSearchEndpoint
+	for _, ep := range all {
+		if ep.Name == good {
+			ordered = append(ordered, ep)
+		} else {
+			rest = append(rest, ep)
+		}
+	}
+	ordered = append(ordered, rest...)
+	return ordered
+}
+
+func recordGoodEndpoint(name string) {
+	lastGoodEndpointMu.Lock()
+	lastGoodEndpointName = name
+	lastGoodEndpointMu.Unlock()
 }
 
 func providerFailureDomain(provider corelib.WebSearchProvider) string {
@@ -230,6 +280,8 @@ func providerFailureDomain(provider corelib.WebSearchProvider) string {
 		return "serper"
 	case "tinyfish":
 		return "tinyfish"
+	case "tavily":
+		return "tavily"
 	default:
 		return ""
 	}
@@ -412,6 +464,68 @@ func searchTinyFish(ctx context.Context, provider corelib.WebSearchProvider, que
 		if snippet == "" {
 			snippet = item.Content
 		}
+		if len([]rune(snippet)) > 300 {
+			snippet = string([]rune(snippet)[:300]) + "…"
+		}
+		results = append(results, SearchResult{Title: title, URL: item.URL, Snippet: snippet})
+		if len(results) >= maxResults {
+			break
+		}
+	}
+	return results, nil
+}
+
+func searchTavily(ctx context.Context, provider corelib.WebSearchProvider, query string, maxResults int) ([]SearchResult, error) {
+	baseURL := provider.BaseURL
+	if baseURL == "" {
+		baseURL = defaultTavilySearchURL
+	}
+	payload, err := json.Marshal(map[string]interface{}{
+		"query":       query,
+		"max_results": maxResults,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+provider.Key)
+
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("Tavily returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var tavilyResp struct {
+		Results []struct {
+			Title   string `json:"title"`
+			URL     string `json:"url"`
+			Content string `json:"content"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&tavilyResp); err != nil {
+		return nil, fmt.Errorf("Tavily: failed to parse response: %w", err)
+	}
+
+	results := make([]SearchResult, 0, len(tavilyResp.Results))
+	for _, item := range tavilyResp.Results {
+		if item.URL == "" {
+			continue
+		}
+		title := item.Title
+		if title == "" {
+			title = item.URL
+		}
+		snippet := item.Content
 		if len([]rune(snippet)) > 300 {
 			snippet = string([]rune(snippet)[:300]) + "…"
 		}
@@ -850,6 +964,10 @@ func isSearchProviderHost(host string) bool {
 		return true
 	case host == "duckduckgo.com" || strings.HasSuffix(host, ".duckduckgo.com"):
 		return true
+	case host == "bing.com" || strings.HasSuffix(host, ".bing.com"):
+		return true
+	case host == "baidu.com" || strings.HasSuffix(host, ".baidu.com"):
+		return true
 	default:
 		return false
 	}
@@ -952,4 +1070,315 @@ func cleanHTML(s string) string {
 	result = strings.ReplaceAll(result, "&nbsp;", " ")
 	result = strings.TrimSpace(result)
 	return result
+}
+
+
+// ---------------------------------------------------------------------------
+// Bing China direct HTML search (no API key required)
+// ---------------------------------------------------------------------------
+
+func searchBingDirect(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
+	searchURL := defaultBingSearchURL + "?q=" + url.QueryEscape(query) + "&count=" + fmt.Sprintf("%d", maxResults)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", pickUserAgent())
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Bing returned HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return nil, err
+	}
+
+	return parseBingResults(string(body), maxResults), nil
+}
+
+// parseBingResults extracts search results from Bing's HTML response.
+// Bing uses <li class="b_algo"> for each result, with <h2><a href="...">title</a></h2>
+// and <p class="b_lineclamp..."> or <div class="b_caption"><p> for snippets.
+func parseBingResults(html string, maxResults int) []SearchResult {
+	var results []SearchResult
+	remaining := html
+
+	for len(results) < maxResults {
+		// Find the next result block: <li class="b_algo">
+		idx := strings.Index(remaining, `class="b_algo"`)
+		if idx < 0 {
+			break
+		}
+		remaining = remaining[idx:]
+
+		// Find the next result block boundary for scoping
+		nextBlock := strings.Index(remaining[14:], `class="b_algo"`)
+		var block string
+		if nextBlock > 0 {
+			block = remaining[:nextBlock+14]
+		} else {
+			block = remaining
+		}
+
+		// Extract URL and title from <h2><a href="...">title</a></h2>
+		href := ""
+		title := ""
+		h2Idx := strings.Index(block, "<h2")
+		if h2Idx >= 0 {
+			aIdx := strings.Index(block[h2Idx:], "<a ")
+			if aIdx >= 0 {
+				anchorStart := block[h2Idx+aIdx:]
+				href = normalizeSearchResultURL(extractAttr(anchorStart, "href"))
+				title = cleanHTML(extractTagText(anchorStart, "a"))
+			}
+		}
+
+		// Extract snippet: look for <p> after the <h2> block
+		snippet := ""
+		h2End := strings.Index(block, "</h2>")
+		if h2End < 0 {
+			h2End = 0
+		}
+		afterH2 := block[h2End:]
+		captionIdx := strings.Index(afterH2, `class="b_caption"`)
+		if captionIdx >= 0 {
+			pIdx := strings.Index(afterH2[captionIdx:], "<p")
+			if pIdx >= 0 {
+				snippet = cleanHTML(extractTagText(afterH2[captionIdx+pIdx:], "p"))
+			}
+		}
+		if snippet == "" {
+			// Fallback: first <p> after </h2>
+			pIdx := strings.Index(afterH2, "<p")
+			if pIdx >= 0 {
+				snippet = cleanHTML(extractTagText(afterH2[pIdx:], "p"))
+			}
+		}
+
+		if href != "" && title != "" {
+			results = append(results, SearchResult{
+				Title:   title,
+				URL:     href,
+				Snippet: snippet,
+			})
+		}
+
+		// Advance past this block
+		if len(remaining) > 14 {
+			remaining = remaining[14:]
+		} else {
+			break
+		}
+	}
+
+	return results
+}
+
+// ---------------------------------------------------------------------------
+// Baidu direct HTML search (no API key required)
+// ---------------------------------------------------------------------------
+
+func searchBaiduDirect(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
+	// Baidu requires a valid BAIDUID cookie to avoid redirect to verification page.
+	// Fetch one dynamically by hitting the homepage first.
+	cookie := acquireBaiduCookie(ctx)
+
+	searchURL := defaultBaiduSearchURL + "?wd=" + url.QueryEscape(query) + "&rn=" + fmt.Sprintf("%d", maxResults)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", pickUserAgent())
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	req.Header.Set("Cookie", cookie)
+
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Baidu returned HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return nil, err
+	}
+
+	results := parseBaiduResults(string(body), maxResults)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("Baidu returned no parseable results (possibly captcha page)")
+	}
+	return results, nil
+}
+
+// baiduCookie caches a dynamically acquired BAIDUID cookie to avoid
+// hitting baidu.com homepage on every search request.
+var (
+	baiduCookieMu    sync.Mutex
+	baiduCookieValue string
+	baiduCookieTime  time.Time
+)
+
+const baiduCookieTTL = 30 * time.Minute
+
+// acquireBaiduCookie returns a cached or freshly obtained BAIDUID cookie string.
+// If the homepage request fails, returns a static fallback cookie.
+func acquireBaiduCookie(ctx context.Context) string {
+	const fallbackCookie = "BAIDUID=0000000000000000:FG=1"
+
+	baiduCookieMu.Lock()
+	if baiduCookieValue != "" && time.Since(baiduCookieTime) < baiduCookieTTL {
+		cached := baiduCookieValue
+		baiduCookieMu.Unlock()
+		return cached
+	}
+	// Hold lock during fetch to prevent concurrent duplicate requests.
+	// The fetch has its own 3s timeout so it won't block long.
+	defer baiduCookieMu.Unlock()
+
+	// If the parent context has very little time left, use fallback immediately.
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 1*time.Second {
+		return fallbackCookie
+	}
+
+	// Fetch homepage to get Set-Cookie headers
+	cookieCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(cookieCtx, http.MethodGet, "https://www.baidu.com/", nil)
+	if err != nil {
+		return fallbackCookie
+	}
+	req.Header.Set("User-Agent", pickUserAgent())
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return fallbackCookie
+	}
+	defer resp.Body.Close()
+	// Drain body to allow connection reuse
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
+
+	// Extract all Set-Cookie values and build a cookie header
+	var cookies []string
+	for _, setCookie := range resp.Header["Set-Cookie"] {
+		// Take just the name=value part (before the first ';')
+		parts := strings.SplitN(setCookie, ";", 2)
+		if len(parts) > 0 && strings.Contains(parts[0], "=") {
+			cookies = append(cookies, strings.TrimSpace(parts[0]))
+		}
+	}
+
+	cookie := strings.Join(cookies, "; ")
+	if cookie == "" {
+		cookie = fallbackCookie
+	}
+
+	baiduCookieValue = cookie
+	baiduCookieTime = time.Now()
+	return cookie
+}
+
+// parseBaiduResults extracts search results from Baidu's HTML response.
+// Baidu uses <div class="result ..."> or <div class="c-container"> for each result,
+// with <h3 class="t"><a href="...">title</a></h3> and various snippet containers.
+func parseBaiduResults(html string, maxResults int) []SearchResult {
+	var results []SearchResult
+	remaining := html
+
+	for len(results) < maxResults {
+		// Find result containers — Baidu uses <h3 class="t"> for result titles
+		idx := strings.Index(remaining, `<h3 class="t"`)
+		if idx < 0 {
+			// Try alternative: <h3 class="c-title">
+			idx = strings.Index(remaining, `<h3 class="c-title"`)
+			if idx < 0 {
+				break
+			}
+		}
+		remaining = remaining[idx:]
+
+		// Extract the <a> inside <h3>
+		aIdx := strings.Index(remaining, "<a ")
+		if aIdx < 0 || aIdx > 200 {
+			if len(remaining) > 10 {
+				remaining = remaining[10:]
+			} else {
+				break
+			}
+			continue
+		}
+
+		href := extractAttr(remaining[aIdx:], "href")
+		// Baidu returns redirect URLs (www.baidu.com/link?url=...) rather than
+		// direct links. These are functional — HTTP clients follow the 302 redirect.
+		// Resolving to real URLs would require N extra HTTP calls per search.
+		href = normalizeSearchResultURL(href)
+		title := cleanHTML(extractTagText(remaining[aIdx:], "a"))
+
+		// Extract snippet: look for the content-right or abstract div after h3
+		snippet := ""
+		// Baidu puts snippets in various containers; try common patterns
+		h3End := strings.Index(remaining, "</h3>")
+		if h3End > 0 && h3End < 500 {
+			afterH3 := remaining[h3End:]
+			// Try <span class="content-right_...">
+			crIdx := strings.Index(afterH3, `class="content-right`)
+			if crIdx >= 0 && crIdx < 1000 {
+				snippet = cleanHTML(extractTagText(afterH3[crIdx:], "span"))
+			}
+			if snippet == "" {
+				// Try <span class="c-font-normal c-color-text">
+				fnIdx := strings.Index(afterH3, `c-color-text`)
+				if fnIdx >= 0 && fnIdx < 1000 {
+					// Go back to find the <span
+					spStart := strings.LastIndex(afterH3[:fnIdx], "<span")
+					if spStart >= 0 {
+						snippet = cleanHTML(extractTagText(afterH3[spStart:], "span"))
+					}
+				}
+			}
+			if snippet == "" {
+				// Generic: first <p> or first long text span
+				pIdx := strings.Index(afterH3, "<p")
+				if pIdx >= 0 && pIdx < 800 {
+					snippet = cleanHTML(extractTagText(afterH3[pIdx:], "p"))
+				}
+			}
+		}
+
+		if href != "" && title != "" {
+			results = append(results, SearchResult{
+				Title:   title,
+				URL:     href,
+				Snippet: snippet,
+			})
+		}
+
+		// Advance
+		if len(remaining) > 10 {
+			remaining = remaining[10:]
+		} else {
+			break
+		}
+	}
+
+	return results
 }

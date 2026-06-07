@@ -195,6 +195,8 @@ func NewRouter(
 	mux.HandleFunc("POST /api/ve/{id}/approve", requireTenantAdmin(VEAdminActionHandler(system, "approve", deviceSvc)))
 	mux.HandleFunc("POST /api/ve/{id}/reject", requireTenantAdmin(VEAdminActionHandler(system, "reject", deviceSvc)))
 	mux.HandleFunc("POST /api/ve/{id}/disable", requireTenantAdmin(VEAdminActionHandler(system, "disable", deviceSvc)))
+	mux.HandleFunc("DELETE /api/ve/{id}", requireTenantAdmin(VEAdminActionHandler(system, "delete", deviceSvc)))
+	mux.HandleFunc("POST /api/ve/{id}/force-delete", requireTenantAdmin(VEAdminForceDeleteHandler(system, groupDiscussionSvc, admins, deviceSvc)))
 	mux.HandleFunc("PUT /api/ve/{id}/resident", requireTenantAdmin(VEAdminResidentHandler(system)))
 	mux.HandleFunc("PUT /api/ve/{id}/visibility", requireTenantAdmin(VEAdminVisibilityHandler(system, securitySvc)))
 	mux.HandleFunc("POST /api/platform/providers/register", PlatformProviderRegisterHandler(system, tenantRepo))

@@ -109,6 +109,44 @@ func TestIntentUnderstanding_CancelIntentClassification(t *testing.T) {
 	}
 }
 
+func TestIntentUnderstandingCancelFallbackUsesUserLanguage(t *testing.T) {
+	llm := &MockLLMCaller{
+		Response: `{"intent":{"category":"coding","summary":"test"},"reply":"ok","ready":false}`,
+	}
+	mgr := NewIntentUnderstandingManager(NullStore{}, llm, nil)
+	mgr.SetLanguage("zh-Hans")
+	mgr.SetUserLanguage("cancel_en", "en")
+
+	if _, err := mgr.Start("cancel_en", "build a workflow"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	llm.Response = `{"intent":{"category":"cancel","summary":"user cancelled","ready":false},"reply":"","ready":false}`
+	reply, _, cancelled, _, err := mgr.HandleInput("cancel_en", "never mind")
+	if err != nil {
+		t.Fatalf("HandleInput cancel failed: %v", err)
+	}
+	if !cancelled {
+		t.Fatal("expected cancelled=true")
+	}
+	if reply != "Current workflow has been cancelled." {
+		t.Fatalf("English cancel fallback = %q", reply)
+	}
+
+	llm.Response = `{"intent":{"category":"coding","summary":"test"},"reply":"ok","ready":false}`
+	if _, err := mgr.Start("cancel_zh", "\u505a\u4e2a\u5de5\u4f5c\u6d41"); err != nil {
+		t.Fatalf("Start zh failed: %v", err)
+	}
+	mgr.SetUserLanguage("cancel_zh", "zh-Hans")
+	llm.Response = `{"intent":{"category":"cancel","summary":"user cancelled","ready":false},"reply":"","ready":false}`
+	reply, _, cancelled, _, err = mgr.HandleInput("cancel_zh", "\u7b97\u4e86")
+	if err != nil {
+		t.Fatalf("HandleInput zh cancel failed: %v", err)
+	}
+	if !cancelled || strings.Contains(reply, "Current workflow") {
+		t.Fatalf("Chinese cancel fallback not localized: cancelled=%v reply=%q", cancelled, reply)
+	}
+}
+
 func TestIntentUnderstanding_CancelSessionDoesNotCallLLM(t *testing.T) {
 	llm := &MockLLMCaller{
 		Response: `{"intent":{"category":"coding","summary":"test"},"reply":"ok","ready":false}`,
@@ -145,6 +183,7 @@ func TestIntentUnderstanding_SessionExpiry(t *testing.T) {
 		UpdatedAt: time.Now().Add(-45 * time.Minute),
 		CreatedAt: time.Now().Add(-45 * time.Minute),
 	}
+	mgr.userLang["expired_user"] = "en"
 	mgr.mu.Unlock()
 
 	if !mgr.HasActiveSession("expired_user") {
@@ -155,6 +194,9 @@ func TestIntentUnderstanding_SessionExpiry(t *testing.T) {
 
 	if mgr.HasActiveSession("expired_user") {
 		t.Error("expired session should be removed after CleanupExpired")
+	}
+	if lang := mgr.languageForUser("expired_user"); lang != "" {
+		t.Fatalf("expired session should remove per-user language, got %q", lang)
 	}
 }
 
@@ -339,6 +381,38 @@ func TestBuildIntentParseFailureReply_HidesStructuredGarbage(t *testing.T) {
 		if strings.Contains(reply, "BROKEN") || strings.Contains(reply, "intent") {
 			t.Fatalf("fallback leaked structured garbage: %q", reply)
 		}
+	}
+}
+
+func TestIntentUnderstandingParseFailureReplyIsLocalized(t *testing.T) {
+	mgr := NewIntentUnderstandingManager(NullStore{}, nil, nil)
+
+	mgr.SetLanguage("zh-Hans")
+	zh := mgr.buildIntentParseFailureReply("", `{"intent": BROKEN}`)
+	if !strings.Contains(zh, "内部理解步骤临时失败") {
+		t.Fatalf("expected Chinese localized retry hint, got %q", zh)
+	}
+
+	mgr.SetLanguage("en")
+	en := mgr.buildIntentParseFailureReply("", `{"intent": BROKEN}`)
+	if !strings.Contains(en, "Internal understanding step failed temporarily") {
+		t.Fatalf("expected English localized retry hint, got %q", en)
+	}
+}
+
+func TestIntentUnderstandingParseFailureReplyUsesUserLanguage(t *testing.T) {
+	mgr := NewIntentUnderstandingManager(NullStore{}, nil, nil)
+	mgr.SetLanguage("en")
+	mgr.SetUserLanguage("u-zh", "zh-Hans")
+	mgr.SetUserLanguage("u-en", "en")
+
+	zh := mgr.buildIntentParseFailureReply("u-zh", `{"intent": BROKEN}`)
+	if !strings.Contains(zh, "内部理解步骤临时失败") {
+		t.Fatalf("expected Chinese user retry hint, got %q", zh)
+	}
+	en := mgr.buildIntentParseFailureReply("u-en", `{"intent": BROKEN}`)
+	if !strings.Contains(en, "Internal understanding step failed temporarily") {
+		t.Fatalf("expected English user retry hint, got %q", en)
 	}
 }
 

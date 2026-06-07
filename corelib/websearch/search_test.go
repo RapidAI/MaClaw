@@ -11,6 +11,34 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+// disableBingBaidu mocks Bing and Baidu endpoints to return 503 so that
+// existing tests exercise the DDG/Mojeek fallback paths they were designed for.
+// Returns a cleanup function that restores the original URLs.
+func disableBingBaidu(t *testing.T) func() {
+	t.Helper()
+	origBing := defaultBingSearchURL
+	origBaidu := defaultBaiduSearchURL
+	origLastGood := lastGoodEndpointName
+
+	unavailableServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable in test", http.StatusServiceUnavailable)
+	}))
+	defaultBingSearchURL = unavailableServer.URL
+	defaultBaiduSearchURL = unavailableServer.URL
+	lastGoodEndpointMu.Lock()
+	lastGoodEndpointName = ""
+	lastGoodEndpointMu.Unlock()
+
+	return func() {
+		defaultBingSearchURL = origBing
+		defaultBaiduSearchURL = origBaidu
+		lastGoodEndpointMu.Lock()
+		lastGoodEndpointName = origLastGood
+		lastGoodEndpointMu.Unlock()
+		unavailableServer.Close()
+	}
+}
+
 func TestSearchWithProvider_Brave(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-Subscription-Token"); got != "brave-key" {
@@ -66,6 +94,8 @@ func TestSearchWithProvider_DuckDuckGo(t *testing.T) {
 }
 
 func TestSearchWithProvider_FallbackOnMissingKey(t *testing.T) {
+	cleanup := disableBingBaidu(t)
+	defer cleanup()
 	legacyURL := defaultLegacySearchURL
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -87,6 +117,8 @@ func TestSearchWithProvider_FallbackOnMissingKey(t *testing.T) {
 }
 
 func TestSearchWithProvider_ProviderErrorFallsBackToDirectSearch(t *testing.T) {
+	cleanup := disableBingBaidu(t)
+	defer cleanup()
 	legacyURL := defaultLegacySearchURL
 	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -113,6 +145,8 @@ func TestSearchWithProvider_ProviderErrorFallsBackToDirectSearch(t *testing.T) {
 }
 
 func TestSearchWithProvider_DuckDuckGoHTTP202FallsBackToDirectSearch(t *testing.T) {
+	cleanup := disableBingBaidu(t)
+	defer cleanup()
 	legacyURL := defaultLegacySearchURL
 	mojeekURL := defaultMojeekSearchURL
 	legacyCalled := false
@@ -153,6 +187,8 @@ func TestSearchWithProvider_DuckDuckGoHTTP202FallsBackToDirectSearch(t *testing.
 }
 
 func TestSearchWithProvider_DirectFallbackUsesAlternateFailureDomain(t *testing.T) {
+	cleanup := disableBingBaidu(t)
+	defer cleanup()
 	legacyURL := defaultLegacySearchURL
 	mojeekURL := defaultMojeekSearchURL
 	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -186,6 +222,8 @@ func TestSearchWithProvider_DirectFallbackUsesAlternateFailureDomain(t *testing.
 }
 
 func TestDirectFallbackChainTimesOutSlowEndpointAndTriesNext(t *testing.T) {
+	cleanup := disableBingBaidu(t)
+	defer cleanup()
 	legacyURL := defaultLegacySearchURL
 	mojeekURL := defaultMojeekSearchURL
 	oldDirectEndpointTimeout := directEndpointSearchTimeout
@@ -249,6 +287,8 @@ func TestFallbackDirectSearchRespectsParentContextAfterProviderError(t *testing.
 }
 
 func TestSearchWithProvider_ProviderTimeoutStillFallsBackWithinGlobalBudget(t *testing.T) {
+	cleanup := disableBingBaidu(t)
+	defer cleanup()
 	legacyURL := defaultLegacySearchURL
 	oldSearchTimeout := searchTimeout
 	oldProviderSearchTimeout := providerSearchTimeout

@@ -202,6 +202,54 @@ func TestApplyRunInputInferenceDoesNotGuessNaturalCityPromptWithoutPreposition(t
 	}
 }
 
+func TestApplyRunInputInferenceExtractsSingleCityFromExplicitInput(t *testing.T) {
+	runArgs := map[string]interface{}{"input": "weather in Chengdu"}
+	vars := NormalizeRunVars(runArgs)
+	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
+
+	ApplyRunInputInference(entry, vars, runArgs)
+
+	if vars["city"] != "Chengdu" {
+		t.Fatalf("city = %q, want Chengdu from explicit input", vars["city"])
+	}
+}
+
+func TestApplyRunInputInferenceTrimsDateFromExplicitCityInput(t *testing.T) {
+	runArgs := map[string]interface{}{"input": "weather in Chengdu tomorrow"}
+	vars := NormalizeRunVars(runArgs)
+	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
+
+	ApplyRunInputInference(entry, vars, runArgs)
+
+	if vars["city"] != "Chengdu" {
+		t.Fatalf("city = %q, want Chengdu without date suffix", vars["city"])
+	}
+}
+
+func TestApplyRunInputInferenceUsesDirectChineseInputForSingleCity(t *testing.T) {
+	runArgs := map[string]interface{}{"input": "\u6210\u90fd"}
+	vars := NormalizeRunVars(runArgs)
+	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
+
+	ApplyRunInputInference(entry, vars, runArgs)
+
+	if vars["city"] != "\u6210\u90fd" {
+		t.Fatalf("city = %q, want Chengdu in Chinese from explicit input", vars["city"])
+	}
+}
+
+func TestApplyRunInputInferenceDoesNotUseExplicitInputWhenMultipleParamsMissing(t *testing.T) {
+	runArgs := map[string]interface{}{"input": "weather in Chengdu"}
+	vars := NormalizeRunVars(runArgs)
+	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city", "days"}}
+
+	ApplyRunInputInference(entry, vars, runArgs)
+
+	if vars["city"] != "" || vars["days"] != "" {
+		t.Fatalf("vars = %#v, want no direct input inference with multiple missing params", vars)
+	}
+}
+
 func TestApplyRunInputInferenceDoesNotTreatWeatherIntentAsCity(t *testing.T) {
 	for _, prompt := range []string{"weather", "weather forecast", "\u5929\u6c14"} {
 		vars := NormalizeRunVars(map[string]interface{}{"user_prompt": prompt})

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,92 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
+
+type fakeSrvWeixinGateway struct {
+	onStatus     weixin.StatusCallback
+	handler      weixin.MessageHandler
+	starts       *int
+	stops        *int
+	startErr     error
+	skipStatus   bool
+	stopStatus   string
+	stopCallback func()
+	sent         []weixin.OutgoingText
+}
+
+func (g *fakeSrvWeixinGateway) Start(context.Context) error {
+	if g.starts != nil {
+		*g.starts = *g.starts + 1
+	}
+	if g.onStatus != nil && !g.skipStatus {
+		g.onStatus("connected")
+	}
+	return g.startErr
+}
+
+func (g *fakeSrvWeixinGateway) Stop() error {
+	if g.stops != nil {
+		*g.stops = *g.stops + 1
+	}
+	if g.stopStatus != "" && g.onStatus != nil {
+		g.onStatus(g.stopStatus)
+	}
+	if g.stopCallback != nil {
+		g.stopCallback()
+	}
+	return nil
+}
+
+func (g *fakeSrvWeixinGateway) SendText(_ context.Context, out weixin.OutgoingText) error {
+	g.sent = append(g.sent, out)
+	return nil
+}
+
+func (g *fakeSrvWeixinGateway) GetContextToken(string) string { return "ctx-token" }
+
+func (g *fakeSrvWeixinGateway) SetStatusCallback(cb weixin.StatusCallback) { g.onStatus = cb }
+
+type fakeSrvIMGateway struct {
+	onStatus      func(string)
+	starts        *int
+	stops         *int
+	startCallback func()
+	startErr      error
+	skipStatus    bool
+	stopCallback  func()
+	sent          []string
+	reply         func(string) error
+}
+
+func (g *fakeSrvIMGateway) Start(context.Context) error {
+	if g.starts != nil {
+		*g.starts = *g.starts + 1
+	}
+	if g.startCallback != nil {
+		g.startCallback()
+	}
+	if g.onStatus != nil && !g.skipStatus {
+		g.onStatus("connected")
+	}
+	return g.startErr
+}
+
+func (g *fakeSrvIMGateway) Stop() error {
+	if g.stops != nil {
+		*g.stops = *g.stops + 1
+	}
+	if g.onStatus != nil {
+		g.onStatus("disconnected")
+	}
+	if g.stopCallback != nil {
+		g.stopCallback()
+	}
+	return nil
+}
+
+func (g *fakeSrvIMGateway) SetStatusCallback(cb func(string)) { g.onStatus = cb }
 
 func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
@@ -53,6 +139,45 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	}
 	if _, ok := doc.Paths["/api/v1/knowledge/import/url"]; !ok {
 		t.Fatalf("expected knowledge single URL import path in openapi doc")
+	}
+	for _, path := range []string{"/api/v1/im/weixin/qr/start", "/api/v1/im/weixin/qr/image", "/api/v1/im/weixin/qr/poll", "/api/v1/im/weixin/status", "/api/v1/im/weixin/restart"} {
+		if _, ok := doc.Paths[path]; !ok {
+			t.Fatalf("expected WeChat QR binding path %s in openapi doc", path)
+		}
+	}
+	for _, path := range []string{"/api/im-gateway/v1/health", "/api/im-gateway/v1/handshake", "/api/im-gateway/v1/incoming", "/api/im-gateway/v1/outgoing", "/api/im-gateway/v1/ack"} {
+		if _, ok := doc.Paths[path]; !ok {
+			t.Fatalf("expected third-party IM gateway path %s in openapi doc", path)
+		}
+	}
+	for path, method := range map[string]string{
+		"/api/im-gateway/v1/handshake": "post",
+		"/api/im-gateway/v1/incoming":  "post",
+		"/api/im-gateway/v1/outgoing":  "get",
+		"/api/im-gateway/v1/ack":       "post",
+	} {
+		pathItem, ok := doc.Paths[path].(map[string]any)
+		if !ok {
+			t.Fatalf("expected third-party gateway path object %s", path)
+		}
+		operation, ok := pathItem[method].(map[string]any)
+		if !ok {
+			t.Fatalf("expected third-party gateway operation %s %s", method, path)
+		}
+		if !openAPIOperationHasSecurity(operation, "bearerAuth") {
+			t.Fatalf("expected third-party gateway operation %s %s to require bearerAuth: %#v", method, path, operation["security"])
+		}
+	}
+	healthPath, ok := doc.Paths["/api/im-gateway/v1/health"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected third-party gateway health path object")
+	}
+	healthGet, ok := healthPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected third-party gateway health GET operation")
+	}
+	if _, ok := healthGet["security"]; ok {
+		t.Fatalf("third-party gateway health should stay public, got security=%#v", healthGet["security"])
 	}
 	knowledgeAccessPath, ok := doc.Paths["/api/v1/knowledge/access"].(map[string]any)
 	if !ok {
@@ -485,6 +610,23 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	}
 }
 
+func openAPIOperationHasSecurity(operation map[string]any, scheme string) bool {
+	items, ok := operation["security"].([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, ok := entry[scheme]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func TestOpenAPIKnowledgeFileImportsUseMultipart(t *testing.T) {
 	doc := buildOpenAPISpec()
 	paths, ok := doc["paths"].(map[string]map[string]any)
@@ -579,6 +721,7 @@ func TestOpenAPIAdminMutationsAreOwnerOnlyUnlessExplicitlyAllowed(t *testing.T) 
 		http.MethodPost + " /api/v1/admin/auth/change-password":                              true,
 		http.MethodPost + " /api/v1/admin/logs/search":                                       true,
 		http.MethodPost + " /api/v1/admin/service-config/validate":                           true,
+		http.MethodPost + " /api/v1/admin/client-config/default/validate":                    true,
 		http.MethodPost + " /api/v1/admin/tenants/{tenantId}/users/{userId}/config/validate": true,
 		http.MethodPost + " /api/v1/admin/tenants/{tenantId}/users/{userId}/config/test":     true,
 		http.MethodPost + " /api/v1/admin/sandbox/detect":                                    true,
@@ -628,6 +771,10 @@ func TestOpenAPIAdminRoleAnnotationsCoverCriticalRoutes(t *testing.T) {
 		{http.MethodDelete, "/api/v1/admin/service-config/draft", "owner"},
 		{http.MethodPost, "/api/v1/admin/service-config/validate", "operator"},
 		{http.MethodPost, "/api/v1/admin/service-config/export-plan", "owner"},
+		{http.MethodGet, "/api/v1/admin/client-config/schema", "operator"},
+		{http.MethodGet, "/api/v1/admin/client-config/default", "operator"},
+		{http.MethodPut, "/api/v1/admin/client-config/default", "owner"},
+		{http.MethodPost, "/api/v1/admin/client-config/default/validate", "operator"},
 		{http.MethodPut, "/api/v1/admin/sandbox/config", "owner"},
 		{http.MethodPost, "/api/v1/admin/sandbox/rollback", "owner"},
 		{http.MethodPost, "/api/v1/admin/sandbox/switch", "owner"},
@@ -3926,6 +4073,3006 @@ func TestIMAuditMessagesAreUserScopedAndFilterable(t *testing.T) {
 	}
 	if len(out.Items) == 0 || !strings.Contains(out.Items[0].Message.Content, "secret from bob") {
 		t.Fatalf("expected user B IM message to remain, got %#v", out.Items)
+	}
+}
+
+func TestWeixinQRLoginSavesOnlyAuthenticatedUserConfig(t *testing.T) {
+	ctx := context.Background()
+	ilink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ilink/bot/get_bot_qrcode":
+			writeJSON(w, http.StatusOK, map[string]string{"qrcode": "qr-token", "qrcode_img_content": "https://example.invalid/qr.png"})
+		case "/ilink/bot/get_qrcode_status":
+			if r.URL.Query().Get("qrcode") != "qr-token" {
+				t.Fatalf("qrcode token = %q", r.URL.Query().Get("qrcode"))
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "confirmed", "bot_token": "wx-bound-token", "ilink_bot_id": "wx-account-1", "baseurl": requestBaseURL(r)})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ilink.Close()
+
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	principalA := agentservice.Principal{TenantID: tenant.ID, UserID: userA.ID}
+	principalB := agentservice.Principal{TenantID: tenant.ID, UserID: userB.ID}
+	if _, err := svc.UpdateUserConfig(ctx, principalA, corelib.AppConfig{WeixinBaseURL: ilink.URL}); err != nil {
+		t.Fatalf("UpdateUserConfig A: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(ctx, principalB, corelib.AppConfig{WeixinBaseURL: ilink.URL, WeixinToken: "other-token", WeixinAccountID: "other-account"}); err != nil {
+		t.Fatalf("UpdateUserConfig B: %v", err)
+	}
+	tokenA, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principalA)
+	if err != nil {
+		t.Fatalf("Issue token A: %v", err)
+	}
+	tokenB, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principalB)
+	if err != nil {
+		t.Fatalf("Issue token B: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	runtimeStarts := 0
+	server.weixinRuntime.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		return &fakeSrvWeixinGateway{starts: &runtimeStarts}
+	}
+
+	startReq := httptest.NewRequest(http.MethodPost, "/api/v1/im/weixin/qr/start?user_id="+url.QueryEscape(userB.ID), bytes.NewReader([]byte("{}")))
+	startReq.Header.Set("Authorization", "Bearer "+tokenA)
+	startW := httptest.NewRecorder()
+	server.Handler().ServeHTTP(startW, startReq)
+	if startW.Code != http.StatusOK {
+		t.Fatalf("start status = %d body = %s", startW.Code, startW.Body.String())
+	}
+	var startOut map[string]string
+	if err := json.NewDecoder(startW.Body).Decode(&startOut); err != nil {
+		t.Fatalf("decode start: %v", err)
+	}
+	if startOut["qrcode_token"] != "qr-token" || startOut["qrcode_url"] == "" {
+		t.Fatalf("unexpected start output: %#v", startOut)
+	}
+	wantImageURLPrefix := "/api/v1/im/weixin/qr/image?value="
+	if !strings.HasPrefix(startOut["qrcode_image_url"], wantImageURLPrefix) || !strings.Contains(startOut["qrcode_image_url"], url.QueryEscape(startOut["qrcode_url"])) {
+		t.Fatalf("start should return same-origin qrcode_image_url, got %#v", startOut)
+	}
+	imageReq := httptest.NewRequest(http.MethodGet, startOut["qrcode_image_url"], nil)
+	imageReq.Header.Set("Authorization", "Bearer "+tokenA)
+	imageW := httptest.NewRecorder()
+	server.Handler().ServeHTTP(imageW, imageReq)
+	if imageW.Code != http.StatusOK || imageW.Result().Header.Get("Content-Type") != "image/png" || !bytes.HasPrefix(imageW.Body.Bytes(), []byte{0x89, 'P', 'N', 'G'}) {
+		t.Fatalf("qrcode image status = %d content-type = %s bytes = %x", imageW.Code, imageW.Result().Header.Get("Content-Type"), imageW.Body.Bytes()[:min(len(imageW.Body.Bytes()), 8)])
+	}
+
+	crossPollReq := httptest.NewRequest(http.MethodPost, "/api/v1/im/weixin/qr/poll", bytes.NewReader([]byte(`{"qrcode_token":"qr-token"}`)))
+	crossPollReq.Header.Set("Authorization", "Bearer "+tokenB)
+	crossPollW := httptest.NewRecorder()
+	server.Handler().ServeHTTP(crossPollW, crossPollReq)
+	if crossPollW.Code != http.StatusBadRequest {
+		t.Fatalf("cross-user poll status = %d body = %s", crossPollW.Code, crossPollW.Body.String())
+	}
+
+	pollReq := httptest.NewRequest(http.MethodPost, "/api/v1/im/weixin/qr/poll?user_id="+url.QueryEscape(userB.ID), bytes.NewReader([]byte(`{"qrcode_token":"qr-token"}`)))
+	pollReq.Header.Set("Authorization", "Bearer "+tokenA)
+	pollW := httptest.NewRecorder()
+	server.Handler().ServeHTTP(pollW, pollReq)
+	if pollW.Code != http.StatusOK {
+		t.Fatalf("poll status = %d body = %s", pollW.Code, pollW.Body.String())
+	}
+	var pollOut map[string]any
+	if err := json.NewDecoder(pollW.Body).Decode(&pollOut); err != nil {
+		t.Fatalf("decode poll: %v", err)
+	}
+	if pollOut["status"] != "confirmed" || pollOut["account_id"] != "wx-account-1" {
+		t.Fatalf("unexpected poll output: %#v", pollOut)
+	}
+	if runtimeStarts != 1 {
+		t.Fatalf("WeChat runtime starts = %d, want 1", runtimeStarts)
+	}
+	cfgA, err := svc.GetRawUserConfig(ctx, principalA)
+	if err != nil {
+		t.Fatalf("GetRawUserConfig A: %v", err)
+	}
+	if !cfgA.AppConfig.WeixinEnabled || cfgA.AppConfig.WeixinToken != "wx-bound-token" || cfgA.AppConfig.WeixinAccountID != "wx-account-1" {
+		t.Fatalf("user A weixin config not saved: %#v", cfgA.AppConfig)
+	}
+	cfgB, err := svc.GetRawUserConfig(ctx, principalB)
+	if err != nil {
+		t.Fatalf("GetRawUserConfig B: %v", err)
+	}
+	if cfgB.AppConfig.WeixinToken != "other-token" || cfgB.AppConfig.WeixinAccountID != "other-account" {
+		t.Fatalf("user B config was modified: %#v", cfgB.AppConfig)
+	}
+	events, err := svc.ListAuditEvents(ctx, agentservice.ListAuditEventsInput{Action: "user.im.weixin_qr_bound", UserID: userA.ID})
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	if len(events) != 1 || events[0].UserID != userA.ID || events[0].Metadata["account_id"] != "wx-account-1" {
+		t.Fatalf("unexpected audit events: %#v", events)
+	}
+}
+
+func TestConfiguredWeixinRuntimeStartsOnServerStartup(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(ctx, p, corelib.AppConfig{WeixinEnabled: true, WeixinToken: "wx-token", WeixinAccountID: "wx-account"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	server := &HTTPServer{svc: svc, weixinRuntime: newSrvWeixinGatewayManager(svc)}
+	starts := 0
+	server.weixinRuntime.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		if cfg.Token != "wx-token" || cfg.AccountID != "wx-account" {
+			t.Fatalf("unexpected runtime config: %#v", cfg)
+		}
+		return &fakeSrvWeixinGateway{starts: &starts}
+	}
+	server.startConfiguredWeixinRuntimes(ctx)
+	if starts != 1 {
+		t.Fatalf("runtime starts = %d, want 1", starts)
+	}
+	status := server.weixinRuntime.Status(p)
+	if status.Status != srvWeixinStatusConnected {
+		t.Fatalf("runtime status = %#v, want connected", status)
+	}
+}
+
+func TestConfiguredWeixinRuntimeStartupSkipsDisabledTenant(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(ctx, p, corelib.AppConfig{WeixinEnabled: true, WeixinToken: "wx-token", WeixinAccountID: "wx-account"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	disabled := agentservice.TenantStatusDisabled
+	if _, err := svc.UpdateTenant(ctx, tenant.ID, agentservice.UpdateTenantInput{Status: &disabled}); err != nil {
+		t.Fatalf("UpdateTenant disabled: %v", err)
+	}
+	server := &HTTPServer{svc: svc, weixinRuntime: newSrvWeixinGatewayManager(svc)}
+	starts := 0
+	server.weixinRuntime.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		starts++
+		return &fakeSrvWeixinGateway{handler: handler}
+	}
+	server.startConfiguredWeixinRuntimes(ctx)
+	if starts != 0 {
+		t.Fatalf("disabled-tenant startup should not start runtime, starts=%d", starts)
+	}
+	status := server.weixinRuntime.Status(p)
+	if status.Status != srvWeixinStatusDisabled {
+		t.Fatalf("runtime status = %#v, want disabled", status)
+	}
+}
+
+func TestAdminUpdateUserConfigSyncsWeixinRuntime(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	starts := 0
+	server.weixinRuntime.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		if cfg.Token != "admin-wx-token" || cfg.AccountID != "admin-wx-account" {
+			t.Fatalf("unexpected runtime config: %#v", cfg)
+		}
+		return &fakeSrvWeixinGateway{starts: &starts}
+	}
+	body := `{"app_config":{"weixin_enabled":true,"weixin_token":"admin-wx-token","weixin_account_id":"admin-wx-account"}}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/tenants/"+url.PathEscape(tenant.ID)+"/users/"+url.PathEscape(user.ID)+"/config", bytes.NewBufferString(body))
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin config update status = %d body = %s", w.Code, w.Body.String())
+	}
+	if starts != 1 {
+		t.Fatalf("runtime starts = %d, want 1", starts)
+	}
+	status := server.weixinRuntime.Status(agentservice.Principal{TenantID: tenant.ID, UserID: user.ID})
+	if status.Status != srvWeixinStatusConnected {
+		t.Fatalf("runtime status = %#v, want connected", status)
+	}
+}
+
+func TestWeixinRuntimeRoutesIncomingMessageAndReplies(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.WeixinEnabled = true
+	cfg.WeixinToken = "runtime-token"
+	cfg.WeixinAccountID = "runtime-account"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	manager := newSrvWeixinGatewayManager(svc)
+	var gateway *fakeSrvWeixinGateway
+	manager.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		if cfg.Token != "runtime-token" || cfg.AccountID != "runtime-account" {
+			t.Fatalf("unexpected runtime config: %#v", cfg)
+		}
+		gateway = &fakeSrvWeixinGateway{handler: handler}
+		return gateway
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	if gateway == nil || gateway.handler == nil {
+		t.Fatal("WeChat gateway handler was not wired")
+	}
+	gateway.handler(weixin.IncomingMessage{
+		FromUserID:   "wx-contact-1",
+		Text:         "hello from wechat",
+		ContextToken: "ctx-token-1",
+		Timestamp:    time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC),
+	})
+	if len(gateway.sent) != 1 {
+		t.Fatalf("sent replies = %d, want 1", len(gateway.sent))
+	}
+	if gateway.sent[0].ToUserID != "wx-contact-1" || gateway.sent[0].ContextToken != "ctx-token-1" || !strings.Contains(gateway.sent[0].Text, "received: hello from wechat") {
+		t.Fatalf("unexpected WeChat reply: %#v", gateway.sent[0])
+	}
+	instances, err := svc.ListInstances(ctx, p)
+	if err != nil {
+		t.Fatalf("ListInstances: %v", err)
+	}
+	if len(instances) != 1 || instances[0].Metadata["im_runtime_key"] != srvWeixinInstanceKey {
+		t.Fatalf("unexpected runtime instances: %#v", instances)
+	}
+	sessions, err := svc.ListSessions(ctx, p, instances[0].ID, agentservice.ListSessionsInput{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].AgentID != srvWeixinSessionAgent || sessions[0].Metadata["im_platform"] != "weixin" || sessions[0].Metadata["contact_id"] != "wx-contact-1" {
+		t.Fatalf("unexpected runtime sessions: %#v", sessions)
+	}
+	messages, err := svc.ListMessages(ctx, p, instances[0].ID, sessions[0].ID, agentservice.ListMessagesInput{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(messages) < 2 || messages[0].Content != "hello from wechat" || !strings.Contains(messages[len(messages)-1].Content, "received: hello from wechat") {
+		t.Fatalf("unexpected runtime messages: %#v", messages)
+	}
+}
+
+func TestWeixinRuntimeKeepsMultipleUsersIsolated(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	principalA := agentservice.Principal{TenantID: tenant.ID, UserID: userA.ID}
+	principalB := agentservice.Principal{TenantID: tenant.ID, UserID: userB.ID}
+	cfgA := testLLMConfig()
+	cfgA.WeixinEnabled = true
+	cfgA.WeixinToken = "wx-token-a"
+	cfgA.WeixinAccountID = "wx-account-a"
+	cfgB := testLLMConfig()
+	cfgB.WeixinEnabled = true
+	cfgB.WeixinToken = "wx-token-b"
+	cfgB.WeixinAccountID = "wx-account-b"
+	if _, err := svc.UpdateUserConfig(ctx, principalA, cfgA); err != nil {
+		t.Fatalf("UpdateUserConfig A: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(ctx, principalB, cfgB); err != nil {
+		t.Fatalf("UpdateUserConfig B: %v", err)
+	}
+
+	manager := newSrvWeixinGatewayManager(svc)
+	gatewaysByToken := map[string]*fakeSrvWeixinGateway{}
+	manager.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		gateway := &fakeSrvWeixinGateway{handler: handler}
+		gatewaysByToken[cfg.Token] = gateway
+		return gateway
+	}
+	manager.SyncPrincipal(ctx, principalA, cfgA)
+	manager.SyncPrincipal(ctx, principalB, cfgB)
+
+	gatewayA := gatewaysByToken["wx-token-a"]
+	gatewayB := gatewaysByToken["wx-token-b"]
+	if gatewayA == nil || gatewayB == nil || gatewayA == gatewayB {
+		t.Fatalf("expected separate WeChat gateways per user: %#v", gatewaysByToken)
+	}
+	if manager.Status(principalA).Status != srvWeixinStatusConnected || manager.Status(principalB).Status != srvWeixinStatusConnected {
+		t.Fatalf("unexpected runtime statuses: A=%#v B=%#v", manager.Status(principalA), manager.Status(principalB))
+	}
+
+	gatewayA.handler(weixin.IncomingMessage{
+		FromUserID:   "wx-contact-a",
+		Text:         "hello from user a wechat",
+		ContextToken: "ctx-a",
+		Timestamp:    time.Date(2026, 6, 7, 12, 1, 0, 0, time.UTC),
+	})
+	gatewayB.handler(weixin.IncomingMessage{
+		FromUserID:   "wx-contact-b",
+		Text:         "hello from user b wechat",
+		ContextToken: "ctx-b",
+		Timestamp:    time.Date(2026, 6, 7, 12, 2, 0, 0, time.UTC),
+	})
+
+	if len(gatewayA.sent) != 1 || gatewayA.sent[0].ToUserID != "wx-contact-a" || gatewayA.sent[0].ContextToken != "ctx-a" || !strings.Contains(gatewayA.sent[0].Text, "hello from user a wechat") {
+		t.Fatalf("unexpected user A reply: %#v", gatewayA.sent)
+	}
+	if len(gatewayB.sent) != 1 || gatewayB.sent[0].ToUserID != "wx-contact-b" || gatewayB.sent[0].ContextToken != "ctx-b" || !strings.Contains(gatewayB.sent[0].Text, "hello from user b wechat") {
+		t.Fatalf("unexpected user B reply: %#v", gatewayB.sent)
+	}
+
+	for _, tc := range []struct {
+		name        string
+		principal   agentservice.Principal
+		contactID   string
+		messageText string
+	}{
+		{name: "user A", principal: principalA, contactID: "wx-contact-a", messageText: "hello from user a wechat"},
+		{name: "user B", principal: principalB, contactID: "wx-contact-b", messageText: "hello from user b wechat"},
+	} {
+		instances, err := svc.ListInstances(ctx, tc.principal)
+		if err != nil {
+			t.Fatalf("%s ListInstances: %v", tc.name, err)
+		}
+		if len(instances) != 1 || instances[0].Metadata["im_runtime_key"] != srvWeixinInstanceKey {
+			t.Fatalf("%s unexpected runtime instances: %#v", tc.name, instances)
+		}
+		sessions, err := svc.ListSessions(ctx, tc.principal, instances[0].ID, agentservice.ListSessionsInput{})
+		if err != nil {
+			t.Fatalf("%s ListSessions: %v", tc.name, err)
+		}
+		if len(sessions) != 1 || sessions[0].Metadata["contact_id"] != tc.contactID {
+			t.Fatalf("%s unexpected runtime sessions: %#v", tc.name, sessions)
+		}
+		messages, err := svc.ListMessages(ctx, tc.principal, instances[0].ID, sessions[0].ID, agentservice.ListMessagesInput{})
+		if err != nil {
+			t.Fatalf("%s ListMessages: %v", tc.name, err)
+		}
+		if len(messages) < 2 || messages[0].Content != tc.messageText {
+			t.Fatalf("%s unexpected runtime messages: %#v", tc.name, messages)
+		}
+	}
+}
+
+func TestWeixinRuntimeIgnoresStaleGatewayAfterRebind(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.WeixinEnabled = true
+	cfg.WeixinToken = "old-token"
+	cfg.WeixinAccountID = "old-account"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig old: %v", err)
+	}
+	manager := newSrvWeixinGatewayManager(svc)
+	gatewaysByToken := map[string]*fakeSrvWeixinGateway{}
+	manager.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		gateway := &fakeSrvWeixinGateway{handler: handler}
+		if cfg.Token == "old-token" {
+			gateway.stopStatus = srvWeixinStatusDisconnected
+		}
+		gatewaysByToken[cfg.Token] = gateway
+		return gateway
+	}
+
+	manager.SyncPrincipal(ctx, p, cfg)
+	oldGateway := gatewaysByToken["old-token"]
+	if oldGateway == nil || oldGateway.handler == nil {
+		t.Fatal("old WeChat gateway handler was not wired")
+	}
+	cfg.WeixinToken = "new-token"
+	cfg.WeixinAccountID = "new-account"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig new: %v", err)
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	newGateway := gatewaysByToken["new-token"]
+	if newGateway == nil || newGateway.handler == nil {
+		t.Fatal("new WeChat gateway handler was not wired")
+	}
+	if status := manager.Status(p); status.Status != srvWeixinStatusConnected {
+		t.Fatalf("stale stop status changed new runtime: %#v", status)
+	}
+
+	oldGateway.handler(weixin.IncomingMessage{
+		FromUserID:   "wx-old-contact",
+		Text:         "stale old gateway message",
+		ContextToken: "old-ctx",
+		Timestamp:    time.Date(2026, 6, 7, 12, 3, 0, 0, time.UTC),
+	})
+	if len(oldGateway.sent) != 0 || len(newGateway.sent) != 0 {
+		t.Fatalf("stale old gateway should not send replies: old=%#v new=%#v", oldGateway.sent, newGateway.sent)
+	}
+	instances, err := svc.ListInstances(ctx, p)
+	if err != nil {
+		t.Fatalf("ListInstances: %v", err)
+	}
+	if len(instances) != 0 {
+		t.Fatalf("stale old gateway should not create instances: %#v", instances)
+	}
+
+	newGateway.handler(weixin.IncomingMessage{
+		FromUserID:   "wx-new-contact",
+		Text:         "fresh new gateway message",
+		ContextToken: "new-ctx",
+		Timestamp:    time.Date(2026, 6, 7, 12, 4, 0, 0, time.UTC),
+	})
+	if len(newGateway.sent) != 1 || newGateway.sent[0].ToUserID != "wx-new-contact" || !strings.Contains(newGateway.sent[0].Text, "fresh new gateway message") {
+		t.Fatalf("new gateway reply missing: %#v", newGateway.sent)
+	}
+}
+
+func TestWeixinRuntimeInheritsVirtualEmployeeIdentity(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(ctx, p, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	if _, err := svc.CreateInstance(ctx, p, agentservice.CreateInstanceInput{
+		Name:        "合同审查数字员工",
+		Description: "负责合同风险审查",
+		Metadata: map[string]string{
+			"ve_employee_id":       "ve-contract-reviewer",
+			"ve_name":              "合同审查数字员工",
+			"ve_handle":            "contract-reviewer",
+			"ve_skill_description": "负责合同风险审查",
+		},
+	}); err != nil {
+		t.Fatalf("CreateInstance template: %v", err)
+	}
+	manager := newSrvWeixinGatewayManager(svc)
+	instanceID, err := manager.ensureWeixinInstance(ctx, p)
+	if err != nil {
+		t.Fatalf("ensureWeixinInstance: %v", err)
+	}
+	inst, err := svc.GetInstance(ctx, p, instanceID)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if inst.Name != "合同审查数字员工" || inst.Description != "负责合同风险审查" {
+		t.Fatalf("unexpected runtime identity: %#v", inst)
+	}
+	if inst.Metadata["ve_employee_id"] != "ve-contract-reviewer" || inst.Metadata["ve_name"] != "合同审查数字员工" || inst.Metadata["im_runtime_key"] != srvWeixinInstanceKey {
+		t.Fatalf("unexpected runtime metadata: %#v", inst.Metadata)
+	}
+}
+
+func TestWeixinRuntimeRecreatesDeletedCachedInstanceOnMessage(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.WeixinEnabled = true
+	cfg.WeixinToken = "runtime-token"
+	cfg.WeixinAccountID = "runtime-account"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	manager := newSrvWeixinGatewayManager(svc)
+	gateway := &fakeSrvWeixinGateway{}
+	manager.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		gateway.handler = handler
+		return gateway
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	instanceID, err := manager.ensureWeixinInstance(ctx, p)
+	if err != nil {
+		t.Fatalf("ensureWeixinInstance: %v", err)
+	}
+	if err := svc.DeleteInstance(ctx, p, instanceID); err != nil {
+		t.Fatalf("DeleteInstance: %v", err)
+	}
+	gateway.handler(weixin.IncomingMessage{
+		FromUserID:   "wx-contact-recreate",
+		Text:         "hello after delete",
+		ContextToken: "ctx-token",
+		Timestamp:    time.Date(2026, 6, 7, 12, 5, 0, 0, time.UTC),
+	})
+	instances, err := svc.ListInstances(ctx, p)
+	if err != nil {
+		t.Fatalf("ListInstances: %v", err)
+	}
+	if len(instances) != 1 || instances[0].ID == instanceID {
+		t.Fatalf("expected recreated runtime instance, got %#v", instances)
+	}
+	if len(gateway.sent) != 1 || !strings.Contains(gateway.sent[0].Text, "hello after delete") {
+		t.Fatalf("expected successful reply after recreation, got %#v", gateway.sent)
+	}
+}
+
+func TestWeixinRuntimeFactoryCanObserveStatusWithoutDeadlock(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.WeixinEnabled = true
+	cfg.WeixinToken = "token"
+	manager := newSrvWeixinGatewayManager(svc)
+	starts := 0
+	manager.factory = func(weixin.Config, weixin.MessageHandler) srvWeixinGateway {
+		if status := manager.Status(p); status.Status != srvWeixinStatusConnecting {
+			t.Fatalf("factory should observe connecting placeholder, got %#v", status)
+		}
+		return &fakeSrvWeixinGateway{starts: &starts}
+	}
+	done := make(chan struct{})
+	go func() {
+		manager.SyncPrincipal(ctx, p, cfg)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SyncPrincipal deadlocked while factory observed status")
+	}
+	if starts != 1 || manager.Status(p).Status != srvWeixinStatusConnected {
+		t.Fatalf("runtime not connected after factory status observation: starts=%d status=%#v", starts, manager.Status(p))
+	}
+}
+
+func TestWeixinRuntimeStartErrorStopsGateway(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.WeixinEnabled = true
+	cfg.WeixinToken = "token"
+	manager := newSrvWeixinGatewayManager(svc)
+	starts := 0
+	stops := 0
+	manager.factory = func(weixin.Config, weixin.MessageHandler) srvWeixinGateway {
+		return &fakeSrvWeixinGateway{starts: &starts, stops: &stops, startErr: errors.New("dial failed")}
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	status := manager.Status(p)
+	if starts != 1 || stops != 1 || status.Status != srvWeixinStatusError || !strings.Contains(status.LastError, "dial failed") {
+		t.Fatalf("start error should stop gateway and expose error: starts=%d stops=%d status=%#v", starts, stops, status)
+	}
+}
+
+func TestWeixinRuntimeStartSuccessMarksConnectedWithoutGatewayStatus(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.WeixinEnabled = true
+	cfg.WeixinToken = "token"
+	manager := newSrvWeixinGatewayManager(svc)
+	manager.factory = func(weixin.Config, weixin.MessageHandler) srvWeixinGateway {
+		return &fakeSrvWeixinGateway{skipStatus: true}
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	if status := manager.Status(p); status.Status != srvWeixinStatusConnected {
+		t.Fatalf("successful WeChat gateway start should mark runtime connected, got %#v", status)
+	}
+}
+
+func TestWeixinRuntimeMissingFactoryExposesError(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.WeixinEnabled = true
+	cfg.WeixinToken = "token"
+	manager := newSrvWeixinGatewayManager(svc)
+	manager.factory = nil
+	manager.SyncPrincipal(ctx, p, cfg)
+	status := manager.Status(p)
+	if status.Status != srvWeixinStatusError || !strings.Contains(status.LastError, "factory") {
+		t.Fatalf("missing factory should expose runtime error, got %#v", status)
+	}
+}
+
+func TestWeixinRuntimeStopsWhenAdminPausesAndDeletesUser(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	starts := 0
+	stops := 0
+	server.weixinRuntime.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		return &fakeSrvWeixinGateway{handler: handler, starts: &starts, stops: &stops}
+	}
+	cfg := testLLMConfig()
+	cfg.WeixinEnabled = true
+	cfg.WeixinToken = "wx-token"
+	cfg.WeixinAccountID = "wx-account"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	server.syncWeixinRuntimeFromRawConfig(ctx, p)
+	if starts != 1 || server.weixinRuntime.Status(p).Status != srvWeixinStatusConnected {
+		t.Fatalf("runtime did not start: starts=%d status=%#v", starts, server.weixinRuntime.Status(p))
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/tenants/"+url.PathEscape(tenant.ID)+"/users/"+url.PathEscape(user.ID)+"/pause", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("pause user status=%d body=%s", w.Code, w.Body.String())
+	}
+	if stops != 1 || server.weixinRuntime.Status(p).Status != srvWeixinStatusDisabled {
+		t.Fatalf("pause should stop runtime: stops=%d status=%#v", stops, server.weixinRuntime.Status(p))
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/tenants/"+url.PathEscape(tenant.ID)+"/users/"+url.PathEscape(user.ID)+"/resume", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("resume user status=%d body=%s", w.Code, w.Body.String())
+	}
+	if starts != 2 || server.weixinRuntime.Status(p).Status != srvWeixinStatusConnected {
+		t.Fatalf("resume should restart runtime: starts=%d status=%#v", starts, server.weixinRuntime.Status(p))
+	}
+	unprotected := false
+	if _, err := svc.UpdateUser(ctx, tenant.ID, user.ID, agentservice.UpdateUserInput{DeleteProtected: &unprotected}); err != nil {
+		t.Fatalf("UpdateUser delete protection: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+url.PathEscape(tenant.ID)+"/users/"+url.PathEscape(user.ID)+"?confirm=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete user status=%d body=%s", w.Code, w.Body.String())
+	}
+	if stops != 2 || server.weixinRuntime.Status(p).Status != srvWeixinStatusDisabled {
+		t.Fatalf("delete should stop runtime: stops=%d status=%#v", stops, server.weixinRuntime.Status(p))
+	}
+}
+
+func TestWeixinRuntimeStopsWhenAdminPausesTenant(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	starts := 0
+	stops := 0
+	server.weixinRuntime.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		return &fakeSrvWeixinGateway{handler: handler, starts: &starts, stops: &stops}
+	}
+	var principals []agentservice.Principal
+	for i := 0; i < 2; i++ {
+		user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: fmt.Sprintf("User %d", i+1)})
+		if err != nil {
+			t.Fatalf("CreateUser %d: %v", i+1, err)
+		}
+		p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+		cfg := testLLMConfig()
+		cfg.WeixinEnabled = true
+		cfg.WeixinToken = fmt.Sprintf("wx-token-%d", i+1)
+		cfg.WeixinAccountID = fmt.Sprintf("wx-account-%d", i+1)
+		if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+			t.Fatalf("UpdateUserConfig %d: %v", i+1, err)
+		}
+		principals = append(principals, p)
+	}
+	for _, p := range principals {
+		server.syncWeixinRuntimeFromRawConfig(ctx, p)
+	}
+	if starts != 2 {
+		t.Fatalf("runtime starts=%d, want 2", starts)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/tenants/"+url.PathEscape(tenant.ID)+"/pause", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("pause tenant status=%d body=%s", w.Code, w.Body.String())
+	}
+	if stops != 2 {
+		t.Fatalf("tenant pause stops=%d, want 2", stops)
+	}
+	for _, p := range principals {
+		if status := server.weixinRuntime.Status(p); status.Status != srvWeixinStatusDisabled {
+			t.Fatalf("tenant pause should stop %s: %#v", p.UserID, status)
+		}
+	}
+}
+
+func TestWeixinRuntimeResumeTenantOnlyStartsTargetTenant(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenantA, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant A"})
+	if err != nil {
+		t.Fatalf("CreateTenant A: %v", err)
+	}
+	tenantB, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant B"})
+	if err != nil {
+		t.Fatalf("CreateTenant B: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenantA.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenantB.ID, Name: "User B"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	cfgA := testLLMConfig()
+	cfgA.WeixinEnabled = true
+	cfgA.WeixinToken = "wx-token-a"
+	cfgA.WeixinAccountID = "wx-account-a"
+	cfgB := testLLMConfig()
+	cfgB.WeixinEnabled = true
+	cfgB.WeixinToken = "wx-token-b"
+	cfgB.WeixinAccountID = "wx-account-b"
+	if _, err := svc.UpdateUserConfig(ctx, agentservice.Principal{TenantID: tenantA.ID, UserID: userA.ID}, cfgA); err != nil {
+		t.Fatalf("UpdateUserConfig A: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(ctx, agentservice.Principal{TenantID: tenantB.ID, UserID: userB.ID}, cfgB); err != nil {
+		t.Fatalf("UpdateUserConfig B: %v", err)
+	}
+	disabled := agentservice.TenantStatusDisabled
+	if _, err := svc.UpdateTenant(ctx, tenantA.ID, agentservice.UpdateTenantInput{Status: &disabled}); err != nil {
+		t.Fatalf("UpdateTenant A disabled: %v", err)
+	}
+	server := &HTTPServer{svc: svc, adminSecret: "admin-secret", weixinRuntime: newSrvWeixinGatewayManager(svc)}
+	startsByToken := map[string]int{}
+	server.weixinRuntime.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		startsByToken[cfg.Token]++
+		return &fakeSrvWeixinGateway{handler: handler}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/tenants/"+url.PathEscape(tenantA.ID)+"/resume", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.SetPathValue("tenantId", tenantA.ID)
+	w := httptest.NewRecorder()
+	server.updateTenantLifecycleStatus(w, req, agentservice.TenantStatusActive, "admin.tenant_resumed")
+	if w.Code != http.StatusOK {
+		t.Fatalf("resume tenant status=%d body=%s", w.Code, w.Body.String())
+	}
+	if startsByToken["wx-token-a"] != 1 {
+		t.Fatalf("resumed tenant runtime starts=%d, want 1", startsByToken["wx-token-a"])
+	}
+	if startsByToken["wx-token-b"] != 0 {
+		t.Fatalf("other tenant runtime should stay stopped, starts=%d", startsByToken["wx-token-b"])
+	}
+}
+
+func TestWeixinRuntimeDoesNotStartForInactivePrincipalOnConfigSave(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	starts := 0
+	stops := 0
+	server.weixinRuntime.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		return &fakeSrvWeixinGateway{handler: handler, starts: &starts, stops: &stops}
+	}
+	disabled := agentservice.UserStatusDisabled
+	if _, err := svc.UpdateUser(ctx, tenant.ID, user.ID, agentservice.UpdateUserInput{Status: &disabled}); err != nil {
+		t.Fatalf("UpdateUser disabled: %v", err)
+	}
+	cfg := testLLMConfig()
+	cfg.WeixinEnabled = true
+	cfg.WeixinToken = "wx-token"
+	cfg.WeixinAccountID = "wx-account"
+	body, err := json.Marshal(map[string]any{"app_config": cfg})
+	if err != nil {
+		t.Fatalf("Marshal config: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/tenants/"+url.PathEscape(tenant.ID)+"/users/"+url.PathEscape(user.ID)+"/config", bytes.NewReader(body))
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin config disabled user status=%d body=%s", w.Code, w.Body.String())
+	}
+	if starts != 0 {
+		t.Fatalf("disabled user config save should not start runtime, starts=%d", starts)
+	}
+
+	active := agentservice.UserStatusActive
+	if _, err := svc.UpdateUser(ctx, tenant.ID, user.ID, agentservice.UpdateUserInput{Status: &active}); err != nil {
+		t.Fatalf("UpdateUser active: %v", err)
+	}
+	tenantDisabled := agentservice.TenantStatusDisabled
+	if _, err := svc.UpdateTenant(ctx, tenant.ID, agentservice.UpdateTenantInput{Status: &tenantDisabled}); err != nil {
+		t.Fatalf("UpdateTenant disabled: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/admin/tenants/"+url.PathEscape(tenant.ID)+"/users/"+url.PathEscape(user.ID)+"/config", bytes.NewReader(body))
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin config disabled tenant status=%d body=%s", w.Code, w.Body.String())
+	}
+	if starts != 0 {
+		t.Fatalf("disabled tenant config save should not start runtime, starts=%d", starts)
+	}
+	if status := server.weixinRuntime.Status(agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}); status.Status != srvWeixinStatusDisabled {
+		t.Fatalf("inactive principal status=%#v, want disabled", status)
+	}
+}
+
+func TestWeixinQRCodeImageURLValidation(t *testing.T) {
+	for _, rawURL := range []string{
+		"",
+		"http://liteapp.weixin.qq.com/qrcode.png",
+		"https://example.com/qrcode.png",
+		"https://liteapp.weixin.qq.com.evil.example/qrcode.png",
+	} {
+		if _, err := validateWeixinQRCodeImageURL(rawURL); err == nil {
+			t.Fatalf("validateWeixinQRCodeImageURL(%q) succeeded", rawURL)
+		}
+	}
+	u, err := validateWeixinQRCodeImageURL("https://liteapp.weixin.qq.com/qrcode.png")
+	if err != nil {
+		t.Fatalf("validateWeixinQRCodeImageURL valid url: %v", err)
+	}
+	if u.Hostname() != "liteapp.weixin.qq.com" {
+		t.Fatalf("unexpected validated host: %s", u.Hostname())
+	}
+}
+
+func TestConfiguredIMRuntimesRouteIncomingMessages(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		platform string
+		apply    func(*corelib.AppConfig)
+		contact  string
+		text     string
+	}{
+		{platform: "telegram", apply: func(cfg *corelib.AppConfig) {
+			cfg.TelegramBotEnabled = true
+			cfg.TelegramBotToken = "tg-token"
+		}, contact: "1001", text: "hello telegram"},
+		{platform: "qq", apply: func(cfg *corelib.AppConfig) {
+			cfg.QQBotEnabled = true
+			cfg.QQBotAppID = "qq-app"
+			cfg.QQBotAppSecret = "qq-secret"
+		}, contact: "qq-openid", text: "hello qq"},
+		{platform: "lansenger", apply: func(cfg *corelib.AppConfig) {
+			cfg.LansengerEnabled = true
+			cfg.LansengerAppID = "lx-app"
+			cfg.LansengerAppSecret = "lx-secret"
+			cfg.LansengerGatewayURL = "https://lansenger.example"
+		}, contact: "lx-user", text: "hello lansenger"},
+	} {
+		t.Run(tc.platform, func(t *testing.T) {
+			svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+			if err != nil {
+				t.Fatalf("NewService: %v", err)
+			}
+			tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+			if err != nil {
+				t.Fatalf("CreateTenant: %v", err)
+			}
+			user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+			cfg := testLLMConfig()
+			tc.apply(&cfg)
+			if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+				t.Fatalf("UpdateUserConfig: %v", err)
+			}
+			manager := newSrvIMGatewayManager(svc)
+			starts := 0
+			stops := 0
+			var gateway *fakeSrvIMGateway
+			var captured func(srvIMIncomingMessage)
+			manager.factories = map[string]srvIMGatewayFactory{
+				tc.platform: {
+					ConfigKey: func(corelib.AppConfig) (string, bool) {
+						return tc.platform + "-config", true
+					},
+					New: func(cfg corelib.AppConfig, handler func(srvIMIncomingMessage)) srvIMGateway {
+						captured = handler
+						gateway = &fakeSrvIMGateway{starts: &starts, stops: &stops}
+						return gateway
+					},
+				},
+			}
+			manager.SyncPrincipal(ctx, p, cfg)
+			if starts != 1 || captured == nil || gateway == nil {
+				t.Fatalf("runtime not started: starts=%d captured=%v gateway=%#v", starts, captured != nil, gateway)
+			}
+			if status := manager.Status(p, tc.platform); status.Status != srvWeixinStatusConnected {
+				t.Fatalf("runtime status = %#v, want connected", status)
+			}
+			captured(srvIMIncomingMessage{
+				Platform:      tc.platform,
+				ContactID:     tc.contact,
+				Title:         tc.platform + " " + tc.contact,
+				Text:          tc.text,
+				ClientEventID: tc.platform + "-event-1",
+				Reply: func(ctx context.Context, text string) error {
+					gateway.sent = append(gateway.sent, text)
+					return nil
+				},
+			})
+			if len(gateway.sent) != 1 || !strings.Contains(gateway.sent[0], tc.text) {
+				t.Fatalf("reply not sent through %s gateway: %#v", tc.platform, gateway.sent)
+			}
+			instances, err := svc.ListInstances(ctx, p)
+			if err != nil {
+				t.Fatalf("ListInstances: %v", err)
+			}
+			if len(instances) != 1 || instances[0].Metadata["im_platform"] != tc.platform || instances[0].Metadata["im_runtime_key"] != "maclawsrv:im:"+tc.platform {
+				t.Fatalf("unexpected instances: %#v", instances)
+			}
+			sessions, err := svc.ListSessions(ctx, p, instances[0].ID, agentservice.ListSessionsInput{})
+			if err != nil {
+				t.Fatalf("ListSessions: %v", err)
+			}
+			if len(sessions) != 1 || sessions[0].Metadata["im_platform"] != tc.platform || sessions[0].Metadata["contact_id"] != tc.contact {
+				t.Fatalf("unexpected sessions: %#v", sessions)
+			}
+			manager.factories[tc.platform] = srvIMGatewayFactory{
+				ConfigKey: func(corelib.AppConfig) (string, bool) {
+					return "", false
+				},
+				New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+					t.Fatal("disabled runtime must not construct gateway")
+					return nil
+				},
+			}
+			manager.SyncPrincipal(ctx, p, testLLMConfig())
+			if stops != 1 {
+				t.Fatalf("runtime stops = %d, want 1", stops)
+			}
+			if status := manager.Status(p, tc.platform); status.Status != srvWeixinStatusDisabled {
+				t.Fatalf("disabled runtime status = %#v", status)
+			}
+		})
+	}
+}
+
+func TestConfiguredIMRuntimeRejectsEmptyContactID(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "token"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	manager := newSrvIMGatewayManager(svc)
+	var captured func(srvIMIncomingMessage)
+	replies := 0
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "config", true
+			},
+			New: func(_ corelib.AppConfig, handler func(srvIMIncomingMessage)) srvIMGateway {
+				captured = handler
+				return &fakeSrvIMGateway{}
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	captured(srvIMIncomingMessage{
+		Platform:      "telegram",
+		ContactID:     "",
+		Title:         "Telegram",
+		Text:          "hello",
+		ClientEventID: "empty-contact",
+		Reply: func(context.Context, string) error {
+			replies++
+			return nil
+		},
+	})
+	if replies != 0 {
+		t.Fatalf("empty contact should not reply, replies=%d", replies)
+	}
+	if status := manager.Status(p, "telegram"); status.Status != srvWeixinStatusError || !strings.Contains(status.LastError, "contact id") {
+		t.Fatalf("empty contact should expose runtime error, got %#v", status)
+	}
+	instances, err := svc.ListInstances(ctx, p)
+	if err != nil {
+		t.Fatalf("ListInstances: %v", err)
+	}
+	if len(instances) != 0 {
+		t.Fatalf("empty contact should not create runtime instance: %#v", instances)
+	}
+}
+
+func TestConfiguredIMRuntimeGeneratesMissingClientMessageID(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "token"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	manager := newSrvIMGatewayManager(svc)
+	var captured func(srvIMIncomingMessage)
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "config", true
+			},
+			New: func(_ corelib.AppConfig, handler func(srvIMIncomingMessage)) srvIMGateway {
+				captured = handler
+				return &fakeSrvIMGateway{}
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	captured(srvIMIncomingMessage{
+		Platform:  " telegram ",
+		ContactID: " contact-1 ",
+		Title:     "Telegram contact-1",
+		Text:      "hello without event id",
+		Reply:     func(context.Context, string) error { return nil },
+	})
+	instances, err := svc.ListInstances(ctx, p)
+	if err != nil {
+		t.Fatalf("ListInstances: %v", err)
+	}
+	if len(instances) != 1 {
+		t.Fatalf("unexpected instances: %#v", instances)
+	}
+	sessions, err := svc.ListSessions(ctx, p, instances[0].ID, agentservice.ListSessionsInput{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Metadata["client_session_key"] != "telegram:contact-1" || sessions[0].Metadata["contact_id"] != "contact-1" {
+		t.Fatalf("unexpected session metadata: %#v", sessions)
+	}
+	messages, err := svc.ListMessages(ctx, p, instances[0].ID, sessions[0].ID, agentservice.ListMessagesInput{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	var userMessage *agentservice.Message
+	for i := range messages {
+		if messages[i].Role == agentservice.MessageRoleUser {
+			userMessage = &messages[i]
+			break
+		}
+	}
+	if userMessage == nil || strings.TrimSpace(userMessage.Metadata["client_message_id"]) == "" {
+		t.Fatalf("missing generated client_message_id: %#v", messages)
+	}
+}
+
+func TestConfiguredIMRuntimeReplyUsesNormalizedPlatform(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	manager := newSrvIMGatewayManager(svc)
+	var captured func(srvIMIncomingMessage)
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "token"
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "config", true
+			},
+			New: func(_ corelib.AppConfig, handler func(srvIMIncomingMessage)) srvIMGateway {
+				captured = handler
+				return &fakeSrvIMGateway{}
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	var replies []string
+	captured(srvIMIncomingMessage{
+		Platform:  " Telegram ",
+		ContactID: "contact-1",
+		Title:     "Telegram contact-1",
+		Text:      "hello",
+		Reply: func(_ context.Context, text string) error {
+			replies = append(replies, text)
+			return nil
+		},
+	})
+	if len(replies) != 1 || !strings.Contains(replies[0], "telegram channel is not ready") {
+		t.Fatalf("normalized platform reply not sent: %#v", replies)
+	}
+}
+
+func TestConfiguredIMRuntimeInheritsVirtualEmployeeIdentity(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(ctx, p, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	if _, err := svc.CreateInstance(ctx, p, agentservice.CreateInstanceInput{
+		Name:        "税务顾问",
+		Description: "解答企业税务问题",
+		Metadata: map[string]string{
+			"ve_employee_id":       "ve-tax-advisor",
+			"ve_name":              "税务顾问",
+			"ve_skill_description": "解答企业税务问题",
+			"ve_skill_tags":        "tax, finance",
+		},
+	}); err != nil {
+		t.Fatalf("CreateInstance template: %v", err)
+	}
+	manager := newSrvIMGatewayManager(svc)
+	instanceID, err := manager.ensureInstance(ctx, p, "telegram")
+	if err != nil {
+		t.Fatalf("ensureInstance: %v", err)
+	}
+	inst, err := svc.GetInstance(ctx, p, instanceID)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if inst.Name != "税务顾问" || inst.Description != "解答企业税务问题" {
+		t.Fatalf("unexpected runtime identity: %#v", inst)
+	}
+	if inst.Metadata["ve_employee_id"] != "ve-tax-advisor" || inst.Metadata["ve_skill_tags"] != "tax, finance" || inst.Metadata["im_platform"] != "telegram" {
+		t.Fatalf("unexpected runtime metadata: %#v", inst.Metadata)
+	}
+}
+
+func TestConfiguredIMRuntimeKeepsDefaultIdentityWithoutVirtualEmployeeTemplate(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(ctx, p, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	if _, err := svc.CreateInstance(ctx, p, agentservice.CreateInstanceInput{
+		Name:        "普通实例",
+		Description: "普通描述",
+		Metadata:    map[string]string{"channel": "ve-platform-web"},
+	}); err != nil {
+		t.Fatalf("CreateInstance plain: %v", err)
+	}
+	manager := newSrvIMGatewayManager(svc)
+	instanceID, err := manager.ensureInstance(ctx, p, "telegram")
+	if err != nil {
+		t.Fatalf("ensureInstance: %v", err)
+	}
+	inst, err := svc.GetInstance(ctx, p, instanceID)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if inst.Name != "Telegram Assistant" || inst.Description != "MaClawSrv telegram runtime" {
+		t.Fatalf("plain instance should not override IM identity: %#v", inst)
+	}
+	if _, ok := inst.Metadata["ve_name"]; ok {
+		t.Fatalf("plain instance should not inject VE metadata: %#v", inst.Metadata)
+	}
+}
+
+func TestConfiguredIMRuntimePrefersMostRecentVirtualEmployeeIdentity(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(ctx, p, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	older, err := svc.CreateInstance(ctx, p, agentservice.CreateInstanceInput{
+		Name:        "旧角色",
+		Description: "旧描述",
+		Metadata: map[string]string{
+			"ve_employee_id":       "ve-old",
+			"ve_name":              "旧角色",
+			"ve_skill_description": "旧描述",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateInstance older: %v", err)
+	}
+	if _, err := svc.CreateInstance(ctx, p, agentservice.CreateInstanceInput{
+		Name:        "新角色",
+		Description: "新描述",
+		Metadata: map[string]string{
+			"ve_employee_id":       "ve-new",
+			"ve_name":              "新角色",
+			"ve_skill_description": "新描述",
+		},
+	}); err != nil {
+		t.Fatalf("CreateInstance newer: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	oldDesc := "旧描述-已更新"
+	if _, err := svc.UpdateInstance(ctx, p, older.ID, agentservice.UpdateInstanceInput{Description: &oldDesc}); err != nil {
+		t.Fatalf("UpdateInstance older: %v", err)
+	}
+	manager := newSrvIMGatewayManager(svc)
+	instanceID, err := manager.ensureInstance(ctx, p, "telegram")
+	if err != nil {
+		t.Fatalf("ensureInstance: %v", err)
+	}
+	inst, err := svc.GetInstance(ctx, p, instanceID)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if inst.Name != older.Name || inst.Metadata["ve_employee_id"] != older.Metadata["ve_employee_id"] {
+		t.Fatalf("expected latest VE instance to drive IM identity: %#v", inst)
+	}
+}
+
+func TestConfiguredIMRuntimePreservesNonIdentityRuntimeMetadata(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(ctx, p, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	if _, err := svc.CreateInstance(ctx, p, agentservice.CreateInstanceInput{
+		Name:        "法务助手",
+		Description: "负责法务问答",
+		Metadata: map[string]string{
+			"ve_employee_id":       "ve-legal",
+			"ve_name":              "法务助手",
+			"ve_skill_description": "负责法务问答",
+		},
+	}); err != nil {
+		t.Fatalf("CreateInstance template: %v", err)
+	}
+	runtime, err := svc.CreateInstance(ctx, p, agentservice.CreateInstanceInput{
+		Name:        "Telegram Assistant",
+		Description: "MaClawSrv telegram runtime",
+		Metadata: map[string]string{
+			"im_runtime_key": "maclawsrv:im:telegram",
+			"im_platform":    "telegram",
+			"custom_flag":    "keep-me",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateInstance runtime: %v", err)
+	}
+	manager := newSrvIMGatewayManager(svc)
+	instanceID, err := manager.ensureInstance(ctx, p, "telegram")
+	if err != nil {
+		t.Fatalf("ensureInstance: %v", err)
+	}
+	if instanceID != runtime.ID {
+		t.Fatalf("expected existing runtime instance, got %s want %s", instanceID, runtime.ID)
+	}
+	inst, err := svc.GetInstance(ctx, p, instanceID)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if inst.Metadata["custom_flag"] != "keep-me" {
+		t.Fatalf("non-identity runtime metadata should be preserved: %#v", inst.Metadata)
+	}
+	if inst.Metadata["ve_employee_id"] != "ve-legal" {
+		t.Fatalf("VE identity metadata should still sync: %#v", inst.Metadata)
+	}
+}
+
+func TestConfiguredIMRuntimeRecreatesDeletedCachedInstanceOnMessage(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "tg-token"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	manager := newSrvIMGatewayManager(svc)
+	var handler func(srvIMIncomingMessage)
+	manager.factories["telegram"] = srvIMGatewayFactory{
+		ConfigKey: srvTelegramRuntimeConfigKey,
+		New: func(_ corelib.AppConfig, h func(srvIMIncomingMessage)) srvIMGateway {
+			handler = h
+			return &fakeSrvIMGateway{}
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	instanceID, err := manager.ensureInstance(ctx, p, "telegram")
+	if err != nil {
+		t.Fatalf("ensureInstance: %v", err)
+	}
+	if err := svc.DeleteInstance(ctx, p, instanceID); err != nil {
+		t.Fatalf("DeleteInstance: %v", err)
+	}
+	var replies []string
+	handler(srvIMIncomingMessage{
+		Platform:  "telegram",
+		ContactID: "tg-contact-recreate",
+		Title:     "Telegram tg-contact-recreate",
+		Text:      "hello after delete",
+		Reply: func(_ context.Context, text string) error {
+			replies = append(replies, text)
+			return nil
+		},
+	})
+	instances, err := svc.ListInstances(ctx, p)
+	if err != nil {
+		t.Fatalf("ListInstances: %v", err)
+	}
+	if len(instances) != 1 || instances[0].ID == instanceID {
+		t.Fatalf("expected recreated runtime instance, got %#v", instances)
+	}
+	if len(replies) != 1 || !strings.Contains(replies[0], "hello after delete") {
+		t.Fatalf("expected successful reply after recreation, got %#v", replies)
+	}
+}
+
+func TestConfiguredIMRuntimeSameConfigDoesNotRecreateGateway(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "same-token"
+	manager := newSrvIMGatewayManager(svc)
+	constructed := 0
+	starts := 0
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "same-config", true
+			},
+			New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+				constructed++
+				return &fakeSrvIMGateway{starts: &starts}
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	manager.SyncPrincipal(ctx, p, cfg)
+	if constructed != 1 || starts != 1 {
+		t.Fatalf("same config should reuse runtime, constructed=%d starts=%d", constructed, starts)
+	}
+}
+
+func TestConfiguredIMRuntimeFactoryCanObserveStatusWithoutDeadlock(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "token"
+	manager := newSrvIMGatewayManager(svc)
+	starts := 0
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "config", true
+			},
+			New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+				if status := manager.Status(p, "telegram"); status.Status != srvWeixinStatusConnecting {
+					t.Fatalf("factory should observe connecting placeholder, got %#v", status)
+				}
+				return &fakeSrvIMGateway{starts: &starts}
+			},
+		},
+	}
+	done := make(chan struct{})
+	go func() {
+		manager.SyncPrincipal(ctx, p, cfg)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SyncPrincipal deadlocked while factory observed status")
+	}
+	if starts != 1 || manager.Status(p, "telegram").Status != srvWeixinStatusConnected {
+		t.Fatalf("runtime not connected after factory status observation: starts=%d status=%#v", starts, manager.Status(p, "telegram"))
+	}
+}
+
+func TestConfiguredIMRuntimeStartSuccessMarksConnectedWithoutGatewayStatus(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.QQBotEnabled = true
+	cfg.QQBotAppID = "qq-app"
+	cfg.QQBotAppSecret = "qq-secret"
+	manager := newSrvIMGatewayManager(svc)
+	manager.factories = map[string]srvIMGatewayFactory{
+		"qq": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "qq-config", true
+			},
+			New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+				return &fakeSrvIMGateway{skipStatus: true}
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	if status := manager.Status(p, "qq"); status.Status != srvWeixinStatusConnected {
+		t.Fatalf("successful gateway start should mark runtime connected, got %#v", status)
+	}
+}
+
+func TestConfiguredIMRuntimeStaleFactoryResultIsStopped(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfgOld := testLLMConfig()
+	cfgOld.TelegramBotEnabled = true
+	cfgOld.TelegramBotToken = "old-token"
+	cfgNew := cfgOld
+	cfgNew.TelegramBotToken = "new-token"
+	manager := newSrvIMGatewayManager(svc)
+	oldFactoryEntered := make(chan struct{})
+	releaseOldFactory := make(chan struct{})
+	oldStarts, oldStops := 0, 0
+	newStarts, newStops := 0, 0
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(cfg corelib.AppConfig) (string, bool) {
+				return cfg.TelegramBotToken, true
+			},
+			New: func(cfg corelib.AppConfig, _ func(srvIMIncomingMessage)) srvIMGateway {
+				if cfg.TelegramBotToken == "old-token" {
+					close(oldFactoryEntered)
+					<-releaseOldFactory
+					return &fakeSrvIMGateway{starts: &oldStarts, stops: &oldStops}
+				}
+				return &fakeSrvIMGateway{starts: &newStarts, stops: &newStops}
+			},
+		},
+	}
+	firstDone := make(chan struct{})
+	go func() {
+		manager.SyncPrincipal(ctx, p, cfgOld)
+		close(firstDone)
+	}()
+	select {
+	case <-oldFactoryEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("old factory did not start")
+	}
+	manager.SyncPrincipal(ctx, p, cfgNew)
+	close(releaseOldFactory)
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("old SyncPrincipal did not finish")
+	}
+	if oldStarts != 0 || oldStops != 1 {
+		t.Fatalf("stale old gateway should be stopped without starting: starts=%d stops=%d", oldStarts, oldStops)
+	}
+	if newStarts != 1 || newStops != 0 {
+		t.Fatalf("new gateway should be running: starts=%d stops=%d", newStarts, newStops)
+	}
+	status := manager.Status(p, "telegram")
+	if status.Status != srvWeixinStatusConnected {
+		t.Fatalf("stale factory result changed current status: %#v", status)
+	}
+}
+
+func TestConfiguredIMRuntimeStoppedDuringStartDoesNotRemainRunning(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "token"
+	manager := newSrvIMGatewayManager(svc)
+	starts := 0
+	stops := 0
+	startCallbackRan := false
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "config", true
+			},
+			New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+				return &fakeSrvIMGateway{
+					starts: &starts,
+					stops:  &stops,
+					startCallback: func() {
+						startCallbackRan = true
+						manager.StopPrincipal(p)
+					},
+				}
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	if !startCallbackRan || starts != 1 || stops < 1 {
+		t.Fatalf("start/stop callback did not run as expected: callback=%v starts=%d stops=%d", startCallbackRan, starts, stops)
+	}
+	if status := manager.Status(p, "telegram"); status.Status != srvWeixinStatusDisabled {
+		t.Fatalf("runtime stopped during start should remain disabled, got %#v", status)
+	}
+}
+
+func TestConfiguredIMRuntimeStartErrorStopsGateway(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "token"
+	manager := newSrvIMGatewayManager(svc)
+	starts := 0
+	stops := 0
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "config", true
+			},
+			New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+				return &fakeSrvIMGateway{starts: &starts, stops: &stops, startErr: errors.New("dial failed")}
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	status := manager.Status(p, "telegram")
+	if starts != 1 || stops != 1 || status.Status != srvWeixinStatusError || !strings.Contains(status.LastError, "dial failed") {
+		t.Fatalf("start error should stop gateway and expose error: starts=%d stops=%d status=%#v", starts, stops, status)
+	}
+}
+
+func TestConfiguredIMRuntimeStartErrorIgnoresLateStopStatus(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "token"
+	manager := newSrvIMGatewayManager(svc)
+	releaseLateStopStatus := make(chan struct{})
+	lateStopStatusSent := make(chan struct{})
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "config", true
+			},
+			New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+				var gateway *fakeSrvIMGateway
+				gateway = &fakeSrvIMGateway{
+					startErr: errors.New("dial failed"),
+					stopCallback: func() {
+						go func() {
+							<-releaseLateStopStatus
+							if gateway.onStatus != nil {
+								gateway.onStatus("disconnected")
+							}
+							close(lateStopStatusSent)
+						}()
+					},
+				}
+				return gateway
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	if status := manager.Status(p, "telegram"); status.Status != srvWeixinStatusError {
+		t.Fatalf("start error should set error before late stop status, got %#v", status)
+	}
+	close(releaseLateStopStatus)
+	select {
+	case <-lateStopStatusSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("late stop status did not fire")
+	}
+	if status := manager.Status(p, "telegram"); status.Status != srvWeixinStatusError || !strings.Contains(status.LastError, "dial failed") {
+		t.Fatalf("late stop status should not overwrite start error: %#v", status)
+	}
+}
+
+func TestConfiguredIMRuntimeStopClearsStatusCallback(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "token"
+	manager := newSrvIMGatewayManager(svc)
+	var gateway *fakeSrvIMGateway
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(cfg corelib.AppConfig) (string, bool) {
+				if cfg.TelegramBotEnabled {
+					return cfg.TelegramBotToken, true
+				}
+				return "", false
+			},
+			New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+				gateway = &fakeSrvIMGateway{}
+				return gateway
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	if gateway == nil || gateway.onStatus == nil {
+		t.Fatalf("gateway did not start with status callback")
+	}
+	cfg.TelegramBotEnabled = false
+	manager.SyncPrincipal(ctx, p, cfg)
+	gateway.onStatus("connected")
+	if status := manager.Status(p, "telegram"); status.Status != srvWeixinStatusDisabled {
+		t.Fatalf("stopped gateway callback should not change disabled status: %#v", status)
+	}
+}
+
+func TestConfiguredIMRuntimeFactoryFailureStopsOldRuntime(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "token-1"
+	starts := 0
+	stops := 0
+	manager := newSrvIMGatewayManager(svc)
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(cfg corelib.AppConfig) (string, bool) {
+				return cfg.TelegramBotToken, true
+			},
+			New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+				return &fakeSrvIMGateway{starts: &starts, stops: &stops}
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	if starts != 1 || manager.Status(p, "telegram").Status != srvWeixinStatusConnected {
+		t.Fatalf("initial runtime not connected: starts=%d status=%#v", starts, manager.Status(p, "telegram"))
+	}
+	cfg.TelegramBotToken = "token-2"
+	manager.factories["telegram"] = srvIMGatewayFactory{
+		ConfigKey: func(cfg corelib.AppConfig) (string, bool) {
+			return cfg.TelegramBotToken, true
+		},
+		New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+			return nil
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	status := manager.Status(p, "telegram")
+	if stops != 1 || status.Status != srvWeixinStatusError || !strings.Contains(status.LastError, "returned nil") {
+		t.Fatalf("factory failure should stop old runtime and expose error: stops=%d status=%#v", stops, status)
+	}
+}
+
+func TestConfiguredIMRuntimeMissingConfigResolverExposesError(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "token-1"
+	starts := 0
+	stops := 0
+	manager := newSrvIMGatewayManager(svc)
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "config-1", true
+			},
+			New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+				return &fakeSrvIMGateway{starts: &starts, stops: &stops}
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	manager.factories["telegram"] = srvIMGatewayFactory{New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+		t.Fatal("missing config resolver must not construct gateway")
+		return nil
+	}}
+	manager.SyncPrincipal(ctx, p, cfg)
+	status := manager.Status(p, "telegram")
+	if starts != 1 || stops != 1 || status.Status != srvWeixinStatusError || !strings.Contains(status.LastError, "resolver") {
+		t.Fatalf("missing resolver should stop old runtime and expose error: starts=%d stops=%d status=%#v", starts, stops, status)
+	}
+}
+
+func TestConfiguredIMRuntimeStatusEndpoint(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(p)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	qqStarts := 0
+	lansengerStarts := 0
+	server.imRuntime.factories = map[string]srvIMGatewayFactory{
+		"qq": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "qq-config", true
+			},
+			New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+				return &fakeSrvIMGateway{starts: &qqStarts}
+			},
+		},
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "", false
+			},
+			New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+				t.Fatal("disabled telegram must not construct gateway")
+				return nil
+			},
+		},
+		"lansenger": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) {
+				return "lansenger-config", true
+			},
+			New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+				return &fakeSrvIMGateway{starts: &lansengerStarts}
+			},
+		},
+	}
+	cfg := testLLMConfig()
+	cfg.QQBotEnabled = true
+	cfg.QQBotAppID = "qq-app"
+	cfg.QQBotAppSecret = "qq-secret"
+	cfg.LansengerEnabled = true
+	cfg.LansengerAppID = "lx-app"
+	cfg.LansengerAppSecret = "lx-secret"
+	cfg.LansengerGatewayURL = "https://lansenger.example"
+	cfg.ThirdPartyGatewayEnabled = true
+	cfg.ThirdPartyGatewayToken = "thirdparty-status-token"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	server.syncIMRuntimeFromRawConfig(ctx, p)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/im/status", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status endpoint = %d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Items map[string]srvIMRuntimeStatus `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if out.Items["qq"].Status != srvWeixinStatusConnected || out.Items["lansenger"].Status != srvWeixinStatusConnected || out.Items["telegram"].Status != srvWeixinStatusDisabled || out.Items["thirdparty"].Status != srvWeixinStatusConnected {
+		t.Fatalf("unexpected IM statuses: %#v", out.Items)
+	}
+	if qqStarts != 1 || lansengerStarts != 1 {
+		t.Fatalf("unexpected starts: qq=%d lansenger=%d", qqStarts, lansengerStarts)
+	}
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("second status endpoint = %d body=%s", w.Code, w.Body.String())
+	}
+	if qqStarts != 1 || lansengerStarts != 1 {
+		t.Fatalf("status endpoint should be read-only, starts: qq=%d lansenger=%d", qqStarts, lansengerStarts)
+	}
+}
+
+func TestConfiguredIMRuntimeStartupSkipsDisabledTenant(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "tg-token"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	disabled := agentservice.TenantStatusDisabled
+	if _, err := svc.UpdateTenant(ctx, tenant.ID, agentservice.UpdateTenantInput{Status: &disabled}); err != nil {
+		t.Fatalf("UpdateTenant disabled: %v", err)
+	}
+	server := &HTTPServer{svc: svc, imRuntime: newSrvIMGatewayManager(svc)}
+	starts := 0
+	server.imRuntime.factories["telegram"] = srvIMGatewayFactory{
+		ConfigKey: srvTelegramRuntimeConfigKey,
+		New: func(corelib.AppConfig, func(srvIMIncomingMessage)) srvIMGateway {
+			starts++
+			return &fakeSrvIMGateway{}
+		},
+	}
+	server.startConfiguredIMRuntimes(ctx)
+	if starts != 0 {
+		t.Fatalf("disabled-tenant startup should not start runtime, starts=%d", starts)
+	}
+	if status := server.imRuntime.Status(p, "telegram"); status.Status != srvWeixinStatusDisabled {
+		t.Fatalf("runtime status = %#v, want disabled", status)
+	}
+}
+
+func TestConfiguredIMRuntimeResumeTenantOnlyStartsTargetTenant(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenantA, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant A"})
+	if err != nil {
+		t.Fatalf("CreateTenant A: %v", err)
+	}
+	tenantB, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant B"})
+	if err != nil {
+		t.Fatalf("CreateTenant B: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenantA.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenantB.ID, Name: "User B"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	cfgA := testLLMConfig()
+	cfgA.TelegramBotEnabled = true
+	cfgA.TelegramBotToken = "tg-token-a"
+	cfgB := testLLMConfig()
+	cfgB.TelegramBotEnabled = true
+	cfgB.TelegramBotToken = "tg-token-b"
+	if _, err := svc.UpdateUserConfig(ctx, agentservice.Principal{TenantID: tenantA.ID, UserID: userA.ID}, cfgA); err != nil {
+		t.Fatalf("UpdateUserConfig A: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(ctx, agentservice.Principal{TenantID: tenantB.ID, UserID: userB.ID}, cfgB); err != nil {
+		t.Fatalf("UpdateUserConfig B: %v", err)
+	}
+	disabled := agentservice.TenantStatusDisabled
+	if _, err := svc.UpdateTenant(ctx, tenantA.ID, agentservice.UpdateTenantInput{Status: &disabled}); err != nil {
+		t.Fatalf("UpdateTenant A disabled: %v", err)
+	}
+	server := &HTTPServer{svc: svc, adminSecret: "admin-secret", imRuntime: newSrvIMGatewayManager(svc)}
+	startsByToken := map[string]int{}
+	server.imRuntime.factories["telegram"] = srvIMGatewayFactory{
+		ConfigKey: srvTelegramRuntimeConfigKey,
+		New: func(cfg corelib.AppConfig, _ func(srvIMIncomingMessage)) srvIMGateway {
+			startsByToken[cfg.TelegramBotToken]++
+			return &fakeSrvIMGateway{}
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/tenants/"+url.PathEscape(tenantA.ID)+"/resume", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.SetPathValue("tenantId", tenantA.ID)
+	w := httptest.NewRecorder()
+	server.updateTenantLifecycleStatus(w, req, agentservice.TenantStatusActive, "admin.tenant_resumed")
+	if w.Code != http.StatusOK {
+		t.Fatalf("resume tenant status=%d body=%s", w.Code, w.Body.String())
+	}
+	if startsByToken["tg-token-a"] != 1 {
+		t.Fatalf("resumed tenant runtime starts=%d, want 1", startsByToken["tg-token-a"])
+	}
+	if startsByToken["tg-token-b"] != 0 {
+		t.Fatalf("other tenant runtime should stay stopped, starts=%d", startsByToken["tg-token-b"])
+	}
+}
+
+func TestWeixinQRPollTimeoutStaysWaiting(t *testing.T) {
+	resp := weixinQRPollErrorResponse(context.DeadlineExceeded)
+	if resp["status"] != weixin.QRLoginStatusWait.String() || resp["retryable"] != true || resp["error"] != nil {
+		t.Fatalf("retryable poll timeout should stay waiting without user-visible error: %#v", resp)
+	}
+	if msg := weixinQRPollMessage(weixin.QRLoginStatusWait, &weixin.QRLoginResult{Message: "timeout"}); msg != "" {
+		t.Fatalf("wait timeout message should be hidden, got %q", msg)
+	}
+	if msg := weixinQRPollMessage(weixin.QRLoginStatus("waiting"), &weixin.QRLoginResult{Message: "timeout"}); msg != "" {
+		t.Fatalf("wait alias timeout message should be hidden, got %q", msg)
+	}
+	if status := normalizeWeixinQRPollStatus(weixin.QRLoginStatusUnknown, &weixin.QRLoginResult{Message: "timeout"}); status != weixin.QRLoginStatusWait {
+		t.Fatalf("message timeout should normalize to wait, got %q", status)
+	}
+	if msg := weixinQRPollMessage(weixin.QRLoginStatusUnknown, &weixin.QRLoginResult{Message: "timeout"}); msg != "" {
+		t.Fatalf("unknown timeout message should be hidden, got %q", msg)
+	}
+	if msg := weixinQRPollMessage(weixin.QRLoginStatusScanned, &weixin.QRLoginResult{Message: "scanned"}); msg != "scanned" {
+		t.Fatalf("non-wait status message should be kept, got %q", msg)
+	}
+}
+
+func TestThirdPartyGatewayRoutesMessageToUserAssistant(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.ThirdPartyGatewayEnabled = true
+	cfg.ThirdPartyGatewayToken = "gateway-token"
+	if _, err := svc.UpdateUserConfig(context.Background(), p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	handshakeBody := bytes.NewBufferString(`{"clientId":"client-a"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/handshake", handshakeBody)
+	req.Header.Set("Authorization", "Bearer gateway-token")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"protocolVersion"`) {
+		t.Fatalf("handshake = %d body=%s", w.Code, w.Body.String())
+	}
+
+	incoming := `{"clientId":"client-a","eventId":"evt-1","conversationId":"room-1","message":{"type":"text","text":"hello third party"}}`
+	req = httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/incoming", bytes.NewBufferString(incoming))
+	req.Header.Set("Authorization", "Bearer gateway-token")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"accepted":true`) {
+		t.Fatalf("incoming = %d body=%s", w.Code, w.Body.String())
+	}
+
+	var out struct {
+		Messages []srvThirdPartyOutgoingMessage `json:"messages"`
+	}
+	for i := 0; i < 20; i++ {
+		req = httptest.NewRequest(http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=client-a&timeout=0", nil)
+		req.Header.Set("Authorization", "Bearer gateway-token")
+		w = httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("outgoing = %d body=%s", w.Code, w.Body.String())
+		}
+		out = struct {
+			Messages []srvThirdPartyOutgoingMessage `json:"messages"`
+		}{}
+		if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+			t.Fatalf("decode outgoing: %v", err)
+		}
+		if len(out.Messages) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(out.Messages) != 1 || !strings.Contains(out.Messages[0].Text, "hello third party") {
+		t.Fatalf("outgoing messages = %#v", out.Messages)
+	}
+
+	ack := fmt.Sprintf(`{"clientId":"client-a","messageIds":["%s"],"status":"delivered"}`, out.Messages[0].ID)
+	req = httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/ack", bytes.NewBufferString(ack))
+	req.Header.Set("Authorization", "Bearer gateway-token")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Fatalf("ack = %d body=%s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=client-a&cursor=0&timeout=0", nil)
+	req.Header.Set("Authorization", "Bearer gateway-token")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("outgoing after ack = %d body=%s", w.Code, w.Body.String())
+	}
+	var afterAck struct {
+		Messages   []srvThirdPartyOutgoingMessage `json:"messages"`
+		NextCursor string                         `json:"nextCursor"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&afterAck); err != nil {
+		t.Fatalf("decode outgoing after ack: %v", err)
+	}
+	if len(afterAck.Messages) != 0 || afterAck.NextCursor == "" || afterAck.NextCursor == "0" {
+		t.Fatalf("acked message should not be redelivered and cursor should advance: %#v", afterAck)
+	}
+}
+
+func TestThirdPartyRuntimeInheritsVirtualEmployeeIdentity(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(ctx, p, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	if _, err := svc.CreateInstance(ctx, p, agentservice.CreateInstanceInput{
+		Name:        "招投标助手",
+		Description: "负责招投标材料整理",
+		Metadata: map[string]string{
+			"ve_employee_id":       "ve-bid-assistant",
+			"ve_name":              "招投标助手",
+			"ve_skill_description": "负责招投标材料整理",
+		},
+	}); err != nil {
+		t.Fatalf("CreateInstance template: %v", err)
+	}
+	manager := newSrvThirdPartyGatewayManager(svc)
+	instanceID, err := manager.ensureThirdPartyInstance(ctx, p)
+	if err != nil {
+		t.Fatalf("ensureThirdPartyInstance: %v", err)
+	}
+	inst, err := svc.GetInstance(ctx, p, instanceID)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if inst.Name != "招投标助手" || inst.Description != "负责招投标材料整理" {
+		t.Fatalf("unexpected runtime identity: %#v", inst)
+	}
+	if inst.Metadata["ve_employee_id"] != "ve-bid-assistant" || inst.Metadata["im_runtime_key"] != srvThirdPartyRuntimeKey || inst.Metadata["im_platform"] != "thirdparty" {
+		t.Fatalf("unexpected runtime metadata: %#v", inst.Metadata)
+	}
+}
+
+func TestThirdPartyRuntimeRecreatesDeletedCachedInstanceOnMessage(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(ctx, p, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	manager := newSrvThirdPartyGatewayManager(svc)
+	instanceID, err := manager.ensureThirdPartyInstance(ctx, p)
+	if err != nil {
+		t.Fatalf("ensureThirdPartyInstance: %v", err)
+	}
+	if err := svc.DeleteInstance(ctx, p, instanceID); err != nil {
+		t.Fatalf("DeleteInstance: %v", err)
+	}
+	manager.processIncoming(ctx, p, srvThirdPartyIncomingRequest{
+		ClientID:       "client-a",
+		EventID:        "evt-recreate",
+		ConversationID: "conv-a",
+		Message:        srvThirdPartyMessageBody{Type: "text", Text: "hello after delete"},
+	}, "mc_in_recreate")
+	instances, err := svc.ListInstances(ctx, p)
+	if err != nil {
+		t.Fatalf("ListInstances: %v", err)
+	}
+	if len(instances) != 1 || instances[0].ID == instanceID {
+		t.Fatalf("expected recreated runtime instance, got %#v", instances)
+	}
+	clientKey := thirdPartyClientKey(p, "client-a")
+	msgs, _, _, _ := manager.messagesAfter(clientKey, 0, 10)
+	if len(msgs) != 1 || !strings.Contains(msgs[0].Text, "hello after delete") {
+		t.Fatalf("expected successful outgoing message after recreation, got %#v", msgs)
+	}
+}
+
+func TestThirdPartyGatewayRejectsUnauthorizedToken(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/handshake", bytes.NewBufferString(`{"clientId":"client-a"}`))
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized handshake = %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestThirdPartyGatewayRejectsOversizedProtocolFields(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	cfg := testLLMConfig()
+	cfg.ThirdPartyGatewayEnabled = true
+	cfg.ThirdPartyGatewayToken = "gateway-token"
+	if _, err := svc.UpdateUserConfig(ctx, agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	longID := strings.Repeat("a", srvThirdPartyMaxIDChars+1)
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "handshake client", method: http.MethodPost, path: "/api/im-gateway/v1/handshake", body: fmt.Sprintf(`{"clientId":%q}`, longID)},
+		{name: "incoming event", method: http.MethodPost, path: "/api/im-gateway/v1/incoming", body: fmt.Sprintf(`{"clientId":"client-a","eventId":%q,"conversationId":"room-1","message":{"type":"text","text":"hello"}}`, longID)},
+		{name: "incoming conversation", method: http.MethodPost, path: "/api/im-gateway/v1/incoming", body: fmt.Sprintf(`{"clientId":"client-a","eventId":"evt-1","conversationId":%q,"message":{"type":"text","text":"hello"}}`, longID)},
+		{name: "outgoing client", method: http.MethodGet, path: "/api/im-gateway/v1/outgoing?clientId=" + longID + "&timeout=0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer gateway-token")
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("oversized field status = %d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+	ids := make([]string, srvThirdPartyMaxAckIDs+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("msg-%d", i)
+	}
+	bodyBytes, err := json.Marshal(map[string]any{"clientId": "client-a", "messageIds": ids})
+	if err != nil {
+		t.Fatalf("marshal ack: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/ack", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer gateway-token")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("oversized ack status = %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestThirdPartyGatewayManagerBoundsState(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	clientKey := thirdPartyClientKey(agentservice.Principal{TenantID: "tenant", UserID: "user"}, "client-a")
+	for i := 0; i < srvThirdPartyMaxSeenEvents+25; i++ {
+		eventID := fmt.Sprintf("event-%d", i)
+		duplicate, stored := manager.markIncoming(clientKey, eventID, "msg-"+eventID)
+		if duplicate || stored == "" {
+			t.Fatalf("unexpected duplicate for %s: duplicate=%v stored=%q", eventID, duplicate, stored)
+		}
+	}
+	manager.mu.Lock()
+	state := manager.clients[clientKey]
+	seenLen := len(state.Seen)
+	seenOrderLen := len(state.SeenOrder)
+	_, oldestKept := state.Seen["event-0"]
+	_, newestKept := state.Seen[fmt.Sprintf("event-%d", srvThirdPartyMaxSeenEvents+24)]
+	manager.mu.Unlock()
+	if seenLen != srvThirdPartyMaxSeenEvents || seenOrderLen != srvThirdPartyMaxSeenEvents || oldestKept || !newestKept {
+		t.Fatalf("seen state not bounded: seen=%d order=%d oldest=%v newest=%v", seenLen, seenOrderLen, oldestKept, newestKept)
+	}
+
+	req := srvThirdPartyIncomingRequest{ClientID: "client-a", ConversationID: "room-1"}
+	for i := 0; i < srvThirdPartyMaxStoredMsgs+10; i++ {
+		manager.enqueue(agentservice.Principal{TenantID: "tenant", UserID: "user"}, req, srvThirdPartyOutgoingMessage{ID: fmt.Sprintf("out-%d", i), Type: "text", Text: "hello"})
+	}
+	manager.ack(clientKey, srvThirdPartyAckRequest{ClientID: "client-a", MessageIDs: []string{"missing", "out-0", fmt.Sprintf("out-%d", srvThirdPartyMaxStoredMsgs+9)}})
+	manager.mu.Lock()
+	messageLen := len(state.Messages)
+	ackLen := len(state.Acked)
+	_, oldAcked := state.Acked["out-0"]
+	_, missingAcked := state.Acked["missing"]
+	_, liveAcked := state.Acked[fmt.Sprintf("out-%d", srvThirdPartyMaxStoredMsgs+9)]
+	manager.mu.Unlock()
+	if messageLen != srvThirdPartyMaxStoredMsgs || ackLen != 1 || oldAcked || missingAcked || !liveAcked {
+		t.Fatalf("message/ack state not bounded: messages=%d ack=%d old=%v missing=%v live=%v", messageLen, ackLen, oldAcked, missingAcked, liveAcked)
+	}
+}
+
+func TestThirdPartyGatewayManagerStopsPrincipalAndTenant(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	p1 := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
+	p2 := agentservice.Principal{TenantID: "tenant-a", UserID: "user-b"}
+	p3 := agentservice.Principal{TenantID: "tenant-b", UserID: "user-c"}
+	for _, item := range []struct {
+		p      agentservice.Principal
+		client string
+	}{
+		{p1, "client-a"},
+		{p2, "client-b"},
+		{p3, "client-c"},
+	} {
+		manager.ensureClient(thirdPartyClientKey(item.p, item.client))
+	}
+	manager.StopPrincipal(p1)
+	manager.mu.Lock()
+	_, p1Exists := manager.clients[thirdPartyClientKey(p1, "client-a")]
+	_, p2Exists := manager.clients[thirdPartyClientKey(p2, "client-b")]
+	_, p3Exists := manager.clients[thirdPartyClientKey(p3, "client-c")]
+	manager.mu.Unlock()
+	if p1Exists || !p2Exists || !p3Exists {
+		t.Fatalf("StopPrincipal scoped incorrectly: p1=%v p2=%v p3=%v", p1Exists, p2Exists, p3Exists)
+	}
+	manager.StopTenant("tenant-a")
+	manager.mu.Lock()
+	remainingTenantA := false
+	for key := range manager.clients {
+		if strings.HasPrefix(key, "tenant-a\x00") {
+			remainingTenantA = true
+		}
+	}
+	_, p3Exists = manager.clients[thirdPartyClientKey(p3, "client-c")]
+	manager.mu.Unlock()
+	if remainingTenantA || !p3Exists {
+		t.Fatalf("StopTenant scoped incorrectly: remainingTenantA=%v p3=%v", remainingTenantA, p3Exists)
+	}
+}
+
+func TestThirdPartyGatewayRejectsDisabledTenantToken(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Disabled Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	cfg := testLLMConfig()
+	cfg.ThirdPartyGatewayEnabled = true
+	cfg.ThirdPartyGatewayToken = "disabled-tenant-token"
+	if _, err := svc.UpdateUserConfig(ctx, agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	disabled := agentservice.TenantStatusDisabled
+	if _, err := svc.UpdateTenant(ctx, tenant.ID, agentservice.UpdateTenantInput{Status: &disabled}); err != nil {
+		t.Fatalf("UpdateTenant disabled: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/handshake", bytes.NewBufferString(`{"clientId":"client-a"}`))
+	req.Header.Set("Authorization", "Bearer disabled-tenant-token")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("disabled-tenant handshake = %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestThirdPartyGatewayDuplicateTokenIgnoresInactiveTenant(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	activeTenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Active Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant active: %v", err)
+	}
+	disabledTenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Disabled Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant disabled: %v", err)
+	}
+	activeUser, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: activeTenant.ID, Name: "Active User"})
+	if err != nil {
+		t.Fatalf("CreateUser active: %v", err)
+	}
+	disabledUser, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: disabledTenant.ID, Name: "Disabled User"})
+	if err != nil {
+		t.Fatalf("CreateUser disabled: %v", err)
+	}
+	for _, p := range []agentservice.Principal{
+		{TenantID: activeTenant.ID, UserID: activeUser.ID},
+		{TenantID: disabledTenant.ID, UserID: disabledUser.ID},
+	} {
+		cfg := testLLMConfig()
+		cfg.ThirdPartyGatewayEnabled = true
+		cfg.ThirdPartyGatewayToken = "shared-inactive-token"
+		if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+			t.Fatalf("UpdateUserConfig %#v: %v", p, err)
+		}
+	}
+	disabled := agentservice.TenantStatusDisabled
+	if _, err := svc.UpdateTenant(ctx, disabledTenant.ID, agentservice.UpdateTenantInput{Status: &disabled}); err != nil {
+		t.Fatalf("UpdateTenant disabled: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/handshake", bytes.NewBufferString(`{"clientId":"client-a"}`))
+	req.Header.Set("Authorization", "Bearer shared-inactive-token")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("active token with inactive duplicate handshake = %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestThirdPartyGatewayRejectsDuplicateUserToken(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	for _, userID := range []string{userA.ID, userB.ID} {
+		cfg := testLLMConfig()
+		cfg.ThirdPartyGatewayEnabled = true
+		cfg.ThirdPartyGatewayToken = "shared-gateway-token"
+		if _, err := svc.UpdateUserConfig(ctx, agentservice.Principal{TenantID: tenant.ID, UserID: userID}, cfg); err != nil {
+			t.Fatalf("UpdateUserConfig %s: %v", userID, err)
+		}
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/handshake", bytes.NewBufferString(`{"clientId":"client-a"}`))
+	req.Header.Set("Authorization", "Bearer shared-gateway-token")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("duplicate-token handshake = %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestThirdPartyGatewayConfigDisableClearsClientState(t *testing.T) {
+	ctx := context.Background()
+	secret := "test-token-secret-0123456789012345"
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: secret}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.ThirdPartyGatewayEnabled = true
+	cfg.ThirdPartyGatewayToken = "disable-gateway-token"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager(secret, time.Hour).Issue(p)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/handshake", bytes.NewBufferString(`{"clientId":"client-a"}`))
+	req.Header.Set("Authorization", "Bearer disable-gateway-token")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("handshake = %d body=%s", w.Code, w.Body.String())
+	}
+	if _, ok := server.thirdPartyIM.clients[thirdPartyClientKey(p, "client-a")]; !ok {
+		t.Fatal("expected third-party client state after handshake")
+	}
+
+	cfg.ThirdPartyGatewayEnabled = false
+	body, err := json.Marshal(map[string]any{"app_config": cfg})
+	if err != nil {
+		t.Fatalf("Marshal config: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/config", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("disable config = %d body=%s", w.Code, w.Body.String())
+	}
+	if _, ok := server.thirdPartyIM.clients[thirdPartyClientKey(p, "client-a")]; ok {
+		t.Fatal("third-party client state should be cleared when channel is disabled")
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/handshake", bytes.NewBufferString(`{"clientId":"client-a"}`))
+	req.Header.Set("Authorization", "Bearer disable-gateway-token")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("disabled token handshake = %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestThirdPartyGatewayConfigTokenRotationClearsClientState(t *testing.T) {
+	ctx := context.Background()
+	secret := "test-token-secret-0123456789012345"
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: secret}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.ThirdPartyGatewayEnabled = true
+	cfg.ThirdPartyGatewayToken = "old-gateway-token"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager(secret, time.Hour).Issue(p)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/handshake", bytes.NewBufferString(`{"clientId":"client-a"}`))
+	req.Header.Set("Authorization", "Bearer old-gateway-token")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("handshake = %d body=%s", w.Code, w.Body.String())
+	}
+	if _, ok := server.thirdPartyIM.clients[thirdPartyClientKey(p, "client-a")]; !ok {
+		t.Fatal("expected third-party client state after handshake")
+	}
+
+	cfg.ThirdPartyGatewayToken = "new-gateway-token"
+	body, err := json.Marshal(map[string]any{"app_config": cfg})
+	if err != nil {
+		t.Fatalf("Marshal config: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/config", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("rotate token config = %d body=%s", w.Code, w.Body.String())
+	}
+	if _, ok := server.thirdPartyIM.clients[thirdPartyClientKey(p, "client-a")]; ok {
+		t.Fatal("third-party client state should be cleared when token rotates")
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/handshake", bytes.NewBufferString(`{"clientId":"client-a"}`))
+	req.Header.Set("Authorization", "Bearer old-gateway-token")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("old token handshake = %d body=%s", w.Code, w.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/handshake", bytes.NewBufferString(`{"clientId":"client-a"}`))
+	req.Header.Set("Authorization", "Bearer new-gateway-token")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("new token handshake = %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestThirdPartyGatewayMaskedTokenSavePreservesClientState(t *testing.T) {
+	ctx := context.Background()
+	secret := "test-token-secret-0123456789012345"
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: secret}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.ThirdPartyGatewayEnabled = true
+	cfg.ThirdPartyGatewayToken = "masked-save-token"
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager(secret, time.Hour).Issue(p)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/handshake", bytes.NewBufferString(`{"clientId":"client-a"}`))
+	req.Header.Set("Authorization", "Bearer masked-save-token")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("handshake = %d body=%s", w.Code, w.Body.String())
+	}
+
+	cfg.ThirdPartyGatewayToken = "******"
+	body, err := json.Marshal(map[string]any{"app_config": cfg})
+	if err != nil {
+		t.Fatalf("Marshal config: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/config", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("masked token config = %d body=%s", w.Code, w.Body.String())
+	}
+	if _, ok := server.thirdPartyIM.clients[thirdPartyClientKey(p, "client-a")]; !ok {
+		t.Fatal("masked token save should preserve third-party client state")
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/handshake", bytes.NewBufferString(`{"clientId":"client-b"}`))
+	req.Header.Set("Authorization", "Bearer masked-save-token")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("preserved token handshake = %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestThirdPartyGatewayConfigRejectsDuplicateUserToken(t *testing.T) {
+	ctx := context.Background()
+	secret := "test-token-secret-0123456789012345"
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: secret}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	principalA := agentservice.Principal{TenantID: tenant.ID, UserID: userA.ID}
+	principalB := agentservice.Principal{TenantID: tenant.ID, UserID: userB.ID}
+	cfgA := testLLMConfig()
+	cfgA.ThirdPartyGatewayEnabled = true
+	cfgA.ThirdPartyGatewayToken = "unique-gateway-token"
+	if _, err := svc.UpdateUserConfig(ctx, principalA, cfgA); err != nil {
+		t.Fatalf("UpdateUserConfig A: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	cfgB := testLLMConfig()
+	cfgB.ThirdPartyGatewayEnabled = true
+	cfgB.ThirdPartyGatewayToken = "unique-gateway-token"
+	body, err := json.Marshal(map[string]any{"app_config": cfgB})
+	if err != nil {
+		t.Fatalf("Marshal config: %v", err)
+	}
+	userToken, _, err := agentservice.NewTokenManager(secret, time.Hour).Issue(principalB)
+	if err != nil {
+		t.Fatalf("Issue user token: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/config", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("user duplicate-token config status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	adminReq := httptest.NewRequest(http.MethodPut, "/api/v1/admin/tenants/"+url.PathEscape(tenant.ID)+"/users/"+url.PathEscape(userB.ID)+"/config", bytes.NewReader(body))
+	adminReq.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	adminW := httptest.NewRecorder()
+	server.Handler().ServeHTTP(adminW, adminReq)
+	if adminW.Code != http.StatusBadRequest {
+		t.Fatalf("admin duplicate-token config status = %d body=%s", adminW.Code, adminW.Body.String())
+	}
+}
+
+func requestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
+
+func TestWeixinQRTokenStoreReplacesSameUserAndPrunesExpired(t *testing.T) {
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	store := newWeixinQRTokenStore()
+	principal := agentservice.Principal{TenantID: "tenant-1", UserID: "user-1"}
+	other := agentservice.Principal{TenantID: "tenant-1", UserID: "user-2"}
+	store.Put("old-token", weixinQRTokenRecord{TenantID: principal.TenantID, UserID: principal.UserID, BaseURL: "https://old.example", ExpiresAt: now.Add(time.Minute)}, now)
+	store.Put("other-token", weixinQRTokenRecord{TenantID: other.TenantID, UserID: other.UserID, BaseURL: "https://other.example", ExpiresAt: now.Add(time.Minute)}, now)
+	store.Put("new-token", weixinQRTokenRecord{TenantID: principal.TenantID, UserID: principal.UserID, BaseURL: "https://new.example", ExpiresAt: now.Add(time.Minute)}, now)
+	if _, ok := store.Get("old-token", principal, now); ok {
+		t.Fatal("old same-user QR token should be replaced")
+	}
+	if rec, ok := store.Get("new-token", principal, now); !ok || rec.BaseURL != "https://new.example" {
+		t.Fatalf("new same-user QR token missing: %#v ok=%v", rec, ok)
+	}
+	if rec, ok := store.Get("other-token", other, now); !ok || rec.BaseURL != "https://other.example" {
+		t.Fatalf("other user QR token should remain: %#v ok=%v", rec, ok)
+	}
+	if _, ok := store.Get("new-token", principal, now.Add(2*time.Minute)); ok {
+		t.Fatal("expired QR token should be pruned")
 	}
 }
 

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MaClaw Third API Demo</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section id="connectView" class="connect-view">
+      <div class="brand">
+        <span class="brand-mark">M</span>
+        <div>
+          <h1>MaClaw 第三方 API Demo</h1>
+          <p>输入网关 URL 和 apikey，进入简单聊天界面。</p>
+        </div>
+      </div>
+      <form id="connectForm" class="connect-form">
+        <label>
+          <span>URL</span>
+          <input id="baseUrl" name="baseUrl" value="http://127.0.0.1:18777/api/im-gateway/v1" autocomplete="url" required>
+        </label>
+        <label>
+          <span>API Key</span>
+          <input id="apiKey" name="apiKey" type="password" autocomplete="current-password" required>
+        </label>
+        <div class="form-row">
+          <label>
+            <span>Client ID</span>
+            <input id="clientId" name="clientId" value="third-api-demo">
+          </label>
+          <label>
+            <span>Conversation</span>
+            <input id="conversationId" name="conversationId" value="demo">
+          </label>
+        </div>
+        <div class="form-row">
+          <label>
+            <span>User ID</span>
+            <input id="userId" name="userId" value="demo-user">
+          </label>
+          <label>
+            <span>User Name</span>
+            <input id="userName" name="userName" value="Demo User">
+          </label>
+        </div>
+        <button id="connectButton" type="submit">连接</button>
+        <p id="connectError" class="error-text" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="chatView" class="chat-view hidden">
+      <header class="chat-header">
+        <div>
+          <h2>MaClaw Chat</h2>
+          <p id="connectionMeta"></p>
+        </div>
+        <button id="disconnectButton" class="secondary-button" type="button">断开</button>
+      </header>
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <form id="chatForm" class="composer">
+        <textarea id="messageInput" rows="3" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+        <button id="sendButton" type="submit">发送</button>
+      </form>
+      <p id="chatStatus" class="status-text"></p>
+    </section>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>

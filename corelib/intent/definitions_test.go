@@ -114,6 +114,26 @@ func TestBusinessDataDefinitionRoutesToMISData(t *testing.T) {
 	t.Fatalf("business_data label should route to mis_data, got %#v", tools)
 }
 
+func TestNonCodingDefinitionDoesNotClaimLiveDataOrSearch(t *testing.T) {
+	for _, def := range DefaultDefinitions() {
+		if def.Label != LabelNonCoding {
+			continue
+		}
+		for _, blocked := range []string{"天气", "weather", "搜索", "search"} {
+			if containsSubstring(def.TreeText, blocked) {
+				t.Fatalf("non_coding TreeText should not claim live/search domain %q: %s", blocked, def.TreeText)
+			}
+			for _, text := range def.EmbedTexts {
+				if containsSubstring(text, blocked) {
+					t.Fatalf("non_coding EmbedTexts should not claim live/search domain %q: %s", blocked, text)
+				}
+			}
+		}
+		return
+	}
+	t.Fatal("non_coding definition not found")
+}
+
 func TestBuildIntentTreeFromDefinitions(t *testing.T) {
 	defs := DefaultDefinitions()
 	tree := BuildIntentTreeText(defs)

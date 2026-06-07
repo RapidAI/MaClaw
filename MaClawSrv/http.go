@@ -6,12 +6,14 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +23,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/weixin"
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 type configEnvelope struct {
@@ -65,9 +69,79 @@ type HTTPServer struct {
 	mux            *http.ServeMux
 	authLimiter    *authLimiter
 	launchTokens   *launchTokenStore
+	weixinQRTokens *weixinQRTokenStore
+	weixinRuntime  *srvWeixinGatewayManager
+	imRuntime      *srvIMGatewayManager
+	thirdPartyIM   *srvThirdPartyGatewayManager
 	jobs           *asyncJobManager
 	knowledgeMgr   *knowledgeStoreManager
 	skillSourceSvc *cskill.SourceControlService
+}
+
+type weixinQRTokenRecord struct {
+	TenantID  string
+	UserID    string
+	BaseURL   string
+	ExpiresAt time.Time
+}
+
+type weixinQRTokenStore struct {
+	mu     sync.Mutex
+	tokens map[string]weixinQRTokenRecord
+}
+
+func newWeixinQRTokenStore() *weixinQRTokenStore {
+	return &weixinQRTokenStore{tokens: map[string]weixinQRTokenRecord{}}
+}
+
+func (s *weixinQRTokenStore) Put(token string, rec weixinQRTokenRecord, now time.Time) {
+	if s == nil || strings.TrimSpace(token) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(now)
+	s.deletePrincipalLocked(rec.TenantID, rec.UserID)
+	s.tokens[strings.TrimSpace(token)] = rec
+}
+
+func (s *weixinQRTokenStore) Get(token string, p agentservice.Principal, now time.Time) (weixinQRTokenRecord, bool) {
+	if s == nil || strings.TrimSpace(token) == "" {
+		return weixinQRTokenRecord{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(now)
+	rec, ok := s.tokens[strings.TrimSpace(token)]
+	if !ok || rec.TenantID != p.TenantID || rec.UserID != p.UserID {
+		return weixinQRTokenRecord{}, false
+	}
+	return rec, true
+}
+
+func (s *weixinQRTokenStore) Delete(token string) {
+	if s == nil || strings.TrimSpace(token) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.tokens, strings.TrimSpace(token))
+}
+
+func (s *weixinQRTokenStore) pruneLocked(now time.Time) {
+	for token, rec := range s.tokens {
+		if !rec.ExpiresAt.IsZero() && !rec.ExpiresAt.After(now) {
+			delete(s.tokens, token)
+		}
+	}
+}
+
+func (s *weixinQRTokenStore) deletePrincipalLocked(tenantID, userID string) {
+	for token, rec := range s.tokens {
+		if rec.TenantID == tenantID && rec.UserID == userID {
+			delete(s.tokens, token)
+		}
+	}
 }
 
 func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *knowledgeStoreManager, skillSourceSvc ...*cskill.SourceControlService) *HTTPServer {
@@ -79,10 +153,257 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 		sourceSvc = cskill.NewSourceControlService(newFileKVStore(filepath.Join(svc.DataRoot(), "skill_source_control.json")))
 	}
 	wireSkillSourceFilter(svc, sourceSvc)
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc}
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc}
+	s.weixinRuntime = newSrvWeixinGatewayManager(svc)
+	s.imRuntime = newSrvIMGatewayManager(svc)
+	s.thirdPartyIM = newSrvThirdPartyGatewayManager(svc)
+	s.startConfiguredWeixinRuntimes(context.Background())
+	s.startConfiguredIMRuntimes(context.Background())
 	s.routes()
 	s.startSandboxStartupDiagnoseIfEnabled()
 	return s
+}
+
+func (s *HTTPServer) startConfiguredIMRuntimes(ctx context.Context) {
+	if s == nil || s.imRuntime == nil || s.svc == nil {
+		return
+	}
+	activeTenants, err := s.activeTenantSet(ctx)
+	if err != nil {
+		return
+	}
+	users, err := s.svc.ListAllUsers(ctx, agentservice.ListAllUsersAdminInput{Status: agentservice.UserStatusActive})
+	if err != nil {
+		return
+	}
+	for _, user := range users {
+		p := agentservice.Principal{TenantID: user.TenantID, UserID: user.ID}
+		if _, ok := activeTenants[p.TenantID]; !ok {
+			s.stopIMRuntimeForPrincipal(p)
+			continue
+		}
+		cfg, err := s.svc.GetRawUserConfig(ctx, p)
+		if err != nil || cfg == nil {
+			continue
+		}
+		s.imRuntime.SyncPrincipal(ctx, p, cfg.AppConfig)
+	}
+}
+
+func (s *HTTPServer) startConfiguredIMRuntimesForTenant(ctx context.Context, tenantID string) {
+	if s == nil || s.imRuntime == nil || s.svc == nil || strings.TrimSpace(tenantID) == "" {
+		return
+	}
+	users, err := s.svc.ListUsers(ctx, tenantID, agentservice.ListUsersAdminInput{Status: agentservice.UserStatusActive})
+	if err != nil {
+		return
+	}
+	for _, user := range users {
+		s.syncIMRuntimeFromRawConfig(ctx, agentservice.Principal{TenantID: tenantID, UserID: user.ID})
+	}
+}
+
+func (s *HTTPServer) startConfiguredWeixinRuntimes(ctx context.Context) {
+	if s == nil || s.weixinRuntime == nil || s.svc == nil {
+		return
+	}
+	activeTenants, err := s.activeTenantSet(ctx)
+	if err != nil {
+		return
+	}
+	users, err := s.svc.ListAllUsers(ctx, agentservice.ListAllUsersAdminInput{Status: agentservice.UserStatusActive})
+	if err != nil {
+		return
+	}
+	for _, user := range users {
+		if _, ok := activeTenants[user.TenantID]; !ok {
+			continue
+		}
+		p := agentservice.Principal{TenantID: user.TenantID, UserID: user.ID}
+		cfg, err := s.svc.GetRawUserConfig(ctx, p)
+		if err != nil || cfg == nil || !cfg.AppConfig.WeixinEnabled || strings.TrimSpace(cfg.AppConfig.WeixinToken) == "" {
+			continue
+		}
+		s.weixinRuntime.SyncPrincipal(ctx, p, cfg.AppConfig)
+	}
+}
+
+func (s *HTTPServer) activeTenantSet(ctx context.Context) (map[string]struct{}, error) {
+	if s == nil || s.svc == nil {
+		return nil, errors.New("service is not available")
+	}
+	tenants, err := s.svc.ListTenants(ctx, agentservice.ListTenantsInput{Status: agentservice.TenantStatusActive})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]struct{}, len(tenants))
+	for _, tenant := range tenants {
+		out[tenant.ID] = struct{}{}
+	}
+	return out, nil
+}
+
+func (s *HTTPServer) startConfiguredWeixinRuntimesForTenant(ctx context.Context, tenantID string) {
+	if s == nil || s.weixinRuntime == nil || s.svc == nil || strings.TrimSpace(tenantID) == "" {
+		return
+	}
+	tenant, err := s.svc.GetTenant(ctx, tenantID)
+	if err != nil || tenant == nil || tenant.Status != agentservice.TenantStatusActive {
+		return
+	}
+	users, err := s.svc.ListUsers(ctx, tenantID, agentservice.ListUsersAdminInput{Status: agentservice.UserStatusActive})
+	if err != nil {
+		return
+	}
+	for _, user := range users {
+		p := agentservice.Principal{TenantID: tenantID, UserID: user.ID}
+		cfg, err := s.svc.GetRawUserConfig(ctx, p)
+		if err != nil || cfg == nil || !cfg.AppConfig.WeixinEnabled || strings.TrimSpace(cfg.AppConfig.WeixinToken) == "" {
+			continue
+		}
+		s.weixinRuntime.SyncPrincipal(ctx, p, cfg.AppConfig)
+	}
+}
+
+func (s *HTTPServer) syncWeixinRuntimeFromRawConfig(ctx context.Context, p agentservice.Principal) {
+	if s == nil || s.weixinRuntime == nil || s.svc == nil {
+		return
+	}
+	if !s.isActivePrincipal(ctx, p) {
+		s.stopWeixinRuntimeForPrincipal(p)
+		return
+	}
+	cfg, err := s.svc.GetRawUserConfig(ctx, p)
+	if err != nil || cfg == nil {
+		return
+	}
+	s.weixinRuntime.SyncPrincipal(ctx, p, cfg.AppConfig)
+}
+
+func (s *HTTPServer) syncIMRuntimeFromRawConfig(ctx context.Context, p agentservice.Principal) {
+	if s == nil || s.imRuntime == nil || s.svc == nil {
+		return
+	}
+	if !s.isActivePrincipal(ctx, p) {
+		s.stopIMRuntimeForPrincipal(p)
+		return
+	}
+	cfg, err := s.svc.GetRawUserConfig(ctx, p)
+	if err != nil || cfg == nil {
+		return
+	}
+	s.imRuntime.SyncPrincipal(ctx, p, cfg.AppConfig)
+}
+
+func (s *HTTPServer) isActivePrincipal(ctx context.Context, p agentservice.Principal) bool {
+	if s == nil || s.svc == nil {
+		return false
+	}
+	tenant, err := s.svc.GetTenant(ctx, p.TenantID)
+	if err != nil || tenant == nil || tenant.Status != agentservice.TenantStatusActive {
+		return false
+	}
+	user, err := s.svc.GetUser(ctx, p.TenantID, p.UserID)
+	if err != nil || user == nil || user.Status != agentservice.UserStatusActive {
+		return false
+	}
+	return true
+}
+
+func (s *HTTPServer) stopWeixinRuntimeForPrincipal(p agentservice.Principal) {
+	if s == nil || s.weixinRuntime == nil {
+		return
+	}
+	s.weixinRuntime.StopPrincipal(p)
+}
+
+func (s *HTTPServer) stopIMRuntimeForPrincipal(p agentservice.Principal) {
+	if s == nil || s.imRuntime == nil {
+		return
+	}
+	s.imRuntime.StopPrincipal(p)
+}
+
+func (s *HTTPServer) stopThirdPartyIMForPrincipal(p agentservice.Principal) {
+	if s == nil || s.thirdPartyIM == nil {
+		return
+	}
+	s.thirdPartyIM.StopPrincipal(p)
+}
+
+func (s *HTTPServer) syncThirdPartyIMFromRawConfig(ctx context.Context, p agentservice.Principal) {
+	if s == nil || s.thirdPartyIM == nil || s.svc == nil {
+		return
+	}
+	if !s.isActivePrincipal(ctx, p) {
+		s.stopThirdPartyIMForPrincipal(p)
+		return
+	}
+	cfg, err := s.svc.GetRawUserConfig(ctx, p)
+	if err != nil || cfg == nil || !cfg.AppConfig.ThirdPartyGatewayEnabled || strings.TrimSpace(cfg.AppConfig.ThirdPartyGatewayToken) == "" {
+		s.stopThirdPartyIMForPrincipal(p)
+	}
+}
+
+func (s *HTTPServer) syncThirdPartyIMConfigTransition(p agentservice.Principal, before, after corelib.AppConfig) {
+	if s == nil || s.thirdPartyIM == nil {
+		return
+	}
+	beforeToken := strings.TrimSpace(before.ThirdPartyGatewayToken)
+	afterToken := strings.TrimSpace(after.ThirdPartyGatewayToken)
+	if !after.ThirdPartyGatewayEnabled || afterToken == "" || beforeToken != afterToken {
+		s.stopThirdPartyIMForPrincipal(p)
+	}
+}
+
+func (s *HTTPServer) stopWeixinRuntimesForTenant(ctx context.Context, tenantID string) {
+	if s == nil || s.weixinRuntime == nil || s.svc == nil {
+		return
+	}
+	users, err := s.svc.ListUsers(ctx, tenantID, agentservice.ListUsersAdminInput{})
+	if err != nil {
+		return
+	}
+	for _, user := range users {
+		s.stopWeixinRuntimeForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: user.ID})
+	}
+}
+
+func (s *HTTPServer) stopIMRuntimesForTenant(ctx context.Context, tenantID string) {
+	if s == nil || s.imRuntime == nil || s.svc == nil {
+		return
+	}
+	users, err := s.svc.ListUsers(ctx, tenantID, agentservice.ListUsersAdminInput{})
+	if err != nil {
+		return
+	}
+	for _, user := range users {
+		s.stopIMRuntimeForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: user.ID})
+	}
+}
+
+func (s *HTTPServer) stopThirdPartyIMForTenant(tenantID string) {
+	if s == nil || s.thirdPartyIM == nil {
+		return
+	}
+	s.thirdPartyIM.StopTenant(tenantID)
+}
+
+func (s *HTTPServer) rawWeixinAppConfig(ctx context.Context, p agentservice.Principal) (corelib.AppConfig, error) {
+	if s == nil || s.svc == nil {
+		return corelib.AppConfig{}, errors.New("service is not available")
+	}
+	cfg, err := s.svc.GetRawUserConfig(ctx, p)
+	if err != nil {
+		if errors.Is(err, agentservice.ErrUserConfigNotFound) {
+			return corelib.AppConfig{}, nil
+		}
+		return corelib.AppConfig{}, err
+	}
+	if cfg == nil {
+		return corelib.AppConfig{}, nil
+	}
+	return cfg.AppConfig, nil
 }
 
 type authFailureState struct {
@@ -211,6 +532,7 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /admin/", s.handleAdminWeb)
 	s.mux.HandleFunc("GET /app", s.handleUserWeb)
 	s.mux.HandleFunc("GET /app/", s.handleUserWeb)
+	s.mux.HandleFunc("POST /api/v1/web/refresh", s.handleWebAccessTokenRefresh)
 	s.mux.HandleFunc("GET /api/v1/admin/bootstrap/status", s.withAdminSecurityHeaders(s.handleAdminBootstrapStatus))
 	s.mux.HandleFunc("POST /api/v1/admin/bootstrap/initialize", s.withAdminSecurityHeaders(s.handleAdminBootstrapInitialize))
 	s.mux.HandleFunc("POST /api/v1/admin/auth/login", s.withAdminSecurityHeaders(s.handleAdminAuthLogin))
@@ -255,6 +577,10 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/admin/service-config/draft", s.withAdmin(s.handleClearAdminServiceConfigDraft))
 	s.mux.HandleFunc("POST /api/v1/admin/service-config/validate", s.withAdmin(s.handleValidateAdminServiceConfig))
 	s.mux.HandleFunc("POST /api/v1/admin/service-config/export-plan", s.withAdmin(s.handleExportAdminServiceConfigPlan))
+	s.mux.HandleFunc("GET /api/v1/admin/client-config/schema", s.withAdmin(s.handleAdminGetClientConfigSchema))
+	s.mux.HandleFunc("GET /api/v1/admin/client-config/default", s.withAdmin(s.handleAdminGetDefaultClientConfig))
+	s.mux.HandleFunc("PUT /api/v1/admin/client-config/default", s.withAdmin(s.handleAdminUpdateDefaultClientConfig))
+	s.mux.HandleFunc("POST /api/v1/admin/client-config/default/validate", s.withAdmin(s.handleAdminValidateDefaultClientConfig))
 	s.mux.HandleFunc("GET /api/v1/admin/i18n/locales", s.withAdmin(s.handleAdminI18NLocales))
 	s.mux.HandleFunc("GET /api/v1/admin/i18n/messages", s.withAdmin(s.handleAdminI18NMessages))
 	s.mux.HandleFunc("GET /api/v1/admin/sandbox/status", s.withAdmin(s.handleAdminSandboxStatus))
@@ -342,6 +668,17 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("PUT /api/v1/config", s.withPrincipal(s.handleUpdateConfig))
 	s.mux.HandleFunc("POST /api/v1/config/validate", s.withPrincipal(s.handleValidateConfig))
 	s.mux.HandleFunc("POST /api/v1/config/test", s.withPrincipal(s.handleTestConfig))
+	s.mux.HandleFunc("POST /api/v1/im/weixin/qr/start", s.withPrincipal(s.handleStartWeixinQRLogin))
+	s.mux.HandleFunc("GET /api/v1/im/weixin/qr/image", s.withPrincipal(s.handleProxyWeixinQRCodeImage))
+	s.mux.HandleFunc("POST /api/v1/im/weixin/qr/poll", s.withPrincipal(s.handlePollWeixinQRLogin))
+	s.mux.HandleFunc("GET /api/v1/im/weixin/status", s.withPrincipal(s.handleGetWeixinRuntimeStatus))
+	s.mux.HandleFunc("POST /api/v1/im/weixin/restart", s.withPrincipal(s.handleRestartWeixinRuntime))
+	s.mux.HandleFunc("GET /api/v1/im/status", s.withPrincipal(s.handleGetIMRuntimeStatuses))
+	s.mux.HandleFunc("GET /api/im-gateway/v1/health", s.handleThirdPartyGatewayHealth)
+	s.mux.HandleFunc("POST /api/im-gateway/v1/handshake", s.handleThirdPartyGatewayHandshake)
+	s.mux.HandleFunc("POST /api/im-gateway/v1/incoming", s.handleThirdPartyGatewayIncoming)
+	s.mux.HandleFunc("GET /api/im-gateway/v1/outgoing", s.handleThirdPartyGatewayOutgoing)
+	s.mux.HandleFunc("POST /api/im-gateway/v1/ack", s.handleThirdPartyGatewayAck)
 	s.mux.HandleFunc("GET /api/v1/im-audit/contacts", s.withPrincipal(s.handleListIMAuditContacts))
 	s.mux.HandleFunc("GET /api/v1/im-audit/messages", s.withPrincipal(s.handleListIMAuditMessages))
 	s.mux.HandleFunc("GET /api/v1/im-audit/stats", s.withPrincipal(s.handleGetIMAuditStats))
@@ -2014,6 +2351,14 @@ func (s *HTTPServer) updateTenantLifecycleStatus(w http.ResponseWriter, r *http.
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	if status == agentservice.TenantStatusDisabled {
+		s.stopWeixinRuntimesForTenant(r.Context(), out.ID)
+		s.stopIMRuntimesForTenant(r.Context(), out.ID)
+		s.stopThirdPartyIMForTenant(out.ID)
+	} else if status == agentservice.TenantStatusActive {
+		s.startConfiguredWeixinRuntimesForTenant(r.Context(), out.ID)
+		s.startConfiguredIMRuntimesForTenant(r.Context(), out.ID)
+	}
 	_ = s.recordAdminAudit(r.Context(), action, "tenant", out.ID, map[string]string{"status": string(out.Status), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, out)
 }
@@ -2061,6 +2406,9 @@ func (s *HTTPServer) handleDeleteTenant(w http.ResponseWriter, r *http.Request) 
 				}
 			}
 		}
+		s.stopWeixinRuntimesForTenant(r.Context(), tenantID)
+		s.stopIMRuntimesForTenant(r.Context(), tenantID)
+		s.stopThirdPartyIMForTenant(tenantID)
 		if err := s.svc.DeleteTenant(r.Context(), tenantID); err != nil {
 			writeRedactedError(w, err, s.svc.DataRoot())
 			return
@@ -2069,6 +2417,9 @@ func (s *HTTPServer) handleDeleteTenant(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "forced": true, "users_deleted": len(users)})
 		return
 	}
+	s.stopWeixinRuntimesForTenant(r.Context(), tenantID)
+	s.stopIMRuntimesForTenant(r.Context(), tenantID)
+	s.stopThirdPartyIMForTenant(tenantID)
 	if err := s.svc.DeleteTenant(r.Context(), tenantID); err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
@@ -2188,11 +2539,29 @@ func (s *HTTPServer) handleAdminUpdateUserConfig(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty or invalid config body"})
 		return
 	}
-	out, err := s.svc.UpdateUserConfig(r.Context(), s.adminUserPrincipal(r), *inPtr)
+	p := s.adminUserPrincipal(r)
+	if err := s.validateThirdPartyGatewayTokenUnique(r.Context(), p, *inPtr); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	before, _ := s.svc.GetRawUserConfig(r.Context(), p)
+	out, err := s.svc.UpdateUserConfig(r.Context(), p, *inPtr)
 	if err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	s.syncWeixinRuntimeFromRawConfig(r.Context(), p)
+	s.syncIMRuntimeFromRawConfig(r.Context(), p)
+	beforeCfg := corelib.AppConfig{}
+	if before != nil {
+		beforeCfg = before.AppConfig
+	}
+	after, _ := s.svc.GetRawUserConfig(r.Context(), p)
+	afterCfg := *inPtr
+	if after != nil {
+		afterCfg = after.AppConfig
+	}
+	s.syncThirdPartyIMConfigTransition(p, beforeCfg, afterCfg)
 	_ = s.recordAdminAudit(r.Context(), "admin.user_config_updated", "user", r.PathValue("userId"), map[string]string{"tenant_id": r.PathValue("tenantId"), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, out)
 }
@@ -2221,6 +2590,72 @@ func (s *HTTPServer) handleAdminTestUserConfig(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, sanitizeConfigTestResultForAPI(s.svc.DataRoot(), out))
+}
+
+func (s *HTTPServer) handleAdminGetClientConfigSchema(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"items": agentservice.SharedClientParameterDefinitions()})
+}
+
+func (s *HTTPServer) handleAdminGetDefaultClientConfig(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.GetDefaultClientConfig(r.Context())
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	cfg := *out
+	cfg.AppConfig = agentservice.SanitizeAppConfig(cfg.AppConfig)
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+func (s *HTTPServer) handleAdminUpdateDefaultClientConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	current, err := s.svc.GetDefaultClientConfig(r.Context())
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	base := current.AppConfig
+	if current.UpdatedAt.IsZero() {
+		base = corelib.AppConfigDefaults()
+	}
+	inPtr, ok := decodeOptionalAppConfigWithBase(w, r, base)
+	if !ok {
+		return
+	}
+	if inPtr == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty or invalid config body"})
+		return
+	}
+	out, err := s.svc.UpdateDefaultClientConfig(r.Context(), *inPtr)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), "admin.default_client_config_updated", "default_client_config", "global", map[string]string{"remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *HTTPServer) handleAdminValidateDefaultClientConfig(w http.ResponseWriter, r *http.Request) {
+	current, err := s.svc.GetDefaultClientConfig(r.Context())
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	base := current.AppConfig
+	if current.UpdatedAt.IsZero() {
+		base = corelib.AppConfigDefaults()
+	}
+	candidate, ok := decodeOptionalAppConfigWithBase(w, r, base)
+	if !ok {
+		return
+	}
+	cfg := corelib.AppConfig{}
+	if candidate != nil {
+		cfg = agentservice.SharedClientAppConfigOnly(*candidate)
+	}
+	writeJSON(w, http.StatusOK, agentservice.ValidateAppConfig(cfg))
 }
 
 func (s *HTTPServer) handleGetUserDeleteCheck(w http.ResponseWriter, r *http.Request) {
@@ -2264,6 +2699,15 @@ func (s *HTTPServer) updateUserLifecycleStatus(w http.ResponseWriter, r *http.Re
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	p := agentservice.Principal{TenantID: out.TenantID, UserID: out.ID}
+	if status == agentservice.UserStatusDisabled {
+		s.stopWeixinRuntimeForPrincipal(p)
+		s.stopIMRuntimeForPrincipal(p)
+		s.stopThirdPartyIMForPrincipal(p)
+	} else if status == agentservice.UserStatusActive {
+		s.syncWeixinRuntimeFromRawConfig(r.Context(), p)
+		s.syncIMRuntimeFromRawConfig(r.Context(), p)
+	}
 	_ = s.recordAdminAudit(r.Context(), action, "user", out.ID, map[string]string{"tenant_id": out.TenantID, "status": string(out.Status), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, out)
 }
@@ -2299,6 +2743,9 @@ func (s *HTTPServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			writeRedactedError(w, err, s.svc.DataRoot())
 			return
 		}
+		s.stopWeixinRuntimeForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: userID})
+		s.stopIMRuntimeForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: userID})
+		s.stopThirdPartyIMForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: userID})
 		if err := s.svc.DeleteUser(r.Context(), tenantID, userID); err != nil {
 			writeRedactedError(w, err, s.svc.DataRoot())
 			return
@@ -2307,6 +2754,9 @@ func (s *HTTPServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "forced": true})
 		return
 	}
+	s.stopWeixinRuntimeForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: userID})
+	s.stopIMRuntimeForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: userID})
+	s.stopThirdPartyIMForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: userID})
 	if err := s.svc.DeleteUser(r.Context(), tenantID, userID); err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
@@ -2502,13 +2952,343 @@ func (s *HTTPServer) handleUpdateConfig(w http.ResponseWriter, r *http.Request, 
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	if err := s.validateThirdPartyGatewayTokenUnique(r.Context(), p, next); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	before, _ := s.svc.GetRawUserConfig(r.Context(), p)
 	out, err := s.svc.UpdateUserConfig(r.Context(), p, next)
 	if err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	s.syncWeixinRuntimeFromRawConfig(r.Context(), p)
+	s.syncIMRuntimeFromRawConfig(r.Context(), p)
+	beforeCfg := corelib.AppConfig{}
+	if before != nil {
+		beforeCfg = before.AppConfig
+	}
+	after, _ := s.svc.GetRawUserConfig(r.Context(), p)
+	afterCfg := next
+	if after != nil {
+		afterCfg = after.AppConfig
+	}
+	s.syncThirdPartyIMConfigTransition(p, beforeCfg, afterCfg)
 	writeUserConfigResponse(w, http.StatusOK, out)
 }
+
+func (s *HTTPServer) handleGetWeixinRuntimeStatus(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	cfg, err := s.rawWeixinAppConfig(r.Context(), p)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	s.syncWeixinRuntimeFromRawConfig(r.Context(), p)
+	status := srvWeixinRuntimeStatus{Status: srvWeixinStatusDisabled}
+	if s.weixinRuntime != nil {
+		status = s.weixinRuntime.Status(p)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":    cfg.WeixinEnabled,
+		"bound":      strings.TrimSpace(cfg.WeixinToken) != "",
+		"account_id": strings.TrimSpace(cfg.WeixinAccountID),
+		"runtime":    status.Status,
+		"last_error": status.LastError,
+		"updated_at": status.UpdatedAt,
+	})
+}
+
+func (s *HTTPServer) handleRestartWeixinRuntime(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	cfg, err := s.rawWeixinAppConfig(r.Context(), p)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	if !cfg.WeixinEnabled || strings.TrimSpace(cfg.WeixinToken) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "weixin is not bound or enabled"})
+		return
+	}
+	if s.weixinRuntime != nil {
+		s.weixinRuntime.RestartPrincipal(r.Context(), p, cfg)
+	}
+	status := srvWeixinRuntimeStatus{Status: srvWeixinStatusDisabled}
+	if s.weixinRuntime != nil {
+		status = s.weixinRuntime.Status(p)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "restarted", "runtime": status.Status, "last_error": status.LastError, "updated_at": status.UpdatedAt})
+}
+
+func (s *HTTPServer) handleGetIMRuntimeStatuses(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	items := map[string]srvIMRuntimeStatus{}
+	if s.imRuntime != nil {
+		items = s.imRuntime.Statuses(p)
+	}
+	for _, platform := range []string{"qq", "telegram", "lansenger"} {
+		if _, ok := items[platform]; !ok {
+			items[platform] = srvIMRuntimeStatus{Status: srvWeixinStatusDisabled}
+		}
+	}
+	items["thirdparty"] = s.thirdPartyRuntimeStatus(r.Context(), p)
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *HTTPServer) thirdPartyRuntimeStatus(ctx context.Context, p agentservice.Principal) srvIMRuntimeStatus {
+	now := time.Now().UTC()
+	raw, err := s.svc.GetRawUserConfig(ctx, p)
+	if err != nil {
+		if errors.Is(err, agentservice.ErrUserConfigNotFound) {
+			return srvIMRuntimeStatus{Status: srvWeixinStatusDisabled, UpdatedAt: now}
+		}
+		return srvIMRuntimeStatus{Status: srvWeixinStatusError, LastError: err.Error(), UpdatedAt: now}
+	}
+	if raw == nil || !raw.AppConfig.ThirdPartyGatewayEnabled {
+		return srvIMRuntimeStatus{Status: srvWeixinStatusDisabled, UpdatedAt: now}
+	}
+	if strings.TrimSpace(raw.AppConfig.ThirdPartyGatewayToken) == "" {
+		return srvIMRuntimeStatus{Status: srvWeixinStatusError, LastError: "third-party gateway token is required", UpdatedAt: now}
+	}
+	if err := s.validateThirdPartyGatewayTokenUnique(ctx, p, raw.AppConfig); err != nil {
+		return srvIMRuntimeStatus{Status: srvWeixinStatusError, LastError: err.Error(), UpdatedAt: now}
+	}
+	return srvIMRuntimeStatus{Status: srvWeixinStatusConnected, UpdatedAt: now}
+}
+
+func (s *HTTPServer) handleStartWeixinQRLogin(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	baseURL, err := s.weixinQRBaseURL(r.Context(), p)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	qrcodeURL, qrcodeToken, err := weixin.StartQRLogin(ctx, baseURL, weixin.DefaultBotType)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	if s.weixinQRTokens == nil {
+		s.weixinQRTokens = newWeixinQRTokenStore()
+	}
+	s.weixinQRTokens.Put(qrcodeToken, weixinQRTokenRecord{TenantID: p.TenantID, UserID: p.UserID, BaseURL: baseURL, ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}, time.Now().UTC())
+	writeJSON(w, http.StatusOK, map[string]string{"qrcode_url": qrcodeURL, "qrcode_image_url": weixinQRCodeImageProxyURL(qrcodeURL), "qrcode_token": qrcodeToken})
+}
+
+func weixinQRCodeImageProxyURL(qrcodeURL string) string {
+	qrcodeURL = strings.TrimSpace(qrcodeURL)
+	if qrcodeURL == "" {
+		return ""
+	}
+	return "/api/v1/im/weixin/qr/image?value=" + url.QueryEscape(qrcodeURL)
+}
+
+var weixinQRCodeAllowedImageHosts = map[string]bool{
+	"liteapp.weixin.qq.com": true,
+}
+
+func validateWeixinQRCodeImageURL(rawURL string) (*url.URL, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil, errors.New("qrcode url is required")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, errors.New("invalid qrcode url")
+	}
+	if u.Scheme != "https" {
+		return nil, errors.New("qrcode image must use https")
+	}
+	if !weixinQRCodeAllowedImageHosts[strings.ToLower(u.Hostname())] {
+		return nil, errors.New("qrcode image host is not allowed")
+	}
+	return u, nil
+}
+
+func (s *HTTPServer) handleProxyWeixinQRCodeImage(w http.ResponseWriter, r *http.Request, _ agentservice.Principal) {
+	if value := strings.TrimSpace(r.URL.Query().Get("value")); value != "" {
+		if len(value) > 4096 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "qrcode value is too large"})
+			return
+		}
+		png, err := qrcode.Encode(value, qrcode.Medium, 360)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "generate qrcode image failed"})
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(png)
+		return
+	}
+	u, err := validateWeixinQRCodeImageURL(r.URL.Query().Get("url"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid qrcode url"})
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "fetch qrcode image failed"})
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("qrcode image returned %d", resp.StatusCode)})
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "read qrcode image failed"})
+		return
+	}
+	if len(body) > 2*1024*1024 {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "qrcode image is too large"})
+		return
+	}
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
+		contentType = http.DetectContentType(body)
+		if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "qrcode response is not an image"})
+			return
+		}
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+const userWeixinQRStatusPollTimeout = 5 * time.Second
+
+func (s *HTTPServer) handlePollWeixinQRLogin(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	var in struct {
+		QRCodeToken string `json:"qrcode_token"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	in.QRCodeToken = strings.TrimSpace(in.QRCodeToken)
+	if in.QRCodeToken == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "qrcode token is required"})
+		return
+	}
+	if s.weixinQRTokens == nil {
+		s.weixinQRTokens = newWeixinQRTokenStore()
+	}
+	rec, ok := s.weixinQRTokens.Get(in.QRCodeToken, p, time.Now().UTC())
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "qrcode token is not active for this user", "status": "error"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), userWeixinQRStatusPollTimeout)
+	defer cancel()
+	result, status, err := weixin.PollQRStatus(ctx, rec.BaseURL, in.QRCodeToken)
+	if err != nil {
+		writeJSON(w, http.StatusOK, weixinQRPollErrorResponse(err))
+		return
+	}
+	status = normalizeWeixinQRPollStatus(status, result)
+	resp := map[string]any{"status": status.String()}
+	if msg := weixinQRPollMessage(status, result); msg != "" {
+		resp["message"] = msg
+	}
+	if status == weixin.QRLoginStatusConfirmed {
+		if result == nil || !result.Connected {
+			message := "weixin login was not connected"
+			if result != nil && strings.TrimSpace(result.Message) != "" {
+				message = strings.TrimSpace(result.Message)
+			}
+			resp["error"] = message
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+		if err := s.saveWeixinQRLoginConfig(r.Context(), p, result); err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
+		s.syncWeixinRuntimeFromRawConfig(r.Context(), p)
+		s.weixinQRTokens.Delete(in.QRCodeToken)
+		resp["account_id"] = result.AccountID
+		_ = s.svc.RecordAuditEvent(r.Context(), agentservice.AuditEvent{TenantID: p.TenantID, UserID: p.UserID, ActorType: "user", ActorTenant: p.TenantID, ActorUser: p.UserID, Action: "user.im.weixin_qr_bound", ResourceType: "config", ResourceID: "weixin", Metadata: map[string]string{"account_id": result.AccountID, "remote_ip": requestClientIP(r)}})
+	}
+	if status == weixin.QRLoginStatusExpired {
+		s.weixinQRTokens.Delete(in.QRCodeToken)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func weixinQRPollErrorResponse(err error) map[string]any {
+	if weixin.IsQRLoginRetryableError(err) {
+		return map[string]any{"status": weixin.QRLoginStatusWait.String(), "retryable": true}
+	}
+	return map[string]any{"error": err.Error(), "status": "error"}
+}
+
+func weixinQRPollMessage(status weixin.QRLoginStatus, result *weixin.QRLoginResult) string {
+	status = normalizeWeixinQRPollStatus(status, result)
+	msg := strings.TrimSpace(resultMessage(result))
+	if status == weixin.QRLoginStatusWait && weixin.IsQRLoginWaitMessage(msg) {
+		return ""
+	}
+	return msg
+}
+
+func normalizeWeixinQRPollStatus(status weixin.QRLoginStatus, result *weixin.QRLoginResult) weixin.QRLoginStatus {
+	normalized := weixin.NormalizeQRLoginStatus(status)
+	if normalized == weixin.QRLoginStatusUnknown && weixin.IsQRLoginWaitMessage(resultMessage(result)) {
+		return weixin.QRLoginStatusWait
+	}
+	return normalized
+}
+
+func resultMessage(result *weixin.QRLoginResult) string {
+	if result == nil {
+		return ""
+	}
+	return result.Message
+}
+
+func (s *HTTPServer) weixinQRBaseURL(ctx context.Context, p agentservice.Principal) (string, error) {
+	cfg, _, err := s.currentUserConfigForVisibleMerge(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(cfg.WeixinBaseURL) != "" {
+		return strings.TrimSpace(cfg.WeixinBaseURL), nil
+	}
+	return weixin.DefaultBaseURL, nil
+}
+
+func (s *HTTPServer) saveWeixinQRLoginConfig(ctx context.Context, p agentservice.Principal, result *weixin.QRLoginResult) error {
+	if result == nil {
+		return errors.New("weixin login result is nil")
+	}
+	cfg, _, err := s.currentUserConfigForVisibleMerge(ctx, p)
+	if err != nil {
+		return err
+	}
+	cfg.WeixinEnabled = true
+	cfg.WeixinToken = result.BotToken
+	cfg.WeixinAccountID = result.AccountID
+	if strings.TrimSpace(result.BaseURL) != "" {
+		cfg.WeixinBaseURL = strings.TrimSpace(result.BaseURL)
+	}
+	if cfg.WeixinLocalMode == nil {
+		local := true
+		cfg.WeixinLocalMode = &local
+	}
+	_, err = s.svc.UpdateUserConfig(ctx, p, cfg)
+	return err
+}
+
 func (s *HTTPServer) handleValidateConfig(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	candidate, ok := decodeOptionalAppConfig(w, r)
 	if !ok {
@@ -3073,6 +3853,9 @@ func filterUserConfigSchema(defs []agentservice.ParameterDefinition) []agentserv
 		if _, hidden := userHiddenConfigKeys[def.Key]; hidden {
 			continue
 		}
+		if isUserWebRetiredSettingsKey(def.Key) {
+			continue
+		}
 		out = append(out, def)
 	}
 	return out
@@ -3105,7 +3888,7 @@ func userVisibleAppConfigMap(cfg corelib.AppConfig) map[string]any {
 		allowed[def.Key] = struct{}{}
 	}
 	for key := range raw {
-		if _, ok := allowed[key]; !ok {
+		if _, ok := allowed[key]; !ok || isUserWebRetiredSettingsKey(key) {
 			delete(raw, key)
 		}
 	}
@@ -3131,6 +3914,7 @@ func (s *HTTPServer) userVisibleConfigCandidate(ctx context.Context, p agentserv
 	} else {
 		out = stripUserComplexConfig(out)
 	}
+	out = stripUserSharedClientConfig(out)
 	return &out, nil
 }
 
@@ -3140,9 +3924,9 @@ func (s *HTTPServer) userVisibleConfigUpdate(ctx context.Context, p agentservice
 		return corelib.AppConfig{}, err
 	}
 	if !found {
-		return stripUserComplexConfig(cfg), nil
+		return stripUserSharedClientConfig(stripUserComplexConfig(cfg)), nil
 	}
-	return preserveUserComplexConfig(current, cfg), nil
+	return stripUserSharedClientConfig(preserveUserComplexConfig(current, cfg)), nil
 }
 
 func (s *HTTPServer) currentUserConfigForVisibleMerge(ctx context.Context, p agentservice.Principal) (corelib.AppConfig, bool, error) {
@@ -3158,6 +3942,7 @@ func (s *HTTPServer) currentUserConfigForVisibleMerge(ctx context.Context, p age
 
 func preserveUserComplexConfig(current, next corelib.AppConfig) corelib.AppConfig {
 	next = preserveUserFlatLLMConfig(current, next)
+	next = preserveUserSharedClientConfig(current, next)
 	next.MaclawLLMProtocol = current.MaclawLLMProtocol
 	next.MaclawLLMContextLength = current.MaclawLLMContextLength
 	next.MaclawLLMTimeoutSec = current.MaclawLLMTimeoutSec
@@ -3166,6 +3951,7 @@ func preserveUserComplexConfig(current, next corelib.AppConfig) corelib.AppConfi
 	next.LLMPromptCache = current.LLMPromptCache
 	next.AuxiliaryLLM = current.AuxiliaryLLM
 	next.ModelRoutes = current.ModelRoutes
+	next = preserveUserInvisibleConfig(current, next)
 	return next
 }
 
@@ -3191,8 +3977,121 @@ func stripUserComplexConfig(cfg corelib.AppConfig) corelib.AppConfig {
 	cfg.LLMPromptCache = corelib.LLMPromptCacheConfig{}
 	cfg.AuxiliaryLLM = corelib.AuxiliaryLLMConfig{}
 	cfg.ModelRoutes = nil
+	return stripUserInvisibleConfig(cfg)
+}
+
+func preserveUserSharedClientConfig(current, next corelib.AppConfig) corelib.AppConfig {
+	next.WebSearchProviders = current.WebSearchProviders
+	next.WebSearchCurrentProvider = current.WebSearchCurrentProvider
+	next.DefaultProxyEnabled = current.DefaultProxyEnabled
+	next.DefaultProxyProtocol = current.DefaultProxyProtocol
+	next.DefaultProxyHost = current.DefaultProxyHost
+	next.DefaultProxyPort = current.DefaultProxyPort
+	next.DefaultProxyUsername = current.DefaultProxyUsername
+	next.DefaultProxyPassword = current.DefaultProxyPassword
+	next.DefaultProxyBypass = current.DefaultProxyBypass
+	next.DefaultProxyScopeMaclaw = current.DefaultProxyScopeMaclaw
+	next.DefaultProxyScopeCodingTools = current.DefaultProxyScopeCodingTools
+	next.DefaultProxyScopeAgent = current.DefaultProxyScopeAgent
+	next.MCPServers = current.MCPServers
+	next.LocalMCPServers = current.LocalMCPServers
+	next.SkillHubURLs = current.SkillHubURLs
+	next.ExternalSkillDirs = current.ExternalSkillDirs
+	next.SecurityPolicyMode = current.SecurityPolicyMode
+	next.HubSecurityCentralized = current.HubSecurityCentralized
+	next.NetworkLevel = current.NetworkLevel
+	next.NetworkAllowlist = current.NetworkAllowlist
+	next.SkillSourcesAllowed = current.SkillSourcesAllowed
+	next.Language = current.Language
+	next.UIMode = current.UIMode
+	next.WorkingDirectory = current.WorkingDirectory
+	next.VectorSearchEnabled = current.VectorSearchEnabled
+	next.ASREnabled = current.ASREnabled
+	next.TTSEnabled = current.TTSEnabled
+	next.IMProgressNudgeEnabled = current.IMProgressNudgeEnabled
+	next.SSHHosts = current.SSHHosts
+	return next
+}
+
+func stripUserSharedClientConfig(cfg corelib.AppConfig) corelib.AppConfig {
+	cfg.WebSearchProviders = nil
+	cfg.WebSearchCurrentProvider = ""
+	cfg.DefaultProxyEnabled = false
+	cfg.DefaultProxyProtocol = ""
+	cfg.DefaultProxyHost = ""
+	cfg.DefaultProxyPort = ""
+	cfg.DefaultProxyUsername = ""
+	cfg.DefaultProxyPassword = ""
+	cfg.DefaultProxyBypass = ""
+	cfg.DefaultProxyScopeMaclaw = false
+	cfg.DefaultProxyScopeCodingTools = false
+	cfg.DefaultProxyScopeAgent = false
+	cfg.MCPServers = nil
+	cfg.LocalMCPServers = nil
+	cfg.SkillHubURLs = nil
+	cfg.ExternalSkillDirs = nil
+	cfg.SecurityPolicyMode = ""
+	cfg.HubSecurityCentralized = false
+	cfg.NetworkLevel = ""
+	cfg.NetworkAllowlist = nil
+	cfg.SkillSourcesAllowed = nil
+	cfg.Language = ""
+	cfg.UIMode = ""
+	cfg.WorkingDirectory = ""
+	cfg.VectorSearchEnabled = false
+	cfg.ASREnabled = false
+	cfg.TTSEnabled = false
+	cfg.IMProgressNudgeEnabled = nil
+	cfg.SSHHosts = nil
 	return cfg
 }
+
+func isUserWebRetiredSettingsKey(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "working_directory" || key == "data_dir" || key == "default_launch_mode" {
+		return true
+	}
+	for _, prefix := range []string{"pet_", "floating_", "hide_", "power_", "workstation_", "check_", "pause_", "env_", "remote_", "local_"} {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isUserInvisibleConfigKey(key string) bool {
+	if _, hidden := userHiddenConfigKeys[key]; hidden {
+		return true
+	}
+	return isUserWebRetiredSettingsKey(key)
+}
+
+func preserveUserInvisibleConfig(current, next corelib.AppConfig) corelib.AppConfig {
+	return preserveAppConfigTaggedFields(current, next, isUserInvisibleConfigKey)
+}
+
+func stripUserInvisibleConfig(cfg corelib.AppConfig) corelib.AppConfig {
+	return preserveAppConfigTaggedFields(corelib.AppConfig{}, cfg, isUserInvisibleConfigKey)
+}
+
+func preserveAppConfigTaggedFields(current, next corelib.AppConfig, keep func(string) bool) corelib.AppConfig {
+	currentValue := reflect.ValueOf(current)
+	nextValue := reflect.ValueOf(&next).Elem()
+	typ := nextValue.Type()
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		key := strings.Split(field.Tag.Get("json"), ",")[0]
+		if key == "" || key == "-" || !keep(key) {
+			continue
+		}
+		dst := nextValue.Field(i)
+		if dst.CanSet() {
+			dst.Set(currentValue.Field(i))
+		}
+	}
+	return next
+}
+
 func (s *HTTPServer) handleValidateSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.ValidateSkill(r.Context(), p, r.PathValue("skillName"))
 	if err != nil {
@@ -4000,6 +4899,56 @@ func decodeOptionalAppConfig(w http.ResponseWriter, r *http.Request) (*corelib.A
 	var cfg corelib.AppConfig
 	if err := json.Unmarshal(body, &cfg); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return nil, false
+	}
+	return &cfg, true
+}
+
+func decodeOptionalAppConfigWithBase(w http.ResponseWriter, r *http.Request, base corelib.AppConfig) (*corelib.AppConfig, bool) {
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read request body"})
+		return nil, false
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil, true
+	}
+
+	payload := body
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err == nil {
+		if appConfigBody, ok := raw["app_config"]; ok {
+			payload = appConfigBody
+		}
+	}
+	var nextFields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &nextFields); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid app_config body: " + err.Error()})
+		return nil, false
+	}
+	baseBytes, err := json.Marshal(base)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare config base"})
+		return nil, false
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(baseBytes, &merged); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare config base"})
+		return nil, false
+	}
+	for key, value := range nextFields {
+		merged[key] = value
+	}
+	mergedBytes, err := json.Marshal(merged)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid app_config body: " + err.Error()})
+		return nil, false
+	}
+	var cfg corelib.AppConfig
+	if err := json.Unmarshal(mergedBytes, &cfg); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid app_config body: " + err.Error()})
 		return nil, false
 	}
 	return &cfg, true

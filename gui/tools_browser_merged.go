@@ -61,6 +61,9 @@ var mergedBrowserInputSchema = map[string]interface{}{
 }
 
 func dispatchMergedBrowser(registry *ToolRegistry, args map[string]interface{}) string {
+	if ownerID, explicitRuntimeOwner := runtimePolicyOwnerIDFromToolArgsWithPresence(args); explicitRuntimeOwner && ownerID == "" {
+		return "browser failed: runtime owner is missing; isolated runtime will not fall back to desktop owner"
+	}
 	actionText, _ := args["action"].(string)
 	actionText = strings.TrimSpace(actionText)
 	if actionText == "" {

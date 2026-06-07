@@ -1080,6 +1080,7 @@ func (m *tuiModel) handleSlashCommand(text string) tea.Cmd {
 		m.app.workflowMu.Lock()
 		m.app.pendingPhasePrompt = ""
 		m.app.workflowAgentLoop = false
+		m.app.pendingWorkflowStart = nil
 		m.app.workflowMu.Unlock()
 		m.root.Chat.ClearMessages(tuiText(m.uiLang(), "chatCleared"))
 		return nil

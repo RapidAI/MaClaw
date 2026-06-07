@@ -47,6 +47,7 @@ func TestProperty4_IntentUnderstandingCleanupExpired(t *testing.T) {
 			}
 			mgr.mu.Lock()
 			mgr.sessions[uid] = sess
+			mgr.userLang[uid] = "en"
 			mgr.mu.Unlock()
 		}
 
@@ -62,6 +63,7 @@ func TestProperty4_IntentUnderstandingCleanupExpired(t *testing.T) {
 			}
 			mgr.mu.Lock()
 			mgr.sessions[uid] = sess
+			mgr.userLang[uid] = "en"
 			mgr.mu.Unlock()
 		}
 
@@ -73,11 +75,17 @@ func TestProperty4_IntentUnderstandingCleanupExpired(t *testing.T) {
 			if !mgr.HasActiveSession(uid) {
 				return false
 			}
+			if mgr.languageForUser(uid) != "en" {
+				return false
+			}
 		}
 		// Verify expired sessions removed
 		for i := 0; i < ec; i++ {
 			uid := "expired_" + string(rune('A'+i))
 			if mgr.HasActiveSession(uid) {
+				return false
+			}
+			if mgr.languageForUser(uid) != "" {
 				return false
 			}
 		}

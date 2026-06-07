@@ -78,8 +78,19 @@ func TestWorkflowApproverDirectoryHandlerReturnsTenantScopedApprovers(t *testing
 	}
 
 	tenantSystem := scopedSystemSettingsForTenant(tenantID, st.System)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(ctx, st.System, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{tenantID}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
 	if err := saveVERegistry(ctx, tenantSystem, digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
 		{ID: "ve-active", MachineID: "ve-machine-active", Name: "Runtime Worker", Status: veStatusActive, OwnerEmail: "owner@example.com"},
+		{ID: "ve-ghost", MachineID: "ve-ghost", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "deleted-employee", Name: "Deleted Runtime Worker", Status: veStatusActive, OwnerEmail: "owner@example.com"},
 		{ID: "ve-disabled", MachineID: "ve-machine-disabled", Name: "Disabled Worker", Status: veStatusDisabled, OwnerEmail: "owner@example.com"},
 	}}); err != nil {
 		t.Fatalf("save ve registry: %v", err)

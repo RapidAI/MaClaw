@@ -183,6 +183,29 @@ func TestMergedBrowserSessionStartDefaultsToPersistent(t *testing.T) {
 	}
 }
 
+func TestMergedBrowserEmptyRuntimeOwnerFailsClosed(t *testing.T) {
+	registry := NewToolRegistry()
+	called := false
+	_ = registry.Register(RegisteredTool{
+		Name: "browser_session_start",
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "ok"
+		},
+	})
+
+	got := dispatchMergedBrowser(registry, map[string]interface{}{
+		"action":                         "session_start",
+		registeredToolPolicyOwnerIDField: "",
+	})
+	if !strings.Contains(got, "runtime owner is missing") {
+		t.Fatalf("dispatchMergedBrowser empty runtime owner = %q, want fail closed", got)
+	}
+	if called {
+		t.Fatal("browser_session_start should not run when runtime owner is explicitly empty")
+	}
+}
+
 func TestMergedBrowserSessionStartMapsAutoToPersistent(t *testing.T) {
 	registry := NewToolRegistry()
 	var received map[string]interface{}

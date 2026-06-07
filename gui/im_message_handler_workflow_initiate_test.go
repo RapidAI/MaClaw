@@ -286,6 +286,64 @@ func TestWorkflowInitiation_ConfirmationFlow(t *testing.T) {
 	})
 }
 
+func TestWorkflowInitiation_UserPromptsUseConfiguredLanguage(t *testing.T) {
+	server := mockHubServer(t)
+	defer server.Close()
+
+	app := mockAppForInitiation(server.URL)
+	app.CurrentLanguage = "en"
+	handler := NewWorkflowInitiationHandler(app)
+	ctx := context.Background()
+
+	noMatch, err := handler.HandleInitiationIntent(ctx, "user-lang-no-match", "random unrelated text about weather")
+	if err != nil {
+		t.Fatalf("no match: %v", err)
+	}
+	if noMatch == nil || !strings.Contains(noMatch.Text, "No matching approval workflow") {
+		t.Fatalf("expected English no-match prompt, got %#v", noMatch)
+	}
+	if strings.Contains(noMatch.Text, "未找到") || strings.Contains(noMatch.Text, "请指定") {
+		t.Fatalf("no-match prompt leaked Chinese text: %q", noMatch.Text)
+	}
+
+	session := &initiationSession{
+		UserID:       "user-lang-session",
+		WorkflowID:   "wf-leave-001",
+		WorkflowName: "Leave Approval",
+		Schema: []initiationFormField{
+			{Name: "leave_type", Label: "Leave type", Type: "select", Required: true},
+			{Name: "reason", Label: "Reason", Type: "text", Required: false},
+		},
+		ExtractedData: map[string]interface{}{},
+		MissingFields: []string{"leave_type"},
+		CreatedAt:     time.Now(),
+	}
+	missing := handler.buildMissingFieldsPrompt(session)
+	if missing == nil || !strings.Contains(missing.Text, "The following information is still required") {
+		t.Fatalf("expected English missing-fields prompt, got %#v", missing)
+	}
+	if strings.Contains(missing.Text, "还需要") || strings.Contains(missing.Text, "请补充") {
+		t.Fatalf("missing-fields prompt leaked Chinese text: %q", missing.Text)
+	}
+	if data := handler.presentExtractedData(session); !strings.Contains(data, "(not filled)") {
+		t.Fatalf("expected English unset placeholder, got %q", data)
+	}
+
+	session.MissingFields = nil
+	session.ExtractedData["leave_type"] = "Annual leave"
+	handler.setSession(session.UserID, session)
+	cancelled, err := handler.HandleInitiationIntent(ctx, session.UserID, "cancel")
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if cancelled == nil || !strings.Contains(cancelled.Text, "Cancelled the initiation flow") {
+		t.Fatalf("expected English cancellation prompt, got %#v", cancelled)
+	}
+	if strings.Contains(cancelled.Text, "已取消") || strings.Contains(cancelled.Text, "发起流程") {
+		t.Fatalf("cancel prompt leaked Chinese text: %q", cancelled.Text)
+	}
+}
+
 // =============================================================================
 // Test 4: Multi-Turn Conversation
 // Validates: Requirements 2.1, 2.2, 2.3, 2.4

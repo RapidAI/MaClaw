@@ -40,7 +40,7 @@
       <div class="hero-card" aria-hidden="true">
         <svg viewBox="0 0 360 220" role="img">
           <defs>
-            <linearGradient id="heroCardGradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#13315c"/><stop offset=".56" stop-color="#2563eb"/><stop offset="1" stop-color="#13a68b"/></linearGradient>
+            <linearGradient id="heroCardGradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#102a43"/><stop offset=".56" stop-color="#1f5f99"/><stop offset="1" stop-color="#0b7768"/></linearGradient>
             <pattern id="heroCircuit" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M0 16h12M20 16h12M16 0v12M16 20v12" stroke="rgba(255,255,255,.18)" stroke-width="1.4" fill="none"/><circle cx="16" cy="16" r="2" fill="rgba(255,255,255,.38)"/></pattern>
           </defs>
           <rect x="18" y="24" width="324" height="172" rx="18" fill="url(#heroCardGradient)"/>
@@ -134,7 +134,7 @@
     let secondaryEmail = normalizeEmail(localStorage.getItem('card_store_secondary_email') || '');
     let recoverCaptchaCode = '';
     if (registeredEmail) localStorage.setItem('card_store_email', registeredEmail);
-    const productTone = { service_day: ['#08a7ff', '#5b5ff7', '#7afcff'], service_week: ['#00c6a7', '#1f8fff', '#c8ff6a'], service_month: ['#8b5cf6', '#06b6d4', '#ff8bd1'], service_quarter: ['#ff9f1c', '#f43f5e', '#38bdf8'], service_year: ['#14b8a6', '#2563eb', '#22d3ee'], credits_10000: ['#0ea5e9', '#22d3ee', '#a7f3d0'], credits_50000: ['#6366f1', '#ec4899', '#facc15'], service_test_10: ['#64748b', '#f97316', '#fbbf24'] };
+    const productTone = { service_day: ['#12355b', '#256d85', '#5aa6a6'], service_week: ['#114e4b', '#247c91', '#93b27a'], service_month: ['#1f3b57', '#357aa3', '#7e9fb5'], service_quarter: ['#213047', '#8d5f4a', '#bd6f72'], service_year: ['#102a43', '#1f5f99', '#26a69a'], credits_10000: ['#1d4f66', '#2f8f9d', '#8cc7b5'], credits_50000: ['#243b6b', '#526fa7', '#b7a66a'], service_test_10: ['#334155', '#64748b', '#a3a3a3'] };
     function normalizeLang(value) { return String(value || '').toLowerCase().indexOf('en') === 0 ? 'en' : 'zh'; }
     function t(key) { return I18N[lang][key] || I18N.zh[key] || key; }
     function normalizeEmail(value) { return String(value || '').trim().toLowerCase(); }
@@ -201,15 +201,18 @@
     function periodLimitTags(product) {
       const parts = periodLimitParts(product);
       if (!parts.length) return '<span class="period-limit-tag period-limit-tag--empty">' + esc(t('noPeriodLimit')) + '</span>';
-      return parts.map(part => '<span class="period-limit-tag"><b>' + esc(part.label) + '</b><em>' + esc(part.value) + '</em></span>').join('');
+      return parts.map(part => {
+        const text = part.label + ': ' + part.value;
+        return '<span class="period-limit-tag" title="' + esc(text) + '" aria-label="' + esc(text) + '"><b>' + esc(part.label) + '</b><em>' + esc(part.value) + '</em></span>';
+      }).join('');
     }
     function productMeta(product) {
       if (isTestProduct(product)) return '';
       const scenario = productScenario(product);
       const limitSection = isCredits(product) ? '' : '<section class="product-meta-section product-meta-section--limit"><h4>' + esc(t('periodLimitLabel')) + '</h4><div class="period-limit-tags">' + periodLimitTags(product) + '</div></section>';
-      return '<div class="product-meta">' + limitSection
-        + (scenario ? '<section class="product-meta-section product-meta-section--scenario"><h4>' + esc(t('usageScenarioLabel')) + '</h4><p>' + esc(scenario) + '</p></section>' : '')
-        + '</div>';
+      const scenarioSection = scenario ? '<section class="product-meta-section product-meta-section--scenario"><h4>' + esc(t('usageScenarioLabel')) + '</h4><p>' + esc(scenario) + '</p></section>' : '';
+      if (!limitSection && !scenarioSection) return '';
+      return '<div class="product-meta">' + limitSection + scenarioSection + '</div>';
     }
     function alignProductSectionRows(cards, selector) {
       const rows = [];
@@ -320,7 +323,7 @@
       ctx.save();
       ctx.translate(12, 28 + (Math.random() * 4 - 2));
       ctx.rotate((Math.random() * 4 - 2) * Math.PI / 180);
-      ctx.fillStyle = '#1d4ed8';
+      ctx.fillStyle = '#1f4fbf';
       ctx.font = '900 22px Segoe UI, Arial, sans-serif';
       ctx.fillText(challenge.text, 0, 0);
       ctx.restore();
@@ -334,7 +337,7 @@
       }
     }
     function svgCard(product) {
-      const tones = productTone[product.id] || ['#08a7ff', '#5b5ff7', '#7afcff'];
+      const tones = productTone[product.id] || ['#12355b', '#256d85', '#5aa6a6'];
       const safeId = svgId(product.id);
       const title = cardArtTitle(product);
       const chip = isCredits(product) ? 'PTS' : String(product.duration_days || 0) + 'D';
@@ -693,7 +696,15 @@
       try {
         const res = await fetch('/api/card-store/recover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, tenant_id: tenantId }) });
         const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body.message || t('recoverFailed'));
+        if (!res.ok) {
+          let message = body.message || t('recoverFailed');
+          if (body.code === 'CARD_STORE_RECOVER_RATE_LIMITED') {
+            message = body.scope === 'email'
+              ? (lang === 'en' ? 'This email has reached today\'s recovery limit.' : '该邮箱今日找回次数已达上限。')
+              : (lang === 'en' ? 'Too many recovery requests from this IP today.' : '该 IP 今日找回次数已达上限。');
+          }
+          throw new Error(message);
+        }
         msg.textContent = body.count ? t('recoverSent') : t('recoverNone');
         drawRecoverCaptcha();
         captchaInput.value = '';

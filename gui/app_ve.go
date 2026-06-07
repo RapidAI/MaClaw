@@ -92,7 +92,8 @@ func (a *App) RegisterVirtualEmployee(name, skillDesc, policy string, list []str
 	if err != nil {
 		return err
 	}
-	a.emitEvent("ve:status_change", nil)
+	a.clearDiscoverableVECache()
+	a.emitEvent("ve:status_change", map[string]any{"employee": a.localVirtualEmployeeEventPayload(name, skillDesc, policy, list, avatarDataURL)})
 	a.emitDigitalEmployeeFeatureStatusChanged()
 	return nil
 }
@@ -124,10 +125,48 @@ func (a *App) UpdateVESettings(name, skillDesc, policy string, list []string, av
 	if err != nil {
 		return err
 	}
-	a.emitEvent("ve:list_update", nil)
-	a.emitEvent("ve:status_change", nil)
+	a.clearDiscoverableVECache()
+	eventData := map[string]any{"employee": a.localVirtualEmployeeEventPayload(name, skillDesc, policy, list, avatarDataURL)}
+	a.emitEvent("ve:list_update", eventData)
+	a.emitEvent("ve:status_change", eventData)
 	a.emitDigitalEmployeeFeatureStatusChanged()
 	return nil
+}
+
+func (a *App) clearDiscoverableVECache() {
+	if a == nil {
+		return
+	}
+	a.veDiscoverableCache.Range(func(key, _ any) bool {
+		a.veDiscoverableCache.Delete(key)
+		return true
+	})
+}
+
+func (a *App) localVirtualEmployeeEventPayload(name, skillDesc, policy string, list []string, avatarDataURL string) VirtualEmployeeEntry {
+	employee := VirtualEmployeeEntry{
+		Name:             strings.TrimSpace(name),
+		SkillDescription: strings.TrimSpace(skillDesc),
+		AvatarDataURL:    strings.TrimSpace(avatarDataURL),
+		AccessPolicy:     strings.TrimSpace(policy),
+		Status:           "active",
+		OnlineStatus:     "online",
+	}
+	if a != nil {
+		if cfg, err := a.LoadConfig(); err == nil {
+			employee.MachineID = strings.TrimSpace(groupDiscussionAgentID(cfg))
+			employee.ID = virtualEmployeeIDForMachine(employee.MachineID)
+		}
+	}
+	if employee.ID == "" {
+		employee.ID = employee.MachineID
+	}
+	if policy == "whitelist" {
+		employee.Whitelist = append([]string(nil), list...)
+	} else if policy == "blacklist" {
+		employee.Blacklist = append([]string(nil), list...)
+	}
+	return employee
 }
 
 func validateVEAvatarDataURL(value string) error {

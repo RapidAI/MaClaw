@@ -93,39 +93,41 @@ type App struct {
 	autoUploadTrigger               *AutoUploadTrigger
 	gossipAutoPublish               *AutoPublishTrigger
 	// Maclaw capability evolution components
-	riskAssessor          *RiskAssessor
-	policyEngine          *PolicyEngine
-	auditLog              *AuditLog
-	llmSecurityReview     *LLMSecurityReview
-	mdnsScanner           *MDNSScanner
-	projectScanner        *ProjectScanner
-	toolDefGenerator      *ToolDefinitionGenerator
-	toolRouter            *ToolRouter
-	gateIntentClassifier  *GateIntentClassifier           // semantic gate classifier (wired in Task 12.1)
-	unifiedClassifier     *intent.UnifiedIntentClassifier // UIC: shared three-layer intent classifier
-	classifierOnce        sync.Once                       // guards single creation of unifiedClassifier + gateIntentClassifier
-	embeddingActivated    atomic.Bool                     // ensures activateEmbedderAsync runs at most once
-	intentEmbeddingActive atomic.Bool                     // ensures UIC-only embedding activation runs at most once
-	embeddingMu           sync.Mutex
-	intentEmbedder        embedding.Embedder // local model held for UIC and reused when vector search is enabled
-	usageTracker          *tool.UsageTracker
-	experienceEvents      *lifecycle.EventTrail
-	experienceSink        lifecycle.EventSink
-	experienceExtractor   *ExperienceExtractor
-	orchestrator          *Orchestrator
-	sharedContext         *SharedContextStore
-	toolSelector          *ToolSelector
-	skillHubClient        *SkillHubClient
-	capabilityGapDetector *CapabilityGapDetector
-	agentRegistry         *agent.AgentRegistry
-	agentRegistryOnce     sync.Once
-	ohModules             openhumanModules
-	stopHubTicker         chan struct{} // signals the 24h recommendation refresh goroutine to stop
-	hubUpdCache           *hubUpdateCache
-	hubCenterCache        *remote.HubCenterSelectionCache // shared cache from corelib/remote
-	hubCenterPersister    *guiHubCenterPersister          // persister for HubCenter URL config
-	oauthMu               sync.Mutex
-	oauthCancel           context.CancelFunc
+	riskAssessor            *RiskAssessor
+	policyEngine            *PolicyEngine
+	auditLog                *AuditLog
+	llmSecurityReview       *LLMSecurityReview
+	mdnsScanner             *MDNSScanner
+	projectScanner          *ProjectScanner
+	toolDefGenerator        *ToolDefinitionGenerator
+	toolRouter              *ToolRouter
+	gateIntentClassifier    *GateIntentClassifier           // semantic gate classifier (wired in Task 12.1)
+	unifiedClassifier       *intent.UnifiedIntentClassifier // UIC: shared three-layer intent classifier
+	classifierOnce          sync.Once                       // guards single creation of unifiedClassifier + gateIntentClassifier
+	embeddingActivated      atomic.Bool                     // ensures activateEmbedderAsync runs at most once
+	intentEmbeddingActive   atomic.Bool                     // ensures UIC-only embedding activation runs at most once
+	embeddingMu             sync.Mutex
+	intentEmbedder          embedding.Embedder // local model held for UIC and reused when vector search is enabled
+	usageTracker            *tool.UsageTracker
+	experienceEvents        *lifecycle.EventTrail
+	experienceSink          lifecycle.EventSink
+	experienceExtractor     *ExperienceExtractor
+	llmEndpointFailuresOnce sync.Once
+	llmEndpointFailures     *llmEndpointFailureGate
+	orchestrator            *Orchestrator
+	sharedContext           *SharedContextStore
+	toolSelector            *ToolSelector
+	skillHubClient          *SkillHubClient
+	capabilityGapDetector   *CapabilityGapDetector
+	agentRegistry           *agent.AgentRegistry
+	agentRegistryOnce       sync.Once
+	ohModules               openhumanModules
+	stopHubTicker           chan struct{} // signals the 24h recommendation refresh goroutine to stop
+	hubUpdCache             *hubUpdateCache
+	hubCenterCache          *remote.HubCenterSelectionCache // shared cache from corelib/remote
+	hubCenterPersister      *guiHubCenterPersister          // persister for HubCenter URL config
+	oauthMu                 sync.Mutex
+	oauthCancel             context.CancelFunc
 	// Smart session components
 	memoryStore                       *memory.Store
 	memoryStoreMu                     sync.Mutex

@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
@@ -126,10 +127,11 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 		}
 	}
 	handler := hubClient.ensureIMHandler()
+	lang := handler.getWorkflowLang()
 	engine := handler.getWorkflowEngine()
 	if engine == nil {
 		return &IMAgentResponse{
-			Text:           avTr("Workflow engine is not available.", "工作流引擎不可用。"),
+			Text:           i18n.T(i18n.MsgWorkflowUnavailable, lang),
 			Error:          "no workflow engine",
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
@@ -137,7 +139,7 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 
 	if submittedPhaseID := workflowFormStringField(data, workflowFormPhaseField); submittedPhaseID != "" && submittedPhaseID != phaseID {
 		return &IMAgentResponse{
-			Text:           avTr("The workflow form phase is no longer current. Please reopen the current workflow form.", "该工作流表单阶段已不是当前版本，请重新打开当前工作流表单。"),
+			Text:           i18n.T(i18n.MsgWorkflowFormPhaseStale, lang),
 			Error:          fmt.Sprintf("workflow phase field mismatch: expected %s, got %s", phaseID, submittedPhaseID),
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
@@ -147,21 +149,21 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 	ws := engine.GetActiveWorkflow(userID)
 	if ws == nil {
 		return &IMAgentResponse{
-			Text:           avTr("No active workflow is available.", "当前没有可用的活动工作流。"),
+			Text:           i18n.T(i18n.MsgWorkflowFormNoActive, lang),
 			Error:          "no active workflow",
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
 	}
 	if submittedWorkflowID := workflowFormStringField(data, workflowFormWorkflowIDField); submittedWorkflowID != "" && ws.ID != submittedWorkflowID {
 		return &IMAgentResponse{
-			Text:           avTr("The workflow form is no longer current. Please reopen the current workflow form.", "该工作流表单已不是当前版本，请重新打开当前工作流表单。"),
+			Text:           i18n.T(i18n.MsgWorkflowFormStale, lang),
 			Error:          fmt.Sprintf("workflow mismatch: expected %s, got %s", ws.ID, submittedWorkflowID),
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
 	}
 	if ws.CurrentPhase != phaseID {
 		return &IMAgentResponse{
-			Text:           avTr("The workflow phase has changed. Please refresh and submit the current form.", "工作流阶段已变化，请刷新后提交当前表单。"),
+			Text:           i18n.T(i18n.MsgWorkflowFormPhaseChanged, lang),
 			Error:          fmt.Sprintf("phase mismatch: expected %s, got %s", ws.CurrentPhase, phaseID),
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
@@ -178,7 +180,7 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 	resp, err := engine.SubmitPhaseForm(userID, cleanData)
 	if err != nil {
 		return &IMAgentResponse{
-			Text:           avTr("Form submission failed.", "表单提交失败。"),
+			Text:           i18n.T(i18n.MsgWorkflowFormSubmitError, lang),
 			Error:          err.Error(),
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
@@ -198,7 +200,7 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 			handler.stashedPhasePrompt.Delete(userID)
 			handler.workflowAgentLoopMarker.Delete(userID)
 			return &IMAgentResponse{
-				Text:           avTr("Workflow continuation failed.", "工作流继续执行失败。"),
+				Text:           i18n.T(i18n.MsgWorkflowFormContinueError, lang),
 				Error:          err.Error(),
 				ResponseSource: imResponseSourceAgentViewSubmit.String(),
 			}
@@ -207,7 +209,7 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 		return &IMAgentResponse{
 			RequestID:      requestID,
 			Deferred:       true,
-			Text:           avTr("Information submitted. Generating the workflow output now...", "信息已提交，正在生成工作流输出..."),
+			Text:           i18n.T(i18n.MsgWorkflowFormGenerating, lang),
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
 	}
@@ -219,7 +221,7 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 		}
 	}
 	return &IMAgentResponse{
-		Text:           avTr("Form submitted.", "表单已提交。"),
+		Text:           i18n.T(i18n.MsgWorkflowFormSubmitted, lang),
 		ResponseSource: imResponseSourceAgentViewSubmit.String(),
 	}
 }

@@ -579,6 +579,7 @@ func ApplyRunInputInference(entry *corelib.NLSkillEntry, vars map[string]string,
 			}
 		}
 	}
+	applyExplicitInputForSingleMissingParam(entry, vars, runArgs, paramsByName)
 }
 
 func promoteRunParamAlias(vars map[string]string, param corelib.NLSkillParam) bool {
@@ -655,6 +656,128 @@ func inferRunParamValue(param corelib.NLSkillParam, candidates []string) string 
 		}
 	}
 	return ""
+}
+
+func applyExplicitInputForSingleMissingParam(entry *corelib.NLSkillEntry, vars map[string]string, runArgs map[string]interface{}, paramsByName map[string]corelib.NLSkillParam) {
+	input := explicitRunInputValue(vars, runArgs)
+	if input == "" {
+		return
+	}
+	missing := map[string]corelib.NLSkillParam{}
+	addMissing := func(param corelib.NLSkillParam) {
+		name := canonicalRunVarKey(param.Name)
+		if name == "" || strings.TrimSpace(vars[name]) != "" {
+			return
+		}
+		param.Name = name
+		missing[name] = param
+	}
+	for _, arg := range entry.RequiredArgs {
+		addMissing(runParamForName(arg, paramsByName))
+	}
+	for _, param := range entry.Params {
+		if param.Required {
+			addMissing(param)
+		}
+	}
+	if len(missing) != 1 {
+		return
+	}
+	for name, param := range missing {
+		if value := inferExplicitInputParamValue(param, input); value != "" {
+			vars[name] = value
+		}
+	}
+}
+
+func explicitRunInputValue(vars map[string]string, runArgs map[string]interface{}) string {
+	if raw, ok := lookupRunArg(runArgs, "input"); ok {
+		if value, ok := runVarString(raw); ok {
+			value = strings.TrimSpace(value)
+			if value != "" && !strings.HasPrefix(value, "{") && !strings.HasPrefix(value, "[") {
+				return value
+			}
+		}
+	}
+	if value, ok := lookupCanonicalVar(vars, "input"); ok {
+		value = strings.TrimSpace(value)
+		if value != "" && !strings.HasPrefix(value, "{") && !strings.HasPrefix(value, "[") {
+			return value
+		}
+	}
+	return ""
+}
+
+func inferExplicitInputParamValue(param corelib.NLSkillParam, input string) string {
+	switch runParamKind(param) {
+	case "city":
+		return extractExplicitInputCity(input)
+	default:
+		return ""
+	}
+}
+
+func extractExplicitInputCity(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	if value := extractNamedRunArg(input, "city"); value != "" {
+		return value
+	}
+	if value := extractNamedRunArg(input, "location"); value != "" {
+		return value
+	}
+	if value := extractNamedRunArg(input, "\u57ce\u5e02"); value != "" {
+		return value
+	}
+	if value := extractNamedRunArg(input, "\u5730\u70b9"); value != "" {
+		return value
+	}
+	for _, pattern := range []string{
+		`(?i)(?:^|\s)(?:weather|forecast)\s+(?:in|for|at)\s+([A-Za-z][A-Za-z .'-]*[A-Za-z])(?:\s|$|[,.!?;:])`,
+		`(?i)(?:^|\s)(?:in|for|at)\s+([A-Za-z][A-Za-z .'-]*[A-Za-z])(?:\s|$|[,.!?;:])`,
+	} {
+		if re, err := regexp.Compile(pattern); err == nil {
+			if m := re.FindStringSubmatch(input); len(m) > 1 {
+				return cleanInferredRunArgValue(m[1])
+			}
+		}
+	}
+	if looksLikeDirectCityInput(input) {
+		return input
+	}
+	return ""
+}
+
+func looksLikeDirectCityInput(input string) bool {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return false
+	}
+	lower := strings.ToLower(input)
+	for _, token := range []string{"weather", "forecast", "\u5929\u6c14", "\u67e5\u8be2", "\u67e5\u4e00\u4e0b", "\u660e\u5929", "\u540e\u5929"} {
+		if strings.Contains(lower, token) {
+			return false
+		}
+	}
+	if strings.ContainsAny(input, "\n\r{}[]:=") {
+		return false
+	}
+	words := strings.Fields(input)
+	if len(words) > 3 {
+		return false
+	}
+	for _, r := range input {
+		if unicode.IsLetter(r) || unicode.IsSpace(r) || r == '-' || r == '\'' || r == '.' {
+			continue
+		}
+		if unicode.Is(unicode.Han, r) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func runParamInferenceNames(param corelib.NLSkillParam) []string {
@@ -742,7 +865,7 @@ func extractNamedRunArg(text, arg string) string {
 
 func cleanInferredRunArgValue(value string) string {
 	value = strings.Trim(strings.TrimSpace(value), `"'`)
-	for _, marker := range []string{" \u7684", " for ", " with ", " please", " \u8bf7", "\uff0c", ",", "\u3002", ";", "\uff1b"} {
+	for _, marker := range []string{" \u7684", " for ", " with ", " today", " tomorrow", " tonight", " now", " please", " \u8bf7", "\u4eca\u5929", "\u660e\u5929", "\u4eca\u665a", "\uff0c", ",", "\u3002", ";", "\uff1b"} {
 		if idx := strings.Index(value, marker); idx > 0 {
 			value = strings.TrimSpace(value[:idx])
 		}

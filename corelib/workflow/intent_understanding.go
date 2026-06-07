@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -9,11 +10,18 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 // sessionExpiryDuration is the maximum inactivity time before a session
 // is considered expired and eligible for cleanup.
 const sessionExpiryDuration = 30 * time.Minute
+
+// ErrIntentUnderstandingContractBreach marks an IUM response that left the
+// structured JSON contract completely. Callers can fall back to the normal
+// agent loop because the understanding session has already been cancelled.
+var ErrIntentUnderstandingContractBreach = errors.New("intent understanding contract breach")
 
 // llmIntentTimeout is the timeout for LLM calls during intent understanding.
 // Keep semantic workflow routing aligned with other lightweight LLM classifiers.
@@ -29,16 +37,61 @@ type IntentUnderstandingManager struct {
 	store    PersistenceStore
 	llm      LLMCaller
 	registry *WorkflowRegistry
+	lang     string
+	userLang map[string]string
 }
 
 // NewIntentUnderstandingManager creates a new manager with the given dependencies.
 func NewIntentUnderstandingManager(store PersistenceStore, llm LLMCaller, registry *WorkflowRegistry) *IntentUnderstandingManager {
 	return &IntentUnderstandingManager{
 		sessions: make(map[string]*UnderstandingSession),
+		userLang: make(map[string]string),
 		store:    store,
 		llm:      llm,
 		registry: registry,
 	}
+}
+
+// SetLanguage sets the user-facing language for retry/fallback messages.
+func (m *IntentUnderstandingManager) SetLanguage(lang string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.lang = lang
+	m.mu.Unlock()
+}
+
+// SetUserLanguage sets the user-facing language for one understanding user.
+func (m *IntentUnderstandingManager) SetUserLanguage(userID, lang string) {
+	if m == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		m.SetLanguage(lang)
+		return
+	}
+	m.mu.Lock()
+	if m.userLang == nil {
+		m.userLang = make(map[string]string)
+	}
+	m.userLang[userID] = lang
+	m.mu.Unlock()
+}
+
+func (m *IntentUnderstandingManager) languageForUser(userID string) string {
+	if m == nil {
+		return ""
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.userLang != nil {
+		if lang := strings.TrimSpace(m.userLang[strings.TrimSpace(userID)]); lang != "" {
+			return lang
+		}
+	}
+	return m.lang
 }
 
 // StartResult holds the outcome of Start(). When Rejected is true, the LLM
@@ -163,7 +216,7 @@ func (m *IntentUnderstandingManager) HandleInput(userID, text string) (reply str
 		log.Printf("[IntentUnderstanding] parse failed for user %s, preserving session. raw_len=%d",
 			userID, len([]rune(raw)))
 
-		fallbackReply := buildIntentParseFailureReply(raw)
+		fallbackReply := m.buildIntentParseFailureReply(userID, raw)
 
 		// Contract breach: the LLM has completely departed from the structured
 		// JSON contract (capability denial, long free-form explanation, etc.).
@@ -176,7 +229,7 @@ func (m *IntentUnderstandingManager) HandleInput(userID, text string) (reply str
 			// Return error so the caller falls through to the normal agent loop.
 			// The error message is internal — the caller (handleActiveUnderstanding)
 			// already handles err != nil by cancelling and returning nil.
-			return "", false, false, nil, fmt.Errorf("IUM contract breach: LLM departed from structured contract")
+			return "", false, false, nil, fmt.Errorf("%w: LLM departed from structured contract", ErrIntentUnderstandingContractBreach)
 		}
 
 		// Minor format drift (short clarification question) — preserve session.
@@ -201,9 +254,10 @@ func (m *IntentUnderstandingManager) HandleInput(userID, text string) (reply str
 	}
 
 	if parsedIntent.Category == WorkflowType("cancel") {
+		lang := m.languageForUser(userID)
 		m.cleanupSession(userID)
 		if strings.TrimSpace(replyText) == "" {
-			replyText = "已取消。"
+			replyText = i18n.T(i18n.MsgWorkflowCancelled, lang)
 		}
 		return replyText, false, true, nil, nil
 	}
@@ -274,6 +328,7 @@ func (m *IntentUnderstandingManager) CleanupExpired() {
 			}
 		}
 		delete(m.sessions, uid)
+		delete(m.userLang, uid)
 	}
 	m.mu.Unlock()
 }
@@ -317,6 +372,7 @@ func (m *IntentUnderstandingManager) cleanupSession(userID string) {
 		}
 	}
 	delete(m.sessions, userID)
+	delete(m.userLang, userID)
 	m.mu.Unlock()
 
 	if m.store != nil {
@@ -567,10 +623,21 @@ func parseLLMIntentResponse(raw string) (reply string, intent StructuredIntent, 
 	return result.Reply, result.Intent, isReady, true
 }
 
+func (m *IntentUnderstandingManager) buildIntentParseFailureReply(userID, raw string) string {
+	return buildIntentParseFailureReplyWithHint(raw, i18n.T(i18n.MsgWorkflowUnderstandError, m.languageForUser(userID)))
+}
+
 func buildIntentParseFailureReply(raw string) string {
+	return buildIntentParseFailureReplyWithHint(raw, i18n.T(i18n.MsgWorkflowUnderstandError, ""))
+}
+
+func buildIntentParseFailureReplyWithHint(raw, retryHint string) string {
 	text := strings.TrimSpace(raw)
 	if text == "" || looksLikeStructuredGarbage(text) {
-		return parseFailureRetryHint
+		if strings.TrimSpace(retryHint) != "" {
+			return retryHint
+		}
+		return i18n.T(i18n.MsgWorkflowUnderstandError, "")
 	}
 
 	// Mechanism: when the IUM LLM produces a response that is completely
@@ -593,10 +660,6 @@ func buildIntentParseFailureReply(raw string) string {
 	// clarification question. Surface it to the user and keep the session.
 	return truncateForLog(text, 500)
 }
-
-// parseFailureRetryHint is returned when the raw response is empty or
-// structured garbage (malformed JSON). The session is preserved for retry.
-const parseFailureRetryHint = "I received your supplement, but the workflow understanding step failed temporarily. Please send the supplement again or confirm to continue the current task."
 
 // contractBreachMarker is an internal sentinel used by buildIntentParseFailureReply
 // to signal that the LLM has completely departed from the structured JSON contract.

@@ -1122,6 +1122,8 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 		{http.MethodPost, "/api/ve/ve-1/approve", nil},
 		{http.MethodPost, "/api/ve/ve-1/reject", nil},
 		{http.MethodPost, "/api/ve/ve-1/disable", nil},
+		{http.MethodDelete, "/api/ve/ve-1", nil},
+		{http.MethodPost, "/api/ve/ve-1/force-delete", map[string]any{"admin_password": "StrongPassword123!"}},
 		{http.MethodPut, "/api/ve/ve-1/visibility", map[string]any{"visible_group_ids": []string{"dept-1"}}},
 		{http.MethodGet, "/api/admin/feishu/bindings", nil},
 		{http.MethodDelete, "/api/admin/feishu/bindings?user_id=u1", nil},

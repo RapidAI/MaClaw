@@ -76,6 +76,53 @@ func setupWorkflowTestHandler(llm workflow.LLMCaller) (*IMMessageHandler, *mockE
 	return handler, cb
 }
 
+func TestActiveWorkflowIgnoresUICWorkflowTypeReplacement(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	handler.unifiedClassifier = intent.New(intent.Config{
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"workflow_task","score":0.95,"reason":"looks like another workflow","workflow_type":"grant_proposal"}]}`, nil
+		},
+	})
+	engine := handler.app.workflowEngine
+	userID := "test-active-workflow-ignores-uic-workflow-type"
+	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowChangjiangScholar,
+		Summary:  "draft application",
+	}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	handler.handleWorkflowInterception(userID, "我是青年学者，研究方向是人工智能。", "weixin")
+
+	if got := engine.GetActiveWorkflow(userID); got == nil || got.Type != workflow.WorkflowChangjiangScholar {
+		t.Fatalf("active workflow should not be replaced by UIC workflow_type, got %#v", got)
+	}
+}
+
+func TestActiveWorkflowIgnoresUICNonWorkflowBypass(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	handler.unifiedClassifier = testIntentClassifier(string(intent.LabelSSH))
+	engine := handler.app.workflowEngine
+	userID := "test-active-workflow-ignores-uic-nonworkflow-bypass"
+	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowChangjiangScholar,
+		Summary:  "draft application",
+	}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	resp := handler.handleWorkflowInterception(userID, "请把这段研究经历补充进当前申请材料。", "weixin")
+	if resp == nil || strings.TrimSpace(resp.Text) == "" {
+		t.Fatalf("active workflow input should be owned by workflow state machine, got %#v", resp)
+	}
+	if got := engine.GetActiveWorkflow(userID); got == nil || got.Type != workflow.WorkflowChangjiangScholar {
+		t.Fatalf("active workflow should remain active, got %#v", got)
+	}
+	if !strings.Contains(resp.Text, "长江学者申请人信息") {
+		t.Fatalf("active workflow should return its own form prompt, got %q", resp.Text)
+	}
+}
+
 func TestApprovePendingWorkflowConfirmationCreatesProjectDirectory(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "test-workflow-start-creates-project-dir"
@@ -163,6 +210,61 @@ func TestWorkflowInterceptionLowConfidenceUnknownStillReachesUnderstandingConfir
 	}
 }
 
+func TestWorkflowInterceptionSurfacesUnderstandingErrorForWorkflowCandidate(t *testing.T) {
+	llm := &mockLLMCallerGUI{Err: errors.New("connection refused")}
+	handler, _ := setupWorkflowTestHandler(llm)
+	handler.unifiedClassifier = intent.New(intent.Config{
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"workflow_task","score":0.82,"reason":"workflow-capable document task"}]}`, nil
+		},
+	})
+	userID := "test-workflow-candidate-understanding-error"
+
+	resp := handler.handleWorkflowInterception(userID, "write a multi-stage application document", "desktop")
+	if resp == nil || resp.Error == "" {
+		t.Fatal("workflow candidate should surface understanding LLM failure instead of falling through to ordinary agent")
+	}
+	if !strings.Contains(resp.Error, "工作流理解服务暂时不可用") {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	if llm.Calls == 0 {
+		t.Fatal("IntentUnderstandingManager should still be consulted before surfacing the failure")
+	}
+}
+
+func TestWorkflowInterceptionSurfacesUnderstandingErrorLocalized(t *testing.T) {
+	llm := &mockLLMCallerGUI{Err: errors.New("connection refused")}
+	handler, _ := setupWorkflowTestHandler(llm)
+	handler.app.CurrentLanguage = "en"
+	handler.unifiedClassifier = intent.New(intent.Config{
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"workflow_task","score":0.82,"reason":"workflow-capable document task"}]}`, nil
+		},
+	})
+	userID := "test-workflow-candidate-understanding-error-en"
+
+	resp := handler.handleWorkflowInterception(userID, "write a multi-stage application document", "desktop")
+	if resp == nil || !strings.Contains(resp.Error, "Workflow understanding service is temporarily unavailable") {
+		t.Fatalf("expected English localized error, got %#v", resp)
+	}
+}
+
+func TestShouldSurfaceWorkflowUnderstandingStartErrorRequiresWorkflowCandidate(t *testing.T) {
+	uic := intent.New(intent.Config{})
+	if shouldSurfaceWorkflowUnderstandingStartError(uic, &intent.ClassificationResult{
+		Primary:    intent.LabelUnknown,
+		Confidence: 0.90,
+	}) {
+		t.Fatal("unknown intent should not surface workflow-understanding transport errors")
+	}
+	if !shouldSurfaceWorkflowUnderstandingStartError(uic, &intent.ClassificationResult{
+		Primary:    intent.LabelWorkflowTask,
+		Confidence: 0.82,
+	}) {
+		t.Fatal("confident workflow candidate should surface workflow-understanding transport errors")
+	}
+}
+
 func TestBugCondition_CategoryNoneReadyTrue_ShouldNotCallStartWorkflow(t *testing.T) {
 	llm := &mockLLMCallerGUI{
 		Response: `{"intent":{"category":"coding","summary":"build a system","confidence":0.7,"ready":false},"reply":"need more detail","ready":false}`,
@@ -229,6 +331,85 @@ func TestActiveUnderstanding_ErrorPreservesSession(t *testing.T) {
 	}
 	if !understanding.HasActiveSession(userID) {
 		t.Fatal("active understanding session should survive transient HandleInput error")
+	}
+}
+
+func TestActiveUnderstandingKeepsWorkflowCandidateWithoutConcreteType(t *testing.T) {
+	llm := &mockLLMCallerGUI{
+		Response: `{"intent":{"category":"presentation_design","summary":"make slides","confidence":0.8,"ready":false},"reply":"please add audience","ready":false}`,
+	}
+	handler, _ := setupWorkflowTestHandler(llm)
+	handler.unifiedClassifier = intent.New(intent.Config{
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"workflow_task","score":0.86,"reason":"workflow candidate but no concrete type"}]}`, nil
+		},
+	})
+	engine := handler.app.workflowEngine
+	understanding := engine.GetUnderstanding()
+	userID := "test-active-understanding-keeps-workflow-candidate"
+
+	if _, err := understanding.Start(userID, "make a memorial PPT"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	llm.Response = `{"intent":{"category":"presentation_design","summary":"make slides for students","confidence":0.82,"ready":false},"reply":"please add page count","ready":false}`
+
+	resp := handler.handleWorkflowInterception(userID, "the audience is university students and the tone should be formal", "desktop")
+	if resp == nil || !strings.Contains(resp.Text, "please add page count") {
+		t.Fatalf("workflow candidate should stay in active understanding, got %#v", resp)
+	}
+	if !understanding.HasActiveSession(userID) {
+		t.Fatal("workflow-candidate UIC result without concrete workflow_type must not cancel active understanding")
+	}
+}
+
+func TestActiveUnderstandingKeepsOfficeClarificationWithoutConcreteType(t *testing.T) {
+	llm := &mockLLMCallerGUI{
+		Response: `{"intent":{"category":"presentation_design","summary":"make slides","confidence":0.8,"ready":false},"reply":"please add style","ready":false}`,
+	}
+	handler, _ := setupWorkflowTestHandler(llm)
+	handler.unifiedClassifier = intent.New(intent.Config{
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"office","score":0.90,"reason":"office clarification without concrete workflow type"}]}`, nil
+		},
+	})
+	engine := handler.app.workflowEngine
+	understanding := engine.GetUnderstanding()
+	userID := "test-active-understanding-keeps-office-clarification"
+
+	if _, err := understanding.Start(userID, "make a memorial PPT"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	llm.Response = `{"intent":{"category":"presentation_design","summary":"make slides in PowerPoint","confidence":0.82,"ready":false},"reply":"please add audience","ready":false}`
+
+	resp := handler.handleWorkflowInterception(userID, "use PowerPoint format and keep the deck around 12 pages", "desktop")
+	if resp == nil || !strings.Contains(resp.Text, "please add audience") {
+		t.Fatalf("office clarification should stay in active understanding, got %#v", resp)
+	}
+	if !understanding.HasActiveSession(userID) {
+		t.Fatal("office clarification must not cancel active understanding")
+	}
+}
+
+func TestActiveUnderstandingEscapesForDirectExecutionIntent(t *testing.T) {
+	llm := &mockLLMCallerGUI{
+		Response: `{"intent":{"category":"presentation_design","summary":"make slides","confidence":0.8,"ready":false},"reply":"please add style","ready":false}`,
+	}
+	handler, _ := setupWorkflowTestHandler(llm)
+	handler.unifiedClassifier = testIntentClassifier(string(intent.LabelSSH))
+	engine := handler.app.workflowEngine
+	understanding := engine.GetUnderstanding()
+	userID := "test-active-understanding-escapes-direct-execution"
+
+	if _, err := understanding.Start(userID, "make a memorial PPT"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	resp := handler.handleWorkflowInterception(userID, "ssh into the server and check current deployment logs", "desktop")
+	if resp != nil {
+		t.Fatalf("direct execution intent should fall through to agent loop, got %#v", resp)
+	}
+	if understanding.HasActiveSession(userID) {
+		t.Fatal("direct execution intent should cancel active understanding session")
 	}
 }
 
@@ -1632,6 +1813,37 @@ func TestWorkflowReviewExecutionRequestDoesNotStartAgentLoop(t *testing.T) {
 	ws := engine.GetActiveWorkflow(userID)
 	if ws == nil || ws.CurrentPhase != "plan" || !engine.IsAwaitingReview(userID) {
 		t.Fatalf("workflow should remain awaiting plan review, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))
+	}
+}
+
+func TestWorkflowReviewExecutionBlockedResponseUsesConfiguredLanguage(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	handler.app.CurrentLanguage = "en"
+	engine := handler.app.workflowEngine
+	userID := "test-review-execution-blocked-lang"
+	workflowType := workflow.WorkflowType("gui_review_execution_blocked_lang")
+	engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+		Type:        workflowType,
+		Name:        "review execution blocked language",
+		Description: "test template",
+		Phases: []workflow.PhaseTemplate{
+			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: workflow.ToolFilterFull},
+		},
+	})
+	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "build"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if phaseID, _, err := engine.SavePhaseOutputAndMaybeAdvance(userID, reviewStateValidContentGUI()); err != nil || phaseID != "plan" {
+		t.Fatalf("SavePhaseOutputAndMaybeAdvance phase=%q err=%v", phaseID, err)
+	}
+
+	resp := handler.workflowReviewExecutionBlockedResponse(engine, userID)
+	if resp == nil || !strings.Contains(resp.Text, "Current workflow phase") || !strings.Contains(resp.Text, "has not been confirmed yet") {
+		t.Fatalf("expected English localized barrier response, got %#v", resp)
+	}
+	if strings.Contains(resp.Text, "涓嶈兘") || strings.Contains(resp.Text, "确认") {
+		t.Fatalf("barrier response leaked Chinese text: %q", resp.Text)
 	}
 }
 

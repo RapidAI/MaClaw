@@ -214,7 +214,10 @@ func (m *BrowserAgentManager) Start(args map[string]interface{}) (BrowserSession
 		ContentBoundary:            boolValue(args["content_boundary"], true),
 	}
 	mode := stableBrowserManagerSessionMode(args)
-	ownerID := strings.TrimSpace(stringValue(args[registeredToolPolicyOwnerIDField]))
+	ownerID, explicitRuntimeOwner := runtimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if explicitRuntimeOwner && ownerID == "" {
+		return BrowserSessionView{}, fmt.Errorf("runtime owner is missing; isolated runtime will not fall back to desktop owner")
+	}
 	sess, err := browser.StartAgentSessionForOwner(ownerID, stringValue(args["addr"]), policy, boolValue(args["reuse_existing"], true), mode)
 	if err != nil {
 		return BrowserSessionView{}, err

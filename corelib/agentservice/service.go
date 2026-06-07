@@ -302,7 +302,6 @@ func (s *Service) GetTenantDeleteCheck(ctx context.Context, tenantID string) (*T
 }
 
 func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*User, error) {
-	_ = ctx
 	if _, err := s.store.GetTenant(in.TenantID); err != nil {
 		return nil, err
 	}
@@ -934,6 +933,52 @@ func (s *Service) Authenticate(accessToken string) (*Principal, error) {
 	return p, nil
 }
 
+func (s *Service) RefreshToken(ctx context.Context, accessToken string, credentialSlidingTTL time.Duration) (*IssueTokenOutput, error) {
+	_ = ctx
+	p, _, credentialID, credentialVersion, err := s.tokens.Parse(strings.TrimSpace(accessToken))
+	if err != nil {
+		return nil, ErrUnauthorized
+	}
+	if strings.TrimSpace(credentialID) != "" {
+		cred, credErr := s.store.GetCredential(p.TenantID, p.UserID, credentialID)
+		if credErr != nil || credentialStatus(cred) != CredentialStatusActive {
+			return nil, ErrUnauthorized
+		}
+		if credentialExpired(cred, s.now()) {
+			return nil, ErrUnauthorized
+		}
+		if credentialVersion > 0 && credentialTokenVersion(cred) != credentialVersion {
+			return nil, ErrUnauthorized
+		}
+		if err := s.ensurePrincipalActive(p.TenantID, p.UserID); err != nil {
+			return nil, err
+		}
+		if credentialSlidingTTL > 0 && cred.ExpiresAt != nil {
+			nextExpiry := s.now().Add(credentialSlidingTTL).UTC()
+			if nextExpiry.After(cred.ExpiresAt.UTC()) {
+				cred.ExpiresAt = &nextExpiry
+				cred.UpdatedAt = s.now()
+				if saveErr := s.store.SaveCredential(cred); saveErr != nil {
+					return nil, saveErr
+				}
+			}
+		}
+		token, exp, issueErr := s.tokens.IssueForCredential(*p, cred.ID, credentialTokenVersion(cred))
+		if issueErr != nil {
+			return nil, issueErr
+		}
+		return &IssueTokenOutput{AccessToken: token, TokenType: "Bearer", ExpiresAt: exp, Principal: *p}, nil
+	}
+	if err := s.ensurePrincipalActive(p.TenantID, p.UserID); err != nil {
+		return nil, err
+	}
+	token, exp, err := s.tokens.Issue(*p)
+	if err != nil {
+		return nil, err
+	}
+	return &IssueTokenOutput{AccessToken: token, TokenType: "Bearer", ExpiresAt: exp, Principal: *p}, nil
+}
+
 func (s *Service) GetMe(ctx context.Context, p Principal) (*User, error) {
 	_ = ctx
 	u, err := s.store.GetUser(p.TenantID, p.UserID)
@@ -970,7 +1015,7 @@ func (s *Service) GetRawUserConfig(ctx context.Context, p Principal) (*UserConfi
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
-	cfg, err := s.getOrLoadUserConfig(p.TenantID, p.UserID)
+	cfg, err := s.getOrLoadRawUserConfig(p.TenantID, p.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -1274,7 +1319,7 @@ func (s *Service) UpdateUserConfig(ctx context.Context, p Principal, next coreli
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
-	current, err := s.getOrLoadUserConfig(p.TenantID, p.UserID)
+	current, err := s.getOrLoadRawUserConfig(p.TenantID, p.UserID)
 	if err != nil && err != ErrUserConfigNotFound {
 		return nil, err
 	}
@@ -1293,6 +1338,70 @@ func (s *Service) UpdateUserConfig(ctx context.Context, p Principal, next coreli
 	cfg.AppConfig = effectiveLLMFlatConfig(cfg.AppConfig)
 	cfg.AppConfig = SanitizeAppConfig(cfg.AppConfig)
 	return &cfg, nil
+}
+
+func (s *Service) defaultClientConfigPath() string {
+	return filepath.Join(s.dataRoot, "config", "default_client_config.json")
+}
+
+func (s *Service) GetDefaultClientConfig(ctx context.Context) (*UserConfig, error) {
+	_ = ctx
+	cfg, err := loadUserConfigFromFile(s.defaultClientConfigPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &UserConfig{TenantID: "", UserID: "", AppConfig: corelib.AppConfig{}, UpdatedAt: time.Time{}}, nil
+		}
+		return nil, err
+	}
+	cfg.TenantID = ""
+	cfg.UserID = ""
+	cfg.AppConfig = SharedClientAppConfigOnly(cfg.AppConfig)
+	return &cfg, nil
+}
+
+func (s *Service) UpdateDefaultClientConfig(ctx context.Context, next corelib.AppConfig) (*UserConfig, error) {
+	_ = ctx
+	current, err := s.GetDefaultClientConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	currentShared := SharedClientAppConfigOnly(current.AppConfig)
+	nextShared := SharedClientAppConfigOnly(next)
+	merged := mergeSecretPreserving(currentShared, nextShared)
+	cfg := UserConfig{TenantID: "", UserID: "", AppConfig: merged, UpdatedAt: s.now()}
+	if err := saveUserConfigToFile(s.defaultClientConfigPath(), cfg); err != nil {
+		return nil, err
+	}
+	if err := s.refreshAllUserInstanceReadinessCache(); err != nil {
+		return nil, err
+	}
+	_ = s.recordAudit(auditRecord{Action: "config.default_client_updated", ResourceType: "default_client_config", ResourceID: "global", ActorType: "admin"})
+	cfg.AppConfig = effectiveLLMFlatConfig(cfg.AppConfig)
+	cfg.AppConfig = SanitizeAppConfig(cfg.AppConfig)
+	return &cfg, nil
+}
+
+func (s *Service) refreshAllUserInstanceReadinessCache() error {
+	tenants, err := s.store.ListTenants()
+	if err != nil {
+		return err
+	}
+	for _, tenant := range tenants {
+		users, err := s.store.ListUsers(tenant.ID)
+		if err != nil {
+			return err
+		}
+		for _, user := range users {
+			validation, err := s.currentInstanceConfigValidation(tenant.ID, user.ID)
+			if err != nil {
+				continue
+			}
+			if err := s.refreshUserInstanceReadinessCache(tenant.ID, user.ID, validation, s.now()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Service) refreshUserInstanceReadinessCache(tenantID, userID string, validation ConfigValidationResult, updatedAt time.Time) error {
@@ -3250,7 +3359,7 @@ func (s *Service) exportUserState(tenantID, userID string, in ExportServiceState
 		return ExportedUser{}, err
 	}
 	out := ExportedUser{User: user}
-	cfg, err := s.getOrLoadUserConfig(tenantID, userID)
+	cfg, err := s.getOrLoadRawUserConfig(tenantID, userID)
 	if err == nil {
 		if !in.IncludeSecrets {
 			cfg.AppConfig = SanitizeAppConfig(cfg.AppConfig)
@@ -3625,7 +3734,7 @@ func (s *Service) ImportServiceState(ctx context.Context, in ImportServiceStateR
 	for _, exportedUser := range data.Users {
 		currentAppConfig := corelib.AppConfig{}
 		if _, err := s.store.GetUser(exportedUser.User.TenantID, exportedUser.User.ID); err == nil {
-			if currentConfig, cfgErr := s.getOrLoadUserConfig(exportedUser.User.TenantID, exportedUser.User.ID); cfgErr == nil {
+			if currentConfig, cfgErr := s.getOrLoadRawUserConfig(exportedUser.User.TenantID, exportedUser.User.ID); cfgErr == nil {
 				currentAppConfig = currentConfig.AppConfig
 			} else if cfgErr != ErrUserConfigNotFound {
 				return nil, cfgErr
@@ -4269,6 +4378,18 @@ func (s *Service) userConfigPath(tenantID, userID string) string {
 }
 
 func (s *Service) getOrLoadUserConfig(tenantID, userID string) (UserConfig, error) {
+	cfg, err := s.getOrLoadRawUserConfig(tenantID, userID)
+	if err != nil {
+		return UserConfig{}, err
+	}
+	cfg.AppConfig = s.applySharedClientAppConfig(cfg.AppConfig)
+	if shared, ok, err := s.loadDefaultClientConfigIfExists(); err == nil && ok && shared.UpdatedAt.After(cfg.UpdatedAt) {
+		cfg.UpdatedAt = shared.UpdatedAt
+	}
+	return cfg, nil
+}
+
+func (s *Service) getOrLoadRawUserConfig(tenantID, userID string) (UserConfig, error) {
 	cfg, err := s.store.GetUserConfig(tenantID, userID)
 	if err == nil {
 		return cfg, nil
@@ -4290,11 +4411,102 @@ func (s *Service) getOrLoadUserConfig(tenantID, userID string) (UserConfig, erro
 	return cfg, nil
 }
 
+func (s *Service) loadDefaultClientConfigIfExists() (UserConfig, bool, error) {
+	cfg, err := loadUserConfigFromFile(s.defaultClientConfigPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return UserConfig{}, false, nil
+		}
+		return UserConfig{}, false, err
+	}
+	cfg.TenantID = ""
+	cfg.UserID = ""
+	return cfg, true, nil
+}
+
+func (s *Service) applySharedClientAppConfig(userCfg corelib.AppConfig) corelib.AppConfig {
+	shared, ok, err := s.loadDefaultClientConfigIfExists()
+	if err != nil || !ok {
+		return userCfg
+	}
+	return mergeSharedClientAppConfig(userCfg, shared.AppConfig)
+}
+
+func mergeSharedClientAppConfig(userCfg, shared corelib.AppConfig) corelib.AppConfig {
+	out := cloneAppConfig(userCfg)
+	shared = cloneAppConfig(shared)
+	out.WebSearchProviders = shared.WebSearchProviders
+	out.WebSearchCurrentProvider = shared.WebSearchCurrentProvider
+	out.DefaultProxyEnabled = shared.DefaultProxyEnabled
+	out.DefaultProxyProtocol = shared.DefaultProxyProtocol
+	out.DefaultProxyHost = shared.DefaultProxyHost
+	out.DefaultProxyPort = shared.DefaultProxyPort
+	out.DefaultProxyUsername = shared.DefaultProxyUsername
+	out.DefaultProxyPassword = shared.DefaultProxyPassword
+	out.DefaultProxyBypass = shared.DefaultProxyBypass
+	out.DefaultProxyScopeMaclaw = shared.DefaultProxyScopeMaclaw
+	out.DefaultProxyScopeCodingTools = shared.DefaultProxyScopeCodingTools
+	out.DefaultProxyScopeAgent = shared.DefaultProxyScopeAgent
+	out.MCPServers = shared.MCPServers
+	out.LocalMCPServers = shared.LocalMCPServers
+	out.SkillHubURLs = shared.SkillHubURLs
+	out.ExternalSkillDirs = append([]string(nil), shared.ExternalSkillDirs...)
+	out.SecurityPolicyMode = shared.SecurityPolicyMode
+	out.HubSecurityCentralized = shared.HubSecurityCentralized
+	out.NetworkLevel = shared.NetworkLevel
+	out.NetworkAllowlist = append([]string(nil), shared.NetworkAllowlist...)
+	out.SkillSourcesAllowed = append([]string(nil), shared.SkillSourcesAllowed...)
+	out.Language = shared.Language
+	out.UIMode = shared.UIMode
+	out.WorkingDirectory = shared.WorkingDirectory
+	out.VectorSearchEnabled = shared.VectorSearchEnabled
+	out.ASREnabled = shared.ASREnabled
+	out.TTSEnabled = shared.TTSEnabled
+	out.IMProgressNudgeEnabled = shared.IMProgressNudgeEnabled
+	out.SSHHosts = shared.SSHHosts
+	return out
+}
+
+func SharedClientAppConfigOnly(cfg corelib.AppConfig) corelib.AppConfig {
+	cfg = cloneAppConfig(cfg)
+	return corelib.AppConfig{
+		WebSearchProviders:           cfg.WebSearchProviders,
+		WebSearchCurrentProvider:     cfg.WebSearchCurrentProvider,
+		DefaultProxyEnabled:          cfg.DefaultProxyEnabled,
+		DefaultProxyProtocol:         cfg.DefaultProxyProtocol,
+		DefaultProxyHost:             cfg.DefaultProxyHost,
+		DefaultProxyPort:             cfg.DefaultProxyPort,
+		DefaultProxyUsername:         cfg.DefaultProxyUsername,
+		DefaultProxyPassword:         cfg.DefaultProxyPassword,
+		DefaultProxyBypass:           cfg.DefaultProxyBypass,
+		DefaultProxyScopeMaclaw:      cfg.DefaultProxyScopeMaclaw,
+		DefaultProxyScopeCodingTools: cfg.DefaultProxyScopeCodingTools,
+		DefaultProxyScopeAgent:       cfg.DefaultProxyScopeAgent,
+		MCPServers:                   cfg.MCPServers,
+		LocalMCPServers:              cfg.LocalMCPServers,
+		SkillHubURLs:                 cfg.SkillHubURLs,
+		ExternalSkillDirs:            cfg.ExternalSkillDirs,
+		SecurityPolicyMode:           cfg.SecurityPolicyMode,
+		HubSecurityCentralized:       cfg.HubSecurityCentralized,
+		NetworkLevel:                 cfg.NetworkLevel,
+		NetworkAllowlist:             cfg.NetworkAllowlist,
+		SkillSourcesAllowed:          cfg.SkillSourcesAllowed,
+		Language:                     cfg.Language,
+		UIMode:                       cfg.UIMode,
+		WorkingDirectory:             cfg.WorkingDirectory,
+		VectorSearchEnabled:          cfg.VectorSearchEnabled,
+		ASREnabled:                   cfg.ASREnabled,
+		TTSEnabled:                   cfg.TTSEnabled,
+		IMProgressNudgeEnabled:       cfg.IMProgressNudgeEnabled,
+		SSHHosts:                     cfg.SSHHosts,
+	}
+}
+
 func (s *Service) resolveCandidateConfig(p Principal, next *corelib.AppConfig) (corelib.AppConfig, error) {
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return corelib.AppConfig{}, err
 	}
-	current, err := s.getOrLoadUserConfig(p.TenantID, p.UserID)
+	current, err := s.getOrLoadRawUserConfig(p.TenantID, p.UserID)
 	if err != nil {
 		if err != ErrUserConfigNotFound {
 			return corelib.AppConfig{}, err
@@ -4302,10 +4514,10 @@ func (s *Service) resolveCandidateConfig(p Principal, next *corelib.AppConfig) (
 		current = UserConfig{TenantID: p.TenantID, UserID: p.UserID, AppConfig: corelib.AppConfig{}}
 	}
 	if next == nil {
-		return effectiveLLMFlatConfig(current.AppConfig), nil
+		return effectiveLLMFlatConfig(s.applySharedClientAppConfig(current.AppConfig)), nil
 	}
 	merged := normalizeLLMConfigForSave(current.AppConfig, mergeSecretPreserving(current.AppConfig, *next))
-	return merged, nil
+	return s.applySharedClientAppConfig(merged), nil
 }
 
 func (s *Service) withInstanceReadiness(inst Instance) Instance {

@@ -37,6 +37,61 @@ func DefaultParameterDefinitions() []ParameterDefinition {
 	return appendMissingAppConfigDefinitions(defs)
 }
 
+func SharedClientParameterDefinitions() []ParameterDefinition {
+	defs := DefaultParameterDefinitions()
+	seen := make(map[string]bool, len(defs))
+	out := make([]ParameterDefinition, 0, len(defs))
+	for _, def := range defs {
+		seen[def.Key] = true
+		if sharedClientConfigKeys[def.Key] {
+			out = append(out, def)
+		}
+	}
+	t := reflect.TypeOf(corelib.AppConfig{})
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		key := jsonFieldName(field)
+		if key == "" || seen[key] || !sharedClientConfigKeys[key] {
+			continue
+		}
+		out = append(out, ParameterDefinition{Key: key, Title: titleFromConfigKey(key), Description: "Shared client AppConfig field " + key + ".", Required: false, Secret: configKeyLooksSecret(key), Type: appConfigFieldType(field.Type)})
+		seen[key] = true
+	}
+	return out
+}
+
+var sharedClientConfigKeys = map[string]bool{
+	"web_search_providers":             true,
+	"web_search_current_provider":      true,
+	"default_proxy_enabled":            true,
+	"default_proxy_protocol":           true,
+	"default_proxy_host":               true,
+	"default_proxy_port":               true,
+	"default_proxy_username":           true,
+	"default_proxy_password":           true,
+	"default_proxy_bypass":             true,
+	"default_proxy_scope_maclaw":       true,
+	"default_proxy_scope_coding_tools": true,
+	"default_proxy_scope_agent":        true,
+	"mcp_servers":                      true,
+	"local_mcp_servers":                true,
+	"ssh_hosts":                        true,
+	"skill_hub_urls":                   true,
+	"external_skill_dirs":              true,
+	"skill_sources_allowed":            true,
+	"security_policy_mode":             true,
+	"hub_security_centralized":         true,
+	"network_level":                    true,
+	"network_allowlist":                true,
+	"language":                         true,
+	"ui_mode":                          true,
+	"working_directory":                true,
+	"vector_search_enabled":            true,
+	"asr_enabled":                      true,
+	"tts_enabled":                      true,
+	"im_progress_nudge_enabled":        true,
+}
+
 func appendMissingAppConfigDefinitions(defs []ParameterDefinition) []ParameterDefinition {
 	seen := make(map[string]bool, len(defs))
 	for _, def := range defs {
@@ -679,12 +734,19 @@ func preserveWebSearchProviderSecrets(current, next []corelib.WebSearchProvider)
 	}
 	currentByKey := make(map[string]corelib.WebSearchProvider, len(current))
 	for i, provider := range current {
-		currentByKey[indexedSecretLookupKey(provider.Name, i)] = provider
+		for _, key := range webSearchProviderSecretLookupKeys(provider, i) {
+			if _, exists := currentByKey[key]; !exists {
+				currentByKey[key] = provider
+			}
+		}
 	}
 	for i := range next {
 		currentProvider := corelib.WebSearchProvider{}
-		if found, ok := currentByKey[indexedSecretLookupKey(next[i].Name, i)]; ok {
-			currentProvider = found
+		for _, key := range webSearchProviderSecretLookupKeys(next[i], i) {
+			if found, ok := currentByKey[key]; ok {
+				currentProvider = found
+				break
+			}
 		}
 		preserveMaskedSecretString(&next[i].Key, currentProvider.Key)
 	}
@@ -800,6 +862,17 @@ func indexedSecretLookupKey(name string, index int) string {
 		return fmt.Sprintf("#%d", index)
 	}
 	return strings.ToLower(name)
+}
+
+func webSearchProviderSecretLookupKeys(provider corelib.WebSearchProvider, index int) []string {
+	keys := []string{"name:" + indexedSecretLookupKey(provider.Name, index)}
+	if provider.Type = strings.TrimSpace(provider.Type); provider.Type != "" {
+		keys = append(keys, "type:"+strings.ToLower(provider.Type)+fmt.Sprintf("#%d", index))
+		if baseURL := strings.TrimSpace(provider.BaseURL); baseURL != "" {
+			keys = append(keys, "type-base:"+strings.ToLower(provider.Type)+"|"+strings.ToLower(baseURL))
+		}
+	}
+	return keys
 }
 
 func mcpSecretLookupKey(id, name string, index int) string {

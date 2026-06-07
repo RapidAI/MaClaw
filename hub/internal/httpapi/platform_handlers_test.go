@@ -506,6 +506,44 @@ func TestTrustedInviteAutoAcceptsMacLawSrvPlatformEmployee(t *testing.T) {
 	}
 }
 
+func TestTrustedInviteRejectsMissingMacLawSrvRuntimeEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: maclawSrvRuntimePlatformID, RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_deleted", MachineID: "runtime-machine-deleted", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "deleted-employee", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/invites", `{"from_id":"maclaw-gui","to_id":"runtime-machine-deleted","role":"speak","trusted":true}`))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "not active") {
+		t.Fatalf("invite status=%d body=%s", w.Code, w.Body.String())
+	}
+	if invites := groupSvc.ListInvitations("tenant-a", "runtime-machine-deleted", "pending"); len(invites) != 0 {
+		t.Fatalf("missing runtime invite should not remain pending, got %#v", invites)
+	}
+}
+
 func TestTrustedInviteRejectsPlatformEmployeeWithoutRuntime(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	provider := platformProviderEntry{PlatformID: maclawSrvRuntimePlatformID, RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
@@ -577,6 +615,10 @@ func TestGroupDiscussionMessageRoutesPlatformEmployeeToMacLawSrvRuntime(t *testi
 	settings := &testSystemSettingsRepo{}
 	seen := make(chan map[string]any, 1)
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{{"employee_id": "platform-employee-1", "runtime_status": "ready"}}})
+			return
+		}
 		if r.URL.Path != "/api/runtime/virtual-employees/platform-employee-1/discussion-messages" {
 			t.Fatalf("unexpected runtime path %s", r.URL.Path)
 		}
@@ -641,6 +683,10 @@ func TestGroupDiscussionMessageIncludesSharedContextForPlatformRuntime(t *testin
 	settings := &testSystemSettingsRepo{}
 	seen := make(chan map[string]any, 1)
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{{"employee_id": "platform-employee-1", "runtime_status": "ready"}}})
+			return
+		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode runtime body: %v", err)
@@ -694,6 +740,16 @@ func TestGroupDiscussionMessageIncludesSharedContextForPlatformRuntime(t *testin
 func TestGroupDiscussionMessagePersistsRepliesFromMultiplePlatformEmployees(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "ok",
+				"users": []map[string]any{
+					{"employee_id": "platform-employee-1", "runtime_status": "ready"},
+					{"employee_id": "platform-employee-2", "runtime_status": "ready"},
+				},
+			})
+			return
+		}
 		employeeID := strings.TrimPrefix(r.URL.Path, "/api/runtime/virtual-employees/")
 		employeeID = strings.TrimSuffix(employeeID, "/discussion-messages")
 		w.Header().Set("Content-Type", "application/json")
@@ -891,6 +947,10 @@ func TestGroupDiscussionMessageReturnsBeforeSlowMacLawSrvRuntimeReply(t *testing
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{{"employee_id": "platform-employee-1", "runtime_status": "ready"}}})
+			return
+		}
 		called <- struct{}{}
 		<-release
 		w.Header().Set("Content-Type", "application/json")
@@ -944,6 +1004,10 @@ func TestGroupDiscussionMessageRoutesMacLawSrvEmployeeDirectly(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	runtimePayloads := make(chan map[string]any, 2)
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{{"employee_id": "srv-user-1", "runtime_status": "ready"}}})
+			return
+		}
 		if r.URL.Path != "/api/runtime/virtual-employees/srv-user-1/discussion-messages" {
 			t.Fatalf("unexpected runtime path %s", r.URL.Path)
 		}
@@ -1026,6 +1090,51 @@ func TestGroupDiscussionMessageRoutesMacLawSrvEmployeeDirectly(t *testing.T) {
 	}
 }
 
+func TestGroupDiscussionMessageRejectsMissingMacLawSrvRuntimeEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	deliveryCalls := 0
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/platform/runtime/report":
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+		case "/api/runtime/virtual-employees/deleted-employee/discussion-messages":
+			deliveryCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"message":{"content":"should not be called"}}`))
+		default:
+			t.Fatalf("unexpected runtime path %s", r.URL.Path)
+		}
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: maclawSrvRuntimePlatformID, CallbackBaseURL: runtime.URL, CallbackSecret: "srv-secret", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "srv-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_deleted", MachineID: "ve_deleted", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "deleted-employee", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_deleted", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"id":"hub-msg-deleted-runtime","from_id":"maclaw-gui","content":"hello deleted"}`))
+	if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "not active") {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	if deliveryCalls != 0 {
+		t.Fatalf("deleted runtime employee should not receive discussion delivery, got %d calls", deliveryCalls)
+	}
+}
+
 func TestGroupDiscussionMessageBypassesPlatformForMacLawSrvRuntimeEmployee(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	platformCalls := 0
@@ -1036,6 +1145,10 @@ func TestGroupDiscussionMessageBypassesPlatformForMacLawSrvRuntimeEmployee(t *te
 	defer platform.Close()
 	runtimeCalls := 0
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{{"employee_id": "platform-employee-1", "runtime_status": "ready"}}})
+			return
+		}
 		runtimeCalls++
 		if r.URL.Path != "/api/runtime/virtual-employees/platform-employee-1/discussion-messages" {
 			t.Fatalf("unexpected runtime path %s", r.URL.Path)
@@ -1147,6 +1260,10 @@ func TestGroupDiscussionMessageUsesSessionTenantForRuntimeLookup(t *testing.T) {
 	defer runtimeA.Close()
 	runtimeBCalls := make(chan string, 1)
 	runtimeB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{{"employee_id": "platform-employee-b", "runtime_status": "ready"}}})
+			return
+		}
 		runtimeBCalls <- r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"message":{"content":"tenant b reply"}}`))
@@ -1417,6 +1534,7 @@ type fakePlatformUserRepo struct {
 type createCountingPlatformUserRepo struct {
 	fakePlatformUserRepo
 	creates int
+	deletes int
 }
 
 type failKeySystemSettingsRepo struct {
@@ -1435,6 +1553,20 @@ func (f *createCountingPlatformUserRepo) Create(ctx context.Context, user *store
 	_ = ctx
 	f.creates++
 	f.items = append(f.items, user)
+	return nil
+}
+
+func (f *createCountingPlatformUserRepo) DeleteByTenantEmail(ctx context.Context, tenantID, email string) error {
+	_ = ctx
+	f.deletes++
+	kept := f.items[:0]
+	for _, item := range f.items {
+		if item != nil && item.TenantID == tenantID && strings.EqualFold(item.Email, email) {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	f.items = kept
 	return nil
 }
 
@@ -2068,6 +2200,48 @@ func TestPlatformEmployeeRegisterRequiresRuntimeForCurrentTenant(t *testing.T) {
 	}
 }
 
+func TestPlatformEmployeeRegisterDoesNotFetchRuntimeReportOrMarkOnline(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	reportCalled := false
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reportCalled = true
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{
+		"hub_tenant_id":        "tenant-a",
+		"platform_employee_id": "platform-employee-new",
+		"virtual_email":        "new-worker@tenant.test",
+		"name":                 "New Worker",
+		"runtime_base_url":     runtime.URL,
+		"runtime_api_key":      "runtime-secret",
+	})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, tenants, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if reportCalled {
+		t.Fatal("registration should not synchronously fetch runtime report")
+	}
+	registry := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
+	if len(registry.Employees) != 1 || registry.Employees[0].Status != veStatusActive || registry.Employees[0].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("fresh registration should remain active/offline until runtime reports ready: %#v", registry.Employees)
+	}
+}
+
 func TestPlatformEmployeeRegisterKeepsRuntimesTenantScoped(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -2122,7 +2296,7 @@ func TestPlatformEmployeeRegisterUpdatesExistingPlatformEmployeeID(t *testing.T)
 		t.Fatalf("save runtime registry: %v", err)
 	}
 	registeredAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_old-employee-id", MachineID: "ve_old-employee-id", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "old-account", OwnerEmail: "old@tenant.test", Name: "Old Worker", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, RegisteredAt: registeredAt}}}
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_old-employee-id", MachineID: "ve_old-employee-id", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "old-account", OwnerEmail: "old@tenant.test", Name: "Old Worker", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, AvatarDataURL: testAvatarPNGDataURL, AccessPolicy: "private", Whitelist: []string{"user-a"}, Blacklist: []string{"user-b"}, VisibleGroupIDs: []string{"dept-legal"}, Resident: true, RegisteredAt: registeredAt}}}
 	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), seed); err != nil {
 		t.Fatalf("save seed registry: %v", err)
 	}
@@ -2133,6 +2307,13 @@ func TestPlatformEmployeeRegisterUpdatesExistingPlatformEmployeeID(t *testing.T)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	var resp struct {
+		HubAccountID string               `json:"hub_account_id"`
+		Employee     digitalEmployeeEntry `json:"employee"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
 	registry := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
 	if len(registry.Employees) != 1 {
 		t.Fatalf("expected registration to update existing employee, got %#v", registry.Employees)
@@ -2140,6 +2321,217 @@ func TestPlatformEmployeeRegisterUpdatesExistingPlatformEmployeeID(t *testing.T)
 	got := registry.Employees[0]
 	if got.ID != "ve_new-employee-id" || got.MachineID != "ve_new-employee-id" || got.PlatformEmployeeID != "platform-employee-1" || got.Name != "New Worker" || got.RegisteredAt != registeredAt {
 		t.Fatalf("unexpected updated employee: %#v", got)
+	}
+	if !got.Resident || got.AccessPolicy != "private" || !reflect.DeepEqual(got.Whitelist, []string{"user-a"}) || !reflect.DeepEqual(got.Blacklist, []string{"user-b"}) || !reflect.DeepEqual(got.VisibleGroupIDs, []string{"dept-legal"}) {
+		t.Fatalf("hub-managed fields should be preserved on platform info update: %#v", got)
+	}
+	if got.AvatarDataURL != testAvatarPNGDataURL {
+		t.Fatalf("existing avatar should be preserved when platform update omits avatar: %#v", got)
+	}
+	if resp.HubAccountID != resp.Employee.OwnerUserID || resp.HubAccountID != got.OwnerUserID {
+		t.Fatalf("register response hub_account_id should match final employee owner: body=%s saved=%#v", rec.Body.String(), got)
+	}
+}
+
+func TestPlatformEmployeeRegisterUpdateBackfillsMissingRegisteredAt(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: "https://runtime.example", AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee-1", MachineID: "ve_employee-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, seed); err != nil {
+		t.Fatalf("save seed registry: %v", err)
+	}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 || strings.TrimSpace(updated.Employees[0].RegisteredAt) == "" {
+		t.Fatalf("missing registered_at should be backfilled on platform update: %#v", updated.Employees)
+	}
+}
+
+func TestPlatformEmployeeRegisterUpdateReplacesAvatarWhenProvided(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: "https://runtime.example", AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	newAvatar := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00})
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee-1", MachineID: "ve_employee-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", AvatarDataURL: testAvatarPNGDataURL, Status: veStatusActive, RegisteredAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, seed); err != nil {
+		t.Fatalf("save seed registry: %v", err)
+	}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker", "avatar_data_url": newAvatar})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 || updated.Employees[0].AvatarDataURL != newAvatar {
+		t.Fatalf("provided avatar should replace old avatar: %#v", updated.Employees)
+	}
+}
+
+func TestPlatformEmployeeRegisterUpdateDoesNotReactivateDisabledEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: "https://runtime.example", AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	disabledAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee-1", MachineID: "ve_employee-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusDisabled, OnlineStatus: veOnlineStatusOffline, DisabledAt: disabledAt, Resident: true, RegisteredAt: disabledAt}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, seed); err != nil {
+		t.Fatalf("save seed registry: %v", err)
+	}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Renamed Worker"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 {
+		t.Fatalf("expected one employee after update: %#v", updated.Employees)
+	}
+	got := updated.Employees[0]
+	if got.Status != veStatusDisabled || got.OnlineStatus != veOnlineStatusOffline || got.DisabledAt != disabledAt || got.Resident {
+		t.Fatalf("platform info update must not reactivate disabled employee or keep disabled resident: %#v", got)
+	}
+}
+
+func TestPlatformEmployeeRegisterUpdateClearsStaleTerminalFieldsForActiveEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: "https://runtime.example", AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee-1", MachineID: "ve_employee-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive, DisabledAt: "2026-01-01T00:00:00Z", RejectReason: "stale", RejectedAt: "2026-01-02T00:00:00Z", RegisteredAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, seed); err != nil {
+		t.Fatalf("save seed registry: %v", err)
+	}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	got := updated.Employees[0]
+	if got.Status != veStatusActive || got.DisabledAt != "" || got.RejectReason != "" || got.RejectedAt != "" {
+		t.Fatalf("active employee should not keep stale terminal fields: %#v", got)
+	}
+}
+
+func TestPlatformEmployeeRegisterUpdateDoesNotReactivateRejectedEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: "https://runtime.example", AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	rejectedAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee-1", MachineID: "ve_employee-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusRejected, RejectReason: "not allowed", RejectedAt: rejectedAt, RegisteredAt: rejectedAt}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, seed); err != nil {
+		t.Fatalf("save seed registry: %v", err)
+	}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Renamed Worker"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	got := updated.Employees[0]
+	if got.Status != veStatusRejected || got.RejectReason != "not allowed" || got.RejectedAt != rejectedAt {
+		t.Fatalf("platform info update must not reactivate rejected employee or drop rejection detail: %#v", got)
+	}
+}
+
+func TestPlatformEmployeeRegisterUpdateReturnsNormalizedResidentFlag(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: "https://runtime.example", AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registeredAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_first", MachineID: "ve_first", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-first", Status: veStatusActive, Resident: true, RegisteredAt: registeredAt},
+		{ID: "ve_second", MachineID: "ve_second", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-second", Status: veStatusActive, Resident: true, RegisteredAt: registeredAt},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, seed); err != nil {
+		t.Fatalf("save seed registry: %v", err)
+	}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-second", "virtual_email": "worker@tenant.test", "name": "Second Worker"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Employee digitalEmployeeEntry `json:"employee"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
+	if resp.Employee.Resident {
+		t.Fatalf("response should return normalized non-resident second employee: %s", rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 2 || !updated.Employees[0].Resident || updated.Employees[1].Resident {
+		t.Fatalf("registry resident flags not normalized: %#v", updated.Employees)
 	}
 }
 
@@ -2218,7 +2610,7 @@ func TestPlatformEmployeeRegisterInvalidLLMServiceGroupDoesNotCreateDigitalEmplo
 	}
 }
 
-func TestPlatformEmployeeRegisterLLMEntitlementSaveFailureDoesNotCreateUser(t *testing.T) {
+func TestPlatformEmployeeRegisterLLMEntitlementSaveFailureRollsBackCreatedUser(t *testing.T) {
 	settings := &failKeySystemSettingsRepo{failKey: llmservice.RegistryKey}
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -2243,8 +2635,8 @@ func TestPlatformEmployeeRegisterLLMEntitlementSaveFailureDoesNotCreateUser(t *t
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "LLM_SERVICE_GROUP_ENTITLEMENT_FAILED") {
 		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if users.creates != 0 || len(users.items) != 0 {
-		t.Fatalf("llm entitlement save failure must not create user, creates=%d users=%#v", users.creates, users.items)
+	if users.creates != 1 || users.deletes != 1 || len(users.items) != 0 {
+		t.Fatalf("llm entitlement save failure must roll back created user, creates=%d deletes=%d users=%#v", users.creates, users.deletes, users.items)
 	}
 	registry := loadVERegistry(context.Background(), tenantSystem)
 	if len(registry.Employees) != 0 {
@@ -2273,8 +2665,8 @@ func TestPlatformEmployeeRegisterLLMEntitlementSaveFailureDoesNotCreateRuntime(t
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "LLM_SERVICE_GROUP_ENTITLEMENT_FAILED") {
 		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if users.creates != 0 || len(users.items) != 0 {
-		t.Fatalf("llm entitlement save failure must not create user, creates=%d users=%#v", users.creates, users.items)
+	if users.creates != 1 || users.deletes != 1 || len(users.items) != 0 {
+		t.Fatalf("llm entitlement save failure must roll back created user, creates=%d deletes=%d users=%#v", users.creates, users.deletes, users.items)
 	}
 	if runtimeRegistry := loadMacLawSrvRuntimeRegistry(context.Background(), settings); len(runtimeRegistry.Runtimes) != 0 {
 		t.Fatalf("llm entitlement save failure must not create runtime registry: %#v", runtimeRegistry.Runtimes)
@@ -2282,6 +2674,43 @@ func TestPlatformEmployeeRegisterLLMEntitlementSaveFailureDoesNotCreateRuntime(t
 	registry := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
 	if len(registry.Employees) != 0 {
 		t.Fatalf("employee should not be registered when llm entitlement save fails: %#v", registry.Employees)
+	}
+}
+
+func TestPlatformEmployeeRegisterRegistrySaveFailureRollsBackCreatedUser(t *testing.T) {
+	settings := &failKeySystemSettingsRepo{failKey: veRegistryKey}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	if err := settings.testSystemSettingsRepo.Set(context.Background(), "tenant:tenant-a:"+llmservice.RegistryKey, mustJSON(t, llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "ops-pro", Name: "Ops Pro", AccessPolicy: llmservice.AccessPolicyGrantRequired}}})); err != nil {
+		t.Fatalf("seed llm registry: %v", err)
+	}
+	users := &createCountingPlatformUserRepo{}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker", "llm_service_group_id": "ops-pro", "runtime_base_url": "https://runtime.example", "runtime_api_key": "runtime-secret"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, tenants, users).ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "VE_REGISTRY_SAVE_FAILED") {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if users.creates != 1 || users.deletes != 1 || len(users.items) != 0 {
+		t.Fatalf("registry save failure should roll back created user, creates=%d deletes=%d users=%#v", users.creates, users.deletes, users.items)
+	}
+	if runtimeRegistry := loadMacLawSrvRuntimeRegistry(context.Background(), settings); len(runtimeRegistry.Runtimes) != 0 {
+		t.Fatalf("registry save failure must not create runtime registry: %#v", runtimeRegistry.Runtimes)
+	}
+	llmRegistry, err := llmservice.LoadRegistry(context.Background(), tenantSystem)
+	if err != nil {
+		t.Fatalf("load llm registry: %v", err)
+	}
+	if len(llmRegistry.UserBindings) != 0 || len(llmRegistry.Grants) != 0 {
+		t.Fatalf("registry save failure must not create llm bindings or grants: %#v", llmRegistry)
 	}
 }
 
@@ -2331,8 +2760,8 @@ func TestPlatformEmployeeRegisterGrantsRequestedLLMServiceGroup(t *testing.T) {
 		t.Fatalf("active grants = %#v", status.ActiveGrants)
 	}
 	registry := loadVERegistry(context.Background(), tenantSystem)
-	if len(registry.Employees) != 1 || registry.Employees[0].OnlineStatus != veOnlineStatusOnline {
-		t.Fatalf("registered employee online status = %#v", registry.Employees)
+	if len(registry.Employees) != 1 || registry.Employees[0].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("registered employee should not be marked online before runtime report confirms ready: %#v", registry.Employees)
 	}
 }
 
@@ -2571,11 +3000,224 @@ func TestPlatformEmployeeStatusAcceptsPlatformEmployeeID(t *testing.T) {
 	}
 }
 
+func TestPlatformEmployeeStatusActiveRejectsMissingMacLawSrvRuntimeEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: maclawSrvRuntimePlatformID, PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID:                 "ve_deleted",
+		MachineID:          "ve_deleted",
+		PlatformID:         maclawSrvRuntimePlatformID,
+		PlatformEmployeeID: "deleted-employee",
+		RuntimeProviderID:  maclawSrvRuntimePlatformID,
+		Status:             veStatusDisabled,
+		OnlineStatus:       veOnlineStatusOffline,
+	}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees/deleted-employee/status", maclawSrvRuntimePlatformID, privateKey, map[string]any{
+		"hub_tenant_id":        "tenant-a",
+		"platform_employee_id": "deleted-employee",
+		"service_status":       "active",
+	})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeStatusHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !bytes.Contains(rec.Body.Bytes(), []byte("VE_RUNTIME_MISSING")) {
+		t.Fatalf("status active missing runtime status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 || updated.Employees[0].Status != veStatusDisabled || updated.Employees[0].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("missing runtime employee should stay disabled/offline: %#v", updated.Employees)
+	}
+}
+
+func TestPlatformEmployeeStatusActiveWithoutTenantRejectsMissingMacLawSrvRuntimeEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/platform/runtime/report" {
+			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{}})
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: maclawSrvRuntimePlatformID, PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID:                 "ve_deleted",
+		MachineID:          "ve_deleted",
+		PlatformID:         maclawSrvRuntimePlatformID,
+		PlatformEmployeeID: "deleted-employee",
+		RuntimeProviderID:  maclawSrvRuntimePlatformID,
+		Status:             veStatusDisabled,
+		OnlineStatus:       veOnlineStatusOffline,
+	}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees/deleted-employee/status", maclawSrvRuntimePlatformID, privateKey, map[string]any{
+		"platform_employee_id": "deleted-employee",
+		"service_status":       "active",
+	})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeStatusHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !bytes.Contains(rec.Body.Bytes(), []byte("VE_RUNTIME_MISSING")) {
+		t.Fatalf("status active missing runtime without tenant status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 || updated.Employees[0].Status != veStatusDisabled || updated.Employees[0].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("missing runtime employee should stay disabled/offline: %#v", updated.Employees)
+	}
+}
+
 func TestNormalizePlatformEmployeeDeletedStatusDisablesEmployee(t *testing.T) {
 	for _, status := range []string{"deleted", "removed"} {
 		if got := normalizePlatformEmployeeStatus(status); got != veStatusDisabled {
 			t.Fatalf("normalize %q = %q, want %q", status, got, veStatusDisabled)
 		}
+	}
+}
+
+func TestPlatformEmployeeStatusDeleteVERegistryRemovesRegistryEntry(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees/platform-employee-1/status", "platform-1", privateKey, map[string]any{
+		"hub_tenant_id":        "tenant-a",
+		"platform_employee_id": "platform-employee-1",
+		"hub_employee_id":      "ve_employee_1",
+		"hub_account_id":       "hub-account-1",
+		"service_status":       "deleted",
+		"delete_ve_registry":   true,
+		"ve_registry_status":   "deleted",
+	})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeStatusHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status delete registry=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"hub_status":"deleted"`)) {
+		t.Fatalf("status delete registry response should report deleted: %s", rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
+	if len(updated.Employees) != 0 {
+		t.Fatalf("status delete left registry entry: %#v", updated.Employees)
+	}
+}
+
+func TestPlatformEmployeeStatusDeleteVERegistryWithoutTenantRemovesRegistryEntry(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, Resident: true}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees/platform-employee-1/status", "platform-1", privateKey, map[string]any{
+		"platform_employee_id": "platform-employee-1",
+		"service_status":       "deleted",
+		"delete_ve_registry":   true,
+	})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeStatusHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status delete registry without tenant=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"hub_status":"deleted"`)) {
+		t.Fatalf("status delete registry without tenant response should report deleted: %s", rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 0 {
+		t.Fatalf("status delete without tenant left registry entry: %#v", updated.Employees)
+	}
+}
+
+func TestPlatformEmployeeStatusDeleteVERegistryWithoutTenantMatchesIdentity(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}, {HubTenantID: "tenant-b"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenantASystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	tenantBSystem := scopedSystemSettingsForTenant("tenant-b", settings)
+	if err := saveVERegistry(context.Background(), tenantASystem, digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_a", MachineID: "ve_employee_a", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-a", Status: veStatusActive}}}); err != nil {
+		t.Fatalf("save tenant a registry: %v", err)
+	}
+	if err := saveVERegistry(context.Background(), tenantBSystem, digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_b", MachineID: "ve_employee_b", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-b", Status: veStatusActive}}}); err != nil {
+		t.Fatalf("save tenant b registry: %v", err)
+	}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees/platform-employee-1/status", "platform-1", privateKey, map[string]any{
+		"platform_employee_id": "platform-employee-1",
+		"hub_employee_id":      "ve_employee_b",
+		"hub_account_id":       "hub-account-b",
+		"service_status":       "deleted",
+		"delete_ve_registry":   true,
+	})
+	rec := httptest.NewRecorder()
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}, {ID: "tenant-b", Slug: "tenant-b", Name: "Tenant B", Status: "active"}}}
+	PlatformEmployeeStatusHandler(settings, tenants).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status delete registry identity match=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"hub_tenant_id":"tenant-b"`)) {
+		t.Fatalf("status delete registry response should resolve tenant b: %s", rec.Body.String())
+	}
+	if updatedA := loadVERegistry(context.Background(), tenantASystem); len(updatedA.Employees) != 1 {
+		t.Fatalf("tenant a registry should remain: %#v", updatedA.Employees)
+	}
+	if updatedB := loadVERegistry(context.Background(), tenantBSystem); len(updatedB.Employees) != 0 {
+		t.Fatalf("tenant b registry should be removed: %#v", updatedB.Employees)
 	}
 }
 
@@ -2600,9 +3242,151 @@ func TestPlatformEmployeeDeleteRemovesRegistryEntry(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"ve_registry_deleted":true`)) {
+		t.Fatalf("delete response should report registry deletion: %s", rec.Body.String())
+	}
 	updated := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
 	if len(updated.Employees) != 0 {
 		t.Fatalf("employee registry entry was not removed: %#v", updated.Employees)
+	}
+}
+
+func TestPlatformEmployeeDeleteWithoutTenantRemovesRegistryEntry(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", OwnerEmail: "worker@tenant.test", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodDelete, "/api/platform/employees/platform-employee-1", "platform-1", privateKey, map[string]any{"platform_employee_id": "platform-employee-1", "hub_employee_id": "ve_employee_1", "hub_account_id": "hub-account-1", "virtual_email": "worker@tenant.test"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeDeleteHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete without tenant status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"hub_tenant_id":"tenant-a"`)) || !bytes.Contains(rec.Body.Bytes(), []byte(`"ve_registry_deleted":true`)) {
+		t.Fatalf("delete without tenant response should report resolved tenant and registry deletion: %s", rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 0 {
+		t.Fatalf("delete without tenant left registry entry: %#v", updated.Employees)
+	}
+}
+
+func TestPlatformEmployeeDeleteLookupMatchesIdentity(t *testing.T) {
+	entry := digitalEmployeeEntry{ID: "ve_employee_1", MachineID: "ve_employee_1", OwnerUserID: "hub-account-1"}
+	if !platformEmployeeDeleteLookupMatches(entry, "ve_employee_1", "hub-account-1") {
+		t.Fatal("expected exact employee and account identity to match")
+	}
+	if platformEmployeeDeleteLookupMatches(entry, "ve_employee_2", "hub-account-1") {
+		t.Fatal("expected mismatched hub employee identity to be rejected")
+	}
+	if platformEmployeeDeleteLookupMatches(entry, "ve_employee_1", "hub-account-2") {
+		t.Fatal("expected mismatched hub account identity to be rejected")
+	}
+	if !platformEmployeeDeleteLookupMatches(digitalEmployeeEntry{ID: "ve_employee_1"}, "ve_employee_1", "hub-account-1") {
+		t.Fatal("expected missing owner binding to keep legacy delete lookup behavior")
+	}
+}
+
+func TestPlatformEmployeeDeleteLookupScoreRanksIdentityStrength(t *testing.T) {
+	entry := digitalEmployeeEntry{ID: "ve_employee_1", MachineID: "ve_employee_1", OwnerUserID: "hub-account-1"}
+	if got := platformEmployeeDeleteLookupScore(entry, "ve_employee_1", "hub-account-1"); got != 3 {
+		t.Fatalf("full identity score=%d, want 3", got)
+	}
+	if got := platformEmployeeDeleteLookupScore(entry, "ve_employee_1", ""); got != 2 {
+		t.Fatalf("employee identity score=%d, want 2", got)
+	}
+	if got := platformEmployeeDeleteLookupScore(entry, "", "hub-account-1"); got != 1 {
+		t.Fatalf("account identity score=%d, want 1", got)
+	}
+	if got := platformEmployeeDeleteLookupScore(digitalEmployeeEntry{ID: "ve_employee_1"}, "", "hub-account-1"); got != 0 {
+		t.Fatalf("weak legacy score=%d, want 0", got)
+	}
+}
+
+func TestPlatformEmployeeDeleteRejectsMismatchedHubIdentity(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodDelete, "/api/platform/employees/platform-employee-1", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "hub_employee_id": "other-employee", "hub_account_id": "hub-account-1"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeDeleteHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || !bytes.Contains(rec.Body.Bytes(), []byte("EMPLOYEE_IDENTITY_MISMATCH")) {
+		t.Fatalf("delete identity mismatch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 {
+		t.Fatalf("mismatched delete should not remove registry entry: %#v", updated.Employees)
+	}
+}
+
+func TestDeletePlatformEmployeeInTenantMatchesIdentity(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_employee_a", MachineID: "ve_employee_a", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-a", Status: veStatusActive},
+		{ID: "ve_employee_b", MachineID: "ve_employee_b", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-b", Status: veStatusActive},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	removed, err := deletePlatformEmployeeInTenant(context.Background(), settings, "tenant-a", "platform-1", "platform-employee-1", "ve_employee_b", "hub-account-b")
+	if err != nil {
+		t.Fatalf("delete registry entry: %v", err)
+	}
+	if !removed {
+		t.Fatal("expected matching registry entry to be removed")
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 || updated.Employees[0].ID != "ve_employee_a" {
+		t.Fatalf("delete should keep non-matching duplicate entry: %#v", updated.Employees)
+	}
+}
+
+func TestDeletePlatformEmployeeInTenantPrefersStrongIdentityMatch(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_employee_weak", MachineID: "ve_employee_weak", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive},
+		{ID: "ve_employee_strong", MachineID: "ve_employee_strong", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-strong", Status: veStatusActive},
+	}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	removed, err := deletePlatformEmployeeInTenant(context.Background(), settings, "tenant-a", "platform-1", "platform-employee-1", "", "hub-account-strong")
+	if err != nil {
+		t.Fatalf("delete registry entry: %v", err)
+	}
+	if !removed {
+		t.Fatal("expected strongly matching registry entry to be removed")
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 || updated.Employees[0].ID != "ve_employee_weak" {
+		t.Fatalf("delete should prefer strong identity match: %#v", updated.Employees)
 	}
 }
 
@@ -2711,6 +3495,34 @@ func TestPlatformEmployeeStatusRejectsMismatchedHubIdentity(t *testing.T) {
 	updated := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
 	if len(updated.Employees) != 1 || updated.Employees[0].Status != veStatusActive {
 		t.Fatalf("employee status should not change: %#v", updated.Employees)
+	}
+}
+
+func TestPlatformEmployeeStatusDeleteRegistryRejectsMismatchedHubIdentity(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	handler := PlatformEmployeeStatusHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}})
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees/platform-employee-1/status", "platform-1", privateKey, map[string]any{"platform_employee_id": "platform-employee-1", "hub_tenant_id": "tenant-a", "hub_employee_id": "other-employee", "service_status": "deleted", "delete_ve_registry": true})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || !bytes.Contains(rec.Body.Bytes(), []byte("EMPLOYEE_IDENTITY_MISMATCH")) {
+		t.Fatalf("delete registry identity mismatch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	if len(updated.Employees) != 1 || updated.Employees[0].Status != veStatusActive {
+		t.Fatalf("delete registry identity mismatch should not remove employee: %#v", updated.Employees)
 	}
 }
 

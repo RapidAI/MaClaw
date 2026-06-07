@@ -1,11 +1,21 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+type executionProfileSkillProviderForTest struct {
+	skills []coretool.SkillSummary
+}
+
+func (p *executionProfileSkillProviderForTest) ListActiveSkills() []coretool.SkillSummary {
+	return p.skills
+}
 
 func TestClassifyIMExecutionProfileSemanticLookupUsesLight(t *testing.T) {
 	semantic := &intent.ClassificationResult{
@@ -21,8 +31,8 @@ func TestClassifyIMExecutionProfileSemanticLookupUsesLight(t *testing.T) {
 	if profile.ToolBudget <= 0 || profile.IterationBudget <= 0 {
 		t.Fatalf("light profile should set budgets: %+v", profile)
 	}
-	if profile.IterationBudget != 2 {
-		t.Fatalf("live_data iteration budget = %d, want 2", profile.IterationBudget)
+	if profile.IterationBudget != 3 {
+		t.Fatalf("live_data iteration budget = %d, want 3", profile.IterationBudget)
 	}
 }
 
@@ -320,6 +330,96 @@ func TestFilterToolsForExecutionProfileLightKeepsMatchedSkillCapabilities(t *tes
 	}
 }
 
+func TestFilterToolsForExecutionProfileLightFallsOpenWhenNoContractMatches(t *testing.T) {
+	tools := []map[string]interface{}{
+		toolDef("manage_skill", "manage skills", nil, nil),
+		toolDef("web_search", "search web", nil, nil),
+	}
+	for _, def := range tools {
+		if contract := defaultExplicitExecutionContractMetadata(extractToolName(def)); len(contract) > 0 {
+			def["x_execution_contract"] = contract
+		}
+	}
+	profile := ExecutionProfile{
+		Layer:                string(executionLayerLight),
+		RequiredCapabilities: []string{"capability_not_declared"},
+		ToolBudget:           8,
+	}
+
+	filtered := filterToolsForExecutionProfile(tools, profile)
+	if len(filtered) != len(tools) {
+		t.Fatalf("light filter should fall open when no contract matches; got %v", executionProfileToolNames(filtered))
+	}
+}
+
+func TestPrepareAgentLoopToolsLightKeepsMatchedSkillFirst(t *testing.T) {
+	registry := NewToolRegistry()
+	h := &IMMessageHandler{
+		app:      &App{},
+		registry: registry,
+	}
+	registerBuiltinTools(registry, h)
+	registerNonCodeTools(registry, h.app)
+	for i := 0; i < 40; i++ {
+		if err := registry.Register(RegisteredTool{
+			Name:        fmt.Sprintf("filler_tool_%02d", i),
+			Description: "generic filler tool",
+			Category:    ToolCategoryNonCode,
+			Status:      RegToolAvailable,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.toolBuilder = NewDynamicToolBuilder(registry)
+	router := NewToolRouter(nil)
+	router.SetSkillProvider(&executionProfileSkillProviderForTest{skills: []coretool.SkillSummary{{
+		Name:         "Live Lookup",
+		Triggers:     []string{"live lookup"},
+		Description:  "live current data lookup",
+		Capabilities: []string{"current_data"},
+	}}})
+	h.unifiedClassifier = intent.New(intent.Config{
+		LLMFunc: func(_, _ string) (string, error) {
+			return fmt.Sprintf(`{"top":[{"skill":%q,"score":0.95,"reason":"test live data"}]}`, intent.LabelLiveData), nil
+		},
+	})
+	h.SetToolRouter(router)
+
+	ctx := &LoopContext{
+		SkipNeedsConfirmGate: true,
+		Runtime: RuntimeContext{
+			RequestID: "req-light-skill",
+			Execution: ExecutionProfile{
+				Layer:                string(executionLayerLight),
+				TaskType:             string(intent.LabelLiveData),
+				PromptProfile:        "light",
+				Confidence:           0.91,
+				Reason:               "test live data profile",
+				RequiredCapabilities: []string{"current_data", "time"},
+				ToolBudget:           8,
+				IterationBudget:      2,
+			},
+		},
+	}
+	toolSet := h.prepareAgentLoopTools("test-user", "live lookup", ctx, agentLoopPhase{})
+	if len(toolSet.Tools) == 0 {
+		t.Fatal("expected light tool set")
+	}
+	if got := extractToolName(toolSet.Tools[0]); got != "manage_skill" {
+		t.Fatalf("first tool = %q; tools=%s, want manage_skill first", got, executionProfileToolNames(toolSet.Tools))
+	}
+	names := map[string]bool{}
+	for _, def := range toolSet.Tools {
+		if _, ok := def["x_execution_contract"]; ok {
+			t.Fatalf("LLM tool leaked execution contract: %#v", def)
+		}
+		names[extractToolName(def)] = true
+	}
+	if !names["web_search"] && !names["current_datetime"] {
+		t.Fatalf("light live data tools should retain generic current-data/time path too: %s", executionProfileToolNames(toolSet.Tools))
+	}
+}
+
 func TestFilterToolsForExecutionProfileLightWithoutExplicitContractsFallsBack(t *testing.T) {
 	tools := []map[string]interface{}{
 		toolDef("manage_skill", "manage skills", nil, nil),
@@ -332,7 +432,7 @@ func TestFilterToolsForExecutionProfileLightWithoutExplicitContractsFallsBack(t 
 	}
 }
 
-func TestFilterToolsForExecutionProfileLightDoesNotFallbackWhenExplicitContractsMismatch(t *testing.T) {
+func TestFilterToolsForExecutionProfileLightFallsBackWhenExplicitContractsMismatch(t *testing.T) {
 	tools := []map[string]interface{}{
 		toolDef("manage_skill", "manage skills", nil, nil),
 		toolDef("async_wait", "wait", nil, nil),
@@ -345,8 +445,8 @@ func TestFilterToolsForExecutionProfileLightDoesNotFallbackWhenExplicitContracts
 	}
 	profile := ExecutionProfile{Layer: string(executionLayerLight), RequiredCapabilities: []string{"current_data"}, ToolBudget: 8}
 	filtered := filterToolsForExecutionProfile(tools, profile)
-	if len(filtered) != 0 {
-		t.Fatalf("filtered tools = %v, want no fallback when explicit contracts mismatch", executionProfileToolNames(filtered))
+	if len(filtered) != len(tools) {
+		t.Fatalf("filtered tools = %v, want fallback when explicit contracts mismatch", executionProfileToolNames(filtered))
 	}
 }
 

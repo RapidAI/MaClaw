@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
 // mockSkillProvider implements SkillProvider for testing.
@@ -28,6 +30,15 @@ func toolNamesForTest(defs []map[string]interface{}) []string {
 		names = append(names, ExtractToolName(def))
 	}
 	return names
+}
+
+func toolIndexForTest(defs []map[string]interface{}, name string) int {
+	for i, def := range defs {
+		if ExtractToolName(def) == name {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestRouter_SkillProvider_FourSignalScoring(t *testing.T) {
@@ -150,6 +161,46 @@ func TestRouter_SkillMatchScore_NilProvider(t *testing.T) {
 	}
 	if names != nil {
 		t.Errorf("expected nil names, got %v", names)
+	}
+}
+
+func TestRouter_SkillMatchScoreCapabilityConstraint(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{
+			Name:         "Live Lookup",
+			Triggers:     []string{"lookup"},
+			Description:  "weather forecast current data",
+			Capabilities: []string{"current_data"},
+		},
+	}})
+
+	score, matched := router.skillMatchScoreWithCapabilityConstraint("weather forecast", []string{"current_data"}, true)
+	if score <= 0 || len(matched) == 0 || matched[0] != "Live Lookup" {
+		t.Fatalf("current_data constraint should allow live skill: score=%.4f matched=%v", score, matched)
+	}
+
+	score, matched = router.skillMatchScoreWithCapabilityConstraint("weather forecast", []string{"ssh", "remote"}, true)
+	if score != 0 || len(matched) != 0 {
+		t.Fatalf("ssh constraint should reject current_data skill: score=%.4f matched=%v", score, matched)
+	}
+}
+
+func TestRouter_SkillCapabilityConstraintForUICSeparatesSearchAndLiveData(t *testing.T) {
+	caps, constrained := skillCapabilityConstraintForUIC(intent.ClassificationResult{
+		Primary:    intent.LabelLiveData,
+		Confidence: 0.92,
+	})
+	if !constrained || !testStringSliceContains(caps, "current_data") {
+		t.Fatalf("live_data caps = %v constrained=%v, want current_data", caps, constrained)
+	}
+
+	caps, constrained = skillCapabilityConstraintForUIC(intent.ClassificationResult{
+		Primary:    intent.LabelSearch,
+		Confidence: 0.92,
+	})
+	if !constrained || testStringSliceContains(caps, "current_data") {
+		t.Fatalf("search caps = %v constrained=%v, should not include current_data", caps, constrained)
 	}
 }
 
@@ -394,6 +445,103 @@ func TestRouter_RouteKeepsMatchedSkillWhenCoreOverBudget(t *testing.T) {
 	t.Fatalf("manage_skill trimmed despite matched skill: %v", toolNamesForTest(result))
 }
 
+func TestRouter_RoutePrioritizesMatchedSkillBeforeGenericCurrentDataTool(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{Name: "Live Lookup", Triggers: []string{"live"}, Description: "live current data lookup", Capabilities: []string{"current_data"}},
+	}})
+	tools := []map[string]interface{}{
+		makeToolDef("web_search", "live current data web search"),
+		makeToolDef("manage_skill", "Skill management"),
+		makeToolDef("bash", "Run shell"),
+	}
+	for i := 0; i < 30; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("live", tools)
+	manageIdx := toolIndexForTest(result, "manage_skill")
+	if manageIdx != 0 {
+		t.Fatalf("tool order = %v, want matched manage_skill first", toolNamesForTest(result))
+	}
+}
+
+func TestRouter_RoutePrioritizesMatchedSkillBeforeConditionalCoreTools(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{Name: "Live Lookup", Triggers: []string{"live"}, Description: "live current data lookup", Capabilities: []string{"current_data"}},
+	}})
+	router.sessionTools = map[string]bool{"session_context": true}
+	tools := []map[string]interface{}{
+		makeToolDef("session_context", "Pinned session context"),
+		makeToolDef("manage_skill", "Skill management"),
+		makeToolDef("web_search", "live current data web search"),
+		makeToolDef("bash", "Run shell"),
+	}
+	for i := 0; i < 30; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("live", tools)
+	manageIdx := toolIndexForTest(result, "manage_skill")
+	sessionIdx := toolIndexForTest(result, "session_context")
+	if manageIdx != 0 || (sessionIdx >= 0 && manageIdx > sessionIdx) {
+		t.Fatalf("tool order = %v, want matched manage_skill before conditional/session tools", toolNamesForTest(result))
+	}
+}
+
+func TestRouter_SSHIntentKeepsMatchedSkill(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	ic := NewIntentClassifier(nil)
+	defer ic.Close()
+	ic.SetLLMFunc(func(prompt string) (string, error) { return IntentSSH, nil })
+	router.SetIntentClassifier(ic)
+	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{Name: "server-health", Triggers: []string{"remote server"}, Description: "remote server resource usage", Capabilities: []string{"ssh", "server"}},
+	}})
+
+	result := router.Route("Check the remote server resource usage.", makeCoreSSHRouteTools(20))
+	names := routedToolNames(result)
+	if !names["ssh"] {
+		t.Fatalf("ssh should remain routed, got %v", toolNamesForTest(result))
+	}
+	if !names["manage_skill"] {
+		t.Fatalf("matched manage_skill should survive ssh fallback suppression, got %v", toolNamesForTest(result))
+	}
+	if toolIndexForTest(result, "manage_skill") != 0 {
+		t.Fatalf("tool order = %v, want matched manage_skill first", toolNamesForTest(result))
+	}
+}
+
+func TestRouter_BrowserSessionKeepsMatchedSkill(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	router.ActivateSessionTool("browser")
+	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{Name: "browser-publisher", Triggers: []string{"submit followup"}, Description: "browser session submit followup", Capabilities: []string{"browser"}},
+	}})
+
+	tools := []map[string]interface{}{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools, makeToolDef("browser", "stable browser automation merged tool"))
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("submit followup", tools)
+	names := routedToolNames(result)
+	if !names["browser"] {
+		t.Fatalf("browser should remain routed, got %v", toolNamesForTest(result))
+	}
+	if !names["manage_skill"] {
+		t.Fatalf("matched manage_skill should survive browser fallback suppression, got %v", toolNamesForTest(result))
+	}
+	if toolIndexForTest(result, "manage_skill") != 0 {
+		t.Fatalf("tool order = %v, want matched manage_skill first", toolNamesForTest(result))
+	}
+}
+
 func TestDynamicToolBuilder_SkillProvider(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(RegisteredTool{Name: "bash", Description: "run shell", Category: CategoryBuiltin})
@@ -505,4 +653,30 @@ func TestDynamicToolBuilder_EnrichesMatchedSkillWithoutRouting(t *testing.T) {
 		return
 	}
 	t.Fatalf("manage_skill missing from build result: %#v", result)
+}
+
+func TestDynamicToolBuilder_PrioritizesMatchedSkillBeforeGenericCurrentDataTool(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(RegisteredTool{Name: "web_search", Description: "search web", Category: CategoryBuiltin})
+	reg.Register(RegisteredTool{Name: "manage_skill", Description: "Skill management", Category: CategoryBuiltin})
+	reg.Register(RegisteredTool{Name: "bash", Description: "run shell", Category: CategoryBuiltin})
+	for i := 0; i < 30; i++ {
+		reg.Register(RegisteredTool{
+			Name:        fmt.Sprintf("filler_%d", i),
+			Description: fmt.Sprintf("filler tool %d", i),
+			Category:    CategoryNonCode,
+		})
+	}
+
+	builder := NewDynamicToolBuilder(reg)
+	builder.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
+		{Name: "Live Lookup", Triggers: []string{"live"}, Description: "live current data lookup", Capabilities: []string{"current_data"}},
+	}})
+
+	result := builder.Build("live")
+	manageIdx := toolIndexForTest(result, "manage_skill")
+	searchIdx := toolIndexForTest(result, "web_search")
+	if manageIdx < 0 || searchIdx < 0 || manageIdx > searchIdx {
+		t.Fatalf("tool order = %v, want manage_skill before web_search", toolNamesForTest(result))
+	}
 }

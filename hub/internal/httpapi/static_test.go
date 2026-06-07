@@ -141,6 +141,34 @@ func TestRegisterAdminStaticRoutesServesIndexAndAssets(t *testing.T) {
 	}
 }
 
+func TestRegisterAdminStaticRoutesEscapesInlineScriptEndTags(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(`<body><script src="/admin/admin.js"></script></body>`), 0644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	js := `window.msg = "</script><script>throw new Error('truncated')</script>";`
+	if err := os.WriteFile(filepath.Join(dir, "admin.js"), []byte(js), 0644); err != nil {
+		t.Fatalf("write asset: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAdminStaticRoutes(mux, dir, "/admin")
+
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("index status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, `window.msg = "</script>`) {
+		t.Fatalf("inline admin script was not escaped: %q", body)
+	}
+	if !strings.Contains(body, `window.msg = "<\/script><script>throw new Error('truncated')<\/script>";`) {
+		t.Fatalf("inline admin script missing escaped content: %q", body)
+	}
+}
+
 func TestRegisterGetCreditsStaticRoutesServesPage(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("credits-page"), 0644); err != nil {

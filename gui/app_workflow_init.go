@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
@@ -40,6 +42,7 @@ func (a *App) initWorkflowEngineWithStore(store workflow.PersistenceStore) {
 
 	// 4. Create IntentUnderstandingManager.
 	understanding := workflow.NewIntentUnderstandingManager(store, llmCaller, registry)
+	understanding.SetLanguage(i18n.NormalizeLang(a.CurrentLanguage))
 
 	// 5. Create WorkflowEngine (callbacks=nil initially, set below).
 	engine := workflow.NewWorkflowEngine(registry, understanding, store, nil)
@@ -91,10 +94,14 @@ type workflowLLMCaller struct {
 
 func (c *workflowLLMCaller) DoSimpleLLMRequest(messages []interface{}, timeout time.Duration) (string, error) {
 	cfg := c.app.GetMaclawLLMConfig()
+	if reason, skip := c.app.shouldSkipLightweightLLM(cfg); skip {
+		return "", fmt.Errorf("workflow-understanding LLM endpoint temporarily unavailable after recent network failure: %s", reason)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "workflow-understanding"})
 	result, err := doSimpleLLMRequest(ctx, cfg, messages, c.client, timeout)
+	c.app.observeLLMEndpointResult(cfg, err)
 	if err != nil {
 		return "", err
 	}

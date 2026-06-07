@@ -37,6 +37,11 @@ type CoreToolDeps struct {
 	// OnBashProgress is called periodically during long-running bash commands.
 	OnBashProgress func(msg string)
 
+	// LoopIDFunc returns the current agent loop ID for scroll session scoping.
+	// Called each time the memory tool handles a recall with session=true.
+	// Nil means no loop ID is available (scroll sessions disabled).
+	LoopIDFunc func() string
+
 	// ExtraHandlers maps tool names to host-provided handlers.
 	// This is the extension point for tools that need platform-specific
 	// implementations (e.g. manage_skill, screenshot) without changing
@@ -204,7 +209,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Description: memoryTool.Description,
 		Properties:  memoryTool.Properties,
 		Required:    memoryTool.Required,
-		Handler:     func(args map[string]interface{}) string { return ToolMemory(deps.MemoryStore, args) },
+		Handler:     func(args map[string]interface{}) string { return ToolMemory(deps.MemoryStore, args, deps.LoopIDFunc) },
 	})
 
 	r.Register(ToolEntry{

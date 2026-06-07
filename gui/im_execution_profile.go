@@ -141,9 +141,9 @@ func executionProfileFromSemanticIntent(result *intent.ClassificationResult, con
 			PromptProfile:        "light",
 			Confidence:           result.Confidence,
 			Reason:               "semantic low-complexity intent",
-			RequiredCapabilities: []string{"current_data", "time"},
+			RequiredCapabilities: []string{"current_data", "time", "web", "fetch"},
 			ToolBudget:           8,
-			IterationBudget:      2,
+			IterationBudget:      3,
 		}
 	default:
 		return fullExecutionProfile("semantic intent requires full agent")
@@ -195,13 +195,11 @@ func filterToolsForExecutionProfile(tools []map[string]interface{}, profile Exec
 	}
 	filtered := make([]map[string]interface{}, 0, budget)
 	seen := make(map[string]bool, budget)
-	explicitContracts := 0
 	for _, def := range tools {
 		contract := executionContractForTool(def)
 		if !contract.Explicit {
 			continue
 		}
-		explicitContracts++
 		if !contractAllowedForLight(contract) || !contractMatchesExecutionProfile(contract, profile) || seen[contract.Name] {
 			continue
 		}
@@ -211,7 +209,7 @@ func filterToolsForExecutionProfile(tools []map[string]interface{}, profile Exec
 			break
 		}
 	}
-	if len(filtered) == 0 && explicitContracts == 0 {
+	if len(filtered) == 0 {
 		return tools
 	}
 	return filtered
