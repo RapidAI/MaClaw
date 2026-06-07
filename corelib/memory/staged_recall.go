@@ -149,6 +149,12 @@ func (p *StagedRecallPipeline) rankBM25(store *Store, bm25Scores map[string]floa
 		return candidates[i].score > candidates[j].score
 	})
 
+	// Temporal demotion: stale/invalidated entries rank lower.
+	applyTemporalDemotion(candidates, now)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
 	return topNEntries(candidates, maxEntries)
 }
 
@@ -201,6 +207,9 @@ func (p *StagedRecallPipeline) rankBM25Vec(store *Store, bm25Scores, vecScores m
 		ms := memoryStreamScore(c.entry, rrfScores[i], c.bm25, projectLower, now)
 		scored = append(scored, recallScored{entry: c.entry, score: ms})
 	}
+
+	// Temporal demotion: stale/invalidated entries rank lower.
+	applyTemporalDemotion(scored, now)
 
 	sort.SliceStable(scored, func(i, j int) bool {
 		return scored[i].score > scored[j].score
@@ -291,6 +300,12 @@ func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[
 	// Graph expansion for top candidates.
 	scored = store.graphExpand(scored, graphExpandSeeds)
 	scored = filterRecallProjectOthers(scored, projectLower)
+
+	// Temporal demotion: stale/invalidated entries rank lower.
+	applyTemporalDemotion(scored, now)
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
 
 	return topNEntries(scored, maxEntries)
 }

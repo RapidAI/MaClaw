@@ -1017,14 +1017,7 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 	// Implements the Dreaming V3 "stay current over time" principle using the
 	// existing Stale flag (set by DetectStale/DreamCycle) and InvalidAt field
 	// (set by OnlineExtractor OpDelete / SupersedeEntryByID).
-	for i := range others {
-		e := &others[i].entry
-		if e.InvalidAt != nil && e.InvalidAt.Before(now) {
-			others[i].score *= 0.2 // temporally invalidated: nearly invisible
-		} else if e.Stale {
-			others[i].score *= 0.3 // stale: significantly demoted but retrievable
-		}
-	}
+	applyTemporalDemotion(others, now)
 	// Re-sort after demotion to push stale/invalidated entries down.
 	sort.SliceStable(others, func(i, j int) bool {
 		if others[i].score != others[j].score {
@@ -1435,6 +1428,24 @@ const graphExpandSeeds = 5
 type recallScored struct {
 	entry Entry
 	score float64
+}
+
+// applyTemporalDemotion demotes stale and temporally-invalidated entries in a
+// scored candidate list. Entries with InvalidAt in the past get score × 0.2;
+// entries marked Stale get score × 0.3. This keeps them discoverable but
+// pushes them below fresh entries in ranking.
+//
+// Implements the Dreaming V3 "stay current over time" principle.
+// Call this after all scoring/expansion is complete, before final sort/truncation.
+func applyTemporalDemotion(candidates []recallScored, now time.Time) {
+	for i := range candidates {
+		e := &candidates[i].entry
+		if e.InvalidAt != nil && e.InvalidAt.Before(now) {
+			candidates[i].score *= 0.2
+		} else if e.Stale {
+			candidates[i].score *= 0.3
+		}
+	}
 }
 
 // CategoryImportanceWeight returns a base importance weight for each category.
@@ -2128,14 +2139,7 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 	// demoted in score so they rank lower but remain discoverable. Applied
 	// after graphExpand so expanded entries are also subject to demotion.
 	// Implements the Dreaming V3 "stay current over time" principle.
-	for i := range candidates {
-		e := &candidates[i].entry
-		if e.InvalidAt != nil && e.InvalidAt.Before(now) {
-			candidates[i].score *= 0.2
-		} else if e.Stale {
-			candidates[i].score *= 0.3
-		}
-	}
+	applyTemporalDemotion(candidates, now)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})
@@ -2292,14 +2296,7 @@ func (s *Store) recallScoredForPagination(query string, category Category, proje
 	candidates = filterRecallDynamicCandidatesWithExclusions(candidates, category, projectLower, ownerID, proactiveRecallExcludeCategories)
 
 	// Temporal demotion: stale/invalidated entries rank lower.
-	for i := range candidates {
-		e := &candidates[i].entry
-		if e.InvalidAt != nil && e.InvalidAt.Before(now) {
-			candidates[i].score *= 0.2
-		} else if e.Stale {
-			candidates[i].score *= 0.3
-		}
-	}
+	applyTemporalDemotion(candidates, now)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})
@@ -2856,7 +2853,11 @@ func (s *Store) detectTemporallyExpired() int {
 		// Rule 2: ValidAt is older than 30 days and entry has not been
 		// updated or accessed recently (14 days). This avoids marking
 		// actively-referenced entries that happen to have an old ValidAt.
-		if !shouldMark && e.ValidAt != nil && now.Sub(*e.ValidAt) > validAtStalenessWindow {
+		//
+		// Skip stable-fact categories (user_fact, preference, instruction):
+		// these represent facts true until explicitly contradicted, not
+		// time-bound events. Their ValidAt means "when stated", not "expires after".
+		if !shouldMark && e.ValidAt != nil && !isStableFactCategory(e.Category) && now.Sub(*e.ValidAt) > validAtStalenessWindow {
 			lastActivity := e.UpdatedAt
 			if e.CreatedAt.After(lastActivity) {
 				lastActivity = e.CreatedAt

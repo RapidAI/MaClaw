@@ -69,6 +69,18 @@ func (c Category) IsProtected() bool {
 	return c == CategorySelfIdentity
 }
 
+// isStableFactCategory returns true for categories that represent long-lived
+// user facts/preferences which should only be invalidated by explicit
+// contradiction (OnlineExtractor OpDelete / DetectStale tag-overlap), never
+// by time-based expiry alone. Their ValidAt means "when stated", not "when
+// this fact expires".
+func isStableFactCategory(c Category) bool {
+	canonical := MapToCanonical(c)
+	return c == CategoryUserFact || canonical == CategoryUserFact ||
+		c == CategoryPreference || c == CategoryInstruction ||
+		c == CategorySelfIdentity || c == "user"
+}
+
 // DisplayName returns a human-readable Chinese label for the category.
 // Used by memory index injection in system prompts (main AI assistant and VE).
 func (c Category) DisplayName() string {

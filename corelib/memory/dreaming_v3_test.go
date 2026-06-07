@@ -280,3 +280,57 @@ func TestFormatMemorySummary_OwnerIDFilter(t *testing.T) {
 		t.Error("user_b summary should not contain user_a's entry")
 	}
 }
+
+// TestDetectTemporallyExpired_PreferenceNotExpired verifies that stable-fact
+// categories (user_fact, preference, instruction) are never marked stale by
+// time-based expiry, even with old ValidAt and no recent activity.
+// These entries represent facts true until contradicted, not time-bound events.
+func TestDetectTemporallyExpired_PreferenceNotExpired(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldTime := time.Now().Add(-90 * 24 * time.Hour) // 90 days ago
+	oldUpdate := time.Now().Add(-60 * 24 * time.Hour) // 60 days ago (well beyond activity window)
+
+	// User preferences should never expire based on time alone.
+	cases := []struct {
+		name     string
+		category Category
+	}{
+		{"user_fact", CategoryUserFact},
+		{"preference", CategoryPreference},
+		{"instruction", CategoryInstruction},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := Entry{
+				Content:  "Stable fact: " + tc.name,
+				Category: tc.category,
+				Tags:     []string{"test"},
+				ValidAt:  &oldTime,
+			}
+			if err := store.Save(e); err != nil {
+				t.Fatal(err)
+			}
+
+			// Force old timestamps.
+			store.mu.Lock()
+			for i := range store.entries {
+				if store.entries[i].Content == e.Content {
+					store.entries[i].UpdatedAt = oldUpdate
+					store.entries[i].CreatedAt = oldUpdate
+					break
+				}
+			}
+			store.mu.Unlock()
+		})
+	}
+
+	count := store.detectTemporallyExpired()
+	if count != 0 {
+		t.Fatalf("expected 0 temporal expiry (stable-fact categories protected), got %d", count)
+	}
+}
