@@ -356,7 +356,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     display: "flex",
                     alignItems: "center",
                     gap: 6,
-                    padding: "6px 8px",
+                    padding: "6px 8px 6px 12px",
                     background: theme.bg,
                     borderBottom: `1px solid ${theme.divider}`,
                     boxSizing: "border-box",
