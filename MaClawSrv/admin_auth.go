@@ -975,6 +975,32 @@ func (s *HTTPServer) requireAdminForceDelete(w http.ResponseWriter, r *http.Requ
 	return true
 }
 
+func (s *HTTPServer) adminOwnerSecretOrPasswordAuthorized(secret, password string) (string, bool, error) {
+	secret = strings.TrimSpace(secret)
+	if secret != "" && s.adminSecretAuthorized(secret) {
+		return "admin_secret", true, nil
+	}
+	if password == "" {
+		return "", false, nil
+	}
+	if s.adminSecretAuthorized(strings.TrimSpace(password)) {
+		return "admin_secret", true, nil
+	}
+	users, err := loadAdminUsers(s.svc.DataRoot())
+	if err != nil {
+		return "", false, err
+	}
+	for _, user := range users {
+		if user.Role != "owner" || user.Status != "active" {
+			continue
+		}
+		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) == nil {
+			return "admin_password", true, nil
+		}
+	}
+	return "", false, nil
+}
+
 func activeOwnerCount(users []adminUserRecord) int {
 	count := 0
 	for _, user := range users {

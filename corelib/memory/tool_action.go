@@ -18,6 +18,7 @@ const (
 	MemoryToolActionSave           MemoryToolAction = "save"
 	MemoryToolActionList           MemoryToolAction = "list"
 	MemoryToolActionDelete         MemoryToolAction = "delete"
+	MemoryToolActionSummary        MemoryToolAction = "summary"
 )
 
 // NormalizeMemoryToolAction canonicalizes action aliases accepted by HandleTool.
@@ -43,6 +44,8 @@ func NormalizeMemoryToolAction(action string) MemoryToolAction {
 		return MemoryToolActionList
 	case MemoryToolActionDelete:
 		return MemoryToolActionDelete
+	case MemoryToolActionSummary, "overview", "profile_summary":
+		return MemoryToolActionSummary
 	default:
 		return MemoryToolActionUnknown
 	}
@@ -51,5 +54,5 @@ func NormalizeMemoryToolAction(action string) MemoryToolAction {
 // IsRecallOnlyAllowed reports whether the action is safe in side-query modes
 // where memory is read-only but recall and inspection are allowed.
 func (a MemoryToolAction) IsRecallOnlyAllowed() bool {
-	return a == MemoryToolActionRecall || a == MemoryToolActionThemes || a == MemoryToolActionScenes || a == MemoryToolActionTrace || a == MemoryToolActionCandidates || a == MemoryToolActionDerived
+	return a == MemoryToolActionRecall || a == MemoryToolActionThemes || a == MemoryToolActionScenes || a == MemoryToolActionTrace || a == MemoryToolActionCandidates || a == MemoryToolActionDerived || a == MemoryToolActionSummary
 }

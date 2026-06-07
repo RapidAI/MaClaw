@@ -1011,6 +1011,28 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 		others = themeAwareDiversityRerank(others, s.themeManager.Themes(), graphExpandSeeds)
 	}
 
+	// Temporal demotion: entries marked stale or temporally invalidated are
+	// demoted in score so they rank lower but remain discoverable. Applied
+	// after graphExpand so expanded entries are also subject to demotion.
+	// Implements the Dreaming V3 "stay current over time" principle using the
+	// existing Stale flag (set by DetectStale/DreamCycle) and InvalidAt field
+	// (set by OnlineExtractor OpDelete / SupersedeEntryByID).
+	for i := range others {
+		e := &others[i].entry
+		if e.InvalidAt != nil && e.InvalidAt.Before(now) {
+			others[i].score *= 0.2 // temporally invalidated: nearly invisible
+		} else if e.Stale {
+			others[i].score *= 0.3 // stale: significantly demoted but retrievable
+		}
+	}
+	// Re-sort after demotion to push stale/invalidated entries down.
+	sort.SliceStable(others, func(i, j int) bool {
+		if others[i].score != others[j].score {
+			return others[i].score > others[j].score
+		}
+		return others[i].entry.AccessCount > others[j].entry.AccessCount
+	})
+
 	// === Phase 5: Type-quota assembly ===
 	var result []Entry
 	tokenBudget := maxTokens
@@ -2102,6 +2124,22 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 		candidates = themeAwareDiversityRerank(candidates, s.themeManager.Themes(), graphExpandSeeds)
 	}
 
+	// Temporal demotion: entries marked stale or temporally invalidated are
+	// demoted in score so they rank lower but remain discoverable. Applied
+	// after graphExpand so expanded entries are also subject to demotion.
+	// Implements the Dreaming V3 "stay current over time" principle.
+	for i := range candidates {
+		e := &candidates[i].entry
+		if e.InvalidAt != nil && e.InvalidAt.Before(now) {
+			candidates[i].score *= 0.2
+		} else if e.Stale {
+			candidates[i].score *= 0.3
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
 	// Recall gating removed from hot path (see memory-simplification-plan.md).
 	// Gating is available via RecallAdaptiveHier for precision-sensitive paths.
 	var result []Entry
@@ -2252,6 +2290,19 @@ func (s *Store) recallScoredForPagination(query string, category Category, proje
 
 	// Re-apply visibility filters after graph expansion.
 	candidates = filterRecallDynamicCandidatesWithExclusions(candidates, category, projectLower, ownerID, proactiveRecallExcludeCategories)
+
+	// Temporal demotion: stale/invalidated entries rank lower.
+	for i := range candidates {
+		e := &candidates[i].entry
+		if e.InvalidAt != nil && e.InvalidAt.Before(now) {
+			candidates[i].score *= 0.2
+		} else if e.Stale {
+			candidates[i].score *= 0.3
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
 
 	return candidates
 }
@@ -2770,6 +2821,68 @@ func (s *Store) ClearStale() int {
 	return len(updates)
 }
 
+// detectTemporallyExpired marks active entries as stale when their temporal
+// validity has passed. This catches time-bound memories (plans, events, projects)
+// that become outdated without a newer contradicting entry existing.
+//
+// Two detection rules:
+//   - Boundary.Until expired: entry explicitly declares an end time.
+//   - ValidAt + staleness window: entry has a real-world validity timestamp
+//     older than 30 days and has not been accessed/updated in 14 days.
+//
+// Pinned, protected-category, and already-stale entries are skipped.
+func (s *Store) detectTemporallyExpired() int {
+	now := time.Now()
+	const (
+		validAtStalenessWindow = 30 * 24 * time.Hour // 30 days since ValidAt
+		recentActivityWindow   = 14 * 24 * time.Hour // 14 days of inactivity
+	)
+
+	s.mu.RLock()
+	var updates []Entry
+	for i := range s.entries {
+		e := &s.entries[i]
+		if !e.IsActive() || e.Stale || e.Pinned || e.Category.IsProtected() {
+			continue
+		}
+
+		shouldMark := false
+
+		// Rule 1: Boundary.Until explicitly expired.
+		if e.Boundary != nil && e.Boundary.Until != nil && !e.Boundary.Until.IsZero() && e.Boundary.Until.Before(now) {
+			shouldMark = true
+		}
+
+		// Rule 2: ValidAt is older than 30 days and entry has not been
+		// updated or accessed recently (14 days). This avoids marking
+		// actively-referenced entries that happen to have an old ValidAt.
+		if !shouldMark && e.ValidAt != nil && now.Sub(*e.ValidAt) > validAtStalenessWindow {
+			lastActivity := e.UpdatedAt
+			if e.CreatedAt.After(lastActivity) {
+				lastActivity = e.CreatedAt
+			}
+			if now.Sub(lastActivity) > recentActivityWindow {
+				shouldMark = true
+			}
+		}
+
+		if shouldMark {
+			updated := *e
+			updated.Stale = true
+			updates = append(updates, updated)
+		}
+	}
+	s.mu.RUnlock()
+
+	if len(updates) > 0 {
+		if err := s.UpdateEntriesByID(updates); err != nil {
+			log.Printf("[memory_dream] persist temporal expired flags: %v", err)
+			return 0
+		}
+	}
+	return len(updates)
+}
+
 func hasOverlappingTags(a, b []string) bool {
 	if len(a) == 0 || len(b) == 0 {
 		// If either has no tags, consider them potentially overlapping
@@ -2792,7 +2905,8 @@ func hasOverlappingTags(a, b []string) bool {
 // Dream Cycle - background self-healing (inspired by GBrain's dream cycle)
 //
 // Runs during the Compressor's periodic loop. Performs:
-// 1. Stale detection
+// 1. Stale detection (tag-overlap based)
+// 1b. Temporal expiry detection (time-based, Dreaming V3 "stay current")
 // 2. Auto-link discovery for unlinked but related entries
 // 3. Content hash backfill for entries missing hashes
 // ---------------------------------------------------------------------------
@@ -2802,8 +2916,14 @@ func hasOverlappingTags(a, b []string) bool {
 func (s *Store) DreamCycle() *DreamCycleResult {
 	result := &DreamCycleResult{}
 
-	// Phase 1: Stale detection.
+	// Phase 1: Stale detection (tag-overlap based).
 	result.StaleDetected = s.DetectStale()
+
+	// Phase 1b: Temporal expiry detection — marks entries whose ValidAt or
+	// Boundary.Until has passed as stale. Implements the Dreaming V3
+	// "stay current over time" principle without requiring a new contradicting
+	// entry to trigger invalidation.
+	result.TemporalExpired = s.detectTemporallyExpired()
 
 	// Phase 2: Auto-link discovery; find high-BM25 pairs that aren't linked.
 	result.LinksDiscovered = s.discoverMissingLinks()
@@ -2814,9 +2934,9 @@ func (s *Store) DreamCycle() *DreamCycleResult {
 	// Phase 4: Tag backfill; enrich old entries that have poor tags.
 	result.TagsBackfilled = s.backfillTags()
 
-	if result.StaleDetected > 0 || result.LinksDiscovered > 0 || result.HashesBackfilled > 0 || result.TagsBackfilled > 0 {
-		log.Printf("[memory_dream] stale=%d links=%d hashes=%d tags=%d",
-			result.StaleDetected, result.LinksDiscovered, result.HashesBackfilled, result.TagsBackfilled)
+	if result.StaleDetected > 0 || result.TemporalExpired > 0 || result.LinksDiscovered > 0 || result.HashesBackfilled > 0 || result.TagsBackfilled > 0 {
+		log.Printf("[memory_dream] stale=%d temporal_expired=%d links=%d hashes=%d tags=%d",
+			result.StaleDetected, result.TemporalExpired, result.LinksDiscovered, result.HashesBackfilled, result.TagsBackfilled)
 	}
 
 	return result

@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
 
@@ -25,10 +26,10 @@ func cardEmbeddingText(card Card) string {
 	return strings.Join(parts, " ")
 }
 
-// searchByEmbedding performs vector similarity search on card embeddings.
-// Returns cards sorted by cosine similarity to the query embedding.
-// Uses a lightweight in-memory cache of card embeddings to avoid repeated
-// SQLite BLOB reads on every search call.
+// searchByEmbedding performs vector similarity search on card AND node embeddings.
+// Returns results sorted by cosine similarity to the query embedding.
+// Searches both distilled cards AND original document nodes to ensure
+// information lost during distillation is still discoverable.
 func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
 	if s.embedder == nil || embedding.IsNoop(s.embedder) {
 		return nil, nil
@@ -43,9 +44,7 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 		limit = 5
 	}
 
-	// Load cards with embeddings. For small knowledge bases (<500 cards),
-	// load all at once. For larger ones, limit to top-N by importance to
-	// bound memory and CPU usage.
+	// --- Card embedding search ---
 	const maxEmbeddingCandidates = 500
 	where := []string{"c.embedding IS NOT NULL", "LENGTH(c.embedding) > 0"}
 	args := make([]interface{}, 0)
@@ -113,6 +112,16 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+
+	// --- Node embedding search (original document full text) ---
+	nodeResults, nodeErr := s.searchNodesByEmbedding(ctx, queryVec, opts)
+	if nodeErr == nil && len(nodeResults) > 0 {
+		for _, nr := range nodeResults {
+			// Reverse the score→sim mapping: score = 1.0 + (sim-0.25)*4.0
+			sim := (nr.Score-1.0)/4.0 + 0.25
+			candidates = append(candidates, candidate{result: nr, sim: sim})
+		}
 	}
 
 	// Sort by similarity descending
@@ -296,4 +305,242 @@ func (s *SQLiteStore) backfillCardEmbeddings(ctx context.Context) error {
 			float32SliceToBytes(vectors[i]), c.id)
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Document Node Embedding: vector search over original document full text.
+//
+// Rationale: LLM distillation (cards/facts) necessarily loses information.
+// A 1300-character page compressed into a 300-character card claim loses ~77%
+// of content. Vector search over the ORIGINAL document text ensures that
+// information not captured in cards/facts can still be found via semantic
+// similarity. This is the root-cause fix for distillation loss.
+// ---------------------------------------------------------------------------
+
+// EnsureNodeEmbeddingColumn adds the embedding column to document_nodes if
+// it doesn't already exist. Safe to call multiple times (idempotent).
+func (s *SQLiteStore) EnsureNodeEmbeddingColumn() error {
+	_, err := s.db.Exec(`ALTER TABLE document_nodes ADD COLUMN embedding BLOB`)
+	if err != nil && strings.Contains(err.Error(), "duplicate column") {
+		return nil // already exists
+	}
+	return err
+}
+
+// BackfillNodeEmbeddings generates embeddings for document_nodes that don't
+// have one yet. Uses the full node text for embedding, providing semantic
+// coverage of the original document content.
+func (s *SQLiteStore) BackfillNodeEmbeddings(ctx context.Context) error {
+	if s.embedder == nil || embedding.IsNoop(s.embedder) {
+		return nil
+	}
+	// Ensure column exists first
+	if err := s.EnsureNodeEmbeddingColumn(); err != nil {
+		return err
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT id, title, text FROM document_nodes WHERE embedding IS NULL OR LENGTH(embedding) = 0`)
+	if err != nil {
+		// Column may not exist yet on older DBs — not fatal
+		if strings.Contains(err.Error(), "no such column") {
+			return nil
+		}
+		return err
+	}
+	defer rows.Close()
+
+	type nodeInfo struct {
+		id, title, text string
+	}
+	var nodes []nodeInfo
+	for rows.Next() {
+		var n nodeInfo
+		if err := rows.Scan(&n.id, &n.title, &n.text); err != nil {
+			return err
+		}
+		nodes = append(nodes, n)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(nodes) == 0 {
+		return nil
+	}
+
+	// Batch embed — use full text (truncated to embedder's max input)
+	texts := make([]string, len(nodes))
+	for i, n := range nodes {
+		t := n.text
+		if n.title != "" && !strings.HasPrefix(t, n.title) {
+			t = n.title + " " + t
+		}
+		// Most embedding models have ~512 token input limit.
+		// Truncate to ~2000 chars which is ~500 tokens for CJK.
+		const maxEmbedChars = 2000
+		if len([]rune(t)) > maxEmbedChars {
+			t = string([]rune(t)[:maxEmbedChars])
+		}
+		texts[i] = t
+	}
+	vectors, err := s.embedder.EmbedBatch(texts)
+	if err != nil {
+		return err
+	}
+
+	for i, n := range nodes {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if i >= len(vectors) || len(vectors[i]) == 0 {
+			continue
+		}
+		_, _ = s.db.ExecContext(ctx, `UPDATE document_nodes SET embedding = ? WHERE id = ?`,
+			float32SliceToBytes(vectors[i]), n.id)
+	}
+	return nil
+}
+
+// extractQueryTermsForSnippet splits a query into meaningful terms for snippet extraction.
+// Uses gse tokenization for CJK, keeping multi-char tokens. For non-CJK, splits on whitespace.
+func extractQueryTermsForSnippet(query string) []string {
+	if query == "" {
+		return nil
+	}
+	if containsCJKRunes(query) {
+		tokens := bm25.Tokenize(query)
+		var terms []string
+		for _, t := range tokens {
+			t = strings.TrimSpace(t)
+			if t != "" && len([]rune(t)) >= 2 {
+				terms = append(terms, t)
+			}
+		}
+		if len(terms) > 0 {
+			return terms
+		}
+	}
+	// Fallback: split on whitespace
+	var terms []string
+	for _, w := range strings.Fields(query) {
+		w = strings.TrimSpace(w)
+		if len(w) >= 2 {
+			terms = append(terms, w)
+		}
+	}
+	return terms
+}
+
+// searchNodesByEmbedding performs vector similarity search on document_nodes.
+// This is the root-cause fix for distillation loss: it searches the ORIGINAL
+// document text embeddings, not the distilled card claims.
+func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []float32, opts SearchOptions) ([]SearchResult, error) {
+	if len(queryVec) == 0 {
+		return nil, nil
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 5
+	}
+
+	const maxCandidates = 200
+	where := []string{"n.embedding IS NOT NULL", "LENGTH(n.embedding) > 0"}
+	args := make([]interface{}, 0)
+	where, args = appendSearchFilters(where, args, "s", opts)
+	args = append(args, maxCandidates)
+
+	sqlQuery := `SELECT n.id, n.title, n.type, n.text, n.page, n.embedding,
+		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
+		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
+		FROM document_nodes n
+		JOIN knowledge_sources s ON s.id = n.source_id
+		WHERE ` + strings.Join(where, " AND ") + `
+		ORDER BY n.page ASC
+		LIMIT ?`
+
+	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
+	if err != nil {
+		// Column may not exist yet
+		if strings.Contains(err.Error(), "no such column") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+
+	type candidate struct {
+		result SearchResult
+		sim    float64
+	}
+	var candidates []candidate
+
+	for rows.Next() {
+		var result SearchResult
+		var source Source
+		var embBlob []byte
+		var nodeText string
+		var publishedAt, fetchedAt, createdAt, updatedAt string
+
+		if err := rows.Scan(&result.NodeID, &result.NodeTitle, &result.NodeType, &nodeText, &result.Page, &embBlob,
+			&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt,
+			&source.ContentHash, &source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath,
+			&source.Status, &source.ErrorMessage, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+
+		nodeVec := bytesToFloat32Slice(embBlob)
+		if len(nodeVec) == 0 || len(nodeVec) != len(queryVec) {
+			continue
+		}
+
+		sim := cosineSimilarity(queryVec, nodeVec)
+		if sim < 0.25 { // lower threshold for nodes (more content → noisier embedding)
+			continue
+		}
+
+		source.PublishedAt = parseTime(publishedAt)
+		source.FetchedAt = parseTime(fetchedAt)
+		source.CreatedAt = parseTime(createdAt)
+		source.UpdatedAt = parseTime(updatedAt)
+		result.Source = source
+		result.ResultType = "node"
+		// Use query terms to extract a relevant snippet from the original text,
+		// rather than blindly returning the tail (which may be unrelated to the match).
+		queryTerms := extractQueryTermsForSnippet(opts.Query)
+		result.Snippet = extractLikeSnippet(nodeText, queryTerms, 200)
+		if result.Snippet == "" {
+			// Fallback: return tail which often has specific info
+			runes := []rune(nodeText)
+			if len(runes) > 300 {
+				result.Snippet = "..." + string(runes[len(runes)-300:])
+			} else {
+				result.Snippet = nodeText
+			}
+		}
+		result.Score = 1.0 + (sim-0.25)*4.0
+		result.Citation = formatResultCitation(result)
+
+		candidates = append(candidates, candidate{result: result, sim: sim})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Sort by similarity descending
+	for i := 0; i < len(candidates)-1; i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			if candidates[j].sim > candidates[i].sim {
+				candidates[i], candidates[j] = candidates[j], candidates[i]
+			}
+		}
+	}
+
+	results := make([]SearchResult, 0, limit)
+	for i, c := range candidates {
+		if i >= limit {
+			break
+		}
+		results = append(results, c.result)
+	}
+	return results, nil
 }

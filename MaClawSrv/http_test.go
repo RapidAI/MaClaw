@@ -680,6 +680,46 @@ func TestOpenAPIKnowledgeFileImportsUseMultipart(t *testing.T) {
 	}
 }
 
+func TestOpenAPIKnowledgeClearDocumentsAdminCredentialBody(t *testing.T) {
+	doc := buildOpenAPISpec()
+	paths, ok := doc["paths"].(map[string]map[string]any)
+	if !ok {
+		t.Fatalf("expected typed OpenAPI paths map")
+	}
+	op, ok := paths["/api/v1/knowledge"]["delete"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing DELETE /api/v1/knowledge operation")
+	}
+	requestBody, ok := op["requestBody"].(map[string]any)
+	if !ok || requestBody["required"] != true {
+		t.Fatalf("knowledge clear should document required credential body: %#v", op["requestBody"])
+	}
+	content, ok := requestBody["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing request content: %#v", requestBody)
+	}
+	jsonBody, ok := content["application/json"].(map[string]any)
+	if !ok {
+		t.Fatalf("knowledge clear body should be application/json: %#v", content)
+	}
+	schema, ok := jsonBody["schema"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing JSON schema: %#v", jsonBody)
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing credential properties: %#v", schema)
+	}
+	for _, key := range []string{"admin_password", "password", "admin_secret"} {
+		if _, ok := properties[key]; !ok {
+			t.Fatalf("knowledge clear credential body missing %s: %#v", key, properties)
+		}
+	}
+	if anyOf, ok := schema["anyOf"].([]map[string]any); !ok || len(anyOf) != 3 {
+		t.Fatalf("knowledge clear should require one credential field via anyOf: %#v", schema["anyOf"])
+	}
+}
+
 func TestOpenAPICoversRegisteredAdminRoutes(t *testing.T) {
 	source, err := os.ReadFile("http.go")
 	if err != nil {

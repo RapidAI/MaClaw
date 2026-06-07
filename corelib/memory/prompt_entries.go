@@ -16,6 +16,10 @@ type RecallEntriesPromptOptions struct {
 	Intro    string
 	Footer   string
 	MaxRunes int
+	// SourceNumbering enables [M1], [M2], ... prefixes on each entry and appends
+	// a source-attribution instruction at the end. Implements the Dreaming V3
+	// "sources" concept: LLM can cite which memories influenced its answer.
+	SourceNumbering bool
 }
 
 // FormatRecallEntriesForPrompt renders recalled entries for prompt injection in
@@ -40,11 +44,18 @@ func FormatRecallEntriesForPrompt(entries []Entry, opts RecallEntriesPromptOptio
 	}
 	writePromptLine(opts.Header)
 	writePromptLine(opts.Intro)
-	for _, entry := range entries {
-		b.WriteString(FormatRecallEntryForPrompt(entry, maxRunes))
+	for i, entry := range entries {
+		line := FormatRecallEntryForPrompt(entry, maxRunes)
+		if opts.SourceNumbering {
+			line = "[M" + strconv.Itoa(i+1) + "] " + line
+		}
+		b.WriteString(line)
 		b.WriteByte('\n')
 	}
 	writePromptLine(opts.Footer)
+	if opts.SourceNumbering && len(entries) > 0 {
+		b.WriteString("（如果你的回答使用了上述记忆信息，请在末尾用 📌 来源：[MX] 标注使用了哪些条目。）\n")
+	}
 	return b.String()
 }
 
@@ -68,11 +79,18 @@ func FormatExperienceCandidatesForPrompt(candidates []lifecycle.Candidate, opts 
 	}
 	writePromptLine(opts.Header)
 	writePromptLine(opts.Intro)
-	for _, candidate := range candidates {
-		b.WriteString(FormatExperienceCandidateForPrompt(candidate, maxRunes))
+	for i, candidate := range candidates {
+		line := FormatExperienceCandidateForPrompt(candidate, maxRunes)
+		if opts.SourceNumbering {
+			line = "[M" + strconv.Itoa(i+1) + "] " + line
+		}
+		b.WriteString(line)
 		b.WriteByte('\n')
 	}
 	writePromptLine(opts.Footer)
+	if opts.SourceNumbering && len(candidates) > 0 {
+		b.WriteString("（如果你的回答使用了上述记忆信息，请在末尾用 📌 来源：[MX] 标注使用了哪些条目。）\n")
+	}
 	return b.String()
 }
 

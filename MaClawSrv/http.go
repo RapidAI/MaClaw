@@ -1408,7 +1408,7 @@ func riskEventFromAudit(dataRoot string, event agentservice.AuditEvent) (adminRi
 		severity, kind, summary = "high", "sandbox_install_changed", "Sandbox installation was requested or completed from Admin Web."
 	case "admin.service_config_draft_updated", "admin.service_config_draft_cleared", "admin.service_config_export_plan":
 		severity, kind, summary = "medium", "service_config_changed", "Service configuration draft or export plan was changed."
-	case "admin.knowledge_access_cross_tenant_updated", "admin.knowledge_access_user_updated", "admin.knowledge_access_user_deleted", "admin.knowledge_access_public_library_attached", "admin.knowledge_access_public_library_detached", "admin.knowledge_tenant_cleared":
+	case "admin.knowledge_access_cross_tenant_updated", "admin.knowledge_access_user_updated", "admin.knowledge_access_user_deleted", "admin.knowledge_access_public_library_attached", "admin.knowledge_access_public_library_detached", "admin.knowledge_tenant_cleared", "admin.knowledge_user_cleared", "admin.knowledge_user_clear_failed":
 		severity, kind, summary = "medium", "knowledge_policy_changed", "Knowledge access policy or tenant knowledge data was changed."
 	case "admin.public_knowledge_library_created", "admin.public_knowledge_library_deleted", "admin.public_knowledge_import_text", "admin.public_knowledge_import_urls", "admin.public_knowledge_import_file":
 		severity, kind, summary = "medium", "public_knowledge_changed", "A public knowledge library or its imported sources were changed."

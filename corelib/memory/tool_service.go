@@ -389,8 +389,11 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		}
 		return fmt.Sprintf("Memory deleted: %s", id)
 
+	case MemoryToolActionSummary:
+		return store.FormatMemorySummary(opts.OwnerID)
+
 	default:
-		return fmt.Sprintf("unknown memory action: %s (use save/recall/candidates/derived/derived_surgery/themes/scenes/trace/delete/list)", rawAction)
+		return fmt.Sprintf("unknown memory action: %s (use save/recall/summary/candidates/derived/derived_surgery/themes/scenes/trace/delete/list)", rawAction)
 	}
 }
 

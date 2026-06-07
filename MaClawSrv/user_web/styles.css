@@ -38,6 +38,15 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .secondary:hover { background: #e5eef4; }
 .ghost { background: transparent; box-shadow: none; }
 .danger { background: var(--danger-soft); border-color: #f1b8b2; color: var(--danger); }
+.danger-modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 18px; background: rgba(15, 23, 42, .42); }
+.danger-modal { width: min(460px, 100%); display: grid; gap: 14px; border: 1px solid #f1b8b2; border-radius: 8px; background: var(--panel); box-shadow: var(--shadow); padding: 18px; }
+.danger-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.danger-modal h2 { margin: 0; color: var(--danger); font-size: 18px; line-height: 1.25; }
+.danger-modal p { margin: 0; color: var(--text); }
+.danger-modal label { display: grid; gap: 6px; color: var(--muted); font-weight: 700; }
+.danger-modal input { width: 100%; min-height: 42px; border: 1px solid var(--line); border-radius: 8px; padding: 0 11px; background: var(--panel); color: var(--text); }
+.danger-modal-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.danger-modal-close { min-height: 32px; width: 32px; padding: 0; }
 
 .skip-link { position: absolute; left: 16px; top: -48px; background: var(--text); color: var(--panel); padding: 10px 14px; border-radius: 8px; z-index: 10; }
 .skip-link:focus { top: 16px; }
@@ -299,11 +308,13 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
 .memory-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .memory-tags span { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; font-weight: 700; }
 .memory-load-more { justify-self: center; min-width: 160px; }
-.knowledge-scope-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; min-height: 36px; align-items: stretch; }
-.knowledge-scope-chip { display: grid; gap: 9px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
+.knowledge-scope-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 560px)); justify-content: start; gap: 12px; min-height: 36px; align-items: stretch; }
+.knowledge-scope-chip { display: grid; grid-template-rows: auto 1fr auto; gap: 10px; min-width: 0; width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
 .knowledge-scope-chip strong { font-size: 14px; line-height: 1.3; overflow-wrap: anywhere; }
-.knowledge-scope-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
-.knowledge-scope-badge { flex: 0 0 auto; max-width: 48%; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; font-weight: 700; text-align: center; white-space: normal; overflow-wrap: anywhere; }
+.knowledge-scope-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px; min-width: 0; }
+.knowledge-scope-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: nowrap; }
+.knowledge-scope-badge { flex: 0 0 auto; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 11px; font-weight: 800; line-height: 1.2; text-align: center; white-space: nowrap; }
+.knowledge-clear-btn { min-height: 28px; padding: 4px 9px; border-radius: 7px; font-size: 12px; line-height: 1.2; box-shadow: none; }
 .knowledge-scope-self .knowledge-scope-badge { border-color: rgba(8, 116, 67, .24); color: var(--ok); background: #ecfdf3; }
 .knowledge-scope-public .knowledge-scope-badge { border-color: rgba(37, 99, 235, .22); color: #1d4ed8; background: #eff6ff; }
 .knowledge-scope-meta { display: grid; gap: 6px; margin: 0; }
@@ -312,6 +323,8 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
 .knowledge-scope-meta dd { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
 .knowledge-scope-chip small { color: var(--muted); font-size: 11px; line-height: 1.35; }
 .knowledge-scope-chip code { white-space: normal; overflow-wrap: anywhere; }
+.knowledge-scope-ids { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.knowledge-scope-ids code { max-width: 100%; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); font-size: 11px; font-family: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .knowledge-import-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 12px; align-items: start; }
 .knowledge-import-grid section { display: grid; align-content: start; gap: 12px; min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
 .knowledge-import-grid h3 { margin: 0; padding-bottom: 9px; border-bottom: 1px solid var(--line); font-size: 14px; line-height: 1.25; }

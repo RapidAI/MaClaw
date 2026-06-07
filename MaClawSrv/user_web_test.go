@@ -560,6 +560,20 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"knowledgeOwner",
 		"knowledgeTenant",
 		"knowledgeScopeIDs",
+		"clearOwnKnowledge",
+		"clearOwnKnowledgeConfirm",
+		"clearOwnKnowledgePasswordPrompt",
+		"data-clear-own-knowledge",
+		"function requestDangerPassword",
+		`role="dialog" aria-modal="true"`,
+		`data-danger-password type="password"`,
+		"const dialogID = `dangerModal",
+		"document.activeElement === input",
+		"event.currentTarget",
+		"async function clearOwnKnowledgeBase(btn)",
+		`api("/api/v1/knowledge?confirm=true", { method: "DELETE"`,
+		"admin_password: adminCredential",
+		"knowledge-scope-ids",
 		"displayWithID(tenantLabel, tenantID)",
 		"state.me?.tenant_name",
 		"public:",
@@ -727,6 +741,18 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 	if strings.Contains(body, "prompt(t(\"instanceName\")") {
 		t.Fatalf("new instance flow should not require browser text prompt")
 	}
+	if strings.Contains(body, "prompt(t(\"clearOwnKnowledgePasswordPrompt\")") {
+		t.Fatalf("knowledge clear should use an in-page password dialog, not a browser prompt")
+	}
+	if strings.Contains(body, "$(\"dangerModalPassword\")") {
+		t.Fatalf("knowledge clear dialog should read the local password input, not a global fixed id")
+	}
+	if strings.Contains(body, "admin_secret: adminCredential") || strings.Contains(body, "admin_secret: adminPassword") {
+		t.Fatalf("knowledge clear should submit the single credential field without duplicating it as admin_secret")
+	}
+	if strings.Contains(body, "const adminPassword = await requestDangerPassword") {
+		t.Fatalf("knowledge clear credential variable should not be named as password-only")
+	}
 	for _, hiddenTab := range []string{
 		`id: "pet"`,
 		`id: "startup"`,
@@ -809,7 +835,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	assertAdminSecurityHeaders(t, w.Result())
 	css := w.Body.String()
-	for _, needle := range []string{"@media (prefers-color-scheme: dark)", "@media (prefers-reduced-motion", ".skip-link", "min-height: 100dvh", ".run-panel", ".chat-toolbar", ".clear-panel-btn", ".tool-detail", ".messages-wrap", ".jump-latest", ".message-head", ".message-meta", ".message-time", ".message.pending", ".md-content.thinking", "@keyframes thinking-dots", ".copy-btn", ".sr-copy-area", ".md-content", ".md-content .md-code", ".md-content .md-code-head", ".md-content blockquote", ".md-content hr", ".md-content .md-table-wrap", "min-width: max-content", ".md-content .task-list-item", ".composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }", ".cfg-group", ".cfg-group[hidden] { display: none !important; }", ".cfg-tabs", ".cfg-output", ".settings-head", ".settings-actions", ".object-list", ".object-row", ".kv-list", ".kv-pair", ".kv-pair.custom-key-active", ".kv-pair.custom-value-active", ".choice-lines", ".choice-select-stack", ".choice-actions", ".choice-custom", ".choice-custom:not(.custom-active) [data-choice-custom]", ".custom-lines", ".raw-json-editor", ".secret-input", ".bool-radio", ".bool-radio-two", ".bool-radio input:checked + span", ".skill-grid", ".skill-card", ".skill-pager", ".mcp-inline-editor", ".mcp-param-row", ".mcp-param-row button", ".memory-manager", ".memory-toolbar", ".memory-summary", ".memory-chip", ".memory-entry", ".memory-tags", ".memory-load-more", ".channel-overview", ".im-progress-settings", ".im-subtabs", ".im-subtab.active", ".im-channel-panel", ".im-channel-toolbar", ".im-channel-actions", ".im-link-action", ".im-enable-row", ".im-field-grid", ".im-field-grid-two", ".weixin-account-status", ".weixin-qr-actions", ".channel-protocol", ".channel-protocol-actions", ".im-audit-shell", ".knowledge-access-summary", ".knowledge-scope-chip", ".knowledge-scope-badge", ".knowledge-scope-meta", ".knowledge-scope-chip small", ".knowledge-importer", ".knowledge-import-grid", ".knowledge-import-fields", ".knowledge-import-fields > button", ".knowledge-import-grid h3", ".knowledge-span-2", ".knowledge-search-form input,", ".knowledge-search-form { display: grid;", ".knowledge-progress", ".knowledge-field-error", ".knowledge-field-help", "#issues .error", ".fields { display: block; }", "width: 100%; border: 1px solid var(--line)"} {
+	for _, needle := range []string{"@media (prefers-color-scheme: dark)", "@media (prefers-reduced-motion", ".skip-link", "min-height: 100dvh", ".run-panel", ".chat-toolbar", ".clear-panel-btn", ".tool-detail", ".messages-wrap", ".jump-latest", ".message-head", ".message-meta", ".message-time", ".message.pending", ".md-content.thinking", "@keyframes thinking-dots", ".copy-btn", ".sr-copy-area", ".md-content", ".md-content .md-code", ".md-content .md-code-head", ".md-content blockquote", ".md-content hr", ".md-content .md-table-wrap", "min-width: max-content", ".md-content .task-list-item", ".composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }", ".cfg-group", ".cfg-group[hidden] { display: none !important; }", ".cfg-tabs", ".cfg-output", ".settings-head", ".settings-actions", ".object-list", ".object-row", ".kv-list", ".kv-pair", ".kv-pair.custom-key-active", ".kv-pair.custom-value-active", ".choice-lines", ".choice-select-stack", ".choice-actions", ".choice-custom", ".choice-custom:not(.custom-active) [data-choice-custom]", ".custom-lines", ".raw-json-editor", ".secret-input", ".bool-radio", ".bool-radio-two", ".bool-radio input:checked + span", ".skill-grid", ".skill-card", ".skill-pager", ".mcp-inline-editor", ".mcp-param-row", ".mcp-param-row button", ".memory-manager", ".memory-toolbar", ".memory-summary", ".memory-chip", ".memory-entry", ".memory-tags", ".memory-load-more", ".channel-overview", ".im-progress-settings", ".im-subtabs", ".im-subtab.active", ".im-channel-panel", ".im-channel-toolbar", ".im-channel-actions", ".im-link-action", ".im-enable-row", ".im-field-grid", ".im-field-grid-two", ".weixin-account-status", ".weixin-qr-actions", ".channel-protocol", ".channel-protocol-actions", ".im-audit-shell", ".danger-modal-backdrop", ".danger-modal", ".danger-modal-actions", ".knowledge-access-summary", ".knowledge-scope-list { display: grid; grid-template-columns: repeat(auto-fill", ".knowledge-scope-chip", ".knowledge-scope-head { display: grid; grid-template-columns: minmax(0, 1fr) auto;", ".knowledge-scope-actions", ".knowledge-clear-btn", ".knowledge-scope-badge", ".knowledge-scope-meta", ".knowledge-scope-ids", ".knowledge-scope-ids code", ".knowledge-scope-chip small", ".knowledge-importer", ".knowledge-import-grid", ".knowledge-import-fields", ".knowledge-import-fields > button", ".knowledge-import-grid h3", ".knowledge-span-2", ".knowledge-search-form input,", ".knowledge-search-form { display: grid;", ".knowledge-progress", ".knowledge-field-error", ".knowledge-field-help", "#issues .error", ".fields { display: block; }", "width: 100%; border: 1px solid var(--line)"} {
 		if !strings.Contains(css, needle) {
 			t.Fatalf("user css missing marker %s", needle)
 		}

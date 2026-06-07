@@ -1588,52 +1588,52 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 
 	// FTS fallback: if FTS returned no results or only very low-scoring results
 	// and the query contains CJK characters, fall back to LIKE-based search.
-	// This handles two cases:
+	// This handles three cases:
 	// 1. FTS index not yet rebuilt with segmentation (rebuild pending/failed)
 	// 2. FTS tokenization mismatch (new words not in gse dictionary)
+	// 3. FTS found card/fact results but missed relevant document_nodes content
+	//    (distillation loss: cards/facts may not cover all original document text)
 	if containsCJKRunes(opts.Query) {
-		needsFallback := len(results) == 0
-		if !needsFallback && len(results) > 0 {
-			// FTS found results but with very low scores — likely a partial match
-			// on unsegmented index data. LIKE search may find better matches.
-			needsFallback = results[0].Score < 1.0
-		}
-		if needsFallback {
-			likeResults, likeErr := s.searchCJKLikeFallback(ctx, opts)
-			if likeErr == nil && len(likeResults) > 0 {
-				// Merge LIKE results into FTS results, deduplicating by card/fact/node ID
-				seen := make(map[string]struct{})
-				for _, r := range results {
-					if r.CardID != "" {
-						seen[r.CardID] = struct{}{}
-					}
-					if r.FactID != "" {
-						seen[r.FactID] = struct{}{}
-					}
-					if r.NodeID != "" {
-						seen[r.NodeID] = struct{}{}
+		// For CJK queries, always run LIKE fallback to search document_nodes original
+		// text. FTS tokenization mismatch means FTS may find some nodes (via "马勇"
+		// matching page 1) but miss others (page 2 has "书籍" which doesn't match
+		// query token "书"). LIKE handles arbitrary substrings correctly.
+		// Performance: O(nodes × terms) string matching. For typical knowledge bases
+		// (<2000 nodes, <12 terms), this is <50ms — acceptable tradeoff for recall.
+		likeResults, likeErr := s.searchCJKLikeFallback(ctx, opts)
+		if likeErr == nil && len(likeResults) > 0 {
+			// Merge LIKE results into FTS results, deduplicating by card/fact/node ID
+			seen := make(map[string]struct{})
+			for _, r := range results {
+				if r.CardID != "" {
+					seen[r.CardID] = struct{}{}
+				}
+				if r.FactID != "" {
+					seen[r.FactID] = struct{}{}
+				}
+				if r.NodeID != "" {
+					seen[r.NodeID] = struct{}{}
+				}
+			}
+			for _, lr := range likeResults {
+				isDup := false
+				if lr.CardID != "" {
+					if _, ok := seen[lr.CardID]; ok {
+						isDup = true
 					}
 				}
-				for _, lr := range likeResults {
-					isDup := false
-					if lr.CardID != "" {
-						if _, ok := seen[lr.CardID]; ok {
-							isDup = true
-						}
+				if lr.FactID != "" {
+					if _, ok := seen[lr.FactID]; ok {
+						isDup = true
 					}
-					if lr.FactID != "" {
-						if _, ok := seen[lr.FactID]; ok {
-							isDup = true
-						}
+				}
+				if lr.NodeID != "" && lr.CardID == "" && lr.FactID == "" {
+					if _, ok := seen[lr.NodeID]; ok {
+						isDup = true
 					}
-					if lr.NodeID != "" && lr.CardID == "" && lr.FactID == "" {
-						if _, ok := seen[lr.NodeID]; ok {
-							isDup = true
-						}
-					}
-					if !isDup {
-						results = append(results, lr)
-					}
+				}
+				if !isDup {
+					results = append(results, lr)
 				}
 			}
 		}
@@ -1642,12 +1642,22 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	// Embedding vector search: fuse with FTS/LIKE results using RRF.
 	// This provides semantic matching (e.g., "学历" matches "博士") that
 	// neither FTS nor LIKE can achieve.
-	// Only triggered when FTS+LIKE didn't find high-confidence results,
-	// to avoid adding 50-100ms embedding inference latency to every search.
+	// Triggered when FTS+LIKE didn't find high-confidence results from the
+	// ORIGINAL FTS path (ignoring LIKE-injected scores). LIKE may produce
+	// high scores from term-count heuristics that don't reflect true semantic
+	// relevance, so we check the best FTS-originated score separately.
 	if s.embedder != nil && !embedding.IsNoop(s.embedder) {
+		// Find the best score from FTS results only (exclude LIKE-injected nodes
+		// which use term-count scoring that can be artificially high).
+		bestFTSScore := 0.0
+		for _, r := range results {
+			if r.Score > bestFTSScore && r.ResultType != "node" {
+				bestFTSScore = r.Score
+			}
+		}
 		needsEmbedding := len(results) == 0
-		if !needsEmbedding && len(results) > 0 && results[0].Score < 2.0 {
-			// FTS/LIKE found something but not high-confidence — embedding may help
+		if !needsEmbedding && bestFTSScore < 2.0 {
+			// FTS found nothing high-confidence — embedding may find semantic matches
 			needsEmbedding = true
 		}
 		if needsEmbedding {
@@ -4323,31 +4333,83 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 	}
 
 	// Extract meaningful search terms from the query using gse tokenization.
-	// This handles queries like "马勇是什么学历" → terms: ["马勇", "学历"]
-	// (stop words like "是", "什么" are filtered out)
+	// For LIKE search, we use two sources of terms:
+	// 1. gse tokenization (multi-char words: "马勇", "博士", "著译")
+	// 2. Individual CJK characters from the original query ("书", "译")
+	// Source 2 is critical: LIKE '%书%' matches "书籍" in the original text,
+	// which gse may not produce as a standalone token. This is the mechanism
+	// that bridges the gap between user's word choice and document's phrasing.
+	//
+	// Term priority: gse compound words first (most specific), then single CJK
+	// chars that are NOT already covered by a compound word. This ensures the
+	// cap doesn't cut high-value single chars like "书" which may be the only
+	// term that matches the target text.
 	var terms []string
 	if containsCJKRunes(query) {
+		seen := make(map[string]struct{})
+
+		// Source 1 (high priority): individual CJK characters from the raw query.
+		// LIKE '%书%' matches "书籍", '%译%' matches "一译" — single chars have
+		// the broadest recall and must not be truncated by the cap.
+		for _, r := range query {
+			if isCJK(r) && !isCJKStopChar(r) {
+				ch := string(r)
+				if _, ok := seen[ch]; ok {
+					continue
+				}
+				seen[ch] = struct{}{}
+				terms = append(terms, ch)
+			}
+		}
+
+		// Source 2 (supplementary): gse multi-char tokens (compound words).
+		// These provide more specific matching ("马勇" vs just "马"+"勇").
+		// Only keep tokens ≥2 chars that are substrings of the original query
+		// (filters out ngram noise like "勇博" that spans word boundaries).
 		tokens := bm25.Tokenize(query)
+		queryLower := strings.ToLower(query)
 		for _, t := range tokens {
 			t = strings.TrimSpace(t)
-			if t == "" {
+			if t == "" || len([]rune(t)) < 2 {
 				continue
 			}
-			// Keep multi-char tokens (meaningful words) and single CJK chars (names)
-			if len([]rune(t)) >= 2 {
-				terms = append(terms, t)
+			if !strings.Contains(queryLower, strings.ToLower(t)) {
+				continue
 			}
+			if _, ok := seen[t]; ok {
+				continue
+			}
+			seen[t] = struct{}{}
+			terms = append(terms, t)
 		}
 	}
 	if len(terms) == 0 {
-		// Fallback: use the raw query as a single term
 		terms = []string{query}
 	}
-	// Cap terms to prevent excessive OR conditions in LIKE queries.
-	// With 5 terms × 3 columns = 15 LIKE conditions per table — acceptable.
-	const maxLikeTerms = 5
-	if len(terms) > maxLikeTerms {
-		terms = terms[:maxLikeTerms]
+	// Limit total LIKE conditions to prevent query explosion.
+	// Strategy: keep all single-char terms (high recall, max ~10 CJK chars in a query)
+	// and cap multi-char terms (lower priority since single chars subsume their matching).
+	// Final cap ensures total doesn't exceed database performance budget.
+	const maxTotalTerms = 12
+	if len(terms) > maxTotalTerms {
+		terms = terms[:maxTotalTerms]
+	}
+
+	// Split terms by length for precision control:
+	// - multiCharTerms (≥2 chars): higher precision, used for cards/facts LIKE
+	// - allTerms (including single CJK chars): higher recall, used for nodes LIKE
+	// Single-char LIKE on cards produces too much noise (e.g., '%士%' matches every
+	// card mentioning "博士", "硕士", "战士"). Node full-text search benefits from
+	// single chars because the target info may only share one character with the query.
+	var multiCharTerms []string
+	for _, t := range terms {
+		if len([]rune(t)) >= 2 {
+			multiCharTerms = append(multiCharTerms, t)
+		}
+	}
+	if len(multiCharTerms) == 0 {
+		// All terms are single-char — use them for cards too (no alternative)
+		multiCharTerms = terms
 	}
 
 	limit := opts.Limit
@@ -4357,12 +4419,12 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 
 	results := make([]SearchResult, 0, limit)
 
-	// Build OR-based LIKE conditions for each term
-	buildLikeWhere := func(columns []string) (string, []interface{}) {
+	// Build OR-based LIKE conditions for given terms and columns
+	buildLikeWhereWith := func(columns []string, termsToUse []string) (string, []interface{}) {
 		var conditions []string
 		var args []interface{}
 		for _, col := range columns {
-			for _, term := range terms {
+			for _, term := range termsToUse {
 				conditions = append(conditions, col+" LIKE ?")
 				args = append(args, "%"+term+"%")
 			}
@@ -4370,9 +4432,9 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 		return "(" + strings.Join(conditions, " OR ") + ")", args
 	}
 
-	// Search cards by claim/title LIKE
+	// Search cards by claim/title LIKE — use multi-char terms only for precision
 	{
-		likeExpr, likeArgs := buildLikeWhere([]string{"c.claim", "c.title", "c.summary"})
+		likeExpr, likeArgs := buildLikeWhereWith([]string{"c.claim", "c.title", "c.summary"}, multiCharTerms)
 		cardWhere := []string{likeExpr, "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
 		cardArgs := append([]interface{}{}, likeArgs...)
 		cardWhere, cardArgs = appendSearchFilters(cardWhere, cardArgs, "s", opts)
@@ -4415,9 +4477,9 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 		}
 	}
 
-	// Search facts by subject/object LIKE
+	// Search facts by subject/object LIKE — use multi-char terms only for precision
 	if len(results) < limit {
-		likeExpr, likeArgs := buildLikeWhere([]string{"f.subject", "f.object"})
+		likeExpr, likeArgs := buildLikeWhereWith([]string{"f.subject", "f.object"}, multiCharTerms)
 		factWhere := []string{likeExpr, "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
 		factArgs := append([]interface{}{}, likeArgs...)
 		factWhere, factArgs = appendSearchFilters(factWhere, factArgs, "s", opts)
@@ -4461,19 +4523,27 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 		}
 	}
 
-	// Search nodes by text LIKE
-	if len(results) < limit {
-		likeExpr, likeArgs := buildLikeWhere([]string{"n.text", "n.title"})
+	// Search nodes by text LIKE — always search document_nodes regardless of
+	// card/fact results above. Uses ALL terms (including single CJK chars) for
+	// maximum recall against the original document full text. This is the
+	// root-cause fix for distillation loss: LIKE '%书%' matches "书籍" in the
+	// original text even when FTS and card LIKE cannot.
+	{
+		nodeLimit := limit
+		if nodeLimit < 3 {
+			nodeLimit = 3
+		}
+		likeExpr, likeArgs := buildLikeWhereWith([]string{"n.text", "n.title"}, terms)
 		nodeWhere := []string{likeExpr}
 		nodeArgs := append([]interface{}{}, likeArgs...)
 		nodeWhere, nodeArgs = appendSearchFilters(nodeWhere, nodeArgs, "s", opts)
-		nodeArgs = append(nodeArgs, limit-len(results))
-		nodeQuery := `SELECT n.id, n.title, n.type,
+		nodeArgs = append(nodeArgs, nodeLimit)
+		nodeQuery := `SELECT n.id, n.title, n.type, n.text, n.page,
 		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
 		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
 		FROM document_nodes n
 		JOIN knowledge_sources s ON s.id = n.source_id
-		WHERE ` + strings.Join(nodeWhere, " AND ") + ` ORDER BY n.token_count DESC LIMIT ?`
+		WHERE ` + strings.Join(nodeWhere, " AND ") + ` ORDER BY n.page ASC LIMIT ?`
 		rows, err := s.db.QueryContext(ctx, nodeQuery, nodeArgs...)
 		if err != nil {
 			return nil, err
@@ -4482,7 +4552,8 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 			var result SearchResult
 			var source Source
 			var publishedAt, fetchedAt, createdAt, updatedAt string
-			if err := rows.Scan(&result.NodeID, &result.NodeTitle, &result.NodeType,
+			var nodeText string
+			if err := rows.Scan(&result.NodeID, &result.NodeTitle, &result.NodeType, &nodeText, &result.Page,
 				&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt,
 				&source.ContentHash, &source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath,
 				&source.Status, &source.ErrorMessage, &createdAt, &updatedAt); err != nil {
@@ -4495,8 +4566,22 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 			source.UpdatedAt = parseTime(updatedAt)
 			result.Source = source
 			result.ResultType = "node"
-			result.Snippet = result.NodeTitle
-			result.Score = 1.5
+			// Extract a context snippet around the first matching term in the full text.
+			result.Snippet = extractLikeSnippet(nodeText, terms, 200)
+			if result.Snippet == "" {
+				result.Snippet = result.NodeTitle
+			}
+			// Score by number of distinct terms matched — nodes with more term hits
+			// are more likely to be relevant. This prevents single-char matches on
+			// common characters from ranking as high as multi-term matches.
+			textLower := strings.ToLower(nodeText)
+			matchCount := 0
+			for _, term := range terms {
+				if strings.Contains(textLower, strings.ToLower(term)) {
+					matchCount++
+				}
+			}
+			result.Score = 1.5 + float64(matchCount)*0.3 // range: 1.8 (1 match) to ~5.0 (12 matches)
 			result.Citation = formatResultCitation(result)
 			results = append(results, result)
 		}
@@ -4507,6 +4592,59 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 	}
 
 	return results, nil
+}
+
+// extractLikeSnippet extracts a context window around the first occurrence of any
+// search term in the full text. Returns up to windowRunes characters centered on
+// the match. This provides the LLM with relevant evidence from the original
+// document text that may have been lost during distillation into cards/facts.
+func extractLikeSnippet(text string, terms []string, windowRunes int) string {
+	if text == "" || len(terms) == 0 {
+		return ""
+	}
+	textLower := strings.ToLower(text)
+	textRunes := []rune(text)
+	bestPos := -1
+	for _, term := range terms {
+		pos := strings.Index(textLower, strings.ToLower(term))
+		if pos >= 0 {
+			// Convert byte position to rune position
+			runePos := len([]rune(text[:pos]))
+			if bestPos < 0 || runePos < bestPos {
+				bestPos = runePos
+			}
+		}
+	}
+	if bestPos < 0 {
+		// No term found in text — return tail as fallback (often has summary info)
+		if len(textRunes) <= windowRunes {
+			return text
+		}
+		start := len(textRunes) - windowRunes
+		return "..." + string(textRunes[start:])
+	}
+	// Center the window around the match position
+	half := windowRunes / 2
+	start := bestPos - half
+	if start < 0 {
+		start = 0
+	}
+	end := start + windowRunes
+	if end > len(textRunes) {
+		end = len(textRunes)
+		start = end - windowRunes
+		if start < 0 {
+			start = 0
+		}
+	}
+	snippet := string(textRunes[start:end])
+	if start > 0 {
+		snippet = "..." + snippet
+	}
+	if end < len(textRunes) {
+		snippet = snippet + "..."
+	}
+	return snippet
 }
 
 func normalizeSource(source Source) Source {

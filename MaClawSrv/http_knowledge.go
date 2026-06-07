@@ -1238,6 +1238,32 @@ func (s *HTTPServer) handleKnowledgeClearAll(w http.ResponseWriter, r *http.Requ
 	if !s.requireKnowledge(w) {
 		return
 	}
+	if err := requireDeleteConfirmation(r); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	var in struct {
+		AdminPassword string `json:"admin_password,omitempty"`
+		Password      string `json:"password,omitempty"`
+		AdminSecret   string `json:"admin_secret,omitempty"`
+	}
+	if !decodeOptionalJSON(w, r, &in) {
+		return
+	}
+	password := in.AdminPassword
+	if password == "" {
+		password = in.Password
+	}
+	authType, ok, err := s.adminOwnerSecretOrPasswordAuthorized(in.AdminSecret, password)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	if !ok {
+		_ = s.recordAdminAudit(r.Context(), "admin.knowledge_user_clear_failed", "knowledge", p.TenantID+"/"+p.UserID, map[string]string{"tenant_id": p.TenantID, "user_id": p.UserID, "reason": "invalid_admin_authorization", "remote_ip": requestClientIP(r)})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid admin credential"})
+		return
+	}
 	store := s.knowledgeMgr.Store()
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -1250,6 +1276,7 @@ func (s *HTTPServer) handleKnowledgeClearAll(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("clear failed: %v", err))})
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.knowledge_user_cleared", "knowledge", p.TenantID+"/"+p.UserID, map[string]string{"tenant_id": p.TenantID, "user_id": p.UserID, "deleted": fmt.Sprint(deleted), "auth_type": authType, "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "cleared", "deleted": deleted})
 }
 

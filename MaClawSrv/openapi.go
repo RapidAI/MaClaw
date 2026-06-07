@@ -204,6 +204,7 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodGet, Path: "/api/v1/knowledge/import/jobs/{jobId}", Summary: "Knowledge import job", Description: "Returns status and result for a user knowledge import job.", Tag: "knowledge", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/knowledge/search", Summary: "Search knowledge", Description: "Searches the current user's own knowledge plus effective readable knowledge scopes. Tenant and owner are enforced from the authenticated principal.", Tag: "knowledge", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/knowledge/access", Summary: "Effective knowledge access", Description: "Returns the current user's effective readable knowledge bases. Own knowledge is included by default. Each scope includes scope_type (self, public, or user) and display fields such as tenant_name and owner_name when available; other users' email addresses are not exposed.", Tag: "knowledge", Security: bearerSecurity()},
+	{Method: http.MethodDelete, Path: "/api/v1/knowledge", Summary: "Clear own knowledge", Description: "Clears all sources in the current user's own knowledge base. Requires confirm=true and administrator password or Admin Secret in the request body.", Tag: "knowledge", Security: bearerSecurity(), QueryParams: []string{"confirm"}},
 	{Method: http.MethodGet, Path: "/api/v1/usage/summary", Summary: "Usage summary", Tag: "usage", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/mcp/servers", Summary: "List MCP servers", Tag: "mcp", Security: bearerSecurity(), QueryParams: []string{"limit", "before"}},
 	{Method: http.MethodGet, Path: "/api/v1/mcp/market", Summary: "Search MCP marketplace", Tag: "mcp", Security: bearerSecurity(), QueryParams: []string{"q"}},
@@ -446,6 +447,9 @@ func buildOpenAPISpec() map[string]any {
 		if body := openAPIMemoryRequestBody(route.Method, route.Path); body != nil {
 			op["requestBody"] = body
 		}
+		if body := openAPIKnowledgeClearRequestBody(route.Method, route.Path); body != nil {
+			op["requestBody"] = body
+		}
 		if route.Path == "/api/v1/instances/{instanceId}/runs/{runId}/events" {
 			op["responses"] = map[string]any{
 				"200": map[string]any{
@@ -643,6 +647,32 @@ func openAPIMemoryRequestBody(method, path string) map[string]any {
 							"maxItems": agentservice.UserMemoryMaxTags,
 							"items":    map[string]any{"type": "string", "maxLength": agentservice.UserMemoryMaxTagRunes},
 						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func openAPIKnowledgeClearRequestBody(method, path string) map[string]any {
+	if method != http.MethodDelete || path != "/api/v1/knowledge" {
+		return nil
+	}
+	return map[string]any{
+		"required": true,
+		"content": map[string]any{
+			"application/json": map[string]any{
+				"schema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"admin_password": map[string]any{"type": "string", "description": "Administrator password. For the user web single credential field, Admin Secret is also accepted here."},
+						"password":       map[string]any{"type": "string", "description": "Compatibility alias for admin_password."},
+						"admin_secret":   map[string]any{"type": "string", "description": "Root Admin Secret from MACLAW_ADMIN_SECRET."},
+					},
+					"anyOf": []map[string]any{
+						{"required": []string{"admin_password"}},
+						{"required": []string{"password"}},
+						{"required": []string{"admin_secret"}},
 					},
 				},
 			},

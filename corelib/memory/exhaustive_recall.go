@@ -151,6 +151,20 @@ func (s *Store) RecallExhaustive(query string, category Category, projectPath st
 		return aboveThreshold[i].fusionScore > aboveThreshold[j].fusionScore
 	})
 
+	// Temporal demotion: stale/invalidated entries are demoted but still
+	// included in exhaustive results (user explicitly asked to see everything).
+	for i := range aboveThreshold {
+		e := &aboveThreshold[i].entry
+		if e.InvalidAt != nil && e.InvalidAt.Before(now) {
+			aboveThreshold[i].fusionScore *= 0.2
+		} else if e.Stale {
+			aboveThreshold[i].fusionScore *= 0.3
+		}
+	}
+	sort.SliceStable(aboveThreshold, func(i, j int) bool {
+		return aboveThreshold[i].fusionScore > aboveThreshold[j].fusionScore
+	})
+
 	// === Phase 5: Truncation — entry count cap first ===
 	truncated := false
 	if len(aboveThreshold) > exhaustiveMaxEntries {

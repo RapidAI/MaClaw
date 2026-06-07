@@ -95,6 +95,21 @@ func isCJK(r rune) bool {
 	return (r >= 0x4E00 && r <= 0x9FFF) || (r >= 0x3400 && r <= 0x4DBF)
 }
 
+// isCJKStopChar returns true for high-frequency CJK characters that are too
+// common to be useful as LIKE search terms. These are function words (particles,
+// conjunctions, pronouns) that appear in nearly every Chinese text and would
+// match too many irrelevant documents.
+func isCJKStopChar(r rune) bool {
+	switch r {
+	case '的', '了', '是', '在', '有', '和', '与', '或', '不', '也',
+		'都', '就', '而', '及', '等', '这', '那', '你', '我', '他',
+		'她', '它', '们', '个', '为', '到', '把', '被', '让', '从',
+		'对', '中', '上', '下', '里', '吗', '呢', '吧', '啊', '哦':
+		return true
+	}
+	return false
+}
+
 // RebuildFTSIndex drops and rebuilds all FTS indexes with properly segmented content.
 // This should be called once after upgrading to gse-based FTS to re-index existing data.
 // The rebuild is atomic per table — if any table rebuild fails, that table's FTS is
@@ -114,6 +129,11 @@ func (s *SQLiteStore) RebuildFTSIndex(ctx context.Context) error {
 		if err := s.backfillCardEmbeddings(ctx); err != nil {
 			// Non-fatal: FTS is rebuilt, embeddings can be backfilled later
 			fmt.Printf("[knowledge] embedding backfill failed: %v\n", err)
+		}
+		// Backfill node embeddings — root-cause fix for distillation loss.
+		// Original document text gets its own embedding for vector search.
+		if err := s.BackfillNodeEmbeddings(ctx); err != nil {
+			fmt.Printf("[knowledge] node embedding backfill failed: %v\n", err)
 		}
 	}
 	return nil

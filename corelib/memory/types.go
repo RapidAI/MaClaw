@@ -401,6 +401,7 @@ type GCResult struct {
 // DreamCycleResult records the outcome of a dream cycle (background self-healing).
 type DreamCycleResult struct {
 	StaleDetected    int `json:"stale_detected"`
+	TemporalExpired  int `json:"temporal_expired"`
 	LinksDiscovered  int `json:"links_discovered"`
 	HashesBackfilled int `json:"hashes_backfilled"`
 	TagsBackfilled   int `json:"tags_backfilled"`

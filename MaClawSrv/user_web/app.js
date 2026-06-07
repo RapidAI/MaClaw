@@ -4,7 +4,7 @@ const I18N = {
     userWorkspace: "User Workspace", assistantNav: "AI Assistant", settingsNav: "System Settings", skipToMain: "Skip to main content", appSections: "User app sections", userViews: "User views", notSignedIn: "Not signed in", logout: "Log Out", ready: "Ready", busy: "Busy",
     loginRequired: "Login required", loginHint: "Open this page from VE Platform MaClawSrv user entry.", cannotStart: "Cannot start user app", missingToken: "Missing short-lived access token.", rawSecretRejected: "Raw secrets in URLs are not accepted. Open this page again from VE Platform.", sessionExpired: "Session expired. Open this page again from VE Platform.", loadFailed: "Load failed", retry: "Retry",
     assistantTitle: "AI Assistant", assistantHint: "Instances share user-level config, tools, knowledge, memory, and security policy.", instancesTitle: "Assistant instances", instancesHint: "Runtime state and sessions stay per instance. Configuration stays shared by user.", new: "New", noInstances: "No instances", unknown: "unknown", readyState: "ready", notReady: "not ready", instanceName: "Instance name", instanceCreated: "Instance created",
-    sessions: "Sessions", noSessions: "No sessions", firstMessage: "Send the first message to create a session.", selectedMissing: "Selected assistant instance was not found or is unavailable. Open it again from VE Platform or select another instance.", createFirst: "No instance yet. Create an assistant instance first.", noMessages: "No messages", typeMessage: "Type a message...", message: "Message", send: "Send", webSession: "Web session", run: "Run", waitingUser: "waiting for user", continueWaiting: "Continue waiting", cancel: "Cancel", runCancelled: "Run cancelled", sent: "Sent", runStatus: "Run status: {status}", llmManagedByHub: "LLM is not fully configured. Ask VE Platform to pass the Hub LLM endpoint and viewer token, or fill in System Settings.",
+    sessions: "Sessions", noSessions: "No sessions", firstMessage: "Send the first message to create a session.", selectedMissing: "Selected assistant instance was not found or is unavailable. Open it again from VE Platform or select another instance.", createFirst: "No instance yet. Create an assistant instance first.", noMessages: "No messages", typeMessage: "Type a message...", message: "Message", send: "Send", webSession: "Web session", run: "Run", waitingUser: "waiting for user", continueWaiting: "Continue waiting", cancel: "Cancel", confirm: "Confirm", runCancelled: "Run cancelled", sent: "Sent", runStatus: "Run status: {status}", llmManagedByHub: "LLM is not fully configured. Ask VE Platform to pass the Hub LLM endpoint and viewer token, or fill in System Settings.",
     settingsTitle: "System Settings", settingsHint: "User-scoped settings shared by all assistant instances.", sharedConfig: "Shared config", sharedConfigHint: "LLM, MCP, tools, skills, knowledge, and security policy are shared at user scope.", configResponse: "Config response", secretHint: "Masked value keeps the existing secret. Enter a new value only when rotating it.", valid: "Valid", needsAttention: "Needs attention", currentConfigOk: "Current shared config can start instances.", save: "Save", validate: "Validate", test: "Test", saved: "Saved", validated: "Validated", testPassed: "Test passed", testFailed: "Test failed", unset: "Unset", trueValue: "True", falseValue: "False",
     groupLLM: "LLM", groupLLMHint: "Primary model providers and legacy fallback fields.", groupTools: "MCP & Tools", groupToolsHint: "MCP capability install, compact add, and search providers shared by every instance.", groupSkills: "Skills", groupSkillsHint: "Search, install, and view skills. Source details stay managed by the service.", installedSkills: "Installed skills", noSkills: "No skills installed", skillMarketSearch: "SkillMarket search", search: "Search", install: "Install", installed: "Installed", searchSkillsPlaceholder: "Search SkillMarket...", skillInstalled: "Skill installed", previous: "Previous", nextPage: "Next", pageStatus: "Page {page} / {pages}", groupMemory: "Knowledge & Memory", groupMemoryHint: "Memory compression and knowledge context budget.", groupSecurity: "Security", groupSecurityHint: "User-level execution boundary and network policy.", groupIM: "IM", groupIMHint: "User-scoped QQ, WeChat, Telegram, third-party integration, monitor, and history.", numberInvalid: "{key} must be a valid {type}", jsonInvalid: "{key} must be valid JSON"
   },
@@ -12,7 +12,7 @@ const I18N = {
     userWorkspace: "用户工作台", assistantNav: "AI 助手", settingsNav: "系统设置", skipToMain: "跳到主要内容", appSections: "用户应用区域", userViews: "用户视图", notSignedIn: "未登录", logout: "退出", ready: "就绪", busy: "忙碌",
     loginRequired: "需要登录", loginHint: "请从 VE Platform 的 MaClawSrv 用户入口打开本页。", cannotStart: "无法启动用户应用", missingToken: "缺少短期访问令牌。", rawSecretRejected: "URL 中不接受原始密钥。请从 VE Platform 重新打开本页。", sessionExpired: "会话已过期，请从 VE Platform 重新打开本页。", loadFailed: "加载失败", retry: "重试",
     assistantTitle: "AI 助手", assistantHint: "多个实例共享用户级配置、工具、知识、记忆和安全策略。", instancesTitle: "助手实例", instancesHint: "运行状态和会话按实例保留，配置按用户共享。", new: "新建", noInstances: "暂无实例", unknown: "未知", readyState: "就绪", notReady: "未就绪", instanceName: "实例名称", instanceCreated: "实例已创建",
-    sessions: "会话", noSessions: "暂无会话", firstMessage: "发送第一条消息后会自动创建会话。", selectedMissing: "选中的助手实例不存在或不可用。请从 VE Platform 重新打开，或选择其它实例。", createFirst: "还没有实例，请先创建助手实例。", noMessages: "暂无消息", typeMessage: "输入消息...", message: "消息", send: "发送", webSession: "网页会话", run: "运行", waitingUser: "等待用户", continueWaiting: "继续等待", cancel: "取消", runCancelled: "运行已取消", sent: "已发送", runStatus: "运行状态：{status}", llmManagedByHub: "LLM 未完成配置。请让 VE Platform 传入 Hub LLM 地址和 viewer token，或在系统设置里填写可用配置。",
+    sessions: "会话", noSessions: "暂无会话", firstMessage: "发送第一条消息后会自动创建会话。", selectedMissing: "选中的助手实例不存在或不可用。请从 VE Platform 重新打开，或选择其它实例。", createFirst: "还没有实例，请先创建助手实例。", noMessages: "暂无消息", typeMessage: "输入消息...", message: "消息", send: "发送", webSession: "网页会话", run: "运行", waitingUser: "等待用户", continueWaiting: "继续等待", cancel: "取消", confirm: "确认", runCancelled: "运行已取消", sent: "已发送", runStatus: "运行状态：{status}", llmManagedByHub: "LLM 未完成配置。请让 VE Platform 传入 Hub LLM 地址和 viewer token，或在系统设置里填写可用配置。",
     settingsTitle: "系统设置", settingsHint: "这些用户级设置会被所有助手实例共享。", sharedConfig: "共享配置", sharedConfigHint: "LLM、MCP、工具、技能、知识和安全策略按用户范围共享。", configResponse: "配置响应", secretHint: "显示为掩码时会保留现有密钥；只有需要轮换时才输入新值。", valid: "有效", needsAttention: "需要处理", currentConfigOk: "当前共享配置可以启动实例。", save: "保存", validate: "校验", test: "测试", saved: "已保存", validated: "已校验", testPassed: "测试通过", testFailed: "测试失败", unset: "未设置", trueValue: "是", falseValue: "否",
     groupLLM: "LLM", groupLLMHint: "主模型服务商和旧版兜底字段。", groupTools: "MCP 与工具", groupToolsHint: "所有实例共享的远程/本地工具服务器和搜索服务商。", groupSkills: "技能", groupSkillsHint: "已安装技能、技能中心、外部目录和来源白名单。", groupMemory: "知识与记忆", groupMemoryHint: "记忆压缩和知识上下文预算。", groupSecurity: "安全", groupSecurityHint: "用户级执行边界和网络策略。", numberInvalid: "{key} 必须是有效的{type}", jsonInvalid: "{key} 必须是有效 JSON"
   }
@@ -238,6 +238,7 @@ Object.assign(I18N.zh, {
   clearSelection: "\u6e05\u7a7a"
 });
 Object.assign(I18N.en, { loading: "Loading...", knowledgeImport: "Knowledge import", knowledgeImportHint: "Add text, documents, document archives, or crawled URLs to this user's knowledge base.", connectedKnowledge: "Accessible knowledge bases", connectedKnowledgeHint: "Knowledge bases this user can read. Import only writes to the user's own knowledge base.", noConnectedKnowledge: "No accessible knowledge bases", selfKnowledge: "Own knowledge base", publicKnowledge: "Public knowledge base", otherUserKnowledge: "Other user's knowledge base", knowledgeOwner: "Owner", knowledgeTenant: "Tenant", knowledgeScopeIDs: "Raw IDs", knowledgeCurrentUser: "current user", knowledgePublicOwner: "public", importText: "Text", importFile: "File or archive", importURL: "URL crawl", title: "Title", topicHint: "Topic hint", labels: "Labels", textToImport: "Text to import", chooseFiles: "Choose documents, ZIP, or RAR", urlsToImport: "URLs to import", crawlDepth: "Crawl depth", sameDomainOnly: "Same domain only", import: "Import", importing: "Importing...", importStarted: "Knowledge import started", importedKnowledge: "Knowledge import completed", importCompleted: "Knowledge import completed", importStillRunning: "Knowledge import still running", importTextPlaceholder: "Paste text...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "Template", insertTemplate: "Insert template", urlExample: "URL example", addURL: "Add URL", importJob: "Import job", importStatus: "Status", importSource: "Source", importTitle: "Title", importKind: "Kind", importFiles: "Files", importUrls: "URLs", importProcessed: "Processed", importImported: "Imported", importFailed: "Failed", importSkipped: "Skipped", importDuplicates: "Duplicates", importWarnings: "Warnings" });
+Object.assign(I18N.en, { clearOwnKnowledge: "Clear", clearOwnKnowledgeConfirm: "All data in your own knowledge base will be cleared and cannot be recovered. Continue?", clearOwnKnowledgePasswordPrompt: "Enter administrator password or Admin Secret to clear this knowledge base:", clearOwnKnowledgeDone: "Knowledge base cleared. Deleted sources: {count}", clearOwnKnowledgeAuthRequired: "Administrator credential is required." });
 Object.assign(I18N.zh, {
   groupIM: "\u0049\u004d",
   groupIMHint: "\u5f53\u524d\u7528\u6237\u9694\u79bb\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram\u3001\u7b2c\u4e09\u65b9\u63a5\u5165\u3001\u76d1\u770b\u548c\u5386\u53f2\u4ea4\u6d41\u3002",
@@ -245,6 +246,7 @@ Object.assign(I18N.zh, {
   channelOverviewHint: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram \u548c\u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002"
 });
 Object.assign(I18N.zh, { loading: "\u52a0\u8f7d\u4e2d...", knowledgeImport: "\u77e5\u8bc6\u5e93\u5bfc\u5165", knowledgeImportHint: "\u5c06\u6587\u672c\u3001\u5355\u6587\u6863\u3001\u6587\u6863\u538b\u7f29\u5305\u6216\u6307\u5b9a\u6df1\u5ea6\u7684 URL \u6293\u53d6\u7ed3\u679c\u5bfc\u5165\u5f53\u524d\u7528\u6237\u77e5\u8bc6\u5e93\u3002", connectedKnowledge: "\u53ef\u8bbf\u95ee\u77e5\u8bc6\u5e93", connectedKnowledgeHint: "\u5f53\u524d\u7528\u6237\u53ef\u8bfb\u7684\u77e5\u8bc6\u5e93\u5217\u8868\u3002\u5bfc\u5165\u53ea\u5199\u5165\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\u3002", noConnectedKnowledge: "\u6682\u65e0\u53ef\u8bbf\u95ee\u77e5\u8bc6\u5e93", selfKnowledge: "\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93", publicKnowledge: "\u516c\u5171\u77e5\u8bc6\u5e93", otherUserKnowledge: "\u5176\u5b83\u7528\u6237\u7684\u77e5\u8bc6\u5e93", knowledgeOwner: "\u5c5e\u4e3b", knowledgeTenant: "\u79df\u6237", knowledgeScopeIDs: "\u539f\u59cb ID", knowledgeCurrentUser: "\u5f53\u524d\u7528\u6237", knowledgePublicOwner: "\u516c\u5171", importText: "\u6587\u672c", importFile: "\u6587\u4ef6/\u538b\u7f29\u5305", importURL: "URL \u679a\u4e3e", title: "\u6807\u9898", topicHint: "\u4e3b\u9898\u63d0\u793a", labels: "\u6807\u7b7e", textToImport: "\u5bfc\u5165\u6587\u672c", chooseFiles: "\u9009\u62e9\u6587\u6863\u3001ZIP \u6216 RAR", urlsToImport: "\u5bfc\u5165 URL", crawlDepth: "\u679a\u4e3e\u6df1\u5ea6", sameDomainOnly: "\u4ec5\u540c\u57df\u540d", import: "\u5bfc\u5165", importing: "\u5bfc\u5165\u4e2d...", importStarted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5f00\u59cb", importedKnowledge: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importCompleted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importStillRunning: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u4ecd\u5728\u8fd0\u884c", importTextPlaceholder: "\u7c98\u8d34\u8981\u5bfc\u5165\u7684\u6587\u672c...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "\u6a21\u677f", insertTemplate: "\u63d2\u5165\u6a21\u677f", urlExample: "URL \u793a\u4f8b", addURL: "\u6dfb\u52a0 URL", importJob: "\u5bfc\u5165\u4efb\u52a1", importStatus: "\u72b6\u6001", importSource: "\u6765\u6e90", importTitle: "\u6807\u9898", importKind: "\u7c7b\u578b", importFiles: "\u6587\u4ef6", importUrls: "URL", importProcessed: "\u5df2\u5904\u7406", importImported: "\u5df2\u5bfc\u5165", importFailed: "\u5931\u8d25", importSkipped: "\u8df3\u8fc7", importDuplicates: "\u91cd\u590d", importWarnings: "\u8b66\u544a" });
+Object.assign(I18N.zh, { clearOwnKnowledge: "\u6e05\u9664", clearOwnKnowledgeConfirm: "\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\u4e2d\u7684\u6240\u6709\u6570\u636e\u5c06\u88ab\u6e05\u9664\uff0c\u4e14\u4e0d\u53ef\u6062\u590d\u3002\u786e\u8ba4\u7ee7\u7eed\uff1f", clearOwnKnowledgePasswordPrompt: "\u8bf7\u8f93\u5165\u7ba1\u7406\u5458\u5bc6\u7801\u6216 Admin Secret\uff0c\u7528\u4e8e\u6e05\u9664\u8be5\u77e5\u8bc6\u5e93\uff1a", clearOwnKnowledgeDone: "\u77e5\u8bc6\u5e93\u5df2\u6e05\u9664\uff0c\u5220\u9664\u6765\u6e90\u6570\uff1a{count}", clearOwnKnowledgeAuthRequired: "\u9700\u8981\u8f93\u5165\u7ba1\u7406\u5458\u51ed\u636e\u3002" });
 Object.assign(I18N.en, { enterTextFirst: "Enter text before importing.", chooseFileFirst: "Choose at least one document or archive.", enterURLFirst: "Enter at least one URL.", customTopicRequired: "Enter the custom topic hint.", customLabelRequired: "Enter the custom labels.", customTitleRequired: "Enter the custom title.", importQueued: "Import submitted. Checking progress...", importProgress: "Checking progress {current}/{total}..." });
 Object.assign(I18N.zh, { enterTextFirst: "\u8bf7\u5148\u8f93\u5165\u8981\u5bfc\u5165\u7684\u6587\u672c\u3002", chooseFileFirst: "\u8bf7\u5148\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u6587\u6863\u6216\u538b\u7f29\u5305\u3002", enterURLFirst: "\u8bf7\u5148\u8f93\u5165\u81f3\u5c11\u4e00\u4e2a URL\u3002", customTopicRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u4e3b\u9898\u63d0\u793a\u3002", customLabelRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u6807\u7b7e\u3002", customTitleRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u6807\u9898\u3002", importQueued: "\u5bfc\u5165\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u67e5\u8be2\u8fdb\u5ea6...", importProgress: "\u6b63\u5728\u67e5\u8be2\u8fdb\u5ea6 {current}/{total}..." });
 Object.assign(I18N.en, { knowledgeNav: "Knowledge", knowledgeTitle: "Knowledge Base", knowledgeHint: "Import into your own knowledge base and search readable knowledge scopes.", knowledgeQuery: "Knowledge query", knowledgeQueryHint: "Search your own knowledge plus connected readable scopes. Other users' private knowledge is not queried.", knowledgeQueryPlaceholder: "Search knowledge...", knowledgeLimit: "Results", knowledgeNoResults: "No matching knowledge", knowledgeQueryFailed: "Knowledge query failed", knowledgeResultType: "Type", knowledgeResultScore: "Score" });
@@ -1597,14 +1599,77 @@ function renderKnowledgeAccessScopes(access) {
     const label = String(scope.name || "").trim();
     const title = label && label !== "self" ? label : type;
     const display = userKnowledgeScopeDisplay(scope, kind);
-    return `<div class="knowledge-scope-chip knowledge-scope-${esc(kind)}"><div class="knowledge-scope-head"><strong>${esc(title)}</strong><span class="knowledge-scope-badge">${esc(type)}</span></div><dl class="knowledge-scope-meta"><div><dt>${esc(t("knowledgeOwner"))}</dt><dd>${esc(display.owner)}</dd></div><div><dt>${esc(t("knowledgeTenant"))}</dt><dd>${esc(display.tenant)}</dd></div></dl><small>${esc(t("knowledgeScopeIDs"))}: ${esc(scope.tenant_id || "-")} / ${esc(scope.owner_id || "-")}</small></div>`;
+    const clearAction = kind === "self" ? `<button type="button" class="danger knowledge-clear-btn" data-clear-own-knowledge>${esc(t("clearOwnKnowledge"))}</button>` : "";
+    return `<div class="knowledge-scope-chip knowledge-scope-${esc(kind)}"><div class="knowledge-scope-head"><strong>${esc(title)}</strong><div class="knowledge-scope-actions"><span class="knowledge-scope-badge">${esc(type)}</span>${clearAction}</div></div><dl class="knowledge-scope-meta"><div><dt>${esc(t("knowledgeOwner"))}</dt><dd>${esc(display.owner)}</dd></div><div><dt>${esc(t("knowledgeTenant"))}</dt><dd>${esc(display.tenant)}</dd></div></dl><small class="knowledge-scope-ids"><span>${esc(t("knowledgeScopeIDs"))}</span><code>${esc(scope.tenant_id || "-")}</code><code>${esc(scope.owner_id || "-")}</code></small></div>`;
   }).join("");
 }
 async function loadKnowledgeAccessSummary() {
   const el = $('knowledgeAccessSummary');
   if (!el) return;
-  try { el.innerHTML = renderKnowledgeAccessScopes(await api("/api/v1/knowledge/access")); }
+  try { el.innerHTML = renderKnowledgeAccessScopes(await api("/api/v1/knowledge/access")); bindKnowledgeAccessActions(); }
   catch (e) { el.innerHTML = `<p class="error">${esc(e.message || t("loadFailed"))}</p>`; }
+}
+function bindKnowledgeAccessActions() {
+  document.querySelectorAll("[data-clear-own-knowledge]").forEach((btn) => {
+    btn.onclick = (event) => clearOwnKnowledgeBase(event.currentTarget);
+  });
+}
+function requestDangerPassword({ title, message, passwordLabel }) {
+  return new Promise((resolve) => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    let closed = false;
+    const dialogID = `dangerModal${Date.now()}${Math.floor(Math.random() * 100000)}`;
+    const titleID = `${dialogID}Title`;
+    const messageID = `${dialogID}Message`;
+    const backdrop = document.createElement("div");
+    backdrop.className = "danger-modal-backdrop";
+    backdrop.innerHTML = `<section class="danger-modal" role="dialog" aria-modal="true" aria-labelledby="${esc(titleID)}" aria-describedby="${esc(messageID)}"><div class="danger-modal-head"><h2 id="${esc(titleID)}">${esc(title)}</h2><button type="button" class="ghost danger-modal-close" aria-label="${esc(t("cancel"))}">x</button></div><p id="${esc(messageID)}">${esc(message)}</p><label>${esc(passwordLabel)}<input data-danger-password type="password" autocomplete="current-password"></label><div class="danger-modal-actions"><button type="button" class="secondary" data-danger-cancel>${esc(t("cancel"))}</button><button type="button" class="danger" data-danger-confirm>${esc(t("confirm"))}</button></div></section>`;
+    const input = backdrop.querySelector("[data-danger-password]");
+    const cleanup = (value) => {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener("keydown", onKey);
+      backdrop.remove();
+      previousFocus?.focus?.({ preventScroll: true });
+      resolve(value);
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") cleanup(null);
+      if (event.key === "Enter" && document.activeElement === input) cleanup(input?.value || "");
+    };
+    backdrop.querySelector("[data-danger-cancel]").onclick = () => cleanup(null);
+    backdrop.querySelector(".danger-modal-close").onclick = () => cleanup(null);
+    backdrop.querySelector("[data-danger-confirm]").onclick = () => cleanup(input?.value || "");
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(backdrop);
+    input?.focus({ preventScroll: true });
+  });
+}
+async function clearOwnKnowledgeBase(btn) {
+  if (btn?.disabled) return;
+  const oldText = btn?.textContent || "";
+  if (btn) { btn.disabled = true; btn.textContent = t("busy"); }
+  const adminCredential = await requestDangerPassword({ title: t("clearOwnKnowledge"), message: t("clearOwnKnowledgeConfirm"), passwordLabel: t("clearOwnKnowledgePasswordPrompt") });
+  if (adminCredential === null) {
+    if (btn) { btn.disabled = false; btn.textContent = oldText || t("clearOwnKnowledge"); }
+    return;
+  }
+  if (adminCredential === "") {
+    if (btn) { btn.disabled = false; btn.textContent = oldText || t("clearOwnKnowledge"); }
+    toast(t("clearOwnKnowledgeAuthRequired"));
+    return;
+  }
+  try {
+    const out = await api("/api/v1/knowledge?confirm=true", { method: "DELETE", body: JSON.stringify({ admin_password: adminCredential }) });
+    const count = Number.isFinite(Number(out.deleted)) ? Number(out.deleted) : 0;
+    toast(t("clearOwnKnowledgeDone", { count }));
+    setKnowledgeImportStatus(out, true);
+    await loadKnowledgeAccessSummary();
+  } catch (e) {
+    if (!handleAPIError(e)) toast(e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = oldText || t("clearOwnKnowledge"); }
+  }
 }
 async function watchKnowledgeImportJob(jobID) {
   if (!jobID) return null;

@@ -18,6 +18,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestSanitizeKnowledgeDirectoryImportResultForAPIRedactsPaths(t *testing.T) {
@@ -1411,6 +1412,150 @@ func TestAdminKnowledgeClearTenantRequiresConfirmAndWritesAudit(t *testing.T) {
 		t.Fatalf("unexpected clear audit events: %#v", events)
 	}
 }
+
+func TestUserKnowledgeClearRequiresAdminPasswordAndOnlyClearsOwnKnowledge(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(" owner-password-123 "), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("GenerateFromPassword: %v", err)
+	}
+	if err := saveAdminUsers(dataRoot, []adminUserRecord{{ID: "admin-owner", Username: "owner", Role: "owner", Status: "active", PasswordHash: string(hash)}}); err != nil {
+		t.Fatalf("saveAdminUsers: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A", Email: "a@example.test"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B", Email: "b@example.test"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	if _, err := svc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: userA.ID, Name: "api", APIKey: "clear-own-key", APISecret: "secret"}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	token, err := svc.IssueToken(ctx, agentservice.IssueTokenInput{APIKey: "clear-own-key", APISecret: "secret"})
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "own clear marker", Title: "own", TenantID: tenant.ID, OwnerID: userA.ID}); err != nil {
+		t.Fatalf("SaveText own: %v", err)
+	}
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "other must stay", Title: "other", TenantID: tenant.ID, OwnerID: userB.ID}); err != nil {
+		t.Fatalf("SaveText other: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{store: store, access: newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/knowledge", bytes.NewReader([]byte(`{"admin_password":" owner-password-123 "}`)))
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("clear without confirm = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/knowledge?confirm=true", bytes.NewReader([]byte(`{"admin_password":"wrong-password"}`)))
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("clear with wrong password = %d body = %s", w.Code, w.Body.String())
+	}
+	ownBefore, err := store.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: tenant.ID, OwnerID: userA.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources own before: %v", err)
+	}
+	if len(ownBefore) != 1 {
+		t.Fatalf("wrong password should not clear own knowledge: %#v", ownBefore)
+	}
+	failedEvents, err := svc.ListAuditEvents(ctx, agentservice.ListAuditEventsInput{Action: "admin.knowledge_user_clear_failed"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents failed: %v", err)
+	}
+	if len(failedEvents) != 1 || failedEvents[0].ResourceID != tenant.ID+"/"+userA.ID || failedEvents[0].Metadata["reason"] != "invalid_admin_authorization" {
+		t.Fatalf("unexpected failed clear audit events: %#v", failedEvents)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/knowledge?confirm=true", bytes.NewReader([]byte(`{"admin_password":" owner-password-123 "}`)))
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("clear with admin password = %d body = %s", w.Code, w.Body.String())
+	}
+	ownAfter, err := store.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: tenant.ID, OwnerID: userA.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources own after: %v", err)
+	}
+	otherAfter, err := store.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: tenant.ID, OwnerID: userB.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources other after: %v", err)
+	}
+	if len(ownAfter) != 0 || len(otherAfter) != 1 {
+		t.Fatalf("clear should remove only current user's knowledge, own=%#v other=%#v", ownAfter, otherAfter)
+	}
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "own secret marker", Title: "own-secret", TenantID: tenant.ID, OwnerID: userA.ID}); err != nil {
+		t.Fatalf("SaveText own secret: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataRoot, "admin_users.json"), []byte(`not valid json`), 0600); err != nil {
+		t.Fatalf("corrupt admin users: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/knowledge?confirm=true", bytes.NewReader([]byte(`{"admin_password":"admin-secret"}`)))
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("clear with admin secret in single credential field = %d body = %s", w.Code, w.Body.String())
+	}
+	ownAfterSecret, err := store.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: tenant.ID, OwnerID: userA.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources own after secret: %v", err)
+	}
+	otherAfterSecret, err := store.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: tenant.ID, OwnerID: userB.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources other after secret: %v", err)
+	}
+	if len(ownAfterSecret) != 0 || len(otherAfterSecret) != 1 {
+		t.Fatalf("admin secret clear should still remove only current user's knowledge, own=%#v other=%#v", ownAfterSecret, otherAfterSecret)
+	}
+	events, err := svc.ListAuditEvents(ctx, agentservice.ListAuditEventsInput{Action: "admin.knowledge_user_cleared"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("unexpected clear audit events: %#v", events)
+	}
+	seenPassword := false
+	seenSecret := false
+	for _, event := range events {
+		if event.ResourceID != tenant.ID+"/"+userA.ID || event.Metadata["deleted"] != "1" {
+			t.Fatalf("unexpected clear audit event: %#v", event)
+		}
+		if event.Metadata["auth_type"] == "admin_password" {
+			seenPassword = true
+		}
+		if event.Metadata["auth_type"] == "admin_secret" {
+			seenSecret = true
+		}
+	}
+	if !seenPassword || !seenSecret {
+		t.Fatalf("clear audits should include password and admin secret auth types: %#v", events)
+	}
+}
+
 func hasKnowledgeScope(scopes []knowledgeScope, tenantID, ownerID string) bool {
 	for _, scope := range scopes {
 		if scope.TenantID == tenantID && scope.OwnerID == ownerID {
