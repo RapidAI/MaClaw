@@ -4566,11 +4566,13 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 			source.UpdatedAt = parseTime(updatedAt)
 			result.Source = source
 			result.ResultType = "node"
-			// Extract a context snippet around the first matching term in the full text.
-			result.Snippet = extractLikeSnippet(nodeText, terms, 200)
-			if result.Snippet == "" {
-				result.Snippet = result.NodeTitle
-			}
+			// Return the FULL node text when LIKE matches. Unlike FTS which may
+			// return many low-relevance nodes, LIKE with multi-term matching has
+			// already proven this node contains the query terms. Truncating to a
+			// fixed-size snippet loses information that the LLM needs to answer
+			// count/list questions accurately (e.g., "how many books").
+			// Average node is ~1300 chars (~325 tokens) — acceptable for LLM context.
+			result.Snippet = nodeText
 			// Score by number of distinct terms matched — nodes with more term hits
 			// are more likely to be relevant. This prevents single-char matches on
 			// common characters from ranking as high as multi-term matches.

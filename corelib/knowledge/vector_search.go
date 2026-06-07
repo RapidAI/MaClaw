@@ -504,19 +504,10 @@ func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []flo
 		source.UpdatedAt = parseTime(updatedAt)
 		result.Source = source
 		result.ResultType = "node"
-		// Use query terms to extract a relevant snippet from the original text,
-		// rather than blindly returning the tail (which may be unrelated to the match).
-		queryTerms := extractQueryTermsForSnippet(opts.Query)
-		result.Snippet = extractLikeSnippet(nodeText, queryTerms, 200)
-		if result.Snippet == "" {
-			// Fallback: return tail which often has specific info
-			runes := []rune(nodeText)
-			if len(runes) > 300 {
-				result.Snippet = "..." + string(runes[len(runes)-300:])
-			} else {
-				result.Snippet = nodeText
-			}
-		}
+		// Return full node text for embedding-matched nodes. These are already
+		// semantically relevant (cosine sim > 0.25). Full text ensures the LLM
+		// has complete evidence for count/list questions.
+		result.Snippet = nodeText
 		result.Score = 1.0 + (sim-0.25)*4.0
 		result.Citation = formatResultCitation(result)
 
