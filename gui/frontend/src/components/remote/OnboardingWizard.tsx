@@ -986,7 +986,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {offlineMode
                                     ? t("选择离网模式后，将跳过 Hub 注册并进入 LLM 配置。", "Offline mode skips Hub registration and continues to LLM setup.", "選擇離網模式後，將跳過 Hub 註冊並進入 LLM 配置。")
-                                    : t("选择运行模式。正常联网模式下，注册设备邮箱到 Hub 后即可使用所有功能。", "Choose a run mode. In online mode, register your email to the Hub to unlock all features.", "選擇運行模式。正常聯網模式下，註冊設備郵箱到 Hub 後即可使用所有功能。")}
+                                    : t("选择运行模式。正常联网模式下，注册邮箱到 Hub 后即可使用所有功能。", "Choose a run mode. In online mode, register your email to the Hub to unlock all features.", "選擇運行模式。正常聯網模式下，註冊郵箱到 Hub 後即可使用所有功能。")}
                             </p>
                             <OnboardingOfflineModeOption
                                 offlineMode={offlineMode}

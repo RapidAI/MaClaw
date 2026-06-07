@@ -3265,10 +3265,19 @@ ${instruction}`;
                             onRegister={() => setShowMaclawLLMPopup(true)}
                             onClearRegistration={async () => {
                                 await clearRemoteActivationState();
-                                // Clear onboarding_done flag so onboarding can be re-triggered
-                                const c = { ...config, onboarding_done: false } as any;
-                                setConfig(c);
-                                await SaveConfig(c);
+                                // clearRemoteActivationState already refreshes config + activation status
+                                // via refreshRemotePanel(). Additionally clear onboarding_done flag
+                                // so the wizard can be re-triggered on next "Register" click.
+                                try {
+                                    const c = await callBackend(() => LoadConfig());
+                                    if (c) {
+                                        (c as any).onboarding_done = false;
+                                        await SaveConfig(c);
+                                        setConfig(c);
+                                    }
+                                } catch (e) {
+                                    console.error("Failed to clear onboarding_done:", e);
+                                }
                             }}
                         />
                     )}
