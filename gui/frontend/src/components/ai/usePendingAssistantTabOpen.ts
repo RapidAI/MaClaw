@@ -62,7 +62,7 @@ function readableHistoryDiscussionTitle(discussion: PendingHistoryDiscussionOpen
 
 interface PendingAssistantTabOpenOptions {
     lang?: string;
-    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string) => AITab | null;
+    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string) => AITab | null;
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     createProjectTab: (projectPath: string, taskTitle: string, options?: CreateProjectTabOptions) => AITab | null;
     activateTab?: (tabId: string) => void;
@@ -178,7 +178,14 @@ export function usePendingAssistantTabOpen({
     useEffect(() => {
         if (!pendingVEOpen) return;
         const participantId = String(pendingVEOpen.machine_id || pendingVEOpen.id || '').trim();
-        createVETab(participantId || pendingVEOpen.id, pendingVEOpen.name, undefined, pendingVEOpen.online_status, pendingVEOpen.avatar_data_url);
+        createVETab(
+            participantId || pendingVEOpen.id,
+            pendingVEOpen.name,
+            undefined,
+            pendingVEOpen.online_status,
+            pendingVEOpen.avatar_data_url,
+            pendingVEOpen.skill_description,
+        );
         onPendingVEOpenHandled?.();
     }, [createVETab, onPendingVEOpenHandled, pendingVEOpen]);
 

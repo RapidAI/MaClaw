@@ -39,6 +39,10 @@ export interface VEMessage {
     sendFailed?: boolean;
     /** Attachment metadata for display */
     attachments?: VEMessageAttachment[];
+    /** Local-only UI helper message, never sent to a digital employee. */
+    localOnly?: boolean;
+    /** Synthetic local message kind for rendering or filtering. */
+    messageKind?: "employee_intro";
 }
 
 export interface VEMessageAttachment {
@@ -146,6 +150,7 @@ export interface VEConversationViewProps {
     veId: string;
     veName: string;
     avatarDataURL?: string;
+    veSkillDescription?: string;
     theme: Theme;
     lang?: string;
     /** Initial online status of the VE. Defaults to true (optimistic). Updated via ve:status_change events. */
@@ -282,6 +287,48 @@ function participantColorById(participants: MentionParticipant[] | undefined, id
     return index >= 0 ? getParticipantColor(index) : fallback;
 }
 
+function buildLocalEmployeeIntro(
+    veName: string,
+    veId: string,
+    veSkillDescription: string | undefined,
+    isZh: boolean,
+): string {
+    const displayName = readableConversationPartnerName(veName, veId, isZh);
+    const skillDescription = String(veSkillDescription || "").trim();
+    if (isZh) {
+        const lines = [`你好，我是${displayName}。`];
+        if (skillDescription) {
+            lines.push(`我擅长：${skillDescription}。`);
+        }
+        lines.push("你可以直接告诉我任务目标、背景材料或期望输出，我会尽快开始处理。");
+        return lines.join("\n");
+    }
+    const lines = [`Hi, I am ${displayName}.`];
+    if (skillDescription) {
+        lines.push(`I am good at: ${skillDescription}.`);
+    }
+    lines.push("You can tell me the goal, context, or expected output and I will get started.");
+    return lines.join("\n");
+}
+
+function buildLocalEmployeeIntroMessage(
+    veId: string,
+    veName: string,
+    veSkillDescription: string | undefined,
+    isZh: boolean,
+): VEMessage {
+    return {
+        id: `local-intro:${normalizeMentionParticipantId(veId) || "ve"}`,
+        role: "assistant",
+        content: buildLocalEmployeeIntro(veName, veId, veSkillDescription, isZh),
+        timestamp: Date.now(),
+        fromId: veId,
+        fromName: readableConversationPartnerName(veName, veId, isZh),
+        localOnly: true,
+        messageKind: "employee_intro",
+    };
+}
+
 function escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -365,6 +412,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     veId,
     veName,
     avatarDataURL,
+    veSkillDescription,
     theme,
     lang,
     initialOnlineStatus,
@@ -412,6 +460,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     // Track VE online status; input is disabled when offline.
     const [veOnline, setVeOnline] = useState(initialOnlineStatus !== "offline");
     const [responseWatchdogTimeoutSec, setResponseWatchdogTimeoutSec] = useState(DEFAULT_AGENT_TIMEOUT_SEC);
+    const [historyLoadSettledSessionId, setHistoryLoadSettledSessionId] = useState("");
+    const [historyLoadSucceededSessionId, setHistoryLoadSucceededSessionId] = useState("");
 
     // Refs for imperative state access (avoids stale closure in useImperativeHandle)
     const stateRef = useRef(state);
@@ -670,11 +720,15 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         const sessionId = String(state.sessionId || "").trim();
         if (!sessionId || loadedHistorySessionRef.current === sessionId || state.messages.length > 0) return;
         loadedHistorySessionRef.current = sessionId;
+        setHistoryLoadSettledSessionId("");
+        setHistoryLoadSucceededSessionId("");
         let cancelled = false;
         void getWailsAppModule()
             .then((mod) => (mod as any).GroupDiscussionGetConsultationDetail?.(sessionId))
             .then((detail: VEHistoryDetail | undefined) => {
-                if (cancelled || !detail) return;
+                if (cancelled) return;
+                setHistoryLoadSucceededSessionId(sessionId);
+                if (!detail) return;
                 const history = veMessagesFromHistoryDetail(detail, veId, assistantDisplayName, localSpeakerName);
                 if (!history.length) return;
                 setState((prev) => {
@@ -682,9 +736,31 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     return { ...prev, messages: history };
                 });
             })
-            .catch(() => {});
+            .catch(() => {
+                if (!cancelled) setHistoryLoadSucceededSessionId("");
+            })
+            .finally(() => {
+                if (!cancelled) setHistoryLoadSettledSessionId(sessionId);
+            });
         return () => { cancelled = true; };
     }, [assistantDisplayName, localSpeakerName, state.messages.length, state.sessionId, veId]);
+
+    useEffect(() => {
+        const sessionId = String(state.sessionId || "").trim();
+        if (!sessionId) return;
+        if ((participants?.length || 0) > 0) return;
+        const resumedExistingSessionId = String(existingSessionId || "").trim();
+        if (resumedExistingSessionId && resumedExistingSessionId === sessionId) return;
+        if ((initialMessages?.length || 0) > 0) return;
+        if (state.messages.length > 0) return;
+        if (historyLoadSettledSessionId !== sessionId) return;
+        if (historyLoadSucceededSessionId !== sessionId) return;
+        const introMessage = buildLocalEmployeeIntroMessage(veId, veName, veSkillDescription, isZh);
+        setState((prev) => {
+            if (String(prev.sessionId || "").trim() !== sessionId || prev.messages.length > 0) return prev;
+            return { ...prev, messages: [introMessage] };
+        });
+    }, [existingSessionId, historyLoadSettledSessionId, historyLoadSucceededSessionId, initialMessages, isZh, participants?.length, state.messages.length, state.sessionId, veId, veName, veSkillDescription]);
 
 
     // Keep reconnectAttemptRef in sync with state resets (e.g. successful session init)
@@ -931,6 +1007,9 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         resetHistoryBrowsing();
         setPromptHistoryState({ veId, history: [] });
         closeMentionPopover();
+        loadedHistorySessionRef.current = "";
+        setHistoryLoadSettledSessionId("");
+        setHistoryLoadSucceededSessionId("");
         sessionIdRef.current = null;
         setState((prev) => ({
             ...prev,
@@ -1701,6 +1780,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
     const hasAttachments = !!message.attachments?.length;
     const hasContent = message.content.trim().length > 0;
     const shouldRenderContent = hasContent || !hasAttachments || !!message.sendFailed;
+    const isLocalIntro = !isUser && message.localOnly && message.messageKind === "employee_intro";
 
     return (
         <div
@@ -1735,17 +1815,36 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
                         style={{ width: 18, height: 18, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
                     />
                 )}
+                {isLocalIntro && (
+                    <span
+                        data-testid={`ve-local-intro-badge-${message.id}`}
+                        style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            borderRadius: 999,
+                            padding: "1px 6px",
+                            fontSize: 10,
+                            fontWeight: 700,
+                            letterSpacing: 0.2,
+                            color: theme.btnColor,
+                            background: theme.sendBtnBg + "1A",
+                            border: `1px solid ${theme.btnBorder}33`,
+                        }}
+                    >
+                        {isZh ? "本地欢迎" : "Local intro"}
+                    </span>
+                )}
                 <span>{speakerName}</span>
             </div>
             {shouldRenderContent && (
                 <div
-                    data-testid={`ve-msg-content-${message.id}`}
+                    data-testid={message.localOnly ? `ve-local-msg-content-${message.id}` : `ve-msg-content-${message.id}`}
                     style={{
                         maxWidth: "80%",
                         padding: "8px 12px",
                         borderRadius: 8,
-                        background: isUser ? theme.sendBtnBg + "15" : theme.fieldBg,
-                        borderLeft: isUser ? "none" : `3px solid ${theme.responseBorderLeft}`,
+                        background: isUser ? theme.sendBtnBg + "15" : (isLocalIntro ? theme.sendBtnBg + "0D" : theme.fieldBg),
+                        borderLeft: isUser ? "none" : `3px solid ${isLocalIntro ? theme.btnColor : theme.responseBorderLeft}`,
                         borderRight: isUser ? `3px solid ${theme.borderLeft}` : "none",
                         fontSize: 13,
                         color: theme.text,

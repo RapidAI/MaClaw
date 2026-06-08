@@ -171,7 +171,7 @@ export interface UseAITabManagerResult {
     /** Switch to a tab by ID */
     activateTab: (tabId: string) => void;
     /** Create a new VE conversation tab. Returns the tab or null if limit reached. */
-    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string) => AITab | null;
+    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string) => AITab | null;
     /** Create a new group chat tab */
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     /** Create a new project tab. Returns the tab or null if limit reached. */
@@ -531,11 +531,12 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         }
     }, [updateTabState]);
 
-    const createVETab = useCallback((veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string): AITab | null => {
+    const createVETab = useCallback((veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string): AITab | null => {
         const prev = tabStateRef.current;
         const canonicalVEId = String(veId || "").trim();
         if (!canonicalVEId) return null;
         const safeAvatar = safeAvatarDataURL(avatarDataURL);
+        const normalizedSkillDescription = String(veSkillDescription || "").trim();
 
         const canonicalTabId = canonicalVETabId(canonicalVEId);
 
@@ -570,10 +571,16 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                     participantNames: veName ? { ...(existing.participantNames || {}), [canonicalVEId]: veName } : existing.participantNames,
                     onlineStatus: onlineStatus || existing.onlineStatus || "online",
                     avatarDataURL: safeAvatar || existing.avatarDataURL,
+                    veSkillDescription: normalizedSkillDescription || existing.veSkillDescription,
                     readOnly: false,
                 }
-                : isLiveVETab(existing) && (onlineStatus || safeAvatar)
-                    ? { ...existing, ...(onlineStatus ? { onlineStatus } : {}), ...(safeAvatar ? { avatarDataURL: safeAvatar } : {}) }
+                : isLiveVETab(existing) && (onlineStatus || safeAvatar || normalizedSkillDescription)
+                    ? {
+                        ...existing,
+                        ...(onlineStatus ? { onlineStatus } : {}),
+                        ...(safeAvatar ? { avatarDataURL: safeAvatar } : {}),
+                        ...(normalizedSkillDescription ? { veSkillDescription: normalizedSkillDescription } : {}),
+                    }
                     : existing;
             updateTabState(() => ({
                 ...prev,
@@ -600,6 +607,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             veId: canonicalVEId,
             onlineStatus: onlineStatus || "online",
             avatarDataURL: safeAvatar,
+            veSkillDescription: normalizedSkillDescription || undefined,
             closable: true,
         };
         const cachedState = tabStatesRef.current.get(newTab.id);

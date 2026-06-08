@@ -348,6 +348,40 @@ describe("AssistantActiveTabContent", () => {
         ));
     });
 
+    it("does not persist local-only intro messages into cached tab history", () => {
+        const liveTab: AITab = { id: "ve-local-intro", type: "ve", title: "Agent A", veId: "ve-a", closable: true };
+        const saveTabState = vi.fn();
+        const { unmount } = render(
+            <AssistantActiveTabContent
+                activeTab={liveTab}
+                tabs={[LOCAL_TAB, liveTab]}
+                isLocalTabActive={false}
+                isProjectTabActive={false}
+                lang="en"
+                theme={theme}
+                getTabState={() => ({
+                    sessionId: "session-1",
+                    history: [
+                        { id: "local-intro:ve_a", role: "assistant", content: "Hi, I am Agent A.", timestamp: 1, localOnly: true, messageKind: "employee_intro" },
+                        { id: "real-msg", role: "assistant", content: "real answer", timestamp: 2 },
+                    ],
+                    inputText: "",
+                    scrollTop: 0,
+                })}
+                saveTabState={saveTabState}
+            />
+        );
+
+        unmount();
+
+        expect(saveTabState).toHaveBeenCalledWith(
+            liveTab.id,
+            expect.objectContaining({
+                history: [{ id: "real-msg", role: "assistant", content: "real answer", timestamp: 2 }],
+            })
+        );
+    });
+
     it("lets the unified participant panel add a live group participant", async () => {
         const groupTab: AITab = { id: "group-live", type: "group", title: "Agent A", veId: "ve-a", participants: ["ve-a", "local-maclaw"], closable: true };
         const onAddParticipantToTab = vi.fn();

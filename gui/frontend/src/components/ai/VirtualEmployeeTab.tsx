@@ -129,9 +129,20 @@ function displayNameForVirtualEmployee(ve: VirtualEmployeeEntry, index: number, 
 
 // --- Component ---
 
+/**
+ * Module-level cache for the employee list.
+ * Survives component unmount/remount (tab switching) so the list is shown
+ * instantly on tab re-entry while a background refresh runs.
+ */
+let _cachedEmployees: VirtualEmployeeEntry[] | null = null;
+
+export function __resetVirtualEmployeeTabCacheForTests() {
+    _cachedEmployees = null;
+}
+
 export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtualEmployees, favoriteEmployeeIds, favoriteEmployeeNames, onSetFavorite, onRemoveFavorite, onRenameEmployee }: VETabProps) {
-    const [employees, setEmployees] = useState<VirtualEmployeeEntry[]>([]);
-    const [loading, setLoading] = useState(true);
+    const [employees, setEmployees] = useState<VirtualEmployeeEntry[]>(_cachedEmployees || []);
+    const [loading, setLoading] = useState(_cachedEmployees === null);
     const [refreshing, setRefreshing] = useState(false);
     const [error, setError] = useState<string>("");
     const [query, setQuery] = useState("");
@@ -180,18 +191,23 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
         if (!fn) return;
         const requestSeq = requestSeqRef.current + 1;
         requestSeqRef.current = requestSeq;
-        const showLoading = options?.showLoading !== false;
+        // Stale-while-revalidate: if we have cached data, skip the loading spinner
+        // and silently refresh in the background.
+        const showLoading = options?.showLoading !== false && _cachedEmployees === null;
         if (showLoading) setLoading(true);
         else setRefreshing(true);
         fn()
             .then((result) => {
                 if (!mountedRef.current || requestSeq !== requestSeqRef.current) return;
-                setEmployees(Array.isArray(result) ? result : []);
+                const list = Array.isArray(result) ? result : [];
+                _cachedEmployees = list;
+                setEmployees(list);
                 setError("");
             })
             .catch(() => {
                 if (!mountedRef.current || requestSeq !== requestSeqRef.current) return;
-                if (showLoading) {
+                // Only show error state if we have no cached data at all
+                if (_cachedEmployees === null) {
                     setError("hub_unavailable");
                     setEmployees([]);
                 }
@@ -356,7 +372,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     display: "flex",
                     alignItems: "center",
                     gap: 6,
-                    padding: "6px 8px 6px 12px",
+                    padding: "6px 8px 6px 16px",
                     background: theme.bg,
                     borderBottom: `1px solid ${theme.divider}`,
                     boxSizing: "border-box",
@@ -372,12 +388,12 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     style={{
                         flex: 1,
                         minWidth: 0,
-                        height: 28,
+                        height: 26,
                         borderRadius: 6,
                         border: `1px solid ${theme.divider}`,
                         background: theme.fieldBg,
                         color: theme.text,
-                        padding: "0 9px",
+                        padding: "0 8px",
                         fontSize: 12,
                         outline: "none",
                     }}
@@ -390,8 +406,8 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     disabled={refreshing}
                     onClick={() => fetchList({ showLoading: false })}
                     style={{
-                        width: 28,
-                        height: 28,
+                        width: 26,
+                        height: 26,
                         borderRadius: 6,
                         border: `1px solid ${theme.divider}`,
                         background: theme.bg,

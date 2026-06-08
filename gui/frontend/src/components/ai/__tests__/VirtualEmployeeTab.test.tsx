@@ -1,6 +1,6 @@
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { VirtualEmployeeTab, truncateText, policyIcon, policyLabel } from '../VirtualEmployeeTab';
+import { VirtualEmployeeTab, truncateText, policyIcon, policyLabel, __resetVirtualEmployeeTabCacheForTests } from '../VirtualEmployeeTab';
 import type { VirtualEmployeeEntry, VETabProps } from '../VirtualEmployeeTab';
 import type { Theme } from '../aiAssistantPanelTheme';
 import { safeAvatarDataURL, safeAvatarSourceDataURL } from '../virtualEmployeeAvatar';
@@ -125,9 +125,11 @@ describe('VirtualEmployeeTab', () => {
     beforeEach(() => {
         eventHandlers.clear();
         vi.useFakeTimers();
+        __resetVirtualEmployeeTabCacheForTests();
     });
 
     afterEach(() => {
+        __resetVirtualEmployeeTabCacheForTests();
         vi.useRealTimers();
     });
 

@@ -151,19 +151,24 @@ function useVEStatePersistence(
     tabId: string,
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void,
 ) {
-    const veRef = useRef<VEConversationHandle>(null);
+    const veRef = useRef<VEConversationHandle | null>(null);
+    const lastHandleRef = useRef<VEConversationHandle | null>(null);
     const tabIdRef = useRef(tabId);
     tabIdRef.current = tabId;
     const saveTabStateRef = useRef(saveTabState);
     saveTabStateRef.current = saveTabState;
+    const setVERef = useCallback((handle: VEConversationHandle | null) => {
+        veRef.current = handle;
+        if (handle) lastHandleRef.current = handle;
+    }, []);
 
     useEffect(() => {
         return () => {
-            const handle = veRef.current;
+            const handle = veRef.current || lastHandleRef.current;
             if (!handle || !saveTabStateRef.current) return;
             const s = handle.getState();
             saveTabStateRef.current(tabIdRef.current, {
-                history: s.messages as unknown[],
+                history: s.messages.filter((message) => !message.localOnly) as unknown[],
                 sessionId: s.sessionId || undefined,
                 inputText: s.inputText,
                 scrollTop: 0,
@@ -171,7 +176,7 @@ function useVEStatePersistence(
         };
     }, []); // Empty deps — cleanup only runs on unmount
 
-    return veRef;
+    return setVERef;
 }
 
 // --- Unified VE/Group Tab Wrapper ---
@@ -293,6 +298,7 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
                     veId={tab.veId!}
                     veName={primaryVEName}
                     avatarDataURL={tab.avatarDataURL}
+                    veSkillDescription={tab.veSkillDescription}
                     theme={theme}
                     lang={lang}
                     initialOnlineStatus={tab.onlineStatus}

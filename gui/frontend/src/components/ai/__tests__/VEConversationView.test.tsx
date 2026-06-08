@@ -374,6 +374,35 @@ describe("VEConversationView", () => {
             expect(initiate).toHaveBeenCalledWith("ve-1");
         });
 
+        it("shows a local intro message for a new VE session with no local history", async () => {
+            renderConversation({ lang: "en", veSkillDescription: "contract review" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(screen.getByTestId("ve-local-intro-badge-local-intro:ve_1").textContent).toBe("Local intro");
+            expect(screen.getByText("Hi, I am Test VE.")).toBeTruthy();
+            expect(screen.getByText("I am good at: contract review.")).toBeTruthy();
+            expect(screen.getByText("You can tell me the goal, context, or expected output and I will get started.")).toBeTruthy();
+        });
+
+        it("does not show the local intro for fresh live group sessions", async () => {
+            const initiateGroupConversation = vi.fn().mockResolvedValue({ session_id: "group-session-1", ve_id: "ve-1,ve-2", ve_name: "Group" });
+            renderConversation({
+                lang: "en",
+                veSkillDescription: "contract review",
+                initiateConversation: vi.fn(),
+                initiateGroupConversation,
+                participants: [
+                    { id: "ve-1", name: "Agent A", online: true },
+                    { id: "ve-2", name: "Agent B", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(initiateGroupConversation).toHaveBeenCalledWith(["ve-1", "ve-2"]);
+            expect(screen.queryByTestId("ve-local-intro-badge-local-intro:ve_1")).toBeNull();
+            expect(screen.queryByText("Hi, I am Test VE.")).toBeNull();
+        });
+
         it("notifies parent when a session id is established", async () => {
             const onSessionIdChange = vi.fn();
             renderConversation({ onSessionIdChange });
@@ -2738,6 +2767,37 @@ describe("VEConversationView", () => {
             expect(screen.getByText("earlier answer")).toBeTruthy();
         });
 
+        it("does not keep the local intro when initiate reuses a session with saved history", async () => {
+            const initiate = vi.fn().mockResolvedValue({ session_id: "reused-session-1", ve_id: "ve-1", ve_name: "Test VE" });
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "reused-session-1", local_relation: "initiated_by_me" },
+                session: { participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speaker" }] },
+                messages: [
+                    { id: "m-reused-1", from_id: "human-1", from_name: "Me", kind: "statement", content: "saved question", created_at: "2026-05-01T00:00:00Z" },
+                    { id: "m-reused-2", from_id: "ve-1", from_name: "Test VE", kind: "statement", content: "saved answer", created_at: "2026-05-01T00:00:01Z" },
+                ],
+            });
+
+            renderConversation({ initiateConversation: initiate, lang: "en", veSkillDescription: "contract review" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(screen.getByText("saved question")).toBeTruthy();
+            expect(screen.getByText("saved answer")).toBeTruthy();
+            expect(screen.queryByText("Hi, I am Test VE.")).toBeNull();
+        });
+
+        it("does not show the local intro when reused-session history lookup fails", async () => {
+            const initiate = vi.fn().mockResolvedValue({ session_id: "reused-session-1", ve_id: "ve-1", ve_name: "Test VE" });
+            (GroupDiscussionGetConsultationDetail as any).mockRejectedValueOnce(new Error("history lookup failed"));
+
+            renderConversation({ initiateConversation: initiate, lang: "en", veSkillDescription: "contract review" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(GroupDiscussionGetConsultationDetail).toHaveBeenCalledWith("reused-session-1");
+            expect(screen.queryByText("Hi, I am Test VE.")).toBeNull();
+            expect(screen.queryByTestId("ve-local-intro-badge-local-intro:ve_1")).toBeNull();
+        });
+
         it("does not replace already provided messages with fetched history", async () => {
             (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
                 discussion: { id: "test-session-1", local_relation: "initiated_by_me" },
@@ -2876,6 +2936,39 @@ describe("VEConversationView", () => {
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(screen.queryByText("old answer")).toBeNull();
             expect(close).toHaveBeenCalledWith("test-session-1");
+        });
+
+        it("shows the local intro again after local VE history is cleared and a fresh session starts", async () => {
+            const close = vi.fn().mockResolvedValue(undefined);
+            const { rerender } = renderConversation({
+                existingSessionId: "test-session-1",
+                closeSession: close,
+                initialMessages: [{ id: "old-msg", role: "assistant", content: "old answer", timestamp: 1 }],
+                clearSignal: 0,
+                lang: "en",
+                veSkillDescription: "contract review",
+            });
+
+            rerender(
+                <VEConversationView
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="en"
+                    existingSessionId="test-session-1"
+                    veSkillDescription="contract review"
+                    initiateConversation={vi.fn().mockResolvedValue({ session_id: "test-session-2", ve_id: "ve-1", ve_name: "Test VE" })}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={close}
+                    clearSignal={1}
+                />
+            );
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(screen.queryByText("old answer")).toBeNull();
+            expect(screen.getByTestId("ve-local-intro-badge-local-intro:ve_1").textContent).toBe("Local intro");
+            expect(screen.getByText("Hi, I am Test VE.")).toBeTruthy();
         });
 
         it("ignores stale session creation result after clear starts a fresh session", async () => {

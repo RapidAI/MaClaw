@@ -70,7 +70,7 @@ describe('useAITabManager', () => {
         }));
 
         await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
-        expect(createVETab).toHaveBeenCalledWith('machine-ve', 'Machine VE', undefined, 'online', 'data:image/jpeg;base64,/9j/');
+        expect(createVETab).toHaveBeenCalledWith('machine-ve', 'Machine VE', undefined, 'online', 'data:image/jpeg;base64,/9j/', '');
     });
 
     describe('initial state', () => {
@@ -109,6 +109,34 @@ describe('useAITabManager', () => {
             });
 
             expect((tab as AITab | null)?.avatarDataURL).toBe("data:image/jpeg;base64,/9j/");
+        });
+
+        it('stores VE skill descriptions on tabs for local intro copy', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            let tab: AITab | null = null;
+            act(() => {
+                tab = result.current.createVETab("ve-123", "Avatar Agent", undefined, "online", undefined, "contract review");
+            });
+
+            expect((tab as AITab | null)?.veSkillDescription).toBe("contract review");
+        });
+
+        it('updates an existing live VE tab when only the skill description changes', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            let original: AITab | null = null;
+            let reopened: AITab | null = null;
+            act(() => {
+                original = result.current.createVETab("ve-123", "Avatar Agent");
+            });
+            act(() => {
+                reopened = result.current.createVETab("ve-123", "Avatar Agent", undefined, undefined, undefined, "contract review");
+            });
+
+            expect((original as AITab | null)?.id).toBe((reopened as AITab | null)?.id);
+            expect((reopened as AITab | null)?.veSkillDescription).toBe("contract review");
+            expect(result.current.tabState.tabs.find(tab => tab.id === reopened?.id)?.veSkillDescription).toBe("contract review");
         });
 
         it('creates a group tab', () => {

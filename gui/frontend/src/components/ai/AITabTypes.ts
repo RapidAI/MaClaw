@@ -41,6 +41,8 @@ export interface AITab {
     onlineStatus?: "online" | "offline";
     /** Safe data URL avatar for a digital employee tab. */
     avatarDataURL?: string;
+    /** Short skill/profile description for local-only intro copy. */
+    veSkillDescription?: string;
     /** Bumped when the visible conversation should clear and start a fresh session. */
     conversationResetSeq?: number;
     /** Whether this tab can be closed. The local tab is always false. */
