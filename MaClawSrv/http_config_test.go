@@ -455,8 +455,8 @@ func TestReadASRPayloadUnsupportedContentTypeMessageMatchesAdvertisedFormats(t *
 	if !strings.Contains(msg, "audio/wav") || !strings.Contains(msg, "audio/mpeg") {
 		t.Fatalf("unsupported content-type message missing supported formats: %v", err)
 	}
-	if !strings.Contains(msg, "audio/mp4") || !strings.Contains(msg, "audio/aac") {
-		t.Fatalf("unsupported content-type message missing recognized compressed formats: %v", err)
+	if strings.Contains(msg, "audio/mp4") || strings.Contains(msg, "audio/aac") {
+		t.Fatalf("unsupported content-type message advertises unsupported native formats: %v", err)
 	}
 }
 
@@ -516,6 +516,17 @@ func TestReadASRPayloadJSONM4AFormatReturnsNativeUnsupported(t *testing.T) {
 	_, err := readASRWAVPayload(w, req)
 	if err == nil || !strings.Contains(err.Error(), "native m4a decode is not supported") {
 		t.Fatalf("m4a json format err = %v", err)
+	}
+}
+
+func TestReadASRPayloadRejectsUnsupportedAudioFormatHeader(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/asr/transcribe", strings.NewReader(string(testWAVBytes())))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-MaClaw-Audio-Format", "flac")
+	w := httptest.NewRecorder()
+	_, err := readASRWAVPayload(w, req)
+	if err == nil || !strings.Contains(err.Error(), "X-MaClaw-Audio-Format must be wav, ogg, opus, silk, mp3, m4a, or aac") {
+		t.Fatalf("unsupported audio format header err = %v", err)
 	}
 }
 

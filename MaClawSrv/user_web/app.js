@@ -576,7 +576,7 @@ async function renderAssistant() {
   setTitle(t("assistantTitle"), t("assistantHint"));
   const inst = activeInstance();
   if (inst) state.instanceId = inst.id;
-  $("content").innerHTML = `<div class="assistant-layout"><section class="panel stack assistant-rail"><div class="split"><div><h2>${t("instancesTitle")}</h2><p class="helper">${t("instancesHint")}</p></div><button id="newInst" type="button" class="primary">${t("new")}</button></div><div id="instanceList" class="list"></div><div id="sessionList" class="list"></div></section><section class="card chat"><div id="runPanel" class="run-panel hidden"></div><div class="chat-toolbar"><span class="muted">${t("webSession")}</span><button id="clearPanel" type="button" class="secondary clear-panel-btn">${clearContentLabel()}</button></div><div class="messages-wrap"><div id="messages" class="messages"></div><button id="jumpLatest" type="button" class="jump-latest hidden">${latestLabel()}</button></div><form id="composer" class="composer"><textarea id="prompt" placeholder="${t("typeMessage")}" aria-label="${t("message")}"></textarea><div class="composer-actions"><input id="voiceFile" type="file" accept="audio/wav,audio/ogg,audio/opus,audio/mpeg,audio/mp4,audio/aac,.wav,.ogg,.opus,.oga,.silk,.mp3,.m4a,.aac" hidden><button id="voiceBtn" type="button" class="secondary">${transcribeLabel()}</button><button id="sendBtn" type="submit" class="primary">${t("send")}</button></div></form></section></div>`;
+  $("content").innerHTML = `<div class="assistant-layout"><section class="panel stack assistant-rail"><div class="split"><div><h2>${t("instancesTitle")}</h2><p class="helper">${t("instancesHint")}</p></div><button id="newInst" type="button" class="primary">${t("new")}</button></div><div id="instanceList" class="list"></div><div id="sessionList" class="list"></div></section><section class="card chat"><div id="runPanel" class="run-panel hidden"></div><div class="chat-toolbar"><span class="muted">${t("webSession")}</span><button id="clearPanel" type="button" class="secondary clear-panel-btn">${clearContentLabel()}</button></div><div class="messages-wrap"><div id="messages" class="messages"></div><button id="jumpLatest" type="button" class="jump-latest hidden">${latestLabel()}</button></div><form id="composer" class="composer"><textarea id="prompt" placeholder="${t("typeMessage")}" aria-label="${t("message")}"></textarea><div class="composer-actions"><input id="voiceFile" type="file" accept="audio/wav,audio/ogg,audio/opus,audio/mpeg,.wav,.ogg,.opus,.oga,.silk,.mp3" hidden><button id="voiceBtn" type="button" class="secondary">${transcribeLabel()}</button><button id="sendBtn" type="submit" class="primary">${t("send")}</button></div></form></section></div>`;
   renderInstanceList();
   $("newInst").onclick = createInstance;
   $("clearPanel").onclick = clearPanelContent;
@@ -701,8 +701,6 @@ function voiceUploadContentType(file) {
   if (inferred === "mp3") return "audio/mpeg";
   if (inferred === "ogg") return "audio/ogg";
   if (inferred === "wav") return "audio/wav";
-  if (inferred === "m4a") return "audio/mp4";
-  if (inferred === "aac") return "audio/aac";
   if (inferred === "silk") return "application/octet-stream";
   return explicit || "application/octet-stream";
 }
@@ -712,8 +710,6 @@ function voiceUploadFormat(file) {
   if (name.endsWith(".ogg") || name.endsWith(".oga") || name.endsWith(".opus")) return "ogg";
   if (name.endsWith(".wav")) return "wav";
   if (name.endsWith(".silk")) return "silk";
-  if (name.endsWith(".m4a")) return "m4a";
-  if (name.endsWith(".aac")) return "aac";
   return "";
 }
 function autoResizePrompt() { const el = $("prompt"); if (!el) return; el.style.height = "auto"; el.style.height = `${Math.min(el.scrollHeight, 180)}px`; }

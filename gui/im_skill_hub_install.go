@@ -71,7 +71,15 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 			return skillInstallExecutionResult{Text: err.Error(), SilentFailure: true}
 		}
 	}
-	// GitHub result 鈫?import via a stable install ref when available.
+	// Enterprise-only install policy: when enabled, only enterprise Hub source is allowed.
+	if h != nil && h.app != nil && best != nil {
+		if cfg, err := h.app.LoadConfig(); err == nil {
+			if reason, blocked := cfg.CapabilityMarketPolicy.RejectNonEnterpriseInstall(best.SourceKind().String(), cfg.RemoteHubURL); blocked {
+				return skillInstallExecutionResult{Text: reason, SilentFailure: true}
+			}
+		}
+	}
+	// GitHub result → import via a stable install ref when available.
 	if best.SourceKind() == skillSearchSourceGitHub {
 		if h.app != nil {
 			guardArgs := map[string]interface{}{"action": "install", "source": "github", "skill_id": best.ID, "install_ref": best.InstallRef}

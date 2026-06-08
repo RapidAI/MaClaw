@@ -631,6 +631,28 @@ func (p CapabilityMarketPolicy) EffectiveEnterpriseOnlyInstall() bool {
 	return *p.EnterpriseOnlyInstall
 }
 
+// ErrEnterpriseOnlyInstall is the canonical error message returned when
+// enterprise-only-install policy blocks a non-enterprise source.
+// Frontend localizeHubError matches this string for i18n display.
+const ErrEnterpriseOnlyInstall = "enterprise policy only allows installing skills from enterprise Hub"
+
+// RejectNonEnterpriseInstall checks if the enterprise-only-install policy
+// should block installation from the given source. Returns ("", false) if
+// installation is allowed, or (reason, true) if blocked.
+// hubURL is the configured RemoteHubURL — empty means no enterprise Hub configured.
+func (p CapabilityMarketPolicy) RejectNonEnterpriseInstall(source, hubURL string) (string, bool) {
+	if strings.EqualFold(strings.TrimSpace(source), "enterprise_hub") {
+		return "", false
+	}
+	if strings.TrimSpace(hubURL) == "" {
+		return "", false
+	}
+	if !p.WithDefaults().EffectiveEnterpriseOnlyInstall() {
+		return "", false
+	}
+	return ErrEnterpriseOnlyInstall, true
+}
+
 func (p CapabilityMarketPolicy) EffectiveEnterpriseOnlySearch() bool {
 	if p.EnterpriseOnlySearch == nil {
 		return false

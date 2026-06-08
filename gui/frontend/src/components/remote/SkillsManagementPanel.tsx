@@ -311,7 +311,7 @@ function makeLocalizeHubError(localizeText: Props["localizeText"]) {
             fn: () => localizeText("Enterprise capability ID is required", "企业能力 ID 不能为空", "企業能力 ID 不能為空"),
         },
         {
-            re: /skill ([^ ]+) has no steps and no SKILL\.md/,
+            re: /skill (.+) has no steps and no SKILL\.md/,
             fn: (m) => localizeText(
                 `Skill "${m[1]}" has no executable steps and no SKILL.md definition file.`,
                 `技能「${m[1]}」没有可执行步骤，也没有 SKILL.md 定义文件。`,

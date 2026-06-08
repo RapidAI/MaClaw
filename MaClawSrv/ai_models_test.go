@@ -236,6 +236,27 @@ func TestSrvAIModelManagerRejectsEmptyModelFiles(t *testing.T) {
 	}
 }
 
+func TestSrvAIModelStatusReadySuppressesStaleDownloading(t *testing.T) {
+	dataRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
+		t.Fatalf("create models dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", embedding.DefaultModelFilename), []byte("model"), 0o644); err != nil {
+		t.Fatalf("write embedding model: %v", err)
+	}
+	manager := newSrvAIModelManager(dataRoot)
+	manager.tasks[srvAIModelEmbedding] = &srvAIModelTask{
+		Downloading: true,
+		LastError:   "old transient download state",
+		UpdatedAt:   time.Now().UTC(),
+	}
+
+	got := manager.statusOne(srvAIModelEmbedding, corelib.AppConfig{})
+	if !got.Ready || got.Downloading || got.LastError != "" {
+		t.Fatalf("ready model should suppress stale download task: %#v", got)
+	}
+}
+
 func TestSrvAIModelManagerUsesGlobalDownloadHubForSharedModels(t *testing.T) {
 	t.Setenv("MACLAW_DISABLE_MODEL_DOWNLOADS", "false")
 	dataRoot := t.TempDir()

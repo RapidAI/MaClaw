@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,7 +29,7 @@ const codeGenQwenFlashSchemaDescriptionMax = 256
 const codeGenQwenFlashToolLoopAfterToolResults = 32
 const codeGenQwenFlashToolLoopRepeatedToolCalls = 8
 const codeGenQwenFlashSystemPrompt = "You are TigerClaw Code, a helpful coding assistant. Follow the user's instructions, use available tools when needed, and report outcomes clearly."
-const codeGenStreamScannerMaxBuffer = 8 * 1024 * 1024
+const codeGenStreamMaxEventBytes = 32 * 1024 * 1024
 
 func setCodeGenUpstreamHeaders(req *http.Request, clientName string) {
 	if req != nil {
@@ -514,12 +515,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if anthReq.Stream {
 		s.handleStreamResponse(w, upResp, anthReq.Model, reqID)
 	} else {
-		s.handleNonStreamResponse(w, upResp, anthReq.Model)
+		s.handleNonStreamResponse(w, upResp, anthReq.Model, reqID)
 	}
 }
 
 // handleNonStreamResponse converts an OpenAI non-streaming response to Anthropic format.
-func (s *Server) handleNonStreamResponse(w http.ResponseWriter, upResp *http.Response, model string) {
+func (s *Server) handleNonStreamResponse(w http.ResponseWriter, upResp *http.Response, model, reqID string) {
 	respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 10*1024*1024))
 
 	if upResp.StatusCode != http.StatusOK {
@@ -538,6 +539,11 @@ func (s *Server) handleNonStreamResponse(w http.ResponseWriter, upResp *http.Res
 	var openaiResp openaiChatResponse
 	if err := json.Unmarshal(respBody, &openaiResp); err != nil {
 		writeError(w, http.StatusBadGateway, "parse upstream: "+err.Error())
+		return
+	}
+	if err := validateOpenAIResponseToolUses(openaiResp); err != nil {
+		log.Printf("[codegenproxy] non-stream tool call invalid id=%s model=%q err=%v", reqID, model, err)
+		writeError(w, http.StatusBadGateway, "upstream response produced invalid tool call")
 		return
 	}
 
@@ -566,7 +572,7 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 	// If the body is clearly not SSE, fall back to non-stream parsing.
 	ct := upResp.Header.Get("Content-Type")
 	if strings.Contains(ct, "application/json") {
-		s.handleNonStreamResponse(w, upResp, model)
+		s.handleNonStreamResponse(w, upResp, model, reqID)
 		return
 	}
 
@@ -593,9 +599,6 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 	})
 	flusher.Flush()
 
-	scanner := bufio.NewScanner(upResp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), codeGenStreamScannerMaxBuffer)
-
 	blockIdx := 0
 	textStarted := false
 	var stopReason string
@@ -603,25 +606,23 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 	toolCalls := make(map[int]*streamToolCallAccum)
 	var toolOrder []int
 	var legacyFunction *streamToolCallAccum
+	var payloadErr error
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	handlePayload := func(payload string) bool {
+		payload = strings.TrimSpace(payload)
 		if payload == "[DONE]" {
-			break
+			return false
 		}
 
 		var chunk openaiStreamChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			log.Printf("[codegenproxy] stream chunk parse failed id=%s model=%q payload_bytes=%d err=%v payload=%s",
-				reqID, model, len(payload), err, truncate(payload, 512))
-			continue
+			log.Printf("[codegenproxy] stream chunk parse failed id=%s model=%q payload_bytes=%d payload_sha256=%s err=%v",
+				reqID, model, len(payload), shortSHA256(payload), err)
+			payloadErr = fmt.Errorf("parse upstream stream chunk: %w", err)
+			return false
 		}
 		if len(chunk.Choices) == 0 {
-			continue
+			return true
 		}
 		delta := chunk.Choices[0].Delta
 		finish := chunk.Choices[0].FinishReason
@@ -681,10 +682,16 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 		if finish != "" {
 			stopReason = finish
 		}
+		return true
 	}
-	if err := scanner.Err(); err != nil {
-		log.Printf("[codegenproxy] stream scan failed id=%s model=%q max_buffer=%d err=%v",
-			reqID, model, codeGenStreamScannerMaxBuffer, err)
+
+	streamErr := readOpenAIStreamEvents(upResp.Body, handlePayload)
+	if streamErr == nil && payloadErr != nil {
+		streamErr = payloadErr
+	}
+	if streamErr != nil {
+		log.Printf("[codegenproxy] stream read failed id=%s model=%q max_event_bytes=%d err=%v",
+			reqID, model, codeGenStreamMaxEventBytes, streamErr)
 	}
 
 	if textStarted {
@@ -693,6 +700,22 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 		})
 		blockIdx++
 		flusher.Flush()
+	}
+
+	if streamErr != nil {
+		log.Printf("[codegenproxy] stream abort id=%s model=%q text_bytes=%d tool_calls=%d legacy_function=%t tool_summary=%s",
+			reqID, model, textBytes, len(toolOrder), legacyFunction != nil, summarizeStreamTools(toolOrder, toolCalls, legacyFunction))
+		writeStreamError(w, "upstream stream read failed")
+		flusher.Flush()
+		return
+	}
+
+	if err := validateBufferedToolUses(toolOrder, toolCalls, legacyFunction); err != nil {
+		log.Printf("[codegenproxy] stream tool call invalid id=%s model=%q err=%v tool_summary=%s",
+			reqID, model, err, summarizeStreamTools(toolOrder, toolCalls, legacyFunction))
+		writeStreamError(w, "upstream stream produced invalid tool call")
+		flusher.Flush()
+		return
 	}
 
 	if len(toolOrder) > 0 {
@@ -736,6 +759,60 @@ type streamToolCallAccum struct {
 	Arguments string
 }
 
+func readOpenAIStreamEvents(r io.Reader, handle func(string) bool) error {
+	reader := bufio.NewReaderSize(r, 64*1024)
+	var data strings.Builder
+	flush := func() bool {
+		if data.Len() == 0 {
+			return true
+		}
+		payload := data.String()
+		data.Reset()
+		return handle(payload)
+	}
+
+	for {
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			line = strings.TrimRight(line, "\r\n")
+			switch {
+			case line == "":
+				if !flush() {
+					return nil
+				}
+			case strings.HasPrefix(line, ":"):
+				// SSE comment/heartbeat.
+			case strings.HasPrefix(line, "data:"):
+				part := strings.TrimPrefix(line, "data:")
+				if strings.HasPrefix(part, " ") {
+					part = strings.TrimPrefix(part, " ")
+				}
+				if data.Len() > 0 {
+					data.WriteByte('\n')
+				}
+				data.WriteString(part)
+				if data.Len() > codeGenStreamMaxEventBytes {
+					return fmt.Errorf("stream event exceeded %d bytes", codeGenStreamMaxEventBytes)
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				if !flush() {
+					return nil
+				}
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func shortSHA256(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return fmt.Sprintf("%x", sum[:8])
+}
+
 func summarizeStreamTools(order []int, calls map[int]*streamToolCallAccum, legacy *streamToolCallAccum) string {
 	var parts []string
 	for _, idx := range order {
@@ -758,8 +835,70 @@ func summarizeStreamTool(acc *streamToolCallAccum) string {
 		name = "unknown_tool"
 	}
 	args := strings.TrimSpace(acc.Arguments)
-	valid := args == "" || json.Valid([]byte(args))
-	return fmt.Sprintf("%s(args_bytes=%d,json=%t)", name, len(args), valid)
+	validObject := args == "" || isJSONObject(args)
+	return fmt.Sprintf("%s(args_bytes=%d,json_object=%t)", name, len(args), validObject)
+}
+
+func validateBufferedToolUses(order []int, calls map[int]*streamToolCallAccum, legacy *streamToolCallAccum) error {
+	for _, idx := range order {
+		if acc := calls[idx]; acc != nil {
+			if err := validateBufferedToolUse(acc); err != nil {
+				return err
+			}
+		}
+	}
+	if legacy != nil {
+		if err := validateBufferedToolUse(legacy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateBufferedToolUse(acc *streamToolCallAccum) error {
+	name := strings.TrimSpace(acc.Name)
+	if name == "" {
+		return fmt.Errorf("tool call index=%d missing name", acc.Index)
+	}
+	args := strings.TrimSpace(acc.Arguments)
+	if args == "" {
+		return nil
+	}
+	if !isJSONObject(args) {
+		return fmt.Errorf("tool call index=%d name=%q has non-object JSON arguments bytes=%d", acc.Index, name, len(args))
+	}
+	return nil
+}
+
+func validateOpenAIResponseToolUses(resp openaiChatResponse) error {
+	for choiceIdx, choice := range resp.Choices {
+		for toolIdx, tc := range choice.Message.ToolCalls {
+			name := strings.TrimSpace(tc.Function.Name)
+			if name == "" {
+				return fmt.Errorf("choice=%d tool_call=%d missing name", choiceIdx, toolIdx)
+			}
+			args := strings.TrimSpace(tc.Function.Arguments)
+			if args != "" && !isJSONObject(args) {
+				return fmt.Errorf("choice=%d tool_call=%d name=%q has non-object JSON arguments bytes=%d", choiceIdx, toolIdx, name, len(args))
+			}
+		}
+		if fc := choice.Message.FunctionCall; fc != nil {
+			name := strings.TrimSpace(fc.Name)
+			if name == "" {
+				return fmt.Errorf("choice=%d legacy function missing name", choiceIdx)
+			}
+			args := strings.TrimSpace(fc.Arguments)
+			if args != "" && !isJSONObject(args) {
+				return fmt.Errorf("choice=%d legacy function name=%q has non-object JSON arguments bytes=%d", choiceIdx, name, len(args))
+			}
+		}
+	}
+	return nil
+}
+
+func isJSONObject(raw string) bool {
+	var value map[string]interface{}
+	return json.Unmarshal([]byte(raw), &value) == nil && value != nil
 }
 
 func writeBufferedToolUse(w http.ResponseWriter, flusher http.Flusher, blockIdx int, acc *streamToolCallAccum) int {
@@ -776,10 +915,6 @@ func writeBufferedToolUse(w http.ResponseWriter, flusher http.Flusher, blockIdx 
 	}
 	args := strings.TrimSpace(acc.Arguments)
 	if args == "" {
-		args = "{}"
-	}
-	if !json.Valid([]byte(args)) {
-		log.Printf("[codegenproxy] stream tool call has invalid JSON args index=%d name=%q args=%s", acc.Index, name, truncate(args, 512))
 		args = "{}"
 	}
 	writeSSE(w, "content_block_start", map[string]interface{}{
@@ -810,6 +945,16 @@ func writeBufferedToolUse(w http.ResponseWriter, flusher http.Flusher, blockIdx 
 func writeSSE(w http.ResponseWriter, event string, data interface{}) {
 	b, _ := json.Marshal(data)
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(b))
+}
+
+func writeStreamError(w http.ResponseWriter, message string) {
+	writeSSE(w, "error", map[string]interface{}{
+		"type": "error",
+		"error": map[string]interface{}{
+			"type":    "api_error",
+			"message": message,
+		},
+	})
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

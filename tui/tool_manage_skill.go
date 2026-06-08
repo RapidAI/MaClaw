@@ -508,6 +508,11 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 		return reason
 	}
 
+	// Enterprise-only install policy: when enabled, only enterprise Hub source is allowed.
+	if reason, blocked := app.appConfig.CapabilityMarketPolicy.RejectNonEnterpriseInstall(effectiveSource, app.appConfig.RemoteHubURL); blocked {
+		return reason
+	}
+
 	// Check if source is allowed by policy/config.
 	if !tuiSkillSourceAllowedByPolicy(app.appConfig, effectiveSource) {
 		return fmt.Sprintf("❌ 来源 '%s' 已被管理策略禁止。当前允许的来源: %v", effectiveSource, app.appConfig.SkillSourcesAllowed)

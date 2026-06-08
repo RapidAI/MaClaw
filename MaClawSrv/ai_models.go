@@ -300,6 +300,10 @@ func (m *srvAIModelManager) statusOne(model string, cfg corelib.AppConfig) srvAI
 		status.UpdatedAt = task.UpdatedAt
 	}
 	m.mu.Unlock()
+	if status.Ready {
+		status.Downloading = false
+		status.LastError = ""
+	}
 	return status
 }
 
@@ -624,12 +628,16 @@ func readASRWAVPayload(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 		}
 		return audioconv.ToWAV(audio, format)
 	}
-	format := srvASRAudioFormatHint(r.Header.Get("X-MaClaw-Audio-Format"))
+	formatHeader := r.Header.Get("X-MaClaw-Audio-Format")
+	format := srvASRAudioFormatHint(formatHeader)
+	if strings.TrimSpace(formatHeader) != "" && format == "" {
+		return nil, fmt.Errorf("X-MaClaw-Audio-Format must be wav, ogg, opus, silk, mp3, m4a, or aac")
+	}
 	if format == "" {
 		format = srvASRAudioFormatHint(contentType)
 	}
 	if format == "" && contentType != "application/octet-stream" {
-		return nil, fmt.Errorf("content-type must be audio/wav, audio/ogg, audio/opus, audio/mpeg, audio/mp4, audio/aac, application/octet-stream, or application/json")
+		return nil, fmt.Errorf("content-type must be audio/wav, audio/ogg, audio/opus, audio/mpeg, application/octet-stream, or application/json")
 	}
 	audio, err := io.ReadAll(r.Body)
 	if err != nil {

@@ -198,7 +198,14 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
         else setRefreshing(true);
         fn()
             .then((result) => {
-                if (!mountedRef.current || requestSeq !== requestSeqRef.current) return;
+                const isCurrent = requestSeq === requestSeqRef.current;
+                if (!mountedRef.current) {
+                    // Component unmounted mid-flight — still update cache so
+                    // the next mount shows fresh data (but only if not superseded).
+                    if (isCurrent && Array.isArray(result)) _cachedEmployees = result;
+                    return;
+                }
+                if (!isCurrent) return; // superseded by a newer request
                 const list = Array.isArray(result) ? result : [];
                 _cachedEmployees = list;
                 setEmployees(list);
@@ -435,7 +442,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     </span>
                 </button>
             </div>
-            <div style={options?.center ? { display: "flex", alignItems: "center", justifyContent: "center", minHeight: "calc(100% - 41px)", padding: "0 12px 12px" } : undefined}>
+            <div style={options?.center ? { display: "flex", alignItems: "center", justifyContent: "center", minHeight: "calc(100% - 39px)", padding: "0 12px 12px" } : undefined}>
                 {children}
             </div>
         </div>

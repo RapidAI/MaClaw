@@ -330,9 +330,9 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 	}()
 	ctx := context.Background()
 	kind := skillSearchSourceFromStatus(source)
-	if kind != skillSearchSourceEnterpriseHub {
-		if cfg, err := a.LoadConfig(); err == nil && strings.TrimSpace(cfg.RemoteHubURL) != "" && cfg.CapabilityMarketPolicy.WithDefaults().EffectiveEnterpriseOnlyInstall() {
-			return fmt.Errorf("enterprise policy only allows installing skills from enterprise Hub")
+	if cfg, err := a.LoadConfig(); err == nil {
+		if reason, blocked := cfg.CapabilityMarketPolicy.RejectNonEnterpriseInstall(string(kind), cfg.RemoteHubURL); blocked {
+			return fmt.Errorf("%s", reason)
 		}
 	}
 	switch kind {

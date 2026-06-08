@@ -350,6 +350,75 @@ func TestAdminWebUsesTenantUserSelectors(t *testing.T) {
 	}
 }
 
+func TestAdminWebAIModelsUsesVoicePickerAndClearDownloadStates(t *testing.T) {
+	bodyBytes, err := fs.ReadFile(adminWebFS, "admin_web/app.js")
+	if err != nil {
+		t.Fatalf("read admin app: %v", err)
+	}
+	body := string(bodyBytes)
+	for _, needle := range []string{
+		`async function saveDefaultClientConfig(mutator)`,
+		`const latest=await api("/api/v1/admin/client-config/default")`,
+		`const base={...(latest?.app_config||{})}`,
+		`const ttsVoiceOptions=[`,
+		`id:"zf_xiaoyi"`,
+		`id:"zf_xiaoxiao"`,
+		`id:"zm_yunxi"`,
+		`id:"zm_yunyang"`,
+		`function renderTTSVoiceOptions(current)`,
+		`<select id="aiTTSVoice">${renderTTSVoiceOptions(cfg.tts_voice_id||"zf_xiaoyi")}</select>`,
+		`ttsVoiceHint`,
+		`downloadNow`,
+		`backgroundDownloading`,
+		`downloadQueued`,
+		`downloadPendingHint`,
+		`model.ready?`,
+		`data-ai-model-download="${esc(name)}"`,
+		`btn.textContent=t("backgroundDownloading")`,
+		`toast(t("downloadQueued"))`,
+		`await saveDefaultClientConfig(base=>readAIModelsForm(base));`,
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("admin ai models page missing marker %s", needle)
+		}
+	}
+	for _, stale := range []string{
+		`<input id="aiTTSVoice" value="${esc(cfg.tts_voice_id||"")}">`,
+		`id="aiKnowledgeIncludeImages"`,
+		`cfg.knowledge_include_images=$("aiKnowledgeIncludeImages").checked;`,
+	} {
+		if strings.Contains(body, stale) {
+			t.Fatalf("admin ai models page should not keep stale marker %s", stale)
+		}
+	}
+}
+
+func TestAdminWebKnowledgeImportDefaultsLiveInKnowledgePanel(t *testing.T) {
+	bodyBytes, err := fs.ReadFile(adminWebFS, "admin_web/app.js")
+	if err != nil {
+		t.Fatalf("read admin app: %v", err)
+	}
+	body := string(bodyBytes)
+	for _, needle := range []string{
+		`api("/api/v1/admin/client-config/default").catch(e=>({error:e.message,app_config:{}}))`,
+		`const sharedCfg=cfgResp.app_config||{};`,
+		`publicKnowledgePanel(publicKnowledgeRows,tenantItems,sharedCfg)`,
+		`function publicKnowledgePanel(libraries,tenants,sharedCfg)`,
+		`<h3>${t("knowledgeImportDefaults")}</h3>`,
+		`id="knowledgeIncludeImages"`,
+		`id="saveKnowledgeImportDefaults"`,
+		`knowledgeImportDefaultsHint`,
+		`knowledgeImportDefaultsSaved`,
+		`bindKnowledgeActions(availableSources,publicLibraries,sharedCfg)`,
+		`function bindKnowledgeActions(sources,publicLibraries,sharedCfg)`,
+		`await saveDefaultClientConfig(base=>({...base,knowledge_include_images:$('knowledgeIncludeImages')?.checked===true}));`,
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("admin knowledge page missing marker %s", needle)
+		}
+	}
+}
+
 func TestAdminWebIncludesOwnerRoleGuards(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
@@ -372,6 +441,8 @@ func TestAdminWebIncludesOwnerRoleGuards(t *testing.T) {
 		"installSandboxRun",
 		"createTenant",
 		"createCredential",
+		"saveAIModels",
+		"saveKnowledgeImportDefaults",
 		"createPublicKnowledge",
 		"publicKnowledgeImportText",
 		"publicKnowledgeImportFile",
@@ -385,6 +456,7 @@ func TestAdminWebIncludesOwnerRoleGuards(t *testing.T) {
 		"[data-public-kb-add]",
 		"[data-public-kb-remove]",
 		"[data-public-kb-delete]",
+		"[data-ai-model-download]",
 		"/api/v1/admin/auth/change-password",
 		"/api/v1/admin/auth/users",
 		"/api/v1/admin/auth/sessions",
@@ -477,6 +549,7 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 		`function renderAIModelStatusPanel(models)`,
 		`/api/v1/admin/ai-models/status`,
 		`await refreshAIModelStatus(true)`,
+		`bindAIModelStatusActions(); applyOwnerGuards();`,
 		`/api/v1/admin/ai-models/${encodeURIComponent(model)}/download`,
 		`data-ai-model-download`,
 		`decoder_ready`,

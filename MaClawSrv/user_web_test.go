@@ -137,7 +137,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"function voiceUploadFormat(file)",
 		"function voiceUploadContentType(file)",
 		"audio/mpeg",
-		"id=\"voiceFile\" type=\"file\" accept=\"audio/wav,audio/ogg,audio/opus,audio/mpeg,audio/mp4,audio/aac,.wav,.ogg,.opus,.oga,.silk,.mp3,.m4a,.aac\" hidden",
+		"id=\"voiceFile\" type=\"file\" accept=\"audio/wav,audio/ogg,audio/opus,audio/mpeg,.wav,.ogg,.opus,.oga,.silk,.mp3\" hidden",
 		"id=\"voiceBtn\" type=\"button\"",
 		"function autoResizePrompt()",
 		"function updateSendButtonState()",

@@ -345,14 +345,9 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 
 	choice := resp.Choices[0]
 
-	// Map finish reason
-	switch choice.FinishReason {
-	case "tool_calls", "function_call":
-		result.StopReason = "tool_use"
-	case "length":
+	result.StopReason = "end_turn"
+	if choice.FinishReason == "length" {
 		result.StopReason = "max_tokens"
-	default:
-		result.StopReason = "end_turn"
 	}
 
 	// Convert text content
@@ -364,12 +359,13 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 	}
 
 	// Convert tool calls
+	hasToolUse := false
 	for _, tc := range choice.Message.ToolCalls {
-		var input map[string]interface{}
-		_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
-		if input == nil {
-			input = map[string]interface{}{}
+		input, ok := parseOpenAIToolArguments(tc.Function.Arguments)
+		if !ok {
+			continue
 		}
+		hasToolUse = true
 		result.Content = append(result.Content, anthropicContentBlock{
 			Type:  "tool_use",
 			ID:    tc.ID,
@@ -378,17 +374,19 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 		})
 	}
 	if fc := choice.Message.FunctionCall; fc != nil && fc.Name != "" {
-		var input map[string]interface{}
-		_ = json.Unmarshal([]byte(fc.Arguments), &input)
-		if input == nil {
-			input = map[string]interface{}{}
+		input, ok := parseOpenAIToolArguments(fc.Arguments)
+		if ok {
+			hasToolUse = true
+			result.Content = append(result.Content, anthropicContentBlock{
+				Type:  "tool_use",
+				ID:    "call_legacy_function",
+				Name:  fc.Name,
+				Input: input,
+			})
 		}
-		result.Content = append(result.Content, anthropicContentBlock{
-			Type:  "tool_use",
-			ID:    "call_legacy_function",
-			Name:  fc.Name,
-			Input: input,
-		})
+	}
+	if hasToolUse {
+		result.StopReason = "tool_use"
 	}
 
 	if len(result.Content) == 0 {
@@ -396,4 +394,15 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 	}
 
 	return result
+}
+
+func parseOpenAIToolArguments(raw string) (map[string]interface{}, bool) {
+	if strings.TrimSpace(raw) == "" {
+		return map[string]interface{}{}, true
+	}
+	var input map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &input); err != nil || input == nil {
+		return nil, false
+	}
+	return input, true
 }

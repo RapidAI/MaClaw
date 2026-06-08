@@ -1,6 +1,7 @@
 package codegenproxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -212,6 +213,42 @@ func TestConvertOpenAIToAnthropic_LegacyFunctionCall(t *testing.T) {
 	}
 	if result.Content[0].Name != "search" || result.Content[0].Input["query"] != "test" {
 		t.Fatalf("tool_use = %+v, want search query test", result.Content[0])
+	}
+}
+
+func TestConvertOpenAIToAnthropic_SkipsInvalidToolArguments(t *testing.T) {
+	resp := openaiChatResponse{
+		Choices: []openaiChoice{{
+			Message: openaiMessage{
+				Role: "assistant",
+				ToolCalls: []openaiToolCall{
+					{
+						ID: "call_array", Type: "function",
+						Function: struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						}{Name: "array_args", Arguments: `[]`},
+					},
+					{
+						ID: "call_invalid", Type: "function",
+						Function: struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						}{Name: "invalid_args", Arguments: `{`},
+					},
+				},
+			},
+			FinishReason: "tool_calls",
+		}},
+	}
+
+	result := convertOpenAIToAnthropic(resp, "Qwen-Flash")
+
+	if result.StopReason != "end_turn" {
+		t.Fatalf("stop_reason = %q, want end_turn", result.StopReason)
+	}
+	if len(result.Content) != 1 || result.Content[0].Type != "text" || result.Content[0].Text != "" {
+		t.Fatalf("content = %+v, want empty text fallback", result.Content)
 	}
 }
 
@@ -912,7 +949,7 @@ func TestAnthropicProxyBuffersSplitStreamToolCalls(t *testing.T) {
 }
 
 func TestAnthropicProxyStreamsLargeToolCallArguments(t *testing.T) {
-	largeContent := strings.Repeat("x", 300*1024)
+	largeContent := strings.Repeat("x", 9*1024*1024)
 	args, err := json.Marshal(map[string]string{
 		"file_path": "large.txt",
 		"content":   largeContent,
@@ -984,6 +1021,258 @@ func TestAnthropicProxyStreamsLargeToolCallArguments(t *testing.T) {
 	if !strings.Contains(text, `"stop_reason":"tool_use"`) {
 		t.Fatalf("stream stop_reason missing tool_use: tail=%s", truncate(text, 512))
 	}
+}
+
+func TestAnthropicProxyParsesMultilineSSEDataEvent(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"Qwen-Flash","name":"Qwen-Flash"}]}`))
+			return
+		case "/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"choices\":[\n"))
+			_, _ = w.Write([]byte("data: {\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}\n"))
+			_, _ = w.Write([]byte("data: ]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	anthReq := `{
+		"model": "Qwen-Flash",
+		"messages": [{"role": "user", "content": "say hello"}],
+		"max_tokens": 1024,
+		"stream": true
+	}`
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	text := string(body)
+	if !strings.Contains(text, `"text":"hello"`) {
+		t.Fatalf("stream missing multiline content: %s", text)
+	}
+	if !strings.Contains(text, `"stop_reason":"end_turn"`) {
+		t.Fatalf("stream stop_reason missing end_turn: %s", text)
+	}
+}
+
+func TestShortSHA256DoesNotExposePayload(t *testing.T) {
+	payload := `{"secret":"do-not-log-me","choices":[]}`
+	got := shortSHA256(payload)
+	if len(got) != 16 {
+		t.Fatalf("short hash length = %d, want 16", len(got))
+	}
+	if strings.Contains(got, "do-not-log-me") || strings.Contains(got, "secret") {
+		t.Fatalf("hash leaked payload: %s", got)
+	}
+}
+
+func TestReadOpenAIStreamEventsReturnsReaderError(t *testing.T) {
+	reader := io.MultiReader(
+		strings.NewReader("data: {\"choices\":[]}\n\n"),
+		errReader{err: io.ErrUnexpectedEOF},
+	)
+	seen := 0
+	err := readOpenAIStreamEvents(reader, func(payload string) bool {
+		seen++
+		return true
+	})
+	if err == nil {
+		t.Fatalf("err = nil, want reader error")
+	}
+	if seen != 1 {
+		t.Fatalf("seen events = %d, want 1", seen)
+	}
+}
+
+func TestAnthropicProxyStreamReadErrorEmitsErrorEvent(t *testing.T) {
+	srv := NewServer(":0")
+	body := io.NopCloser(io.MultiReader(
+		strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"),
+		errReader{err: io.ErrUnexpectedEOF},
+	))
+	upResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       body,
+	}
+	rec := httptest.NewRecorder()
+
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-stream-error")
+
+	text := rec.Body.String()
+	if !strings.Contains(text, "event: error") {
+		t.Fatalf("stream missing error event: %s", text)
+	}
+	if strings.Contains(text, "event: message_stop") {
+		t.Fatalf("stream emitted message_stop after read error: %s", text)
+	}
+}
+
+func TestAnthropicProxyStreamReadErrorDoesNotEmitPartialToolUse(t *testing.T) {
+	srv := NewServer(":0")
+	body := io.NopCloser(io.MultiReader(
+		strings.NewReader(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_partial","function":{"name":"Write","arguments":"{\"file_path\":\"x.txt\",\"content\":\"unterminated"}}]}}]}`+"\n\n"),
+		errReader{err: io.ErrUnexpectedEOF},
+	))
+	upResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       body,
+	}
+	rec := httptest.NewRecorder()
+
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-partial-tool-error")
+
+	text := rec.Body.String()
+	if !strings.Contains(text, "event: error") {
+		t.Fatalf("stream missing error event: %s", text)
+	}
+	if strings.Contains(text, `"type":"tool_use"`) {
+		t.Fatalf("stream emitted partial tool_use after read error: %s", text)
+	}
+}
+
+func TestAnthropicProxyInvalidToolArgumentsEmitError(t *testing.T) {
+	srv := NewServer(":0")
+	body := io.NopCloser(strings.NewReader(
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_bad\",\"function\":{\"name\":\"Write\",\"arguments\":\"{\\\"file_path\\\": \"}}]}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+			"data: [DONE]\n\n",
+	))
+	upResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       body,
+	}
+	rec := httptest.NewRecorder()
+
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-invalid-tool-args")
+
+	text := rec.Body.String()
+	if !strings.Contains(text, "event: error") {
+		t.Fatalf("stream missing error event: %s", text)
+	}
+	if strings.Contains(text, `"type":"tool_use"`) {
+		t.Fatalf("stream emitted tool_use with invalid args: %s", text)
+	}
+	if strings.Contains(text, `"partial_json":"{}"`) {
+		t.Fatalf("stream downgraded invalid args to empty object: %s", text)
+	}
+}
+
+func TestAnthropicProxyNonObjectToolArgumentsEmitError(t *testing.T) {
+	srv := NewServer(":0")
+	body := io.NopCloser(strings.NewReader(
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_array\",\"function\":{\"name\":\"Write\",\"arguments\":\"[]\"}}]}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+			"data: [DONE]\n\n",
+	))
+	upResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       body,
+	}
+	rec := httptest.NewRecorder()
+
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-non-object-tool-args")
+
+	text := rec.Body.String()
+	if !strings.Contains(text, "event: error") {
+		t.Fatalf("stream missing error event: %s", text)
+	}
+	if strings.Contains(text, `"type":"tool_use"`) {
+		t.Fatalf("stream emitted tool_use with non-object args: %s", text)
+	}
+}
+
+func TestAnthropicProxyNonStreamInvalidToolArgumentsReturnsError(t *testing.T) {
+	srv := NewServer(":0")
+	resp := openaiChatResponse{
+		ID: "chatcmpl-invalid-tool",
+		Choices: []openaiChoice{{
+			Message: openaiMessage{
+				Role: "assistant",
+				ToolCalls: []openaiToolCall{{
+					ID:   "call_bad",
+					Type: "function",
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{
+						Name:      "Write",
+						Arguments: "[]",
+					},
+				}},
+			},
+			FinishReason: "tool_calls",
+		}},
+	}
+	body, _ := json.Marshal(resp)
+	upResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+	rec := httptest.NewRecorder()
+
+	srv.handleNonStreamResponse(rec, upResp, "Qwen-Flash", "test-nonstream-invalid-tool")
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "tool_use") {
+		t.Fatalf("non-stream emitted tool_use with invalid args: %s", rec.Body.String())
+	}
+}
+
+func TestAnthropicProxyInvalidStreamChunkEmitsError(t *testing.T) {
+	srv := NewServer(":0")
+	body := io.NopCloser(strings.NewReader(
+		"data: {not-json}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+			"data: [DONE]\n\n",
+	))
+	upResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       body,
+	}
+	rec := httptest.NewRecorder()
+
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-invalid-stream-chunk")
+
+	text := rec.Body.String()
+	if !strings.Contains(text, "event: error") {
+		t.Fatalf("stream missing error event: %s", text)
+	}
+	if strings.Contains(text, "event: message_stop") {
+		t.Fatalf("stream emitted message_stop after invalid chunk: %s", text)
+	}
+}
+
+type errReader struct {
+	err error
+}
+
+func (r errReader) Read(_ []byte) (int, error) {
+	return 0, r.err
 }
 
 func TestAnthropicProxyRetriesQwenFlashWithoutToolsOnBadRequest(t *testing.T) {

@@ -773,9 +773,14 @@ func TestOpenAPIAIModelAudioContracts(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing ASR request content: %#v", asrBody)
 	}
-	for _, contentType := range []string{"application/json", "audio/wav", "audio/ogg", "audio/mpeg", "audio/mp4", "audio/aac", "application/octet-stream"} {
+	for _, contentType := range []string{"application/json", "audio/wav", "audio/ogg", "audio/opus", "audio/mpeg", "application/octet-stream"} {
 		if _, ok := asrContent[contentType]; !ok {
 			t.Fatalf("ASR request content missing %s: %#v", contentType, asrContent)
+		}
+	}
+	for _, contentType := range []string{"audio/mp4", "audio/aac"} {
+		if _, ok := asrContent[contentType]; ok {
+			t.Fatalf("ASR request content should not advertise unsupported %s: %#v", contentType, asrContent)
 		}
 	}
 	ttsPost, ok := paths["/api/v1/ai-models/tts/synthesize"]["post"].(map[string]any)
