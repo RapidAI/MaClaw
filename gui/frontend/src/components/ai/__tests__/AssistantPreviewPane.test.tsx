@@ -94,6 +94,8 @@ const workflowState = {
     suggestMaximizeType: '',
     transientText: '',
     workingDir: '',
+    workflowID: '',
+    docUpdatePhaseIDs: new Set<string>(),
 };
 
 function renderPane() {

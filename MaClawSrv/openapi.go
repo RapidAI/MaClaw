@@ -9,15 +9,18 @@ import (
 )
 
 type openAPIRoute struct {
-	Method          string
-	Path            string
-	Summary         string
-	Description     string
-	Tag             string
-	Security        []map[string][]string
-	QueryParams     []string
-	ResponseContent string
-	AdminRole       string
+	Method               string
+	Path                 string
+	Summary              string
+	Description          string
+	Tag                  string
+	Security             []map[string][]string
+	QueryParams          []string
+	HeaderParams         []string
+	ResponseContent      string
+	ResponseContentTypes []string
+	RequestContentTypes  []string
+	AdminRole            string
 }
 
 var openAPIRoutes = []openAPIRoute{
@@ -91,6 +94,8 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodGet, Path: "/api/v1/admin/client-config/default", Summary: "Shared client config", Description: "Returns the redacted shared MaClawSrv client configuration applied to all users at runtime.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPut, Path: "/api/v1/admin/client-config/default", Summary: "Update shared client config", Description: "Validates and persists the shared MaClawSrv client configuration applied to all users at runtime. Redacted sensitive placeholders preserve existing shared secrets when available.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/admin/client-config/default/validate", Summary: "Validate shared client config", Description: "Validates a submitted shared MaClawSrv client configuration without persisting it.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/admin/ai-models/status", Summary: "Admin AI model status", Description: "Returns server-wide shared AI model readiness for embedding, ASR, and TTS using the shared default client configuration.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/admin/ai-models/{model}/download", Summary: "Admin download AI model", Description: "Starts or resumes a server-wide shared AI model download for embedding, ASR, or TTS. OminiParser is intentionally unsupported in MaClawSrv.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/i18n/locales", Summary: "Admin locales", Description: "Returns Admin Web supported locales, labels, and the configured default locale after normalizing aliases such as zh_CN, zh, en_US, and en.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/i18n/messages", Summary: "Admin locale messages", Description: "Returns Admin Web message strings for the requested locale. Locale aliases such as zh_CN, zh, en_US, and en are normalized; unsupported locales return 400 with enabled_locales.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"locale"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/sandbox/status", Summary: "Sandbox status", Description: "Returns sandbox mode, detected capabilities, backend availability, and effective fallback decision.", Tag: "admin", Security: adminSecurity()},
@@ -190,6 +195,10 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodPut, Path: "/api/v1/config", Summary: "Update config", Tag: "config", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/config/validate", Summary: "Validate config", Tag: "config", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/config/test", Summary: "Test config", Tag: "config", Security: bearerSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/ai-models/status", Summary: "AI model status", Description: "Returns shared server-side AI model readiness for embedding, ASR, and TTS without exposing local model paths.", Tag: "ai-models", Security: bearerSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/ai-models/{model}/download", Summary: "Download AI model", Description: "Starts or resumes a server-wide shared AI model download for embedding, ASR, or TTS. OminiParser is intentionally unsupported in MaClawSrv.", Tag: "ai-models", Security: bearerSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/ai-models/asr/transcribe", Summary: "Transcribe audio", Description: "Uses the shared ASR model to transcribe uploaded audio for the authenticated user's agent composer. WAV, OGG/Opus, Silk, and MP3 inputs are normalized to 16kHz mono WAV before ASR using native Go decoders. M4A and AAC are recognized but currently return a native-decoder-not-supported error because no native decoder is wired. For application/octet-stream, send X-MaClaw-Audio-Format with wav, ogg, silk, mp3, m4a, or aac when magic-byte detection is not enough. The model is lazy-loaded once per server process.", Tag: "ai-models", Security: bearerSecurity(), HeaderParams: []string{"X-MaClaw-Audio-Format"}, RequestContentTypes: []string{"application/json", "audio/wav", "audio/ogg", "audio/opus", "audio/mpeg", "audio/mp4", "audio/aac", "application/octet-stream"}},
+	{Method: http.MethodPost, Path: "/api/v1/ai-models/tts/synthesize", Summary: "Synthesize assistant speech", Description: "Uses the shared TTS model to synthesize text as audio for assistant response playback. Request format=mp3 to receive audio/mpeg; otherwise WAV is returned. IM auto voice replies synthesize WAV first, then convert to an MP3 file with the built-in pure Go shine-mp3 encoder using the MaClaw GUI-compatible flow.", Tag: "ai-models", Security: bearerSecurity(), ResponseContentTypes: []string{"audio/wav", "audio/mpeg"}},
 	{Method: http.MethodPost, Path: "/api/v1/im/weixin/qr/start", Summary: "Start WeChat QR binding", Description: "Starts an iLink/personal WeChat QR binding flow for the authenticated MaClawSrv user only and returns the original QR image URL, same-origin QR image proxy URL, plus opaque QR token.", Tag: "messages", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/im/weixin/qr/image", Summary: "Render WeChat QR image", Description: "Renders a WeChat QR payload as a same-origin PNG image. Legacy validated remote image proxying remains available for url query values.", Tag: "messages", Security: bearerSecurity(), QueryParams: []string{"value", "url"}},
 	{Method: http.MethodPost, Path: "/api/v1/im/weixin/qr/poll", Summary: "Poll WeChat QR binding", Description: "Polls one iLink/personal WeChat QR binding token for the authenticated MaClawSrv user only. On confirmed login, saves WeChat credentials into that user's isolated config.", Tag: "messages", Security: bearerSecurity()},
@@ -322,6 +331,7 @@ func isOwnerOpenAPIRoute(method, path string) bool {
 		http.MethodDelete + " /api/v1/admin/service-config/draft",
 		http.MethodPost + " /api/v1/admin/service-config/export-plan",
 		http.MethodPut + " /api/v1/admin/client-config/default",
+		http.MethodPost + " /api/v1/admin/ai-models/{model}/download",
 		http.MethodPut + " /api/v1/admin/sandbox/config",
 		http.MethodPost + " /api/v1/admin/sandbox/rollback",
 		http.MethodPost + " /api/v1/admin/sandbox/switch",
@@ -380,6 +390,30 @@ func bearerSecurity() []map[string][]string {
 	return []map[string][]string{{"bearerAuth": {}}}
 }
 
+func routeResponseContentTypes(route openAPIRoute) []string {
+	if len(route.ResponseContentTypes) > 0 {
+		return route.ResponseContentTypes
+	}
+	if strings.TrimSpace(route.ResponseContent) != "" {
+		return []string{route.ResponseContent}
+	}
+	return nil
+}
+
+func routeRequestContentTypes(route openAPIRoute) []string {
+	if len(route.RequestContentTypes) > 0 {
+		return route.RequestContentTypes
+	}
+	return []string{"application/json"}
+}
+
+func openAPIContentSchema(contentType string) map[string]any {
+	if strings.HasPrefix(contentType, "audio/") || contentType == "application/octet-stream" {
+		return map[string]any{"type": "string", "format": "binary"}
+	}
+	return map[string]any{"type": "string"}
+}
+
 func buildOpenAPISpec() map[string]any {
 	paths := map[string]map[string]any{}
 	tags := map[string]struct{}{}
@@ -396,14 +430,16 @@ func buildOpenAPISpec() map[string]any {
 			"401": map[string]any{"description": "Unauthorized"},
 			"500": map[string]any{"description": "Internal server error"},
 		}
-		if route.ResponseContent != "" {
+		if responseTypes := routeResponseContentTypes(route); len(responseTypes) > 0 {
+			content := map[string]any{}
+			for _, contentType := range responseTypes {
+				content[contentType] = map[string]any{
+					"schema": openAPIContentSchema(contentType),
+				}
+			}
 			responses["200"] = map[string]any{
 				"description": "Successful response",
-				"content": map[string]any{
-					route.ResponseContent: map[string]any{
-						"schema": map[string]any{"type": "string"},
-					},
-				},
+				"content":     content,
 			}
 		}
 		op := map[string]any{
@@ -428,17 +464,25 @@ func buildOpenAPISpec() map[string]any {
 		if len(route.Security) > 0 {
 			op["security"] = route.Security
 		}
-		if params := buildOpenAPIParameters(route.Path, route.QueryParams); len(params) > 0 {
+		if params := buildOpenAPIParameters(route.Path, route.QueryParams, route.HeaderParams); len(params) > 0 {
 			op["parameters"] = params
 		}
 		if route.Method == http.MethodPost || route.Method == http.MethodPut || route.Method == http.MethodPatch {
+			contentTypes := routeRequestContentTypes(route)
+			content := map[string]any{}
+			for _, contentType := range contentTypes {
+				content[contentType] = map[string]any{
+					"schema": map[string]any{"type": "object"},
+				}
+				if strings.HasPrefix(contentType, "audio/") || contentType == "application/octet-stream" {
+					content[contentType] = map[string]any{
+						"schema": map[string]any{"type": "string", "format": "binary"},
+					}
+				}
+			}
 			op["requestBody"] = map[string]any{
 				"required": false,
-				"content": map[string]any{
-					"application/json": map[string]any{
-						"schema": map[string]any{"type": "object"},
-					},
-				},
+				"content":  content,
 			}
 		}
 		if body := openAPIFileImportRequestBody(route.Path); body != nil {
@@ -512,7 +556,7 @@ func buildOpenAPISpec() map[string]any {
 	}
 }
 
-func buildOpenAPIParameters(path string, queryParams []string) []map[string]any {
+func buildOpenAPIParameters(path string, queryParams, headerParams []string) []map[string]any {
 	params := []map[string]any{}
 	for _, segment := range strings.Split(path, "/") {
 		if strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") {
@@ -534,7 +578,30 @@ func buildOpenAPIParameters(path string, queryParams []string) []map[string]any 
 			"description": openAPIQueryDescription(path, name),
 		})
 	}
+	for _, name := range headerParams {
+		params = append(params, map[string]any{
+			"name":        name,
+			"in":          "header",
+			"required":    false,
+			"schema":      openAPIHeaderSchema(path, name),
+			"description": openAPIHeaderDescription(path, name),
+		})
+	}
 	return params
+}
+
+func openAPIHeaderSchema(path, name string) map[string]any {
+	if path == "/api/v1/ai-models/asr/transcribe" && strings.EqualFold(name, "X-MaClaw-Audio-Format") {
+		return map[string]any{"type": "string", "enum": []string{"wav", "ogg", "opus", "silk", "mp3"}}
+	}
+	return map[string]any{"type": "string"}
+}
+
+func openAPIHeaderDescription(path, name string) string {
+	if path == "/api/v1/ai-models/asr/transcribe" && strings.EqualFold(name, "X-MaClaw-Audio-Format") {
+		return "Optional source audio format hint for application/octet-stream uploads when magic-byte detection is insufficient."
+	}
+	return ""
 }
 
 func openAPIQuerySchema(path, name string) map[string]any {

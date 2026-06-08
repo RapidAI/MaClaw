@@ -9,14 +9,15 @@ import (
 
 // CodeFileEvent is the payload for code:file_update events.
 type CodeFileEvent struct {
-	SessionID string `json:"session_id"`
-	FilePath  string `json:"file_path"`
-	FileName  string `json:"file_name"`
-	Content   string `json:"content"`
-	Original  string `json:"original,omitempty"`   // empty for new files
-	OpType    string `json:"op_type"`              // "create" or "modify"
-	Language  string `json:"language"`             // detected from extension
-	ForceOpen bool   `json:"force_open,omitempty"` // true when backend should override a manually closed preview
+	SessionID   string `json:"session_id"`
+	FilePath    string `json:"file_path"`
+	FileName    string `json:"file_name"`
+	Content     string `json:"content"`
+	Original    string `json:"original,omitempty"`    // empty for new files
+	OpType      string `json:"op_type"`               // "create" or "modify"
+	Language    string `json:"language"`              // detected from extension
+	ForceOpen   bool   `json:"force_open,omitempty"`  // true when backend should override a manually closed preview
+	ProjectPath string `json:"project_path,omitempty"` // project/working directory for frontend tab routing
 }
 
 // CodeEventEmitter emits code file events to the frontend via Wails runtime.
@@ -40,24 +41,32 @@ func (e *CodeEventEmitter) EmitCodeFileEvent(evt CodeFileEvent) {
 
 // EmitSessionStart emits a code:session_start event when a coding session begins.
 // If app.ctx is nil, the call is silently skipped.
-func (e *CodeEventEmitter) EmitSessionStart(sessionID string) {
+func (e *CodeEventEmitter) EmitSessionStart(sessionID string, projectPath ...string) {
 	if e.app.ctx == nil {
 		return
 	}
-	runtime.EventsEmit(e.app.ctx, "code:session_start", map[string]string{
+	payload := map[string]string{
 		"session_id": sessionID,
-	})
+	}
+	if len(projectPath) > 0 && projectPath[0] != "" {
+		payload["project_path"] = projectPath[0]
+	}
+	runtime.EventsEmit(e.app.ctx, "code:session_start", payload)
 }
 
 // EmitSessionEnd emits a code:session_end event when a coding session completes.
 // If app.ctx is nil, the call is silently skipped.
-func (e *CodeEventEmitter) EmitSessionEnd(sessionID string) {
+func (e *CodeEventEmitter) EmitSessionEnd(sessionID string, projectPath ...string) {
 	if e.app.ctx == nil {
 		return
 	}
-	runtime.EventsEmit(e.app.ctx, "code:session_end", map[string]string{
+	payload := map[string]string{
 		"session_id": sessionID,
-	})
+	}
+	if len(projectPath) > 0 && projectPath[0] != "" {
+		payload["project_path"] = projectPath[0]
+	}
+	runtime.EventsEmit(e.app.ctx, "code:session_end", payload)
 }
 
 // detectLanguageFromExt maps a file extension to a language identifier.

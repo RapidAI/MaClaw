@@ -11,6 +11,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/opus/libopus"
 )
 
+const maxNativeOpusDecodeSeconds = 10 * 60
+
 // opusToWAV decodes OGG/Opus audio data to 16kHz mono 16-bit WAV.
 func opusToWAV(data []byte) ([]byte, error) {
 	if len(data) == 0 {
@@ -37,6 +39,7 @@ func opusToWAV(data []byte) ([]byte, error) {
 	frameBuf := make([]int16, maxFrameSamples)
 
 	var allPCM []byte
+	maxDecodedBytes := 48000 * 2 * maxNativeOpusDecodeSeconds
 
 	for _, pkt := range packets {
 		if len(pkt) == 0 {
@@ -56,6 +59,9 @@ func opusToWAV(data []byte) ([]byte, error) {
 		for i := 0; i < n; i++ {
 			s := frameBuf[i]
 			allPCM = append(allPCM, byte(s), byte(s>>8))
+		}
+		if len(allPCM) > maxDecodedBytes {
+			return nil, fmt.Errorf("audioconv: opus decoded PCM too large")
 		}
 	}
 

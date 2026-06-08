@@ -176,9 +176,10 @@ func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) erro
 	}
 	if a.app.ctx != nil {
 		runtime.EventsEmit(a.app.ctx, "workflow:doc_update", map[string]string{
-			"user_id":  userID,
-			"phase_id": phaseID,
-			"content":  content,
+			"user_id":      userID,
+			"phase_id":     phaseID,
+			"content":      content,
+			"project_path": a.GetWorkingDir(),
 		})
 	}
 	return nil
@@ -264,9 +265,10 @@ func (a *GUIWorkflowAdapter) EmitGateResult(userID, phaseID string, result *work
 	phaseID = canonicalWorkflowPhaseID(phaseID)
 	if a.app.ctx != nil {
 		runtime.EventsEmit(a.app.ctx, "workflow:gate_result", map[string]interface{}{
-			"user_id":  userID,
-			"phase_id": phaseID,
-			"result":   result,
+			"user_id":      userID,
+			"phase_id":     phaseID,
+			"result":       result,
+			"project_path": a.GetWorkingDir(),
 		})
 	}
 	return nil

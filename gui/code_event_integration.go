@@ -83,13 +83,14 @@ func (m *RemoteSessionManager) emitCodeFileEvents(s *RemoteSession, events []Imp
 		}
 
 		emitter.EmitCodeFileEvent(CodeFileEvent{
-			SessionID: s.ID,
-			FilePath:  filePath,
-			FileName:  fileName,
-			Content:   string(content),
-			Original:  original,
-			OpType:    opType,
-			Language:  language,
+			SessionID:   s.ID,
+			FilePath:    filePath,
+			FileName:    fileName,
+			Content:     string(content),
+			Original:    original,
+			OpType:      opType,
+			Language:    language,
+			ProjectPath: s.ProjectPath,
 		})
 	}
 }
@@ -190,14 +191,15 @@ func buildCodingSubAgentCodeFileEvents(sessionID, projectPath string, filesModif
 
 		fileName := filepath.Base(normalized.displayPath)
 		events = append(events, CodeFileEvent{
-			SessionID: sessionID,
-			FilePath:  normalized.displayPath,
-			FileName:  fileName,
-			Content:   string(content),
-			Original:  original,
-			OpType:    opType,
-			Language:  detectLanguageFromExt(fileName),
-			ForceOpen: true,
+			SessionID:   sessionID,
+			FilePath:    normalized.displayPath,
+			FileName:    fileName,
+			Content:     string(content),
+			Original:    original,
+			OpType:      opType,
+			Language:    detectLanguageFromExt(fileName),
+			ForceOpen:   true,
+			ProjectPath: projectPath,
 		})
 	}
 	return events

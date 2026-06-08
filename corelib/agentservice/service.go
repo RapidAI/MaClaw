@@ -42,6 +42,10 @@ type Service struct {
 	// to integrate with the skill source control system.
 	SkillSourceFilter func(tenantID, userID string) []string
 
+	// AssistantMessageMetadataHook lets the hosting server attach runtime
+	// capability metadata after an assistant response is produced.
+	AssistantMessageMetadataHook func(ctx context.Context, p Principal, inst Instance, sess Session, run Run, msg Message, cfg corelib.AppConfig) map[string]string
+
 	runMu       sync.Mutex
 	runningRuns map[string]context.CancelFunc
 }
@@ -2375,6 +2379,14 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		return &run, nil, execErr
 	}
 	assistant := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleAssistant, OutputType: defaultString(res.OutputType, "text/plain"), Content: res.Content, Metadata: cloneMap(res.Metadata), CreatedAt: completed}
+	if s.AssistantMessageMetadataHook != nil {
+		for key, value := range s.AssistantMessageMetadataHook(ctx, p, inst, sess, run, assistant, cfg.AppConfig) {
+			if assistant.Metadata == nil {
+				assistant.Metadata = map[string]string{}
+			}
+			assistant.Metadata[key] = value
+		}
+	}
 	if err := s.store.SaveMessage(assistant); err != nil {
 		return nil, nil, err
 	}
@@ -4435,6 +4447,18 @@ func (s *Service) applySharedClientAppConfig(userCfg corelib.AppConfig) corelib.
 func mergeSharedClientAppConfig(userCfg, shared corelib.AppConfig) corelib.AppConfig {
 	out := cloneAppConfig(userCfg)
 	shared = cloneAppConfig(shared)
+	out.MaclawLLMUrl = shared.MaclawLLMUrl
+	out.MaclawLLMKey = shared.MaclawLLMKey
+	out.MaclawLLMModel = shared.MaclawLLMModel
+	out.MaclawLLMProtocol = shared.MaclawLLMProtocol
+	out.MaclawLLMContextLength = shared.MaclawLLMContextLength
+	out.MaclawLLMTimeoutSec = shared.MaclawLLMTimeoutSec
+	out.AgentResponseTimeoutSec = shared.AgentResponseTimeoutSec
+	out.MaclawLLMProviders = shared.MaclawLLMProviders
+	out.MaclawLLMCurrentProvider = shared.MaclawLLMCurrentProvider
+	out.LLMPromptCache = shared.LLMPromptCache
+	out.MaclawAgentMaxIterations = shared.MaclawAgentMaxIterations
+	out.SubAgentConcurrency = shared.SubAgentConcurrency
 	out.WebSearchProviders = shared.WebSearchProviders
 	out.WebSearchCurrentProvider = shared.WebSearchCurrentProvider
 	out.DefaultProxyEnabled = shared.DefaultProxyEnabled
@@ -4462,14 +4486,33 @@ func mergeSharedClientAppConfig(userCfg, shared corelib.AppConfig) corelib.AppCo
 	out.VectorSearchEnabled = shared.VectorSearchEnabled
 	out.ASREnabled = shared.ASREnabled
 	out.TTSEnabled = shared.TTSEnabled
+	out.TTSVoiceID = shared.TTSVoiceID
+	out.TTSAutoVoiceSummary = shared.TTSAutoVoiceSummary
 	out.IMProgressNudgeEnabled = shared.IMProgressNudgeEnabled
 	out.SSHHosts = shared.SSHHosts
+	out.KnowledgeVisionLLM = shared.KnowledgeVisionLLM
+	out.KnowledgeIncludeImages = shared.KnowledgeIncludeImages
+	out.AuxiliaryLLM = shared.AuxiliaryLLM
+	out.ModelRoutes = shared.ModelRoutes
+	out.DailyLLMBudgetUSD = shared.DailyLLMBudgetUSD
 	return out
 }
 
 func SharedClientAppConfigOnly(cfg corelib.AppConfig) corelib.AppConfig {
 	cfg = cloneAppConfig(cfg)
 	return corelib.AppConfig{
+		MaclawLLMUrl:                 cfg.MaclawLLMUrl,
+		MaclawLLMKey:                 cfg.MaclawLLMKey,
+		MaclawLLMModel:               cfg.MaclawLLMModel,
+		MaclawLLMProtocol:            cfg.MaclawLLMProtocol,
+		MaclawLLMContextLength:       cfg.MaclawLLMContextLength,
+		MaclawLLMTimeoutSec:          cfg.MaclawLLMTimeoutSec,
+		AgentResponseTimeoutSec:      cfg.AgentResponseTimeoutSec,
+		MaclawLLMProviders:           cfg.MaclawLLMProviders,
+		MaclawLLMCurrentProvider:     cfg.MaclawLLMCurrentProvider,
+		LLMPromptCache:               cfg.LLMPromptCache,
+		MaclawAgentMaxIterations:     cfg.MaclawAgentMaxIterations,
+		SubAgentConcurrency:          cfg.SubAgentConcurrency,
 		WebSearchProviders:           cfg.WebSearchProviders,
 		WebSearchCurrentProvider:     cfg.WebSearchCurrentProvider,
 		DefaultProxyEnabled:          cfg.DefaultProxyEnabled,
@@ -4496,9 +4539,16 @@ func SharedClientAppConfigOnly(cfg corelib.AppConfig) corelib.AppConfig {
 		WorkingDirectory:             cfg.WorkingDirectory,
 		VectorSearchEnabled:          cfg.VectorSearchEnabled,
 		ASREnabled:                   cfg.ASREnabled,
+		TTSVoiceID:                   cfg.TTSVoiceID,
 		TTSEnabled:                   cfg.TTSEnabled,
+		TTSAutoVoiceSummary:          cfg.TTSAutoVoiceSummary,
 		IMProgressNudgeEnabled:       cfg.IMProgressNudgeEnabled,
 		SSHHosts:                     cfg.SSHHosts,
+		KnowledgeVisionLLM:           cfg.KnowledgeVisionLLM,
+		KnowledgeIncludeImages:       cfg.KnowledgeIncludeImages,
+		AuxiliaryLLM:                 cfg.AuxiliaryLLM,
+		ModelRoutes:                  cfg.ModelRoutes,
+		DailyLLMBudgetUSD:            cfg.DailyLLMBudgetUSD,
 	}
 }
 

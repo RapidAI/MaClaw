@@ -167,9 +167,6 @@ func TestAdminWebClientConfigProxyScopeControls(t *testing.T) {
 		`cfg.asr_enabled=$("clientASR").checked`,
 		`cfg.tts_enabled=$("clientTTS").checked`,
 		`cfg.im_progress_nudge_enabled=$("clientIMProgress").checked`,
-		`> Vector search</label>`,
-		`> ASR</label>`,
-		`> TTS</label>`,
 		`> IM progress nudges</label>`,
 		`<select id="clientSecurityMode">`,
 		`<label for="clientSecurityMode">${t("mode")}</label><select`,
@@ -473,7 +470,22 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 		`document.title=`,
 		`document.onkeydown=(e)=>`,
 		`buttons[n-1]?.click()`,
-		`const sections = ["overview","sandbox","logs","config","clientConfig","tenants","accounts","knowledge","ops"]`,
+		`const sections = ["overview","sandbox","logs","config","clientConfig","aiModels","tenants","accounts","knowledge","ops"]`,
+		`const f={overview,sandbox,logs,config,clientConfig,aiModels,tenants,accounts,knowledge,ops}[state.section] || overview;`,
+		`async function aiModels(){`,
+		`sharedAIModels: "Shared AI models",`,
+		`function renderAIModelStatusPanel(models)`,
+		`/api/v1/admin/ai-models/status`,
+		`await refreshAIModelStatus(true)`,
+		`/api/v1/admin/ai-models/${encodeURIComponent(model)}/download`,
+		`data-ai-model-download`,
+		`decoder_ready`,
+		`mp3_encoder_ready`,
+		`const enabled=model.enabled!==false`,
+		`${t("enabledState")} ${t("autoEnabled")}`,
+		`modelRuntimeStatus: "Model runtime status"`,
+		`localAICapabilities: "Local AI capabilities"`,
+		`id="aiTTSAutoVoiceSummary"`,
 		`const initialSection = sections.includes(location.hash.slice(1))`,
 		`function setSection(id, updateHash=true)`,
 		`function setAuthShell(on,target="loginPanel")`,
@@ -540,15 +552,31 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 			t.Fatalf("admin app missing accessibility marker %s", needle)
 		}
 	}
+	for _, stale := range []string{
+		`id="aiCurrentProvider"`,
+		`id="aiProvidersJSON"`,
+		`id="aiPromptCacheJSON"`,
+		`id="aiModelsOut"`,
+		`id="validateAIModels"`,
+		`excluded:["screen_parsing_enabled"]`,
+		`advanced routing settings`,
+	} {
+		if strings.Contains(app, stale) {
+			t.Fatalf("admin AI models page should not expose retired marker %s", stale)
+		}
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/admin/styles.css", nil)
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
 	css := w.Body.String()
-	for _, needle := range []string{".skip-link", ".badge-on::before", ".badge-off::before", ".modal-backdrop", ".modal-actions", ".app-shell.auth-only .sidebar", ".app-shell.auth-only .topbar", ".app-shell.auth-only #content", ".admin-auth-shell", ".auth-locale", ".client-search-layout", ".client-search-provider.active", ".client-search-detail", ".client-mode-tabs", ".client-mode-tab.active"} {
+	for _, needle := range []string{".skip-link", ".badge-on::before", ".badge-off::before", ".modal-backdrop", ".modal-actions", ".app-shell.auth-only .sidebar", ".app-shell.auth-only .topbar", ".app-shell.auth-only #content", ".admin-auth-shell", ".auth-locale", ".client-search-layout", ".client-search-provider.active", ".client-search-detail", ".client-mode-tabs", ".client-mode-tab.active", `.nav button[data-section="aiModels"]::before`} {
 		if !strings.Contains(css, needle) {
 			t.Fatalf("admin css missing accessibility marker %s", needle)
 		}
+	}
+	if strings.Contains(css, "#aiModelsOut") {
+		t.Fatalf("admin css should not reference retired AI models raw output")
 	}
 	for _, needle := range []string{`body.is-fetching::after`, `@keyframes network-progress`, `.field:focus-within label`, `env(safe-area-inset-top)`, `@media print`} {
 		if !strings.Contains(css, needle) {

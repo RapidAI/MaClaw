@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,7 +15,9 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 )
 
 func TestUserConfigStripsComplexLLMFields(t *testing.T) {
@@ -136,6 +141,548 @@ func TestUserConfigMemoryFieldsRoundTripThroughUserAPI(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("get zero response missing %s body = %s", want, text)
 		}
+	}
+}
+
+func TestUserAIModelsStatusAndDownloadEndpoints(t *testing.T) {
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(agentservice.Principal{TenantID: tenant.ID, UserID: user.ID})
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	modelsDir := filepath.Join(dataRoot, "models")
+	if err := os.MkdirAll(modelsDir, 0o755); err != nil {
+		t.Fatalf("create models dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelsDir, embedding.DefaultModelFilename), []byte("embedding-model"), 0o644); err != nil {
+		t.Fatalf("write embedding model: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{
+		MaclawLLMUrl:        "https://llm.example/v1",
+		MaclawLLMKey:        "llm-key",
+		MaclawLLMModel:      "llm-model",
+		VectorSearchEnabled: true,
+		ASREnabled:          false,
+		TTSEnabled:          true,
+		TTSVoiceID:          "zm_yunxi",
+	}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	if _, err := svc.UpdateDefaultClientConfig(context.Background(), corelib.AppConfig{
+		MaclawLLMUrl:        "https://llm.example/v1",
+		MaclawLLMKey:        "llm-key",
+		MaclawLLMModel:      "llm-model",
+		VectorSearchEnabled: true,
+		TTSEnabled:          true,
+		TTSVoiceID:          "zm_yunxi",
+	}); err != nil {
+		t.Fatalf("seed default config: %v", err)
+	}
+	server := NewHTTPServer(svc, "root-admin-secret", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai-models/status", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"embedding"`) || !strings.Contains(body, `"ready":true`) || !strings.Contains(body, `"voice_id":"zm_yunxi"`) || !strings.Contains(body, `"decoder":"native-go-mp3"`) || !strings.Contains(body, `"decoder_ready"`) || !strings.Contains(body, `"encoder":"shine-mp3"`) {
+		t.Fatalf("unexpected ai model status body: %s", body)
+	}
+	if strings.Contains(body, `"enabled":false`) {
+		t.Fatalf("ai models should be auto-enabled regardless of manual config: %s", body)
+	}
+	if strings.Contains(body, dataRoot) || strings.Contains(body, filepath.ToSlash(dataRoot)) {
+		t.Fatalf("ai model status should not expose data root: %s", body)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/embedding/download", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("download existing embedding = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/omniparser/download", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown ai model = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/ai-models/status", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "root-admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin status = %d body = %s", w.Code, w.Body.String())
+	}
+	adminBody := w.Body.String()
+	if !strings.Contains(adminBody, `"embedding"`) || !strings.Contains(adminBody, `"ready":true`) || !strings.Contains(adminBody, `"voice_id":"zm_yunxi"`) || !strings.Contains(adminBody, `"decoder":"native-go-mp3"`) || !strings.Contains(adminBody, `"decoder_ready"`) || !strings.Contains(adminBody, `"encoder":"shine-mp3"`) {
+		t.Fatalf("unexpected admin ai model status body: %s", adminBody)
+	}
+	if strings.Contains(adminBody, dataRoot) || strings.Contains(adminBody, filepath.ToSlash(dataRoot)) {
+		t.Fatalf("admin ai model status should not expose data root: %s", adminBody)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/ai-models/embedding/download", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "root-admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("admin download existing embedding = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/ai-models/omniparser/download", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "root-admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("admin unknown ai model = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/asr/transcribe", strings.NewReader("RIFF\x00\x00\x00\x00WAVE"))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "audio/wav")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "not ready") {
+		t.Fatalf("auto-enabled asr without model = %d body = %s", w.Code, w.Body.String())
+	}
+
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{
+		MaclawLLMUrl:        "https://llm.example/v1",
+		MaclawLLMKey:        "llm-key",
+		MaclawLLMModel:      "llm-model",
+		VectorSearchEnabled: true,
+		ASREnabled:          true,
+		TTSEnabled:          true,
+		TTSVoiceID:          "zm_yunxi",
+	}); err != nil {
+		t.Fatalf("enable asr config: %v", err)
+	}
+	if _, err := svc.UpdateDefaultClientConfig(context.Background(), corelib.AppConfig{
+		MaclawLLMUrl:        "https://llm.example/v1",
+		MaclawLLMKey:        "llm-key",
+		MaclawLLMModel:      "llm-model",
+		VectorSearchEnabled: true,
+		ASREnabled:          true,
+		TTSEnabled:          true,
+		TTSVoiceID:          "zm_yunxi",
+	}); err != nil {
+		t.Fatalf("enable default asr config: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/asr/transcribe", strings.NewReader("RIFF\x00\x00\x00\x00WAVE"))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "audio/wav")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "not ready") {
+		t.Fatalf("missing asr model = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/tts/synthesize", strings.NewReader(`{"text":"你好"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "not ready") {
+		t.Fatalf("missing tts model = %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHTTPServerStartsConfiguredAIModelDownloadsOnStartup(t *testing.T) {
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.UpdateDefaultClientConfig(context.Background(), corelib.AppConfig{
+		MaclawLLMUrl:        "https://llm.example/v1",
+		MaclawLLMKey:        "llm-key",
+		MaclawLLMModel:      "llm-model",
+		VectorSearchEnabled: false,
+		ASREnabled:          false,
+		TTSEnabled:          false,
+	}); err != nil {
+		t.Fatalf("UpdateDefaultClientConfig: %v", err)
+	}
+	server := NewHTTPServer(svc, "root-admin-secret", nil)
+	server.aiModels.mu.Lock()
+	defer server.aiModels.mu.Unlock()
+	for _, model := range []string{srvAIModelEmbedding, srvAIModelASR, srvAIModelTTS} {
+		if server.aiModels.tasks[model] == nil {
+			t.Fatalf("startup did not queue %s model download", model)
+		}
+	}
+}
+
+func TestUserConfigUpdateForcesLocalAIModelsAutoEnabled(t *testing.T) {
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(p)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "root-admin-secret", nil)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(`{"app_config":{"vector_search_enabled":false,"asr_enabled":false,"tts_enabled":false}}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update config = %d body = %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `"vector_search_enabled":false`) || strings.Contains(w.Body.String(), `"asr_enabled":false`) || strings.Contains(w.Body.String(), `"tts_enabled":false`) {
+		t.Fatalf("response should force local AI model toggles true: %s", w.Body.String())
+	}
+	raw, err := svc.GetRawUserConfig(context.Background(), p)
+	if err != nil {
+		t.Fatalf("GetRawUserConfig: %v", err)
+	}
+	if !raw.AppConfig.VectorSearchEnabled || !raw.AppConfig.ASREnabled || !raw.AppConfig.TTSEnabled {
+		t.Fatalf("raw config should force local AI model toggles true: %#v", raw.AppConfig)
+	}
+}
+
+func TestAdminGetUserConfigForcesLocalAIModelsAutoEnabled(t *testing.T) {
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), p, corelib.AppConfig{VectorSearchEnabled: false, ASREnabled: false, TTSEnabled: false}); err != nil {
+		t.Fatalf("UpdateUserConfig seed: %v", err)
+	}
+	server := NewHTTPServer(svc, "root-admin-secret", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/config", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "root-admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin get user config = %d body = %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `"vector_search_enabled":false`) || strings.Contains(w.Body.String(), `"asr_enabled":false`) || strings.Contains(w.Body.String(), `"tts_enabled":false`) {
+		t.Fatalf("admin response should force local AI model toggles true: %s", w.Body.String())
+	}
+}
+
+func TestReadASRPayloadRecognizesCompressedAudioFormatHints(t *testing.T) {
+	for _, tc := range []struct {
+		contentType string
+		format      string
+		want        string
+	}{
+		{contentType: "audio/mpeg", want: "mp3"},
+		{format: "mp3", want: "mp3"},
+		{contentType: "audio/mp4", want: "m4a"},
+		{contentType: "audio/aac", want: "aac"},
+		{format: "m4a", want: "m4a"},
+		{format: "aac", want: "aac"},
+	} {
+		if tc.contentType != "" {
+			if got := srvASRAudioFormatHint(tc.contentType); got != tc.want {
+				t.Fatalf("content type %q hint = %q want %q", tc.contentType, got, tc.want)
+			}
+			continue
+		}
+		if got := srvASRAudioFormatHint(tc.format); got != tc.want {
+			t.Fatalf("format %q hint = %q want %q", tc.format, got, tc.want)
+		}
+	}
+}
+
+func TestReadASRPayloadReturnsNativeUnsupportedForM4AAndAAC(t *testing.T) {
+	for _, contentType := range []string{"audio/mp4", "audio/aac"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/asr/transcribe", strings.NewReader("audio"))
+		req.Header.Set("Content-Type", contentType)
+		w := httptest.NewRecorder()
+		_, err := readASRWAVPayload(w, req)
+		if err == nil || !strings.Contains(err.Error(), "native") || !strings.Contains(err.Error(), "decode is not supported") {
+			t.Fatalf("readASRWAVPayload %s err = %v", contentType, err)
+		}
+	}
+}
+
+func TestReadASRPayloadUnsupportedContentTypeMessageMatchesAdvertisedFormats(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/asr/transcribe", strings.NewReader("audio"))
+	req.Header.Set("Content-Type", "audio/flac")
+	w := httptest.NewRecorder()
+	_, err := readASRWAVPayload(w, req)
+	if err == nil {
+		t.Fatal("readASRWAVPayload should reject unsupported content type")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "audio/wav") || !strings.Contains(msg, "audio/mpeg") {
+		t.Fatalf("unsupported content-type message missing supported formats: %v", err)
+	}
+	if !strings.Contains(msg, "audio/mp4") || !strings.Contains(msg, "audio/aac") {
+		t.Fatalf("unsupported content-type message missing recognized compressed formats: %v", err)
+	}
+}
+
+func TestReadASRPayloadRejectsOversizedRawAudioBody(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/asr/transcribe", bytes.NewReader(make([]byte, srvASRAudioBodyMaxBytes+1)))
+	req.Header.Set("Content-Type", "audio/wav")
+	w := httptest.NewRecorder()
+	_, err := readASRWAVPayload(w, req)
+	if err == nil || !strings.Contains(err.Error(), "http: request body too large") {
+		t.Fatalf("oversized asr body err = %v", err)
+	}
+}
+
+func TestReadASRPayloadRejectsOversizedJSONBodyWithoutInvalidJSONWrapper(t *testing.T) {
+	body := `{"audio_base64":"` + strings.Repeat("A", int(srvASRAudioBodyMaxBytes)) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/asr/transcribe", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	_, err := readASRWAVPayload(w, req)
+	if err == nil || !strings.Contains(err.Error(), "http: request body too large") {
+		t.Fatalf("oversized asr json body err = %v", err)
+	}
+	if strings.Contains(err.Error(), "invalid json") {
+		t.Fatalf("oversized asr json body should not be wrapped as invalid json: %v", err)
+	}
+}
+
+func TestReadASRPayloadRejectsMultipleJSONValues(t *testing.T) {
+	body := `{"audio_base64":"` + base64.StdEncoding.EncodeToString(testWAVBytes()) + `","format":"wav"}{}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/asr/transcribe", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	_, err := readASRWAVPayload(w, req)
+	if err == nil || !strings.Contains(err.Error(), "multiple json values") {
+		t.Fatalf("multiple json values err = %v", err)
+	}
+}
+
+func TestReadASRPayloadRejectsUnsupportedJSONFormatHint(t *testing.T) {
+	for _, format := range []string{"flac"} {
+		body := `{"audio_base64":"` + base64.StdEncoding.EncodeToString(testWAVBytes()) + `","format":"` + format + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/asr/transcribe", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		_, err := readASRWAVPayload(w, req)
+		if err == nil || !strings.Contains(err.Error(), "format must be wav, ogg, opus, silk, mp3, m4a, or aac") {
+			t.Fatalf("unsupported json format %q err = %v", format, err)
+		}
+	}
+}
+
+func TestReadASRPayloadJSONM4AFormatReturnsNativeUnsupported(t *testing.T) {
+	body := `{"audio_base64":"` + base64.StdEncoding.EncodeToString([]byte("m4a-audio")) + `","format":"m4a"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/asr/transcribe", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	_, err := readASRWAVPayload(w, req)
+	if err == nil || !strings.Contains(err.Error(), "native m4a decode is not supported") {
+		t.Fatalf("m4a json format err = %v", err)
+	}
+}
+
+func TestReadASRPayloadUsesAudioFormatHeaderForOctetStream(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/asr/transcribe", strings.NewReader(string(testWAVBytes())))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-MaClaw-Audio-Format", "wav")
+	w := httptest.NewRecorder()
+	wav, err := readASRWAVPayload(w, req)
+	if err != nil {
+		t.Fatalf("readASRWAVPayload: %v", err)
+	}
+	if string(wav[:4]) != "RIFF" {
+		t.Fatalf("expected WAV output, got %q", wav[:4])
+	}
+}
+
+func TestTTSDownloadSkipsVoiceZipWhenVoicesReady(t *testing.T) {
+	dataRoot := t.TempDir()
+	seedReadyTTSModel(t, dataRoot)
+	manager := newSrvAIModelManager(dataRoot)
+	if err := manager.download(srvAIModelTTS, corelib.AppConfig{TTSEnabled: true}); err != nil {
+		t.Fatalf("download ready tts without zip: %v", err)
+	}
+}
+
+func TestAdminTTSDownloadEndpointSkipsVoiceZipWhenVoicesReady(t *testing.T) {
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.UpdateDefaultClientConfig(context.Background(), corelib.AppConfig{
+		MaclawLLMUrl:   "https://llm.example/v1",
+		MaclawLLMKey:   "llm-key",
+		MaclawLLMModel: "llm-model",
+		TTSEnabled:     true,
+	}); err != nil {
+		t.Fatalf("UpdateDefaultClientConfig: %v", err)
+	}
+	seedReadyTTSModel(t, dataRoot)
+	server := NewHTTPServer(svc, "root-admin-secret", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/ai-models/tts/download", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "root-admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted || strings.Contains(w.Body.String(), "model downloads are disabled") {
+		t.Fatalf("admin download ready tts = %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUserAIModelTTSSynthesizeSupportsMP3Format(t *testing.T) {
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := corelib.AppConfig{
+		MaclawLLMUrl:   "https://llm.example/v1",
+		MaclawLLMKey:   "llm-key",
+		MaclawLLMModel: "llm-model",
+		TTSEnabled:     true,
+		TTSVoiceID:     "zm_yunxi",
+	}
+	if _, err := svc.UpdateDefaultClientConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("UpdateDefaultClientConfig: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(context.Background(), p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	seedReadyTTSModel(t, dataRoot)
+	server := NewHTTPServer(svc, "root-admin-secret", nil)
+	server.aiModels.ttsMgr = &fakeSrvTTSSynthesizer{wav: []byte("RIFF-tts-wav")}
+	server.aiModels.ttsVoice = "zm_yunxi"
+	originalMP3 := srvPreparePlayableVoiceMP3
+	defer func() { srvPreparePlayableVoiceMP3 = originalMP3 }()
+	srvPreparePlayableVoiceMP3 = func(_ context.Context, name string, wav []byte) (tts.PlayableVoiceFile, error) {
+		if name != "voice.wav" {
+			t.Fatalf("mp3 encoder name = %q", name)
+		}
+		if string(wav) != "RIFF-tts-wav" {
+			t.Fatalf("mp3 encoder input = %q", wav)
+		}
+		return tts.PlayableVoiceFile{Data: []byte("ID3-api-mp3"), Name: "voice.mp3", MIME: "audio/mpeg", Converted: true}, nil
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(p)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/tts/synthesize", strings.NewReader(`{"text":"你好","format":"mp3"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK || w.Body.String() != "ID3-api-mp3" || !strings.HasPrefix(w.Header().Get("Content-Type"), "audio/mpeg") || w.Header().Get("X-MaClaw-TTS-Voice-ID") != "zm_yunxi" {
+		t.Fatalf("mp3 synthesize = %d headers=%v body=%q", w.Code, w.Header(), w.Body.String())
+	}
+}
+
+func TestSrvTTSReplyTextIsCleanedBeforeSynthesis(t *testing.T) {
+	dataRoot := t.TempDir()
+	seedReadyTTSModel(t, dataRoot)
+	fakeTTS := &fakeSrvTTSSynthesizer{wav: []byte("RIFF-clean")}
+	manager := newSrvAIModelManager(dataRoot)
+	manager.ttsMgr = fakeTTS
+	manager.ttsVoice = "zf_xiaoyi"
+	_, _, err := manager.synthesizeText(context.Background(), corelib.AppConfig{TTSEnabled: true, TTSVoiceID: "zf_xiaoyi"}, "完成了：`命令` https://example.com\n\n**结果**正常")
+	if err != nil {
+		t.Fatalf("synthesizeText: %v", err)
+	}
+	if len(fakeTTS.seen) != 1 {
+		t.Fatalf("tts seen = %#v", fakeTTS.seen)
+	}
+	got := fakeTTS.seen[0]
+	if strings.Contains(got, "`") || strings.Contains(got, "https://") || strings.Contains(got, "**") || !strings.Contains(got, "命令") || !strings.Contains(got, "结果") {
+		t.Fatalf("tts text was not cleaned: %q", got)
+	}
+}
+
+func TestAssistantMessageCarriesSharedTTSAgentMetadata(t *testing.T) {
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateDefaultClientConfig(context.Background(), corelib.AppConfig{
+		MaclawLLMUrl:   "https://llm.example/v1",
+		MaclawLLMKey:   "llm-key",
+		MaclawLLMModel: "llm-model",
+		TTSEnabled:     true,
+		TTSVoiceID:     "zf_xiaoyi",
+	}); err != nil {
+		t.Fatalf("seed shared config: %v", err)
+	}
+	_ = NewHTTPServer(svc, "root-admin-secret", nil)
+	inst, err := svc.CreateInstance(context.Background(), p, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), p, inst.ID, agentservice.CreateSessionInput{AgentID: "default", Title: "Chat"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	_, msg, err := svc.PostMessage(context.Background(), p, inst.ID, sess.ID, agentservice.PostMessageInput{Content: "hello"})
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+	if msg == nil || msg.Metadata["tts_available"] != "false" || msg.Metadata["tts_status"] != "model_not_ready" {
+		t.Fatalf("assistant message should carry tts runtime metadata, got %#v", msg)
 	}
 }
 

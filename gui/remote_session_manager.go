@@ -2357,7 +2357,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 
 	// Emit code:session_end event for the code preview panel.
 	if m.app != nil && m.app.codeEventEmitter != nil {
-		m.app.codeEventEmitter.EmitSessionEnd(s.ID)
+		m.app.codeEventEmitter.EmitSessionEnd(s.ID, s.ProjectPath)
 	}
 
 	log.Printf("[session-lifecycle] 鈼?Session %s cleanup complete: tool=%s, final_status=%s, output_lines=%d, duration=%s",

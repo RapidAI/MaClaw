@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
 
@@ -34,6 +35,7 @@ type srvWeixinGateway interface {
 	Start(context.Context) error
 	Stop() error
 	SendText(context.Context, weixin.OutgoingText) error
+	SendMedia(context.Context, weixin.OutgoingMedia) error
 	GetContextToken(string) string
 	SetStatusCallback(weixin.StatusCallback)
 }
@@ -56,16 +58,22 @@ type srvWeixinRuntime struct {
 }
 
 type srvWeixinGatewayManager struct {
-	svc     *agentservice.Service
-	factory srvWeixinGatewayFactory
+	svc      *agentservice.Service
+	aiModels *srvAIModelManager
+	factory  srvWeixinGatewayFactory
 
 	mu       sync.Mutex
 	runtimes map[string]*srvWeixinRuntime
 }
 
-func newSrvWeixinGatewayManager(svc *agentservice.Service) *srvWeixinGatewayManager {
+func newSrvWeixinGatewayManager(svc *agentservice.Service, aiModels ...*srvAIModelManager) *srvWeixinGatewayManager {
+	var mgr *srvAIModelManager
+	if len(aiModels) > 0 {
+		mgr = aiModels[0]
+	}
 	return &srvWeixinGatewayManager{
-		svc: svc,
+		svc:      svc,
+		aiModels: mgr,
 		factory: func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
 			return weixin.NewGateway(cfg, handler)
 		},
@@ -249,7 +257,12 @@ func (m *srvWeixinGatewayManager) handleIncomingMessage(parent context.Context, 
 	if !m.isCurrentRuntime(p, expected) {
 		return
 	}
+	cfg, _ := m.svc.GetUserConfig(context.Background(), p)
 	text := strings.TrimSpace(msg.Text)
+	asrTranscript, asrOK := m.transcribeIncomingVoice(context.Background(), cfg, msg)
+	if text == "" && asrOK {
+		text = asrTranscript
+	}
 	if text == "" && msg.MediaType != "" {
 		text = fmt.Sprintf("[received %s]", msg.MediaType)
 	}
@@ -269,8 +282,13 @@ func (m *srvWeixinGatewayManager) handleIncomingMessage(parent context.Context, 
 		Extra: map[string]string{
 			"context_token": msg.ContextToken,
 			"runtime":       "maclawsrv",
+			"media_type":    msg.MediaType,
 		},
 	})
+	if asrOK {
+		metadata["asr_transcript"] = asrTranscript
+		metadata["asr_source"] = "maclawsrv"
+	}
 	sendInput := agentservice.SendMessageInput{
 		AgentID:          srvWeixinSessionAgent,
 		Title:            "WeChat " + msg.FromUserID,
@@ -297,8 +315,58 @@ func (m *srvWeixinGatewayManager) handleIncomingMessage(parent context.Context, 
 	}
 	if assistant != nil && strings.TrimSpace(assistant.Content) != "" {
 		m.reply(ctx, p, expected, msg, assistant.Content)
+		m.replyVoiceIfEnabled(ctx, p, expected, msg, assistant.Content, cfg, msg.MediaType == "voice")
 	}
 	_ = parent
+}
+
+func (m *srvWeixinGatewayManager) transcribeIncomingVoice(ctx context.Context, cfg *agentservice.UserConfig, msg weixin.IncomingMessage) (string, bool) {
+	if m == nil || m.aiModels == nil || cfg == nil || msg.MediaType != "voice" || len(msg.MediaData) == 0 {
+		return "", false
+	}
+	wav, err := audioconv.ToWAV(msg.MediaData, srvWeixinAudioFormatHint(msg))
+	if err != nil {
+		return "", false
+	}
+	text, err := m.aiModels.transcribeWAV(ctx, cfg.AppConfig, wav)
+	if err != nil {
+		_ = m.aiModels.startDownload(srvAIModelASR, cfg.AppConfig, false)
+		return "", false
+	}
+	text = strings.TrimSpace(text)
+	return text, text != ""
+}
+
+func (m *srvWeixinGatewayManager) replyVoiceIfEnabled(ctx context.Context, p agentservice.Principal, expected *srvWeixinRuntime, msg weixin.IncomingMessage, text string, cfg *agentservice.UserConfig, voiceReply bool) {
+	if m == nil || m.aiModels == nil || cfg == nil || (!voiceReply && !cfg.AppConfig.TTSAutoVoiceSummary) {
+		return
+	}
+	mp3, _, err := m.aiModels.synthesizeTextMP3(ctx, cfg.AppConfig, text)
+	if err != nil {
+		_ = m.aiModels.startDownload(srvAIModelTTS, cfg.AppConfig, false)
+		return
+	}
+	m.replyVoiceFile(ctx, p, expected, msg, mp3)
+}
+
+func srvWeixinAudioFormatHint(msg weixin.IncomingMessage) string {
+	name := strings.ToLower(strings.TrimSpace(msg.MediaName))
+	switch {
+	case strings.Contains(name, "silk"), strings.HasSuffix(name, ".silk"):
+		return audioconv.FormatSilk
+	case strings.Contains(name, "ogg"), strings.Contains(name, "opus"), strings.HasSuffix(name, ".ogg"), strings.HasSuffix(name, ".opus"), strings.HasSuffix(name, ".oga"):
+		return audioconv.FormatOGG
+	case strings.Contains(name, "wav"), strings.Contains(name, "wave"), strings.HasSuffix(name, ".wav"):
+		return audioconv.FormatWAV
+	case strings.Contains(name, "mpeg"), strings.Contains(name, "mp3"), strings.HasSuffix(name, ".mp3"):
+		return audioconv.FormatMP3
+	case strings.Contains(name, "m4a"), strings.Contains(name, "mp4"), strings.HasSuffix(name, ".m4a"):
+		return audioconv.FormatM4A
+	case strings.Contains(name, "aac"), strings.HasSuffix(name, ".aac"):
+		return audioconv.FormatAAC
+	default:
+		return ""
+	}
 }
 
 func (m *srvWeixinGatewayManager) isCurrentRuntime(p agentservice.Principal, expected *srvWeixinRuntime) bool {
@@ -356,6 +424,26 @@ func (m *srvWeixinGatewayManager) reply(ctx context.Context, p agentservice.Prin
 		return
 	}
 	if err := runtime.gateway.SendText(ctx, weixin.OutgoingText{ToUserID: msg.FromUserID, Text: text, ContextToken: contextToken}); err != nil {
+		m.setStatus(p, runtime, srvWeixinStatusError, err.Error())
+	}
+}
+
+func (m *srvWeixinGatewayManager) replyVoiceFile(ctx context.Context, p agentservice.Principal, expected *srvWeixinRuntime, msg weixin.IncomingMessage, mp3 []byte) {
+	m.mu.Lock()
+	runtime := m.runtimes[principalRuntimeKey(p)]
+	m.mu.Unlock()
+	if runtime == nil || runtime != expected || runtime.gateway == nil || len(mp3) == 0 {
+		return
+	}
+	contextToken := msg.ContextToken
+	if contextToken == "" {
+		contextToken = runtime.gateway.GetContextToken(msg.FromUserID)
+	}
+	if contextToken == "" {
+		return
+	}
+	err := runtime.gateway.SendMedia(ctx, weixin.OutgoingMedia{ToUserID: msg.FromUserID, ContextToken: contextToken, FileData: mp3, FileName: "assistant.mp3", MediaType: "file"})
+	if err != nil {
 		m.setStatus(p, runtime, srvWeixinStatusError, err.Error())
 	}
 }

@@ -14,6 +14,9 @@ import (
 )
 
 const silkDecodeSampleRate = 24000
+const maxNativeSilkDecodeSeconds = 10 * 60
+
+var silkDecodeBuffToPCM = silk.DecodeSilkBuffToPcm
 
 // silkToWAV decodes Silk v3 audio data to 16kHz mono 16-bit WAV.
 // The input may have an optional 0x02 prefix (WeChat format).
@@ -34,12 +37,15 @@ func silkToWAV(data []byte) ([]byte, error) {
 	}
 
 	// Decode silk to PCM (S16LE).
-	pcm, err := silk.DecodeSilkBuffToPcm(data, silkDecodeSampleRate)
+	pcm, err := silkDecodeBuffToPCM(raw, silkDecodeSampleRate)
 	if err != nil {
 		return nil, fmt.Errorf("audioconv: silk decode failed: %w", err)
 	}
 	if len(pcm) == 0 {
 		return nil, fmt.Errorf("audioconv: silk decode produced empty PCM")
+	}
+	if len(pcm) > silkDecodeSampleRate*2*maxNativeSilkDecodeSeconds {
+		return nil, fmt.Errorf("audioconv: silk decoded PCM too large")
 	}
 
 	// Resample 24kHz → 16kHz for ASR.

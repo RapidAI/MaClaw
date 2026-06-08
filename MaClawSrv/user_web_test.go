@@ -129,6 +129,16 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"function thinkingLabel()",
 		"return locale === \"en\" ? \"Thinking\" : \"思考中\"",
 		"function bindComposerKeys()",
+		"function bindVoiceComposer()",
+		"function transcribeVoiceFile(file, btn)",
+		"/api/v1/ai-models/asr/transcribe",
+		"X-MaClaw-Audio-Format",
+		"voiceUploadContentType(file)",
+		"function voiceUploadFormat(file)",
+		"function voiceUploadContentType(file)",
+		"audio/mpeg",
+		"id=\"voiceFile\" type=\"file\" accept=\"audio/wav,audio/ogg,audio/opus,audio/mpeg,audio/mp4,audio/aac,.wav,.ogg,.opus,.oga,.silk,.mp3,.m4a,.aac\" hidden",
+		"id=\"voiceBtn\" type=\"button\"",
 		"function autoResizePrompt()",
 		"function updateSendButtonState()",
 		"prompt.oninput = sync",
@@ -152,6 +162,16 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"state.messages = state.messages.filter((m) => m.id !== optimisticId && !m.local_thinking)",
 		"if (!promptEl.value.trim()) promptEl.value = content",
 		"function bindMessageCopyButtons(msgs)",
+		"function bindMessageSpeakButtons(msgs)",
+		"function speakMessage(message, btn)",
+		"safeTTSEndpoint(message?.metadata?.tts_endpoint)",
+		"function safeTTSEndpoint(value)",
+		"endpoint.startsWith(\"/api/\") && !endpoint.startsWith(\"//\")",
+		"/api/v1/ai-models/tts/synthesize",
+		"format: \"mp3\"",
+		"data-speak-message",
+		"tts_available",
+		"tts_endpoint",
 		"function fallbackCopyText(value)",
 		"function copyTextToClipboard(value)",
 		"function copyTextImproved(text, btn)",
@@ -835,7 +855,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	assertAdminSecurityHeaders(t, w.Result())
 	css := w.Body.String()
-	for _, needle := range []string{"@media (prefers-color-scheme: dark)", "@media (prefers-reduced-motion", ".skip-link", "min-height: 100dvh", ".run-panel", ".chat-toolbar", ".clear-panel-btn", ".tool-detail", ".messages-wrap", ".jump-latest", ".message-head", ".message-meta", ".message-time", ".message.pending", ".md-content.thinking", "@keyframes thinking-dots", ".copy-btn", ".sr-copy-area", ".md-content", ".md-content .md-code", ".md-content .md-code-head", ".md-content blockquote", ".md-content hr", ".md-content .md-table-wrap", "min-width: max-content", ".md-content .task-list-item", ".composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }", ".cfg-group", ".cfg-group[hidden] { display: none !important; }", ".cfg-tabs", ".cfg-output", ".settings-head", ".settings-actions", ".object-list", ".object-row", ".kv-list", ".kv-pair", ".kv-pair.custom-key-active", ".kv-pair.custom-value-active", ".choice-lines", ".choice-select-stack", ".choice-actions", ".choice-custom", ".choice-custom:not(.custom-active) [data-choice-custom]", ".custom-lines", ".raw-json-editor", ".secret-input", ".bool-radio", ".bool-radio-two", ".bool-radio input:checked + span", ".skill-grid", ".skill-card", ".skill-pager", ".mcp-inline-editor", ".mcp-param-row", ".mcp-param-row button", ".memory-manager", ".memory-toolbar", ".memory-summary", ".memory-chip", ".memory-entry", ".memory-tags", ".memory-load-more", ".channel-overview", ".im-progress-settings", ".im-subtabs", ".im-subtab.active", ".im-channel-panel", ".im-channel-toolbar", ".im-channel-actions", ".im-link-action", ".im-enable-row", ".im-field-grid", ".im-field-grid-two", ".weixin-account-status", ".weixin-qr-actions", ".channel-protocol", ".channel-protocol-actions", ".im-audit-shell", ".danger-modal-backdrop", ".danger-modal", ".danger-modal-actions", ".knowledge-access-summary", ".knowledge-section-head", ".knowledge-scope-list { display: grid; grid-template-columns: repeat(auto-fit", ".knowledge-scope-chip", ".knowledge-scope-head { display: grid; grid-template-columns: minmax(0, 1fr) auto;", ".knowledge-scope-actions", ".knowledge-clear-btn { min-height: 36px;", ".knowledge-scope-badge { flex: 0 0 auto; display: inline-flex;", ".knowledge-scope-meta", ".knowledge-scope-ids", ".knowledge-scope-ids code", ".knowledge-scope-chip small", ".knowledge-importer", ".knowledge-import-grid { display: grid; grid-template-columns: repeat(2", "align-items: stretch;", ".knowledge-import-grid section { display: grid; grid-template-rows: auto 1fr;", ".knowledge-import-grid section:nth-child(3) { grid-column: 1 / -1; }", ".knowledge-import-fields { display: grid; grid-template-columns: repeat(2", ".knowledge-import-fields > button { align-self: end;", ".knowledge-import-grid h3", ".knowledge-span-2", ".knowledge-search-form input,", ".knowledge-search-form { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(112px, 150px) 96px;", ".knowledge-search-form button { align-self: end; width: 96px;", ".knowledge-progress", ".knowledge-field-error", ".knowledge-field-help", "#issues .error", ".fields { display: block; }", "width: 100%; border: 1px solid var(--line)"} {
+	for _, needle := range []string{"@media (prefers-color-scheme: dark)", "@media (prefers-reduced-motion", ".skip-link", "min-height: 100dvh", ".run-panel", ".chat-toolbar", ".clear-panel-btn", ".tool-detail", ".messages-wrap", ".jump-latest", ".message-head", ".message-meta", ".message-time", ".message.pending", ".message-actions", ".md-content.thinking", "@keyframes thinking-dots", ".copy-btn", ".sr-copy-area", ".md-content", ".md-content .md-code", ".md-content .md-code-head", ".md-content blockquote", ".md-content hr", ".md-content .md-table-wrap", "min-width: max-content", ".md-content .task-list-item", ".composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }", ".composer-actions", ".composer-actions button", ".cfg-group", ".cfg-group[hidden] { display: none !important; }", ".cfg-tabs", ".cfg-output", ".settings-head", ".settings-actions", ".object-list", ".object-row", ".kv-list", ".kv-pair", ".kv-pair.custom-key-active", ".kv-pair.custom-value-active", ".choice-lines", ".choice-select-stack", ".choice-actions", ".choice-custom", ".choice-custom:not(.custom-active) [data-choice-custom]", ".custom-lines", ".raw-json-editor", ".secret-input", ".bool-radio", ".bool-radio-two", ".bool-radio input:checked + span", ".skill-grid", ".skill-card", ".skill-pager", ".mcp-inline-editor", ".mcp-param-row", ".mcp-param-row button", ".memory-manager", ".memory-toolbar", ".memory-summary", ".memory-chip", ".memory-entry", ".memory-tags", ".memory-load-more", ".channel-overview", ".im-progress-settings", ".im-subtabs", ".im-subtab.active", ".im-channel-panel", ".im-channel-toolbar", ".im-channel-actions", ".im-link-action", ".im-enable-row", ".im-field-grid", ".im-field-grid-two", ".weixin-account-status", ".weixin-qr-actions", ".channel-protocol", ".channel-protocol-actions", ".im-audit-shell", ".danger-modal-backdrop", ".danger-modal", ".danger-modal-actions", ".knowledge-access-summary", ".knowledge-section-head", ".knowledge-scope-list { display: grid; grid-template-columns: repeat(auto-fit", ".knowledge-scope-chip", ".knowledge-scope-head { display: grid; grid-template-columns: minmax(0, 1fr) auto;", ".knowledge-scope-actions", ".knowledge-clear-btn { min-height: 36px;", ".knowledge-scope-badge { flex: 0 0 auto; display: inline-flex;", ".knowledge-scope-meta", ".knowledge-scope-ids", ".knowledge-scope-ids code", ".knowledge-scope-chip small", ".knowledge-importer", ".knowledge-import-grid { display: grid; grid-template-columns: repeat(2", "align-items: stretch;", ".knowledge-import-grid section { display: grid; grid-template-rows: auto 1fr;", ".knowledge-import-grid section:nth-child(3) { grid-column: 1 / -1; }", ".knowledge-import-fields { display: grid; grid-template-columns: repeat(2", ".knowledge-import-fields > button { align-self: end;", ".knowledge-import-grid h3", ".knowledge-span-2", ".knowledge-search-form input,", ".knowledge-search-form { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(112px, 150px) 96px;", ".knowledge-search-form button { align-self: end; width: 96px;", ".knowledge-progress", ".knowledge-field-error", ".knowledge-field-help", "#issues .error", ".fields { display: block; }", "width: 100%; border: 1px solid var(--line)"} {
 		if !strings.Contains(css, needle) {
 			t.Fatalf("user css missing marker %s", needle)
 		}
@@ -1080,8 +1100,8 @@ func TestAdminDefaultClientConfigPartialUpdatePreservesBooleans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDefaultClientConfig after false update: %v", err)
 	}
-	if got.AppConfig.VectorSearchEnabled || !got.AppConfig.DefaultProxyEnabled || !got.AppConfig.DefaultProxyScopeCodingTools || !got.AppConfig.DefaultProxyScopeAgent || !got.AppConfig.ASREnabled || !got.AppConfig.TTSEnabled {
-		t.Fatalf("explicit false should update only submitted boolean: %#v", got.AppConfig)
+	if !got.AppConfig.VectorSearchEnabled || !got.AppConfig.DefaultProxyEnabled || !got.AppConfig.DefaultProxyScopeCodingTools || !got.AppConfig.DefaultProxyScopeAgent || !got.AppConfig.ASREnabled || !got.AppConfig.TTSEnabled {
+		t.Fatalf("AI model toggles should stay auto-enabled while other booleans update: %#v", got.AppConfig)
 	}
 }
 
@@ -1100,12 +1120,12 @@ func TestAdminDefaultClientConfigSchemaOnlyExposesSharedFields(t *testing.T) {
 		t.Fatalf("schema = %d body = %s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	for _, want := range []string{"web_search_providers", "default_proxy_enabled", "default_proxy_scope_coding_tools", "security_policy_mode", "network_level", "vector_search_enabled"} {
+	for _, want := range []string{"web_search_providers", "default_proxy_enabled", "default_proxy_scope_coding_tools", "security_policy_mode", "network_level", "vector_search_enabled", "maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_providers", "llm_prompt_cache", "tts_voice_id", "knowledge_vision_llm", "auxiliary_llm", "model_routes"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("client config schema missing shared field %s: %s", want, body)
 		}
 	}
-	for _, forbidden := range []string{"maclaw_llm_key", "maclaw_llm_url", "memory_max_backups", "yolo_mode_allowed"} {
+	for _, forbidden := range []string{"memory_max_backups", "yolo_mode_allowed"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("client config schema should not expose private user field %s: %s", forbidden, body)
 		}

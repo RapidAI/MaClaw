@@ -76,6 +76,7 @@ type HTTPServer struct {
 	jobs           *asyncJobManager
 	knowledgeMgr   *knowledgeStoreManager
 	skillSourceSvc *cskill.SourceControlService
+	aiModels       *srvAIModelManager
 }
 
 type weixinQRTokenRecord struct {
@@ -153,15 +154,27 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 		sourceSvc = cskill.NewSourceControlService(newFileKVStore(filepath.Join(svc.DataRoot(), "skill_source_control.json")))
 	}
 	wireSkillSourceFilter(svc, sourceSvc)
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc}
-	s.weixinRuntime = newSrvWeixinGatewayManager(svc)
-	s.imRuntime = newSrvIMGatewayManager(svc)
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot())}
+	s.aiModels.setDownloadConfigProvider(func() corelib.AppConfig {
+		return s.defaultConfigForAIModels(context.Background())
+	})
+	svc.AssistantMessageMetadataHook = s.decorateAssistantMessageMetadata
+	s.weixinRuntime = newSrvWeixinGatewayManager(svc, s.aiModels)
+	s.imRuntime = newSrvIMGatewayManager(svc, s.aiModels)
 	s.thirdPartyIM = newSrvThirdPartyGatewayManager(svc)
+	s.startConfiguredAIModelDownloads(context.Background())
 	s.startConfiguredWeixinRuntimes(context.Background())
 	s.startConfiguredIMRuntimes(context.Background())
 	s.routes()
 	s.startSandboxStartupDiagnoseIfEnabled()
 	return s
+}
+
+func (s *HTTPServer) startConfiguredAIModelDownloads(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	s.ensureConfiguredAIModelsAsync(s.defaultConfigForAIModels(ctx))
 }
 
 func (s *HTTPServer) startConfiguredIMRuntimes(ctx context.Context) {
@@ -581,6 +594,8 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/client-config/default", s.withAdmin(s.handleAdminGetDefaultClientConfig))
 	s.mux.HandleFunc("PUT /api/v1/admin/client-config/default", s.withAdmin(s.handleAdminUpdateDefaultClientConfig))
 	s.mux.HandleFunc("POST /api/v1/admin/client-config/default/validate", s.withAdmin(s.handleAdminValidateDefaultClientConfig))
+	s.mux.HandleFunc("GET /api/v1/admin/ai-models/status", s.withAdmin(s.handleAdminAIModelsStatus))
+	s.mux.HandleFunc("POST /api/v1/admin/ai-models/{model}/download", s.withAdmin(s.handleAdminAIModelDownload))
 	s.mux.HandleFunc("GET /api/v1/admin/i18n/locales", s.withAdmin(s.handleAdminI18NLocales))
 	s.mux.HandleFunc("GET /api/v1/admin/i18n/messages", s.withAdmin(s.handleAdminI18NMessages))
 	s.mux.HandleFunc("GET /api/v1/admin/sandbox/status", s.withAdmin(s.handleAdminSandboxStatus))
@@ -668,6 +683,10 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("PUT /api/v1/config", s.withPrincipal(s.handleUpdateConfig))
 	s.mux.HandleFunc("POST /api/v1/config/validate", s.withPrincipal(s.handleValidateConfig))
 	s.mux.HandleFunc("POST /api/v1/config/test", s.withPrincipal(s.handleTestConfig))
+	s.mux.HandleFunc("GET /api/v1/ai-models/status", s.withPrincipal(s.handleAIModelsStatus))
+	s.mux.HandleFunc("POST /api/v1/ai-models/{model}/download", s.withPrincipal(s.handleAIModelDownload))
+	s.mux.HandleFunc("POST /api/v1/ai-models/asr/transcribe", s.withPrincipal(s.handleAIModelASRTranscribe))
+	s.mux.HandleFunc("POST /api/v1/ai-models/tts/synthesize", s.withPrincipal(s.handleAIModelTTSSynthesize))
 	s.mux.HandleFunc("POST /api/v1/im/weixin/qr/start", s.withPrincipal(s.handleStartWeixinQRLogin))
 	s.mux.HandleFunc("GET /api/v1/im/weixin/qr/image", s.withPrincipal(s.handleProxyWeixinQRCodeImage))
 	s.mux.HandleFunc("POST /api/v1/im/weixin/qr/poll", s.withPrincipal(s.handlePollWeixinQRLogin))
@@ -2518,12 +2537,13 @@ func (s *HTTPServer) handleAdminGetUserConfig(w http.ResponseWriter, r *http.Req
 	out, err := s.svc.GetUserConfig(r.Context(), s.adminUserPrincipal(r))
 	if err != nil {
 		if errors.Is(err, agentservice.ErrUserConfigNotFound) {
-			writeJSON(w, http.StatusOK, map[string]any{"app_config": corelib.AppConfig{}})
+			writeJSON(w, http.StatusOK, map[string]any{"app_config": forceSrvAIAutoEnabledConfig(corelib.AppConfigDefaults())})
 			return
 		}
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	out.AppConfig = forceSrvAIAutoEnabledConfig(out.AppConfig)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -2540,12 +2560,13 @@ func (s *HTTPServer) handleAdminUpdateUserConfig(w http.ResponseWriter, r *http.
 		return
 	}
 	p := s.adminUserPrincipal(r)
-	if err := s.validateThirdPartyGatewayTokenUnique(r.Context(), p, *inPtr); err != nil {
+	next := forceSrvAIAutoEnabledConfig(*inPtr)
+	if err := s.validateThirdPartyGatewayTokenUnique(r.Context(), p, next); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	before, _ := s.svc.GetRawUserConfig(r.Context(), p)
-	out, err := s.svc.UpdateUserConfig(r.Context(), p, *inPtr)
+	out, err := s.svc.UpdateUserConfig(r.Context(), p, next)
 	if err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
@@ -2557,11 +2578,12 @@ func (s *HTTPServer) handleAdminUpdateUserConfig(w http.ResponseWriter, r *http.
 		beforeCfg = before.AppConfig
 	}
 	after, _ := s.svc.GetRawUserConfig(r.Context(), p)
-	afterCfg := *inPtr
+	afterCfg := next
 	if after != nil {
 		afterCfg = after.AppConfig
 	}
 	s.syncThirdPartyIMConfigTransition(p, beforeCfg, afterCfg)
+	s.ensureConfiguredAIModelsAsync(out.AppConfig)
 	_ = s.recordAdminAudit(r.Context(), "admin.user_config_updated", "user", r.PathValue("userId"), map[string]string{"tenant_id": r.PathValue("tenantId"), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, out)
 }
@@ -2603,7 +2625,7 @@ func (s *HTTPServer) handleAdminGetDefaultClientConfig(w http.ResponseWriter, r 
 		return
 	}
 	cfg := *out
-	cfg.AppConfig = agentservice.SanitizeAppConfig(cfg.AppConfig)
+	cfg.AppConfig = forceSrvAIAutoEnabledConfig(agentservice.SanitizeAppConfig(cfg.AppConfig))
 	writeJSON(w, http.StatusOK, cfg)
 }
 
@@ -2628,12 +2650,14 @@ func (s *HTTPServer) handleAdminUpdateDefaultClientConfig(w http.ResponseWriter,
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty or invalid config body"})
 		return
 	}
-	out, err := s.svc.UpdateDefaultClientConfig(r.Context(), *inPtr)
+	next := forceSrvAIAutoEnabledConfig(*inPtr)
+	out, err := s.svc.UpdateDefaultClientConfig(r.Context(), next)
 	if err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.default_client_config_updated", "default_client_config", "global", map[string]string{"remote_ip": requestClientIP(r)})
+	s.ensureConfiguredAIModelsAsync(out.AppConfig)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -2929,7 +2953,7 @@ func (s *HTTPServer) handleGetConfig(w http.ResponseWriter, r *http.Request, p a
 	out, err := s.svc.GetUserConfig(r.Context(), p)
 	if err != nil {
 		if errors.Is(err, agentservice.ErrUserConfigNotFound) {
-			writeJSON(w, http.StatusOK, map[string]any{"app_config": map[string]any{}})
+			writeUserConfigResponse(w, http.StatusOK, &agentservice.UserConfig{TenantID: p.TenantID, UserID: p.UserID, AppConfig: forceSrvAIAutoEnabledConfig(corelib.AppConfigDefaults())})
 			return
 		}
 		writeRedactedError(w, err, s.svc.DataRoot())
@@ -2952,6 +2976,7 @@ func (s *HTTPServer) handleUpdateConfig(w http.ResponseWriter, r *http.Request, 
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	next = forceSrvAIAutoEnabledConfig(next)
 	if err := s.validateThirdPartyGatewayTokenUnique(r.Context(), p, next); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -2974,6 +2999,7 @@ func (s *HTTPServer) handleUpdateConfig(w http.ResponseWriter, r *http.Request, 
 		afterCfg = after.AppConfig
 	}
 	s.syncThirdPartyIMConfigTransition(p, beforeCfg, afterCfg)
+	s.ensureConfiguredAIModelsAsync(out.AppConfig)
 	writeUserConfigResponse(w, http.StatusOK, out)
 }
 
@@ -3869,7 +3895,7 @@ func writeUserConfigResponse(w http.ResponseWriter, status int, cfg *agentservic
 	writeJSON(w, status, map[string]any{
 		"tenant_id":  cfg.TenantID,
 		"user_id":    cfg.UserID,
-		"app_config": userVisibleAppConfigMap(cfg.AppConfig),
+		"app_config": userVisibleAppConfigMap(forceSrvAIAutoEnabledConfig(cfg.AppConfig)),
 		"updated_at": cfg.UpdatedAt,
 	})
 }
@@ -4011,6 +4037,13 @@ func preserveUserSharedClientConfig(current, next corelib.AppConfig) corelib.App
 	next.IMProgressNudgeEnabled = current.IMProgressNudgeEnabled
 	next.SSHHosts = current.SSHHosts
 	return next
+}
+
+func forceSrvAIAutoEnabledConfig(cfg corelib.AppConfig) corelib.AppConfig {
+	cfg.VectorSearchEnabled = true
+	cfg.ASREnabled = true
+	cfg.TTSEnabled = true
+	return cfg
 }
 
 func stripUserSharedClientConfig(cfg corelib.AppConfig) corelib.AppConfig {

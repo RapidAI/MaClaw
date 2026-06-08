@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
 
@@ -32,6 +34,7 @@ type fakeSrvWeixinGateway struct {
 	stopStatus   string
 	stopCallback func()
 	sent         []weixin.OutgoingText
+	sentMedia    []weixin.OutgoingMedia
 }
 
 func (g *fakeSrvWeixinGateway) Start(context.Context) error {
@@ -62,9 +65,44 @@ func (g *fakeSrvWeixinGateway) SendText(_ context.Context, out weixin.OutgoingTe
 	return nil
 }
 
+func (g *fakeSrvWeixinGateway) SendMedia(_ context.Context, out weixin.OutgoingMedia) error {
+	g.sentMedia = append(g.sentMedia, out)
+	return nil
+}
+
 func (g *fakeSrvWeixinGateway) GetContextToken(string) string { return "ctx-token" }
 
 func (g *fakeSrvWeixinGateway) SetStatusCallback(cb weixin.StatusCallback) { g.onStatus = cb }
+
+type fakeSrvASRTranscriber struct {
+	text string
+	err  error
+	seen [][]byte
+}
+
+func (f *fakeSrvASRTranscriber) TranscribeWAV(wav []byte) (string, error) {
+	f.seen = append(f.seen, append([]byte(nil), wav...))
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.text, nil
+}
+
+type fakeSrvTTSSynthesizer struct {
+	wav  []byte
+	err  error
+	seen []string
+}
+
+func (f *fakeSrvTTSSynthesizer) SynthesizeText(text string) ([]byte, error) {
+	f.seen = append(f.seen, text)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]byte(nil), f.wav...), nil
+}
+
+func (f *fakeSrvTTSSynthesizer) Unload() {}
 
 type fakeSrvIMGateway struct {
 	onStatus      func(string)
@@ -105,6 +143,43 @@ func (g *fakeSrvIMGateway) Stop() error {
 }
 
 func (g *fakeSrvIMGateway) SetStatusCallback(cb func(string)) { g.onStatus = cb }
+
+func testWAVBytes() []byte {
+	pcm := []byte{0, 0, 16, 0, 0, 0, 240, 255}
+	out := make([]byte, 44+len(pcm))
+	copy(out[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(out[4:8], uint32(36+len(pcm)))
+	copy(out[8:12], "WAVE")
+	copy(out[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(out[16:20], 16)
+	binary.LittleEndian.PutUint16(out[20:22], 1)
+	binary.LittleEndian.PutUint16(out[22:24], 1)
+	binary.LittleEndian.PutUint32(out[24:28], 16000)
+	binary.LittleEndian.PutUint32(out[28:32], 32000)
+	binary.LittleEndian.PutUint16(out[32:34], 2)
+	binary.LittleEndian.PutUint16(out[34:36], 16)
+	copy(out[36:40], "data")
+	binary.LittleEndian.PutUint32(out[40:44], uint32(len(pcm)))
+	copy(out[44:], pcm)
+	return out
+}
+
+func seedReadyTTSModel(t *testing.T, dataRoot string) {
+	t.Helper()
+	modelsDir := filepath.Join(dataRoot, "models")
+	voicesDir := filepath.Join(modelsDir, "kokoro_voices")
+	if err := os.MkdirAll(voicesDir, 0o755); err != nil {
+		t.Fatalf("create tts voice dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelsDir, "kokoro-v1_0.koro"), []byte("fake-tts-model"), 0o644); err != nil {
+		t.Fatalf("write tts model marker: %v", err)
+	}
+	for _, voiceID := range []string{"zm_yunxi", "zm_yunyang", "zf_xiaoxiao", "zf_xiaoyi"} {
+		if err := os.WriteFile(filepath.Join(voicesDir, voiceID+".koro"), []byte("fake-voice"), 0o644); err != nil {
+			t.Fatalf("write tts voice marker: %v", err)
+		}
+	}
+}
 
 func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
@@ -680,6 +755,57 @@ func TestOpenAPIKnowledgeFileImportsUseMultipart(t *testing.T) {
 	}
 }
 
+func TestOpenAPIAIModelAudioContracts(t *testing.T) {
+	doc := buildOpenAPISpec()
+	paths, ok := doc["paths"].(map[string]map[string]any)
+	if !ok {
+		t.Fatalf("expected typed OpenAPI paths map")
+	}
+	asrPost, ok := paths["/api/v1/ai-models/asr/transcribe"]["post"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing ASR operation")
+	}
+	asrBody, ok := asrPost["requestBody"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing ASR request body: %#v", asrPost)
+	}
+	asrContent, ok := asrBody["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing ASR request content: %#v", asrBody)
+	}
+	for _, contentType := range []string{"application/json", "audio/wav", "audio/ogg", "audio/mpeg", "audio/mp4", "audio/aac", "application/octet-stream"} {
+		if _, ok := asrContent[contentType]; !ok {
+			t.Fatalf("ASR request content missing %s: %#v", contentType, asrContent)
+		}
+	}
+	ttsPost, ok := paths["/api/v1/ai-models/tts/synthesize"]["post"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing TTS operation")
+	}
+	responses, ok := ttsPost["responses"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing TTS responses: %#v", ttsPost)
+	}
+	okResp, ok := responses["200"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing TTS 200 response: %#v", responses)
+	}
+	content, ok := okResp["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing TTS response content: %#v", okResp)
+	}
+	for _, contentType := range []string{"audio/wav", "audio/mpeg"} {
+		entry, ok := content[contentType].(map[string]any)
+		if !ok {
+			t.Fatalf("TTS response content missing %s: %#v", contentType, content)
+		}
+		schema, _ := entry["schema"].(map[string]any)
+		if schema["format"] != "binary" {
+			t.Fatalf("TTS response %s should be binary: %#v", contentType, schema)
+		}
+	}
+}
+
 func TestOpenAPIKnowledgeClearDocumentsAdminCredentialBody(t *testing.T) {
 	doc := buildOpenAPISpec()
 	paths, ok := doc["paths"].(map[string]map[string]any)
@@ -815,6 +941,8 @@ func TestOpenAPIAdminRoleAnnotationsCoverCriticalRoutes(t *testing.T) {
 		{http.MethodGet, "/api/v1/admin/client-config/default", "operator"},
 		{http.MethodPut, "/api/v1/admin/client-config/default", "owner"},
 		{http.MethodPost, "/api/v1/admin/client-config/default/validate", "operator"},
+		{http.MethodGet, "/api/v1/admin/ai-models/status", "operator"},
+		{http.MethodPost, "/api/v1/admin/ai-models/{model}/download", "owner"},
 		{http.MethodPut, "/api/v1/admin/sandbox/config", "owner"},
 		{http.MethodPost, "/api/v1/admin/sandbox/rollback", "owner"},
 		{http.MethodPost, "/api/v1/admin/sandbox/switch", "owner"},
@@ -4428,6 +4556,161 @@ func TestWeixinRuntimeRoutesIncomingMessageAndReplies(t *testing.T) {
 	}
 }
 
+func TestWeixinRuntimeTranscribesVoiceBeforeAgent(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.WeixinEnabled = true
+	cfg.WeixinToken = "runtime-token"
+	cfg.WeixinAccountID = "runtime-account"
+	cfg.ASREnabled = false
+	if _, err := svc.UpdateDefaultClientConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateDefaultClientConfig: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
+		t.Fatalf("create models dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), []byte("fake-asr-model"), 0o644); err != nil {
+		t.Fatalf("write asr model marker: %v", err)
+	}
+	fakeASR := &fakeSrvASRTranscriber{text: "微信语音转写"}
+	aiModels := newSrvAIModelManager(dataRoot)
+	aiModels.asrMgr = fakeASR
+	manager := newSrvWeixinGatewayManager(svc, aiModels)
+	var gateway *fakeSrvWeixinGateway
+	manager.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		gateway = &fakeSrvWeixinGateway{handler: handler}
+		return gateway
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	if gateway == nil || gateway.handler == nil {
+		t.Fatal("WeChat gateway handler was not wired")
+	}
+	gateway.handler(weixin.IncomingMessage{
+		FromUserID:   "wx-contact-voice",
+		ContextToken: "ctx-token-voice",
+		Timestamp:    time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC),
+		MediaType:    "voice",
+		MediaName:    "voice.wav",
+		MediaData:    testWAVBytes(),
+	})
+	if len(fakeASR.seen) != 1 || !bytes.HasPrefix(fakeASR.seen[0], []byte("RIFF")) {
+		t.Fatalf("ASR did not receive WeChat WAV payload: %#v", fakeASR.seen)
+	}
+	if len(gateway.sent) != 1 || !strings.Contains(gateway.sent[0].Text, "微信语音转写") {
+		t.Fatalf("expected WeChat reply based on ASR transcript, got %#v", gateway.sent)
+	}
+	instances, err := svc.ListInstances(ctx, p)
+	if err != nil {
+		t.Fatalf("ListInstances: %v", err)
+	}
+	sessions, err := svc.ListSessions(ctx, p, instances[0].ID, agentservice.ListSessionsInput{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	messages, err := svc.ListMessages(ctx, p, instances[0].ID, sessions[0].ID, agentservice.ListMessagesInput{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(messages) == 0 || messages[0].Content != "微信语音转写" || messages[0].Metadata["asr_transcript"] != "微信语音转写" || messages[0].Metadata["asr_source"] != "maclawsrv" {
+		t.Fatalf("WeChat voice transcript was not sent to agent with metadata: %#v", messages)
+	}
+}
+
+func TestWeixinRuntimeRepliesToVoiceWithMP3File(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.WeixinEnabled = true
+	cfg.WeixinToken = "runtime-token"
+	cfg.WeixinAccountID = "runtime-account"
+	cfg.ASREnabled = false
+	cfg.TTSEnabled = false
+	cfg.TTSAutoVoiceSummary = false
+	if _, err := svc.UpdateDefaultClientConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateDefaultClientConfig: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
+		t.Fatalf("create models dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), []byte("fake-asr-model"), 0o644); err != nil {
+		t.Fatalf("write asr model marker: %v", err)
+	}
+	seedReadyTTSModel(t, dataRoot)
+	originalMP3 := srvPreparePlayableVoiceMP3
+	defer func() { srvPreparePlayableVoiceMP3 = originalMP3 }()
+	srvPreparePlayableVoiceMP3 = func(_ context.Context, name string, wav []byte) (tts.PlayableVoiceFile, error) {
+		if name != "voice.wav" {
+			t.Fatalf("mp3 encoder name = %q", name)
+		}
+		if string(wav) != "RIFF-wx-tts" {
+			t.Fatalf("mp3 encoder input = %q", wav)
+		}
+		return tts.PlayableVoiceFile{Data: []byte("ID3-wx-mp3"), Name: "voice.mp3", MIME: "audio/mpeg", Converted: true}, nil
+	}
+	fakeTTS := &fakeSrvTTSSynthesizer{wav: []byte("RIFF-wx-tts")}
+	aiModels := newSrvAIModelManager(dataRoot)
+	aiModels.asrMgr = &fakeSrvASRTranscriber{text: "微信语音问题"}
+	aiModels.ttsMgr = fakeTTS
+	aiModels.ttsVoice = "zf_xiaoyi"
+	manager := newSrvWeixinGatewayManager(svc, aiModels)
+	var gateway *fakeSrvWeixinGateway
+	manager.factory = func(cfg weixin.Config, handler weixin.MessageHandler) srvWeixinGateway {
+		gateway = &fakeSrvWeixinGateway{handler: handler}
+		return gateway
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	gateway.handler(weixin.IncomingMessage{
+		FromUserID:   "wx-contact-voice",
+		ContextToken: "ctx-token-voice",
+		MediaType:    "voice",
+		MediaName:    "voice.wav",
+		MediaData:    testWAVBytes(),
+	})
+	if len(fakeTTS.seen) != 1 || !strings.Contains(fakeTTS.seen[0], "微信语音问题") {
+		t.Fatalf("TTS did not synthesize WeChat assistant reply: %#v", fakeTTS.seen)
+	}
+	if len(gateway.sentMedia) != 1 {
+		t.Fatalf("sent media = %#v, want one MP3 file", gateway.sentMedia)
+	}
+	got := gateway.sentMedia[0]
+	if string(got.FileData) != "ID3-wx-mp3" || got.FileName != "assistant.mp3" || got.MediaType != "file" || got.ContextToken != "ctx-token-voice" {
+		t.Fatalf("unexpected WeChat MP3 media reply: %#v", got)
+	}
+}
+
 func TestWeixinRuntimeKeepsMultipleUsersIsolated(t *testing.T) {
 	ctx := context.Background()
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
@@ -5230,6 +5513,251 @@ func TestConfiguredIMRuntimesRouteIncomingMessages(t *testing.T) {
 				t.Fatalf("disabled runtime status = %#v", status)
 			}
 		})
+	}
+}
+
+func TestConfiguredIMRuntimeTranscribesVoiceBeforeAgent(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "tg-token"
+	cfg.ASREnabled = false
+	if _, err := svc.UpdateDefaultClientConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateDefaultClientConfig: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
+		t.Fatalf("create models dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), []byte("fake-asr-model"), 0o644); err != nil {
+		t.Fatalf("write asr model marker: %v", err)
+	}
+	fakeASR := &fakeSrvASRTranscriber{text: "转写后的语音内容"}
+	aiModels := newSrvAIModelManager(dataRoot)
+	aiModels.asrMgr = fakeASR
+	manager := newSrvIMGatewayManager(svc, aiModels)
+	var captured func(srvIMIncomingMessage)
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) { return "tg-config", true },
+			New: func(_ corelib.AppConfig, handler func(srvIMIncomingMessage)) srvIMGateway {
+				captured = handler
+				return &fakeSrvIMGateway{}
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	if captured == nil {
+		t.Fatalf("telegram runtime did not capture handler")
+	}
+	var replies []string
+	captured(srvIMIncomingMessage{
+		Platform:      "telegram",
+		ContactID:     "1001",
+		Title:         "Telegram 1001",
+		MediaType:     "voice",
+		MediaName:     "voice.wav",
+		MimeType:      "audio/wav",
+		MediaData:     testWAVBytes(),
+		MediaBytes:    len(testWAVBytes()),
+		ClientEventID: "voice-event-1",
+		Reply: func(_ context.Context, text string) error {
+			replies = append(replies, text)
+			return nil
+		},
+	})
+	if len(fakeASR.seen) != 1 || !bytes.HasPrefix(fakeASR.seen[0], []byte("RIFF")) {
+		t.Fatalf("ASR did not receive WAV payload: %#v", fakeASR.seen)
+	}
+	if len(replies) != 1 || !strings.Contains(replies[0], "转写后的语音内容") {
+		t.Fatalf("expected reply based on ASR transcript, got %#v", replies)
+	}
+	instances, err := svc.ListInstances(ctx, p)
+	if err != nil {
+		t.Fatalf("ListInstances: %v", err)
+	}
+	sessions, err := svc.ListSessions(ctx, p, instances[0].ID, agentservice.ListSessionsInput{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	messages, err := svc.ListMessages(ctx, p, instances[0].ID, sessions[0].ID, agentservice.ListMessagesInput{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(messages) == 0 || messages[0].Content != "转写后的语音内容" || messages[0].Metadata["asr_transcript"] != "转写后的语音内容" || messages[0].Metadata["mime_type"] != "audio/wav" {
+		t.Fatalf("voice transcript was not sent to agent with metadata: %#v", messages)
+	}
+}
+
+func TestConfiguredIMRuntimeRepliesToVoiceWithMP3File(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "tg-token"
+	cfg.ASREnabled = false
+	cfg.TTSEnabled = false
+	cfg.TTSAutoVoiceSummary = false
+	if _, err := svc.UpdateDefaultClientConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateDefaultClientConfig: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
+		t.Fatalf("create models dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), []byte("fake-asr-model"), 0o644); err != nil {
+		t.Fatalf("write asr model marker: %v", err)
+	}
+	seedReadyTTSModel(t, dataRoot)
+	originalMP3 := srvPreparePlayableVoiceMP3
+	defer func() { srvPreparePlayableVoiceMP3 = originalMP3 }()
+	srvPreparePlayableVoiceMP3 = func(_ context.Context, name string, wav []byte) (tts.PlayableVoiceFile, error) {
+		if name != "voice.wav" {
+			t.Fatalf("mp3 encoder name = %q", name)
+		}
+		if string(wav) != "RIFF-tts-wav" {
+			t.Fatalf("mp3 encoder input = %q", wav)
+		}
+		return tts.PlayableVoiceFile{Data: []byte("ID3-mp3"), Name: "voice.mp3", MIME: "audio/mpeg", Converted: true}, nil
+	}
+	fakeTTS := &fakeSrvTTSSynthesizer{wav: []byte("RIFF-tts-wav")}
+	aiModels := newSrvAIModelManager(dataRoot)
+	aiModels.asrMgr = &fakeSrvASRTranscriber{text: "语音问题"}
+	aiModels.ttsMgr = fakeTTS
+	aiModels.ttsVoice = "zf_xiaoyi"
+	manager := newSrvIMGatewayManager(svc, aiModels)
+	var captured func(srvIMIncomingMessage)
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) { return "tg-config", true },
+			New: func(_ corelib.AppConfig, handler func(srvIMIncomingMessage)) srvIMGateway {
+				captured = handler
+				return &fakeSrvIMGateway{}
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	var media struct {
+		data      []byte
+		fileName  string
+		mediaType string
+		mimeType  string
+	}
+	captured(srvIMIncomingMessage{
+		Platform:   "telegram",
+		ContactID:  "1001",
+		Title:      "Telegram 1001",
+		MediaType:  "voice",
+		MediaName:  "voice.wav",
+		MimeType:   "audio/wav",
+		MediaData:  testWAVBytes(),
+		MediaBytes: len(testWAVBytes()),
+		Reply:      func(context.Context, string) error { return nil },
+		ReplyMedia: func(_ context.Context, data []byte, fileName, mediaType, mimeType string) error {
+			media.data = append([]byte(nil), data...)
+			media.fileName = fileName
+			media.mediaType = mediaType
+			media.mimeType = mimeType
+			return nil
+		},
+	})
+	if len(fakeTTS.seen) != 1 || !strings.Contains(fakeTTS.seen[0], "语音问题") {
+		t.Fatalf("TTS did not synthesize assistant reply: %#v", fakeTTS.seen)
+	}
+	if string(media.data) != "ID3-mp3" || media.fileName != "assistant.mp3" || media.mediaType != "file" || media.mimeType != "audio/mpeg" {
+		t.Fatalf("unexpected MP3 media reply: %#v", media)
+	}
+}
+
+func TestConfiguredIMRuntimeDoesNotVoiceReplyToTextWhenAutoDisabled(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.TelegramBotEnabled = true
+	cfg.TelegramBotToken = "tg-token"
+	cfg.TTSEnabled = true
+	cfg.TTSAutoVoiceSummary = false
+	if _, err := svc.UpdateDefaultClientConfig(ctx, cfg); err != nil {
+		t.Fatalf("UpdateDefaultClientConfig: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(ctx, p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	seedReadyTTSModel(t, dataRoot)
+	fakeTTS := &fakeSrvTTSSynthesizer{wav: []byte("RIFF-tts-wav")}
+	aiModels := newSrvAIModelManager(dataRoot)
+	aiModels.ttsMgr = fakeTTS
+	aiModels.ttsVoice = "zf_xiaoyi"
+	manager := newSrvIMGatewayManager(svc, aiModels)
+	var captured func(srvIMIncomingMessage)
+	manager.factories = map[string]srvIMGatewayFactory{
+		"telegram": {
+			ConfigKey: func(corelib.AppConfig) (string, bool) { return "tg-config", true },
+			New: func(_ corelib.AppConfig, handler func(srvIMIncomingMessage)) srvIMGateway {
+				captured = handler
+				return &fakeSrvIMGateway{}
+			},
+		},
+	}
+	manager.SyncPrincipal(ctx, p, cfg)
+	var mediaReplies int
+	captured(srvIMIncomingMessage{
+		Platform:  "telegram",
+		ContactID: "1001",
+		Title:     "Telegram 1001",
+		Text:      "hello",
+		Reply:     func(context.Context, string) error { return nil },
+		ReplyMedia: func(_ context.Context, data []byte, fileName, mediaType, mimeType string) error {
+			mediaReplies++
+			return nil
+		},
+	})
+	if mediaReplies != 0 || len(fakeTTS.seen) != 0 {
+		t.Fatalf("text message generated voice reply: media=%d tts=%#v", mediaReplies, fakeTTS.seen)
 	}
 }
 

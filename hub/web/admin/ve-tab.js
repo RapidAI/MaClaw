@@ -285,20 +285,6 @@
   function jsAttrString(value) {
     return escapeHtml(jsString(value));
   }
-  function currentVEQuery() {
-    var input = document.getElementById('veHistorySearchInput');
-    return input ? String(input.value || '').trim().toLowerCase() : '';
-  }
-
-  function filterVEForQuery(employees) {
-    var query = currentVEQuery();
-    if (!query) return employees;
-    return employees.filter(function(ve) {
-      return String(ve.name || '').toLowerCase().indexOf(query) >= 0 ||
-        String(ve.owner_email || ve.owner_user_id || '').toLowerCase().indexOf(query) >= 0;
-    });
-  }
-
   function discussionTitle(discussion) {
     return discussion.topic || discussion.question || discussion.id || '';
   }
@@ -436,7 +422,7 @@
   }
 
   function renderPendingList(employees) {
-    var pending = filterVEForQuery(employees).filter(function(e) { return e.status === 'pending'; });
+    var pending = employees.filter(function(e) { return e.status === 'pending'; });
     var container = document.getElementById('vePendingList');
     if (!container) return;
 
@@ -455,7 +441,7 @@
   }
 
   function renderActiveList(employees) {
-    var active = filterVEForQuery(employees).filter(function(e) { return e.status === 'active'; });
+    var active = employees.filter(function(e) { return e.status === 'active'; });
     var container = document.getElementById('veActiveList');
     if (!container) return;
 
@@ -478,7 +464,7 @@
   }
 
   function renderDeletedList(employees) {
-    var deleted = filterVEForQuery(employees).filter(isDeletedVEWithHistory);
+    var deleted = employees.filter(isDeletedVEWithHistory);
     var container = document.getElementById('veDeletedList');
     if (!container) return;
 
@@ -497,7 +483,7 @@
   }
 
   function renderInactiveList(employees) {
-    var inactive = filterVEForQuery(employees).filter(function(e) { return e.status !== 'active' && e.status !== 'pending' && !isDeletedVEWithHistory(e); });
+    var inactive = employees.filter(function(e) { return e.status !== 'active' && e.status !== 'pending' && !isDeletedVEWithHistory(e); });
     var container = document.getElementById('veInactiveList');
     if (!container) return;
 
@@ -657,10 +643,14 @@
   };
 
   global.veSearchHistory = function veSearchHistory(loadMatches) {
-    renderVELists();
     if (!loadMatches) return;
     global.veLoadHistorySearch(currentVEQuery());
   };
+
+  function currentVEQuery() {
+    var input = document.getElementById('veHistorySearchInput');
+    return input ? String(input.value || '').trim().toLowerCase() : '';
+  }
 
   function mergeVEHistoryDiscussionMatches(matches, limit) {
     var byID = Object.create(null);
@@ -1072,10 +1062,10 @@
     }
     return new Promise(function(resolve) {
       var overlay = document.createElement('div');
-      overlay.className = 'modal-overlay show';
-      overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.42);display:flex;align-items:center;justify-content:center;padding:18px';
-      overlay.innerHTML = '<div class="modal" role="dialog" aria-modal="true" style="width:min(420px,100%);background:var(--panel,#fff);border:1px solid var(--border,#d8dee9);border-radius:12px;padding:16px;box-shadow:0 18px 60px rgba(15,23,42,.22)">' +
-        '<div class="item-title" style="margin-bottom:8px">' + escapeHtml(vt('forcePurge')) + '</div>' +
+      overlay.className = 'session-modal-overlay show';
+      overlay.style.cssText = 'z-index:9999;background:rgba(15,23,42,.42);padding:18px';
+      overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="veForcePurgeDialogTitle" style="width:min(420px,100%);max-height:none;overflow:visible;border:1px solid var(--border,#d8dee9);border-radius:12px;padding:16px;box-shadow:0 18px 60px rgba(15,23,42,.22)">' +
+        '<div class="item-title" id="veForcePurgeDialogTitle" style="margin-bottom:8px">' + escapeHtml(vt('forcePurge')) + '</div>' +
         '<div class="item-meta" style="margin-bottom:12px">' + escapeHtml(message) + '</div>' +
         '<input id="veForcePurgePasswordInput" type="password" autocomplete="current-password" style="width:100%;height:36px;margin-bottom:12px">' +
         '<div class="actions" style="justify-content:flex-end;gap:8px">' +
@@ -1087,6 +1077,13 @@
         resolve(value);
       };
       document.body.appendChild(overlay);
+      if (global.AdminUI && typeof global.AdminUI.bindModalOverlayDismiss === 'function') {
+        global.AdminUI.bindModalOverlayDismiss(overlay, function() { done(null); });
+      } else {
+        overlay.onclick = function(event) {
+          if (event && event.target === overlay) done(null);
+        };
+      }
       var input = overlay.querySelector ? overlay.querySelector('#veForcePurgePasswordInput') : null;
       var cancel = overlay.querySelector ? overlay.querySelector('#veForcePurgeCancelBtn') : null;
       var ok = overlay.querySelector ? overlay.querySelector('#veForcePurgeConfirmBtn') : null;

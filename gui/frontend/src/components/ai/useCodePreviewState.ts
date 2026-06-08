@@ -57,6 +57,24 @@ export function applyFileUpdate(
         return state;
     }
     if (state.sessionID && file.sessionID !== state.sessionID) {
+        // Session mismatch detected.
+        // If the current session is NOT active (i.e., it ended or was restored
+        // from a snapshot of a completed session), allow a new session to take
+        // over by clearing old files and accepting the new file.
+        if (file.sessionID && !state.sessionActive) {
+            // New session starting — clear stale state and accept
+            const nextFiles = new Map<string, CodeFile>();
+            nextFiles.set(file.filePath, file);
+            return {
+                ...state,
+                files: nextFiles,
+                activeFilePath: file.filePath,
+                sessionID: file.sessionID,
+                active: !state.userClosed || file.forceOpen ? true : state.active,
+                userClosed: file.forceOpen ? false : state.userClosed,
+            };
+        }
+        // Active session should block foreign events
         return state;
     }
 
@@ -170,14 +188,28 @@ export function applyResetSession(): CodePreviewUIState {
  *   - code:session_end    — deactivate session
  *   - workflow:doc_update  — preserve code preview for tabbed switching
  *
+ * @param activeTabProjectPath - The project_path of the currently active tab.
+ *   Used to route code:file_update events: if the event carries a project_path
+ *   that doesn't match the active tab, the update is skipped (it belongs to
+ *   another tab and will be handled via per-tab save/restore). Events without
+ *   project_path are applied to the current state (backward compatible).
  */
-export function useCodePreviewState() {
+export function useCodePreviewState(activeTabProjectPath?: string) {
     const [state, setState] = useState<CodePreviewUIState>(initialState);
 
     // Listen for code:file_update
     useEffect(() => {
         const unsub = EventsOn("code:file_update", (data: any) => {
             if (!data?.file_path || data?.content === undefined || data?.content === null) return;
+
+            // Route by project_path: if the event carries a project_path that
+            // doesn't match the active tab, skip the update. The per-tab
+            // save/restore (task 3.6) handles cross-tab state.
+            // If project_path is absent, apply to current state (backward compatible).
+            const eventProjectPath: string | undefined = data.project_path;
+            if (eventProjectPath && activeTabProjectPath && eventProjectPath !== activeTabProjectPath) {
+                return;
+            }
 
             const file: CodeFile = {
                 sessionID: data.session_id || "",
@@ -197,29 +229,37 @@ export function useCodePreviewState() {
             if (typeof unsub === "function") unsub();
             else EventsOff("code:file_update");
         };
-    }, []);
+    }, [activeTabProjectPath]);
 
     // Listen for code:session_start
     useEffect(() => {
         const unsub = EventsOn("code:session_start", (data: any) => {
+            const eventProjectPath: string | undefined = data?.project_path;
+            if (eventProjectPath && activeTabProjectPath && eventProjectPath !== activeTabProjectPath) {
+                return;
+            }
             setState(prev => applySessionStart(prev, data?.session_id || ""));
         });
         return () => {
             if (typeof unsub === "function") unsub();
             else EventsOff("code:session_start");
         };
-    }, []);
+    }, [activeTabProjectPath]);
 
     // Listen for code:session_end
     useEffect(() => {
         const unsub = EventsOn("code:session_end", (data: any) => {
+            const eventProjectPath: string | undefined = data?.project_path;
+            if (eventProjectPath && activeTabProjectPath && eventProjectPath !== activeTabProjectPath) {
+                return;
+            }
             setState(prev => applySessionEnd(prev, data?.session_id || ""));
         });
         return () => {
             if (typeof unsub === "function") unsub();
             else EventsOff("code:session_end");
         };
-    }, []);
+    }, [activeTabProjectPath]);
 
     // Listen for workflow:doc_update — keep source preview available for tabs.
     useEffect(() => {
@@ -248,11 +288,17 @@ export function useCodePreviewState() {
         setState(applyResetSession());
     }, []);
 
+    /** Overwrites the entire code preview state from a saved snapshot. */
+    const restoreState = useCallback((snapshot: CodePreviewUIState) => {
+        setState(snapshot);
+    }, []);
+
     return {
         state,
         closePanel,
         reopenPanel,
         selectFile,
         resetSession,
+        restoreState,
     };
 }

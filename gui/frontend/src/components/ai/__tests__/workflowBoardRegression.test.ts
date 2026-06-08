@@ -221,10 +221,11 @@ describe('workflow reset and completion regression (Requirement 6.7)', () => {
         });
         emit('workflow:suggest_maximize_dismiss', {});
 
-        // Board pane closed, maximize suggestion dismissed, but the produced
-        // document remains viewable.
+        // After completion: maximize suggestion dismissed, but the board pane
+        // remains open (splitMode=true) so the user can review final documents.
+        // Documents are retained until the next workflow instance starts.
         expect(result.current.state.active).toBe(false);
-        expect(result.current.state.splitMode).toBe(false);
+        expect(result.current.state.splitMode).toBe(true);
         expect(result.current.state.suggestMaximize).toBe(false);
         expect(result.current.state.suggestMaximizeType).toBe('');
         expect(result.current.state.phaseDocuments.get('requirements')).toBe('# Requirements');

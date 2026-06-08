@@ -104,7 +104,7 @@ describe('workflow state document collection', () => {
         expect(result.current.state.latestDocumentPhaseID).toBe('requirements');
     });
 
-    it('ignores late document and gate events when no workflow is active', () => {
+    it('accepts late document and gate events even when no workflow is active', () => {
         const { result } = renderHook(() => useWorkflowState());
 
         act(() => {
@@ -118,7 +118,12 @@ describe('workflow state document collection', () => {
             });
         });
 
-        expect(result.current.state.phaseDocuments.size).toBe(0);
+        // After the fix, late doc_update events are accepted regardless of
+        // workflow active status — the document is the final output and should
+        // always be displayed (Bug 1.3 / Requirement 2.3).
+        expect(result.current.state.phaseDocuments.size).toBe(1);
+        expect(result.current.state.phaseDocuments.get('requirements')).toBe('# Late requirements');
+        // Gate results still require an active workflow (guard not removed for gates)
         expect(result.current.state.gateResults.size).toBe(0);
 
         act(() => {
@@ -151,7 +156,9 @@ describe('workflow state document collection', () => {
             });
         });
 
-        expect(result.current.state.phaseDocuments.has('design')).toBe(false);
+        expect(result.current.state.phaseDocuments.has('design')).toBe(true);
+        expect(result.current.state.phaseDocuments.get('design')).toBe('# Late design');
+        // Gate results still require active workflow (guard not removed for gates)
         expect(result.current.state.gateResults.has('design')).toBe(false);
     });
 

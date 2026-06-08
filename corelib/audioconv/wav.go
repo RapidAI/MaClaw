@@ -46,6 +46,9 @@ func pcmToWAV(pcm []byte, sampleRate, channels int) ([]byte, error) {
 // resampleS16 resamples mono S16LE PCM from srcRate to dstRate using linear
 // interpolation. Good enough for speech; avoids any external dependency.
 func resampleS16(pcm []byte, srcRate, dstRate int) []byte {
+	if srcRate <= 0 || dstRate <= 0 {
+		return nil
+	}
 	if srcRate == dstRate {
 		return pcm
 	}

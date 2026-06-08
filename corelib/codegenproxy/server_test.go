@@ -3,6 +3,7 @@ package codegenproxy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -187,12 +188,42 @@ func TestConvertOpenAIToAnthropic_ToolCalls(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIToAnthropic_LegacyFunctionCall(t *testing.T) {
+	resp := openaiChatResponse{
+		Choices: []openaiChoice{{
+			Message: openaiMessage{
+				Role: "assistant",
+				FunctionCall: &openaiLegacyFunctionCall{
+					Name:      "search",
+					Arguments: `{"query":"test"}`,
+				},
+			},
+			FinishReason: "function_call",
+		}},
+	}
+
+	result := convertOpenAIToAnthropic(resp, "Qwen-Flash")
+
+	if result.StopReason != "tool_use" {
+		t.Fatalf("stop_reason = %q, want tool_use", result.StopReason)
+	}
+	if len(result.Content) != 1 || result.Content[0].Type != "tool_use" {
+		t.Fatalf("content = %+v", result.Content)
+	}
+	if result.Content[0].Name != "search" || result.Content[0].Input["query"] != "test" {
+		t.Fatalf("tool_use = %+v, want search query test", result.Content[0])
+	}
+}
+
 func TestSetCodeGenUpstreamHeadersNormalizeLegacyClientName(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, "https://codegen.qianxin-inc.cn/api/v1/models", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	setCodeGenUpstreamHeaders(req, "openclaw")
+	if got := req.Header.Get("User-Agent"); got != corelib.CodeGenClientName {
+		t.Fatalf("User-Agent = %q, want %q", got, corelib.CodeGenClientName)
+	}
 	if got := req.Header.Get(corelib.CodeGenClientNameHeader); got != corelib.CodeGenClientName {
 		t.Fatalf("%s = %q, want %q", corelib.CodeGenClientNameHeader, got, corelib.CodeGenClientName)
 	}
@@ -205,6 +236,9 @@ func TestNonStreamProxyRoundTrip(t *testing.T) {
 		auth := r.Header.Get("Authorization")
 		if auth != "Bearer test-key" {
 			t.Errorf("upstream Authorization = %q, want %q", auth, "Bearer test-key")
+		}
+		if got := r.Header.Get("User-Agent"); got != "custom-agent" {
+			t.Errorf("upstream User-Agent = %q, want %q", got, "custom-agent")
 		}
 		if got := r.Header.Get(corelib.CodeGenClientNameHeader); got != "custom-agent" {
 			t.Errorf("upstream %s = %q, want %q", corelib.CodeGenClientNameHeader, got, "custom-agent")
@@ -280,6 +314,827 @@ func TestNonStreamProxyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAnthropicProxyPreservesProviderPrefixedModel(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", 400)
+			return
+		}
+		if req.Model != "qax-codegen/Qwen-Flash" {
+			t.Errorf("upstream model = %q, want qax-codegen/Qwen-Flash", req.Model)
+		}
+		json.NewEncoder(w).Encode(openaiChatResponse{
+			ID: "chatcmpl-prefixed",
+			Choices: []openaiChoice{{
+				Message:      openaiMessage{Role: "assistant", Content: "ok"},
+				FinishReason: "stop",
+			}},
+		})
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	anthReq := `{
+		"model": "qax-codegen/Qwen-Flash",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"max_tokens": 1024,
+		"stream": false
+	}`
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestAnthropicProxyResolvesShortModelAlias(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"qax-codegen/Qwen-Flash","name":"Qwen-Flash","provider":"qax-codegen"}]}`))
+			return
+		case "/chat/completions":
+			body, _ := io.ReadAll(r.Body)
+			var req openaiChatRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Errorf("upstream received invalid JSON: %v", err)
+				http.Error(w, "bad request", 400)
+				return
+			}
+			if req.Model != "qax-codegen/Qwen-Flash" {
+				t.Errorf("upstream model = %q, want qax-codegen/Qwen-Flash", req.Model)
+			}
+			json.NewEncoder(w).Encode(openaiChatResponse{
+				ID: "chatcmpl-alias",
+				Choices: []openaiChoice{{
+					Message:      openaiMessage{Role: "assistant", Content: "ok"},
+					FinishReason: "stop",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	anthReq := `{
+		"model": "Qwen-Flash",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"max_tokens": 1024,
+		"stream": false
+	}`
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestAnthropicProxyClampsQwenFlashMaxTokens(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"Qwen-Flash","name":"Qwen-Flash"}]}`))
+			return
+		case "/chat/completions":
+			body, _ := io.ReadAll(r.Body)
+			var req openaiChatRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Errorf("upstream received invalid JSON: %v", err)
+				http.Error(w, "bad request", 400)
+				return
+			}
+			if req.Model != "Qwen-Flash" {
+				t.Errorf("upstream model = %q, want Qwen-Flash", req.Model)
+			}
+			if req.MaxTokens != codeGenQwenFlashMaxTokens {
+				t.Errorf("max_tokens = %d, want %d", req.MaxTokens, codeGenQwenFlashMaxTokens)
+			}
+			if len(req.Tools) != 1 || req.Tools[0].Function.Name != "search" {
+				t.Errorf("tools = %+v, want one search tool", req.Tools)
+			}
+			if len(req.Functions) != 0 {
+				t.Errorf("functions count = %d, want 0", len(req.Functions))
+			}
+			parameters, ok := req.Tools[0].Function.Parameters.(map[string]interface{})
+			if !ok {
+				t.Fatalf("parameters = %#v, want object", req.Tools[0].Function.Parameters)
+			}
+			if _, ok := parameters["$schema"]; ok {
+				t.Fatalf("parameters should remove $schema: %#v", parameters)
+			}
+			if _, ok := parameters["additionalProperties"]; ok {
+				t.Fatalf("parameters should remove additionalProperties=false: %#v", parameters)
+			}
+			json.NewEncoder(w).Encode(openaiChatResponse{
+				ID: "chatcmpl-qwen",
+				Choices: []openaiChoice{{
+					Message:      openaiMessage{Role: "assistant", Content: "ok"},
+					FinishReason: "stop",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	anthReq := `{
+		"model": "Qwen-Flash",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"max_tokens": 32000,
+		"stream": false,
+		"tools": [{"name":"search","description":"` + strings.Repeat("long ", 200) + `","input_schema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"properties":{"query":{"type":"string","description":"` + strings.Repeat("desc ", 120) + `"}}}}]
+	}`
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestAnthropicProxySanitizesQwenFlashClaudeCodeSystemPrompt(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"Qwen-Flash","name":"Qwen-Flash"}]}`))
+			return
+		case "/chat/completions":
+			body, _ := io.ReadAll(r.Body)
+			var req openaiChatRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Errorf("upstream received invalid JSON: %v", err)
+				http.Error(w, "bad request", 400)
+				return
+			}
+			if len(req.Messages) == 0 || req.Messages[0].Role != "system" {
+				t.Fatalf("first message = %+v, want system", req.Messages)
+			}
+			systemText, _ := req.Messages[0].Content.(string)
+			for _, forbidden := range []string{"x-anthropic-billing-header", "Claude Code", "Anthropic"} {
+				if strings.Contains(systemText, forbidden) {
+					t.Fatalf("system prompt leaked %q: %q", forbidden, systemText)
+				}
+			}
+			if !strings.Contains(systemText, "TigerClaw Code") {
+				t.Fatalf("system prompt = %q, want TigerClaw Code", systemText)
+			}
+			json.NewEncoder(w).Encode(openaiChatResponse{
+				ID: "chatcmpl-qwen-system",
+				Choices: []openaiChoice{{
+					Message:      openaiMessage{Role: "assistant", Content: "ok"},
+					FinishReason: "stop",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	anthReq := `{
+		"model": "Qwen-Flash",
+		"system": "x-anthropic-billing-header: cc_version=2.1.168.a47\nYou are Claude Code, Anthropic's official CLI for Claude.\nUse tools well.",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"max_tokens": 32000,
+		"stream": false
+	}`
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestAnthropicProxyKeepsGLMClaudeCodeSystemPrompt(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", 400)
+			return
+		}
+		systemText, _ := req.Messages[0].Content.(string)
+		if !strings.Contains(systemText, "You are Claude Code") {
+			t.Fatalf("system prompt = %q, want original Claude Code prompt", systemText)
+		}
+		json.NewEncoder(w).Encode(openaiChatResponse{
+			ID: "chatcmpl-glm-system",
+			Choices: []openaiChoice{{
+				Message:      openaiMessage{Role: "assistant", Content: "ok"},
+				FinishReason: "stop",
+			}},
+		})
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	anthReq := `{
+		"model": "GLM-5.1",
+		"system": "x-anthropic-billing-header: cc_version=2.1.168.a47\nYou are Claude Code, Anthropic's official CLI for Claude.",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"max_tokens": 32000,
+		"stream": false
+	}`
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestAnthropicProxyMergesAdjacentQwenFlashUserMessages(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"Qwen-Flash","name":"Qwen-Flash"}]}`))
+			return
+		case "/chat/completions":
+			body, _ := io.ReadAll(r.Body)
+			var req openaiChatRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Errorf("upstream received invalid JSON: %v", err)
+				http.Error(w, "bad request", 400)
+				return
+			}
+			if len(req.Messages) != 2 {
+				t.Fatalf("messages = %+v, want system plus merged user", req.Messages)
+			}
+			if req.Messages[0].Role != "system" || req.Messages[1].Role != "user" {
+				t.Fatalf("roles = %+v, want system,user", req.Messages)
+			}
+			content, _ := req.Messages[1].Content.(string)
+			if !strings.Contains(content, "first") || !strings.Contains(content, "second") {
+				t.Fatalf("merged user content = %q, want first and second", content)
+			}
+			json.NewEncoder(w).Encode(openaiChatResponse{
+				ID: "chatcmpl-qwen-merge",
+				Choices: []openaiChoice{{
+					Message:      openaiMessage{Role: "assistant", Content: "ok"},
+					FinishReason: "stop",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	anthReq := `{
+		"model": "Qwen-Flash",
+		"system": "You are helpful.",
+		"messages": [
+			{"role": "user", "content": "first"},
+			{"role": "user", "content": "second"}
+		],
+		"max_tokens": 1024,
+		"stream": false
+	}`
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestAnthropicProxyDropsQwenFlashMidConversationSystemMessages(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"Qwen-Flash","name":"Qwen-Flash"}]}`))
+			return
+		case "/chat/completions":
+			body, _ := io.ReadAll(r.Body)
+			var req openaiChatRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Errorf("upstream received invalid JSON: %v", err)
+				http.Error(w, "bad request", 400)
+				return
+			}
+			if len(req.Messages) != 2 {
+				t.Fatalf("messages = %+v, want system,user", req.Messages)
+			}
+			if req.Messages[0].Role != "system" || req.Messages[1].Role != "user" {
+				t.Fatalf("roles = %+v, want system,user", req.Messages)
+			}
+			for _, msg := range req.Messages {
+				text := logContentText(msg.Content)
+				for _, forbidden := range []string{"Claude Code", "Anthropic", "Skill tool"} {
+					if strings.Contains(text, forbidden) {
+						t.Fatalf("message leaked %q: %+v", forbidden, req.Messages)
+					}
+				}
+			}
+			json.NewEncoder(w).Encode(openaiChatResponse{
+				ID: "chatcmpl-qwen-mid-system",
+				Choices: []openaiChoice{{
+					Message:      openaiMessage{Role: "assistant", Content: "ok"},
+					FinishReason: "stop",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	anthReq := `{
+		"model": "Qwen-Flash",
+		"system": "x-anthropic-billing-header: cc_version=2.1.168.a47\nYou are Claude Code, Anthropic's official CLI for Claude.",
+		"messages": [
+			{"role": "user", "content": "hello"},
+			{"role": "system", "content": "The following skills are available for use with the Skill tool: Claude API / Anthropic SDK."}
+		],
+		"max_tokens": 1024,
+		"stream": false
+	}`
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestAnthropicProxyKeepsQwenFlashToolsForRepeatedToolHistory(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"Qwen-Flash","name":"Qwen-Flash"}]}`))
+			return
+		case "/chat/completions":
+			body, _ := io.ReadAll(r.Body)
+			var req openaiChatRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Errorf("upstream received invalid JSON: %v", err)
+				http.Error(w, "bad request", 400)
+				return
+			}
+			if len(req.Tools) != 1 {
+				t.Fatalf("tools count = %d, want 1; proxy must not end repeated tool history", len(req.Tools))
+			}
+			if got := countOpenAIToolResultMessages(req.Messages); got != codeGenQwenFlashToolLoopAfterToolResults {
+				t.Fatalf("tool result messages = %d, want preserved %d", got, codeGenQwenFlashToolLoopAfterToolResults)
+			}
+			json.NewEncoder(w).Encode(openaiChatResponse{
+				ID: "chatcmpl-qwen-repeated-tools",
+				Choices: []openaiChoice{{
+					Message:      openaiMessage{Role: "assistant", Content: "final"},
+					FinishReason: "stop",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	messages := []string{`{"role": "user", "content": "Use tools then answer"}`}
+	for i := 0; i < codeGenQwenFlashToolLoopAfterToolResults; i++ {
+		messages = append(messages,
+			`{"role": "assistant", "content": [{"type":"tool_use","id":"call_`+string(rune('a'+i))+`","name":"search","input":{"q":"x"}}]}`,
+			`{"role": "user", "content": [{"type":"tool_result","tool_use_id":"call_`+string(rune('a'+i))+`","content":"result"}]}`,
+		)
+	}
+	anthReq := `{
+		"model": "Qwen-Flash",
+		"system": "You are Claude Code, Anthropic's official CLI for Claude.",
+		"messages": [` + strings.Join(messages, ",") + `],
+		"max_tokens": 1024,
+		"stream": false,
+		"tools": [{"name":"search","input_schema":{"type":"object","properties":{"q":{"type":"string"}}}}]
+	}`
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestQwenFlashDoesNotFlagDistinctToolProgressAsLoop(t *testing.T) {
+	messages := []openaiMessage{{Role: "user", Content: "Use tools then answer"}}
+	for i := 0; i < codeGenQwenFlashToolLoopAfterToolResults; i++ {
+		var tc openaiToolCall
+		tc.ID = fmt.Sprintf("call_%d", i)
+		tc.Type = "function"
+		tc.Function.Name = "Read"
+		tc.Function.Arguments = fmt.Sprintf(`{"file_path":"file_%d.go"}`, i)
+		messages = append(messages,
+			openaiMessage{Role: "assistant", ToolCalls: []openaiToolCall{tc}},
+			openaiMessage{Role: "tool", ToolCallID: tc.ID, Content: "result"},
+		)
+	}
+
+	toolResults, repeatedToolCalls, loop := detectQwenFlashRepeatedToolLoop(messages)
+	if toolResults != codeGenQwenFlashToolLoopAfterToolResults {
+		t.Fatalf("toolResults = %d, want %d", toolResults, codeGenQwenFlashToolLoopAfterToolResults)
+	}
+	if repeatedToolCalls != 1 {
+		t.Fatalf("repeatedToolCalls = %d, want 1", repeatedToolCalls)
+	}
+	if loop {
+		t.Fatalf("loop = true, want false for distinct tool progress")
+	}
+}
+
+func TestAnthropicProxyBuffersSplitStreamToolCalls(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"Qwen-Flash","name":"Qwen-Flash"}]}`))
+			return
+		case "/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"file_path\\\":\"}}]}}]}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_write\",\"function\":{\"name\":\"Write\",\"arguments\":\"\\\"main.cpp\\\",\\\"content\\\":\\\"hi\\\"}\"}}]}}]}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	anthReq := `{
+		"model": "Qwen-Flash",
+		"messages": [{"role": "user", "content": "write file"}],
+		"max_tokens": 1024,
+		"stream": true,
+		"tools": [{"name":"Write","input_schema":{"type":"object","properties":{"file_path":{"type":"string"},"content":{"type":"string"}}}}]
+	}`
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	text := string(body)
+	if !strings.Contains(text, `"name":"Write"`) {
+		t.Fatalf("stream missing buffered tool name: %s", text)
+	}
+	if !strings.Contains(text, `"partial_json":"{\"file_path\":\"main.cpp\",\"content\":\"hi\"}"`) {
+		t.Fatalf("stream missing complete buffered args: %s", text)
+	}
+	if strings.Contains(text, `"name":""`) {
+		t.Fatalf("stream emitted empty tool name: %s", text)
+	}
+}
+
+func TestAnthropicProxyStreamsLargeToolCallArguments(t *testing.T) {
+	largeContent := strings.Repeat("x", 300*1024)
+	args, err := json.Marshal(map[string]string{
+		"file_path": "large.txt",
+		"content":   largeContent,
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"Qwen-Flash","name":"Qwen-Flash"}]}`))
+			return
+		case "/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			chunk, _ := json.Marshal(map[string]interface{}{
+				"choices": []interface{}{map[string]interface{}{
+					"delta": map[string]interface{}{
+						"tool_calls": []interface{}{map[string]interface{}{
+							"index": 0,
+							"id":    "call_large",
+							"function": map[string]interface{}{
+								"name":      "Write",
+								"arguments": string(args),
+							},
+						}},
+					},
+				}},
+			})
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	anthReq := `{
+		"model": "Qwen-Flash",
+		"messages": [{"role": "user", "content": "write large file"}],
+		"max_tokens": 1024,
+		"stream": true,
+		"tools": [{"name":"Write","input_schema":{"type":"object","properties":{"file_path":{"type":"string"},"content":{"type":"string"}}}}]
+	}`
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	text := string(body)
+	if !strings.Contains(text, `"name":"Write"`) {
+		t.Fatalf("stream missing large tool name")
+	}
+	if !strings.Contains(text, `"partial_json":`) || !strings.Contains(text, `large.txt`) {
+		t.Fatalf("stream missing large tool arguments")
+	}
+	if !strings.Contains(text, `"stop_reason":"tool_use"`) {
+		t.Fatalf("stream stop_reason missing tool_use: tail=%s", truncate(text, 512))
+	}
+}
+
+func TestAnthropicProxyRetriesQwenFlashWithoutToolsOnBadRequest(t *testing.T) {
+	chatAttempts := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"Qwen-Flash","name":"Qwen-Flash"}]}`))
+			return
+		case "/chat/completions":
+			chatAttempts++
+			body, _ := io.ReadAll(r.Body)
+			var payload map[string]interface{}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Errorf("upstream received invalid JSON: %v", err)
+				http.Error(w, "bad request", 400)
+				return
+			}
+			if chatAttempts == 1 {
+				if got := logArrayLen(payload["tools"]); got != 1 {
+					t.Errorf("first attempt tools = %d, want 1", got)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":{"message":"Bad Request","type":"upstream_error"}}`))
+				return
+			}
+			if got := logArrayLen(payload["functions"]); got != 0 {
+				t.Errorf("retry functions = %d, want 0", got)
+			}
+			if got := logArrayLen(payload["tools"]); got != 0 {
+				t.Errorf("retry tools = %d, want 0", got)
+			}
+			json.NewEncoder(w).Encode(openaiChatResponse{
+				ID: "chatcmpl-qwen-retry",
+				Choices: []openaiChoice{{
+					Message:      openaiMessage{Role: "assistant", Content: "ok"},
+					FinishReason: "stop",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	anthReq := `{
+		"model": "Qwen-Flash",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"max_tokens": 32000,
+		"stream": false,
+		"tools": [{"name":"search","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}}]
+	}`
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if chatAttempts != 2 {
+		t.Fatalf("chat attempts = %d, want 2", chatAttempts)
+	}
+}
+
+func TestOpenAIChatCompletionsProxySetsUpstreamUserAgent(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", 400)
+			return
+		}
+		if req.Model != "qax-codegen/Auto" {
+			t.Errorf("upstream model = %q, want qax-codegen/Auto", req.Model)
+		}
+		if got := r.Header.Get("User-Agent"); got != corelib.CodeGenClientName {
+			t.Errorf("upstream User-Agent = %q, want %q", got, corelib.CodeGenClientName)
+		}
+		if got := r.Header.Get(corelib.CodeGenClientNameHeader); got != corelib.CodeGenClientName {
+			t.Errorf("upstream %s = %q, want %q", corelib.CodeGenClientNameHeader, got, corelib.CodeGenClientName)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/v1/chat/completions",
+		strings.NewReader(`{"model":"qax-codegen/Auto","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestModelsProxySetsUpstreamUserAgent(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("User-Agent"); got != "custom-agent" {
+			t.Errorf("upstream User-Agent = %q, want %q", got, "custom-agent")
+		}
+		if got := r.Header.Get(corelib.CodeGenClientNameHeader); got != "custom-agent" {
+			t.Errorf("upstream %s = %q, want %q", corelib.CodeGenClientNameHeader, got, "custom-agent")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qax-codegen/Auto","object":"model"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstreamWithClientName(upstream.URL, "fallback-key", "custom-agent")
+
+	resp, err := http.Get("http://" + srv.Addr().String() + "/v1/models")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
 func TestResolveAPIKey_Priority(t *testing.T) {
 	// x-api-key takes priority
 	r, _ := http.NewRequest("POST", "/", nil)
@@ -303,7 +1158,7 @@ func TestResolveAPIKey_Priority(t *testing.T) {
 	}
 }
 
-func TestNormalizeModelsResponseOpenAIStripsProviderPrefix(t *testing.T) {
+func TestNormalizeModelsResponseOpenAIPreservesProviderPrefix(t *testing.T) {
 	body := []byte(`{"data":[{"id":"qax-codegen/Qwen-Flash","name":"Qwen-Flash","provider":"qax-codegen"}]}`)
 	got, err := normalizeModelsResponse(body, "openai")
 	if err != nil {
@@ -317,23 +1172,23 @@ func TestNormalizeModelsResponseOpenAIStripsProviderPrefix(t *testing.T) {
 	if err := json.Unmarshal(got, &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].ID != "Qwen-Flash" {
-		t.Fatalf("model id = %+v, want Qwen-Flash", resp.Data)
+	if len(resp.Data) != 1 || resp.Data[0].ID != "qax-codegen/Qwen-Flash" {
+		t.Fatalf("model id = %+v, want qax-codegen/Qwen-Flash", resp.Data)
 	}
 }
 
-func TestNormalizeOpenAIModelInBodyStripsProviderPrefix(t *testing.T) {
+func TestNormalizeOpenAIModelInBodyPreservesProviderPrefix(t *testing.T) {
 	got := normalizeOpenAIModelInBody([]byte(`{"model":"qax-codegen/Qwen-Flash","messages":[]}`))
 	var payload map[string]interface{}
 	if err := json.Unmarshal(got, &payload); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if payload["model"] != "Qwen-Flash" {
-		t.Fatalf("model = %q, want Qwen-Flash", payload["model"])
+	if payload["model"] != "qax-codegen/Qwen-Flash" {
+		t.Fatalf("model = %q, want qax-codegen/Qwen-Flash", payload["model"])
 	}
 }
 
-func TestNormalizeModelsResponseAnthropicStripsProviderPrefix(t *testing.T) {
+func TestNormalizeModelsResponseAnthropicPreservesProviderPrefix(t *testing.T) {
 	body := []byte(`{"models":[{"id":"qax-codegen/Qwen-Flash","name":"Qwen-Flash"}]}`)
 	got, err := normalizeModelsResponse(body, "anthropic")
 	if err != nil {
@@ -348,7 +1203,27 @@ func TestNormalizeModelsResponseAnthropicStripsProviderPrefix(t *testing.T) {
 	if err := json.Unmarshal(got, &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].ID != "Qwen-Flash" || resp.Data[0].DisplayName != "Qwen-Flash" {
-		t.Fatalf("model = %+v, want Qwen-Flash", resp.Data)
+	if len(resp.Data) != 1 || resp.Data[0].ID != "qax-codegen/Qwen-Flash" || resp.Data[0].DisplayName != "Qwen-Flash" {
+		t.Fatalf("model = %+v, want qax-codegen/Qwen-Flash", resp.Data)
+	}
+}
+
+func TestTruncateForLogRedactsSensitiveFields(t *testing.T) {
+	got := truncateForLog([]byte(`{
+		"model": "qax-codegen/Qwen-Flash",
+		"api_key": "sk-secret",
+		"metadata": {"access_token": "tok-secret", "note": "keep-me"},
+		"messages": [{"role": "user", "content": "hello"}]
+	}`), 4096)
+
+	for _, secret := range []string{"sk-secret", "tok-secret"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("log body leaked secret %q: %s", secret, got)
+		}
+	}
+	for _, want := range []string{"qax-codegen/Qwen-Flash", "keep-me", "hello", "[REDACTED]"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log body missing %q: %s", want, got)
+		}
 	}
 }

@@ -7,15 +7,18 @@ require (
 	github.com/VantageDataChat/GoExcel v0.0.0-20260217221828-9e17ca484c06
 	github.com/VantageDataChat/GoPDF2 v0.0.0-20260405225922-b95b4bfad327
 	github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c
+	github.com/braheezy/shine-mp3 v0.1.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/energye/systray v1.0.2
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/go-audio/wav v1.1.0
 	github.com/go-ego/gse v1.0.2
 	github.com/go-lark/lark/v2 v2.0.0-beta.6
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/mattn/go-isatty v0.0.20
 	github.com/mattn/go-runewidth v0.0.19
@@ -37,6 +40,11 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.46.1
 	pgregory.net/rapid v1.2.0
+)
+
+require (
+	github.com/go-audio/audio v1.0.0 // indirect
+	github.com/go-audio/riff v1.0.0 // indirect
 )
 
 require (
@@ -101,6 +109,8 @@ replace github.com/energye/systray v1.0.2 => ./gui/internal/systray
 replace github.com/RapidAI/CodeClaw/datasrv => ./datasrv
 
 replace github.com/shakinm/xlsReader => github.com/Vantagics/LegacyOfficeReader v0.0.0-20260227214529-f028c77dd3e8
+
+replace github.com/braheezy/shine-mp3 => ./third_party/shine-mp3
 
 // replace github.com/VantageDataChat/GoPDF2 => ../GoPDF2
 

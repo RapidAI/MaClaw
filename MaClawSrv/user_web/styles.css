@@ -140,9 +140,13 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .tool-detail { margin-top: 8px; }
 .tool-detail summary { cursor: pointer; color: var(--muted); }
 .tool-detail pre { white-space: pre-wrap; max-height: 220px; overflow: auto; margin: 8px 0 0; font-size: 12px; }
-.composer { display: grid; grid-template-columns: minmax(0, 1fr) 92px; align-items: end; gap: 10px; border-top: 1px solid var(--line); padding: 14px; background: #ffffff; }
+.composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; border-top: 1px solid var(--line); padding: 14px; background: #ffffff; }
 .composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }
 .composer button { height: 50px; }
+.composer-actions { display: flex; align-items: stretch; gap: 8px; }
+.composer-actions .secondary { min-width: 72px; }
+.composer-actions .primary { min-width: 92px; }
+.message-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 
 label { font-weight: 700; }
 input, select, textarea { width: 100%; min-height: 42px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); padding: 9px 11px; box-shadow: 0 1px 0 rgba(15, 23, 42, .02); }
@@ -412,6 +416,8 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
   .topbar h1 { font-size: 23px; }
   .nav { grid-template-columns: 1fr; }
   .composer { grid-template-columns: 1fr; }
+  .composer-actions { width: 100%; }
+  .composer-actions button { flex: 1 1 0; }
   .composer button { width: 100%; }
   .cfg-group { grid-template-columns: 1fr; }
   .choice-lines { grid-template-columns: 1fr; }

@@ -35,6 +35,8 @@ export interface WorkflowUIState {
     suggestMaximizeType: string;
     transientText: string;
     workingDir: string;
+    workflowID: string;
+    docUpdatePhaseIDs: Set<string>;
 }
 
 const DEFAULT_SPLIT_RATIO = 0.42;
@@ -102,8 +104,14 @@ function resolveWorkflowInstanceKey(state: any): string {
  *   - workflow:phase_update  — phase changes
  *   - workflow:doc_update    — document content updates
  *   - workflow:gate_result   — quality gate results
+ *
+ * @param activeTabProjectPath - The project path of the currently active tab.
+ *   Used for event routing: if an event carries a `project_path` that differs
+ *   from the active tab's path, the update is skipped (it belongs to another
+ *   tab and will be handled via the tab switch save/restore mechanism).
+ *   If empty/undefined, all events are applied (backward compatible fallback).
  */
-export function useWorkflowState() {
+export function useWorkflowState(activeTabProjectPath?: string) {
     const [active, setActive] = useState(false);
     const [splitMode, setSplitMode] = useState(false);
     const [splitRatio, setSplitRatioState] = useState(DEFAULT_SPLIT_RATIO);
@@ -124,6 +132,8 @@ export function useWorkflowState() {
     const workflowActiveRef = useRef(false);
     const pendingWorkingDirRef = useRef("");
     const transientTextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const activeTabProjectPathRef = useRef(activeTabProjectPath || "");
+    activeTabProjectPathRef.current = activeTabProjectPath || "";
 
     const setWorkflowSplitMode = useCallback((next: boolean | ((current: boolean) => boolean)) => {
         setSplitMode(current => {
@@ -159,6 +169,16 @@ export function useWorkflowState() {
                     clearTimeout(transientTextTimerRef.current);
                     transientTextTimerRef.current = null;
                 }
+                return;
+            }
+
+            // Project_path event routing: if the event carries a project_path
+            // that differs from the currently active tab's project path, skip
+            // the update — it belongs to another tab and will be handled via
+            // the tab switch save/restore mechanism.
+            const eventProjectPath = typeof state.project_path === "string" ? state.project_path.trim() : "";
+            const currentTabPath = activeTabProjectPathRef.current;
+            if (eventProjectPath && currentTabPath && eventProjectPath !== currentTabPath) {
                 return;
             }
             const workflowID = resolveWorkflowInstanceKey(state);
@@ -224,7 +244,11 @@ export function useWorkflowState() {
                 });
             }
             if (!isActive) {
-                setWorkflowSplitMode(false);
+                // Do NOT setWorkflowSplitMode(false) here — keep documents
+                // visible after workflow completion so the user can review
+                // final outputs. splitMode is only cleared on explicit user
+                // action (close button), new workflow start (new workflow ID
+                // detected), or full workflow reset (null state above).
                 userClosedRef.current = false;
                 // Don't clear phaseDocuments here — preserve documents so
                 // the user can still view them (e.g. task decomposition)
@@ -241,8 +265,18 @@ export function useWorkflowState() {
     // Listen for document updates
     useEffect(() => {
         const unsub = EventsOn("workflow:doc_update", (data: any) => {
-            if (!workflowActiveRef.current) return;
             if (!data?.phase_id) return;
+
+            // Project_path event routing: if the event carries a project_path
+            // that differs from the currently active tab's project path, skip
+            // the update — it belongs to another tab and will be handled via
+            // the tab switch save/restore mechanism.
+            const eventProjectPath = typeof data.project_path === "string" ? data.project_path.trim() : "";
+            const currentTabPath = activeTabProjectPathRef.current;
+            if (eventProjectPath && currentTabPath && eventProjectPath !== currentTabPath) {
+                return;
+            }
+
             const phaseID = normalizeWorkflowPhaseID(data.phase_id);
             const content = normalizeWorkflowDocumentContent(data.content);
             if (!content) return;
@@ -273,6 +307,13 @@ export function useWorkflowState() {
         const unsub = EventsOn("workflow:gate_result", (data: any) => {
             if (!workflowActiveRef.current) return;
             if (!data?.phase_id || !data?.result) return;
+
+            const eventProjectPath = typeof data.project_path === "string" ? data.project_path.trim() : "";
+            const currentTabPath = activeTabProjectPathRef.current;
+            if (eventProjectPath && currentTabPath && eventProjectPath !== currentTabPath) {
+                return;
+            }
+
             const phaseID = normalizeWorkflowPhaseID(data.phase_id);
             if (!phaseID) return;
             setGateResults(prev => {
@@ -292,7 +333,7 @@ export function useWorkflowState() {
             if (typeof unsub === "function") unsub();
             else EventsOff("workflow:gate_result");
         };
-    }, []);
+    }, [activeTabProjectPath]);
 
     // Listen for maximize suggestion when workflow starts
     useEffect(() => {
@@ -381,6 +422,89 @@ export function useWorkflowState() {
         setSuggestMaximizeType("");
     }, []);
 
+    /** Returns a snapshot of the current workflow UI state for per-tab save/restore. */
+    const stateRef = useRef<WorkflowUIState>({
+        active,
+        splitMode,
+        splitRatio,
+        workflowType,
+        currentPhaseID,
+        latestDocumentPhaseID,
+        phaseDocuments,
+        gateResults,
+        phases,
+        suggestMaximize,
+        suggestMaximizeType,
+        transientText,
+        workingDir,
+        workflowID: workflowIDRef.current,
+        docUpdatePhaseIDs: new Set(docUpdatePhaseIDsRef.current),
+    });
+    stateRef.current = {
+        active,
+        splitMode,
+        splitRatio,
+        workflowType,
+        currentPhaseID,
+        latestDocumentPhaseID,
+        phaseDocuments,
+        gateResults,
+        phases,
+        suggestMaximize,
+        suggestMaximizeType,
+        transientText,
+        workingDir,
+        workflowID: workflowIDRef.current,
+        docUpdatePhaseIDs: new Set(docUpdatePhaseIDsRef.current),
+    };
+    const getSnapshot = useCallback((): WorkflowUIState => stateRef.current, []);
+
+    /** Overwrites the entire workflow UI state from a saved snapshot. */
+    const restoreState = useCallback((snapshot: WorkflowUIState) => {
+        setActive(snapshot.active);
+        setWorkflowSplitMode(snapshot.splitMode);
+        setSplitRatioState(snapshot.splitRatio);
+        setWorkflowType(snapshot.workflowType);
+        setCurrentPhaseID(snapshot.currentPhaseID);
+        setLatestDocumentPhaseID(snapshot.latestDocumentPhaseID);
+        setPhaseDocuments(snapshot.phaseDocuments);
+        setGateResults(snapshot.gateResults);
+        setPhases(snapshot.phases);
+        setSuggestMaximize(snapshot.suggestMaximize);
+        setSuggestMaximizeType(snapshot.suggestMaximizeType);
+        setTransientText(snapshot.transientText);
+        setWorkingDir(snapshot.workingDir);
+        workflowActiveRef.current = snapshot.active;
+        workflowTypeRef.current = snapshot.workflowType;
+        workflowIDRef.current = snapshot.workflowID || "";
+        docUpdatePhaseIDsRef.current = snapshot.docUpdatePhaseIDs
+            ? new Set(snapshot.docUpdatePhaseIDs)
+            : new Set();
+    }, [setWorkflowSplitMode]);
+
+    /** Resets workflow state to defaults (empty/inactive). */
+    const resetState = useCallback(() => {
+        setActive(false);
+        setWorkflowSplitMode(false);
+        setSplitRatioState(DEFAULT_SPLIT_RATIO);
+        setWorkflowType("");
+        setCurrentPhaseID("");
+        setLatestDocumentPhaseID("");
+        setPhaseDocuments(new Map());
+        setGateResults(new Map());
+        setPhases([]);
+        setSuggestMaximize(false);
+        setSuggestMaximizeType("");
+        setTransientText("");
+        setWorkingDir("");
+        userClosedRef.current = false;
+        docUpdatePhaseIDsRef.current = new Set();
+        workflowIDRef.current = "";
+        workflowTypeRef.current = "";
+        workflowActiveRef.current = false;
+        pendingWorkingDirRef.current = "";
+    }, [setWorkflowSplitMode]);
+
     return {
         state: {
             active,
@@ -396,10 +520,15 @@ export function useWorkflowState() {
             suggestMaximizeType,
             transientText,
             workingDir,
+            workflowID: workflowIDRef.current,
+            docUpdatePhaseIDs: docUpdatePhaseIDsRef.current,
         } as WorkflowUIState,
         openDocPreview,
         closeDocPreview,
         setSplitRatio,
         dismissMaximizeSuggestion,
+        getSnapshot,
+        restoreState,
+        resetState,
     };
 }

@@ -2,8 +2,8 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { ChatMessage } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds } from "./useAIAssistant";
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
-import { useWorkflowState } from "./useWorkflowState";
-import { useCodePreviewState } from "./useCodePreviewState";
+import { useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
+import { useCodePreviewState, type CodePreviewUIState } from "./useCodePreviewState";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { renderMessage } from "./aiAssistantMarkdown";
@@ -172,10 +172,39 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         projectPrepareTimersRef.current.clear();
     }, []);
     const prevActiveTabIdRef = useRef<string>(activeTab.id);
+    const previewStateMapRef = useRef<Map<string, { workflow: WorkflowUIState; code: CodePreviewUIState; previewMode: "workflow" | "code" }>>(new Map());
+    const agentViewOwnerTabRef = useRef<string>("");
     useEffect(() => {
         const prevTabId = prevActiveTabIdRef.current;
         const currentTabId = activeTab.id;
         if (prevTabId === currentTabId) return;
+
+        // --- Per-tab preview state save/restore ---
+        // Only execute when multiple tabs exist (single tab = zero overhead)
+        const multipleTabsExist = tabState.tabs.length > 1;
+        if (multipleTabsExist) {
+            // Determine the current preview mode before saving
+            const currentPreviewMode: "workflow" | "code" = codePreviewState.active ? "code" : "workflow";
+
+            // Save previous tab's preview state
+            previewStateMapRef.current.set(prevTabId, {
+                workflow: getWorkflowSnapshot(),
+                code: { ...codePreviewState, files: new Map(codePreviewState.files) },
+                previewMode: currentPreviewMode,
+            });
+
+            // Restore the new tab's preview state (or reset to initial if not found)
+            const savedState = previewStateMapRef.current.get(currentTabId);
+            if (savedState) {
+                restoreWorkflowState(savedState.workflow);
+                restoreCodePreviewState(savedState.code);
+            } else {
+                // New tab with no saved state — reset to initial/empty state
+                resetWorkflowState();
+                resetCodePreviewState();
+            }
+        }
+
         const prevTab = tabState.tabs.find(t => t.id === prevTabId);
         if (prevTab && prevTab.type === "project") {
             const scrollTop = outputContainerRef.current?.scrollTop || 0;
@@ -219,11 +248,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 setProjectTabMessages([]);
                 setLocalDraftInputValue("");
             }
+
         } else if (activeTab.id === "local") {
             setLocalDraftInputValue(draftInputValue);
         }
         prevActiveTabIdRef.current = currentTabId;
     }, [activeTab.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Track which tab owns the agentView — when agentView is set, record the
+    // current active tab as its owner. Only show agentView when owning tab is active.
+    useEffect(() => {
+        if (agentView) {
+            agentViewOwnerTabRef.current = activeTab.id;
+        }
+    }, [agentView]); // eslint-disable-line react-hooks/exhaustive-deps
     const projectTabRoundSeqRef = useRef(0);
     const projectTabRoundsRef = useRef<Map<string, { tabId: string | null; projectPath: string; baseline: number; seq: number }>>(new Map());
     const findProjectRoundForTab = useCallback((tabId: string, projectPath?: string | null) => {
@@ -646,6 +683,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [getTabs, messages, persistProjectTabMsgIds, setProjectTabPreparing]);
     const closeTabWithProjectCleanup = useCallback((tabId: string) => {
         clearProjectRoundTrackingForTab(tabId);
+        // Clean up per-tab preview state to prevent memory leak over long sessions
+        previewStateMapRef.current.delete(tabId);
         closeTab(tabId);
     }, [clearProjectRoundTrackingForTab, closeTab]);
     const createProjectTabFromSearch = useCallback((projectPath: string, taskTitle: string, options?: { autoSend?: boolean }) => {
@@ -705,9 +744,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const timer = setTimeout(clearTabLimitError, 3000);
         return () => clearTimeout(timer);
     }, [tabLimitError, clearTabLimitError]);
-    const { state: workflowState, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion } = useWorkflowState();
-    const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile } = useCodePreviewState();
-    const showAgentView = !!agentView;
+    const { state: workflowState, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(activeTab.projectPath || undefined);
+    const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(activeTab.projectPath);
+    const showAgentView = !!agentView && agentViewOwnerTabRef.current === activeTab.id;
     const showWorkflowPreview = !showAgentView && workflowState.splitMode;
     const showCodePreview = !showAgentView && codePreviewState.active;
     const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;

@@ -576,11 +576,12 @@ async function renderAssistant() {
   setTitle(t("assistantTitle"), t("assistantHint"));
   const inst = activeInstance();
   if (inst) state.instanceId = inst.id;
-  $("content").innerHTML = `<div class="assistant-layout"><section class="panel stack assistant-rail"><div class="split"><div><h2>${t("instancesTitle")}</h2><p class="helper">${t("instancesHint")}</p></div><button id="newInst" type="button" class="primary">${t("new")}</button></div><div id="instanceList" class="list"></div><div id="sessionList" class="list"></div></section><section class="card chat"><div id="runPanel" class="run-panel hidden"></div><div class="chat-toolbar"><span class="muted">${t("webSession")}</span><button id="clearPanel" type="button" class="secondary clear-panel-btn">${clearContentLabel()}</button></div><div class="messages-wrap"><div id="messages" class="messages"></div><button id="jumpLatest" type="button" class="jump-latest hidden">${latestLabel()}</button></div><form id="composer" class="composer"><textarea id="prompt" placeholder="${t("typeMessage")}" aria-label="${t("message")}"></textarea><button id="sendBtn" type="submit" class="primary">${t("send")}</button></form></section></div>`;
+  $("content").innerHTML = `<div class="assistant-layout"><section class="panel stack assistant-rail"><div class="split"><div><h2>${t("instancesTitle")}</h2><p class="helper">${t("instancesHint")}</p></div><button id="newInst" type="button" class="primary">${t("new")}</button></div><div id="instanceList" class="list"></div><div id="sessionList" class="list"></div></section><section class="card chat"><div id="runPanel" class="run-panel hidden"></div><div class="chat-toolbar"><span class="muted">${t("webSession")}</span><button id="clearPanel" type="button" class="secondary clear-panel-btn">${clearContentLabel()}</button></div><div class="messages-wrap"><div id="messages" class="messages"></div><button id="jumpLatest" type="button" class="jump-latest hidden">${latestLabel()}</button></div><form id="composer" class="composer"><textarea id="prompt" placeholder="${t("typeMessage")}" aria-label="${t("message")}"></textarea><div class="composer-actions"><input id="voiceFile" type="file" accept="audio/wav,audio/ogg,audio/opus,audio/mpeg,audio/mp4,audio/aac,.wav,.ogg,.opus,.oga,.silk,.mp3,.m4a,.aac" hidden><button id="voiceBtn" type="button" class="secondary">${transcribeLabel()}</button><button id="sendBtn" type="submit" class="primary">${t("send")}</button></div></form></section></div>`;
   renderInstanceList();
   $("newInst").onclick = createInstance;
   $("clearPanel").onclick = clearPanelContent;
   $("composer").onsubmit = sendMessage;
+  bindVoiceComposer();
   bindComposerKeys();
   if (inst) await loadSessionsAndMessages();
   else if (selectedInstanceMissing()) {
@@ -654,6 +655,66 @@ function bindComposerKeys() {
     $("composer")?.requestSubmit();
   };
   sync();
+}
+function bindVoiceComposer() {
+  const input = $("voiceFile");
+  const btn = $("voiceBtn");
+  if (!input || !btn) return;
+  btn.onclick = () => input.click();
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    input.value = "";
+    if (file) await transcribeVoiceFile(file, btn);
+  };
+}
+async function transcribeVoiceFile(file, btn) {
+  if (!file) return;
+  const prev = btn?.textContent || transcribeLabel();
+  if (btn) { btn.disabled = true; btn.textContent = transcribingLabel(); }
+  try {
+    const audioFormat = voiceUploadFormat(file);
+    const resp = await fetch("/api/v1/ai-models/asr/transcribe", { method: "POST", headers: { Authorization: `Bearer ${state.token}`, "Content-Type": voiceUploadContentType(file), "X-MaClaw-Audio-Format": audioFormat }, body: file });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const err = new Error(apiErrorMessage(data, `${resp.status} ${resp.statusText}`));
+      err.status = resp.status;
+      throw err;
+    }
+    const text = String(data.text || "").trim();
+    const prompt = $("prompt");
+    if (prompt && text) {
+      prompt.value = [prompt.value.trim(), text].filter(Boolean).join(prompt.value.trim() ? "\n" : "");
+      prompt.dispatchEvent(new Event("input", { bubbles: true }));
+      prompt.focus();
+      toast(voiceReadyLabel());
+    }
+  } catch (e) {
+    if (!handleAPIError(e)) toast(e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = prev; }
+  }
+}
+function voiceUploadContentType(file) {
+  const inferred = voiceUploadFormat(file);
+  const explicit = String(file?.type || "").trim().toLowerCase();
+  if (explicit && explicit !== "application/octet-stream" && explicit !== "binary/octet-stream") return explicit;
+  if (inferred === "mp3") return "audio/mpeg";
+  if (inferred === "ogg") return "audio/ogg";
+  if (inferred === "wav") return "audio/wav";
+  if (inferred === "m4a") return "audio/mp4";
+  if (inferred === "aac") return "audio/aac";
+  if (inferred === "silk") return "application/octet-stream";
+  return explicit || "application/octet-stream";
+}
+function voiceUploadFormat(file) {
+  const name = String(file?.name || "").toLowerCase();
+  if (name.endsWith(".mp3")) return "mp3";
+  if (name.endsWith(".ogg") || name.endsWith(".oga") || name.endsWith(".opus")) return "ogg";
+  if (name.endsWith(".wav")) return "wav";
+  if (name.endsWith(".silk")) return "silk";
+  if (name.endsWith(".m4a")) return "m4a";
+  if (name.endsWith(".aac")) return "aac";
+  return "";
 }
 function autoResizePrompt() { const el = $("prompt"); if (!el) return; el.style.height = "auto"; el.style.height = `${Math.min(el.scrollHeight, 180)}px`; }
 function updateSendButtonState() { const btn = $("sendBtn"); const prompt = $("prompt"); if (btn && prompt) btn.disabled = !prompt.value.trim() || prompt.disabled; }
@@ -959,11 +1020,66 @@ function bindMessageCopyButtons(msgs) {
   document.querySelectorAll("[data-copy-message]").forEach((btn) => btn.onclick = () => copyTextImproved(String(msgs[Number(btn.dataset.copyMessage)]?.content || msgs[Number(btn.dataset.copyMessage)]?.text || ""), btn));
   document.querySelectorAll("[data-copy-code]").forEach((btn) => btn.onclick = () => copyTextImproved(state.copySnippets[Number(btn.dataset.copyCode)] || "", btn));
 }
+function bindMessageSpeakButtons(msgs) {
+  document.querySelectorAll("[data-speak-message]").forEach((btn) => btn.onclick = () => speakMessage(msgs[Number(btn.dataset.speakMessage)], btn));
+}
+async function speakMessage(message, btn) {
+  const text = String(message?.content || message?.text || "").trim();
+  const endpoint = safeTTSEndpoint(message?.metadata?.tts_endpoint);
+  if (!text || message?.metadata?.tts_available !== "true") return toast(ttsUnavailableLabel());
+  const prev = btn?.textContent || speakLabel();
+  if (btn) { btn.disabled = true; btn.textContent = speakingLabel(); }
+  try {
+    const resp = await fetch(endpoint, { method: "POST", headers: headers(true), body: JSON.stringify({ text, voice_id: message?.metadata?.tts_voice_id || "", format: "mp3" }) });
+    if (!resp.ok) {
+      let data = {};
+      try { data = await resp.json(); } catch { data = {}; }
+      const err = new Error(apiErrorMessage(data, `${resp.status} ${resp.statusText}`));
+      err.status = resp.status;
+      throw err;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    const sinkID = String(state.config?.audio_output_device_id || "").trim();
+    if (sinkID && typeof audio.setSinkId === "function") {
+      try { await audio.setSinkId(sinkID); } catch { /* Browser may reject unavailable output device IDs. */ }
+    }
+    audio.onended = () => URL.revokeObjectURL(url);
+    audio.onerror = () => URL.revokeObjectURL(url);
+    await audio.play();
+  } catch (e) {
+    if (!handleAPIError(e)) toast(e.message || ttsUnavailableLabel());
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = prev; }
+  }
+}
+function safeTTSEndpoint(value) {
+  const endpoint = String(value || "").trim();
+  if (endpoint.startsWith("/api/") && !endpoint.startsWith("//")) return endpoint;
+  return "/api/v1/ai-models/tts/synthesize";
+}
 function shouldStickMessagesToBottom(el) { return !el || el.scrollHeight <= el.clientHeight || el.scrollHeight - el.scrollTop - el.clientHeight < 80; }
 function updateJumpLatestButton(show) { const btn = $("jumpLatest"); if (btn) btn.classList.toggle("hidden", !show); }
 function bindJumpLatestButton() { const btn = $("jumpLatest"); const box = $("messages"); if (!btn || !box) return; btn.onclick = () => { box.scrollTop = box.scrollHeight; updateJumpLatestButton(false); }; box.onscroll = () => { if (shouldStickMessagesToBottom(box)) updateJumpLatestButton(false); }; }
 function messageCopyButtonHTML(m, idx) { return m.local_thinking || !String(m.content || m.text || "").trim() ? "" : `<button type="button" class="copy-btn" data-copy-message="${idx}" aria-label="${esc(copyLabel())}">${esc(copyLabel())}</button>`; }
-function renderMessages(forceStick = false) { const box = $("messages"); const stick = forceStick || shouldStickMessagesToBottom(box); const msgs = orderedMessages(); state.copySnippets = []; box.innerHTML = msgs.map((m, idx) => `<article class="message ${messageRoleClass(m.role || "assistant")} ${m.local_pending || m.local_thinking ? "pending" : ""}"><div class="message-head"><div class="message-meta"><strong>${esc(m.role || "assistant")}</strong>${messageMetaHTML(m)}${m.local_pending ? `<span class="message-time">${sendingLabel()}</span>` : ""}</div>${messageCopyButtonHTML(m, idx)}</div><div class="md-content ${m.local_thinking ? "thinking" : ""}">${renderMarkdown(m.content || m.text || "", state.copySnippets)}</div>${messageDetails(m)}</article>`).join("") || `<div class="message assistant">${t("noMessages")}</div>`; bindMessageCopyButtons(msgs); bindJumpLatestButton(); if (stick) { box.scrollTop = box.scrollHeight; updateJumpLatestButton(false); } else { updateJumpLatestButton(true); } }
+function speakLabel() { return locale === "en" ? "Speak" : "\u6717\u8bfb"; }
+function speakingLabel() { return locale === "en" ? "Speaking..." : "\u6717\u8bfb\u4e2d..."; }
+function transcribeLabel() { return locale === "en" ? "Voice" : "\u8bed\u97f3"; }
+function transcribingLabel() { return locale === "en" ? "Transcribing..." : "\u8bc6\u522b\u4e2d..."; }
+function voiceReadyLabel() { return locale === "en" ? "Voice text inserted" : "\u8bed\u97f3\u6587\u672c\u5df2\u63d2\u5165"; }
+function ttsUnavailableLabel() { return locale === "en" ? "Voice playback is not ready" : "\u8bed\u97f3\u64ad\u653e\u6682\u672a\u5c31\u7eea"; }
+function messageSpeakButtonHTML(m, idx) {
+  const meta = m.metadata || {};
+  const text = String(m.content || m.text || "").trim();
+  if ((m.role || "assistant") !== "assistant" || !text || m.local_thinking || meta.tts_available !== "true") return "";
+  return `<button type="button" class="copy-btn" data-speak-message="${idx}" aria-label="${esc(speakLabel())}">${esc(speakLabel())}</button>`;
+}
+function messageActionsHTML(m, idx) {
+  const actions = [messageSpeakButtonHTML(m, idx), messageCopyButtonHTML(m, idx)].filter(Boolean).join("");
+  return actions ? `<div class="message-actions">${actions}</div>` : "";
+}
+function renderMessages(forceStick = false) { const box = $("messages"); const stick = forceStick || shouldStickMessagesToBottom(box); const msgs = orderedMessages(); state.copySnippets = []; box.innerHTML = msgs.map((m, idx) => `<article class="message ${messageRoleClass(m.role || "assistant")} ${m.local_pending || m.local_thinking ? "pending" : ""}"><div class="message-head"><div class="message-meta"><strong>${esc(m.role || "assistant")}</strong>${messageMetaHTML(m)}${m.local_pending ? `<span class="message-time">${sendingLabel()}</span>` : ""}</div>${messageActionsHTML(m, idx)}</div><div class="md-content ${m.local_thinking ? "thinking" : ""}">${renderMarkdown(m.content || m.text || "", state.copySnippets)}</div>${messageDetails(m)}</article>`).join("") || `<div class="message assistant">${t("noMessages")}</div>`; bindMessageCopyButtons(msgs); bindMessageSpeakButtons(msgs); bindJumpLatestButton(); if (stick) { box.scrollTop = box.scrollHeight; updateJumpLatestButton(false); } else { updateJumpLatestButton(true); } }
 function renderRunPanel(run) {
   const panel = $("runPanel"); if (!panel) return;
   if (run === null) state.currentRun = null; else state.currentRun = run || state.currentRun;

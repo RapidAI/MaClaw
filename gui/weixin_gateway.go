@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -9,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -20,6 +18,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
 
@@ -853,60 +852,14 @@ type weixinPlayableVoiceFile struct {
 	converted bool
 }
 
-var weixinEncodeWAVToMP3 = encodeWAVToMP3WithFFmpeg
+var weixinPreparePlayableVoiceMP3 = tts.PreparePlayableVoiceMP3
 
 func prepareWeixinPlayableVoiceFile(ctx context.Context, voiceFileName string, voiceBytes []byte) (weixinPlayableVoiceFile, error) {
-	if len(voiceBytes) == 0 {
-		return weixinPlayableVoiceFile{}, fmt.Errorf("empty voice data")
-	}
-	ext := strings.ToLower(filepath.Ext(voiceFileName))
-	if ext == ".mp3" || bytes.HasPrefix(voiceBytes, []byte("ID3")) || hasMP3FrameHeader(voiceBytes) {
-		return weixinPlayableVoiceFile{data: voiceBytes, name: "voice.mp3", mime: "audio/mpeg"}, nil
-	}
-	if ext != ".wav" && !bytes.HasPrefix(voiceBytes, []byte("RIFF")) {
-		return weixinPlayableVoiceFile{}, fmt.Errorf("unsupported playable fallback source %q", voiceFileName)
-	}
-	mp3, err := weixinEncodeWAVToMP3(ctx, voiceBytes)
+	file, err := weixinPreparePlayableVoiceMP3(ctx, voiceFileName, voiceBytes)
 	if err != nil {
 		return weixinPlayableVoiceFile{}, err
 	}
-	if len(mp3) == 0 {
-		return weixinPlayableVoiceFile{}, fmt.Errorf("mp3 encoder returned empty data")
-	}
-	return weixinPlayableVoiceFile{data: mp3, name: "voice.mp3", mime: "audio/mpeg", converted: true}, nil
-}
-
-func hasMP3FrameHeader(data []byte) bool {
-	return len(data) >= 2 && data[0] == 0xff && data[1]&0xe0 == 0xe0
-}
-
-func encodeWAVToMP3WithFFmpeg(ctx context.Context, wav []byte) ([]byte, error) {
-	ffmpegPath, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		return nil, fmt.Errorf("ffmpeg not found for wav->mp3 conversion: %w", err)
-	}
-	tmpDir, err := os.MkdirTemp("", "maclaw-wx-voice-mp3-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(tmpDir)
-
-	inPath := filepath.Join(tmpDir, "voice.wav")
-	outPath := filepath.Join(tmpDir, "voice.mp3")
-	if err := os.WriteFile(inPath, wav, 0o600); err != nil {
-		return nil, err
-	}
-	encCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(encCtx, ffmpegPath, "-hide_banner", "-loglevel", "error", "-y", "-i", inPath, "-vn", "-codec:a", "libmp3lame", "-b:a", "64k", outPath)
-	out, err := cmd.CombinedOutput()
-	if encCtx.Err() != nil {
-		return nil, encCtx.Err()
-	}
-	if err != nil {
-		return nil, fmt.Errorf("ffmpeg wav->mp3 failed: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return os.ReadFile(outPath)
+	return weixinPlayableVoiceFile{data: file.Data, name: file.Name, mime: file.MIME, converted: file.Converted}, nil
 }
 
 func (m *weixinGatewayManager) saveWeixinVoicePlayableDebug(file weixinPlayableVoiceFile) {

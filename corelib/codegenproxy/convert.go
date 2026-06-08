@@ -8,13 +8,13 @@ import (
 // ── Anthropic request/response types ──
 
 type anthropicRequest struct {
-	Model     string                   `json:"model"`
-	Messages  []anthropicMessage       `json:"messages"`
-	System    interface{}              `json:"system,omitempty"` // string or []block
-	MaxTokens int                      `json:"max_tokens"`
-	Stream    bool                     `json:"stream"`
-	Tools     []anthropicTool          `json:"tools,omitempty"`
-	Metadata  map[string]interface{}   `json:"metadata,omitempty"`
+	Model     string                 `json:"model"`
+	Messages  []anthropicMessage     `json:"messages"`
+	System    interface{}            `json:"system,omitempty"` // string or []block
+	MaxTokens int                    `json:"max_tokens"`
+	Stream    bool                   `json:"stream"`
+	Tools     []anthropicTool        `json:"tools,omitempty"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -56,18 +56,21 @@ type anthropicUsage struct {
 // ── OpenAI request/response types ──
 
 type openaiChatRequest struct {
-	Model     string          `json:"model"`
-	Messages  []openaiMessage `json:"messages"`
-	Stream    bool            `json:"stream,omitempty"`
-	MaxTokens int             `json:"max_tokens,omitempty"`
-	Tools     []openaiTool    `json:"tools,omitempty"`
+	Model        string           `json:"model"`
+	Messages     []openaiMessage  `json:"messages"`
+	Stream       bool             `json:"stream,omitempty"`
+	MaxTokens    int              `json:"max_tokens,omitempty"`
+	Tools        []openaiTool     `json:"tools,omitempty"`
+	Functions    []openaiFunction `json:"functions,omitempty"`
+	FunctionCall interface{}      `json:"function_call,omitempty"`
 }
 
 type openaiMessage struct {
-	Role       string          `json:"role"`
-	Content    interface{}     `json:"content,omitempty"` // string or null
-	ToolCalls  []openaiToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Role         string                    `json:"role"`
+	Content      interface{}               `json:"content,omitempty"` // string or null
+	ToolCalls    []openaiToolCall          `json:"tool_calls,omitempty"`
+	ToolCallID   string                    `json:"tool_call_id,omitempty"`
+	FunctionCall *openaiLegacyFunctionCall `json:"function_call,omitempty"`
 }
 
 type openaiTool struct {
@@ -90,6 +93,11 @@ type openaiToolCall struct {
 	} `json:"function"`
 }
 
+type openaiLegacyFunctionCall struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
 type openaiChatResponse struct {
 	ID      string         `json:"id"`
 	Choices []openaiChoice `json:"choices"`
@@ -110,8 +118,9 @@ type openaiUsage struct {
 type openaiStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string              `json:"content,omitempty"`
-			ToolCalls []streamToolCallDelta `json:"tool_calls,omitempty"`
+			Content      string                    `json:"content,omitempty"`
+			ToolCalls    []streamToolCallDelta     `json:"tool_calls,omitempty"`
+			FunctionCall *openaiLegacyFunctionCall `json:"function_call,omitempty"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason,omitempty"`
 	} `json:"choices"`
@@ -338,7 +347,7 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 
 	// Map finish reason
 	switch choice.FinishReason {
-	case "tool_calls":
+	case "tool_calls", "function_call":
 		result.StopReason = "tool_use"
 	case "length":
 		result.StopReason = "max_tokens"
@@ -365,6 +374,19 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 			Type:  "tool_use",
 			ID:    tc.ID,
 			Name:  tc.Function.Name,
+			Input: input,
+		})
+	}
+	if fc := choice.Message.FunctionCall; fc != nil && fc.Name != "" {
+		var input map[string]interface{}
+		_ = json.Unmarshal([]byte(fc.Arguments), &input)
+		if input == nil {
+			input = map[string]interface{}{}
+		}
+		result.Content = append(result.Content, anthropicContentBlock{
+			Type:  "tool_use",
+			ID:    "call_legacy_function",
+			Name:  fc.Name,
 			Input: input,
 		})
 	}

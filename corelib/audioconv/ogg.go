@@ -11,6 +11,7 @@ import (
 )
 
 const oggCapturePattern = "OggS"
+const oggHeaderContinuation = 0x01
 
 // oggPage represents a single OGG page.
 type oggPage struct {
@@ -20,8 +21,9 @@ type oggPage struct {
 
 // oggReader reads OGG pages from a byte stream.
 type oggReader struct {
-	data []byte
-	pos  int
+	data    []byte
+	pos     int
+	pending []byte
 }
 
 func newOggReader(data []byte) *oggReader {
@@ -42,6 +44,11 @@ func (r *oggReader) readPage() (*oggPage, error) {
 	// Version (byte 4) must be 0
 	if r.data[r.pos+4] != 0 {
 		return nil, fmt.Errorf("audioconv/ogg: unsupported version %d", r.data[r.pos+4])
+	}
+
+	headerType := r.data[r.pos+5]
+	if headerType&oggHeaderContinuation != 0 && len(r.pending) == 0 {
+		return nil, fmt.Errorf("audioconv/ogg: continuation page without pending packet at offset %d", r.pos)
 	}
 
 	granule := binary.LittleEndian.Uint64(r.data[r.pos+6 : r.pos+14])
@@ -68,7 +75,8 @@ func (r *oggReader) readPage() (*oggPage, error) {
 	// Merge segments into packets. A segment of size < 255 terminates a packet.
 	// A segment of exactly 255 means the packet continues in the next segment.
 	var packets [][]byte
-	var current []byte
+	current := r.pending
+	r.pending = nil
 	off := payloadStart
 	for i := 0; i < numSegments; i++ {
 		sz := segSizes[i]
@@ -80,7 +88,7 @@ func (r *oggReader) readPage() (*oggPage, error) {
 		}
 	}
 	if len(current) > 0 {
-		packets = append(packets, current)
+		r.pending = current
 	}
 
 	r.pos = payloadStart + totalPayload
@@ -120,6 +128,9 @@ func extractOggOpusPackets(data []byte) ([][]byte, error) {
 			}
 			packets = append(packets, pkt)
 		}
+	}
+	if len(reader.pending) > 0 {
+		return nil, fmt.Errorf("audioconv/ogg: truncated packet at end of stream")
 	}
 
 	if len(packets) == 0 {

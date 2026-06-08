@@ -479,6 +479,48 @@ async function runTests() {
     assertEqual(JSON.parse(forceCall.opts.body).admin_password, 'admin-secret', 'Should send admin password in body');
   }
 
+  // Test 8d: History search input must not filter employee lists
+  {
+    console.log('  Test: History search input does not clear employee lists');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    await ctx.loadVEList();
+    var searchInput = g.document.elements['veHistorySearchInput'];
+    var activeList = g.document.elements['veActiveList'];
+    assert(searchInput !== undefined, 'History search input should exist');
+    searchInput.value = 'no-match-query';
+    ctx.veSearchHistory(false);
+    assertIncludes(activeList.innerHTML, 'Test VE 2', 'Active list should stay visible when only history search changes');
+    assertIncludes(activeList.innerHTML, 'Test VE 3', 'History search should not filter other active employees');
+  }
+
+  // Test 8e: Force purge modal can be dismissed by backdrop without API call
+  {
+    console.log('  Test: Force delete modal backdrop dismisses without API call');
+    var g = createMockGlobal();
+    var overlayRef = null;
+    var originalAppendChild = g.document.body.appendChild;
+    g.document.body.appendChild = function(el) {
+      overlayRef = el;
+      return originalAppendChild.call(this, el);
+    };
+    g.AdminUI = {
+      bindModalOverlayDismiss: function(overlay, closeFn) {
+        overlay._boundCloseFn = closeFn;
+      }
+    };
+    var ctx = loadVETab(g);
+    g._apiCalls.length = 0;
+    var pending = ctx.veForcePurge('ve-006');
+    var overlay = overlayRef;
+    assert(overlay !== undefined && overlay !== null, 'Force delete overlay should exist');
+    assert(typeof overlay._boundCloseFn === 'function', 'Force delete overlay should bind backdrop dismiss handler');
+    overlay._boundCloseFn();
+    await pending;
+    var forceCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/ve-006/force-delete'; });
+    assert(forceCall === undefined, 'Backdrop dismiss should not call force delete API');
+  }
+
   // Test 9: Approve refreshes list
   {
     console.log('  Test: Approve refreshes digital employee list after success');

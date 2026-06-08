@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
 
@@ -99,13 +100,16 @@ func TestIsVoiceInputMessageUsesStructuralModality(t *testing.T) {
 }
 
 func TestPrepareWeixinPlayableVoiceFileConvertsWAVToMP3(t *testing.T) {
-	original := weixinEncodeWAVToMP3
-	defer func() { weixinEncodeWAVToMP3 = original }()
-	weixinEncodeWAVToMP3 = func(ctx context.Context, wav []byte) ([]byte, error) {
+	original := weixinPreparePlayableVoiceMP3
+	defer func() { weixinPreparePlayableVoiceMP3 = original }()
+	weixinPreparePlayableVoiceMP3 = func(ctx context.Context, name string, wav []byte) (tts.PlayableVoiceFile, error) {
+		if name != "voice.wav" {
+			t.Fatalf("converter name = %q", name)
+		}
 		if string(wav) != "RIFFxxxxWAVE" {
 			t.Fatalf("converter input = %q", wav)
 		}
-		return []byte("ID3mp3"), nil
+		return tts.PlayableVoiceFile{Data: []byte("ID3mp3"), Name: "voice.mp3", MIME: "audio/mpeg", Converted: true}, nil
 	}
 
 	got, err := prepareWeixinPlayableVoiceFile(context.Background(), "voice.wav", []byte("RIFFxxxxWAVE"))
@@ -118,11 +122,12 @@ func TestPrepareWeixinPlayableVoiceFileConvertsWAVToMP3(t *testing.T) {
 }
 
 func TestPrepareWeixinPlayableVoiceFileKeepsMP3(t *testing.T) {
-	got, err := prepareWeixinPlayableVoiceFile(context.Background(), "already.mp3", []byte("ID3payload"))
+	mp3Data := append([]byte{'I', 'D', '3', 4, 0, 0, 0, 0, 0, 0}, []byte{0xff, 0xfb, 0x90, 0x64}...)
+	got, err := prepareWeixinPlayableVoiceFile(context.Background(), "already.mp3", mp3Data)
 	if err != nil {
 		t.Fatalf("prepareWeixinPlayableVoiceFile(mp3): %v", err)
 	}
-	if string(got.data) != "ID3payload" || got.name != "voice.mp3" || got.mime != "audio/mpeg" || got.converted {
+	if string(got.data) != string(mp3Data) || got.name != "voice.mp3" || got.mime != "audio/mpeg" || got.converted {
 		t.Fatalf("fallback = %#v, want passthrough mp3", got)
 	}
 }

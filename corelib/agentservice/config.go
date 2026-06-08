@@ -61,6 +61,18 @@ func SharedClientParameterDefinitions() []ParameterDefinition {
 }
 
 var sharedClientConfigKeys = map[string]bool{
+	"maclaw_llm_url":                   true,
+	"maclaw_llm_key":                   true,
+	"maclaw_llm_model":                 true,
+	"maclaw_llm_protocol":              true,
+	"maclaw_llm_context_length":        true,
+	"maclaw_llm_timeout_sec":           true,
+	"agent_response_timeout_sec":       true,
+	"maclaw_llm_providers":             true,
+	"maclaw_llm_current_provider":      true,
+	"llm_prompt_cache":                 true,
+	"maclaw_agent_max_iterations":      true,
+	"subagent_concurrency":             true,
 	"web_search_providers":             true,
 	"web_search_current_provider":      true,
 	"default_proxy_enabled":            true,
@@ -88,8 +100,14 @@ var sharedClientConfigKeys = map[string]bool{
 	"working_directory":                true,
 	"vector_search_enabled":            true,
 	"asr_enabled":                      true,
+	"tts_voice_id":                     true,
 	"tts_enabled":                      true,
 	"im_progress_nudge_enabled":        true,
+	"knowledge_vision_llm":             true,
+	"knowledge_include_images":         true,
+	"auxiliary_llm":                    true,
+	"model_routes":                     true,
+	"daily_llm_budget_usd":             true,
 }
 
 func appendMissingAppConfigDefinitions(defs []ParameterDefinition) []ParameterDefinition {
