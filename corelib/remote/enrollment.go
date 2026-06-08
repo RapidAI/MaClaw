@@ -228,8 +228,10 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 		"client_id":    clientID,
 	}
 	heartbeat := cfg.HeartbeatSec
-	if heartbeat < 5 {
-		heartbeat = 10
+	if heartbeat <= 0 {
+		heartbeat = 30
+	} else if heartbeat < 5 {
+		heartbeat = 5
 	}
 	body["heartbeat_interval_sec"] = heartbeat
 	if cfg.InvitationCode != "" {

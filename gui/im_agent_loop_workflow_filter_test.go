@@ -113,18 +113,22 @@ func TestFullWorkflowPhasePinsLocalCodingTools(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "workflow-full-phase-pins-local-tools-user"
 	workflowType := workflow.WorkflowType("full_policy_local_tools")
-	handler.app.workflowEngine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	if err := handler.app.workflowEngine.GetRegistry().Register(&workflow.WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "full policy local tools",
 		Description: "test template",
 		Phases: []workflow.PhaseTemplate{{
-			ID:          "implementation",
-			Name:        "Implementation",
-			Prompt:      "implement the project",
-			Deliverable: "working code",
-			ToolPolicy:  workflow.ToolFilterFull,
+			ID:            "implementation",
+			Name:          "Implementation",
+			Prompt:        "implement the project",
+			Deliverable:   "working code",
+			ToolPolicy:    workflow.ToolFilterFull,
+			Kind:          workflow.PhaseKindExecution,
+			MutationScope: workflow.MutationScopeProject,
 		}},
-	})
+	}); err != nil {
+		t.Fatalf("Register workflow template: %v", err)
+	}
 	if _, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "build"}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -149,6 +153,67 @@ func TestFullWorkflowPhasePinsLocalCodingTools(t *testing.T) {
 	}
 	if !names["task"] {
 		t.Fatalf("full policy should preserve routed non-local tools too, got %#v", names)
+	}
+}
+
+func TestArtifactWorkflowPhaseDoesNotExposeProjectMutationTools(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-artifact-scope-tools-user"
+	workflowType := workflow.WorkflowType("artifact_scope_tools")
+	if err := handler.app.workflowEngine.GetRegistry().Register(&workflow.WorkflowTemplate{
+		Type:        workflowType,
+		Name:        "artifact scope tools",
+		Description: "test template",
+		Phases: []workflow.PhaseTemplate{{
+			ID:            "generate",
+			Name:          "Generate",
+			Prompt:        "generate artifact",
+			Deliverable:   "artifact",
+			ToolPolicy:    workflow.ToolFilterFull,
+			Kind:          workflow.PhaseKindArtifactGeneration,
+			MutationScope: workflow.MutationScopeArtifact,
+		}},
+	}); err != nil {
+		t.Fatalf("Register workflow template: %v", err)
+	}
+	if _, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "make deck"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("task", "task", nil, nil),
+		toolDef("office", "office", nil, nil),
+		toolDef("generate_pdf", "generate pdf", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+	})
+
+	filtered := handler.applyWorkflowToolFilterWithCatalog(userID,
+		[]map[string]interface{}{toolDef("task", "task", nil, nil), toolDef("edit_file", "edit file", nil, nil)},
+		handler.getTools(),
+	)
+	names := toolNameSetForWorkflowFilterTest(filtered)
+	for _, name := range []string{"write_file", "office", "generate_pdf", "send_file"} {
+		if !names[name] {
+			t.Fatalf("artifact phase should expose %s, got %#v", name, names)
+		}
+	}
+	for _, name := range []string{"edit_file", "task"} {
+		if names[name] {
+			t.Fatalf("artifact phase should not expose project mutation tool %s, got %#v", name, names)
+		}
+	}
+	if allowed, reason := handler.isWorkflowToolCallAllowedForOwner(userID, "write_file", `{"path":"deck.pptx","content":"body"}`); !allowed {
+		t.Fatalf("artifact write should pass: %s", reason)
+	}
+	if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "write_file", `{"path":"src/main.go","content":"package main"}`); allowed {
+		t.Fatal("artifact phase should reject source writes")
+	}
+	if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "bash", `{"command":"touch src/main.go"}`); allowed {
+		t.Fatal("artifact phase should reject mutating bash")
 	}
 }
 
@@ -205,6 +270,58 @@ func TestDocOnlyWorkflowPhaseBlocksImplementationTools(t *testing.T) {
 		if ok, _ := handler.isWorkflowToolCallAllowed(userID, blocked, `{}`); ok {
 			t.Fatalf("%s concrete call must be blocked in doc-only workflow phase", blocked)
 		}
+	}
+}
+
+func TestPlanningWorkflowPhaseAllowsInspectionButBlocksImplementationTools(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-planning-policy-boundary-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	state.PhaseIndex = 2
+	state.CurrentPhase = workflow.PhaseCodingTaskBreakdown
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("bash", "bash", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("task", "task", nil, nil),
+		toolDef("delegate_task", "delegate", nil, nil),
+	})
+
+	filtered := handler.applyWorkflowToolFilter(userID, []map[string]interface{}{
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("task", "task", nil, nil),
+	})
+	names := toolNameSetForWorkflowFilterTest(filtered)
+	for _, allowed := range []string{"bash", "read_file", "list_directory", "send_file"} {
+		if !names[allowed] {
+			t.Fatalf("%s should remain available in planning workflow phase; got %#v", allowed, names)
+		}
+	}
+	for _, blocked := range []string{"write_file", "edit_file", "task", "delegate_task"} {
+		if names[blocked] {
+			t.Fatalf("%s must not be exposed in planning workflow phase; got %#v", blocked, names)
+		}
+		if handler.isWorkflowToolAllowed(userID, blocked) {
+			t.Fatalf("%s execution must be blocked in planning workflow phase", blocked)
+		}
+	}
+	if !handler.isWorkflowToolAllowed(userID, "bash") {
+		t.Fatal("planning workflow phase should allow bash at tool-name gate")
+	}
+	if ok, reason := handler.isWorkflowToolCallAllowed(userID, "bash", `{"command":"rg -n \"TODO\""}`); !ok {
+		t.Fatalf("planning workflow phase should allow read-only bash call: %s", reason)
+	}
+	if ok, _ := handler.isWorkflowToolCallAllowed(userID, "bash", `{"command":"touch generated.go"}`); ok {
+		t.Fatal("planning workflow phase must block mutating bash calls")
 	}
 }
 

@@ -36,6 +36,7 @@ const emptyValue = (lang: string, kind: 'inactive' | 'unset' | 'generated') => {
 };
 
 export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, saveRemoteConfigField, showToastMessage }: SystemSettingsPanelProps) => {
+    const defaultHeartbeatSec = 30;
 
     const diagnostics: Array<[string, string]> = [
         ['Machine ID', config?.remote_machine_id || emptyValue(lang, 'inactive')],
@@ -61,9 +62,9 @@ export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, sav
                             type="number"
                             min={5}
                             step={1}
-                            value={config?.remote_heartbeat_sec || 10}
-                            onChange={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Number(e.target.value || 10) })}
-                            onBlur={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Math.max(5, Number(e.target.value || 10)) })}
+                            value={config?.remote_heartbeat_sec || defaultHeartbeatSec}
+                            onChange={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Number(e.target.value || defaultHeartbeatSec) })}
+                            onBlur={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Math.max(5, Number(e.target.value || defaultHeartbeatSec)) })}
                         />
                     </label>
                     <label className="system-settings-field">

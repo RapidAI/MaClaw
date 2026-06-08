@@ -58,6 +58,14 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 	}
 	if h.shouldRejectInvalidCodingTaskBreakdownOutput(h.getWorkflowEngine(), ownerID, resp.Text) {
 		log.Printf("[WorkflowEngine] post-loop doc capture rejected invalid coding task breakdown: user=%s owner=%s len=%d", msg.UserID, ownerID, len(resp.Text))
+		if h.reopenInvalidCodingTaskBreakdownForRepair(h.getWorkflowEngine(), ownerID) {
+			log.Printf("[WorkflowEngine] scheduled invalid coding task breakdown repair: user=%s owner=%s", msg.UserID, ownerID)
+			if h.app != nil && h.app.ctx != nil {
+				if _, err := h.app.continueAIAssistantWorkflowMessage(ownerID, invalidCodingTaskBreakdownFeedbackText(), ""); err != nil {
+					log.Printf("[WorkflowEngine] failed to auto-continue invalid coding task breakdown repair: user=%s owner=%s err=%v", msg.UserID, ownerID, err)
+				}
+			}
+		}
 		return
 	}
 	if phaseID, advResp, err := h.getWorkflowEngine().SavePhaseOutputAndMaybeAdvance(ownerID, resp.Text); err != nil {

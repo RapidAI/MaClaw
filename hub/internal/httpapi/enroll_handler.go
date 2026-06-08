@@ -209,8 +209,10 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 			if resp.MachineID != "" {
 				metadataStart := time.Now()
 				heartbeat := req.HeartbeatIntervalSec
-				if heartbeat < 5 || heartbeat > 3600 {
-					heartbeat = 10
+				if heartbeat <= 0 || heartbeat > 3600 {
+					heartbeat = 30
+				} else if heartbeat < 5 {
+					heartbeat = 5
 				}
 				if err := identity.UpdateMachineMetadata(ctx, resp.MachineID, auth.MachineMetadata{
 					Name:                 req.MachineName,

@@ -2541,6 +2541,9 @@ func (app *TUIApp) isWorkflowToolAllowedTUI(name string) bool {
 	if app.isWorkflowPhaseExecutionBlockedTUI() {
 		return false
 	}
+	if contract, ok := app.currentWorkflowPhaseContractTUI(); ok {
+		return workflow.IsToolAllowedByContract(contract, name)
+	}
 	return workflow.IsToolAllowedByPolicy(app.currentWorkflowToolFilterTUI(), name)
 }
 
@@ -2560,6 +2563,12 @@ func (app *TUIApp) isWorkflowToolCallAllowedTUI(name, argsJSON string) (bool, st
 	var approved []workflow.OpsApprovedCommand
 	if engine := app.getWorkflowEngine(); engine != nil {
 		approved = engine.GetOpsApprovedCommands("tui-user")
+		if contract, ok := engine.GetActivePhaseContract("tui-user"); ok {
+			if err := workflow.ValidateToolCallByContractWithApproval(contract, strings.TrimSpace(name), args, approved); err != nil {
+				return false, err.Error()
+			}
+			return true, ""
+		}
 	}
 	if err := workflow.ValidateToolCallByPolicyWithApproval(app.currentWorkflowToolFilterTUI(), strings.TrimSpace(name), args, approved); err != nil {
 		return false, err.Error()
@@ -2584,6 +2593,17 @@ func (app *TUIApp) currentWorkflowToolFilterTUI() workflow.ToolFilterPolicy {
 		return workflow.ToolFilterNone
 	}
 	return engine.GetActivePhaseToolFilter("tui-user")
+}
+
+func (app *TUIApp) currentWorkflowPhaseContractTUI() (workflow.PhaseContract, bool) {
+	if app == nil {
+		return workflow.PhaseContract{}, false
+	}
+	engine := app.getWorkflowEngine()
+	if engine == nil {
+		return workflow.PhaseContract{}, false
+	}
+	return engine.GetActivePhaseContract("tui-user")
 }
 
 func (c *tuiCallbacks) OnToken(delta string) {

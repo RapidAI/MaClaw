@@ -6,12 +6,16 @@ import "strings"
 // single serialized shape consumed by every renderer (GUI adapter, TUI adapter,
 // the code generator, and the contract test).
 type PhaseMeta struct {
-	ID              string `json:"id"`               // canonical phase id (aliases applied)
-	Name            string `json:"name"`             // display label (template Name)
-	Index           int    `json:"index"`            // 0-based order after dedup
-	ExpectsDocument bool   `json:"expects_document"` // produces a preview document
-	CanSkip         bool   `json:"can_skip"`         // phase is optional
-	NeedsConfirm    bool   `json:"needs_confirm"`    // phase pauses for user confirmation
+	ID                    string           `json:"id"`                     // canonical phase id (aliases applied)
+	Name                  string           `json:"name"`                   // display label (template Name)
+	Index                 int              `json:"index"`                  // 0-based order after dedup
+	ExpectsDocument       bool             `json:"expects_document"`       // produces a preview document
+	CanSkip               bool             `json:"can_skip"`               // phase is optional
+	NeedsConfirm          bool             `json:"needs_confirm"`          // phase pauses for user confirmation
+	Kind                  PhaseKind        `json:"kind,omitempty"`         // derived semantic phase kind
+	ToolPolicy            ToolFilterPolicy `json:"tool_policy,omitempty"`  // derived tool boundary
+	MutationScope         MutationScope    `json:"mutation_scope"`         // derived mutation boundary
+	ActivatesOrchestrator bool             `json:"activates_orchestrator"` // starts coding/project orchestrator
 }
 
 // CanonicalPhaseID applies the phase-ID alias table so that backend IDs and the
@@ -39,10 +43,11 @@ func CanonicalPhaseID(phaseID string) string {
 }
 
 // PhaseExpectsDocument is the single rule for whether a phase yields a preview
-// document. Execution phases use a non-document tool policy (ToolFilterFull or
-// ToolFilterOpsControlled); every other policy produces a document.
+// document. Reviewable planning phases may expose repository-inspection tools,
+// but NeedsConfirm still means their output is a document. Only non-review
+// execution phases use a non-document tool policy.
 func PhaseExpectsDocument(p PhaseTemplate) bool {
-	return p.ToolPolicy != ToolFilterFull && p.ToolPolicy != ToolFilterOpsControlled
+	return DerivePhaseContract(nil, p).ExpectsDocument
 }
 
 // PhaseMetadata projects a template's phases into ordered, de-duplicated
@@ -65,14 +70,19 @@ func PhaseMetadata(tmpl *WorkflowTemplate) []PhaseMeta {
 		if id == "" || seen[id] {
 			continue
 		}
+		contract := DerivePhaseContract(tmpl, phase)
 		seen[id] = true
 		metas = append(metas, PhaseMeta{
-			ID:              id,
-			Name:            phase.Name,
-			Index:           len(metas),
-			ExpectsDocument: PhaseExpectsDocument(phase),
-			CanSkip:         phase.CanSkip,
-			NeedsConfirm:    phase.NeedsConfirm,
+			ID:                    id,
+			Name:                  phase.Name,
+			Index:                 len(metas),
+			ExpectsDocument:       contract.ExpectsDocument,
+			CanSkip:               phase.CanSkip,
+			NeedsConfirm:          phase.NeedsConfirm,
+			Kind:                  contract.Kind,
+			ToolPolicy:            contract.ToolPolicy,
+			MutationScope:         contract.MutationScope,
+			ActivatesOrchestrator: contract.ActivatesOrchestrator,
 		})
 	}
 

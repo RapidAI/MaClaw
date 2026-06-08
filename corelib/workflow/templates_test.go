@@ -140,6 +140,24 @@ func TestBuiltinTemplates_CodingImplementationToolPolicyFull(t *testing.T) {
 	}
 }
 
+func TestBuiltinTemplates_CodingTaskBreakdownToolPolicyPlanning(t *testing.T) {
+	r := NewWorkflowRegistry()
+	tmpl := r.Match(WorkflowCoding)
+	if tmpl == nil {
+		t.Fatal("coding template not found")
+	}
+	phase := tmpl.Phases[2]
+	if phase.ID != PhaseCodingTaskBreakdown {
+		t.Fatalf("expected phase 2 to be task_breakdown, got %s", phase.ID)
+	}
+	if phase.ToolPolicy != ToolFilterPlanning {
+		t.Fatalf("coding task_breakdown phase must expose planning tools for repo inspection without implementation mutation, got %s", phase.ToolPolicy)
+	}
+	if !phase.NeedsConfirm {
+		t.Fatal("coding task_breakdown phase must still require confirmation before implementation starts")
+	}
+}
+
 func TestBuiltinTemplates_CodingTaskBreakdownUsesOneBasedDependencyLabels(t *testing.T) {
 	r := NewWorkflowRegistry()
 	tmpl := r.Match(WorkflowCoding)

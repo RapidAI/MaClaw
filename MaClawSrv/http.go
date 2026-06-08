@@ -170,6 +170,24 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 	return s
 }
 
+func (s *HTTPServer) Close() {
+	if s == nil {
+		return
+	}
+	if s.weixinRuntime != nil {
+		s.weixinRuntime.StopAll()
+	}
+	if s.imRuntime != nil {
+		s.imRuntime.StopAll()
+	}
+	if s.thirdPartyIM != nil {
+		s.thirdPartyIM.StopAll()
+	}
+	if s.aiModels != nil {
+		s.aiModels.Close()
+	}
+}
+
 func (s *HTTPServer) startConfiguredAIModelDownloads(ctx context.Context) {
 	if s == nil {
 		return
@@ -596,6 +614,9 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/admin/client-config/default/validate", s.withAdmin(s.handleAdminValidateDefaultClientConfig))
 	s.mux.HandleFunc("GET /api/v1/admin/ai-models/status", s.withAdmin(s.handleAdminAIModelsStatus))
 	s.mux.HandleFunc("POST /api/v1/admin/ai-models/{model}/download", s.withAdmin(s.handleAdminAIModelDownload))
+	s.mux.HandleFunc("POST /api/v1/admin/ai-models/embedding/embed", s.withAdmin(s.handleAdminAIModelEmbeddingEmbed))
+	s.mux.HandleFunc("POST /api/v1/admin/ai-models/asr/transcribe", s.withAdmin(s.handleAdminAIModelASRTranscribe))
+	s.mux.HandleFunc("POST /api/v1/admin/ai-models/tts/synthesize", s.withAdmin(s.handleAdminAIModelTTSSynthesize))
 	s.mux.HandleFunc("GET /api/v1/admin/i18n/locales", s.withAdmin(s.handleAdminI18NLocales))
 	s.mux.HandleFunc("GET /api/v1/admin/i18n/messages", s.withAdmin(s.handleAdminI18NMessages))
 	s.mux.HandleFunc("GET /api/v1/admin/sandbox/status", s.withAdmin(s.handleAdminSandboxStatus))

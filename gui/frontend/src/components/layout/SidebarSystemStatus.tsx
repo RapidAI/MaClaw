@@ -105,6 +105,14 @@ export const SidebarSystemStatus = ({
     const providerActionTitle = `${providerLabel}${CREDIT_SEPARATOR}${providerTitle}`;
     const openProviderTarget = isOfficialProvider ? openServiceRedeemPage : openLLMSettingsPage;
     const cardStoreTitle = textForLang(lang, 'Open MaClaw card store', '\u6253\u5f00 MaClaw \u670d\u52a1\u5361\u5546\u5e97', '\u6253\u958b MaClaw \u670d\u52d9\u5361\u5546\u5e97');
+    const lowCreditWarning = isOfficialProvider && !!sidebarHubCredits && sidebarHubCredits.authorized && !sidebarHubCredits.unlimited && sidebarHubCredits.remaining < 1000;
+    const isPeriodLimited = !!sidebarHubCredits && String(sidebarHubCredits.status || '').toLowerCase() === 'period_limited';
+    const isPeriodLimitedStopped = isPeriodLimited && sidebarHubCredits!.serviceActive === false;
+    const lowCreditTitle = isPeriodLimitedStopped
+        ? textForLang(lang, 'Period quota used up, service stopped. Buy a top-up credits card to continue.', '\u5468\u671f\u9650\u989d\u5df2\u7528\u5c3d\uff0c\u670d\u52a1\u5df2\u505c\u6b62\u3002\u53ef\u8d2d\u4e70\u7eaf\u70b9\u5361\u8865\u5145\u7ee7\u7eed\u4f7f\u7528', '\u9031\u671f\u9650\u984d\u5df2\u7528\u76e1\uff0c\u670d\u52d9\u5df2\u505c\u6b62\u3002\u53ef\u8cfc\u8cb7\u7d14\u9ede\u5361\u88dc\u5145\u7e7c\u7e8c\u4f7f\u7528')
+        : lowCreditWarning
+            ? textForLang(lang, 'Credits below 1000, click to recharge', '\u4f59\u989d\u4e0d\u8db31000\uff0c\u70b9\u51fb\u5145\u503c', '\u9918\u984d\u4e0d\u8db31000\uff0c\u9ede\u64ca\u5145\u503c')
+            : cardStoreTitle;
     const localCacheRequests = sidebarCurrentProviderTokenUsage.localCacheRequests ?? 0;
     const localCacheHits = sidebarCurrentProviderTokenUsage.localCacheHits ?? 0;
     const shouldDisplayCacheRate = !isOfficialProvider;
@@ -201,10 +209,10 @@ export const SidebarSystemStatus = ({
                     {isOfficialProvider && openHubCardStorePage && (
                         <button
                             type="button"
-                            className="sidebar-system-status__provider-cart"
+                            className={`sidebar-system-status__provider-cart${(lowCreditWarning || isPeriodLimitedStopped) ? ' sidebar-system-status__provider-cart--alert' : ''}`}
                             onClick={openHubCardStorePage}
-                            title={cardStoreTitle}
-                            aria-label={cardStoreTitle}
+                            title={lowCreditTitle}
+                            aria-label={lowCreditTitle}
                         >
                             <svg className="sidebar-system-status__provider-cart-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                                 <path d="M3 5h2.7l2.1 10.2a2 2 0 0 0 2 1.6h7.5a2 2 0 0 0 1.9-1.4l1.3-5.2H7.1" />

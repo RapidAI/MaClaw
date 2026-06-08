@@ -252,6 +252,36 @@ func TestConvertOpenAIToAnthropic_SkipsInvalidToolArguments(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIToAnthropic_UnwrapsEncodedToolArguments(t *testing.T) {
+	resp := openaiChatResponse{
+		Choices: []openaiChoice{{
+			Message: openaiMessage{
+				Role: "assistant",
+				ToolCalls: []openaiToolCall{{
+					ID: "call_encoded", Type: "function",
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{Name: "Write", Arguments: `"{\"file_path\":\"main.cpp\",\"content\":\"hi\"}"`},
+				}},
+			},
+			FinishReason: "tool_calls",
+		}},
+	}
+
+	result := convertOpenAIToAnthropic(resp, "Qwen-Flash")
+
+	if result.StopReason != "tool_use" {
+		t.Fatalf("stop_reason = %q, want tool_use", result.StopReason)
+	}
+	if len(result.Content) != 1 || result.Content[0].Type != "tool_use" {
+		t.Fatalf("content = %+v", result.Content)
+	}
+	if result.Content[0].Input["file_path"] != "main.cpp" || result.Content[0].Input["content"] != "hi" {
+		t.Fatalf("tool input = %+v, want unwrapped object", result.Content[0].Input)
+	}
+}
+
 func TestSetCodeGenUpstreamHeadersNormalizeLegacyClientName(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, "https://codegen.qianxin-inc.cn/api/v1/models", nil)
 	if err != nil {
@@ -1083,6 +1113,58 @@ func TestShortSHA256DoesNotExposePayload(t *testing.T) {
 	}
 }
 
+func TestClassifyToolArguments(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "empty", raw: "", want: "empty"},
+		{name: "object", raw: `{"file_path":"main.cpp"}`, want: "object"},
+		{name: "encoded_object", raw: `"{\"file_path\":\"main.cpp\"}"`, want: "encoded_object"},
+		{name: "array", raw: `[]`, want: "array"},
+		{name: "string", raw: `"main.cpp"`, want: "string"},
+		{name: "null", raw: `null`, want: "null"},
+		{name: "invalid", raw: `{`, want: "invalid_json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyToolArguments(tt.raw); got != tt.want {
+				t.Fatalf("classifyToolArguments(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSummarizeStreamToolIncludesKeysAndSchemaMissing(t *testing.T) {
+	schemas := map[string]toolSchemaSummary{
+		"Write": {
+			Required: map[string]struct{}{
+				"file_path": {},
+				"content":   {},
+			},
+			Props: map[string]struct{}{
+				"file_path": {},
+				"content":   {},
+			},
+		},
+	}
+	acc := &streamToolCallAccum{
+		Index:     0,
+		Name:      "Write",
+		Arguments: `{"file_path":"main.cpp"}`,
+	}
+
+	got := summarizeStreamTool(acc, schemas)
+
+	if !strings.Contains(got, "args_keys=file_path") {
+		t.Fatalf("summary missing args keys: %s", got)
+	}
+	if !strings.Contains(got, "schema_missing=content") {
+		t.Fatalf("summary missing schema gap: %s", got)
+	}
+}
+
 func TestReadOpenAIStreamEventsReturnsReaderError(t *testing.T) {
 	reader := io.MultiReader(
 		strings.NewReader("data: {\"choices\":[]}\n\n"),
@@ -1114,7 +1196,7 @@ func TestAnthropicProxyStreamReadErrorEmitsErrorEvent(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-stream-error")
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-stream-error", nil)
 
 	text := rec.Body.String()
 	if !strings.Contains(text, "event: error") {
@@ -1138,7 +1220,7 @@ func TestAnthropicProxyStreamReadErrorDoesNotEmitPartialToolUse(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-partial-tool-error")
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-partial-tool-error", nil)
 
 	text := rec.Body.String()
 	if !strings.Contains(text, "event: error") {
@@ -1163,7 +1245,7 @@ func TestAnthropicProxyInvalidToolArgumentsEmitError(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-invalid-tool-args")
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-invalid-tool-args", nil)
 
 	text := rec.Body.String()
 	if !strings.Contains(text, "event: error") {
@@ -1174,6 +1256,56 @@ func TestAnthropicProxyInvalidToolArgumentsEmitError(t *testing.T) {
 	}
 	if strings.Contains(text, `"partial_json":"{}"`) {
 		t.Fatalf("stream downgraded invalid args to empty object: %s", text)
+	}
+}
+
+func TestAnthropicProxyUnwrapsEncodedStreamToolArguments(t *testing.T) {
+	srv := NewServer(":0")
+	encodedArgs := `"{\"file_path\":\"main.cpp\",\"content\":\"hi\"}"`
+	chunk, err := json.Marshal(map[string]interface{}{
+		"choices": []interface{}{
+			map[string]interface{}{
+				"delta": map[string]interface{}{
+					"tool_calls": []interface{}{
+						map[string]interface{}{
+							"index": 0,
+							"id":    "call_encoded",
+							"function": map[string]interface{}{
+								"name":      "Write",
+								"arguments": encodedArgs,
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := io.NopCloser(strings.NewReader(
+		"data: " + string(chunk) + "\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+			"data: [DONE]\n\n",
+	))
+	upResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       body,
+	}
+	rec := httptest.NewRecorder()
+
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-encoded-tool-args", nil)
+
+	text := rec.Body.String()
+	if strings.Contains(text, "event: error") {
+		t.Fatalf("stream emitted error for encoded args: %s", text)
+	}
+	if !strings.Contains(text, `"type":"tool_use"`) {
+		t.Fatalf("stream missing tool_use: %s", text)
+	}
+	if !strings.Contains(text, `"partial_json":"{\"file_path\":\"main.cpp\",\"content\":\"hi\"}"`) {
+		t.Fatalf("stream did not unwrap encoded args: %s", text)
 	}
 }
 
@@ -1191,7 +1323,7 @@ func TestAnthropicProxyNonObjectToolArgumentsEmitError(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-non-object-tool-args")
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-non-object-tool-args", nil)
 
 	text := rec.Body.String()
 	if !strings.Contains(text, "event: error") {
@@ -1232,7 +1364,7 @@ func TestAnthropicProxyNonStreamInvalidToolArgumentsReturnsError(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	srv.handleNonStreamResponse(rec, upResp, "Qwen-Flash", "test-nonstream-invalid-tool")
+	srv.handleNonStreamResponse(rec, upResp, "Qwen-Flash", "test-nonstream-invalid-tool", nil)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
@@ -1256,7 +1388,7 @@ func TestAnthropicProxyInvalidStreamChunkEmitsError(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-invalid-stream-chunk")
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-invalid-stream-chunk", nil)
 
 	text := rec.Body.String()
 	if !strings.Contains(text, "event: error") {

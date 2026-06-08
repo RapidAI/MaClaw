@@ -106,21 +106,21 @@ TTS 引擎（Piper）输出 PCM float32 @ 22050Hz 单声道。需要编码为各
 | 方案 | 覆盖平台 | 纯 Go | 文件大小（10s 音频） | 复杂度 |
 |------|---------|-------|-------------------|--------|
 | **A: WAV only** | 企微 ✅ QQ ✅ 飞书 ❌ 蓝信 ✅ | ✅ | ~430KB | 最低 |
-| **B: WAV + OGG Opus** | 企微 ✅ QQ ✅ 飞书 ✅ 蓝信 ✅ Telegram ✅ | ⚠️ Opus 编码需要评估 | WAV ~430KB, Opus ~20KB | 中 |
-| **C: MP3 only** | 企微 ✅ QQ ✅ 飞书 ❌ 蓝信 ✅ | ❌ 纯 Go MP3 编码器不成熟 | ~80KB | 中 |
+| **B: WAV + OGG Opus** | 企微 ✅ QQ ✅ 飞书 ✅ 蓝信 ✅ Telegram ✅ | ✅ 内置纯 Go Opus | WAV ~430KB, Opus ~20KB | 中 |
+| **C: MP3 only** | 企微 ✅ QQ ✅ 飞书 ❌ 蓝信 ✅ | ✅ `shine-mp3` | ~80KB | 中 |
 | **D: WAV（默认）+ 平台适配** | 全平台 | ✅ 核心 + 按需 | 按平台 | 最灵活 |
 
 ### 3.3 推荐方案：D（WAV 默认 + 平台适配层）
 
 **核心层**（`corelib/tts`）：
 - `Manager.SynthesizeText(text) → []byte`（WAV）——已有，不改
-- 新增 `EncodeWAVToOpus(wav) → []byte`（OGG Opus）——飞书/钉钉/Telegram 专用，依赖系统 ffmpeg
-- 新增 `HasOpusEncoder() → bool`——检测 ffmpeg 是否可用
+- 新增 `EncodeWAVToOpus(wav) → []byte`（OGG Opus）——飞书/钉钉/Telegram 专用，使用内置纯 Go Opus 编码器
+- 新增 `HasOpusEncoder() → bool`——检测内置 Opus 编码器是否可用
 
-**Opus 编码方案**：使用系统 ffmpeg 做 WAV → OGG Opus 转码。
-- 纯 Go Opus 编码器不可用：`pion/opus` 只有解码器；`gotranspile/opus`（libopus 自动转译）编译不过（大量类型错误）
-- ffmpeg 方案：零额外 Go 依赖，32kbps voip 模式，10 秒音频 → ~40KB OGG Opus
-- 降级策略：ffmpeg 不可用时回退到 WAV（企微/QQ 仍为语音气泡，飞书/钉钉降级为文件附件）
+**Opus 编码方案**：使用内置纯 Go 编码器做 WAV → OGG Opus 转码。
+- 当前实现基于 `corelib/opus/libopus`，不调用 ffmpeg，不依赖 CGo 或系统 libopus。
+- 编码目标为 32kbps voip 模式，10 秒音频约 40KB OGG Opus。
+- 降级策略：内置 Opus 编码不可用时回退到 WAV（企微/QQ 仍为语音气泡，飞书/钉钉降级为文件附件）。
 
 **平台适配层**（`gui/im_tool_tts.go` 或 hub 侧）：
 - 根据目标平台选择编码格式
@@ -140,8 +140,8 @@ TTS 引擎（Piper）输出 PCM float32 @ 22050Hz 单声道。需要编码为各
 
 **务实选择**：
 
-1. **首期**：飞书通道使用 `hraban/opus`（CGo，依赖 libopus）。MacLaw 已经是桌面应用，CGo 在编译时可接受。或者用 `exec.Command("ffmpeg", ...)` 调用系统 ffmpeg 做 WAV→Opus 转换（如果用户安装了 ffmpeg）。
-2. **备选**：如果 `pion/opus` 的编码器足够用（需要验证），优先使用纯 Go 方案。
+1. **当前**：使用 `corelib/opus/libopus` 内置纯 Go 编码器，避免 ffmpeg、CGo、系统 libopus 依赖。
+2. **备选**：如果未来替换编码器，仍优先选择纯 Go 方案，保持服务器和 GUI 安装后即用。
 3. **兜底**：飞书通道如果 Opus 编码不可用，降级为文件附件发送 WAV（功能可用但不是语音气泡）。
 
 ## 4. 架构设计

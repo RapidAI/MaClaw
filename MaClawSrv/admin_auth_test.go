@@ -533,6 +533,7 @@ func TestAdminOwnerCanCreateOperatorAndOperatorCannotManageAdmins(t *testing.T) 
 		{http.MethodPost, "/api/v1/admin/snapshots/missing/restore?dry_run=true", `{}`},
 		{http.MethodDelete, "/api/v1/admin/snapshots/missing?confirm=true", ``},
 		{http.MethodPost, "/api/v1/admin/runtime/gc", ``},
+		{http.MethodPost, "/api/v1/admin/ai-models/embedding/download", ``},
 		{http.MethodPost, "/api/v1/admin/jobs/missing/cancel", ``},
 		{http.MethodPost, "/api/v1/admin/logs/service/rotate?confirm=true", ``},
 		{http.MethodDelete, "/api/v1/admin/sandbox/reports/missing?confirm=true", ``},

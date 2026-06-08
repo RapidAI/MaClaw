@@ -3,11 +3,8 @@ package main
 import (
 	"os"
 	goruntime "runtime"
-)
 
-const (
-	defaultRemoteHeartbeatSec = 5
-	minRemoteHeartbeatSec     = 5
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 type remoteMachineProfile struct {
@@ -22,10 +19,7 @@ type remoteMachineProfile struct {
 }
 
 func normalizeRemoteHeartbeatIntervalSec(value int) int {
-	if value < minRemoteHeartbeatSec {
-		return defaultRemoteHeartbeatSec
-	}
-	return value
+	return corelib.NormalizeRemoteHeartbeatIntervalSec(value)
 }
 
 func remoteAppVersion() string {

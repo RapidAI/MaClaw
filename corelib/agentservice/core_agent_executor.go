@@ -77,6 +77,7 @@ type coreAgentCallbacks struct {
 	sshDeps                    sshtool.SSHToolDeps
 	httpClient                 *http.Client
 	toolPolicy                 workflow.ToolFilterPolicy
+	mutationScope              workflow.MutationScope
 	opsApprovedCommands        []workflow.OpsApprovedCommand
 	knowledgeStore             KnowledgeStore
 	mcpProvider                MCPToolProvider
@@ -118,7 +119,7 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		knowledgeStore:       e.knowledgeStore,
 		mcpProvider:          e.mcpProvider,
 		skillProvider:        e.skillProvider,
-		loopID:              fmt.Sprintf("srv:%s:%s", req.Session.ID, req.Principal.UserID),
+		loopID:               fmt.Sprintf("srv:%s:%s", req.Session.ID, req.Principal.UserID),
 		sshDeps: sshtool.SSHToolDeps{
 			Manager:   sshResources.mgr,
 			BGTaskMgr: sshResources.bg,
@@ -126,8 +127,9 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 				return configuredSSHHostsFrom(req.Config.SSHHosts)
 			},
 		},
-		httpClient: e.clientFor(llmCfg),
-		toolPolicy: req.ToolPolicy,
+		httpClient:    e.clientFor(llmCfg),
+		toolPolicy:    req.ToolPolicy,
+		mutationScope: req.MutationScope,
 		opsApprovedCommands: append([]workflow.OpsApprovedCommand(nil),
 			req.OpsApprovedCommands...),
 	}
@@ -385,7 +387,7 @@ type coreToolSpec struct {
 
 func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req ExecuteRequest) (*AgentCapabilities, error) {
 	_ = ctx
-	cb := &coreAgentCallbacks{appCfg: req.Config, principal: req.Principal, workspace: req.Instance.Workspace, dataDir: req.DataDir, allowLocalBash: e.AllowLocalBash, localBashTrustedSingleUser: e.LocalBashTrustedSingleUser, localBashTenantID: strings.TrimSpace(e.LocalBashTenantID), localBashUserID: strings.TrimSpace(e.LocalBashUserID), allowDirectSSH: e.AllowDirectSSH, allowSSHFileTransfer: e.AllowSSHFileTransfer, toolPolicy: req.ToolPolicy, opsApprovedCommands: append([]workflow.OpsApprovedCommand(nil), req.OpsApprovedCommands...)}
+	cb := &coreAgentCallbacks{appCfg: req.Config, principal: req.Principal, workspace: req.Instance.Workspace, dataDir: req.DataDir, allowLocalBash: e.AllowLocalBash, localBashTrustedSingleUser: e.LocalBashTrustedSingleUser, localBashTenantID: strings.TrimSpace(e.LocalBashTenantID), localBashUserID: strings.TrimSpace(e.LocalBashUserID), allowDirectSSH: e.AllowDirectSSH, allowSSHFileTransfer: e.AllowSSHFileTransfer, toolPolicy: req.ToolPolicy, mutationScope: req.MutationScope, opsApprovedCommands: append([]workflow.OpsApprovedCommand(nil), req.OpsApprovedCommands...)}
 	return &AgentCapabilities{
 		Executor:          "core_agent",
 		SupportsSessions:  true,
@@ -402,6 +404,7 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 			"ssh_direct_connect_enabled": boolString(e.AllowDirectSSH && cb.IsToolAllowed("ssh")),
 			"ssh_file_transfer_enabled":  boolString(e.AllowSSHFileTransfer && cb.IsToolAllowed("ssh")),
 			"tool_policy":                string(req.ToolPolicy),
+			"mutation_scope":             string(workflow.PhaseContractFromPolicy(req.ToolPolicy, req.MutationScope).MutationScope),
 		},
 	}, nil
 }
@@ -847,8 +850,12 @@ func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.ExecuteToolStructured(name, argsJSON).Result
 }
 
+func (c *coreAgentCallbacks) phaseContract() workflow.PhaseContract {
+	return workflow.PhaseContractFromPolicy(c.toolPolicy, c.mutationScope)
+}
+
 func (c *coreAgentCallbacks) IsToolAllowed(name string) bool {
-	return workflow.IsToolAllowedByPolicy(c.toolPolicy, name)
+	return workflow.IsToolAllowedByContract(c.phaseContract(), name)
 }
 
 func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
@@ -858,7 +865,7 @@ func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, str
 			return false, fmt.Sprintf("invalid tool arguments: %v", err)
 		}
 	}
-	if err := workflow.ValidateToolCallByPolicyWithApproval(c.toolPolicy, strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
+	if err := workflow.ValidateToolCallByContractWithApproval(c.phaseContract(), strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
 		return false, err.Error()
 	}
 	if ok, reason := clientsecurity.EnforceConfig(c.appCfg, strings.TrimSpace(name), args); !ok {
@@ -885,7 +892,7 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 			}
 		}
 	}
-	if err := workflow.ValidateToolCallByPolicyWithApproval(c.toolPolicy, strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
+	if err := workflow.ValidateToolCallByContractWithApproval(c.phaseContract(), strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
 		return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
 	}
 	if ok, reason := clientsecurity.EnforceConfig(c.appCfg, strings.TrimSpace(name), args); !ok {

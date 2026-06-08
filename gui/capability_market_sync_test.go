@@ -28,6 +28,15 @@ func TestCapabilityManagedSyncRetryDelayThrottlesHeartbeatNoise(t *testing.T) {
 	}
 }
 
+func TestCapabilityManagedSyncSuccessDelayThrottlesHeartbeatNoise(t *testing.T) {
+	if got := capabilityManagedSyncSuccessDelay("hub-heartbeat"); got != capabilityManagedSyncMinInterval {
+		t.Fatalf("heartbeat success delay = %s, want %s", got, capabilityManagedSyncMinInterval)
+	}
+	if got := capabilityManagedSyncSuccessDelay("hub-config-update"); got != 0 {
+		t.Fatalf("config update success delay = %s, want 0", got)
+	}
+}
+
 func TestCapabilityMarketplaceUnsupportedErrorIgnoresInventory404(t *testing.T) {
 	if !isCapabilityMarketplaceUnsupportedError("managed deployments request failed: hub marketplace request failed: status=404 body=map[]") {
 		t.Fatal("marketplace endpoint 404 should mark marketplace unsupported")

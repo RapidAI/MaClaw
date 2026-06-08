@@ -170,7 +170,7 @@ type App struct {
 	digitalEmployeeAuthCache          digitalEmployeeAuthorizationCache
 	hubViewerTokenRecoveryNextAttempt atomic.Value // stores time.Time; throttles failed viewer-token recovery
 	capabilitySyncRunning             atomic.Bool
-	capabilitySyncNextAttempt         atomic.Value // stores time.Time; throttles heartbeat-triggered managed sync retries
+	capabilitySyncNextAttempt         atomic.Value // stores time.Time; throttles heartbeat-triggered managed sync retries and steady-state re-syncs
 	hubMarketplaceUnsupported         atomic.Bool  // capability discovery: hub doesn't have marketplace API
 	hubMarketplace404URL              atomic.Value // stores the hub URL (string) that returned 404
 	managedDeploymentIDs              sync.Map     // capability_ref (string) -> true; cached from last sync
@@ -280,7 +280,7 @@ func (a *App) resolveExperienceProviderForAttribution() lifecycle.Provider {
 		}
 	}
 	if a.workflowEngine != nil {
-		if ws := a.workflowEngine.GetActiveWorkflow(desktopUserID); ws != nil {
+		if ws := a.workflowEngine.GetActiveWorkflow(a.workflowOwnerIDForCurrentProject()); ws != nil {
 			providers = append(providers, workflow.NewExperienceProvider(ws))
 		}
 	}
@@ -2639,16 +2639,28 @@ func (a *App) SetWorkflowWorkingDir(dir string) {
 		}
 		dir = trimmed
 	}
+	ownerID := a.workflowOwnerIDForCurrentProject()
 	if adapter, ok := a.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
-		adapter.SetWorkingDir(desktopUserID, dir)
+		adapter.SetWorkingDir(ownerID, dir)
+	} else if err := a.workflowEngine.SetProjectPath(ownerID, dir); err != nil {
+		log.Printf("[WorkflowAdapter] failed to persist workflow project path: %v", err)
 	}
-	projectPath := strings.TrimSpace(a.GetCurrentProjectPath())
-	if projectPath != "" {
-		projectUserID := fmt.Sprintf("%s:%s", desktopUserID, projectPath)
-		if err := a.workflowEngine.SetProjectPath(projectUserID, dir); err != nil {
-			log.Printf("[WorkflowAdapter] failed to persist project-scoped workflow project path: %v", err)
+}
+
+func (a *App) workflowOwnerIDForCurrentProject() string {
+	if a == nil {
+		return desktopUserID
+	}
+	projectOwnerID := projectSessionOwnerID(a.GetCurrentProjectPath())
+	if a.workflowEngine != nil {
+		if projectOwnerID != desktopUserID && a.workflowEngine.GetActiveWorkflow(projectOwnerID) != nil {
+			return projectOwnerID
+		}
+		if a.workflowEngine.GetActiveWorkflow(desktopUserID) != nil {
+			return desktopUserID
 		}
 	}
+	return projectOwnerID
 }
 
 // GetWorkflowWorkingDir returns the current workflow working directory.
@@ -3699,7 +3711,11 @@ func getBaseUrl(selectedModel *corelib.ModelConfig) string {
 func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonProject bool, pythonEnv string, projectDir string, useProxy bool) error {
 	a.log(fmt.Sprintf("LaunchTool called: %s, yolo=%v, admin=%v, py=%v, pyenv=%s, dir=%s, proxy=%v",
 		toolName, yoloMode, adminMode, pythonProject, pythonEnv, projectDir, useProxy))
-	if err := a.ensureWorkflowAllowsRemoteToolCall(remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir, "launch_source": "desktop"}); err != nil {
+	if projectDir == "" {
+		projectDir = a.GetCurrentProjectPath()
+	}
+	projectDir = normalizeProjectSessionPath(projectDir)
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerIDForProject(RemoteLaunchSourceDesktop, projectDir), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir, "launch_source": "desktop"}); err != nil {
 		a.log(fmt.Sprintf("LaunchTool blocked by workflow policy: %v", err))
 		return err
 	}
@@ -3714,9 +3730,6 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 	} else {
 		// Clear pythonEnv if not a Python project
 		pythonEnv = ""
-	}
-	if projectDir == "" {
-		projectDir = a.GetCurrentProjectPath()
 	}
 	config, err := a.LoadConfig()
 	if err != nil {
@@ -4341,7 +4354,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 						RemoteUserID:           "",
 						RemoteMachineID:        "",
 						RemoteMachineToken:     "",
-						RemoteHeartbeatSec:     10,
+						RemoteHeartbeatSec:     corelib.DefaultRemoteHeartbeatSec,
 						SubAgentConcurrency:    corelib.DefaultSubAgentConcurrency,
 						IMProgressNudgeEnabled: boolPtr(true),
 					}
@@ -4408,7 +4421,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 			RemoteUserID:           "",
 			RemoteMachineID:        "",
 			RemoteMachineToken:     "",
-			RemoteHeartbeatSec:     10,
+			RemoteHeartbeatSec:     corelib.DefaultRemoteHeartbeatSec,
 			ScreenDimTimeoutMin:    3, // Default: dim display after 3 minutes of inactivity
 			GossipAutoPublish:      true,
 			YoloModeAllowed:        true,
@@ -4450,9 +4463,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	if config.SandboxMode == "" {
 		config.SandboxMode = "none"
 	}
-	if config.RemoteHeartbeatSec < 5 {
-		config.RemoteHeartbeatSec = 10
-	}
+	config.RemoteHeartbeatSec = corelib.NormalizeRemoteHeartbeatIntervalSec(config.RemoteHeartbeatSec)
 
 	// Set default values for new fields if not present or invalid
 	if config.EnvCheckInterval < 2 || config.EnvCheckInterval > 30 {
@@ -5061,6 +5072,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	removeDisallowedCodingToolProviders(&config)
 	sanitizeCodingToolSelection(&config)
 	config.SubAgentConcurrency = corelib.NormalizeSubAgentConcurrency(config.SubAgentConcurrency)
+	config.RemoteHeartbeatSec = corelib.NormalizeRemoteHeartbeatIntervalSec(config.RemoteHeartbeatSec)
 	normalizeConfigTimeouts(&config)
 	sanitizePetConfig(&config)
 	// Load old config to compare for sync logic
@@ -5804,7 +5816,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
-			cfg.RemoteHeartbeatSec = max(5, v)
+			cfg.RemoteHeartbeatSec = corelib.NormalizeRemoteHeartbeatIntervalSec(v)
 		case "agent_response_timeout_sec":
 			v, err := intField(key, value)
 			if err != nil {
@@ -8186,11 +8198,22 @@ func zipEntryHasColonPathComponent(name string) bool {
 }
 
 func (a *App) InstallSkill(name, description, skillType, value, location, projectPath, toolName string) error {
-	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "name": name, "type": skillType, "location": location, "project_path": projectPath, "tool": toolName}); err != nil {
+	locationKind := normalizeSkillInstallLocationKind(location)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if locationKind.IsProject() && projectPath == "" {
+		projectPath = normalizeProjectSessionPath(a.GetCurrentProjectPath())
+	}
+	if locationKind.IsProject() && projectPath == "" {
+		return fmt.Errorf("project path required")
+	}
+	policyOwnerID := a.defaultManualPolicyOwnerID()
+	if locationKind.IsProject() {
+		policyOwnerID = projectSessionOwnerID(projectPath)
+	}
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(policyOwnerID, "manage_skill", map[string]interface{}{"action": "install", "name": name, "type": skillType, "location": location, "project_path": projectPath, "tool": toolName}); err != nil {
 		return err
 	}
 	skillKind := normalizeSkillTypeKind(skillType)
-	locationKind := normalizeSkillInstallLocationKind(location)
 	// 1. Validate
 	if locationKind.IsProject() && skillKind.IsAddress() {
 		return fmt.Errorf("project installation only supports zip/rar files")
@@ -8278,9 +8301,6 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 			}
 		}
 	} else if locationKind.IsProject() {
-		if projectPath == "" {
-			return fmt.Errorf("project path required")
-		}
 		destDir := filepath.Join(projectPath, configDirName, "skills")
 		a.emitSkillInstallProgress(name, "installing", "Installing approved skill package.", installScanReport)
 		if err := a.unzip(fullPath, destDir); err != nil {

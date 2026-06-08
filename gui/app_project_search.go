@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -24,6 +25,9 @@ func normalizeProjectSessionPath(projectPath string) string {
 	if projectPath == "" {
 		return ""
 	}
+	if strings.HasPrefix(projectPath, "/") {
+		return path.Clean(projectPath)
+	}
 	cleaned := filepath.Clean(projectPath)
 	if strings.HasSuffix(cleaned, string(filepath.Separator)+".") {
 		cleaned = filepath.Clean(cleaned[:len(cleaned)-2])
@@ -40,6 +44,14 @@ func projectSessionOwnerID(projectPath string) string {
 		return desktopUserID
 	}
 	return fmt.Sprintf("desktop-user:%s", projectPath)
+}
+
+func projectPathFromSessionOwnerID(ownerID string) string {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" || ownerID == desktopUserID || !strings.HasPrefix(ownerID, desktopUserID+":") {
+		return ""
+	}
+	return normalizeProjectSessionPath(strings.TrimPrefix(ownerID, desktopUserID+":"))
 }
 
 // ProjectSearchResult is the frontend-facing search result type.

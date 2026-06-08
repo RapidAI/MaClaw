@@ -132,4 +132,26 @@ describe('SidebarAiPane digital employee tabs', () => {
         expect(contentSlot.style.flex).toBe('1 1 0%');
         expect(contentSlot.style.minHeight).toBe('0px');
     });
+
+    it('insets digital employee content so the pane does not press against the divider', () => {
+        renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
+
+        fireEvent.click(screen.getByText('Digital Employees'));
+
+        const middlePane = screen.getByTestId('sidebar-middle-pane-employees');
+        expect(middlePane.style.paddingLeft).toBe('6px');
+        expect(middlePane.style.paddingRight).toBe('6px');
+        expect(middlePane.style.boxSizing).toBe('border-box');
+    });
+
+    it('insets history content with the same pane spacing', () => {
+        renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
+
+        fireEvent.click(screen.getByText('History'));
+
+        const middlePane = screen.getByTestId('sidebar-middle-pane-history');
+        expect(middlePane.style.paddingLeft).toBe('6px');
+        expect(middlePane.style.paddingRight).toBe('6px');
+        expect(middlePane.style.boxSizing).toBe('border-box');
+    });
 });

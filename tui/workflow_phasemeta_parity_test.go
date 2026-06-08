@@ -49,7 +49,9 @@ func TestTUIWorkflowPhaseMetaParity(t *testing.T) {
 			g, w := got[i], want[i]
 			if g.ID != w.ID || g.Name != w.Name || g.Index != w.Index ||
 				g.ExpectsDocument != w.ExpectsDocument || g.CanSkip != w.CanSkip ||
-				g.NeedsConfirm != w.NeedsConfirm {
+				g.NeedsConfirm != w.NeedsConfirm || g.Kind != w.Kind ||
+				g.ToolPolicy != w.ToolPolicy || g.MutationScope != w.MutationScope ||
+				g.ActivatesOrchestrator != w.ActivatesOrchestrator {
 				t.Fatalf("%s phase %d:\n got=%+v\nwant=%+v", tmpl.Type, i, g, w)
 			}
 		}
@@ -81,6 +83,9 @@ func TestTUIWorkflowPhaseMetaParityCodingConcrete(t *testing.T) {
 		}
 		if strings.TrimSpace(m.Name) == "" {
 			t.Fatalf("coding phase %q (index %d) has an empty label", m.ID, i)
+		}
+		if strings.TrimSpace(string(m.Kind)) == "" {
+			t.Fatalf("coding phase %q (index %d) has empty contract kind", m.ID, i)
 		}
 	}
 }

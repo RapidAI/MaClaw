@@ -17,6 +17,7 @@ import (
 )
 
 const capabilityManagedSyncMinRetry = 5 * time.Minute
+const capabilityManagedSyncMinInterval = 5 * time.Minute
 const capabilityManagedSyncOwnerID = "system:scheduler:background:capability-market-sync"
 
 type CapabilitySyncStatus struct {
@@ -89,7 +90,11 @@ func (a *App) TriggerHubManagedCapabilitySync(reason string) {
 			log.Printf("[capability-market] managed sync reason=%s errors=%v next_retry=%s", reason, status.Errors, nextAttempt.Format(time.RFC3339))
 			return
 		}
-		a.capabilitySyncNextAttempt.Store(time.Time{})
+		if delay := capabilityManagedSyncSuccessDelay(reason); delay <= 0 {
+			a.capabilitySyncNextAttempt.Store(time.Time{})
+		} else {
+			a.capabilitySyncNextAttempt.Store(time.Now().Add(delay))
+		}
 		log.Printf("[capability-market] managed sync reason=%s checked=%d installed=%d needs_config=%d", reason, status.ManagedChecked, status.ManagedInstalled, len(status.NeedsUserConfig))
 	}()
 }
@@ -127,6 +132,13 @@ func capabilityManagedSyncRetryDelay(errs []string) time.Duration {
 		return 30 * time.Minute
 	}
 	return capabilityManagedSyncMinRetry
+}
+
+func capabilityManagedSyncSuccessDelay(reason string) time.Duration {
+	if isCapabilitySyncImmediateReason(reason) {
+		return 0
+	}
+	return capabilityManagedSyncMinInterval
 }
 
 func isCapabilityMarketplaceUnsupportedError(errText string) bool {

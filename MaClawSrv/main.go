@@ -143,6 +143,7 @@ func runServer(ctx context.Context) error {
 		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
+		server.Close()
 		// Close knowledge store after HTTP server has drained all in-flight requests.
 		if knowledgeMgr != nil {
 			knowledgeMgr.Close()

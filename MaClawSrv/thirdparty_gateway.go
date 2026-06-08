@@ -513,6 +513,16 @@ func (m *srvThirdPartyGatewayManager) StopTenant(tenantID string) {
 	}
 }
 
+func (m *srvThirdPartyGatewayManager) StopAll() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clients = map[string]*srvThirdPartyClientState{}
+	m.runtimeInstances = map[string]srvThirdPartyRuntimeInstance{}
+}
+
 func (m *srvThirdPartyGatewayManager) cachedRuntimeInstanceID(p agentservice.Principal) (string, bool) {
 	if m == nil {
 		return "", false

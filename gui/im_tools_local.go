@@ -175,11 +175,7 @@ func (h *IMMessageHandler) resolveFileToolPathForOwner(path, ownerID string) (st
 // userID (format: "desktop-user:{projectPath}"). Returns empty string if the
 // userID is not a Project Tab userID.
 func projectPathFromUserID(userID string) string {
-	const prefix = desktopUserID + ":"
-	if strings.HasPrefix(userID, prefix) && len(userID) > len(prefix) {
-		return userID[len(prefix):]
-	}
-	return ""
+	return projectPathFromSessionOwnerID(userID)
 }
 
 // projectTabWorkDir returns the validated projectPath from the current session's

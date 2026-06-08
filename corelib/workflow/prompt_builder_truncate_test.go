@@ -206,3 +206,38 @@ func TestBuildPhaseSystemPrompt_RendersEmptySubmittedOptionalForm(t *testing.T) 
 		t.Fatalf("prompt should explicitly represent empty optional form submission:\n%s", prompt)
 	}
 }
+
+func TestBuildPhaseSystemPrompt_PlanningBoundarySeparatesDocsFromProjectWrites(t *testing.T) {
+	registry := NewWorkflowRegistry()
+	tmpl := registry.Match(WorkflowCoding)
+	if tmpl == nil {
+		t.Fatal("coding template not found")
+	}
+	phase := tmpl.Phases[2]
+	if phase.ID != PhaseCodingTaskBreakdown || phase.ToolPolicy != ToolFilterPlanning {
+		t.Fatalf("expected coding task_breakdown planning phase, got id=%s policy=%s", phase.ID, phase.ToolPolicy)
+	}
+	state := &WorkflowState{
+		Type:         WorkflowCoding,
+		PhaseIndex:   2,
+		CurrentPhase: PhaseCodingTaskBreakdown,
+		Intent:       StructuredIntent{Category: WorkflowCoding, Summary: "build CMake app"},
+		PhaseOutputs: map[string]string{
+			PhaseCodingRequirements: "Need a C++ app.",
+			PhaseCodingTechDesign:   "Use CMake and src/main.cpp.",
+		},
+	}
+
+	prompt := BuildPhaseSystemPrompt(state, &phase, registry)
+	for _, want := range []string{
+		"## Planning Tool Boundary",
+		"workflow system saves this phase deliverable",
+		"Do not create, edit, move, or delete project files",
+		"CMake files",
+		"implementation phase",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("planning prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

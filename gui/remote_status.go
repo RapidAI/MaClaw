@@ -385,7 +385,7 @@ func (a *App) remoteSessionPolicyOwnerID(sessionID string) string {
 		return a.defaultManualPolicyOwnerID()
 	}
 	if session, ok := a.remoteSessions.Get(strings.TrimSpace(sessionID)); ok && session != nil {
-		return remoteLaunchPolicyOwnerID(session.LaunchSource)
+		return remoteLaunchPolicyOwnerIDForProject(session.LaunchSource, session.ProjectPath)
 	}
 	return a.defaultManualPolicyOwnerID()
 }
@@ -467,17 +467,18 @@ func (a *App) RunRemoteToolSmoke(toolName, projectDir string, useProxy bool) (Re
 	if projectDir == "" {
 		projectDir = a.GetCurrentProjectPath()
 	}
+	projectDir = normalizeProjectSessionPath(projectDir)
 
 	report := RemoteSmokeReport{
 		Tool:        toolName,
 		ProjectPath: projectDir,
 		UseProxy:    useProxy,
-		Connection:  a.GetRemoteConnectionStatus(),
-		Readiness:   a.GetRemoteToolReadiness(toolName, projectDir, useProxy),
 	}
-	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(RemoteLaunchSourceDesktop), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir}); err != nil {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerIDForProject(RemoteLaunchSourceDesktop, projectDir), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir}); err != nil {
 		return report, err
 	}
+	report.Connection = a.GetRemoteConnectionStatus()
+	report.Readiness = a.GetRemoteToolReadiness(toolName, projectDir, useProxy)
 
 	cfg, err := a.LoadConfig()
 	if err != nil {
@@ -575,9 +576,6 @@ func (a *App) StartRemoteClaudeSession(projectDir string, useProxy bool) (Remote
 }
 
 func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, provider string, launchSource RemoteLaunchSource) (RemoteSessionView, error) {
-	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(launchSource), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir, "provider": provider, "launch_source": string(launchSource)}); err != nil {
-		return RemoteSessionView{}, err
-	}
 	toolName = normalizeRemoteToolName(toolName)
 	if !remoteToolSupported(toolName) {
 		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", toolName)
@@ -592,6 +590,10 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, pro
 
 	if projectDir == "" {
 		projectDir = a.GetCurrentProjectPath()
+	}
+	projectDir = normalizeProjectSessionPath(projectDir)
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerIDForProject(launchSource, projectDir), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir, "provider": provider, "launch_source": string(launchSource)}); err != nil {
+		return RemoteSessionView{}, err
 	}
 	if err := a.ensureRemoteLaunchToolInstalled(toolName, launchSource); err != nil {
 		return RemoteSessionView{}, err
@@ -628,9 +630,6 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, pro
 }
 
 func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bool, provider string, launchSource RemoteLaunchSource) (RemoteSessionView, error) {
-	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(launchSource), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir, "provider": provider, "launch_source": string(launchSource)}); err != nil {
-		return RemoteSessionView{}, err
-	}
 	toolName = normalizeRemoteToolName(toolName)
 	if !remoteToolSupported(toolName) {
 		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", toolName)
@@ -645,6 +644,10 @@ func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bo
 
 	if projectDir == "" {
 		projectDir = a.GetCurrentProjectPath()
+	}
+	projectDir = normalizeProjectSessionPath(projectDir)
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerIDForProject(launchSource, projectDir), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir, "provider": provider, "launch_source": string(launchSource)}); err != nil {
+		return RemoteSessionView{}, err
 	}
 	if err := a.ensureRemoteLaunchToolInstalled(toolName, launchSource); err != nil {
 		return RemoteSessionView{}, err

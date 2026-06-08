@@ -379,6 +379,22 @@ func (m *srvIMGatewayManager) StopPrincipal(p agentservice.Principal) {
 	}
 }
 
+func (m *srvIMGatewayManager) StopAll() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	runtimes := make([]*srvIMRuntime, 0, len(m.runtimes))
+	for _, runtime := range m.runtimes {
+		runtimes = append(runtimes, runtime)
+	}
+	m.runtimes = map[string]*srvIMRuntime{}
+	m.mu.Unlock()
+	for _, runtime := range runtimes {
+		stopSrvIMGateway(runtime.gateway)
+	}
+}
+
 func (m *srvIMGatewayManager) stopPrincipalPlatform(p agentservice.Principal, platform string) {
 	platform = normalizeSrvIMPlatform(platform)
 	key := srvIMRuntimeKey(p, platform)

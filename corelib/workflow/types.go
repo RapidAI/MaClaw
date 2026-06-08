@@ -61,8 +61,40 @@ type ToolFilterPolicy string
 const (
 	ToolFilterNone          ToolFilterPolicy = "none"           // no tool restrictions
 	ToolFilterDocOnly       ToolFilterPolicy = "doc_only"       // documentation tools only
+	ToolFilterPlanning      ToolFilterPolicy = "planning"       // repository inspection for reviewable planning phases
 	ToolFilterFull          ToolFilterPolicy = "full"           // full tool list
 	ToolFilterOpsControlled ToolFilterPolicy = "ops_controlled" // controlled operational execution tools
+)
+
+// PhaseKind is the normalized semantic role of a workflow phase. It is derived
+// from existing templates first, then can be declared explicitly by newer
+// templates.
+type PhaseKind string
+
+const (
+	PhaseKindUnknown            PhaseKind = ""
+	PhaseKindIntake             PhaseKind = "intake"
+	PhaseKindDocumentPlanning   PhaseKind = "document_planning"
+	PhaseKindCodePlanning       PhaseKind = "code_planning"
+	PhaseKindArtifactGeneration PhaseKind = "artifact_generation"
+	PhaseKindExecution          PhaseKind = "execution"
+	PhaseKindOpsRiskPolicy      PhaseKind = "ops_risk_policy"
+	PhaseKindOpsExecution       PhaseKind = "ops_execution"
+	PhaseKindReview             PhaseKind = "review"
+)
+
+// MutationScope describes what state a phase may mutate. It is intentionally
+// separate from ToolFilterPolicy because "full" tools can mean code changes,
+// user-facing artifact generation, or other execution contexts.
+type MutationScope string
+
+const (
+	MutationScopeUnknown     MutationScope = ""
+	MutationScopeNone        MutationScope = "none"
+	MutationScopeWorkflowDoc MutationScope = "workflow_doc"
+	MutationScopeArtifact    MutationScope = "artifact"
+	MutationScopeProject     MutationScope = "project"
+	MutationScopeOps         MutationScope = "ops"
 )
 
 // DocOnlyAllowedTools is the canonical set of tool names permitted during
@@ -81,6 +113,23 @@ var DocOnlyAllowedTools = map[string]bool{
 	"open":           true,
 	"set_nickname":   true,
 	"list_directory": true,
+}
+
+// PlanningAllowedTools is the canonical set for reviewable coding-planning
+// phases. It gives the main agent enough context-gathering tools to inspect a
+// repository and produce an executable plan, while still blocking workspace
+// mutation and subagent/task delegation until the confirmed implementation
+// phase.
+var PlanningAllowedTools = map[string]bool{
+	"bash":           true,
+	"read_file":      true,
+	"list_directory": true,
+	"memory":         true,
+	"send_file":      true,
+	"web_search":     true,
+	"web_fetch":      true,
+	"open":           true,
+	"set_nickname":   true,
 }
 
 // OpsControlledAllowedTools is the canonical tool set for controlled server
@@ -247,15 +296,17 @@ func (s *PhaseInputSchema) Clone() *PhaseInputSchema {
 
 // PhaseTemplate defines a single phase within a workflow template.
 type PhaseTemplate struct {
-	ID           string           `json:"id"`
-	Name         string           `json:"name"`
-	Description  string           `json:"description"`
-	Prompt       string           `json:"prompt"`
-	Deliverable  string           `json:"deliverable"`
-	Checklist    []string         `json:"checklist"`
-	NeedsConfirm bool             `json:"needs_confirm"`
-	CanSkip      bool             `json:"can_skip"`
-	ToolPolicy   ToolFilterPolicy `json:"tool_policy"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	Description   string           `json:"description"`
+	Prompt        string           `json:"prompt"`
+	Deliverable   string           `json:"deliverable"`
+	Checklist     []string         `json:"checklist"`
+	NeedsConfirm  bool             `json:"needs_confirm"`
+	CanSkip       bool             `json:"can_skip"`
+	ToolPolicy    ToolFilterPolicy `json:"tool_policy"`
+	Kind          PhaseKind        `json:"kind,omitempty"`
+	MutationScope MutationScope    `json:"mutation_scope,omitempty"`
 
 	// InputSchema declares a structured form for this phase's information
 	// collection. When set, the engine signals ShowForm=true on first entry
@@ -328,11 +379,11 @@ type WorkflowResponse struct {
 	PendingConfirm bool
 
 	// ActivateOrchestrator is true when the workflow has advanced into an
-	// execution phase (see IsExecutionOrchestratorPhase). The caller should
+	// execution phase (see IsTemplatePhaseExecutionOrchestrator). The caller should
 	// attempt to parse the TaskBreakdownText as a task list and activate
-	// the orchestrator if parsing succeeds. If parsing fails (e.g. PPT
-	// workflow's slide_scripting output is not a task list), the caller
-	// falls through to the normal agent loop for execution.
+	// the orchestrator if parsing succeeds. Artifact-generation phases with
+	// ToolFilterFull are excluded by the phase contract instead of relying on
+	// parse failure as a fallback.
 	ActivateOrchestrator bool
 	TaskBreakdownText    string // output from the phase preceding the execution phase
 	RequirementsContext  string // truncated first-phase output (requirements/goals)

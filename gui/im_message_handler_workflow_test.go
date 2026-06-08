@@ -190,6 +190,117 @@ func TestSetWorkflowWorkingDirCreatesDirectoryAndPersistsProjectPath(t *testing.
 	}
 }
 
+func TestSetWorkflowWorkingDirUsesProjectScopedWorkflowOwner(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	adapter := NewGUIWorkflowAdapter(handler.app, engine)
+	engine.SetCallbacks(adapter)
+	projectRoot := filepath.Join(t.TempDir(), "project-root")
+	projectUserID := projectSessionOwnerID(projectRoot)
+	workingDir := filepath.Join(t.TempDir(), "selected-project")
+
+	if err := handler.app.SaveConfig(corelib.AppConfig{
+		Projects:       []corelib.ProjectConfig{{Id: "p1", Name: "Project", Path: projectRoot}},
+		CurrentProject: "p1",
+	}); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+	if _, err := engine.StartWorkflowWithOptions(projectUserID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a desktop game",
+	}, workflow.WorkflowStartOptions{ProjectPath: projectRoot}); err != nil {
+		t.Fatalf("StartWorkflowWithOptions project failed: %v", err)
+	}
+	if _, err := engine.StartWorkflow(desktopUserID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "unrelated desktop workflow",
+	}); err != nil {
+		t.Fatalf("StartWorkflow desktop failed: %v", err)
+	}
+
+	handler.app.SetWorkflowWorkingDir("  " + workingDir + "  ")
+
+	projectState := engine.GetActiveWorkflow(projectUserID)
+	if projectState == nil || projectState.ProjectPath != workingDir {
+		t.Fatalf("project workflow ProjectPath = %#v, want %q", projectState, workingDir)
+	}
+	desktopState := engine.GetActiveWorkflow(desktopUserID)
+	if desktopState == nil || desktopState.ProjectPath == workingDir {
+		t.Fatalf("desktop workflow must not receive project working dir, got %#v", desktopState)
+	}
+}
+
+func TestWorkflowStartProjectPathPrefersProjectScopedOwner(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	ownerProject := filepath.Join(t.TempDir(), "owner-project")
+	currentProject := filepath.Join(t.TempDir(), "current-project")
+	ownerID := projectSessionOwnerID(ownerProject)
+
+	if err := handler.app.SaveConfig(corelib.AppConfig{
+		Projects:       []corelib.ProjectConfig{{Id: "current", Name: "Current", Path: currentProject}},
+		CurrentProject: "current",
+	}); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+
+	if got := handler.workflowStartProjectPathForOwner(ownerID); got != normalizeProjectSessionPath(ownerProject) {
+		t.Fatalf("workflowStartProjectPathForOwner(%q) = %q, want %q", ownerID, got, normalizeProjectSessionPath(ownerProject))
+	}
+	if got := handler.workflowStartProjectPathForOwner(desktopUserID); got != currentProject {
+		t.Fatalf("desktop workflowStartProjectPathForOwner = %q, want current project %q", got, currentProject)
+	}
+}
+
+func TestStartAIAssistantBackgroundTaskUsesProjectWorkflowPolicy(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := handler.app
+	projectPath := filepath.Join(t.TempDir(), "policy-project")
+	ownerID := projectSessionOwnerID(projectPath)
+	if err := app.SaveConfig(corelib.AppConfig{
+		Projects:       []corelib.ProjectConfig{{Id: "p1", Name: "Project", Path: projectPath}},
+		CurrentProject: "p1",
+	}); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+	if _, err := app.workflowEngine.StartWorkflowWithOptions(ownerID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build app",
+	}, workflow.WorkflowStartOptions{ProjectPath: projectPath}); err != nil {
+		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
+	}
+	if err := app.workflowEngine.SkipPhaseForm(ownerID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	_, err := app.StartAIAssistantBackgroundTask(AIAssistantBackgroundTaskRequest{
+		Text:        "run background implementation",
+		ProjectPath: projectPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "delegate_task") {
+		t.Fatalf("project workflow doc_only phase should reject background delegate_task, err=%v", err)
+	}
+}
+
+func TestStartDesktopBackgroundTaskUsesProjectWorkflowPolicy(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	projectPath := filepath.Join(t.TempDir(), "policy-project")
+	ownerID := projectSessionOwnerID(projectPath)
+	if _, err := handler.app.workflowEngine.StartWorkflowWithOptions(ownerID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build app",
+	}, workflow.WorkflowStartOptions{ProjectPath: projectPath}); err != nil {
+		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
+	}
+	if err := handler.app.workflowEngine.SkipPhaseForm(ownerID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	_, err := handler.StartDesktopBackgroundTask("run background implementation", projectPath)
+	if err == nil || !strings.Contains(err.Error(), "delegate_task") {
+		t.Fatalf("handler background task should reject by project workflow policy, err=%v", err)
+	}
+}
+
 func TestWorkflowInterceptionLowConfidenceUnknownStillReachesUnderstandingConfirmation(t *testing.T) {
 	llm := &mockLLMCallerGUI{
 		Response: `{"intent":{"category":"presentation_design","summary":"Create community anniversary PPT","goals":["Build a polished deck"],"constraints":[],"confidence":0.82,"ready":true},"reply":"Ready to confirm presentation workflow.","ready":true}`,
@@ -2040,8 +2151,17 @@ func TestCaptureWorkflowDocRejectsInvalidCodingTaskBreakdown(t *testing.T) {
 	if ws == nil {
 		t.Fatal("workflow should remain active")
 	}
-	if ws.PhaseOutputs[workflow.PhaseCodingTaskBreakdown] != "" || ws.PendingReviewPhaseID != "" {
-		t.Fatalf("invalid task breakdown should not be saved or enter review, got output=%q pending=%q", ws.PhaseOutputs[workflow.PhaseCodingTaskBreakdown], ws.PendingReviewPhaseID)
+	if ws.PhaseOutputs[workflow.PhaseCodingTaskBreakdown] != "" {
+		t.Fatalf("invalid task breakdown should not be saved, got output=%q", ws.PhaseOutputs[workflow.PhaseCodingTaskBreakdown])
+	}
+	if ws.CurrentPhase != workflow.PhaseCodingTaskBreakdown || ws.PendingReviewPhaseID != workflow.PhaseCodingTaskBreakdown || !ws.PendingReviewRevisionRequested {
+		t.Fatalf("invalid task breakdown should reopen repair loop on same phase, got %#v", ws)
+	}
+	if _, ok := handler.workflowAgentLoopMarker.Load(userID); !ok {
+		t.Fatal("invalid task breakdown capture should schedule regeneration loop")
+	}
+	if prompt, ok := handler.stashedPhasePrompt.Load(userID); !ok || strings.TrimSpace(prompt.(string)) == "" {
+		t.Fatalf("invalid task breakdown capture should stash regeneration prompt, got %#v ok=%v", prompt, ok)
 	}
 }
 

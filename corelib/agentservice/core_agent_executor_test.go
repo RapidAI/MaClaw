@@ -424,6 +424,64 @@ func TestPostMessagePropagatesToolPolicyMetadata(t *testing.T) {
 	}
 }
 
+func TestPostMessagePropagatesPlanningToolPolicyMetadata(t *testing.T) {
+	executor := &captureExecutor{}
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{MaclawLLMUrl: "http://127.0.0.1/test", MaclawLLMKey: "test-key", MaclawLLMModel: "test-model"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "Session"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if _, _, err := svc.PostMessage(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{
+		Content: "break down implementation tasks",
+		Metadata: map[string]string{
+			"tool_policy":    string(workflow.ToolFilterPlanning),
+			"mutation_scope": string(workflow.MutationScopeWorkflowDoc),
+		},
+	}); err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+
+	if executor.req.ToolPolicy != workflow.ToolFilterPlanning {
+		t.Fatalf("ToolPolicy = %q, want %q", executor.req.ToolPolicy, workflow.ToolFilterPlanning)
+	}
+	if executor.req.MutationScope != workflow.MutationScopeWorkflowDoc {
+		t.Fatalf("MutationScope = %q, want %q", executor.req.MutationScope, workflow.MutationScopeWorkflowDoc)
+	}
+}
+
+func TestMutationScopeFromMetadataMessageOverridesSession(t *testing.T) {
+	got := mutationScopeFromMetadata(
+		map[string]string{"mutation_scope": string(workflow.MutationScopeArtifact)},
+		map[string]string{"mutation_scope": string(workflow.MutationScopeProject)},
+	)
+	if got != workflow.MutationScopeArtifact {
+		t.Fatalf("mutation scope = %q, want artifact", got)
+	}
+	if got := mutationScopeFromMetadata(nil, map[string]string{"mutation_scope": "invalid"}); got != workflow.MutationScopeUnknown {
+		t.Fatalf("invalid mutation scope = %q, want unknown", got)
+	}
+}
+
 func TestPostMessageUsesUpdatedUserConfigForExistingInstance(t *testing.T) {
 	executor := &captureExecutor{}
 	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
@@ -1299,6 +1357,82 @@ func TestCoreAgentDocOnlyToolPolicyBlocksImplementationTools(t *testing.T) {
 	}
 	if !strings.Contains(result.Result, "workflow tool policy") {
 		t.Fatalf("expected workflow policy rejection, got %q", result.Result)
+	}
+}
+
+func TestCoreAgentPlanningToolPolicyAllowsInspectionOnly(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		allowLocalBash:             true,
+		localBashTrustedSingleUser: true,
+		localBashTenantID:          "tenant_a",
+		localBashUserID:            "user_a",
+		principal:                  Principal{TenantID: "tenant_a", UserID: "user_a"},
+		workspace:                  t.TempDir(),
+		toolPolicy:                 workflow.ToolFilterPlanning,
+	}
+	tools := agent.FilterToolDefinitionsByAuthorizer(cb, cb.BuildTools(""))
+	seen := map[string]bool{}
+	for _, tool := range tools {
+		seen[tooldef.Name(tool)] = true
+	}
+	for _, name := range []string{"bash", "read_file", "list_directory"} {
+		if !seen[name] {
+			t.Fatalf("expected %s to remain available for planning context, got %#v", name, seen)
+		}
+		if !cb.IsToolAllowed(name) {
+			t.Fatalf("expected execution guard to allow %s under planning policy", name)
+		}
+	}
+	for _, name := range []string{"write_file", "edit_file", "task"} {
+		if seen[name] {
+			t.Fatalf("expected %s to be filtered out by planning policy, got %#v", name, seen)
+		}
+		if cb.IsToolAllowed(name) {
+			t.Fatalf("expected execution guard to block %s under planning policy", name)
+		}
+	}
+	if allowed, reason := cb.IsToolCallAllowed("bash", `{"command":"rg -n \"TODO\""}`); !allowed {
+		t.Fatalf("expected read-only bash under planning policy: %s", reason)
+	}
+	if allowed, _ := cb.IsToolCallAllowed("bash", `{"command":"touch generated.go"}`); allowed {
+		t.Fatal("expected mutating bash to be blocked under planning policy")
+	}
+}
+
+func TestCoreAgentArtifactMutationScopeBlocksProjectMutation(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		allowLocalBash:             true,
+		localBashTrustedSingleUser: true,
+		localBashTenantID:          "tenant_a",
+		localBashUserID:            "user_a",
+		principal:                  Principal{TenantID: "tenant_a", UserID: "user_a"},
+		workspace:                  t.TempDir(),
+		toolPolicy:                 workflow.ToolFilterFull,
+		mutationScope:              workflow.MutationScopeArtifact,
+	}
+	if !cb.IsToolAllowed("write_file") {
+		t.Fatal("artifact scope should expose write_file for deliverables")
+	}
+	for _, name := range []string{"edit_file", "task", "delegate_task", "ssh"} {
+		if cb.IsToolAllowed(name) {
+			t.Fatalf("artifact scope should not expose project mutation tool %s", name)
+		}
+	}
+	if allowed, reason := cb.IsToolCallAllowed("write_file", `{"path":"deck.pptx","content":"body"}`); !allowed {
+		t.Fatalf("artifact write should pass: %s", reason)
+	}
+	if allowed, _ := cb.IsToolCallAllowed("write_file", `{"path":"src/main.go","content":"package main"}`); allowed {
+		t.Fatal("artifact scope should block source writes")
+	}
+	if allowed, _ := cb.IsToolCallAllowed("bash", `{"command":"touch src/main.go"}`); allowed {
+		t.Fatal("artifact scope should block mutating bash")
+	}
+	result := cb.ExecuteToolStructured("write_file", `{"path":"CMakeLists.txt","content":"cmake_minimum_required(VERSION 3.20)"}`)
+	if result.Outcome != agent.ToolExecutionOutcomeError {
+		t.Fatalf("Outcome = %q, want error for project control write", result.Outcome)
+	}
+	if !strings.Contains(result.Result, "artifact") {
+		t.Fatalf("expected artifact-scope rejection, got %q", result.Result)
 	}
 }
 

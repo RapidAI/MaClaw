@@ -9,19 +9,36 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
+
+func startDocOnlyCodingWorkflowForOwner(t *testing.T, app *App, ownerID string) {
+	t.Helper()
+	if _, err := app.workflowEngine.StartWorkflow(ownerID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := app.workflowEngine.SkipPhaseForm(ownerID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+}
+
+func startDocOnlyCodingWorkflowForProject(t *testing.T, app *App, projectPath string) {
+	t.Helper()
+	ownerID := projectSessionOwnerID(projectPath)
+	if _, err := app.workflowEngine.StartWorkflowWithOptions(ownerID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}, workflow.WorkflowStartOptions{ProjectPath: projectPath}); err != nil {
+		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
+	}
+	if err := app.workflowEngine.SkipPhaseForm(ownerID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+}
 
 func TestExplicitWorkflowOwnerActionsHonorWorkflowPolicy(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	app := h.app
 	userID := desktopUserID
-	if _, err := app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
-		t.Fatalf("StartWorkflow failed: %v", err)
-	}
-	if err := app.workflowEngine.SkipPhaseForm(userID); err != nil {
-		t.Fatalf("SkipPhaseForm failed: %v", err)
-	}
+	startDocOnlyCodingWorkflowForOwner(t, app, userID)
 
 	if err := app.ensureWorkflowAllowsRemoteToolCallForOwner(userID, "manage_skill", map[string]interface{}{"action": "install", "name": "demo"}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
 		t.Fatalf("explicit workflow-owned manage_skill error = %v, want workflow policy rejection", err)
@@ -34,12 +51,7 @@ func TestExplicitWorkflowOwnerActionsHonorWorkflowPolicy(t *testing.T) {
 func TestBackgroundCapabilitySyncDoesNotInheritDesktopWorkflowPolicy(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	app := h.app
-	if _, err := app.workflowEngine.StartWorkflow(capabilityManagedSyncOwnerID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
-		t.Fatalf("StartWorkflow failed: %v", err)
-	}
-	if err := app.workflowEngine.SkipPhaseForm(capabilityManagedSyncOwnerID); err != nil {
-		t.Fatalf("SkipPhaseForm failed: %v", err)
-	}
+	startDocOnlyCodingWorkflowForOwner(t, app, capabilityManagedSyncOwnerID)
 
 	err := app.ensureWorkflowAllowsRemoteToolCallForOwner(capabilityManagedSyncOwnerID, "manage_skill", map[string]interface{}{"action": "sync_capabilities", "reason": "hub-heartbeat"})
 	if err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
@@ -50,12 +62,7 @@ func TestBackgroundCapabilitySyncDoesNotInheritDesktopWorkflowPolicy(t *testing.
 func TestSystemBackgroundBypassIsScopedToExpectedActions(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	app := h.app
-	if _, err := app.workflowEngine.StartWorkflow(capabilityManagedSyncOwnerID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
-		t.Fatalf("StartWorkflow failed: %v", err)
-	}
-	if err := app.workflowEngine.SkipPhaseForm(capabilityManagedSyncOwnerID); err != nil {
-		t.Fatalf("SkipPhaseForm failed: %v", err)
-	}
+	startDocOnlyCodingWorkflowForOwner(t, app, capabilityManagedSyncOwnerID)
 
 	err := app.ensureWorkflowAllowsRemoteToolCallForOwner(capabilityManagedSyncOwnerID, "manage_skill", map[string]interface{}{"action": "install", "name": "demo"})
 	if err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
@@ -66,12 +73,7 @@ func TestSystemBackgroundBypassIsScopedToExpectedActions(t *testing.T) {
 func TestScheduledTaskExecutorDoesNotInheritWorkflowPolicy(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	app := h.app
-	if _, err := app.workflowEngine.StartWorkflow(scheduledTaskExecutorOwnerID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
-		t.Fatalf("StartWorkflow failed: %v", err)
-	}
-	if err := app.workflowEngine.SkipPhaseForm(scheduledTaskExecutorOwnerID); err != nil {
-		t.Fatalf("SkipPhaseForm failed: %v", err)
-	}
+	startDocOnlyCodingWorkflowForOwner(t, app, scheduledTaskExecutorOwnerID)
 
 	err := app.ensureWorkflowAllowsRemoteToolCallForOwner(scheduledTaskExecutorOwnerID, "delegate_task", map[string]interface{}{"agent": "scheduled_task", "request": "nightly"})
 	if err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
@@ -83,27 +85,192 @@ func TestRemoteSessionActionsDoNotInheritUnrelatedWorkflowPolicy(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	app := h.app
 	unrelatedUserID := "remote-unrelated-doc-only-policy-user"
-	if _, err := app.workflowEngine.StartWorkflow(unrelatedUserID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
-		t.Fatalf("StartWorkflow failed: %v", err)
-	}
-	if err := app.workflowEngine.SkipPhaseForm(unrelatedUserID); err != nil {
-		t.Fatalf("SkipPhaseForm failed: %v", err)
-	}
+	startDocOnlyCodingWorkflowForOwner(t, app, unrelatedUserID)
 
 	if err := app.ensureWorkflowAllowsRemoteToolCall(remoteSessionStartPolicyToolName, map[string]interface{}{"tool": "codex"}); err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
 		t.Fatalf("manual remote call must not inherit unrelated workflow policy: %v", err)
 	}
 }
 
+func TestDesktopRemoteSessionUsesProjectWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	projectPath := t.TempDir()
+	if err := app.SaveConfig(corelib.AppConfig{RemoteEnabled: true}); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
+
+	_, err := app.StartRemoteSession("codex", projectPath, false, "", RemoteLaunchSourceDesktop)
+	if err == nil || !strings.Contains(err.Error(), "remote_session_start") {
+		t.Fatalf("desktop project remote session should be blocked by project workflow policy, err=%v", err)
+	}
+}
+
+func TestLaunchToolUsesProjectWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	projectPath := t.TempDir()
+	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
+
+	err := app.LaunchTool("codex", false, false, false, "", projectPath, false)
+	if err == nil || !strings.Contains(err.Error(), "remote_session_start") {
+		t.Fatalf("desktop launch tool should be blocked by project workflow policy, err=%v", err)
+	}
+}
+
+func TestStartSwarmRunUsesProjectWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	projectPath := t.TempDir()
+	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
+
+	_, err := app.StartSwarmRun(swarm.SwarmRunRequest{ProjectPath: projectPath, Requirements: "implement feature", Tool: "codex"})
+	if err == nil || !strings.Contains(err.Error(), "delegate_task") {
+		t.Fatalf("swarm run should be blocked by project workflow policy, err=%v", err)
+	}
+}
+
+func TestStartSwarmRunWithoutProjectDoesNotInheritDesktopWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	startDocOnlyCodingWorkflowForOwner(t, app, desktopUserID)
+
+	_, err := app.StartSwarmRun(swarm.SwarmRunRequest{Requirements: "implement feature", Tool: "codex"})
+	if err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("swarm run without project must not inherit desktop workflow policy: %v", err)
+	}
+}
+
+func TestProjectInstallSkillUsesProjectWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	projectPath := t.TempDir()
+	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
+
+	err := app.InstallSkill("demo", "demo skill", "zip", filepath.Join(t.TempDir(), "demo.zip"), "project", projectPath, "codex")
+	if err == nil || !strings.Contains(err.Error(), "manage_skill") {
+		t.Fatalf("project skill install should be blocked by project workflow policy, err=%v", err)
+	}
+}
+
+func TestRunNLSkillAsyncUsesProjectWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	projectPath := t.TempDir()
+	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
+
+	_, err := app.RunNLSkillAsync("demo", map[string]interface{}{"project_dir": projectPath})
+	if err == nil || !strings.Contains(err.Error(), "manage_skill") {
+		t.Fatalf("project skill run should be blocked by project workflow policy, err=%v", err)
+	}
+}
+
+func TestRunNLSkillAsyncUsesNestedProjectWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	projectPath := t.TempDir()
+	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
+
+	_, err := app.RunNLSkillAsync("demo", map[string]interface{}{"args": map[string]interface{}{"project_path": projectPath}})
+	if err == nil || !strings.Contains(err.Error(), "manage_skill") {
+		t.Fatalf("nested project skill run should be blocked by project workflow policy, err=%v", err)
+	}
+}
+
+func TestRunNLSkillAsyncWithoutProjectDoesNotInheritDesktopWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	startDocOnlyCodingWorkflowForOwner(t, app, desktopUserID)
+
+	_, err := app.RunNLSkillAsync("missing-skill", map[string]interface{}{})
+	if err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("skill run without project must not inherit desktop workflow policy: %v", err)
+	}
+}
+
+func TestSkillRunProjectPathExtractsExplicitProjectArgs(t *testing.T) {
+	topLevel := filepath.Join(t.TempDir(), "top", ".")
+	nested := filepath.Join(t.TempDir(), "nested", ".")
+
+	tests := []struct {
+		name string
+		args map[string]interface{}
+		want string
+	}{
+		{name: "empty", args: nil, want: ""},
+		{name: "project_path", args: map[string]interface{}{"project_path": topLevel}, want: normalizeProjectSessionPath(topLevel)},
+		{name: "projectDir", args: map[string]interface{}{"projectDir": topLevel}, want: normalizeProjectSessionPath(topLevel)},
+		{name: "nested", args: map[string]interface{}{"args": map[string]interface{}{"project_path": nested}}, want: normalizeProjectSessionPath(nested)},
+		{name: "top level wins", args: map[string]interface{}{"project_path": topLevel, "args": map[string]interface{}{"project_path": nested}}, want: normalizeProjectSessionPath(topLevel)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := skillRunProjectPath(tt.args); got != tt.want {
+				t.Fatalf("skillRunProjectPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCreateTemplateUsesProjectWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	projectPath := t.TempDir()
+	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
+
+	err := app.CreateTemplate("demo", "codex", projectPath, "", false)
+	if err == nil || !strings.Contains(err.Error(), remoteTemplatePolicyToolName) {
+		t.Fatalf("project template creation should be blocked by project workflow policy, err=%v", err)
+	}
+}
+
+func TestDesktopRemoteProjectLaunchUsesProjectWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	projectPath := t.TempDir()
+	if err := app.SaveConfig(corelib.AppConfig{RemoteEnabled: true}); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
+
+	_, err := app.StartRemoteSessionForProject(RemoteStartSessionRequest{Tool: "codex", ProjectPath: projectPath, LaunchSource: RemoteLaunchSourceDesktop})
+	if err == nil || !strings.Contains(err.Error(), "remote_session_start") {
+		t.Fatalf("desktop project remote launch should be blocked by project workflow policy, err=%v", err)
+	}
+}
+
+func TestDesktopRemoteHandoffUsesProjectWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	projectPath := t.TempDir()
+	if err := app.SaveConfig(corelib.AppConfig{RemoteEnabled: true}); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
+
+	_, err := app.StartRemoteHandoffSession("codex", projectPath, false, "", RemoteLaunchSourceDesktop)
+	if err == nil || !strings.Contains(err.Error(), "remote_session_start") {
+		t.Fatalf("desktop project handoff should be blocked by project workflow policy, err=%v", err)
+	}
+}
+
+func TestDesktopRemoteSmokeUsesProjectWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	projectPath := t.TempDir()
+	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
+
+	_, err := app.RunRemoteToolSmoke("codex", projectPath, false)
+	if err == nil || !strings.Contains(err.Error(), "remote_session_start") {
+		t.Fatalf("desktop remote smoke should be blocked by project workflow policy, err=%v", err)
+	}
+}
+
 func TestMobileRemoteSessionDoesNotInheritDesktopWorkflowPolicy(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	app := h.app
-	if _, err := app.workflowEngine.StartWorkflow(desktopUserID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
-		t.Fatalf("StartWorkflow failed: %v", err)
-	}
-	if err := app.workflowEngine.SkipPhaseForm(desktopUserID); err != nil {
-		t.Fatalf("SkipPhaseForm failed: %v", err)
-	}
+	startDocOnlyCodingWorkflowForOwner(t, app, desktopUserID)
 
 	_, err := app.StartRemoteSessionForProject(RemoteStartSessionRequest{Tool: "codex", ProjectPath: t.TempDir(), LaunchSource: RemoteLaunchSourceMobile})
 	if err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
@@ -114,17 +281,25 @@ func TestMobileRemoteSessionDoesNotInheritDesktopWorkflowPolicy(t *testing.T) {
 func TestMobileRemoteSessionInputDoesNotInheritDesktopWorkflowPolicy(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	app := h.app
-	if _, err := app.workflowEngine.StartWorkflow(desktopUserID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
-		t.Fatalf("StartWorkflow failed: %v", err)
-	}
-	if err := app.workflowEngine.SkipPhaseForm(desktopUserID); err != nil {
-		t.Fatalf("SkipPhaseForm failed: %v", err)
-	}
+	startDocOnlyCodingWorkflowForOwner(t, app, desktopUserID)
 	app.remoteSessions = NewRemoteSessionManager(app)
 	app.remoteSessions.sessions["mobile-1"] = &RemoteSession{ID: "mobile-1", LaunchSource: RemoteLaunchSourceMobile}
 
 	if err := app.SendRemoteSessionInput("mobile-1", "continue"); err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
 		t.Fatalf("mobile remote input must not inherit desktop workflow policy: %v", err)
+	}
+}
+
+func TestDesktopRemoteSessionInputUsesProjectWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	projectPath := t.TempDir()
+	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
+	app.remoteSessions = NewRemoteSessionManager(app)
+	app.remoteSessions.sessions["desktop-1"] = &RemoteSession{ID: "desktop-1", LaunchSource: RemoteLaunchSourceDesktop, ProjectPath: projectPath}
+
+	if err := app.SendRemoteSessionInput("desktop-1", "continue"); err == nil || !strings.Contains(err.Error(), "send_input") {
+		t.Fatalf("desktop project remote input should be blocked by project workflow policy, err=%v", err)
 	}
 }
 

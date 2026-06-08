@@ -13,8 +13,8 @@ const PHASE_ID_ALIASES: Record<string, WorkflowPhaseID> = {
  * frontend owner of that set: `WorkflowDocPreview` re-exports it as
  * `fallbackNonDocumentPhaseIDs` so the anti-drift contract test
  * (`workflowPhaseMeta.contract.test.ts`) validates this one set against the
- * generated artifact. It mirrors the backend rule
- * `PhaseExpectsDocument == false` (ToolFilterFull / ToolFilterOpsControlled).
+ * generated artifact. It mirrors the backend rule: reviewable phases produce
+ * documents, while non-review execution phases are the known non-document IDs.
  */
 export const FALLBACK_NON_DOCUMENT_PHASE_IDS = new Set<WorkflowPhaseID>([
     "implementation",
@@ -31,6 +31,10 @@ export interface PhaseInfo {
     expectsDocument?: boolean;
     canSkip?: boolean;
     needsConfirm?: boolean;
+    kind?: string;
+    toolPolicy?: string;
+    mutationScope?: string;
+    activatesOrchestrator?: boolean;
 }
 
 export function normalizeWorkflowPhaseID(phaseID: unknown): WorkflowPhaseID {
@@ -52,12 +56,20 @@ export function collectWorkflowPhases(phases: unknown): PhaseInfo[] {
         const expectsDocument = typeof phase.expects_document === "boolean" ? phase.expects_document : undefined;
         const canSkip = typeof phase.can_skip === "boolean" ? phase.can_skip : undefined;
         const needsConfirm = typeof phase.needs_confirm === "boolean" ? phase.needs_confirm : undefined;
+        const kind = typeof phase.kind === "string" ? phase.kind.trim() : "";
+        const toolPolicy = typeof phase.tool_policy === "string" ? phase.tool_policy.trim() : "";
+        const mutationScope = typeof phase.mutation_scope === "string" ? phase.mutation_scope.trim() : "";
+        const activatesOrchestrator = typeof phase.activates_orchestrator === "boolean" ? phase.activates_orchestrator : undefined;
         if (!id || seen.has(id)) continue;
         seen.add(id);
         const item: PhaseInfo = { id, name, index };
         if (typeof expectsDocument === "boolean") item.expectsDocument = expectsDocument;
         if (typeof canSkip === "boolean") item.canSkip = canSkip;
         if (typeof needsConfirm === "boolean") item.needsConfirm = needsConfirm;
+        if (kind) item.kind = kind;
+        if (toolPolicy) item.toolPolicy = toolPolicy;
+        if (mutationScope) item.mutationScope = mutationScope;
+        if (typeof activatesOrchestrator === "boolean") item.activatesOrchestrator = activatesOrchestrator;
         collected.push(item);
     }
     return collected.sort((a, b) => a.index - b.index);

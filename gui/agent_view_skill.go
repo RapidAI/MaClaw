@@ -86,7 +86,7 @@ func (a *App) handleSkillRunAgentViewSubmit(skillName string, data map[string]in
 			return &IMAgentResponse{Text: "Skill parameters are still incomplete. Review the task panel.", Error: "missing required parameters: " + strings.Join(missing, ", "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
 	}
-	policyOwnerID := a.defaultManualPolicyOwnerID()
+	policyOwnerID := a.skillRunPolicyOwnerID(runArgs)
 	if rejection := a.skillRunWorkflowPolicyRejectionForOwner(policyOwnerID, skillName, runArgs); rejection != nil {
 		return rejection
 	}
@@ -110,7 +110,35 @@ func (a *App) handleSkillRunAgentViewSubmit(skillName string, data map[string]in
 }
 
 func (a *App) skillRunWorkflowPolicyRejection(skillName string, runArgs map[string]interface{}) *IMAgentResponse {
-	return a.skillRunWorkflowPolicyRejectionForOwner(a.defaultManualPolicyOwnerID(), skillName, runArgs)
+	return a.skillRunWorkflowPolicyRejectionForOwner(a.skillRunPolicyOwnerID(runArgs), skillName, runArgs)
+}
+
+func (a *App) skillRunPolicyOwnerID(runArgs map[string]interface{}) string {
+	projectPath := skillRunProjectPath(runArgs)
+	if projectPath != "" {
+		return projectSessionOwnerID(projectPath)
+	}
+	return a.defaultManualPolicyOwnerID()
+}
+
+func skillRunProjectPath(runArgs map[string]interface{}) string {
+	for _, key := range skillRunProjectPathKeys() {
+		if projectPath := normalizeProjectSessionPath(stringVal(runArgs, key)); projectPath != "" {
+			return projectPath
+		}
+	}
+	if nested, _ := runArgs["args"].(map[string]interface{}); nested != nil {
+		for _, key := range skillRunProjectPathKeys() {
+			if projectPath := normalizeProjectSessionPath(stringVal(nested, key)); projectPath != "" {
+				return projectPath
+			}
+		}
+	}
+	return ""
+}
+
+func skillRunProjectPathKeys() []string {
+	return []string{"project_path", "projectPath", "project_dir", "projectDir"}
 }
 
 func (a *App) skillRunWorkflowPolicyRejectionForOwner(policyOwnerID, skillName string, runArgs map[string]interface{}) *IMAgentResponse {

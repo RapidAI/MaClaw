@@ -2032,6 +2032,49 @@ func TestPlatformRuntimeReportUsesPlatformEmployeeIDs(t *testing.T) {
 	}
 }
 
+func TestPlatformRuntimeReportScopesByHubTenantID(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	for _, payload := range []map[string]any{
+		{"employee_id": "emp-a", "tenant_id": "hub-tenant-a", "platform_tenant_id": "tenant-a", "name": "Employee A", "virtual_email": "employee-a@example.test", "hub_llm_endpoint": "https://hub.example.test/llm", "hub_llm_api_key": "test-hub-key"},
+		{"employee_id": "emp-b", "tenant_id": "hub-tenant-b", "platform_tenant_id": "tenant-b", "name": "Employee B", "virtual_email": "employee-b@example.test", "hub_llm_endpoint": "https://hub.example.test/llm", "hub_llm_api_key": "test-hub-key"},
+	} {
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/platform/virtual-employees", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer admin-secret")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("provision status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/platform/runtime/report", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("X-Hub-Tenant-ID", "hub-tenant-a")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("report status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Users []struct {
+			EmployeeID    string `json:"employee_id"`
+			RuntimeStatus string `json:"runtime_status"`
+		} `json:"users"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(out.Users) != 1 || out.Users[0].EmployeeID != "emp-a" || out.Users[0].RuntimeStatus != "ready" {
+		t.Fatalf("unexpected scoped report: %#v body=%s", out.Users, w.Body.String())
+	}
+}
+
 func TestPlatformVirtualEmployeeProvisionIgnoresUnknownFields(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {

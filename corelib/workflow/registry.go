@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,15 +29,30 @@ func NewWorkflowRegistry() *WorkflowRegistry {
 	return r
 }
 
-// Register adds or overwrites a template in the registry.
-func (r *WorkflowRegistry) Register(tmpl *WorkflowTemplate) {
+// Register adds or overwrites a template in the registry after validating the
+// phase contract. Invalid templates are rejected before they can affect phase
+// progression, tool exposure, or orchestrator activation.
+func (r *WorkflowRegistry) Register(tmpl *WorkflowTemplate) error {
 	if tmpl == nil {
-		return
+		return fmt.Errorf("workflow template is nil")
+	}
+	if errs := ValidateWorkflowTemplateContract(tmpl); len(errs) != 0 {
+		return fmt.Errorf("workflow template %s contract invalid: %w", tmpl.Type, errors.Join(errs...))
 	}
 	r.mu.Lock()
 	r.templates[tmpl.Type] = tmpl
 	r.bm25Dirty = true
 	r.mu.Unlock()
+	return nil
+}
+
+// MustRegister registers a template and panics on contract errors. Built-in
+// template registration uses this so startup/test failures surface immediately
+// instead of silently dropping a workflow.
+func (r *WorkflowRegistry) MustRegister(tmpl *WorkflowTemplate) {
+	if err := r.Register(tmpl); err != nil {
+		panic(err)
+	}
 }
 
 // Match returns the template registered for the given WorkflowType, or nil if

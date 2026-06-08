@@ -342,6 +342,34 @@ func TestValidateToolCallByPolicyBlocksDocOnlyReadOnlyBash(t *testing.T) {
 	}
 }
 
+func TestValidateToolCallByPolicyAllowsPlanningReadOnlyBash(t *testing.T) {
+	err := ValidateToolCallByPolicy(ToolFilterPlanning, "bash", map[string]interface{}{"command": "git status --short && rg -n \"TODO\""})
+	if err != nil {
+		t.Fatalf("expected planning read-only bash command to pass: %v", err)
+	}
+}
+
+func TestValidateToolCallByPolicyBlocksPlanningMutatingToolsAndCommands(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args map[string]interface{}
+	}{
+		{name: "write_file", args: map[string]interface{}{"path": "src/main.go", "content": "package main"}},
+		{name: "edit_file", args: map[string]interface{}{"path": "src/main.go", "old": "a", "new": "b"}},
+		{name: "edit_lines", args: map[string]interface{}{"path": "src/main.go"}},
+		{name: "delegate_task", args: map[string]interface{}{"task": "implement"}},
+		{name: "task", args: map[string]interface{}{"prompt": "implement"}},
+		{name: "bash", args: map[string]interface{}{"command": "touch generated.go"}},
+		{name: "bash", args: map[string]interface{}{"command": "echo ok > generated.go"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateToolCallByPolicy(ToolFilterPlanning, tc.name, tc.args); err == nil {
+				t.Fatalf("expected planning policy to block %#v", tc)
+			}
+		})
+	}
+}
+
 func TestValidateToolCallByPolicyBlocksDocOnlyFileWrites(t *testing.T) {
 	for _, tc := range []struct {
 		name string

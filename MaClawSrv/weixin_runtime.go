@@ -208,6 +208,22 @@ func (m *srvWeixinGatewayManager) StopPrincipal(p agentservice.Principal) {
 	m.stopPrincipal(p, srvWeixinStatusDisabled, "")
 }
 
+func (m *srvWeixinGatewayManager) StopAll() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	runtimes := make([]*srvWeixinRuntime, 0, len(m.runtimes))
+	for _, runtime := range m.runtimes {
+		runtimes = append(runtimes, runtime)
+	}
+	m.runtimes = map[string]*srvWeixinRuntime{}
+	m.mu.Unlock()
+	for _, runtime := range runtimes {
+		stopSrvWeixinGateway(runtime.gateway)
+	}
+}
+
 func (m *srvWeixinGatewayManager) stopPrincipal(p agentservice.Principal, status, lastError string) {
 	key := principalRuntimeKey(p)
 	m.mu.Lock()
@@ -315,13 +331,13 @@ func (m *srvWeixinGatewayManager) handleIncomingMessage(parent context.Context, 
 	}
 	if assistant != nil && strings.TrimSpace(assistant.Content) != "" {
 		m.reply(ctx, p, expected, msg, assistant.Content)
-		m.replyVoiceIfEnabled(ctx, p, expected, msg, assistant.Content, cfg, msg.MediaType == "voice")
+		m.replyVoiceIfEnabled(ctx, p, expected, msg, assistant.Content, cfg, srvWeixinIncomingIsVoice(msg))
 	}
 	_ = parent
 }
 
 func (m *srvWeixinGatewayManager) transcribeIncomingVoice(ctx context.Context, cfg *agentservice.UserConfig, msg weixin.IncomingMessage) (string, bool) {
-	if m == nil || m.aiModels == nil || cfg == nil || msg.MediaType != "voice" || len(msg.MediaData) == 0 {
+	if m == nil || m.aiModels == nil || cfg == nil || !srvWeixinIncomingIsVoice(msg) || len(msg.MediaData) == 0 {
 		return "", false
 	}
 	wav, err := audioconv.ToWAV(msg.MediaData, srvWeixinAudioFormatHint(msg))
@@ -350,23 +366,31 @@ func (m *srvWeixinGatewayManager) replyVoiceIfEnabled(ctx context.Context, p age
 }
 
 func srvWeixinAudioFormatHint(msg weixin.IncomingMessage) string {
-	name := strings.ToLower(strings.TrimSpace(msg.MediaName))
-	switch {
-	case strings.Contains(name, "silk"), strings.HasSuffix(name, ".silk"):
-		return audioconv.FormatSilk
-	case strings.Contains(name, "ogg"), strings.Contains(name, "opus"), strings.HasSuffix(name, ".ogg"), strings.HasSuffix(name, ".opus"), strings.HasSuffix(name, ".oga"):
-		return audioconv.FormatOGG
-	case strings.Contains(name, "wav"), strings.Contains(name, "wave"), strings.HasSuffix(name, ".wav"):
-		return audioconv.FormatWAV
-	case strings.Contains(name, "mpeg"), strings.Contains(name, "mp3"), strings.HasSuffix(name, ".mp3"):
-		return audioconv.FormatMP3
-	case strings.Contains(name, "m4a"), strings.Contains(name, "mp4"), strings.HasSuffix(name, ".m4a"):
-		return audioconv.FormatM4A
-	case strings.Contains(name, "aac"), strings.HasSuffix(name, ".aac"):
-		return audioconv.FormatAAC
-	default:
-		return ""
+	for _, value := range []string{msg.MediaName, msg.MediaType} {
+		value = strings.ToLower(strings.TrimSpace(value))
+		switch {
+		case strings.Contains(value, "silk"), strings.HasSuffix(value, ".silk"):
+			return audioconv.FormatSilk
+		case strings.Contains(value, "ogg"), strings.Contains(value, "opus"), strings.HasSuffix(value, ".ogg"), strings.HasSuffix(value, ".opus"), strings.HasSuffix(value, ".oga"):
+			return audioconv.FormatOGG
+		case strings.Contains(value, "wav"), strings.Contains(value, "wave"), strings.HasSuffix(value, ".wav"):
+			return audioconv.FormatWAV
+		case strings.Contains(value, "mpeg"), strings.Contains(value, "mp3"), strings.HasSuffix(value, ".mp3"):
+			return audioconv.FormatMP3
+		case strings.Contains(value, "m4a"), strings.Contains(value, "mp4"), strings.HasSuffix(value, ".m4a"):
+			return audioconv.FormatM4A
+		case strings.Contains(value, "aac"), strings.HasSuffix(value, ".aac"):
+			return audioconv.FormatAAC
+		}
 	}
+	return ""
+}
+
+func srvWeixinIncomingIsVoice(msg weixin.IncomingMessage) bool {
+	if strings.EqualFold(strings.TrimSpace(msg.MediaType), "voice") {
+		return true
+	}
+	return normalizeSrvIMMediaType(msg.MediaType) == "voice"
 }
 
 func (m *srvWeixinGatewayManager) isCurrentRuntime(p agentservice.Principal, expected *srvWeixinRuntime) bool {

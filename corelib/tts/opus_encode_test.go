@@ -12,7 +12,7 @@ import (
 // with a synthetic WAV file (440Hz sine wave).
 func TestEncodeWAVToOpus_SyntheticWAV(t *testing.T) {
 	if !HasOpusEncoder() {
-		t.Skip("ffmpeg not available, skipping Opus encoding test")
+		t.Skip("built-in Opus encoder not available, skipping Opus encoding test")
 	}
 
 	// Generate a 1-second 48kHz mono 16-bit WAV with a 440Hz sine tone.
@@ -57,7 +57,7 @@ func TestEncodeWAVToOpus_SyntheticWAV(t *testing.T) {
 // TestEncodeWAVToOpus_22050Hz tests resampling from 22050Hz (TTS native rate).
 func TestEncodeWAVToOpus_22050Hz(t *testing.T) {
 	if !HasOpusEncoder() {
-		t.Skip("ffmpeg not available, skipping Opus encoding test")
+		t.Skip("built-in Opus encoder not available, skipping Opus encoding test")
 	}
 
 	wav := generateTestWAV(22050, 1, 0.5, 440.0)
@@ -82,7 +82,7 @@ func TestEncodeWAVToOpus_22050Hz(t *testing.T) {
 // TTS engine if the model is available. Skipped if model not found.
 func TestEncodeWAVToOpus_WithRealTTS(t *testing.T) {
 	if !HasOpusEncoder() {
-		t.Skip("ffmpeg not available, skipping Opus encoding test")
+		t.Skip("built-in Opus encoder not available, skipping Opus encoding test")
 	}
 
 	modelPath := filepath.Join("testdata", "piper-xiao_ya-zh-fp32.gguf")
@@ -123,7 +123,7 @@ func TestEncodeWAVToOpus_WithRealTTS(t *testing.T) {
 }
 
 func TestHasOpusEncoder(t *testing.T) {
-	// Just log the result — ffmpeg may or may not be available.
+	// Just log the result; the encoder should be built in and independent of ffmpeg.
 	t.Logf("HasOpusEncoder() = %v", HasOpusEncoder())
 }
 

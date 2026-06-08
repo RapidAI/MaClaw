@@ -56,7 +56,7 @@ func main() {
 //
 // The emitted shape is:
 //
-//	export interface GeneratedPhaseMeta { id; name; index; expectsDocument; canSkip; needsConfirm }
+//	export interface GeneratedPhaseMeta { id; name; index; expectsDocument; canSkip; needsConfirm; kind; toolPolicy; mutationScope; activatesOrchestrator }
 //	export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]>
 //
 // renderGeneratedTS is package-private so the contract test can regenerate the
@@ -76,6 +76,10 @@ func renderGeneratedTS(r *workflow.WorkflowRegistry) string {
 	b.WriteString("  expectsDocument: boolean;\n")
 	b.WriteString("  canSkip: boolean;\n")
 	b.WriteString("  needsConfirm: boolean;\n")
+	b.WriteString("  kind: string;\n")
+	b.WriteString("  toolPolicy: string;\n")
+	b.WriteString("  mutationScope: string;\n")
+	b.WriteString("  activatesOrchestrator: boolean;\n")
 	b.WriteString("}\n")
 	b.WriteString("\n")
 	b.WriteString("export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {\n")
@@ -87,8 +91,9 @@ func renderGeneratedTS(r *workflow.WorkflowRegistry) string {
 		fmt.Fprintf(&b, "  %s: [\n", strconv.Quote(string(tmpl.Type)))
 		for _, m := range workflow.PhaseMetadata(tmpl) {
 			fmt.Fprintf(&b,
-				"    { id: %s, name: %s, index: %d, expectsDocument: %t, canSkip: %t, needsConfirm: %t },\n",
+				"    { id: %s, name: %s, index: %d, expectsDocument: %t, canSkip: %t, needsConfirm: %t, kind: %s, toolPolicy: %s, mutationScope: %s, activatesOrchestrator: %t },\n",
 				strconv.Quote(m.ID), strconv.Quote(m.Name), m.Index, m.ExpectsDocument, m.CanSkip, m.NeedsConfirm,
+				strconv.Quote(string(m.Kind)), strconv.Quote(string(m.ToolPolicy)), strconv.Quote(string(m.MutationScope)), m.ActivatesOrchestrator,
 			)
 		}
 		b.WriteString("  ],\n")

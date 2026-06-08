@@ -146,6 +146,38 @@ describe('collectWorkflowPhases', () => {
         ]);
     });
 
+    it('preserves workflow contract metadata from backend payload', () => {
+        const phases = collectWorkflowPhases([
+            {
+                id: 'implementation',
+                name: 'Implementation',
+                index: 3,
+                expects_document: false,
+                can_skip: false,
+                needs_confirm: false,
+                kind: 'execution',
+                tool_policy: 'full',
+                mutation_scope: 'project',
+                activates_orchestrator: true,
+            },
+        ]);
+
+        expect(phases).toEqual([
+            {
+                id: 'implementation',
+                name: 'Implementation',
+                index: 3,
+                expectsDocument: false,
+                canSkip: false,
+                needsConfirm: false,
+                kind: 'execution',
+                toolPolicy: 'full',
+                mutationScope: 'project',
+                activatesOrchestrator: true,
+            },
+        ]);
+    });
+
     it('preserves false-valued optional booleans (does not treat false as absent)', () => {
         const phases = collectWorkflowPhases([
             {

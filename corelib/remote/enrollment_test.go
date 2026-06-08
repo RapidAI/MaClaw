@@ -143,6 +143,58 @@ func TestEnroll_WithExistingHubURL(t *testing.T) {
 	}
 }
 
+func TestEnroll_NormalizesHeartbeatIntervalInRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{name: "unset defaults to 30", in: 0, want: 30},
+		{name: "small positive clamps to 5", in: 3, want: 5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotHeartbeat int
+			hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/enroll/start" {
+					http.NotFound(w, r)
+					return
+				}
+				var req struct {
+					HeartbeatIntervalSec int `json:"heartbeat_interval_sec"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				gotHeartbeat = req.HeartbeatIntervalSec
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"status":        "approved",
+					"email":         "user@corp.com",
+					"machine_id":    "m-direct",
+					"machine_token": "t-direct",
+				})
+			}))
+			defer hub.Close()
+
+			client := &EnrollmentClient{HTTPClient: hub.Client()}
+			_, err := client.Enroll(context.Background(), EnrollConfig{
+				Email:        "user@corp.com",
+				HubURL:       hub.URL,
+				ClientID:     "existing-client-id",
+				AppVersion:   "2.0.0",
+				HeartbeatSec: tt.in,
+			})
+			if err != nil {
+				t.Fatalf("Enroll failed: %v", err)
+			}
+			if gotHeartbeat != tt.want {
+				t.Fatalf("heartbeat_interval_sec = %d, want %d", gotHeartbeat, tt.want)
+			}
+		})
+	}
+}
+
 func TestEnroll_AcceptsBOMPrefixedJSON(t *testing.T) {
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/enroll/start" {

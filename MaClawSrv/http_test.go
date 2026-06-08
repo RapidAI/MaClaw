@@ -89,9 +89,10 @@ func (f *fakeSrvASRTranscriber) TranscribeWAV(wav []byte) (string, error) {
 }
 
 type fakeSrvTTSSynthesizer struct {
-	wav  []byte
-	err  error
-	seen []string
+	wav      []byte
+	err      error
+	seen     []string
+	unloaded bool
 }
 
 func (f *fakeSrvTTSSynthesizer) SynthesizeText(text string) ([]byte, error) {
@@ -102,7 +103,7 @@ func (f *fakeSrvTTSSynthesizer) SynthesizeText(text string) ([]byte, error) {
 	return append([]byte(nil), f.wav...), nil
 }
 
-func (f *fakeSrvTTSSynthesizer) Unload() {}
+func (f *fakeSrvTTSSynthesizer) Unload() { f.unloaded = true }
 
 type fakeSrvIMGateway struct {
 	onStatus      func(string)
@@ -761,26 +762,55 @@ func TestOpenAPIAIModelAudioContracts(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected typed OpenAPI paths map")
 	}
-	asrPost, ok := paths["/api/v1/ai-models/asr/transcribe"]["post"].(map[string]any)
+	adminStatus, ok := paths["/api/v1/admin/ai-models/status"]["get"].(map[string]any)
 	if !ok {
-		t.Fatalf("missing ASR operation")
+		t.Fatalf("missing admin AI model status operation")
 	}
-	asrBody, ok := asrPost["requestBody"].(map[string]any)
+	adminDesc, _ := adminStatus["description"].(string)
+	if !strings.Contains(adminDesc, "full local model paths") {
+		t.Fatalf("admin AI model status should document full local paths: %q", adminDesc)
+	}
+	userStatus, ok := paths["/api/v1/ai-models/status"]["get"].(map[string]any)
 	if !ok {
-		t.Fatalf("missing ASR request body: %#v", asrPost)
+		t.Fatalf("missing user AI model status operation")
 	}
-	asrContent, ok := asrBody["content"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing ASR request content: %#v", asrBody)
+	userDesc, _ := userStatus["description"].(string)
+	if strings.Contains(strings.ToLower(userDesc), "local model paths") && !strings.Contains(strings.ToLower(userDesc), "without exposing") {
+		t.Fatalf("user AI model status should not document path exposure: %q", userDesc)
 	}
-	for _, contentType := range []string{"application/json", "audio/wav", "audio/ogg", "audio/opus", "audio/mpeg", "application/octet-stream"} {
-		if _, ok := asrContent[contentType]; !ok {
-			t.Fatalf("ASR request content missing %s: %#v", contentType, asrContent)
+	for _, path := range []string{"/api/v1/ai-models/asr/transcribe", "/api/v1/admin/ai-models/asr/transcribe"} {
+		asrPost, ok := paths[path]["post"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing ASR operation %s", path)
 		}
-	}
-	for _, contentType := range []string{"audio/mp4", "audio/aac"} {
-		if _, ok := asrContent[contentType]; ok {
-			t.Fatalf("ASR request content should not advertise unsupported %s: %#v", contentType, asrContent)
+		asrBody, ok := asrPost["requestBody"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing ASR request body %s: %#v", path, asrPost)
+		}
+		asrContent, ok := asrBody["content"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing ASR request content %s: %#v", path, asrBody)
+		}
+		for _, contentType := range []string{"application/json", "audio/wav", "audio/ogg", "audio/opus", "audio/mpeg", "audio/mp4", "audio/aac", "application/octet-stream"} {
+			if _, ok := asrContent[contentType]; !ok {
+				t.Fatalf("ASR request content %s missing %s: %#v", path, contentType, asrContent)
+			}
+		}
+		params := openAPITestParameters(asrPost["parameters"])
+		foundFormatHeader := false
+		for _, item := range params {
+			param := item
+			if param["name"] != "X-MaClaw-Audio-Format" {
+				continue
+			}
+			schema, _ := param["schema"].(map[string]any)
+			enumValues := openAPITestStringEnum(schema["enum"])
+			if stringSetContainsAll(enumValues, []string{"wav", "ogg", "opus", "silk", "mp3", "m4a", "aac"}) {
+				foundFormatHeader = true
+			}
+		}
+		if !foundFormatHeader {
+			t.Fatalf("ASR operation %s missing native format header enum: %#v", path, params)
 		}
 	}
 	ttsPost, ok := paths["/api/v1/ai-models/tts/synthesize"]["post"].(map[string]any)
@@ -808,6 +838,53 @@ func TestOpenAPIAIModelAudioContracts(t *testing.T) {
 		if schema["format"] != "binary" {
 			t.Fatalf("TTS response %s should be binary: %#v", contentType, schema)
 		}
+	}
+}
+
+func stringSetContainsAll(got, want []string) bool {
+	seen := map[string]bool{}
+	for _, value := range got {
+		seen[value] = true
+	}
+	for _, value := range want {
+		if !seen[value] {
+			return false
+		}
+	}
+	return len(got) == len(want)
+}
+
+func openAPITestStringEnum(value any) []string {
+	switch values := value.(type) {
+	case []string:
+		return values
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if s, ok := value.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func openAPITestParameters(value any) []map[string]any {
+	switch params := value.(type) {
+	case []map[string]any:
+		return params
+	case []any:
+		out := make([]map[string]any, 0, len(params))
+		for _, item := range params {
+			if param, ok := item.(map[string]any); ok {
+				out = append(out, param)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 
@@ -893,6 +970,9 @@ func TestOpenAPIAdminMutationsAreOwnerOnlyUnlessExplicitlyAllowed(t *testing.T) 
 		http.MethodPost + " /api/v1/admin/logs/search":                                       true,
 		http.MethodPost + " /api/v1/admin/service-config/validate":                           true,
 		http.MethodPost + " /api/v1/admin/client-config/default/validate":                    true,
+		http.MethodPost + " /api/v1/admin/ai-models/embedding/embed":                         true,
+		http.MethodPost + " /api/v1/admin/ai-models/asr/transcribe":                          true,
+		http.MethodPost + " /api/v1/admin/ai-models/tts/synthesize":                          true,
 		http.MethodPost + " /api/v1/admin/tenants/{tenantId}/users/{userId}/config/validate": true,
 		http.MethodPost + " /api/v1/admin/tenants/{tenantId}/users/{userId}/config/test":     true,
 		http.MethodPost + " /api/v1/admin/sandbox/detect":                                    true,
@@ -948,6 +1028,9 @@ func TestOpenAPIAdminRoleAnnotationsCoverCriticalRoutes(t *testing.T) {
 		{http.MethodPost, "/api/v1/admin/client-config/default/validate", "operator"},
 		{http.MethodGet, "/api/v1/admin/ai-models/status", "operator"},
 		{http.MethodPost, "/api/v1/admin/ai-models/{model}/download", "owner"},
+		{http.MethodPost, "/api/v1/admin/ai-models/embedding/embed", "operator"},
+		{http.MethodPost, "/api/v1/admin/ai-models/asr/transcribe", "operator"},
+		{http.MethodPost, "/api/v1/admin/ai-models/tts/synthesize", "operator"},
 		{http.MethodPut, "/api/v1/admin/sandbox/config", "owner"},
 		{http.MethodPost, "/api/v1/admin/sandbox/rollback", "owner"},
 		{http.MethodPost, "/api/v1/admin/sandbox/switch", "owner"},
@@ -4611,8 +4694,7 @@ func TestWeixinRuntimeTranscribesVoiceBeforeAgent(t *testing.T) {
 		FromUserID:   "wx-contact-voice",
 		ContextToken: "ctx-token-voice",
 		Timestamp:    time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC),
-		MediaType:    "voice",
-		MediaName:    "voice.wav",
+		MediaType:    "audio/wav",
 		MediaData:    testWAVBytes(),
 	})
 	if len(fakeASR.seen) != 1 || !bytes.HasPrefix(fakeASR.seen[0], []byte("RIFF")) {
@@ -4700,8 +4782,7 @@ func TestWeixinRuntimeRepliesToVoiceWithMP3File(t *testing.T) {
 	gateway.handler(weixin.IncomingMessage{
 		FromUserID:   "wx-contact-voice",
 		ContextToken: "ctx-token-voice",
-		MediaType:    "voice",
-		MediaName:    "voice.wav",
+		MediaType:    "audio/wav",
 		MediaData:    testWAVBytes(),
 	})
 	if len(fakeTTS.seen) != 1 || !strings.Contains(fakeTTS.seen[0], "微信语音问题") {
@@ -4713,6 +4794,27 @@ func TestWeixinRuntimeRepliesToVoiceWithMP3File(t *testing.T) {
 	got := gateway.sentMedia[0]
 	if string(got.FileData) != "ID3-wx-mp3" || got.FileName != "assistant.mp3" || got.MediaType != "file" || got.ContextToken != "ctx-token-voice" {
 		t.Fatalf("unexpected WeChat MP3 media reply: %#v", got)
+	}
+}
+
+func TestWeixinVoiceMediaRecognitionCoversAudioAliases(t *testing.T) {
+	for _, tc := range []struct {
+		msg        weixin.IncomingMessage
+		wantVoice  bool
+		wantFormat string
+	}{
+		{msg: weixin.IncomingMessage{MediaType: "voice", MediaName: "voice.silk"}, wantVoice: true, wantFormat: "silk"},
+		{msg: weixin.IncomingMessage{MediaType: "audio/wav"}, wantVoice: true, wantFormat: "wav"},
+		{msg: weixin.IncomingMessage{MediaType: "audio/mpeg"}, wantVoice: true, wantFormat: "mp3"},
+		{msg: weixin.IncomingMessage{MediaType: "ptt", MediaName: "voice.ogg"}, wantVoice: true, wantFormat: "ogg"},
+		{msg: weixin.IncomingMessage{MediaType: "image", MediaName: "photo.png"}, wantVoice: false, wantFormat: ""},
+	} {
+		if got := srvWeixinIncomingIsVoice(tc.msg); got != tc.wantVoice {
+			t.Fatalf("srvWeixinIncomingIsVoice(%#v) = %v, want %v", tc.msg, got, tc.wantVoice)
+		}
+		if got := srvWeixinAudioFormatHint(tc.msg); got != tc.wantFormat {
+			t.Fatalf("srvWeixinAudioFormatHint(%#v) = %q, want %q", tc.msg, got, tc.wantFormat)
+		}
 	}
 }
 

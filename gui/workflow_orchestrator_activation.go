@@ -71,7 +71,7 @@ func activeWorkflowExecutionPhase(engine *workflow.WorkflowEngine, userID string
 		return nil, nil, false
 	}
 	phase := tmpl.Phases[ws.PhaseIndex]
-	if phase.ID != ws.CurrentPhase || !workflow.IsExecutionOrchestratorPhase(phase) {
+	if phase.ID != ws.CurrentPhase || !workflow.IsTemplatePhaseExecutionOrchestrator(tmpl, phase) {
 		return nil, nil, false
 	}
 	return ws, tmpl, true
@@ -161,6 +161,29 @@ func (h *IMMessageHandler) shouldRejectInvalidCodingTaskBreakdownOutput(engine *
 	}
 	tasks := ParseTaskListFromText(trimmed)
 	return !isExecutableCodingTaskBreakdown(trimmed, tasks) && currentCodingTaskBreakdownFeedsExecution(engine, userID)
+}
+
+func (h *IMMessageHandler) reopenInvalidCodingTaskBreakdownForRepair(engine *workflow.WorkflowEngine, userID string) bool {
+	if h == nil || engine == nil {
+		return false
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || ws.Type != workflow.WorkflowCoding || ws.CurrentPhase != workflow.PhaseCodingTaskBreakdown {
+		return false
+	}
+	if ws.PendingReviewRevisionRequested {
+		return true
+	}
+	repairResp, err := engine.ReopenPhaseForRevision(userID, workflow.PhaseCodingTaskBreakdown, invalidCodingTaskBreakdownFeedbackText())
+	if err != nil {
+		log.Printf("[WorkflowInterception] failed to reopen invalid coding task breakdown for repair: user=%s err=%v", userID, err)
+		return false
+	}
+	if repairResp != nil && repairResp.PhasePrompt != "" {
+		h.stashedPhasePrompt.Store(userID, repairResp.PhasePrompt)
+		h.workflowAgentLoopMarker.Store(userID, true)
+	}
+	return true
 }
 
 func isExecutableCodingTaskBreakdown(text string, tasks []*TaskItem) bool {
@@ -420,7 +443,7 @@ func currentCodingTaskBreakdownFeedsExecution(engine *workflow.WorkflowEngine, u
 	if tmpl == nil || ws.PhaseIndex < 0 || ws.PhaseIndex+1 >= len(tmpl.Phases) {
 		return false
 	}
-	return tmpl.Phases[ws.PhaseIndex].ID == ws.CurrentPhase && workflow.IsExecutionOrchestratorPhase(tmpl.Phases[ws.PhaseIndex+1])
+	return tmpl.Phases[ws.PhaseIndex].ID == ws.CurrentPhase && workflow.IsTemplatePhaseExecutionOrchestrator(tmpl, tmpl.Phases[ws.PhaseIndex+1])
 }
 
 func currentCodingTaskBreakdownOutputBeforeExecution(engine *workflow.WorkflowEngine, userID string) (string, bool) {
@@ -447,7 +470,7 @@ func (h *IMMessageHandler) workflowExecutionProjectPath(engine *workflow.Workflo
 		}
 	}
 	if h != nil {
-		if projectPath := strings.TrimSpace(h.workflowStartProjectPath()); projectPath != "" {
+		if projectPath := strings.TrimSpace(h.workflowStartProjectPathForOwner(userID)); projectPath != "" {
 			return projectPath
 		}
 	}

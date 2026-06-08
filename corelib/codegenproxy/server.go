@@ -16,6 +16,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -453,6 +454,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Convert Anthropic → OpenAI
 	openaiReq := convertAnthropicToOpenAI(anthReq)
 	compatibilityNotes := applyCodeGenOpenAIRequestCompatibility(&openaiReq)
+	toolSchemas := summarizeOpenAIToolSchemas(openaiReq.Tools)
 
 	reqData, _ := json.Marshal(openaiReq)
 	requestSummary := summarizeOpenAIRequest(reqData)
@@ -513,14 +515,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if anthReq.Stream {
-		s.handleStreamResponse(w, upResp, anthReq.Model, reqID)
+		s.handleStreamResponse(w, upResp, anthReq.Model, reqID, toolSchemas)
 	} else {
-		s.handleNonStreamResponse(w, upResp, anthReq.Model, reqID)
+		s.handleNonStreamResponse(w, upResp, anthReq.Model, reqID, toolSchemas)
 	}
 }
 
 // handleNonStreamResponse converts an OpenAI non-streaming response to Anthropic format.
-func (s *Server) handleNonStreamResponse(w http.ResponseWriter, upResp *http.Response, model, reqID string) {
+func (s *Server) handleNonStreamResponse(w http.ResponseWriter, upResp *http.Response, model, reqID string, toolSchemas map[string]toolSchemaSummary) {
 	respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 10*1024*1024))
 
 	if upResp.StatusCode != http.StatusOK {
@@ -553,7 +555,7 @@ func (s *Server) handleNonStreamResponse(w http.ResponseWriter, upResp *http.Res
 }
 
 // handleStreamResponse converts an OpenAI SSE stream to Anthropic SSE stream.
-func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Response, model, reqID string) {
+func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Response, model, reqID string, toolSchemas map[string]toolSchemaSummary) {
 	if upResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
 		w.Header().Set("Content-Type", "application/json")
@@ -572,7 +574,7 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 	// If the body is clearly not SSE, fall back to non-stream parsing.
 	ct := upResp.Header.Get("Content-Type")
 	if strings.Contains(ct, "application/json") {
-		s.handleNonStreamResponse(w, upResp, model, reqID)
+		s.handleNonStreamResponse(w, upResp, model, reqID, toolSchemas)
 		return
 	}
 
@@ -704,7 +706,7 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 
 	if streamErr != nil {
 		log.Printf("[codegenproxy] stream abort id=%s model=%q text_bytes=%d tool_calls=%d legacy_function=%t tool_summary=%s",
-			reqID, model, textBytes, len(toolOrder), legacyFunction != nil, summarizeStreamTools(toolOrder, toolCalls, legacyFunction))
+			reqID, model, textBytes, len(toolOrder), legacyFunction != nil, summarizeStreamTools(toolOrder, toolCalls, legacyFunction, toolSchemas))
 		writeStreamError(w, "upstream stream read failed")
 		flusher.Flush()
 		return
@@ -712,7 +714,7 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 
 	if err := validateBufferedToolUses(toolOrder, toolCalls, legacyFunction); err != nil {
 		log.Printf("[codegenproxy] stream tool call invalid id=%s model=%q err=%v tool_summary=%s",
-			reqID, model, err, summarizeStreamTools(toolOrder, toolCalls, legacyFunction))
+			reqID, model, err, summarizeStreamTools(toolOrder, toolCalls, legacyFunction, toolSchemas))
 		writeStreamError(w, "upstream stream produced invalid tool call")
 		flusher.Flush()
 		return
@@ -739,7 +741,7 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 		anthStop = "max_tokens"
 	}
 	log.Printf("[codegenproxy] stream complete id=%s model=%q openai_finish=%q anthropic_stop=%q text_bytes=%d tool_calls=%d legacy_function=%t tool_summary=%s",
-		reqID, model, stopReason, anthStop, textBytes, len(toolOrder), legacyFunction != nil, summarizeStreamTools(toolOrder, toolCalls, legacyFunction))
+		reqID, model, stopReason, anthStop, textBytes, len(toolOrder), legacyFunction != nil, summarizeStreamTools(toolOrder, toolCalls, legacyFunction, toolSchemas))
 
 	writeSSE(w, "message_delta", map[string]interface{}{
 		"type":  "message_delta",
@@ -813,15 +815,53 @@ func shortSHA256(text string) string {
 	return fmt.Sprintf("%x", sum[:8])
 }
 
-func summarizeStreamTools(order []int, calls map[int]*streamToolCallAccum, legacy *streamToolCallAccum) string {
+type toolSchemaSummary struct {
+	Required map[string]struct{}
+	Props    map[string]struct{}
+}
+
+func summarizeOpenAIToolSchemas(tools []openaiTool) map[string]toolSchemaSummary {
+	if len(tools) == 0 {
+		return nil
+	}
+	result := make(map[string]toolSchemaSummary, len(tools))
+	for _, tool := range tools {
+		name := strings.TrimSpace(tool.Function.Name)
+		if name == "" {
+			continue
+		}
+		summary := toolSchemaSummary{
+			Required: map[string]struct{}{},
+			Props:    map[string]struct{}{},
+		}
+		if schema, ok := tool.Function.Parameters.(map[string]interface{}); ok {
+			if props, ok := schema["properties"].(map[string]interface{}); ok {
+				for key := range props {
+					summary.Props[key] = struct{}{}
+				}
+			}
+			if required, ok := schema["required"].([]interface{}); ok {
+				for _, item := range required {
+					if key, ok := item.(string); ok && key != "" {
+						summary.Required[key] = struct{}{}
+					}
+				}
+			}
+		}
+		result[name] = summary
+	}
+	return result
+}
+
+func summarizeStreamTools(order []int, calls map[int]*streamToolCallAccum, legacy *streamToolCallAccum, schemas map[string]toolSchemaSummary) string {
 	var parts []string
 	for _, idx := range order {
 		if acc := calls[idx]; acc != nil {
-			parts = append(parts, summarizeStreamTool(acc))
+			parts = append(parts, summarizeStreamTool(acc, schemas))
 		}
 	}
 	if legacy != nil {
-		parts = append(parts, "legacy:"+summarizeStreamTool(legacy))
+		parts = append(parts, "legacy:"+summarizeStreamTool(legacy, schemas))
 	}
 	if len(parts) == 0 {
 		return "-"
@@ -829,14 +869,57 @@ func summarizeStreamTools(order []int, calls map[int]*streamToolCallAccum, legac
 	return strings.Join(parts, ",")
 }
 
-func summarizeStreamTool(acc *streamToolCallAccum) string {
+func summarizeStreamTool(acc *streamToolCallAccum, schemas map[string]toolSchemaSummary) string {
 	name := strings.TrimSpace(acc.Name)
 	if name == "" {
 		name = "unknown_tool"
 	}
 	args := strings.TrimSpace(acc.Arguments)
-	validObject := args == "" || isJSONObject(args)
-	return fmt.Sprintf("%s(args_bytes=%d,json_object=%t)", name, len(args), validObject)
+	keys := topLevelJSONKeys(args)
+	schemaNote := summarizeToolSchemaMatch(name, keys, schemas)
+	return fmt.Sprintf("%s(args_bytes=%d,args_kind=%s,args_keys=%s%s)", name, len(args), classifyToolArguments(args), strings.Join(keys, "|"), schemaNote)
+}
+
+func topLevelJSONKeys(raw string) []string {
+	normalized, ok := normalizeOpenAIToolArguments(raw)
+	if !ok {
+		return nil
+	}
+	var input map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &input); err != nil {
+		return nil
+	}
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func summarizeToolSchemaMatch(name string, keys []string, schemas map[string]toolSchemaSummary) string {
+	if len(schemas) == 0 {
+		return ""
+	}
+	schema, ok := schemas[name]
+	if !ok {
+		return ",schema=missing_tool"
+	}
+	keySet := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		keySet[key] = struct{}{}
+	}
+	missing := make([]string, 0)
+	for key := range schema.Required {
+		if _, ok := keySet[key]; !ok {
+			missing = append(missing, key)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		return ",schema_missing=" + strings.Join(missing, "|")
+	}
+	return ",schema=ok"
 }
 
 func validateBufferedToolUses(order []int, calls map[int]*streamToolCallAccum, legacy *streamToolCallAccum) error {
@@ -864,9 +947,11 @@ func validateBufferedToolUse(acc *streamToolCallAccum) error {
 	if args == "" {
 		return nil
 	}
-	if !isJSONObject(args) {
-		return fmt.Errorf("tool call index=%d name=%q has non-object JSON arguments bytes=%d", acc.Index, name, len(args))
+	normalized, ok := normalizeOpenAIToolArguments(args)
+	if !ok {
+		return fmt.Errorf("tool call index=%d name=%q has invalid tool arguments kind=%s bytes=%d args_sha256=%s", acc.Index, name, classifyToolArguments(args), len(args), shortSHA256(args))
 	}
+	acc.Arguments = normalized
 	return nil
 }
 
@@ -878,8 +963,8 @@ func validateOpenAIResponseToolUses(resp openaiChatResponse) error {
 				return fmt.Errorf("choice=%d tool_call=%d missing name", choiceIdx, toolIdx)
 			}
 			args := strings.TrimSpace(tc.Function.Arguments)
-			if args != "" && !isJSONObject(args) {
-				return fmt.Errorf("choice=%d tool_call=%d name=%q has non-object JSON arguments bytes=%d", choiceIdx, toolIdx, name, len(args))
+			if _, ok := normalizeOpenAIToolArguments(args); !ok {
+				return fmt.Errorf("choice=%d tool_call=%d name=%q has invalid tool arguments kind=%s bytes=%d args_sha256=%s", choiceIdx, toolIdx, name, classifyToolArguments(args), len(args), shortSHA256(args))
 			}
 		}
 		if fc := choice.Message.FunctionCall; fc != nil {
@@ -888,17 +973,40 @@ func validateOpenAIResponseToolUses(resp openaiChatResponse) error {
 				return fmt.Errorf("choice=%d legacy function missing name", choiceIdx)
 			}
 			args := strings.TrimSpace(fc.Arguments)
-			if args != "" && !isJSONObject(args) {
-				return fmt.Errorf("choice=%d legacy function name=%q has non-object JSON arguments bytes=%d", choiceIdx, name, len(args))
+			if _, ok := normalizeOpenAIToolArguments(args); !ok {
+				return fmt.Errorf("choice=%d legacy function name=%q has invalid tool arguments kind=%s bytes=%d args_sha256=%s", choiceIdx, name, classifyToolArguments(args), len(args), shortSHA256(args))
 			}
 		}
 	}
 	return nil
 }
 
-func isJSONObject(raw string) bool {
-	var value map[string]interface{}
-	return json.Unmarshal([]byte(raw), &value) == nil && value != nil
+func classifyToolArguments(raw string) string {
+	args := strings.TrimSpace(raw)
+	if args == "" {
+		return "empty"
+	}
+	var object map[string]interface{}
+	if err := json.Unmarshal([]byte(args), &object); err == nil && object != nil {
+		return "object"
+	}
+	var encoded string
+	if err := json.Unmarshal([]byte(args), &encoded); err == nil {
+		if strings.EqualFold(args, "null") {
+			return "null"
+		}
+		encoded = strings.TrimSpace(encoded)
+		var encodedObject map[string]interface{}
+		if err := json.Unmarshal([]byte(encoded), &encodedObject); err == nil && encodedObject != nil {
+			return "encoded_object"
+		}
+		return "string"
+	}
+	var array []interface{}
+	if err := json.Unmarshal([]byte(args), &array); err == nil {
+		return "array"
+	}
+	return "invalid_json"
 }
 
 func writeBufferedToolUse(w http.ResponseWriter, flusher http.Flusher, blockIdx int, acc *streamToolCallAccum) int {

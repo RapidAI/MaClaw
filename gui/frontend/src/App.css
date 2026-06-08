@@ -873,6 +873,25 @@ body {
     background: color-mix(in srgb, var(--theme-primary) 14%, var(--theme-surface));
 }
 
+.sidebar-system-status__provider-cart--alert {
+    border-color: #ef4444;
+    color: #ef4444;
+    background: color-mix(in srgb, #ef4444 10%, var(--theme-surface));
+    animation: cart-alert-pulse 1.5s ease-in-out infinite;
+}
+
+.sidebar-system-status__provider-cart--alert:hover,
+.sidebar-system-status__provider-cart--alert:focus-visible {
+    border-color: #dc2626;
+    color: #dc2626;
+    background: color-mix(in srgb, #ef4444 20%, var(--theme-surface));
+}
+
+@keyframes cart-alert-pulse {
+    0%, 100% { border-color: #ef4444; box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+    50% { border-color: #dc2626; box-shadow: 0 0 4px 1px rgba(239, 68, 68, 0.3); }
+}
+
 .sidebar-system-status__provider-cart-icon {
     width: 12px;
     height: 12px;

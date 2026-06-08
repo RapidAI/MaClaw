@@ -60,6 +60,13 @@ func TestProjectPathFromUserID_ProjectTab(t *testing.T) {
 	}
 }
 
+func TestProjectPathFromUserID_NormalizesProjectTabOwner(t *testing.T) {
+	got := projectPathFromUserID(`desktop-user:d:\workprj\test5\.`)
+	if got != `D:\workprj\test5` {
+		t.Fatalf("projectPathFromUserID normalized = %q, want %q", got, `D:\workprj\test5`)
+	}
+}
+
 func TestProjectTabWorkDir_ValidDirectory(t *testing.T) {
 	// Create a temporary directory to simulate a valid project path.
 	tmpDir := t.TempDir()

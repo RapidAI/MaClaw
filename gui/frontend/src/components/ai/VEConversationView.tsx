@@ -718,6 +718,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
     useEffect(() => {
         const sessionId = String(state.sessionId || "").trim();
+        const resumedExistingSessionId = String(existingSessionId || "").trim();
+        if (!resumedExistingSessionId && (participants?.length || 0) === 0) return;
         if (!sessionId || loadedHistorySessionRef.current === sessionId || state.messages.length > 0) return;
         loadedHistorySessionRef.current = sessionId;
         setHistoryLoadSettledSessionId("");
@@ -743,7 +745,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 if (!cancelled) setHistoryLoadSettledSessionId(sessionId);
             });
         return () => { cancelled = true; };
-    }, [assistantDisplayName, localSpeakerName, state.messages.length, state.sessionId, veId]);
+    }, [assistantDisplayName, existingSessionId, localSpeakerName, participants?.length, state.messages.length, state.sessionId, veId]);
 
     useEffect(() => {
         const sessionId = String(state.sessionId || "").trim();
@@ -753,14 +755,12 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         if (resumedExistingSessionId && resumedExistingSessionId === sessionId) return;
         if ((initialMessages?.length || 0) > 0) return;
         if (state.messages.length > 0) return;
-        if (historyLoadSettledSessionId !== sessionId) return;
-        if (historyLoadSucceededSessionId !== sessionId) return;
         const introMessage = buildLocalEmployeeIntroMessage(veId, veName, veSkillDescription, isZh);
         setState((prev) => {
             if (String(prev.sessionId || "").trim() !== sessionId || prev.messages.length > 0) return prev;
             return { ...prev, messages: [introMessage] };
         });
-    }, [existingSessionId, historyLoadSettledSessionId, historyLoadSucceededSessionId, initialMessages, isZh, participants?.length, state.messages.length, state.sessionId, veId, veName, veSkillDescription]);
+    }, [existingSessionId, initialMessages, isZh, participants?.length, state.messages.length, state.sessionId, veId, veName, veSkillDescription]);
 
 
     // Keep reconnectAttemptRef in sync with state resets (e.g. successful session init)

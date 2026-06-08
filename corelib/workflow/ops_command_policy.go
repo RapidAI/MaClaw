@@ -132,7 +132,7 @@ func ValidateToolCallByPolicyWithApproval(policy ToolFilterPolicy, name string, 
 	if !IsToolAllowedByPolicy(policy, name) {
 		return fmt.Errorf("%s is not allowed by the current workflow tool policy", name)
 	}
-	if policy == ToolFilterDocOnly {
+	if policy == ToolFilterDocOnly || policy == ToolFilterPlanning {
 		return validateReadOnlyOpsToolCall(name, args)
 	}
 	if policy != ToolFilterOpsControlled {

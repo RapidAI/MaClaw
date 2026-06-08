@@ -207,6 +207,9 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 		projectPath = extractCodingDelegateProjectPath(request)
 	}
 	if projectPath == "" {
+		projectPath = h.workflowStartProjectPathForOwner(policyUserID)
+	}
+	if projectPath == "" {
 		projectPath = h.traceProjectPath()
 	}
 	if projectPath == "" {
@@ -388,6 +391,9 @@ func (h *IMMessageHandler) isWorkflowToolAllowedForOwner(policyUserID, name stri
 	if engine.IsPhaseExecutionBlocked(policyUserID) {
 		return false
 	}
+	if contract, ok := engine.GetActivePhaseContract(policyUserID); ok {
+		return workflow.IsToolAllowedByContract(contract, name)
+	}
 	return workflow.IsToolAllowedByPolicy(engine.GetActivePhaseToolFilter(policyUserID), name)
 }
 
@@ -406,6 +412,12 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 		if err := json.Unmarshal([]byte(cleaned), &args); err != nil {
 			return false, fmt.Sprintf("invalid tool arguments: %v", err)
 		}
+	}
+	if contract, ok := engine.GetActivePhaseContract(policyUserID); ok {
+		if err := workflow.ValidateToolCallByContractWithApproval(contract, strings.TrimSpace(name), args, engine.GetOpsApprovedCommands(policyUserID)); err != nil {
+			return false, err.Error()
+		}
+		return true, ""
 	}
 	if err := workflow.ValidateToolCallByPolicyWithApproval(engine.GetActivePhaseToolFilter(policyUserID), strings.TrimSpace(name), args, engine.GetOpsApprovedCommands(policyUserID)); err != nil {
 		return false, err.Error()

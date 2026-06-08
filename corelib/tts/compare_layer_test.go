@@ -10,6 +10,13 @@ import (
 
 const testGGUF = "testdata/melotts-en-fp32.gguf"
 
+func requireTTSReferenceCompare(t *testing.T) {
+	t.Helper()
+	if os.Getenv("MACLAW_TTS_COMPARE") != "1" {
+		t.Skip("set MACLAW_TTS_COMPARE=1 to run Python reference comparison tests")
+	}
+}
+
 func loadRef(t *testing.T, name string) []float32 {
 	t.Helper()
 	path := filepath.Join("testdata", name+".bin")
@@ -122,6 +129,7 @@ func TestCompareLayerDurationPredictor(t *testing.T) {
 
 // TestCompareLayerEncoderLayer0 tests the first encoder layer output.
 func TestCompareLayerEncoderLayer0(t *testing.T) {
+	requireTTSReferenceCompare(t)
 	if _, err := os.Stat(testGGUF); os.IsNotExist(err) {
 		t.Skip("test GGUF not found")
 	}

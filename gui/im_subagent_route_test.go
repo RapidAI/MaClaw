@@ -118,6 +118,26 @@ func TestDirectCodingSubAgentRouteBlockedByActiveDocOnlyWorkflow(t *testing.T) {
 	}
 }
 
+func TestDirectCodingSubAgentRouteBlockedByActivePlanningWorkflow(t *testing.T) {
+	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"existing code repair"}]}`, nil
+	}})
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.unifiedClassifier = uic
+	attachCodeProjectToRouteHandler(t, h)
+	userID := "direct-route-planning-policy-user"
+	state, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	state.PhaseIndex = 2
+	state.CurrentPhase = workflow.PhaseCodingTaskBreakdown
+
+	if h.shouldRouteBugFixToDirectCodingSubAgent(IMUserMessage{UserID: userID, Text: "repair the startup bug"}, &LoopContext{Kind: LoopKindChat}) {
+		t.Fatal("active planning workflow phase must block direct CodingSubAgent routing")
+	}
+}
+
 func TestDirectCodingSubAgentRouteDoesNotInheritSingleActiveWorkflowPolicy(t *testing.T) {
 	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
 		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"existing code repair"}]}`, nil
@@ -434,6 +454,52 @@ func TestRouteDirectCodingSubAgentExecutionRunsCodingSubAgent(t *testing.T) {
 	}
 	if gotTask == nil || gotTask.Description != "fix the startup bug" {
 		t.Fatalf("task = %#v, want original request", gotTask)
+	}
+}
+
+func TestRouteDirectCodingSubAgentExecutionUsesProjectScopedOwnerPath(t *testing.T) {
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+
+	ownerProject := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ownerProject, "go.mod"), []byte("module example.com/owner\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile owner go.mod: %v", err)
+	}
+	currentProject := t.TempDir()
+	var gotProjectPath string
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		gotProjectPath = projectPath
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "bug fixed"}
+	}
+
+	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"existing code repair"}]}`, nil
+	}})
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.memory = agent.NewConversationMemory()
+	h.unifiedClassifier = uic
+	if err := h.app.SaveConfig(corelib.AppConfig{
+		CurrentProject: "current",
+		Projects:       []corelib.ProjectConfig{{Id: "current", Path: currentProject}},
+	}); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+	ownerID := projectSessionOwnerID(ownerProject)
+	ctx := &LoopContext{Kind: LoopKindChat, Runtime: RuntimeContext{RequestID: "req-owner-project", PolicyOwnerID: ownerID}}
+
+	resp, _, handled := h.routeDirectCodingSubAgentExecution(
+		IMUserMessage{UserID: desktopUserID, Text: "repair the startup bug in this project"},
+		nil,
+		ctx,
+		nil,
+		nil,
+		nil,
+	)
+	if !handled || resp == nil || resp.Text != "bug fixed" {
+		t.Fatalf("direct route = handled=%v resp=%#v", handled, resp)
+	}
+	if gotProjectPath != normalizeProjectSessionPath(ownerProject) {
+		t.Fatalf("CodingSubAgent projectPath = %q, want owner project %q", gotProjectPath, normalizeProjectSessionPath(ownerProject))
 	}
 }
 

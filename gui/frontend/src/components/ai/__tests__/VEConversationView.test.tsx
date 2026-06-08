@@ -2747,7 +2747,7 @@ describe("VEConversationView", () => {
             expect(screen.getByText("Hello world")).toBeTruthy();
         });
 
-        it("loads saved messages after initiate reuses an existing digital employee session", async () => {
+        it("shows the local intro instead of loading remote history when opening a fresh VE tab", async () => {
             const initiate = vi.fn().mockResolvedValue({ session_id: "reused-session-1", ve_id: "ve-1", ve_name: "Test VE" });
             (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
                 discussion: { id: "reused-session-1", local_relation: "initiated_by_me" },
@@ -2762,13 +2762,23 @@ describe("VEConversationView", () => {
             await act(async () => { await vi.runAllTimersAsync(); });
 
             expect(initiate).toHaveBeenCalledWith("ve-1");
-            expect(GroupDiscussionGetConsultationDetail).toHaveBeenCalledWith("reused-session-1");
-            expect(screen.getByText("earlier question")).toBeTruthy();
-            expect(screen.getByText("earlier answer")).toBeTruthy();
+            expect(GroupDiscussionGetConsultationDetail).not.toHaveBeenCalled();
+            expect(screen.getByTestId("ve-local-intro-badge-local-intro:ve_1")).toBeTruthy();
         });
 
-        it("does not keep the local intro when initiate reuses a session with saved history", async () => {
+        it("shows the local intro when opening a fresh VE tab even if sticky session exists remotely", async () => {
             const initiate = vi.fn().mockResolvedValue({ session_id: "reused-session-1", ve_id: "ve-1", ve_name: "Test VE" });
+            (GroupDiscussionGetConsultationDetail as any).mockRejectedValueOnce(new Error("history lookup failed"));
+
+            renderConversation({ initiateConversation: initiate, lang: "en", veSkillDescription: "contract review" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(GroupDiscussionGetConsultationDetail).not.toHaveBeenCalled();
+            expect(screen.getByText("Hi, I am Test VE.")).toBeTruthy();
+            expect(screen.getByTestId("ve-local-intro-badge-local-intro:ve_1").textContent).toBe("Local intro");
+        });
+
+        it("still loads remote history for explicitly resumed existing VE sessions", async () => {
             (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
                 discussion: { id: "reused-session-1", local_relation: "initiated_by_me" },
                 session: { participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speaker" }] },
@@ -2778,19 +2788,20 @@ describe("VEConversationView", () => {
                 ],
             });
 
-            renderConversation({ initiateConversation: initiate, lang: "en", veSkillDescription: "contract review" });
+            renderConversation({ existingSessionId: "reused-session-1", lang: "en", veSkillDescription: "contract review" });
             await act(async () => { await vi.runAllTimersAsync(); });
 
+            expect(GroupDiscussionGetConsultationDetail).toHaveBeenCalledWith("reused-session-1");
             expect(screen.getByText("saved question")).toBeTruthy();
             expect(screen.getByText("saved answer")).toBeTruthy();
             expect(screen.queryByText("Hi, I am Test VE.")).toBeNull();
         });
 
-        it("does not show the local intro when reused-session history lookup fails", async () => {
+        it("does not show the local intro when an explicitly resumed existing VE session cannot load history", async () => {
             const initiate = vi.fn().mockResolvedValue({ session_id: "reused-session-1", ve_id: "ve-1", ve_name: "Test VE" });
-            (GroupDiscussionGetConsultationDetail as any).mockRejectedValueOnce(new Error("history lookup failed"));
+            (GroupDiscussionGetConsultationDetail as any).mockRejectedValueOnce(new Error("hub returned 404: consultation not found"));
 
-            renderConversation({ initiateConversation: initiate, lang: "en", veSkillDescription: "contract review" });
+            renderConversation({ existingSessionId: "reused-session-1", initiateConversation: initiate, lang: "en", veSkillDescription: "contract review" });
             await act(async () => { await vi.runAllTimersAsync(); });
 
             expect(GroupDiscussionGetConsultationDetail).toHaveBeenCalledWith("reused-session-1");

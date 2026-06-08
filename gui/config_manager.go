@@ -625,7 +625,7 @@ func (m *ConfigManager) applyRemoteChange(cfg *corelib.AppConfig, key, value str
 		if _, err := fmt.Sscanf(value, "%d", &n); err != nil {
 			return "", fmt.Errorf("invalid integer value %q for remote_heartbeat_sec", value)
 		}
-		cfg.RemoteHeartbeatSec = n
+		cfg.RemoteHeartbeatSec = normalizeRemoteHeartbeatIntervalSec(n)
 		return old, nil
 	case "default_launch_mode":
 		old := cfg.DefaultLaunchMode

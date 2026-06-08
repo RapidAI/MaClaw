@@ -397,12 +397,32 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 }
 
 func parseOpenAIToolArguments(raw string) (map[string]interface{}, bool) {
-	if strings.TrimSpace(raw) == "" {
-		return map[string]interface{}{}, true
+	normalized, ok := normalizeOpenAIToolArguments(raw)
+	if !ok {
+		return nil, false
 	}
 	var input map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &input); err != nil || input == nil {
+	if err := json.Unmarshal([]byte(normalized), &input); err != nil || input == nil {
 		return nil, false
 	}
 	return input, true
+}
+
+func normalizeOpenAIToolArguments(raw string) (string, bool) {
+	args := strings.TrimSpace(raw)
+	if args == "" {
+		return "{}", true
+	}
+	for i := 0; i < 2; i++ {
+		var input map[string]interface{}
+		if err := json.Unmarshal([]byte(args), &input); err == nil && input != nil {
+			return args, true
+		}
+		var encoded string
+		if err := json.Unmarshal([]byte(args), &encoded); err != nil {
+			return "", false
+		}
+		args = strings.TrimSpace(encoded)
+	}
+	return "", false
 }

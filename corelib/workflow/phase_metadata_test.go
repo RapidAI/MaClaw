@@ -65,7 +65,7 @@ var syntheticPhaseIDPool = []string{
 // syntheticToolPolicies covers the defined policies plus an unknown/empty value
 // so the document-expectation rule is exercised beyond the enum.
 var syntheticToolPolicies = []ToolFilterPolicy{
-	ToolFilterNone, ToolFilterDocOnly, ToolFilterFull, ToolFilterOpsControlled,
+	ToolFilterNone, ToolFilterDocOnly, ToolFilterPlanning, ToolFilterFull, ToolFilterOpsControlled,
 	ToolFilterPolicy("unknown_policy"), ToolFilterPolicy(""),
 }
 
@@ -129,11 +129,12 @@ func TestProperty1_PhaseOrderMatchesTemplate(t *testing.T) {
 	})
 }
 
-// --- Task 1.3 / Property 6: Document-expectation determined solely by ToolPolicy ---
+// --- Task 1.3 / Property 6: Document-expectation follows review gate before ToolPolicy ---
 
 // TestProperty6_DocumentExpectationFromToolPolicy asserts that PhaseExpectsDocument
-// is false exactly when the phase uses ToolFilterFull or ToolFilterOpsControlled,
-// across every real template phase and arbitrary synthetic ToolPolicy values.
+// is true for reviewable phases and otherwise false exactly when the phase uses
+// ToolFilterFull or ToolFilterOpsControlled, across every real template phase
+// and arbitrary synthetic ToolPolicy values.
 //
 // **Validates: Requirements 1.3**
 func TestProperty6_DocumentExpectationFromToolPolicy(t *testing.T) {
@@ -148,9 +149,9 @@ func TestProperty6_DocumentExpectationFromToolPolicy(t *testing.T) {
 	// Over all real template phases.
 	rapid.Check(t, func(t *rapid.T) {
 		p := rapid.SampledFrom(allPhases).Draw(t, "phase")
-		want := p.ToolPolicy != ToolFilterFull && p.ToolPolicy != ToolFilterOpsControlled
+		want := p.NeedsConfirm || (p.ToolPolicy != ToolFilterFull && p.ToolPolicy != ToolFilterOpsControlled)
 		if got := PhaseExpectsDocument(p); got != want {
-			t.Fatalf("PhaseExpectsDocument(policy=%q) = %v, want %v", p.ToolPolicy, got, want)
+			t.Fatalf("PhaseExpectsDocument(policy=%q needs_confirm=%v) = %v, want %v", p.ToolPolicy, p.NeedsConfirm, got, want)
 		}
 	})
 
@@ -161,9 +162,10 @@ func TestProperty6_DocumentExpectationFromToolPolicy(t *testing.T) {
 			Name:       rapid.String().Draw(t, "name"),
 			ToolPolicy: rapid.SampledFrom(syntheticToolPolicies).Draw(t, "policy"),
 		}
-		want := p.ToolPolicy != ToolFilterFull && p.ToolPolicy != ToolFilterOpsControlled
+		p.NeedsConfirm = rapid.Bool().Draw(t, "needs_confirm")
+		want := p.NeedsConfirm || (p.ToolPolicy != ToolFilterFull && p.ToolPolicy != ToolFilterOpsControlled)
 		if got := PhaseExpectsDocument(p); got != want {
-			t.Fatalf("PhaseExpectsDocument(policy=%q) = %v, want %v", p.ToolPolicy, got, want)
+			t.Fatalf("PhaseExpectsDocument(policy=%q needs_confirm=%v) = %v, want %v", p.ToolPolicy, p.NeedsConfirm, got, want)
 		}
 	})
 }
@@ -280,7 +282,7 @@ func TestPhaseMetadata_CodingTemplate(t *testing.T) {
 	want := map[string]expect{
 		"requirements":   {0, true, false, true},
 		"design":         {1, true, false, true},
-		"tasks":          {2, true, true, true},  // task_breakdown has CanSkip=true
+		"tasks":          {2, true, true, true},    // task_breakdown has CanSkip=true
 		"implementation": {3, false, false, false}, // ToolFilterFull -> no document
 		"review":         {4, true, true, true},
 	}
@@ -305,6 +307,17 @@ func TestPhaseMetadata_CodingTemplate(t *testing.T) {
 		if strings.TrimSpace(m.Name) == "" {
 			t.Errorf("%s: empty label", m.ID)
 		}
+	}
+}
+
+func TestPhaseExpectsDocumentTreatsReviewablePlanningPhaseAsDocument(t *testing.T) {
+	phase := PhaseTemplate{
+		ID:           PhaseCodingTaskBreakdown,
+		ToolPolicy:   ToolFilterPlanning,
+		NeedsConfirm: true,
+	}
+	if !PhaseExpectsDocument(phase) {
+		t.Fatal("reviewable planning phase should still produce a document")
 	}
 }
 

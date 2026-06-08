@@ -624,7 +624,7 @@ var macLawSrvRuntimePresenceCache = struct {
 	items map[string]cachedMacLawSrvRuntimePresence
 }{items: map[string]cachedMacLawSrvRuntimePresence{}}
 
-var macLawSrvRuntimeReportHTTPClient = &http.Client{Timeout: time.Second}
+var macLawSrvRuntimeReportHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
 func loadMacLawSrvRuntimePresence(ctx context.Context, system store.SystemSettingsRepository, tenantID string) macLawSrvRuntimePresence {
 	runtime, ok := loadMacLawSrvRuntimeRegistry(ctx, system).findForTenant(tenantID)
@@ -635,7 +635,7 @@ func loadMacLawSrvRuntimePresence(ctx context.Context, system store.SystemSettin
 	if cached, ok := getCachedMacLawSrvRuntimePresence(cacheKey, time.Now()); ok {
 		return cached
 	}
-	report, err := fetchMacLawSrvRuntimeReport(ctx, runtime)
+	report, err := fetchMacLawSrvRuntimeReport(ctx, runtime, tenantID)
 	if err != nil {
 		presence := emptyMacLawSrvRuntimePresence()
 		setCachedMacLawSrvRuntimePresence(cacheKey, presence, time.Now().Add(1*time.Second))
@@ -736,17 +736,20 @@ type macLawSrvRuntimeReportWire struct {
 	Users *[]macLawSrvRuntimeReportUser `json:"users"`
 }
 
-func fetchMacLawSrvRuntimeReport(ctx context.Context, runtime macLawSrvRuntimeEntry) (macLawSrvRuntimeReport, error) {
+func fetchMacLawSrvRuntimeReport(ctx context.Context, runtime macLawSrvRuntimeEntry, tenantID string) (macLawSrvRuntimeReport, error) {
 	var report macLawSrvRuntimeReport
 	baseURL := strings.TrimRight(strings.TrimSpace(runtime.BaseURL), "/")
 	if baseURL == "" {
 		return report, fmt.Errorf("maclawsrv runtime base url is empty")
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, baseURL+"/api/platform/runtime/report", nil)
 	if err != nil {
 		return report, err
+	}
+	if tenantID := strings.TrimSpace(tenantID); tenantID != "" {
+		req.Header.Set("X-Hub-Tenant-ID", tenantID)
 	}
 	if secret := strings.TrimSpace(runtime.AdminSecret); secret != "" {
 		req.Header.Set("Authorization", "Bearer "+secret)

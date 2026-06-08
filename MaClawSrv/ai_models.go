@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,17 +38,25 @@ const (
 
 var errSrvAIModelUnknown = errors.New("unknown ai model")
 var errSrvAIModelNotReady = errors.New("ai model is not ready")
+var errSrvAIModelInvalidInput = errors.New("invalid ai model input")
 
 var srvPreparePlayableVoiceMP3 = tts.PreparePlayableVoiceMP3
 var srvDownloadModelFile = downloadModelFile
+
+const srvAIModelDownloadStatusMaxAge = 35 * time.Minute
 
 type srvAIModelManager struct {
 	dataRoot               string
 	downloadConfigProvider func() corelib.AppConfig
 	mu                     sync.Mutex
+	done                   chan struct{}
+	closed                 bool
+	downloadWG             sync.WaitGroup
+	embeddingRunMu         sync.Mutex
 	asrRunMu               sync.Mutex
 	ttsRunMu               sync.Mutex
 	tasks                  map[string]*srvAIModelTask
+	embeddingMgr           embedding.Embedder
 	asrMgr                 srvASRTranscriber
 	ttsMgr                 srvTTSSynthesizer
 	ttsVoice               string
@@ -76,7 +85,9 @@ type srvAIModelStatus struct {
 	Downloading     bool      `json:"downloading"`
 	SizeBytes       int64     `json:"size_bytes,omitempty"`
 	Filename        string    `json:"filename,omitempty"`
+	Path            string    `json:"path,omitempty"`
 	VoiceID         string    `json:"voice_id,omitempty"`
+	VoicePath       string    `json:"voice_path,omitempty"`
 	Decoder         string    `json:"decoder,omitempty"`
 	DecoderReady    *bool     `json:"decoder_ready,omitempty"`
 	Encoder         string    `json:"encoder,omitempty"`
@@ -86,7 +97,7 @@ type srvAIModelStatus struct {
 }
 
 func newSrvAIModelManager(dataRoot string) *srvAIModelManager {
-	return &srvAIModelManager{dataRoot: dataRoot, tasks: map[string]*srvAIModelTask{}}
+	return &srvAIModelManager{dataRoot: dataRoot, done: make(chan struct{}), tasks: map[string]*srvAIModelTask{}}
 }
 
 func (m *srvAIModelManager) setDownloadConfigProvider(provider func() corelib.AppConfig) {
@@ -119,7 +130,7 @@ func (s *HTTPServer) handleAIModelDownload(w http.ResponseWriter, r *http.Reques
 
 func (s *HTTPServer) handleAdminAIModelsStatus(w http.ResponseWriter, r *http.Request) {
 	cfg := s.defaultConfigForAIModels(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"models": s.aiModels.status(cfg)})
+	writeJSON(w, http.StatusOK, map[string]any{"models": s.aiModels.statusWithPaths(cfg)})
 }
 
 func (s *HTTPServer) handleAdminAIModelDownload(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +147,75 @@ func (s *HTTPServer) handleAdminAIModelDownload(w http.ResponseWriter, r *http.R
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"model": model, "status": s.aiModels.statusOne(model, cfg)})
+	writeJSON(w, http.StatusAccepted, map[string]any{"model": model, "status": s.aiModels.statusOneWithPath(model, cfg)})
+}
+
+func (s *HTTPServer) handleAdminAIModelEmbeddingEmbed(w http.ResponseWriter, r *http.Request) {
+	cfg := s.defaultConfigForAIModels(r.Context())
+	var in struct {
+		Text string `json:"text"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	vector, err := s.aiModels.embedText(r.Context(), cfg, in.Text)
+	if err != nil {
+		s.writeAIModelRuntimeError(w, srvAIModelEmbedding, cfg, err)
+		return
+	}
+	norm := 0.0
+	for _, v := range vector {
+		norm += float64(v) * float64(v)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"text":      in.Text,
+		"dimension": len(vector),
+		"norm":      math.Sqrt(norm),
+		"values":    vector,
+	})
+}
+
+func (s *HTTPServer) handleAdminAIModelASRTranscribe(w http.ResponseWriter, r *http.Request) {
+	cfg := s.defaultConfigForAIModels(r.Context())
+	if exists, _ := modelFileReady(s.aiModels.modelPath(srvASRModelFilename)); !exists {
+		s.writeAIModelRuntimeError(w, srvAIModelASR, cfg, fmt.Errorf("%w: asr model is missing", errSrvAIModelNotReady))
+		return
+	}
+	wav, err := readASRWAVPayload(w, r)
+	if err != nil {
+		writeASRPayloadError(w, err)
+		return
+	}
+	text, err := s.aiModels.transcribeWAV(r.Context(), cfg, wav)
+	if err != nil {
+		s.writeAIModelRuntimeError(w, srvAIModelASR, cfg, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"text": text})
+}
+
+func (s *HTTPServer) handleAdminAIModelTTSSynthesize(w http.ResponseWriter, r *http.Request) {
+	cfg := s.defaultConfigForAIModels(r.Context())
+	var in struct {
+		Text    string `json:"text"`
+		VoiceID string `json:"voice_id,omitempty"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if strings.TrimSpace(in.VoiceID) != "" {
+		cfg.TTSVoiceID = in.VoiceID
+	}
+	wav, voiceID, err := s.aiModels.synthesizeText(r.Context(), cfg, in.Text)
+	if err != nil {
+		s.writeAIModelRuntimeError(w, srvAIModelTTS, cfg, err)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Content-Disposition", `attachment; filename="maclaw-tts-test.wav"`)
+	w.Header().Set("X-MaClaw-TTS-Voice-ID", voiceID)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(wav)
 }
 
 func (s *HTTPServer) handleAIModelASRTranscribe(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -147,7 +226,7 @@ func (s *HTTPServer) handleAIModelASRTranscribe(w http.ResponseWriter, r *http.R
 	}
 	wav, err := readASRWAVPayload(w, r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeASRPayloadError(w, err)
 		return
 	}
 	text, err := s.aiModels.transcribeWAV(r.Context(), cfg, wav)
@@ -201,6 +280,17 @@ func (s *HTTPServer) writeAIModelRuntimeError(w http.ResponseWriter, model strin
 	case errors.Is(err, errSrvAIModelNotReady):
 		status = http.StatusConflict
 		_ = s.aiModels.startDownload(model, cfg, false)
+	case errors.Is(err, errSrvAIModelInvalidInput):
+		status = http.StatusBadRequest
+	}
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func writeASRPayloadError(w http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		status = http.StatusRequestEntityTooLarge
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
@@ -265,6 +355,25 @@ func (m *srvAIModelManager) status(cfg corelib.AppConfig) map[string]srvAIModelS
 	}
 }
 
+func (m *srvAIModelManager) statusWithPaths(cfg corelib.AppConfig) map[string]srvAIModelStatus {
+	return map[string]srvAIModelStatus{
+		srvAIModelEmbedding: m.statusOneWithPath(srvAIModelEmbedding, cfg),
+		srvAIModelASR:       m.statusOneWithPath(srvAIModelASR, cfg),
+		srvAIModelTTS:       m.statusOneWithPath(srvAIModelTTS, cfg),
+	}
+}
+
+func (m *srvAIModelManager) statusOneWithPath(model string, cfg corelib.AppConfig) srvAIModelStatus {
+	status := m.statusOne(model, cfg)
+	if status.Filename != "" {
+		status.Path = m.modelPath(status.Filename)
+	}
+	if model == srvAIModelTTS && status.VoiceID != "" {
+		status.VoicePath = filepath.Join(m.ttsVoiceDir(), status.VoiceID+".koro")
+	}
+	return status
+}
+
 func (m *srvAIModelManager) statusOne(model string, cfg corelib.AppConfig) srvAIModelStatus {
 	status := srvAIModelStatus{Name: model}
 	switch model {
@@ -298,6 +407,12 @@ func (m *srvAIModelManager) statusOne(model string, cfg corelib.AppConfig) srvAI
 		status.Downloading = task.Downloading
 		status.LastError = task.LastError
 		status.UpdatedAt = task.UpdatedAt
+		if task.Downloading && !task.UpdatedAt.IsZero() && time.Since(task.UpdatedAt) > srvAIModelDownloadStatusMaxAge {
+			status.Downloading = false
+			if status.LastError == "" {
+				status.LastError = "download status expired; retry download"
+			}
+		}
 	}
 	m.mu.Unlock()
 	if status.Ready {
@@ -313,27 +428,44 @@ func (m *srvAIModelManager) startDownload(model string, cfg corelib.AppConfig, f
 	default:
 		return errSrvAIModelUnknown
 	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return fmt.Errorf("ai model manager is closed")
+	}
+	m.mu.Unlock()
 	if !force && m.statusOne(model, cfg).Exists {
 		return nil
 	}
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return fmt.Errorf("ai model manager is closed")
+	}
 	task := m.tasks[model]
 	if task == nil {
 		task = &srvAIModelTask{}
 		m.tasks[model] = task
 	}
 	if task.Downloading {
-		m.mu.Unlock()
-		return nil
+		if task.UpdatedAt.IsZero() || time.Since(task.UpdatedAt) <= srvAIModelDownloadStatusMaxAge {
+			m.mu.Unlock()
+			return nil
+		}
+		task.Downloading = false
+		task.LastError = "download status expired; retrying"
 	}
 	task.Downloading = true
 	task.LastError = ""
 	task.UpdatedAt = time.Now().UTC()
+	done := m.done
+	m.downloadWG.Add(1)
 	m.mu.Unlock()
 
 	downloadCfg := m.downloadConfig(cfg)
 	go func() {
-		err := m.download(model, downloadCfg)
+		defer m.downloadWG.Done()
+		err := m.download(model, downloadCfg, done)
 		m.mu.Lock()
 		task.Downloading = false
 		task.UpdatedAt = time.Now().UTC()
@@ -345,6 +477,9 @@ func (m *srvAIModelManager) startDownload(model string, cfg corelib.AppConfig, f
 			log.Printf("[ai-models] %s model ready", model)
 		}
 		m.mu.Unlock()
+		if err == nil {
+			m.resetRuntime(model)
+		}
 	}()
 	return nil
 }
@@ -359,20 +494,27 @@ func (m *srvAIModelManager) downloadConfig(fallback corelib.AppConfig) corelib.A
 	return provider()
 }
 
-func (m *srvAIModelManager) download(model string, cfg corelib.AppConfig) error {
+func (m *srvAIModelManager) doneChannel() <-chan struct{} {
+	m.mu.Lock()
+	done := m.done
+	m.mu.Unlock()
+	return done
+}
+
+func (m *srvAIModelManager) download(model string, cfg corelib.AppConfig, done <-chan struct{}) error {
 	switch model {
 	case srvAIModelEmbedding:
-		return m.downloadWithFallback(embedding.DefaultModelFilename, embedding.DefaultModelDownloadURL, cfg)
+		return m.downloadWithFallback(embedding.DefaultModelFilename, embedding.DefaultModelDownloadURL, cfg, done)
 	case srvAIModelASR:
-		return m.downloadWithFallback(srvASRModelFilename, srvASRModelDefaultURL, cfg)
+		return m.downloadWithFallback(srvASRModelFilename, srvASRModelDefaultURL, cfg, done)
 	case srvAIModelTTS:
-		if err := m.downloadWithFallback(tts.TTSModelFilename, srvTTSAssetURL(tts.TTSModelFilename), cfg); err != nil {
+		if err := m.downloadWithFallback(tts.TTSModelFilename, srvTTSAssetURL(tts.TTSModelFilename), cfg, done); err != nil {
 			return err
 		}
 		if m.ttsVoicesReady() {
 			return nil
 		}
-		if err := m.downloadWithFallback(tts.TTSVoiceZipFilename, srvTTSAssetURL(tts.TTSVoiceZipFilename), cfg); err != nil {
+		if err := m.downloadWithFallback(tts.TTSVoiceZipFilename, srvTTSAssetURL(tts.TTSVoiceZipFilename), cfg, done); err != nil {
 			return err
 		}
 		return m.unzipTTSVoices()
@@ -381,7 +523,7 @@ func (m *srvAIModelManager) download(model string, cfg corelib.AppConfig) error 
 	}
 }
 
-func (m *srvAIModelManager) downloadWithFallback(filename, primaryURL string, cfg corelib.AppConfig) error {
+func (m *srvAIModelManager) downloadWithFallback(filename, primaryURL string, cfg corelib.AppConfig, done <-chan struct{}) error {
 	destPath := m.modelPath(filename)
 	if exists, _ := modelFileReady(destPath); exists {
 		return nil
@@ -392,7 +534,6 @@ func (m *srvAIModelManager) downloadWithFallback(filename, primaryURL string, cf
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return err
 	}
-	done := make(chan struct{})
 	if err := srvDownloadModelFile(primaryURL, destPath, done); err == nil {
 		return nil
 	}
@@ -408,6 +549,96 @@ func (m *srvAIModelManager) downloadWithFallback(filename, primaryURL string, cf
 
 func (m *srvAIModelManager) modelPath(filename string) string {
 	return filepath.Join(m.dataRoot, "models", filename)
+}
+
+func (m *srvAIModelManager) Close() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if !m.closed {
+		m.closed = true
+		close(m.done)
+	}
+	now := time.Now().UTC()
+	for _, task := range m.tasks {
+		if task != nil && task.Downloading {
+			task.Downloading = false
+			task.LastError = "ai model manager is closed"
+			task.UpdatedAt = now
+		}
+	}
+	m.mu.Unlock()
+	m.downloadWG.Wait()
+	m.resetRuntime(srvAIModelEmbedding)
+	m.resetRuntime(srvAIModelASR)
+	m.resetRuntime(srvAIModelTTS)
+}
+
+func (m *srvAIModelManager) resetRuntime(model string) {
+	switch model {
+	case srvAIModelEmbedding:
+		m.embeddingRunMu.Lock()
+		defer m.embeddingRunMu.Unlock()
+		m.mu.Lock()
+		mgr := m.embeddingMgr
+		m.embeddingMgr = nil
+		m.mu.Unlock()
+		if mgr != nil {
+			mgr.Close()
+		}
+	case srvAIModelASR:
+		m.asrRunMu.Lock()
+		defer m.asrRunMu.Unlock()
+		m.mu.Lock()
+		m.asrMgr = nil
+		m.mu.Unlock()
+	case srvAIModelTTS:
+		m.ttsRunMu.Lock()
+		defer m.ttsRunMu.Unlock()
+		m.mu.Lock()
+		mgr := m.ttsMgr
+		m.ttsMgr = nil
+		m.ttsVoice = ""
+		m.mu.Unlock()
+		if mgr != nil {
+			mgr.Unload()
+		}
+	}
+}
+
+func (m *srvAIModelManager) embedText(ctx context.Context, cfg corelib.AppConfig, text string) ([]float32, error) {
+	_ = ctx
+	_ = cfg
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("%w: text is required", errSrvAIModelInvalidInput)
+	}
+	modelPath := m.modelPath(embedding.DefaultModelFilename)
+	if exists, _ := modelFileReady(modelPath); !exists {
+		return nil, fmt.Errorf("%w: embedding model is missing", errSrvAIModelNotReady)
+	}
+	m.embeddingRunMu.Lock()
+	defer m.embeddingRunMu.Unlock()
+	m.mu.Lock()
+	if m.embeddingMgr == nil {
+		mgr, err := embedding.NewGemmaEmbedder(modelPath, 256)
+		if err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+		m.embeddingMgr = mgr
+	}
+	mgr := m.embeddingMgr
+	m.mu.Unlock()
+	vector, err := mgr.Embed(text)
+	if err != nil {
+		return nil, err
+	}
+	if len(vector) == 0 {
+		return nil, fmt.Errorf("%w: embedding model returned empty vector", errSrvAIModelNotReady)
+	}
+	return vector, nil
 }
 
 func (m *srvAIModelManager) transcribeWAV(ctx context.Context, cfg corelib.AppConfig, wav []byte) (string, error) {
@@ -430,7 +661,7 @@ func (m *srvAIModelManager) synthesizeText(ctx context.Context, cfg corelib.AppC
 	_ = ctx
 	text = cleanSrvTTSReplyText(text)
 	if text == "" {
-		return nil, "", fmt.Errorf("text is required")
+		return nil, "", fmt.Errorf("%w: text is required", errSrvAIModelInvalidInput)
 	}
 	if exists, _ := modelFileReady(m.modelPath(tts.TTSModelFilename)); !exists || !m.ttsVoicesReady() {
 		return nil, "", fmt.Errorf("%w: tts model is missing", errSrvAIModelNotReady)
@@ -637,7 +868,7 @@ func readASRWAVPayload(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 		format = srvASRAudioFormatHint(contentType)
 	}
 	if format == "" && contentType != "application/octet-stream" {
-		return nil, fmt.Errorf("content-type must be audio/wav, audio/ogg, audio/opus, audio/mpeg, application/octet-stream, or application/json")
+		return nil, fmt.Errorf("content-type must be audio/wav, audio/ogg, audio/opus, audio/mpeg, audio/mp4, audio/aac, application/octet-stream, or application/json")
 	}
 	audio, err := io.ReadAll(r.Body)
 	if err != nil {

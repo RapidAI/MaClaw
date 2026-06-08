@@ -259,14 +259,14 @@ Object.assign(I18N.en, { webSearchManager: "Web search", webSearchHint: "Search 
 Object.assign(I18N.zh, { webSearchManager: "\u8054\u7f51\u641c\u7d22\u670d\u52a1", webSearchHint: "\u641c\u7d22\u670d\u52a1\u7531\u7ba1\u7406\u5458\u5728\u540e\u53f0\u300c\u5ba2\u6237\u7aef\u914d\u7f6e\u300d\u7edf\u4e00\u8bbe\u7f6e\uff0c\u6b64\u5904\u4ec5\u663e\u793a\u5f53\u524d\u751f\u6548 provider\u3002", webSearchNoProviders: "\u6682\u65e0\u641c\u7d22\u670d\u52a1", webSearchCurrent: "\u5f53\u524d\u641c\u7d22\u670d\u52a1", webSearchManagedByAdmin: "\u7531\u7ba1\u7406\u5458\u7edf\u4e00\u914d\u7f6e", webSearchProviderCount: "\u5df2\u914d\u7f6e {count} \u4e2a", webSearchProviderType: "\u7c7b\u578b" });
 const FIELD_I18N = {
   en: {
-    maclaw_llm_url: ["LLM URL", "Legacy flat LLM endpoint URL."], maclaw_llm_key: ["LLM API Key", "Legacy flat API key or bearer token."], maclaw_llm_model: ["LLM Model", "Legacy flat default model. Use auto for VE Platform Hub LLM endpoints; service groups are platform metadata, not model names."], maclaw_llm_current_provider: ["Current Provider", "Selected provider name from maclaw_llm_providers."], maclaw_llm_providers: ["LLM Providers", "Provider list. When configured, MaClawSrv prefers the selected provider over legacy flat fields."],
+    maclaw_llm_url: ["LLM URL", "Legacy flat LLM endpoint URL."], maclaw_llm_key: ["LLM Access Token", "Provider access token entered manually. This field does not generate a key."], maclaw_llm_model: ["LLM Model", "Legacy flat default model. Use auto for VE Platform Hub LLM endpoints; service groups are platform metadata, not model names."], maclaw_llm_current_provider: ["Current Provider", "Selected provider name from maclaw_llm_providers."], maclaw_llm_providers: ["LLM Providers", "Provider list. When configured, MaClawSrv prefers the selected provider over legacy flat fields."],
     mcp_servers: ["Remote MCP Servers", "Remote MCP server registry shared by all user assistant instances."], local_mcp_servers: ["Local MCP Servers", "Local MCP stdio server registry shared by all user assistant instances."], ssh_hosts: ["SSH Hosts", "Preconfigured SSH host labels available to user assistant instances."], web_search_providers: ["Web Search Providers", "Search provider configuration shared by user assistant instances."], web_search_current_provider: ["Current Web Search Provider", "Selected provider name from web_search_providers."],
     nl_skills: ["Installed Skills", "User-level skill entries available to assistant instances."], skill_hub_urls: ["Skill Hubs", "Skill discovery sources for this user."], external_skill_dirs: ["External Skill Directories", "Additional user skill directories."], skill_sources_allowed: ["Allowed Skill Sources", "Optional allow-list for skill sources. Empty allows all configured sources."],
     memory_auto_compress: ["Memory Auto Compress", "Enable automatic conversation and memory compression."], memory_max_backups: ["Memory Max Backups", "Maximum memory backup count. Zero uses service default."], knowledge_skill_token_budget: ["Knowledge Skill Token Budget", "Token budget for knowledge skill context packs. Zero uses service default."],
     security_policy_mode: ["Security Policy Mode", "User-level security policy mode for tool and agent execution."], sandbox_mode: ["Sandbox Mode", "Execution sandbox preference for this user."], network_level: ["Network Level", "Network access level for user tools and agents."], yolo_mode_allowed: ["YOLO Mode Allowed", "Allow this user to enable broad tool execution mode."]
   },
   zh: {
-    maclaw_llm_url: ["LLM 服务地址", "旧版平铺 LLM 服务端点地址。由 VE Platform 托管时通常自动填入。"], maclaw_llm_key: ["LLM 访问令牌", "旧版 API Key 或 Hub viewer Bearer token。"], maclaw_llm_model: ["LLM 模型", "旧版默认模型；接入 VE Platform Hub 时使用 auto，服务组由平台元数据管理，不填在这里。"], maclaw_llm_current_provider: ["当前服务商", "从 maclaw_llm_providers 中选择的服务商名称。"], maclaw_llm_providers: ["LLM 服务商列表", "服务商列表。配置后会优先使用选中的服务商，而不是旧版平铺字段。"],
+    maclaw_llm_url: ["LLM 服务地址", "旧版平铺 LLM 服务端点地址。由 VE Platform 托管时通常自动填入。"], maclaw_llm_key: ["LLM 访问令牌", "这里填写服务商访问令牌，不需要生成密钥。"], maclaw_llm_model: ["LLM 模型", "旧版默认模型；接入 VE Platform Hub 时使用 auto，服务组由平台元数据管理，不填在这里。"], maclaw_llm_current_provider: ["当前服务商", "从 maclaw_llm_providers 中选择的服务商名称。"], maclaw_llm_providers: ["LLM 服务商列表", "服务商列表。配置后会优先使用选中的服务商，而不是旧版平铺字段。"],
     mcp_servers: ["远程 MCP 服务", "所有助手实例共享的远程 MCP 服务注册表。"], local_mcp_servers: ["本地 MCP 服务", "所有助手实例共享的本地 stdio MCP 服务注册表。"], ssh_hosts: ["SSH 主机", "预配置给用户助手实例使用的 SSH 主机标签。"], web_search_providers: ["联网搜索服务", "用户助手实例共享的搜索服务配置。"], web_search_current_provider: ["当前搜索服务", "从 web_search_providers 中选择的搜索服务名称。"],
     nl_skills: ["已安装技能", "可供助手实例使用的用户级技能条目。"], skill_hub_urls: ["技能中心", "此用户的技能发现来源。"], external_skill_dirs: ["外部技能目录", "额外的用户技能目录。"], skill_sources_allowed: ["允许的技能来源", "可选的技能来源白名单。留空表示允许所有已配置来源。"],
     memory_auto_compress: ["自动压缩记忆", "启用会话与记忆的自动压缩。"], memory_max_backups: ["记忆备份上限", "最大记忆备份数量。0 表示使用服务默认值。"], knowledge_skill_token_budget: ["知识技能 Token 预算", "知识技能上下文包的 Token 预算。0 表示使用服务默认值。"],
@@ -306,7 +306,7 @@ function stripAdminManagedConfig(config) {
 }
 const requestedLocale = (params.get("lang") || localStorage.getItem("maclaw.user.lang") || document.documentElement.lang || navigator.language || "zh-CN").toLowerCase();
 Object.assign(FIELD_I18N.zh, {
-  maclaw_llm_url: ["LLM 服务地址", "旧版平铺 LLM 服务端点地址。由 VE Platform 托管时通常自动填入。"], maclaw_llm_key: ["LLM 访问令牌", "旧版 API Key 或 Hub viewer Bearer token。"], maclaw_llm_model: ["LLM 模型", "旧版默认模型；接入 VE Platform Hub 时使用 auto，服务组由平台元数据管理，不填在这里。"], maclaw_llm_current_provider: ["当前服务商", "从 maclaw_llm_providers 中选择的服务商名称。"], maclaw_llm_providers: ["LLM 服务商列表", "服务商列表。配置后会优先使用选中的服务商，而不是旧版平铺字段。"],
+  maclaw_llm_url: ["LLM 服务地址", "旧版平铺 LLM 服务端点地址。由 VE Platform 托管时通常自动填入。"], maclaw_llm_key: ["LLM 访问令牌", "这里填写服务商访问令牌，不需要生成密钥。"], maclaw_llm_model: ["LLM 模型", "旧版默认模型；接入 VE Platform Hub 时使用 auto，服务组由平台元数据管理，不填在这里。"], maclaw_llm_current_provider: ["当前服务商", "从 maclaw_llm_providers 中选择的服务商名称。"], maclaw_llm_providers: ["LLM 服务商列表", "服务商列表。配置后会优先使用选中的服务商，而不是旧版平铺字段。"],
   mcp_servers: ["远程 MCP 服务", "所有助手实例共享的远程 MCP 服务注册表。"], local_mcp_servers: ["本地 MCP 服务", "所有助手实例共享的本地 stdio MCP 服务注册表。"], ssh_hosts: ["SSH 主机", "预配置给用户助手实例使用的 SSH 主机标签。"], web_search_providers: ["联网搜索服务", "用户助手实例共享的搜索服务配置。"], web_search_current_provider: ["当前搜索服务", "从 web_search_providers 中选择的搜索服务名称。"],
   nl_skills: ["已安装技能", "可供助手实例使用的用户级技能条目。"], skill_hub_urls: ["技能中心", "此用户的技能发现来源。"], external_skill_dirs: ["外部技能目录", "额外的用户技能目录。"], skill_sources_allowed: ["允许的技能来源", "可选的技能来源白名单。留空表示允许所有已配置来源。"],
   memory_auto_compress: ["自动压缩记忆", "启用会话与记忆的自动压缩。"], memory_max_backups: ["记忆备份上限", "最大记忆备份数量。0 表示使用服务默认值。"], knowledge_skill_token_budget: ["知识技能 Token 预算", "知识技能上下文包的 Token 预算。0 表示使用服务默认值。"],
@@ -576,7 +576,7 @@ async function renderAssistant() {
   setTitle(t("assistantTitle"), t("assistantHint"));
   const inst = activeInstance();
   if (inst) state.instanceId = inst.id;
-  $("content").innerHTML = `<div class="assistant-layout"><section class="panel stack assistant-rail"><div class="split"><div><h2>${t("instancesTitle")}</h2><p class="helper">${t("instancesHint")}</p></div><button id="newInst" type="button" class="primary">${t("new")}</button></div><div id="instanceList" class="list"></div><div id="sessionList" class="list"></div></section><section class="card chat"><div id="runPanel" class="run-panel hidden"></div><div class="chat-toolbar"><span class="muted">${t("webSession")}</span><button id="clearPanel" type="button" class="secondary clear-panel-btn">${clearContentLabel()}</button></div><div class="messages-wrap"><div id="messages" class="messages"></div><button id="jumpLatest" type="button" class="jump-latest hidden">${latestLabel()}</button></div><form id="composer" class="composer"><textarea id="prompt" placeholder="${t("typeMessage")}" aria-label="${t("message")}"></textarea><div class="composer-actions"><input id="voiceFile" type="file" accept="audio/wav,audio/ogg,audio/opus,audio/mpeg,.wav,.ogg,.opus,.oga,.silk,.mp3" hidden><button id="voiceBtn" type="button" class="secondary">${transcribeLabel()}</button><button id="sendBtn" type="submit" class="primary">${t("send")}</button></div></form></section></div>`;
+  $("content").innerHTML = `<div class="assistant-layout"><section class="panel stack assistant-rail"><div class="split"><div><h2>${t("instancesTitle")}</h2><p class="helper">${t("instancesHint")}</p></div><button id="newInst" type="button" class="primary">${t("new")}</button></div><div id="instanceList" class="list"></div><div id="sessionList" class="list"></div></section><section class="card chat"><div id="runPanel" class="run-panel hidden"></div><div class="chat-toolbar"><span class="muted">${t("webSession")}</span><button id="clearPanel" type="button" class="secondary clear-panel-btn">${clearContentLabel()}</button></div><div class="messages-wrap"><div id="messages" class="messages"></div><button id="jumpLatest" type="button" class="jump-latest hidden">${latestLabel()}</button></div><form id="composer" class="composer"><textarea id="prompt" placeholder="${t("typeMessage")}" aria-label="${t("message")}"></textarea><div class="composer-actions"><input id="voiceFile" type="file" accept="audio/wav,audio/ogg,audio/opus,audio/mpeg,audio/aac,audio/mp4,.wav,.ogg,.opus,.oga,.silk,.mp3,.aac,.m4a" hidden><button id="voiceBtn" type="button" class="secondary">${transcribeLabel()}</button><button id="sendBtn" type="submit" class="primary">${t("send")}</button></div></form></section></div>`;
   renderInstanceList();
   $("newInst").onclick = createInstance;
   $("clearPanel").onclick = clearPanelContent;
@@ -701,6 +701,8 @@ function voiceUploadContentType(file) {
   if (inferred === "mp3") return "audio/mpeg";
   if (inferred === "ogg") return "audio/ogg";
   if (inferred === "wav") return "audio/wav";
+  if (inferred === "aac") return "audio/aac";
+  if (inferred === "m4a") return "audio/mp4";
   if (inferred === "silk") return "application/octet-stream";
   return explicit || "application/octet-stream";
 }
@@ -710,6 +712,8 @@ function voiceUploadFormat(file) {
   if (name.endsWith(".ogg") || name.endsWith(".oga") || name.endsWith(".opus")) return "ogg";
   if (name.endsWith(".wav")) return "wav";
   if (name.endsWith(".silk")) return "silk";
+  if (name.endsWith(".aac")) return "aac";
+  if (name.endsWith(".m4a")) return "m4a";
   return "";
 }
 function autoResizePrompt() { const el = $("prompt"); if (!el) return; el.style.height = "auto"; el.style.height = `${Math.min(el.scrollHeight, 180)}px`; }
@@ -1982,7 +1986,10 @@ const IM_REQUIRED_FIELDS = {
   lansenger_enabled: ["lansenger_app_id", "lansenger_app_secret", "lansenger_gateway_url"],
   thirdparty_gateway_enabled: ["thirdparty_gateway_token"]
 };
-const NON_GENERATABLE_SECRET_KEYS = new Set(["qqbot_app_secret", "lansenger_app_secret"]);
+const NON_GENERATABLE_SECRET_KEYS = new Set(["maclaw_llm_key", "qqbot_app_secret", "lansenger_app_secret"]);
+function canGenerateSecretForKey(key) {
+  return !NON_GENERATABLE_SECRET_KEYS.has(String(key || ""));
+}
 const IM_RUNTIME_PLATFORMS = {
   qqbot_enabled: "qq",
   telegram_bot_enabled: "telegram",
@@ -2326,7 +2333,7 @@ function secretGenerateLabel(id) {
 }
 function secretFieldMarkup(id, attrs, current, extra = "", canGenerate = true) {
   const key = String(id || "").replace(/^cfg_/, "");
-  const generate = canGenerate && !NON_GENERATABLE_SECRET_KEYS.has(key) ? `<button type="button" class="secondary" data-generate-secret="${esc(id)}">${esc(secretGenerateLabel(id))}</button>` : "";
+  const generate = canGenerate && canGenerateSecretForKey(key) ? `<button type="button" class="secondary" data-generate-secret="${esc(id)}">${esc(secretGenerateLabel(id))}</button>` : "";
   const reveal = key === "thirdparty_gateway_token" ? `<button type="button" class="secondary" data-toggle-secret="${esc(id)}">${esc(t("showSecret"))}</button>` : "";
   return `<div class="secret-input"><input id="${esc(id)}" ${attrs} type="password" autocomplete="new-password" spellcheck="false" value="${esc(current)}" ${extra}>${generate}${reveal}</div>`;
 }
@@ -3253,14 +3260,22 @@ function fieldInput(key, def) {
   if (CONFIG_JSON_STRING_OBJECT_FIELDS[key]) return jsonStringObjectInput(key);
   if (CONFIG_STRING_LINE_FIELDS.has(key)) return stringLineInput(key);
   if (key === "audio_input_device_id" || key === "audio_output_device_id") return audioDeviceInput(key, fieldValue(key, def));
-  if (secret) return secretFieldMarkup(`cfg_${key}`, `data-key="${esc(key)}" data-type="string"`, fieldValue(key, def), "", !NON_GENERATABLE_SECRET_KEYS.has(key));
+  if (secret) return secretFieldMarkup(`cfg_${key}`, `data-key="${esc(key)}" data-type="string"`, fieldValue(key, def));
   if (CONFIG_SUGGESTION_FIELDS[key] || genericSuggestionOptions(key).length) return suggestionInput(key, def, fieldValue(key, def));
   return choiceCustomMarkup(`cfg_${key}`, `data-key="${esc(key)}" data-type="string-choice-custom"`, fieldValue(key, def), COMMON_TEXT_FALLBACK_SUGGESTIONS);
 }
 function fieldHelper(d) {
   const text = d.description || d.example || "";
-  const extra = d.secret ? t("secretHint") : "";
+  const extra = d.secret ? fieldSecretHint(d) : "";
   return [text, extra].filter(Boolean).join(" ");
+}
+function fieldSecretHint(d) {
+  if (d.key === "maclaw_llm_key") {
+    return locale === "en"
+      ? "Masked value keeps the existing access token. Enter a new value only when replacing it."
+      : "显示为掩码时会保留现有访问令牌；只有需要替换时才输入新值。";
+  }
+  return t("secretHint");
 }
 function parseConfigNumber(key, value, integer) {
   const raw = String(value || "").trim();

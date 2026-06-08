@@ -2354,6 +2354,10 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		DataDir:    inst.DataDir,
 		Config:     cfg.AppConfig,
 		ToolPolicy: toolPolicyFromMetadata(userMsg.Metadata, sess.Metadata),
+		MutationScope: mutationScopeFromMetadata(
+			userMsg.Metadata,
+			sess.Metadata,
+		),
 		OpsApprovedCommands: opsApprovedCommandsFromMetadata(
 			userMsg.Metadata,
 			sess.Metadata,
@@ -2413,11 +2417,22 @@ func toolPolicyFromMetadata(messageMetadata, sessionMetadata map[string]string) 
 	for _, metadata := range []map[string]string{messageMetadata, sessionMetadata} {
 		policy := workflow.ToolFilterPolicy(strings.TrimSpace(metadata["tool_policy"]))
 		switch policy {
-		case workflow.ToolFilterDocOnly, workflow.ToolFilterFull, workflow.ToolFilterOpsControlled:
+		case workflow.ToolFilterDocOnly, workflow.ToolFilterPlanning, workflow.ToolFilterFull, workflow.ToolFilterOpsControlled:
 			return policy
 		}
 	}
 	return workflow.ToolFilterNone
+}
+
+func mutationScopeFromMetadata(messageMetadata, sessionMetadata map[string]string) workflow.MutationScope {
+	for _, metadata := range []map[string]string{messageMetadata, sessionMetadata} {
+		scope := workflow.MutationScope(strings.TrimSpace(metadata["mutation_scope"]))
+		switch scope {
+		case workflow.MutationScopeNone, workflow.MutationScopeWorkflowDoc, workflow.MutationScopeArtifact, workflow.MutationScopeProject, workflow.MutationScopeOps:
+			return scope
+		}
+	}
+	return workflow.MutationScopeUnknown
 }
 
 func opsApprovedCommandsFromMetadata(messageMetadata, sessionMetadata map[string]string) []workflow.OpsApprovedCommand {
@@ -4447,15 +4462,20 @@ func (s *Service) applySharedClientAppConfig(userCfg corelib.AppConfig) corelib.
 func mergeSharedClientAppConfig(userCfg, shared corelib.AppConfig) corelib.AppConfig {
 	out := cloneAppConfig(userCfg)
 	shared = cloneAppConfig(shared)
-	out.MaclawLLMUrl = shared.MaclawLLMUrl
-	out.MaclawLLMKey = shared.MaclawLLMKey
-	out.MaclawLLMModel = shared.MaclawLLMModel
-	out.MaclawLLMProtocol = shared.MaclawLLMProtocol
-	out.MaclawLLMContextLength = shared.MaclawLLMContextLength
-	out.MaclawLLMTimeoutSec = shared.MaclawLLMTimeoutSec
+	// If the user already has their own LLM configuration (set by VE platform
+	// or manually), do NOT overwrite it with the global shared config.
+	// Only users without any LLM config inherit from the global settings.
+	if !userHasOwnLLMConfig(userCfg) {
+		out.MaclawLLMUrl = shared.MaclawLLMUrl
+		out.MaclawLLMKey = shared.MaclawLLMKey
+		out.MaclawLLMModel = shared.MaclawLLMModel
+		out.MaclawLLMProtocol = shared.MaclawLLMProtocol
+		out.MaclawLLMContextLength = shared.MaclawLLMContextLength
+		out.MaclawLLMTimeoutSec = shared.MaclawLLMTimeoutSec
+		out.MaclawLLMProviders = shared.MaclawLLMProviders
+		out.MaclawLLMCurrentProvider = shared.MaclawLLMCurrentProvider
+	}
 	out.AgentResponseTimeoutSec = shared.AgentResponseTimeoutSec
-	out.MaclawLLMProviders = shared.MaclawLLMProviders
-	out.MaclawLLMCurrentProvider = shared.MaclawLLMCurrentProvider
 	out.LLMPromptCache = shared.LLMPromptCache
 	out.MaclawAgentMaxIterations = shared.MaclawAgentMaxIterations
 	out.SubAgentConcurrency = shared.SubAgentConcurrency
@@ -4496,6 +4516,20 @@ func mergeSharedClientAppConfig(userCfg, shared corelib.AppConfig) corelib.AppCo
 	out.ModelRoutes = shared.ModelRoutes
 	out.DailyLLMBudgetUSD = shared.DailyLLMBudgetUSD
 	return out
+}
+
+// userHasOwnLLMConfig returns true when the user's config already has LLM
+// settings — either via MaclawLLMProviders (set by VE platform) or via the
+// flat fields (url+key+model). Such users should NOT have their LLM config
+// overwritten by the global shared/default client config.
+func userHasOwnLLMConfig(cfg corelib.AppConfig) bool {
+	if len(cfg.MaclawLLMProviders) > 0 {
+		return true
+	}
+	if strings.TrimSpace(cfg.MaclawLLMUrl) != "" && strings.TrimSpace(cfg.MaclawLLMKey) != "" && strings.TrimSpace(cfg.MaclawLLMModel) != "" {
+		return true
+	}
+	return false
 }
 
 func SharedClientAppConfigOnly(cfg corelib.AppConfig) corelib.AppConfig {

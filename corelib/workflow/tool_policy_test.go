@@ -89,6 +89,38 @@ func TestDocOnlyPolicyBlocksExecutionAndMutationTools(t *testing.T) {
 	}
 }
 
+func TestPlanningPolicyAllowsInspectionButBlocksImplementationTools(t *testing.T) {
+	for _, name := range []string{"bash", "read_file", "list_directory", "send_file", "web_search", "web_fetch"} {
+		if !IsToolAllowedByPolicy(ToolFilterPlanning, name) {
+			t.Fatalf("expected %s to be allowed by planning workflow policy", name)
+		}
+	}
+	for _, name := range []string{"write_file", "edit_file", "edit_lines", "task", "delegate_task", "ssh", "async_wait", "browser"} {
+		if IsToolAllowedByPolicy(ToolFilterPlanning, name) {
+			t.Fatalf("expected %s to be blocked by planning workflow policy", name)
+		}
+		if err := ValidateToolCallByPolicy(ToolFilterPlanning, name, map[string]interface{}{"path": "src/main.go", "command": "true"}); err == nil {
+			t.Fatalf("expected %s execution to be rejected by planning workflow policy", name)
+		}
+	}
+
+	required := RequiredToolNamesForPolicy(ToolFilterPlanning)
+	requiredSet := make(map[string]bool, len(required))
+	for _, name := range required {
+		requiredSet[name] = true
+	}
+	for _, name := range []string{"bash", "read_file", "list_directory", "send_file"} {
+		if !requiredSet[name] {
+			t.Fatalf("expected %s to be a required planning workflow tool; got %#v", name, required)
+		}
+	}
+	for _, name := range []string{"write_file", "edit_file", "edit_lines", "task", "delegate_task", "ssh"} {
+		if requiredSet[name] {
+			t.Fatalf("expected %s to be absent from required planning workflow tools; got %#v", name, required)
+		}
+	}
+}
+
 func TestRequiredToolNamesForPolicyReturnsCopy(t *testing.T) {
 	first := RequiredToolNamesForPolicy(ToolFilterDocOnly)
 	if len(first) == 0 {
@@ -102,7 +134,7 @@ func TestRequiredToolNamesForPolicyReturnsCopy(t *testing.T) {
 }
 
 func TestRequiredToolNamesForPolicyAreAllowed(t *testing.T) {
-	for _, policy := range []ToolFilterPolicy{ToolFilterDocOnly, ToolFilterOpsControlled, ToolFilterFull} {
+	for _, policy := range []ToolFilterPolicy{ToolFilterDocOnly, ToolFilterPlanning, ToolFilterOpsControlled, ToolFilterFull} {
 		for _, name := range RequiredToolNamesForPolicy(policy) {
 			if !IsToolAllowedByPolicy(policy, name) {
 				t.Fatalf("required tool %s must be allowed by policy %s", name, policy)
@@ -130,5 +162,75 @@ func TestIsToolAllowedByPolicyTrimsToolName(t *testing.T) {
 	}
 	if IsToolAllowedByPolicy(ToolFilterOpsControlled, " task ") {
 		t.Fatal("expected trimmed blocked tool to remain blocked")
+	}
+}
+
+func TestArtifactMutationScopeAllowsArtifactsButBlocksProjectMutation(t *testing.T) {
+	contract := PhaseContract{
+		ToolPolicy:    ToolFilterFull,
+		MutationScope: MutationScopeArtifact,
+	}
+	for _, name := range []string{"write_file", "send_file", "office", "generate_pdf", "read_file", "list_directory"} {
+		if !IsToolAllowedByContract(contract, name) {
+			t.Fatalf("expected %s to be exposed for artifact generation", name)
+		}
+	}
+	for _, name := range []string{"edit_file", "edit_lines", "task", "delegate_task", "ssh"} {
+		if IsToolAllowedByContract(contract, name) {
+			t.Fatalf("expected %s to be hidden by artifact mutation scope", name)
+		}
+		if err := ValidateToolCallByContract(contract, name, map[string]interface{}{"path": "src/main.go"}); err == nil {
+			t.Fatalf("expected %s call to be rejected by artifact mutation scope", name)
+		}
+	}
+	for _, path := range []string{"business-plan.md", "deck.pptx", "report.pdf", "data.xlsx"} {
+		if err := ValidateToolCallByContract(contract, "write_file", map[string]interface{}{"path": path, "content": "body"}); err != nil {
+			t.Fatalf("expected artifact write %s to pass: %v", path, err)
+		}
+	}
+	for _, path := range []string{"src/main.go", "CMakeLists.txt", "package.json", "app.tsx"} {
+		if err := ValidateToolCallByContract(contract, "write_file", map[string]interface{}{"path": path, "content": "code"}); err == nil {
+			t.Fatalf("expected project write %s to be rejected by artifact scope", path)
+		}
+	}
+	if err := ValidateToolCallByContract(contract, "bash", map[string]interface{}{"command": "rg -n TODO"}); err != nil {
+		t.Fatalf("expected read-only bash to pass under artifact scope: %v", err)
+	}
+	if err := ValidateToolCallByContract(contract, "bash", map[string]interface{}{"command": "mkdir -p src && touch src/main.go"}); err == nil {
+		t.Fatal("expected mutating bash to be rejected by artifact scope")
+	}
+}
+
+func TestWorkflowDocMutationScopeUsesSystemPersistenceOnly(t *testing.T) {
+	contract := PhaseContractFromPolicy(ToolFilterPlanning, MutationScopeWorkflowDoc)
+	if IsToolAllowedByContract(contract, "write_file") {
+		t.Fatal("workflow_doc scope must not expose write_file")
+	}
+	if err := ValidateToolCallByContract(contract, "write_file", map[string]interface{}{"path": "task-plan.md"}); err == nil {
+		t.Fatal("workflow_doc scope must reject direct write_file even for markdown")
+	}
+	if err := ValidateToolCallByContract(contract, "bash", map[string]interface{}{"command": "git status --short"}); err != nil {
+		t.Fatalf("workflow_doc scope should allow read-only bash when policy allows it: %v", err)
+	}
+	if err := ValidateToolCallByContract(contract, "bash", map[string]interface{}{"command": "touch task-plan.md"}); err == nil {
+		t.Fatal("workflow_doc scope must reject mutating bash")
+	}
+}
+
+func TestRequiredToolNamesForArtifactContractDoesNotPinCodingTools(t *testing.T) {
+	required := RequiredToolNamesForContract(PhaseContract{ToolPolicy: ToolFilterFull, MutationScope: MutationScopeArtifact})
+	seen := make(map[string]bool, len(required))
+	for _, name := range required {
+		seen[name] = true
+	}
+	for _, name := range []string{"write_file", "send_file", "office", "generate_pdf"} {
+		if !seen[name] {
+			t.Fatalf("expected artifact required tool %s, got %#v", name, required)
+		}
+	}
+	for _, name := range []string{"bash", "edit_file", "edit_lines"} {
+		if seen[name] {
+			t.Fatalf("artifact contract must not pin coding tool %s, got %#v", name, required)
+		}
 	}
 }

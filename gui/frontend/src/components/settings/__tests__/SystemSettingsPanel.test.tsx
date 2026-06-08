@@ -18,7 +18,7 @@ function renderPanel(configPatch: Record<string, unknown> = {}) {
   render(
     <SystemSettingsPanel
       config={new main.AppConfig({
-        remote_heartbeat_sec: 10,
+        remote_heartbeat_sec: 30,
         screen_dim_timeout_min: 3,
         agent_response_timeout_sec: 600,
         maclaw_llm_timeout_sec: 600,
@@ -35,6 +35,12 @@ function renderPanel(configPatch: Record<string, unknown> = {}) {
 }
 
 describe("SystemSettingsPanel", () => {
+  it("falls back to 30 seconds when heartbeat config is unset", () => {
+    renderPanel({ remote_heartbeat_sec: 0 });
+
+    expect(screen.getByDisplayValue("30")).toBeTruthy();
+  });
+
   it("renders agent and LLM timeout settings", () => {
     renderPanel({ agent_response_timeout_sec: 300, maclaw_llm_timeout_sec: 480 });
 

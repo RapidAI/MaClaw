@@ -53,6 +53,10 @@ function generatedAsPhaseInfo(type: string): PhaseInfo[] {
         expectsDocument: m.expectsDocument,
         canSkip: m.canSkip,
         needsConfirm: m.needsConfirm,
+        kind: m.kind,
+        toolPolicy: m.toolPolicy,
+        mutationScope: m.mutationScope,
+        activatesOrchestrator: m.activatesOrchestrator,
     }));
 }
 
@@ -200,6 +204,42 @@ describe('Doc-expectation resolvers agree across board and auto-open in degraded
             }
         }
         expect(divergences, `doc-expectation resolver divergences (type/phase):\n${divergences.join('\n')}`).toEqual([]);
+    });
+});
+
+describe('Generated workflow phase contract metadata', () => {
+    it('marks coding implementation as project execution and artifact generation as non-orchestrated artifact work', () => {
+        expect(generatedPhase('coding', 'implementation')).toMatchObject({
+            kind: 'execution',
+            toolPolicy: 'full',
+            mutationScope: 'project',
+            activatesOrchestrator: true,
+        });
+
+        expect(generatedPhase('presentation_design', 'ppt_generation')).toMatchObject({
+            kind: 'artifact_generation',
+            toolPolicy: 'full',
+            mutationScope: 'artifact',
+            activatesOrchestrator: false,
+        });
+
+        expect(generatedPhase('business_plan', 'bp_doc_generation')).toMatchObject({
+            kind: 'artifact_generation',
+            toolPolicy: 'full',
+            mutationScope: 'artifact',
+            activatesOrchestrator: false,
+        });
+    });
+
+    it('keeps coding task breakdown as reviewable workflow-doc planning, not project execution', () => {
+        expect(generatedPhase('coding', 'tasks')).toMatchObject({
+            kind: 'code_planning',
+            toolPolicy: 'planning',
+            mutationScope: 'workflow_doc',
+            expectsDocument: true,
+            needsConfirm: true,
+            activatesOrchestrator: false,
+        });
     });
 });
 

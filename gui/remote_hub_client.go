@@ -1727,7 +1727,7 @@ func (c *RemoteHubClient) heartbeatLoop() {
 func (c *RemoteHubClient) currentHeartbeatInterval() time.Duration {
 	cfg, err := c.app.LoadConfig()
 	if err != nil {
-		return time.Duration(defaultRemoteHeartbeatSec) * time.Second
+		return time.Duration(corelib.DefaultRemoteHeartbeatSec) * time.Second
 	}
 	return time.Duration(normalizeRemoteHeartbeatIntervalSec(cfg.RemoteHeartbeatSec)) * time.Second
 }

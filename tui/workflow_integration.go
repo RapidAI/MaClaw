@@ -106,8 +106,9 @@ func formatTUIPhaseMeta(phases []workflow.PhaseMeta) string {
 	}
 	parts := make([]string, 0, len(phases))
 	for _, p := range phases {
-		parts = append(parts, fmt.Sprintf("%d:%s(%s doc=%t skip=%t confirm=%t)",
-			p.Index, p.ID, p.Name, p.ExpectsDocument, p.CanSkip, p.NeedsConfirm))
+		parts = append(parts, fmt.Sprintf("%d:%s(%s doc=%t skip=%t confirm=%t kind=%s policy=%s scope=%s orch=%t)",
+			p.Index, p.ID, p.Name, p.ExpectsDocument, p.CanSkip, p.NeedsConfirm,
+			p.Kind, p.ToolPolicy, p.MutationScope, p.ActivatesOrchestrator))
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
 }

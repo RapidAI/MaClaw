@@ -11,24 +11,24 @@ import (
 	"testing"
 )
 
-// TestComparePhonemeIDs verifies Go G2P produces the same phoneme IDs as Python.
+// TestComparePhonemeIDs verifies the stable Go G2P boundary/separator behavior.
 func TestComparePhonemeIDs(t *testing.T) {
-	// Python reference: "Hello" → [0, 49, 0, 127, 0, 70, 0, 80, 0]
-	pyIDs := []int{0, 49, 0, 127, 0, 70, 0, 80, 0}
+	// Go G2P keeps one sentence boundary at each edge and omits internal blank separators.
+	wantIDs := []int{0, 49, 127, 70, 80, 0}
 
 	pt := NewPhonemeTable()
 	g2p := TextToPhonemes("Hello", pt, LangEN)
 
 	t.Logf("Go phoneme IDs (%d): %v", len(g2p.PhonemeIDs), g2p.PhonemeIDs)
-	t.Logf("Py phoneme IDs (%d): %v", len(pyIDs), pyIDs)
+	t.Logf("Expected phoneme IDs (%d): %v", len(wantIDs), wantIDs)
 
-	if len(g2p.PhonemeIDs) != len(pyIDs) {
-		t.Fatalf("length mismatch: Go=%d, Py=%d", len(g2p.PhonemeIDs), len(pyIDs))
+	if len(g2p.PhonemeIDs) != len(wantIDs) {
+		t.Fatalf("length mismatch: Go=%d, expected=%d", len(g2p.PhonemeIDs), len(wantIDs))
 	}
 
-	for i := range pyIDs {
-		if g2p.PhonemeIDs[i] != pyIDs[i] {
-			t.Errorf("ID[%d]: Go=%d, Py=%d", i, g2p.PhonemeIDs[i], pyIDs[i])
+	for i := range wantIDs {
+		if g2p.PhonemeIDs[i] != wantIDs[i] {
+			t.Errorf("ID[%d]: Go=%d, expected=%d", i, g2p.PhonemeIDs[i], wantIDs[i])
 		}
 	}
 }

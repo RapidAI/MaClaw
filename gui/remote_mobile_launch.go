@@ -64,9 +64,6 @@ func (a *App) ListRemoteLaunchProjects() ([]RemoteLaunchProject, error) {
 }
 
 func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (RemoteSessionView, error) {
-	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(req.LaunchSource), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": req.Tool, "project_id": req.ProjectID, "project_path": req.ProjectPath, "provider": req.Provider, "launch_source": string(req.LaunchSource)}); err != nil {
-		return RemoteSessionView{}, err
-	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return RemoteSessionView{}, err
@@ -77,6 +74,9 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 
 	project, err := resolveRemoteProject(cfg, req.ProjectID, req.ProjectPath)
 	if err != nil {
+		return RemoteSessionView{}, err
+	}
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerIDForProject(req.LaunchSource, project.Path), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": req.Tool, "project_id": req.ProjectID, "project_path": project.Path, "provider": req.Provider, "launch_source": string(req.LaunchSource)}); err != nil {
 		return RemoteSessionView{}, err
 	}
 
@@ -200,6 +200,13 @@ func remoteLaunchPolicyOwnerID(source RemoteLaunchSource) string {
 	default:
 		return ""
 	}
+}
+
+func remoteLaunchPolicyOwnerIDForProject(source RemoteLaunchSource, projectPath string) string {
+	if normalizeRemoteLaunchSource(source) == RemoteLaunchSourceDesktop {
+		return projectSessionOwnerID(projectPath)
+	}
+	return remoteLaunchPolicyOwnerID(source)
 }
 
 func resolveRemoteProject(cfg corelib.AppConfig, projectID string, projectPath string) (corelib.ProjectConfig, error) {

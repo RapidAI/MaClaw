@@ -61,8 +61,9 @@ func TestNormalizeAIAssistantSessionUserID(t *testing.T) {
 	}{
 		{name: "empty falls back", input: " ", want: ""},
 		{name: "local", input: desktopUserID, want: desktopUserID},
-		{name: "project", input: desktopUserID + ":D:/work/project", want: desktopUserID + ":D:/work/project"},
-		{name: "project path is trimmed", input: desktopUserID + ":  D:/work/project  ", want: desktopUserID + ":D:/work/project"},
+		{name: "project", input: desktopUserID + ":D:/work/project", want: projectSessionOwnerID("D:/work/project")},
+		{name: "project path is trimmed", input: desktopUserID + ":  D:/work/project  ", want: projectSessionOwnerID("D:/work/project")},
+		{name: "project path is normalized", input: desktopUserID + `:d:\work\project\.`, want: projectSessionOwnerID(`d:\work\project\.`)},
 		{name: "empty project rejected", input: desktopUserID + ":", wantErr: true},
 		{name: "foreign user rejected", input: "weixin:user", wantErr: true},
 	}

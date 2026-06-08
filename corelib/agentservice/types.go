@@ -994,6 +994,10 @@ type ExecuteRequest struct {
 	// deployment-level capability checks.
 	ToolPolicy workflow.ToolFilterPolicy
 
+	// MutationScope optionally constrains what state this request may mutate.
+	// When empty, legacy policy-only defaults are used.
+	MutationScope workflow.MutationScope
+
 	// OpsApprovedCommands is the optional command manifest approved by an ops
 	// risk-policy gate. When present in ops_controlled mode, bash/ssh execution
 	// must match this manifest exactly.

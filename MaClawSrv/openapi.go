@@ -94,8 +94,11 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodGet, Path: "/api/v1/admin/client-config/default", Summary: "Shared client config", Description: "Returns the redacted shared MaClawSrv client configuration applied to all users at runtime.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPut, Path: "/api/v1/admin/client-config/default", Summary: "Update shared client config", Description: "Validates and persists the shared MaClawSrv client configuration applied to all users at runtime. Redacted sensitive placeholders preserve existing shared secrets when available.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/admin/client-config/default/validate", Summary: "Validate shared client config", Description: "Validates a submitted shared MaClawSrv client configuration without persisting it.", Tag: "admin", Security: adminSecurity()},
-	{Method: http.MethodGet, Path: "/api/v1/admin/ai-models/status", Summary: "Admin AI model status", Description: "Returns server-wide shared AI model readiness for embedding, ASR, and TTS using the shared default client configuration.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/admin/ai-models/status", Summary: "Admin AI model status", Description: "Returns server-wide shared AI model readiness for embedding, ASR, and TTS using the shared default client configuration, including full local model paths for administrator verification.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/admin/ai-models/{model}/download", Summary: "Admin download AI model", Description: "Starts or resumes a server-wide shared AI model download for embedding, ASR, or TTS. OminiParser is intentionally unsupported in MaClawSrv.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/admin/ai-models/embedding/embed", Summary: "Admin test embedding model", Description: "Uses the shared server-wide embedding model to embed supplied text and returns the full vector, dimension, and L2 norm for admin verification.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/admin/ai-models/asr/transcribe", Summary: "Admin test ASR model", Description: "Uses the shared server-wide ASR model to transcribe uploaded audio for admin verification. WAV, OGG/Opus, Silk, and MP3 inputs are normalized to 16kHz mono WAV before ASR using native Go decoders. M4A and AAC are accepted as uploads but currently rejected with a native-decoder-not-supported error because no native decoder is wired.", Tag: "admin", Security: adminSecurity(), HeaderParams: []string{"X-MaClaw-Audio-Format"}, RequestContentTypes: []string{"application/json", "audio/wav", "audio/ogg", "audio/opus", "audio/mpeg", "audio/mp4", "audio/aac", "application/octet-stream"}},
+	{Method: http.MethodPost, Path: "/api/v1/admin/ai-models/tts/synthesize", Summary: "Admin test TTS model", Description: "Uses the shared server-wide TTS model to synthesize supplied text and returns a downloadable WAV file for admin verification.", Tag: "admin", Security: adminSecurity(), ResponseContentTypes: []string{"audio/wav"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/i18n/locales", Summary: "Admin locales", Description: "Returns Admin Web supported locales, labels, and the configured default locale after normalizing aliases such as zh_CN, zh, en_US, and en.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/i18n/messages", Summary: "Admin locale messages", Description: "Returns Admin Web message strings for the requested locale. Locale aliases such as zh_CN, zh, en_US, and en are normalized; unsupported locales return 400 with enabled_locales.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"locale"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/sandbox/status", Summary: "Sandbox status", Description: "Returns sandbox mode, detected capabilities, backend availability, and effective fallback decision.", Tag: "admin", Security: adminSecurity()},
@@ -197,7 +200,7 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodPost, Path: "/api/v1/config/test", Summary: "Test config", Tag: "config", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/ai-models/status", Summary: "AI model status", Description: "Returns shared server-side AI model readiness for embedding, ASR, and TTS without exposing local model paths.", Tag: "ai-models", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/ai-models/{model}/download", Summary: "Download AI model", Description: "Starts or resumes a server-wide shared AI model download for embedding, ASR, or TTS. OminiParser is intentionally unsupported in MaClawSrv.", Tag: "ai-models", Security: bearerSecurity()},
-	{Method: http.MethodPost, Path: "/api/v1/ai-models/asr/transcribe", Summary: "Transcribe audio", Description: "Uses the shared ASR model to transcribe uploaded audio for the authenticated user's agent composer. WAV, OGG/Opus, Silk, and MP3 inputs are normalized to 16kHz mono WAV before ASR using native Go decoders. M4A and AAC are recognized but currently rejected with a native-decoder-not-supported error because no native decoder is wired. For application/octet-stream, send X-MaClaw-Audio-Format with wav, ogg, opus, silk, or mp3 when magic-byte detection is not enough. The model is lazy-loaded once per server process.", Tag: "ai-models", Security: bearerSecurity(), HeaderParams: []string{"X-MaClaw-Audio-Format"}, RequestContentTypes: []string{"application/json", "audio/wav", "audio/ogg", "audio/opus", "audio/mpeg", "application/octet-stream"}},
+	{Method: http.MethodPost, Path: "/api/v1/ai-models/asr/transcribe", Summary: "Transcribe audio", Description: "Uses the shared ASR model to transcribe uploaded audio for the authenticated user's agent composer. WAV, OGG/Opus, Silk, and MP3 inputs are normalized to 16kHz mono WAV before ASR using native Go decoders. M4A and AAC are accepted as uploads but currently rejected with a native-decoder-not-supported error because no native decoder is wired. For application/octet-stream, send X-MaClaw-Audio-Format with wav, ogg, opus, silk, mp3, m4a, or aac when magic-byte detection is not enough. The model is lazy-loaded once per server process.", Tag: "ai-models", Security: bearerSecurity(), HeaderParams: []string{"X-MaClaw-Audio-Format"}, RequestContentTypes: []string{"application/json", "audio/wav", "audio/ogg", "audio/opus", "audio/mpeg", "audio/mp4", "audio/aac", "application/octet-stream"}},
 	{Method: http.MethodPost, Path: "/api/v1/ai-models/tts/synthesize", Summary: "Synthesize assistant speech", Description: "Uses the shared TTS model to synthesize text as audio for assistant response playback. Request format=mp3 to receive audio/mpeg; otherwise WAV is returned. IM auto voice replies synthesize WAV first, then convert to an MP3 file with the built-in pure Go shine-mp3 encoder using the MaClaw GUI-compatible flow.", Tag: "ai-models", Security: bearerSecurity(), ResponseContentTypes: []string{"audio/wav", "audio/mpeg"}},
 	{Method: http.MethodPost, Path: "/api/v1/im/weixin/qr/start", Summary: "Start WeChat QR binding", Description: "Starts an iLink/personal WeChat QR binding flow for the authenticated MaClawSrv user only and returns the original QR image URL, same-origin QR image proxy URL, plus opaque QR token.", Tag: "messages", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/im/weixin/qr/image", Summary: "Render WeChat QR image", Description: "Renders a WeChat QR payload as a same-origin PNG image. Legacy validated remote image proxying remains available for url query values.", Tag: "messages", Security: bearerSecurity(), QueryParams: []string{"value", "url"}},
@@ -591,17 +594,26 @@ func buildOpenAPIParameters(path string, queryParams, headerParams []string) []m
 }
 
 func openAPIHeaderSchema(path, name string) map[string]any {
-	if path == "/api/v1/ai-models/asr/transcribe" && strings.EqualFold(name, "X-MaClaw-Audio-Format") {
-		return map[string]any{"type": "string", "enum": []string{"wav", "ogg", "opus", "silk", "mp3"}}
+	if isOpenAPIASRTranscribePath(path) && strings.EqualFold(name, "X-MaClaw-Audio-Format") {
+		return map[string]any{"type": "string", "enum": []string{"wav", "ogg", "opus", "silk", "mp3", "m4a", "aac"}}
 	}
 	return map[string]any{"type": "string"}
 }
 
 func openAPIHeaderDescription(path, name string) string {
-	if path == "/api/v1/ai-models/asr/transcribe" && strings.EqualFold(name, "X-MaClaw-Audio-Format") {
-		return "Optional source audio format hint for application/octet-stream uploads when magic-byte detection is insufficient."
+	if isOpenAPIASRTranscribePath(path) && strings.EqualFold(name, "X-MaClaw-Audio-Format") {
+		return "Optional source audio format hint. M4A/AAC are accepted but return native-decoder-not-supported until a native decoder is wired."
 	}
 	return ""
+}
+
+func isOpenAPIASRTranscribePath(path string) bool {
+	switch path {
+	case "/api/v1/ai-models/asr/transcribe", "/api/v1/admin/ai-models/asr/transcribe":
+		return true
+	default:
+		return false
+	}
 }
 
 func openAPIQuerySchema(path, name string) map[string]any {

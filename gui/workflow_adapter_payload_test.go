@@ -14,7 +14,7 @@ import (
 // TestProperty7_PhaseMetadataPayloadRoundTrip asserts that marshaling
 // workflow.PhaseMetadata(t) to JSON and parsing it back into []workflow.PhaseMeta
 // preserves the phase IDs, their ascending index order, and the three boolean
-// flags (expects_document / can_skip / needs_confirm) for every registered
+// flags (expects_document / can_skip / needs_confirm) and contract fields for every registered
 // template. Nothing is dropped, duplicated, or reordered across the wire — this
 // is the serialization contract the dashboard relies on (collectWorkflowPhases
 // on the frontend consumes exactly this JSON shape).
@@ -61,7 +61,7 @@ func TestProperty7_PhaseMetadataPayloadRoundTrip(t *testing.T) {
 			if got[i].Name != want[i].Name {
 				rt.Fatalf("%s: phase[%d] Name = %q, want %q", tmpl.Type, i, got[i].Name, want[i].Name)
 			}
-			// All three boolean flags preserved.
+			// Boolean flags preserved.
 			if got[i].ExpectsDocument != want[i].ExpectsDocument {
 				rt.Fatalf("%s: phase[%d] (%s) ExpectsDocument = %v, want %v", tmpl.Type, i, got[i].ID, got[i].ExpectsDocument, want[i].ExpectsDocument)
 			}
@@ -70,6 +70,18 @@ func TestProperty7_PhaseMetadataPayloadRoundTrip(t *testing.T) {
 			}
 			if got[i].NeedsConfirm != want[i].NeedsConfirm {
 				rt.Fatalf("%s: phase[%d] (%s) NeedsConfirm = %v, want %v", tmpl.Type, i, got[i].ID, got[i].NeedsConfirm, want[i].NeedsConfirm)
+			}
+			if got[i].Kind != want[i].Kind {
+				rt.Fatalf("%s: phase[%d] (%s) Kind = %v, want %v", tmpl.Type, i, got[i].ID, got[i].Kind, want[i].Kind)
+			}
+			if got[i].ToolPolicy != want[i].ToolPolicy {
+				rt.Fatalf("%s: phase[%d] (%s) ToolPolicy = %v, want %v", tmpl.Type, i, got[i].ID, got[i].ToolPolicy, want[i].ToolPolicy)
+			}
+			if got[i].MutationScope != want[i].MutationScope {
+				rt.Fatalf("%s: phase[%d] (%s) MutationScope = %v, want %v", tmpl.Type, i, got[i].ID, got[i].MutationScope, want[i].MutationScope)
+			}
+			if got[i].ActivatesOrchestrator != want[i].ActivatesOrchestrator {
+				rt.Fatalf("%s: phase[%d] (%s) ActivatesOrchestrator = %v, want %v", tmpl.Type, i, got[i].ID, got[i].ActivatesOrchestrator, want[i].ActivatesOrchestrator)
 			}
 		}
 	})
@@ -81,12 +93,16 @@ func TestProperty7_PhaseMetadataPayloadRoundTrip(t *testing.T) {
 // wire, so the tests assert against the serialized field names (the contract the
 // frontend parses) rather than the Go struct.
 type emittedPhase struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Index           int    `json:"index"`
-	ExpectsDocument bool   `json:"expects_document"`
-	CanSkip         bool   `json:"can_skip"`
-	NeedsConfirm    bool   `json:"needs_confirm"`
+	ID                    string                    `json:"id"`
+	Name                  string                    `json:"name"`
+	Index                 int                       `json:"index"`
+	ExpectsDocument       bool                      `json:"expects_document"`
+	CanSkip               bool                      `json:"can_skip"`
+	NeedsConfirm          bool                      `json:"needs_confirm"`
+	Kind                  workflow.PhaseKind        `json:"kind"`
+	ToolPolicy            workflow.ToolFilterPolicy `json:"tool_policy"`
+	MutationScope         workflow.MutationScope    `json:"mutation_scope"`
+	ActivatesOrchestrator bool                      `json:"activates_orchestrator"`
 }
 
 // emittedState captures the fields of the emitted workflow:phase_update payload
@@ -120,18 +136,22 @@ func TestAdapterEmittedJSONShapeWithRegistry(t *testing.T) {
 	}
 
 	type want struct {
-		id              string
-		index           int
-		expectsDocument bool
-		canSkip         bool
-		needsConfirm    bool
+		id                    string
+		index                 int
+		expectsDocument       bool
+		canSkip               bool
+		needsConfirm          bool
+		kind                  workflow.PhaseKind
+		toolPolicy            workflow.ToolFilterPolicy
+		mutationScope         workflow.MutationScope
+		activatesOrchestrator bool
 	}
 	expected := []want{
-		{"requirements", 0, true, false, true},
-		{"design", 1, true, false, true},
-		{"tasks", 2, true, true, true},
-		{"implementation", 3, false, false, false},
-		{"review", 4, true, true, true},
+		{"requirements", 0, true, false, true, workflow.PhaseKindDocumentPlanning, workflow.ToolFilterDocOnly, workflow.MutationScopeWorkflowDoc, false},
+		{"design", 1, true, false, true, workflow.PhaseKindDocumentPlanning, workflow.ToolFilterDocOnly, workflow.MutationScopeWorkflowDoc, false},
+		{"tasks", 2, true, true, true, workflow.PhaseKindCodePlanning, workflow.ToolFilterPlanning, workflow.MutationScopeWorkflowDoc, false},
+		{"implementation", 3, false, false, false, workflow.PhaseKindExecution, workflow.ToolFilterFull, workflow.MutationScopeProject, true},
+		{"review", 4, true, true, true, workflow.PhaseKindReview, workflow.ToolFilterDocOnly, workflow.MutationScopeWorkflowDoc, false},
 	}
 	if len(got.Phases) != len(expected) {
 		t.Fatalf("emitted phases count = %d, want %d: %#v", len(got.Phases), len(expected), got.Phases)
@@ -155,6 +175,18 @@ func TestAdapterEmittedJSONShapeWithRegistry(t *testing.T) {
 		}
 		if p.NeedsConfirm != w.needsConfirm {
 			t.Errorf("phase[%d] (%s) needs_confirm = %v, want %v", i, p.ID, p.NeedsConfirm, w.needsConfirm)
+		}
+		if p.Kind != w.kind {
+			t.Errorf("phase[%d] (%s) kind = %v, want %v", i, p.ID, p.Kind, w.kind)
+		}
+		if p.ToolPolicy != w.toolPolicy {
+			t.Errorf("phase[%d] (%s) tool_policy = %v, want %v", i, p.ID, p.ToolPolicy, w.toolPolicy)
+		}
+		if p.MutationScope != w.mutationScope {
+			t.Errorf("phase[%d] (%s) mutation_scope = %v, want %v", i, p.ID, p.MutationScope, w.mutationScope)
+		}
+		if p.ActivatesOrchestrator != w.activatesOrchestrator {
+			t.Errorf("phase[%d] (%s) activates_orchestrator = %v, want %v", i, p.ID, p.ActivatesOrchestrator, w.activatesOrchestrator)
 		}
 	}
 }

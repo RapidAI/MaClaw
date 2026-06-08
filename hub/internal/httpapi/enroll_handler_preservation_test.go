@@ -475,6 +475,69 @@ func TestEnrollStartAutoResolvesUniqueTenantByEmail(t *testing.T) {
 	}
 }
 
+func TestEnrollStartHandlerNormalizesHeartbeatMetadata(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{
+			name: "unset defaults to 30",
+			body: `{"email":"hb-default@example.com","machine_name":"desktop","platform":"windows","client_id":"cid-hb-default","heartbeat_interval_sec":0}`,
+			want: 30,
+		},
+		{
+			name: "small positive clamps to 5",
+			body: `{"email":"hb-min@example.com","machine_name":"desktop","platform":"windows","client_id":"cid-hb-min","heartbeat_interval_sec":3}`,
+			want: 5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			identity, st, _ := newPreservationTestIdentity(t)
+			handler := EnrollStartHandler(identity, nil, nil)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/enroll/start", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("HTTP status: got %d, want 200; body=%s", rr.Code, rr.Body.String())
+			}
+
+			var result struct {
+				MachineID string `json:"machine_id"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if result.MachineID == "" {
+				t.Fatalf("missing machine_id in response: %s", rr.Body.String())
+			}
+
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				machine, err := st.Machines.GetByID(context.Background(), result.MachineID)
+				if err != nil {
+					t.Fatalf("load machine: %v", err)
+				}
+				if machine != nil && machine.HeartbeatSec == tt.want {
+					break
+				}
+				if time.Now().After(deadline) {
+					if machine == nil {
+						t.Fatalf("machine %s not found before timeout", result.MachineID)
+					}
+					t.Fatalf("HeartbeatSec = %d, want %d", machine.HeartbeatSec, tt.want)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
+	}
+}
+
 func TestEnrollStartRejectsAmbiguousTenantEmailWithoutHint(t *testing.T) {
 	identity, st, _ := newPreservationTestIdentity(t)
 	ctx := context.Background()

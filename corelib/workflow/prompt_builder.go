@@ -127,6 +127,13 @@ func BuildPhaseSystemPrompt(state *WorkflowState, phase *PhaseTemplate, registry
 		b.WriteString("\n")
 	}
 
+	if phase.ToolPolicy == ToolFilterPlanning {
+		b.WriteString("## Planning Tool Boundary\n\n")
+		b.WriteString("You may inspect the repository and run read-only discovery commands for accurate planning. Do not create, edit, move, or delete project files in this phase.\n")
+		b.WriteString("The workflow system saves this phase deliverable as the durable workflow document; do not use file-write tools to persist the document yourself.\n")
+		b.WriteString("If setup work is needed, such as creating directories, CMake files, package manifests, or source files, describe it as numbered implementation tasks. Those project mutations run only after user confirmation in the implementation phase.\n\n")
+	}
+
 	if phase.NeedsConfirm {
 		b.WriteString("## Review Gate\n\n")
 		b.WriteString("This phase requires explicit user review before the workflow may advance. Follow these rules:\n")

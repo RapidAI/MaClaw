@@ -119,8 +119,8 @@ func (a *App) LoadProjectContext(projectPath string) (*ProjectContextSummary, er
 		summary.KeyArtifacts = summary.KeyArtifacts[:10]
 	}
 
-	// Check for active workflow via synthesized userID.
-	synthesizedUserID := fmt.Sprintf("desktop-user:%s", projectPath)
+	// Check for active workflow via the same normalized owner used by project tabs.
+	synthesizedUserID := projectSessionOwnerID(projectPath)
 	if a.workflowEngine != nil && !a.workflowDisabled.Load() {
 		ws := a.workflowEngine.GetActiveWorkflow(synthesizedUserID)
 		if ws != nil {

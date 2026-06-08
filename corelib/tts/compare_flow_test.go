@@ -6,6 +6,7 @@ import (
 )
 
 func TestCompareFlowReverse(t *testing.T) {
+	requireTTSReferenceCompare(t)
 	if _, err := os.Stat(testGGUF); os.IsNotExist(err) {
 		t.Skip("test GGUF not found")
 	}

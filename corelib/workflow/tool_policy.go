@@ -13,6 +13,8 @@ func IsToolAllowedByPolicy(policy ToolFilterPolicy, name string) bool {
 	switch policy {
 	case ToolFilterDocOnly:
 		return DocOnlyAllowedTools[name]
+	case ToolFilterPlanning:
+		return PlanningAllowedTools[name]
 	case ToolFilterOpsControlled:
 		return OpsControlledAllowedTools[name]
 	default:
@@ -48,6 +50,8 @@ func RequiredToolNamesForPolicy(policy ToolFilterPolicy) []string {
 		names = []string{"bash", "read_file", "list_directory", "write_file", "edit_file"}
 	case ToolFilterDocOnly:
 		names = []string{"read_file", "list_directory", "send_file"}
+	case ToolFilterPlanning:
+		names = []string{"bash", "read_file", "list_directory", "send_file"}
 	case ToolFilterOpsControlled:
 		names = []string{"bash", "ssh", "read_file", "list_directory"}
 	default:

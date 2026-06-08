@@ -24,3 +24,21 @@ func TestIsExecutionOrchestratorPhase(t *testing.T) {
 		})
 	}
 }
+
+func TestIsTemplatePhaseExecutionOrchestratorUsesWorkflowContract(t *testing.T) {
+	registry := NewWorkflowRegistry()
+	coding := registry.Match(WorkflowCoding)
+	if !IsTemplatePhaseExecutionOrchestrator(coding, mustPhase(t, coding, PhaseCodingImplementation)) {
+		t.Fatal("coding implementation should activate orchestrator")
+	}
+
+	presentation := registry.Match(WorkflowPresentationDesign)
+	if IsTemplatePhaseExecutionOrchestrator(presentation, mustPhase(t, presentation, "ppt_generation")) {
+		t.Fatal("ppt artifact generation must not activate coding orchestrator")
+	}
+
+	businessPlan := registry.Match(WorkflowBusinessPlan)
+	if IsTemplatePhaseExecutionOrchestrator(businessPlan, mustPhase(t, businessPlan, "bp_doc_generation")) {
+		t.Fatal("business-plan artifact generation must not activate coding orchestrator")
+	}
+}

@@ -1014,11 +1014,10 @@ func (e *WorkflowEngine) advancePhase(userID string, ws *WorkflowState, tmpl *Wo
 	// workflow engine's declaration that "planning phases are done, execute."
 	// The caller decides HOW to execute (SubAgent vs main loop vs external).
 	//
-	// This decouples orchestrator activation from specific phase IDs; coding's
-	// "ppt_generation" all satisfy ToolFilterFull && !NeedsConfirm.
-	// Templates can opt out when full-tool execution must stay inside the
-	// phase prompt itself (for example controlled ops execution).
-	if IsExecutionOrchestratorPhase(*nextPhase) {
+	// This decouples orchestrator activation from ad-hoc GUI checks while still
+	// using the template-aware phase contract so artifact generation phases with
+	// ToolFilterFull do not look like coding implementation phases.
+	if IsTemplatePhaseExecutionOrchestrator(tmpl, *nextPhase) {
 		resp.ActivateOrchestrator = true
 		// The task list is in the phase immediately before the execution phase.
 		if nextIndex > 0 {
@@ -1205,6 +1204,44 @@ func (e *WorkflowEngine) GetActivePhaseToolFilter(userID string) ToolFilterPolic
 	return GetToolFilterForPhase(phase)
 }
 
+// GetActivePhaseContract returns the static contract for the current phase,
+// even when runtime gates (form/input/review) temporarily block execution.
+func (e *WorkflowEngine) GetActivePhaseContract(userID string) (PhaseContract, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	ws := e.workflows[userID]
+	if ws == nil || ws.Status != WorkflowActive {
+		return PhaseContract{}, false
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil || ws.PhaseIndex < 0 || ws.PhaseIndex >= len(tmpl.Phases) {
+		return PhaseContract{}, false
+	}
+	phase := tmpl.Phases[ws.PhaseIndex]
+	if phase.ID != ws.CurrentPhase {
+		return PhaseContract{}, false
+	}
+	return DerivePhaseContract(tmpl, phase), true
+}
+
+// GetPhaseRuntimeGate returns the current phase contract plus runtime blocking
+// gates. Missing workflows are not blocked; corrupt active state is blocked.
+func (e *WorkflowEngine) GetPhaseRuntimeGate(userID string) (PhaseRuntimeGate, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	ws := e.workflows[userID]
+	if ws == nil || ws.Status != WorkflowActive {
+		return PhaseRuntimeGate{}, false
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil {
+		return PhaseRuntimeGate{BlocksAgentLoop: true}, true
+	}
+	return DerivePhaseRuntimeGate(tmpl, ws), true
+}
+
 // IsActivePhaseExecutionOrchestrator reports whether the active phase is an
 // implementation phase that may launch the task/CodingSubAgent orchestrator.
 func (e *WorkflowEngine) IsActivePhaseExecutionOrchestrator(userID string) bool {
@@ -1223,7 +1260,7 @@ func (e *WorkflowEngine) IsActivePhaseExecutionOrchestrator(userID string) bool 
 	if phase.ID != ws.CurrentPhase || e.isPhaseExecutionBlockedLocked(ws, tmpl, phase) {
 		return false
 	}
-	return IsExecutionOrchestratorPhase(*phase)
+	return IsTemplatePhaseExecutionOrchestrator(tmpl, *phase)
 }
 
 // IsPhaseExecutionBlocked reports whether the active workflow phase is waiting
@@ -1254,16 +1291,10 @@ func (e *WorkflowEngine) isPhaseExecutionBlockedLocked(ws *WorkflowState, tmpl *
 	if ws == nil || tmpl == nil || phase == nil || ws.Status != WorkflowActive {
 		return true
 	}
-	if ws.IsWaitingForInput(tmpl) {
+	if phase.ID != ws.CurrentPhase {
 		return true
 	}
-	if ws.PendingReviewPhaseID != "" {
-		return true
-	}
-	if phase.InputSchema != nil && !ws.phaseFormGateSatisfied() {
-		return true
-	}
-	return false
+	return DerivePhaseRuntimeGate(tmpl, ws).BlocksAgentLoop
 }
 
 // GetOpsApprovedCommands returns the confirmed risk-policy command manifest for

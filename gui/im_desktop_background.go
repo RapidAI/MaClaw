@@ -15,8 +15,10 @@ func (h *IMMessageHandler) StartDesktopBackgroundTask(text, projectPath string) 
 			Error:    "empty task text",
 		}, nil
 	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	ownerID := projectSessionOwnerID(projectPath)
 	if h != nil && h.app != nil {
-		if err := h.app.ensureWorkflowAllowsRemoteToolCall("delegate_task", map[string]interface{}{"agent": "background", "request": trimmedText, "project_path": strings.TrimSpace(projectPath)}); err != nil {
+		if err := h.app.ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, "delegate_task", map[string]interface{}{"agent": "background", "request": trimmedText, "project_path": projectPath}); err != nil {
 			return nil, err
 		}
 	}
@@ -25,8 +27,10 @@ func (h *IMMessageHandler) StartDesktopBackgroundTask(text, projectPath string) 
 	}
 	loopCtx := NewLoopContext(fmt.Sprintf("ai-bg-%d", time.Now().UnixNano()), h.getMaclawAgentMaxIterations(), h.taskClient)
 	loopCtx.Platform = "desktop"
+	loopCtx.UserID = ownerID
+	loopCtx.Runtime.PolicyOwnerID = ownerID
 	if h.traceService != nil {
-		job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, trimmedText, desktopPlatform, desktopUserID, strings.TrimSpace(projectPath))
+		job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, trimmedText, desktopPlatform, ownerID, projectPath)
 		loopCtx.JobID = job.JobID
 		loopCtx.RunID = run.RunID
 		h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
@@ -40,7 +44,7 @@ func (h *IMMessageHandler) StartDesktopBackgroundTask(text, projectPath string) 
 	if h.traceService != nil && loopCtx.RunID != "" {
 		h.traceService.SetRunSessionID(loopCtx.RunID, session.ID)
 	}
-	go h.runDesktopBackgroundTask(session.ID, loopCtx, trimmedText, strings.TrimSpace(projectPath))
+	go h.runDesktopBackgroundTask(session.ID, loopCtx, ownerID, trimmedText)
 	return &AIAssistantBackgroundTaskResult{
 		Accepted:  true,
 		Mode:      "background",
@@ -50,9 +54,9 @@ func (h *IMMessageHandler) StartDesktopBackgroundTask(text, projectPath string) 
 	}, nil
 }
 
-func (h *IMMessageHandler) runDesktopBackgroundTask(sessionID string, loopCtx *LoopContext, text, _ string) {
+func (h *IMMessageHandler) runDesktopBackgroundTask(sessionID string, loopCtx *LoopContext, ownerID, text string) {
 	msg := IMUserMessage{
-		UserID:             desktopUserID,
+		UserID:             ownerID,
 		Platform:           desktopPlatform,
 		Text:               text,
 		IsBackground:       true,

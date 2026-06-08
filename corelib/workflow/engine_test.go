@@ -178,6 +178,49 @@ func TestEngine_OpsMaintenanceExecutionDoesNotActivateOrchestrator(t *testing.T)
 	}
 }
 
+func TestEngine_FullArtifactGenerationDoesNotActivateOrchestrator(t *testing.T) {
+	cases := []struct {
+		name     string
+		workflow WorkflowType
+		confirms int
+		wantTool ToolFilterPolicy
+	}{
+		{name: "business plan docs", workflow: WorkflowBusinessPlan, confirms: 4, wantTool: ToolFilterFull},
+		{name: "presentation ppt", workflow: WorkflowPresentationDesign, confirms: 4, wantTool: ToolFilterFull},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, _ := newTestEngine()
+			userID := "u_" + string(tc.workflow)
+			if _, err := engine.StartWorkflow(userID, StructuredIntent{Category: tc.workflow, Summary: tc.name}); err != nil {
+				t.Fatalf("StartWorkflow failed: %v", err)
+			}
+			var resp *WorkflowResponse
+			for i := 0; i < tc.confirms; i++ {
+				saveReviewOutputForCurrentPhase(t, engine, userID)
+				var err error
+				resp, err = engine.ApplyReviewIntent(userID, ReviewIntentConfirm, "")
+				if err != nil {
+					t.Fatalf("ApplyReviewIntent phase %d failed: %v", i, err)
+				}
+			}
+			if resp == nil || !resp.Advance || !resp.RunAgentLoop {
+				t.Fatalf("confirmation should enter artifact generation phase, got %#v", resp)
+			}
+			if resp.ToolFilter != tc.wantTool {
+				t.Fatalf("artifact generation tool filter = %s, want %s", resp.ToolFilter, tc.wantTool)
+			}
+			if resp.ActivateOrchestrator {
+				t.Fatalf("%s artifact generation must not activate coding orchestrator", tc.workflow)
+			}
+			if engine.IsActivePhaseExecutionOrchestrator(userID) {
+				t.Fatalf("%s active artifact phase must not be an execution orchestrator", tc.workflow)
+			}
+		})
+	}
+}
+
 func TestEngine_LLMNotConfiguredDegradation(t *testing.T) {
 	// Engine with nil understanding manager — should still work for direct workflow start
 	registry := NewWorkflowRegistry()
@@ -286,6 +329,21 @@ func TestEngine_GetPhaseToolFilterNoWorkflow(t *testing.T) {
 	}
 }
 
+func TestEngine_GetPhaseToolFilterCodingTaskBreakdownPlanning(t *testing.T) {
+	engine, _ := newTestEngine()
+	userID := "u_task_breakdown_tools"
+	if _, err := engine.StartWorkflow(userID, StructuredIntent{Category: WorkflowCoding, Summary: "build"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	setWorkflowPhaseForTest(t, engine, userID, PhaseCodingTaskBreakdown)
+	if policy := engine.GetPhaseToolFilter(userID); policy != ToolFilterPlanning {
+		t.Fatalf("task_breakdown tool filter = %s, want %s", policy, ToolFilterPlanning)
+	}
+	if activePolicy := engine.GetActivePhaseToolFilter(userID); activePolicy != ToolFilterPlanning {
+		t.Fatalf("active task_breakdown tool filter = %s, want %s", activePolicy, ToolFilterPlanning)
+	}
+}
+
 func TestEngine_SingleActiveWorkflowUserID(t *testing.T) {
 	engine, _ := newTestEngine()
 	if userID, ok := engine.SingleActiveWorkflowUserID(); ok || userID != "" {
@@ -318,13 +376,24 @@ func TestEngine_IsActivePhaseExecutionOrchestrator(t *testing.T) {
 		t.Fatal("implementation phase should be an execution orchestrator phase")
 	}
 
-	workflowType := WorkflowType("full_confirm_phase")
-	engine.GetRegistry().Register(&WorkflowTemplate{Type: workflowType, Name: "full confirm", Phases: []PhaseTemplate{{ID: "reviewable_full", NeedsConfirm: true, ToolPolicy: ToolFilterFull}}})
-	if _, err := engine.StartWorkflow("u_full_confirm", StructuredIntent{Category: workflowType, Summary: "confirm"}); err != nil {
-		t.Fatalf("StartWorkflow confirm failed: %v", err)
+	workflowType := WorkflowType("artifact_full_phase")
+	if err := engine.GetRegistry().Register(&WorkflowTemplate{
+		Type: workflowType,
+		Name: "artifact full",
+		Phases: []PhaseTemplate{{
+			ID:            "artifact",
+			ToolPolicy:    ToolFilterFull,
+			Kind:          PhaseKindArtifactGeneration,
+			MutationScope: MutationScopeArtifact,
+		}},
+	}); err != nil {
+		t.Fatalf("Register artifact template failed: %v", err)
 	}
-	if engine.IsActivePhaseExecutionOrchestrator("u_full_confirm") {
-		t.Fatal("full NeedsConfirm phase must not be an execution orchestrator phase")
+	if _, err := engine.StartWorkflow("u_artifact_full", StructuredIntent{Category: workflowType, Summary: "generate"}); err != nil {
+		t.Fatalf("StartWorkflow artifact failed: %v", err)
+	}
+	if engine.IsActivePhaseExecutionOrchestrator("u_artifact_full") {
+		t.Fatal("artifact full phase must not be an execution orchestrator phase")
 	}
 }
 

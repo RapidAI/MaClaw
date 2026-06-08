@@ -3,28 +3,28 @@ package workflow
 // RegisterBuiltinTemplates registers all built-in workflow templates
 // into the given registry. Called automatically by NewWorkflowRegistry.
 func RegisterBuiltinTemplates(r *WorkflowRegistry) {
-	r.Register(codingTemplate())
-	r.Register(productDesignTemplate())
-	r.Register(innovationTemplate())
-	r.Register(businessPlanTemplate())
-	r.Register(testingTemplate())
-	r.Register(literatureReviewTemplate())
-	r.Register(researchReportTemplate())
-	r.Register(experimentDesignTemplate())
-	r.Register(grantProposalTemplate())
-	r.Register(paperWritingTemplate())
-	r.Register(projectProposalTemplate())
-	r.Register(eventPlanningTemplate())
-	r.Register(competitiveAnalysisTemplate())
-	r.Register(presentationDesignTemplate())
-	r.Register(bidResponseTemplate())
-	r.Register(contractReviewTemplate())
-	r.Register(dueDiligenceTemplate())
-	r.Register(complianceAuditTemplate())
-	r.Register(patentAnalysisTemplate())
-	r.Register(opsMaintenanceTemplate())
-	r.Register(changjiangScholarTemplate())
-	r.Register(changjiangScholarReviewTemplate())
+	r.MustRegister(codingTemplate())
+	r.MustRegister(productDesignTemplate())
+	r.MustRegister(innovationTemplate())
+	r.MustRegister(businessPlanTemplate())
+	r.MustRegister(testingTemplate())
+	r.MustRegister(literatureReviewTemplate())
+	r.MustRegister(researchReportTemplate())
+	r.MustRegister(experimentDesignTemplate())
+	r.MustRegister(grantProposalTemplate())
+	r.MustRegister(paperWritingTemplate())
+	r.MustRegister(projectProposalTemplate())
+	r.MustRegister(eventPlanningTemplate())
+	r.MustRegister(competitiveAnalysisTemplate())
+	r.MustRegister(presentationDesignTemplate())
+	r.MustRegister(bidResponseTemplate())
+	r.MustRegister(contractReviewTemplate())
+	r.MustRegister(dueDiligenceTemplate())
+	r.MustRegister(complianceAuditTemplate())
+	r.MustRegister(patentAnalysisTemplate())
+	r.MustRegister(opsMaintenanceTemplate())
+	r.MustRegister(changjiangScholarTemplate())
+	r.MustRegister(changjiangScholarReviewTemplate())
 }
 
 // codingTemplate returns the coding workflow template (5 phases).
@@ -67,7 +67,7 @@ func codingTemplate() *WorkflowTemplate {
 				Checklist:    []string{"任务粒度是否适中（单个任务可在一次迭代内完成）", "依赖关系是否正确标注", "优先级排序是否合理", "是否覆盖技术设计中的所有模块"},
 				NeedsConfirm: true,
 				CanSkip:      true,
-				ToolPolicy:   ToolFilterDocOnly,
+				ToolPolicy:   ToolFilterPlanning,
 			},
 			{
 				ID:           "implementation",

@@ -754,6 +754,9 @@ func TestVEAdminListUsesMacLawSrvRuntimeReportForVirtualEmployees(t *testing.T) 
 		if r.URL.Path != "/api/platform/runtime/report" {
 			t.Fatalf("unexpected runtime path: %s", r.URL.Path)
 		}
+		if got := r.Header.Get("X-Hub-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("runtime report tenant header = %q, want tenant-a", got)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "ok",
 			"users": []map[string]any{

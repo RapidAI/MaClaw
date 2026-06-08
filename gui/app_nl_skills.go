@@ -2614,7 +2614,7 @@ func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) 
 	if a.skillRunner == nil {
 		return "", fmt.Errorf("skill runner not initialized")
 	}
-	return a.skillRunner.StartRunForOwner(a.defaultManualPolicyOwnerID(), skillName, runArgs)
+	return a.skillRunner.StartRunForOwner(a.skillRunPolicyOwnerID(runArgs), skillName, runArgs)
 }
 
 // GetNLSkillRunStatus returns the status of an async skill run for Wails.

@@ -33,7 +33,9 @@ func TestProperty5_RegisterThenMatchRoundTrip(t *testing.T) {
 				{ID: "p1", Name: "Phase1", Prompt: "Do something", Checklist: []string{"check1"}},
 			},
 		}
-		r.Register(tmpl)
+		if err := r.Register(tmpl); err != nil {
+			return false
+		}
 		got := r.Match(wt)
 		if got == nil {
 			return false
@@ -49,7 +51,9 @@ func TestProperty5_RegisterThenMatchRoundTrip(t *testing.T) {
 			Description: desc + "_v2",
 			Phases:      tmpl.Phases,
 		}
-		r.Register(tmpl2)
+		if err := r.Register(tmpl2); err != nil {
+			return false
+		}
 		got2 := r.Match(wt)
 		if got2 == nil {
 			return false
@@ -79,11 +83,13 @@ func TestProperty6_AllDescriptionsCompleteness(t *testing.T) {
 			wt := WorkflowType(string(rune('A' + i)))
 			name := "Name_" + string(rune('A'+i))
 			desc := "Desc_" + string(rune('A'+i))
-			r.Register(&WorkflowTemplate{
+			if err := r.Register(&WorkflowTemplate{
 				Type:        wt,
 				Name:        name,
 				Description: desc,
-			})
+			}); err != nil {
+				return false
+			}
 			entries[i] = entry{name, desc}
 		}
 
@@ -101,4 +107,57 @@ func TestProperty6_AllDescriptionsCompleteness(t *testing.T) {
 	if err := quick.Check(f, quickConfig()); err != nil {
 		t.Errorf("Property 6 (AllDescriptions completeness) failed: %v", err)
 	}
+}
+
+func TestWorkflowRegistryRegisterRejectsInvalidPhaseContract(t *testing.T) {
+	r := &WorkflowRegistry{templates: make(map[WorkflowType]*WorkflowTemplate)}
+	good := &WorkflowTemplate{
+		Type:        "contract_guard",
+		Name:        "good",
+		Description: "valid template",
+		Phases: []PhaseTemplate{{
+			ID:            "generate",
+			ToolPolicy:    ToolFilterFull,
+			Kind:          PhaseKindArtifactGeneration,
+			MutationScope: MutationScopeArtifact,
+		}},
+	}
+	if err := r.Register(good); err != nil {
+		t.Fatalf("Register(good) failed: %v", err)
+	}
+	bad := &WorkflowTemplate{
+		Type:        good.Type,
+		Name:        "bad",
+		Description: "invalid template",
+		Phases: []PhaseTemplate{{
+			ID:            "generate",
+			ToolPolicy:    ToolFilterFull,
+			Kind:          PhaseKindArtifactGeneration,
+			MutationScope: MutationScopeProject,
+		}},
+	}
+	if err := r.Register(bad); err == nil {
+		t.Fatal("Register(bad) should reject conflicting phase contract")
+	}
+	if got := r.Match(good.Type); got != good {
+		t.Fatalf("invalid template must not overwrite existing registration: got %#v want %#v", got, good)
+	}
+}
+
+func TestWorkflowRegistryMustRegisterPanicsOnInvalidPhaseContract(t *testing.T) {
+	r := &WorkflowRegistry{templates: make(map[WorkflowType]*WorkflowTemplate)}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("MustRegister should panic for invalid phase contract")
+		}
+	}()
+	r.MustRegister(&WorkflowTemplate{
+		Type: "bad_must_register",
+		Phases: []PhaseTemplate{{
+			ID:            "ops",
+			ToolPolicy:    ToolFilterFull,
+			Kind:          PhaseKindOpsExecution,
+			MutationScope: MutationScopeOps,
+		}},
+	})
 }

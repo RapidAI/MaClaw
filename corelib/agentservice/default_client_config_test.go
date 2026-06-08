@@ -108,7 +108,13 @@ func TestSharedClientConfigAppliesToAllUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getOrLoadUserConfig existing: %v", err)
 	}
-	assertSharedClientConfigApplied(t, gotExisting.AppConfig)
+	// Existing user has their own LLM config → shared LLM fields should NOT overwrite.
+	// Non-LLM shared fields (proxy, network, search, etc.) should still be applied.
+	assertSharedNonLLMConfigApplied(t, gotExisting.AppConfig)
+	// LLM fields should remain user-specific (not overwritten by shared config).
+	if gotExisting.AppConfig.MaclawLLMUrl != "https://llm.example/v1" || gotExisting.AppConfig.MaclawLLMKey != "user-llm-key" || gotExisting.AppConfig.MaclawLLMModel != "user-model" {
+		t.Fatalf("existing user LLM config should NOT be overwritten by shared config: url=%q key=%q model=%q", gotExisting.AppConfig.MaclawLLMUrl, gotExisting.AppConfig.MaclawLLMKey, gotExisting.AppConfig.MaclawLLMModel)
+	}
 
 	rawExisting, err := svc.GetRawUserConfig(ctx, existingPrincipal)
 	if err != nil {
@@ -217,6 +223,20 @@ func TestDefaultClientConfigPreservesMaskedSearchKeyWhenProviderRenamed(t *testi
 
 func assertSharedClientConfigApplied(t *testing.T, got corelib.AppConfig) {
 	t.Helper()
+	assertSharedNonLLMConfigApplied(t, got)
+	if got.MaclawLLMUrl != "https://shared-llm.example/v1" || got.MaclawLLMKey != "shared-llm-key" || got.MaclawLLMModel != "shared-model" || got.MaclawLLMCurrentProvider != "shared-main" {
+		t.Fatalf("shared primary LLM defaults not applied: %#v", got)
+	}
+	if got.MaclawLLMProtocol != "openai" || got.MaclawLLMContextLength != 32000 || got.MaclawLLMTimeoutSec != 90 || got.AgentResponseTimeoutSec != 120 {
+		t.Fatalf("shared LLM runtime defaults not applied: %#v", got)
+	}
+	if len(got.MaclawLLMProviders) != 1 || got.MaclawLLMProviders[0].Name != "shared-main" || got.MaclawAgentMaxIterations != 7 || got.SubAgentConcurrency != 3 {
+		t.Fatalf("shared provider or iteration defaults not applied: %#v", got)
+	}
+}
+
+func assertSharedNonLLMConfigApplied(t *testing.T, got corelib.AppConfig) {
+	t.Helper()
 	if got.WebSearchCurrentProvider != "serpapi" || len(got.WebSearchProviders) != 1 || got.WebSearchProviders[0].Name != "corp-search" {
 		t.Fatalf("web search defaults not applied: %#v", got.WebSearchProviders)
 	}
@@ -229,14 +249,11 @@ func assertSharedClientConfigApplied(t *testing.T, got corelib.AppConfig) {
 	if len(got.ExternalSkillDirs) != 1 || got.ExternalSkillDirs[0] != "/opt/maclaw/skills" {
 		t.Fatalf("skill dir defaults not applied: %#v", got.ExternalSkillDirs)
 	}
-	if got.MaclawLLMUrl != "https://shared-llm.example/v1" || got.MaclawLLMKey != "shared-llm-key" || got.MaclawLLMModel != "shared-model" || got.MaclawLLMCurrentProvider != "shared-main" {
-		t.Fatalf("shared primary LLM defaults not applied: %#v", got)
+	if got.AgentResponseTimeoutSec != 120 {
+		t.Fatalf("shared agent response timeout not applied: %v", got.AgentResponseTimeoutSec)
 	}
-	if got.MaclawLLMProtocol != "openai" || got.MaclawLLMContextLength != 32000 || got.MaclawLLMTimeoutSec != 90 || got.AgentResponseTimeoutSec != 120 {
-		t.Fatalf("shared LLM runtime defaults not applied: %#v", got)
-	}
-	if len(got.MaclawLLMProviders) != 1 || got.MaclawLLMProviders[0].Name != "shared-main" || got.MaclawAgentMaxIterations != 7 || got.SubAgentConcurrency != 3 {
-		t.Fatalf("shared provider or iteration defaults not applied: %#v", got)
+	if got.MaclawAgentMaxIterations != 7 || got.SubAgentConcurrency != 3 {
+		t.Fatalf("shared iteration defaults not applied: iterations=%v concurrency=%v", got.MaclawAgentMaxIterations, got.SubAgentConcurrency)
 	}
 	if !got.VectorSearchEnabled || !got.ASREnabled || !got.TTSEnabled || got.TTSVoiceID != "zf_xiaoyi" {
 		t.Fatalf("shared local AI toggles not applied: %#v", got)

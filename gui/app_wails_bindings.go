@@ -1204,7 +1204,12 @@ func (a *App) ListTemplates() []remote.SessionTemplate {
 
 // CreateTemplate creates a new session template (Wails binding).
 func (a *App) CreateTemplate(name, tool, projectPath, modelConfig string, yoloMode bool) error {
-	if err := a.ensureWorkflowAllowsRemoteToolCall(remoteTemplatePolicyToolName, map[string]interface{}{"action": "create_template", "name": name, "tool": tool, "project_path": projectPath}); err != nil {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	policyOwnerID := a.defaultManualPolicyOwnerID()
+	if projectPath != "" {
+		policyOwnerID = projectSessionOwnerID(projectPath)
+	}
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(policyOwnerID, remoteTemplatePolicyToolName, map[string]interface{}{"action": "create_template", "name": name, "tool": tool, "project_path": projectPath}); err != nil {
 		return err
 	}
 	a.ensureTemplateManager()
@@ -1993,7 +1998,11 @@ func (a *App) ClearAIAssistantHistory() error {
 
 // StartAIAssistantBackgroundTask starts a visible AI background task and returns immediately.
 func (a *App) StartAIAssistantBackgroundTask(req AIAssistantBackgroundTaskRequest) (*AIAssistantBackgroundTaskResult, error) {
-	if err := a.ensureWorkflowAllowsRemoteToolCall("delegate_task", map[string]interface{}{"agent": "background", "request": strings.TrimSpace(req.Text), "project_path": strings.TrimSpace(req.ProjectPath)}); err != nil {
+	projectPath := normalizeProjectSessionPath(req.ProjectPath)
+	if projectPath == "" {
+		projectPath = normalizeProjectSessionPath(a.GetCurrentProjectPath())
+	}
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(projectSessionOwnerID(projectPath), "delegate_task", map[string]interface{}{"agent": "background", "request": strings.TrimSpace(req.Text), "project_path": projectPath}); err != nil {
 		return nil, err
 	}
 	a.ensureInteractionInfra()
@@ -2004,10 +2013,6 @@ func (a *App) StartAIAssistantBackgroundTask(req AIAssistantBackgroundTaskReques
 	handler := hubClient.ensureIMHandler()
 	if handler == nil {
 		return nil, fmt.Errorf("AI assistant handler not initialized")
-	}
-	projectPath := normalizeProjectSessionPath(req.ProjectPath)
-	if projectPath == "" {
-		projectPath = normalizeProjectSessionPath(a.GetCurrentProjectPath())
 	}
 	result, err := handler.StartDesktopBackgroundTask(strings.TrimSpace(req.Text), projectPath)
 	if err != nil {
@@ -2150,12 +2155,8 @@ func normalizeAIAssistantSessionUserID(userID string) (string, error) {
 	if trimmed == desktopUserID {
 		return desktopUserID, nil
 	}
-	prefix := desktopUserID + ":"
-	if strings.HasPrefix(trimmed, prefix) {
-		projectPart := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
-		if projectPart != "" {
-			return prefix + projectPart, nil
-		}
+	if ownerID := projectSessionOwnerID(projectPathFromSessionOwnerID(trimmed)); ownerID != desktopUserID {
+		return ownerID, nil
 	}
 	return "", fmt.Errorf("invalid AI assistant session userID: %q", userID)
 }

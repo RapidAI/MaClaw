@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"math/rand"
 	"reflect"
 	"testing"
@@ -85,10 +84,7 @@ func (singleProjectPath) Generate(r *rand.Rand, size int) reflect.Value {
 // synthesizeUserID replicates the logic from SendAIAssistantMessage:
 // when ProjectPath is empty, return desktopUserID; otherwise synthesize.
 func synthesizeUserID(projectPath string) string {
-	if projectPath == "" {
-		return desktopUserID
-	}
-	return fmt.Sprintf("desktop-user:%s", projectPath)
+	return projectSessionOwnerID(projectPath)
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +117,7 @@ func TestSessionIsolationProperty12_EmptyPathPreservesDefault(t *testing.T) {
 func TestSessionIsolationProperty12_NonEmptyPathSynthesizesUserID(t *testing.T) {
 	f := func(input singleProjectPath) bool {
 		userID := synthesizeUserID(input.Path)
-		expected := fmt.Sprintf("desktop-user:%s", input.Path)
+		expected := projectSessionOwnerID(input.Path)
 		if userID != expected {
 			t.Logf("expected %q, got %q", expected, userID)
 			return false

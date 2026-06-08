@@ -394,6 +394,13 @@ func extractOriginalRequest(state *workflow.WorkflowState, currentText string) s
 }
 
 func (h *IMMessageHandler) workflowStartProjectPath() string {
+	return h.workflowStartProjectPathForOwner("")
+}
+
+func (h *IMMessageHandler) workflowStartProjectPathForOwner(ownerID string) string {
+	if projectPath := projectPathFromSessionOwnerID(ownerID); projectPath != "" {
+		return projectPath
+	}
 	if h != nil && h.app != nil {
 		if projectPath := strings.TrimSpace(h.app.GetCurrentProjectPath()); projectPath != "" {
 			return projectPath
@@ -426,7 +433,7 @@ func (h *IMMessageHandler) confirmWorkflowStart(userID, text string, intent work
 		return nil
 	}
 	lang := h.getWorkflowLang()
-	item := buildPendingWorkflowConfirmation(userID, text, intent, startReply, lang, h.workflowStartProjectPath())
+	item := buildPendingWorkflowConfirmation(userID, text, intent, startReply, lang, h.workflowStartProjectPathForOwner(userID))
 	h.confirmationStore.set(item)
 	return buildWorkflowConfirmationResponse(item, lang)
 }
@@ -622,7 +629,7 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 	}
 	projectPath := strings.TrimSpace(pending.LastProjectPath)
 	if projectPath == "" {
-		projectPath = h.workflowStartProjectPath()
+		projectPath = h.workflowStartProjectPathForOwner(userID)
 	}
 	if preparedPath, err := h.ensureWorkflowProjectPath(projectPath); err != nil {
 		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, lang, err)}}
@@ -1788,8 +1795,19 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalog(userID string, too
 	if policy == workflow.ToolFilterNone && engine.HasActiveWorkflow(userID) && engine.IsPhaseExecutionBlocked(userID) {
 		return nil
 	}
-	if len(workflow.RequiredToolNamesForPolicy(policy)) > 0 && len(allTools) == 0 {
+	contract, hasContract := engine.GetActivePhaseContract(userID)
+	var required []string
+	if hasContract {
+		required = workflow.RequiredToolNamesForContract(contract)
+	} else {
+		required = workflow.RequiredToolNamesForPolicy(policy)
+	}
+	if len(required) > 0 && len(allTools) == 0 {
 		allTools = h.getTools()
+	}
+	if hasContract {
+		tools = ensureWorkflowRequiredToolsForNames(required, tools, allTools)
+		return workflow.FilterToolDefinitionsByContract(contract, tools)
 	}
 	tools = ensureWorkflowRequiredTools(policy, tools, allTools)
 	return workflow.FilterToolDefinitions(policy, tools)

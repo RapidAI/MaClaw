@@ -204,7 +204,7 @@ func (h *IMMessageHandler) directCodingSubAgentExecutionContextBlockReason(msg I
 	reason := h.codingSubAgentAdmissionBlockReason(codingSubAgentAdmissionInput{
 		Text:                        msg.Text,
 		OwnerID:                     ownerID,
-		ProjectPath:                 h.workflowStartProjectPath(),
+		ProjectPath:                 h.workflowStartProjectPathForOwner(ownerID),
 		InteractionContinuation:     interactionContinuation,
 		RequireExistingCodeEvidence: requireExistingCodeEvidence,
 	})
@@ -212,7 +212,7 @@ func (h *IMMessageHandler) directCodingSubAgentExecutionContextBlockReason(msg I
 		reason = h.codingSubAgentAdmissionBlockReason(codingSubAgentAdmissionInput{
 			Text:                        msg.Text,
 			OwnerID:                     strings.TrimSpace(msg.UserID),
-			ProjectPath:                 h.workflowStartProjectPath(),
+			ProjectPath:                 h.workflowStartProjectPathForOwner(msg.UserID),
 			InteractionContinuation:     interactionContinuation,
 			RequireExistingCodeEvidence: requireExistingCodeEvidence,
 		})
@@ -243,7 +243,7 @@ func (h *IMMessageHandler) routeDirectCodingSubAgentExecution(msg IMUserMessage,
 		"agent":   "coding_workflow",
 		"request": msg.Text,
 	}
-	if projectPath := h.workflowStartProjectPath(); projectPath != "" {
+	if projectPath := h.workflowStartProjectPathForOwner(ownerID); projectPath != "" {
 		args["project_path"] = projectPath
 	}
 	result, handled := h.executeCodingWorkflowDelegateArgs(args, agentLoopToolExecutionOptions{

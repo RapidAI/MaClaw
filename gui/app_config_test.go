@@ -83,6 +83,25 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	}
 }
 
+func TestLoadConfigNormalizesRemoteHeartbeatSec(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHeartbeatSec: 0}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.RemoteHeartbeatSec != corelib.DefaultRemoteHeartbeatSec {
+		t.Fatalf("RemoteHeartbeatSec = %d, want %d", cfg.RemoteHeartbeatSec, corelib.DefaultRemoteHeartbeatSec)
+	}
+}
+
 func TestLoadConfigDefaultsLocalAIModelsWhenFieldsAbsent(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -633,6 +652,23 @@ func TestPatchConfigFieldsRejectsUnsupportedFields(t *testing.T) {
 	app := &App{testHomeDir: tmpHome}
 	if _, err := app.PatchConfigFields(map[string]interface{}{"unknown_field": "bad"}); err == nil {
 		t.Fatal("PatchConfigFields(unknown_field) error = nil, want unsupported field error")
+	}
+}
+
+func TestPatchConfigFieldsRemoteHeartbeatUsesSharedNormalization(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"remote_heartbeat_sec": float64(0),
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields() error = %v", err)
+	}
+	if patched.RemoteHeartbeatSec != corelib.DefaultRemoteHeartbeatSec {
+		t.Fatalf("RemoteHeartbeatSec = %d, want %d", patched.RemoteHeartbeatSec, corelib.DefaultRemoteHeartbeatSec)
 	}
 }
 

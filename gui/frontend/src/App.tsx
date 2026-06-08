@@ -3318,29 +3318,6 @@ ${instruction}`;
                                     />
                                     <span>{isWindows ? t("adminModeLabel") : t("rootModeLabel")}</span>
                                 </label>
-                                {activeTool !== 'kilo' && (
-                                    <label className="coding-launch-check">
-                                        <input
-                                            type="checkbox"
-                                            checked={launchPanelProject?.yolo_mode || false}
-                                            onChange={(e) => {
-                                                updateResolvedLaunchProject((project) => {
-                                                    const updated = { ...project, yolo_mode: e.target.checked };
-                                                    if (!isWindows && e.target.checked) {
-                                                        updated.admin_mode = false;
-                                                    }
-                                                    return updated;
-                                                });
-                                            }}
-                                        />
-                                        <span>{t("yoloModeLabel")}</span>
-                                        {launchPanelProject?.yolo_mode && (
-                                            <span className="coding-launch-danger-badge">
-                                                {t("danger")}
-                                            </span>
-                                        )}
-                                    </label>
-                                )}
                                 <label className="coding-launch-check">
                                     <input
                                         type="checkbox"
@@ -3413,6 +3390,29 @@ ${instruction}`;
                                             onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, team_mode: e.target.checked }))}
                                         />
                                         <span>{t("teamModeLabel")}</span>
+                                    </label>
+                                )}
+                                {activeTool !== 'kilo' && (
+                                    <label className="coding-launch-check">
+                                        <input
+                                            type="checkbox"
+                                            checked={launchPanelProject?.yolo_mode || false}
+                                            onChange={(e) => {
+                                                updateResolvedLaunchProject((project) => {
+                                                    const updated = { ...project, yolo_mode: e.target.checked };
+                                                    if (!isWindows && e.target.checked) {
+                                                        updated.admin_mode = false;
+                                                    }
+                                                    return updated;
+                                                });
+                                            }}
+                                        />
+                                        <span>{t("yoloModeLabel")}</span>
+                                        {launchPanelProject?.yolo_mode && (
+                                            <span className="coding-launch-danger-badge">
+                                                {t("danger")}
+                                            </span>
+                                        )}
                                     </label>
                                 )}
                                 {!isWindows && (

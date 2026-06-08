@@ -91,6 +91,15 @@ func TestRegression_AllTemplatesRenderThroughSharedDeriver(t *testing.T) {
 			if strings.TrimSpace(m.Name) == "" {
 				t.Errorf("%s: phase %q (index %d) has an empty/whitespace label", tmpl.Type, m.ID, m.Index)
 			}
+			if strings.TrimSpace(string(m.Kind)) == "" {
+				t.Errorf("%s: phase %q (index %d) has empty derived kind", tmpl.Type, m.ID, m.Index)
+			}
+			if strings.TrimSpace(string(m.ToolPolicy)) == "" {
+				t.Errorf("%s: phase %q (index %d) has empty tool policy", tmpl.Type, m.ID, m.Index)
+			}
+			if strings.TrimSpace(string(m.MutationScope)) == "" {
+				t.Errorf("%s: phase %q (index %d) has empty mutation scope", tmpl.Type, m.ID, m.Index)
+			}
 		}
 	}
 }

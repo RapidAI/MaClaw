@@ -101,6 +101,10 @@ func agentLoopToolNamesForLog(tools []map[string]interface{}) []string {
 
 func ensureWorkflowRequiredTools(policy workflow.ToolFilterPolicy, routed, allTools []map[string]interface{}) []map[string]interface{} {
 	required := workflow.RequiredToolNamesForPolicy(policy)
+	return ensureWorkflowRequiredToolsForNames(required, routed, allTools)
+}
+
+func ensureWorkflowRequiredToolsForNames(required []string, routed, allTools []map[string]interface{}) []map[string]interface{} {
 	if len(required) == 0 || len(allTools) == 0 {
 		return routed
 	}

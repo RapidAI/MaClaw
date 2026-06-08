@@ -502,6 +502,114 @@ func TestTUIDocOnlyWorkflowPhaseBlocksImplementationTools(t *testing.T) {
 	}
 }
 
+func TestTUIPlanningWorkflowPhaseAllowsInspectionOnly(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	state, err := app.workflowEngine.StartWorkflow("tui-user", workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	state.PhaseIndex = 2
+	state.CurrentPhase = workflow.PhaseCodingTaskBreakdown
+
+	tools := []map[string]interface{}{
+		agent.ToolDef("read_file", "read file", nil, nil),
+		agent.ToolDef("list_directory", "list directory", nil, nil),
+		agent.ToolDef("bash", "run shell", nil, nil),
+		agent.ToolDef("write_file", "write file", nil, nil),
+		agent.ToolDef("edit_file", "edit file", nil, nil),
+		agent.ToolDef("task", "spawn task", nil, nil),
+	}
+	got := agent.FilterToolDefinitionsByAuthorizer(&tuiCallbacks{app: app}, tools)
+
+	names := make(map[string]bool, len(got))
+	for _, def := range got {
+		names[tooldef.Name(def)] = true
+	}
+	for _, name := range []string{"bash", "read_file", "list_directory"} {
+		if !names[name] {
+			t.Fatalf("expected %s to remain available for planning context; got %#v", name, names)
+		}
+		if !app.isWorkflowToolAllowedTUI(name) {
+			t.Fatalf("expected execution guard to allow %s in planning phase", name)
+		}
+	}
+	for _, name := range []string{"write_file", "edit_file", "task"} {
+		if names[name] {
+			t.Fatalf("expected %s to be filtered out in planning phase; got %#v", name, names)
+		}
+		if app.isWorkflowToolAllowedTUI(name) {
+			t.Fatalf("expected execution guard to block %s in planning phase", name)
+		}
+	}
+	allowed, reason := (&tuiCallbacks{app: app}).IsToolCallAllowed("bash", `{"command":"rg -n \"TODO\""}`)
+	if !allowed {
+		t.Fatalf("expected read-only bash in planning phase, got %q", reason)
+	}
+	allowed, _ = (&tuiCallbacks{app: app}).IsToolCallAllowed("bash", `{"command":"touch generated.go"}`)
+	if allowed {
+		t.Fatal("expected mutating bash to be blocked in planning phase")
+	}
+}
+
+func TestTUIArtifactWorkflowPhaseBlocksProjectMutation(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	workflowType := workflow.WorkflowType("tui_artifact_scope_tools")
+	if err := app.workflowEngine.GetRegistry().Register(&workflow.WorkflowTemplate{
+		Type:        workflowType,
+		Name:        "tui artifact scope tools",
+		Description: "test template",
+		Phases: []workflow.PhaseTemplate{{
+			ID:            "generate",
+			Name:          "Generate",
+			Prompt:        "generate artifact",
+			Deliverable:   "artifact",
+			ToolPolicy:    workflow.ToolFilterFull,
+			Kind:          workflow.PhaseKindArtifactGeneration,
+			MutationScope: workflow.MutationScopeArtifact,
+		}},
+	}); err != nil {
+		t.Fatalf("Register workflow template: %v", err)
+	}
+	if _, err := app.workflowEngine.StartWorkflow("tui-user", workflow.StructuredIntent{Category: workflowType, Summary: "make deck"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	tools := []map[string]interface{}{
+		agent.ToolDef("write_file", "write file", nil, nil),
+		agent.ToolDef("edit_file", "edit file", nil, nil),
+		agent.ToolDef("task", "spawn task", nil, nil),
+		agent.ToolDef("office", "office", nil, nil),
+		agent.ToolDef("generate_pdf", "generate pdf", nil, nil),
+	}
+	got := agent.FilterToolDefinitionsByAuthorizer(&tuiCallbacks{app: app}, tools)
+	names := make(map[string]bool, len(got))
+	for _, def := range got {
+		names[tooldef.Name(def)] = true
+	}
+	for _, name := range []string{"write_file", "office", "generate_pdf"} {
+		if !names[name] {
+			t.Fatalf("expected %s in artifact phase tools, got %#v", name, names)
+		}
+	}
+	for _, name := range []string{"edit_file", "task"} {
+		if names[name] {
+			t.Fatalf("expected %s blocked by artifact scope, got %#v", name, names)
+		}
+	}
+	if allowed, reason := (&tuiCallbacks{app: app}).IsToolCallAllowed("write_file", `{"path":"deck.pptx","content":"body"}`); !allowed {
+		t.Fatalf("artifact write should pass: %s", reason)
+	}
+	if allowed, _ := (&tuiCallbacks{app: app}).IsToolCallAllowed("write_file", `{"path":"src/main.go","content":"package main"}`); allowed {
+		t.Fatal("artifact phase should reject source writes")
+	}
+	if allowed, _ := (&tuiCallbacks{app: app}).IsToolCallAllowed("bash", `{"command":"touch src/main.go"}`); allowed {
+		t.Fatal("artifact phase should reject mutating bash")
+	}
+}
+
 func TestTUIWorkflowBlockedPhaseRejectsTools(t *testing.T) {
 	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
 	_, err := app.workflowEngine.StartWorkflow("tui-user", workflow.StructuredIntent{

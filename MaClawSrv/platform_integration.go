@@ -1408,6 +1408,7 @@ func (s *HTTPServer) findPlatformRuntimeUserBindingFromDeletePayload(r *http.Req
 
 func (s *HTTPServer) handlePlatformRuntimeReport(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	hubTenantID := platformRuntimeRequestHubTenantID(r)
 	tenants, err := s.svc.ListTenants(r.Context(), agentservice.ListTenantsInput{})
 	if err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
@@ -1434,6 +1435,9 @@ func (s *HTTPServer) handlePlatformRuntimeReport(w http.ResponseWriter, r *http.
 				if employeeID == "" {
 					continue
 				}
+				if !platformRuntimeReportIncludesInstance(inst, hubTenantID) {
+					continue
+				}
 				status := platformRuntimeStatusFor(tenant, user, inst)
 				if status == "ready" {
 					readyUsers++
@@ -1446,6 +1450,18 @@ func (s *HTTPServer) handlePlatformRuntimeReport(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "generated_at": now, "service": map[string]any{"status": "ok", "message": "MaClawSrv platform runtime report ready"}, "summary": map[string]any{"active_users": len(usersOut), "ready_users": readyUsers, "error_users": 0, "runtime_errors": 0}, "users": usersOut, "instances": instancesOut, "errors": []any{}})
 }
 
+func platformRuntimeReportIncludesInstance(inst agentservice.Instance, hubTenantID string) bool {
+	hubTenantID = strings.TrimSpace(hubTenantID)
+	if hubTenantID == "" {
+		return true
+	}
+	instHubTenantID := strings.TrimSpace(inst.Metadata["ve_hub_tenant_id"])
+	if instHubTenantID == "" {
+		return true
+	}
+	return strings.EqualFold(instHubTenantID, hubTenantID)
+}
+
 func platformRuntimeStatusFor(tenant agentservice.Tenant, user agentservice.User, inst agentservice.Instance) string {
 	if tenant.Status != agentservice.TenantStatusActive || user.Status != agentservice.UserStatusActive {
 		return "attention"
@@ -1456,7 +1472,10 @@ func platformRuntimeStatusFor(tenant agentservice.Tenant, user agentservice.User
 	if strings.TrimSpace(string(inst.Status)) == "" {
 		return "attention"
 	}
-	return string(inst.Status)
+	if inst.Status == agentservice.InstanceStatusReady {
+		return "ready"
+	}
+	return "attention"
 }
 
 func (s *HTTPServer) requirePlatformSourceUserBinding(w http.ResponseWriter, r *http.Request, in platformSourceUserRequest) (platformSourceUserBinding, bool) {
@@ -2317,7 +2336,11 @@ func platformRuntimeRequestHubTenantID(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	return firstPlatformNonEmpty(r.Header.Get("X-VE-Hub-Tenant-ID"), r.Header.Get("X-Hub-Tenant-ID"))
+	queryTenantID := ""
+	if r.URL != nil {
+		queryTenantID = r.URL.Query().Get("tenant_id")
+	}
+	return firstPlatformNonEmpty(r.Header.Get("X-VE-Hub-Tenant-ID"), r.Header.Get("X-Hub-Tenant-ID"), queryTenantID)
 }
 
 func platformRuntimeInstanceMatchesEmployeeID(inst agentservice.Instance, employeeID string, allowSourceUserID bool) bool {
