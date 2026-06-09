@@ -49,6 +49,11 @@ func (a *App) ensureViewerToken(cfg corelib.AppConfig) (corelib.AppConfig, error
 	if strings.TrimSpace(cfg.RemoteEmail) == "" || strings.TrimSpace(cfg.RemoteHubURL) == "" {
 		return cfg, fmt.Errorf("hub access token is missing")
 	}
+	// Only attempt re-enroll if machine credentials are still present.
+	// If machine_id is empty, the user was unbound by admin — don't recreate.
+	if strings.TrimSpace(cfg.RemoteMachineID) == "" {
+		return cfg, fmt.Errorf("hub access token is missing (machine credentials cleared)")
+	}
 	if !a.shouldAttemptHubViewerTokenRecovery() {
 		return cfg, fmt.Errorf("hub access token is missing (recovery throttled)")
 	}

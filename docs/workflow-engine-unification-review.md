@@ -423,5 +423,6 @@ MutationScope MutationScope `json:"mutation_scope,omitempty"`
 - `read_file` 和 `list_directory` 只用于构造简洁委派请求。
 - 如果 `delegate_task` 缺失，必须报告 workflow tooling error，不能声称无法编程，也不能绕过流程自己实现。
 - no-tool/stall 恢复提示也必须走同一契约：coding implementation 阶段只能提醒 `delegate_task(agent="coding_workflow")`，不能回退到通用“选择文件/编辑工具”提示。
+- Empty-response recovery and no-tool hard-cap finalization are part of the same contract: retry prompts must point to `delegate_task(agent="coding_workflow")`, and terminal failure text must report workflow tooling failure instead of echoing model claims such as "no tools".
 
 这样提示层和 contract/tool 层一致，模型会先走正确路径，而不是等工具调用被拦后才暴露问题。

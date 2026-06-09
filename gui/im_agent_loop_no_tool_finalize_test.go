@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
@@ -210,6 +211,52 @@ func TestNoToolHardCapCodingWorkflowImplementationReportsHandoffFailure(t *testi
 	for _, bad := range []string{"there are no tools", "I cannot write files"} {
 		if strings.Contains(result.Response.Text, bad) {
 			t.Fatalf("hard-cap response should not echo model hallucination %q:\n%s", bad, result.Response.Text)
+		}
+	}
+}
+
+func TestToolAvailabilityHallucinationCodingWorkflowImplementationPromptsDelegateTask(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "hallucinated-delegate-tool-coding-workflow-implementation"
+	state, err := h.app.workflowEngine.StartWorkflowWithOptions(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "implement approved tasks",
+	}, workflow.WorkflowStartOptions{ProjectPath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
+	}
+	moveWorkflowStateToPhase(t, h.app.workflowEngine, state, workflow.PhaseCodingImplementation)
+
+	phase := &agentLoopPhase{Stage: agentStageConverge}
+	conversation := []interface{}{
+		map[string]string{"role": "user", "content": "start implementation"},
+	}
+	result := h.handleAgentLoopNoToolBranch(agentLoopNoToolBranchOptions{
+		Context:        &LoopContext{WorkflowAgentLoop: true},
+		UserID:         userID,
+		MessageContent: "I do not have delegate_task tool available.",
+		Choice: llm.Choice{Message: llm.Message{
+			Role:    "assistant",
+			Content: "I do not have delegate_task tool available.",
+		}},
+		Phase:                    phase,
+		Conversation:             conversation,
+		Tools:                    testToolDefs("read_file", "list_directory", "delegate_task"),
+		LengthContinuationBuffer: &strings.Builder{},
+		AttachLLMTelemetry:       func(*IMAgentResponse) {},
+		AttachVisibleArtifacts:   func(*IMAgentResponse) {},
+	})
+
+	if !result.ContinueLoop {
+		t.Fatal("expected hallucinated delegate_task absence to recover")
+	}
+	if len(result.Conversation) != len(conversation)+1 {
+		t.Fatalf("conversation len = %d, want %d", len(result.Conversation), len(conversation)+1)
+	}
+	correction := msgContent(result.Conversation[len(result.Conversation)-1])
+	for _, want := range []string{"CodingSubAgent", "delegate_task(agent=\"coding_workflow\"", "approved task IDs"} {
+		if !strings.Contains(correction, want) {
+			t.Fatalf("coding implementation tool correction missing %q:\n%s", want, correction)
 		}
 	}
 }

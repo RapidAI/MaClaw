@@ -509,7 +509,11 @@ func (r *userRepo) list(ctx context.Context, tenantID string) ([]*store.User, er
 		where = "WHERE tenant_id = ?"
 		args = append(args, tenantID)
 	}
-	rows, err := r.readDB.QueryContext(
+	// Use write DB (r.db) to guarantee read-after-write consistency.
+	// The admin panel lists users immediately after delete; the read pool
+	// may return stale WAL snapshot data. Write connection always sees its
+	// own committed deletes. This is safe since admin list queries are infrequent.
+	rows, err := r.db.QueryContext(
 		ctx,
 		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, email_verified, email_verified_at, created_at, updated_at
 		 FROM users `+where+`

@@ -1817,18 +1817,15 @@ func (c *RemoteHubClient) reconnectLoop() {
 			return
 		}
 
-		// If the hub rejected our credentials, attempt re-enrollment so the
-		// machine obtains fresh machine_id / machine_token before retrying.
+		// If the hub rejected our credentials, the admin may have unbound this
+		// machine or deleted the user. Do NOT auto re-enroll — this would silently
+		// recreate a deleted user. Instead clear local state and notify the user
+		// so they can decide to re-register via the onboarding wizard.
 		if errors.Is(err, errHubAuthFailed) {
-			if c.tryReEnroll() {
-				// Re-enrollment succeeded; retry connect immediately with new creds.
-				continue
-			}
-			// Re-enrollment also failed - the server may have unbound this user.
-			// Verify activation status and clear local state if needed.
-			if !c.app.VerifyRemoteActivation() {
-				return // activation was invalidated, stop reconnecting
-			}
+			log.Printf("[hub-client] auth rejected by hub, clearing local credentials (user may have been unbound by admin)")
+			c.app.clearMachineCredentials()
+			c.app.emitEvent("hub-auth-rejected")
+			return // stop reconnecting — user must manually re-register
 		}
 
 		time.Sleep(backoff)
@@ -1839,20 +1836,6 @@ func (c *RemoteHubClient) reconnectLoop() {
 			}
 		}
 	}
-}
-
-// tryReEnroll attempts to re-enroll with the hub using the saved email and
-// client_id. Returns true if new credentials were obtained and persisted.
-func (c *RemoteHubClient) tryReEnroll() bool {
-	cfg, err := c.app.LoadConfig()
-	if err != nil || cfg.RemoteEmail == "" {
-		return false
-	}
-	result, err := c.app.ActivateRemote(cfg.RemoteEmail, "", "")
-	if err != nil {
-		return false
-	}
-	return result.MachineID != "" && result.MachineToken != ""
 }
 
 func (c *RemoteHubClient) appVersion() string {

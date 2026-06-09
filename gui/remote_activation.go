@@ -98,22 +98,24 @@ func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, er
 	return result, nil
 }
 
-// autoRegisterOnStartup re-registers a previously registered machine using saved config.
-// Called in a goroutine during startup when email and hub URL are present but machine credentials are missing.
+// autoRegisterOnStartup is called during startup when email and hub URL are present
+// but machine credentials are missing. This can happen when:
+//   - The user was unbound by admin (clearMachineCredentials preserved email/hubURL)
+//   - A config migration left partial state
+//
+// Instead of silently re-enrolling (which would recreate a deleted user), we notify
+// the frontend to prompt the user whether they want to re-register.
+// Delays slightly to ensure frontend event listeners are mounted.
 func (a *App) autoRegisterOnStartup(cfg corelib.AppConfig) {
 	email := strings.TrimSpace(cfg.RemoteEmail)
 	hubURL := strings.TrimSpace(cfg.RemoteHubURL)
 	if email == "" || hubURL == "" {
 		return
 	}
-	result, err := a.ActivateRemote(email, "", "")
-	if err != nil {
-		fmt.Printf("auto-register on startup failed: %v\n", err)
-		return
-	}
-	if result.MachineID != "" {
-		fmt.Printf("auto-register on startup succeeded: machine_id=%s\n", result.MachineID)
-	}
+	// Wait for frontend to mount event listeners before emitting.
+	time.Sleep(3 * time.Second)
+	log.Printf("[startup] hub credentials incomplete (email=%s, hub=%s, machine_id missing), prompting user to re-register", email, hubURL)
+	a.emitEvent("hub-auth-rejected")
 }
 
 func (a *App) ActivateRemote(email string, invitationCode string, mobile string) (RemoteActivationResult, error) {

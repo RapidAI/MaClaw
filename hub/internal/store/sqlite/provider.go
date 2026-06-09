@@ -39,22 +39,27 @@ func NewProvider(cfg Config) (*Provider, error) {
 		return nil, fmt.Errorf("open write db: %w", err)
 	}
 
-	// Use the same connection for reads — eliminates WAL read-after-write
-	// visibility issues where a separate read pool could return stale data
-	// after a write commit. SQLite's built-in WAL concurrency (readers don't
-	// block writers) still applies; multiple goroutines can read via the same
-	// *sql.DB because the Go pool manages per-goroutine connections.
-	readDB := writeDB
-
-	maxConns := cfg.MaxWriteOpenConns + cfg.MaxReadOpenConns
-	if maxConns < 4 {
-		maxConns = 4
+	readDB, err := sql.Open("sqlite", cfg.DSN)
+	if err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("open read db: %w", err)
 	}
-	writeDB.SetMaxOpenConns(maxConns)
-	writeDB.SetMaxIdleConns(maxConns)
+
+	writeDB.SetMaxOpenConns(cfg.MaxWriteOpenConns)
+	writeDB.SetMaxIdleConns(cfg.MaxWriteIdleConns)
 	writeDB.SetConnMaxLifetime(30 * time.Minute)
 
+	readDB.SetMaxOpenConns(cfg.MaxReadOpenConns)
+	readDB.SetMaxIdleConns(cfg.MaxReadIdleConns)
+	readDB.SetConnMaxLifetime(30 * time.Minute)
+
 	if err := applyPragmas(writeDB, cfg); err != nil {
+		_ = readDB.Close()
+		_ = writeDB.Close()
+		return nil, err
+	}
+	if err := applyPragmas(readDB, cfg); err != nil {
+		_ = readDB.Close()
 		_ = writeDB.Close()
 		return nil, err
 	}
@@ -73,7 +78,9 @@ func (p *Provider) Close() error {
 	if p.batch != nil {
 		p.batch.Close()
 	}
-	// Read and Write share the same *sql.DB — close only once.
+	if p.Read != nil {
+		_ = p.Read.Close()
+	}
 	if p.Write != nil {
 		_ = p.Write.Close()
 	}

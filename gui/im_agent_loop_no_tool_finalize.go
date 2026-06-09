@@ -274,7 +274,11 @@ func (h *IMMessageHandler) handleAgentLoopNoToolBranch(opts agentLoopNoToolBranc
 	phase.Stage = agentStageConverge
 	phase.ConsecutiveNoTool++
 
-	hallucinationResult := handleAgentLoopToolAvailabilityHallucination(opts.Iteration, result.MessageContent, result.Tools, phase, result.Conversation)
+	hallucinationCorrection := ""
+	if h.shouldUseCodingWorkflowImplementationNoToolRecovery(opts.Context, opts.UserID) {
+		hallucinationCorrection = buildCodingWorkflowImplementationToolAvailabilityCorrection()
+	}
+	hallucinationResult := handleAgentLoopToolAvailabilityHallucination(opts.Iteration, result.MessageContent, result.Tools, phase, result.Conversation, hallucinationCorrection)
 	result.Conversation = hallucinationResult.Conversation
 	if hallucinationResult.ContinueLoop {
 		result.ContinueLoop = true
@@ -371,7 +375,7 @@ func (h *IMMessageHandler) shouldContinueForPendingGuideReference(userID string)
 	return true
 }
 
-func handleAgentLoopToolAvailabilityHallucination(iteration int, msgContent string, tools []map[string]interface{}, phase *agentLoopPhase, conversation []interface{}) agentLoopNoToolRecoverResult {
+func handleAgentLoopToolAvailabilityHallucination(iteration int, msgContent string, tools []map[string]interface{}, phase *agentLoopPhase, conversation []interface{}, correctionOverride string) agentLoopNoToolRecoverResult {
 	result := agentLoopNoToolRecoverResult{Conversation: conversation}
 	if phase == nil || phase.ToolHallucinationCorrected {
 		return result
@@ -379,6 +383,9 @@ func handleAgentLoopToolAvailabilityHallucination(iteration int, msgContent stri
 	correction := detectToolAvailabilityHallucination(msgContent, tools)
 	if correction == "" {
 		return result
+	}
+	if strings.TrimSpace(correctionOverride) != "" {
+		correction = strings.TrimSpace(correctionOverride)
 	}
 	phase.ToolHallucinationCorrected = true
 	phase.ConsecutiveNoTool = 0

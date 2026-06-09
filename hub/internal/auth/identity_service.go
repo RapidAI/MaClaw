@@ -635,7 +635,9 @@ func (s *IdentityService) sendRegistrationVerification(ctx context.Context, emai
 		return nil, err
 	}
 
-	confirmURL := s.buildConfirmURL(rawToken)
+	// Use a direct GET endpoint for email verification — user clicks the link
+	// and gets a success page immediately, no PWA frontend required.
+	confirmURL := s.buildVerifyEmailURL(rawToken)
 
 	if s.mailer == nil {
 		return nil, fmt.Errorf("mail delivery is not configured")
@@ -1542,6 +1544,14 @@ func (s *IdentityService) buildConfirmURL(rawToken string) string {
 		base = "http://127.0.0.1:9399"
 	}
 	return fmt.Sprintf("%s/app/auth/confirm?token=%s", base, url.QueryEscape(rawToken))
+}
+
+func (s *IdentityService) buildVerifyEmailURL(rawToken string) string {
+	base := s.resolvePublicBaseURL()
+	if base == "" {
+		base = "http://127.0.0.1:9399"
+	}
+	return fmt.Sprintf("%s/api/auth/verify-email?token=%s", base, url.QueryEscape(rawToken))
 }
 
 // resolvePublicBaseURL reads the dynamic public base URL from settings,

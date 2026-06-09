@@ -300,6 +300,41 @@ func EmailRequestLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 	}
 }
 
+// VerifyEmailHandler handles GET /api/auth/verify-email?token=xxx
+// This is the endpoint linked in registration verification emails.
+// It directly confirms the email (grants 70% bonus credits) and returns
+// a human-readable HTML success/error page — no PWA frontend required.
+func VerifyEmailHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimSpace(r.URL.Query().Get("token"))
+		if token == "" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(verifyEmailPage("❌ 验证失败", "链接无效或缺少 token 参数。", "Verification failed", "Invalid link or missing token parameter.")))
+			return
+		}
+
+		_, _, err := identity.ConfirmEmailLogin(r.Context(), token)
+		if err != nil {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(verifyEmailPage("❌ 验证失败", "链接已过期或已使用。请重新注册或联系管理员。", "Verification failed", "Link expired or already used. Please re-register or contact admin.")))
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(verifyEmailPage("✅ 邮箱验证成功", "您的完整注册奖励额度已激活！可以关闭此页面。", "Email verified successfully", "Your full registration bonus credits are now active! You may close this page.")))
+	}
+}
+
+func verifyEmailPage(zhTitle, zhMsg, enTitle, enMsg string) string {
+	return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MaClaw Hub</title>
+<style>body{font-family:-apple-system,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f8fafc}
+.card{background:#fff;border-radius:16px;padding:48px;box-shadow:0 4px 24px rgba(0,0,0,.08);text-align:center;max-width:420px}
+h1{font-size:24px;margin:0 0 12px} p{color:#64748b;margin:0;line-height:1.6}</style></head>
+<body><div class="card"><h1>` + zhTitle + `</h1><p>` + zhMsg + `</p><br><h1 style="font-size:18px;color:#94a3b8">` + enTitle + `</h1><p style="font-size:14px">` + enMsg + `</p></div></body></html>`
+}
+
 func EmailConfirmLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req EmailConfirmLoginRequest
@@ -312,7 +347,6 @@ func EmailConfirmLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Token is required")
 			return
 		}
-
 		token, user, err := identity.ConfirmEmailLogin(r.Context(), req.Token)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "LOGIN_CONFIRM_FAILED", err.Error())

@@ -43,6 +43,10 @@ func buildCodingWorkflowImplementationEmptyResultRecoverPrompt(pendingTaskHint s
 	return base
 }
 
+func buildCodingWorkflowImplementationToolAvailabilityCorrection() string {
+	return "[system correction] delegate_task is available in the current tool list. Coding workflow implementation must be handed off with delegate_task(agent=\"coding_workflow\", request=\"...\") to the internal CodingSubAgent, using approved task IDs and current workflow context."
+}
+
 func buildCodingWorkflowImplementationToolingFailureText(reason string, pendingTaskHint string) string {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {

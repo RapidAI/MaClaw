@@ -1446,6 +1446,15 @@ function App() {
             callBackend(() => IsGossipAllowed()).then(setGossipAllowed).catch(() => {});
         });
 
+        // Hub auth rejected: admin unbound this user — prompt to re-register.
+        // Note: uses bilingual message to avoid stale config closure issue.
+        safeEventsOn("hub-auth-rejected", () => {
+            const msg = 'Hub 绑定已失效（管理员已解除绑定），是否重新注册？\n\nYour Hub account has been unbound by the administrator. Re-register?';
+            if (confirm(msg)) {
+                setActiveTab('onboarding');
+            }
+        });
+
         return () => {
             safeEventsOff("env-log");
             safeEventsOff("env-check-done");
@@ -1464,6 +1473,7 @@ function App() {
             safeEventsOff("tool-updated");
             safeEventsOff("tools-install-done");
             safeEventsOff("hub-security-policy-changed");
+            safeEventsOff("hub-auth-rejected");
         };
     }, []);
 

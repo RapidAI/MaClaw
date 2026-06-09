@@ -480,6 +480,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/enroll/start", EnrollStartHandler(identity, invitationSvc, securitySvc))
 	mux.HandleFunc("POST /api/auth/email-request", EmailRequestLoginHandler(identity))
 	mux.HandleFunc("POST /api/auth/email-confirm", EmailConfirmLoginHandler(identity))
+	mux.HandleFunc("GET /api/auth/verify-email", VerifyEmailHandler(identity))
 	mux.HandleFunc("POST /api/auth/email-poll", EmailPollLoginHandler(identity))
 	mux.HandleFunc("POST /api/entry/probe", EntryProbeHandler(entrySvc))
 	mux.HandleFunc("GET /api/machines", ListMachinesHandler(identity, deviceSvc))
