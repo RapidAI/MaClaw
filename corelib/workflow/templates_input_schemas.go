@@ -20,7 +20,7 @@ func codingRequirementsInputSchema() *PhaseInputSchema {
 			{Name: "build_tool", Label: "Build tool", Type: "select", Options: []PhaseInputOption{{Label: "Auto-select (recommended)", Value: "auto"}, {Label: "CMake", Value: "cmake"}, {Label: "Makefile", Value: "makefile"}, {Label: "npm/yarn/pnpm", Value: "npm"}, {Label: "Gradle/Maven", Value: "gradle"}, {Label: "Cargo", Value: "cargo"}, {Label: "go mod", Value: "gomod"}, {Label: "Other", Value: "other"}}},
 			{Name: "description", Label: "Feature description", Type: "textarea", Required: true, Placeholder: "Describe the expected features, gameplay, UI, interactions, and behavior.", Description: "Be specific about what the software should do and how success should be judged."},
 			{Name: "constraints", Label: "Special requirements", Type: "textarea", Placeholder: "Performance, dependency limits, UI style, compatibility, security, or deployment requirements."},
-			{Name: "project_path", Label: "Project directory", Type: "text", Placeholder: "Example: D:\\workprj\\my-game", Description: "Leave empty to use the current workspace."},
+			{Name: "project_path", Label: "Project directory", Type: "directory", Placeholder: "Example: D:\\workprj\\my-game", Description: "Leave empty to use the current workspace."},
 		},
 	}
 }

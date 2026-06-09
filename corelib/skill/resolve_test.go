@@ -91,6 +91,26 @@ func TestResolveStep_CommonAliasCanSatisfyTemplatePlaceholder(t *testing.T) {
 	}
 }
 
+func TestResolveStep_ModeAliasSatisfiesActionPlaceholder(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "python weather.py {{action}} --lat {{lat}} --lng {{lng}}",
+		},
+	}
+	params := CompleteParamsForRunner(nil, []corelib.NLSkillStep{step}, nil)
+	vars := map[string]string{"mode": "weekly", "lat": "30.27", "lng": "120.15"}
+
+	result, err := ResolveStep(step, vars, "", params, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if cmd != "python weather.py weekly --lat 30.27 --lng 120.15" {
+		t.Fatalf("command = %q, want mode alias resolved into action placeholder", cmd)
+	}
+}
+
 func TestResolveStep_CommonAliasDoesNotCollapseDeclaredTemplateParams(t *testing.T) {
 	step := corelib.NLSkillStep{
 		Action: "bash",

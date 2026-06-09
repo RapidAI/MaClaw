@@ -153,6 +153,55 @@ func TestValidateWorkflowTemplateContractBuiltinTemplates(t *testing.T) {
 	}
 }
 
+func TestValidateWorkflowTemplateContractRejectsDirectorySemanticTextField(t *testing.T) {
+	tmpl := &WorkflowTemplate{Type: "bad_directory_field", Phases: []PhaseTemplate{{
+		ID:         "intake",
+		ToolPolicy: ToolFilterDocOnly,
+		InputSchema: &PhaseInputSchema{Fields: []PhaseInputField{{
+			Name: "project_path",
+			Type: "text",
+		}}},
+	}}}
+
+	if errs := ValidateWorkflowTemplateContract(tmpl); len(errs) == 0 {
+		t.Fatal("expected project_path text field to violate directory picker contract")
+	}
+}
+
+func TestValidateWorkflowTemplateContractRejectsUnsupportedInputFieldType(t *testing.T) {
+	for _, fieldType := range []string{"direcotry", "object"} {
+		t.Run(fieldType, func(t *testing.T) {
+			tmpl := &WorkflowTemplate{Type: "bad_field_type", Phases: []PhaseTemplate{{
+				ID:         "intake",
+				ToolPolicy: ToolFilterDocOnly,
+				InputSchema: &PhaseInputSchema{Fields: []PhaseInputField{{
+					Name: "target",
+					Type: fieldType,
+				}}},
+			}}}
+
+			if errs := ValidateWorkflowTemplateContract(tmpl); len(errs) == 0 {
+				t.Fatal("expected unsupported field type to violate input schema contract")
+			}
+		})
+	}
+}
+
+func TestValidateWorkflowTemplateContractAllowsFilePathTextField(t *testing.T) {
+	tmpl := &WorkflowTemplate{Type: "file_path_field", Phases: []PhaseTemplate{{
+		ID:         "intake",
+		ToolPolicy: ToolFilterDocOnly,
+		InputSchema: &PhaseInputSchema{Fields: []PhaseInputField{{
+			Name: "file_path",
+			Type: "text",
+		}}},
+	}}}
+
+	if errs := ValidateWorkflowTemplateContract(tmpl); len(errs) != 0 {
+		t.Fatalf("file_path should not be forced to directory picker: %v", errs)
+	}
+}
+
 func TestValidateWorkflowTemplateContractRejectsConflictingScopes(t *testing.T) {
 	cases := []struct {
 		name string

@@ -60,11 +60,13 @@ func TestSkillRunUnconsumedArgsRejectsIgnoredRuntimeArgs(t *testing.T) {
 		Steps: []corelib.NLSkillStep{{
 			Action: "bash",
 			Params: map[string]interface{}{
-				"command": "python weather.py realtime --lat 39.9 --lng 116.4",
+				"command": "python weather.py realtime --lat {{lat}} --lng {{lng}}",
 			},
 		}},
 	}
 	runArgs := map[string]interface{}{"args": map[string]interface{}{"city": "天津"}}
+	runArgs["args"].(map[string]interface{})["lat"] = 30.27
+	runArgs["args"].(map[string]interface{})["lng"] = 120.15
 	vars := normalizeSkillRunVars(runArgs)
 	params, missing := skillRunParameterContract(skill, vars, runArgs)
 	if len(missing) != 0 {
@@ -73,6 +75,35 @@ func TestSkillRunUnconsumedArgsRejectsIgnoredRuntimeArgs(t *testing.T) {
 	unknown := skillRunUnconsumedArgs(skill, params, vars, runArgs)
 	if len(unknown) != 1 || unknown[0] != "city" {
 		t.Fatalf("unknown = %#v, want [city]", unknown)
+	}
+}
+
+func TestSkillRunUnconsumedArgsIgnoresHiddenRuntimeArgs(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Name: "weather",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "python weather.py {{action}} --lat {{lat}} --lng {{lng}}",
+			},
+		}},
+	}
+	runArgs := map[string]interface{}{
+		"_runtime_platform":        "desktop",
+		"_runtime_policy_owner_id": "desktop-user",
+		"args": map[string]interface{}{
+			"mode": "realtime",
+			"lat":  30.2741,
+			"lng":  120.1551,
+		},
+	}
+	vars := normalizeSkillRunVars(runArgs)
+	params, missing := skillRunParameterContract(skill, vars, runArgs)
+	if len(missing) != 0 {
+		t.Fatalf("missing = %#v, want none", missing)
+	}
+	if unknown := skillRunUnconsumedArgs(skill, params, vars, runArgs); len(unknown) != 0 {
+		t.Fatalf("unknown = %#v, want hidden runtime args ignored", unknown)
 	}
 }
 
@@ -154,6 +185,24 @@ func TestSkillRunUnconsumedArgsUsesCanonicalKeys(t *testing.T) {
 	params, _ := skillRunParameterContract(skill, vars, runArgs)
 	if unknown := skillRunUnconsumedArgs(skill, params, vars, runArgs); len(unknown) != 0 {
 		t.Fatalf("unknown = %#v, want none", unknown)
+	}
+}
+
+func TestSkillRunUnconsumedArgsUsesPipelinePlaceholders(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Name: "pipe",
+		Mode: "pipeline",
+		Pipeline: []corelib.SkillPipelineStep{{
+			Skill:  "child",
+			Params: map[string]string{"input": "{{input}}"},
+		}},
+	}
+	runArgs := map[string]interface{}{"args": map[string]interface{}{"input": "report.md", "city": "Nanjing"}}
+	vars := normalizeSkillRunVars(runArgs)
+	params, _ := skillRunParameterContract(skill, vars, runArgs)
+	unknown := skillRunUnconsumedArgs(skill, params, vars, runArgs)
+	if len(unknown) != 1 || unknown[0] != "city" {
+		t.Fatalf("unknown = %#v, want [city]", unknown)
 	}
 }
 

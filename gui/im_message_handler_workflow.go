@@ -411,6 +411,20 @@ func (h *IMMessageHandler) workflowStartProjectPathForOwner(ownerID string) stri
 	return strings.TrimSpace(corelib.EffectiveWorkspaceDir())
 }
 
+func (h *IMMessageHandler) workflowStartProjectPathForIntent(ownerID, text string, intent workflow.StructuredIntent) string {
+	if intent.Category == workflow.WorkflowCoding {
+		candidates := []string{text, intent.Summary}
+		candidates = append(candidates, intent.Goals...)
+		candidates = append(candidates, intent.Constraints...)
+		for _, candidate := range candidates {
+			if projectPath := extractCodingDelegateProjectPath(candidate); projectPath != "" {
+				return projectPath
+			}
+		}
+	}
+	return h.workflowStartProjectPathForOwner(ownerID)
+}
+
 func (h *IMMessageHandler) resolveWorkflowStartProjectPath() (string, error) {
 	projectPath := strings.TrimSpace(h.workflowStartProjectPath())
 	return h.resolveWorkflowProjectPath(projectPath)
@@ -426,7 +440,7 @@ func (h *IMMessageHandler) confirmWorkflowStart(userID, text string, intent work
 		return nil
 	}
 	lang := h.getWorkflowLang()
-	item := buildPendingWorkflowConfirmation(userID, text, intent, startReply, lang, h.workflowStartProjectPathForOwner(userID))
+	item := buildPendingWorkflowConfirmation(userID, text, intent, startReply, lang, h.workflowStartProjectPathForIntent(userID, text, intent))
 	h.confirmationStore.set(item)
 	return buildWorkflowConfirmationResponse(item, lang)
 }
@@ -622,7 +636,7 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 	}
 	projectPath := strings.TrimSpace(pending.LastProjectPath)
 	if projectPath == "" {
-		projectPath = h.workflowStartProjectPathForOwner(userID)
+		projectPath = h.workflowStartProjectPathForIntent(userID, pending.OriginalText, wfIntent)
 	}
 	if normalizedPath, err := h.resolveWorkflowProjectPath(projectPath); err != nil {
 		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, lang, err)}}
@@ -1618,7 +1632,8 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 		if resp := h.confirmWorkflowStart(userID, text, *intent, reply); resp != nil {
 			return resp
 		}
-		projectPath, prepErr := h.resolveWorkflowStartProjectPath()
+		projectPath := h.workflowStartProjectPathForIntent(userID, text, *intent)
+		projectPath, prepErr := h.resolveWorkflowProjectPath(projectPath)
 		if prepErr != nil {
 			log.Printf("[WorkflowInterception] invalid workflow project path for user %s: %v", userID, prepErr)
 			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, h.getWorkflowLang(), prepErr)}
@@ -1747,7 +1762,8 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 		if resp := h.confirmWorkflowStart(userID, text, *result.Intent, result.Reply); resp != nil {
 			return resp
 		}
-		projectPath, prepErr := h.resolveWorkflowStartProjectPath()
+		projectPath := h.workflowStartProjectPathForIntent(userID, text, *result.Intent)
+		projectPath, prepErr := h.resolveWorkflowProjectPath(projectPath)
 		if prepErr != nil {
 			log.Printf("[WorkflowInterception] invalid workflow project path for user %s: %v", userID, prepErr)
 			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, h.getWorkflowLang(), prepErr)}

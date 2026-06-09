@@ -97,24 +97,26 @@ func TestToolRunSkill_WaitSecondsInStructuredOutput(t *testing.T) {
 
 func TestToolRunSkill_BuildsRunArgs(t *testing.T) {
 	raw := map[string]interface{}{
-		"name":         "demo-skill",
-		"action":       "run",
-		"input":        "report.md",
-		"output":       "report.pdf",
-		"query":        "weather in Chengdu",
-		"mode":         "advanced",
-		"operation":    "safe",
-		"steps":        []interface{}{"safe-step"},
-		"wait_seconds": 30,
-		"auto_run":     true,
-		"auto_fix":     true,
-		"force":        true,
-		"field":        "command",
-		"value":        "patched",
-		"find":         "old",
-		"replace":      "new",
-		"reason":       "patch test",
-		"args":         map[string]interface{}{"format": "A4", "count": 2, "operation": "nested-safe"},
+		"name":                     "demo-skill",
+		"action":                   "run",
+		"input":                    "report.md",
+		"output":                   "report.pdf",
+		"query":                    "weather in Chengdu",
+		"mode":                     "advanced",
+		"operation":                "safe",
+		"_runtime_platform":        "desktop",
+		"_runtime_policy_owner_id": "desktop-user",
+		"steps":                    []interface{}{"safe-step"},
+		"wait_seconds":             30,
+		"auto_run":                 true,
+		"auto_fix":                 true,
+		"force":                    true,
+		"field":                    "command",
+		"value":                    "patched",
+		"find":                     "old",
+		"replace":                  "new",
+		"reason":                   "patch test",
+		"args":                     map[string]interface{}{"format": "A4", "count": 2, "operation": "nested-safe"},
 	}
 	got := buildRunSkillArgs(raw)
 	argsMap, _ := got["args"].(map[string]interface{})
@@ -130,7 +132,7 @@ func TestToolRunSkill_BuildsRunArgs(t *testing.T) {
 	if got["operation"] != "safe" || len(got["steps"].([]interface{})) != 1 {
 		t.Fatalf("buildRunSkillArgs() = %#v, want workflow selectors preserved", got)
 	}
-	for _, key := range []string{"name", "action", "wait_seconds", "auto_run", "auto_fix", "force", "field", "value", "find", "replace", "reason"} {
+	for _, key := range []string{"name", "action", "runtime_platform", "runtime_policy_owner_id", "_runtime_platform", "_runtime_policy_owner_id", "wait_seconds", "auto_run", "auto_fix", "force", "field", "value", "find", "replace", "reason"} {
 		if _, ok := got[key]; ok {
 			t.Fatalf("buildRunSkillArgs() = %#v, want %s control key stripped", got, key)
 		}

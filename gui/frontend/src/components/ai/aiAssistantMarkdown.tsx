@@ -46,7 +46,7 @@ function looksLikeFilePath(s: string): boolean {
  * Uses the same patterns as the inline regex path groups to find the path substring.
  */
 function extractPathFromContent(s: string): string | null {
-    const m = s.match(/([A-Za-z]:\\[^\n\r*?"<>|]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/);
+    const m = s.match(/([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)|([A-Za-z]:\\[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\\])|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/);
     return m ? m[0] : null;
 }
 
@@ -61,7 +61,12 @@ function renderPathLink(filePath: string, key: number, t: Theme): React.ReactNod
         >{"\uD83D\uDCC2 "}{display}</a>
     );
 }
-const codeBlockPathPattern = /([A-Za-z]:\\[^\n\r*?"<>|]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|]+\.\w+)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))\/[^\n\r*?"<>|]+\.\w+)/g;
+// CJK exclusion ranges used in path-detection regexes below:
+//   \u3000-\u303f  CJK symbols & punctuation (、。「」【】)
+//   \u4e00-\u9fff  CJK unified ideographs (common Chinese/Japanese/Korean characters)
+//   \uff00-\uffef  fullwidth forms (，。（）：！etc)
+// These prevent path regexes from greedily matching through Chinese text.
+const codeBlockPathPattern = /([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))\/[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)/g;
 function renderCodePathLink(filePath: string, key: string, t: Theme): React.ReactNode {
     const display = stripPathWrapping(filePath);
     return <a key={key} href="#" onClick={(event) => openFileInFolder(event, display)} style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }} title={display}>{display}</a>;
@@ -105,7 +110,14 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
     // Mechanism: Instead of matching all backtick content with one group then guessing if it's a path,
     // we match "backtick containing a path" as a SEPARATE higher-priority group. The regex engine
     // guarantees alternation order = priority. This eliminates the need for post-match heuristics.
-    const re = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
+    //
+    // Bare path groups (7-12):
+    //   Group 7: Windows dir — ends with \ (e.g. C:\Users\test\)     — allows internal spaces
+    //   Group 8: Windows file — ends with .ext (e.g. C:\file.txt)    — allows internal spaces
+    //   Group 9: Windows bare — no \ or .ext anchor (e.g. D:\game2)  — NO spaces (stops at first space)
+    //   Group 10-11: Unix file — ends with .ext (e.g. ~/file.txt)    — allows internal spaces
+    //   Group 12-13: Unix bare — [\w/.\-]+ only (e.g. ~/projects)
+    const re = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)|([A-Za-z]:\\[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\\])(?=[\s,;:!?\u3000-\u303f\u4e00-\u9fff\uff00-\uffef`'"\u2018\u2019\u201c\u201d()\[\]]|$)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
     let lastIndex = 0;
     let idx = 0;
     const removeTrailingQuoteFromPreviousText = () => {
@@ -160,7 +172,7 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
             } else {
                 parts.push(m);
             }
-        } else if (match[7] || match[8] || match[9] || match[11]) {
+        } else if (match[7] || match[8] || match[9] || match[10] || match[12]) {
             const nextChar = text[re.lastIndex] || "";
             if (isPathQuoteChar(text[match.index - 1] || "") && isPathQuoteChar(nextChar)) {
                 removeTrailingQuoteFromPreviousText();

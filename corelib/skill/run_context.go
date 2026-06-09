@@ -199,6 +199,130 @@ func CanonicalRunVarKey(key string) string {
 	return canonicalRunVarKey(key)
 }
 
+// FoldUnconsumedArgsToInput merges undeclared user-provided args into the
+// "input" carrier key when the skill has no explicit parameter contract.
+//
+// This preserves semantic args passed to a contractless skill (for example
+// city="南京") as runner input context instead of silently discarding them.
+// Downstream craft_tool/documentation fallback steps can then consume that
+// context through the standard "input" carrier. Bash commands still need an
+// explicit parameter contract or placeholders to receive concrete CLI args.
+//
+// Call this AFTER the unconsumed-args check has determined the skill is
+// contractless (allowed set is empty) and accepted the args.
+func FoldUnconsumedArgsToInput(vars map[string]string, params []corelib.NLSkillParam) {
+	if len(vars) == 0 {
+		return
+	}
+	// Build the set of keys that are already consumed by carrier keys or
+	// the parameter binding system.
+	consumed := ParameterBindingKeySet(params)
+	consumed["input"] = true
+	consumed["user_prompt"] = true
+	consumed["output"] = true
+	consumed["operation"] = true
+
+	var parts []string
+	for key, value := range vars {
+		canonical := canonicalRunVarKey(key)
+		if canonical == "" || consumed[canonical] || isUndeclaredRunCarrierKey(key) {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		parts = append(parts, key+": "+value)
+	}
+	if len(parts) == 0 {
+		return
+	}
+	sort.Strings(parts)
+	folded := strings.Join(parts, "\n")
+	if existing := strings.TrimSpace(vars["input"]); existing != "" {
+		vars["input"] = existing + "\n" + folded
+	} else {
+		vars["input"] = folded
+	}
+}
+
+// IsContractlessSkill reports whether a skill has no explicit parameter
+// contract: no declared params, no required_args, and no placeholders in step
+// or pipeline templates. Used by the unconsumed-args checker and the runner to
+// decide whether to accept/fold unknown args.
+func IsContractlessSkill(entry *corelib.NLSkillEntry) bool {
+	if entry == nil {
+		return true
+	}
+	if len(entry.Params) > 0 || len(entry.RequiredArgs) > 0 {
+		return false
+	}
+	return !StepsHavePlaceholders(entry.Steps) && !PipelineHavePlaceholders(entry.Pipeline)
+}
+
+// StepsHavePlaceholders checks whether any executable step template contains
+// {{placeholder}}, ${placeholder}, or {placeholder}.
+func StepsHavePlaceholders(steps []corelib.NLSkillStep) bool {
+	return len(StepPlaceholderKeySet(steps)) > 0
+}
+
+// StepPlaceholderKeySet returns canonical placeholder keys used by step params
+// and when conditions, including fallback steps. It intentionally does not scan
+// capture or poll/loop regex fields because regex quantifiers like {4} would
+// be false positives.
+func StepPlaceholderKeySet(steps []corelib.NLSkillStep) map[string]bool {
+	keys := map[string]bool{}
+	for _, step := range steps {
+		addStepPlaceholderKeys(keys, &step, map[*corelib.NLSkillStep]bool{})
+	}
+	return keys
+}
+
+func addStepPlaceholderKeys(dst map[string]bool, step *corelib.NLSkillStep, seen map[*corelib.NLSkillStep]bool) {
+	if step == nil || seen[step] {
+		return
+	}
+	seen[step] = true
+	extractPlaceholdersFromParams(step.Params, func(key string) {
+		if key = canonicalRunVarKey(key); key != "" {
+			dst[key] = true
+		}
+	})
+	for _, key := range ExtractPlaceholderKeys(step.When) {
+		if key = canonicalRunVarKey(key); key != "" {
+			dst[key] = true
+		}
+	}
+	addStepPlaceholderKeys(dst, step.FallbackStep, seen)
+}
+
+// PipelineHavePlaceholders checks whether any pipeline param or checkpoint
+// message contains a pipeline variable template such as {{input}}.
+func PipelineHavePlaceholders(steps []corelib.SkillPipelineStep) bool {
+	return len(PipelinePlaceholderKeySet(steps)) > 0
+}
+
+// PipelinePlaceholderKeySet returns canonical placeholder keys used by pipeline
+// params and checkpoint messages.
+func PipelinePlaceholderKeySet(steps []corelib.SkillPipelineStep) map[string]bool {
+	keys := map[string]bool{}
+	for _, step := range steps {
+		for _, value := range step.Params {
+			addPlaceholderKeys(keys, value)
+		}
+		addPlaceholderKeys(keys, step.CheckpointMessage)
+	}
+	return keys
+}
+
+func addPlaceholderKeys(dst map[string]bool, text string) {
+	for _, key := range ExtractPlaceholderKeys(text) {
+		if key = canonicalRunVarKey(key); key != "" {
+			dst[key] = true
+		}
+	}
+}
+
 func isRunControlKey(key string) bool {
 	key = canonicalRunVarKey(key)
 	if IsManageSkillRunnerControlKey(key) {
@@ -217,7 +341,7 @@ func isRunControlKey(key string) bool {
 // Runtime selectors such as query and mode intentionally remain forwardable.
 func IsManageSkillRunnerControlKey(key string) bool {
 	switch canonicalRunVarKey(key) {
-	case "action", "name", "skill", "skill_name", "qualified_name", "skill_id", "hub_url", "install_ref", "auto_run", "wait_seconds", "run_id", "auto_fix", "force", "step_index", "field", "value", "find", "replace", "reason":
+	case "action", "name", "skill", "skill_name", "qualified_name", "skill_id", "hub_url", "install_ref", "auto_run", "wait_seconds", "run_id", "auto_fix", "force", "step_index", "field", "value", "find", "replace", "reason", "runtime_platform", "runtime_policy_owner_id":
 		return true
 	default:
 		return false

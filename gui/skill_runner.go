@@ -289,6 +289,14 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 
 	templateVars := normalizeSkillRunVars(runArgs)
 	extraEnv := cskill.ExtractRunExtraEnvFromArgs(runArgs)
+
+	// Mechanism: For contractless skills (no declared params, no required_args,
+	// no {{placeholders}}), fold LLM-provided args into the "input" carrier key
+	// so documentation/craft_tool fallbacks receive the same semantic context.
+	if cskill.IsContractlessSkill(target) {
+		cskill.FoldUnconsumedArgsToInput(templateVars, target.Params)
+	}
+
 	if cskill.IsPipelineSkill(target) {
 		return r.startPipelineRun(policyOwnerID, skillName, target, runArgs, templateVars, extraEnv)
 	}

@@ -476,14 +476,15 @@ func invalidPhaseInputFields(schema *PhaseInputSchema, formData map[string]inter
 }
 
 func validatePhaseInputField(field PhaseInputField, value interface{}) error {
-	typ := strings.ToLower(strings.TrimSpace(field.Type))
-	switch typ {
-	case "", "text", "textarea", "date", "file":
+	typ := normalizePhaseInputFieldType(field.Type)
+	if isStringPhaseInputFieldType(typ) {
 		s, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("must be text")
 		}
 		return validateStringPhaseInput(field, s)
+	}
+	switch typ {
 	case "select":
 		s, ok := value.(string)
 		if !ok {
@@ -522,8 +523,10 @@ func validatePhaseInputField(field PhaseInputField, value interface{}) error {
 		if _, ok := value.(bool); !ok {
 			return fmt.Errorf("must be true or false")
 		}
-	default:
+	case "object_form", "array_table":
 		return nil
+	default:
+		return fmt.Errorf("has unsupported field type %q", field.Type)
 	}
 	return nil
 }

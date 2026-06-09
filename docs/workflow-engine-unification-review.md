@@ -73,6 +73,8 @@
 
 补充边界：`ProjectPath` 是 workflow 的目标上下文，不是“创建项目目录”的执行指令。若目标项目目录已存在，阶段文档可以按旧规则落到 `{ProjectPath}/.maclaw/workflow/{workflowID}` 和 `docs/workflow/...`；若目标目录尚不存在，workflow system 只能把阶段文档落到应用内部存储（如 `~/.maclaw/data/workflow/{workflowID}`），不得因为启动流程、切换阶段、确认任务拆分或激活 orchestrator 而 `MkdirAll(ProjectPath)`。如果后续 `implementation` 阶段由 CodingSubAgent 创建了项目根，workflow 完成/取消时再把已确认的 `PhaseOutputs` 发布到项目内 `docs/workflow/...`。新项目根目录、`src/`、`CMakeLists.txt` 等项目结构必须作为任务进入 `implementation` 后由 `delegate_task(agent="coding_workflow")` 的 CodingSubAgent 创建。
 
+补充实现约束：coding workflow 启动时，如果用户原始需求、意图摘要、目标或约束中包含显式 Windows 项目路径（如 `D:\workprj\my-game` 或 `D:/workprj/my-game`），该路径优先写入 workflow state 的 `ProjectPath`，但仍只做合法性校验，不创建目录。内部阶段文档 fallback 目录不再只使用清洗后的 `workflowID`，而是使用 `清洗前缀 + sha256(workflowID)` 的短 hash 后缀，避免异常 ID 清洗后碰撞导致文档串线。
+
 ### 3. 状态推进散落在多个边界
 
 当前 engine 是权威状态机，但 GUI/TUI/agentservice 仍各有工具曝光、执行校验、orchestrator 激活点。虽然它们已经逐步使用 core workflow 函数，但新增阶段能力时仍有漏接风险。

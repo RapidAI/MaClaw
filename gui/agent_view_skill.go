@@ -247,15 +247,35 @@ func skillRunUnconsumedArgs(skill *corelib.NLSkillEntry, params []corelib.NLSkil
 			allowed[key] = true
 		}
 	}
-	for _, step := range executionSteps {
-		for _, value := range step.Params {
-			for _, key := range cskill.ExtractPlaceholderKeys(fmt.Sprint(value)) {
-				if normalized := cskill.CanonicalRunVarKey(key); normalized != "" {
-					allowed[normalized] = true
-				}
+	for key := range cskill.StepPlaceholderKeySet(executionSteps) {
+		allowed[key] = true
+	}
+	for key := range cskill.PipelinePlaceholderKeySet(skill.Pipeline) {
+		allowed[key] = true
+	}
+
+	// Mechanism: If the skill has NO explicit parameter contract (no declared
+	// params, no required_args, no {{placeholders}} in executable templates),
+	// then the skill author never told the runner what parameters it accepts. In
+	// this case, rejecting LLM-provided args is runner overreach — the skill
+	// simply has no contract to validate against. Accept all args and fold
+	// them into input context for the runner to use as semantic input.
+	//
+	// Safety: cap at maxUnconsumedArgsForContractlessSkill unknown keys —
+	// more than that indicates the LLM has a fundamental misunderstanding
+	// of the skill, not a missing contract.
+	if len(allowed) == 0 {
+		userKeyCount := 0
+		for key := range vars {
+			if !cskill.IsUndeclaredRunCarrierKey(key) && cskill.CanonicalRunVarKey(key) != "" {
+				userKeyCount++
 			}
 		}
+		if userKeyCount <= maxUnconsumedArgsForContractlessSkill {
+			return nil
+		}
 	}
+
 	unknownSet := map[string]bool{}
 	for key := range vars {
 		normalized := cskill.CanonicalRunVarKey(key)
@@ -271,6 +291,11 @@ func skillRunUnconsumedArgs(skill *corelib.NLSkillEntry, params []corelib.NLSkil
 	sort.Strings(unknown)
 	return unknown
 }
+
+// maxUnconsumedArgsForContractlessSkill is the safety cap for skills without
+// any parameter contract. If LLM passes more keys than this, it likely has a
+// fundamental misunderstanding of the skill — fall through to contract_mismatch.
+const maxUnconsumedArgsForContractlessSkill = 8
 
 func skillNeedsOperationChoice(skill *corelib.NLSkillEntry, runArgs map[string]interface{}) bool {
 	if skill == nil || !strings.EqualFold(skill.Mode, "api_workflow") {

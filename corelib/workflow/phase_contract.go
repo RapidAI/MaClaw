@@ -1,6 +1,9 @@
 package workflow
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // PhaseContract is the static, template-derived capability contract for one
 // phase. Runtime gates such as "waiting for form" belong in PhaseRuntimeGate.
@@ -191,6 +194,7 @@ func ValidateWorkflowTemplateContract(tmpl *WorkflowTemplate) []error {
 	for _, phase := range tmpl.Phases {
 		c := DerivePhaseContract(tmpl, phase)
 		prefix := fmt.Sprintf("%s/%s", tmpl.Type, phase.ID)
+		errs = append(errs, validatePhaseInputSchemaContract(prefix, phase.InputSchema)...)
 		if c.RequiresReview && c.MutationScope == MutationScopeProject {
 			errs = append(errs, fmt.Errorf("%s: reviewable phase cannot mutate project state", prefix))
 		}
@@ -239,4 +243,40 @@ func ValidateWorkflowTemplateContract(tmpl *WorkflowTemplate) []error {
 		}
 	}
 	return errs
+}
+
+func validatePhaseInputSchemaContract(prefix string, schema *PhaseInputSchema) []error {
+	if schema == nil {
+		return nil
+	}
+	var errs []error
+	for _, field := range schema.Fields {
+		if !isSupportedPhaseInputFieldType(field.Type) {
+			errs = append(errs, fmt.Errorf("%s: field %q uses unsupported form field type %q", prefix, field.Name, field.Type))
+			continue
+		}
+		if !phaseInputFieldRequiresDirectoryPicker(field) {
+			continue
+		}
+		if normalizePhaseInputFieldType(field.Type) != "directory" {
+			errs = append(errs, fmt.Errorf("%s: field %q is a working-directory selector and must use type directory, got %q", prefix, field.Name, field.Type))
+		}
+	}
+	return errs
+}
+
+func phaseInputFieldRequiresDirectoryPicker(field PhaseInputField) bool {
+	name := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(field.Name, "-", "_")))
+	switch name {
+	case "project_path", "project_dir", "project_directory",
+		"working_dir", "working_directory", "workdir", "cwd",
+		"workspace", "workspace_path", "workspace_dir", "workspace_directory",
+		"root_path", "root_dir", "root_directory",
+		"directory", "dir", "folder":
+		return true
+	default:
+		return strings.HasSuffix(name, "_dir") ||
+			strings.HasSuffix(name, "_directory") ||
+			strings.HasSuffix(name, "_folder")
+	}
 }

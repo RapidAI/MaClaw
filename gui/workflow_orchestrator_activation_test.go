@@ -139,7 +139,7 @@ func TestHandleWorkflowEngineResponseBlocksWhenProjectPathInvalid(t *testing.T) 
 		t.Fatalf("expected invalid workflow project path error, got %#v", got)
 	}
 	if orch := h.getTaskOrchestratorReadOnly("u1"); orch != nil && orch.IsActive() {
-		t.Fatalf("orchestrator must not activate when project path cannot be prepared, got %#v", orch)
+		t.Fatalf("orchestrator must not activate when workflow project path is invalid, got %#v", orch)
 	}
 	if _, ok := h.workflowAgentLoopMarker.Load("u1"); ok {
 		t.Fatal("workflow agent loop must not start after invalid workflow project path")

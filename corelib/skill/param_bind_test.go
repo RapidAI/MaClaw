@@ -55,6 +55,25 @@ func TestBindParams_HonorsCommonAliases(t *testing.T) {
 	}
 }
 
+func TestBindParams_HonorsModeAliasForAction(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "action", Required: true},
+	}
+	vars := map[string]string{"mode": "realtime"}
+
+	result := BindParams(params, vars)
+
+	if result.HasErrors() {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	if result.ResolvedVars["action"] != "realtime" || result.ResolvedVars["mode"] != "realtime" {
+		t.Fatalf("ResolvedVars = %#v, want mode bound to action", result.ResolvedVars)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none for action mode alias", result.Warnings)
+	}
+}
+
 func TestBindParams_CommonAliasesDoNotOverrideDeclaredParams(t *testing.T) {
 	params := []corelib.NLSkillParam{
 		{Name: "text", Required: true},
@@ -69,6 +88,23 @@ func TestBindParams_CommonAliasesDoNotOverrideDeclaredParams(t *testing.T) {
 	}
 	if result.ResolvedVars["text"] != "from-text" || result.ResolvedVars["content"] != "from-content" {
 		t.Fatalf("ResolvedVars = %#v, want declared params to keep independent values", result.ResolvedVars)
+	}
+}
+
+func TestBindParams_ModeAliasDoesNotOverrideDeclaredModeParam(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "action", Required: true},
+		{Name: "mode", Required: true},
+	}
+	vars := map[string]string{"action": "run", "mode": "advanced"}
+
+	result := BindParams(params, vars)
+
+	if result.HasErrors() {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	if result.ResolvedVars["action"] != "run" || result.ResolvedVars["mode"] != "advanced" {
+		t.Fatalf("ResolvedVars = %#v, want action and mode independent", result.ResolvedVars)
 	}
 }
 

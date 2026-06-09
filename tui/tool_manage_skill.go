@@ -674,6 +674,13 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 	skill.NormalizeSkillForRunner(entry)
 	templateVars := normalizeTUIRunSkillVars(args)
 	extraEnv := extractTUIRunExtraEnv(args)
+
+	// Mechanism: For contractless skills (no declared params, no required_args,
+	// no {{placeholders}}), fold LLM-provided args into the "input" carrier key.
+	if skill.IsContractlessSkill(entry) {
+		skill.FoldUnconsumedArgsToInput(templateVars, entry.Params)
+	}
+
 	if skill.IsPipelineSkill(entry) {
 		result := skillRunPipelineDetailed(app, entry, args, templateVars)
 		if !internalPipelineCall {

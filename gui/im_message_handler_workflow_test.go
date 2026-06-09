@@ -153,6 +153,38 @@ func TestApprovePendingWorkflowConfirmationRecordsProjectPathWithoutCreatingDire
 	}
 }
 
+func TestApprovePendingWorkflowConfirmationInfersExplicitCodingProjectPath(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "test-workflow-start-infers-explicit-project-dir"
+	projectPath := filepath.Join(t.TempDir(), "explicit-new-project")
+	if filepath.VolumeName(projectPath) == "" {
+		projectPath = `D:\workprj\maclaw-explicit-new-project`
+	}
+
+	result := handler.approvePendingWorkflowConfirmation(userID, &pendingConfirmation{
+		UserID:          userID,
+		OriginalText:    "build a desktop game in " + projectPath + " and create src files",
+		Summary:         "build a desktop game",
+		WorkflowType:    string(workflow.WorkflowCoding),
+		WorkflowSummary: "build a desktop game",
+		WorkflowGoals:   []string{"build a desktop game in " + projectPath},
+	}, "desktop")
+
+	if result.Handled && result.Response != nil && result.Response.Error != "" {
+		t.Fatalf("approvePendingWorkflowConfirmation returned error: %s", result.Response.Error)
+	}
+	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
+		t.Fatalf("workflow start must not create inferred project directory, stat err=%v path=%s", err, projectPath)
+	}
+	state := handler.app.workflowEngine.GetActiveWorkflow(userID)
+	if state == nil {
+		t.Fatal("workflow should be active after confirmation")
+	}
+	if state.ProjectPath != filepath.Clean(projectPath) {
+		t.Fatalf("workflow ProjectPath = %q, want %q", state.ProjectPath, filepath.Clean(projectPath))
+	}
+}
+
 func TestSetWorkflowWorkingDirRecordsProjectPathWithoutCreatingDirectory(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
@@ -1278,6 +1310,95 @@ func TestWorkflowFormSubmitContinuesSameWorkflowUser(t *testing.T) {
 	}
 	if ws := engine.GetActiveWorkflow(desktopUserID); ws != nil {
 		t.Fatalf("form submit must not fork workflow onto generic desktop user: %#v", ws)
+	}
+}
+
+func TestWorkflowFormSubmitProjectPathUpdatesWorkflowWithoutCreatingDirectory(t *testing.T) {
+	userID := "desktop-user:C:/Users/ma139"
+	registry := workflow.NewWorkflowRegistry()
+	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
+	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
+	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	handler := NewIMMessageHandlerStandalone(StandaloneConfig{
+		WorkflowEngine:    engine,
+		UnifiedClassifier: intent.New(intent.Config{}),
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://localhost:8080/v1", Model: "test-model", Key: "test-key"}
+		},
+	})
+	defer handler.memory.Stop()
+	app := &App{workflowEngine: engine, remoteSessions: NewRemoteSessionManager(nil)}
+	client := NewRemoteHubClient(app, app.remoteSessions)
+	client.imHandler = handler
+	app.remoteSessions.SetHubClient(client)
+	handler.app = app
+	projectPath := filepath.Join(t.TempDir(), "missing-form-project")
+
+	resp := app.handleWorkflowFormAgentViewSubmit(workflow.PhaseCodingRequirements, map[string]interface{}{
+		workflowFormUserIDField:     userID,
+		workflowFormWorkflowIDField: state.ID,
+		"project_name":              "snake",
+		"tech_stack":                "cpp",
+		"description":               "graphical game",
+		"project_path":              "  " + projectPath + "  ",
+	}, "req-workflow-form-project-path")
+
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("form submit failed: %#v", resp)
+	}
+	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
+		t.Fatalf("workflow form project_path must not create project directory, stat err=%v path=%s", err, projectPath)
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || ws.ProjectPath != filepath.Clean(projectPath) {
+		t.Fatalf("workflow ProjectPath = %#v, want %q", ws, filepath.Clean(projectPath))
+	}
+	if got := fmt.Sprint(ws.PhaseFormData["project_path"]); got != filepath.Clean(projectPath) {
+		t.Fatalf("PhaseFormData project_path = %q, want %q", got, filepath.Clean(projectPath))
+	}
+}
+
+func TestWorkflowFormSubmitInvalidProjectPathRejectsBeforeFormMutation(t *testing.T) {
+	userID := "desktop-user:C:/Users/ma139"
+	registry := workflow.NewWorkflowRegistry()
+	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
+	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
+	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	invalidProject := filepath.Join(t.TempDir(), "project-file")
+	if err := os.WriteFile(invalidProject, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	handler := NewIMMessageHandlerStandalone(StandaloneConfig{WorkflowEngine: engine})
+	defer handler.memory.Stop()
+	app := &App{workflowEngine: engine, remoteSessions: NewRemoteSessionManager(nil)}
+	client := NewRemoteHubClient(app, app.remoteSessions)
+	client.imHandler = handler
+	app.remoteSessions.SetHubClient(client)
+	handler.app = app
+
+	resp := app.handleWorkflowFormAgentViewSubmit(workflow.PhaseCodingRequirements, map[string]interface{}{
+		workflowFormUserIDField:     userID,
+		workflowFormWorkflowIDField: state.ID,
+		"project_name":              "snake",
+		"tech_stack":                "cpp",
+		"description":               "graphical game",
+		"project_path":              invalidProject,
+	}, "req-workflow-form-invalid-project-path")
+
+	if resp == nil || resp.Error == "" {
+		t.Fatalf("invalid project_path should fail form submit, got %#v", resp)
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || ws.PhaseFormSubmitted || len(ws.PhaseFormData) != 0 || ws.ProjectPath != "" {
+		t.Fatalf("invalid project_path must not mutate workflow form/project state, got %#v", ws)
 	}
 }
 

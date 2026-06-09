@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -81,11 +83,18 @@ func (a *GUIWorkflowAdapter) workflowInternalDocDir() string {
 	if wfID == "" {
 		return ""
 	}
-	segment := sanitizeWorkflowPhaseFileStem(wfID)
-	if segment == "" {
-		segment = "workflow"
-	}
+	segment := workflowInternalDocSegment(wfID)
 	return filepath.Join(baseDir, "workflow", segment)
+}
+
+func workflowInternalDocSegment(wfID string) string {
+	wfID = strings.TrimSpace(wfID)
+	stem := sanitizeWorkflowPhaseFileStem(wfID)
+	if stem == "" {
+		stem = "workflow"
+	}
+	sum := sha256.Sum256([]byte(wfID))
+	return stem + "-" + hex.EncodeToString(sum[:])[:12]
 }
 
 // workflowDocDir returns the directory for persisting workflow documents.

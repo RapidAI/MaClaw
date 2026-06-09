@@ -94,20 +94,22 @@ func TestNormalizeRunVarsTreatsNestedJSONArgsControlKeysAsControlInput(t *testin
 
 func TestNormalizeRunVarsDropsManageSkillControlKeys(t *testing.T) {
 	got := NormalizeRunVars(map[string]interface{}{
-		"input":        "weather in Chengdu",
-		"query":        "weather in Chengdu",
-		"mode":         "advanced",
-		"wait_seconds": 30,
-		"auto_run":     true,
-		"auto_fix":     true,
-		"force":        true,
-		"field":        "command",
-		"value":        "patched",
+		"input":                    "weather in Chengdu",
+		"query":                    "weather in Chengdu",
+		"mode":                     "advanced",
+		"_runtime_platform":        "desktop",
+		"_runtime_policy_owner_id": "desktop-user",
+		"wait_seconds":             30,
+		"auto_run":                 true,
+		"auto_fix":                 true,
+		"force":                    true,
+		"field":                    "command",
+		"value":                    "patched",
 	})
 	if got["query"] != "weather in Chengdu" || got["mode"] != "advanced" {
 		t.Fatalf("NormalizeRunVars() = %#v, want runtime selectors preserved", got)
 	}
-	for _, key := range []string{"wait_seconds", "auto_run", "auto_fix", "force", "field", "value"} {
+	for _, key := range []string{"runtime_platform", "runtime_policy_owner_id", "wait_seconds", "auto_run", "auto_fix", "force", "field", "value"} {
 		if _, ok := got[key]; ok {
 			t.Fatalf("NormalizeRunVars() = %#v, want %s control key dropped", got, key)
 		}
@@ -150,6 +152,69 @@ func TestNormalizeRunVarsPreservesArgsOverJSONInput(t *testing.T) {
 func TestNormalizeRunVarsNilSafe(t *testing.T) {
 	if got := NormalizeRunVars(nil); got != nil {
 		t.Fatalf("NormalizeRunVars(nil) = %#v, want nil", got)
+	}
+}
+
+func TestContractlessSkillHelpers(t *testing.T) {
+	contractless := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"task": "answer user request"},
+		}},
+	}
+	if !IsContractlessSkill(contractless) {
+		t.Fatal("skill without params, required args, or placeholders should be contractless")
+	}
+
+	withPlaceholder := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo {{input}}"},
+		}},
+	}
+	if IsContractlessSkill(withPlaceholder) {
+		t.Fatal("placeholder-bearing skill should have an implicit contract")
+	}
+
+	withFallbackPlaceholder := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo stable"},
+			FallbackStep: &corelib.NLSkillStep{
+				Action: "craft_tool",
+				Params: map[string]interface{}{"task": "repair {{input}}"},
+			},
+		}},
+	}
+	if IsContractlessSkill(withFallbackPlaceholder) {
+		t.Fatal("fallback placeholder should make skill contractual")
+	}
+
+	pipelineWithPlaceholder := &corelib.NLSkillEntry{
+		Mode: "pipeline",
+		Pipeline: []corelib.SkillPipelineStep{{
+			Skill:             "summarize",
+			Params:            map[string]string{"input": "{{input}}"},
+			CheckpointMessage: "Review {{summarize.output}}",
+		}},
+	}
+	if IsContractlessSkill(pipelineWithPlaceholder) {
+		t.Fatal("pipeline placeholder should make skill contractual")
+	}
+}
+
+func TestFoldUnconsumedArgsToInput(t *testing.T) {
+	vars := map[string]string{
+		"city":        "南京",
+		"mode":        "weekly",
+		"input":       "weather request",
+		"user_prompt": "ignored carrier",
+	}
+
+	FoldUnconsumedArgsToInput(vars, nil)
+
+	if got := vars["input"]; got != "weather request\ncity: 南京\nmode: weekly" {
+		t.Fatalf("input = %q, want folded semantic args appended in stable order", got)
 	}
 }
 
@@ -1240,7 +1305,7 @@ func TestIsManageSkillRunnerControlKeyKeepsRuntimeSelectors(t *testing.T) {
 			t.Fatalf("%s should be forwarded to runner", key)
 		}
 	}
-	for _, key := range []string{"action", "name", "wait_seconds", "run_id", "skill_id", "auto_run", "auto_fix", "force", "step_index", "field", "value", "find", "replace", "reason"} {
+	for _, key := range []string{"action", "name", "wait_seconds", "run_id", "skill_id", "auto_run", "auto_fix", "force", "step_index", "field", "value", "find", "replace", "reason", "_runtime_platform", "_runtime_policy_owner_id"} {
 		if !IsManageSkillRunnerControlKey(key) {
 			t.Fatalf("%s should be consumed by manage_skill", key)
 		}

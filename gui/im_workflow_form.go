@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	workflowFormPhaseField      = "_workflow_phase"
-	workflowFormUserIDField     = "_workflow_user_id"
-	workflowFormWorkflowIDField = "_workflow_id"
+	workflowFormPhaseField       = "_workflow_phase"
+	workflowFormUserIDField      = "_workflow_user_id"
+	workflowFormWorkflowIDField  = "_workflow_id"
+	workflowFormProjectPathField = "project_path"
 )
 
 // emitWorkflowPhaseForm builds an AgentView form from the phase's InputSchema
@@ -176,6 +177,19 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 			cleanData[k] = v
 		}
 	}
+	formProjectPath := ""
+	if projectPath := workflowFormStringField(cleanData, workflowFormProjectPathField); projectPath != "" {
+		normalizedPath, _, err := normalizeWorkflowProjectPath(projectPath)
+		if err != nil {
+			return &IMAgentResponse{
+				Text:           i18n.T(i18n.MsgWorkflowFormSubmitError, lang),
+				Error:          err.Error(),
+				ResponseSource: imResponseSourceAgentViewSubmit.String(),
+			}
+		}
+		formProjectPath = normalizedPath
+		cleanData[workflowFormProjectPathField] = normalizedPath
+	}
 
 	resp, err := engine.SubmitPhaseForm(userID, cleanData)
 	if err != nil {
@@ -183,6 +197,15 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 			Text:           i18n.T(i18n.MsgWorkflowFormSubmitError, lang),
 			Error:          err.Error(),
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
+		}
+	}
+	if formProjectPath != "" {
+		if err := engine.SetProjectPath(userID, formProjectPath); err != nil {
+			return &IMAgentResponse{
+				Text:           i18n.T(i18n.MsgWorkflowFormSubmitError, lang),
+				Error:          err.Error(),
+				ResponseSource: imResponseSourceAgentViewSubmit.String(),
+			}
 		}
 	}
 

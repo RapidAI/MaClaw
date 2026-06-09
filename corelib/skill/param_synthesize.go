@@ -22,6 +22,7 @@ var commonParamAliases = map[string][]string{
 	"task":        {"content", "text", "message", "prompt", "input", "description"},
 	"query":       {"q", "question", "prompt", "text"},
 	"format":      {"type", "fmt", "output_format"},
+	"action":      {"mode"},
 }
 
 // SynthesizeParams extracts placeholder keys from all step command templates

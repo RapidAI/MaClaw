@@ -29,7 +29,7 @@
 type PhaseInputField struct {
     Name        string                 `json:"name"`
     Label       string                 `json:"label"`
-    Type        string                 `json:"type"`         // text|textarea|number|date|select|multiselect|boolean|file
+    Type        string                 `json:"type"`         // text|textarea|number|date|datetime|select|multiselect|boolean|file|directory|hidden|object_form|array_table
     Required    bool                   `json:"required,omitempty"`
     Description string                 `json:"description,omitempty"`
     Placeholder string                 `json:"placeholder,omitempty"`
@@ -386,7 +386,7 @@ func (a *App) handleWorkflowFormSubmit(phaseID string, data map[string]interface
             }},
             {Name: "description", Label: "功能描述", Type: "textarea", Required: true, Placeholder: "描述你想要的功能、玩法、界面等..."},
             {Name: "constraints", Label: "特殊要求", Type: "textarea", Placeholder: "性能要求、依赖限制、UI 风格等（可选）"},
-            {Name: "project_path", Label: "项目目录", Type: "text", Placeholder: "如：D:\\workprj\\my-game（可选，默认当前目录）"},
+            {Name: "project_path", Label: "项目目录", Type: "directory", Placeholder: "如：D:\\workprj\\my-game（可选，默认当前目录）"},
         },
     },
     // ... rest of phase config unchanged ...

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -286,6 +287,14 @@ func TestExtractCodingDelegateProjectPathWindows(t *testing.T) {
 	got := extractCodingDelegateProjectPath(`create the app in d:\workprj\testprj, write index.html`)
 	if got != `d:\workprj\testprj` {
 		t.Fatalf("path = %q, want %q", got, `d:\workprj\testprj`)
+	}
+}
+
+func TestExtractCodingDelegateProjectPathWindowsSlash(t *testing.T) {
+	want := filepath.Clean(`D:/workprj/testprj`)
+	got := extractCodingDelegateProjectPath(`create the app in D:/workprj/testprj and write index.html`)
+	if got != want {
+		t.Fatalf("path = %q, want %q", got, want)
 	}
 }
 

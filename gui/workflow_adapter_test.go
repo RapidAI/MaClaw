@@ -184,6 +184,26 @@ func TestGUIWorkflowAdapterSetWorkingDirDoesNotCreateDirectory(t *testing.T) {
 	}
 }
 
+func TestWorkflowInternalDocSegmentAvoidsSanitizedIDCollisions(t *testing.T) {
+	first := workflowInternalDocSegment("abc!!!def")
+	second := workflowInternalDocSegment("abc???def")
+	if first == second {
+		t.Fatalf("workflowInternalDocSegment should not collide after sanitization: %q", first)
+	}
+	if !strings.HasPrefix(first, "abc-def-") || !strings.HasPrefix(second, "abc-def-") {
+		t.Fatalf("segments should keep readable sanitized prefix, got %q and %q", first, second)
+	}
+
+	emptyStemFirst := workflowInternalDocSegment("!!!")
+	emptyStemSecond := workflowInternalDocSegment("???")
+	if emptyStemFirst == emptyStemSecond {
+		t.Fatalf("fallback workflow segments should still be unique, got %q", emptyStemFirst)
+	}
+	if !strings.HasPrefix(emptyStemFirst, "workflow-") || !strings.HasPrefix(emptyStemSecond, "workflow-") {
+		t.Fatalf("empty sanitized stems should use workflow prefix, got %q and %q", emptyStemFirst, emptyStemSecond)
+	}
+}
+
 func TestGUIWorkflowAdapterUsesWorkflowStateProjectPathForDocs(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	currentProject := t.TempDir()
@@ -240,7 +260,7 @@ func TestGUIWorkflowAdapterMissingWorkflowProjectPersistsDocsInternally(t *testi
 	if _, err := os.Stat(projectDocPath); !os.IsNotExist(err) {
 		t.Fatalf("missing workflow project must not be created for docs, stat err=%v path=%s", err, projectDocPath)
 	}
-	internalDocPath := filepath.Join(app.GetDataDir(), "workflow", sanitizeWorkflowPhaseFileStem(state.ID), workflowPhaseFileName(workflow.PhaseCodingRequirements))
+	internalDocPath := filepath.Join(app.GetDataDir(), "workflow", workflowInternalDocSegment(state.ID), workflowPhaseFileName(workflow.PhaseCodingRequirements))
 	if got, err := os.ReadFile(internalDocPath); err != nil || string(got) != content {
 		t.Fatalf("workflow doc not persisted internally, content=%q err=%v path=%s", string(got), err, internalDocPath)
 	}
@@ -265,7 +285,7 @@ func TestGUIWorkflowAdapterCompletionPublishesInternalDocsAfterProjectCreated(t 
 	if err := adapter.EmitDocUpdate("u1", workflow.PhaseCodingRequirements, content); err != nil {
 		t.Fatalf("EmitDocUpdate() error = %v", err)
 	}
-	internalDocPath := filepath.Join(app.GetDataDir(), "workflow", sanitizeWorkflowPhaseFileStem(state.ID), workflowPhaseFileName(workflow.PhaseCodingRequirements))
+	internalDocPath := filepath.Join(app.GetDataDir(), "workflow", workflowInternalDocSegment(state.ID), workflowPhaseFileName(workflow.PhaseCodingRequirements))
 	if _, err := os.Stat(workflowProject); !os.IsNotExist(err) {
 		t.Fatalf("planning doc persistence must not create project root, stat err=%v path=%s", err, workflowProject)
 	}

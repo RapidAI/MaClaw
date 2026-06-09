@@ -1230,7 +1230,7 @@ func TestEngine_GetActiveWorkflowDeepSnapshotDoesNotMutateEngine(t *testing.T) {
 				{Name: "project_name", Label: "Project", Type: "text", Required: true},
 				{Name: "tech_stack", Label: "Stack", Type: "text"},
 				{Name: "description", Label: "Description", Type: "textarea"},
-				{Name: "nested", Label: "Nested", Type: "object"},
+				{Name: "nested", Label: "Nested", Type: "object_form"},
 			}},
 			ToolPolicy: ToolFilterDocOnly,
 		}},
@@ -1288,7 +1288,7 @@ func TestEngine_SubmitPayloadAndFormDoNotRetainCallerMutableObjects(t *testing.T
 				{Name: "project_name", Label: "Project", Type: "text", Required: true},
 				{Name: "tech_stack", Label: "Stack", Type: "text"},
 				{Name: "description", Label: "Description", Type: "textarea"},
-				{Name: "list", Label: "List", Type: "object"},
+				{Name: "list", Label: "List", Type: "array_table"},
 			}},
 			ToolPolicy: ToolFilterDocOnly,
 		}},
@@ -1576,6 +1576,54 @@ func TestEngine_SubmitPhaseFormValidatesSchemaConstraints(t *testing.T) {
 		t.Fatalf("valid form should trigger phase loop, got %#v", resp)
 	}
 }
+
+func TestEngine_SubmitPhaseFormAcceptsDirectoryField(t *testing.T) {
+	engine, _ := newTestEngine()
+	workflowType := WorkflowType("form_directory_field_test")
+	engine.GetRegistry().Register(&WorkflowTemplate{
+		Type:        workflowType,
+		Name:        "form directory field test",
+		Description: "test template",
+		Phases: []PhaseTemplate{{
+			ID:          "collect",
+			Name:        "Collect",
+			Prompt:      "collect",
+			Deliverable: "doc",
+			InputSchema: &PhaseInputSchema{Fields: []PhaseInputField{
+				{Name: "workspace", Label: "Workspace", Type: "directory", Required: true},
+			}},
+			ToolPolicy: ToolFilterDocOnly,
+		}},
+	})
+	if _, err := engine.StartWorkflow("u_form_directory", StructuredIntent{Category: workflowType, Summary: "test"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if _, err := engine.SubmitPhaseForm("u_form_directory", map[string]interface{}{"workspace": 123}); err == nil {
+		t.Fatal("SubmitPhaseForm should reject non-string directory values")
+	}
+	ws := engine.GetActiveWorkflow("u_form_directory")
+	if ws == nil || ws.PhaseFormSubmitted {
+		t.Fatalf("invalid directory value must not submit form, got %#v", ws)
+	}
+	resp, err := engine.SubmitPhaseForm("u_form_directory", map[string]interface{}{"workspace": `D:\workprj\game`})
+	if err != nil {
+		t.Fatalf("directory field should accept string path: %v", err)
+	}
+	if resp == nil || !resp.RunAgentLoop {
+		t.Fatalf("directory form submit should trigger phase loop, got %#v", resp)
+	}
+}
+
+func TestEngine_ValidatePhaseInputFieldRejectsUnsupportedType(t *testing.T) {
+	for _, fieldType := range []string{"direcotry", "object"} {
+		t.Run(fieldType, func(t *testing.T) {
+			if err := validatePhaseInputField(PhaseInputField{Name: "target", Type: fieldType}, "D:/workprj/demo"); err == nil {
+				t.Fatal("unsupported field type must not be silently accepted")
+			}
+		})
+	}
+}
+
 func TestEngine_SubmitPhaseFormValidatesRequiredFields(t *testing.T) {
 	engine, _ := newTestEngine()
 	_, err := engine.StartWorkflow("u_form_required", StructuredIntent{

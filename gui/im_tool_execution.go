@@ -338,7 +338,7 @@ func isSemanticCodingWorkflowDelegateResult(result GateIntentResult) bool {
 	}
 }
 
-var windowsPathInTextPattern = regexp.MustCompile(`(?i)([a-z]:\\[^\s\r\n\t"'<>|*?,;\x{ff0c}\x{3002}\x{ff1b}\x{ff1a}\x{3001}\x{ff09}\x{3011}\x{300b}]+)`)
+var windowsPathInTextPattern = regexp.MustCompile(`(?i)([a-z]:[\\/][^\s\r\n\t"'<>|*?,;\x{ff0c}\x{3002}\x{ff1b}\x{ff1a}\x{3001}\x{ff09}\x{3011}\x{300b}]+)`)
 
 func firstCodingDelegateProjectPathArg(args map[string]interface{}) string {
 	for _, key := range []string{"project_path", "projectPath", "path", "working_dir", "workingDir", "cwd"} {

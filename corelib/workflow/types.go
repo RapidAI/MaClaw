@@ -227,7 +227,7 @@ type PhaseInputOption struct {
 type PhaseInputField struct {
 	Name            string             `json:"name"`
 	Label           string             `json:"label"`
-	Type            string             `json:"type"` // text|textarea|number|date|select|multiselect|boolean|file
+	Type            string             `json:"type"` // text|textarea|number|date|datetime|select|multiselect|boolean|file|directory|hidden|object_form|array_table
 	Required        bool               `json:"required,omitempty"`
 	Description     string             `json:"description,omitempty"`
 	Placeholder     string             `json:"placeholder,omitempty"`

@@ -191,6 +191,28 @@ func TestBuiltinTemplates_CodingTaskBreakdownToolPolicyPlanning(t *testing.T) {
 	}
 }
 
+func TestBuiltinTemplates_CodingProjectPathUsesDirectoryPicker(t *testing.T) {
+	r := NewWorkflowRegistry()
+	tmpl := r.Match(WorkflowCoding)
+	if tmpl == nil {
+		t.Fatal("coding template not found")
+	}
+	requirements := mustPhase(t, tmpl, PhaseCodingRequirements)
+	if requirements.InputSchema == nil {
+		t.Fatal("coding requirements phase should expose structured intake form")
+	}
+	for _, field := range requirements.InputSchema.Fields {
+		if field.Name != "project_path" {
+			continue
+		}
+		if field.Type != "directory" {
+			t.Fatalf("coding project_path field Type = %q, want directory", field.Type)
+		}
+		return
+	}
+	t.Fatal("coding requirements form missing project_path field")
+}
+
 func TestBuiltinTemplates_CodingTaskBreakdownUsesOneBasedDependencyLabels(t *testing.T) {
 	r := NewWorkflowRegistry()
 	tmpl := r.Match(WorkflowCoding)
