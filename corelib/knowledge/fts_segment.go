@@ -125,7 +125,7 @@ func (s *SQLiteStore) RebuildFTSIndex(ctx context.Context) error {
 		return fmt.Errorf("rebuild knowledge_facts_fts: %w", err)
 	}
 	// Backfill card embeddings if embedder is available
-	if s.embedder != nil && !embedding.IsNoop(s.embedder) {
+	if emb := s.currentEmbedder(); emb != nil && !embedding.IsNoop(emb) {
 		if err := s.backfillCardEmbeddings(ctx); err != nil {
 			// Non-fatal: FTS is rebuilt, embeddings can be backfilled later
 			fmt.Printf("[knowledge] embedding backfill failed: %v\n", err)

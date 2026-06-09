@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -416,6 +417,54 @@ func TestSQLiteStoreImportDirectory(t *testing.T) {
 	if len(staleDirectoryResults) != 0 {
 		t.Fatalf("stale directory content leaked into search: %#v", staleDirectoryResults)
 	}
+}
+
+func TestSQLiteStoreSetEmbedderConcurrentSearch(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "guide.md"), []byte("# Guide\n\nConcurrent vector recall anchor."))
+
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.ImportDirectory(ctx, DirectoryImportRequest{
+		RootPath:     root,
+		ProjectPath:  "D:/project",
+		SaveScope:    SaveScopeProject,
+		IncludeExts:  []string{".md"},
+		MaxFileBytes: 1024,
+	}); err != nil {
+		t.Fatalf("ImportDirectory: %v", err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 100; i++ {
+			if i%2 == 0 {
+				store.SetEmbedder(testKnowledgeEmbedder{})
+			} else {
+				store.SetEmbedder(embedding.NoopEmbedder{})
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 100; i++ {
+			if _, err := store.Search(ctx, SearchOptions{Query: "vector recall", ProjectPath: "D:/project", Limit: 5}); err != nil {
+				t.Errorf("Search failed: %v", err)
+				return
+			}
+		}
+	}()
+	close(start)
+	wg.Wait()
 }
 
 func TestSQLiteStoreImportFiles(t *testing.T) {

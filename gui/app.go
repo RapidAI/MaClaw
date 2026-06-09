@@ -108,6 +108,7 @@ type App struct {
 	intentEmbeddingActive   atomic.Bool                     // ensures UIC-only embedding activation runs at most once
 	embeddingMu             sync.Mutex
 	intentEmbedder          embedding.Embedder // local model held for UIC and reused when vector search is enabled
+	intentEmbedderPath      string             // absolute/loader-provided path for the shared local embedding runtime
 	usageTracker            *tool.UsageTracker
 	experienceEvents        *lifecycle.EventTrail
 	experienceSink          lifecycle.EventSink
@@ -597,7 +598,13 @@ func (a *App) ensureMemoryStore() {
 			}
 			a.logMemorySnapshot("ensureMemoryStore:embedding-load")
 			modelPath := embedding.DefaultModelPath()
-			emb := embedding.NewDefaultEmbedder(modelPath)
+			emb, err := a.sharedEmbeddingEmbedder(modelPath, func(path string) (embedding.Embedder, error) {
+				return embedding.NewDefaultEmbedder(path), nil
+			})
+			if err != nil {
+				log.Printf("[ensureMemoryStore] embedding model load failed: %v", err)
+				return
+			}
 			if embedding.IsNoop(emb) {
 				return // model not found, skip
 			}

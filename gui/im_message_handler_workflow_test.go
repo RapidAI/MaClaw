@@ -1988,7 +1988,7 @@ func TestDetectWorkflowReviewIntentFast(t *testing.T) {
 	}
 }
 
-func TestCodingWorkflowTaskBreakdownConfirmStartsImplementationWithLocalTools(t *testing.T) {
+func TestCodingWorkflowTaskBreakdownConfirmStartsImplementationWithCodingSubAgentGate(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-coding-task-breakdown-confirm-starts-implementation"
@@ -2031,6 +2031,7 @@ func TestCodingWorkflowTaskBreakdownConfirmStartsImplementationWithLocalTools(t 
 		toolDef("write_file", "write file", nil, nil),
 		toolDef("edit_file", "edit file", nil, nil),
 		toolDef("task", "task", nil, nil),
+		toolDef("delegate_task", "delegate task", nil, nil),
 	})
 
 	trimmed := "\u5f00\u59cb\u7f16\u7801"
@@ -2048,17 +2049,40 @@ func TestCodingWorkflowTaskBreakdownConfirmStartsImplementationWithLocalTools(t 
 
 	toolSet := handler.prepareAgentLoopTools(userID, trimmed, &LoopContext{SkipNeedsConfirmGate: true, WorkflowAgentLoop: true}, agentLoopPhase{})
 	names := toolNameSetForWorkflowFilterTest(toolSet.Tools)
-	for _, name := range []string{"bash", "read_file", "list_directory", "write_file", "edit_file"} {
+	for _, name := range []string{"read_file", "list_directory", "delegate_task"} {
 		if !names[name] {
-			t.Fatalf("implementation workflow loop must expose local coding tool %s, got %#v", name, names)
+			t.Fatalf("implementation workflow loop must expose CodingSubAgent handoff/read tool %s, got %#v", name, names)
+		}
+	}
+	for _, name := range []string{"bash", "write_file", "edit_file"} {
+		if names[name] {
+			t.Fatalf("implementation workflow loop must not expose local coding tool %s to main agent, got %#v", name, names)
 		}
 	}
 	if toolSet.WorkflowDecision != workflowToolFilterDecision(workflow.ToolFilterFull) {
 		t.Fatalf("workflow decision = %q, want %q", toolSet.WorkflowDecision, workflow.ToolFilterFull)
 	}
+	if !handler.isWorkflowToolAllowedForOwner(userID, "delegate_task") {
+		t.Fatal("implementation workflow execution gate must allow delegate_task(coding_workflow)")
+	}
+	if allowed, reason := handler.isWorkflowToolCallAllowedForOwner(userID, "delegate_task", `{"agent":"coding_workflow","request":"implement T1"}`); !allowed {
+		t.Fatalf("implementation workflow should allow CodingSubAgent delegation: %s", reason)
+	}
+	for _, tc := range []struct {
+		name string
+		args string
+	}{
+		{name: "delegate_task", args: `{"agent":"help","request":"help"}`},
+		{name: "office", args: `{"action":"write_excel","file_path":"data.xlsx","data":{"sheets":[]}}`},
+		{name: "web_fetch", args: `{"url":"https://example.com/app.go","save_path":"app.go"}`},
+	} {
+		if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, tc.name, tc.args); allowed {
+			t.Fatalf("implementation workflow main loop must reject %s %s", tc.name, tc.args)
+		}
+	}
 	for _, name := range []string{"bash", "write_file", "edit_file"} {
-		if !handler.isWorkflowToolAllowedForOwner(userID, name) {
-			t.Fatalf("implementation workflow execution gate must allow %s", name)
+		if handler.isWorkflowToolAllowedForOwner(userID, name) {
+			t.Fatalf("implementation workflow execution gate must block main-agent local coding tool %s", name)
 		}
 	}
 	outPath := filepath.Join(t.TempDir(), "impl", "created.txt")
@@ -2075,11 +2099,11 @@ func TestCodingWorkflowTaskBreakdownConfirmStartsImplementationWithLocalTools(t 
 			Arguments: fmt.Sprintf(`{"path":%q,"content":"ok"}`, outPath),
 		}},
 	})
-	if writeResult.FailureKind == toolFailurePolicyRejected || strings.Contains(writeResult.Text, "workflow tool policy") {
-		t.Fatalf("implementation workflow write_file execution must not be workflow-policy rejected, got %+v", writeResult)
+	if writeResult.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("implementation workflow write_file must be policy-rejected for the main agent, got %+v", writeResult)
 	}
-	if data, err := os.ReadFile(outPath); err != nil || string(data) != "ok" {
-		t.Fatalf("implementation write_file did not create expected file: data=%q err=%v result=%+v", string(data), err, writeResult)
+	if _, err := os.ReadFile(outPath); err == nil {
+		t.Fatalf("main-agent write_file unexpectedly created %s", outPath)
 	}
 }
 

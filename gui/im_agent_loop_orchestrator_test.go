@@ -20,6 +20,8 @@ func TestApplyAgentLoopTaskOrchestratorStepUsesNextReadyTask(t *testing.T) {
 	tools := []map[string]interface{}{
 		toolDef("create_session", "create session", nil, nil),
 		toolDef("bash", "bash", nil, nil),
+		toolDef("delegate_task", "delegate task", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
 	}
 
 	result := h.applyAgentLoopTaskOrchestratorStep("u1", nil, tools, nil, false)
@@ -31,8 +33,11 @@ func TestApplyAgentLoopTaskOrchestratorStepUsesNextReadyTask(t *testing.T) {
 	if names["create_session"] {
 		t.Fatalf("ready coding task should strip create_session tool, got %#v", names)
 	}
-	if !names["bash"] {
-		t.Fatalf("ready coding task should keep direct coding tools, got %#v", names)
+	if names["bash"] {
+		t.Fatalf("ready coding task must not expose local coding tools to the main loop, got %#v", names)
+	}
+	if !names["delegate_task"] || !names["read_file"] {
+		t.Fatalf("ready coding task should keep CodingSubAgent handoff/read tools, got %#v", names)
 	}
 	if len(result.Conversation) != 1 {
 		t.Fatalf("expected one task injection, got %#v", result.Conversation)

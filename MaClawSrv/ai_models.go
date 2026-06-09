@@ -566,6 +566,11 @@ func (m *srvAIModelManager) downloadWithFallback(filename, primaryURL string, cf
 }
 
 func (m *srvAIModelManager) modelPath(filename string) string {
+	if filename == embedding.DefaultModelFilename {
+		if custom := strings.TrimSpace(os.Getenv("MACLAW_EMBEDDING_MODEL_PATH")); custom != "" {
+			return custom
+		}
+	}
 	return filepath.Join(m.dataRoot, "models", filename)
 }
 
@@ -632,6 +637,30 @@ func (m *srvAIModelManager) embedText(ctx context.Context, cfg corelib.AppConfig
 	if text == "" {
 		return nil, fmt.Errorf("%w: text is required", errSrvAIModelInvalidInput)
 	}
+	vectors, err := m.embedBatch(ctx, cfg, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(vectors) != 1 {
+		return nil, fmt.Errorf("%w: embedding model returned unexpected batch size", errSrvAIModelNotReady)
+	}
+	return vectors[0], nil
+}
+
+func (m *srvAIModelManager) embedBatch(ctx context.Context, cfg corelib.AppConfig, texts []string) ([][]float32, error) {
+	_ = ctx
+	_ = cfg
+	cleaned := make([]string, len(texts))
+	for i, text := range texts {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return nil, fmt.Errorf("%w: text %d is required", errSrvAIModelInvalidInput, i)
+		}
+		cleaned[i] = text
+	}
+	if len(cleaned) == 0 {
+		return [][]float32{}, nil
+	}
 	modelPath := m.modelPath(embedding.DefaultModelFilename)
 	if exists, _ := modelFileReady(modelPath); !exists {
 		return nil, fmt.Errorf("%w: embedding model is missing", errSrvAIModelNotReady)
@@ -649,14 +678,19 @@ func (m *srvAIModelManager) embedText(ctx context.Context, cfg corelib.AppConfig
 	}
 	mgr := m.embeddingMgr
 	m.mu.Unlock()
-	vector, err := mgr.Embed(text)
+	vectors, err := mgr.EmbedBatch(cleaned)
 	if err != nil {
 		return nil, err
 	}
-	if len(vector) == 0 {
-		return nil, fmt.Errorf("%w: embedding model returned empty vector", errSrvAIModelNotReady)
+	if len(vectors) != len(cleaned) {
+		return nil, fmt.Errorf("%w: embedding model returned %d vectors for %d texts", errSrvAIModelNotReady, len(vectors), len(cleaned))
 	}
-	return vector, nil
+	for i, vector := range vectors {
+		if len(vector) == 0 {
+			return nil, fmt.Errorf("%w: embedding model returned empty vector at index %d", errSrvAIModelNotReady, i)
+		}
+	}
+	return vectors, nil
 }
 
 func (m *srvAIModelManager) transcribeWAV(ctx context.Context, cfg corelib.AppConfig, wav []byte) (string, error) {
@@ -748,15 +782,18 @@ func (a srvAIModelEmbedderAdapter) Embed(text string) ([]float32, error) {
 }
 
 func (a srvAIModelEmbedderAdapter) EmbedBatch(texts []string) ([][]float32, error) {
-	out := make([][]float32, len(texts))
-	for i, text := range texts {
-		vector, err := a.Embed(text)
-		if err != nil {
-			return nil, err
-		}
-		out[i] = vector
+	if a.manager == nil {
+		return nil, errSrvAIModelNotReady
 	}
-	return out, nil
+	cfg := corelib.AppConfigDefaults()
+	if a.config != nil {
+		cfg = a.config()
+	}
+	vectors, err := a.manager.embedBatch(context.Background(), cfg, texts)
+	if errors.Is(err, errSrvAIModelNotReady) {
+		_ = a.manager.startDownload(srvAIModelEmbedding, cfg, false)
+	}
+	return vectors, err
 }
 
 func (srvAIModelEmbedderAdapter) Dim() int { return 256 }

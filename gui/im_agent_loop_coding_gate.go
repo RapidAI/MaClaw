@@ -269,6 +269,9 @@ func (h *IMMessageHandler) shouldBypassCodingGateForWorkflowAgentLoop(userID str
 func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, baseTools []map[string]interface{}, phase agentLoopPhase, gateConfig codingToolGateConfig, skipCodingGate bool, orchestratorActive func() bool) ([]map[string]interface{}, int, bool) {
 	tools := baseTools
 	directModeToolsFiltered := false
+	if engine := h.getWorkflowEngine(); engine != nil && strings.TrimSpace(userID) != "" && engine.GetActiveWorkflow(userID) != nil {
+		tools = h.applyWorkflowToolFilterWithCatalog(userID, tools, h.getTools())
+	}
 	if gateConfig.active && !skipCodingGate && !orchestratorActive() {
 		gateFiltered := make([]map[string]interface{}, 0, len(tools))
 		for _, t := range tools {
@@ -307,6 +310,7 @@ func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, baseTool
 			tools = truncFiltered
 		}
 	}
+	tools = stripExecutionContractMetadataForLLM(tools)
 	return tools, estimateToolsTokens(tools), directModeToolsFiltered
 }
 

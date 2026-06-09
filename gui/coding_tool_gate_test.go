@@ -53,7 +53,12 @@ func TestCodingGate_DirectModeSessionBlocklist(t *testing.T) {
 			t.Fatalf("expected direct mode to block %s", name)
 		}
 	}
-	for _, name := range []string{"bash", "write_file", "edit_file", "send_file"} {
+	for _, name := range []string{"bash", "write_file", "edit_file"} {
+		if !isDirectModeBlockedTool(name) {
+			t.Fatalf("expected direct mode to block local coding tool %s", name)
+		}
+	}
+	for _, name := range []string{"read_file", "list_directory", "delegate_task", "send_file"} {
 		if isDirectModeBlockedTool(name) {
 			t.Fatalf("expected direct mode to allow %s", name)
 		}

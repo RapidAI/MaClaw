@@ -391,6 +391,9 @@ func (h *IMMessageHandler) isWorkflowToolAllowedForOwner(policyUserID, name stri
 	if engine.IsPhaseExecutionBlocked(policyUserID) {
 		return false
 	}
+	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyUserID) && !isCodingWorkflowImplementationMainLoopToolAllowed(name) {
+		return false
+	}
 	if contract, ok := engine.GetActivePhaseContract(policyUserID); ok {
 		return workflow.IsToolAllowedByContract(contract, name)
 	}
@@ -411,6 +414,11 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 		cleaned := coretool.CleanToolArguments(argsJSON)
 		if err := json.Unmarshal([]byte(cleaned), &args); err != nil {
 			return false, fmt.Sprintf("invalid tool arguments: %v", err)
+		}
+	}
+	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyUserID) {
+		if reason := validateCodingWorkflowImplementationMainLoopToolCall(name, args); reason != "" {
+			return false, reason
 		}
 	}
 	if contract, ok := engine.GetActivePhaseContract(policyUserID); ok {

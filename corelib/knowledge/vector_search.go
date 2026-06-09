@@ -35,10 +35,11 @@ func cardEmbeddingText(card Card) string {
 // Searches both distilled cards AND original document nodes to ensure
 // information lost during distillation is still discoverable.
 func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
-	if s.embedder == nil || embedding.IsNoop(s.embedder) {
+	emb := s.currentEmbedder()
+	if emb == nil || embedding.IsNoop(emb) {
 		return nil, nil
 	}
-	queryVec, err := s.embedder.Embed(opts.Query)
+	queryVec, err := emb.Embed(opts.Query)
 	if err != nil || len(queryVec) == 0 {
 		return nil, nil
 	}
@@ -292,7 +293,11 @@ func (s *SQLiteStore) backfillCardEmbeddings(ctx context.Context) error {
 	for i, c := range cards {
 		texts[i] = cardEmbeddingText(Card{Title: c.title, Claim: c.claim, Summary: c.summary})
 	}
-	vectors, err := s.embedder.EmbedBatch(texts)
+	emb := s.currentEmbedder()
+	if emb == nil || embedding.IsNoop(emb) {
+		return nil
+	}
+	vectors, err := emb.EmbedBatch(texts)
 	if err != nil {
 		return err
 	}
@@ -335,7 +340,7 @@ func (s *SQLiteStore) EnsureNodeEmbeddingColumn() error {
 // have one yet. Uses the full node text for embedding, providing semantic
 // coverage of the original document content.
 func (s *SQLiteStore) BackfillNodeEmbeddings(ctx context.Context) error {
-	if s.embedder == nil || embedding.IsNoop(s.embedder) {
+	if emb := s.currentEmbedder(); emb == nil || embedding.IsNoop(emb) {
 		return nil
 	}
 	// Ensure column exists first
@@ -371,7 +376,7 @@ func (s *SQLiteStore) BackfillNodeEmbeddings(ctx context.Context) error {
 // for newly saved/imported sources. It keeps vector recall current without
 // waiting for a full index rebuild or startup backfill.
 func (s *SQLiteStore) BackfillNodeEmbeddingsForSources(ctx context.Context, sourceIDs []string) error {
-	if s.embedder == nil || embedding.IsNoop(s.embedder) {
+	if emb := s.currentEmbedder(); emb == nil || embedding.IsNoop(emb) {
 		return nil
 	}
 	if len(sourceIDs) == 0 {
@@ -433,7 +438,11 @@ func (s *SQLiteStore) embedAndStoreNodeEmbeddings(ctx context.Context, nodes []n
 	for i, n := range nodes {
 		texts[i] = nodeEmbeddingText(n.title, n.text)
 	}
-	vectors, err := s.embedder.EmbedBatch(texts)
+	emb := s.currentEmbedder()
+	if emb == nil || embedding.IsNoop(emb) {
+		return nil
+	}
+	vectors, err := emb.EmbedBatch(texts)
 	if err != nil {
 		return err
 	}

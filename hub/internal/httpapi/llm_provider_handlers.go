@@ -1168,6 +1168,27 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			if err != nil {
 				if wroteStream {
 					logErrorCode = "LLM_STREAM_INTERRUPTED"
+					// Still charge credits for tokens already streamed to the client.
+					// Without this, users could disconnect mid-stream to avoid payment
+					// while having received partial (but useful) LLM output.
+					if usedProviderID != "" {
+						tokensPerCredit := 0
+						if serviceReg != nil {
+							tokensPerCredit = serviceReg.TokensPerCredit
+						}
+						credits := llmservice.EstimateCreditsWithFloor(
+							usageStat.TotalTokens,
+							llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID),
+							tokensPerCredit,
+						)
+						userGroupIDs := []string(nil)
+						if securitySvc != nil {
+							if resolved, resolveErr := securitySvc.ResolveUserGroupChain(ctx, principal.Email); resolveErr == nil {
+								userGroupIDs = resolved
+							}
+						}
+						enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+					}
 					return
 				}
 				if queueErr, ok := err.(*providerConcurrencyError); ok {
@@ -1191,7 +1212,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				if serviceReg != nil {
 					tokensPerCredit = serviceReg.TokensPerCredit
 				}
-				credits := llmservice.EstimateCredits(
+				credits := llmservice.EstimateCreditsWithFloor(
 					usageStat.TotalTokens,
 					llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID),
 					tokensPerCredit,
@@ -1237,7 +1258,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			if serviceReg != nil {
 				tokensPerCredit = serviceReg.TokensPerCredit
 			}
-			credits := llmservice.EstimateCredits(
+			credits := llmservice.EstimateCreditsWithFloor(
 				usageStat.TotalTokens,
 				llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID),
 				tokensPerCredit,

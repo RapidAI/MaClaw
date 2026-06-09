@@ -150,7 +150,7 @@ func CenterUserMigrationImportHandler(centerSvc *center.Service, identity *auth.
 	}
 }
 
-func CenterUserMigrationDeleteHandler(centerSvc *center.Service, identity *auth.IdentityService, devices *device.Service, invitationSvc *invitation.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner) http.HandlerFunc {
+func CenterUserMigrationDeleteHandler(centerSvc *center.Service, identity *auth.IdentityService, devices *device.Service, invitationSvc *invitation.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner, purger ...*UserDataPurger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req centerMigrationRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -180,25 +180,33 @@ func CenterUserMigrationDeleteHandler(centerSvc *center.Service, identity *auth.
 			if user == nil {
 				continue
 			}
-			if devices != nil {
-				if _, err := devices.ForceDeleteMachinesByTenantUser(r.Context(), tenantID, user.ID); err != nil {
-					writeError(w, http.StatusInternalServerError, "DELETE_USER_MACHINES_FAILED", err.Error())
+			// Use unified purger if available; fall back to legacy inline cleanup.
+			if len(purger) > 0 && purger[0] != nil {
+				if _, err := purger[0].PurgeAll(r.Context(), user); err != nil {
+					writeError(w, http.StatusInternalServerError, "DELETE_USER_FAILED", err.Error())
 					return
 				}
-			}
-			if invitationSvc != nil {
-				if _, err := invitationSvc.DeleteCodeByTenantEmail(r.Context(), tenantID, user.Email); err != nil {
-					writeError(w, http.StatusInternalServerError, "DELETE_USER_INVITES_FAILED", err.Error())
+			} else {
+				if devices != nil {
+					if _, err := devices.ForceDeleteMachinesByTenantUser(r.Context(), tenantID, user.ID); err != nil {
+						writeError(w, http.StatusInternalServerError, "DELETE_USER_MACHINES_FAILED", err.Error())
+						return
+					}
+				}
+				if invitationSvc != nil {
+					if _, err := invitationSvc.DeleteCodeByTenantEmail(r.Context(), tenantID, user.Email); err != nil {
+						writeError(w, http.StatusInternalServerError, "DELETE_USER_INVITES_FAILED", err.Error())
+						return
+					}
+				}
+				if feishuNotifier != nil {
+					feishuNotifier.RemoveOpenIDForTenant(tenantID, user.Email)
+				}
+				removeIMBindingsForTenant(imCleaners, tenantID, user.Email)
+				if err := identity.UsersRepo().DeleteByTenantEmail(r.Context(), tenantID, user.Email); err != nil {
+					writeError(w, http.StatusInternalServerError, "DELETE_USER_FAILED", err.Error())
 					return
 				}
-			}
-			if feishuNotifier != nil {
-				feishuNotifier.RemoveOpenIDForTenant(tenantID, user.Email)
-			}
-			removeIMBindingsForTenant(imCleaners, tenantID, user.Email)
-			if err := identity.UsersRepo().DeleteByTenantEmail(r.Context(), tenantID, user.Email); err != nil {
-				writeError(w, http.StatusInternalServerError, "DELETE_USER_FAILED", err.Error())
-				return
 			}
 			deleted++
 		}

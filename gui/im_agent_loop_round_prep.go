@@ -153,10 +153,14 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		directModeToolsFiltered = recoverPromptResult.DirectModeToolsFiltered
 	}
 
+	toolsBeforeOrchestrator := len(tools)
 	orchestratorStep := h.applyAgentLoopTaskOrchestratorStep(opts.UserID, ctx, tools, conversation, directModeToolsFiltered)
 	tools = orchestratorStep.Tools
 	conversation = orchestratorStep.Conversation
 	directModeToolsFiltered = orchestratorStep.DirectModeToolsFiltered
+	if len(tools) != toolsBeforeOrchestrator {
+		toolsTokenBudget = estimateToolsTokens(tools)
+	}
 	if forceLightFinalizeWithoutTools {
 		tools = nil
 		toolsTokenBudget = 0

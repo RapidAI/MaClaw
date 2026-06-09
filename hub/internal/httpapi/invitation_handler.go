@@ -175,6 +175,11 @@ func ExportInvitationCodesHandler(svc *invitation.Service) http.HandlerFunc {
 }
 
 func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.IdentityService, deviceSvc *device.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner) http.HandlerFunc {
+	return UnbindInvitationCodeHandlerWithPurger(svc, identity, nil)
+}
+
+// UnbindInvitationCodeHandlerWithPurger uses the unified UserDataPurger for comprehensive cleanup.
+func UnbindInvitationCodeHandlerWithPurger(svc *invitation.Service, identity *auth.IdentityService, purger *UserDataPurger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ID string `json:"id"`
@@ -201,65 +206,39 @@ func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.Identit
 		}
 
 		email := code.UsedByEmail
-		var deletedMachines int64
+		var result *PurgeResult
 
-		// If the code was bound to an email, clean up all associated data.
-		if email != "" {
-			var lookupUser *store.User
+		// If the code was bound to an email, clean up all associated data via the unified purger.
+		if email != "" && purger != nil {
+			var user *store.User
 			if identity != nil {
-				user, lookupErr := identity.UsersRepo().GetByTenantEmail(r.Context(), code.TenantID, email)
-				if lookupErr != nil {
-					log.Printf("[admin-unbind] lookup user %s failed: %v", email, lookupErr)
-				}
-				lookupUser = user
-				if user != nil && deviceSvc != nil {
-					deleted, delErr := deviceSvc.ForceDeleteMachinesByTenantUser(r.Context(), code.TenantID, user.ID)
-					if delErr != nil {
-						log.Printf("[admin-unbind] delete machines for user %s failed: %v", user.ID, delErr)
-					} else {
-						deletedMachines = deleted
-					}
-				}
+				user, _ = identity.UsersRepo().GetByTenantEmail(r.Context(), code.TenantID, email)
 			}
-
-			// Remove all invitation codes bound to this email.
-			codesDeleted, delErr := svc.DeleteCodeByTenantEmail(r.Context(), code.TenantID, email)
-			if delErr != nil {
-				log.Printf("[admin-unbind] delete codes for %s failed: %v", email, delErr)
-			} else if codesDeleted > 0 {
-				log.Printf("[admin-unbind] deleted %d invitation code(s) for %s", codesDeleted, email)
+			if user == nil {
+				user = &store.User{ID: "", TenantID: code.TenantID, Email: email}
 			}
-
-			// Remove IM bindings.
-			if feishuNotifier != nil {
-				feishuNotifier.RemoveOpenIDForTenant(code.TenantID, email)
-			}
-			removeIMBindingsForTenant(imCleaners, code.TenantID, email)
-
-			// Comprehensive cleanup of auxiliary data (enrollments, tokens).
+			result, _ = purger.PurgeAll(r.Context(), user)
+		} else if email != "" {
+			// Fallback: no purger available — do minimal cleanup for backward compat.
+			result = &PurgeResult{}
 			if identity != nil {
-				purgeUser := lookupUser
-				if purgeUser == nil {
-					purgeUser = &store.User{ID: "", TenantID: code.TenantID, Email: email}
-				}
-				purgeUserAuxiliaryData(r.Context(), identity, purgeUser)
-			}
-
-			// Delete the user record so bind-query returns unbound.
-			if identity != nil {
-				if repo := identity.UsersRepo(); repo != nil {
-					if delErr := repo.DeleteByTenantEmail(r.Context(), code.TenantID, email); delErr != nil {
-						log.Printf("[admin-unbind] delete user record for %s failed: %v", email, delErr)
+				if user, _ := identity.UsersRepo().GetByTenantEmail(r.Context(), code.TenantID, email); user != nil {
+					if repo := identity.UsersRepo(); repo != nil {
+						_ = repo.DeleteByTenantEmail(r.Context(), code.TenantID, email)
 					}
 				}
 			}
 		}
 
-		// Delete the invitation code itself (if not already deleted by DeleteCodeByEmail above).
+		// Delete the invitation code itself (if not already deleted by PurgeAll above).
 		if delErr := svc.DeleteCode(r.Context(), req.ID); delErr != nil {
 			log.Printf("[admin-unbind] delete code %s: %v (may already be deleted)", req.ID, delErr)
 		}
 
+		var deletedMachines int64
+		if result != nil {
+			deletedMachines = result.DeletedMachines
+		}
 		log.Printf("[admin-unbind] code=%s email=%s machines_deleted=%d", code.Code, email, deletedMachines)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":               true,

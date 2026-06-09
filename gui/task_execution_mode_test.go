@@ -130,33 +130,47 @@ func TestDirectModeSessionBlocklist(t *testing.T) {
 		}
 	}
 
-	codingTools := []string{"bash", "write_file", "edit_file", "read_file", "list_directory"}
-	for _, tool := range codingTools {
+	localCodingTools := []string{"bash", "write_file", "edit_file", "edit_lines", "craft_tool", "parallel_execute"}
+	for _, tool := range localCodingTools {
+		if !isDirectModeBlockedTool(tool) {
+			t.Errorf("expected local coding tool %s to be blocked in direct mode", tool)
+		}
+	}
+
+	subAgentTools := []string{"delegate_task", "read_file", "list_directory"}
+	for _, tool := range subAgentTools {
 		if isDirectModeBlockedTool(tool) {
 			t.Errorf("expected %s to NOT be blocked in direct mode", tool)
 		}
 	}
 }
 
-func TestDirectModeSessionBlocklist_CodingToolsPreserved(t *testing.T) {
-	directCodingTools := []string{"bash", "write_file", "edit_file", "read_file", "list_directory", "craft_tool", "memory", "web_search"}
-	for _, name := range directCodingTools {
+func TestDirectModeMainLoopBlocklist_ForcesCodingSubAgent(t *testing.T) {
+	localCodingTools := []string{"bash", "write_file", "edit_file", "edit_lines", "craft_tool", "parallel_execute"}
+	for _, name := range localCodingTools {
+		if !isDirectModeBlockedTool(name) {
+			t.Errorf("%s must be blocked from the main loop in direct CodingSubAgent mode", name)
+		}
+	}
+
+	allowedTools := []string{"delegate_task", "read_file", "list_directory", "memory", "web_search"}
+	for _, name := range allowedTools {
 		if isDirectModeBlockedTool(name) {
-			t.Errorf("%s must NOT be in directModeSessionBlocklist", name)
+			t.Errorf("%s must NOT be in directModeMainLoopBlocklist", name)
 		}
 	}
 }
 
-func TestPhaseGateAndDirectMode_NoOverlap(t *testing.T) {
+func TestPhaseGateAndDirectMode_BothBlockLocalCoding(t *testing.T) {
 	criticalTools := []string{"bash", "write_file", "edit_file"}
 	for _, name := range criticalTools {
 		inPhaseGate := codingToolBlocklist[name]
-		inDirectBlock := directModeSessionBlocklist[name]
+		inDirectBlock := directModeMainLoopBlocklist[name]
 		if !inPhaseGate {
 			t.Errorf("%s should be in codingToolBlocklist", name)
 		}
-		if inDirectBlock {
-			t.Errorf("%s must NOT be in directModeSessionBlocklist", name)
+		if !inDirectBlock {
+			t.Errorf("%s should also be in directModeMainLoopBlocklist", name)
 		}
 	}
 
@@ -165,8 +179,8 @@ func TestPhaseGateAndDirectMode_NoOverlap(t *testing.T) {
 		if !codingToolBlocklist[name] {
 			t.Errorf("%s should be in codingToolBlocklist", name)
 		}
-		if !directModeSessionBlocklist[name] {
-			t.Errorf("%s should be in directModeSessionBlocklist", name)
+		if !directModeMainLoopBlocklist[name] {
+			t.Errorf("%s should be in directModeMainLoopBlocklist", name)
 		}
 	}
 }

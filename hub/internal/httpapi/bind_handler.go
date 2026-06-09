@@ -273,7 +273,7 @@ func BindSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service, f
 // BindUnbindHandler verifies code, deletes all machines, invalidates the
 // invitation code, and removes IM bindings (Feishu, QQ Bot, etc.) for the email.
 // POST /api/bind/unbind  { "email": "...", "code": "..." }
-func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service, invitationSvc *invitation.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner) http.HandlerFunc {
+func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service, invitationSvc *invitation.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner, purger ...*UserDataPurger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Email string `json:"email"`
@@ -312,13 +312,30 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 			return
 		}
 
+		// Use unified purger if available.
+		if len(purger) > 0 && purger[0] != nil {
+			result, purgeErr := purger[0].PurgeAll(r.Context(), user)
+			if purgeErr != nil {
+				writeError(w, http.StatusInternalServerError, "UNBIND_FAILED", purgeErr.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":               true,
+				"tenant_id":        tenantID,
+				"deleted_machines": result.DeletedMachines,
+				"codes_deleted":    result.DeletedInvitationCodes,
+				"email":            email,
+			})
+			return
+		}
+
+		// Legacy fallback: no purger available.
 		deleted, err := deviceSvc.ForceDeleteMachinesByTenantUser(r.Context(), tenantID, user.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "UNBIND_FAILED", err.Error())
 			return
 		}
 
-		// Delete the invitation code bound to this email so it cannot be reused.
 		var codesDeleted int64
 		if invitationSvc != nil {
 			codesDeleted, err = invitationSvc.DeleteCodeByTenantEmail(ctx, tenantID, email)
@@ -327,16 +344,11 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 			}
 		}
 
-		// Remove Feishu open_id binding.
 		if feishuNotifier != nil {
 			feishuNotifier.RemoveOpenIDForTenant(tenantID, email)
-			log.Printf("[bind] removed feishu binding for %s", email)
 		}
-
-		// Remove bindings from other IM plugins (QQ Bot, etc.).
 		removeIMBindingsForTenant(imCleaners, tenantID, email)
 
-		// Delete the user record so query returns unbound.
 		if repo := identity.UsersRepo(); repo != nil {
 			if err := repo.DeleteByTenantEmail(ctx, tenantID, email); err != nil {
 				log.Printf("[bind] delete user record for %s failed: %v", email, err)

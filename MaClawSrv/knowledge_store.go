@@ -132,8 +132,9 @@ func (m *knowledgeStoreManager) backfillEmbeddingsAsync(reason string) {
 	}()
 }
 
-// backgroundDownloadAndActivate downloads the embedding model in the background,
-// then loads and activates it for vector search. Supports HTTP Range resume.
+// backgroundDownloadAndActivate is the legacy knowledge-store download path.
+// It only ensures the shared model file exists; runtime loading is owned by
+// srvAIModelManager so MaClawSrv keeps one embedding model in memory.
 // Respects m.done channel — exits early if the manager is being closed.
 func (m *knowledgeStoreManager) backgroundDownloadAndActivate() {
 	// Check if already shutting down.
@@ -232,56 +233,12 @@ func (m *knowledgeStoreManager) writeDownloadFailMarker(path string) {
 	_ = os.WriteFile(path, []byte(time.Now().Format(time.RFC3339)), 0o644)
 }
 
-// activateEmbedder loads the model and hot-swaps the embedder in the running store.
-// No-op if the manager is already closed.
+// activateEmbedder is retained for the legacy download path. The knowledge
+// store uses srvAIModelEmbedderAdapter, so activation means rebuilding existing
+// rows through the shared AI model manager rather than loading another model.
 func (m *knowledgeStoreManager) activateEmbedder(modelPath string) {
-	emb, err := embedding.NewGemmaEmbedder(modelPath, 256)
-	if err != nil {
-		log.Printf("[knowledge] failed to load embedding model after download: %v", err)
-		return
-	}
-
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		emb.Close()
-		return
-	}
-	oldEmb := m.embedder
-	m.embedder = emb
-	m.store.SetEmbedder(emb)
-	m.mu.Unlock()
-
-	// Only close oldEmb if it's not a NoopEmbedder (Noop.Close is safe but
-	// checking avoids confusion in logs if we add Close logging later).
-	if oldEmb != nil && !embedding.IsNoop(oldEmb) {
-		oldEmb.Close()
-	}
-
-	log.Printf("[knowledge] embedding model activated, vector search is now available")
-
-	// Backfill embeddings for existing cards that don't have vectors yet.
-	m.wg.Add(1)
-	go func() {
-		defer m.wg.Done()
-		// Use done channel as cancellation signal for backfill.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		go func() {
-			select {
-			case <-m.done:
-				cancel()
-			case <-ctx.Done():
-			}
-		}()
-		if err := m.store.RebuildFTSIndex(ctx); err != nil {
-			if ctx.Err() == nil {
-				log.Printf("[knowledge] FTS rebuild (with embedding backfill) failed: %v", err)
-			}
-		} else {
-			log.Printf("[knowledge] embedding backfill completed for existing cards")
-		}
-	}()
+	_ = modelPath
+	m.backfillEmbeddingsAsync("legacy embedding activation")
 }
 
 // downloadModelFile downloads a file from url to destPath with HTTP Range resume support.

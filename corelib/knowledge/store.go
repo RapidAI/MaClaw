@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
@@ -23,6 +24,7 @@ type SQLiteStore struct {
 	distiller      CardDistiller
 	importProgress ImportProgressFunc
 	embedder       embedding.Embedder
+	embedderMu     sync.RWMutex
 	imageAssets    *ImageAssetManager
 	imageDescriber ImageDescriber
 	imageDescSem   chan struct{} // semaphore for concurrent image description calls
@@ -31,7 +33,21 @@ type SQLiteStore struct {
 // SetEmbedder sets the embedding model for vector search.
 // When set, card embeddings are generated on insert and used for semantic search.
 func (s *SQLiteStore) SetEmbedder(emb embedding.Embedder) {
+	if s == nil {
+		return
+	}
+	s.embedderMu.Lock()
+	defer s.embedderMu.Unlock()
 	s.embedder = emb
+}
+
+func (s *SQLiteStore) currentEmbedder() embedding.Embedder {
+	if s == nil {
+		return nil
+	}
+	s.embedderMu.RLock()
+	defer s.embedderMu.RUnlock()
+	return s.embedder
 }
 
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
@@ -430,12 +446,12 @@ func (s *SQLiteStore) DistillAndSaveCardsWithMode(ctx context.Context, tx *sql.T
 		return source, nil
 	}
 	// Generate embeddings for cards if embedder is available
-	if s != nil && s.embedder != nil && !embedding.IsNoop(s.embedder) {
+	if emb := s.currentEmbedder(); emb != nil && !embedding.IsNoop(emb) {
 		texts := make([]string, len(cards))
 		for i, card := range cards {
 			texts[i] = cardEmbeddingText(card)
 		}
-		if vectors, err := s.embedder.EmbedBatch(texts); err == nil && len(vectors) == len(cards) {
+		if vectors, err := emb.EmbedBatch(texts); err == nil && len(vectors) == len(cards) {
 			for i := range cards {
 				cards[i].Embedding = vectors[i]
 			}
@@ -1646,7 +1662,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	// ORIGINAL FTS path (ignoring LIKE-injected scores). LIKE may produce
 	// high scores from term-count heuristics that don't reflect true semantic
 	// relevance, so we check the best FTS-originated score separately.
-	if s.embedder != nil && !embedding.IsNoop(s.embedder) {
+	if emb := s.currentEmbedder(); emb != nil && !embedding.IsNoop(emb) {
 		// Find the best score from FTS results only (exclude LIKE-injected nodes
 		// which use term-count scoring that can be artificially high).
 		bestFTSScore := 0.0

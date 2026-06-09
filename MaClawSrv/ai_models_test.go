@@ -67,7 +67,8 @@ func (e *closingSrvEmbedder) Dim() int { return 1 }
 func (e *closingSrvEmbedder) Close() { e.closed.Store(true) }
 
 type countingSrvEmbedder struct {
-	calls atomic.Int32
+	calls      atomic.Int32
+	batchCalls atomic.Int32
 }
 
 func (e *countingSrvEmbedder) Embed(text string) ([]float32, error) {
@@ -76,6 +77,7 @@ func (e *countingSrvEmbedder) Embed(text string) ([]float32, error) {
 }
 
 func (e *countingSrvEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	e.batchCalls.Add(1)
 	out := make([][]float32, len(texts))
 	for i, text := range texts {
 		out[i], _ = e.Embed(text)
@@ -85,6 +87,58 @@ func (e *countingSrvEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
 
 func (e *countingSrvEmbedder) Dim() int { return 2 }
 func (e *countingSrvEmbedder) Close()   {}
+
+func TestSrvAIModelEmbedderAdapterUsesSharedBatchRuntime(t *testing.T) {
+	dataRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
+		t.Fatalf("create models dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", embedding.DefaultModelFilename), []byte("fake-embedding-model"), 0o644); err != nil {
+		t.Fatalf("write embedding model marker: %v", err)
+	}
+	emb := &countingSrvEmbedder{}
+	manager := newSrvAIModelManager(dataRoot)
+	manager.embeddingMgr = emb
+	adapter := srvAIModelEmbedderAdapter{manager: manager}
+
+	vectors, err := adapter.EmbedBatch([]string{"alpha", "beta", "gamma"})
+	if err != nil {
+		t.Fatalf("EmbedBatch failed: %v", err)
+	}
+	if len(vectors) != 3 {
+		t.Fatalf("got %d vectors, want 3", len(vectors))
+	}
+	if emb.batchCalls.Load() != 1 {
+		t.Fatalf("expected one shared batch inference, got %d", emb.batchCalls.Load())
+	}
+	if emb.calls.Load() != 3 {
+		t.Fatalf("expected fake embedder to embed 3 texts inside the batch, got %d", emb.calls.Load())
+	}
+}
+
+func TestSrvAIModelManagerEmbeddingModelPathUsesEnvOverride(t *testing.T) {
+	dataRoot := t.TempDir()
+	customPath := filepath.Join(t.TempDir(), embedding.DefaultModelFilename)
+	t.Setenv("MACLAW_EMBEDDING_MODEL_PATH", customPath)
+	if err := os.WriteFile(customPath, []byte("fake-embedding-model"), 0o644); err != nil {
+		t.Fatalf("write custom embedding model marker: %v", err)
+	}
+
+	manager := newSrvAIModelManager(dataRoot)
+	if got := manager.modelPath(embedding.DefaultModelFilename); got != customPath {
+		t.Fatalf("embedding model path = %q, want env override %q", got, customPath)
+	}
+	status := manager.statusOneWithPath(srvAIModelEmbedding, corelib.AppConfig{})
+	if !status.Exists || !status.Ready {
+		t.Fatalf("expected custom embedding model to be ready, status=%+v", status)
+	}
+	if status.Path != customPath {
+		t.Fatalf("status path = %q, want %q", status.Path, customPath)
+	}
+	if got := manager.modelPath(srvASRModelFilename); got != filepath.Join(dataRoot, "models", srvASRModelFilename) {
+		t.Fatalf("ASR model path should not use embedding override, got %q", got)
+	}
+}
 
 func TestSrvAIModelManagerSerializesSharedASRRuntime(t *testing.T) {
 	dataRoot := t.TempDir()

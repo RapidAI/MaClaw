@@ -340,6 +340,106 @@ func TestPlanningWorkflowPhaseAllowsInspectionButBlocksImplementationTools(t *te
 	}
 }
 
+func TestCodingWorkflowImplementationMainLoopExposesOnlySubAgentHandoff(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-implementation-main-loop-minimal-tools-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	state.PhaseIndex = 3
+	state.CurrentPhase = workflow.PhaseCodingImplementation
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("ask_user", "ask user", nil, nil),
+		toolDef("bash", "bash", nil, nil),
+		toolDef("delegate_task", "delegate", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("generate_pdf", "generate pdf", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("memory", "memory", nil, nil),
+		toolDef("office", "office", nil, nil),
+		toolDef("open", "open", nil, nil),
+		toolDef("parallel_execute", "parallel execute", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+		toolDef("set_nickname", "set nickname", nil, nil),
+		toolDef("task", "task", nil, nil),
+		toolDef("web_fetch", "web fetch", nil, nil),
+		toolDef("web_search", "web search", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+	})
+
+	filtered := handler.applyWorkflowToolFilterWithCatalog(userID, handler.getTools(), handler.getTools())
+	names := toolNameSetForWorkflowFilterTest(filtered)
+	for _, name := range []string{"ask_user", "delegate_task", "list_directory", "read_file", "send_file"} {
+		if !names[name] {
+			t.Fatalf("implementation main loop should keep %s, got %#v", name, names)
+		}
+	}
+	for _, name := range []string{"bash", "write_file", "edit_file", "task", "memory", "office", "web_search", "web_fetch", "open", "generate_pdf", "set_nickname", "parallel_execute"} {
+		if names[name] {
+			t.Fatalf("implementation main loop must not expose %s to the main agent, got %#v", name, names)
+		}
+		if handler.isWorkflowToolAllowedForOwner(userID, name) {
+			t.Fatalf("implementation execution gate must reject main-agent tool %s", name)
+		}
+	}
+	if ok, reason := handler.isWorkflowToolCallAllowedForOwner(userID, "delegate_task", `{"agent":"coding_workflow","request":"implement T1"}`); !ok {
+		t.Fatalf("delegate_task(coding_workflow) should remain available: %s", reason)
+	}
+	if ok, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "delegate_task", `{"agent":"help","request":"help"}`); ok {
+		t.Fatal("implementation main loop must reject non-coding delegate_task")
+	}
+}
+
+func TestSkillRecoverReappliesCodingImplementationWorkflowFilter(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-skill-recover-implementation-filter-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	state.PhaseIndex = 3
+	state.CurrentPhase = workflow.PhaseCodingImplementation
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("delegate_task", "delegate", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("memory", "memory", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("task", "task", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+	})
+	baseTools := []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("memory", "memory", nil, nil),
+		toolDef("task", "task", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+	}
+
+	restored, _, directFiltered := handler.restoreToolsAfterSkillRecover(userID, baseTools, agentLoopPhase{}, codingToolGateConfig{}, false, func() bool { return false })
+	names := toolNameSetForWorkflowFilterTest(restored)
+	if directFiltered {
+		t.Fatal("workflow filter should not report direct-mode filtering when orchestrator is inactive")
+	}
+	for _, name := range []string{"read_file", "list_directory", "delegate_task"} {
+		if !names[name] {
+			t.Fatalf("recover should restore required CodingSubAgent handoff tool %s, got %#v", name, names)
+		}
+	}
+	for _, name := range []string{"bash", "write_file", "task", "memory"} {
+		if names[name] {
+			t.Fatalf("recover must not resurrect workflow-blocked tool %s, got %#v", name, names)
+		}
+	}
+}
+
 func TestDirectToolExecutionDoesNotInheritSingleActiveWorkflowPolicy(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "single-active-direct-tool-policy-user"

@@ -63,12 +63,18 @@ var codingToolBlocklist = map[string]bool{
 	"gui_observe": true, "gui_verify": true,
 }
 
-// directModeSessionBlocklist lists session management tools that should be
-// stripped during the execution phase when using direct coding mode. In direct
-// mode, maclaw writes code itself using bash/write_file/edit_file; external
-// session tools are unnecessary and their presence confuses the LLM into
-// trying to delegate instead of coding directly.
-var directModeSessionBlocklist = map[string]bool{
+// directModeMainLoopBlocklist lists tools that the main loop must not receive
+// while implementation is owned by the internal CodingSubAgent.
+var directModeMainLoopBlocklist = map[string]bool{
+	"bash":               true,
+	"write_file":         true,
+	"edit_file":          true,
+	"edit_lines":         true,
+	"craft_tool":         true,
+	"parallel_execute":   true,
+	"create_session":     true,
+	"send_and_observe":   true,
+	"control_session":    true,
 	"get_session_output": true,
 	"get_session_events": true,
 	"interrupt_session":  true,
@@ -80,7 +86,7 @@ var directModeSessionBlocklist = map[string]bool{
 func init() {
 	for name := range disabledExternalCodingSessionTools {
 		codingToolBlocklist[name] = true
-		directModeSessionBlocklist[name] = true
+		directModeMainLoopBlocklist[name] = true
 	}
 }
 
@@ -106,10 +112,10 @@ func isCodingTool(name string) bool {
 	return codingToolBlocklist[name] && !deliveryToolAllowlist[name]
 }
 
-// isDirectModeBlockedTool returns true if the tool should be stripped during
-// the execution phase when using direct coding mode.
+// isDirectModeBlockedTool returns true if the main loop must not receive this
+// tool while direct mode delegates code changes to CodingSubAgent.
 func isDirectModeBlockedTool(name string) bool {
-	return directModeSessionBlocklist[name]
+	return directModeMainLoopBlocklist[name]
 }
 
 // mapGateIntentToConfig maps a GateIntentResult from the semantic classifier

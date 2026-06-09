@@ -1796,8 +1796,11 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalog(userID string, too
 		return nil
 	}
 	contract, hasContract := engine.GetActivePhaseContract(userID)
+	constrainCodingImplementation := h.shouldConstrainCodingWorkflowImplementationMainLoop(userID)
 	var required []string
-	if hasContract {
+	if constrainCodingImplementation {
+		required = codingWorkflowImplementationMainLoopRequiredTools()
+	} else if hasContract {
 		required = workflow.RequiredToolNamesForContract(contract)
 	} else {
 		required = workflow.RequiredToolNamesForPolicy(policy)
@@ -1807,7 +1810,11 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalog(userID string, too
 	}
 	if hasContract {
 		tools = ensureWorkflowRequiredToolsForNames(required, tools, allTools)
-		return workflow.FilterToolDefinitionsByContract(contract, tools)
+		tools = workflow.FilterToolDefinitionsByContract(contract, tools)
+		if constrainCodingImplementation {
+			return filterCodingWorkflowImplementationMainLoopTools(tools)
+		}
+		return tools
 	}
 	tools = ensureWorkflowRequiredTools(policy, tools, allTools)
 	return workflow.FilterToolDefinitions(policy, tools)

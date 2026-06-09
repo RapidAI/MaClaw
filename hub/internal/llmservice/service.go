@@ -6,10 +6,16 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 )
+
+// cardRedeemMu serializes card redemption to prevent TOCTOU race conditions
+// where two concurrent requests could both pass the "not yet redeemed" check
+// and create duplicate grants from the same card.
+var cardRedeemMu sync.Mutex
 
 type userGroupResolver interface {
 	ResolveUserGroupChain(ctx context.Context, email string) ([]string, error)
@@ -404,6 +410,13 @@ func RedeemCard(ctx context.Context, system SystemSettingsRepository, securitySv
 	if err := ValidateCardCode(code); err != nil {
 		return nil, err
 	}
+
+	// Serialize card redemption to prevent TOCTOU race:
+	// Without this lock, two concurrent requests with the same card code could
+	// both pass the RedeemedAt==nil check and create duplicate grants.
+	cardRedeemMu.Lock()
+	defer cardRedeemMu.Unlock()
+
 	reg, err := LoadRegistry(ctx, system)
 	if err != nil {
 		return nil, err
@@ -987,6 +1000,22 @@ func EstimateCredits(tokens int64, multiplier float64, tokensPerCredit int) floa
 		tokensPerCredit = DefaultTokensPerCredit
 	}
 	return roundCredits((float64(tokens) * normalizeCreditMultiplier(multiplier)) / float64(tokensPerCredit))
+}
+
+// MinimumRequestCredits is the minimum credit charge for a successful LLM request
+// that returned a valid response but reported zero usage tokens. This prevents
+// free-riding when upstream providers omit the usage field in their response.
+const MinimumRequestCredits = 0.1
+
+// EstimateCreditsWithFloor is like EstimateCredits but applies a minimum charge
+// floor for successful requests. Use this when the request is known to have
+// succeeded (statusCode < 400 and response body is non-empty).
+func EstimateCreditsWithFloor(tokens int64, multiplier float64, tokensPerCredit int) float64 {
+	credits := EstimateCredits(tokens, multiplier, tokensPerCredit)
+	if credits <= 0 {
+		return MinimumRequestCredits
+	}
+	return credits
 }
 
 func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []string, credits float64, now time.Time) float64 {

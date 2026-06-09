@@ -249,7 +249,19 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/sessions/all", requireAdmin(AdminListAllSessionsHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", requireAdmin(ManualBindHandler(identity)))
 	mux.HandleFunc("GET /api/admin/users", requireAdmin(ListUsersHandler(identity, system, securitySvc)))
-	mux.HandleFunc("DELETE /api/admin/users", requireAdmin(DeleteBoundUserHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, securitySvc, system, centerSvc)))
+	// Shared purger: single source of truth for "what data does a user leave behind".
+	userPurger := &UserDataPurger{
+		Identity:      identity,
+		DeviceSvc:     deviceSvc,
+		InvitationSvc: invitationSvc,
+		FeishuNotify:  feishuNotifier,
+		IMCleaners:    imCleaners,
+		SecuritySvc:   securitySvc,
+		System:        system,
+		DB:            hubDB,
+		RouteDeleter:  centerSvc,
+	}
+	mux.HandleFunc("DELETE /api/admin/users", requireAdmin(DeleteBoundUserHandler(identity, userPurger)))
 	mux.HandleFunc("GET /api/admin/users/lookup", requireAdmin(LookupUserHandler(identity)))
 	mux.HandleFunc("GET /api/admin/blocklist", requireAdmin(ListBlockedEmailsHandler(identity)))
 	mux.HandleFunc("POST /api/admin/blocklist", requireAdmin(AddBlockedEmailHandler(identity)))
@@ -263,7 +275,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/invitation-codes/toggle", requireAdmin(ToggleInvitationCodeHandler(invitationSvc)))
 	mux.HandleFunc("GET /api/admin/invitation-codes/status", requireAdmin(InvitationCodeStatusHandler(invitationSvc)))
 	mux.HandleFunc("GET /api/admin/invitation-codes/export", requireAdmin(ExportInvitationCodesHandler(invitationSvc)))
-	mux.HandleFunc("POST /api/admin/invitation-codes/unbind", requireAdmin(UnbindInvitationCodeHandler(invitationSvc, identity, deviceSvc, feishuNotifier, imCleaners)))
+	mux.HandleFunc("POST /api/admin/invitation-codes/unbind", requireAdmin(UnbindInvitationCodeHandlerWithPurger(invitationSvc, identity, userPurger)))
 	mux.HandleFunc("GET /api/admin/enrollments/pending", requireAdmin(ListPendingEnrollmentsHandler(identity)))
 	mux.HandleFunc("GET /api/admin/enrollments/all", requireAdmin(ListAllEnrollmentsHandler(identity)))
 	mux.HandleFunc("POST /api/admin/enrollments/approve", requireAdmin(ApproveEnrollmentHandler(identity, securitySvc)))
@@ -273,7 +285,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/center/status", requireGlobalAdminAllowTenantQuery(GetCenterStatusHandler(centerSvc)))
 	mux.HandleFunc("POST /api/center/user-migration/export", CenterUserMigrationExportHandler(centerSvc, identity, deviceSvc))
 	mux.HandleFunc("POST /api/center/user-migration/import", CenterUserMigrationImportHandler(centerSvc, identity, deviceSvc))
-	mux.HandleFunc("POST /api/center/user-migration/delete", CenterUserMigrationDeleteHandler(centerSvc, identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners))
+	mux.HandleFunc("POST /api/center/user-migration/delete", CenterUserMigrationDeleteHandler(centerSvc, identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, userPurger))
 	mux.HandleFunc("POST /api/admin/center/config", requireGlobalAdmin(UpdateCenterConfigHandler(centerSvc, identity, func(url string) {
 		if qqbotPlugin != nil {
 			qqbotPlugin.SetPublicBaseURL(url)
@@ -462,7 +474,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/bind/config", bindCORS(BindConfigHandler(invitationSvc)))
 	mux.HandleFunc("POST /api/bind/query", bindCORS(BindQueryHandler(identity)))
 	mux.HandleFunc("POST /api/bind/send-code", bindCORS(BindSendCodeHandler(identity, mailer, feishuNotifier)))
-	mux.HandleFunc("POST /api/bind/unbind", bindCORS(BindUnbindHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners)))
+	mux.HandleFunc("POST /api/bind/unbind", bindCORS(BindUnbindHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, userPurger)))
 
 	mux.HandleFunc("POST /api/enroll/start", EnrollStartHandler(identity, invitationSvc, securitySvc))
 	mux.HandleFunc("POST /api/auth/email-request", EmailRequestLoginHandler(identity))

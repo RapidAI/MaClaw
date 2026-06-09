@@ -165,7 +165,12 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 
 	if enabled {
 		modelPath := embedding.DefaultModelPath()
-		emb := embedding.NewDefaultEmbedder(modelPath)
+		emb, err := a.sharedEmbeddingEmbedder(modelPath, func(path string) (embedding.Embedder, error) {
+			return embedding.NewDefaultEmbedder(path), nil
+		})
+		if err != nil {
+			return err
+		}
 		if embedding.IsNoop(emb) {
 			// Model file not found 鈥?config is saved but embedder stays inactive.
 			// Download it in the background, then verify and activate it.
@@ -475,24 +480,27 @@ func (a *App) verifyAndEnableEmbedding(modelPath string) bool {
 	// Ensure infrastructure is ready before enabling.
 	a.ensureRemoteInfra()
 
-	emb, err := embedding.NewGemmaEmbedder(modelPath, 256)
+	emb, err := a.sharedEmbeddingEmbedder(modelPath, func(path string) (embedding.Embedder, error) {
+		emb, err := embedding.NewGemmaEmbedder(path, 256)
+		if err != nil {
+			return nil, err
+		}
+		vec, err := emb.Embed("test")
+		if err != nil || len(vec) == 0 {
+			emb.Close()
+			return nil, fmt.Errorf("smoke test failed: err=%v len=%d", err, len(vec))
+		}
+		return emb, nil
+	})
 	if err != nil {
 		fmt.Printf("[embedding] verification failed: %v\n", err)
-		return false
-	}
-
-	// Quick smoke test: embed a short string.
-	vec, err := emb.Embed("test")
-	if err != nil || len(vec) == 0 {
-		fmt.Printf("[embedding] smoke test failed: err=%v len=%d\n", err, len(vec))
-		emb.Close()
 		return false
 	}
 
 	fmt.Println("[embedding] model verified, enabling vector search asynchronously")
 
 	if !a.vectorSearchConfiguredEnabled() {
-		emb.Close()
+		a.closeEmbedderIfNotShared(emb)
 		return false
 	}
 
@@ -521,7 +529,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	}
 
 	if !a.vectorSearchConfiguredEnabled() {
-		emb.Close()
+		a.closeEmbedderIfNotShared(emb)
 		return
 	}
 
@@ -529,7 +537,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	// (ensureMemoryStore, SetVectorSearchEnabled, verifyAndEnableEmbedding)
 	// may race; the first one wins, subsequent calls close the redundant embedder.
 	if !a.embeddingActivated.CompareAndSwap(false, true) {
-		emb.Close()
+		a.closeEmbedderIfNotShared(emb)
 		return
 	}
 	emb, reusedIntentEmbedder := a.claimEmbeddingForFullActivation(emb)
@@ -616,11 +624,12 @@ func (a *App) claimEmbeddingForFullActivation(emb embedding.Embedder) (embedding
 	a.embeddingMu.Lock()
 	defer a.embeddingMu.Unlock()
 	if a.intentEmbedder != nil && !embedding.IsNoop(a.intentEmbedder) {
-		if emb != nil {
+		intentWasActive := a.intentEmbeddingActive.Load()
+		if emb != nil && !sameEmbedder(a.intentEmbedder, emb) {
 			emb.Close()
 		}
 		a.intentEmbeddingActive.Store(true)
-		return a.intentEmbedder, true
+		return a.intentEmbedder, intentWasActive
 	}
 	a.intentEmbedder = emb
 	a.intentEmbeddingActive.Store(true)
@@ -639,17 +648,25 @@ func (a *App) activateIntentClassifierEmbedderAsync(emb embedding.Embedder) {
 	if emb == nil || embedding.IsNoop(emb) {
 		return
 	}
-	if a.embeddingActivated.Load() || !a.intentEmbeddingActive.CompareAndSwap(false, true) {
-		emb.Close()
+	if a.embeddingActivated.Load() {
+		a.closeEmbedderIfNotShared(emb)
 		return
 	}
 	a.embeddingMu.Lock()
-	if a.intentEmbedder != nil && !embedding.IsNoop(a.intentEmbedder) {
+	if a.intentEmbeddingActive.Load() {
 		a.embeddingMu.Unlock()
-		emb.Close()
+		a.closeEmbedderIfNotShared(emb)
 		return
 	}
-	a.intentEmbedder = emb
+	if a.intentEmbedder != nil && !embedding.IsNoop(a.intentEmbedder) {
+		if !sameEmbedder(a.intentEmbedder, emb) {
+			emb.Close()
+		}
+		emb = a.intentEmbedder
+	} else {
+		a.intentEmbedder = emb
+	}
+	a.intentEmbeddingActive.Store(true)
 	a.embeddingMu.Unlock()
 	t0 := time.Now()
 	a.initEarlyClassifier()
@@ -660,6 +677,64 @@ func (a *App) activateIntentClassifierEmbedderAsync(emb embedding.Embedder) {
 	}
 	log.Println("[embedding] UnifiedIntentClassifier upgraded: L2 embedding + L3 LLM available for intent routing")
 	fmt.Printf("[embedding] intent-only activation complete in %v\n", time.Since(t0))
+}
+
+// sharedEmbeddingEmbedder serializes model loading and publishes one shared
+// embedding runtime per App. This prevents concurrent startup/settings/download
+// paths from loading multiple Gemma instances and spiking memory.
+func (a *App) sharedEmbeddingEmbedder(modelPath string, load func(string) (embedding.Embedder, error)) (embedding.Embedder, error) {
+	if a == nil {
+		return embedding.NoopEmbedder{}, nil
+	}
+	a.embeddingMu.Lock()
+	defer a.embeddingMu.Unlock()
+	if a.intentEmbedder != nil && !embedding.IsNoop(a.intentEmbedder) {
+		if strings.TrimSpace(modelPath) == "" || modelPath == a.intentEmbedderPath {
+			return a.intentEmbedder, nil
+		}
+		a.intentEmbedder.Close()
+		a.intentEmbedder = nil
+		a.intentEmbedderPath = ""
+		a.intentEmbeddingActive.Store(false)
+		a.embeddingActivated.Store(false)
+	}
+	emb, err := load(modelPath)
+	if err != nil {
+		return nil, err
+	}
+	if emb == nil || embedding.IsNoop(emb) {
+		return emb, nil
+	}
+	a.intentEmbedder = emb
+	a.intentEmbedderPath = modelPath
+	return emb, nil
+}
+
+func (a *App) closeEmbedderIfNotShared(emb embedding.Embedder) {
+	if emb == nil || embedding.IsNoop(emb) {
+		return
+	}
+	if a != nil {
+		a.embeddingMu.Lock()
+		shared := sameEmbedder(a.intentEmbedder, emb)
+		a.embeddingMu.Unlock()
+		if shared {
+			return
+		}
+	}
+	emb.Close()
+}
+
+func sameEmbedder(left, right embedding.Embedder) (same bool) {
+	if left == nil || right == nil {
+		return left == right
+	}
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	return left == right
 }
 
 // buildIntentLLMFunc creates a LLMClassifyFunc callback that uses the app's
