@@ -74,12 +74,15 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
     const effectiveVisibleTotal = Math.max(total, visibleGrantTotal);
     total = Math.max(numeric(status?.credits_total ?? status?.CreditsTotal ?? effectiveVisibleTotal), effectiveVisibleTotal);
     used = numeric(status?.credits_used ?? status?.CreditsUsed ?? used);
-    remaining = numeric(status?.credits_remaining ?? status?.CreditsRemaining ?? remaining);
+    // Keep our accumulated remaining (which includes queued grants) if it's larger
+    // than backend's status.credits_remaining (which only counts effective grants).
+    const statusRemaining = numeric(status?.credits_remaining ?? status?.CreditsRemaining);
+    remaining = Math.max(remaining, statusRemaining);
     const statusAvailable = numeric(status?.credits_available ?? status?.CreditsAvailable);
     const statusGrantAvailable = numeric(statusGrant?.credits_available ?? statusGrant?.CreditsAvailable);
     const available = statusAvailable > 0 ? statusAvailable : (grantAvailable > 0 ? grantAvailable : statusGrantAvailable);
     if (!active && grantStatus === 'expired') remaining = Math.max(0, available);
-    if ((active || remaining <= 0) && available > 0) remaining = available;
+    if ((active || remaining <= 0) && available > 0 && available > remaining) remaining = available;
     if (remaining > 0 && total < used + remaining) total = used + remaining;
     const unlimited = total <= 0;
     const latestGrantExpiry = latestExpiry(grants

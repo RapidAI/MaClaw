@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -472,6 +473,7 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 			items, err = identity.ListUsersForTenant(r.Context(), RequestTenantID(r))
 		}
 		if err != nil {
+			log.Printf("[admin/users] ListUsers failed: %v", err)
 			writeError(w, http.StatusInternalServerError, "LIST_USERS_FAILED", err.Error())
 			return
 		}

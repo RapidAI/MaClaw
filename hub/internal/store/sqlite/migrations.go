@@ -881,6 +881,8 @@ func migrateTenantScopedUserTable(db *sql.DB) error {
 			status TEXT NOT NULL DEFAULT 'active',
 			enrollment_status TEXT NOT NULL DEFAULT 'approved',
 			smart_route INTEGER NOT NULL DEFAULT 0,
+			email_verified INTEGER NOT NULL DEFAULT 0,
+			email_verified_at TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(tenant_id, email)

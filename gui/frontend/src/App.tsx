@@ -391,6 +391,7 @@ function App() {
     const [isLoading, setIsLoading] = useState(true);
     const [isManualCheck, setIsManualCheck] = useState(false);
     const [showMaclawLLMPopup, setShowMaclawLLMPopup] = useState(false);
+    const [hubAuthRejectedPrompt, setHubAuthRejectedPrompt] = useState(false);
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
     const [envCheckInterval, setEnvCheckInterval] = useState<number>(7);
     const [uiZoom, setUiZoom] = useState<number>(1.0);
@@ -1447,12 +1448,8 @@ function App() {
         });
 
         // Hub auth rejected: admin unbound this user — prompt to re-register.
-        // Note: uses bilingual message to avoid stale config closure issue.
         safeEventsOn("hub-auth-rejected", () => {
-            const msg = 'Hub 绑定已失效（管理员已解除绑定），是否重新注册？\n\nYour Hub account has been unbound by the administrator. Re-register?';
-            if (confirm(msg)) {
-                setActiveTab('onboarding');
-            }
+            setHubAuthRejectedPrompt(true);
         });
 
         return () => {
@@ -2013,7 +2010,7 @@ function App() {
         };
         const offTokenUsageChanged = safeEventsOn("llm-token-usage-changed", onTokenUsageChanged);
         const offHubLLMServiceChanged = safeEventsOn("hub-llm-service-changed", onTokenUsageChanged);
-        const usageRefreshTimer = window.setInterval(() => { void refreshSidebarTokenUsage(); }, 10 * 60 * 1000);
+        const usageRefreshTimer = window.setInterval(() => { void refreshSidebarTokenUsage(); }, 60 * 1000);
         return () => {
             sidebarTokenUsageSeqRef.current += 1;
             window.clearInterval(usageRefreshTimer);
@@ -4143,6 +4140,20 @@ ${instruction}`;
                             void saveRemoteConfigField(patch as any);
                         }, 0);
                     }}
+                />
+            )}
+
+            {hubAuthRejectedPrompt && (
+                <ConfirmDialog
+                    title={localizeText('Hub Binding Expired', 'Hub 绑定已失效', 'Hub 綁定已失效')}
+                    message={localizeText(
+                        'Your Hub account has been unbound by the administrator. Would you like to re-register?',
+                        '管理员已解除您的 Hub 绑定，是否重新注册？',
+                        '管理員已解除您的 Hub 綁定，是否重新註冊？'
+                    )}
+                    t={(key) => key === 'cancel' ? localizeText('Later', '稍后', '稍後') : localizeText('Re-register', '重新注册', '重新註冊')}
+                    onCancel={() => setHubAuthRejectedPrompt(false)}
+                    onConfirm={() => { setHubAuthRejectedPrompt(false); setShowMaclawLLMPopup(true); }}
                 />
             )}
 

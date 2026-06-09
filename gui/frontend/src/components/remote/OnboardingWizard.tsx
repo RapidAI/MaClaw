@@ -1402,11 +1402,12 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             background: "var(--theme-info-bg)",
                             border: `1px solid ${colors.borderLight}`,
                             marginBottom: 10,
+                            display: "flex", alignItems: "center", gap: 10,
                         }}>
-                            <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 3, fontWeight: 500 }}>
+                            <div style={{ fontSize: 12, color: colors.textMuted, fontWeight: 500, whiteSpace: "nowrap" }}>
                                 {t("注册邮箱", "Registration Email", "註冊信箱")}
                             </div>
-                            <div style={{ fontSize: 14, fontWeight: 600, color: colors.text, wordBreak: "break-all" }}>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, wordBreak: "break-all" }}>
                                 {regEmail}
                             </div>
                         </div>
