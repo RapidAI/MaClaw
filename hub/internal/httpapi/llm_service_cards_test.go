@@ -831,7 +831,7 @@ func TestUpdateLLMServicesAdminHandlerPreservesGrantsWhenOmitted(t *testing.T) {
 	}
 }
 
-func TestUpdateLLMServicesAdminHandlerRejectsDeletingReferencedServiceGroup(t *testing.T) {
+func TestUpdateLLMServicesAdminHandlerCascadeCleansOrphanedReferencesOnGroupDeletion(t *testing.T) {
 	now := time.Now().UTC()
 	system := newTestLLMServiceSystemSettings()
 	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{
@@ -846,17 +846,36 @@ func TestUpdateLLMServicesAdminHandlerRejectsDeletingReferencedServiceGroup(t *t
 		t.Fatal(err)
 	}
 
+	// Remove "paid" from model_service_groups — cascade cleanup should remove orphaned card refs and grants.
 	body := []byte(`{"model_service_groups":[{"id":"default","name":"Default (No Model Access)"}],"group_bindings":[],"user_bindings":[],"default_new_user_service_groups":["default"],"default_new_user_duration_days":30,"tokens_per_credit":10000}`)
 	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	UpdateLLMServicesAdminHandler(system, nil).ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s; expected cascade cleanup to succeed", rec.Code, rec.Body.String())
 	}
-	bodyText := rec.Body.String()
-	if !strings.Contains(bodyText, "service exchange card") || !strings.Contains(bodyText, "grant") || !strings.Contains(bodyText, "paid") {
-		t.Fatalf("expected preserved card/grant reference validation error, got %s", bodyText)
+
+	// Verify the saved registry has cleaned up the orphaned references.
+	saved, err := llmservice.LoadRegistry(context.Background(), system)
+	if err != nil {
+		t.Fatalf("load registry: %v", err)
+	}
+	// Card should have its ServiceGroupIDs cleaned (empty).
+	for _, card := range saved.Cards {
+		if card.ID == "card-1" {
+			for _, sgID := range card.ServiceGroupIDs {
+				if strings.EqualFold(sgID, "paid") {
+					t.Fatalf("card-1 still references deleted group 'paid': %#v", card.ServiceGroupIDs)
+				}
+			}
+		}
+	}
+	// Grant referencing "paid" should be removed.
+	for _, grant := range saved.Grants {
+		if strings.EqualFold(grant.ServiceGroupID, "paid") {
+			t.Fatalf("grant still references deleted group 'paid': %#v", grant)
+		}
 	}
 }
 

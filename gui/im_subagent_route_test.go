@@ -165,7 +165,7 @@ func TestDirectCodingSubAgentRouteBlockedByNonOrchestratorFullWorkflowPhase(t *t
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	h.unifiedClassifier = uic
 	workflowType := workflow.WorkflowType("full_non_orchestrator_route")
-	h.app.workflowEngine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	if err := h.app.workflowEngine.GetRegistry().Register(&workflow.WorkflowTemplate{
 		Type: workflowType,
 		Name: "full non orchestrator route",
 		Phases: []workflow.PhaseTemplate{{
@@ -174,9 +174,13 @@ func TestDirectCodingSubAgentRouteBlockedByNonOrchestratorFullWorkflowPhase(t *t
 			Prompt:              "generate artifact",
 			Deliverable:         "artifact",
 			ToolPolicy:          workflow.ToolFilterFull,
+			Kind:                workflow.PhaseKindArtifactGeneration,
+			MutationScope:       workflow.MutationScopeArtifact,
 			DisableOrchestrator: true,
 		}},
-	})
+	}); err != nil {
+		t.Fatalf("Register workflow template: %v", err)
+	}
 	userID := "direct-route-full-disabled-user"
 	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "generate"}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)

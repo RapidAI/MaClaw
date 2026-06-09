@@ -124,6 +124,39 @@ func TestBuiltinTemplates_RequiredFieldsNonEmpty(t *testing.T) {
 	}
 }
 
+func TestBuiltinTemplates_KeyPhasesDeclareContracts(t *testing.T) {
+	r := NewWorkflowRegistry()
+	cases := []struct {
+		workflow      WorkflowType
+		phaseID       string
+		toolPolicy    ToolFilterPolicy
+		kind          PhaseKind
+		mutationScope MutationScope
+	}{
+		{WorkflowCoding, PhaseCodingTaskBreakdown, ToolFilterPlanning, PhaseKindCodePlanning, MutationScopeWorkflowDoc},
+		{WorkflowCoding, PhaseCodingImplementation, ToolFilterFull, PhaseKindExecution, MutationScopeProject},
+		{WorkflowTesting, "test_execution", ToolFilterFull, PhaseKindExecution, MutationScopeProject},
+		{WorkflowBusinessPlan, "bp_doc_generation", ToolFilterFull, PhaseKindArtifactGeneration, MutationScopeArtifact},
+		{WorkflowPresentationDesign, "ppt_generation", ToolFilterFull, PhaseKindArtifactGeneration, MutationScopeArtifact},
+		{WorkflowOpsMaintenance, "controlled_execution", ToolFilterOpsControlled, PhaseKindOpsExecution, MutationScopeOps},
+	}
+
+	for _, tc := range cases {
+		t.Run(string(tc.workflow)+"/"+tc.phaseID, func(t *testing.T) {
+			phase := mustPhase(t, r.Match(tc.workflow), tc.phaseID)
+			if phase.ToolPolicy != tc.toolPolicy {
+				t.Fatalf("ToolPolicy=%s, want %s", phase.ToolPolicy, tc.toolPolicy)
+			}
+			if phase.Kind != tc.kind {
+				t.Fatalf("Kind=%s, want explicit %s", phase.Kind, tc.kind)
+			}
+			if phase.MutationScope != tc.mutationScope {
+				t.Fatalf("MutationScope=%s, want explicit %s", phase.MutationScope, tc.mutationScope)
+			}
+		})
+	}
+}
+
 func TestBuiltinTemplates_CodingImplementationToolPolicyFull(t *testing.T) {
 	r := NewWorkflowRegistry()
 	tmpl := r.Match(WorkflowCoding)

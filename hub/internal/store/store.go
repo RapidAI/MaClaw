@@ -294,6 +294,7 @@ type EnrollmentRepository interface {
 	Reject(ctx context.Context, id string, updatedAt time.Time) error
 	UpdateMobile(ctx context.Context, id string, mobile string) error
 	GetByMobile(ctx context.Context, mobile string) (*UserEnrollment, error)
+	DeleteByTenantEmail(ctx context.Context, tenantID, email string) (int64, error)
 }
 
 type EmailBlocklistRepository interface {
@@ -365,6 +366,7 @@ type ViewerTokenRepository interface {
 	Create(ctx context.Context, token *ViewerToken) error
 	GetByTokenHash(ctx context.Context, tokenHash string) (*ViewerToken, error)
 	ExtendExpiry(ctx context.Context, tokenID string, expiresAt time.Time) error
+	DeleteByUserID(ctx context.Context, userID string) (int64, error)
 }
 
 type LoginTokenRepository interface {

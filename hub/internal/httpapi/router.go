@@ -249,7 +249,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/sessions/all", requireAdmin(AdminListAllSessionsHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", requireAdmin(ManualBindHandler(identity)))
 	mux.HandleFunc("GET /api/admin/users", requireAdmin(ListUsersHandler(identity, system, securitySvc)))
-	mux.HandleFunc("DELETE /api/admin/users", requireAdmin(DeleteBoundUserHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, centerSvc)))
+	mux.HandleFunc("DELETE /api/admin/users", requireAdmin(DeleteBoundUserHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, securitySvc, system, centerSvc)))
 	mux.HandleFunc("GET /api/admin/users/lookup", requireAdmin(LookupUserHandler(identity)))
 	mux.HandleFunc("GET /api/admin/blocklist", requireAdmin(ListBlockedEmailsHandler(identity)))
 	mux.HandleFunc("POST /api/admin/blocklist", requireAdmin(AddBlockedEmailHandler(identity)))

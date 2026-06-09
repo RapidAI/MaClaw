@@ -676,6 +676,14 @@ func (r *enrollmentRepo) GetByMobile(ctx context.Context, mobile string) (*store
 	return &item, nil
 }
 
+func (r *enrollmentRepo) DeleteByTenantEmail(ctx context.Context, tenantID, email string) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM user_enrollments WHERE tenant_id = ? AND lower(email) = lower(?)`, normalizeTenantID(tenantID), strings.TrimSpace(email))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (r *emailBlockRepo) Create(ctx context.Context, item *store.EmailBlockItem) error {
 	_, err := r.db.ExecContext(
 		ctx,
@@ -1212,6 +1220,14 @@ func (r *viewerTokenRepo) ExtendExpiry(ctx context.Context, tokenID string, expi
 		tokenID,
 	)
 	return err
+}
+
+func (r *viewerTokenRepo) DeleteByUserID(ctx context.Context, userID string) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM viewer_tokens WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (r *loginTokenRepo) Create(ctx context.Context, token *store.LoginToken) error {

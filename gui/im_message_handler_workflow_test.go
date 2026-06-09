@@ -1829,15 +1829,17 @@ func TestWorkflowReviewFastConfirmBypassesPendingUserReply(t *testing.T) {
 	engine := handler.app.workflowEngine
 	userID := "test-review-pending-reply-priority"
 	workflowType := workflow.WorkflowType("gui_review_pending_reply_priority")
-	engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	if err := engine.GetRegistry().Register(&workflow.WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "review pending reply priority",
 		Description: "test template",
 		Phases: []workflow.PhaseTemplate{
 			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
-			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: workflow.ToolFilterFull},
+			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: workflow.ToolFilterFull, Kind: workflow.PhaseKindExecution, MutationScope: workflow.MutationScopeProject},
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Register workflow template: %v", err)
+	}
 	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
 		Category: workflowType,
 		Summary:  "build a desktop game",
@@ -1883,15 +1885,17 @@ func TestWorkflowReviewExecutionRequestDoesNotStartAgentLoop(t *testing.T) {
 	engine := handler.app.workflowEngine
 	userID := "test-review-execution-request-blocked"
 	workflowType := workflow.WorkflowType("gui_review_execution_request_blocked")
-	engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	if err := engine.GetRegistry().Register(&workflow.WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "review execution request blocked",
 		Description: "test template",
 		Phases: []workflow.PhaseTemplate{
 			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
-			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: workflow.ToolFilterFull},
+			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: workflow.ToolFilterFull, Kind: workflow.PhaseKindExecution, MutationScope: workflow.MutationScopeProject},
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Register workflow template: %v", err)
+	}
 	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "build a desktop game"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
@@ -1933,15 +1937,17 @@ func TestWorkflowReviewExecutionBlockedResponseUsesConfiguredLanguage(t *testing
 	engine := handler.app.workflowEngine
 	userID := "test-review-execution-blocked-lang"
 	workflowType := workflow.WorkflowType("gui_review_execution_blocked_lang")
-	engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	if err := engine.GetRegistry().Register(&workflow.WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "review execution blocked language",
 		Description: "test template",
 		Phases: []workflow.PhaseTemplate{
 			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
-			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: workflow.ToolFilterFull},
+			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: workflow.ToolFilterFull, Kind: workflow.PhaseKindExecution, MutationScope: workflow.MutationScopeProject},
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Register workflow template: %v", err)
+	}
 	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "build"}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}

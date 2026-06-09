@@ -2,7 +2,7 @@ package workflow
 
 import (
 	"fmt"
-	"path/filepath"
+	pathpkg "path"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
@@ -81,6 +81,31 @@ var projectControlFileNames = map[string]bool{
 	"vite.config.js":    true,
 	"vite.config.ts":    true,
 	"yarn.lock":         true,
+}
+
+var projectSourcePathSegments = map[string]bool{
+	".git":       true,
+	".github":    true,
+	".vscode":    true,
+	"app":        true,
+	"apps":       true,
+	"backend":    true,
+	"client":     true,
+	"cmd":        true,
+	"components": true,
+	"corelib":    true,
+	"frontend":   true,
+	"gui":        true,
+	"internal":   true,
+	"lib":        true,
+	"libs":       true,
+	"pages":      true,
+	"pkg":        true,
+	"public":     true,
+	"routes":     true,
+	"server":     true,
+	"src":        true,
+	"tui":        true,
 }
 
 var projectMutationToolNames = map[string]bool{
@@ -204,6 +229,27 @@ func validateArtifactScopeToolCall(name string, args map[string]interface{}) err
 		if !isArtifactWritePath(path) {
 			return fmt.Errorf("write_file path %q looks like project/source mutation, not an artifact deliverable", path)
 		}
+	case "office":
+		action := strings.TrimSpace(stringArg(args, "action"))
+		switch action {
+		case "generate_pdf", "read_excel", "read_pptx":
+			return nil
+		case "write_excel":
+			path := strings.TrimSpace(stringArg(args, "file_path"))
+			if path == "" {
+				return fmt.Errorf("office write_excel file_path is required by mutation scope artifact")
+			}
+			if !isArtifactWritePath(path) {
+				return fmt.Errorf("office write_excel file_path %q looks like project/source mutation, not an artifact deliverable", path)
+			}
+		default:
+			return fmt.Errorf("office action %s is not allowed by mutation scope artifact", displayOpsAction(action))
+		}
+	case "web_fetch":
+		path := strings.TrimSpace(stringArg(args, "save_path"))
+		if path != "" && !isArtifactWritePath(path) {
+			return fmt.Errorf("web_fetch save_path %q looks like project/source mutation, not an artifact deliverable", path)
+		}
 	case "bash":
 		command := stringArg(args, "command")
 		if strings.TrimSpace(command) == "" {
@@ -233,18 +279,62 @@ func validateNonProjectScopeToolCall(scope MutationScope, name string, args map[
 }
 
 func isArtifactWritePath(path string) bool {
-	path = strings.TrimSpace(path)
-	if path == "" {
+	cleaned, ok := cleanRelativeArtifactPath(path)
+	if !ok {
 		return false
 	}
-	cleaned := filepath.ToSlash(filepath.Clean(path))
-	base := filepath.Base(cleaned)
-	if projectControlFileNames[base] {
+	base := pathpkg.Base(cleaned)
+	if isProjectControlFileName(base) {
 		return false
 	}
-	ext := strings.ToLower(filepath.Ext(base))
+	for _, segment := range strings.Split(cleaned, "/") {
+		if projectSourcePathSegments[strings.ToLower(strings.TrimSpace(segment))] {
+			return false
+		}
+	}
+	ext := strings.ToLower(pathpkg.Ext(base))
 	if projectCodeExtensions[ext] {
 		return false
 	}
 	return artifactWriteExtensions[ext]
+}
+
+func cleanRelativeArtifactPath(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.ContainsRune(raw, '\x00') {
+		return "", false
+	}
+	normalized := strings.ReplaceAll(raw, "\\", "/")
+	if strings.HasPrefix(normalized, "/") || strings.HasPrefix(normalized, "//") || hasWindowsVolumeName(normalized) {
+		return "", false
+	}
+	if normalized == "~" || strings.HasPrefix(normalized, "~/") {
+		return "", false
+	}
+	cleaned := pathpkg.Clean(normalized)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") || strings.HasPrefix(cleaned, "/") {
+		return "", false
+	}
+	return cleaned, true
+}
+
+func hasWindowsVolumeName(path string) bool {
+	if len(path) < 2 || path[1] != ':' {
+		return false
+	}
+	c := path[0]
+	return ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')
+}
+
+func isProjectControlFileName(base string) bool {
+	if projectControlFileNames[base] {
+		return true
+	}
+	base = strings.ToLower(strings.TrimSpace(base))
+	for name := range projectControlFileNames {
+		if strings.ToLower(name) == base {
+			return true
+		}
+	}
+	return false
 }

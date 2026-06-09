@@ -493,6 +493,22 @@ func TestAdminWebAIModelsUsesVoicePickerAndClearDownloadStates(t *testing.T) {
 			t.Fatalf("admin ai models page should not keep stale marker %s", stale)
 		}
 	}
+	cssBytes, err := fs.ReadFile(adminWebFS, "admin_web/styles.css")
+	if err != nil {
+		t.Fatalf("read admin css: %v", err)
+	}
+	css := string(cssBytes)
+	for _, needle := range []string{
+		".ai-model-status-card {\n  display: flex;",
+		"flex-direction: column;",
+		"gap: 10px;",
+		".ai-model-status-card p {\n  margin: 0;",
+		".ai-model-status-card button {\n  margin-top: auto;",
+	} {
+		if !strings.Contains(css, needle) {
+			t.Fatalf("admin ai models css missing aligned status card marker %s", needle)
+		}
+	}
 }
 
 func TestAdminWebKnowledgeImportDefaultsLiveInKnowledgePanel(t *testing.T) {
@@ -792,6 +808,11 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 		`.ops-main-grid`,
 		`.ops-snapshot-card`,
 		`.ops-risk-card`,
+		`grid-column: 1 / -1;`,
+		`.ops-risk-table .table-wrap`,
+		`max-height: clamp(260px, calc(100dvh - 500px), 620px);`,
+		`overscroll-behavior: contain;`,
+		`position: sticky;`,
 		`@media (max-width: 1120px)`,
 		`.ops-control-grid,
   .ops-risk-meta { grid-template-columns: 1fr; }`,
@@ -820,6 +841,17 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
   .ops-main-grid { grid-template-columns: 1fr; }
 }`) {
 		t.Fatalf("admin ops page should keep two-column layout on normal desktop widths")
+	}
+	bodyBytes, err := fs.ReadFile(adminWebFS, "admin_web/app.js")
+	if err != nil {
+		t.Fatalf("read admin app: %v", err)
+	}
+	body := string(bodyBytes)
+	riskIndex := strings.Index(body, `ops-risk-card`)
+	snapshotIndex := strings.Index(body, `ops-snapshot-card`)
+	controlIndex := strings.Index(body, `ops-control-grid`)
+	if riskIndex < 0 || snapshotIndex < 0 || controlIndex < 0 || !(riskIndex < snapshotIndex && snapshotIndex < controlIndex) {
+		t.Fatalf("admin ops DOM order should be risk events, snapshots, then controls")
 	}
 	for _, stale := range []string{
 		`@media (max-width: 1040px) {

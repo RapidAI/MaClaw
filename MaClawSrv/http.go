@@ -158,6 +158,11 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 	s.aiModels.setDownloadConfigProvider(func() corelib.AppConfig {
 		return s.defaultConfigForAIModels(context.Background())
 	})
+	if s.knowledgeMgr != nil {
+		s.knowledgeMgr.UseSharedAIModels(s.aiModels, func() corelib.AppConfig {
+			return s.defaultConfigForAIModels(context.Background())
+		})
+	}
 	svc.AssistantMessageMetadataHook = s.decorateAssistantMessageMetadata
 	s.weixinRuntime = newSrvWeixinGatewayManager(svc, s.aiModels)
 	s.imRuntime = newSrvIMGatewayManager(svc, s.aiModels)

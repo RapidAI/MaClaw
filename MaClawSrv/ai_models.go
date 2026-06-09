@@ -60,6 +60,7 @@ type srvAIModelManager struct {
 	asrMgr                 srvASRTranscriber
 	ttsMgr                 srvTTSSynthesizer
 	ttsVoice               string
+	embeddingReadyHook     func()
 }
 
 type srvASRTranscriber interface {
@@ -106,6 +107,15 @@ func (m *srvAIModelManager) setDownloadConfigProvider(provider func() corelib.Ap
 	}
 	m.mu.Lock()
 	m.downloadConfigProvider = provider
+	m.mu.Unlock()
+}
+
+func (m *srvAIModelManager) setEmbeddingReadyHook(hook func()) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.embeddingReadyHook = hook
 	m.mu.Unlock()
 }
 
@@ -479,6 +489,14 @@ func (m *srvAIModelManager) startDownload(model string, cfg corelib.AppConfig, f
 		m.mu.Unlock()
 		if err == nil {
 			m.resetRuntime(model)
+			if model == srvAIModelEmbedding {
+				m.mu.Lock()
+				hook := m.embeddingReadyHook
+				m.mu.Unlock()
+				if hook != nil {
+					hook()
+				}
+			}
 		}
 	}()
 	return nil
@@ -708,6 +726,41 @@ func (m *srvAIModelManager) synthesizeTextMP3(ctx context.Context, cfg corelib.A
 	}
 	return playable.Data, voiceID, nil
 }
+
+type srvAIModelEmbedderAdapter struct {
+	manager *srvAIModelManager
+	config  func() corelib.AppConfig
+}
+
+func (a srvAIModelEmbedderAdapter) Embed(text string) ([]float32, error) {
+	if a.manager == nil {
+		return nil, errSrvAIModelNotReady
+	}
+	cfg := corelib.AppConfigDefaults()
+	if a.config != nil {
+		cfg = a.config()
+	}
+	vector, err := a.manager.embedText(context.Background(), cfg, text)
+	if errors.Is(err, errSrvAIModelNotReady) {
+		_ = a.manager.startDownload(srvAIModelEmbedding, cfg, false)
+	}
+	return vector, err
+}
+
+func (a srvAIModelEmbedderAdapter) EmbedBatch(texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		vector, err := a.Embed(text)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = vector
+	}
+	return out, nil
+}
+
+func (srvAIModelEmbedderAdapter) Dim() int { return 256 }
+func (srvAIModelEmbedderAdapter) Close()   {}
 
 func (m *srvAIModelManager) ttsVoiceDir() string {
 	return filepath.Join(m.dataRoot, "models", "kokoro_voices")

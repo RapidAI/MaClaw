@@ -149,7 +149,7 @@ func TestHandleWorkflowEngineResponseBlocksWhenProjectPathCannotBePrepared(t *te
 func TestBackfillExecutionOrchestratorActivationRequiresOrchestratorPhase(t *testing.T) {
 	engine := workflow.NewWorkflowEngine(workflow.NewWorkflowRegistry(), nil, nil, nil)
 	workflowType := workflow.WorkflowType("full_non_orchestrator_backfill")
-	engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	if err := engine.GetRegistry().Register(&workflow.WorkflowTemplate{
 		Type: workflowType,
 		Name: "full non orchestrator backfill",
 		Phases: []workflow.PhaseTemplate{{
@@ -158,9 +158,13 @@ func TestBackfillExecutionOrchestratorActivationRequiresOrchestratorPhase(t *tes
 			Prompt:              "generate artifact",
 			Deliverable:         "artifact",
 			ToolPolicy:          workflow.ToolFilterFull,
+			Kind:                workflow.PhaseKindArtifactGeneration,
+			MutationScope:       workflow.MutationScopeArtifact,
 			DisableOrchestrator: true,
 		}},
-	})
+	}); err != nil {
+		t.Fatalf("Register workflow template: %v", err)
+	}
 	if _, err := engine.StartWorkflow("u1", workflow.StructuredIntent{Category: workflowType, Summary: "generate"}); err != nil {
 		t.Fatalf("StartWorkflow() error = %v", err)
 	}

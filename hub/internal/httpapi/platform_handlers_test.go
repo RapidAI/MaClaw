@@ -1693,6 +1693,12 @@ func (f *fakePlatformViewerTokenRepo) ExtendExpiry(ctx context.Context, tokenID 
 	return nil
 }
 
+func (f *fakePlatformViewerTokenRepo) DeleteByUserID(ctx context.Context, userID string) (int64, error) {
+	_ = ctx
+	_ = userID
+	return 0, nil
+}
+
 func TestPlatformSourceUsersForTenantExcludesPlatformEmployees(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	now := time.Now().UTC()

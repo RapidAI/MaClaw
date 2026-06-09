@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -164,7 +165,7 @@ func ManualBindHandler(identity *auth.IdentityService) http.HandlerFunc {
 	}
 }
 
-func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Service, invitationSvc *invitation.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner, routeDeleters ...BoundUserRouteDeleter) http.HandlerFunc {
+func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Service, invitationSvc *invitation.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner, securitySvc *security.SecurityService, system store.SystemSettingsRepository, routeDeleters ...BoundUserRouteDeleter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		email := strings.TrimSpace(r.URL.Query().Get("email"))
 		tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
@@ -206,22 +207,26 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Se
 		if deviceSvc != nil {
 			deletedMachines, err = deviceSvc.ForceDeleteMachinesByTenantUser(r.Context(), user.TenantID, user.ID)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "DELETE_USER_MACHINES_FAILED", err.Error())
-				return
+				log.Printf("[admin-unbind] delete machines for user %s failed: %v (continuing)", user.Email, err)
 			}
 		}
 		var deletedCodes int64
 		if invitationSvc != nil {
 			deletedCodes, err = invitationSvc.DeleteCodeByTenantEmail(r.Context(), user.TenantID, user.Email)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "DELETE_USER_INVITES_FAILED", err.Error())
-				return
+				log.Printf("[admin-unbind] delete invitation codes for user %s failed: %v (continuing)", user.Email, err)
 			}
 		}
 		if feishuNotifier != nil {
 			feishuNotifier.RemoveOpenIDForTenant(user.TenantID, user.Email)
 		}
 		removeIMBindingsForTenant(imCleaners, user.TenantID, user.Email)
+		// Comprehensive cleanup: remove auxiliary user data (enrollments, tokens, sessions, workflow state).
+		// Best-effort — failures are logged but do not block the main user deletion.
+		purgeUserAuxiliaryData(r.Context(), identity, user, UserPurgeOptions{
+			SecuritySvc: securitySvc,
+			System:      system,
+		})
 		if err := identity.UsersRepo().DeleteByTenantEmail(r.Context(), user.TenantID, user.Email); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				writeError(w, http.StatusNotFound, "USER_NOT_DELETED", "User was not deleted; tenant_id and email did not match a stored user")
@@ -241,6 +246,58 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Se
 }
 
 var errAmbiguousTenantEmail = errors.New("email exists in multiple tenants")
+
+// UserPurgeOptions provides additional services for comprehensive user data cleanup.
+type UserPurgeOptions struct {
+	SecuritySvc *security.SecurityService
+	System      store.SystemSettingsRepository
+}
+
+// purgeUserAuxiliaryData performs best-effort cleanup of all auxiliary user data
+// (enrollments, viewer tokens, LLM service grants/bindings, security group membership)
+// so that the user is fully removed from the system as if they never existed.
+// Errors are logged but do not propagate — the caller proceeds with user deletion.
+func purgeUserAuxiliaryData(ctx context.Context, identity *auth.IdentityService, user *store.User, opts ...UserPurgeOptions) {
+	if identity == nil || user == nil {
+		return
+	}
+	logErr := func(area string, err error) {
+		if err != nil {
+			log.Printf("[admin-unbind] purge %s for user %s (%s): %v", area, user.Email, user.ID, err)
+		}
+	}
+
+	// 1. Delete enrollment records.
+	if repo := identity.EnrollmentsRepo(); repo != nil {
+		_, err := repo.DeleteByTenantEmail(ctx, user.TenantID, user.Email)
+		logErr("enrollments", err)
+	}
+
+	// 2. Delete viewer tokens.
+	if repo := identity.ViewerTokensRepo(); repo != nil && user.ID != "" {
+		_, err := repo.DeleteByUserID(ctx, user.ID)
+		logErr("viewer_tokens", err)
+	}
+
+	if len(opts) == 0 {
+		return
+	}
+	opt := opts[0]
+
+	// 3. Remove from security group (department membership).
+	if opt.SecuritySvc != nil && user.Email != "" {
+		tenantCtx := security.WithTenant(ctx, user.TenantID)
+		err := opt.SecuritySvc.RemoveUser(tenantCtx, "", user.Email)
+		logErr("security_group", err)
+	}
+
+	// 4. Remove LLM service user bindings, grants, and redeemed cards.
+	if opt.System != nil && user.Email != "" {
+		tenantSystem := ScopedSystemSettingsForTenant(user.TenantID, opt.System)
+		err := llmservice.PurgeUserFromRegistry(ctx, tenantSystem, user.Email)
+		logErr("llm_service_registry", err)
+	}
+}
 
 func resolveBoundUserForDelete(r *http.Request, users store.UserRepository, tenantID, email string) (*store.User, error) {
 	if r == nil || users == nil {

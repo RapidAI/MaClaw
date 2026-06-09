@@ -258,7 +258,7 @@ func TestDeleteBoundUserHandlerDeletesCenterRouteWithTenantID(t *testing.T) {
 	}
 	identity := auth.NewIdentityService(services.store.Users, services.store.Enrollments, services.store.EmailBlocks, services.store.Machines, services.store.ViewerTokens, services.store.LoginTokens, services.store.System, nil, "open", true, nil, "http://127.0.0.1:8080")
 	routeDeleter := &fakeBoundUserRouteDeleter{}
-	handler := DeleteBoundUserHandler(identity, nil, nil, nil, nil, routeDeleter)
+	handler := DeleteBoundUserHandler(identity, nil, nil, nil, nil, nil, nil, routeDeleter)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users?tenant_id=tenant_route&email=route-delete@example.com", nil)
@@ -285,7 +285,7 @@ func TestDeleteBoundUserHandlerStillSucceedsWhenCenterRouteDeleteFailsAfterLocal
 	}
 	identity := auth.NewIdentityService(services.store.Users, services.store.Enrollments, services.store.EmailBlocks, services.store.Machines, services.store.ViewerTokens, services.store.LoginTokens, services.store.System, nil, "open", true, nil, "http://127.0.0.1:8080")
 	routeDeleter := &fakeBoundUserRouteDeleter{err: errors.New("center unavailable")}
-	handler := DeleteBoundUserHandler(identity, nil, nil, nil, nil, routeDeleter)
+	handler := DeleteBoundUserHandler(identity, nil, nil, nil, nil, nil, nil, routeDeleter)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users?tenant_id=tenant_route&email=route-fail@example.com", nil)

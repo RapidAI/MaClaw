@@ -14,6 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 )
 
@@ -64,6 +65,26 @@ func (e *closingSrvEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
 func (e *closingSrvEmbedder) Dim() int { return 1 }
 
 func (e *closingSrvEmbedder) Close() { e.closed.Store(true) }
+
+type countingSrvEmbedder struct {
+	calls atomic.Int32
+}
+
+func (e *countingSrvEmbedder) Embed(text string) ([]float32, error) {
+	e.calls.Add(1)
+	return []float32{1, float32(len([]rune(text))) + 1}, nil
+}
+
+func (e *countingSrvEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		out[i], _ = e.Embed(text)
+	}
+	return out, nil
+}
+
+func (e *countingSrvEmbedder) Dim() int { return 2 }
+func (e *countingSrvEmbedder) Close()   {}
 
 func TestSrvAIModelManagerSerializesSharedASRRuntime(t *testing.T) {
 	dataRoot := t.TempDir()
@@ -195,6 +216,51 @@ func TestHTTPServerCloseReleasesSharedAIModelRuntimes(t *testing.T) {
 	}
 	if len(server.thirdPartyIM.clients) != 0 || len(server.thirdPartyIM.runtimeInstances) != 0 {
 		t.Fatalf("server close did not clear third-party IM state: clients=%d runtimes=%d", len(server.thirdPartyIM.clients), len(server.thirdPartyIM.runtimeInstances))
+	}
+}
+
+func TestKnowledgeStoreUsesSharedAIModelEmbeddingRuntime(t *testing.T) {
+	dataRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
+		t.Fatalf("create models dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", embedding.DefaultModelFilename), []byte("fake-embedding-model"), 0o644); err != nil {
+		t.Fatalf("write embedding model marker: %v", err)
+	}
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	knowledgeMgr, err := newKnowledgeStoreManager(dataRoot)
+	if err != nil {
+		t.Fatalf("newKnowledgeStoreManager: %v", err)
+	}
+	server := NewHTTPServer(svc, "root-admin-secret", knowledgeMgr)
+	defer func() {
+		server.Close()
+		knowledgeMgr.Close()
+	}()
+	shared := &countingSrvEmbedder{}
+	server.aiModels.mu.Lock()
+	server.aiModels.embeddingMgr = shared
+	server.aiModels.mu.Unlock()
+
+	if _, err := knowledgeMgr.Store().SaveText(context.Background(), knowledge.TextSaveRequest{
+		Text:     "shared embedding runtime document",
+		Title:    "shared",
+		OwnerID:  "user-a",
+		TenantID: "tenant-a",
+	}); err != nil {
+		t.Fatalf("SaveText: %v", err)
+	}
+	if shared.calls.Load() == 0 {
+		t.Fatalf("knowledge store did not use shared ai model embedding runtime")
+	}
+	server.aiModels.mu.Lock()
+	got := server.aiModels.embeddingMgr
+	server.aiModels.mu.Unlock()
+	if got != shared {
+		t.Fatalf("shared embedding runtime was replaced: got %#v want %#v", got, shared)
 	}
 }
 

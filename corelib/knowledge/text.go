@@ -53,6 +53,7 @@ func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source
 	if err := tx.Commit(); err != nil {
 		return Source{}, err
 	}
+	_ = s.BackfillNodeEmbeddingsForSources(ctx, []string{source.ID})
 	_, _ = s.RefreshSourceTopicLinks(ctx, source.ID, 8)
 	sources := []Source{source}
 	if err := s.hydrateSourceCounts(ctx, sources); err != nil {

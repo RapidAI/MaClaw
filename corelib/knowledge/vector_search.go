@@ -10,6 +10,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
 
+type nodeEmbeddingRow struct {
+	id, title, text string
+}
+
 // cardEmbeddingText returns the text to embed for a card.
 // Combines title + claim for a concise semantic representation.
 func cardEmbeddingText(card Card) string {
@@ -349,12 +353,9 @@ func (s *SQLiteStore) BackfillNodeEmbeddings(ctx context.Context) error {
 	}
 	defer rows.Close()
 
-	type nodeInfo struct {
-		id, title, text string
-	}
-	var nodes []nodeInfo
+	var nodes []nodeEmbeddingRow
 	for rows.Next() {
-		var n nodeInfo
+		var n nodeEmbeddingRow
 		if err := rows.Scan(&n.id, &n.title, &n.text); err != nil {
 			return err
 		}
@@ -363,30 +364,79 @@ func (s *SQLiteStore) BackfillNodeEmbeddings(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	return s.embedAndStoreNodeEmbeddings(ctx, nodes)
+}
+
+// BackfillNodeEmbeddingsForSources generates missing document node embeddings
+// for newly saved/imported sources. It keeps vector recall current without
+// waiting for a full index rebuild or startup backfill.
+func (s *SQLiteStore) BackfillNodeEmbeddingsForSources(ctx context.Context, sourceIDs []string) error {
+	if s.embedder == nil || embedding.IsNoop(s.embedder) {
+		return nil
+	}
+	if len(sourceIDs) == 0 {
+		return nil
+	}
+	if err := s.EnsureNodeEmbeddingColumn(); err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, len(sourceIDs))
+	ids := make([]string, 0, len(sourceIDs))
+	for _, id := range sourceIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, 0, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, title, text FROM document_nodes WHERE source_id IN (`+strings.Join(placeholders, ",")+`) AND (embedding IS NULL OR LENGTH(embedding) = 0)`, args...)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such column") {
+			return nil
+		}
+		return err
+	}
+	defer rows.Close()
+
+	var nodes []nodeEmbeddingRow
+	for rows.Next() {
+		var n nodeEmbeddingRow
+		if err := rows.Scan(&n.id, &n.title, &n.text); err != nil {
+			return err
+		}
+		nodes = append(nodes, n)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return s.embedAndStoreNodeEmbeddings(ctx, nodes)
+}
+
+func (s *SQLiteStore) embedAndStoreNodeEmbeddings(ctx context.Context, nodes []nodeEmbeddingRow) error {
 	if len(nodes) == 0 {
 		return nil
 	}
-
-	// Batch embed — use full text (truncated to embedder's max input)
 	texts := make([]string, len(nodes))
 	for i, n := range nodes {
-		t := n.text
-		if n.title != "" && !strings.HasPrefix(t, n.title) {
-			t = n.title + " " + t
-		}
-		// Most embedding models have ~512 token input limit.
-		// Truncate to ~2000 chars which is ~500 tokens for CJK.
-		const maxEmbedChars = 2000
-		if len([]rune(t)) > maxEmbedChars {
-			t = string([]rune(t)[:maxEmbedChars])
-		}
-		texts[i] = t
+		texts[i] = nodeEmbeddingText(n.title, n.text)
 	}
 	vectors, err := s.embedder.EmbedBatch(texts)
 	if err != nil {
 		return err
 	}
-
 	for i, n := range nodes {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -398,6 +448,18 @@ func (s *SQLiteStore) BackfillNodeEmbeddings(ctx context.Context) error {
 			float32SliceToBytes(vectors[i]), n.id)
 	}
 	return nil
+}
+
+func nodeEmbeddingText(title, text string) string {
+	t := text
+	if title != "" && !strings.HasPrefix(t, title) {
+		t = title + " " + t
+	}
+	const maxEmbedChars = 2000
+	if len([]rune(t)) > maxEmbedChars {
+		t = string([]rune(t)[:maxEmbedChars])
+	}
+	return t
 }
 
 // extractQueryTermsForSnippet splits a query into meaningful terms for snippet extraction.

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
@@ -35,11 +36,10 @@ type knowledgeStoreManager struct {
 	wg       sync.WaitGroup // tracks background goroutines (download, backfill)
 }
 
-// newKnowledgeStoreManager initializes the knowledge store and embedding model.
+// newKnowledgeStoreManager initializes the knowledge store.
 // The store is created at $MACLAW_DATA_ROOT/knowledge/knowledge.db.
-// The embedding model is loaded from $MACLAW_DATA_ROOT/models/ or a custom path.
-// If the model is unavailable, it is downloaded in the background and activated
-// once ready (similar to GUI's backgroundPreloadEmbeddingModel).
+// Embedding is wired later through srvAIModelManager so MaClawSrv only keeps
+// one server-wide embedding model loaded in memory.
 func newKnowledgeStoreManager(dataRoot string) (*knowledgeStoreManager, error) {
 	dbPath := filepath.Join(dataRoot, "knowledge", "knowledge.db")
 	store, err := knowledge.NewSQLiteStore(dbPath)
@@ -62,26 +62,74 @@ func newKnowledgeStoreManager(dataRoot string) (*knowledgeStoreManager, error) {
 		store.SetEmbedder(mgr.embedder)
 		log.Printf("[knowledge] embedding explicitly disabled via MACLAW_EMBEDDING_DISABLED, using FTS-only mode")
 	} else {
-		modelPath := resolveEmbeddingModelPath(dataRoot)
-		emb := embedding.NewDefaultEmbedder(modelPath)
-		if embedding.IsNoop(emb) {
-			// Model not found — start background download, use FTS-only until ready.
-			mgr.embedder = emb
-			store.SetEmbedder(emb)
-			log.Printf("[knowledge] embedding model not available at %s, starting background download...", modelPath)
-			mgr.wg.Add(1)
-			go func() {
-				defer mgr.wg.Done()
-				mgr.backgroundDownloadAndActivate()
-			}()
-		} else {
-			mgr.embedder = emb
-			store.SetEmbedder(emb)
-			log.Printf("[knowledge] embedding model loaded from %s", modelPath)
-		}
+		mgr.embedder = embedding.NewNoopEmbedder()
+		store.SetEmbedder(mgr.embedder)
+		log.Printf("[knowledge] embedding waits for shared AI model manager")
 	}
 
 	return mgr, nil
+}
+
+func (m *knowledgeStoreManager) UseSharedAIModels(aiModels *srvAIModelManager, cfgProvider func() corelib.AppConfig) {
+	if m == nil || aiModels == nil || isEmbeddingDisabled() {
+		return
+	}
+	adapter := srvAIModelEmbedderAdapter{manager: aiModels, config: cfgProvider}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	oldEmb := m.embedder
+	m.embedder = adapter
+	if m.store != nil {
+		m.store.SetEmbedder(adapter)
+	}
+	m.mu.Unlock()
+	if oldEmb != nil && !embedding.IsNoop(oldEmb) {
+		oldEmb.Close()
+	}
+	aiModels.setEmbeddingReadyHook(func() {
+		m.backfillEmbeddingsAsync("shared embedding model ready")
+	})
+	if exists, _ := modelFileReady(aiModels.modelPath(embedding.DefaultModelFilename)); exists {
+		m.backfillEmbeddingsAsync("shared embedding model already ready")
+	}
+	log.Printf("[knowledge] embedding uses shared AI model manager")
+}
+
+func (m *knowledgeStoreManager) backfillEmbeddingsAsync(reason string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.closed || m.store == nil {
+		m.mu.Unlock()
+		return
+	}
+	store := m.store
+	done := m.done
+	m.wg.Add(1)
+	m.mu.Unlock()
+	go func() {
+		defer m.wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		go func() {
+			select {
+			case <-done:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		if err := store.RebuildFTSIndex(ctx); err != nil {
+			if ctx.Err() == nil {
+				log.Printf("[knowledge] embedding backfill failed after %s: %v", reason, err)
+			}
+		} else {
+			log.Printf("[knowledge] embedding backfill completed after %s", reason)
+		}
+	}()
 }
 
 // backgroundDownloadAndActivate downloads the embedding model in the background,

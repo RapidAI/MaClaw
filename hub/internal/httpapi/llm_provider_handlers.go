@@ -365,6 +365,10 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 			req.Grants = append([]llmservice.Grant(nil), oldReg.Grants...)
 		}
 		req.Normalize()
+		// Cascade-clean orphaned references: when a service group definition is removed,
+		// automatically purge all bindings/grants/cards that still reference it.
+		// This prevents "ghost references" that silently fail at runtime.
+		req.PurgeOrphanedServiceGroupReferences()
 		providerReg, err := im.LoadLLMProviderRegistry(r.Context(), system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())

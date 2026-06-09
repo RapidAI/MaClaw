@@ -78,6 +78,7 @@ func (s *SQLiteStore) SaveURL(ctx context.Context, req URLSaveRequest) (Source, 
 	if err := tx.Commit(); err != nil {
 		return Source{}, err
 	}
+	_ = s.BackfillNodeEmbeddingsForSources(ctx, []string{source.ID})
 	_, _ = s.RefreshSourceTopicLinks(ctx, source.ID, 8)
 	sources := []Source{source}
 	if err := s.hydrateSourceCounts(ctx, sources); err != nil {
@@ -725,6 +726,7 @@ func (s *SQLiteStore) replaceSourceDerivedRows(ctx context.Context, source Sourc
 	if err := tx.Commit(); err != nil {
 		return Source{}, err
 	}
+	_ = s.BackfillNodeEmbeddingsForSources(ctx, []string{source.ID})
 	sources := []Source{source}
 	if err := s.hydrateSourceCounts(ctx, sources); err != nil {
 		return Source{}, err

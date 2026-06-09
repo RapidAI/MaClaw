@@ -1424,6 +1424,18 @@ func TestCoreAgentArtifactMutationScopeBlocksProjectMutation(t *testing.T) {
 	if allowed, _ := cb.IsToolCallAllowed("write_file", `{"path":"src/main.go","content":"package main"}`); allowed {
 		t.Fatal("artifact scope should block source writes")
 	}
+	if allowed, reason := cb.IsToolCallAllowed("office", `{"action":"write_excel","file_path":"data.xlsx","data":{"sheets":[]}}`); !allowed {
+		t.Fatalf("artifact office write_excel should pass for deliverables: %s", reason)
+	}
+	if allowed, _ := cb.IsToolCallAllowed("office", `{"action":"write_excel","file_path":"src/data.xlsx","data":{"sheets":[]}}`); allowed {
+		t.Fatal("artifact scope should block office write_excel into source directories")
+	}
+	if allowed, reason := cb.IsToolCallAllowed("web_fetch", `{"url":"https://example.com/report.pdf","save_path":"report.pdf"}`); !allowed {
+		t.Fatalf("artifact web_fetch save_path should pass for deliverables: %s", reason)
+	}
+	if allowed, _ := cb.IsToolCallAllowed("web_fetch", `{"url":"https://example.com/main.go","save_path":"src/main.go"}`); allowed {
+		t.Fatal("artifact scope should block web_fetch save_path into source directories")
+	}
 	if allowed, _ := cb.IsToolCallAllowed("bash", `{"command":"touch src/main.go"}`); allowed {
 		t.Fatal("artifact scope should block mutating bash")
 	}

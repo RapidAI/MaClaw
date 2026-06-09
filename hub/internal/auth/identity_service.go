@@ -194,6 +194,20 @@ func (s *IdentityService) MachinesRepo() store.MachineRepository {
 	return s.machines
 }
 
+func (s *IdentityService) EnrollmentsRepo() store.EnrollmentRepository {
+	if s == nil {
+		return nil
+	}
+	return s.enrollments
+}
+
+func (s *IdentityService) ViewerTokensRepo() store.ViewerTokenRepository {
+	if s == nil {
+		return nil
+	}
+	return s.viewerTok
+}
+
 func (s *IdentityService) UpdateMachineMetadata(ctx context.Context, machineID string, metadata MachineMetadata) error {
 	if s == nil || s.machines == nil || strings.TrimSpace(machineID) == "" {
 		return nil

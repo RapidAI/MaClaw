@@ -3679,6 +3679,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 	if err := tx.Commit(); err != nil {
 		return result, err
 	}
+	_ = s.BackfillNodeEmbeddingsForSources(ctx, importedSourceIDs)
 	for _, sourceID := range importedSourceIDs {
 		_, _ = s.RefreshSourceTopicLinks(ctx, sourceID, 8)
 	}

@@ -218,6 +218,58 @@ func SaveRegistry(ctx context.Context, system SystemSettingsRepository, reg *Reg
 	return system.Set(ctx, RegistryKey, string(data))
 }
 
+// PurgeUserFromRegistry removes all user-specific data (bindings, grants, redeemed cards)
+// for the given email from the LLM service registry and persists the change.
+func PurgeUserFromRegistry(ctx context.Context, system SystemSettingsRepository, email string) error {
+	email = normalizeEmail(email)
+	if email == "" || system == nil {
+		return nil
+	}
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return err
+	}
+	changed := false
+
+	// Remove user bindings.
+	filtered := reg.UserBindings[:0]
+	for _, ub := range reg.UserBindings {
+		if normalizeEmail(ub.Email) != email {
+			filtered = append(filtered, ub)
+		} else {
+			changed = true
+		}
+	}
+	reg.UserBindings = filtered
+
+	// Remove grants.
+	filteredGrants := reg.Grants[:0]
+	for _, g := range reg.Grants {
+		if normalizeEmail(g.Email) != email {
+			filteredGrants = append(filteredGrants, g)
+		} else {
+			changed = true
+		}
+	}
+	reg.Grants = filteredGrants
+
+	// Remove redeemed cards (cards whose RedeemedByEmail matches email).
+	filteredCards := reg.Cards[:0]
+	for _, c := range reg.Cards {
+		if normalizeEmail(c.RedeemedByEmail) != email {
+			filteredCards = append(filteredCards, c)
+		} else {
+			changed = true
+		}
+	}
+	reg.Cards = filteredCards
+
+	if !changed {
+		return nil
+	}
+	return SaveRegistry(ctx, system, reg)
+}
+
 func (r *Registry) Normalize() {
 	if r == nil {
 		return
@@ -620,6 +672,87 @@ func (r *Registry) AccessPolicyForServiceGroup(id string) string {
 		return AccessPolicyFree
 	}
 	return NormalizeAccessPolicy(group.AccessPolicy)
+}
+
+// PurgeOrphanedServiceGroupReferences removes all references to service group IDs
+// that no longer exist in ModelServiceGroups. This is called when a service group
+// definition is deleted to ensure no orphaned references remain in bindings, grants, etc.
+// Returns true if any references were removed.
+func (r *Registry) PurgeOrphanedServiceGroupReferences() bool {
+	if r == nil {
+		return false
+	}
+	changed := false
+
+	// filterIDs returns a new slice only if orphaned IDs are found; otherwise returns the original.
+	filterIDs := func(ids []string) []string {
+		for i, id := range ids {
+			if r.FindModelServiceGroup(id) == nil {
+				// Found first orphan — allocate output and copy valid prefix.
+				out := make([]string, i, len(ids))
+				copy(out, ids[:i])
+				for _, remaining := range ids[i+1:] {
+					if r.FindModelServiceGroup(remaining) != nil {
+						out = append(out, remaining)
+					}
+				}
+				changed = true
+				return out
+			}
+		}
+		return ids // no orphans
+	}
+
+	// Clean GlobalServiceGroupIDs.
+	r.GlobalServiceGroupIDs = filterIDs(r.GlobalServiceGroupIDs)
+
+	// Clean DefaultNewUserServiceGroups.
+	r.DefaultNewUserServiceGroups = filterIDs(r.DefaultNewUserServiceGroups)
+
+	// Clean GroupBindings.
+	n := 0
+	for i := range r.GroupBindings {
+		r.GroupBindings[i].ServiceGroupIDs = filterIDs(r.GroupBindings[i].ServiceGroupIDs)
+		if len(r.GroupBindings[i].ServiceGroupIDs) > 0 {
+			r.GroupBindings[n] = r.GroupBindings[i]
+			n++
+		} else {
+			changed = true
+		}
+	}
+	r.GroupBindings = r.GroupBindings[:n]
+
+	// Clean UserBindings.
+	n = 0
+	for i := range r.UserBindings {
+		r.UserBindings[i].ServiceGroupIDs = filterIDs(r.UserBindings[i].ServiceGroupIDs)
+		if len(r.UserBindings[i].ServiceGroupIDs) > 0 {
+			r.UserBindings[n] = r.UserBindings[i]
+			n++
+		} else {
+			changed = true
+		}
+	}
+	r.UserBindings = r.UserBindings[:n]
+
+	// Clean Cards.
+	for i := range r.Cards {
+		r.Cards[i].ServiceGroupIDs = filterIDs(r.Cards[i].ServiceGroupIDs)
+	}
+
+	// Clean Grants — remove grants referencing non-existent service groups.
+	n = 0
+	for i := range r.Grants {
+		if strings.TrimSpace(r.Grants[i].ServiceGroupID) == "" || r.FindModelServiceGroup(r.Grants[i].ServiceGroupID) != nil {
+			r.Grants[n] = r.Grants[i]
+			n++
+		} else {
+			changed = true
+		}
+	}
+	r.Grants = r.Grants[:n]
+
+	return changed
 }
 
 func (r *Registry) FindCardByCode(code string) (*RechargeCard, int) {

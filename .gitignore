@@ -152,6 +152,7 @@ iWorkerCenter/cmd/iworkercenter/web/admin/assets/index-*.css
 .kiro/specs/**/*.jpeg
 /srvdemo.exe
 /MaClawSrv.exe
+/MaClawSrv/maclawsrv_local.exe
 /datasrv/maclaw-data-srv.exe
 build/deploy-ha/debug-*
 build/deploy-ha/agentnet.patch

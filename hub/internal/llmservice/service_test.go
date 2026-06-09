@@ -361,6 +361,83 @@ func TestRegistryNormalizeDefaultsNewUsersToBuiltinDefaultGroup(t *testing.T) {
 	}
 }
 
+func TestPurgeOrphanedServiceGroupReferences(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "coding-basic", Name: "Coding Basic", AccessPolicy: AccessPolicyFree},
+		},
+		GlobalServiceGroupIDs:       []string{"coding-basic", "deleted-global"},
+		DefaultNewUserServiceGroups: []string{"deleted-default", "coding-basic"},
+		GroupBindings: []GroupBinding{
+			{GroupID: "ops", ServiceGroupIDs: []string{"coding-basic", "deleted-binding"}},
+			{GroupID: "empty", ServiceGroupIDs: []string{"deleted-only"}},
+		},
+		UserBindings: []UserBinding{
+			{Email: "user@example.com", ServiceGroupIDs: []string{"deleted-user", "coding-basic"}},
+			{Email: "orphan@example.com", ServiceGroupIDs: []string{"deleted-orphan"}},
+		},
+		Cards: []RechargeCard{
+			{ID: "card-1", ServiceGroupIDs: []string{"coding-basic", "deleted-card"}},
+		},
+		Grants: []Grant{
+			{ID: "grant-1", Email: "user@example.com", ServiceGroupID: "coding-basic"},
+			{ID: "grant-2", Email: "user@example.com", ServiceGroupID: "deleted-grant"},
+		},
+	}
+	reg.Normalize()
+	changed := reg.PurgeOrphanedServiceGroupReferences()
+	if !changed {
+		t.Fatal("expected PurgeOrphanedServiceGroupReferences to return true")
+	}
+
+	// GlobalServiceGroupIDs: only coding-basic remains.
+	if len(reg.GlobalServiceGroupIDs) != 1 || reg.GlobalServiceGroupIDs[0] != "coding-basic" {
+		t.Fatalf("GlobalServiceGroupIDs = %#v, want [coding-basic]", reg.GlobalServiceGroupIDs)
+	}
+	// DefaultNewUserServiceGroups: only coding-basic remains.
+	if len(reg.DefaultNewUserServiceGroups) != 1 || reg.DefaultNewUserServiceGroups[0] != "coding-basic" {
+		t.Fatalf("DefaultNewUserServiceGroups = %#v, want [coding-basic]", reg.DefaultNewUserServiceGroups)
+	}
+	// GroupBindings: "ops" keeps coding-basic; "empty" removed entirely.
+	if len(reg.GroupBindings) != 1 || reg.GroupBindings[0].GroupID != "ops" {
+		t.Fatalf("GroupBindings = %#v, want [ops->coding-basic]", reg.GroupBindings)
+	}
+	if len(reg.GroupBindings[0].ServiceGroupIDs) != 1 || reg.GroupBindings[0].ServiceGroupIDs[0] != "coding-basic" {
+		t.Fatalf("GroupBindings[0].ServiceGroupIDs = %#v, want [coding-basic]", reg.GroupBindings[0].ServiceGroupIDs)
+	}
+	// UserBindings: user@example.com keeps coding-basic; orphan@example.com removed entirely.
+	if len(reg.UserBindings) != 1 || reg.UserBindings[0].Email != "user@example.com" {
+		t.Fatalf("UserBindings = %#v, want [user@example.com]", reg.UserBindings)
+	}
+	if len(reg.UserBindings[0].ServiceGroupIDs) != 1 || reg.UserBindings[0].ServiceGroupIDs[0] != "coding-basic" {
+		t.Fatalf("UserBindings[0].ServiceGroupIDs = %#v, want [coding-basic]", reg.UserBindings[0].ServiceGroupIDs)
+	}
+	// Cards: deleted-card removed from ServiceGroupIDs.
+	if len(reg.Cards) != 1 || len(reg.Cards[0].ServiceGroupIDs) != 1 || reg.Cards[0].ServiceGroupIDs[0] != "coding-basic" {
+		t.Fatalf("Cards[0].ServiceGroupIDs = %#v, want [coding-basic]", reg.Cards[0].ServiceGroupIDs)
+	}
+	// Grants: grant-2 (referencing deleted-grant) removed.
+	if len(reg.Grants) != 1 || reg.Grants[0].ID != "grant-1" {
+		t.Fatalf("Grants = %#v, want [grant-1]", reg.Grants)
+	}
+}
+
+func TestPurgeOrphanedServiceGroupReferencesNoChange(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "coding-basic", Name: "Coding Basic"},
+		},
+		GlobalServiceGroupIDs:       []string{"coding-basic"},
+		DefaultNewUserServiceGroups: []string{"coding-basic"},
+		UserBindings:                []UserBinding{{Email: "user@example.com", ServiceGroupIDs: []string{"coding-basic"}}},
+	}
+	reg.Normalize()
+	changed := reg.PurgeOrphanedServiceGroupReferences()
+	if changed {
+		t.Fatal("expected PurgeOrphanedServiceGroupReferences to return false when all references are valid")
+	}
+}
+
 func TestSelectBestModelForRequest(t *testing.T) {
 	models := []AuthorizedModel{
 		{Name: "doc-fast", CapabilityTags: []string{"document"}, ResolutionTier: 1, Priority: 10, CreditMultiplier: 1},

@@ -205,11 +205,13 @@ func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.Identit
 
 		// If the code was bound to an email, clean up all associated data.
 		if email != "" {
+			var lookupUser *store.User
 			if identity != nil {
 				user, lookupErr := identity.UsersRepo().GetByTenantEmail(r.Context(), code.TenantID, email)
 				if lookupErr != nil {
 					log.Printf("[admin-unbind] lookup user %s failed: %v", email, lookupErr)
 				}
+				lookupUser = user
 				if user != nil && deviceSvc != nil {
 					deleted, delErr := deviceSvc.ForceDeleteMachinesByTenantUser(r.Context(), code.TenantID, user.ID)
 					if delErr != nil {
@@ -233,6 +235,15 @@ func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.Identit
 				feishuNotifier.RemoveOpenIDForTenant(code.TenantID, email)
 			}
 			removeIMBindingsForTenant(imCleaners, code.TenantID, email)
+
+			// Comprehensive cleanup of auxiliary data (enrollments, tokens).
+			if identity != nil {
+				purgeUser := lookupUser
+				if purgeUser == nil {
+					purgeUser = &store.User{ID: "", TenantID: code.TenantID, Email: email}
+				}
+				purgeUserAuxiliaryData(r.Context(), identity, purgeUser)
+			}
 
 			// Delete the user record so bind-query returns unbound.
 			if identity != nil {

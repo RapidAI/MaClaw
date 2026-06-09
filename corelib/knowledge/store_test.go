@@ -9,7 +9,28 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
+
+type testKnowledgeEmbedder struct{}
+
+func (testKnowledgeEmbedder) Embed(text string) ([]float32, error) {
+	return []float32{1, float32(len([]rune(text))) + 1}, nil
+}
+
+func (testKnowledgeEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	vectors := make([][]float32, len(texts))
+	for i, text := range texts {
+		vectors[i], _ = (testKnowledgeEmbedder{}).Embed(text)
+	}
+	return vectors, nil
+}
+
+func (testKnowledgeEmbedder) Dim() int { return 2 }
+func (testKnowledgeEmbedder) Close()   {}
+
+var _ embedding.Embedder = testKnowledgeEmbedder{}
 
 func TestSQLiteStoreImportDirectory(t *testing.T) {
 	ctx := context.Background()
@@ -504,6 +525,49 @@ func TestSQLiteStoreImportFiles(t *testing.T) {
 	}
 	if len(enabledResults) == 0 {
 		t.Fatalf("enabled source should return to default search")
+	}
+}
+
+func TestSQLiteStoreImportFilesBackfillsNodeEmbeddings(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	selected := filepath.Join(root, "vector.md")
+	mustWrite(t, selected, []byte("Vector import should embed original document nodes immediately."))
+
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	store.SetEmbedder(testKnowledgeEmbedder{})
+
+	res, err := store.ImportFiles(ctx, DirectoryImportRequest{
+		ProjectPath:  "D:/project",
+		SaveScope:    SaveScopeProject,
+		IncludeExts:  []string{".md"},
+		MaxFileBytes: 1024,
+	}, []string{selected})
+	if err != nil {
+		t.Fatalf("ImportFiles: %v", err)
+	}
+	if res.ImportedFiles != 1 || len(res.Items) != 1 || res.Items[0].SourceID == "" {
+		t.Fatalf("unexpected import result: %#v", res)
+	}
+	sourceID := res.Items[0].SourceID
+
+	var cardEmbeddings int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_cards WHERE source_id = ? AND embedding IS NOT NULL AND LENGTH(embedding) > 0`, sourceID).Scan(&cardEmbeddings); err != nil {
+		t.Fatalf("count card embeddings: %v", err)
+	}
+	if cardEmbeddings == 0 {
+		t.Fatalf("expected imported cards to have embeddings")
+	}
+	var nodeEmbeddings int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM document_nodes WHERE source_id = ? AND embedding IS NOT NULL AND LENGTH(embedding) > 0`, sourceID).Scan(&nodeEmbeddings); err != nil {
+		t.Fatalf("count node embeddings: %v", err)
+	}
+	if nodeEmbeddings == 0 {
+		t.Fatalf("expected imported document nodes to have embeddings")
 	}
 }
 

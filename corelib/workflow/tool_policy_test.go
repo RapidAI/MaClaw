@@ -183,14 +183,72 @@ func TestArtifactMutationScopeAllowsArtifactsButBlocksProjectMutation(t *testing
 			t.Fatalf("expected %s call to be rejected by artifact mutation scope", name)
 		}
 	}
-	for _, path := range []string{"business-plan.md", "deck.pptx", "report.pdf", "data.xlsx"} {
+	for _, path := range []string{"business-plan.md", "deck.pptx", "report.pdf", "data.xlsx", "artifacts/business-plan.md", "reports/deck.pdf", `reports\deck.pdf`} {
 		if err := ValidateToolCallByContract(contract, "write_file", map[string]interface{}{"path": path, "content": "body"}); err != nil {
 			t.Fatalf("expected artifact write %s to pass: %v", path, err)
 		}
 	}
-	for _, path := range []string{"src/main.go", "CMakeLists.txt", "package.json", "app.tsx"} {
+	for _, path := range []string{
+		"src/main.go",
+		"SRC/report.md",
+		"CMakeLists.txt",
+		"cmakelists.txt",
+		"Dockerfile",
+		"dockerfile",
+		"package.json",
+		"Package.json",
+		"TSConfig.json",
+		"app.tsx",
+		"src/report.md",
+		"cmd/output.pdf",
+		"frontend/data.json",
+		"../report.md",
+		`..\report.md`,
+		"/tmp/report.md",
+		`C:\tmp\report.md`,
+		"C:report.md",
+		"~/report.md",
+	} {
 		if err := ValidateToolCallByContract(contract, "write_file", map[string]interface{}{"path": path, "content": "code"}); err == nil {
 			t.Fatalf("expected project write %s to be rejected by artifact scope", path)
+		}
+	}
+	for _, args := range []map[string]interface{}{
+		{"action": "generate_pdf", "content": "# deck"},
+		{"action": "read_excel", "file_path": "src/data.xlsx"},
+		{"action": "read_pptx", "file_path": "src/deck.pptx"},
+		{"action": "write_excel", "file_path": "data.xlsx", "data": map[string]interface{}{"sheets": []interface{}{}}},
+	} {
+		if err := ValidateToolCallByContract(contract, "office", args); err != nil {
+			t.Fatalf("expected artifact office call %#v to pass: %v", args, err)
+		}
+	}
+	for _, args := range []map[string]interface{}{
+		{"action": "write_excel"},
+		{"action": "write_excel", "file_path": "src/data.xlsx", "data": map[string]interface{}{}},
+		{"action": "write_excel", "file_path": "corelib/report.xlsx", "data": map[string]interface{}{}},
+		{"action": "write_excel", "file_path": `C:\tmp\data.xlsx`, "data": map[string]interface{}{}},
+		{"action": "unknown", "file_path": "data.xlsx"},
+	} {
+		if err := ValidateToolCallByContract(contract, "office", args); err == nil {
+			t.Fatalf("expected artifact office call %#v to be rejected", args)
+		}
+	}
+	for _, args := range []map[string]interface{}{
+		{"url": "https://example.com"},
+		{"url": "https://example.com/report.pdf", "save_path": "report.pdf"},
+	} {
+		if err := ValidateToolCallByContract(contract, "web_fetch", args); err != nil {
+			t.Fatalf("expected artifact web_fetch call %#v to pass: %v", args, err)
+		}
+	}
+	for _, args := range []map[string]interface{}{
+		{"url": "https://example.com/main.go", "save_path": "src/main.go"},
+		{"url": "https://example.com/report.pdf", "save_path": "cmd/report.pdf"},
+		{"url": "https://example.com/report.pdf", "save_path": `C:\tmp\report.pdf`},
+	} {
+		if err := ValidateToolCallByContract(contract, "web_fetch", args); err == nil {
+			t.Fatalf("expected artifact web_fetch call %#v to be rejected", args)
 		}
 	}
 	if err := ValidateToolCallByContract(contract, "bash", map[string]interface{}{"command": "rg -n TODO"}); err != nil {

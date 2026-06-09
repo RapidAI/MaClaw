@@ -1364,41 +1364,54 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             {showConfirm && (
                 <div style={{
                     position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-                    background: "rgba(0,0,0,0.35)", display: "flex",
+                    background: colors.overlay, display: "flex",
                     alignItems: "center", justifyContent: "center", zIndex: 10000,
                 }} onClick={() => setShowConfirm(false)}>
                     <div style={{
-                        background: colors.surface, borderRadius: 16, padding: "24px 28px",
-                        maxWidth: 400, width: "90%", boxShadow: "0 16px 40px rgba(0,0,0,0.18)",
+                        background: colors.surface, borderRadius: 14, padding: "22px 26px",
+                        maxWidth: 380, width: "90%", boxShadow: "0 12px 36px rgba(15,23,42,0.18)",
+                        color: colors.text,
                     }} onClick={e => e.stopPropagation()}>
-                        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>
-                            {t("确认注册信息", "Confirm Registration")}
+                        {/* Header: icon + title */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                            <span style={{ fontSize: 18 }}>✉️</span>
+                            <span style={{ fontSize: 15, fontWeight: 700 }}>
+                                {t("确认注册信息", "Confirm Registration")}
+                            </span>
                         </div>
-                        <div style={{ fontSize: 14, color: colors.textSecondary, lineHeight: 1.6, marginBottom: 8 }}>
-                            {t("请确认邮箱正确无误。填写错误会导致注册失败，且需要管理员手动处理。",
-                                "Please confirm the email below is correct. Errors require admin intervention.")}
-                        </div>
-                        {freeTrial && (
-                            <div style={{
-                                fontSize: 13, color: colors.warning, lineHeight: 1.5, marginBottom: 8,
-                                padding: "8px 10px", borderRadius: 8,
-                                background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.25)",
-                            }}>
-                                {t("只有填写正确邮箱并完成邮件确认后，才可以获得剩余赠送额度。",
-                                    "Only a correct email address and email confirmation can unlock the remaining bonus credits.",
-                                    "只有填寫正確信箱並完成郵件確認後，才可以獲得剩餘贈送額度。")}
-                            </div>
-                        )}
+                        {/* Description – warning tone */}
                         <div style={{
-                            padding: 14, margin: "12px 0", borderRadius: 10,
-                            background: "var(--theme-info-bg)", fontSize: "0.88rem", lineHeight: 1.8,
+                            display: "flex", alignItems: "flex-start", gap: 8,
+                            fontSize: 13, color: colors.danger, lineHeight: 1.5, marginBottom: 12,
+                            padding: "8px 11px", borderRadius: 8,
+                            background: colors.dangerBg, border: `1px solid ${colors.danger}`,
+                            borderColor: "rgba(220,38,38,0.25)",
                         }}>
-                            <div>
-                                <span style={{ color: colors.textSecondary }}>{t("邮箱", "Email")}:</span>{" "}
-                                <span style={{ fontWeight: 600, color: colors.text }}>{regEmail}</span>
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, marginTop: 2 }}>
+                                <path d="M8 1.5L1 13.5h14L8 1.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" fill="none"/>
+                                <path d="M8 6.5v3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                                <circle cx="8" cy="11.5" r="0.7" fill="currentColor"/>
+                            </svg>
+                            <span>{t("填写真实邮箱，从邮箱中确认后获得其余70%赠送额度。",
+                                "Use a real email. Confirm via email to unlock the remaining 70% bonus credits.",
+                                "填寫真實信箱，從信箱中確認後獲得其餘70%贈送額度。")}</span>
+                        </div>
+                        {/* Email card */}
+                        <div style={{
+                            padding: "10px 14px", borderRadius: 8,
+                            background: "var(--theme-info-bg)",
+                            border: `1px solid ${colors.borderLight}`,
+                            marginBottom: 10,
+                        }}>
+                            <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 3, fontWeight: 500 }}>
+                                {t("注册邮箱", "Registration Email", "註冊信箱")}
+                            </div>
+                            <div style={{ fontSize: 14, fontWeight: 600, color: colors.text, wordBreak: "break-all" }}>
+                                {regEmail}
                             </div>
                         </div>
-                        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
+                        {/* Action buttons */}
+                        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
                             <button onClick={() => setShowConfirm(false)} style={{
                                 ...wizardGhostButtonStyle, padding: "8px 18px", fontSize: "0.8rem", color: colors.text,
                             }}>
@@ -1407,7 +1420,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             <button onClick={doRegister} style={{
                                 ...wizardPrimaryButtonStyle, width: "auto", padding: "8px 18px", fontSize: "0.8rem",
                             }}>
-                                {t("确认注册", "Confirm & Register")}
+                                ✓ {t("确认注册", "Confirm & Register")}
                             </button>
                         </div>
                     </div>

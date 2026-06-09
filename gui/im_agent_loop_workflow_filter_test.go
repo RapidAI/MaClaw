@@ -212,6 +212,21 @@ func TestArtifactWorkflowPhaseDoesNotExposeProjectMutationTools(t *testing.T) {
 	if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "write_file", `{"path":"src/main.go","content":"package main"}`); allowed {
 		t.Fatal("artifact phase should reject source writes")
 	}
+	if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "write_file", `{"path":"src/report.md","content":"body"}`); allowed {
+		t.Fatal("artifact phase should reject artifact-looking writes inside source directories")
+	}
+	if allowed, reason := handler.isWorkflowToolCallAllowedForOwner(userID, "office", `{"action":"write_excel","file_path":"data.xlsx","data":{"sheets":[]}}`); !allowed {
+		t.Fatalf("artifact office write_excel should pass for deliverables: %s", reason)
+	}
+	if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "office", `{"action":"write_excel","file_path":"src/data.xlsx","data":{"sheets":[]}}`); allowed {
+		t.Fatal("artifact phase should reject office write_excel inside source directories")
+	}
+	if allowed, reason := handler.isWorkflowToolCallAllowedForOwner(userID, "web_fetch", `{"url":"https://example.com/report.pdf","save_path":"report.pdf"}`); !allowed {
+		t.Fatalf("artifact web_fetch save_path should pass for deliverables: %s", reason)
+	}
+	if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "web_fetch", `{"url":"https://example.com/main.go","save_path":"src/main.go"}`); allowed {
+		t.Fatal("artifact phase should reject web_fetch save_path inside source directories")
+	}
 	if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "bash", `{"command":"touch src/main.go"}`); allowed {
 		t.Fatal("artifact phase should reject mutating bash")
 	}
