@@ -21,9 +21,12 @@ import (
 // This maintains the invariant that "the tool list reflects the current task
 // direction" while respecting the coding gate's invariant that "blocklisted
 // tools don't appear in the tool list during three-phase workflow".
-func (h *IMMessageHandler) augmentToolsFromInjection(injectionText string, currentTools, baseTools []map[string]interface{}, gateActive bool) ([]map[string]interface{}, int) {
-	if injectionText == "" || h.toolRouter == nil {
+func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, injectionText string, currentTools, baseTools []map[string]interface{}, gateActive bool) ([]map[string]interface{}, int) {
+	if injectionText == "" {
 		return currentTools, estimateToolsTokens(currentTools)
+	}
+	if h.toolRouter == nil {
+		return h.finalizeInjectionAugmentedTools(ctx, userID, currentTools)
 	}
 
 	// Strip injection prefix (e.g. "[用户补充] ", "[用户补充需求——请在当前任务中纳入] ")
@@ -32,7 +35,7 @@ func (h *IMMessageHandler) augmentToolsFromInjection(injectionText string, curre
 	// classification (embedding similarity, keyword matching, etc.).
 	routeText := stripInjectionPrefix(injectionText)
 	if routeText == "" {
-		return currentTools, estimateToolsTokens(currentTools)
+		return h.finalizeInjectionAugmentedTools(ctx, userID, currentTools)
 	}
 
 	// Route with the cleaned injection text to see what tools it would activate.
@@ -79,7 +82,15 @@ func (h *IMMessageHandler) augmentToolsFromInjection(injectionText string, curre
 		log.Printf("[injection-tool-augment] added %d tools from injection: %v", len(added), added)
 	}
 
-	return currentTools, estimateToolsTokens(currentTools)
+	return h.finalizeInjectionAugmentedTools(ctx, userID, currentTools)
+}
+
+func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, userID string, tools []map[string]interface{}) ([]map[string]interface{}, int) {
+	if policyOwnerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {
+		tools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, tools, h.getTools())
+	}
+	tools = stripExecutionContractMetadataForLLM(tools)
+	return tools, estimateToolsTokens(tools)
 }
 
 // findToolDef finds a tool definition by name in a tool list.

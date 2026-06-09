@@ -134,6 +134,10 @@ func BuildPhaseSystemPrompt(state *WorkflowState, phase *PhaseTemplate, registry
 		b.WriteString("If setup work is needed, such as creating directories, CMake files, package manifests, or source files, describe it as numbered implementation tasks. Those project mutations run only after user confirmation in the implementation phase.\n\n")
 	}
 
+	if shouldAppendCodingImplementationHandoffContract(state, phase, registry) {
+		appendCodingImplementationHandoffContract(&b)
+	}
+
 	if phase.NeedsConfirm {
 		b.WriteString("## Review Gate\n\n")
 		b.WriteString("This phase requires explicit user review before the workflow may advance. Follow these rules:\n")
@@ -144,6 +148,32 @@ func BuildPhaseSystemPrompt(state *WorkflowState, phase *PhaseTemplate, registry
 	}
 
 	return b.String()
+}
+
+func shouldAppendCodingImplementationHandoffContract(state *WorkflowState, phase *PhaseTemplate, registry *WorkflowRegistry) bool {
+	if state == nil || phase == nil || state.Type != WorkflowCoding || state.CurrentPhase != PhaseCodingImplementation || phase.ID != PhaseCodingImplementation {
+		return false
+	}
+	if registry != nil {
+		if tmpl := registry.Match(state.Type); tmpl != nil {
+			contract := DerivePhaseContract(tmpl, *phase)
+			return contract.Kind == PhaseKindExecution &&
+				contract.MutationScope == MutationScopeProject &&
+				contract.ActivatesOrchestrator
+		}
+	}
+	contract := DerivePhaseContract(nil, *phase)
+	return contract.Kind == PhaseKindExecution && contract.MutationScope == MutationScopeProject
+}
+
+func appendCodingImplementationHandoffContract(b *strings.Builder) {
+	b.WriteString("## Coding Implementation Handoff Contract\n\n")
+	b.WriteString("This phase changes project files, but the main workflow agent is only the coordinator. Actual coding must be performed by the internal CodingSubAgent.\n")
+	b.WriteString("1. Delegate implementation with `delegate_task(agent=\"coding_workflow\", request=\"...\")`.\n")
+	b.WriteString("2. Keep the request concise and reference approved task IDs, requirements, technical design, project path, and expected verification.\n")
+	b.WriteString("3. Do not call local project mutation tools such as `bash`, `write_file`, `edit_file`, `edit_lines`, `craft_tool`, `task`, `create_session`, or `ssh` from the main workflow agent.\n")
+	b.WriteString("4. Reading context with `read_file` or `list_directory` is allowed only when needed to build the delegation request.\n")
+	b.WriteString("5. If `delegate_task` is unavailable, report a workflow tooling error instead of claiming there are no coding tools or attempting manual implementation.\n\n")
 }
 
 func phaseFormDataWasSkipped(formData map[string]interface{}) bool {

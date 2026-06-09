@@ -114,6 +114,9 @@ func TestSrvAIModelEmbedderAdapterUsesSharedBatchRuntime(t *testing.T) {
 	if emb.calls.Load() != 3 {
 		t.Fatalf("expected fake embedder to embed 3 texts inside the batch, got %d", emb.calls.Load())
 	}
+	if want := filepath.Join(dataRoot, "models", embedding.DefaultModelFilename); manager.embeddingPath != want {
+		t.Fatalf("embeddingPath = %q, want %q", manager.embeddingPath, want)
+	}
 }
 
 func TestSrvAIModelManagerEmbeddingModelPathUsesEnvOverride(t *testing.T) {
@@ -137,6 +140,34 @@ func TestSrvAIModelManagerEmbeddingModelPathUsesEnvOverride(t *testing.T) {
 	}
 	if got := manager.modelPath(srvASRModelFilename); got != filepath.Join(dataRoot, "models", srvASRModelFilename) {
 		t.Fatalf("ASR model path should not use embedding override, got %q", got)
+	}
+}
+
+func TestSrvAIModelManagerEmbeddingPathChangeDropsStaleRuntimeOnLoadFailure(t *testing.T) {
+	dataRoot := t.TempDir()
+	modelsDir := filepath.Join(dataRoot, "models")
+	if err := os.MkdirAll(modelsDir, 0o755); err != nil {
+		t.Fatalf("create models dir: %v", err)
+	}
+	badModelPath := filepath.Join(modelsDir, embedding.DefaultModelFilename)
+	if err := os.WriteFile(badModelPath, []byte("not-a-gguf"), 0o644); err != nil {
+		t.Fatalf("write bad embedding model: %v", err)
+	}
+
+	old := &closingSrvEmbedder{}
+	manager := newSrvAIModelManager(dataRoot)
+	manager.embeddingMgr = old
+	manager.embeddingPath = filepath.Join(dataRoot, "models", "old-"+embedding.DefaultModelFilename)
+
+	_, err := manager.embedBatch(context.Background(), corelib.AppConfig{}, []string{"hello"})
+	if err == nil {
+		t.Fatalf("expected bad model load to fail")
+	}
+	if !old.closed.Load() {
+		t.Fatalf("old embedding runtime should be closed after path change")
+	}
+	if manager.embeddingMgr != nil || manager.embeddingPath != "" {
+		t.Fatalf("stale embedding runtime should be cleared after load failure: mgr=%#v path=%q", manager.embeddingMgr, manager.embeddingPath)
 	}
 }
 
@@ -211,13 +242,14 @@ func TestSrvAIModelManagerResetRuntimeClearsSharedManagers(t *testing.T) {
 	embeddingMgr := &closingSrvEmbedder{}
 	manager := newSrvAIModelManager(dataRoot)
 	manager.embeddingMgr = embeddingMgr
+	manager.embeddingPath = filepath.Join(dataRoot, "models", embedding.DefaultModelFilename)
 	manager.asrMgr = &fakeSrvASRTranscriber{text: "ok"}
 	manager.ttsMgr = &fakeSrvTTSSynthesizer{wav: []byte("RIFF")}
 	manager.ttsVoice = "zm_yunxi"
 
 	manager.resetRuntime(srvAIModelEmbedding)
-	if !embeddingMgr.closed.Load() || manager.embeddingMgr != nil {
-		t.Fatalf("embedding runtime was not reset: closed=%v mgr=%#v", embeddingMgr.closed.Load(), manager.embeddingMgr)
+	if !embeddingMgr.closed.Load() || manager.embeddingMgr != nil || manager.embeddingPath != "" {
+		t.Fatalf("embedding runtime was not reset: closed=%v mgr=%#v path=%q", embeddingMgr.closed.Load(), manager.embeddingMgr, manager.embeddingPath)
 	}
 
 	manager.resetRuntime(srvAIModelASR)

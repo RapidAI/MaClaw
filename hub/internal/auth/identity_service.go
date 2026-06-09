@@ -76,6 +76,18 @@ type EnrollmentResult struct {
 	ExpiresAt    string `json:"expires_at,omitempty"`
 }
 
+// EnrollOption allows passing optional parameters to StartEnrollment.
+type EnrollOption func(*enrollOptions)
+
+type enrollOptions struct {
+	Language string
+}
+
+// WithLanguage sets the UI language for registration emails.
+func WithLanguage(lang string) EnrollOption {
+	return func(o *enrollOptions) { o.Language = lang }
+}
+
 func (s *IdentityService) TenantDisplayName(ctx context.Context, tenantID string) string {
 	tenantID = normalizeTenantIDValue(tenantID)
 	if s == nil || s.tenants == nil {
@@ -300,7 +312,7 @@ func (s *IdentityService) syncUserRoute(ctx context.Context, email string) {
 	_ = s.userRouteSyncer.SyncUserRoute(ctx, email, tenantIDFromContext(ctx))
 }
 
-func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineName, platform, clientID, invitationCode string) (*EnrollmentResult, error) {
+func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineName, platform, clientID, invitationCode string, opts ...EnrollOption) (*EnrollmentResult, error) {
 	email = normalizeEmail(email)
 	tenantID := tenantIDFromContext(ctx)
 	if email == "" {
@@ -399,7 +411,17 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 			if err != nil {
 				return nil, err
 			}
-			_, _ = s.createLoginTokenAndNotify(ctx, email)
+			// Send dedicated registration verification email (explains 70% bonus).
+			// If sending fails, grant the benefit directly — don't penalize the user
+			// for server-side email delivery issues.
+			var eopts enrollOptions
+			for _, opt := range opts {
+				opt(&eopts)
+			}
+			if _, notifyErr := s.sendRegistrationVerification(ctx, email, eopts.Language); notifyErr != nil {
+				_ = s.grantEmailConfirmedBenefitForUser(ctx, email)
+				_ = s.users.MarkEmailVerified(ctx, tenantID, email)
+			}
 		}
 	}
 
@@ -584,6 +606,53 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 	}, nil
 }
 
+// sendRegistrationVerification creates a login token and sends a dedicated
+// registration verification email (with language-appropriate content explaining
+// the 70% bonus credits). This is distinct from SendLoginConfirmation which is
+// a generic "click to sign in" email.
+func (s *IdentityService) sendRegistrationVerification(ctx context.Context, email, language string) (*EmailLoginRequestResult, error) {
+	tenantID := tenantIDFromContext(ctx)
+	rawToken, err := randomToken(32)
+	if err != nil {
+		return nil, err
+	}
+	rawPollToken, err := randomToken(32)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	if err := s.loginTok.Create(ctx, &store.LoginToken{
+		ID:            newID("lt"),
+		TenantID:      tenantID,
+		Email:         email,
+		TokenHash:     hashToken(rawToken),
+		PollTokenHash: hashToken(rawPollToken),
+		Purpose:       "login",
+		ExpiresAt:     now.Add(72 * time.Hour), // 3 days for registration verification (vs 15min for login)
+		CreatedAt:     now,
+	}); err != nil {
+		return nil, err
+	}
+
+	confirmURL := s.buildConfirmURL(rawToken)
+
+	if s.mailer == nil {
+		return nil, fmt.Errorf("mail delivery is not configured")
+	}
+	if err := s.mailer.SendRegistrationVerification(store.WithTenant(ctx, tenantID), email, confirmURL, language); err != nil {
+		return nil, err
+	}
+
+	return &EmailLoginRequestResult{
+		Status:   "pending_email_confirmation",
+		TenantID: tenantID,
+		Message:  "Registration verification email sent",
+		PollID:   rawPollToken,
+		SentTo:   "email",
+	}, nil
+}
+
 // createLoginTokenForPoll creates (or refreshes) a login token for the given
 // email with a custom expiry, without sending a confirmation email. This is
 // used for approval-mode enrollments where the PWA needs to poll until the
@@ -669,6 +738,8 @@ func (s *IdentityService) ConfirmEmailLogin(ctx context.Context, rawToken string
 	if err := s.grantEmailConfirmedBenefitForUser(ctx, user.Email); err != nil {
 		return "", nil, err
 	}
+	// Mark user as email-verified in the user record.
+	_ = s.users.MarkEmailVerified(ctx, user.TenantID, user.Email)
 
 	return rawViewerToken, user, nil
 }

@@ -50,13 +50,29 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
             ? eff
             : String(grant.status ?? grant.Status ?? '').toLowerCase() !== 'queued'
               && String(grant.status ?? grant.Status ?? '').toLowerCase() !== 'expired';
-        if (!isEffective) continue;
+        if (!isEffective) {
+            // Queued grants (not yet started but not expired) still contribute
+            // their full remaining credits to the visible total/remaining so
+            // the user sees "top-up succeeded" immediately in the UI.
+            const grantStatusLower = String(grant.status ?? grant.Status ?? '').toLowerCase();
+            if (grantStatusLower === 'queued') {
+                const queuedRemaining = numeric(grant.credits_remaining ?? grant.CreditsRemaining);
+                if (queuedRemaining > 0) {
+                    total += numeric(grant.credits_total ?? grant.CreditsTotal);
+                    remaining += queuedRemaining;
+                }
+            }
+            continue;
+        }
         total += numeric(grant.credits_total ?? grant.CreditsTotal);
         used += numeric(grant.credits_used ?? grant.CreditsUsed);
         remaining += numeric(grant.credits_remaining ?? grant.CreditsRemaining);
         grantAvailable += numeric(grant.credits_available ?? grant.CreditsAvailable);
     }
-    total = Math.max(numeric(status?.credits_total ?? status?.CreditsTotal ?? total), visibleGrantTotal);
+    // Include queued grant totals in the floor value so backend's status.credits_total
+    // (which excludes queued grants) cannot overwrite/reduce the visible total.
+    const effectiveVisibleTotal = Math.max(total, visibleGrantTotal);
+    total = Math.max(numeric(status?.credits_total ?? status?.CreditsTotal ?? effectiveVisibleTotal), effectiveVisibleTotal);
     used = numeric(status?.credits_used ?? status?.CreditsUsed ?? used);
     remaining = numeric(status?.credits_remaining ?? status?.CreditsRemaining ?? remaining);
     const statusAvailable = numeric(status?.credits_available ?? status?.CreditsAvailable);

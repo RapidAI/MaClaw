@@ -1655,6 +1655,13 @@ func (f fakePlatformUserRepo) UpdateSmartRoute(ctx context.Context, userID strin
 	return nil
 }
 
+func (f fakePlatformUserRepo) MarkEmailVerified(ctx context.Context, tenantID, email string) error {
+	_ = ctx
+	_ = tenantID
+	_ = email
+	return nil
+}
+
 type fakePlatformViewerTokenRepo struct {
 	items []*store.ViewerToken
 }

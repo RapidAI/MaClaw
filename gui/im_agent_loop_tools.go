@@ -56,9 +56,8 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	workflowFilterPolicy := workflowToolFilterNone
 	workflowFilterSkipped := false
 	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
-	workflowAgentLoop := ctx != nil && ctx.WorkflowAgentLoop
-	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
-	if engine := h.getWorkflowEngine(); engine != nil && shouldApplyWorkflowFilter(skipNeedsConfirmGate, engine.IsAwaitingReview(policyOwnerID), workflowAgentLoop, engine.IsPhaseExecutionBlocked(policyOwnerID), engine.GetActiveWorkflow(policyOwnerID) != nil) {
+	policyOwnerID, applyWorkflowFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx)
+	if engine := h.getWorkflowEngine(); engine != nil && applyWorkflowFilter {
 		policy := engine.GetActivePhaseToolFilter(policyOwnerID)
 		if policy != "" {
 			workflowFilterPolicy = workflowToolFilterDecision(policy)
@@ -84,6 +83,17 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		BrowserBeforeWF:  browserBeforeWF,
 		BrowserPinned:    browserSessionPinned,
 	}
+}
+
+func (h *IMMessageHandler) workflowToolFilterOwnerAndDecision(userID string, ctx *LoopContext) (string, bool) {
+	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
+	engine := h.getWorkflowEngine()
+	if engine == nil {
+		return policyOwnerID, false
+	}
+	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
+	workflowAgentLoop := ctx != nil && ctx.WorkflowAgentLoop
+	return policyOwnerID, shouldApplyWorkflowFilter(skipNeedsConfirmGate, engine.IsAwaitingReview(policyOwnerID), workflowAgentLoop, engine.IsPhaseExecutionBlocked(policyOwnerID), engine.GetActiveWorkflow(policyOwnerID) != nil)
 }
 
 func agentLoopToolNamesForLog(tools []map[string]interface{}) []string {

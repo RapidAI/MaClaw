@@ -101,6 +101,44 @@ func TestSharedEmbeddingEmbedderSerializesConcurrentLoads(t *testing.T) {
 	}
 }
 
+func TestSharedEmbeddingEmbedderReloadsWhenPathChanges(t *testing.T) {
+	app := &App{}
+	first, err := app.sharedEmbeddingEmbedder("first.gguf", func(string) (embedding.Embedder, error) {
+		return &appEmbeddingTestEmbedder{}, nil
+	})
+	if err != nil {
+		t.Fatalf("first load failed: %v", err)
+	}
+	firstEmb := first.(*appEmbeddingTestEmbedder)
+
+	again, err := app.sharedEmbeddingEmbedder("first.gguf", func(string) (embedding.Embedder, error) {
+		t.Fatalf("same path should reuse existing embedder")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("same path load failed: %v", err)
+	}
+	if again != first {
+		t.Fatalf("same path should reuse existing embedder")
+	}
+
+	second, err := app.sharedEmbeddingEmbedder("second.gguf", func(string) (embedding.Embedder, error) {
+		return &appEmbeddingTestEmbedder{}, nil
+	})
+	if err != nil {
+		t.Fatalf("second load failed: %v", err)
+	}
+	if second == first {
+		t.Fatalf("different path should load a new embedder")
+	}
+	if !firstEmb.closed.Load() {
+		t.Fatalf("old embedder should be closed after path change")
+	}
+	if app.intentEmbedderPath != "second.gguf" {
+		t.Fatalf("intentEmbedderPath = %q, want second.gguf", app.intentEmbedderPath)
+	}
+}
+
 func TestIntentActivationDoesNotCloseSharedEmbedder(t *testing.T) {
 	app := &App{}
 	emb := &appEmbeddingTestEmbedder{}

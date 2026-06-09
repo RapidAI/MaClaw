@@ -132,6 +132,52 @@ func TestTruncationFallbackCatalogRestoresWorkflowDocRequiredTools(t *testing.T)
 	}
 }
 
+func TestTruncationFallbackCatalogRespectsCodingImplementationMainLoopPolicy(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "truncation-fallback-implementation-main-loop-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	state.PhaseIndex = 3
+	state.CurrentPhase = workflow.PhaseCodingImplementation
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "shell", nil, nil),
+		toolDef("craft_tool", "craft", nil, nil),
+		toolDef("delegate_task", "delegate", nil, nil),
+		toolDef("list_directory", "list", nil, nil),
+		toolDef("read_file", "read", nil, nil),
+		toolDef("task", "task", nil, nil),
+		toolDef("write_file", "write", nil, nil),
+	})
+
+	got := handler.truncationFallbackToolCatalog(&LoopContext{WorkflowAgentLoop: true}, userID, nil, []map[string]interface{}{
+		toolDef("bash", "shell", nil, nil),
+		toolDef("craft_tool", "craft", nil, nil),
+		toolDef("read_file", "read", nil, nil),
+		toolDef("task", "task", nil, nil),
+		toolDef("write_file", "write", nil, nil),
+	})
+	names := map[string]bool{}
+	for _, td := range got {
+		names[tool.ExtractToolName(td)] = true
+	}
+
+	for _, name := range []string{"read_file", "list_directory", "delegate_task"} {
+		if !names[name] {
+			t.Fatalf("implementation truncation fallback should keep %s, got %v", name, names)
+		}
+	}
+	for _, name := range []string{"bash", "write_file", "task", "craft_tool"} {
+		if names[name] {
+			t.Fatalf("implementation truncation fallback must not expose %s, got %v", name, names)
+		}
+	}
+}
+
 func TestTruncationFallbackCatalogUsesRuntimePolicyOwner(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	desktopID := "desktop-truncation-doc-only-owner"
@@ -278,6 +324,49 @@ func TestHandleTruncatedToolCallsDoesNotBlockRepeatedBashTruncation(t *testing.T
 	}
 	if !names["read_file"] {
 		t.Fatalf("safe tools should remain available: %v", names)
+	}
+}
+
+func TestHandleTruncatedToolCallsDoesNotBlockDelegateTaskHandoff(t *testing.T) {
+	if !classifyAgentToolKind("delegate_task").IsTruncationBlockSafe() {
+		t.Fatal("delegate_task should remain available; coding implementation depends on this handoff tool")
+	}
+
+	phase := &agentLoopPhase{}
+	tools := []map[string]interface{}{
+		toolDef("delegate_task", "delegate", nil, nil),
+		toolDef("read_file", "read", nil, nil),
+	}
+	recorded := false
+	result := (&IMMessageHandler{}).handleAgentLoopTruncatedToolCalls(
+		7,
+		llm.Choice{TruncatedToolNames: []string{"delegate_task"}},
+		phase,
+		nil,
+		tools,
+		tools,
+		func(int, []interface{}) { recorded = true },
+	)
+
+	if !result.ContinueLoop {
+		t.Fatal("expected loop to continue after delegate_task truncation hint")
+	}
+	if phase.TruncationBlockedTools["delegate_task"] {
+		t.Fatalf("delegate_task should not be marked blocked after truncation: %#v", phase.TruncationBlockedTools)
+	}
+	names := map[string]bool{}
+	for _, td := range result.Tools {
+		names[tool.ExtractToolName(td)] = true
+	}
+	if !names["delegate_task"] || !names["read_file"] {
+		t.Fatalf("delegate_task/read_file should remain available: %v", names)
+	}
+	if !recorded || len(result.Conversation) != 1 {
+		t.Fatalf("expected delegate_task recovery hint, recorded=%v conversation=%#v", recorded, result.Conversation)
+	}
+	hint, _ := result.Conversation[0].(map[string]string)
+	if !containsText(hint["content"], "keep request concise") || containsText(hint["content"], "write_file chunks") {
+		t.Fatalf("delegate_task hint should guide concise handoff, got %#v", hint)
 	}
 }
 

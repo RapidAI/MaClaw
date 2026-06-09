@@ -2046,6 +2046,16 @@ func TestCodingWorkflowTaskBreakdownConfirmStartsImplementationWithCodingSubAgen
 	if ws == nil || ws.CurrentPhase != workflow.PhaseCodingImplementation || engine.IsAwaitingReview(userID) {
 		t.Fatalf("workflow should advance to implementation after task breakdown confirm, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))
 	}
+	stashedPromptValue, ok := handler.stashedPhasePrompt.Load(userID)
+	if !ok {
+		t.Fatal("implementation phase prompt should be stashed for the workflow agent loop")
+	}
+	stashedPrompt, _ := stashedPromptValue.(string)
+	for _, want := range []string{"Coding Implementation Handoff Contract", "CodingSubAgent", "delegate_task(agent=\"coding_workflow\""} {
+		if !strings.Contains(stashedPrompt, want) {
+			t.Fatalf("stashed implementation prompt missing %q:\n%s", want, stashedPrompt)
+		}
+	}
 
 	toolSet := handler.prepareAgentLoopTools(userID, trimmed, &LoopContext{SkipNeedsConfirmGate: true, WorkflowAgentLoop: true}, agentLoopPhase{})
 	names := toolNameSetForWorkflowFilterTest(toolSet.Tools)

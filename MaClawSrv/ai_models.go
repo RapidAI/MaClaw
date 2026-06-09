@@ -57,6 +57,7 @@ type srvAIModelManager struct {
 	ttsRunMu               sync.Mutex
 	tasks                  map[string]*srvAIModelTask
 	embeddingMgr           embedding.Embedder
+	embeddingPath          string
 	asrMgr                 srvASRTranscriber
 	ttsMgr                 srvTTSSynthesizer
 	ttsVoice               string
@@ -606,6 +607,7 @@ func (m *srvAIModelManager) resetRuntime(model string) {
 		m.mu.Lock()
 		mgr := m.embeddingMgr
 		m.embeddingMgr = nil
+		m.embeddingPath = ""
 		m.mu.Unlock()
 		if mgr != nil {
 			mgr.Close()
@@ -668,6 +670,17 @@ func (m *srvAIModelManager) embedBatch(ctx context.Context, cfg corelib.AppConfi
 	m.embeddingRunMu.Lock()
 	defer m.embeddingRunMu.Unlock()
 	m.mu.Lock()
+	if m.embeddingMgr != nil && m.embeddingPath == "" {
+		m.embeddingPath = modelPath
+	}
+	if m.embeddingMgr != nil && m.embeddingPath != "" && m.embeddingPath != modelPath {
+		old := m.embeddingMgr
+		m.embeddingMgr = nil
+		m.embeddingPath = ""
+		m.mu.Unlock()
+		old.Close()
+		m.mu.Lock()
+	}
 	if m.embeddingMgr == nil {
 		mgr, err := embedding.NewGemmaEmbedder(modelPath, 256)
 		if err != nil {
@@ -675,6 +688,7 @@ func (m *srvAIModelManager) embedBatch(ctx context.Context, cfg corelib.AppConfi
 			return nil, err
 		}
 		m.embeddingMgr = mgr
+		m.embeddingPath = modelPath
 	}
 	mgr := m.embeddingMgr
 	m.mu.Unlock()

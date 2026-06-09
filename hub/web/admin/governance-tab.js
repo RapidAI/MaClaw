@@ -29,6 +29,14 @@
 
   var GOV_I18N = {
     serviceAccess: { zh: '\u5df2\u6709\u670d\u52a1\u6743\u9650', en: 'Service Access' },
+    regularUsers: { zh: '\u666e\u901a\u7528\u6237', en: 'Regular Users' },
+    virtualEmployees: { zh: '\u865a\u62df\u5458\u5de5', en: 'Virtual Employees' },
+    virtualEmployeeHint: { zh: 'VE Platform \u6ce8\u518c', en: 'Registered from VE Platform' },
+    virtualUserDeleteLabel: { zh: '\u5f3a\u5236\u5220\u9664', en: 'Force Delete' },
+    virtualUserDeleteWarning: { zh: '\u8be5\u865a\u62df\u7528\u6237\u6765\u81ea VE Platform\uff0c\u901a\u5e38\u4e0d\u5e94\u7531 Hub \u7ba1\u7406\u5458\u76f4\u63a5\u5220\u9664\u3002\u53ea\u6709\u5728\u786e\u8ba4\u9700\u8981\u5f3a\u5236\u6e05\u7406\u65f6\u624d\u7ee7\u7eed\u3002', en: 'This virtual user was registered from VE Platform. Hub administrators normally should not delete it directly. Continue only when force cleanup is truly necessary.' },
+    virtualUserDeletePasswordPrompt: { zh: '\u8f93\u5165\u7ba1\u7406\u5458\u5bc6\u7801\uff0c\u5f3a\u5236\u5220\u9664\u8be5 VE Platform \u865a\u62df\u7528\u6237\uff1a', en: 'Enter administrator password to force delete this VE Platform virtual user:' },
+    virtualUserDeleteSuccess: { zh: '\u865a\u62df\u7528\u6237\u5df2\u5f3a\u5236\u5220\u9664', en: 'Virtual user force deleted' },
+    virtualUserDeleteFailed: { zh: '\u5f3a\u5236\u5220\u9664\u865a\u62df\u7528\u6237\u5931\u8d25: {error}', en: 'Force delete virtual user failed: {error}' },
     serviceGroupsPrefix: { zh: '\u670d\u52a1\u7ec4: ', en: 'Service Groups: ' },
     modelsPrefix: { zh: '\u53ef\u7528\u6a21\u578b: ', en: 'Models: ' },
     nearestExpiryPrefix: { zh: '\u6700\u8fd1\u5230\u671f: ', en: 'Nearest Expiry: ' },
@@ -45,6 +53,7 @@
     grantRetryAfterAt: { zh: '\u6062\u590d\u65f6\u95f4 {time}', en: 'Restores at {time}' },
     smartRouteLabel: { zh: '\u667a\u80fd\u63a7\u5236', en: 'Smart Route' },
     smartRouteAllLabel: { zh: '\u5168\u5458\u667a\u80fd\u8def\u7531', en: 'Smart Route for all' },
+    emailVerifiedTooltip: { zh: '\u90ae\u7bb1\u5df2\u9a8c\u8bc1', en: 'Email verified' },
     boundUsersSearchPlaceholder: { zh: '\u641c\u7d22\u90ae\u7bb1 / SN...', en: 'Search email / SN...' },
     noMatches: { zh: '\u65e0\u5339\u914d\u7ed3\u679c', en: 'No matches' },
     loadContentAuditConfigFailed: { zh: '\u52a0\u8f7d\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5931\u8d25: ', en: 'Load content audit config failed: ' },
@@ -65,6 +74,65 @@
 
   function serviceAccessLabel() {
     return gt('serviceAccess');
+  }
+
+  function governanceUserType(item) {
+    return item && item.is_virtual_employee ? 'virtual' : 'regular';
+  }
+
+  function governanceUserTypeLabel(type) {
+    return gt(type === 'virtual' ? 'virtualEmployees' : 'regularUsers');
+  }
+
+  function groupBoundUsers(items) {
+    var groups = { regular: [], virtual: [] };
+    (items || []).forEach(function(item) {
+      groups[governanceUserType(item)].push(item);
+    });
+    return groups;
+  }
+
+  function promptGovernanceAdminPassword(title, message, confirmLabel) {
+    if (!document || !document.createElement || !document.body) {
+      return Promise.resolve(prompt(message));
+    }
+    return new Promise(function(resolve) {
+      var overlay = document.createElement('div');
+      overlay.className = 'session-modal-overlay show';
+      overlay.style.cssText = 'z-index:9999;background:rgba(15,23,42,.42);padding:18px';
+      overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="governanceForceDeleteTitle" style="width:min(420px,100%);max-height:none;overflow:visible;border:1px solid var(--border,#d8dee9);border-radius:12px;padding:16px;box-shadow:0 18px 60px rgba(15,23,42,.22)">' +
+        '<div class="item-title" id="governanceForceDeleteTitle" style="margin-bottom:8px">' + escapeHtml(title) + '</div>' +
+        '<div class="item-meta" style="margin-bottom:12px;white-space:pre-wrap">' + escapeHtml(message) + '</div>' +
+        '<input id="governanceForceDeletePasswordInput" type="password" autocomplete="current-password" style="width:100%;height:36px;margin-bottom:12px">' +
+        '<div class="actions" style="justify-content:flex-end;gap:8px">' +
+        '<button type="button" class="btn-ghost" id="governanceForceDeleteCancelBtn">' + escapeHtml(tr('closeDialog')) + '</button>' +
+        '<button type="button" class="btn-danger" id="governanceForceDeleteConfirmBtn">' + escapeHtml(confirmLabel) + '</button>' +
+        '</div></div>';
+      var done = function(value) {
+        if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        resolve(value);
+      };
+      document.body.appendChild(overlay);
+      if (global.AdminUI && typeof global.AdminUI.bindModalOverlayDismiss === 'function') {
+        global.AdminUI.bindModalOverlayDismiss(overlay, function() { done(null); });
+      } else {
+        overlay.onclick = function(event) {
+          if (event && event.target === overlay) done(null);
+        };
+      }
+      var input = overlay.querySelector('#governanceForceDeletePasswordInput');
+      var cancel = overlay.querySelector('#governanceForceDeleteCancelBtn');
+      var ok = overlay.querySelector('#governanceForceDeleteConfirmBtn');
+      if (cancel) cancel.addEventListener('click', function() { done(null); });
+      if (ok) ok.addEventListener('click', function() { done(input ? input.value : ''); });
+      if (input) {
+        input.addEventListener('keydown', function(event) {
+          if (event.key === 'Enter') done(input.value);
+          if (event.key === 'Escape') done(null);
+        });
+        input.focus();
+      }
+    });
   }
 
   function serviceAccessTooltip(item) {
@@ -215,30 +283,43 @@
     const start = (global._boundUsersPage - 1) * pageSize;
     const pageItems = filtered.slice(start, start + pageSize);
     const searchHtml = '<div style="margin-bottom:8px"><input id="boundUsersSearchInput" placeholder="' + gt('boundUsersSearchPlaceholder') + '" value="' + escapeHtml(global._boundUsersSearch || '') + '" style="max-width:260px;height:34px" oninput="window._boundUsersSearch=this.value;window._boundUsersPage=1;clearTimeout(window._busDeb);window._busDeb=setTimeout(_renderBoundUsersPage,200)"></div>';
-    const rows = pageItems.map(function(item) {
-      var smartRoute = item.smart_route;
-      var toggleId = 'sr_' + item.id;
-      var serviceBadge = item.has_service_access ? '<span class="badge ok" title="' + escapeHtml(serviceAccessTooltip(item)) + '" style="padding:4px 8px;font-size:10px">' + escapeHtml(serviceAccessLabel()) + '</span>' : '<span class="badge info" style="padding:4px 8px;font-size:10px">-</span>';
-      var unbindBtn = '<button class="btn-danger" style="height:24px;font-size:10px;padding:0 8px" data-email="' + escapeHtml(String(item.email || '')) + '" data-tenant-id="' + escapeHtml(String(item.tenant_id || '')) + '" onclick="unbindBoundUser(this.dataset.email, this.dataset.tenantId)">' + escapeHtml(gt('unbindUser')) + '</button>';
-      return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
-        + '<div style="display:flex;flex-direction:column;gap:8px;min-width:0">'
-        + '<div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">' + escapeHtml(item.email) + '</div>'
-        + '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0">'
-        + '<span class="badge info" style="padding:4px 8px;font-size:10px">' + escapeHtml(formatStatus(item.enrollment_status || item.status || 'active')) + '</span>'
-        + serviceBadge
-        + '<label class="toggle-label" title="' + gt('smartRouteLabel') + '" style="justify-content:flex-start;font-size:11px"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' data-user-id="' + escapeHtml(String(item.id || '')) + '" onchange="toggleSmartRoute(this.dataset.userId, this.checked)"><span>AI</span></label>'
-        + unbindBtn
-        + '</div>'
-        + renderCreditsSummary(item)
-        + '<div class="item-meta mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">' + escapeHtml(item.sn || tr('na')) + '</div>'
-        + '</div></div>';
+    var grouped = groupBoundUsers(pageItems);
+    var gridStyle = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px';
+    var sections = ['regular', 'virtual'].map(function(type) {
+      var list = grouped[type] || [];
+      if (!list.length) return '';
+      var cards = list.map(function(item) {
+        var smartRoute = item.smart_route;
+        var toggleId = 'sr_' + item.id;
+        var serviceBadge = item.has_service_access ? '<span class="badge ok" title="' + escapeHtml(serviceAccessTooltip(item)) + '" style="padding:4px 8px;font-size:10px">' + escapeHtml(serviceAccessLabel()) + '</span>' : '<span class="badge info" style="padding:4px 8px;font-size:10px">-</span>';
+        var typeBadge = item.is_virtual_employee
+          ? '<span class="badge warn" style="padding:4px 8px;font-size:10px" title="' + escapeHtml(gt('virtualEmployeeHint')) + '">' + escapeHtml(gt('virtualEmployees')) + '</span>'
+          : '<span class="badge info" style="padding:4px 8px;font-size:10px">' + escapeHtml(gt('regularUsers')) + '</span>';
+        var actionLabel = item.is_virtual_employee ? gt('virtualUserDeleteLabel') : gt('unbindUser');
+        var unbindBtn = '<button class="btn-danger" style="height:24px;font-size:10px;padding:0 8px" data-email="' + escapeHtml(String(item.email || '')) + '" data-tenant-id="' + escapeHtml(String(item.tenant_id || '')) + '" data-is-virtual="' + (item.is_virtual_employee ? 'true' : 'false') + '" onclick="unbindBoundUser(this.dataset.email, this.dataset.tenantId)">' + escapeHtml(actionLabel) + '</button>';
+        var verifiedStar = item.email_verified ? '<span title="' + escapeHtml(gt('emailVerifiedTooltip')) + '" style="color:#f59e0b;font-size:13px;margin-left:4px;cursor:default">&#9733;</span>' : '';
+        return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
+          + '<div style="display:flex;flex-direction:column;gap:8px;min-width:0">'
+          + '<div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">' + escapeHtml(item.email) + verifiedStar + '</div>'
+          + '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0">'
+          + '<span class="badge info" style="padding:4px 8px;font-size:10px">' + escapeHtml(formatStatus(item.enrollment_status || item.status || 'active')) + '</span>'
+          + typeBadge
+          + serviceBadge
+          + '<label class="toggle-label" title="' + gt('smartRouteLabel') + '" style="justify-content:flex-start;font-size:11px"><input type="checkbox" id="' + toggleId + '" ' + (smartRoute ? 'checked' : '') + ' data-user-id="' + escapeHtml(String(item.id || '')) + '" onchange="toggleSmartRoute(this.dataset.userId, this.checked)"><span>AI</span></label>'
+          + unbindBtn
+          + '</div>'
+          + renderCreditsSummary(item)
+          + '<div class="item-meta mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">' + escapeHtml(item.sn || tr('na')) + '</div>'
+          + '</div></div>';
+      }).join('');
+      return '<div style="grid-column:1 / -1;margin-top:4px"><div class="item-title" style="font-size:12px;margin-bottom:8px">' + escapeHtml(governanceUserTypeLabel(type)) + ' (' + list.length + ')</div><div class="user-grid-wrap" style="' + gridStyle + '">' + cards + '</div></div>';
     }).join('');
     var pagerHtml = '';
     var showCount = filtered.length > 0 ? (start + 1) + '-' + (start + pageItems.length) + ' / ' + filtered.length : '0 / 0';
     if (totalPages > 1 || query) {
       pagerHtml = '<div class="pager" style="margin-top:8px;display:flex;align-items:center;justify-content:center;gap:6px"><button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="window._boundUsersPage=Math.max(1,window._boundUsersPage-1);_renderBoundUsersPage()" ' + (global._boundUsersPage <= 1 ? 'disabled' : '') + '>Prev</button><span style="font-size:11px">' + showCount + '</span><button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="window._boundUsersPage=Math.min(' + totalPages + ',window._boundUsersPage+1);_renderBoundUsersPage()" ' + (global._boundUsersPage >= totalPages ? 'disabled' : '') + '>Next</button></div>';
     }
-    root.innerHTML = searchHtml + '<div class="user-grid-wrap" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px">' + (pageItems.length ? rows : '<div class="hint" style="grid-column:1 / -1">' + gt('noMatches') + '</div>') + '</div>' + pagerHtml;
+    root.innerHTML = searchHtml + (pageItems.length ? sections : '<div class="hint">' + gt('noMatches') + '</div>') + pagerHtml;
     var searchInput = document.getElementById('boundUsersSearchInput');
     if (searchInput && query) {
       searchInput.focus();
@@ -271,6 +352,40 @@
     email = String(email || '').trim();
     tenantID = String(tenantID || '').trim();
     if (!email) return;
+    var matched = (global._boundUsersAll || []).find(function(item) {
+      return String(item && item.email || '').trim().toLowerCase() === email.toLowerCase()
+        && String(item && item.tenant_id || '').trim() === tenantID;
+    }) || null;
+    var isVirtualEmployee = !!(matched && matched.is_virtual_employee);
+    if (isVirtualEmployee) {
+      var warning = gt('virtualUserDeleteWarning') + '\n\n' + email;
+      if (!confirm(warning)) return;
+      var password = await promptGovernanceAdminPassword(gt('virtualUserDeleteLabel'), gt('virtualUserDeletePasswordPrompt') + '\n' + email, gt('virtualUserDeleteLabel'));
+      if (password === null) return;
+      if (!password) {
+        const emptyMsg = gt('virtualUserDeleteFailed').replace('{error}', 'admin_password is required');
+        setOutput(emptyMsg);
+        showToast(emptyMsg, 'error');
+        return;
+      }
+      try {
+        const data = await api('/api/admin/users/force-delete-virtual', {
+          method: 'POST',
+          body: JSON.stringify({ email: email, tenant_id: tenantID, admin_password: password })
+        });
+        const removedEmail = data.email || email;
+        let msg = gt('virtualUserDeleteSuccess') + ': ' + removedEmail;
+        if (data.route_delete_warning) msg += ' Route sync warning: ' + data.route_delete_warning;
+        setOutput(msg);
+        showToast(msg, 'success');
+        await Promise.all([global.loadBoundUsers(), global.loadMachines()]);
+      } catch (err) {
+        const msg = gt('virtualUserDeleteFailed').replace('{error}', err.message);
+        setOutput(msg);
+        showToast(msg, 'error');
+      }
+      return;
+    }
     if (!confirm(gt('unbindConfirm').replace('{email}', email))) return;
     try {
       const query = '?email=' + encodeURIComponent(email) + (tenantID ? '&tenant_id=' + encodeURIComponent(tenantID) : '');

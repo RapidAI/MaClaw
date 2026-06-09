@@ -33,6 +33,39 @@ func (f *fakeBoundUserRouteDeleter) DeleteUserRoute(_ context.Context, email str
 	return f.err
 }
 
+func seedVirtualBoundUser(t *testing.T, services *hubAdminRouterTestServices, tenantID, userID, email string) {
+	t.Helper()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	user := &store.User{
+		ID:               userID,
+		TenantID:         tenantID,
+		Email:            email,
+		SN:               "sn-" + strings.ReplaceAll(userID, "_", "-"),
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := services.store.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create virtual user: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{
+		ID:                 "ve_" + strings.ReplaceAll(userID, "_", "-"),
+		MachineID:          "ve_" + strings.ReplaceAll(userID, "_", "-"),
+		PlatformID:         "platform-1",
+		PlatformEmployeeID: "platform-employee-" + strings.ReplaceAll(userID, "_", "-"),
+		OwnerUserID:        userID,
+		OwnerEmail:         email,
+		Status:             veStatusActive,
+		OnlineStatus:       veOnlineStatusOffline,
+	}}}
+	if err := saveVERegistry(ctx, scopedSystemSettingsForTenant(tenantID, services.store.System), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+}
+
 func TestManualBindHandlerCreatesUser(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 	token := issueHubAdminToken(t, router)
@@ -258,7 +291,7 @@ func TestDeleteBoundUserHandlerDeletesCenterRouteWithTenantID(t *testing.T) {
 	}
 	identity := auth.NewIdentityService(services.store.Users, services.store.Enrollments, services.store.EmailBlocks, services.store.Machines, services.store.ViewerTokens, services.store.LoginTokens, services.store.System, nil, "open", true, nil, "http://127.0.0.1:8080")
 	routeDeleter := &fakeBoundUserRouteDeleter{}
-	handler := DeleteBoundUserHandler(identity, &UserDataPurger{Identity: identity, RouteDeleter: routeDeleter})
+	handler := DeleteBoundUserHandler(identity, &UserDataPurger{Identity: identity, RouteDeleter: routeDeleter}, services.store.System)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users?tenant_id=tenant_route&email=route-delete@example.com", nil)
@@ -285,7 +318,7 @@ func TestDeleteBoundUserHandlerStillSucceedsWhenCenterRouteDeleteFailsAfterLocal
 	}
 	identity := auth.NewIdentityService(services.store.Users, services.store.Enrollments, services.store.EmailBlocks, services.store.Machines, services.store.ViewerTokens, services.store.LoginTokens, services.store.System, nil, "open", true, nil, "http://127.0.0.1:8080")
 	routeDeleter := &fakeBoundUserRouteDeleter{err: errors.New("center unavailable")}
-	handler := DeleteBoundUserHandler(identity, &UserDataPurger{Identity: identity, RouteDeleter: routeDeleter})
+	handler := DeleteBoundUserHandler(identity, &UserDataPurger{Identity: identity, RouteDeleter: routeDeleter}, services.store.System)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users?tenant_id=tenant_route&email=route-fail@example.com", nil)
@@ -377,6 +410,57 @@ func TestDeleteBoundUserHandlerRejectsAmbiguousTenantEmail(t *testing.T) {
 		t.Fatalf("expected tenant_id required, got %d body=%s", resp.Code, resp.Body.String())
 	}
 }
+
+func TestDeleteBoundUserHandlerBlocksVirtualEmployeeDirectDelete(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	seedVirtualBoundUser(t, services, "tenant_virtual", "virtual-user-1", "virtual-delete@example.com")
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodDelete, "/api/admin/users?tenant_id=tenant_virtual&email=virtual-delete@example.com", nil, token)
+	if resp.Code != http.StatusConflict || !strings.Contains(resp.Body.String(), "VIRTUAL_USER_FORCE_DELETE_REQUIRED") {
+		t.Fatalf("expected virtual delete conflict, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got, err := services.store.Users.GetByTenantEmail(context.Background(), "tenant_virtual", "virtual-delete@example.com"); err != nil || got == nil {
+		t.Fatalf("expected virtual user kept after blocked delete, got=%#v err=%v", got, err)
+	}
+}
+
+func TestForceDeleteVirtualBoundUserHandlerRejectsWrongAdminPassword(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	seedVirtualBoundUser(t, services, "tenant_virtual", "virtual-user-2", "virtual-wrong-pass@example.com")
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodPost, "/api/admin/users/force-delete-virtual", map[string]any{
+		"tenant_id":      "tenant_virtual",
+		"email":          "virtual-wrong-pass@example.com",
+		"admin_password": "WrongPassword123!",
+	}, token)
+	if resp.Code != http.StatusUnauthorized || !strings.Contains(resp.Body.String(), "INVALID_ADMIN_PASSWORD") {
+		t.Fatalf("expected invalid admin password, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got, err := services.store.Users.GetByTenantEmail(context.Background(), "tenant_virtual", "virtual-wrong-pass@example.com"); err != nil || got == nil {
+		t.Fatalf("expected virtual user kept after bad password, got=%#v err=%v", got, err)
+	}
+}
+
+func TestForceDeleteVirtualBoundUserHandlerDeletesVirtualEmployee(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	seedVirtualBoundUser(t, services, "tenant_virtual", "virtual-user-3", "virtual-force-delete@example.com")
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodPost, "/api/admin/users/force-delete-virtual", map[string]any{
+		"tenant_id":      "tenant_virtual",
+		"email":          "virtual-force-delete@example.com",
+		"admin_password": "StrongPassword123!",
+	}, token)
+	if resp.Code != http.StatusOK || !containsAll(resp.Body.String(), `"ok":true`, `"forced":true`, `"email":"virtual-force-delete@example.com"`) {
+		t.Fatalf("expected forced delete success, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got, err := services.store.Users.GetByTenantEmail(context.Background(), "tenant_virtual", "virtual-force-delete@example.com"); err != nil || got != nil {
+		t.Fatalf("expected virtual user deleted, got=%#v err=%v", got, err)
+	}
+}
+
 func TestBlockedEmailHandlersPersistEntries(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 	token := issueHubAdminToken(t, router)

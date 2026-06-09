@@ -395,15 +395,16 @@ func (r *userRepo) Create(ctx context.Context, user *store.User) error {
 func (r *userRepo) GetByID(ctx context.Context, id string) (*store.User, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, created_at, updated_at
+		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, email_verified, email_verified_at, created_at, updated_at
 		 FROM users WHERE id = ?`,
 		id,
 	)
 
 	var (
-		user                 store.User
-		smartRoute           int
-		createdAt, updatedAt string
+		user                         store.User
+		smartRoute, emailVerified     int
+		emailVerifiedAt              string
+		createdAt, updatedAt         string
 	)
 	if err := row.Scan(
 		&user.ID,
@@ -413,6 +414,8 @@ func (r *userRepo) GetByID(ctx context.Context, id string) (*store.User, error) 
 		&user.Status,
 		&user.EnrollmentStatus,
 		&smartRoute,
+		&emailVerified,
+		&emailVerifiedAt,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -423,6 +426,11 @@ func (r *userRepo) GetByID(ctx context.Context, id string) (*store.User, error) 
 	}
 
 	user.SmartRoute = smartRoute != 0
+	user.EmailVerified = emailVerified != 0
+	if emailVerifiedAt != "" {
+		t := mustParseTime(emailVerifiedAt)
+		user.EmailVerifiedAt = &t
+	}
 	user.CreatedAt = mustParseTime(createdAt)
 	user.UpdatedAt = mustParseTime(updatedAt)
 	return &user, nil
@@ -445,15 +453,16 @@ func (r *userRepo) getByEmail(ctx context.Context, tenantID, email string) (*sto
 	}
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, created_at, updated_at
+		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, email_verified, email_verified_at, created_at, updated_at
 		 FROM users WHERE `+where,
 		args...,
 	)
 
 	var (
-		user                 store.User
-		smartRoute           int
-		createdAt, updatedAt string
+		user                         store.User
+		smartRoute, emailVerified     int
+		emailVerifiedAt              string
+		createdAt, updatedAt         string
 	)
 	if err := row.Scan(
 		&user.ID,
@@ -463,6 +472,8 @@ func (r *userRepo) getByEmail(ctx context.Context, tenantID, email string) (*sto
 		&user.Status,
 		&user.EnrollmentStatus,
 		&smartRoute,
+		&emailVerified,
+		&emailVerifiedAt,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -473,6 +484,11 @@ func (r *userRepo) getByEmail(ctx context.Context, tenantID, email string) (*sto
 	}
 
 	user.SmartRoute = smartRoute != 0
+	user.EmailVerified = emailVerified != 0
+	if emailVerifiedAt != "" {
+		t := mustParseTime(emailVerifiedAt)
+		user.EmailVerifiedAt = &t
+	}
 	user.CreatedAt = mustParseTime(createdAt)
 	user.UpdatedAt = mustParseTime(updatedAt)
 	return &user, nil
@@ -495,7 +511,7 @@ func (r *userRepo) list(ctx context.Context, tenantID string) ([]*store.User, er
 	}
 	rows, err := r.readDB.QueryContext(
 		ctx,
-		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, created_at, updated_at
+		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, email_verified, email_verified_at, created_at, updated_at
 		 FROM users `+where+`
 		 ORDER BY updated_at DESC, email ASC`,
 		args...,
@@ -508,9 +524,10 @@ func (r *userRepo) list(ctx context.Context, tenantID string) ([]*store.User, er
 	var items []*store.User
 	for rows.Next() {
 		var (
-			user                 store.User
-			smartRoute           int
-			createdAt, updatedAt string
+			user                         store.User
+			smartRoute, emailVerified     int
+			emailVerifiedAt              string
+			createdAt, updatedAt         string
 		)
 		if err := rows.Scan(
 			&user.ID,
@@ -520,12 +537,19 @@ func (r *userRepo) list(ctx context.Context, tenantID string) ([]*store.User, er
 			&user.Status,
 			&user.EnrollmentStatus,
 			&smartRoute,
+			&emailVerified,
+			&emailVerifiedAt,
 			&createdAt,
 			&updatedAt,
 		); err != nil {
 			return nil, err
 		}
 		user.SmartRoute = smartRoute != 0
+		user.EmailVerified = emailVerified != 0
+		if emailVerifiedAt != "" {
+			t := mustParseTime(emailVerifiedAt)
+			user.EmailVerifiedAt = &t
+		}
 		user.CreatedAt = mustParseTime(createdAt)
 		user.UpdatedAt = mustParseTime(updatedAt)
 		items = append(items, &user)
@@ -554,6 +578,14 @@ func (r *userRepo) UpdateSmartRoute(ctx context.Context, userID string, enabled 
 		v = 1
 	}
 	_, err := r.db.ExecContext(ctx, `UPDATE users SET smart_route = ? WHERE id = ?`, v, userID)
+	return err
+}
+
+func (r *userRepo) MarkEmailVerified(ctx context.Context, tenantID, email string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE users SET email_verified = 1, email_verified_at = ? WHERE tenant_id = ? AND lower(email) = lower(?)`,
+		now, normalizeTenantID(tenantID), email)
 	return err
 }
 

@@ -153,7 +153,7 @@ func (h *IMMessageHandler) handleAgentLoopEssentialTruncatedToolCalls(
 	phase.ConsecutiveNoTool = 0
 	truncatedList := strings.Join(choice.TruncatedToolNames, ", ")
 	log.Printf("[agent-loop] essential tool truncation recovery (hint %d/%d, iter=%d, tools=%s)", phase.EssentialTruncationHints, maxEssentialTruncationHints, iteration, truncatedList)
-	hint := fmt.Sprintf("[system hint] Tool call arguments were truncated for essential tool(s): %s. Keep those tools available, but do not send oversized inline payloads. %s Use write_file chunks or craft_tool for generated file bodies; use bash only for short commands.", truncatedList, agentLoopInlinePayloadLimitInstruction())
+	hint := buildEssentialTruncationRecoveryHint(choice.TruncatedToolNames)
 	systemMessagesStart := len(conversation)
 	conversation = append(conversation, map[string]string{
 		"role":    "system",
@@ -163,6 +163,32 @@ func (h *IMMessageHandler) handleAgentLoopEssentialTruncatedToolCalls(
 	result.Conversation = conversation
 	result.ContinueLoop = true
 	return result
+}
+
+func buildEssentialTruncationRecoveryHint(toolNames []string) string {
+	truncatedList := strings.Join(toolNames, ", ")
+	parts := []string{
+		fmt.Sprintf("[system hint] Tool call arguments were truncated for essential tool(s): %s.", truncatedList),
+		"Keep those tools available, but do not send oversized inline payloads.",
+		agentLoopInlinePayloadLimitInstruction(),
+	}
+	if containsToolName(toolNames, "delegate_task") {
+		parts = append(parts, "For delegate_task, keep request concise: reference the approved workflow task IDs and existing context instead of embedding long documents or file contents.")
+	}
+	if containsToolName(toolNames, "bash") {
+		parts = append(parts, "Use bash only for short commands.")
+	}
+	return strings.Join(parts, " ")
+}
+
+func containsToolName(names []string, want string) bool {
+	want = strings.TrimSpace(want)
+	for _, name := range names {
+		if strings.TrimSpace(name) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *IMMessageHandler) truncationFallbackToolCatalog(ctx *LoopContext, userID string, phase *agentLoopPhase, baseTools []map[string]interface{}) []map[string]interface{} {
@@ -178,12 +204,8 @@ func (h *IMMessageHandler) truncationFallbackToolCatalog(ctx *LoopContext, userI
 			catalog = filterToolsForSkillPreference(catalog)
 		}
 	}
-	if engine := h.getWorkflowEngine(); engine != nil {
-		policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
-		applyFilter := ctx == nil || shouldApplyWorkflowFilter(ctx.SkipNeedsConfirmGate, engine.IsAwaitingReview(policyOwnerID), ctx.WorkflowAgentLoop, engine.IsPhaseExecutionBlocked(policyOwnerID), engine.GetActiveWorkflow(policyOwnerID) != nil)
-		if applyFilter {
-			catalog = h.applyWorkflowToolFilter(policyOwnerID, catalog)
-		}
+	if policyOwnerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {
+		catalog = h.applyWorkflowToolFilter(policyOwnerID, catalog)
 	}
 	return catalog
 }

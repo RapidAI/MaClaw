@@ -26,6 +26,9 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	if loopCtx != nil {
 		profile = loopCtx.Runtime.Execution
 	}
+	if workflowAgentLoop && profile.IsLight() {
+		profile = fullExecutionProfile("workflow agent loop prompt override")
+	}
 
 	var systemPrompt string
 	if profile.IsLight() {

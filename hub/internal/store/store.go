@@ -119,6 +119,8 @@ type User struct {
 	Status           string
 	EnrollmentStatus string
 	SmartRoute       bool
+	EmailVerified    bool
+	EmailVerifiedAt  *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -280,6 +282,7 @@ type UserRepository interface {
 	DeleteByEmail(ctx context.Context, email string) error
 	DeleteByTenantEmail(ctx context.Context, tenantID, email string) error
 	UpdateSmartRoute(ctx context.Context, userID string, enabled bool) error
+	MarkEmailVerified(ctx context.Context, tenantID, email string) error
 }
 
 type EnrollmentRepository interface {

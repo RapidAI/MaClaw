@@ -168,7 +168,7 @@ func DerivePhaseRuntimeGate(tmpl *WorkflowTemplate, state *WorkflowState) PhaseR
 | `none` | 非工作流或无约束路径 | 保持原有工具路由 | 无工作流限制 |
 | `doc_only` | 普通文档/分析阶段 | 读文件、列目录、记忆、web、阶段文档导出/发送 | shell、项目写入、委托、SSH |
 | `planning` | 需要仓库上下文的可审阅规划阶段 | 只读 shell、读文件、列目录、记忆、web、发送阶段文档 | 写文件、编辑、创建目录、委托 subagent、SSH、破坏性命令 |
-| `full` | 实现/生成阶段 | 完整工具集 | 由执行 profile、沙箱、运行期校验和 `MutationScope` 限制 |
+| `full` | 实现/生成阶段 | 完整工具集的阶段契约 | 由执行 profile、沙箱、运行期校验和 `MutationScope` 限制；coding implementation 主循环还叠加 CodingSubAgent handoff 策略 |
 | `ops_controlled` | 运维受控执行 | bash/ssh/读文件/任务检查 | 未审批变更、高风险命令、泛化委托 |
 
 关键原则：
@@ -305,7 +305,7 @@ agentservice 需要接收并执行 `tool_policy`，但不应理解模板细节�
 - `PhaseExpectsDocument` 先看 `NeedsConfirm`，再看工具策略。
 - 具体工具调用统一走 `ValidateToolCallByPolicyWithApproval`。
 - direct CodingSubAgent 只允许 execution orchestrator 阶段触发。
-- 确认任务拆分后再进入 `implementation`，此时才开放 full/orchestrator。
+- 确认任务拆分后再进入 `implementation`，此时开放 execution/orchestrator；主 agent 不直接获得本地项目变更工具，只能委派内部 CodingSubAgent。
 
 ### Phase 2：新增 `PhaseContract` 派生器
 
@@ -363,7 +363,9 @@ MutationScope MutationScope `json:"mutation_scope,omitempty"`
 - `planning` 禁止写工具和委托工具：`write_file`、`edit_file`、`edit_lines`、`task`、`delegate_task`。
 - `ops_controlled` 要求 approved manifest。
 - `full + MutationScopeArtifact` 不应触发 coding orchestrator。
-- `full + MutationScopeProject` 才允许 coding subagent/orchestrator。
+- `full + MutationScopeProject` 才允许 coding subagent/orchestrator；coding workflow implementation 的主 agent 只暴露 `delegate_task(agent="coding_workflow")` 和读/交付工具，项目变更由 CodingSubAgent 执行。
+- coding workflow implementation 暴露给 LLM 的 `delegate_task` schema 必须收窄为 `agent=coding_workflow`，避免工具描述继续提示 `help` 或其他委派路径。
+- `delegate_task` 是 coding implementation 的 essential handoff tool；参数截断时只能注入压缩请求提示，不能加入临时 blocked tools，否则主 agent 会再次落入“无可用编程工具”状态。
 - `Register` 拒绝冲突模板，且不能覆盖已有有效模板。
 
 ### 推进测试
@@ -378,7 +380,7 @@ MutationScope MutationScope `json:"mutation_scope,omitempty"`
 
 - GUI、TUI、agentservice 对同一阶段得到同一 `ToolPolicy`。
 - 前端 phase metadata 与后端生成结果保持一致。
-- direct CodingSubAgent 在非 execution 阶段被拒绝。
+- direct CodingSubAgent 在非 execution 阶段被拒绝；在 coding implementation 阶段，主 agent 的 `bash`/`write_file`/`edit_file`/`craft_tool`/`task` 也必须被工具列表和执行 gate 双重拒绝。
 - coding task breakdown 的工具列表不为空，且没有写工具。
 - artifact generation phase 即使使用 `full`，也不被 GUI/TUI/agentservice 当成 coding execution。
 
@@ -408,3 +410,18 @@ MutationScope MutationScope `json:"mutation_scope,omitempty"`
 根因修复不是继续调某一个阶段的 `ToolPolicy`，而是把“阶段意图 -> 阶段能力 -> 工具边界 -> 状态推进 -> UI 展示”收束成一个统一 contract。
 
 `planning` 策略解决了当前 coding 任务拆分无工具的问题；`PhaseContract` 则解决后续所有流程模板都要一个个补的问题。
+
+## Prompt Contract 补充：提示词语义也必须受阶段契约约束
+
+还有一层根因在提示词语义。coding implementation 模板仍然把主 workflow agent 描述成“实现者”，但运行期工具策略已经要求实现必须通过内部 CodingSubAgent 完成。只靠工具闸门，会导致模型先选择旧的主 agent 直写路径，然后撞到受限工具集，最后报告“没有工具”。
+
+现在 `BuildPhaseSystemPrompt` 会给 `coding/implementation` 追加统一 handoff contract：
+
+- 主 workflow agent 是协调者，不是代码修改者。
+- 实现必须通过 `delegate_task(agent="coding_workflow")` 委派。
+- 主 workflow agent 不能直接调用 `bash`、`write_file`、`edit_file`、`craft_tool`、`task`、外部 session、`ssh` 等本地项目变更工具。
+- `read_file` 和 `list_directory` 只用于构造简洁委派请求。
+- 如果 `delegate_task` 缺失，必须报告 workflow tooling error，不能声称无法编程，也不能绕过流程自己实现。
+- no-tool/stall 恢复提示也必须走同一契约：coding implementation 阶段只能提醒 `delegate_task(agent="coding_workflow")`，不能回退到通用“选择文件/编辑工具”提示。
+
+这样提示层和 contract/tool 层一致，模型会先走正确路径，而不是等工具调用被拦后才暴露问题。

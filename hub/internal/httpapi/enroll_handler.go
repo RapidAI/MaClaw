@@ -29,6 +29,7 @@ type EnrollStartRequest struct {
 	InvitationCode       string `json:"invitation_code"`
 	TenantID             string `json:"tenant_id"`
 	GroupID              string `json:"group_id"`
+	Language             string `json:"language,omitempty"`
 }
 
 type tenantResolver interface {
@@ -79,7 +80,18 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 		ctx := auth.WithTenant(r.Context(), tenantID)
 
 		enrollStart := time.Now()
-		resp, err := identity.StartEnrollment(ctx, req.Email, req.MachineName, req.Platform, req.ClientID, req.InvitationCode)
+		var enrollOpts []auth.EnrollOption
+		if lang := strings.TrimSpace(req.Language); lang != "" {
+			enrollOpts = append(enrollOpts, auth.WithLanguage(lang))
+		} else if acceptLang := r.Header.Get("Accept-Language"); acceptLang != "" {
+			// Fallback: derive language from HTTP Accept-Language header.
+			if strings.Contains(acceptLang, "zh") {
+				enrollOpts = append(enrollOpts, auth.WithLanguage("zh"))
+			} else {
+				enrollOpts = append(enrollOpts, auth.WithLanguage("en"))
+			}
+		}
+		resp, err := identity.StartEnrollment(ctx, req.Email, req.MachineName, req.Platform, req.ClientID, req.InvitationCode, enrollOpts...)
 		log.Printf("[onboarding] EnrollStartHandler start_enrollment=%s email=%s status=%s err=%v", time.Since(enrollStart), req.Email, func() string {
 			if resp == nil {
 				return ""

@@ -30,6 +30,31 @@ func buildNoToolActionPrompt(preferSkill bool, skillName, runID string) string {
 	return "[Execution requirement]\nThis task requires real execution. Choose the best real tool and start executing. For document/file delivery, prefer file generation, editing, or sending tools.\n[/Execution requirement]"
 }
 
+func buildCodingWorkflowImplementationNoToolActionPrompt() string {
+	return "[Execution requirement]\nCoding workflow implementation requires real execution through the internal CodingSubAgent. Do not write code directly from the main workflow agent and do not claim there are no coding tools. Call delegate_task(agent=\"coding_workflow\", request=\"...\") with a concise request referencing the approved task IDs and existing workflow context. If delegate_task is unavailable, report a workflow tooling error.\n[/Execution requirement]"
+}
+
+func buildCodingWorkflowImplementationEmptyResultRecoverPrompt(pendingTaskHint string) string {
+	base := "[Recover]\nThe previous coding workflow implementation round returned no visible result. The main workflow agent must not write code directly or claim there are no coding tools. Call delegate_task(agent=\"coding_workflow\", request=\"...\") now to hand off to the internal CodingSubAgent with approved task IDs and current workflow context, or report a workflow tooling error if delegate_task is unavailable."
+	if pendingTaskHint != "" {
+		base += "\n" + strings.TrimSpace(pendingTaskHint)
+	}
+	base += "\n[/Recover]"
+	return base
+}
+
+func buildCodingWorkflowImplementationToolingFailureText(reason string, pendingTaskHint string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "the main workflow agent did not call delegate_task(agent=\"coding_workflow\")"
+	}
+	text := "Workflow tooling error: coding implementation could not proceed because " + reason + ". This phase requires delegate_task(agent=\"coding_workflow\", request=\"...\") to hand project mutation to the internal CodingSubAgent; the main workflow agent must not write project files directly."
+	if strings.TrimSpace(pendingTaskHint) != "" {
+		text = appendPendingBackgroundTaskFinalHint(text, pendingTaskHint)
+	}
+	return text
+}
+
 func buildNoToolStallRecoverPrompt(consecutive int, preferSkill bool, skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
@@ -40,6 +65,10 @@ func buildNoToolStallRecoverPrompt(consecutive int, preferSkill bool, skillName,
 		return fmt.Sprintf("[Recover]\nNo real tool was called for %d consecutive rounds. Prefer manage_skill(action=\"run\", name=\"%s\"). If that Skill fails, use another real tool path.\n[/Recover]", consecutive, skillName)
 	}
 	return fmt.Sprintf("[Recover]\nNo real tool was called for %d consecutive rounds. Choose the best real tool now; for document/file delivery, prefer file generation or sending tools.\n[/Recover]", consecutive)
+}
+
+func buildCodingWorkflowImplementationNoToolStallRecoverPrompt(consecutive int) string {
+	return fmt.Sprintf("[Recover]\nNo real tool was called for %d consecutive rounds in coding workflow implementation. The only project-mutation path for the main workflow agent is delegate_task(agent=\"coding_workflow\"). Call that handoff with a concise request, or report a workflow tooling error if the tool is unavailable.\n[/Recover]", consecutive)
 }
 
 func didSkillToolFail(toolCalls []llm.ToolCall, toolOutcomes []toolOutcome) bool {

@@ -105,6 +105,9 @@
     notSet: { zh: '\u672a\u8bbe\u7f6e', en: 'Not set' },
     noUsersMatchSearch: { zh: '\u65e0\u5339\u914d\u7528\u6237', en: 'No users match the search' },
     noUsersAvailable: { zh: '\u6682\u65e0\u53ef\u5206\u914d\u7528\u6237', en: 'No users available' },
+    regularUsers: { zh: '\u666e\u901a\u7528\u6237', en: 'Regular Users' },
+    virtualEmployees: { zh: '\u865a\u62df\u5458\u5de5', en: 'Virtual Employees' },
+    virtualEmployeeHint: { zh: 'VE Platform \u6ce8\u518c', en: 'Registered from VE Platform' },
     status: { zh: '\u72b6\u6001', en: 'Status' },
     unknown: { zh: '\u672a\u77e5', en: 'Unknown' },
     statusActive: { zh: '\u5df2\u542f\u7528', en: 'Active' },
@@ -518,6 +521,30 @@
     return items;
   }
 
+  function securityUserType(user) {
+    return user && user.is_virtual_employee ? 'virtual' : 'regular';
+  }
+
+  function securityUserTypeLabel(type) {
+    return st(type === 'virtual' ? 'virtualEmployees' : 'regularUsers');
+  }
+
+  function groupUsersByType(users) {
+    var groups = { regular: [], virtual: [] };
+    (users || []).forEach(function(user) {
+      groups[securityUserType(user)].push(user);
+    });
+    return groups;
+  }
+
+  function memberEmailsGroupedByType(emails) {
+    var groups = { regular: [], virtual: [] };
+    (emails || []).forEach(function(email) {
+      groups[securityUserType(findUserDirectoryEntry(email))].push(email);
+    });
+    return groups;
+  }
+
   function selectedAssignEmailList() {
     var selected = state().selectedAssignEmails || {};
     return Object.keys(selected).filter(function(key) { return !!selected[key]; }).map(function(key) { return selected[key]; });
@@ -907,12 +934,20 @@
     if (!rows.length) {
       root.innerHTML = hint(query ? st('noUsersMatchSearch') : st('noUsersAvailable'));
     } else {
-      root.innerHTML = rows.map(function(user) {
-        var email = user.email || '';
-        var key = normalizeEmailKey(email);
-        var selected = !!(sec.selectedAssignEmails && sec.selectedAssignEmails[key]);
-        var jsEmail = escapeJsString(email);
-        return '<div class="item" style="min-height:auto;padding:8px 10px;margin-bottom:6px;border:' + (selected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + ';background:' + (selected ? 'rgba(47,128,237,.06)' : 'linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%)') + ';cursor:pointer" onclick="selectAssignUser(\'' + jsEmail + '\')"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><label style="display:flex;align-items:center;gap:8px;margin:0;min-width:0;cursor:pointer;flex:1" onclick="event.stopPropagation()"><input type="checkbox" style="width:16px;height:16px;flex:0 0 auto" ' + (selected ? 'checked' : '') + ' onchange="toggleAssignUser(\'' + jsEmail + '\', this.checked)"><span style="min-width:0"><span style="display:block;font-weight:600;word-break:break-all">' + escapeHtml(email) + '</span><span class="item-meta">' + escapeHtml(text('SN', 'SN')) + ': ' + escapeHtml(user.sn || '-') + ' | ' + escapeHtml(st('status')) + ': ' + escapeHtml(localizeUserStatus(user.status)) + '</span></span></label><button class="btn-ghost" type="button" style="height:26px;font-size:11px;padding:0 10px;flex:0 0 auto" onclick="event.stopPropagation();selectAssignUser(\'' + jsEmail + '\')">' + escapeHtml(selected ? st('remove') : st('move')) + '</button></div></div>';
+      var groups = groupUsersByType(rows);
+      root.innerHTML = ['regular', 'virtual'].map(function(type) {
+        var list = groups[type] || [];
+        if (!list.length) return '';
+        return '<div style="margin-bottom:10px"><div class="item-title" style="font-size:12px;margin-bottom:6px">' + escapeHtml(securityUserTypeLabel(type)) + ' (' + list.length + ')</div>' + list.map(function(user) {
+          var email = user.email || '';
+          var key = normalizeEmailKey(email);
+          var selected = !!(sec.selectedAssignEmails && sec.selectedAssignEmails[key]);
+          var jsEmail = escapeJsString(email);
+          var typeBadge = user.is_virtual_employee
+            ? '<span class="badge warn" style="padding:2px 8px;font-size:10px" title="' + escapeHtml(st('virtualEmployeeHint')) + '">' + escapeHtml(st('virtualEmployees')) + '</span>'
+            : '<span class="badge info" style="padding:2px 8px;font-size:10px">' + escapeHtml(st('regularUsers')) + '</span>';
+          return '<div class="item" style="min-height:auto;padding:8px 10px;margin-bottom:6px;border:' + (selected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + ';background:' + (selected ? 'rgba(47,128,237,.06)' : 'linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%)') + ';cursor:pointer" onclick="selectAssignUser(\'' + jsEmail + '\')"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><label style="display:flex;align-items:center;gap:8px;margin:0;min-width:0;cursor:pointer;flex:1" onclick="event.stopPropagation()"><input type="checkbox" style="width:16px;height:16px;flex:0 0 auto" ' + (selected ? 'checked' : '') + ' onchange="toggleAssignUser(\'' + jsEmail + '\', this.checked)"><span style="min-width:0"><span style="display:block;font-weight:600;word-break:break-all">' + escapeHtml(email) + '</span><span class="item-meta">' + escapeHtml(text('SN', 'SN')) + ': ' + escapeHtml(user.sn || '-') + ' | ' + escapeHtml(st('status')) + ': ' + escapeHtml(localizeUserStatus(user.status)) + '</span></span></label><div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">' + typeBadge + '<button class="btn-ghost" type="button" style="height:26px;font-size:11px;padding:0 10px" onclick="event.stopPropagation();selectAssignUser(\'' + jsEmail + '\')">' + escapeHtml(selected ? st('remove') : st('move')) + '</button></div></div></div>';
+        }).join('') + '</div>';
       }).join('');
     }
     var selectedCount = selectedAssignEmailList().length;
@@ -2897,15 +2932,19 @@
     var active = 0;
     var enrolled = 0;
     var service = 0;
+    var regular = 0;
+    var virtual = 0;
     (rows || []).forEach(function(email) {
       var entry = findUserDirectoryEntry(email);
       var status = String(entry && entry.status || '').toLowerCase();
       var enrollment = String(entry && entry.enrollment_status || '').toLowerCase();
+      if (entry && entry.is_virtual_employee) virtual += 1;
+      else regular += 1;
       if (status === 'active' || status === 'approved') active += 1;
       if (enrollment === 'approved' || enrollment === 'bound' || enrollment === 'enrolled') enrolled += 1;
       if ((entry && entry.has_service_access) || (entry && entry.service_status && entry.service_status.active)) service += 1;
     });
-    return '<div class="grid4" style="margin-bottom:10px"><div class="metric"><label>' + escapeHtml(st('memberCount')) + '</label><strong>' + String((rows || []).length) + '</strong><span>' + escapeHtml(st('members')) + '</span></div><div class="metric"><label>' + escapeHtml(st('statusActive')) + '</label><strong>' + String(active) + '</strong><span>' + escapeHtml(st('status')) + '</span></div><div class="metric"><label>' + escapeHtml(st('enrollmentStatus')) + '</label><strong>' + String(enrolled) + '</strong><span>' + escapeHtml(st('statusApproved')) + '</span></div><div class="metric"><label>' + escapeHtml(st('serviceAccess')) + '</label><strong>' + String(service) + '</strong><span>' + escapeHtml(st('serviceAccessOn')) + '</span></div></div>';
+    return '<div class="grid4" style="margin-bottom:10px"><div class="metric"><label>' + escapeHtml(st('memberCount')) + '</label><strong>' + String((rows || []).length) + '</strong><span>' + escapeHtml(st('regularUsers')) + ': ' + String(regular) + ' | ' + escapeHtml(st('virtualEmployees')) + ': ' + String(virtual) + '</span></div><div class="metric"><label>' + escapeHtml(st('statusActive')) + '</label><strong>' + String(active) + '</strong><span>' + escapeHtml(st('status')) + '</span></div><div class="metric"><label>' + escapeHtml(st('enrollmentStatus')) + '</label><strong>' + String(enrolled) + '</strong><span>' + escapeHtml(st('statusApproved')) + '</span></div><div class="metric"><label>' + escapeHtml(st('serviceAccess')) + '</label><strong>' + String(service) + '</strong><span>' + escapeHtml(st('serviceAccessOn')) + '</span></div></div>';
   }
 
   function renderMembersModalPage() {
@@ -2922,12 +2961,20 @@
     if (!pageRows.length) {
       root.innerHTML = summaryHtml + hint(st('noMembers'));
     } else {
-      root.innerHTML = summaryHtml + pageRows.map(function(email, idx) {
-        var absoluteIndex = start + idx + 1;
-        var jsEmail = escapeJsString(email);
-        var entry = findUserDirectoryEntry(email);
-        var meta = '#' + absoluteIndex + ' | ' + st('status') + ': ' + localizeUserStatus(entry && entry.status) + ' | ' + st('userSN') + ': ' + (entry && entry.sn || '-');
-        return '<div class="row" style="grid-template-columns:minmax(0,1fr) auto auto;gap:10px"><div style="min-width:0"><div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(email) + '</div><div class="item-meta">' + escapeHtml(meta) + '</div></div><button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" onclick="selectSecUser(\'' + jsEmail + '\')">' + escapeHtml(st('viewUserDetail')) + '</button><button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px;color:var(--danger)" onclick="removeSecGroupMember(\'' + jsEmail + '\')">' + escapeHtml(st('remove')) + '</button></div>';
+      var groups = memberEmailsGroupedByType(pageRows);
+      root.innerHTML = summaryHtml + ['regular', 'virtual'].map(function(type) {
+        var list = groups[type] || [];
+        if (!list.length) return '';
+        return '<div style="margin-bottom:10px"><div class="item-title" style="font-size:12px;margin-bottom:6px">' + escapeHtml(securityUserTypeLabel(type)) + ' (' + list.length + ')</div>' + list.map(function(email) {
+          var absoluteIndex = rows.indexOf(email) + 1;
+          var jsEmail = escapeJsString(email);
+          var entry = findUserDirectoryEntry(email);
+          var typeBadge = entry && entry.is_virtual_employee
+            ? '<span class="badge warn" style="padding:2px 8px;font-size:10px" title="' + escapeHtml(st('virtualEmployeeHint')) + '">' + escapeHtml(st('virtualEmployees')) + '</span>'
+            : '<span class="badge info" style="padding:2px 8px;font-size:10px">' + escapeHtml(st('regularUsers')) + '</span>';
+          var meta = '#' + absoluteIndex + ' | ' + st('status') + ': ' + localizeUserStatus(entry && entry.status) + ' | ' + st('userSN') + ': ' + (entry && entry.sn || '-');
+          return '<div class="row" style="grid-template-columns:minmax(0,1fr) auto auto;gap:10px"><div style="min-width:0"><div style="display:flex;align-items:center;gap:6px;min-width:0"><div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(email) + '</div>' + typeBadge + '</div><div class="item-meta">' + escapeHtml(meta) + '</div></div><button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" onclick="selectSecUser(\'' + jsEmail + '\')">' + escapeHtml(st('viewUserDetail')) + '</button><button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px;color:var(--danger)" onclick="removeSecGroupMember(\'' + jsEmail + '\')">' + escapeHtml(st('remove')) + '</button></div>';
+        }).join('') + '</div>';
       }).join('');
     }
     _s('secMembersModalPagerMeta', 'textContent', st('pagerSummary', { page: sec.membersModalPage, totalPages: totalPages, start: rows.length ? start + 1 : 0, end: Math.min(start + pageRows.length, rows.length), total: rows.length }));

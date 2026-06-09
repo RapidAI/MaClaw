@@ -241,3 +241,86 @@ func TestBuildPhaseSystemPrompt_PlanningBoundarySeparatesDocsFromProjectWrites(t
 		}
 	}
 }
+
+func TestBuildPhaseSystemPrompt_CodingImplementationRequiresSubAgentHandoff(t *testing.T) {
+	registry := NewWorkflowRegistry()
+	tmpl := registry.Match(WorkflowCoding)
+	if tmpl == nil {
+		t.Fatal("coding template not found")
+	}
+	phase := mustPhase(t, tmpl, PhaseCodingImplementation)
+	state := &WorkflowState{
+		Type:         WorkflowCoding,
+		PhaseIndex:   3,
+		CurrentPhase: PhaseCodingImplementation,
+		Intent:       StructuredIntent{Category: WorkflowCoding, Summary: "implement approved tasks"},
+		PhaseOutputs: map[string]string{
+			PhaseCodingRequirements:  "Need a CLI app.",
+			PhaseCodingTechDesign:    "Use Go packages.",
+			PhaseCodingTaskBreakdown: "### T1: create CLI\n### T2: add tests",
+		},
+	}
+
+	prompt := BuildPhaseSystemPrompt(state, &phase, registry)
+	for _, want := range []string{
+		"## Coding Implementation Handoff Contract",
+		"delegate_task(agent=\"coding_workflow\"",
+		"CodingSubAgent",
+		"approved task IDs",
+		"Do not call local project mutation tools",
+		"`bash`",
+		"`write_file`",
+		"If `delegate_task` is unavailable",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("implementation prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPhaseSystemPrompt_CodingHandoffOnlyForImplementation(t *testing.T) {
+	registry := NewWorkflowRegistry()
+	tmpl := registry.Match(WorkflowCoding)
+	if tmpl == nil {
+		t.Fatal("coding template not found")
+	}
+	phase := mustPhase(t, tmpl, PhaseCodingTaskBreakdown)
+	state := &WorkflowState{
+		Type:         WorkflowCoding,
+		PhaseIndex:   2,
+		CurrentPhase: PhaseCodingTaskBreakdown,
+		Intent:       StructuredIntent{Category: WorkflowCoding, Summary: "plan tasks"},
+		PhaseOutputs: map[string]string{
+			PhaseCodingRequirements: "Need a CLI app.",
+			PhaseCodingTechDesign:   "Use Go packages.",
+		},
+	}
+
+	prompt := BuildPhaseSystemPrompt(state, &phase, registry)
+	if strings.Contains(prompt, "Coding Implementation Handoff Contract") {
+		t.Fatalf("task breakdown prompt must not receive implementation handoff contract:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "delegate_task(agent=\"coding_workflow\"") {
+		t.Fatalf("task breakdown prompt must not instruct subagent delegation:\n%s", prompt)
+	}
+}
+
+func TestBuildPhaseSystemPrompt_CodingHandoffRequiresCurrentImplementationState(t *testing.T) {
+	registry := NewWorkflowRegistry()
+	tmpl := registry.Match(WorkflowCoding)
+	if tmpl == nil {
+		t.Fatal("coding template not found")
+	}
+	phase := mustPhase(t, tmpl, PhaseCodingImplementation)
+	state := &WorkflowState{
+		Type:         WorkflowCoding,
+		PhaseIndex:   2,
+		CurrentPhase: PhaseCodingTaskBreakdown,
+		Intent:       StructuredIntent{Category: WorkflowCoding, Summary: "still planning"},
+	}
+
+	prompt := BuildPhaseSystemPrompt(state, &phase, registry)
+	if strings.Contains(prompt, "Coding Implementation Handoff Contract") {
+		t.Fatalf("mismatched workflow state must not receive implementation handoff contract:\n%s", prompt)
+	}
+}

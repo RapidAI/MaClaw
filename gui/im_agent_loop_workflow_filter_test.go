@@ -355,7 +355,10 @@ func TestCodingWorkflowImplementationMainLoopExposesOnlySubAgentHandoff(t *testi
 	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
 		toolDef("ask_user", "ask user", nil, nil),
 		toolDef("bash", "bash", nil, nil),
-		toolDef("delegate_task", "delegate", nil, nil),
+		toolDef("delegate_task", "delegate coding_workflow / help", map[string]interface{}{
+			"agent":   map[string]string{"type": "string", "description": "coding_workflow / help"},
+			"request": map[string]string{"type": "string", "description": "task"},
+		}, nil),
 		toolDef("edit_file", "edit file", nil, nil),
 		toolDef("generate_pdf", "generate pdf", nil, nil),
 		toolDef("list_directory", "list directory", nil, nil),
@@ -372,7 +375,8 @@ func TestCodingWorkflowImplementationMainLoopExposesOnlySubAgentHandoff(t *testi
 		toolDef("write_file", "write file", nil, nil),
 	})
 
-	filtered := handler.applyWorkflowToolFilterWithCatalog(userID, handler.getTools(), handler.getTools())
+	allTools := handler.getTools()
+	filtered := handler.applyWorkflowToolFilterWithCatalog(userID, allTools, allTools)
 	names := toolNameSetForWorkflowFilterTest(filtered)
 	for _, name := range []string{"ask_user", "delegate_task", "list_directory", "read_file", "send_file"} {
 		if !names[name] {
@@ -392,6 +396,28 @@ func TestCodingWorkflowImplementationMainLoopExposesOnlySubAgentHandoff(t *testi
 	}
 	if ok, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "delegate_task", `{"agent":"help","request":"help"}`); ok {
 		t.Fatal("implementation main loop must reject non-coding delegate_task")
+	}
+	delegateDef := toolDefinitionByNameForWorkflowFilterTest(filtered, "delegate_task")
+	fn, _ := delegateDef["function"].(map[string]interface{})
+	if fn == nil {
+		t.Fatalf("filtered delegate_task definition missing function: %#v", delegateDef)
+	}
+	if strings.Contains(strings.ToLower(fmt.Sprint(fn["description"])), "help") {
+		t.Fatalf("implementation delegate_task description must not advertise help: %v", fn["description"])
+	}
+	params, _ := fn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	agentProp, _ := props["agent"].(map[string]interface{})
+	if got := fmt.Sprint(agentProp["enum"]); got != "[coding_workflow]" {
+		t.Fatalf("implementation delegate_task agent enum = %s, want [coding_workflow]", got)
+	}
+	if got := fmt.Sprint(params["required"]); got != "[agent request]" {
+		t.Fatalf("implementation delegate_task required = %s, want [agent request]", got)
+	}
+	rawDelegateDef := toolDefinitionByNameForWorkflowFilterTest(allTools, "delegate_task")
+	rawFn, _ := rawDelegateDef["function"].(map[string]interface{})
+	if !strings.Contains(strings.ToLower(fmt.Sprint(rawFn["description"])), "help") {
+		t.Fatalf("filter should not mutate original delegate_task definition: %v", rawFn["description"])
 	}
 }
 
@@ -436,6 +462,97 @@ func TestSkillRecoverReappliesCodingImplementationWorkflowFilter(t *testing.T) {
 	for _, name := range []string{"bash", "write_file", "task", "memory"} {
 		if names[name] {
 			t.Fatalf("recover must not resurrect workflow-blocked tool %s, got %#v", name, names)
+		}
+	}
+}
+
+func TestInjectionAugmentReappliesCodingImplementationWorkflowFilter(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-injection-implementation-filter-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	state.PhaseIndex = 3
+	state.CurrentPhase = workflow.PhaseCodingImplementation
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("craft_tool", "craft tool", nil, nil),
+		toolDef("delegate_task", "delegate", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("memory", "memory", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("task", "task", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+	})
+	handler.toolRouter = NewToolRouter(handler.toolDefGen)
+
+	currentTools := []map[string]interface{}{
+		toolDef("read_file", "read file", nil, nil),
+	}
+	baseTools := []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("craft_tool", "craft tool", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("memory", "memory", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("task", "task", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+	}
+
+	got, _ := handler.augmentToolsFromInjection(&LoopContext{WorkflowAgentLoop: true}, userID, "[user supplement] use bash and write_file to create src/main.go", currentTools, baseTools, false)
+	names := toolNameSetForWorkflowFilterTest(got)
+	for _, name := range []string{"read_file", "list_directory", "delegate_task"} {
+		if !names[name] {
+			t.Fatalf("injection augment should keep implementation handoff/read tool %s, got %#v", name, names)
+		}
+	}
+	for _, name := range []string{"bash", "write_file", "edit_file", "task", "memory", "craft_tool"} {
+		if names[name] {
+			t.Fatalf("injection augment must not resurrect workflow-blocked tool %s, got %#v", name, names)
+		}
+	}
+}
+
+func TestInjectionAugmentWithoutRouterStillReappliesWorkflowFilter(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-injection-no-router-filter-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	state.PhaseIndex = 3
+	state.CurrentPhase = workflow.PhaseCodingImplementation
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("delegate_task", "delegate", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+	})
+	handler.toolRouter = nil
+
+	got, _ := handler.augmentToolsFromInjection(&LoopContext{WorkflowAgentLoop: true}, userID, "[user supplement] write code", []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+	}, nil, false)
+	names := toolNameSetForWorkflowFilterTest(got)
+	for _, name := range []string{"read_file", "list_directory", "delegate_task"} {
+		if !names[name] {
+			t.Fatalf("routerless injection should keep required implementation tool %s, got %#v", name, names)
+		}
+	}
+	for _, name := range []string{"bash", "write_file"} {
+		if names[name] {
+			t.Fatalf("routerless injection must still filter blocked tool %s, got %#v", name, names)
 		}
 	}
 }
@@ -925,4 +1042,13 @@ func toolNameSetForWorkflowFilterTest(tools []map[string]interface{}) map[string
 		names[extractToolName(tool)] = true
 	}
 	return names
+}
+
+func toolDefinitionByNameForWorkflowFilterTest(tools []map[string]interface{}, name string) map[string]interface{} {
+	for _, tool := range tools {
+		if extractToolName(tool) == name {
+			return tool
+		}
+	}
+	return nil
 }

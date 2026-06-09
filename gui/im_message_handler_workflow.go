@@ -1812,7 +1812,7 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalog(userID string, too
 		tools = ensureWorkflowRequiredToolsForNames(required, tools, allTools)
 		tools = workflow.FilterToolDefinitionsByContract(contract, tools)
 		if constrainCodingImplementation {
-			return filterCodingWorkflowImplementationMainLoopTools(tools)
+			return specializeCodingWorkflowImplementationMainLoopTools(filterCodingWorkflowImplementationMainLoopTools(tools))
 		}
 		return tools
 	}

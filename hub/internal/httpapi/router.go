@@ -261,7 +261,8 @@ func NewRouter(
 		DB:            hubDB,
 		RouteDeleter:  centerSvc,
 	}
-	mux.HandleFunc("DELETE /api/admin/users", requireAdmin(DeleteBoundUserHandler(identity, userPurger)))
+	mux.HandleFunc("DELETE /api/admin/users", requireAdmin(DeleteBoundUserHandler(identity, userPurger, system)))
+	mux.HandleFunc("POST /api/admin/users/force-delete-virtual", requireAdmin(ForceDeleteVirtualBoundUserHandler(admins, identity, userPurger, system)))
 	mux.HandleFunc("GET /api/admin/users/lookup", requireAdmin(LookupUserHandler(identity)))
 	mux.HandleFunc("GET /api/admin/blocklist", requireAdmin(ListBlockedEmailsHandler(identity)))
 	mux.HandleFunc("POST /api/admin/blocklist", requireAdmin(AddBlockedEmailHandler(identity)))

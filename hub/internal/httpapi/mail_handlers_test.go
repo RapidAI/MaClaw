@@ -55,6 +55,10 @@ func (m *testMailer) SendLoginConfirmation(ctx context.Context, to string, confi
 	return m.Send(ctx, []string{to}, "login", confirmURL)
 }
 
+func (m *testMailer) SendRegistrationVerification(ctx context.Context, to string, confirmURL string, lang ...string) error {
+	return m.Send(ctx, []string{to}, "registration-verification", confirmURL)
+}
+
 func TestAdminSendTestMailHandlerRequiresMailer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/mail/test", bytes.NewBufferString(`{"email":"admin@example.com"}`))
 	req.Header.Set("Content-Type", "application/json")

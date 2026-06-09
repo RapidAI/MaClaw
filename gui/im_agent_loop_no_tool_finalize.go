@@ -428,10 +428,11 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 	}
 
 	phase.ConsecutiveEmptyResponses = 0
+	codingWorkflowImplementationRecover := h.shouldUseCodingWorkflowImplementationNoToolRecovery(opts.Context, opts.UserID)
 	if promiseOnlyDeliverable {
 		phase.DeliverableRecoverCount++
 		if phase.DeliverableRecoverCount >= effectiveNoToolRecoverThreshold {
-			enterRecoverPhase(phase, agentRecoverNoToolStall, buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
+			enterRecoverPhase(phase, agentRecoverNoToolStall, h.buildNoToolStallRecoverPromptForContext(codingWorkflowImplementationRecover, phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
 			result.ContinueLoop = true
 			return result
 		}
@@ -447,7 +448,7 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 	}
 
 	phase.DeliverableRecoverCount = 0
-	noToolPrompt := buildNoToolActionPrompt(preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID)
+	noToolPrompt := h.buildNoToolActionPromptForContext(codingWorkflowImplementationRecover, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID)
 	if shouldRestrictToSkillSearch(*phase) {
 		noToolPrompt = buildRemoteSkillSearchPrompt()
 	}
@@ -471,12 +472,30 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 		return result
 	}
 	if noToolStall && (phase.ConsecutiveNoTool >= effectiveNoToolRecoverThreshold || phase.DeliverableRecoverCount >= effectiveNoToolRecoverThreshold || (phase.SkillFailed && phase.ConsecutiveNoTool >= 1)) {
-		enterRecoverPhase(phase, agentRecoverNoToolStall, buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
+		enterRecoverPhase(phase, agentRecoverNoToolStall, h.buildNoToolStallRecoverPromptForContext(codingWorkflowImplementationRecover, phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
 		result.ContinueLoop = true
 		return result
 	}
 
 	return result
+}
+
+func (h *IMMessageHandler) shouldUseCodingWorkflowImplementationNoToolRecovery(ctx *LoopContext, userID string) bool {
+	return ctx != nil && ctx.WorkflowAgentLoop && h != nil && h.shouldConstrainCodingWorkflowImplementationMainLoop(userID)
+}
+
+func (h *IMMessageHandler) buildNoToolActionPromptForContext(codingWorkflowImplementation bool, preferSkill bool, skillName, runID string) string {
+	if codingWorkflowImplementation {
+		return buildCodingWorkflowImplementationNoToolActionPrompt()
+	}
+	return buildNoToolActionPrompt(preferSkill, skillName, runID)
+}
+
+func (h *IMMessageHandler) buildNoToolStallRecoverPromptForContext(codingWorkflowImplementation bool, consecutive int, preferSkill bool, skillName, runID string) string {
+	if codingWorkflowImplementation {
+		return buildCodingWorkflowImplementationNoToolStallRecoverPrompt(consecutive)
+	}
+	return buildNoToolStallRecoverPrompt(consecutive, preferSkill, skillName, runID)
 }
 
 func noToolBranchRequiresExecution(ctx *LoopContext, gateConfig codingToolGateConfig, phase *agentLoopPhase) bool {
@@ -519,12 +538,17 @@ func (h *IMMessageHandler) handleAgentLoopEmptyNoToolResponse(
 		log.Printf("[agent-loop] hard exit: %d consecutive empty responses, %d total recovers; returning best available result",
 			phase.ConsecutiveEmptyResponses, phase.TotalRecoverInjections)
 		phase.Stage = agentStageFinalize
-		fallbackText := findLastAssistantContent(history)
-		if fallbackText == "" {
-			fallbackText = "Sorry, the model returned empty responses several times and cannot continue. Please simplify the request or send it again."
-		}
-		if taskHint != "" {
-			fallbackText += "\n\n" + taskHint + "\nYou can ask to check background task progress later."
+		var fallbackText string
+		if h.shouldUseCodingWorkflowImplementationNoToolRecovery(ctx, userID) {
+			fallbackText = buildCodingWorkflowImplementationToolingFailureText("the model returned empty responses instead of delegating to CodingSubAgent", taskHint)
+		} else {
+			fallbackText = findLastAssistantContent(history)
+			if fallbackText == "" {
+				fallbackText = "Sorry, the model returned empty responses several times and cannot continue. Please simplify the request or send it again."
+			}
+			if taskHint != "" {
+				fallbackText += "\n\n" + taskHint + "\nYou can ask to check background task progress later."
+			}
 		}
 		finalResp := &IMAgentResponse{Text: fallbackText, HardExit: true}
 		attachLLMTelemetry(finalResp)
@@ -533,7 +557,11 @@ func (h *IMMessageHandler) handleAgentLoopEmptyNoToolResponse(
 		return agentLoopEmptyNoToolResult{Response: finalResp}
 	}
 
-	enterRecoverPhase(phase, agentRecoverEmptyFinalResponse, buildEmptyResultRecoverPromptWithTasks(taskHint))
+	recoverPrompt := buildEmptyResultRecoverPromptWithTasks(taskHint)
+	if h.shouldUseCodingWorkflowImplementationNoToolRecovery(ctx, userID) {
+		recoverPrompt = buildCodingWorkflowImplementationEmptyResultRecoverPrompt(taskHint)
+	}
+	enterRecoverPhase(phase, agentRecoverEmptyFinalResponse, recoverPrompt)
 	if taskHint != "" {
 		log.Printf("[agent-loop] empty-response recover: injected pending background task hint")
 	}
@@ -583,9 +611,16 @@ func (h *IMMessageHandler) maybeExitAgentLoopForNoToolHardCap(
 	}
 	log.Printf("[agent-loop] hard cap: %d consecutive no-tool iterations, force-returning response", phase.ConsecutiveNoTool)
 	phase.Stage = agentStageFinalize
-	finalText := stripThinkingTags(lengthContinuationText + msgContent)
+	var finalText string
 	if ctx != nil {
-		finalText = appendPendingBackgroundTaskFinalHint(finalText, h.pendingBackgroundTaskHint(ctx.StartedAt))
+		taskHint := h.pendingBackgroundTaskHint(ctx.StartedAt)
+		if h.shouldUseCodingWorkflowImplementationNoToolRecovery(ctx, userID) {
+			finalText = buildCodingWorkflowImplementationToolingFailureText("the model repeatedly responded without calling delegate_task(agent=\"coding_workflow\")", taskHint)
+		} else {
+			finalText = appendPendingBackgroundTaskFinalHint(stripThinkingTags(lengthContinuationText+msgContent), taskHint)
+		}
+	} else {
+		finalText = stripThinkingTags(lengthContinuationText + msgContent)
 	}
 	finalResp := &IMAgentResponse{Text: finalText}
 	result.PostStreamReturnPrepTime = streamDone

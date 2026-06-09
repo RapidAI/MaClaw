@@ -19,6 +19,7 @@ const TenantSenderNameMaxRunes = 80
 type Mailer interface {
 	Send(ctx context.Context, to []string, subject string, body string) error
 	SendLoginConfirmation(ctx context.Context, to string, confirmURL string) error
+	SendRegistrationVerification(ctx context.Context, to string, confirmURL string, lang ...string) error
 }
 
 type SystemSettingsRepository interface {
@@ -124,6 +125,39 @@ func (s *Service) SendLoginConfirmation(ctx context.Context, to string, confirmU
 		"Hello,\r\n\r\nUse the link below to sign in to MaClaw Hub:\r\n\r\n%s\r\n\r\nIf this was not you, you can ignore this email.\r\n",
 		confirmURL,
 	)
+	return s.Send(ctx, []string{to}, subject, body)
+}
+
+func (s *Service) SendRegistrationVerification(ctx context.Context, to string, confirmURL string, lang ...string) error {
+	language := "zh"
+	if len(lang) > 0 && lang[0] != "" {
+		language = lang[0]
+	}
+
+	var subject, body string
+	if strings.HasPrefix(language, "en") {
+		subject = "MaClaw Hub - Verify your email to activate full credits"
+		body = fmt.Sprintf(
+			"Welcome to MaClaw Hub!\r\n\r\n"+
+				"Please click the link below to verify your email address:\r\n\r\n"+
+				"%s\r\n\r\n"+
+				"After verification, your full registration bonus credits will be activated.\r\n"+
+				"(Currently only 30%% is active; verification unlocks the remaining 70%%.)\r\n\r\n"+
+				"If this was not you, please ignore this email.\r\n",
+			confirmURL,
+		)
+	} else {
+		subject = "MaClaw Hub - 验证邮箱并激活完整额度"
+		body = fmt.Sprintf(
+			"欢迎注册 MaClaw Hub！\r\n\r\n"+
+				"请点击下方链接验证您的邮箱地址：\r\n\r\n"+
+				"%s\r\n\r\n"+
+				"验证成功后，您将获得完整的注册奖励额度。\r\n"+
+				"（当前仅激活了 30%%，验证后激活剩余 70%%。）\r\n\r\n"+
+				"如非本人操作，请忽略此邮件。\r\n",
+			confirmURL,
+		)
+	}
 	return s.Send(ctx, []string{to}, subject, body)
 }
 

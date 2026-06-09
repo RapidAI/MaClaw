@@ -85,7 +85,7 @@ func (h *IMMessageHandler) traceProjectPath() string {
 }
 
 func (h *IMMessageHandler) buildTraceEvidencePrompt(userID, userMessage string) string {
-	if h.traceService == nil {
+	if h == nil || h.traceService == nil || h.memory == nil {
 		return ""
 	}
 	if h.memory.ActiveUnfinishedSlot(userID) == nil {
@@ -127,6 +127,9 @@ func (h *IMMessageHandler) buildResumeTraceContext(userID, fallbackTask string) 
 }
 
 func (h *IMMessageHandler) buildResumeTraceContextWithLang(userID, fallbackTask, lang string) string {
+	if h == nil || h.memory == nil {
+		return ""
+	}
 	if activeSlot := h.memory.ActiveUnfinishedSlot(userID); activeSlot != nil {
 		return buildUnfinishedSlotResumeContextWithLang(activeSlot, lang) + h.buildTraceEvidencePrompt(userID, activeSlot.LastTask)
 	}

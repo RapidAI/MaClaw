@@ -93,6 +93,8 @@ func RunMigrations(db *sql.DB) error {
 			status TEXT NOT NULL DEFAULT 'active',
 			enrollment_status TEXT NOT NULL DEFAULT 'approved',
 			smart_route INTEGER NOT NULL DEFAULT 0,
+			email_verified INTEGER NOT NULL DEFAULT 0,
+			email_verified_at TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(tenant_id, email)
@@ -760,6 +762,8 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `ALTER TABLE workflow_states ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_understanding_sessions_tenant_user_state ON understanding_sessions(tenant_id, user_id, state)`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_workflow_states_tenant_user ON workflow_states(tenant_id, user_id)`)
+	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0`)
+	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN email_verified_at TEXT NOT NULL DEFAULT ''`)
 
 	for _, stmt := range alterStmts {
 		if _, err := db.Exec(stmt); err != nil && !isIgnorableMigrationError(err) {

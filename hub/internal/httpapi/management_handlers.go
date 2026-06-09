@@ -32,6 +32,12 @@ type DeleteBoundUserRequest struct {
 	TenantID string `json:"tenant_id"`
 }
 
+type ForceDeleteVirtualBoundUserRequest struct {
+	Email         string `json:"email"`
+	TenantID      string `json:"tenant_id"`
+	AdminPassword string `json:"admin_password"`
+}
+
 type BlockEmailRequest struct {
 	Email  string `json:"email"`
 	Reason string `json:"reason"`
@@ -113,15 +119,18 @@ func ListFailureLogsHandler(repo store.FailureEventLogRepository) http.HandlerFu
 }
 
 type BoundUserView struct {
-	ID               string                    `json:"id"`
-	TenantID         string                    `json:"tenant_id"`
-	Email            string                    `json:"email"`
-	SN               string                    `json:"sn"`
-	Status           string                    `json:"status"`
-	EnrollmentStatus string                    `json:"enrollment_status"`
-	SmartRoute       bool                      `json:"smart_route"`
-	HasServiceAccess bool                      `json:"has_service_access,omitempty"`
-	ServiceStatus    *llmservice.ServiceStatus `json:"service_status,omitempty"`
+	ID                string                    `json:"id"`
+	TenantID          string                    `json:"tenant_id"`
+	Email             string                    `json:"email"`
+	SN                string                    `json:"sn"`
+	Status            string                    `json:"status"`
+	EnrollmentStatus  string                    `json:"enrollment_status"`
+	AccountType       string                    `json:"account_type,omitempty"`
+	IsVirtualEmployee bool                      `json:"is_virtual_employee,omitempty"`
+	SmartRoute        bool                      `json:"smart_route"`
+	EmailVerified     bool                      `json:"email_verified"`
+	HasServiceAccess  bool                      `json:"has_service_access,omitempty"`
+	ServiceStatus     *llmservice.ServiceStatus `json:"service_status,omitempty"`
 }
 
 type BoundUserRouteDeleter interface {
@@ -161,7 +170,7 @@ func ManualBindHandler(identity *auth.IdentityService) http.HandlerFunc {
 	}
 }
 
-func DeleteBoundUserHandler(identity *auth.IdentityService, purger *UserDataPurger) http.HandlerFunc {
+func DeleteBoundUserHandler(identity *auth.IdentityService, purger *UserDataPurger, system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		email := strings.TrimSpace(r.URL.Query().Get("email"))
 		tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
@@ -199,6 +208,10 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, purger *UserDataPurg
 			writeError(w, http.StatusNotFound, "USER_NOT_FOUND", "User not found")
 			return
 		}
+		if boundUserIsVirtualEmployee(r.Context(), system, user) {
+			writeError(w, http.StatusConflict, "VIRTUAL_USER_FORCE_DELETE_REQUIRED", "virtual employee accounts cannot be removed directly; use force delete with admin password")
+			return
+		}
 
 		result, err := purger.PurgeAll(r.Context(), user)
 		if err != nil {
@@ -210,10 +223,10 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, purger *UserDataPurg
 			return
 		}
 		resp := map[string]any{
-			"ok":                      true,
-			"tenant_id":              user.TenantID,
-			"email":                  user.Email,
-			"deleted_machines":       result.DeletedMachines,
+			"ok":                       true,
+			"tenant_id":                user.TenantID,
+			"email":                    user.Email,
+			"deleted_machines":         result.DeletedMachines,
 			"deleted_invitation_codes": result.DeletedInvitationCodes,
 		}
 		if result.RouteDeleteWarning != "" {
@@ -221,6 +234,101 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, purger *UserDataPurg
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+func ForceDeleteVirtualBoundUserHandler(admins *auth.AdminService, identity *auth.IdentityService, purger *UserDataPurger, system store.SystemSettingsRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if admins == nil {
+			writeError(w, http.StatusServiceUnavailable, "ADMIN_AUTH_UNAVAILABLE", "admin authentication is unavailable")
+			return
+		}
+		email := strings.TrimSpace(r.URL.Query().Get("email"))
+		tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+		var req ForceDeleteVirtualBoundUserRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		if email == "" {
+			email = strings.TrimSpace(req.Email)
+		}
+		if tenantID == "" {
+			tenantID = strings.TrimSpace(req.TenantID)
+		}
+		if email == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
+			return
+		}
+		if strings.TrimSpace(req.AdminPassword) == "" {
+			writeError(w, http.StatusBadRequest, "ADMIN_PASSWORD_REQUIRED", "admin_password is required")
+			return
+		}
+		admin := AdminFromContext(r.Context())
+		if admin == nil || strings.TrimSpace(admin.Username) == "" {
+			writeError(w, http.StatusForbidden, "ADMIN_UNAUTHORIZED", "Admin authorization required")
+			return
+		}
+		scopeTenantID := auth.ExplicitGlobalAdminTenantScope
+		if adminHasTenantScope(admin) {
+			scopeTenantID = AdminTenantID(r.Context())
+		}
+		if _, err := admins.VerifyScopedCredentials(r.Context(), admin.Username, req.AdminPassword, scopeTenantID); err != nil {
+			writeError(w, http.StatusUnauthorized, "INVALID_ADMIN_PASSWORD", "admin password is incorrect")
+			return
+		}
+		if identity == nil || identity.UsersRepo() == nil {
+			writeError(w, http.StatusInternalServerError, "USER_DELETE_UNAVAILABLE", "User repository is unavailable")
+			return
+		}
+		user, err := resolveBoundUserForDelete(r, identity.UsersRepo(), tenantID, strings.ToLower(strings.TrimSpace(email)))
+		if err != nil {
+			if err == errAmbiguousTenantEmail {
+				writeError(w, http.StatusBadRequest, "TENANT_ID_REQUIRED", "tenant_id is required when email exists in multiple tenants")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "LOOKUP_USER_FAILED", err.Error())
+			return
+		}
+		if user == nil {
+			writeError(w, http.StatusNotFound, "USER_NOT_FOUND", "User not found")
+			return
+		}
+		if !boundUserIsVirtualEmployee(r.Context(), system, user) {
+			writeError(w, http.StatusBadRequest, "NOT_VIRTUAL_USER", "force delete is only available for virtual employee accounts")
+			return
+		}
+		result, err := purger.PurgeAll(r.Context(), user)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "USER_NOT_DELETED", "User was not deleted; tenant_id and email did not match a stored user")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "DELETE_USER_FAILED", err.Error())
+			return
+		}
+		resp := map[string]any{
+			"ok":                       true,
+			"tenant_id":                user.TenantID,
+			"email":                    user.Email,
+			"deleted_machines":         result.DeletedMachines,
+			"deleted_invitation_codes": result.DeletedInvitationCodes,
+			"forced":                   true,
+		}
+		if result.RouteDeleteWarning != "" {
+			resp["route_delete_warning"] = result.RouteDeleteWarning
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+func boundUserIsVirtualEmployee(ctx context.Context, system store.SystemSettingsRepository, user *store.User) bool {
+	if system == nil || user == nil {
+		return false
+	}
+	tenantID := store.NormalizeTenantID(user.TenantID)
+	_, excludedEmails := platformEmployeeAccountExclusions(ctx, system, tenantID)
+	_, ok := excludedEmails[strings.ToLower(strings.TrimSpace(user.Email))]
+	return ok
 }
 
 var errAmbiguousTenantEmail = errors.New("email exists in multiple tenants")
@@ -369,6 +477,7 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 		}
 		out := make([]BoundUserView, 0, len(items))
 		seenUsers := make(map[string]struct{}, len(items))
+		virtualEmailCache := map[string]map[string]struct{}{}
 		for _, user := range items {
 			if user == nil {
 				continue
@@ -383,21 +492,37 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 				continue
 			}
 			seenUsers[seenKey] = struct{}{}
+			accountType := "physical_employee"
+			isVirtualEmployee := false
+			if system != nil {
+				excludedEmails, ok := virtualEmailCache[tenantID]
+				if !ok {
+					_, excludedEmails = platformEmployeeAccountExclusions(r.Context(), system, tenantID)
+					virtualEmailCache[tenantID] = excludedEmails
+				}
+				if _, ok := excludedEmails[emailKey]; ok {
+					accountType = "virtual_employee"
+					isVirtualEmployee = true
+				}
+			}
 			var serviceStatus *llmservice.ServiceStatus
 			if system != nil {
 				tenantSystem := ScopedSystemSettingsForTenant(tenantID, system)
 				serviceStatus, _ = llmservice.ResolveServiceStatus(r.Context(), tenantSystem, securitySvc, user.Email, externalLLMBaseURL(r))
 			}
 			out = append(out, BoundUserView{
-				ID:               user.ID,
-				TenantID:         tenantID,
-				Email:            user.Email,
-				SN:               user.SN,
-				Status:           user.Status,
-				EnrollmentStatus: user.EnrollmentStatus,
-				SmartRoute:       user.SmartRoute,
-				HasServiceAccess: serviceStatus != nil && serviceStatus.Active,
-				ServiceStatus:    serviceStatus,
+				ID:                user.ID,
+				TenantID:          tenantID,
+				Email:             user.Email,
+				SN:                user.SN,
+				Status:            user.Status,
+				EnrollmentStatus:  user.EnrollmentStatus,
+				AccountType:       accountType,
+				IsVirtualEmployee: isVirtualEmployee,
+				SmartRoute:        user.SmartRoute,
+				EmailVerified:     user.EmailVerified,
+				HasServiceAccess:  serviceStatus != nil && serviceStatus.Active,
+				ServiceStatus:     serviceStatus,
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"users": out})

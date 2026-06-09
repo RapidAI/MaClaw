@@ -106,7 +106,7 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	tools := opts.Tools
 	toolsTokenBudget := opts.ToolsTokenBudget
 	if injectedText != "" {
-		tools, toolsTokenBudget = h.augmentToolsFromInjection(injectedText, tools, opts.BaseTools, opts.GateConfig.active)
+		tools, toolsTokenBudget = h.augmentToolsFromInjection(ctx, opts.UserID, injectedText, tools, opts.BaseTools, opts.GateConfig.active)
 	}
 	forceLightFinalizeWithoutTools := shouldForceLightFinalizeWithoutTools(ctx, opts.Iteration, effectiveMax, opts.ChatFinalizeGrace)
 	if forceLightFinalizeWithoutTools {

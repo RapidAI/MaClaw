@@ -479,16 +479,40 @@ func RedeemCard(ctx context.Context, system SystemSettingsRepository, securitySv
 }
 
 func nextGrantStart(reg *Registry, email, serviceGroupID string, now time.Time) time.Time {
-	start := now
+	// Scan currently-active grants (within their validity window right now)
+	// to determine whether the user has any remaining credits. If all active
+	// grants are exhausted, the new grant starts immediately so the top-up is
+	// usable right away.
+	hasActiveWithCredits := false
+	latestActiveExpiry := now
 	for _, g := range reg.Grants {
 		if !strings.EqualFold(g.Email, email) || !strings.EqualFold(g.ServiceGroupID, serviceGroupID) {
 			continue
 		}
-		if g.ExpiresAt.After(start) {
-			start = g.ExpiresAt
+		// Only consider grants currently within their validity window.
+		if now.Before(g.StartsAt) || !now.Before(g.ExpiresAt) {
+			continue
+		}
+		// Track the latest expiry among active grants for queuing.
+		if g.ExpiresAt.After(latestActiveExpiry) {
+			latestActiveExpiry = g.ExpiresAt
+		}
+		if !hasActiveWithCredits {
+			if g.CreditsTotal <= 0 {
+				// Unlimited grant — still active.
+				hasActiveWithCredits = true
+			} else if remainingGrantCredits(g) > 0 {
+				hasActiveWithCredits = true
+			}
 		}
 	}
-	return start
+	if !hasActiveWithCredits {
+		// All current grants are exhausted (or none exist) — start immediately.
+		return now
+	}
+	// There's still an active grant with remaining credits. Queue the new grant
+	// after the latest active grant's expiry to avoid overlap.
+	return latestActiveExpiry
 }
 
 func effectiveGrantExpiresAt(reg *Registry, email string, now time.Time) *time.Time {

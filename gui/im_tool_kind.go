@@ -26,6 +26,7 @@ const (
 	agentToolKindSendFile
 	agentToolKindSSH
 	agentToolKindMemory
+	agentToolKindDelegateTask
 )
 
 func classifyAgentToolKind(name string) agentToolKind {
@@ -70,6 +71,8 @@ func classifyAgentToolKind(name string) agentToolKind {
 		return agentToolKindSSH
 	case "memory":
 		return agentToolKindMemory
+	case "delegate_task":
+		return agentToolKindDelegateTask
 	default:
 		return agentToolKindUnknown
 	}
@@ -117,7 +120,7 @@ func (k agentToolKind) IsCodingIterationTool() bool {
 
 func (k agentToolKind) IsTruncationBlockSafe() bool {
 	switch k {
-	case agentToolKindBash, agentToolKindReadFile, agentToolKindListDirectory:
+	case agentToolKindBash, agentToolKindReadFile, agentToolKindListDirectory, agentToolKindDelegateTask:
 		return true
 	default:
 		return false

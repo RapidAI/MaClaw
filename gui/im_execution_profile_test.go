@@ -531,6 +531,35 @@ func TestBuildLightIMSystemPromptStaysSmall(t *testing.T) {
 	}
 }
 
+func TestBuildIMEntrySystemPromptWorkflowLoopOverridesLightProfile(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-loop-light-profile-prompt-override"
+	handler.stashedPhasePrompt.Store(userID, "## Coding Implementation Handoff Contract\nCodingSubAgent delegate_task(agent=\"coding_workflow\")")
+	ctx := &LoopContext{Runtime: RuntimeContext{Execution: ExecutionProfile{
+		Layer:         string(executionLayerLight),
+		TaskType:      string(intent.LabelLiveData),
+		PromptProfile: "light",
+		Reason:        "stale light profile",
+	}}}
+
+	prompt := handler.buildIMEntrySystemPrompt(IMUserMessage{
+		UserID:   userID,
+		Text:     "\u7ee7\u7eed\u63a8\u8fdb",
+		Platform: "desktop",
+	}, nil, ctx, true, "", "", "")
+
+	for _, bad := range []string{"low-complexity lookup task", "Do not inspect local files"} {
+		if contains(prompt, bad) {
+			t.Fatalf("workflow agent loop must not use light prompt fragment %q:\n%s", bad, prompt)
+		}
+	}
+	for _, want := range []string{"Coding Implementation Handoff Contract", "CodingSubAgent", "delegate_task(agent=\"coding_workflow\""} {
+		if !contains(prompt, want) {
+			t.Fatalf("workflow prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestTryDirectExecutionProfileRunsToolAndSavesHistory(t *testing.T) {
 	registry := NewToolRegistry()
 	if err := registry.Register(RegisteredTool{

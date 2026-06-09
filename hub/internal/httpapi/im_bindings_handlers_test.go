@@ -34,6 +34,7 @@ func (imBindingTestUsers) ListByTenant(context.Context, string) ([]*store.User, 
 func (imBindingTestUsers) DeleteByEmail(context.Context, string) error               { return nil }
 func (imBindingTestUsers) DeleteByTenantEmail(context.Context, string, string) error { return nil }
 func (imBindingTestUsers) UpdateSmartRoute(context.Context, string, bool) error      { return nil }
+func (imBindingTestUsers) MarkEmailVerified(context.Context, string, string) error   { return nil }
 
 func requestWithTenantAdmin(method, target, tenantID string) *http.Request {
 	req := httptest.NewRequest(method, target, nil)

@@ -34,6 +34,15 @@ func startDocOnlyCodingWorkflowForProject(t *testing.T, app *App, projectPath st
 	}
 }
 
+func startImplementationCodingWorkflowForOwner(t *testing.T, app *App, ownerID string) {
+	t.Helper()
+	state, err := app.workflowEngine.StartWorkflow(ownerID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	moveWorkflowStateToPhase(t, app.workflowEngine, state, workflow.PhaseCodingImplementation)
+}
+
 func TestExplicitWorkflowOwnerActionsHonorWorkflowPolicy(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	app := h.app
@@ -78,6 +87,37 @@ func TestScheduledTaskExecutorDoesNotInheritWorkflowPolicy(t *testing.T) {
 	err := app.ensureWorkflowAllowsRemoteToolCallForOwner(scheduledTaskExecutorOwnerID, "delegate_task", map[string]interface{}{"agent": "scheduled_task", "request": "nightly"})
 	if err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
 		t.Fatalf("scheduled task executor must not inherit workflow policy: %v", err)
+	}
+}
+
+func TestRemoteDelegateHonorsCodingImplementationSubAgentOnlyPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	ownerID := "remote-coding-implementation-policy-owner"
+	startImplementationCodingWorkflowForOwner(t, app, ownerID)
+
+	if err := app.ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, "delegate_task", map[string]interface{}{"agent": "coding_workflow", "request": "implement T1"}); err != nil {
+		t.Fatalf("delegate_task(coding_workflow) should pass coding implementation policy: %v", err)
+	}
+	for _, tc := range []struct {
+		name  string
+		agent string
+	}{
+		{name: "background", agent: "background"},
+		{name: "scheduled task", agent: "scheduled_task"},
+		{name: "swarm", agent: "swarm"},
+		{name: "missing agent", agent: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := map[string]interface{}{"request": "implement feature"}
+			if tc.agent != "" {
+				args["agent"] = tc.agent
+			}
+			err := app.ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, "delegate_task", args)
+			if err == nil || !strings.Contains(err.Error(), "delegate_task(agent=\"coding_workflow\")") {
+				t.Fatalf("delegate_task(%q) should be rejected by coding implementation policy, err=%v", tc.agent, err)
+			}
+		})
 	}
 }
 
