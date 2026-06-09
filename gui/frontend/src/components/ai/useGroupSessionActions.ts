@@ -9,6 +9,7 @@ import { useCallback, useRef, useState } from "react";
 import { isLocalParticipantId, localExecutorDisplayName, localExecutorParticipantID, looksLikeRawParticipantId, type LocalGroupExecutorRegistration } from "./localAIIdentity";
 import { addParticipantIdentityKeys } from "./participantIdentity";
 import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 export type ActionFeedbackLevel = "info" | "success" | "error";
 
@@ -119,7 +120,7 @@ export function useGroupSessionActions(options: UseGroupSessionActionsOptions = 
 
     const loadAppModule = useCallback(async () => {
         try {
-            return await import("../../../wailsjs/go/main/App");
+            return await getWailsAppModule();
         } catch {
             emit(t(optRef.current.lang, "功能模块加载失败", "Failed to load module"), "error");
             return null;

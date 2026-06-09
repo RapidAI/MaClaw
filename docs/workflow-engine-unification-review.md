@@ -56,8 +56,8 @@
 
 当前已引入 `planning` 策略，这是正确方向：
 
-- 允许只读仓库检查：`bash`、`read_file`、`list_directory` 等。
-- 禁止项目变更：`write_file`、`edit_file`、`edit_lines`、`task`、`delegate_task`、`ssh` 等。
+- 允许只读上下文检查：`read_file`、`list_directory`、`web_search`、`web_fetch` 等。
+- 禁止 shell、项目变更和委派：`bash`、`write_file`、`edit_file`、`edit_lines`、`task`、`delegate_task`、`ssh` 等。
 - 系统保存阶段文档；agent 不负责用写文件工具落文档。
 
 ### 2. 文档落地和项目变更没有清晰分层
@@ -70,6 +70,8 @@
 | 项目/代码/构建文件变更 | implementation/orchestrator/coding subagent | 必须等确认后进入执行阶段 |
 
 也就是说，规划阶段不是“不能写任何东西”，而是“LLM 不能直接改项目文件”。阶段产物由流程系统持久化，这是引擎职责。
+
+补充边界：`ProjectPath` 是 workflow 的目标上下文，不是“创建项目目录”的执行指令。若目标项目目录已存在，阶段文档可以按旧规则落到 `{ProjectPath}/.maclaw/workflow/{workflowID}` 和 `docs/workflow/...`；若目标目录尚不存在，workflow system 只能把阶段文档落到应用内部存储（如 `~/.maclaw/data/workflow/{workflowID}`），不得因为启动流程、切换阶段、确认任务拆分或激活 orchestrator 而 `MkdirAll(ProjectPath)`。如果后续 `implementation` 阶段由 CodingSubAgent 创建了项目根，workflow 完成/取消时再把已确认的 `PhaseOutputs` 发布到项目内 `docs/workflow/...`。新项目根目录、`src/`、`CMakeLists.txt` 等项目结构必须作为任务进入 `implementation` 后由 `delegate_task(agent="coding_workflow")` 的 CodingSubAgent 创建。
 
 ### 3. 状态推进散落在多个边界
 
@@ -358,9 +360,9 @@ MutationScope MutationScope `json:"mutation_scope,omitempty"`
 
 ### 工具策略测试
 
-- `planning` 允许只读命令：`git status`、`rg -n`、`go list`。
-- `planning` 禁止写命令：`mkdir`、`touch`、`tee`、`sed -i`、`go mod tidy`、`npm install`。
-- `planning` 禁止写工具和委托工具：`write_file`、`edit_file`、`edit_lines`、`task`、`delegate_task`。
+- `planning` 允许只读上下文工具：`read_file`、`list_directory`、`web_search`、`web_fetch`。
+- `planning` 不暴露 shell；即使是 `git status`、`rg -n`、`go list` 这类只读命令，也不能通过 `bash` 执行。
+- `planning` 禁止 shell、写工具和委托工具：`bash`、`write_file`、`edit_file`、`edit_lines`、`task`、`delegate_task`。
 - `ops_controlled` 要求 approved manifest。
 - `full + MutationScopeArtifact` 不应触发 coding orchestrator。
 - `full + MutationScopeProject` 才允许 coding subagent/orchestrator；coding workflow implementation 的主 agent 只暴露 `delegate_task(agent="coding_workflow")` 和读/交付工具，项目变更由 CodingSubAgent 执行。
@@ -381,7 +383,7 @@ MutationScope MutationScope `json:"mutation_scope,omitempty"`
 - GUI、TUI、agentservice 对同一阶段得到同一 `ToolPolicy`。
 - 前端 phase metadata 与后端生成结果保持一致。
 - direct CodingSubAgent 在非 execution 阶段被拒绝；在 coding implementation 阶段，主 agent 的 `bash`/`write_file`/`edit_file`/`craft_tool`/`task` 也必须被工具列表和执行 gate 双重拒绝。
-- coding task breakdown 的工具列表不为空，且没有写工具。
+- coding task breakdown 的工具列表不为空，且没有 shell、写工具或委托工具。
 - artifact generation phase 即使使用 `full`，也不被 GUI/TUI/agentservice 当成 coding execution。
 
 ## 风险与注意事项
@@ -391,7 +393,7 @@ MutationScope MutationScope `json:"mutation_scope,omitempty"`
 | 旧模板未声明新字段 | 先派生兼容，不强制迁移 |
 | 前端 fallback 规则漂移 | contract test 覆盖，逐步弱化 fallback |
 | `full` artifact generation 被误判为 coding orchestrator | 用 `Kind=artifact_generation` 或 `DisableOrchestrator=true` 明确 |
-| planning 只读命令识别漏判 | 继续保守 deny-by-default，扩展测试用例 |
+| planning 误暴露 shell | `planning` 不暴露 `bash`，只用读文件/列目录/搜索类工具，扩展测试用例 |
 | 文档保存被误认为工具写入 | 文档明确区分 system doc persistence 与 project mutation |
 | 运行时 gate 被写进静态模板 | 拆分 `PhaseContract` 和 `PhaseRuntimeGate` |
 

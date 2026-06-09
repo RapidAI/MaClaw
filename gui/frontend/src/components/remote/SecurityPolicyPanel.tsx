@@ -12,6 +12,19 @@ type Props = {
     lang: string;
 };
 
+type SecurityTableCell = "Allow" | "Audit" | "Confirm" | "Confirm*" | "Deny" | "Yes" | "No";
+
+type SecurityTableRow = {
+    itemEn: string;
+    itemZh: string;
+    itemZhHant: string;
+    off: SecurityTableCell;
+    relaxed: SecurityTableCell;
+    standard: SecurityTableCell;
+    strict: SecurityTableCell;
+    developer: SecurityTableCell;
+};
+
 const SECURITY_MODES: { value: SecurityPolicyMode; labelZh: string; labelZhHant: string; labelEn: string; descZh: string; descZhHant: string; descEn: string }[] = [
     {
         value: "none",
@@ -62,6 +75,25 @@ const SECURITY_MODES: { value: SecurityPolicyMode; labelZh: string; labelZhHant:
 
 const SANDBOX_OPTIONS = ["none", "os", "docker"] as const;
 const NETWORK_OPTIONS = ["none", "intranet", "allowlist", "full"] as const;
+const SECURITY_TABLE_ROWS: SecurityTableRow[] = [
+    { itemEn: "Risk Scan", itemZh: "风险扫描", itemZhHant: "風險掃描", off: "No", relaxed: "Yes", standard: "Yes", strict: "Yes", developer: "Yes" },
+    { itemEn: "Risk Log", itemZh: "风险日志记录", itemZhHant: "風險日誌記錄", off: "No", relaxed: "Yes", standard: "Yes", strict: "Yes", developer: "Yes" },
+    { itemEn: "High-Risk Dev Audit", itemZh: "高风险开发审计", itemZhHant: "高風險開發稽核", off: "No", relaxed: "No", standard: "No", strict: "No", developer: "Yes" },
+    { itemEn: "Low-Risk Operation", itemZh: "低风险操作", itemZhHant: "低風險操作", off: "Allow", relaxed: "Allow", standard: "Allow", strict: "Allow", developer: "Allow" },
+    { itemEn: "Medium-Risk Operation", itemZh: "中风险操作", itemZhHant: "中風險操作", off: "Allow", relaxed: "Allow", standard: "Audit", strict: "Confirm", developer: "Allow" },
+    { itemEn: "High-Risk Operation", itemZh: "高风险操作", itemZhHant: "高風險操作", off: "Allow", relaxed: "Allow", standard: "Confirm*", strict: "Confirm", developer: "Allow" },
+    { itemEn: "Critical Operation", itemZh: "危险操作", itemZhHant: "危險操作", off: "Allow", relaxed: "Allow", standard: "Confirm*", strict: "Deny", developer: "Allow" },
+];
+
+const SECURITY_TABLE_CELL_LABELS: Record<SecurityTableCell, { en: string; zh: string; zhHant: string }> = {
+    Allow: { en: "Allow", zh: "放行", zhHant: "放行" },
+    Audit: { en: "Audit", zh: "记录", zhHant: "記錄" },
+    Confirm: { en: "Confirm", zh: "确认", zhHant: "確認" },
+    "Confirm*": { en: "Confirm*", zh: "确认*", zhHant: "確認*" },
+    Deny: { en: "Deny", zh: "拒绝", zhHant: "拒絕" },
+    Yes: { en: "Yes", zh: "是", zhHant: "是" },
+    No: { en: "No", zh: "否", zhHant: "否" },
+};
 
 export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Props) {
     const [readOnly, setReadOnly] = useState(false);
@@ -124,6 +156,10 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
 
     const currentMode = SECURITY_MODES.find((item) => item.value === securityMode) || SECURITY_MODES[1];
     const disabledStyle: React.CSSProperties = readOnly ? { opacity: 0.65, pointerEvents: "none" } : {};
+    const renderSecurityTableCell = (value: SecurityTableCell) => {
+        const labels = SECURITY_TABLE_CELL_LABELS[value];
+        return t(labels.en, labels.zh, labels.zhHant);
+    };
 
     return (
         <div style={{ padding: "2px 0" }}>
@@ -177,7 +213,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                 <table style={{ width: "100%", fontSize: "0.75rem", borderCollapse: "collapse", color: colors.textSecondary }}>
                     <thead>
                         <tr style={{ borderBottom: `1px solid ${colors.border}` }}>
-                            <th style={{ textAlign: "left", padding: "4px 6px", fontWeight: 600 }}>{t("Risk Level", "风险等级", "風險等級")}</th>
+                            <th style={{ textAlign: "left", padding: "4px 6px", fontWeight: 600 }}>{t("Item", "项目", "項目")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Off", "关闭", "關閉")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Relaxed", "宽松", "寬鬆")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Standard", "标准", "標準")}</th>
@@ -186,25 +222,20 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                         </tr>
                     </thead>
                     <tbody>
-                        {[
-                            { levelEn: "Low", levelZh: "低", levelZhHant: "低", off: "Allow", relaxed: "Allow", standard: "Allow", strict: "Allow" },
-                            { levelEn: "Medium", levelZh: "中", levelZhHant: "中", off: "Allow", relaxed: "Allow", standard: "Audit", strict: "Confirm" },
-                            { levelEn: "High", levelZh: "高", levelZhHant: "高", off: "Allow", relaxed: "Allow", standard: "Confirm*", strict: "Confirm" },
-                            { levelEn: "Critical", levelZh: "危险", levelZhHant: "危險", off: "Allow", relaxed: "Allow", standard: "Confirm*", strict: "Deny" },
-                        ].map((row) => (
-                            <tr key={row.levelEn} style={{ borderBottom: `1px solid ${colors.borderLight}` }}>
-                                <td style={{ padding: "3px 6px" }}>{t(row.levelEn, row.levelZh, row.levelZhHant)}</td>
-                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.off, "放行", "放行")}</td>
-                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.relaxed, row.relaxed === "Allow" ? "放行" : row.relaxed, row.relaxed === "Allow" ? "放行" : row.relaxed)}</td>
-                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.standard, row.standard === "Allow" ? "放行" : row.standard === "Audit" ? "记录" : row.standard.startsWith("Confirm") ? "确认*" : "拒绝", row.standard === "Allow" ? "放行" : row.standard === "Audit" ? "記錄" : row.standard.startsWith("Confirm") ? "確認*" : "拒絕")}</td>
-                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.strict, row.strict === "Allow" ? "放行" : row.strict === "Audit" ? "记录" : row.strict.startsWith("Confirm") ? "确认" : "拒绝", row.strict === "Allow" ? "放行" : row.strict === "Audit" ? "記錄" : row.strict.startsWith("Confirm") ? "確認" : "拒絕")}</td>
-                                <td style={{ textAlign: "center", padding: "3px 6px", color: "#f59e0b" }}>{t("Audit+Allow", "记录放行", "記錄放行")}</td>
+                        {SECURITY_TABLE_ROWS.map((row) => (
+                            <tr key={row.itemEn} style={{ borderBottom: `1px solid ${colors.borderLight}` }}>
+                                <td style={{ padding: "3px 6px" }}>{t(row.itemEn, row.itemZh, row.itemZhHant)}</td>
+                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{renderSecurityTableCell(row.off)}</td>
+                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{renderSecurityTableCell(row.relaxed)}</td>
+                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{renderSecurityTableCell(row.standard)}</td>
+                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{renderSecurityTableCell(row.strict)}</td>
+                                <td style={{ textAlign: "center", padding: "3px 6px", color: "#f59e0b" }}>{renderSecurityTableCell(row.developer)}</td>
                             </tr>
                         ))}
                     </tbody>
                 </table>
                 <div style={{ fontSize: "0.7rem", color: colors.textMuted, marginTop: "6px" }}>
-                    {t("This table describes risk guardrails only. Off disables guardrail confirmation/blocking while actions may still be logged; Developer allows but keeps high-risk developer audit. Network access, sandboxing, and outbound-file controls are separate and may still block actions.", "此表只说明风险护栏：关闭=不做护栏确认/阻断但仍可能记录日志，开发者=放行但保留高风险开发审计。网络访问、沙箱、文件外发单独配置，仍可能阻止操作", "此表只說明風險護欄：關閉=不做護欄確認/阻斷但仍可能記錄日誌，開發者=放行但保留高風險開發稽核。網路訪問、沙箱、檔案外發單獨配置，仍可能阻止操作")}
+                    {t("This table only covers risk guardrails. Relaxed records scan findings without blocking execution; Developer additionally keeps high-risk developer audit records. Network access, sandboxing, and outbound-file controls are configured separately and may still block actions.", "此表只说明风险护栏：宽松会记录风险扫描结果但不阻断执行；开发者模式在此基础上额外保留高风险开发审计记录。网络访问、沙箱、文件外发单独配置，仍可能阻止操作", "此表只說明風險護欄：寬鬆會記錄風險掃描結果但不阻斷執行；開發者模式在此基礎上額外保留高風險開發稽核記錄。網路訪問、沙箱、檔案外發單獨配置，仍可能阻止操作")}
                 </div>
             </div>
 

@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import type { AITab, AITabState } from "./AITabTypes";
 import { hasLocalAIParticipant, localExecutorDisplayName, localExecutorParticipantID, looksLikeRawParticipantId, type LocalGroupExecutorRegistration } from "./localAIIdentity";
 import { participantIdentityMatches } from "./participantIdentity";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 
 
@@ -31,7 +32,7 @@ export function useAddLocalMaclawToTab({ getTabState, upgradeVETabToGroup }: Use
         let sessionId = getTabState(tab.id)?.sessionId || tab.discussionId || "";
 
         try {
-            const mod = await import("../../../wailsjs/go/main/App");
+            const mod = await getWailsAppModule();
 
             if (!sessionId) {
                 const initiateConversation = (mod as any).InitiateVEConversation;

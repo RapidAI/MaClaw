@@ -316,12 +316,12 @@ func TestPlanningWorkflowPhaseAllowsInspectionButBlocksImplementationTools(t *te
 		toolDef("task", "task", nil, nil),
 	})
 	names := toolNameSetForWorkflowFilterTest(filtered)
-	for _, allowed := range []string{"bash", "read_file", "list_directory", "send_file"} {
+	for _, allowed := range []string{"read_file", "list_directory", "send_file"} {
 		if !names[allowed] {
 			t.Fatalf("%s should remain available in planning workflow phase; got %#v", allowed, names)
 		}
 	}
-	for _, blocked := range []string{"write_file", "edit_file", "task", "delegate_task"} {
+	for _, blocked := range []string{"bash", "write_file", "edit_file", "task", "delegate_task"} {
 		if names[blocked] {
 			t.Fatalf("%s must not be exposed in planning workflow phase; got %#v", blocked, names)
 		}
@@ -329,14 +329,8 @@ func TestPlanningWorkflowPhaseAllowsInspectionButBlocksImplementationTools(t *te
 			t.Fatalf("%s execution must be blocked in planning workflow phase", blocked)
 		}
 	}
-	if !handler.isWorkflowToolAllowed(userID, "bash") {
-		t.Fatal("planning workflow phase should allow bash at tool-name gate")
-	}
-	if ok, reason := handler.isWorkflowToolCallAllowed(userID, "bash", `{"command":"rg -n \"TODO\""}`); !ok {
-		t.Fatalf("planning workflow phase should allow read-only bash call: %s", reason)
-	}
-	if ok, _ := handler.isWorkflowToolCallAllowed(userID, "bash", `{"command":"touch generated.go"}`); ok {
-		t.Fatal("planning workflow phase must block mutating bash calls")
+	if ok, _ := handler.isWorkflowToolCallAllowed(userID, "bash", `{"command":"rg -n \"TODO\""}`); ok {
+		t.Fatal("planning workflow phase must block bash calls")
 	}
 }
 

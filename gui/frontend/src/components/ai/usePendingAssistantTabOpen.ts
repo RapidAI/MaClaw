@@ -172,8 +172,22 @@ export function usePendingAssistantTabOpen({
 
         const title = readableHistoryDiscussionTitle(discussion, discussionId, lang);
         const role = discussion?.local_relation || discussion?.role;
+
+        // For continuable 1:1 discussions (non-read-only with a single VE participant),
+        // open as a live VE tab so the full-featured input area is rendered instead of
+        // the simplified history textarea. This matches the user expectation that
+        // "我发起 - 可继续讨论" sessions behave identically to active sessions.
+        if (!readOnly) {
+            const singleVE = singlePendingParticipantId(discussion);
+            if (singleVE) {
+                const veTab = createVETab(singleVE, title, discussionId);
+                if (veTab) return;
+                // Tab limit reached — fall through to createGroupTab as degraded fallback.
+            }
+        }
+
         createGroupTab(`history-${discussionId}`, title, discussion?.participant_ids || [], { discussionId, readOnly, role, groupTitle: title });
-    }, [activateTab, createGroupTab, getTabList, getTabState, lang, saveTabState]);
+    }, [activateTab, createGroupTab, createVETab, getTabList, getTabState, lang, saveTabState]);
 
     useEffect(() => {
         if (!pendingVEOpen) return;

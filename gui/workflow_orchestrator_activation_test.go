@@ -28,7 +28,7 @@ func moveWorkflowStateToPhase(t *testing.T, engine *workflow.WorkflowEngine, sta
 	t.Fatalf("workflow phase %s not found", phaseID)
 }
 
-func TestActivateWorkflowTaskOrchestratorUsesWorkflowProjectPath(t *testing.T) {
+func TestActivateWorkflowTaskOrchestratorUsesWorkflowProjectPathWithoutCreatingDirectory(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	projectDir := t.TempDir()
 	tempWorkflowDir := filepath.Join(t.TempDir(), "workflow-project")
@@ -65,8 +65,8 @@ func TestActivateWorkflowTaskOrchestratorUsesWorkflowProjectPath(t *testing.T) {
 	if orch.ProjectPath != tempWorkflowDir {
 		t.Fatalf("ProjectPath = %q, want workflow project %q", orch.ProjectPath, tempWorkflowDir)
 	}
-	if info, err := os.Stat(tempWorkflowDir); err != nil || !info.IsDir() {
-		t.Fatalf("workflow project directory should be prepared before orchestrator activation, info=%#v err=%v", info, err)
+	if _, err := os.Stat(tempWorkflowDir); !os.IsNotExist(err) {
+		t.Fatalf("orchestrator activation must not create workflow project directory, stat err=%v path=%s", err, tempWorkflowDir)
 	}
 	if len(orch.Tasks) != 2 || len(orch.Tasks[1].DependsOn) != 1 || orch.Tasks[1].DependsOn[0] != 0 {
 		t.Fatalf("expected parsed tasks with bootstrap dependency, got %#v", orch.Tasks)
@@ -112,7 +112,7 @@ func TestHandleWorkflowEngineResponseActivatesOrchestratorOnFirstAgentLoop(t *te
 	}
 }
 
-func TestHandleWorkflowEngineResponseBlocksWhenProjectPathCannotBePrepared(t *testing.T) {
+func TestHandleWorkflowEngineResponseBlocksWhenProjectPathInvalid(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir(), CurrentLanguage: "en"}
 	projectPath := filepath.Join(t.TempDir(), "project-file")
 	if err := os.WriteFile(projectPath, []byte("not a directory"), 0o644); err != nil {
@@ -135,14 +135,14 @@ func TestHandleWorkflowEngineResponseBlocksWhenProjectPathCannotBePrepared(t *te
 
 	got := h.handleWorkflowEngineResponse(engine, "u1", resp, "desktop")
 
-	if got == nil || !strings.Contains(got.Error, "Failed to prepare workflow project directory") {
-		t.Fatalf("expected project directory preparation error, got %#v", got)
+	if got == nil || !strings.Contains(got.Error, "Invalid workflow project path") {
+		t.Fatalf("expected invalid workflow project path error, got %#v", got)
 	}
 	if orch := h.getTaskOrchestratorReadOnly("u1"); orch != nil && orch.IsActive() {
 		t.Fatalf("orchestrator must not activate when project path cannot be prepared, got %#v", orch)
 	}
 	if _, ok := h.workflowAgentLoopMarker.Load("u1"); ok {
-		t.Fatal("workflow agent loop must not start after project directory preparation failure")
+		t.Fatal("workflow agent loop must not start after invalid workflow project path")
 	}
 }
 
@@ -284,6 +284,16 @@ func TestExecutableCodingTaskBreakdownRequiresAllTaskFields(t *testing.T) {
 	missingEffort := strings.Replace(executableCodingBreakdown, "- **Effort**: Small\n", "", 1)
 	if isExecutableCodingTaskBreakdown(missingEffort, ParseTaskListFromText(missingEffort)) {
 		t.Fatal("coding breakdown missing effort must not be executable")
+	}
+}
+
+func TestExecutableCodingTaskBreakdownRejectsToolBlockedLanguage(t *testing.T) {
+	blockedText := executableCodingBreakdown + "\n\n## \u6267\u884c\u53d7\u963b\u8bf4\u660e\n\n\u5f53\u524d\u5de5\u5177\u5217\u8868\u6ca1\u6709 write_file/edit_file\uff0cbash unavailable\uff0c\u9700\u8981\u624b\u52a8\u521b\u5efa\u76ee\u5f55\u3002"
+	if isExecutableCodingTaskBreakdown(blockedText, ParseTaskListFromText(blockedText)) {
+		t.Fatal("coding task breakdown with tool-blocked execution language must not be executable")
+	}
+	if !containsCodingTaskBreakdownBlockedExecutionLanguage(blockedText) {
+		t.Fatal("expected tool-blocked language detector to trigger")
 	}
 }
 

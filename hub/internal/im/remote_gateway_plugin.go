@@ -362,10 +362,38 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 
 	if owner == nil || owner.MachineID != machineID {
 		log.Printf("[remote-gw/%s] REJECTED: tenant=%s message from non-owner machine=%s (owner=%s)", p.platform, tenantID, machineID, ownerID)
+		// Notify the client so it can fall back to local processing instead of
+		// silently dropping the user's message.
+		if msg.PlatformUID != "" {
+			_ = p.sender.SendToMachine(machineID, map[string]any{
+				"type": "im.gateway_reply",
+				"payload": map[string]any{
+					"platform": p.platform,
+					"payload": map[string]any{
+						"reply_type":   "text",
+						"platform_uid": msg.PlatformUID,
+						"text":         fmt.Sprintf("⚠️ Hub 未识别此 %s 网关的所有权，消息被拒绝。请尝试重启连接或切回单机模式。", p.platform),
+					},
+				},
+			})
+		}
 		return
 	}
 	if handler == nil {
 		log.Printf("[remote-gw/%s] REJECTED: no message handler registered", p.platform)
+		if msg.PlatformUID != "" {
+			_ = p.sender.SendToMachine(machineID, map[string]any{
+				"type": "im.gateway_reply",
+				"payload": map[string]any{
+					"platform": p.platform,
+					"payload": map[string]any{
+						"reply_type":   "text",
+						"platform_uid": msg.PlatformUID,
+						"text":         "⚠️ Hub IM 处理器未就绪，请稍后重试。",
+					},
+				},
+			})
+		}
 		return
 	}
 

@@ -16,6 +16,7 @@ type ProjectContextSummary struct {
 	KeyArtifacts    []string                 `json:"key_artifacts"`
 	RecentArtifacts []ProjectContextArtifact `json:"recent_artifacts,omitempty"`
 	ActiveWorkflow  string                   `json:"active_workflow"`
+	WorkflowState   *ProjectWorkflowState    `json:"workflow_state,omitempty"`
 }
 
 // ProjectContextArtifact is a compact, source-backed artifact summary for
@@ -119,13 +120,9 @@ func (a *App) LoadProjectContext(projectPath string) (*ProjectContextSummary, er
 		summary.KeyArtifacts = summary.KeyArtifacts[:10]
 	}
 
-	// Check for active workflow via the same normalized owner used by project tabs.
-	synthesizedUserID := projectSessionOwnerID(projectPath)
-	if a.workflowEngine != nil && !a.workflowDisabled.Load() {
-		ws := a.workflowEngine.GetActiveWorkflow(synthesizedUserID)
-		if ws != nil {
-			summary.ActiveWorkflow = fmt.Sprintf("%s (阶段: %s)", string(ws.Type), ws.CurrentPhase)
-		}
+	if state := a.activeWorkflowForProject(projectPath); state != nil {
+		summary.WorkflowState = state
+		summary.ActiveWorkflow = fmt.Sprintf("%s (phase: %s)", state.Type, state.Phase)
 	}
 
 	return summary, nil

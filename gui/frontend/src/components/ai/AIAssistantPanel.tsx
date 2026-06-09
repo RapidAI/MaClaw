@@ -48,6 +48,7 @@ import { buildProjectTabRecentMessages, chatHistoriesEquivalent, logAIPanelDiagn
 import { GroupDiscussionRenameConsultation } from "../../../wailsjs/go/main/App";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_PROJECT_TASK_CLOSED } from "../../constants/events";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
@@ -885,7 +886,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             derivedName = runes.length > 30 ? runes.slice(0, 30).join("") + "..." : text || (lang === "en" ? "New task" : "\u65b0\u4efb\u52a1");
         }
         try {
-            const { CreateRecentTask, ForkConversationToProject } = await import("../../../wailsjs/go/main/App");
+            const { CreateRecentTask, ForkConversationToProject } = await getWailsAppModule();
             const result = await CreateRecentTask(derivedName);
             if (!result || !result.project_path) return;
             await ForkConversationToProject(result.project_path);

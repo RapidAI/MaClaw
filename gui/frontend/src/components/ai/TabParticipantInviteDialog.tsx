@@ -6,6 +6,7 @@ import { addParticipantIdentityKeys, participantIdentityKeys } from "./participa
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import { virtualEmployeeDisplayName, virtualEmployeeParticipantId } from "./VEGroupChat";
 import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 type TabParticipantInviteDialogProps = {
     tab: AITab;
@@ -37,7 +38,7 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
         for (const id of tab.participants || [tab.veId]) addParticipantIdentityKeys(currentIds, id);
         setLoading(true);
         setError("");
-        import("../../../wailsjs/go/main/App").then(async (mod) => {
+        getWailsAppModule().then(async (mod) => {
             const listFn = (mod as any).ListVirtualEmployees;
             const detailFn = (mod as any).GroupDiscussionGetConsultationDetail;
             if (tab.discussionId && typeof detailFn === "function") {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -78,15 +77,16 @@ func (a *GUIWorkflowAdapter) GetLang() string {
 func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error {
 	if state != nil {
 		stateProjectPath := ""
-		preparedStateProjectPath := ""
+		validStateProjectPath := ""
 		workflowStateHasPath := state.ID != "" && (state.Status == workflow.WorkflowActive || state.Status == workflow.WorkflowCompleted || state.Status == workflow.WorkflowCancelled)
 		if workflowStateHasPath {
 			stateProjectPath = strings.TrimSpace(state.ProjectPath)
 			if stateProjectPath != "" {
-				if err := os.MkdirAll(stateProjectPath, 0o755); err != nil {
-					log.Printf("[WorkflowAdapter] failed to create workflow project directory %s: %v", stateProjectPath, err)
+				normalized, _, err := normalizeWorkflowProjectPath(stateProjectPath)
+				if err != nil {
+					log.Printf("[WorkflowAdapter] invalid workflow project path %s: %v", stateProjectPath, err)
 				} else {
-					preparedStateProjectPath = stateProjectPath
+					validStateProjectPath = normalized
 				}
 			}
 		}
@@ -100,11 +100,11 @@ func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.Work
 				a.workflowStartDate = time.Now()
 				a.projectStorageDir = "" // force re-resolution for new workflow
 			}
-			if preparedStateProjectPath != "" {
-				if a.workingDir != preparedStateProjectPath {
+			if validStateProjectPath != "" {
+				if a.workingDir != validStateProjectPath {
 					a.projectStorageDir = ""
 				}
-				a.workingDir = preparedStateProjectPath
+				a.workingDir = validStateProjectPath
 			} else {
 				a.projectStorageDir = ""
 				a.workingDir = ""
@@ -118,11 +118,11 @@ func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.Work
 			// then release the lock before calling writeManifestOnCompletion to avoid
 			// holding the lock during I/O.
 			if state.Status == workflow.WorkflowCompleted || state.Status == workflow.WorkflowCancelled {
-				if preparedStateProjectPath != "" {
-					if a.workingDir != preparedStateProjectPath {
+				if validStateProjectPath != "" {
+					if a.workingDir != validStateProjectPath {
 						a.projectStorageDir = ""
 					}
-					a.workingDir = preparedStateProjectPath
+					a.workingDir = validStateProjectPath
 				} else if stateProjectPath != "" {
 					a.projectStorageDir = ""
 					a.workingDir = ""
@@ -189,12 +189,10 @@ func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) erro
 // Documents will be persisted under {workingDir}/.maclaw/workflow/.
 // Also emits a frontend event so the UI can display the path.
 func (a *GUIWorkflowAdapter) SetWorkingDir(userID, dir string) {
-	trimmed := strings.TrimSpace(dir)
-	if trimmed != "" {
-		if err := os.MkdirAll(trimmed, 0o755); err != nil {
-			log.Printf("[WorkflowAdapter] failed to create workflow working directory %s: %v", trimmed, err)
-			return
-		}
+	trimmed, _, err := normalizeWorkflowProjectPath(dir)
+	if err != nil {
+		log.Printf("[WorkflowAdapter] invalid workflow working directory %s: %v", strings.TrimSpace(dir), err)
+		return
 	}
 	a.mu.Lock()
 	if a.workingDir != trimmed {

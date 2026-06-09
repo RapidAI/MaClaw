@@ -5793,3 +5793,53 @@ saveTabState(..., { history: mergeChatMessages(baseHistory, newMessages) });
 - 所有 25 个 corelib/security 测试通过
 - 所有 5 个 TUI config security 测试通过
 - GUI / TUI / corelib 编译通过
+
+
+### 102. 非代码修复命令误触发 CodingSubAgent——删除 bug_fix 意图到 SubAgent 的自动路由
+
+**来源**：用户反馈——带"修复"、"改正"等修复类关键词的命令容易触发 CodingSubAgent，导致体验异常。如"修复配置文件"、"改正文档错误"等请求被路由到精简编码环境执行。
+
+**根因**：`shouldRouteGateResultToDirectCodingSubAgent()` 在 UIC 分类为 `GateIntentBugFix` 且 trusted（Layer 2/3, confidence ≥ 0.60）时，无条件路由到 CodingSubAgent。`RequireExistingCodeEvidence` 只检查项目目录有代码文件（在代码仓库中永远为 true），不区分用户请求是否指向代码修复。
+
+**机制性问题**：这不是"检测不准"的问题——用关键词或语义来区分"修复代码"vs"修复配置"是无穷尽的 workaround。真正的问题是 **CodingSubAgent 不应该从意图分类自动激活**。
+
+CodingSubAgent 的设计定位（#75）是"纯净上下文编码执行器"：
+- 只有 5 个精简工具（read_file/write_file/edit_file/bash/list_directory）
+- 无对话历史、无记忆、无 steering、无 SSH/browser/memory 等 35+ 工具
+- 设计用途：工作流 orchestrator 委派的编码子任务（implementation 阶段）
+
+用户发起的 bug-fix 请求：
+- 需要完整工具集（SSH、browser、memory、配置修改等）
+- 需要对话历史上下文
+- 主 agent loop 已有完整支持（#31 CodingToolGate 对 bug_fix bypass 三阶段）
+
+**修复**：`shouldRouteGateResultToDirectCodingSubAgent()` 直接返回 false——删除整个 bug_fix → SubAgent 的自动路由。
+
+SubAgent 激活路径仅保留两条：
+1. **Orchestrator-driven**（`ShouldUseSubAgent`）：工作流 implementation 阶段的任务委派
+2. **delegate_task 工具**（`im_tool_execution.go`）：LLM 显式调用 delegate_task(agent="coding_workflow")
+
+**权限链（修复后）**：
+```
+用户消息 → 意图分类 → bug_fix
+                        ↓
+             主 Agent Loop（完整工具集 + 对话历史 + 记忆）
+                        ↓
+             CodingToolGate bypass（#31，不走三阶段）
+                        ↓
+             LLM 直接用 read_file/edit_file/bash 等修复
+```
+
+**不受影响的路径**：
+- 工作流 orchestrator 驱动的 SubAgent（ShouldUseSubAgent）→ 不变
+- delegate_task 工具显式委派 → 不变（LLM 主动决策）
+- CodingToolGate 的 bug_fix bypass → 不变
+
+**验收标准**：
+- "修复配置文件" / "改正文档" / "修改 steering 规则" → 主 agent loop 正常执行，不触发 SubAgent
+- "修复代码中的 bug" / "repair the startup crash" → 主 agent loop 正常执行（有完整工具集），不触发 SubAgent
+- 工作流 implementation 阶段的 orchestrator 委派 → SubAgent 正常工作（不受影响）
+- LLM 调用 delegate_task(agent="coding_workflow") → SubAgent 正常工作（不受影响）
+- 所有 18 个 DirectCodingSubAgent 测试通过
+- 所有 CodingGate / GateIntent / ShouldUseSubAgent / RouteTools / RouteSubAgent 测试通过
+- GUI `go vet` 通过

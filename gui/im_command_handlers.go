@@ -43,7 +43,7 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		}
 	}
 
-	if !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(trimmed) && !hasPendingAskUser {
+	if !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(trimmed) && !hasPendingAskUser && !h.workflowReviewPending(msg.UserID, msg.IsBackground) {
 		return &IMAgentResponse{Text: buildShortChitChatResponse(trimmed, msg.Lang)}, true
 	}
 	switch commandKind {

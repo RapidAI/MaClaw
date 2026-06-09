@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func newProjectSearchTestApp(t *testing.T) *App {
@@ -343,6 +344,111 @@ func TestForkRecentTaskRepeatedOpenReusesIndependentTask(t *testing.T) {
 	recent := app.SearchProjects("Draft recent task", 10)
 	if len(recent) != 1 || !searchResultsContainProjectPath(recent, forked.ProjectPath) {
 		t.Fatalf("recent tasks after repeated opens = %+v, want one independent fork", recent)
+	}
+}
+
+func TestRecentTaskCarriesActiveWorkflowState(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = workflow.NewWorkflowEngine(workflow.NewWorkflowRegistry(), nil, nil, nil)
+
+	source := app.CreateRecentTask("Workflow stage output")
+	if source.ProjectPath == "" {
+		t.Fatal("CreateRecentTask returned empty project path")
+	}
+	if _, err := app.workflowEngine.StartWorkflowWithOptions(projectSessionOwnerID(source.ProjectPath), workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}, workflow.WorkflowStartOptions{ProjectPath: source.ProjectPath}); err != nil {
+		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
+	}
+
+	recent := app.SearchProjects("Workflow stage output", 10)
+	if len(recent) != 1 {
+		t.Fatalf("SearchProjects returned %d results: %+v", len(recent), recent)
+	}
+	if recent[0].ActiveWorkflow == nil || recent[0].ActiveWorkflow.ProjectPath != source.ProjectPath || recent[0].ActiveWorkflow.Type != string(workflow.WorkflowCoding) {
+		t.Fatalf("ActiveWorkflow = %#v, want source coding workflow", recent[0].ActiveWorkflow)
+	}
+}
+
+func TestForkedRecentTaskKeepsPointerToSourceWorkflow(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = workflow.NewWorkflowEngine(workflow.NewWorkflowRegistry(), nil, nil, nil)
+
+	source := app.CreateRecentTask("Forked workflow stage output")
+	if source.ProjectPath == "" {
+		t.Fatal("CreateRecentTask returned empty project path")
+	}
+	if _, err := app.workflowEngine.StartWorkflowWithOptions(projectSessionOwnerID(source.ProjectPath), workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}, workflow.WorkflowStartOptions{ProjectPath: source.ProjectPath}); err != nil {
+		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
+	}
+
+	forked := app.ForkRecentTask(source.ProjectPath)
+	if forked.ProjectPath == "" || forked.ProjectPath == source.ProjectPath {
+		t.Fatalf("ForkRecentTask ProjectPath = %q, source = %q", forked.ProjectPath, source.ProjectPath)
+	}
+
+	recent := app.SearchProjects("Forked workflow stage output", 10)
+	if len(recent) != 1 || recent[0].ProjectPath != forked.ProjectPath {
+		t.Fatalf("SearchProjects after fork = %+v, want visible fork only", recent)
+	}
+	if recent[0].ActiveWorkflow == nil || recent[0].ActiveWorkflow.ProjectPath != source.ProjectPath {
+		t.Fatalf("fork ActiveWorkflow = %#v, want pointer to source %q", recent[0].ActiveWorkflow, source.ProjectPath)
+	}
+	scene, err := app.GetProjectScene(forked.ProjectPath)
+	if err != nil {
+		t.Fatalf("GetProjectScene(fork) error = %v", err)
+	}
+	if scene.ActiveWorkflow == nil || scene.ActiveWorkflow.ProjectPath != source.ProjectPath {
+		t.Fatalf("scene ActiveWorkflow = %#v, want pointer to source %q", scene.ActiveWorkflow, source.ProjectPath)
+	}
+}
+
+func TestNonForkSourceTagDoesNotBorrowWorkflowState(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = workflow.NewWorkflowEngine(workflow.NewWorkflowRegistry(), nil, nil, nil)
+
+	source := app.CreateRecentTask("Workflow source owner")
+	if source.ProjectPath == "" {
+		t.Fatal("CreateRecentTask returned empty source project path")
+	}
+	if _, err := app.workflowEngine.StartWorkflowWithOptions(projectSessionOwnerID(source.ProjectPath), workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}, workflow.WorkflowStartOptions{ProjectPath: source.ProjectPath}); err != nil {
+		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
+	}
+
+	other := app.createRecentTaskRecord("Ordinary task with source tag", "ordinary output", []string{"source:" + source.ProjectPath}, false)
+	if other.ProjectPath == "" {
+		t.Fatal("createRecentTaskRecord returned empty ordinary project path")
+	}
+
+	recent := app.SearchProjects("Ordinary task with source tag", 10)
+	var ordinary *ProjectSearchResult
+	for i := range recent {
+		if recent[i].ProjectPath == other.ProjectPath {
+			ordinary = &recent[i]
+			break
+		}
+	}
+	if ordinary == nil {
+		t.Fatalf("SearchProjects results = %+v, want ordinary project %q", recent, other.ProjectPath)
+	}
+	if ordinary.ActiveWorkflow != nil {
+		t.Fatalf("ordinary source-tagged task borrowed workflow state: %#v", ordinary.ActiveWorkflow)
+	}
+}
+
+func TestNonForkSourceTagDoesNotCollapseRecentTaskLineage(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+
+	source := app.CreateRecentTask("Ordinary source task")
+	if source.ProjectPath == "" {
+		t.Fatal("CreateRecentTask returned empty source project path")
+	}
+	other := app.createRecentTaskRecord("Ordinary task with metadata source", "ordinary output", []string{"source:" + source.ProjectPath}, false)
+	if other.ProjectPath == "" {
+		t.Fatal("createRecentTaskRecord returned empty ordinary project path")
+	}
+
+	recent := app.SearchProjects("", 10)
+	if !searchResultsContainProjectPath(recent, source.ProjectPath) || !searchResultsContainProjectPath(recent, other.ProjectPath) {
+		t.Fatalf("SearchProjects collapsed ordinary source tag lineage: %+v", recent)
 	}
 }
 

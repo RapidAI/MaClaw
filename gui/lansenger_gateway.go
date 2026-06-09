@@ -32,6 +32,7 @@ type lansengerGatewayManager struct {
 	lastRestart  time.Time
 	lastToken    string
 	healthCancel context.CancelFunc
+	hubClaimSent bool // true after first successful claim in hub mode
 
 	localHandler *IMMessageHandler
 }
@@ -254,6 +255,9 @@ func (m *lansengerGatewayManager) onGatewayStatusChange(gw *lansenger.Gateway, s
 		hubClient := m.app.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
 			hubClient.SendIMGatewayClaim(imGatewayPlatformLansenger)
+			m.mu.Lock()
+			m.hubClaimSent = true
+			m.mu.Unlock()
 		}
 	}
 }
@@ -281,6 +285,7 @@ func (m *lansengerGatewayManager) resetLocalHandler() {
 		m.localHandler.memory.Stop()
 		m.localHandler = nil
 	}
+	m.hubClaimSent = false
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +346,25 @@ func (m *lansengerGatewayManager) forwardToHub(msg lansenger.IncomingMessage) {
 		m.notifyHubUnavailable(msg)
 		m.handleLocalMessage(msg)
 		return
+	}
+
+	// Ensure gateway claim is registered before forwarding. In rare cases the
+	// claim may not have been sent yet (e.g. hub reconnected after mode switch).
+	// Re-sending claim is idempotent — Hub accepts it if already owned by us.
+	// Only send once per connection to avoid unnecessary WebSocket writes.
+	m.mu.Lock()
+	needsClaim := !m.hubClaimSent
+	m.mu.Unlock()
+	if needsClaim {
+		if err := hubClient.SendIMGatewayClaim(imGatewayPlatformLansenger); err != nil {
+			log.Printf("[lansenger-mgr] forwardToHub: pre-claim failed: %v, falling back to local", err)
+			m.notifyHubUnavailable(msg)
+			m.handleLocalMessage(msg)
+			return
+		}
+		m.mu.Lock()
+		m.hubClaimSent = true
+		m.mu.Unlock()
 	}
 
 	payload := map[string]any{
@@ -791,6 +815,11 @@ func (a *App) SetLansengerLocalMode(enabled bool) error {
 		hubClient := a.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
 			hubClient.SendIMGatewayClaim(imGatewayPlatformLansenger)
+			if a.lansengerGateway != nil {
+				a.lansengerGateway.mu.Lock()
+				a.lansengerGateway.hubClaimSent = true
+				a.lansengerGateway.mu.Unlock()
+			}
 		}
 	}
 	return nil

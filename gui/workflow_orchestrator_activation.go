@@ -99,12 +99,12 @@ func (h *IMMessageHandler) activateWorkflowTaskOrchestrator(engine *workflow.Wor
 		return false, nil
 	}
 	projectPath := h.workflowExecutionProjectPath(engine, userID)
-	preparedPath, err := h.ensureWorkflowProjectPath(projectPath)
+	normalizedPath, err := h.resolveWorkflowProjectPath(projectPath)
 	if err != nil {
-		log.Printf("[WorkflowInterception] failed to prepare orchestrator project directory: user=%s project=%s err=%v", userID, projectPath, err)
+		log.Printf("[WorkflowInterception] invalid orchestrator project path: user=%s project=%s err=%v", userID, projectPath, err)
 		return false, &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, h.getWorkflowLang(), err)}
 	}
-	projectPath = preparedPath
+	projectPath = normalizedPath
 	taskOrch.Activate(tasks, resp.RequirementsContext, resp.DesignContext, projectPath, "")
 	log.Printf("[WorkflowInterception] orchestrator activated by engine: %d tasks for user=%s project=%s", len(tasks), userID, projectPath)
 	return true, nil
@@ -187,6 +187,9 @@ func (h *IMMessageHandler) reopenInvalidCodingTaskBreakdownForRepair(engine *wor
 }
 
 func isExecutableCodingTaskBreakdown(text string, tasks []*TaskItem) bool {
+	if containsCodingTaskBreakdownBlockedExecutionLanguage(text) {
+		return false
+	}
 	if len(tasks) == 0 || !hasSequentialTNumberedTaskHeadings(text, len(tasks)) {
 		return false
 	}
@@ -196,6 +199,28 @@ func isExecutableCodingTaskBreakdown(text string, tasks []*TaskItem) bool {
 		}
 	}
 	return codingTaskBreakdownHasRequiredFields(text, len(tasks)) && codingTaskDependenciesAreValid(text, len(tasks))
+}
+
+func containsCodingTaskBreakdownBlockedExecutionLanguage(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	blockedMarkers := []string{
+		"\u6267\u884c\u53d7\u963b", "\u53d7\u963b\u8bf4\u660e", "\u5de5\u5177\u4e0d\u53ef\u7528", "\u6ca1\u6709\u5de5\u5177", "\u6ca1\u5de5\u5177",
+		"\u65e0\u6cd5\u521b\u5efa\u76ee\u5f55", "\u4e0d\u80fd\u521b\u5efa\u76ee\u5f55", "\u65e0\u6cd5\u5199\u6587\u4ef6", "\u4e0d\u80fd\u5199\u6587\u4ef6",
+		"\u9700\u8981\u5f00\u542f\u5de5\u5177", "\u542f\u7528\u5de5\u5177", "\u624b\u52a8\u521b\u5efa",
+		"tool unavailable", "tools unavailable", "no tools", "missing tool", "missing tools", "cannot create directory", "cannot write file",
+		"write_file/edit_file", "write_file unavailable", "edit_file unavailable", "bash unavailable", "enable tools",
+	}
+	mentionsToolBoundary := strings.Contains(lower, "write_file") ||
+		strings.Contains(lower, "edit_file") ||
+		strings.Contains(lower, "bash") ||
+		strings.Contains(lower, "\u5de5\u5177")
+	if !mentionsToolBoundary {
+		return false
+	}
+	return containsAnyWorkflowReviewMarker(lower, blockedMarkers)
 }
 
 func taskBreakdownValidForOrchestrator(engine *workflow.WorkflowEngine, userID, text string, tasks []*TaskItem) bool {

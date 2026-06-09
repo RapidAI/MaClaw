@@ -51,7 +51,7 @@ func RequiredToolNamesForPolicy(policy ToolFilterPolicy) []string {
 	case ToolFilterDocOnly:
 		names = []string{"read_file", "list_directory", "send_file"}
 	case ToolFilterPlanning:
-		names = []string{"bash", "read_file", "list_directory", "send_file"}
+		names = []string{"read_file", "list_directory", "send_file"}
 	case ToolFilterOpsControlled:
 		names = []string{"bash", "ssh", "read_file", "list_directory"}
 	default:

@@ -14,14 +14,13 @@ import { useResizableAssistantInput } from "./useResizableAssistantInput";
 import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
-
-type WailsAppModule = typeof import("../../../wailsjs/go/main/App");
+import { getWailsAppModule as loadWailsAppModule, type WailsAppModule } from "../../utils/wailsAppModule";
 
 let wailsAppModulePromise: Promise<WailsAppModule> | null = null;
 
 function getWailsAppModule(): Promise<WailsAppModule> {
     if (!wailsAppModulePromise) {
-        wailsAppModulePromise = import("../../../wailsjs/go/main/App");
+        wailsAppModulePromise = loadWailsAppModule();
     }
     return wailsAppModulePromise;
 }

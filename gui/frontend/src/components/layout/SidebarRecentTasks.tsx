@@ -11,6 +11,14 @@ export type RecentProject = {
     name?: string;
     project_path: string;
     workflow_type?: string;
+    active_workflow?: {
+        id?: string;
+        type?: string;
+        phase?: string;
+        status?: string;
+        project_path?: string;
+        pending_review?: boolean;
+    };
     preview?: string;
     tags?: string[];
     last_activity?: string;
@@ -42,6 +50,7 @@ type SidebarRecentTasksProps = {
     renameValue: string;
     setRenameValue: (value: string) => void;
     resumeRecentProject: (projectPath: string) => Promise<void> | void;
+    continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
     onRecentTaskSwitchBlocked?: () => void;
     createRecentTask: (name: string) => Promise<void> | void;
@@ -71,6 +80,7 @@ export const SidebarRecentTasks = ({
     renameValue,
     setRenameValue,
     resumeRecentProject,
+    continueWorkflowProject = () => {},
     assistantReady = true,
     onRecentTaskSwitchBlocked,
     createRecentTask,
@@ -178,13 +188,14 @@ export const SidebarRecentTasks = ({
                 <div onDoubleClick={() => { void handleTaskDoubleClick(proj.project_path); }} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: openingTaskPath === proj.project_path ? 'progress' : 'pointer', transition: 'background 0.15s', opacity: openingTaskPath === proj.project_path ? 0.78 : 1 }} title={`${proj.name || proj.project_path}\n${proj.project_path}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                     <span style={{ flexShrink: 0, color: '#ff3b73', fontSize: '0.82rem', lineHeight: '1.2', width: '16px', textAlign: 'center', overflow: 'hidden' }}>{taskIconForProject(proj)}</span>
                     <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
+                        {proj.active_workflow && <span title={`${proj.active_workflow.type || 'workflow'} ${proj.active_workflow.phase || ''}`.trim()} style={{ display: 'inline-flex', maxWidth: '100%', marginBottom: '3px', padding: '1px 5px', borderRadius: '999px', border: '1px solid color-mix(in srgb, var(--theme-primary) 42%, transparent)', color: 'var(--theme-primary)', background: 'color-mix(in srgb, var(--theme-primary) 8%, transparent)', fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{textForLang(lang, 'Stage output', '\u9636\u6bb5\u4ea7\u51fa', '\u968e\u6bb5\u7522\u51fa')}</span>}
                         {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshRecentProjects(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{proj.name || proj.project_path}</span>}
                         <span style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{openingTaskPath === proj.project_path ? textForLang(lang, 'Restoring...', '恢复中...', '恢復中...') : (proj.preview || proj.project_path)}</span>
                         {openingTaskPath === proj.project_path && <span aria-label={textForLang(lang, 'Restoring task', '正在恢复任务', '正在恢復任務')} style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}><span style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} /></span>}
                     </span>
                     <button type="button" aria-label={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} title={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} onClick={e => { e.stopPropagation(); void openSceneDetail(proj.project_path, proj.name); }} disabled={sceneDetailLoading && sceneDetailPath === proj.project_path} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', opacity: sceneDetailLoading && sceneDetailPath === proj.project_path ? 0.4 : 0.78, cursor: 'pointer', width: '20px', height: '20px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><ProjectSearchIcon name="info" size={13} /></button>
                 </div>
-                {sceneDetailPath === proj.project_path && <SidebarTaskEvidencePanel detail={sceneDetail} loading={sceneDetailLoading} lang={lang} />}
+                {sceneDetailPath === proj.project_path && <SidebarTaskEvidencePanel detail={sceneDetail} loading={sceneDetailLoading} lang={lang} onContinueWorkflow={(workflowProjectPath) => { void continueWorkflowProject(workflowProjectPath); }} />}
             </div>
         ))}
 

@@ -54,6 +54,40 @@ func (a *GUIWorkflowAdapter) workflowProjectPath() string {
 	return projectPath
 }
 
+func (a *GUIWorkflowAdapter) existingWorkflowProjectPath() string {
+	projectPath := a.workflowProjectPath()
+	normalized, existsAsDir, err := normalizeWorkflowProjectPath(projectPath)
+	if err != nil {
+		log.Printf("[WorkflowAdapter] invalid workflow project path %s: %v", strings.TrimSpace(projectPath), err)
+		return ""
+	}
+	if !existsAsDir {
+		return ""
+	}
+	return normalized
+}
+
+func (a *GUIWorkflowAdapter) workflowInternalDocDir() string {
+	if a == nil || a.app == nil {
+		return ""
+	}
+	baseDir := strings.TrimSpace(a.app.GetDataDir())
+	if baseDir == "" {
+		return ""
+	}
+	a.mu.RLock()
+	wfID := strings.TrimSpace(a.activeWorkflowID)
+	a.mu.RUnlock()
+	if wfID == "" {
+		return ""
+	}
+	segment := sanitizeWorkflowPhaseFileStem(wfID)
+	if segment == "" {
+		segment = "workflow"
+	}
+	return filepath.Join(baseDir, "workflow", segment)
+}
+
 // workflowDocDir returns the directory for persisting workflow documents.
 // Each workflow instance gets its own subdirectory to prevent cross-instance
 // contamination: {projectPath}/.maclaw/workflow/{workflowID}/
@@ -62,19 +96,26 @@ func (a *GUIWorkflowAdapter) workflowProjectPath() string {
 // legacy flat path {projectPath}/.maclaw/workflow/ for backward compatibility
 // with documents persisted before instance isolation was introduced.
 func (a *GUIWorkflowAdapter) workflowDocDir() string {
-	projectPath := a.workflowProjectPath()
-	if projectPath == "" {
-		return ""
+	internalDir := a.workflowInternalDocDir()
+	if internalDir != "" {
+		if info, err := os.Stat(internalDir); err == nil && info.IsDir() {
+			return internalDir
+		}
 	}
-	a.mu.RLock()
-	wfID := a.activeWorkflowID
-	a.mu.RUnlock()
-	if wfID != "" {
-		return filepath.Join(projectPath, ".maclaw", "workflow", wfID)
+
+	projectPath := a.existingWorkflowProjectPath()
+	if projectPath != "" {
+		a.mu.RLock()
+		wfID := a.activeWorkflowID
+		a.mu.RUnlock()
+		if wfID != "" {
+			return filepath.Join(projectPath, ".maclaw", "workflow", wfID)
+		}
+		// Fallback: no active workflow ID (shouldn't happen during normal operation,
+		// but provides backward compatibility).
+		return filepath.Join(projectPath, ".maclaw", "workflow")
 	}
-	// Fallback: no active workflow ID (shouldn't happen during normal operation,
-	// but provides backward compatibility).
-	return filepath.Join(projectPath, ".maclaw", "workflow")
+	return internalDir
 }
 
 // activeTemplate resolves the template for the current active workflow type from
@@ -183,16 +224,19 @@ func (a *GUIWorkflowAdapter) publishToProjectStorage(phaseID, content string) {
 // Subsequent calls return the cached value. Returns empty string if workingDir or
 // activeWorkflowType is not set.
 func (a *GUIWorkflowAdapter) resolveProjectStorageDir() string {
+	projectPath := a.existingWorkflowProjectPath()
+	if projectPath == "" {
+		a.mu.Lock()
+		a.projectStorageDir = ""
+		a.mu.Unlock()
+		return ""
+	}
+
 	a.mu.RLock()
 	cached := a.projectStorageDir
 	a.mu.RUnlock()
 	if cached != "" {
 		return cached
-	}
-
-	projectPath := a.workflowProjectPath()
-	if projectPath == "" {
-		return ""
 	}
 
 	a.mu.RLock()
@@ -257,7 +301,7 @@ func resolveCollisionFreeDir(baseDir, dateStr string) string {
 // NOTE: Only removes .md and .txt files. If persistWorkflowDoc is extended to
 // write other formats in the future, update the extension check here.
 func (a *GUIWorkflowAdapter) CleanPersistedWorkflowDocs() {
-	projectPath := a.workflowProjectPath()
+	projectPath := a.existingWorkflowProjectPath()
 	if projectPath == "" {
 		return
 	}
@@ -311,7 +355,7 @@ func (a *GUIWorkflowAdapter) CleanPersistedWorkflowDocs() {
 // If removal fails (permission error, file locked), the error is logged and
 // workflow completion continues without interruption.
 func (a *GUIWorkflowAdapter) cleanInternalStorageOnCompletion() {
-	projectPath := a.workflowProjectPath()
+	projectPath := a.existingWorkflowProjectPath()
 	if projectPath == "" {
 		return
 	}
@@ -321,21 +365,35 @@ func (a *GUIWorkflowAdapter) cleanInternalStorageOnCompletion() {
 	if wfID == "" {
 		return
 	}
+	if internalDir := a.workflowInternalDocDir(); internalDir != "" {
+		internalBase := filepath.Join(a.app.GetDataDir(), "workflow")
+		a.removeWorkflowDirIfSafe(internalDir, internalBase, "completed workflow fallback dir")
+	}
 	// Only remove the specific workflow-ID subdirectory, not the entire
 	// .maclaw/workflow/ directory (other workflow instances may exist).
 	wfDir := filepath.Join(projectPath, ".maclaw", "workflow", wfID)
-	// Safety check: ensure the resolved path is strictly under the expected
-	// .maclaw/workflow/ base directory. This guards against path traversal
-	// if wfID contains ".." or other unexpected characters.
-	expectedBase := filepath.Join(projectPath, ".maclaw", "workflow") + string(filepath.Separator)
-	if !strings.HasPrefix(wfDir, expectedBase) {
-		log.Printf("[WorkflowAdapter] clean: refusing to remove suspicious path %s (not under %s)", wfDir, expectedBase)
+	projectBase := filepath.Join(projectPath, ".maclaw", "workflow")
+	a.removeWorkflowDirIfSafe(wfDir, projectBase, "completed workflow dir")
+}
+
+func (a *GUIWorkflowAdapter) removeWorkflowDirIfSafe(dir, baseDir, label string) {
+	dir = filepath.Clean(strings.TrimSpace(dir))
+	baseDir = filepath.Clean(strings.TrimSpace(baseDir))
+	if dir == "" || baseDir == "" {
 		return
 	}
-	if err := os.RemoveAll(wfDir); err != nil {
-		log.Printf("[WorkflowAdapter] clean: failed to remove completed workflow dir %s: %v", wfDir, err)
+	// Safety check: ensure the resolved path is strictly under the expected
+	// workflow document base. This guards against path traversal if wfID
+	// contains ".." or other unexpected characters.
+	expectedBase := baseDir + string(filepath.Separator)
+	if !strings.HasPrefix(dir, expectedBase) {
+		log.Printf("[WorkflowAdapter] clean: refusing to remove suspicious %s %s (not under %s)", label, dir, expectedBase)
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("[WorkflowAdapter] clean: failed to remove %s %s: %v", label, dir, err)
 	} else {
-		log.Printf("[WorkflowAdapter] clean: removed completed workflow dir: %s", wfDir)
+		log.Printf("[WorkflowAdapter] clean: removed %s: %s", label, dir)
 	}
 }
 
@@ -427,7 +485,29 @@ func (a *GUIWorkflowAdapter) writeManifestOnCompletion(state *workflow.WorkflowS
 	// We use the template's phase order to produce a deterministic ordering.
 	phases := a.buildManifestPhaseEntries(state)
 
+	a.publishPhaseOutputsToProjectStorage(state, phases)
 	a.writeWorkflowManifest(status, phases)
+}
+
+func (a *GUIWorkflowAdapter) publishPhaseOutputsToProjectStorage(state *workflow.WorkflowState, phases []ManifestPhaseEntry) {
+	if state == nil || len(state.PhaseOutputs) == 0 {
+		return
+	}
+	published := make(map[string]bool, len(phases))
+	for _, phase := range phases {
+		content := state.PhaseOutputs[phase.PhaseID]
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		a.publishToProjectStorage(phase.PhaseID, content)
+		published[phase.PhaseID] = true
+	}
+	for phaseID, content := range state.PhaseOutputs {
+		if published[phaseID] || strings.TrimSpace(content) == "" {
+			continue
+		}
+		a.publishToProjectStorage(phaseID, content)
+	}
 }
 
 // buildManifestPhaseEntries constructs an ordered list of ManifestPhaseEntry

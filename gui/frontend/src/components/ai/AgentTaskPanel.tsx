@@ -3,6 +3,7 @@ import type React from "react";
 import type { AgentView, AgentViewField, AgentViewOption, AgentViewTableColumn, AgentViewVariant, AgentViewWizardStep } from "./agentViewTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { agentViewStrings, type AgentViewStrings } from "./agentViewI18n";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 interface AgentTaskPanelProps {
     view: AgentView;
@@ -551,7 +552,7 @@ function renderField(
                 onClick={async () => {
                     if (readOnly) return;
                     try {
-                        const { SelectWorkingDir } = await import("../../../wailsjs/go/main/App");
+                        const { SelectWorkingDir } = await getWailsAppModule();
                         const dir = await SelectWorkingDir();
                         if (dir) onNext(dir);
                     } catch (error) {
@@ -1019,7 +1020,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
     };
     const primaryButtonStyle: React.CSSProperties = {
         ...buttonStyle,
-        background: theme.sendBtnBorder,
+        background: theme.sendBtnBg,
         color: theme.sendBtnColor,
     };
     const dismissPayload = (): Record<string, unknown> => {

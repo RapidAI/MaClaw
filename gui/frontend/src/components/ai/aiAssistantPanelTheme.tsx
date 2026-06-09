@@ -131,7 +131,7 @@ export const lightTheme: Theme = {
     btnBorder: "#6366f1",
     actionBtnColor: "#888",
     closeBtnColor: "#999",
-    sendBtnColor: "#6366f1",
+    sendBtnColor: "#ffffff",
     sendBtnBorder: "#6366f1",
     sendBtnBg: "#6366f1",
 };

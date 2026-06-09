@@ -3,6 +3,7 @@ import type { AITab, AITabState } from "./AITabTypes";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { extractErrorMessage } from "./participantAddError";
 import { addParticipantIdentityKeys } from "./participantIdentity";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 
 function participantNameFromInput(name: string, participantId: string): string {
@@ -56,7 +57,7 @@ export function useAddGroupParticipantToTab({ getTabState, upgradeVETabToGroup }
         let sessionId = getTabState(tab.id)?.sessionId || tab.discussionId || "";
 
         try {
-            const mod = await import("../../../wailsjs/go/main/App");
+            const mod = await getWailsAppModule();
 
             if (!sessionId) {
                 const initiateConversation = (mod as any).InitiateVEConversation;

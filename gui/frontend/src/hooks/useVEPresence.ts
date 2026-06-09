@@ -13,6 +13,7 @@ import { EventsOn, EventsOff } from "../../wailsjs/runtime";
 import type { VirtualEmployeeEntry } from "../components/ai/VirtualEmployeeTab";
 import { isVirtualEmployeeOnline } from "../components/ai/virtualEmployeeStatus";
 import type { VEOnlineStatus } from "../components/ai/VEStatusDot";
+import { getWailsAppModule } from "../utils/wailsAppModule";
 
 // --- Constants ---
 const POLL_INTERVAL_NORMAL = 30_000;   // 30s
@@ -74,7 +75,7 @@ export function useVEPresence({ hubConfigured, listVirtualEmployees }: UseVEPres
         try {
             let fn = listFnRef.current;
             if (!fn) {
-                const mod = await import("../../wailsjs/go/main/App");
+                const mod = await getWailsAppModule();
                 fn = (mod as any).ListVirtualEmployees;
             }
             if (!fn) {

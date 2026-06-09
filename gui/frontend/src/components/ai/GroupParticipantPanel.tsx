@@ -17,6 +17,7 @@ import { localAINameForLang, looksLikeRawParticipantId, normalizeParticipantId }
 import { addParticipantIdentityKeys, participantIdentityKeys } from "./participantIdentity";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { veStatusEventInfo } from "./veStatusEvent";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 export interface Participant {
     id: string;
@@ -286,7 +287,7 @@ export function GroupParticipantPanel({
         if (!missingAvatarParticipantKey) {
             return () => { cancelled = true; };
         }
-        import("../../../wailsjs/go/main/App")
+        getWailsAppModule()
             .then(async (mod) => {
                 const listFn = (mod as any).ListVirtualEmployees;
                 const employees = typeof listFn === "function" ? await listFn() : [];

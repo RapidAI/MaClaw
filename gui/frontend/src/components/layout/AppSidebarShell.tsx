@@ -6,19 +6,8 @@ import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingA
 import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
 import type { HistoryDiscussionSummary } from './SidebarHistorySessions';
+import type { RecentProject, TaskContextMenu } from './SidebarRecentTasks';
 import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
-type RecentProject = {
-    id?: string;
-    name?: string;
-    project_path: string;
-    workflow_type?: string;
-    preview?: string;
-    last_activity?: string;
-    pinned?: boolean;
-    has_output?: boolean;
-};
-
-type TaskContextMenu = { x: number; y: number; projectPath: string; name: string; pinned: boolean } | null;
 
 interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     navTab: string;
@@ -52,6 +41,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     renameValue: string;
     setRenameValue: (value: string) => void;
     resumeRecentProject: (projectPath: string) => Promise<void> | void;
+    continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
     onRecentTaskSwitchBlocked?: () => void;
     createRecentTask: (name: string) => Promise<void> | void;
@@ -122,6 +112,7 @@ export const AppSidebarShell = ({
     renameValue,
     setRenameValue,
     resumeRecentProject,
+    continueWorkflowProject,
     assistantReady = true,
     onRecentTaskSwitchBlocked,
     createRecentTask,
@@ -218,6 +209,7 @@ export const AppSidebarShell = ({
                         renameValue={renameValue}
                         setRenameValue={setRenameValue}
                         resumeRecentProject={resumeRecentProject}
+                        continueWorkflowProject={continueWorkflowProject}
                         assistantReady={assistantReady}
                         onRecentTaskSwitchBlocked={onRecentTaskSwitchBlocked}
                         createRecentTask={createRecentTask}

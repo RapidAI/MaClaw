@@ -6,12 +6,15 @@ const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = 
     lang === 'zh-Hans' || lang === 'zh' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-export function SidebarTaskEvidencePanel({ detail, loading, lang }: {
+export function SidebarTaskEvidencePanel({ detail, loading, lang, onContinueWorkflow }: {
     detail: ProjectSceneDetail | null;
     loading: boolean;
     lang: string;
+    onContinueWorkflow?: (projectPath: string) => void;
 }) {
     const artifacts = detail?.recent_artifacts || [];
+    const activeWorkflow = detail?.active_workflow;
+    const workflowProjectPath = activeWorkflow?.project_path || detail?.project_path || '';
     return <div style={{ margin: '3px 0 5px 22px', padding: '6px 7px', border: '1px solid var(--theme-border)', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-surface) 88%, var(--theme-text-primary) 4%)', minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: artifacts.length > 0 || loading ? '4px' : 0 }}>
             <span style={{ fontSize: '0.64rem', fontWeight: 700, color: 'var(--theme-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -19,6 +22,10 @@ export function SidebarTaskEvidencePanel({ detail, loading, lang }: {
             </span>
             {detail?.entry_count !== undefined && <span style={{ fontSize: '0.6rem', color: 'var(--theme-text-muted)', opacity: 0.75, flexShrink: 0 }}>{detail.entry_count}</span>}
         </div>
+        {!loading && activeWorkflow && <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '5px', minWidth: 0 }}>
+            <span title={`${activeWorkflow.type || 'workflow'} ${activeWorkflow.phase || ''}`.trim()} style={{ flex: 1, minWidth: 0, fontSize: '0.62rem', color: 'var(--theme-primary)', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{textForLang(lang, 'Original workflow unfinished', '\u539f\u6d41\u7a0b\u672a\u5b8c\u6210', '\u539f\u6d41\u7a0b\u672a\u5b8c\u6210')}</span>
+            {onContinueWorkflow && workflowProjectPath && <button type="button" onClick={event => { event.stopPropagation(); onContinueWorkflow(workflowProjectPath); }} style={{ border: '1px solid color-mix(in srgb, var(--theme-primary) 42%, transparent)', background: 'color-mix(in srgb, var(--theme-primary) 8%, transparent)', color: 'var(--theme-primary)', borderRadius: '999px', cursor: 'pointer', padding: '2px 7px', fontSize: '0.6rem', fontWeight: 700, flexShrink: 0 }}>{textForLang(lang, 'Continue workflow', '\u7ee7\u7eed\u539f\u6d41\u7a0b', '\u7e7c\u7e8c\u539f\u6d41\u7a0b')}</button>}
+        </div>}
         {!loading && artifacts.length === 0 && <div style={{ fontSize: '0.64rem', color: 'var(--theme-text-muted)', opacity: 0.75 }}>{textForLang(lang, 'No source-backed artifacts yet', '暂无可回查产物', '暫無可回查產物')}</div>}
         {artifacts.slice(0, 3).map((artifact, index) => {
             const label = artifact.title || artifact.preview || artifact.source_url || textForLang(lang, 'Artifact', '产物', '產物');

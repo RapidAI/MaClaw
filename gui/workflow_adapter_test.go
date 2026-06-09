@@ -170,18 +170,14 @@ func TestEmitDocUpdateUsesExplicitPhaseIDWithoutContentInference(t *testing.T) {
 	}
 }
 
-func TestGUIWorkflowAdapterSetWorkingDirCreatesDirectory(t *testing.T) {
+func TestGUIWorkflowAdapterSetWorkingDirDoesNotCreateDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "missing", "project")
 	adapter := NewGUIWorkflowAdapter(&App{}, nil)
 
 	adapter.SetWorkingDir("u1", dir)
 
-	info, err := os.Stat(dir)
-	if err != nil {
-		t.Fatalf("SetWorkingDir should create directory: %v", err)
-	}
-	if !info.IsDir() {
-		t.Fatalf("working dir should be directory, got file: %s", dir)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("SetWorkingDir must not create project directory, stat err=%v path=%s", err, dir)
 	}
 	if got := adapter.GetWorkingDir(); got != dir {
 		t.Fatalf("GetWorkingDir() = %q, want %q", got, dir)
@@ -191,7 +187,7 @@ func TestGUIWorkflowAdapterSetWorkingDirCreatesDirectory(t *testing.T) {
 func TestGUIWorkflowAdapterUsesWorkflowStateProjectPathForDocs(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	currentProject := t.TempDir()
-	workflowProject := filepath.Join(t.TempDir(), "workflow-project")
+	workflowProject := t.TempDir()
 	if err := app.SaveConfig(corelib.AppConfig{
 		Projects:       []corelib.ProjectConfig{{Id: "current", Name: "Current", Path: currentProject}},
 		CurrentProject: "current",
@@ -221,6 +217,74 @@ func TestGUIWorkflowAdapterUsesWorkflowStateProjectPathForDocs(t *testing.T) {
 	wrongPath := filepath.Join(currentProject, ".maclaw", "workflow", state.ID, workflowPhaseFileName(workflow.PhaseCodingRequirements))
 	if _, err := os.Stat(wrongPath); !os.IsNotExist(err) {
 		t.Fatalf("workflow doc should not persist under current app project, stat err=%v path=%s", err, wrongPath)
+	}
+}
+
+func TestGUIWorkflowAdapterMissingWorkflowProjectPersistsDocsInternally(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	workflowProject := filepath.Join(t.TempDir(), "new-project")
+	engine := workflow.NewWorkflowEngine(workflow.NewWorkflowRegistry(), nil, nil, nil)
+	adapter := NewGUIWorkflowAdapter(app, engine)
+	engine.SetCallbacks(adapter)
+
+	state, err := engine.StartWorkflowWithOptions("u1", workflow.StructuredIntent{Category: workflow.WorkflowCoding}, workflow.WorkflowStartOptions{ProjectPath: workflowProject})
+	if err != nil {
+		t.Fatalf("StartWorkflowWithOptions() error = %v", err)
+	}
+	content := "# Requirements\n\nUse internal storage until coding agent creates the project."
+	if err := adapter.EmitDocUpdate("u1", workflow.PhaseCodingRequirements, content); err != nil {
+		t.Fatalf("EmitDocUpdate() error = %v", err)
+	}
+
+	projectDocPath := filepath.Join(workflowProject, ".maclaw", "workflow", state.ID, workflowPhaseFileName(workflow.PhaseCodingRequirements))
+	if _, err := os.Stat(projectDocPath); !os.IsNotExist(err) {
+		t.Fatalf("missing workflow project must not be created for docs, stat err=%v path=%s", err, projectDocPath)
+	}
+	internalDocPath := filepath.Join(app.GetDataDir(), "workflow", sanitizeWorkflowPhaseFileStem(state.ID), workflowPhaseFileName(workflow.PhaseCodingRequirements))
+	if got, err := os.ReadFile(internalDocPath); err != nil || string(got) != content {
+		t.Fatalf("workflow doc not persisted internally, content=%q err=%v path=%s", string(got), err, internalDocPath)
+	}
+	if got := adapter.readPersistedDoc(workflow.PhaseCodingRequirements); got != content {
+		t.Fatalf("readPersistedDoc() = %q, want %q", got, content)
+	}
+}
+
+func TestGUIWorkflowAdapterCompletionPublishesInternalDocsAfterProjectCreated(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	workflowProject := filepath.Join(t.TempDir(), "new-project")
+	engine := workflow.NewWorkflowEngine(workflow.NewWorkflowRegistry(), nil, nil, nil)
+	adapter := NewGUIWorkflowAdapter(app, engine)
+	engine.SetCallbacks(adapter)
+
+	state, err := engine.StartWorkflowWithOptions("u1", workflow.StructuredIntent{Category: workflow.WorkflowCoding}, workflow.WorkflowStartOptions{ProjectPath: workflowProject})
+	if err != nil {
+		t.Fatalf("StartWorkflowWithOptions() error = %v", err)
+	}
+	adapter.workflowStartDate = time.Date(2026, 6, 9, 10, 0, 0, 0, time.Local)
+	content := "# Requirements\n\nPublish once coding agent creates the project."
+	if err := adapter.EmitDocUpdate("u1", workflow.PhaseCodingRequirements, content); err != nil {
+		t.Fatalf("EmitDocUpdate() error = %v", err)
+	}
+	internalDocPath := filepath.Join(app.GetDataDir(), "workflow", sanitizeWorkflowPhaseFileStem(state.ID), workflowPhaseFileName(workflow.PhaseCodingRequirements))
+	if _, err := os.Stat(workflowProject); !os.IsNotExist(err) {
+		t.Fatalf("planning doc persistence must not create project root, stat err=%v path=%s", err, workflowProject)
+	}
+	if err := os.MkdirAll(workflowProject, 0o755); err != nil {
+		t.Fatalf("MkdirAll(workflowProject) error = %v", err)
+	}
+
+	state.Status = workflow.WorkflowCompleted
+	state.PhaseOutputs[workflow.PhaseCodingRequirements] = content
+	if err := adapter.EmitPhaseUpdate("u1", state); err != nil {
+		t.Fatalf("EmitPhaseUpdate(completed) error = %v", err)
+	}
+
+	wantPath := filepath.Join(workflowProject, "docs", "workflow", "coding", "2026-06-09", workflowPhaseFileName(workflow.PhaseCodingRequirements))
+	if got, err := os.ReadFile(wantPath); err != nil || string(got) != content {
+		t.Fatalf("completion should publish internal phase doc to project storage, content=%q err=%v path=%s", string(got), err, wantPath)
+	}
+	if _, err := os.Stat(internalDocPath); !os.IsNotExist(err) {
+		t.Fatalf("completion should clean internal fallback after project publish, stat err=%v path=%s", err, internalDocPath)
 	}
 }
 
@@ -301,8 +365,8 @@ func TestGUIWorkflowAdapterDoesNotUseUnpreparedWorkflowProjectPath(t *testing.T)
 
 func TestGUIWorkflowAdapterWorkflowStateProjectPathChangeInvalidatesProjectStorage(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	firstProject := filepath.Join(t.TempDir(), "first-project")
-	secondProject := filepath.Join(t.TempDir(), "second-project")
+	firstProject := t.TempDir()
+	secondProject := t.TempDir()
 	adapter := NewGUIWorkflowAdapter(app, nil)
 	state := &workflow.WorkflowState{ID: "wf-same", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: firstProject}
 
@@ -349,7 +413,7 @@ func TestGUIWorkflowAdapterWorkflowStateEmptyProjectPathClearsWorkingDirForSameW
 
 func TestGUIWorkflowAdapterCompletionUsesWorkflowStateProjectPathForManifest(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	workflowProject := filepath.Join(t.TempDir(), "workflow-project")
+	workflowProject := t.TempDir()
 	adapter := NewGUIWorkflowAdapter(app, nil)
 	adapter.activeWorkflowID = "wf-complete"
 	adapter.activeWorkflowType = workflow.WorkflowCoding
@@ -408,7 +472,7 @@ func TestGUIWorkflowAdapterCompletionInvalidProjectPathDoesNotUseStaleWorkingDir
 
 func TestGUIWorkflowAdapterCompletionInvalidProjectPathClearsCachedProjectStorage(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	staleProject := filepath.Join(t.TempDir(), "stale-project")
+	staleProject := t.TempDir()
 	invalidProject := filepath.Join(t.TempDir(), "project-file")
 	if err := os.WriteFile(invalidProject, []byte("not a directory"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)

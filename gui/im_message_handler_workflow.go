@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -412,20 +411,14 @@ func (h *IMMessageHandler) workflowStartProjectPathForOwner(ownerID string) stri
 	return strings.TrimSpace(corelib.EffectiveWorkspaceDir())
 }
 
-func (h *IMMessageHandler) prepareWorkflowProjectPath() (string, error) {
+func (h *IMMessageHandler) resolveWorkflowStartProjectPath() (string, error) {
 	projectPath := strings.TrimSpace(h.workflowStartProjectPath())
-	return h.ensureWorkflowProjectPath(projectPath)
+	return h.resolveWorkflowProjectPath(projectPath)
 }
 
-func (h *IMMessageHandler) ensureWorkflowProjectPath(projectPath string) (string, error) {
-	projectPath = strings.TrimSpace(projectPath)
-	if projectPath == "" {
-		return "", nil
-	}
-	if err := os.MkdirAll(projectPath, 0o755); err != nil {
-		return "", fmt.Errorf("create workflow project directory %q: %w", projectPath, err)
-	}
-	return projectPath, nil
+func (h *IMMessageHandler) resolveWorkflowProjectPath(projectPath string) (string, error) {
+	normalized, _, err := normalizeWorkflowProjectPath(projectPath)
+	return normalized, err
 }
 
 func (h *IMMessageHandler) confirmWorkflowStart(userID, text string, intent workflow.StructuredIntent, startReply string) *IMAgentResponse {
@@ -631,10 +624,10 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 	if projectPath == "" {
 		projectPath = h.workflowStartProjectPathForOwner(userID)
 	}
-	if preparedPath, err := h.ensureWorkflowProjectPath(projectPath); err != nil {
+	if normalizedPath, err := h.resolveWorkflowProjectPath(projectPath); err != nil {
 		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, lang, err)}}
 	} else {
-		projectPath = preparedPath
+		projectPath = normalizedPath
 	}
 	state, err := engine.StartWorkflowWithOptions(userID, wfIntent, workflow.WorkflowStartOptions{ProjectPath: projectPath})
 	if err != nil {
@@ -1284,14 +1277,19 @@ func (h *IMMessageHandler) handleWorkflowReview(engine *workflow.WorkflowEngine,
 		userMessage = fmt.Sprintf("[Context]\n%s\n\n[User reply]\n%s", phaseContext, text)
 	}
 
-	if detectWorkflowReviewBlockedExecutionIntent(text) {
-		log.Printf("[workflow-review] user=%s text_len=%d intent=%q source=execution-block", userID, len([]rune(text)), workflow.ReviewIntentOther)
-		return h.workflowReviewExecutionBlockedResponse(engine, userID)
-	}
-
 	if reviewIntent, ok := detectWorkflowReviewIntentFast(text); ok {
 		log.Printf("[workflow-review] user=%s text_len=%d intent=%q source=fast-path", userID, len([]rune(text)), reviewIntent)
 		return h.applyWorkflowReviewIntent(engine, userID, reviewIntent, text, platform)
+	}
+
+	if reviewIntent, ok := detectCodingTaskBreakdownReviewAdvanceIntent(engine, userID, text); ok {
+		log.Printf("[workflow-review] user=%s text_len=%d intent=%q source=coding-task-breakdown-advance", userID, len([]rune(text)), reviewIntent)
+		return h.applyWorkflowReviewIntent(engine, userID, reviewIntent, text, platform)
+	}
+
+	if detectWorkflowReviewBlockedExecutionIntent(text) {
+		log.Printf("[workflow-review] user=%s text_len=%d intent=%q source=execution-block", userID, len([]rune(text)), workflow.ReviewIntentOther)
+		return h.workflowReviewExecutionBlockedResponse(engine, userID)
 	}
 
 	classifyResult, err := h.LLMClassify(ctx, LLMClassifyRequest{
@@ -1357,7 +1355,7 @@ func detectWorkflowReviewIntentFast(text string) (workflow.ReviewIntent, bool) {
 		return workflow.ReviewIntentOther, false
 	}
 	switch trimmed {
-	case "\u786e\u8ba4", "\u786e\u8ba4\u901a\u8fc7", "\u901a\u8fc7", "\u540c\u610f", "\u53ef\u4ee5", "\u6ca1\u95ee\u9898", "\u6ca1\u610f\u89c1", "\u7ee7\u7eed", "\u7ee7\u7eed\u63a8\u8fdb", "\u5f00\u5de5", "\u5f00\u59cb", "\u5f00\u59cb\u5427", "\u6267\u884c", "\u8d70\u8d77", "\u597d", "\u597d\u7684", "\u5f00\u59cb\u7f16\u7801", "\u5f00\u59cb\u7f16\u7801\u5427", "\u5f00\u59cb\u5199\u4ee3\u7801", "\u5f00\u59cb\u5b9e\u73b0", "\u5f00\u59cb\u5f00\u53d1", "\u5f00\u59cb\u6267\u884c", "\u786e\u8ba4\u5f00\u59cb\u7f16\u7801", "\u786e\u8ba4\u5f00\u59cb\u5b9e\u73b0":
+	case "\u786e\u8ba4", "\u786e\u8ba4\u901a\u8fc7", "\u786e\u5b9a", "\u786e\u5b9a\u7ee7\u7eed", "\u786e\u5b9a\u901a\u8fc7", "\u901a\u8fc7", "\u540c\u610f", "\u53ef\u4ee5", "\u6ca1\u95ee\u9898", "\u6ca1\u610f\u89c1", "\u7ee7\u7eed", "\u7ee7\u7eed\u63a8\u8fdb", "\u5f00\u5de5", "\u5f00\u59cb", "\u5f00\u59cb\u5427", "\u6267\u884c", "\u8d70\u8d77", "\u597d", "\u597d\u7684", "\u5f00\u59cb\u7f16\u7801", "\u5f00\u59cb\u7f16\u7801\u5427", "\u5f00\u59cb\u5199\u4ee3\u7801", "\u5f00\u59cb\u5b9e\u73b0", "\u5f00\u59cb\u5f00\u53d1", "\u5f00\u59cb\u6267\u884c", "\u786e\u8ba4\u5f00\u59cb\u7f16\u7801", "\u786e\u8ba4\u5f00\u59cb\u5b9e\u73b0", "\u786e\u5b9a\u5f00\u59cb\u7f16\u7801", "\u786e\u5b9a\u5f00\u59cb\u5b9e\u73b0":
 		return workflow.ReviewIntentConfirm, true
 	case "\u8df3\u8fc7", "skip", "skip it":
 		return workflow.ReviewIntentSkip, true
@@ -1372,6 +1370,54 @@ func detectWorkflowReviewIntentFast(text string) (workflow.ReviewIntent, bool) {
 		return workflow.ReviewIntentConfirm, true
 	}
 	return workflow.ReviewIntentOther, false
+}
+
+func detectCodingTaskBreakdownReviewAdvanceIntent(engine *workflow.WorkflowEngine, userID, text string) (workflow.ReviewIntent, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(text))
+	trimmed = strings.Trim(trimmed, " \t\r\n.\u3002!\uff01\uff1f?")
+	if trimmed == "" || engine == nil {
+		return workflow.ReviewIntentOther, false
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil ||
+		ws.Type != workflow.WorkflowCoding ||
+		ws.CurrentPhase != workflow.PhaseCodingTaskBreakdown ||
+		ws.PendingReviewPhaseID != workflow.PhaseCodingTaskBreakdown {
+		return workflow.ReviewIntentOther, false
+	}
+	if looksLikeTaskBreakdownDocumentChange(trimmed) {
+		return workflow.ReviewIntentOther, false
+	}
+	if looksLikeCodingImplementationAdvance(trimmed) {
+		return workflow.ReviewIntentConfirm, true
+	}
+	return workflow.ReviewIntentOther, false
+}
+
+func looksLikeTaskBreakdownDocumentChange(text string) bool {
+	revisionMarkers := []string{
+		"\u4fee\u6539", "\u8c03\u6574", "\u8865\u5145", "\u66f4\u65b0", "\u6539\u6210", "\u6539\u4e3a", "\u5220\u9664", "\u79fb\u9664",
+		"\u52a0\u4e0a", "\u52a0\u5230", "\u589e\u52a0", "\u5199\u8fdb", "\u653e\u5230", "\u653e\u5165",
+		"modify", "change", "revise", "update", "add", "remove",
+	}
+	documentTargets := []string{
+		"\u6587\u6863", "\u4efb\u52a1", "\u62c6\u5206", "\u5217\u8868", "\u8ba1\u5212", "\u8bbe\u8ba1", "\u9700\u6c42",
+		"t1", "t2", "t3", "task", "tasks", "plan", "document", "doc",
+	}
+	return containsAnyWorkflowReviewMarker(text, revisionMarkers) && containsAnyWorkflowReviewMarker(text, documentTargets)
+}
+
+func looksLikeCodingImplementationAdvance(text string) bool {
+	markers := []string{
+		"\u5b9e\u73b0", "\u5f00\u53d1", "\u7f16\u7801", "\u5199\u4ee3\u7801", "\u6539\u4ee3\u7801", "\u8dd1\u4ee3\u7801",
+		"\u6838\u5fc3\u529f\u80fd", "\u5f00\u59cb\u5b9e\u73b0", "\u5f00\u59cb\u5f00\u53d1", "\u5f00\u59cb\u7f16\u7801",
+		"\u521b\u5efa\u76ee\u5f55", "\u65b0\u5efa\u76ee\u5f55", "\u521b\u5efa\u6587\u4ef6\u5939", "\u65b0\u5efa\u6587\u4ef6\u5939",
+		"\u521b\u5efa\u6587\u4ef6", "\u65b0\u5efa\u6587\u4ef6", "\u751f\u6210\u6587\u4ef6", "\u843d\u5730\u4ee3\u7801",
+		"\u5199 cmake", "\u5199 cmakelists",
+		"implement", "implementation", "develop", "coding", "write code", "start coding",
+		"mkdir", "create cmake", "create cmakelists", "write cmake", "write cmakelists",
+	}
+	return containsAnyWorkflowReviewMarker(text, markers)
 }
 
 func looksLikeWorkflowReviewApproval(text string) bool {
@@ -1572,9 +1618,9 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 		if resp := h.confirmWorkflowStart(userID, text, *intent, reply); resp != nil {
 			return resp
 		}
-		projectPath, prepErr := h.prepareWorkflowProjectPath()
+		projectPath, prepErr := h.resolveWorkflowStartProjectPath()
 		if prepErr != nil {
-			log.Printf("[WorkflowInterception] prepare workflow project directory failed for user %s: %v", userID, prepErr)
+			log.Printf("[WorkflowInterception] invalid workflow project path for user %s: %v", userID, prepErr)
 			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, h.getWorkflowLang(), prepErr)}
 		}
 		state, err := engine.StartWorkflowWithOptions(userID, *intent, workflow.WorkflowStartOptions{ProjectPath: projectPath})
@@ -1701,9 +1747,9 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 		if resp := h.confirmWorkflowStart(userID, text, *result.Intent, result.Reply); resp != nil {
 			return resp
 		}
-		projectPath, prepErr := h.prepareWorkflowProjectPath()
+		projectPath, prepErr := h.resolveWorkflowStartProjectPath()
 		if prepErr != nil {
-			log.Printf("[WorkflowInterception] prepare workflow project directory failed for user %s: %v", userID, prepErr)
+			log.Printf("[WorkflowInterception] invalid workflow project path for user %s: %v", userID, prepErr)
 			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, h.getWorkflowLang(), prepErr)}
 		}
 		state, err := engine.StartWorkflowWithOptions(userID, *result.Intent, workflow.WorkflowStartOptions{ProjectPath: projectPath})

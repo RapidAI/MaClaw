@@ -37,6 +37,7 @@ function renderRecentTasks(overrides: Partial<ComponentProps<typeof SidebarRecen
         renameValue: '',
         setRenameValue: vi.fn(),
         resumeRecentProject: vi.fn(),
+        continueWorkflowProject: vi.fn(),
         createRecentTask: vi.fn(),
         refreshRecentProjects: vi.fn(),
         taskContextMenu: null,
@@ -170,6 +171,34 @@ describe('SidebarRecentTasks', () => {
 
         fireEvent.click(screen.getByLabelText('Open artifact source'));
         expect(OpenFileOrShowInFolder).toHaveBeenCalledWith('D:/refs/design.md');
+    });
+
+    it('shows unfinished workflow affordance without changing default task open', async () => {
+        const resumeRecentProject = vi.fn();
+        const continueWorkflowProject = vi.fn();
+        getProjectSceneMock.mockResolvedValue({
+            project_path: baseProject.project_path,
+            name: baseProject.name,
+            active_workflow: { type: 'coding', phase: 'tasks', project_path: 'D:/work/tasks/source-workflow' },
+            recent_artifacts: [{ title: 'Task plan', source_url: 'D:/refs/task-plan.md' }],
+        });
+        renderRecentTasks({
+            resumeRecentProject,
+            continueWorkflowProject,
+            recentProjects: [{ ...baseProject, active_workflow: { type: 'coding', phase: 'tasks', project_path: 'D:/work/tasks/source-workflow' } }],
+        });
+
+        expect(screen.getByText('Stage output')).toBeTruthy();
+
+        fireEvent.doubleClick(screen.getByText('Build dashboard'));
+        expect(resumeRecentProject).toHaveBeenCalledWith(baseProject.project_path);
+        expect(continueWorkflowProject).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByLabelText('Scene details'));
+        expect(await screen.findByText('Original workflow unfinished')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Continue workflow' }));
+
+        expect(continueWorkflowProject).toHaveBeenCalledWith('D:/work/tasks/source-workflow');
     });
 
     it('creates a task from the header add button', () => {

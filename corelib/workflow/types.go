@@ -116,12 +116,11 @@ var DocOnlyAllowedTools = map[string]bool{
 }
 
 // PlanningAllowedTools is the canonical set for reviewable coding-planning
-// phases. It gives the main agent enough context-gathering tools to inspect a
-// repository and produce an executable plan, while still blocking workspace
-// mutation and subagent/task delegation until the confirmed implementation
-// phase.
+// phases. Planning phases may read context and produce durable workflow
+// documents through the workflow engine, but they must not expose shell or
+// project-mutation tools. Project setup such as mkdir/CMake/src file creation
+// belongs to the confirmed implementation phase.
 var PlanningAllowedTools = map[string]bool{
-	"bash":           true,
 	"read_file":      true,
 	"list_directory": true,
 	"memory":         true,

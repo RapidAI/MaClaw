@@ -15,6 +15,14 @@ export interface ProjectSearchArtifact {
 export interface ProjectSceneDetail {
     project_path: string;
     name?: string;
+    active_workflow?: {
+        id?: string;
+        type?: string;
+        phase?: string;
+        status?: string;
+        project_path?: string;
+        pending_review?: boolean;
+    };
     workflow_types?: string[];
     tags?: string[];
     source_urls?: string[];

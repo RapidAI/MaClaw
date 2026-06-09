@@ -123,9 +123,9 @@ func TestActiveWorkflowIgnoresUICNonWorkflowBypass(t *testing.T) {
 	}
 }
 
-func TestApprovePendingWorkflowConfirmationCreatesProjectDirectory(t *testing.T) {
+func TestApprovePendingWorkflowConfirmationRecordsProjectPathWithoutCreatingDirectory(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
-	userID := "test-workflow-start-creates-project-dir"
+	userID := "test-workflow-start-records-project-dir"
 	projectPath := filepath.Join(t.TempDir(), "new-project", "nested")
 
 	result := handler.approvePendingWorkflowConfirmation(userID, &pendingConfirmation{
@@ -141,12 +141,8 @@ func TestApprovePendingWorkflowConfirmationCreatesProjectDirectory(t *testing.T)
 	if result.Handled && result.Response != nil && result.Response.Error != "" {
 		t.Fatalf("approvePendingWorkflowConfirmation returned error: %s", result.Response.Error)
 	}
-	info, err := os.Stat(projectPath)
-	if err != nil {
-		t.Fatalf("workflow start should create project directory: %v", err)
-	}
-	if !info.IsDir() {
-		t.Fatalf("workflow project path should be directory, got file: %s", projectPath)
+	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
+		t.Fatalf("workflow start must not create project directory, stat err=%v path=%s", err, projectPath)
 	}
 	state := handler.app.workflowEngine.GetActiveWorkflow(userID)
 	if state == nil {
@@ -157,7 +153,7 @@ func TestApprovePendingWorkflowConfirmationCreatesProjectDirectory(t *testing.T)
 	}
 }
 
-func TestSetWorkflowWorkingDirCreatesDirectoryAndPersistsProjectPath(t *testing.T) {
+func TestSetWorkflowWorkingDirRecordsProjectPathWithoutCreatingDirectory(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	adapter := NewGUIWorkflowAdapter(handler.app, engine)
@@ -174,12 +170,8 @@ func TestSetWorkflowWorkingDirCreatesDirectoryAndPersistsProjectPath(t *testing.
 
 	handler.app.SetWorkflowWorkingDir("  " + projectPath + "  ")
 
-	info, err := os.Stat(projectPath)
-	if err != nil {
-		t.Fatalf("SetWorkflowWorkingDir should create directory: %v", err)
-	}
-	if !info.IsDir() {
-		t.Fatalf("workflow working dir should be directory, got file: %s", projectPath)
+	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
+		t.Fatalf("SetWorkflowWorkingDir must not create project directory, stat err=%v path=%s", err, projectPath)
 	}
 	if got := adapter.GetWorkingDir(); got != projectPath {
 		t.Fatalf("adapter working dir = %q, want %q", got, projectPath)
@@ -1879,6 +1871,53 @@ func TestWorkflowReviewFastConfirmBypassesPendingUserReply(t *testing.T) {
 	}
 }
 
+func TestWorkflowReviewOkBypassesShortChitChatAndAdvances(t *testing.T) {
+	llm := &mockLLMCallerGUI{Response: "other"}
+	handler, _ := setupWorkflowTestHandler(llm)
+	engine := handler.app.workflowEngine
+	userID := "test-review-ok-not-short-chitchat"
+	workflowType := workflow.WorkflowType("gui_review_ok_not_short_chitchat")
+	if err := engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+		Type:        workflowType,
+		Name:        "review ok not short chitchat",
+		Description: "test template",
+		Phases: []workflow.PhaseTemplate{
+			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: workflow.ToolFilterFull, Kind: workflow.PhaseKindExecution, MutationScope: workflow.MutationScopeProject},
+		},
+	}); err != nil {
+		t.Fatalf("Register workflow template: %v", err)
+	}
+	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflowType,
+		Summary:  "build a desktop game",
+	}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if phaseID, _, err := engine.SavePhaseOutputAndMaybeAdvance(userID, reviewStateValidContentGUI()); err != nil || phaseID != "plan" {
+		t.Fatalf("SavePhaseOutputAndMaybeAdvance phase=%q err=%v", phaseID, err)
+	}
+	if !engine.IsAwaitingReview(userID) {
+		t.Fatal("workflow should be awaiting review before ok confirmation")
+	}
+
+	if resp, handled := handler.handleImmediateIMCommand(IMUserMessage{UserID: userID, Text: "ok", Platform: "desktop"}, "ok", nil, nil); handled {
+		t.Fatalf("workflow review ok must not be consumed by short chitchat, resp=%#v", resp)
+	}
+
+	result := handler.routeWorkflowIMMessage(IMUserMessage{UserID: userID, Text: "ok", Platform: "desktop"}, "ok", false, false)
+	if result.Response != nil || !result.WorkflowAgentLoop {
+		t.Fatalf("ok should confirm review and schedule next phase loop, got %#v", result)
+	}
+	if llm.Calls != 0 {
+		t.Fatalf("ok review confirmation should use deterministic fast path, LLM calls=%d", llm.Calls)
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || ws.CurrentPhase != "execute" || engine.IsAwaitingReview(userID) {
+		t.Fatalf("workflow should advance after ok confirmation, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))
+	}
+}
+
 func TestWorkflowReviewExecutionRequestDoesNotStartAgentLoop(t *testing.T) {
 	llm := &mockLLMCallerGUI{Response: "confirm"}
 	handler, _ := setupWorkflowTestHandler(llm)
@@ -1965,7 +2004,7 @@ func TestWorkflowReviewExecutionBlockedResponseUsesConfiguredLanguage(t *testing
 }
 
 func TestDetectWorkflowReviewIntentFast(t *testing.T) {
-	for _, text := range []string{"\u786e\u8ba4", "\u7ee7\u7eed", "\u5f00\u5de5", "\u597d\u7684", "\u5408\u7406\uff0c\u7ee7\u7eed", "\u5f00\u59cb\u7f16\u7801", "\u5f00\u59cb\u7f16\u7801\u5427", "\u786e\u8ba4\u5f00\u59cb\u5b9e\u73b0"} {
+	for _, text := range []string{"\u786e\u8ba4", "\u786e\u5b9a", "\u786e\u5b9a\u7ee7\u7eed", "\u7ee7\u7eed", "\u5f00\u5de5", "\u597d\u7684", "\u5408\u7406\uff0c\u7ee7\u7eed", "\u5f00\u59cb\u7f16\u7801", "\u5f00\u59cb\u7f16\u7801\u5427", "\u786e\u8ba4\u5f00\u59cb\u5b9e\u73b0", "\u786e\u5b9a\u5f00\u59cb\u5b9e\u73b0"} {
 		got, ok := detectWorkflowReviewIntentFast(text)
 		if !ok || got != workflow.ReviewIntentConfirm {
 			t.Fatalf("detectWorkflowReviewIntentFast(%q)=(%q,%v), want confirm,true", text, got, ok)
@@ -2162,6 +2201,95 @@ func TestCodingWorkflowTaskBreakdownContinuePushStartsImplementation(t *testing.
 	if ws == nil || ws.CurrentPhase != workflow.PhaseCodingImplementation || engine.IsAwaitingReview(userID) {
 		t.Fatalf("workflow should advance to implementation after continue-push, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))
 	}
+}
+
+func TestCodingWorkflowTaskBreakdownImplementationRequestStartsImplementation(t *testing.T) {
+	for _, text := range []string{
+		"\u5b9e\u73b0\u8d2a\u5403\u86c7\u6e38\u620f\u7684\u6838\u5fc3\u529f\u80fd",
+		"\u521b\u5efa\u76ee\u5f55 d:\\newgame \u5e76\u5199 CMakeLists.txt",
+	} {
+		t.Run(text, func(t *testing.T) {
+			llm := &mockLLMCallerGUI{Response: "supplement"}
+			handler, _ := setupWorkflowTestHandler(llm)
+			engine := prepareCodingTaskBreakdownReviewForGUI(t, handler, "test-coding-task-breakdown-advance-"+sanitizeTestNameForWorkflow(text))
+
+			trimmed := text
+			result := handler.resolveIMEntryContext(imEntryContextOptions{
+				Message: &IMUserMessage{UserID: "test-coding-task-breakdown-advance-" + sanitizeTestNameForWorkflow(text), Text: trimmed, Platform: "desktop"},
+				Trimmed: &trimmed,
+			})
+			if result.Response != nil || !result.WorkflowAgentLoop {
+				t.Fatalf("implementation-like task breakdown review reply should start implementation loop, got %#v", result)
+			}
+			if llm.Calls != 0 {
+				t.Fatalf("phase-aware implementation advance should bypass LLM classifier, calls=%d", llm.Calls)
+			}
+			ws := engine.GetActiveWorkflow("test-coding-task-breakdown-advance-" + sanitizeTestNameForWorkflow(text))
+			if ws == nil || ws.CurrentPhase != workflow.PhaseCodingImplementation || engine.IsAwaitingReview(ws.UserID) {
+				t.Fatalf("workflow should advance to implementation, got %#v awaiting=%v", ws, engine.IsAwaitingReview(ws.UserID))
+			}
+			prompt, ok := handler.stashedPhasePrompt.Load(ws.UserID)
+			if !ok || !strings.Contains(fmt.Sprint(prompt), "Coding Implementation Handoff Contract") || !strings.Contains(fmt.Sprint(prompt), "delegate_task(agent=\"coding_workflow\"") {
+				t.Fatalf("implementation prompt should contain CodingSubAgent handoff contract, got %#v", prompt)
+			}
+		})
+	}
+}
+
+func TestCodingWorkflowTaskBreakdownDocumentFeedbackDoesNotFastAdvance(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "test-coding-task-breakdown-cmake-feedback"
+	engine := prepareCodingTaskBreakdownReviewForGUI(t, handler, userID)
+
+	if intent, ok := detectCodingTaskBreakdownReviewAdvanceIntent(engine, userID, "CMakeLists.txt \u7684\u4efb\u52a1\u62c6\u5f97\u592a\u7c97"); ok || intent != workflow.ReviewIntentOther {
+		t.Fatalf("document/task feedback should not fast-advance to implementation, got (%q,%v)", intent, ok)
+	}
+}
+
+func prepareCodingTaskBreakdownReviewForGUI(t *testing.T, handler *IMMessageHandler, userID string) *workflow.WorkflowEngine {
+	t.Helper()
+	engine := handler.app.workflowEngine
+	_, err := engine.StartWorkflowWithOptions(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a desktop game",
+		Goals:    []string{"build a desktop game"},
+	}, workflow.WorkflowStartOptions{ProjectPath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
+	}
+	if err := engine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("requirements")); err != nil || phaseID != workflow.PhaseCodingRequirements {
+		t.Fatalf("SavePhaseOutput requirements phase=%q err=%v", phaseID, err)
+	}
+	if resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
+		t.Fatalf("requirements confirm should schedule next phase loop without immediate response, got %#v", resp)
+	}
+	handler.workflowAgentLoopMarker.Delete(userID)
+	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("tech_design")); err != nil || phaseID != workflow.PhaseCodingTechDesign {
+		t.Fatalf("SavePhaseOutput tech_design phase=%q err=%v", phaseID, err)
+	}
+	if resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
+		t.Fatalf("tech design confirm should schedule next phase loop without immediate response, got %#v", resp)
+	}
+	handler.workflowAgentLoopMarker.Delete(userID)
+	if phaseID, err := engine.SavePhaseOutput(userID, executableCodingBreakdown); err != nil || phaseID != workflow.PhaseCodingTaskBreakdown {
+		t.Fatalf("SavePhaseOutput task_breakdown phase=%q err=%v", phaseID, err)
+	}
+	if !engine.IsAwaitingReview(userID) {
+		t.Fatal("task breakdown should await review before implementation")
+	}
+	return engine
+}
+
+func sanitizeTestNameForWorkflow(text string) string {
+	replacer := strings.NewReplacer("\\", "-", ":", "-", " ", "-", "/", "-", "\t", "-", "\n", "-")
+	name := replacer.Replace(strings.ToLower(text))
+	if len([]rune(name)) > 40 {
+		name = string([]rune(name)[:40])
+	}
+	return name
 }
 
 func TestCaptureWorkflowDocRejectsInvalidCodingTaskBreakdown(t *testing.T) {

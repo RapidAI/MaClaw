@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 // --- Types ---
 
@@ -185,8 +186,7 @@ export function WorkflowDirectoryPanel({ hubBaseUrl, getWorkflowDirectory }: Wor
             if (getWorkflowDirectory) {
                 resp = await getWorkflowDirectory(view, filter);
             } else {
-                // Dynamic import: GetWorkflowDirectory binding may not exist yet during development
-                const mod = await import("../../../wailsjs/go/main/App");
+                const mod = await getWailsAppModule();
                 const fn = (mod as Record<string, unknown>)["GetWorkflowDirectory"] as
                     | ((view: string, filter: string) => Promise<DirectoryResponse>)
                     | undefined;

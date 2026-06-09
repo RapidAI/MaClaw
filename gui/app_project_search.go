@@ -61,6 +61,7 @@ type ProjectSearchResult struct {
 	Name            string                  `json:"name"`          // Human-readable project name
 	ProjectPath     string                  `json:"project_path"`  // Canonical absolute path
 	WorkflowType    string                  `json:"workflow_type"` // e.g. "coding", "product_design"
+	ActiveWorkflow  *ProjectWorkflowState   `json:"active_workflow,omitempty"`
 	Preview         string                  `json:"preview"`       // Short content preview (~150 chars)
 	Tags            []string                `json:"tags"`          // Union of all entry tags
 	LastActivity    string                  `json:"last_activity"` // RFC3339 formatted timestamp
@@ -70,6 +71,18 @@ type ProjectSearchResult struct {
 	Archived        bool                    `json:"archived"`      // Whether the task is archived
 	SourceURLs      []string                `json:"source_urls,omitempty"`
 	RecentArtifacts []ProjectSearchArtifact `json:"recent_artifacts,omitempty"`
+}
+
+// ProjectWorkflowState is a compact pointer to an unfinished workflow attached
+// to a recent task artifact. Continue the workflow with ProjectPath; normal
+// opens may use an independent fork for unconstrained follow-up work.
+type ProjectWorkflowState struct {
+	ID            string `json:"id,omitempty"`
+	Type          string `json:"type,omitempty"`
+	Phase         string `json:"phase,omitempty"`
+	Status        string `json:"status,omitempty"`
+	ProjectPath   string `json:"project_path,omitempty"`
+	PendingReview bool   `json:"pending_review,omitempty"`
 }
 
 // ProjectSearchArtifact is the small source-backed artifact summary attached
@@ -88,6 +101,7 @@ type ProjectSearchArtifact struct {
 type ProjectSceneDetail struct {
 	ProjectPath     string                  `json:"project_path"`
 	Name            string                  `json:"name,omitempty"`
+	ActiveWorkflow  *ProjectWorkflowState   `json:"active_workflow,omitempty"`
 	WorkflowTypes   []string                `json:"workflow_types,omitempty"`
 	Tags            []string                `json:"tags,omitempty"`
 	SourceURLs      []string                `json:"source_urls,omitempty"`
@@ -111,9 +125,11 @@ func (a *App) GetProjectScene(projectPath string) (*ProjectSceneDetail, error) {
 
 	scene, ok := projectSceneMap(a.memoryStore.SceneIndex(100))[projectPath]
 	if !ok {
-		return &ProjectSceneDetail{ProjectPath: projectPath, Name: lastPathComponent(projectPath)}, nil
+		return &ProjectSceneDetail{ProjectPath: projectPath, Name: lastPathComponent(projectPath), ActiveWorkflow: a.activeWorkflowForRecentTaskPath(projectPath)}, nil
 	}
-	return projectSceneDetailFromRecord(scene), nil
+	detail := projectSceneDetailFromRecord(scene)
+	detail.ActiveWorkflow = a.activeWorkflowForRecentTaskPath(projectPath)
+	return detail, nil
 }
 
 // SearchProjects searches the project index for projects matching the query.
@@ -148,6 +164,7 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 	for _, rec := range records {
 		result := projectRecordToSearchResult(pi, rec)
 		enrichProjectSearchResultWithScene(&result, scenesByPath[rec.ProjectPath])
+		result.ActiveWorkflow = a.activeWorkflowForProject(projectWorkflowProjectPathForRecord(rec))
 		results = append(results, result)
 	}
 
@@ -186,6 +203,9 @@ func collapseRecentTaskForkRecords(records []memory.ProjectRecord) []memory.Proj
 }
 
 func recentTaskLineageKey(rec memory.ProjectRecord) string {
+	if !projectRecordHasTag(rec, "forked_task") {
+		return normalizeRecentTaskPathKey(rec.ProjectPath)
+	}
 	for _, tag := range rec.Tags {
 		if strings.HasPrefix(tag, "source:") {
 			return normalizeRecentTaskPathKey(strings.TrimPrefix(tag, "source:"))
@@ -424,6 +444,57 @@ func projectRecordHasTag(rec memory.ProjectRecord, target string) bool {
 		}
 	}
 	return false
+}
+
+func projectWorkflowProjectPathForRecord(rec memory.ProjectRecord) string {
+	if !projectRecordHasTag(rec, "forked_task") {
+		return rec.ProjectPath
+	}
+	for _, tag := range rec.Tags {
+		if strings.HasPrefix(tag, "source:") {
+			if source := strings.TrimSpace(strings.TrimPrefix(tag, "source:")); source != "" {
+				return source
+			}
+		}
+	}
+	return rec.ProjectPath
+}
+
+func (a *App) activeWorkflowForRecentTaskPath(projectPath string) *ProjectWorkflowState {
+	if a == nil {
+		return nil
+	}
+	if a.memoryStore != nil {
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			if rec := pi.Get(projectPath); rec != nil {
+				return a.activeWorkflowForProject(projectWorkflowProjectPathForRecord(*rec))
+			}
+		}
+	}
+	return a.activeWorkflowForProject(projectPath)
+}
+
+func (a *App) activeWorkflowForProject(projectPath string) *ProjectWorkflowState {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" || a.workflowEngine == nil || a.workflowDisabled.Load() {
+		return nil
+	}
+	ws := a.workflowEngine.GetActiveWorkflow(projectSessionOwnerID(projectPath))
+	if ws == nil {
+		return nil
+	}
+	workflowProjectPath := normalizeProjectSessionPath(ws.ProjectPath)
+	if workflowProjectPath == "" {
+		workflowProjectPath = projectPath
+	}
+	return &ProjectWorkflowState{
+		ID:            ws.ID,
+		Type:          string(ws.Type),
+		Phase:         ws.CurrentPhase,
+		Status:        string(ws.Status),
+		ProjectPath:   workflowProjectPath,
+		PendingReview: strings.TrimSpace(ws.PendingReviewPhaseID) != "",
+	}
 }
 
 func normalizeRecentTaskPathKey(path string) string {

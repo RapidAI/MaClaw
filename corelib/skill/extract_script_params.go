@@ -52,6 +52,8 @@ var pyArgparseLongOptionCallRe = regexp.MustCompile(`(?s)add_argument\(([^)]*["'
 var pyArgparsePositionalCallRe = regexp.MustCompile(`(?s)add_argument\(\s*["']([a-zA-Z_][a-zA-Z0-9_-]*)["']([^)]*)\)`)
 
 var pyArgparseActionRe = regexp.MustCompile(`(?i)action\s*=\s*["']([^"']+)["']`)
+var pyArgparseDefaultRe = regexp.MustCompile(`(?i)default\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s,)\]]+))`)
+var pyArgparseNargsRe = regexp.MustCompile(`(?i)nargs\s*=\s*["']([^"']+)["']`)
 
 // Matches Click decorators: @click.option("--name", ...), click.option("--name", ...)
 var pyClickOptionCallRe = regexp.MustCompile(`(?s)(?:click\.)?option\(([^)]*["']--([a-zA-Z_][a-zA-Z0-9_-]*)["'][^)]*)\)`)
@@ -96,6 +98,7 @@ func extractPythonParams(script string) []corelib.NLSkillParam {
 			Required:  argparseOptionRequired(call),
 			Synthetic: true,
 			CLIFlag:   "--" + rawName,
+			Default:   argparseOptionDefault(call),
 		}
 		if aliases, ok := commonParamAliases[name]; ok {
 			p.Aliases = aliases
@@ -104,6 +107,7 @@ func extractPythonParams(script string) []corelib.NLSkillParam {
 	}
 	for _, m := range pyArgparsePositionalCallRe.FindAllStringSubmatch(script, -1) {
 		rawName := m[1]
+		call := m[2]
 		name := strings.ReplaceAll(rawName, "-", "_")
 		if seen[name] {
 			continue
@@ -111,8 +115,9 @@ func extractPythonParams(script string) []corelib.NLSkillParam {
 		seen[name] = true
 		p := corelib.NLSkillParam{
 			Name:      name,
-			Required:  true,
+			Required:  argparsePositionalRequired(call),
 			Synthetic: true,
+			Default:   argparseOptionDefault(call),
 		}
 		if aliases, ok := commonParamAliases[name]; ok {
 			p.Aliases = aliases
@@ -197,6 +202,42 @@ func argparseOptionRequired(call string) bool {
 	compact = strings.ReplaceAll(compact, "\t", "")
 	compact = strings.ReplaceAll(compact, "\n", "")
 	return strings.Contains(compact, "required=true")
+}
+
+func argparseOptionDefault(call string) string {
+	m := pyArgparseDefaultRe.FindStringSubmatch(call)
+	if len(m) < 4 {
+		return ""
+	}
+	for _, candidate := range m[1:] {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		switch strings.ToLower(candidate) {
+		case "none":
+			return ""
+		default:
+			return candidate
+		}
+	}
+	return ""
+}
+
+func argparsePositionalRequired(call string) bool {
+	if argparseOptionDefault(call) != "" {
+		return false
+	}
+	m := pyArgparseNargsRe.FindStringSubmatch(call)
+	if len(m) < 2 {
+		return true
+	}
+	switch strings.TrimSpace(m[1]) {
+	case "?", "*":
+		return false
+	default:
+		return true
+	}
 }
 
 func argparseOptionTakesNoValue(call string) bool {

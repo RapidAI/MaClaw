@@ -34,6 +34,7 @@ function renderPane(status: any, overrides: Partial<React.ComponentProps<typeof 
             renameValue=""
             setRenameValue={noop}
             resumeRecentProject={noop}
+            continueWorkflowProject={noop}
             createRecentTask={noop}
             refreshRecentProjects={noop}
             taskContextMenu={null}

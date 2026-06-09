@@ -56,6 +56,32 @@ parser.add_argument("output")
 	}
 }
 
+func TestExtractScriptParamsPythonArgparseDefaultsAndOptionalPositional(t *testing.T) {
+	script := `
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("action", nargs="?", default="realtime")
+parser.add_argument("--lat", type=float, default=39.9)
+parser.add_argument("--lng", type=float, default=116.4)
+`
+
+	params := ExtractScriptParams(script, "python")
+	byName := map[string]corelib.NLSkillParam{}
+	for _, param := range params {
+		byName[param.Name] = param
+	}
+
+	if byName["action"].Required || byName["action"].Default != "realtime" {
+		t.Fatalf("action param = %#v, want optional positional with realtime default", byName["action"])
+	}
+	if byName["lat"].Required || byName["lat"].Default != "39.9" || byName["lat"].CLIFlag != "--lat" {
+		t.Fatalf("lat param = %#v, want optional --lat with numeric default", byName["lat"])
+	}
+	if byName["lng"].Required || byName["lng"].Default != "116.4" || byName["lng"].CLIFlag != "--lng" {
+		t.Fatalf("lng param = %#v, want optional --lng with numeric default", byName["lng"])
+	}
+}
+
 func TestExtractScriptParamsPythonClickOptionsAndArguments(t *testing.T) {
 	script := `
 import click

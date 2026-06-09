@@ -232,9 +232,12 @@ func TestBuildPhaseSystemPrompt_PlanningBoundarySeparatesDocsFromProjectWrites(t
 	for _, want := range []string{
 		"## Planning Tool Boundary",
 		"workflow system saves this phase deliverable",
+		"Do not run shell commands",
 		"Do not create, edit, move, or delete project files",
+		"## Coding Task Breakdown Contract",
+		"only the executable task breakdown document",
 		"CMake files",
-		"implementation phase",
+		"next implementation phase delegates",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("planning prompt missing %q:\n%s", want, prompt)

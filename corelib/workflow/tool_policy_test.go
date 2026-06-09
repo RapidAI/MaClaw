@@ -90,12 +90,12 @@ func TestDocOnlyPolicyBlocksExecutionAndMutationTools(t *testing.T) {
 }
 
 func TestPlanningPolicyAllowsInspectionButBlocksImplementationTools(t *testing.T) {
-	for _, name := range []string{"bash", "read_file", "list_directory", "send_file", "web_search", "web_fetch"} {
+	for _, name := range []string{"read_file", "list_directory", "send_file", "web_search", "web_fetch"} {
 		if !IsToolAllowedByPolicy(ToolFilterPlanning, name) {
 			t.Fatalf("expected %s to be allowed by planning workflow policy", name)
 		}
 	}
-	for _, name := range []string{"write_file", "edit_file", "edit_lines", "task", "delegate_task", "ssh", "async_wait", "browser"} {
+	for _, name := range []string{"bash", "write_file", "edit_file", "edit_lines", "task", "delegate_task", "ssh", "async_wait", "browser"} {
 		if IsToolAllowedByPolicy(ToolFilterPlanning, name) {
 			t.Fatalf("expected %s to be blocked by planning workflow policy", name)
 		}
@@ -109,12 +109,12 @@ func TestPlanningPolicyAllowsInspectionButBlocksImplementationTools(t *testing.T
 	for _, name := range required {
 		requiredSet[name] = true
 	}
-	for _, name := range []string{"bash", "read_file", "list_directory", "send_file"} {
+	for _, name := range []string{"read_file", "list_directory", "send_file"} {
 		if !requiredSet[name] {
 			t.Fatalf("expected %s to be a required planning workflow tool; got %#v", name, required)
 		}
 	}
-	for _, name := range []string{"write_file", "edit_file", "edit_lines", "task", "delegate_task", "ssh"} {
+	for _, name := range []string{"bash", "write_file", "edit_file", "edit_lines", "task", "delegate_task", "ssh"} {
 		if requiredSet[name] {
 			t.Fatalf("expected %s to be absent from required planning workflow tools; got %#v", name, required)
 		}
@@ -267,11 +267,8 @@ func TestWorkflowDocMutationScopeUsesSystemPersistenceOnly(t *testing.T) {
 	if err := ValidateToolCallByContract(contract, "write_file", map[string]interface{}{"path": "task-plan.md"}); err == nil {
 		t.Fatal("workflow_doc scope must reject direct write_file even for markdown")
 	}
-	if err := ValidateToolCallByContract(contract, "bash", map[string]interface{}{"command": "git status --short"}); err != nil {
-		t.Fatalf("workflow_doc scope should allow read-only bash when policy allows it: %v", err)
-	}
-	if err := ValidateToolCallByContract(contract, "bash", map[string]interface{}{"command": "touch task-plan.md"}); err == nil {
-		t.Fatal("workflow_doc scope must reject mutating bash")
+	if err := ValidateToolCallByContract(contract, "bash", map[string]interface{}{"command": "git status --short"}); err == nil {
+		t.Fatal("workflow_doc planning scope must reject bash; use read-only file/search tools instead")
 	}
 }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef, useMemo } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState, useRef, useMemo } from 'react';
 import './App.css';
 import { appVersion, buildNumber } from './version';
 import appIcon from './assets/images/maclaw2.png';
@@ -10,20 +10,11 @@ import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalle
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
-import { WebSearchConfigPanel } from './components/remote/WebSearchConfigPanel';
-import { SecurityPolicyPanel } from './components/remote/SecurityPolicyPanel';
 import { useRemotePanel } from './components/remote/useRemotePanel';
 import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
-import { LLMConfigPanel } from './components/remote/LLMConfigPanel';
-import { HubServiceRedeemPanel } from './components/remote/HubServiceRedeemPanel';
-import { EmbeddingConfigPanel } from './components/remote/EmbeddingConfigPanel';
-import { ASRConfigPanel } from './components/remote/ASRConfigPanel';
-import { TTSConfigPanel } from './components/remote/TTSConfigPanel';
 import { useAudioDevices } from './components/ai/useAudioDevices';
-import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
-import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
 import type { AssistantUpdatePayload } from './components/ai/AssistantUpdateNotice';
 import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
 import { isVirtualEmployeeOnline } from './components/ai/virtualEmployeeStatus';
@@ -38,37 +29,21 @@ import { useDialog } from './components/CustomDialog';
 import { buildHubCardStoreURL, buildHubCreditsURL } from './utils/hubCredits';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './utils/sidebarProviderSelection';
+import { getWailsAppModule } from './utils/wailsAppModule';
 import { translations } from './i18n/appTranslations';
 import { ToolConfiguration } from './components/tools/ToolConfiguration';
 import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, type ProviderEndpoint } from './config/providerCatalog';
 import { TOOL_NAMES, getToolLabel, isToolTab, normalizeToolTab } from './config/toolCatalog';
 import { getSettingsTabOptions, type SettingsTabId } from './config/settingsTabs';
 import { SettingsTabsRail } from './components/settings/SettingsTabsRail';
-import { GeneralSettingsPanel } from './components/settings/GeneralSettingsPanel';
-import { KnowledgeSettingsPanel } from './components/settings/KnowledgeSettingsPanel';
-import { MISDataSettingsPanel } from './components/settings/MISDataSettingsPanel';
-import { UISettingsPanel } from './components/settings/UISettingsPanel';
-import { ProgrammingToolsSettingsPanel } from './components/settings/ProgrammingToolsSettingsPanel';
-import { GeneralAdvancedSettingsPanel } from './components/settings/GeneralAdvancedSettingsPanel';
-import { SystemSettingsPanel } from './components/settings/SystemSettingsPanel';
-import { ProxySettingsPanel } from './components/settings/ProxySettingsPanel';
 import { IMSettingsPanel } from './components/settings/IMSettingsPanel';
-import { LLMCacheSettingsPanel } from './components/settings/LLMCacheSettingsPanel';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops } from './components/layout/backgroundTaskCount';
 import { FavoriteEmployeeSettingsPanel } from './components/settings/FavoriteEmployeeSettingsPanel';
 import { MAX_USER_FAVORITES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
-import { VirtualEmployeeSettingsPanel } from './components/settings/VirtualEmployeeSettingsPanel';
 import { MainTopHeader } from './components/layout/MainTopHeader';
 import { AppStatusMessageBar } from './components/layout/AppStatusMessageBar';
-import { TutorialPage } from './components/pages/TutorialPage';
-import { ApiStorePage } from './components/pages/ApiStorePage';
-import { ProjectManagerPage } from './components/pages/ProjectManagerPage';
-import { RemoteSessionsPage } from './components/pages/RemoteSessionsPage';
-import { SkillsPage } from './components/pages/SkillsPage';
-import { MCPPage } from './components/pages/MCPPage';
-import { GossipPage } from './components/pages/GossipPage';
 
 import { ThanksModal } from './components/modals/ThanksModal';
 import { AboutPanel } from './components/AboutPanel';
@@ -90,6 +65,33 @@ import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHu
 const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
 const DISMISSED_APP_UPDATE_VERSION_KEY = "maclaw:dismissed-app-update-version";
+
+const AIAssistantPanel = lazy(() => import('./components/ai/AIAssistantPanel').then((module) => ({ default: module.AIAssistantPanel })));
+const WebSearchConfigPanel = lazy(() => import('./components/remote/WebSearchConfigPanel').then((module) => ({ default: module.WebSearchConfigPanel })));
+const SecurityPolicyPanel = lazy(() => import('./components/remote/SecurityPolicyPanel').then((module) => ({ default: module.SecurityPolicyPanel })));
+const LLMConfigPanel = lazy(() => import('./components/remote/LLMConfigPanel').then((module) => ({ default: module.LLMConfigPanel })));
+const HubServiceRedeemPanel = lazy(() => import('./components/remote/HubServiceRedeemPanel').then((module) => ({ default: module.HubServiceRedeemPanel })));
+const EmbeddingConfigPanel = lazy(() => import('./components/remote/EmbeddingConfigPanel').then((module) => ({ default: module.EmbeddingConfigPanel })));
+const ASRConfigPanel = lazy(() => import('./components/remote/ASRConfigPanel').then((module) => ({ default: module.ASRConfigPanel })));
+const TTSConfigPanel = lazy(() => import('./components/remote/TTSConfigPanel').then((module) => ({ default: module.TTSConfigPanel })));
+const MemoryManagementPanel = lazy(() => import('./components/remote/MemoryManagementPanel').then((module) => ({ default: module.MemoryManagementPanel })));
+const GeneralSettingsPanel = lazy(() => import('./components/settings/GeneralSettingsPanel').then((module) => ({ default: module.GeneralSettingsPanel })));
+const KnowledgeSettingsPanel = lazy(() => import('./components/settings/KnowledgeSettingsPanel').then((module) => ({ default: module.KnowledgeSettingsPanel })));
+const MISDataSettingsPanel = lazy(() => import('./components/settings/MISDataSettingsPanel').then((module) => ({ default: module.MISDataSettingsPanel })));
+const UISettingsPanel = lazy(() => import('./components/settings/UISettingsPanel').then((module) => ({ default: module.UISettingsPanel })));
+const ProgrammingToolsSettingsPanel = lazy(() => import('./components/settings/ProgrammingToolsSettingsPanel').then((module) => ({ default: module.ProgrammingToolsSettingsPanel })));
+const GeneralAdvancedSettingsPanel = lazy(() => import('./components/settings/GeneralAdvancedSettingsPanel').then((module) => ({ default: module.GeneralAdvancedSettingsPanel })));
+const SystemSettingsPanel = lazy(() => import('./components/settings/SystemSettingsPanel').then((module) => ({ default: module.SystemSettingsPanel })));
+const ProxySettingsPanel = lazy(() => import('./components/settings/ProxySettingsPanel').then((module) => ({ default: module.ProxySettingsPanel })));
+const LLMCacheSettingsPanel = lazy(() => import('./components/settings/LLMCacheSettingsPanel').then((module) => ({ default: module.LLMCacheSettingsPanel })));
+const VirtualEmployeeSettingsPanel = lazy(() => import('./components/settings/VirtualEmployeeSettingsPanel').then((module) => ({ default: module.VirtualEmployeeSettingsPanel })));
+const TutorialPage = lazy(() => import('./components/pages/TutorialPage').then((module) => ({ default: module.TutorialPage })));
+const ApiStorePage = lazy(() => import('./components/pages/ApiStorePage').then((module) => ({ default: module.ApiStorePage })));
+const ProjectManagerPage = lazy(() => import('./components/pages/ProjectManagerPage').then((module) => ({ default: module.ProjectManagerPage })));
+const RemoteSessionsPage = lazy(() => import('./components/pages/RemoteSessionsPage').then((module) => ({ default: module.RemoteSessionsPage })));
+const SkillsPage = lazy(() => import('./components/pages/SkillsPage').then((module) => ({ default: module.SkillsPage })));
+const MCPPage = lazy(() => import('./components/pages/MCPPage').then((module) => ({ default: module.MCPPage })));
+const GossipPage = lazy(() => import('./components/pages/GossipPage').then((module) => ({ default: module.GossipPage })));
 
 const unavailableDigitalEmployeeFeatureStatus = { visible: false, reason: 'unavailable' };
 
@@ -360,7 +362,7 @@ function App() {
     const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean } | null>(null);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
-    const [recentProjects, setRecentProjects] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; preview?: string; tags?: string[]; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
+    const [recentProjects, setRecentProjects] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
     const recentProjectsRef = useRef(recentProjects);
     recentProjectsRef.current = recentProjects;
     const [status, setStatus] = useState("");
@@ -439,7 +441,7 @@ function App() {
         const fetchVeList = () => {
             const seq = requestSeq + 1;
             requestSeq = seq;
-            import("../wailsjs/go/main/App").then((mod) => {
+            getWailsAppModule().then((mod) => {
                 if (cancelled || seq !== requestSeq) return;
                 if ((mod as any).ListVirtualEmployees) {
                     (mod as any).ListVirtualEmployees().then((list: VirtualEmployeeEntry[]) => {
@@ -1918,6 +1920,23 @@ function App() {
         }
     }, [refreshRecentProjects, switchTool]);
 
+    const continueWorkflowProject = useCallback(async (projectPath: string) => {
+        const sourcePath = projectPath.trim();
+        if (!sourcePath) return;
+        try {
+            switchTool('ai');
+            const proj = recentProjectsRef.current.find(p => p.project_path === sourcePath || p.active_workflow?.project_path === sourcePath);
+            const title = proj?.name || sourcePath.split(/[\\/]/).pop() || sourcePath;
+            setPendingProjectTabOpen({
+                projectPath: sourcePath,
+                taskTitle: title,
+                autoSend: false,
+            });
+        } catch (error) {
+            console.error("continueWorkflowProject failed:", error);
+        }
+    }, [switchTool]);
+
     const createRecentTask = useCallback(async (name: string) => {
         const taskName = name.trim();
         if (!taskName) return;
@@ -2877,6 +2896,7 @@ ${instruction}`;
                 renameValue={renameValue}
                 setRenameValue={setRenameValue}
                 resumeRecentProject={resumeRecentProject}
+                continueWorkflowProject={continueWorkflowProject}
                 assistantReady={aiAssistant.ready}
                 onRecentTaskSwitchBlocked={() => showToastMessage(localizeText('System is warming up. Please switch later.', '系统正在预热，请稍后切换。', '系統正在預熱，請稍後切換。'))}
                 createRecentTask={createRecentTask}
@@ -2921,6 +2941,7 @@ ${instruction}`;
                 showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
             />
             <div className="main-container" data-ai-theme={aiThemeMode}>
+                <Suspense fallback={null}>
                 {/* AI assistant as main content (both lite and pro modes) */}
                 {navTab === 'ai' ? (
                     <div className="ai-main-panel-shell">
@@ -3676,7 +3697,8 @@ ${instruction}`;
                     codingAgentProgress={codingAgentProgress}
                 />
             </>)}
-            </div>
+                </Suspense>
+        </div>
 
             {/* Modals */}
             {showRemoteActivationModal && (
@@ -4136,9 +4158,7 @@ ${instruction}`;
                         console.info("[onboarding] App:onRegistered:done");
                     }}
                     onSaveField={(patch) => {
-                        setTimeout(() => {
-                            void saveRemoteConfigField(patch as any);
-                        }, 0);
+                        void saveRemoteConfigField(patch as any);
                     }}
                 />
             )}

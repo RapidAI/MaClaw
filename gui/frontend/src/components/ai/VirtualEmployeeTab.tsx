@@ -6,6 +6,7 @@ import { participantIdentityMatches, participantNameForIdentity } from "./partic
 export { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 // --- Types ---
 
@@ -164,8 +165,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
 
     useEffect(() => {
         if (!listVirtualEmployees) {
-            // Dynamically import to avoid hard dependency in tests
-            import("../../../wailsjs/go/main/App").then((mod) => {
+            getWailsAppModule().then((mod) => {
                 if (mountedRef.current) {
                     const listFn = (mod as any).ListVirtualEmployees;
                     if (typeof listFn === "function") {

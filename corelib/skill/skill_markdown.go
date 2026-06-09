@@ -20,6 +20,7 @@ import (
 var (
 	bashBlockRe        = regexp.MustCompile("(?ims)^```[ \t]*(bash|sh|shell|zsh|cmd|bat|powershell|pwsh)([^\n`]*)\n(.*?)^```[ \t]*$")
 	anglePlaceholderRe = regexp.MustCompile(`<[^>\s]+>`)
+	asciiPlaceholderRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
 )
 
 // hasUnresolvedPlaceholders checks if a line contains template-like
@@ -901,12 +902,23 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 	steps := make([]corelib.NLSkillStep, 0)
 	scriptsDir := filepath.Join(skillDir, "scripts")
 
-	// Build a set of script files that actually exist in the scripts/ directory.
-	localScripts := make(map[string]bool)
+	// Build a lookup of bundled executable scripts that exist either in the
+	// package root or in scripts/. Older skills often store runnable helpers
+	// next to SKILL.md instead of under scripts/, and both layouts should be
+	// treated as first-class local assets.
+	localScripts := make(map[string]string)
 	scriptEntries, _ := os.ReadDir(scriptsDir)
 	for _, e := range scriptEntries {
 		if !e.IsDir() && isScriptFileName(e.Name()) {
-			localScripts[e.Name()] = true
+			localScripts[e.Name()] = filepath.Join(scriptsDir, e.Name())
+		}
+	}
+	rootEntries, _ := os.ReadDir(skillDir)
+	for _, e := range rootEntries {
+		if !e.IsDir() && isScriptFileName(e.Name()) {
+			if _, exists := localScripts[e.Name()]; !exists {
+				localScripts[e.Name()] = filepath.Join(skillDir, e.Name())
+			}
 		}
 	}
 
@@ -930,6 +942,7 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		captureDirectives = extractCaptureDirectives(parsed.markdown)
 	}
 	stepContexts := make([]markdownBashBlockContext, 0)
+	inferredParams := make([]corelib.NLSkillParam, 0)
 
 	if len(allBlocks) > 0 {
 		log.Printf("[skill-parser] %s: found %d bash blocks in SKILL.md, %d scripts in scripts/",
@@ -943,15 +956,6 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 			// references real files in the skill directory.
 			resolved := resolveBaseDirInBlock(rawBlock, skillDir)
 
-			// Check if the resolved block is executable (not a usage example).
-			if !isResolvedBlockExecutable(resolved, skillDir) {
-				continue
-			}
-			if currentBlockIdx < len(blockContexts) && isMarkdownDependencyInstallBlock(resolved, blockContexts[currentBlockIdx]) {
-				log.Printf("[skill-parser] %s: skipping dependency/install example block", parsed.name)
-				continue
-			}
-
 			// Check if this block references a local script in scripts/.
 			// If so, use the script-based command (with proper quoting etc.)
 			var localScriptPath string
@@ -963,8 +967,8 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 				for _, field := range splitMarkdownCommandFields(line) {
 					field = strings.Trim(field, "\"'`")
 					base := filepath.Base(field)
-					if isScriptFileName(base) && localScripts[base] {
-						localScriptPath = filepath.Join(scriptsDir, base)
+					if isScriptFileName(base) && localScripts[base] != "" {
+						localScriptPath = localScripts[base]
 						break
 					}
 				}
@@ -973,14 +977,32 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 				}
 			}
 
+			scriptParams := readLocalScriptParams(localScriptPath)
+			normalizedLocalCommand := ""
+			if localScriptPath != "" {
+				normalizedLocalCommand = normalizeImportedScriptCommandWithParams(rewriteImportedLocalScriptCommand(resolved, localScriptPath), scriptParams)
+			}
+
+			// Check if the resolved block is executable (not a usage example).
+			if !isResolvedBlockExecutable(resolved, skillDir) {
+				if strings.TrimSpace(normalizedLocalCommand) == "" || !isParameterizedMarkdownCommandExecutable(normalizedLocalCommand, skillDir) {
+					continue
+				}
+			}
+			if currentBlockIdx < len(blockContexts) && isMarkdownDependencyInstallBlock(resolved, blockContexts[currentBlockIdx]) {
+				log.Printf("[skill-parser] %s: skipping dependency/install example block", parsed.name)
+				continue
+			}
+
 			var command string
 			if localScriptPath != "" {
 				// Use the current bash block, not the first matching line in the
 				// whole document, so alternative invocations keep their own args.
-				command = normalizeImportedScriptCommand(rewriteImportedLocalScriptCommand(resolved, localScriptPath))
+				command = normalizedLocalCommand
 				if strings.TrimSpace(command) == "" {
 					continue
 				}
+				inferredParams = mergeUniqueSkillParams(inferredParams, scriptParams)
 				log.Printf("[skill-parser] %s: step from script ref: %s", parsed.name, filepath.Base(localScriptPath))
 			} else if parameterized, ok := parameterizeMarkdownUsageCommand(resolved, blockContexts[currentBlockIdx]); ok {
 				command = parameterized
@@ -1018,21 +1040,25 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		}
 	}
 
-	// Fallback: if no bash blocks exist in markdown but scripts/ has files,
-	// include all scripts as steps (legacy behavior for skills without
-	// inline bash blocks in their SKILL.md).
-	if len(steps) == 0 && len(scriptEntries) > 0 {
-		log.Printf("[skill-parser] %s: no bash blocks produced steps, falling back to scripts/ scan (%d files)",
-			parsed.name, len(scriptEntries))
-		for _, e := range scriptEntries {
-			if e.IsDir() {
-				continue
-			}
-			scriptPath := filepath.Join(scriptsDir, e.Name())
+	// Fallback: if no bash blocks exist in markdown but the package bundles
+	// runnable scripts, include them as steps (legacy behavior for skills
+	// without inline bash blocks in their SKILL.md).
+	if len(steps) == 0 && len(localScripts) > 0 {
+		log.Printf("[skill-parser] %s: no bash blocks produced steps, falling back to bundled script scan (%d files)",
+			parsed.name, len(localScripts))
+		scriptPaths := make([]string, 0, len(localScripts))
+		for _, scriptPath := range localScripts {
+			scriptPaths = append(scriptPaths, scriptPath)
+		}
+		slices.Sort(scriptPaths)
+		for _, scriptPath := range scriptPaths {
+			scriptParams := readLocalScriptParams(scriptPath)
 			command, ok := scriptExecutionCommandFromMarkdown(scriptPath, parsed.markdown, skillDir)
 			if !ok {
 				continue
 			}
+			command = AppendRunParamPlaceholders(command, scriptParams)
+			inferredParams = mergeUniqueSkillParams(inferredParams, scriptParams)
 			params := map[string]interface{}{"command": command}
 			if strings.TrimSpace(skillDir) != "" {
 				params["working_dir"] = skillDir
@@ -1135,7 +1161,7 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		RequiresNode:            parsed.requiresNode,
 		RequiresBins:            parsed.requiresBins,
 		Operations:              parsed.operations,
-		Params:                  parsed.params,
+		Params:                  mergeUniqueSkillParams(parsed.params, inferredParams),
 		Pipeline:                parsed.pipeline,
 		Capabilities:            parsed.capabilities,
 		RequiresTools:           parsed.requiresTools,
@@ -1188,6 +1214,10 @@ func commandFromSkillMarkdown(scriptPath, markdown, skillDir string) (string, bo
 // in a SKILL.md command line with {{input}} / {{output}} template variables
 // so that the runner can substitute actual file paths at execution time.
 func normalizeImportedScriptCommand(command string) string {
+	return normalizeImportedScriptCommandWithParams(command, nil)
+}
+
+func normalizeImportedScriptCommandWithParams(command string, params []corelib.NLSkillParam) string {
 	// Static replacements for common placeholder patterns.
 	replacer := strings.NewReplacer(
 		`"/绝对路径/输入.md"`, "{{input}}",
@@ -1211,7 +1241,8 @@ func normalizeImportedScriptCommand(command string) string {
 		`'/path/to/input.md'`, "{{input}}",
 		`'/path/to/output.pdf'`, "{{output}}",
 	)
-	return parameterizeMarkdownSampleCommandArgs(replacer.Replace(command))
+	command = parameterizeMarkdownSampleCommandArgs(replacer.Replace(command))
+	return parameterizeMarkdownDeclaredPlaceholders(command, params)
 }
 
 func rewriteImportedLocalScriptCommand(block, localScriptPath string) string {
@@ -1228,6 +1259,84 @@ func rewriteImportedLocalScriptCommand(block, localScriptPath string) string {
 		return replaceMarkdownCommandTokenOnce(command, token, quoteScriptPath(localScriptPath))
 	}
 	return command
+}
+
+func parameterizeMarkdownDeclaredPlaceholders(command string, params []corelib.NLSkillParam) string {
+	fields := strings.Fields(command)
+	result := command
+	for i, field := range fields {
+		if replacement, ok := parameterizeMarkdownDeclaredFlagAssignment(field, params); ok {
+			result = replaceCommandTokenOnce(result, field, replacement)
+			continue
+		}
+		trimmed := strings.TrimSpace(field)
+		if !strings.HasPrefix(trimmed, "-") {
+			if name := markdownPlaceholderTokenName(trimmed); name != "" {
+				result = replaceCommandTokenOnce(result, field, "{{"+name+"}}")
+			}
+			continue
+		}
+		if i+1 >= len(fields) {
+			continue
+		}
+		name := markdownCLIFlagParamName(trimmed, params)
+		if name == "" || !isMarkdownDocPlaceholderToken(fields[i+1]) {
+			continue
+		}
+		result = replaceCommandTokenOnce(result, fields[i+1], "{{"+name+"}}")
+	}
+	return result
+}
+
+func parameterizeMarkdownDeclaredFlagAssignment(field string, params []corelib.NLSkillParam) (string, bool) {
+	flag, value, ok := strings.Cut(strings.TrimSpace(field), "=")
+	if !ok || !strings.HasPrefix(flag, "-") || !isMarkdownDocPlaceholderToken(value) {
+		return "", false
+	}
+	name := markdownCLIFlagParamName(flag, params)
+	if name == "" {
+		return "", false
+	}
+	return flag + "={{" + name + "}}", true
+}
+
+func markdownCLIFlagParamName(flag string, params []corelib.NLSkillParam) string {
+	flagKey := canonicalRunVarKey(strings.TrimLeft(strings.TrimSpace(flag), "-"))
+	if flagKey == "" {
+		return ""
+	}
+	for _, param := range params {
+		if cliFlag := strings.TrimSpace(param.CLIFlag); cliFlag != "" && canonicalRunVarKey(strings.TrimLeft(cliFlag, "-")) == flagKey {
+			return canonicalRunVarKey(param.Name)
+		}
+	}
+	return flagKey
+}
+
+func markdownPlaceholderTokenName(token string) string {
+	if !isMarkdownDocPlaceholderToken(token) {
+		return ""
+	}
+	inner := strings.TrimSpace(strings.Trim(strings.TrimSpace(token), "<>[]"))
+	if inner == "" {
+		return ""
+	}
+	// Standalone positional placeholders should already look like a param
+	// name. Flag-bound placeholders may be localized and are handled by the
+	// preceding CLI flag instead.
+	if !asciiPlaceholderRe.MatchString(inner) {
+		return ""
+	}
+	return canonicalRunVarKey(inner)
+}
+
+func isMarkdownDocPlaceholderToken(token string) bool {
+	token = strings.TrimSpace(token)
+	if len(token) < 3 {
+		return false
+	}
+	return (strings.HasPrefix(token, "<") && strings.HasSuffix(token, ">")) ||
+		(strings.HasPrefix(token, "[") && strings.HasSuffix(token, "]"))
 }
 
 func replaceMarkdownCommandTokenOnce(command, token, replacement string) string {
@@ -1321,6 +1430,88 @@ func replaceCommandTokenOnce(command, token, replacement string) string {
 		return command
 	}
 	return strings.Replace(command, token, replacement, 1)
+}
+
+func isParameterizedMarkdownCommandExecutable(block, skillDir string) bool {
+	slashDir := ""
+	if skillDir != "" {
+		slashDir = filepath.ToSlash(strings.TrimRight(skillDir, `/\`))
+	}
+	for _, line := range strings.Split(block, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.Contains(line, "{baseDir}") || strings.Contains(line, "{base_dir}") {
+			return false
+		}
+		if hasChinesePathSegments(line) {
+			if slashDir == "" || !strings.Contains(line, slashDir) {
+				return false
+			}
+		}
+		if hasUnsafeAnglePlaceholder(line) {
+			return false
+		}
+	}
+	return true
+}
+
+func readLocalScriptParams(scriptPath string) []corelib.NLSkillParam {
+	scriptPath = strings.TrimSpace(scriptPath)
+	if scriptPath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return nil
+	}
+	params := ExtractScriptParams(string(data), scriptLanguageForPath(scriptPath))
+	for i := range params {
+		// A bundled script's parser/signature is a concrete CLI contract, not
+		// a loose template guess. Treat it like an imported schema so CLIFlag
+		// appending and optional-parameter ownership work for legacy scripts.
+		params[i].Synthetic = false
+	}
+	return params
+}
+
+func scriptLanguageForPath(scriptPath string) string {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(scriptPath))) {
+	case ".py":
+		return "python"
+	case ".js", ".mjs", ".cjs":
+		return "node"
+	case ".sh":
+		return "bash"
+	case ".ps1":
+		return "powershell"
+	default:
+		return ""
+	}
+}
+
+func mergeUniqueSkillParams(base, extras []corelib.NLSkillParam) []corelib.NLSkillParam {
+	if len(extras) == 0 {
+		return append([]corelib.NLSkillParam(nil), base...)
+	}
+	result := make([]corelib.NLSkillParam, 0, len(base)+len(extras))
+	seen := map[string]bool{}
+	add := func(param corelib.NLSkillParam) {
+		key := canonicalRunVarKey(param.Name)
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		result = append(result, param)
+	}
+	for _, param := range base {
+		add(param)
+	}
+	for _, param := range extras {
+		add(param)
+	}
+	return result
 }
 
 func isOutputOptionFlag(flag string) bool {

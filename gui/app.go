@@ -2639,13 +2639,12 @@ func (a *App) SetWorkflowWorkingDir(dir string) {
 	if a.workflowEngine == nil {
 		return
 	}
-	if trimmed := strings.TrimSpace(dir); trimmed != "" {
-		if err := os.MkdirAll(trimmed, 0o755); err != nil {
-			log.Printf("[WorkflowAdapter] failed to create workflow working directory %s: %v", trimmed, err)
-			return
-		}
-		dir = trimmed
+	trimmed, _, err := normalizeWorkflowProjectPath(dir)
+	if err != nil {
+		log.Printf("[WorkflowAdapter] invalid workflow working directory %s: %v", strings.TrimSpace(dir), err)
+		return
 	}
+	dir = trimmed
 	ownerID := a.workflowOwnerIDForCurrentProject()
 	if adapter, ok := a.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
 		adapter.SetWorkingDir(ownerID, dir)

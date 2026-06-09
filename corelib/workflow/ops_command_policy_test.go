@@ -342,10 +342,10 @@ func TestValidateToolCallByPolicyBlocksDocOnlyReadOnlyBash(t *testing.T) {
 	}
 }
 
-func TestValidateToolCallByPolicyAllowsPlanningReadOnlyBash(t *testing.T) {
+func TestValidateToolCallByPolicyBlocksPlanningBash(t *testing.T) {
 	err := ValidateToolCallByPolicy(ToolFilterPlanning, "bash", map[string]interface{}{"command": "git status --short && rg -n \"TODO\""})
-	if err != nil {
-		t.Fatalf("expected planning read-only bash command to pass: %v", err)
+	if err == nil {
+		t.Fatal("expected planning bash command to be blocked by phase policy")
 	}
 }
 

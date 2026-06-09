@@ -129,9 +129,13 @@ func BuildPhaseSystemPrompt(state *WorkflowState, phase *PhaseTemplate, registry
 
 	if phase.ToolPolicy == ToolFilterPlanning {
 		b.WriteString("## Planning Tool Boundary\n\n")
-		b.WriteString("You may inspect the repository and run read-only discovery commands for accurate planning. Do not create, edit, move, or delete project files in this phase.\n")
+		b.WriteString("You may inspect the repository with read-only tools for accurate planning. Do not run shell commands in this phase. Do not create, edit, move, or delete project files in this phase.\n")
 		b.WriteString("The workflow system saves this phase deliverable as the durable workflow document; do not use file-write tools to persist the document yourself.\n")
 		b.WriteString("If setup work is needed, such as creating directories, CMake files, package manifests, or source files, describe it as numbered implementation tasks. Those project mutations run only after user confirmation in the implementation phase.\n\n")
+	}
+
+	if shouldAppendCodingTaskBreakdownContract(state, phase, registry) {
+		appendCodingTaskBreakdownContract(&b)
 	}
 
 	if shouldAppendCodingImplementationHandoffContract(state, phase, registry) {
@@ -148,6 +152,32 @@ func BuildPhaseSystemPrompt(state *WorkflowState, phase *PhaseTemplate, registry
 	}
 
 	return b.String()
+}
+
+func shouldAppendCodingTaskBreakdownContract(state *WorkflowState, phase *PhaseTemplate, registry *WorkflowRegistry) bool {
+	if state == nil || phase == nil || state.Type != WorkflowCoding || state.CurrentPhase != PhaseCodingTaskBreakdown || phase.ID != PhaseCodingTaskBreakdown {
+		return false
+	}
+	if registry != nil {
+		if tmpl := registry.Match(state.Type); tmpl != nil {
+			contract := DerivePhaseContract(tmpl, *phase)
+			return contract.Kind == PhaseKindCodePlanning &&
+				contract.MutationScope == MutationScopeWorkflowDoc &&
+				phase.ToolPolicy == ToolFilterPlanning
+		}
+	}
+	contract := DerivePhaseContract(nil, *phase)
+	return contract.Kind == PhaseKindCodePlanning && contract.MutationScope == MutationScopeWorkflowDoc
+}
+
+func appendCodingTaskBreakdownContract(b *strings.Builder) {
+	b.WriteString("## Coding Task Breakdown Contract\n\n")
+	b.WriteString("This phase produces only the executable task breakdown document. It must not perform implementation.\n")
+	b.WriteString("1. Output Markdown task sections like `### T1: Task title`, with description, files, dependencies, priority, and effort.\n")
+	b.WriteString("2. It is correct to mention future project mutations such as creating directories, CMake files, package manifests, and source files as task descriptions.\n")
+	b.WriteString("3. Do not call or request shell/file-write/project-mutation tools in this phase.\n")
+	b.WriteString("4. After the user confirms this task list, the next implementation phase delegates all project mutations to CodingSubAgent; this phase only names future work.\n")
+	b.WriteString("5. If the user says to implement, create directories, write code, start coding, or continue while this task list is awaiting review, treat that as confirmation to advance; do not try to execute it from this phase.\n\n")
 }
 
 func shouldAppendCodingImplementationHandoffContract(state *WorkflowState, phase *PhaseTemplate, registry *WorkflowRegistry) bool {

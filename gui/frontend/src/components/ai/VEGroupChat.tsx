@@ -20,6 +20,7 @@ import { participantAddErrorText } from "./participantAddError";
 import { addParticipantIdentityKeys, participantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
 import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 // --- Types ---
 
@@ -269,7 +270,7 @@ export function ParticipantSelector({
         try {
             let fn = listVirtualEmployees;
             if (!fn) {
-                const mod = await import("../../../wailsjs/go/main/App");
+                const mod = await getWailsAppModule();
                 fn = (mod as any).ListVirtualEmployees;
             }
             const all = await fn!();
@@ -647,7 +648,7 @@ export function VEGroupChatView({
                     const result = await onAddParticipant(virtualEmployeeParticipantId(ve));
                     return result === false || result === null ? false : true;
                 } else {
-                    const mod = await import("../../../wailsjs/go/main/App");
+                    const mod = await getWailsAppModule();
                     await (mod as any).AddVEToGroup(sessionId, virtualEmployeeParticipantId(ve));
                     return true;
                 }

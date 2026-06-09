@@ -210,14 +210,36 @@ const MAX_PERSISTED_HISTORY_PER_TAB = 50;
 function persistProjectTabHistories(tabStates: Map<string, AITabState>, tabs: AITab[]) {
     try {
         const projectTabs = tabs.filter(t => t.type === "project" && t.projectPath);
+        const projectTabIds = new Set(projectTabs.map(t => t.id));
         const serialized: Record<string, unknown[]> = {};
+
+        // Persist histories for all currently-open project tabs
         for (const tab of projectTabs) {
             const state = tabStates.get(tab.id);
             if (state && Array.isArray(state.history) && state.history.length > 0) {
-                // Keep only the last N messages to avoid localStorage bloat
                 serialized[tab.id] = state.history.slice(-MAX_PERSISTED_HISTORY_PER_TAB);
             }
         }
+
+        // Also persist histories from tabStates that aren't in the current tab
+        // list (hydrated from previous session, tab was reconciled away but may
+        // be re-opened from "最近任务" later). Cap at 10 to prevent unbounded
+        // localStorage growth from closed tabs. Keep the most recently active.
+        const MAX_ORPHAN_HISTORIES = 10;
+        const orphans: Array<[string, AITabState]> = [];
+        for (const [tabId, state] of tabStates) {
+            if (projectTabIds.has(tabId)) continue;
+            if (!tabId.startsWith("proj-")) continue;
+            if (state && Array.isArray(state.history) && state.history.length > 0) {
+                orphans.push([tabId, state]);
+            }
+        }
+        // Sort by lastActiveAt descending — keep most recently used orphans
+        orphans.sort((a, b) => (b[1].lastActiveAt ?? 0) - (a[1].lastActiveAt ?? 0));
+        for (const [tabId, state] of orphans.slice(0, MAX_ORPHAN_HISTORIES)) {
+            serialized[tabId] = state.history.slice(-MAX_PERSISTED_HISTORY_PER_TAB);
+        }
+
         if (Object.keys(serialized).length === 0) {
             localStorage.removeItem(PROJECT_TAB_HISTORY_STORAGE_KEY);
         } else {
@@ -508,10 +530,19 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     }
 
     // Flush pending history to localStorage on page unload (app closing/restarting).
+    // Also flush on visibilitychange (hidden) as a backup — in Wails/Tauri desktop
+    // apps, beforeunload may not fire reliably when the window is closed.
     useEffect(() => {
         const flush = () => persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
+        const onVisibilityChange = () => {
+            if (document.visibilityState === "hidden") flush();
+        };
         window.addEventListener("beforeunload", flush);
-        return () => window.removeEventListener("beforeunload", flush);
+        document.addEventListener("visibilitychange", onVisibilityChange);
+        return () => {
+            window.removeEventListener("beforeunload", flush);
+            document.removeEventListener("visibilitychange", onVisibilityChange);
+        };
     }, []);
 
     const activeTab = tabState.tabs.find(t => t.id === tabState.activeTabId) || tabState.tabs[0];
@@ -710,14 +741,25 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         };
         restoredProjectPathsRef.current.delete(projectPath);
 
-        // Initialize tab state
-        tabStatesRef.current.set(tabId, {
-            history: [],
-            scrollTop: 0,
-            inputText: "",
-            projectPath,
-            lastActiveAt: Date.now(),
-        });
+        // Initialize tab state — preserve any history already hydrated from
+        // localStorage (e.g., the tab was persisted in a previous session but
+        // removed from the tab list during backend reconciliation, and now is
+        // being re-opened from "最近任务"). Only set empty history if there is
+        // truly no prior state for this tabId.
+        const existingHydratedState = tabStatesRef.current.get(tabId);
+        if (!existingHydratedState || !Array.isArray(existingHydratedState.history) || existingHydratedState.history.length === 0) {
+            tabStatesRef.current.set(tabId, {
+                history: [],
+                scrollTop: 0,
+                inputText: "",
+                projectPath,
+                lastActiveAt: Date.now(),
+            });
+        } else {
+            // Keep existing history, just update metadata
+            existingHydratedState.projectPath = projectPath;
+            existingHydratedState.lastActiveAt = Date.now();
+        }
 
         // Register the tab session with the backend. This is the SINGLE place
         // where tab→projectPath mapping is established. All code paths that
@@ -786,7 +828,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         if (historyPersistTimerRef.current) clearTimeout(historyPersistTimerRef.current);
         historyPersistTimerRef.current = setTimeout(() => {
             persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
-        }, 2000);
+        }, 500);
     }, []);
 
     const clearTabConversation = useCallback((tabId: string) => {

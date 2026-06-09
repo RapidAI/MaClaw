@@ -103,6 +103,7 @@ func TestToolDelegateTaskCodingWorkflowBlockedByActiveDocOnlyWorkflow(t *testing
 	}
 
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.app.unifiedClassifier = testHandlerWithDelegateGate(intent.LabelCoding, "coding").app.unifiedClassifier
 	userID := "manual-delegate-doc-only-user"
 	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
@@ -113,8 +114,9 @@ func TestToolDelegateTaskCodingWorkflowBlockedByActiveDocOnlyWorkflow(t *testing
 	h.lastUserID = userID
 
 	got := h.toolDelegateTask(map[string]interface{}{
-		"agent":   "coding_workflow",
-		"request": `create app in d:\workprj\testprj`,
+		"agent":                          "coding_workflow",
+		"request":                        `create app in d:\workprj\testprj`,
+		registeredToolPolicyOwnerIDField: userID,
 	})
 	if !strings.Contains(got, "not allowed by the current workflow phase") {
 		t.Fatalf("delegate result = %q, want workflow phase rejection", got)

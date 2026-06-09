@@ -8,6 +8,7 @@ import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRo
 import { localizeText } from "./aiAssistantI18n";
 import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 export type { Theme } from "./aiAssistantPanelTheme";
 /* Themed inline markdown rendering */
@@ -203,7 +204,7 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
                     }}
                     onClick={() => {
                         if (originalPath) {
-                            import('../../../wailsjs/go/main/App').then(mod => {
+                            getWailsAppModule().then(mod => {
                                 mod.KnowledgeOpenImageFile(originalPath).catch(() => {});
                             });
                         }

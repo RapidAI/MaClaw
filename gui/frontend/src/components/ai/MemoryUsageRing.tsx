@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 interface MemoryUsageRingProps {
     theme: Theme;
@@ -20,7 +21,7 @@ let cachedGetMemoryStatus: (() => Promise<any>) | null = null;
 async function resolveGetMemoryStatus(): Promise<(() => Promise<any>) | null> {
     if (cachedGetMemoryStatus) return cachedGetMemoryStatus;
     try {
-        const mod = await import("../../../wailsjs/go/main/App");
+        const mod = await getWailsAppModule();
         cachedGetMemoryStatus = mod.GetMemoryStatus;
         return cachedGetMemoryStatus;
     } catch {

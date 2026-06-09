@@ -200,8 +200,10 @@ type AppConfig struct {
 	LocalNeedleMinConfidence float64 `json:"local_needle_min_confidence,omitempty"`
 	// LLM token usage statistics.
 	LLMTokenUsage map[string]*TokenUsageStat `json:"llm_token_usage,omitempty"`
-	// Onboarding completion flag.
-	OnboardingDone bool `json:"onboarding_done,omitempty"`
+	// Onboarding completion flag. Must NOT use omitempty — a false value must
+	// be explicitly serialized so that full-config SaveConfig writes do not
+	// accidentally drop the field, causing the wizard to reappear on restart.
+	OnboardingDone bool `json:"onboarding_done"`
 	// Embedding / vector search toggle.
 	VectorSearchEnabled bool `json:"vector_search_enabled"`
 	// ASR toggle.
@@ -999,11 +1001,12 @@ func (c *AppConfig) LansengerWebSocketGatewayURL() string {
 }
 
 // IsLansengerLocalMode returns the effective Lansenger local mode setting.
+// Default is always true (local/单机) regardless of Hub registration status.
+// Unlike other IM gateways, Lansenger defaults to local mode because Hub's
+// multi-machine routing requires device selection which has poor UX in
+// Lansenger (no interactive cards, text-only prompts).
 func (c *AppConfig) IsLansengerLocalMode() bool {
 	if c.LansengerLocalMode == nil {
-		if c.RemoteMachineID != "" {
-			return false
-		}
 		return true
 	}
 	return *c.LansengerLocalMode

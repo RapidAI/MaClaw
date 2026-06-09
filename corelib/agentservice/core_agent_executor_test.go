@@ -1375,7 +1375,7 @@ func TestCoreAgentPlanningToolPolicyAllowsInspectionOnly(t *testing.T) {
 	for _, tool := range tools {
 		seen[tooldef.Name(tool)] = true
 	}
-	for _, name := range []string{"bash", "read_file", "list_directory"} {
+	for _, name := range []string{"read_file", "list_directory"} {
 		if !seen[name] {
 			t.Fatalf("expected %s to remain available for planning context, got %#v", name, seen)
 		}
@@ -1383,7 +1383,7 @@ func TestCoreAgentPlanningToolPolicyAllowsInspectionOnly(t *testing.T) {
 			t.Fatalf("expected execution guard to allow %s under planning policy", name)
 		}
 	}
-	for _, name := range []string{"write_file", "edit_file", "task"} {
+	for _, name := range []string{"bash", "write_file", "edit_file", "task"} {
 		if seen[name] {
 			t.Fatalf("expected %s to be filtered out by planning policy, got %#v", name, seen)
 		}
@@ -1391,11 +1391,8 @@ func TestCoreAgentPlanningToolPolicyAllowsInspectionOnly(t *testing.T) {
 			t.Fatalf("expected execution guard to block %s under planning policy", name)
 		}
 	}
-	if allowed, reason := cb.IsToolCallAllowed("bash", `{"command":"rg -n \"TODO\""}`); !allowed {
-		t.Fatalf("expected read-only bash under planning policy: %s", reason)
-	}
-	if allowed, _ := cb.IsToolCallAllowed("bash", `{"command":"touch generated.go"}`); allowed {
-		t.Fatal("expected mutating bash to be blocked under planning policy")
+	if allowed, _ := cb.IsToolCallAllowed("bash", `{"command":"rg -n \"TODO\""}`); allowed {
+		t.Fatal("expected bash to be blocked under planning policy")
 	}
 }
 

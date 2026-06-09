@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 // --- Types ---
 
@@ -48,7 +49,7 @@ function normalizeAuthRequestSoundPreset(value: unknown): AuthRequestSoundPreset
 
 async function loadAuthRequestSoundConfig(): Promise<{ muted: boolean; preset: AuthRequestSoundPreset }> {
     try {
-        const mod = await import("../../../wailsjs/go/main/App");
+        const mod = await getWailsAppModule();
         if (typeof (mod as any).LoadConfig === "function") {
             const cfg = await (mod as any).LoadConfig();
             const gd = cfg?.group_discussion || cfg?.GroupDiscussion || {};
@@ -210,7 +211,7 @@ export function VEAuthorizationDialog({
                 if (respondAuthRequest) {
                     await respondAuthRequest(requestId, decision);
                 } else {
-                    const mod = await import("../../../wailsjs/go/main/App");
+                    const mod = await getWailsAppModule();
                     await (mod as any).RespondAuthRequest(requestId, decision);
                 }
                 emitAuthHandled(requestId);
@@ -518,7 +519,7 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
             if (respondAuthRequest) {
                 await respondAuthRequest(requestId, decision);
             } else {
-                const mod = await import("../../../wailsjs/go/main/App");
+                const mod = await getWailsAppModule();
                 await (mod as any).RespondAuthRequest(requestId, decision);
             }
             emitAuthHandled(requestId);

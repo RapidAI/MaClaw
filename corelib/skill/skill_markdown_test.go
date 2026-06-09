@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestImportMarkdownSkillDir_CreatesCraftToolWhenNoScripts(t *testing.T) {
@@ -1133,6 +1135,158 @@ func TestImportMarkdownSkillDir_SkipsNonInputAnglePlaceholderUsage(t *testing.T)
 	}
 	if cmd, _ := entry.Steps[0].Params["command"].(string); cmd != "" {
 		t.Fatalf("fallback command = %q, want no direct bash command", cmd)
+	}
+}
+
+func TestImportMarkdownSkillDir_ParameterizesLocalScriptUsageFromArgparseContract(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "weather-query")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	script := `
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("action", nargs="?", default="realtime")
+parser.add_argument("--lat", type=float, default=39.9)
+parser.add_argument("--lng", type=float, default=116.4)
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "weather.py"), []byte(script), 0o644); err != nil {
+		t.Fatalf("WriteFile(weather.py) error = %v", err)
+	}
+	content := "# Weather Query\n\n" +
+		"## Usage\n\n" +
+		"```bash\npython \"{baseDir}/weather.py\" [action] --lat <纬度> --lng <经度>\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	cmd, _ := entry.Steps[0].Params["command"].(string)
+	if strings.Contains(cmd, "<纬度>") || strings.Contains(cmd, "<经度>") || strings.Contains(cmd, "[action]") {
+		t.Fatalf("command = %q, want markdown placeholders rewritten", cmd)
+	}
+	if !strings.Contains(cmd, "{{action}}") || !strings.Contains(cmd, "--lat {{lat}}") || !strings.Contains(cmd, "--lng {{lng}}") {
+		t.Fatalf("command = %q, want action/lat/lng runner placeholders", cmd)
+	}
+
+	params := CompleteParamsForRunner(entry.Params, entry.Steps, entry.RequiredArgs)
+	byName := map[string]corelib.NLSkillParam{}
+	for _, param := range params {
+		byName[param.Name] = param
+	}
+	if byName["action"].Default != "realtime" || byName["lat"].Default != "39.9" || byName["lng"].Default != "116.4" {
+		t.Fatalf("params = %#v, want argparse defaults carried into skill params", params)
+	}
+
+	resolved, err := ResolveStep(entry.Steps[0], nil, entry.SkillDir, params, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	resolvedCmd, _ := resolved.Step.Params["command"].(string)
+	if !strings.Contains(resolvedCmd, "realtime") || !strings.Contains(resolvedCmd, "--lat 39.9") || !strings.Contains(resolvedCmd, "--lng 116.4") {
+		t.Fatalf("resolved command = %q, want defaults substituted for optional argparse params", resolvedCmd)
+	}
+}
+
+func TestImportMarkdownSkillDir_FallbackScriptScanImportsArgparseContract(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "script-only-weather")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	script := `
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--city", required=True)
+parser.add_argument("--units", default="metric")
+`
+	if err := os.WriteFile(filepath.Join(scriptsDir, "weather.py"), []byte(script), 0o644); err != nil {
+		t.Fatalf("WriteFile(weather.py) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# Script Only Weather\n\nRuns weather script."), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	cmd, _ := entry.Steps[0].Params["command"].(string)
+	if !strings.Contains(cmd, "--city {{city}}") || !strings.Contains(cmd, "--units {{units}}") {
+		t.Fatalf("command = %q, want fallback command with script contract placeholders", cmd)
+	}
+
+	params := CompleteParamsForRunner(entry.Params, entry.Steps, entry.RequiredArgs)
+	byName := map[string]corelib.NLSkillParam{}
+	for _, param := range params {
+		byName[param.Name] = param
+	}
+	if !byName["city"].Required || byName["city"].CLIFlag != "--city" || byName["city"].Synthetic {
+		t.Fatalf("city param = %#v, want imported required CLI contract", byName["city"])
+	}
+	if byName["units"].Required || byName["units"].Default != "metric" || byName["units"].Synthetic {
+		t.Fatalf("units param = %#v, want imported optional default CLI contract", byName["units"])
+	}
+
+	resolved, err := ResolveStep(entry.Steps[0], map[string]string{"city": "Beijing"}, entry.SkillDir, params, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	resolvedCmd, _ := resolved.Step.Params["command"].(string)
+	if !strings.Contains(resolvedCmd, "--city Beijing") || !strings.Contains(resolvedCmd, "--units metric") {
+		t.Fatalf("resolved command = %q, want provided city and default units", resolvedCmd)
+	}
+}
+
+func TestImportMarkdownSkillDir_OptionalScriptFlagWithoutDefaultIsStrippedWhenMissing(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "script-optional-flag")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	script := `
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--city", required=True)
+parser.add_argument("--units")
+`
+	if err := os.WriteFile(filepath.Join(scriptsDir, "weather.py"), []byte(script), 0o644); err != nil {
+		t.Fatalf("WriteFile(weather.py) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# Script Optional Flag\n\nRuns weather script."), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	params := CompleteParamsForRunner(entry.Params, entry.Steps, entry.RequiredArgs)
+	resolved, err := ResolveStep(entry.Steps[0], map[string]string{"city": "Beijing"}, entry.SkillDir, params, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	resolvedCmd, _ := resolved.Step.Params["command"].(string)
+	if !strings.Contains(resolvedCmd, "--city Beijing") {
+		t.Fatalf("resolved command = %q, want required city flag", resolvedCmd)
+	}
+	if strings.Contains(resolvedCmd, "--units") || strings.Contains(resolvedCmd, "{{units}}") {
+		t.Fatalf("resolved command = %q, want missing optional flag stripped", resolvedCmd)
 	}
 }
 
