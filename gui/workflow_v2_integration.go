@@ -40,11 +40,21 @@ func (a *App) initWorkflowV2() *workflowV2State {
 func (a *App) buildWorkflowV2StateWithLLM(store v2.WorkflowStore) *workflowV2State {
 	st := buildWorkflowV2State(store)
 	// Wire LLM-based confirm classifier.
-	// The classifier is called with the current phase context and user text.
-	// It uses a lightweight LLM call (~200 tokens input, ~20 tokens output).
-	// Falls back to keyword matching if LLM is unavailable.
 	st.machine.SetConfirmClassifier(a.workflowV2ConfirmClassifier)
 	log.Printf("[workflow-v2] engine ready: router=%v machine=%v store=%v", st.router != nil, st.machine != nil, st.store != nil)
+
+	// On startup, dismiss any stale frontend workflow board state.
+	// The frontend persists board state to ai_assistant_ui_state.json and restores it
+	// on reload, but the backend workflow may have been cancelled or completed since then.
+	// We emit a dismiss event so the frontend starts clean; if there's an active workflow,
+	// the next user message will re-emit the correct phase_update via routeWithWorkflowV2.
+	go func() {
+		time.Sleep(500 * time.Millisecond) // Wait for Wails runtime to be ready
+		emitWorkflowV2Event(a, "workflow:suggest_maximize_dismiss", nil)
+		emitWorkflowV2Event(a, "workflow:phase_update", nil)
+		log.Printf("[workflow-v2] startup: emitted board reset to clear stale frontend state")
+	}()
+
 	return st
 }
 
@@ -174,12 +184,6 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 
 	log.Printf("[workflow-v2] started: user=%s type=%s project=%s id=%s", msg.UserID, state.Type, state.ProjectPath, state.ID)
 
-	// Clear conversation history so the LLM starts fresh for the new workflow.
-	// Without this, old unrelated conversation context pollutes the requirements phase output.
-	if h.memory != nil {
-		h.memory.Clear(msg.UserID)
-	}
-
 	// Emit workflow started event
 	h.emitWorkflowV2Progress(msg.UserID, state)
 
@@ -194,10 +198,12 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 	case v2.ActionRunPhase:
 		// Check if we're entering an execution phase (e.g. after advancing from task_breakdown).
 		if hr.Phase != nil && hr.Phase.ToolPolicy == v2.ToolPolicyFull && hr.State.Type == "coding" {
+			log.Printf("[workflow-v2] ActionRunPhase: entering execution phase for user=%s, invoking SubAgent", msg.UserID)
 			execResp := h.handleWorkflowV2ExecutionPhase(msg.UserID, hr.State)
 			if execResp != nil {
 				return workflowIMRouteResult{Response: execResp}
 			}
+			log.Printf("[workflow-v2] ActionRunPhase: SubAgent returned nil (task parse failed), falling back to agent loop")
 			// SubAgent couldn't parse tasks — fall through to normal agent loop with full tools.
 			if wf := h.getWorkflowV2(); wf != nil {
 				if phase := hr.State.ActivePhase(); phase != nil {
@@ -205,6 +211,8 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 					wf.store.Save(hr.State)
 				}
 			}
+		} else if hr.Phase != nil {
+			log.Printf("[workflow-v2] ActionRunPhase: phase=%s toolPolicy=%s type=%s", hr.Phase.ID, hr.Phase.ToolPolicy, hr.State.Type)
 		}
 		return h.runWorkflowV2Phase(msg.UserID, hr.State, "")
 
@@ -247,14 +255,32 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 	h.stashedPhasePrompt.Store(userID, phasePrompt)
 	h.workflowAgentLoopMarker.Store(userID, true)
 
+	// Clear conversation history for each doc phase.
+	// Root cause of LLM self-repeating: history contains previous phase's
+	// confirm/advance pattern ("user: 确认" → "assistant: 好的，进入下一阶段...").
+	// LLM copies this pattern and self-confirms after generating the document.
+	// Each phase should start with a clean slate — all context comes from phase prompt.
+	if h.memory != nil {
+		h.memory.Clear(userID)
+	}
+
+	// Set explicit userText for the agent loop so the LLM knows what to do.
+	phaseUserText := fmt.Sprintf("请现在生成「%s」阶段的完整文档内容。不要引用或指向之前的对话，直接在本次回复中输出完整文档。", phase.Name)
+	if modifyHint != "" {
+		phaseUserText = fmt.Sprintf("请根据修改意见重新生成「%s」的完整文档。直接输出完整内容。", phase.Name)
+	}
+	h.workflowOriginalRequest.Store(userID, phaseUserText)
+
 	log.Printf("[workflow-v2] running phase: user=%s type=%s phase=%s project=%s",
 		userID, state.Type, phase.ID, state.ProjectPath)
 
 	// WorkflowAgentLoop=true signals the agent loop to use the stashed prompt.
-	// The V2 NeedsConfirm hook (in applyAgentLoopNeedsConfirmGate) will intercept
-	// the output and call recordWorkflowV2Output, then force-return.
+	// WorkflowDocPhase distinguishes doc phases (text-only output, no tool calls expected)
+	// from execution phases (LLM should call tools like bash/write_file).
+	isDocPhase := phase.ToolPolicy != v2.ToolPolicyFull
 	return workflowIMRouteResult{
 		WorkflowAgentLoop: true,
+		WorkflowDocPhase:  isDocPhase,
 	}
 }
 
@@ -396,13 +422,14 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 	// Parse tasks from the task breakdown phase output
 	tasksPhaseOutput := getPhaseOutput(state, "tasks")
 	if tasksPhaseOutput == "" {
-		log.Printf("[workflow-v2] execution phase but no task breakdown output, falling back to agent loop")
+		log.Printf("[workflow-v2] execution phase but no task breakdown output (phase outputs: %v), falling back to agent loop", listPhaseIDs(state))
 		return nil
 	}
 
 	tasks := v2.ParseTaskList(tasksPhaseOutput)
 	if len(tasks) == 0 {
-		log.Printf("[workflow-v2] no tasks parsed from breakdown, falling back to agent loop")
+		log.Printf("[workflow-v2] no tasks parsed from breakdown (output_len=%d), falling back to agent loop. First 200 chars: %s",
+			len(tasksPhaseOutput), truncateRunesV2(tasksPhaseOutput, 200))
 		return nil
 	}
 
@@ -424,6 +451,8 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 			wf.store.Save(state)
 		}
 	}
+	// Notify frontend that we've entered the execution phase.
+	h.emitWorkflowV2Progress(userID, state)
 
 	// Build SubAgent bridge: V2 TaskItem → V1 RunTaskWithSubAgent
 	cfg := h.getMaclawLLMConfig()
@@ -471,41 +500,33 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 		MaxRetries:      2,
 	}
 
-	// Run tasks in a goroutine to not block the message handler.
-	// The result will be delivered as a follow-up message.
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[workflow-v2-exec] panic recovered: %v", r)
-				if wf := h.getWorkflowV2(); wf != nil {
-					wf.machine.RecordOutput(userID, fmt.Sprintf("❌ 执行过程中发生内部错误: %v", r))
-				}
-			}
-		}()
-		runner := v2.NewTaskRunner(config, subAgentFn)
-		runner.RunAll(context.Background(), tasks, nil, func(progress string) {
-			log.Printf("[workflow-v2-exec] %s", progress)
-		})
-		report := runner.FinalReport()
-		if wf := h.getWorkflowV2(); wf != nil {
-			wf.machine.RecordOutput(userID, report)
-			// Notify frontend that workflow is now complete.
-			if updatedState := wf.machine.GetActive(userID); updatedState != nil {
-				h.emitWorkflowV2Progress(userID, updatedState)
-			} else {
-				// Workflow completed (GetActive returns nil for completed workflows).
-				// Load from store to get final state for the progress event.
-				emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-					"status": "completed",
-				})
-			}
+	// Run tasks synchronously — keeps the frontend spinner active until completion.
+	// SubAgent execution may take several minutes for complex projects.
+	runner := v2.NewTaskRunner(config, subAgentFn)
+	runner.RunAll(context.Background(), tasks, nil, func(progress string) {
+		log.Printf("[workflow-v2-exec] %s", progress)
+		// Send progress to the frontend spinner area via the standard progress event.
+		// The frontend's useAIAssistant hook listens to this and shows it below the spinner.
+		if h.app != nil && h.app.ctx != nil {
+			runtime.EventsEmit(h.app.ctx, "ai-assistant-progress", progress)
 		}
-		log.Printf("[workflow-v2] execution complete: user=%s\n%s", userID, report)
-	}()
+	})
+	report := runner.FinalReport()
+	if wf := h.getWorkflowV2(); wf != nil {
+		wf.machine.RecordOutput(userID, report)
+		if updatedState := wf.machine.GetActive(userID); updatedState != nil {
+			h.emitWorkflowV2Progress(userID, updatedState)
+		} else {
+			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
+				"status": "completed",
+			})
+		}
+	}
+	log.Printf("[workflow-v2] execution complete: user=%s\n%s", userID, report)
 
 	return &IMAgentResponse{
-		Text: fmt.Sprintf("🚀 开始执行 %d 个编码任务\n项目路径：%s\n\n%s\n正在后台逐任务执行...",
-			len(tasks), state.ProjectPath, formatTaskListBrief(tasks)),
+		Text: fmt.Sprintf("🚀 执行完成 %d 个编码任务\n项目路径：%s\n\n%s\n\n%s",
+			len(tasks), state.ProjectPath, formatTaskListBrief(tasks), report),
 	}
 }
 
@@ -519,6 +540,17 @@ func getPhaseOutput(state *v2.WorkflowState, phaseID string) string {
 		}
 	}
 	return ""
+}
+
+func listPhaseIDs(state *v2.WorkflowState) []string {
+	if state == nil {
+		return nil
+	}
+	ids := make([]string, len(state.Phases))
+	for i, p := range state.Phases {
+		ids[i] = fmt.Sprintf("%s(status=%s,output_len=%d)", p.ID, p.Status, len(p.Output))
+	}
+	return ids
 }
 
 func truncateRunesV2(s string, max int) string {

@@ -29,7 +29,7 @@ func BuildAnthropicMessagesRequestBody(
 ) map[string]interface{} {
 	converted := ConvertToAnthropicMessages(messages)
 	reqBody := map[string]interface{}{
-		"model":      cfg.Model,
+		"model":      cfg.UpstreamModel(),
 		"messages":   converted.Messages,
 		"max_tokens": 4096,
 		"stream":     opts.Stream,

@@ -510,6 +510,14 @@ func noToolBranchRequiresExecution(ctx *LoopContext, gateConfig codingToolGateCo
 		return true
 	}
 	if ctx != nil && ctx.WorkflowAgentLoop {
+		// V2 workflow doc phases (requirements, design, tasks) produce only text —
+		// they do NOT require tool execution. Treating them as "requires execution"
+		// causes the no-tool recovery logic to inject action prompts and continue
+		// the loop, resulting in duplicated document output.
+		// Only implementation/verification phases require tool calls.
+		if ctx.WorkflowDocPhase {
+			return false
+		}
 		return true
 	}
 	switch gateConfig.intent {

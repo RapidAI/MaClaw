@@ -62,6 +62,18 @@ type LoopContext struct {
 	// set SkipNeedsConfirmGate.
 	WorkflowAgentLoop bool
 
+	// WorkflowDocBuffer accumulates all non-tool text output across iterations
+	// during a V2 workflow agent loop. Used by captureWorkflowDocAfterAgentLoop
+	// to capture the complete phase document instead of relying on resp.Text
+	// (which only contains the last iteration's text).
+	WorkflowDocBuffer strings.Builder
+
+	// WorkflowDocPhase is true when this V2 workflow agent loop is running a
+	// document generation phase (requirements, design, tasks) that produces only
+	// text output and does NOT require tool execution. When false (implementation,
+	// verification), the loop expects the LLM to call tools.
+	WorkflowDocPhase bool
+
 	// IsAskUserResponse is true when the current message is a response to a
 	// previous ask_user tool question. In this case the user's text is a
 	// continuation of an existing task, not a new independent request. The

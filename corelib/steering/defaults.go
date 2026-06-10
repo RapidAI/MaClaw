@@ -10,7 +10,6 @@ import (
 // These are extracted from the hardcoded rules in gui/im_system_prompt.go.
 // Users can freely modify these files; EnsureDefaults never overwrites.
 var defaultFiles = map[string]string{
-	"coding-workflow.md":   defaultCodingWorkflow,
 	"encoding-guidance.md": defaultEncodingGuidance,
 	"ssh-operations.md":    defaultSSHOperations,
 }
@@ -38,29 +37,6 @@ func EnsureDefaults(userDir string) error {
 	}
 	return nil
 }
-
-const defaultCodingWorkflow = `---
-inclusion: always
-priority: 10
----
-# 修复原则
-
-每个问题的修复，都要从机制上分析与修复，而不是做 workaround。Workaround 在换个场景会失效。每次提出修复方案时，先审视：这是不是机制上的通用修复？如果不是，重新设计。
-
-# 任务类型判断
-
-收到用户请求后，先判断任务类型：
-
-- **编码任务**：涉及写代码、改代码、修 bug、设计架构、开发游戏/应用/工具 → 走编程任务三阶段流程
-- **内容处理任务**：翻译、整理、总结、格式转换、字幕处理、文档梳理 → 直接执行，不要反复确认
-
-# 反循环规则
-
-- 已经搜索过的目录/文件，不要再搜索第二次
-- 用户已经明确回答过的问题，不要再问
-- 不要把"列出已完成的工作"当作"执行新工作"
-- 如果发现自己在做重复的事情，立即停下来，直接执行核心任务
-`
 
 const defaultEncodingGuidance = `---
 inclusion: always

@@ -916,26 +916,30 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                         /* All other providers: fetch models, then choose from the dropdown. */
                                         <div style={{ position: "relative" }}>
                                             <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                                                <select
+                                                <input
+                                                    type="text"
                                                     style={{ ...inputStyle, flex: 1 }}
+                                                    list="llm-provider-model-options"
                                                     value={dlgProvider.model || ""}
                                                     onChange={e => dlgUpdateField("model", e.target.value)}
-                                                    disabled={providerModelsFetching || providerModels.length === 0}
-                                                >
-                                                    <option value="">
-                                                        {providerModelsFetching
-                                                            ? t("Loading...", "加载中...")
-                                                            : providerModels.length === 0
-                                                                ? t("Click Fetch to load models first", "请先点击“获取”加载模型", "請先點擊「獲取」載入模型")
-                                                                : t("Select a model", "请选择模型")}
-                                                    </option>
-                                                    {!providerModels.some(m => m.id === dlgProvider.model) && dlgProvider.model && (
-                                                        <option value={dlgProvider.model}>{t("Current", "当前配置")}：{dlgProvider.model}</option>
-                                                    )}
+                                                    placeholder={providerModelsFetching
+                                                        ? t("Loading...", "加载中...")
+                                                        : providerModels.length > 0
+                                                            ? t("Select or type model name", "选择或输入模型名称", "選擇或輸入模型名稱")
+                                                            : t("Type model name or click Fetch", "输入模型名称或点击 Fetch", "輸入模型名稱或點擊 Fetch")}
+                                                    disabled={providerModelsFetching}
+                                                    autoCapitalize="off"
+                                                    autoCorrect="off"
+                                                    spellCheck={false}
+                                                    autoComplete="off"
+                                                />
+                                                <datalist id="llm-provider-model-options">
                                                     {providerModels.map(m => (
-                                                        <option key={m.id} value={m.id}>{m.name !== m.id ? `${m.name} (${m.id})` : m.id}</option>
+                                                        <option key={m.id} value={m.id}>
+                                                            {m.name !== m.id ? m.name : ''}
+                                                        </option>
                                                     ))}
-                                                </select>
+                                                </datalist>
                                                 {/* Fetch button — visible when URL and Key are available */}
                                                 {dlgProvider.url && dlgProvider.key && (
                                                     <button

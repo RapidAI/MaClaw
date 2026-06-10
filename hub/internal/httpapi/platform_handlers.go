@@ -2511,6 +2511,7 @@ type platformAwareMachineSender struct {
 	fallback veMachineEventSender
 	system   store.SystemSettingsRepository
 	tenants  store.TenantRepository
+	groupSvc *GroupDiscussionService
 }
 
 type employeeDeliveryTarget struct {
@@ -2622,22 +2623,39 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 		sessionCopy := cloneSession(session)
 		msgCopy := msg
 		targetCopy := target
+		// Identify the requesting client (initiator) for direct WebSocket push.
+		initiatorID := strings.TrimSpace(msgCopy.FromID)
+		log.Printf("[VE-STREAMING] ===== HUB STAGE D: async goroutine started ===== session=%s initiator=%s target=%s", groupDiscussionSessionID(sessionCopy), initiatorID, targetID)
 		go func() {
 			started := time.Now()
-			// Stream chunks to the requesting client via onReply as they arrive.
+			// Stream chunks directly to the requesting client via WebSocket push.
+			// Unlike onReply, this does NOT persist chunks to discussion history —
+			// only the final aggregated answer is persisted.
 			streamedChunks := false
+			chunkCount := 0
 			chunkCb := func(chunk string) {
-				if onReply == nil || chunk == "" {
+				if chunk == "" || initiatorID == "" {
 					return
 				}
 				streamedChunks = true
-				chunkMsg := corea2a.GroupDiscussionMessage{
-					FromID:    targetID,
-					Kind:      corea2a.MessageStreamChunk,
-					Content:   chunk,
-					CreatedAt: time.Now().UTC(),
+				chunkCount++
+				if chunkCount <= 3 || chunkCount%20 == 0 {
+					log.Printf("[VE-STREAMING] HUB STAGE E: pushing chunk #%d to initiator=%s len=%d", chunkCount, initiatorID, len(chunk))
 				}
-				_ = onReply(chunkMsg)
+				// Push stream_chunk directly to the initiator's WebSocket connection.
+				envelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionMessage, targetID, time.Now().UTC())
+				envelope.SessionID = groupDiscussionSessionID(sessionCopy)
+				envelope.ToIDs = []string{initiatorID}
+				chunkMsg := corea2a.GroupDiscussionMessage{FromID: targetID, Kind: corea2a.MessageStreamChunk, Content: chunk, CreatedAt: time.Now().UTC()}
+				envelope.Message = &chunkMsg
+				_ = s.SendToMachine(initiatorID, map[string]any{
+					"type": "ve:discussion_message",
+					"ts":   time.Now().Unix(),
+					"payload": map[string]any{
+						"envelope":    envelope,
+						"target_role": strings.TrimSpace(targetCopy.RoleCode),
+					},
+				})
 			}
 			reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), chunkCb)
 			if err != nil {
@@ -2647,19 +2665,55 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 			reply = strings.TrimSpace(reply)
 			if reply == "" {
 				log.Printf("[ve-platform-delivery] async runtime empty reply session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started))
-				// Still send stream_end so the frontend closes a streaming state.
-				if streamedChunks && onReply != nil {
-					_ = onReply(corea2a.GroupDiscussionMessage{FromID: targetID, Kind: corea2a.MessageStreamEnd, CreatedAt: time.Now().UTC()})
+				// Send stream_end so the frontend closes the streaming state.
+				if streamedChunks && initiatorID != "" {
+					endEnvelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionMessage, targetID, time.Now().UTC())
+					endEnvelope.SessionID = groupDiscussionSessionID(sessionCopy)
+					endEnvelope.ToIDs = []string{initiatorID}
+					endMsg := corea2a.GroupDiscussionMessage{FromID: targetID, Kind: corea2a.MessageStreamEnd, CreatedAt: time.Now().UTC()}
+					endEnvelope.Message = &endMsg
+					_ = s.SendToMachine(initiatorID, map[string]any{
+						"type": "ve:discussion_message",
+						"ts":   time.Now().Unix(),
+						"payload": map[string]any{
+							"envelope":    endEnvelope,
+							"target_role": strings.TrimSpace(targetCopy.RoleCode),
+						},
+					})
 				}
 				return
 			}
-			// Send stream_end to close the streaming state on the frontend.
-			if streamedChunks && onReply != nil {
-				_ = onReply(corea2a.GroupDiscussionMessage{FromID: targetID, Kind: corea2a.MessageStreamEnd, CreatedAt: time.Now().UTC()})
+			// Send stream_end directly (not persisted).
+			if streamedChunks && initiatorID != "" {
+				endEnvelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionMessage, targetID, time.Now().UTC())
+				endEnvelope.SessionID = groupDiscussionSessionID(sessionCopy)
+				endEnvelope.ToIDs = []string{initiatorID}
+				endMsg := corea2a.GroupDiscussionMessage{FromID: targetID, Kind: corea2a.MessageStreamEnd, CreatedAt: time.Now().UTC()}
+				endEnvelope.Message = &endMsg
+				_ = s.SendToMachine(initiatorID, map[string]any{
+					"type": "ve:discussion_message",
+					"ts":   time.Now().Unix(),
+					"payload": map[string]any{
+						"envelope":    endEnvelope,
+						"target_role": strings.TrimSpace(targetCopy.RoleCode),
+					},
+				})
 			}
 			// Persist the final aggregated response as a MessageAnswer for history.
+			// When streaming occurred, the client already received all content via
+			// stream_chunk + stream_end. Use AddDiscussionMessage directly (not
+			// onReply) to avoid notifyDiscussionMessage re-pushing the same content
+			// as a duplicate message to the frontend.
 			replyMsg := corea2a.GroupDiscussionMessage{ID: macLawSrvReplyMessageID(msgCopy, targetID), FromID: targetID, Kind: corea2a.MessageAnswer, Content: reply, CreatedAt: time.Now().UTC()}
-			if onReply != nil {
+			if streamedChunks {
+				// Persist without notification — client already has the content.
+				if s.groupSvc != nil {
+					if _, err := s.groupSvc.AddDiscussionMessage(deliveryTarget.tenantID, groupDiscussionSessionID(sessionCopy), replyMsg); err != nil {
+						log.Printf("[ve-platform-delivery] async runtime reply persist (direct) failed session=%s target=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, err)
+					}
+				}
+			} else if onReply != nil {
+				// No streaming occurred — use onReply which persists AND notifies.
 				if err := onReply(replyMsg); err != nil {
 					log.Printf("[ve-platform-delivery] async runtime reply persist failed session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started), err)
 					return
@@ -3040,23 +3094,27 @@ func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.C
 	setPlatformEmployeeHubHeaders(req, entry, tenantID)
 	client := &http.Client{Timeout: platformA2ADeliveryTimeout}
 	started := time.Now()
-	log.Printf("[ve-platform-delivery] post runtime start tenant=%s employee=%s platform_employee=%s endpoint=%s request_id=%v hub_discussion=%v hub_message=%v timeout=%s", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), runtimeDiscussionEndpointLogValue(endpoint), payload["request_id"], payload["hub_discussion_id"], payload["hub_message_id"], platformA2ADeliveryTimeout)
+	log.Printf("[VE-STREAMING] ===== HUB STAGE A: posting to maclawsrv with Accept: text/event-stream ===== tenant=%s employee=%s endpoint=%s", tenantID, entry.ID, runtimeDiscussionEndpointLogValue(endpoint))
 	resp, err := client.Do(req)
 	if err != nil {
 		detail := sanitizeRuntimeDeliveryErrorText(err.Error(), entry.PlatformEmployeeID)
-		log.Printf("[ve-platform-delivery] post runtime transport failed tenant=%s employee=%s platform_employee=%s duration=%s err=%s", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), time.Since(started), detail)
+		log.Printf("[VE-STREAMING] HUB STAGE A FAILED: transport error tenant=%s employee=%s err=%s", tenantID, entry.ID, detail)
 		return "", fmt.Errorf("MaClawSrv runtime delivery failed: %s", detail)
 	}
 	defer resp.Body.Close()
 
 	// Handle SSE streaming response — parse each chunk and return aggregated content.
-	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+	contentType := resp.Header.Get("Content-Type")
+	log.Printf("[VE-STREAMING] ===== HUB STAGE B: response received ===== status=%d content_type=%q", resp.StatusCode, contentType)
+	if strings.Contains(contentType, "text/event-stream") {
+		log.Printf("[VE-STREAMING] ===== HUB STAGE C: consuming SSE stream =====")
 		var chunkCb func(string)
 		if len(onChunk) > 0 && onChunk[0] != nil {
 			chunkCb = onChunk[0]
 		}
 		return s.consumeRuntimeSSEResponse(resp.Body, tenantID, entry, started, chunkCb)
 	}
+	log.Printf("[VE-STREAMING] ===== HUB: NOT SSE — falling back to JSON response =====")
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	log.Printf("[ve-platform-delivery] post runtime done tenant=%s employee=%s platform_employee=%s status=%d duration=%s bytes=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), resp.StatusCode, time.Since(started), len(respBody))

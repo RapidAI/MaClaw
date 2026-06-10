@@ -15,7 +15,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
-	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 type agentLoopNeedsConfirmGateResult struct {
@@ -80,19 +79,14 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 	if gateConfig.active && iteration > 0 {
 		needsConfirmFromSteering = true
 	}
-	// V2 workflow: WorkflowAgentLoop enables NeedsConfirm for doc phases only,
-	// regardless of coding gate classification. This covers non-coding workflows (PPT, product design).
-	// Execution phases (ToolPolicyFull) should NOT trigger NeedsConfirm — the LLM needs to freely write code.
+	// V2 workflow: WorkflowAgentLoop doc phases do NOT use the NeedsConfirm gate.
+	// Each doc phase runs as an independent agent loop. The loop runs until the LLM
+	// finishes (no more tool calls, no more text). The final response IS the document.
+	// recordWorkflowV2Output is called AFTER the loop returns (in im_message_handler.go).
+	// No mid-loop interception is needed — that was a V1 pattern.
 	if workflowAgentLoop && h.isWorkflowV2Active(userID) {
-		wf := h.getWorkflowV2()
-		if wf != nil {
-			if state := wf.machine.GetActive(userID); state != nil {
-				phase := state.ActivePhase()
-				if phase != nil && phase.ToolPolicy != v2.ToolPolicyFull {
-					needsConfirmFromSteering = true
-				}
-			}
-		}
+		// V2 workflow agent loop: NeedsConfirm is not used. Let the loop run to completion.
+		return result
 	}
 	engineGateActive := needsConfirmFromEngine
 	if normalizeIMMessagePlatformKind(platform).IsDesktop() && (engineGateActive || needsConfirmFromSteering) {
@@ -240,17 +234,9 @@ func (h *IMMessageHandler) shouldNeedsConfirmToolBranch(ctx *LoopContext, userID
 		log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: pending confirm classified as 'other' (iter=%d user=%s)", iteration, userID)
 		return false
 	}
-	// V2 workflow: enable NeedsConfirm in tool branch for doc phases only.
+	// V2 workflow: tool branch NeedsConfirm is not used. Let the loop run to completion.
 	if !needsConfirm && workflowAgentLoop && h.isWorkflowV2Active(userID) {
-		wf := h.getWorkflowV2()
-		if wf != nil {
-			if state := wf.machine.GetActive(userID); state != nil {
-				phase := state.ActivePhase()
-				if phase != nil && phase.ToolPolicy != v2.ToolPolicyFull {
-					needsConfirm = true
-				}
-			}
-		}
+		return needsConfirm // false — don't intercept
 	}
 	return needsConfirm
 }
@@ -360,6 +346,7 @@ func (h *IMMessageHandler) confirmWorkflowStart(userID, text string, intent work
 type workflowIMRouteResult struct {
 	Response             *IMAgentResponse
 	WorkflowAgentLoop    bool
+	WorkflowDocPhase     bool // true for doc phases (requirements/design/tasks), false for execution phases
 	SkipNeedsConfirmGate bool
 }
 

@@ -16,6 +16,14 @@ import (
 func (a *App) initSteeringStore() {
 	userDir := filepath.Join(a.getMaclawBaseDir(), "steering")
 
+	// Remove legacy coding-workflow.md — V2 workflow engine replaces it
+	// with phase prompts. The file causes LLM to self-advance through phases.
+	legacyCodingWorkflow := filepath.Join(userDir, "coding-workflow.md")
+	if _, err := os.Stat(legacyCodingWorkflow); err == nil {
+		os.Remove(legacyCodingWorkflow)
+		log.Printf("[steering] removed legacy coding-workflow.md")
+	}
+
 	// Ensure default steering files exist.
 	if err := steering.EnsureDefaults(userDir); err != nil {
 		log.Printf("[steering] EnsureDefaults: %v", err)

@@ -375,6 +375,7 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 
 	// Check if Hub supports streaming (indicated by Accept: text/event-stream header).
 	wantsSSE := strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	log.Printf("[VE-STREAMING] ===== STAGE 1: maclawsrv received request ===== employee=%s wantsSSE=%v accept_header=%q", logEmployeeID, wantsSSE, r.Header.Get("Accept"))
 
 	// Wire streaming token callback into the per-request SendMessageInput.
 	var sseWriter *platformSSEWriter
@@ -382,9 +383,17 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 	if wantsSSE {
 		sseWriter = newPlatformSSEWriter(w)
 		sseWriter.WriteHeader()
+		log.Printf("[VE-STREAMING] ===== STAGE 2: SSE headers written, streaming mode active =====")
+		tokenCount := 0
 		onToken = func(delta string) {
+			tokenCount++
+			if tokenCount <= 3 || tokenCount%50 == 0 {
+				log.Printf("[VE-STREAMING] STAGE 3: token delta #%d len=%d", tokenCount, len(delta))
+			}
 			sseWriter.WriteChunk(delta)
 		}
+	} else {
+		log.Printf("[VE-STREAMING] ===== NOT STREAMING: Hub did not send Accept: text/event-stream =====")
 	}
 
 	sess, run, msg, err := s.svc.SendMessage(r.Context(), agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}, binding.Instance.ID, agentservice.SendMessageInput{Title: strings.TrimSpace(title), Content: content, ClientSessionKey: strings.TrimSpace(in.HubDiscussionID), ClientMessageID: firstPlatformNonEmpty(in.HubMessageID, in.RequestID), Metadata: metadata, OnToken: onToken})

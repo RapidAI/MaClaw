@@ -64,7 +64,13 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 		systemPrompt += "\n\n" + capabilityGapContext
 	}
 
-	if !profile.IsLight() {
+	// During V2 workflow agent loops, skip the desktop/IM workflow doc delivery
+	// overrides. The phase prompt already contains precise output instructions
+	// (e.g. "只生成一份文档，输出完毕后立即停止，严禁输出确认提示语").
+	// The desktopWorkflowDocOverride says "输出文档后，仍然需要附带确认提示" which
+	// directly contradicts the phase prompt and can cause the LLM to self-confirm.
+	isV2WorkflowLoop := workflowAgentLoop && h.isWorkflowV2Active(msg.UserID)
+	if !profile.IsLight() && !isV2WorkflowLoop {
 		platformKind := normalizeIMMessagePlatformKind(msg.Platform)
 		if platformKind.IsDesktop() {
 			systemPrompt += desktopWorkflowDocOverride()
@@ -132,14 +138,18 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 	promptUserID := h.promptRuntimeUserID(loopCtx)
 
 	// Build deps for the shared BuildSystemPrompt.
+	// During V2 workflow agent loops, suppress the coding confirmation gate rules
+	// from the stable prompt segment — they conflict with phase-specific instructions.
+	suppressV2CodingRules := loopCtx != nil && loopCtx.WorkflowAgentLoop && h.isWorkflowV2Active(promptUserID)
 	deps := agent.SystemPromptDeps{
 		Config: agent.SystemPromptConfig{
-			RoleName:          roleName,
-			RoleDescription:   roleDesc,
-			IsProMode:         isProMode,
-			Nickname:          currentNickname,
-			HasCodingSessions: true,
-			TrialReflect:      trialReflectEnabled,
+			RoleName:                roleName,
+			RoleDescription:         roleDesc,
+			IsProMode:               isProMode,
+			Nickname:                currentNickname,
+			HasCodingSessions:       true,
+			TrialReflect:            trialReflectEnabled,
+			SuppressCodingGateRules: suppressV2CodingRules,
 		},
 		MemoryStore:      h.memoryStore,
 		SkipMemoryRecall: true, // GUI handles memory recall in appendGUIEpilogue (with memory index, derived facts, knowledge auto-recall, frozen snapshot caching)
@@ -154,6 +164,13 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 	// Steering
 	if h.steeringStore != nil {
 		deps.SteeringResolver = func(userMessage string, contextTokens int) []steering.File {
+			// V2 workflow agent loop: skip ALL steering files.
+			// The phase prompt contains complete, self-sufficient instructions.
+			// Steering files (coding-workflow rules, maclaw-improvements record, etc.)
+			// add conflicting instructions or waste token budget without benefit.
+			if loopCtx != nil && loopCtx.WorkflowAgentLoop && h.isWorkflowV2Active(promptUserID) {
+				return nil
+			}
 			ctx := steering.ResolveContext{
 				UserMessage:            userMessage,
 				EffectiveContextTokens: contextTokens,
@@ -161,14 +178,18 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			if h.contextResolver != nil {
 				ctx.ContextFiles = h.getSteeringContextFiles(promptUserID)
 			}
-			return h.steeringStore.Resolve(ctx)
+			files := h.steeringStore.Resolve(ctx)
+			return files
 		}
 	}
 
 	// PostCorePrinciples: knowledge base rules are already injected via HasKnowledgeBase.
 	// Inject context management + coding workflow contract + passthrough commands.
+	// During V2 workflow agent loops, the coding workflow contract is suppressed
+	// because it describes the full multi-phase pipeline and causes the LLM to
+	// self-confirm and re-emit documents within a single response.
 	deps.PostCorePrinciples = func(b *strings.Builder) {
-		h.appendGUIPostCorePrinciples(b, isProMode, trialReflectEnabled)
+		h.appendGUIPostCorePrinciples(b, isProMode, trialReflectEnabled, suppressV2CodingRules)
 	}
 
 	// PostSSHRules: inject GUI-specific SSH guidance + skills + MCP + device status etc.

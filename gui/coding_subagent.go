@@ -783,10 +783,11 @@ func rejectDisallowedCodingBashCommand(command string) string {
 	switch {
 	case hasDisallowedGitCommand(normalized):
 		disallowed = true
-	case hasDisallowedShellFileMutation(normalized):
-		disallowed = true
 	case hasDisallowedRecursiveDeleteCommand(normalized):
 		disallowed = true
+	// hasDisallowedShellFileMutation removed: SubAgent needs to create/delete/move
+	// files within the project directory. Project scope is enforced by
+	// requireProjectWriteScope, not by blocking shell commands.
 	}
 	if !disallowed {
 		return ""
@@ -1076,6 +1077,15 @@ func (c *codingSubAgentCallbacks) toolGitDiffResult(args map[string]interface{})
 	}
 	if workDir == "" {
 		workDir = "."
+	}
+
+	// Skip if not a git repository — avoids noisy "Not a git repository" errors.
+	gitDir := filepath.Join(workDir, ".git")
+	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+		return codingToolExecutionResult{
+			Text:    "(not a git repository, skipping diff)",
+			Outcome: codingToolOutcomeSuccess,
+		}
 	}
 
 	command := "git diff -- ."
@@ -2677,7 +2687,23 @@ func compactSubAgentTaskDescription(description string) string {
 func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string) string {
 	var b strings.Builder
 
-	b.WriteString(`你是一个专注的编码执行器。你的唯一职责是完成分配给你的编码任务。
+	b.WriteString(`你是一个专注的编码执行器，具备解决复杂 bug 和实现新功能的系统性能力。
+
+## 复杂问题排查策略
+
+当遇到 bug 修复或异常行为时，按以下系统性流程排查：
+1. **复现**：先用 bash 运行相关命令/测试，确认问题确实存在并记录错误信息。
+2. **定位**：用 ripgrep 搜索错误信息中的关键字，追踪调用链。用 Glob 找相关文件。
+3. **理解上下文**：read_file 阅读报错位置上下 50 行，理解数据流和控制流。
+4. **假设验证**：对每个可能的根因，用 ripgrep 搜索相关代码验证假设。
+5. **最小修改**：确认根因后，用 edit_file/edit_lines 做最小范围的精准修改。
+6. **验证**：运行测试/编译确认修复有效且不引入新问题。
+
+关键原则：
+- 改代码前必须先读代码。不要基于猜测修改。
+- 追踪完整调用链：从报错点向上追踪到输入源，向下追踪到影响范围。
+- 一次只修一个问题。修完验证后再处理下一个。
+- 失败两次后换方法，不要重复同样的操作。
 
 ## 工具使用策略（严格遵守）
 
@@ -2686,6 +2712,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - 所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
 - 修改已有文件前，必须先 read_file 查看当前内容。不要凭记忆修改。
 - 大文件用 read_file(start_line=N, lines=50) 只读相关段落，不要读整个文件。
+- 用 ripgrep 搜索函数定义、类型引用、import 关系来理解模块依赖。
 
 ### 修改已有文件：edit_file / edit_lines（patch 模式）
 - 修改已有文件时，必须优先使用 edit_file 或 edit_lines，不要用 write_file 重写整个文件。
@@ -2701,6 +2728,12 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - 只有创建全新文件时才用 write_file(mode=overwrite)。
 - 大文件（>3000 字符）分块写入：先 overwrite 第一部分，再 append 后续部分。
 
+### Shell 执行：bash
+- 用于编译、运行测试、安装依赖、查看进程状态等。
+- 编译后检查退出码和 stderr，失败时分析错误信息定位问题。
+- 可以用 bash 运行调试命令（打印变量值、检查配置文件内容等）。
+- 长命令使用 timeout 参数防止挂起。
+
 ### 禁止行为
 - 禁止用 write_file 重写已有文件来做小修改——这浪费 token 且容易丢失原文件中的其他内容。
 - 禁止不读文件就直接修改——你不知道文件当前的确切内容，edit_file 的 old_string 会匹配失败。
@@ -2708,6 +2741,21 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - bash 的 working_dir 必须在项目路径内；相对路径会按项目路径解析。
 
 ## 编码规范
+- **TDD 强制流程（每个任务必须执行）**：
+  1. 先为当前任务编写测试用例（单元测试或集成测试）
+  2. 运行测试 → 确认测试失败（红灯）
+  3. 编写实现代码
+  4. 运行测试 → 确认测试通过（绿灯）
+  5. 如果测试失败，修复代码后重新运行，直到通过
+  6. 将测试用例和测试结果写入项目目录下的 TEST_REPORT.md 文件（追加模式）
+- TEST_REPORT.md 每个任务的格式：
+  - 标题行：## T{N}: {任务标题}
+  - 测试文件路径
+  - 测试内容简述
+  - 测试状态（通过/失败）
+  - 运行的编译/测试命令
+  - 关键输出摘要
+- 对于无法编写自动化测试的场景（如纯 GUI 渲染），改为：编译验证 + 运行验证（确认程序不崩溃），并在 TEST_REPORT.md 中说明"手动验证：编译通过 + 启动不崩溃"。
 - 每次修改后运行编译/构建命令验证，确保代码可编译。
 - 完成前调用 git_diff 自检，确认改动范围符合任务要求。
 - write_file 始终 UTF-8 编码，直接写中文即可。

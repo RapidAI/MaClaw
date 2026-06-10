@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
@@ -49,8 +50,32 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 }
 
 func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, loopCtx *LoopContext, resp *IMAgentResponse, workflowAgentLoop bool) {
-	// V1 engine removed - post-loop doc capture is now handled by V2 workflow engine.
-	return
+	if !workflowAgentLoop || resp == nil || resp.HardExit {
+		return
+	}
+	if h.isWorkflowV2Active(msg.UserID) && h.getWorkflowV2() != nil {
+		// Prefer the accumulated WorkflowDocBuffer (captures all iterations' text)
+		// over resp.Text (which only contains the last iteration's finalized text).
+		var docText string
+		source := "resp.Text"
+		if loopCtx != nil && loopCtx.WorkflowDocBuffer.Len() > 0 {
+			if t := strings.TrimSpace(loopCtx.WorkflowDocBuffer.String()); t != "" {
+				docText = t
+				source = "buffer"
+			}
+		}
+		if docText == "" {
+			docText = strings.TrimSpace(resp.Text)
+		}
+		if docText == "" && resp.Error != "" {
+			docText = "⚠️ 阶段执行出错: " + resp.Error
+			source = "error"
+		}
+		if docText != "" {
+			h.recordWorkflowV2Output(msg.UserID, docText)
+			log.Printf("[workflow-v2] post-loop doc capture: user=%s len=%d source=%s", msg.UserID, len([]rune(docText)), source)
+		}
+	}
 }
 
 func (h *IMMessageHandler) recordAgentLoopTerminalExperience(loopCtx *LoopContext, resp *IMAgentResponse) {

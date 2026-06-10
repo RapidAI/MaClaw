@@ -63,6 +63,116 @@ func TestSetCodeGenClientNameHeaderIfNeeded(t *testing.T) {
 	}
 }
 
+func TestNormalizeCodeGenSSOProvider(t *testing.T) {
+	if got := NormalizeCodeGenModel(" auto "); got != CodeGenDefaultModelID {
+		t.Fatalf("NormalizeCodeGenModel(auto) = %q, want %q", got, CodeGenDefaultModelID)
+	}
+	if got := NormalizeCodeGenModel("qax-codegen/Qwen-Flash"); got != "qax-codegen/Qwen-Flash" {
+		t.Fatalf("NormalizeCodeGenModel(custom) = %q, want custom model", got)
+	}
+
+	provider := NormalizeCodeGenSSOProvider(MaclawLLMProvider{
+		Name:      " codegen ",
+		URL:       " https://codegen.qianxin-inc.cn/api/v1/anthropic/ ",
+		Model:     " auto ",
+		Protocol:  "anthropic",
+		AgentType: "openclaw",
+		AuthType:  " sso ",
+	})
+	if provider.Name != "CodeGen" {
+		t.Fatalf("Name = %q, want CodeGen", provider.Name)
+	}
+	if provider.URL != "https://codegen.qianxin-inc.cn/api/v1" {
+		t.Fatalf("URL = %q, want OpenAI base URL", provider.URL)
+	}
+	if provider.Model != CodeGenDefaultModelID {
+		t.Fatalf("Model = %q, want %q", provider.Model, CodeGenDefaultModelID)
+	}
+	if provider.Protocol != "openai" {
+		t.Fatalf("Protocol = %q, want openai", provider.Protocol)
+	}
+	if provider.AgentType != CodeGenClientName {
+		t.Fatalf("AgentType = %q, want %q", provider.AgentType, CodeGenClientName)
+	}
+
+	hub := NormalizeCodeGenSSOProvider(MaclawLLMProvider{
+		Name:     "hub",
+		URL:      "https://hub.example.test/api/llm/v1",
+		Model:    "auto",
+		Protocol: "openai",
+		AuthType: "sso",
+	})
+	if hub.Name != "hub" || hub.Model != "auto" {
+		t.Fatalf("non-CodeGen SSO provider should be unchanged, got %#v", hub)
+	}
+}
+
+func TestSanitizeCodeGenOpenAIChatToolsValue(t *testing.T) {
+	tools := SanitizeCodeGenOpenAIChatToolsValue([]interface{}{map[string]interface{}{
+		"type":                 "function",
+		"x_execution_contract": "local-only",
+		"function": map[string]interface{}{
+			"name":   "strict_tool",
+			"strict": true,
+			"parameters": map[string]interface{}{
+				"additionalProperties": false,
+				"properties": map[string]interface{}{
+					"values": map[string]interface{}{
+						"type":    "array",
+						"oneOf":   []interface{}{map[string]interface{}{"type": "string"}},
+						"default": []interface{}{"x"},
+					},
+				},
+			},
+		},
+	}}).([]interface{})
+
+	tool := tools[0].(map[string]interface{})
+	if _, ok := tool["x_execution_contract"]; ok {
+		t.Fatalf("local tool field leaked: %#v", tool)
+	}
+	fn := tool["function"].(map[string]interface{})
+	if _, ok := fn["strict"]; ok {
+		t.Fatalf("strict leaked: %#v", fn)
+	}
+	params := fn["parameters"].(map[string]interface{})
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("additionalProperties=false leaked: %#v", params)
+	}
+	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
+	for _, bad := range []string{"oneOf", "default"} {
+		if _, ok := values[bad]; ok {
+			t.Fatalf("%s leaked: %#v", bad, values)
+		}
+	}
+	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
+		t.Fatalf("array items type = %#v, want string", got)
+	}
+
+	functions := SanitizeCodeGenOpenAIFunctionsValue([]interface{}{map[string]interface{}{
+		"name":   "legacy_function",
+		"strict": true,
+		"parameters": map[string]interface{}{
+			"additionalProperties": false,
+			"properties": map[string]interface{}{
+				"ids": map[string]interface{}{"type": "array"},
+			},
+		},
+	}}).([]interface{})
+	fn = functions[0].(map[string]interface{})
+	if _, ok := fn["strict"]; ok {
+		t.Fatalf("legacy strict leaked: %#v", fn)
+	}
+	params = fn["parameters"].(map[string]interface{})
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("legacy additionalProperties=false leaked: %#v", params)
+	}
+	ids := params["properties"].(map[string]interface{})["ids"].(map[string]interface{})
+	if got := ids["items"].(map[string]interface{})["type"]; got != "string" {
+		t.Fatalf("legacy array items type = %#v, want string", got)
+	}
+}
+
 func TestMaclawLLMUserAgentTrimsCustomValue(t *testing.T) {
 	provider := MaclawLLMProvider{AgentType: "  custom-agent  "}
 	if got := provider.UserAgent(); got != "custom-agent" {

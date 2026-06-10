@@ -549,6 +549,253 @@ func TestOpenAI_RequestBody_DoesNotInventMissingToolFunction(t *testing.T) {
 	}
 }
 
+func TestOpenAI_RequestBody_NormalizesCodeGenAutoModel(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		OpenAIChatRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if got := req["model"]; got != corelib.CodeGenDefaultModelID {
+		t.Fatalf("CodeGen model = %#v, want %q", got, corelib.CodeGenDefaultModelID)
+	}
+
+	_, body, err = BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://hub.example.test/api/llm/v1", Model: "auto"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		OpenAIChatRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if got := req["model"]; got != "auto" {
+		t.Fatalf("non-CodeGen model = %#v, want auto", got)
+	}
+}
+
+func TestProviderRequestBodies_NormalizeCodeGenAutoModel(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto"}
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}
+
+	_, body, err := BuildResponsesAPIRequestData(cfg, messages, ResponsesAPIRequestOptions{})
+	if err != nil {
+		t.Fatalf("BuildResponsesAPIRequestData returned error: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse responses request body: %v", err)
+	}
+	if got := req["model"]; got != corelib.CodeGenDefaultModelID {
+		t.Fatalf("Responses CodeGen model = %#v, want %q", got, corelib.CodeGenDefaultModelID)
+	}
+
+	_, body, err = BuildResponsesAPIRequestData(cfg, messages, ResponsesAPIRequestOptions{
+		Tools: []map[string]interface{}{{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":   "strict_tool",
+				"strict": true,
+				"parameters": map[string]interface{}{
+					"additionalProperties": false,
+					"properties": map[string]interface{}{
+						"values": map[string]interface{}{"type": "array"},
+					},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("BuildResponsesAPIRequestData returned error: %v", err)
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse responses request body: %v", err)
+	}
+	tools := req["tools"].([]interface{})
+	flatTool := tools[0].(map[string]interface{})
+	if _, ok := flatTool["strict"]; ok {
+		t.Fatalf("Responses CodeGen strict leaked: %#v", flatTool)
+	}
+	params := flatTool["parameters"].(map[string]interface{})
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("Responses CodeGen additionalProperties leaked: %#v", params)
+	}
+	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
+	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
+		t.Fatalf("Responses CodeGen array items type = %#v, want string", got)
+	}
+
+	req = BuildAnthropicMessagesRequestBody(cfg, messages, AnthropicMessagesRequestOptions{})
+	if got := req["model"]; got != corelib.CodeGenDefaultModelID {
+		t.Fatalf("Anthropic CodeGen model = %#v, want %q", got, corelib.CodeGenDefaultModelID)
+	}
+}
+
+func TestOpenAI_RequestBody_AddsMissingArrayItemsInToolSchema(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "test-model"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		OpenAIChatRequestOptions{
+			Tools: []map[string]interface{}{{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":        "manage_skill",
+					"description": "Manage skills",
+					"parameters": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"action":           map[string]interface{}{"type": "string"},
+							"approved_actions": map[string]interface{}{"type": "array"},
+						},
+						"required": []string{"action"},
+					},
+				},
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	tools, _ := req["tools"].([]interface{})
+	if len(tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(tools))
+	}
+	toolDef, _ := tools[0].(map[string]interface{})
+	fn, _ := toolDef["function"].(map[string]interface{})
+	params, _ := fn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	approved, _ := props["approved_actions"].(map[string]interface{})
+	items, _ := approved["items"].(map[string]interface{})
+	if got := items["type"]; got != "string" {
+		t.Fatalf("approved_actions.items.type = %#v, want string", got)
+	}
+}
+
+func TestOpenAI_RequestBody_StripsProviderIncompatibleToolSchemaFields(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "test-model"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		OpenAIChatRequestOptions{
+			Tools: []map[string]interface{}{{
+				"type": "function",
+				"x_execution_contract": map[string]interface{}{
+					"risk": "local-only",
+				},
+				"function": map[string]interface{}{
+					"name":        "strict_tool",
+					"description": "Strict local schema",
+					"strict":      true,
+					"extra":       "drop me",
+					"parameters": map[string]interface{}{
+						"additionalProperties": false,
+						"properties": map[string]interface{}{
+							"mode": map[string]interface{}{
+								"oneOf": []interface{}{
+									map[string]interface{}{"type": "string"},
+								},
+								"nullable": true,
+								"type":     "string",
+							},
+						},
+					},
+				},
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	toolDef := req["tools"].([]interface{})[0].(map[string]interface{})
+	if _, ok := toolDef["x_execution_contract"]; ok {
+		t.Fatalf("x_execution_contract leaked into OpenAI tool definition: %#v", toolDef)
+	}
+	fn := toolDef["function"].(map[string]interface{})
+	if _, ok := fn["strict"]; ok {
+		t.Fatalf("strict should be stripped for CodeGen tool definition: %#v", fn)
+	}
+	if _, ok := fn["extra"]; ok {
+		t.Fatalf("function extra field leaked into OpenAI tool definition: %#v", fn)
+	}
+	params := fn["parameters"].(map[string]interface{})
+	if got := params["type"]; got != "object" {
+		t.Fatalf("parameters.type = %#v, want object", got)
+	}
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("additionalProperties=false should be stripped: %#v", params)
+	}
+	props := params["properties"].(map[string]interface{})
+	mode := props["mode"].(map[string]interface{})
+	for _, bad := range []string{"oneOf", "nullable"} {
+		if _, ok := mode[bad]; ok {
+			t.Fatalf("unsupported schema key %q should be stripped: %#v", bad, mode)
+		}
+	}
+}
+
+func TestOpenAI_RequestBody_PreservesStrictToolSchemaForNonCodeGenProvider(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "test-model"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		OpenAIChatRequestOptions{
+			Tools: []map[string]interface{}{{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":   "strict_tool",
+					"strict": true,
+					"parameters": map[string]interface{}{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties": map[string]interface{}{
+							"mode": map[string]interface{}{
+								"type":    "string",
+								"default": "fast",
+							},
+						},
+					},
+				},
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	toolDef := req["tools"].([]interface{})[0].(map[string]interface{})
+	fn := toolDef["function"].(map[string]interface{})
+	if got := fn["strict"]; got != true {
+		t.Fatalf("strict = %#v, want true", got)
+	}
+	params := fn["parameters"].(map[string]interface{})
+	if got := params["additionalProperties"]; got != false {
+		t.Fatalf("additionalProperties = %#v, want false", got)
+	}
+	mode := params["properties"].(map[string]interface{})["mode"].(map[string]interface{})
+	if got := mode["default"]; got != "fast" {
+		t.Fatalf("default = %#v, want fast", got)
+	}
+}
+
 func TestParseSSEToResponse_RejectsOversizedToolArguments(t *testing.T) {
 	oversized := strings.Repeat("a", maxToolArgumentsBytes+1)
 	body := []byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"generate_pdf\",\"arguments\":\"" + oversized + "\"}}]}}]}\n")

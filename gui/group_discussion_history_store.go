@@ -921,9 +921,13 @@ func filterGroupDiscussionSummariesByRole(summaries []a2a.HubDiscussionSummary, 
 func mergeGroupDiscussionSummaries(live, cached []a2a.HubDiscussionSummary, role string) []a2a.HubDiscussionSummary {
 	cached = filterGroupDiscussionSummariesByRole(cached, role)
 	if len(cached) == 0 {
-		return sortGroupDiscussionSummariesByUpdated(live)
+		return sortGroupDiscussionSummariesByUpdated(deduplicateDiscussionsByFingerprint(live))
 	}
 	seen := make(map[string]struct{}, len(live)+len(cached))
+	// Track topic+participant fingerprints to detect semantic duplicates —
+	// entries that have different IDs but represent the same discussion
+	// (e.g. session recreated with a new ID, or Hub returning duplicates).
+	fingerprints := make(map[string]struct{}, len(live)+len(cached))
 	out := make([]a2a.HubDiscussionSummary, 0, len(live)+len(cached))
 	for _, summary := range live {
 		id := strings.TrimSpace(summary.ID)
@@ -931,6 +935,13 @@ func mergeGroupDiscussionSummaries(live, cached []a2a.HubDiscussionSummary, role
 			continue
 		}
 		seen[id] = struct{}{}
+		// Deduplicate within live itself (Hub may return duplicates).
+		if fp := discussionSummaryFingerprint(summary); fp != "" {
+			if _, dup := fingerprints[fp]; dup {
+				continue
+			}
+			fingerprints[fp] = struct{}{}
+		}
 		out = append(out, normalizeHistorySummaryForCache(summary))
 	}
 	for _, summary := range cached {
@@ -941,9 +952,57 @@ func mergeGroupDiscussionSummaries(live, cached []a2a.HubDiscussionSummary, role
 		if _, ok := seen[id]; ok {
 			continue
 		}
+		// Skip cached entries that are semantic duplicates of already-added entries.
+		if fp := discussionSummaryFingerprint(summary); fp != "" {
+			if _, dup := fingerprints[fp]; dup {
+				continue
+			}
+			fingerprints[fp] = struct{}{}
+		}
 		out = append(out, normalizeHistorySummaryForCache(summary))
 	}
 	return sortGroupDiscussionSummariesByUpdated(out)
+}
+
+// deduplicateDiscussionsByFingerprint removes semantic duplicates from a single
+// list, keeping the first occurrence (which is typically the most recent from
+// the API). Used when there is no cached list to merge.
+func deduplicateDiscussionsByFingerprint(summaries []a2a.HubDiscussionSummary) []a2a.HubDiscussionSummary {
+	if len(summaries) <= 1 {
+		return summaries
+	}
+	seen := make(map[string]struct{}, len(summaries))
+	out := make([]a2a.HubDiscussionSummary, 0, len(summaries))
+	for _, s := range summaries {
+		if fp := discussionSummaryFingerprint(s); fp != "" {
+			if _, dup := seen[fp]; dup {
+				continue
+			}
+			seen[fp] = struct{}{}
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// discussionSummaryFingerprint returns a dedup key based on topic + sorted
+// participant IDs. Returns "" when the topic is empty (cannot reliably dedup).
+func discussionSummaryFingerprint(s a2a.HubDiscussionSummary) string {
+	topic := strings.TrimSpace(s.Topic)
+	if topic == "" {
+		topic = strings.TrimSpace(s.Question)
+	}
+	if topic == "" {
+		return ""
+	}
+	ids := make([]string, 0, len(s.ParticipantIDs))
+	for _, id := range s.ParticipantIDs {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			ids = append(ids, trimmed)
+		}
+	}
+	sort.Strings(ids)
+	return topic + "\x00" + strings.Join(ids, ",")
 }
 
 func sortGroupDiscussionSummariesByUpdated(summaries []a2a.HubDiscussionSummary) []a2a.HubDiscussionSummary {

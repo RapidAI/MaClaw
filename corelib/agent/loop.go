@@ -207,8 +207,17 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 		resp, err := doLLMRequestWithToolsStream(ctx, cfg, conversation, tools, httpClient, cb.OnToken)
 		if err != nil {
-			if shouldRetrySimpleLLMError(err) {
-				time.Sleep(2 * time.Second)
+			// Retry with exponential backoff for transient errors (503, timeout, network).
+			// SubAgent tasks should be resilient to brief API outages.
+			const maxLLMRetries = 3
+			for retryAttempt := 1; retryAttempt <= maxLLMRetries && shouldRetrySimpleLLMError(err); retryAttempt++ {
+				backoff := time.Duration(retryAttempt*2) * time.Second
+				log.Printf("[agent-loop] LLM error (attempt %d/%d), retrying in %s: %v", retryAttempt, maxLLMRetries, backoff, err)
+				time.Sleep(backoff)
+				if cb.ShouldStop() {
+					finishLLMRequest(err)
+					return LoopResult{Error: "cancelled during LLM retry", Iterations: iteration, ToolCalls: totalToolCalls}
+				}
 				resp, err = doLLMRequestWithTools(ctx, cfg, conversation, tools, httpClient)
 			}
 			finishLLMRequest(err)

@@ -292,6 +292,78 @@ func TestResolveProvidersPreservesCodeGenSSORuntimeConfig(t *testing.T) {
 	}
 }
 
+func TestGetMaclawLLMProviders_NormalizesCodeGenAutoPlaceholder(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:     codegenProviderName,
+			URL:      "https://codegen.qianxin-inc.cn/api/v1/anthropic",
+			Key:      "token-123",
+			Model:    "auto",
+			Protocol: "anthropic",
+			AuthType: "sso",
+		}},
+		MaclawLLMCurrentProvider: codegenProviderName,
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	if data.Current != codegenProviderName {
+		t.Fatalf("Current = %q, want %q", data.Current, codegenProviderName)
+	}
+	if len(data.Providers) == 0 {
+		t.Fatal("expected providers")
+	}
+	got := data.Providers[0]
+	if got.Model != corelib.CodeGenDefaultModelID {
+		t.Fatalf("CodeGen model = %q, want %q", got.Model, corelib.CodeGenDefaultModelID)
+	}
+	if got.Protocol != "openai" {
+		t.Fatalf("CodeGen protocol = %q, want openai", got.Protocol)
+	}
+	if got.URL != "https://codegen.qianxin-inc.cn/api/v1" {
+		t.Fatalf("CodeGen URL = %q, want trimmed OpenAI base URL", got.URL)
+	}
+}
+
+func TestSaveMaclawLLMProviders_NormalizesCodeGenAutoPlaceholder(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	providers := []corelib.MaclawLLMProvider{{
+		Name:     codegenProviderName,
+		URL:      "https://codegen.qianxin-inc.cn/api/v1",
+		Key:      "token-123",
+		Model:    "auto",
+		Protocol: "anthropic",
+		AuthType: "sso",
+	}}
+	if err := app.SaveMaclawLLMProviders(providers, codegenProviderName); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders() error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := saved.MaclawLLMModel; got != corelib.CodeGenDefaultModelID {
+		t.Fatalf("legacy model = %q, want %q", got, corelib.CodeGenDefaultModelID)
+	}
+	if got := saved.MaclawLLMProviders[0].Model; got != corelib.CodeGenDefaultModelID {
+		t.Fatalf("provider model = %q, want %q", got, corelib.CodeGenDefaultModelID)
+	}
+	if got := saved.MaclawLLMProtocol; got != "openai" {
+		t.Fatalf("legacy protocol = %q, want openai", got)
+	}
+}
+
 func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

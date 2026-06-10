@@ -122,6 +122,37 @@ func TestResolveLLMConfigRejectsManagedByHubProviderCredential(t *testing.T) {
 	}
 }
 
+func TestResolveLLMConfigNormalizesCodeGenSSOAutoProvider(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMCurrentProvider: "CodeGen",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:      "CodeGen",
+			URL:       "https://codegen.qianxin-inc.cn/api/v1/anthropic",
+			Key:       "codegen-token",
+			Model:     "auto",
+			Protocol:  "anthropic",
+			AgentType: "openclaw",
+			AuthType:  "sso",
+		}},
+	}
+	llmCfg, err := ResolveLLMConfig(cfg)
+	if err != nil {
+		t.Fatalf("ResolveLLMConfig() error = %v", err)
+	}
+	if llmCfg.Model != corelib.CodeGenDefaultModelID {
+		t.Fatalf("CodeGen model = %q, want %q", llmCfg.Model, corelib.CodeGenDefaultModelID)
+	}
+	if llmCfg.Protocol != "openai" {
+		t.Fatalf("CodeGen protocol = %q, want openai", llmCfg.Protocol)
+	}
+	if llmCfg.URL != "https://codegen.qianxin-inc.cn/api/v1" {
+		t.Fatalf("CodeGen URL = %q, want OpenAI base URL", llmCfg.URL)
+	}
+	if llmCfg.AgentType != corelib.CodeGenClientName {
+		t.Fatalf("CodeGen agent type = %q, want %q", llmCfg.AgentType, corelib.CodeGenClientName)
+	}
+}
+
 func TestNormalizeLLMFlatConfigFillsSelectedProvider(t *testing.T) {
 	cfg := normalizeLLMFlatConfig(corelib.AppConfig{
 		MaclawLLMCurrentProvider: "hub",
@@ -162,6 +193,21 @@ func TestNormalizeLLMFlatConfigFillsSelectedProvider(t *testing.T) {
 	if cfg.MaclawLLMUrl != "https://hub.example.test/api/llm/v1" || cfg.MaclawLLMKey != "hub-key" || cfg.MaclawLLMModel != "auto" {
 		t.Fatalf("effectiveLLMFlatConfig should expose selected provider as effective flat fields: %#v", cfg)
 	}
+
+	cfg = normalizeLLMFlatConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: "CodeGen",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:     "CodeGen",
+			URL:      "https://codegen.qianxin-inc.cn/api/v1/anthropic",
+			Key:      "codegen-token",
+			Model:    "auto",
+			Protocol: "anthropic",
+			AuthType: "sso",
+		}},
+	})
+	if cfg.MaclawLLMUrl != "https://codegen.qianxin-inc.cn/api/v1" || cfg.MaclawLLMModel != corelib.CodeGenDefaultModelID || cfg.MaclawLLMProtocol != "" {
+		t.Fatalf("normalizeLLMFlatConfig should normalize CodeGen SSO provider, got %#v", cfg)
+	}
 }
 
 func TestMaskedSecretPlaceholderVariants(t *testing.T) {
@@ -178,6 +224,21 @@ func TestMaskedSecretPlaceholderVariants(t *testing.T) {
 }
 
 func TestNormalizeLLMConfigForSaveSyncsVisibleFlatEditsToProvider(t *testing.T) {
+	codegen := normalizeLLMConfigForSave(corelib.AppConfig{}, corelib.AppConfig{
+		MaclawLLMCurrentProvider: "CodeGen",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:     "CodeGen",
+			URL:      "https://codegen.qianxin-inc.cn/api/v1/anthropic",
+			Key:      "codegen-token",
+			Model:    "auto",
+			Protocol: "anthropic",
+			AuthType: "sso",
+		}},
+	})
+	if codegen.MaclawLLMProviders[0].Model != corelib.CodeGenDefaultModelID || codegen.MaclawLLMProviders[0].Protocol != "openai" {
+		t.Fatalf("normalizeLLMConfigForSave should normalize CodeGen SSO provider, got %#v", codegen)
+	}
+
 	created := normalizeLLMConfigForSave(corelib.AppConfig{}, corelib.AppConfig{
 		MaclawLLMUrl:             "https://flat.example.test/v1",
 		MaclawLLMKey:             "flat-key",

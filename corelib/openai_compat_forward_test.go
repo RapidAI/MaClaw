@@ -1,13 +1,21 @@
 package corelib
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
 
 func TestOpenAIChatCompletionsEndpoint(t *testing.T) {
 	tests := []struct {
@@ -30,6 +38,248 @@ func TestOpenAIChatCompletionsEndpoint(t *testing.T) {
 				t.Errorf("openAIChatCompletionsEndpoint(%q) = %q, want %q", tt.baseURL, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestForwardOpenAICompatRequestNormalizesCodeGenAutoModel(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if got := body["model"]; got != CodeGenDefaultModelID {
+			t.Fatalf("upstream model = %#v, want %q", got, CodeGenDefaultModelID)
+		}
+		resp := `{"id":"chatcmpl-test","object":"chat.completion","model":"qax-codegen/Auto","choices":[]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(resp)),
+			Request:    req,
+		}, nil
+	})}
+
+	_, statusCode, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto"}, map[string]any{
+		"messages": []any{},
+	}, client, "")
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", statusCode, http.StatusOK)
+	}
+}
+
+func TestForwardOpenAICompatRequestSanitizesCodeGenTools(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		tools := body["tools"].([]any)
+		fn := tools[0].(map[string]any)["function"].(map[string]any)
+		if _, ok := fn["strict"]; ok {
+			t.Fatalf("strict leaked into CodeGen tool: %#v", fn)
+		}
+		params := fn["parameters"].(map[string]any)
+		if _, ok := params["additionalProperties"]; ok {
+			t.Fatalf("additionalProperties=false leaked into CodeGen schema: %#v", params)
+		}
+		props := params["properties"].(map[string]any)
+		values := props["values"].(map[string]any)
+		if got := values["items"].(map[string]any)["type"]; got != "string" {
+			t.Fatalf("array items type = %#v, want string", got)
+		}
+		functions := body["functions"].([]any)
+		legacyFn := functions[0].(map[string]any)
+		if _, ok := legacyFn["strict"]; ok {
+			t.Fatalf("legacy strict leaked into CodeGen function: %#v", legacyFn)
+		}
+		legacyParams := legacyFn["parameters"].(map[string]any)
+		legacyIDs := legacyParams["properties"].(map[string]any)["ids"].(map[string]any)
+		if got := legacyIDs["items"].(map[string]any)["type"]; got != "string" {
+			t.Fatalf("legacy array items type = %#v, want string", got)
+		}
+		resp := `{"id":"chatcmpl-test","object":"chat.completion","model":"qax-codegen/Auto","choices":[]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(resp)),
+			Request:    req,
+		}, nil
+	})}
+
+	_, statusCode, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto"}, map[string]any{
+		"messages": []any{},
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":   "strict_tool",
+				"strict": true,
+				"parameters": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"values": map[string]any{"type": "array"},
+					},
+				},
+			},
+		}},
+		"functions": []any{map[string]any{
+			"name":   "legacy_function",
+			"strict": true,
+			"parameters": map[string]any{
+				"properties": map[string]any{
+					"ids": map[string]any{"type": "array"},
+				},
+			},
+		}},
+	}, client, "")
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", statusCode, http.StatusOK)
+	}
+}
+
+func TestForwardOpenAICompatRequestPreservesNonCodeGenToolSchema(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		tools := body["tools"].([]any)
+		fn := tools[0].(map[string]any)["function"].(map[string]any)
+		if got := fn["strict"]; got != true {
+			t.Fatalf("strict = %#v, want true", got)
+		}
+		params := fn["parameters"].(map[string]any)
+		if got := params["additionalProperties"]; got != false {
+			t.Fatalf("additionalProperties = %#v, want false", got)
+		}
+		props := params["properties"].(map[string]any)
+		values := props["values"].(map[string]any)
+		if _, ok := values["items"]; ok {
+			t.Fatalf("non-CodeGen array schema should not be patched: %#v", values)
+		}
+		if got := values["default"].([]any)[0]; got != "x" {
+			t.Fatalf("default = %#v, want x", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "chatcmpl-test", "object": "chat.completion", "model": "strict-model", "choices": []any{}})
+	}))
+	defer server.Close()
+
+	_, statusCode, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{URL: server.URL, Model: "strict-model"}, map[string]any{
+		"messages": []any{},
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":   "strict_tool",
+				"strict": true,
+				"parameters": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"values": map[string]any{"type": "array", "default": []any{"x"}},
+					},
+				},
+			},
+		}},
+	}, server.Client(), "")
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", statusCode, http.StatusOK)
+	}
+}
+
+func TestForwardOpenAICompatStreamRequestNormalizesCodeGenAutoModel(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if got := body["model"]; got != CodeGenDefaultModelID {
+			t.Fatalf("upstream model = %#v, want %q", got, CodeGenDefaultModelID)
+		}
+		if got := body["stream"]; got != true {
+			t.Fatalf("stream = %#v, want true", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(bytes.NewBufferString("data: [DONE]\n\n")),
+			Request:    req,
+		}, nil
+	})}
+
+	resp, err := ForwardOpenAICompatStreamRequest(context.Background(), MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto"}, map[string]any{
+		"messages": []any{},
+	}, client)
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatStreamRequest() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestForwardOpenAICompatResponsesRequestNormalizesCodeGenAutoModel(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if got := body["model"]; got != CodeGenDefaultModelID {
+			t.Fatalf("upstream model = %#v, want %q", got, CodeGenDefaultModelID)
+		}
+		tools := body["tools"].([]any)
+		flatTool := tools[0].(map[string]any)
+		if _, ok := flatTool["strict"]; ok {
+			t.Fatalf("Responses strict leaked into CodeGen tool: %#v", flatTool)
+		}
+		params := flatTool["parameters"].(map[string]any)
+		if _, ok := params["additionalProperties"]; ok {
+			t.Fatalf("Responses additionalProperties=false leaked: %#v", params)
+		}
+		values := params["properties"].(map[string]any)["values"].(map[string]any)
+		if got := values["items"].(map[string]any)["type"]; got != "string" {
+			t.Fatalf("Responses array items type = %#v, want string", got)
+		}
+		resp := `{"id":"resp-test","object":"response","model":"qax-codegen/Auto","output":[]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(resp)),
+			Request:    req,
+		}, nil
+	})}
+
+	_, statusCode, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto", WireAPI: "responses"}, map[string]any{
+		"messages": []any{},
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":   "strict_tool",
+				"strict": true,
+				"parameters": map[string]any{
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"values": map[string]any{"type": "array"},
+					},
+				},
+			},
+		}},
+	}, client, "")
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", statusCode, http.StatusOK)
 	}
 }
 

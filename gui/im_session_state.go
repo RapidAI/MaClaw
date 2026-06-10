@@ -65,6 +65,13 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 		}
 	}
 
+	// Tool router session state: clear session-pinned conditional tools
+	// (e.g. ssh, browser) so the new conversation starts with a clean tool
+	// list determined solely by the user's first message.
+	if h.toolRouter != nil {
+		h.toolRouter.ResetSession()
+	}
+
 	// Steering file context (per-user partitioned).
 	h.clearSteeringContextFiles(userID)
 

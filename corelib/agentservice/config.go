@@ -381,6 +381,7 @@ func ValidateAppConfig(cfg corelib.AppConfig) ConfigValidationResult {
 
 func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 	if provider, err := resolveSelectedProvider(cfg); err == nil {
+		provider = corelib.NormalizeCodeGenSSOProvider(provider)
 		key := resolveProviderSecret(provider)
 		if isManagedByHubPlaceholder(strings.TrimSpace(provider.URL), key, strings.TrimSpace(provider.Model)) {
 			return corelib.MaclawLLMConfig{}, fmt.Errorf("llm config still uses unresolved VE Platform managed-by-hub placeholder")
@@ -479,6 +480,7 @@ func projectSelectedProviderToFlat(cfg corelib.AppConfig, overwrite bool) coreli
 	if !ok {
 		return cfg
 	}
+	provider = corelib.NormalizeCodeGenSSOProvider(provider)
 	if overwrite || strings.TrimSpace(cfg.MaclawLLMUrl) == "" {
 		cfg.MaclawLLMUrl = strings.TrimSpace(provider.URL)
 	}
@@ -492,6 +494,9 @@ func projectSelectedProviderToFlat(cfg corelib.AppConfig, overwrite bool) coreli
 }
 
 func normalizeLLMConfigForSave(current, next corelib.AppConfig) corelib.AppConfig {
+	for i := range next.MaclawLLMProviders {
+		next.MaclawLLMProviders[i] = corelib.NormalizeCodeGenSSOProvider(next.MaclawLLMProviders[i])
+	}
 	provider, providerIndex, ok := resolveSelectedProviderForFlatConfigWithIndex(next)
 	if !ok {
 		return normalizeLLMFlatConfig(next)

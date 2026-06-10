@@ -23,6 +23,7 @@ type imEntryContextResult struct {
 	UnfinishedSlot            *agent.UnfinishedTaskSlot
 	FreshTask                 bool
 	WorkflowAgentLoop         bool
+	WorkflowDocPhase          bool
 	SkipNeedsConfirmGate      bool
 	AskUserContext            string
 	PendingUserReplyContext   string
@@ -112,6 +113,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		return result
 	}
 	result.WorkflowAgentLoop = workflowRoute.WorkflowAgentLoop
+	result.WorkflowDocPhase = workflowRoute.WorkflowDocPhase
 	result.SkipNeedsConfirmGate = workflowRoute.SkipNeedsConfirmGate
 	workflowRouteElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()

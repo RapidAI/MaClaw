@@ -19,7 +19,10 @@ import (
 
 // appendGUIPostCorePrinciples injects GUI-only rules after core principles:
 // context management, coding workflow contract, passthrough commands.
-func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isProMode bool, trialReflectEnabled bool) {
+// When suppressCodingContract is true (V2 workflow agent loop), the multi-phase
+// coding workflow contract is omitted to prevent the LLM from self-confirming
+// and re-emitting documents within a single response.
+func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isProMode bool, trialReflectEnabled bool, suppressCodingContract bool) {
 	b.WriteString(`
 ## 上下文管理（长程任务优化）
 - 当你完成一个子任务或阶段性工作后（如完成了文件创建、完成了一轮测试、完成了数据收集），主动调用 compress_context 工具压缩之前的详细工具调用历史为一段摘要。
@@ -31,7 +34,9 @@ func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isPro
 - 不要在每次工具调用后都压缩——只在关键检查点使用。
 `)
 
-	appendCodingWorkflowContract(b)
+	if !suppressCodingContract {
+		appendCodingWorkflowContract(b)
+	}
 
 	b.WriteString(agent.PromptPassthroughCommands)
 

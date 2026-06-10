@@ -42,14 +42,18 @@ func BuildResponsesAPIRequestData(
 	converted := ConvertToResponsesInput(messages)
 
 	reqBody := map[string]interface{}{
-		"model":  cfg.Model,
+		"model":  cfg.UpstreamModel(),
 		"input":  converted.Input,
 		"stream": opts.Stream,
 	}
 	if converted.Instructions != "" {
 		reqBody["instructions"] = converted.Instructions
 	}
-	if tools := ConvertToResponsesTools(opts.Tools); len(tools) > 0 {
+	toolsInput := opts.Tools
+	if corelib.IsCodeGenURL(cfg.URL) {
+		toolsInput = corelib.SanitizeCodeGenOpenAIChatTools(opts.Tools)
+	}
+	if tools := ConvertToResponsesTools(toolsInput); len(tools) > 0 {
 		reqBody["tools"] = tools
 	}
 	for k, v := range opts.ExtraBody {

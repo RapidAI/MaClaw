@@ -88,7 +88,7 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 	}
 	stable.WriteString(PromptEncodingRules)
 	stable.WriteString(PromptSSHRules)
-	if cfg.IsProMode {
+	if cfg.IsProMode && !cfg.SuppressCodingGateRules {
 		appendInternalCodingWorkflowRules(&stable)
 	}
 

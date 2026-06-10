@@ -77,13 +77,18 @@ func buildOpenAIChatRequestBody(
 	messages = sanitizeInvalidToolCallArguments(messages)
 	messages = sanitizeOrphanedToolCalls(messages)
 
+	model := cfg.UpstreamModel()
 	reqBody := map[string]interface{}{
-		"model":    cfg.Model,
+		"model":    model,
 		"messages": messages,
 		"stream":   opts.Stream,
 	}
 	if len(opts.Tools) > 0 {
-		reqBody["tools"] = opts.Tools
+		if corelib.IsCodeGenURL(cfg.URL) {
+			reqBody["tools"] = corelib.SanitizeCodeGenOpenAIChatTools(opts.Tools)
+		} else {
+			reqBody["tools"] = opts.Tools
+		}
 	}
 	if opts.ToolChoice != nil {
 		reqBody["tool_choice"] = opts.ToolChoice

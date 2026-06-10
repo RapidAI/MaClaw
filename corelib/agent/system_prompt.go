@@ -16,6 +16,12 @@ type SystemPromptConfig struct {
 	Nickname          string
 	TrialReflect      bool
 	HasCodingSessions bool
+
+	// SuppressCodingGateRules suppresses the coding workflow confirmation gate
+	// rules from the system prompt. Used during V2 workflow agent loops where
+	// the phase prompt provides all necessary instructions and the confirmation
+	// gate rules conflict with phase-specific output constraints.
+	SuppressCodingGateRules bool
 }
 
 // SystemPromptDeps holds the dependencies needed to build the system prompt.

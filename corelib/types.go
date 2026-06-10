@@ -14,6 +14,8 @@ const RequiredNodeVersion = "24.13.0"
 const (
 	CodeGenClientNameHeader = "X-Codegen-Client-Name"
 	CodeGenClientName       = "tigerclaw"
+	CodeGenDefaultModelID   = "qax-codegen/Auto"
+	CodeGenAutoModelAlias   = "auto"
 )
 
 func SetCodeGenClientNameHeaderIfNeeded(req *http.Request) {
@@ -45,6 +47,46 @@ func IsCodeGenURL(rawURL string) bool {
 		return false
 	}
 	return IsCodeGenHostname(u.Hostname())
+}
+
+func NormalizeCodeGenModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || strings.EqualFold(model, CodeGenAutoModelAlias) {
+		return CodeGenDefaultModelID
+	}
+	return model
+}
+
+func NormalizeCodeGenModelForURL(rawURL, model string) string {
+	if IsCodeGenURL(rawURL) {
+		return NormalizeCodeGenModel(model)
+	}
+	return strings.TrimSpace(model)
+}
+
+func NormalizeCodeGenSSOModel(model string) string {
+	return NormalizeCodeGenModel(model)
+}
+
+func NormalizeCodeGenSSOProvider(provider MaclawLLMProvider) MaclawLLMProvider {
+	provider.Name = strings.TrimSpace(provider.Name)
+	provider.AuthType = strings.TrimSpace(provider.AuthType)
+	if !strings.EqualFold(provider.AuthType, "sso") {
+		return provider
+	}
+	if !strings.EqualFold(provider.Name, "CodeGen") && !IsCodeGenURL(provider.URL) {
+		return provider
+	}
+	provider.Name = "CodeGen"
+	provider.AuthType = "sso"
+	provider.Protocol = "openai"
+	provider.Model = NormalizeCodeGenModel(provider.Model)
+	if strings.TrimSpace(provider.AgentType) == "" || strings.EqualFold(strings.TrimSpace(provider.AgentType), "openclaw") {
+		provider.AgentType = CodeGenClientName
+	}
+	provider.URL = strings.TrimRight(strings.TrimSpace(provider.URL), "/")
+	provider.URL = strings.TrimSuffix(provider.URL, "/anthropic")
+	return provider
 }
 
 // DefaultContextTokens is the fallback context limit when no explicit
@@ -534,6 +576,10 @@ func (c MaclawLLMConfig) UserAgent() string {
 		return agentType
 	}
 	return "openclaw"
+}
+
+func (c MaclawLLMConfig) UpstreamModel() string {
+	return NormalizeCodeGenModelForURL(c.URL, c.Model)
 }
 
 // EffectiveTimeoutSec returns the configured response-header timeout in seconds,

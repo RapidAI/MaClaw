@@ -246,8 +246,16 @@ func (a *App) RedeemHubLLMService(code string) (HubLLMServiceStatus, error) {
 		}
 		serviceStatus = refreshed
 	}
-	if _, err := a.syncHubLLMServiceStatusToConfig(serviceStatus, false); err != nil {
+	changed, err := a.syncHubLLMServiceStatusToConfig(serviceStatus, false)
+	if err != nil {
 		return serviceStatus, err
+	}
+	// syncHubLLMServiceStatusToConfig only emits "hub-llm-service-changed" when
+	// config file changes. But credit grants (runtime data, not persisted in
+	// config) always change after a redeem. Emit unconditionally when sync
+	// didn't already emit, so the sidebar refreshes.
+	if !changed && a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "hub-llm-service-changed")
 	}
 	return serviceStatus, nil
 }

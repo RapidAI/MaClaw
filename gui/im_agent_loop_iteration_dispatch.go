@@ -318,6 +318,21 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	*opts.Conversation = postTurn.Conversation
 	*opts.History = postTurn.History
 	opts.Telemetry.ApplyPostLLMTurn(postTurn)
+
+	// V2 workflow doc buffer: accumulate non-empty text output from each iteration
+	// so captureWorkflowDocAfterAgentLoop can use the complete accumulated text
+	// instead of just resp.Text (which only contains the last iteration's output).
+	// Strip thinking tags before accumulating — they are not part of the document.
+	if opts.Context != nil && opts.Context.WorkflowAgentLoop && msgContent != "" {
+		cleaned := stripThinkingTags(msgContent)
+		if cleaned != "" {
+			if opts.Context.WorkflowDocBuffer.Len() > 0 {
+				opts.Context.WorkflowDocBuffer.WriteString("\n\n")
+			}
+			opts.Context.WorkflowDocBuffer.WriteString(cleaned)
+		}
+	}
+
 	if postTurn.Response != nil {
 		return agentLoopIterationDispatchResult{Response: postTurn.Response}
 	}

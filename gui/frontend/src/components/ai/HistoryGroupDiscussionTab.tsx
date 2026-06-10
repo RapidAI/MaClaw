@@ -503,7 +503,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
 
         const detailMessages = detail?.messages || [];
         const pendingOptimisticMessages = optimisticMessages.filter((pending) =>
-            !detailMessages.some((m) => String(m.content || "") === String(pending.content || "") && String(m.created_at || "") === String(pending.created_at || ""))
+            !detailMessages.some((m) => String(m.content || "") === String(pending.content || ""))
         );
 
         [...detailMessages, ...pendingOptimisticMessages].forEach((m, idx) => {

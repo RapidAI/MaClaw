@@ -136,7 +136,9 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 			req.OpsApprovedCommands...),
 	}
 	userContent := agent.BuildUserContent(req.Message.Content, req.Message.Attachments, llmCfg.Protocol, llmCfg.SupportsVision, nil)
+	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop starting ===== session=%s onToken_wired=%v", req.Session.ID, req.OnToken != nil)
 	result := agent.RunLoopWithUserContent(cb, req.Message.Content, userContent, convertHistoryToEntries(req.History, req.Message.ID), cb.httpClient)
+	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop finished ===== session=%s iterations=%d text_len=%d error=%q", req.Session.ID, result.Iterations, len(result.Text), result.Error)
 	if result.Error != "" {
 		return nil, errors.New(result.Error)
 	}

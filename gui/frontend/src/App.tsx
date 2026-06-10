@@ -3888,34 +3888,37 @@ ${instruction}`;
                                                 const modelOptions = fetchedModelList.length > 0
                                                     ? fetchedModelList
                                                     : getKnownModelOptions(activeTool, currentModel.model_name);
-                                                return (
-                                                    <select
-                                                        className="form-input provider-config-model-select"
-                                                        data-field="model-id"
-                                                        value={currentModel.model_id || ''}
-                                                        onChange={(e) => handleModelIdChange(e.target.value)}
-                                                        disabled={fetchingModelList || modelOptions.length === 0}
-                                                    >
-                                                        <option value="">
-                                                            {fetchingModelList
-                                                                ? localizeText("Loading...", "加载中...", "載入中...")
-                                                                : modelOptions.length === 0
-                                                                    ? localizeText("Click Models to fetch first", "请先点击“模型”获取列表", "請先點擊「模型」取得列表")
-                                                                    : localizeText("Select a model", "选择模型", "選擇模型")}
-                                                        </option>
-                                                        {currentModel.model_id && !modelOptions.some(m => m.id === currentModel.model_id) && (
-                                                            <option value={currentModel.model_id}>
-                                                                {localizeText("Current: ", "当前：", "目前：")}{currentModel.model_id}
-                                                            </option>
-                                                        )}
-                                                        {modelOptions.map((m, i) => (
-                                                            <option key={`${m.id}-${i}`} value={m.id}>
-                                                                {m.name && m.name !== m.id ? `${m.name} (${m.id})` : m.id}
-                                                            </option>
-                                                        ))}
-                                                    </select>
-                                                );
-                                            })()}
+                                                    const datalistId = `model-options-${activeTool}-${activeTab}`;
+                                                    return (
+                                                        <>
+                                                            <input
+                                                                type="text"
+                                                                className="form-input provider-config-model-select"
+                                                                data-field="model-id"
+                                                                list={datalistId}
+                                                                value={currentModel.model_id || ''}
+                                                                onChange={(e) => handleModelIdChange(e.target.value)}
+                                                                placeholder={fetchingModelList
+                                                                    ? localizeText("Loading...", "加载中...", "載入中...")
+                                                                    : modelOptions.length > 0
+                                                                        ? localizeText("Select or type model name", "选择或输入模型名称", "選擇或輸入模型名稱")
+                                                                        : localizeText("Type model name or click Models", "输入模型名称或点击 Models", "輸入模型名稱或點擊 Models")}
+                                                                disabled={fetchingModelList}
+                                                                autoCapitalize="off"
+                                                                autoCorrect="off"
+                                                                spellCheck={false}
+                                                                autoComplete="off"
+                                                            />
+                                                            <datalist id={datalistId}>
+                                                                {modelOptions.map((m, i) => (
+                                                                    <option key={`${m.id}-${i}`} value={m.id}>
+                                                                        {m.name && m.name !== m.id ? m.name : ''}
+                                                                    </option>
+                                                                ))}
+                                                            </datalist>
+                                                        </>
+                                                    );
+                                                })()}
                                             <button
                                                 className="btn-link provider-config-fetch-button"
                                                 disabled={fetchingModelList}

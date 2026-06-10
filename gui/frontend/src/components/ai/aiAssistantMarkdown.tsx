@@ -278,9 +278,9 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
     const numMatch = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
     if (numMatch) {
         return (
-            <div key={key} style={{ paddingLeft: "1.2em", textIndent: "-1.2em", minHeight: "1.4em" }}>
-                <span style={{ color: t.bulletColor }}>{numMatch[1]}.</span>{" "}
-                {renderInlineMarkdown(numMatch[2], t)}
+            <div key={key} style={{ display: "flex", minHeight: "1.4em" }}>
+                <span style={{ color: t.bulletColor, flexShrink: 0, minWidth: "1.8em" }}>{numMatch[1]}.</span>
+                <span style={{ flex: 1 }}>{renderInlineMarkdown(numMatch[2], t)}</span>
             </div>
         );
     }

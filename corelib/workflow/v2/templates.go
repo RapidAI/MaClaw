@@ -83,13 +83,14 @@ func CodingTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:        "coding",
 		Name:        "编程项目",
-		Description: "需求 → 设计 → 任务分解 → 逐任务编码",
+		Description: "需求 → 设计 → 任务分解 → 逐任务编码 → 验收",
 		Keywords:    []string{"开发", "编写", "实现", "写代码", "游戏", "应用", "工具", "系统", "重构"},
 		Phases: []PhaseTemplate{
 			{ID: "requirements", Name: "需求文档", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "design", Name: "技术设计", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "tasks", Name: "任务分解", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "implementation", Name: "编码执行", NeedsConfirm: false, ToolPolicy: ToolPolicyFull},
+			{ID: "verification", Name: "验收确认", NeedsConfirm: false, ToolPolicy: ToolPolicyFull},
 		},
 	}
 }

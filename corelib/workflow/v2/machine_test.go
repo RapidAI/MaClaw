@@ -172,17 +172,22 @@ func TestFullCodingWorkflowLifecycle(t *testing.T) {
 	}
 
 	// Phase 4: implementation (NeedsConfirm=false)
-	// RecordOutput with NeedsConfirm=false -> directly completed
+	// RecordOutput with NeedsConfirm=false auto-advances to verification.
 	m.RecordOutput("user1", "all tasks done")
 	state := m.GetActive("user1")
+	if state == nil {
+		t.Fatal("workflow should still be active (verification phase pending)")
+	}
+	if state.ActivePhase().ID != "verification" {
+		t.Fatalf("expected verification phase, got %s", state.ActivePhase().ID)
+	}
+
+	// Phase 5: verification (NeedsConfirm=false)
+	// RecordOutput auto-advances past last phase → workflow completed.
+	m.RecordOutput("user1", "all tests passed")
+	state = m.GetActive("user1")
 	if state != nil {
-		// implementation phase completed -> workflow should be completed
-		// Actually, let's check: implementation has NeedsConfirm=false,
-		// so RecordOutput sets it to PhaseCompleted but doesn't advance.
-		// The workflow is still active at implementation phase completed.
-		if state.ActivePhase().Status != PhaseCompleted {
-			t.Fatalf("implementation status = %q", state.ActivePhase().Status)
-		}
+		t.Fatal("workflow should be completed after verification")
 	}
 }
 

@@ -218,12 +218,7 @@ func (a *App) GetMaclawLLMProviders() struct {
 		}
 		providers[i] = markHubServiceProvider(normalizeMaclawLLMProvider(providers[i]))
 		if providers[i].Name == codegenProviderName && providers[i].AuthType == "sso" {
-			providers[i].Protocol = "openai"
-			if strings.TrimSpace(providers[i].AgentType) == "" || strings.EqualFold(strings.TrimSpace(providers[i].AgentType), "openclaw") {
-				providers[i].AgentType = corelib.CodeGenClientName
-			}
-			providers[i].URL = strings.TrimRight(strings.TrimSpace(providers[i].URL), "/")
-			providers[i].URL = strings.TrimSuffix(providers[i].URL, "/anthropic")
+			providers[i] = corelib.NormalizeCodeGenSSOProvider(providers[i])
 			continue
 		}
 		// Keep preset provider URLs in sync (handles port changes etc.)
@@ -359,6 +354,7 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 	cfg.MaclawLLMTimeoutSec = 0
 	for i := range providers {
 		providers[i] = markHubServiceProvider(normalizeMaclawLLMProvider(providers[i]))
+		providers[i] = corelib.NormalizeCodeGenSSOProvider(providers[i])
 	}
 	if current == hubServiceProviderName {
 		hasHubProvider := false
@@ -1665,7 +1661,7 @@ func upsertCodeGenProvider(providers []corelib.MaclawLLMProvider, result oauth.C
 		Name:          codegenProviderName,
 		URL:           result.BaseURL,
 		Key:           result.AccessToken,
-		Model:         result.ModelID,
+		Model:         corelib.NormalizeCodeGenSSOModel(result.ModelID),
 		Protocol:      "openai",                  // AI 助手通过 OpenAI 协议接入 CodeGen
 		AgentType:     corelib.CodeGenClientName, // TigerClaw CodeGen client identity
 		AuthType:      "sso",                     // 标识认证来源，区别于手动 API Key

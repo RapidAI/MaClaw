@@ -36,8 +36,9 @@ func ForwardOpenAICompatRequest(ctx context.Context, cfg MaclawLLMConfig, body m
 	case strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic"):
 		return forwardAnthropicCompatRequest(ctx, cfg, clean, client, responseModel)
 	default:
-		// OpenAI-compatible path: pass through as-is. Most OpenAI-compatible
-		// providers (GLM, GPT, Kimi, etc.) support tool calling natively.
+		// OpenAI-compatible path: preserve caller fields, with narrowly scoped
+		// CodeGen compatibility fixes applied immediately before forwarding.
+		// Most OpenAI-compatible providers (GLM, GPT, Kimi, etc.) support tool calling natively.
 		// If a provider rejects role:"tool" (e.g. some DeepSeek endpoints),
 		// the Hub's failover mechanism will try the next provider.
 		return forwardOpenAICompatRequest(ctx, cfg, clean, client, responseModel)
@@ -72,8 +73,9 @@ func forwardOpenAICompatStreamRequest(ctx context.Context, cfg MaclawLLMConfig, 
 	for k, v := range body {
 		fwd[k] = v
 	}
-	fwd["model"] = cfg.Model
+	fwd["model"] = cfg.UpstreamModel()
 	fwd["stream"] = true
+	sanitizeCodeGenOpenAICompatForwardBody(cfg, fwd)
 	ensureOpenAIStreamUsage(fwd)
 
 	jsonBody, err := json.Marshal(fwd)
@@ -226,8 +228,9 @@ func forwardOpenAICompatRequest(ctx context.Context, cfg MaclawLLMConfig, body m
 	for k, v := range body {
 		fwd[k] = v
 	}
-	fwd["model"] = cfg.Model
+	fwd["model"] = cfg.UpstreamModel()
 	fwd["stream"] = false
+	sanitizeCodeGenOpenAICompatForwardBody(cfg, fwd)
 
 	jsonBody, err := json.Marshal(fwd)
 	if err != nil {
@@ -259,8 +262,20 @@ func forwardOpenAICompatRequest(ctx context.Context, cfg MaclawLLMConfig, body m
 	return respBody, resp.StatusCode, nil
 }
 
+func sanitizeCodeGenOpenAICompatForwardBody(cfg MaclawLLMConfig, body map[string]interface{}) {
+	if body == nil || !IsCodeGenURL(cfg.URL) {
+		return
+	}
+	if tools, ok := body["tools"]; ok {
+		body["tools"] = SanitizeCodeGenOpenAIChatToolsValue(tools)
+	}
+	if functions, ok := body["functions"]; ok {
+		body["functions"] = SanitizeCodeGenOpenAIFunctionsValue(functions)
+	}
+}
+
 func forwardAnthropicCompatRequest(ctx context.Context, cfg MaclawLLMConfig, body map[string]interface{}, client *http.Client, responseModel string) ([]byte, int, error) {
-	anthropicReq := openaiToAnthropic(body, cfg.Model)
+	anthropicReq := openaiToAnthropic(body, cfg.UpstreamModel())
 	jsonBody, err := json.Marshal(anthropicReq)
 	if err != nil {
 		return nil, 0, fmt.Errorf("marshal anthropic request: %w", err)
@@ -299,7 +314,7 @@ func forwardAnthropicCompatRequest(ctx context.Context, cfg MaclawLLMConfig, bod
 	}
 	model := strings.TrimSpace(responseModel)
 	if model == "" {
-		model = cfg.Model
+		model = cfg.UpstreamModel()
 	}
 	openaiResp := anthropicToOpenAI(respMap, model)
 	data, err := json.Marshal(openaiResp)
@@ -538,7 +553,12 @@ func responsesToOpenAI(resp map[string]interface{}, model string) map[string]int
 }
 
 func forwardResponsesCompat(ctx context.Context, cfg MaclawLLMConfig, body map[string]interface{}, client *http.Client, responseModel string) ([]byte, int, error) {
-	responsesReq := openaiToResponses(body, cfg.Model)
+	fwd := make(map[string]interface{}, len(body))
+	for k, v := range body {
+		fwd[k] = v
+	}
+	sanitizeCodeGenOpenAICompatForwardBody(cfg, fwd)
+	responsesReq := openaiToResponses(fwd, cfg.UpstreamModel())
 	jsonBody, err := json.Marshal(responsesReq)
 	if err != nil {
 		return nil, 0, fmt.Errorf("marshal responses request: %w", err)
@@ -579,7 +599,7 @@ func forwardResponsesCompat(ctx context.Context, cfg MaclawLLMConfig, body map[s
 	}
 	model := strings.TrimSpace(responseModel)
 	if model == "" {
-		model = cfg.Model
+		model = cfg.UpstreamModel()
 	}
 	openaiResp := responsesToOpenAI(respMap, model)
 	data, err := json.Marshal(openaiResp)

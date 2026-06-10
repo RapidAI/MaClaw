@@ -19,6 +19,7 @@ type preparedIMEntryExecutionOptions struct {
 	Decision                  explicitTaskSlotDecision
 	UnfinishedSlot            *agent.UnfinishedTaskSlot
 	WorkflowAgentLoop         bool
+	WorkflowDocPhase          bool
 	SkipNeedsConfirmGate      bool
 	AskUserContext            string
 	PendingUserReplyContext   string
@@ -39,8 +40,12 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	if resp, handled := h.handleBackgroundIMRoute(msg, opts.ProvidedLoopContext, opts.HTTPClient, opts.OnProgress); handled {
 		return resp
 	}
-	if resp, handled := h.handleExecutionConfirmationGate(opts.FreshTask, msg, opts.Trimmed, opts.HTTPClient); handled {
-		return resp
+	// V2 workflow: skip execution confirmation gate — V2 has its own three-phase
+	// document review mechanism. The confirmation panel is a V1 artifact.
+	if !opts.WorkflowAgentLoop {
+		if resp, handled := h.handleExecutionConfirmationGate(opts.FreshTask, msg, opts.Trimmed, opts.HTTPClient); handled {
+			return resp
+		}
 	}
 	if resp, handled := h.maybeReturnUnfinishedSlotHint(msg, opts.Trimmed, opts.FreshTask, opts.Decision, opts.UnfinishedSlot); handled {
 		return resp
@@ -60,6 +65,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		opts.AskUserContext != "" || opts.PendingUserReplyContext != "",
 	)
 	loopCtx.WorkflowAgentLoop = opts.WorkflowAgentLoop
+	loopCtx.WorkflowDocPhase = opts.WorkflowDocPhase
 	executionProfile, semanticIntent := h.classifyIMExecutionProfileAndSemantic(msg, opts.WorkflowAgentLoop, opts.AskUserContext != "" || opts.PendingUserReplyContext != "")
 	loopCtx.Runtime.Execution = executionProfile
 	loopCtx.Runtime.SemanticIntent = semanticIntent

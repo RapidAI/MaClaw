@@ -135,7 +135,7 @@ func NewRouter(
 		return requireAdmin(RequireTenantAdmin(h))
 	}
 	groupDiscussionSvc := NewGroupDiscussionService(hubDB)
-	groupDiscussionSender := platformAwareMachineSender{fallback: deviceSvc, system: system, tenants: tenantRepo}
+	groupDiscussionSender := platformAwareMachineSender{fallback: deviceSvc, system: system, tenants: tenantRepo, groupSvc: groupDiscussionSvc}
 	groupDiscussionHandler := NewGroupDiscussionHandler(groupDiscussionSvc, groupDiscussionSender)
 	runtimeDataDir := resolveHubRuntimeDataDir(hubCfg, configPath)
 	fileRelay := ve.NewFileRelay(filepath.Join(runtimeDataDir, "ve-files"))
