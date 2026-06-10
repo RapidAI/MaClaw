@@ -949,6 +949,8 @@ type PostMessageInput struct {
 	InputType   string                    `json:"input_type,omitempty"`
 	Attachments []agent.MessageAttachment `json:"attachments,omitempty"`
 	Metadata    map[string]string         `json:"metadata,omitempty"`
+	// OnToken, if set, receives streaming text deltas during execution (not serialized).
+	OnToken func(string) `json:"-"`
 }
 
 type SendMessageInput struct {
@@ -962,6 +964,8 @@ type SendMessageInput struct {
 	SessionMetadata  map[string]string         `json:"session_metadata,omitempty"`
 	ClientSessionKey string                    `json:"client_session_key,omitempty"`
 	ClientMessageID  string                    `json:"client_message_id,omitempty"`
+	// OnToken, if set, receives streaming text deltas during execution (not serialized).
+	OnToken func(string) `json:"-"`
 }
 
 type AgentToolCapability struct {
@@ -1006,6 +1010,11 @@ type ExecuteRequest struct {
 	// risk-policy gate. When present in ops_controlled mode, bash/ssh execution
 	// must match this manifest exactly.
 	OpsApprovedCommands []workflow.OpsApprovedCommand
+
+	// OnToken, if set, is called with each streaming text delta during the agent
+	// loop. Used by maclawsrv to send progressive stream_chunk messages via SSE.
+	// This is per-request (not shared across concurrent requests).
+	OnToken func(delta string)
 }
 
 type ExecuteResult struct {

@@ -2204,7 +2204,7 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, instanceID strin
 		}
 		metadata["client_message_id"] = clientMessageID
 	}
-	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Attachments: in.Attachments, Metadata: metadata})
+	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Attachments: in.Attachments, Metadata: metadata, OnToken: in.OnToken})
 	if err != nil {
 		return sess, run, msg, err
 	}
@@ -2370,6 +2370,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 			userMsg.Metadata,
 			sess.Metadata,
 		),
+		OnToken: in.OnToken,
 	})
 	s.clearRunCancel(run.ID)
 	cancelExec()

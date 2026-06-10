@@ -372,9 +372,29 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 	}
 	content = s.enrichPlatformMessageContentWithAttachments(r, binding, in, content, attachments, metadata)
 	log.Printf("[platform-runtime] discussion send start employee=%s tenant=%s user=%s instance=%s request_id=%s hub_discussion=%s hub_message=%s content_chars=%d", logEmployeeID, binding.Tenant.ID, binding.User.ID, binding.Instance.ID, in.RequestID, in.HubDiscussionID, in.HubMessageID, len([]rune(content)))
-	sess, run, msg, err := s.svc.SendMessage(r.Context(), agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}, binding.Instance.ID, agentservice.SendMessageInput{Title: strings.TrimSpace(title), Content: content, ClientSessionKey: strings.TrimSpace(in.HubDiscussionID), ClientMessageID: firstPlatformNonEmpty(in.HubMessageID, in.RequestID), Metadata: metadata})
+
+	// Check if Hub supports streaming (indicated by Accept: text/event-stream header).
+	wantsSSE := strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+
+	// Wire streaming token callback into the per-request SendMessageInput.
+	var sseWriter *platformSSEWriter
+	var onToken func(string)
+	if wantsSSE {
+		sseWriter = newPlatformSSEWriter(w)
+		sseWriter.WriteHeader()
+		onToken = func(delta string) {
+			sseWriter.WriteChunk(delta)
+		}
+	}
+
+	sess, run, msg, err := s.svc.SendMessage(r.Context(), agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}, binding.Instance.ID, agentservice.SendMessageInput{Title: strings.TrimSpace(title), Content: content, ClientSessionKey: strings.TrimSpace(in.HubDiscussionID), ClientMessageID: firstPlatformNonEmpty(in.HubMessageID, in.RequestID), Metadata: metadata, OnToken: onToken})
 	if err != nil {
 		log.Printf("[platform-runtime] discussion send failed employee=%s tenant=%s user=%s instance=%s request_id=%s hub_discussion=%s hub_message=%s run_id=%s duration=%s err=%v", logEmployeeID, binding.Tenant.ID, binding.User.ID, binding.Instance.ID, in.RequestID, in.HubDiscussionID, in.HubMessageID, platformRunID(run), time.Since(started), err)
+		if sseWriter != nil {
+			sseWriter.WriteError(err.Error())
+			sseWriter.WriteDone("", nil, nil, nil)
+			return
+		}
 		if run != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 			return
@@ -383,6 +403,10 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 		return
 	}
 	log.Printf("[platform-runtime] discussion send ok employee=%s tenant=%s user=%s instance=%s request_id=%s hub_discussion=%s hub_message=%s session=%s message=%s run_id=%s duration=%s", logEmployeeID, binding.Tenant.ID, binding.User.ID, binding.Instance.ID, in.RequestID, in.HubDiscussionID, in.HubMessageID, platformSessionID(sess), platformMessageID(msg), platformRunID(run), time.Since(started))
+	if sseWriter != nil {
+		sseWriter.WriteDone(msg.Content, sess, sanitizeRunPtrForAPI(s.svc.DataRoot(), run), msg)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "employee_id": employeeID})
 }
 
@@ -2387,4 +2411,54 @@ func decodePlatformJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 		return false
 	}
 	return true
+}
+
+// platformSSEWriter writes Server-Sent Events for streaming VE responses.
+// Hub consumes these events to deliver progressive stream_chunk messages to the
+// requesting client, replacing the static "思考中..." indicator with real-time output.
+type platformSSEWriter struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+}
+
+func newPlatformSSEWriter(w http.ResponseWriter) *platformSSEWriter {
+	flusher, _ := w.(http.Flusher)
+	return &platformSSEWriter{w: w, flusher: flusher}
+}
+
+func (s *platformSSEWriter) WriteHeader() {
+	s.w.Header().Set("Content-Type", "text/event-stream")
+	s.w.Header().Set("Cache-Control", "no-cache")
+	s.w.Header().Set("Connection", "keep-alive")
+	s.w.WriteHeader(http.StatusOK)
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+}
+
+func (s *platformSSEWriter) WriteChunk(chunk string) {
+	if chunk == "" {
+		return
+	}
+	data, _ := json.Marshal(map[string]string{"chunk": chunk})
+	fmt.Fprintf(s.w, "data: %s\n\n", data)
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+}
+
+func (s *platformSSEWriter) WriteError(errMsg string) {
+	data, _ := json.Marshal(map[string]string{"error": errMsg})
+	fmt.Fprintf(s.w, "data: %s\n\n", data)
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+}
+
+func (s *platformSSEWriter) WriteDone(content string, sess any, run any, msg any) {
+	data, _ := json.Marshal(map[string]any{"done": true, "content": content, "session": sess, "run": run, "message": msg})
+	fmt.Fprintf(s.w, "data: %s\n\n", data)
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
 }

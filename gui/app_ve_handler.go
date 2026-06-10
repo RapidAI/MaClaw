@@ -371,9 +371,17 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	// Both paths emit ve:stream_chunk events, giving a seamless streaming experience.
 	//
 	// IMPORTANT: onToken emits LOCAL Wails events only (no Hub network calls).
-	// Hub sync uses the final aggregated response after the agent loop completes.
+	// Hub sync uses batched chunks sent via a background goroutine with 80ms
+	// flush intervals, giving remote devices progressive streaming without
+	// per-token HTTP overhead.
 	var streamingStarted int32
 	senderID := h.getLocalAgentID() // cache once — avoid per-token config lock
+
+	// Batched Hub streaming: accumulate deltas and flush every 80ms or 2KB.
+	hubStreamCh := make(chan string, 256)
+	hubStreamDone := make(chan struct{})
+	go h.batchHubStreamChunks(sessionID, hubStreamCh, hubStreamDone)
+
 	onToken := func(delta string) {
 		if delta == "" {
 			return
@@ -385,10 +393,22 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 			default:
 			}
 		}
+		// Local frontend: immediate per-token display
 		h.emitStreamChunkLocalWithSender(sessionID, delta, senderID)
+		// Hub: queue for batched sending to remote devices
+		select {
+		case hubStreamCh <- delta:
+		default:
+			// Channel full — remote device will miss this delta but get the final
+			// aggregated response below.
+		}
 	}
 
 	fullResponse, err := h.runAgentForVE(ctx, sessionID, userMessage, requestID, onToken)
+	// Close the Hub batch channel so the goroutine flushes remaining content and exits.
+	close(hubStreamCh)
+	<-hubStreamDone
+
 	if err != nil {
 		// If streaming was already in progress, close it so the frontend doesn't
 		// hang in the streaming state with a blinking cursor forever.
@@ -412,12 +432,13 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	// ever calling onToken).
 	if strings.TrimSpace(fullResponse) != "" {
 		if atomic.LoadInt32(&streamingStarted) == 0 {
-			// No streaming occurred — send final text locally for immediate display.
+			// No streaming occurred — send final text locally for immediate display
+			// and to Hub for remote devices.
 			h.emitStreamChunkLocal(sessionID, fullResponse)
+			h.SendStreamChunk(sessionID, fullResponse)
 		}
-		// Sync the final aggregated response to Hub for remote devices and history.
-		// Hub's isOwnMessage filter prevents local double-display.
-		h.SendStreamChunk(sessionID, fullResponse)
+		// When streaming occurred, batched Hub chunks already delivered the content
+		// progressively. No need to send fullResponse again (it would duplicate).
 	}
 
 	// Signal end of streaming locally (frontend transitions from streaming to final message).
@@ -1197,6 +1218,60 @@ func (h *VEMessageHandler) emitStreamEndLocal(sessionID string) {
 		"sender_name": "本机AI",
 		"sender_id":   senderID,
 	})
+}
+
+// batchHubStreamChunks consumes token deltas from ch, batches them with an 80ms
+// flush interval or 2KB size threshold, and sends each batch as a single
+// SendStreamChunk call to Hub. This gives remote devices progressive streaming
+// without per-token HTTP overhead.
+func (h *VEMessageHandler) batchHubStreamChunks(sessionID string, ch <-chan string, done chan<- struct{}) {
+	defer close(done)
+
+	const flushInterval = 80 * time.Millisecond
+	const maxBatchBytes = 2048
+
+	var buf strings.Builder
+	timer := time.NewTimer(flushInterval)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	timerActive := false
+
+	flush := func() {
+		if buf.Len() == 0 {
+			return
+		}
+		h.SendStreamChunk(sessionID, buf.String())
+		buf.Reset()
+	}
+
+	for {
+		select {
+		case delta, ok := <-ch:
+			if !ok {
+				// Channel closed — flush remaining buffer.
+				if timerActive && !timer.Stop() {
+					<-timer.C
+				}
+				flush()
+				return
+			}
+			buf.WriteString(delta)
+			if buf.Len() >= maxBatchBytes {
+				if timerActive && !timer.Stop() {
+					<-timer.C
+				}
+				timerActive = false
+				flush()
+			} else if !timerActive {
+				timer.Reset(flushInterval)
+				timerActive = true
+			}
+		case <-timer.C:
+			timerActive = false
+			flush()
+		}
+	}
 }
 
 // getLocalAgentID returns the local machine/client ID for sender identification.

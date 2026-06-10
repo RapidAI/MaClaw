@@ -83,6 +83,7 @@ type coreAgentCallbacks struct {
 	mcpProvider                MCPToolProvider
 	skillProvider              SkillToolProvider
 	loopID                     string
+	onToken                    func(string)
 	promptStats                agent.PromptBundleTokenStats
 	promptStableCacheKey       string
 }
@@ -120,6 +121,7 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		mcpProvider:          e.mcpProvider,
 		skillProvider:        e.skillProvider,
 		loopID:               fmt.Sprintf("srv:%s:%s", req.Session.ID, req.Principal.UserID),
+		onToken:              req.OnToken,
 		sshDeps: sshtool.SSHToolDeps{
 			Manager:   sshResources.mgr,
 			BGTaskMgr: sshResources.bg,
@@ -967,7 +969,11 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 	}
 }
 
-func (c *coreAgentCallbacks) OnToken(string)    {}
+func (c *coreAgentCallbacks) OnToken(delta string) {
+	if c.onToken != nil {
+		c.onToken(delta)
+	}
+}
 func (c *coreAgentCallbacks) OnProgress(string) {}
 func (c *coreAgentCallbacks) OnToolCall(name string) {
 	log.Printf("[tool-call] start name=%q loop=%s owner=%s", name, c.loopID, c.principal.UserID)

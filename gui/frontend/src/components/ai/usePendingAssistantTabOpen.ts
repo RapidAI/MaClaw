@@ -39,7 +39,17 @@ function singlePendingParticipantId(discussion: PendingHistoryDiscussionOpen): s
         addParticipantIdentityKeys(seen, id);
         if (seen.size !== before) ids.push(id);
     }
-    return ids.length === 1 ? ids[0] : "";
+    if (ids.length === 1) return ids[0];
+    // When participant_ids contains both local machine ID (m_xxx) and remote VE
+    // (ve_emp_xxx / ve-xxx / ve_xxx), identify VE participants by prefix.
+    if (ids.length > 1) {
+        const veIds = ids.filter(id => {
+            const lower = id.toLowerCase();
+            return lower.startsWith("ve_emp_") || lower.startsWith("ve-") || lower.startsWith("ve_");
+        });
+        if (veIds.length === 1) return veIds[0];
+    }
+    return "";
 }
 
 function isConversationMessage(value: unknown): value is { role?: unknown } {

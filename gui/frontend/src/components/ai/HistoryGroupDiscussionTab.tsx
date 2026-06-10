@@ -214,7 +214,18 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         setError("");
         try {
             const nextDetail = await GroupDiscussionGetConsultationDetail(discussionId);
-            if (loadSeqRef.current === seq) setDetail(nextDetail);
+            if (loadSeqRef.current === seq) {
+                setDetail(nextDetail);
+                // Remove optimistic messages that are now present in the
+                // authoritative detail. Match by content (created_at format may
+                // differ between client and Hub, so we cannot rely on it).
+                const detailMsgs = nextDetail?.messages || nextDetail?.Messages || [];
+                if (detailMsgs.length > 0) {
+                    setOptimisticMessages((prev) => prev.filter((pending) =>
+                        !detailMsgs.some((m: any) => String(m.content || m.Content || "") === String(pending.content || ""))
+                    ));
+                }
+            }
         } catch (e) {
             if (loadSeqRef.current === seq) setError(String(e));
         } finally {

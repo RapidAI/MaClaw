@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto"
@@ -2623,7 +2624,22 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 		targetCopy := target
 		go func() {
 			started := time.Now()
-			reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode))
+			// Stream chunks to the requesting client via onReply as they arrive.
+			streamedChunks := false
+			chunkCb := func(chunk string) {
+				if onReply == nil || chunk == "" {
+					return
+				}
+				streamedChunks = true
+				chunkMsg := corea2a.GroupDiscussionMessage{
+					FromID:    targetID,
+					Kind:      corea2a.MessageStreamChunk,
+					Content:   chunk,
+					CreatedAt: time.Now().UTC(),
+				}
+				_ = onReply(chunkMsg)
+			}
+			reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), chunkCb)
 			if err != nil {
 				log.Printf("[ve-platform-delivery] async runtime delivery failed session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started), err)
 				return
@@ -2631,8 +2647,17 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 			reply = strings.TrimSpace(reply)
 			if reply == "" {
 				log.Printf("[ve-platform-delivery] async runtime empty reply session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started))
+				// Still send stream_end so the frontend closes a streaming state.
+				if streamedChunks && onReply != nil {
+					_ = onReply(corea2a.GroupDiscussionMessage{FromID: targetID, Kind: corea2a.MessageStreamEnd, CreatedAt: time.Now().UTC()})
+				}
 				return
 			}
+			// Send stream_end to close the streaming state on the frontend.
+			if streamedChunks && onReply != nil {
+				_ = onReply(corea2a.GroupDiscussionMessage{FromID: targetID, Kind: corea2a.MessageStreamEnd, CreatedAt: time.Now().UTC()})
+			}
+			// Persist the final aggregated response as a MessageAnswer for history.
 			replyMsg := corea2a.GroupDiscussionMessage{ID: macLawSrvReplyMessageID(msgCopy, targetID), FromID: targetID, Kind: corea2a.MessageAnswer, Content: reply, CreatedAt: time.Now().UTC()}
 			if onReply != nil {
 				if err := onReply(replyMsg); err != nil {
@@ -2989,7 +3014,7 @@ func isPlatformRuntimeEmployeeEntry(entry digitalEmployeeEntry) bool {
 	return strings.TrimSpace(entry.PlatformEmployeeID) != ""
 }
 
-func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.Context, entry digitalEmployeeEntry, runtime macLawSrvRuntimeEntry, tenantID string, msg any) (string, error) {
+func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.Context, entry digitalEmployeeEntry, runtime macLawSrvRuntimeEntry, tenantID string, msg any, onChunk ...func(string)) (string, error) {
 	payload := platformA2APayload(msg)
 	if strings.TrimSpace(entry.PlatformEmployeeID) == "" {
 		return "", errors.New("MaClawSrv runtime employee id is empty")
@@ -3008,6 +3033,7 @@ func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.C
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream, application/json")
 	if strings.TrimSpace(runtime.AdminSecret) != "" {
 		req.Header.Set("X-MaClaw-Admin-Secret", strings.TrimSpace(runtime.AdminSecret))
 	}
@@ -3022,6 +3048,16 @@ func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.C
 		return "", fmt.Errorf("MaClawSrv runtime delivery failed: %s", detail)
 	}
 	defer resp.Body.Close()
+
+	// Handle SSE streaming response — parse each chunk and return aggregated content.
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		var chunkCb func(string)
+		if len(onChunk) > 0 && onChunk[0] != nil {
+			chunkCb = onChunk[0]
+		}
+		return s.consumeRuntimeSSEResponse(resp.Body, tenantID, entry, started, chunkCb)
+	}
+
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	log.Printf("[ve-platform-delivery] post runtime done tenant=%s employee=%s platform_employee=%s status=%d duration=%s bytes=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), resp.StatusCode, time.Since(started), len(respBody))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -3067,6 +3103,53 @@ func sanitizeRuntimeDeliveryErrorText(text, platformEmployeeID string) string {
 		text = strings.ReplaceAll(text, platformEmployeeID, "*")
 	}
 	return truncateRemoteResponseDetail(text)
+}
+
+// consumeRuntimeSSEResponse reads an SSE stream from a maclawsrv runtime,
+// aggregates the text content from "chunk" events, and returns the final
+// content from the "done" event. If onChunk is non-nil, it's called for each
+// text chunk (used by SendDiscussionMessageAsync to push stream_chunk messages
+// to the requesting client in real-time via Hub WebSocket).
+func (s platformAwareMachineSender) consumeRuntimeSSEResponse(body io.Reader, tenantID string, entry digitalEmployeeEntry, started time.Time, onChunk func(string)) (string, error) {
+	scanner := bufio.NewScanner(body)
+	var content strings.Builder
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		var evt map[string]any
+		if err := json.Unmarshal([]byte(data), &evt); err != nil {
+			continue
+		}
+		if chunk, ok := evt["chunk"].(string); ok && chunk != "" {
+			content.WriteString(chunk)
+			if onChunk != nil {
+				onChunk(chunk)
+			}
+		}
+		if done, ok := evt["done"].(bool); ok && done {
+			if finalContent, ok := evt["content"].(string); ok && finalContent != "" {
+				log.Printf("[ve-platform-delivery] SSE done tenant=%s employee=%s platform_employee=%s duration=%s content_chars=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), time.Since(started), len([]rune(finalContent)))
+				return finalContent, nil
+			}
+			break
+		}
+		if errMsg, ok := evt["error"].(string); ok && errMsg != "" {
+			return "", fmt.Errorf("MaClawSrv runtime error: %s", errMsg)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("MaClawSrv runtime SSE read failed: %w", err)
+	}
+	// If we got chunks but no explicit "done" event, use aggregated content.
+	if content.Len() > 0 {
+		result := content.String()
+		log.Printf("[ve-platform-delivery] SSE aggregated tenant=%s employee=%s platform_employee=%s duration=%s content_chars=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), time.Since(started), len([]rune(result)))
+		return result, nil
+	}
+	return "", errors.New("MaClawSrv runtime SSE response did not include content")
 }
 
 func setPlatformEmployeeHubHeaders(req *http.Request, entry digitalEmployeeEntry, tenantID string) {

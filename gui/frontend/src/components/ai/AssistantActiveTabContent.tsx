@@ -103,13 +103,28 @@ function AssistantTabContentPane({ tab, active, lang, theme, getTabState, saveTa
     } else if (tab.type === "group") {
         const isLiveGroup = !!tab.veId && Array.isArray(tab.participants) && tab.participants.length > 0;
 
-        if (isLiveGroup) {
+        // For continuable group tabs without veId (restored from history), derive
+        // veId from the first VE participant so UnifiedVEGroupWrapper can render
+        // the full-featured input area instead of the simplified history textarea.
+        // participant_ids from Hub contain both the local machine ID (m_xxx) and
+        // the remote VE (ve_emp_xxx / ve-xxx). We identify the VE by its prefix.
+        const derivedVeId = !isLiveGroup && !tab.readOnly && Array.isArray(tab.participants)
+            ? (tab.participants.find(pid => {
+                const id = String(pid || "").trim().toLowerCase();
+                return id.startsWith("ve_emp_") || id.startsWith("ve-") || id.startsWith("ve_");
+            }) || "")
+            : "";
+        const effectiveTab = isLiveGroup ? tab
+            : derivedVeId ? { ...tab, veId: derivedVeId } as typeof tab
+            : null;
+
+        if (effectiveTab) {
             // Group tab: render VEConversationView with participant panel.
             // Same component type as VE tab (UnifiedVEGroupWrapper) so React
             // preserves the VEConversationView instance when upgrading from VE to group.
             content = (
                 <UnifiedVEGroupWrapper
-                    tab={tab}
+                    tab={effectiveTab}
                     theme={theme}
                     lang={lang}
                     getTabState={getTabState}

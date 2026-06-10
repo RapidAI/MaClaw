@@ -1,0 +1,70 @@
+name: paper-review
+description: "论文深度解读 Skill — 下载论文PDF → LLM深度解读（问题/创新点/方法原理/实验分析）→ PDF图片提取 → 生成组会PPT → 生成解读音频MP3。端到端学术论文解读工具。"
+triggers:
+    - 论文解读
+    - paper review
+    - paper reading
+    - 组会PPT
+    - 研读论文
+    - read this paper and make slides
+    - 解读论文并生成PPT和音频
+steps:
+    # Step 0: 安装依赖
+    - action: bash
+      params:
+        command: pip install requests PyPDF2 python-pptx Pillow pydub edge-tts pdf2image 2>&1 | tail -5
+        timeout: 120000
+      continue_on_error: true
+
+    # Step 1: 下载论文 PDF
+    - action: bash
+      params:
+        command: python "{baseDir}/steps/download_paper.py" --url "{{paper_url}}" --output "{{output_dir}}"
+        timeout: 120000
+      continue_on_error: true
+      on_error: "下载论文失败，请检查 paper_url 是否有效"
+
+    # Step 2: 提取 PDF 文本
+    - action: bash
+      params:
+        command: python "{baseDir}/steps/extract_text.py" --pdf "{{output_dir}}/*.pdf" --output "{{output_dir}}"
+        timeout: 300000
+      continue_on_error: false
+
+    # Step 3: LLM 深度解读
+    - action: bash
+      params:
+        command: python "{baseDir}/steps/analyze_paper.py" --text "{{output_dir}}/*_text.txt" --output "{{output_dir}}"
+        env:
+            OPENAI_API_KEY: "{{OPENAI_API_KEY}}"
+            OPENAI_BASE_URL: "{{OPENAI_BASE_URL}}"
+            OPENAI_MODEL: "{{OPENAI_MODEL}}"
+        timeout: 600000
+      continue_on_error: false
+
+    # Step 4: 提取图片素材
+    - action: bash
+      params:
+        command: python "{baseDir}/steps/extract_images.py" --pdf "{{output_dir}}/*.pdf" --output "{{output_dir}}/images"
+        timeout: 300000
+      continue_on_error: true
+
+    # Step 5: 生成组会 PPT
+    - action: bash
+      params:
+        command: python "{baseDir}/steps/generate_ppt.py" --review "{{output_dir}}/*_review.json" --images "{{output_dir}}/images" --output "{{output_dir}}"
+        timeout: 300000
+      continue_on_error: false
+
+    # Step 6: 生成解读音频
+    - action: bash
+      params:
+        command: python "{baseDir}/steps/generate_audio.py" --text "{{output_dir}}/*_review.md" --output "{{output_dir}}"
+        timeout: 300000
+      continue_on_error: true
+
+status: active
+platforms:
+    - universal
+requires_gui: false
+produces_artifact: true
