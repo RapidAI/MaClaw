@@ -2,6 +2,7 @@ package agentservice
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -29,6 +31,115 @@ func (e *captureExecutor) Execute(ctx context.Context, req ExecuteRequest) (*Exe
 	_ = ctx
 	e.req = req
 	return &ExecuteResult{Content: "ok", OutputType: "text/plain"}, nil
+}
+
+func setupCaptureAgentService(t *testing.T, executor Executor) (*Service, Principal, Instance) {
+	t.Helper()
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := corelib.AppConfig{MaclawLLMUrl: "https://llm.example/v1", MaclawLLMKey: "test-key", MaclawLLMModel: "test-model"}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	return svc, principal, *inst
+}
+
+func TestBuildConversationIncludesVisionAttachment(t *testing.T) {
+	req := ExecuteRequest{
+		Principal: Principal{TenantID: "tenant-a", UserID: "user-a"},
+		Instance:  Instance{ID: "inst-a"},
+		Session:   Session{ID: "sess-a"},
+		Message: Message{
+			ID:      "msg-a",
+			Role:    MessageRoleUser,
+			Content: "what is in this image?",
+			Attachments: []agent.MessageAttachment{{
+				Type:     "image",
+				FileName: "screen.png",
+				MimeType: "image/png",
+				Data:     "aW1hZ2U=",
+			}},
+		},
+	}
+	messages := buildConversation(req, corelib.MaclawLLMConfig{Protocol: "openai", SupportsVision: true})
+	last, ok := messages[len(messages)-1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("last message type = %T", messages[len(messages)-1])
+	}
+	blocks, ok := last["content"].([]interface{})
+	if !ok || len(blocks) != 2 {
+		t.Fatalf("content blocks = %#v", last["content"])
+	}
+	imageBlock, ok := blocks[1].(map[string]interface{})
+	if !ok || imageBlock["type"] != "image_url" {
+		t.Fatalf("image block = %#v", blocks[1])
+	}
+}
+
+func TestSendMessagePassesAttachmentsToExecutor(t *testing.T) {
+	capture := &captureExecutor{}
+	svc, principal, inst := setupCaptureAgentService(t, capture)
+	_, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{
+		AgentID: "default",
+		Title:   "attachments",
+		Content: "read",
+		Attachments: []agent.MessageAttachment{{
+			Type:     "file",
+			FileName: "note.txt",
+			MimeType: "text/plain",
+			Data:     "aGVsbG8=",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if len(capture.req.Message.Attachments) != 1 || capture.req.Message.Attachments[0].FileName != "note.txt" {
+		t.Fatalf("executor attachments = %#v", capture.req.Message.Attachments)
+	}
+}
+
+func TestSendMessageRejectsInvalidAttachments(t *testing.T) {
+	capture := &captureExecutor{}
+	svc, principal, inst := setupCaptureAgentService(t, capture)
+	for _, tc := range []struct {
+		name string
+		data string
+	}{
+		{name: "bad base64", data: "not-base64"},
+		{name: "too large", data: base64.StdEncoding.EncodeToString(make([]byte, coreim.ThirdPartyMaxDirectBytes+1))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{
+				AgentID: "default",
+				Title:   "attachments",
+				Content: "read",
+				Attachments: []agent.MessageAttachment{{
+					Type:     "file",
+					FileName: "note.txt",
+					MimeType: "text/plain",
+					Data:     tc.data,
+				}},
+			})
+			if err == nil {
+				t.Fatalf("expected attachment validation error")
+			}
+		})
+	}
 }
 
 func TestCoreAgentExecutorSupportsAskUserFlow(t *testing.T) {

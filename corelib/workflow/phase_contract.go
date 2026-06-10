@@ -269,8 +269,14 @@ func phaseInputFieldRequiresDirectoryPicker(field PhaseInputField) bool {
 	name := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(field.Name, "-", "_")))
 	switch name {
 	case "project_path", "project_dir", "project_directory",
+		"project_root", "project_root_path",
 		"working_dir", "working_directory", "workdir", "cwd",
 		"workspace", "workspace_path", "workspace_dir", "workspace_directory",
+		"workspace_root", "workspace_root_path",
+		"repo_path", "repo_dir", "repo_directory", "repo_root", "repo_root_path",
+		"repository_path", "repository_dir", "repository_directory", "repository_root", "repository_root_path",
+		"source_root", "source_root_path",
+		"worktree", "worktree_path", "worktree_dir", "worktree_directory", "worktree_root",
 		"root_path", "root_dir", "root_directory",
 		"directory", "dir", "folder":
 		return true

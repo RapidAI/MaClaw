@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
@@ -221,16 +223,17 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 			t.Fatalf("expected WeChat QR binding path %s in openapi doc", path)
 		}
 	}
-	for _, path := range []string{"/api/im-gateway/v1/health", "/api/im-gateway/v1/handshake", "/api/im-gateway/v1/incoming", "/api/im-gateway/v1/outgoing", "/api/im-gateway/v1/ack"} {
+	for _, path := range []string{"/api/im-gateway/v1/health", "/api/im-gateway/v1/handshake", "/api/im-gateway/v1/incoming", "/api/im-gateway/v1/outgoing", "/api/im-gateway/v1/ack", "/api/im-gateway/v1/media/upload-url", "/api/im-gateway/v1/media/{mediaId}/upload", "/api/im-gateway/v1/media/{mediaId}"} {
 		if _, ok := doc.Paths[path]; !ok {
 			t.Fatalf("expected third-party IM gateway path %s in openapi doc", path)
 		}
 	}
 	for path, method := range map[string]string{
-		"/api/im-gateway/v1/handshake": "post",
-		"/api/im-gateway/v1/incoming":  "post",
-		"/api/im-gateway/v1/outgoing":  "get",
-		"/api/im-gateway/v1/ack":       "post",
+		"/api/im-gateway/v1/handshake":        "post",
+		"/api/im-gateway/v1/incoming":         "post",
+		"/api/im-gateway/v1/outgoing":         "get",
+		"/api/im-gateway/v1/ack":              "post",
+		"/api/im-gateway/v1/media/upload-url": "post",
 	} {
 		pathItem, ok := doc.Paths[path].(map[string]any)
 		if !ok {
@@ -242,6 +245,27 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 		}
 		if !openAPIOperationHasSecurity(operation, "bearerAuth") {
 			t.Fatalf("expected third-party gateway operation %s %s to require bearerAuth: %#v", method, path, operation["security"])
+		}
+	}
+	for path, method := range map[string]string{
+		"/api/im-gateway/v1/health":                 "get",
+		"/api/im-gateway/v1/media/{mediaId}/upload": "put",
+		"/api/im-gateway/v1/media/{mediaId}":        "get",
+	} {
+		pathItem, ok := doc.Paths[path].(map[string]any)
+		if !ok {
+			t.Fatalf("expected third-party gateway path object %s", path)
+		}
+		operation, ok := pathItem[method].(map[string]any)
+		if !ok {
+			t.Fatalf("expected third-party gateway operation %s %s", method, path)
+		}
+		if _, ok := operation["security"]; ok {
+			t.Fatalf("third-party gateway operation %s %s should not require bearerAuth: %#v", method, path, operation["security"])
+		}
+		desc, _ := operation["description"].(string)
+		if strings.Contains(path, "media") && !strings.Contains(desc, "mediaToken") {
+			t.Fatalf("media operation %s %s should document mediaToken: %q", method, path, desc)
 		}
 	}
 	healthPath, ok := doc.Paths["/api/im-gateway/v1/health"].(map[string]any)
@@ -7049,6 +7073,19 @@ func TestThirdPartyGatewayRoutesMessageToUserAssistant(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"protocolVersion"`) {
 		t.Fatalf("handshake = %d body=%s", w.Code, w.Body.String())
 	}
+	var handshake coreim.ThirdPartyGatewayHandshakeResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &handshake); err != nil {
+		t.Fatalf("decode handshake: %v", err)
+	}
+	if handshake.Mode != coreim.ThirdPartyGatewayMode {
+		t.Fatalf("handshake mode = %q, want %q", handshake.Mode, coreim.ThirdPartyGatewayMode)
+	}
+	if handshake.Limits["maxBodyBytes"] != coreim.ThirdPartyMaxBodyBytes || handshake.Limits["maxMediaBytes"] != coreim.ThirdPartyMaxMediaBytes {
+		t.Fatalf("handshake limits should come from corelib/im: %#v", handshake.Limits)
+	}
+	if !handshake.Features["server_media_upload"] || !handshake.Features["tool_result"] {
+		t.Fatalf("handshake features should come from corelib/im: %#v", handshake.Features)
+	}
 
 	incoming := `{"clientId":"client-a","eventId":"evt-1","conversationId":"room-1","message":{"type":"text","text":"hello third party"}}`
 	req = httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/incoming", bytes.NewBufferString(incoming))
@@ -7110,6 +7147,353 @@ func TestThirdPartyGatewayRoutesMessageToUserAssistant(t *testing.T) {
 	}
 	if len(afterAck.Messages) != 0 || afterAck.NextCursor == "" || afterAck.NextCursor == "0" {
 		t.Fatalf("acked message should not be redelivered and cursor should advance: %#v", afterAck)
+	}
+}
+
+func TestThirdPartyGatewayProvidesServerMediaUploadAndDownloadURL(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	p := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	cfg := testLLMConfig()
+	cfg.ThirdPartyGatewayEnabled = true
+	cfg.ThirdPartyGatewayToken = "gateway-token"
+	if _, err := svc.UpdateUserConfig(context.Background(), p, cfg); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	body := `{"clientId":"client-a","type":"image","fileName":"screen.png","mimeType":"image/png","sizeBytes":11}`
+	req := httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/media/upload-url", bytes.NewBufferString(body))
+	req.Host = "gateway.example.test"
+	req.Header.Set("Authorization", "Bearer gateway-token")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload-url = %d body=%s", w.Code, w.Body.String())
+	}
+	var prepared coreim.ThirdPartyMediaPrepareResponse
+	if err := json.NewDecoder(w.Body).Decode(&prepared); err != nil {
+		t.Fatalf("decode upload-url: %v", err)
+	}
+	if prepared.Upload.Method != http.MethodPut || prepared.Upload.URL == "" || prepared.Download.URL == "" {
+		t.Fatalf("unexpected prepared media: %#v", prepared)
+	}
+	if strings.Contains(prepared.Media.URL, "127.0.0.1") {
+		t.Fatalf("media URL should be server-owned, got %q", prepared.Media.URL)
+	}
+
+	uploadURL, err := url.Parse(prepared.Upload.URL)
+	if err != nil {
+		t.Fatalf("parse upload url: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPut, uploadURL.RequestURI(), bytes.NewBufferString("hello image"))
+	req.Header.Set("Content-Type", "image/png")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload = %d body=%s", w.Code, w.Body.String())
+	}
+
+	downloadURL, err := url.Parse(prepared.Download.URL)
+	if err != nil {
+		t.Fatalf("parse download url: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodGet, downloadURL.RequestURI(), nil)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK || w.Body.String() != "hello image" || w.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("download = %d ct=%q body=%q", w.Code, w.Header().Get("Content-Type"), w.Body.String())
+	}
+}
+
+func TestThirdPartyGatewayBaseURLSanitizesForwardedHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/im-gateway/v1/media/upload-url", nil)
+	req.Host = "gateway.example.test"
+	req.Header.Set("X-Forwarded-Proto", "javascript")
+	req.Header.Set("X-Forwarded-Host", "evil.example\\@bad")
+	if got := thirdPartyGatewayBaseURL(req); got != "http://127.0.0.1/api/im-gateway/v1" {
+		t.Fatalf("bad forwarded headers should be sanitized, got %q", got)
+	}
+
+	req.Header.Set("X-Forwarded-Proto", "https, http")
+	req.Header.Set("X-Forwarded-Host", "maclaw.example.test:18443, proxy.local")
+	if got := thirdPartyGatewayBaseURL(req); got != "https://maclaw.example.test:18443/api/im-gateway/v1" {
+		t.Fatalf("safe forwarded headers should be preserved, got %q", got)
+	}
+}
+
+func TestThirdPartyGatewayBuildsAgentAttachmentsForSmallDirectMedia(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	p := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
+	req := srvThirdPartyIncomingRequest{
+		ClientID:       "client-a",
+		EventID:        "evt-small",
+		ConversationID: "room-a",
+		Message: srvThirdPartyMessageBody{
+			Type: "file",
+			Text: "read this",
+			Attachments: []srvThirdPartyMessageMediaRef{{
+				Type:     "file",
+				FileName: "note.txt",
+				MimeType: "text/plain",
+				Data:     base64.StdEncoding.EncodeToString([]byte("hello agent")),
+			}},
+		},
+	}
+	if err := normalizeThirdPartyIncomingRequest(&req); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	content, attachments := manager.thirdPartyAgentInput(p, req)
+	if len(attachments) != 1 {
+		t.Fatalf("attachments len = %d, want 1; content=%s", len(attachments), content)
+	}
+	if attachments[0].FileName != "note.txt" || attachments[0].Data == "" {
+		t.Fatalf("unexpected attachment: %#v", attachments[0])
+	}
+	if !strings.Contains(content, "attached inline") || !strings.Contains(content, "hello agent") {
+		t.Fatalf("content should explain and inline text attachment: %q", content)
+	}
+}
+
+func TestThirdPartyGatewayKeepsLargeServerMediaAsURLForAgent(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	p := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
+	large := bytes.Repeat([]byte("x"), coreim.ThirdPartyMaxDirectBytes+1)
+	manager.media["media-large"] = &srvThirdPartyMediaObject{
+		Principal: p,
+		ClientID:  "client-a",
+		ID:        "media-large",
+		Token:     "token",
+		Type:      "file",
+		FileName:  "large.txt",
+		MimeType:  "text/plain",
+		Data:      large,
+		Uploaded:  true,
+	}
+	req := srvThirdPartyIncomingRequest{
+		ClientID:       "client-a",
+		EventID:        "evt-large",
+		ConversationID: "room-a",
+		Message: srvThirdPartyMessageBody{
+			Type: "file",
+			Attachments: []srvThirdPartyMessageMediaRef{{
+				ID:       "media-large",
+				Type:     "file",
+				MimeType: "text/plain",
+			}},
+		},
+	}
+	if err := normalizeThirdPartyIncomingRequest(&req); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	content, attachments := manager.thirdPartyAgentInput(p, req)
+	if len(attachments) != 0 {
+		t.Fatalf("large media should not be inlined: %#v", attachments)
+	}
+	if !strings.Contains(content, "available as server media id media-large") {
+		t.Fatalf("content should expose server media id: %q", content)
+	}
+}
+
+func TestThirdPartyGatewayRejectsExternalIncomingMediaURL(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	p := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
+	req := srvThirdPartyIncomingRequest{
+		ClientID:       "client-a",
+		EventID:        "evt-external-url",
+		ConversationID: "room-a",
+		Message: srvThirdPartyMessageBody{
+			Type: "file",
+			Attachments: []srvThirdPartyMessageMediaRef{{
+				Type:     "file",
+				FileName: "report.pdf",
+				URL:      "https://third-party.example.test/report.pdf",
+			}},
+		},
+	}
+	if err := normalizeThirdPartyIncomingRequest(&req); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if err := manager.validateIncomingMediaReferences(p, &req); err == nil || !strings.Contains(err.Error(), "server media URL") {
+		t.Fatalf("expected external media URL rejection, got %v", err)
+	}
+}
+
+func TestThirdPartyGatewayRejectsUploadSizeMismatch(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	p := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
+	prepared, err := manager.prepareMedia(p, coreim.ThirdPartyMediaPrepareRequest{
+		ClientID:  "client-a",
+		Type:      "file",
+		FileName:  "report.txt",
+		MimeType:  "text/plain",
+		SizeBytes: 8,
+	}, "http://127.0.0.1:18777/api/im-gateway/v1")
+	if err != nil {
+		t.Fatalf("prepareMedia: %v", err)
+	}
+	uploadURL, err := url.Parse(prepared.Upload.URL)
+	if err != nil {
+		t.Fatalf("parse upload url: %v", err)
+	}
+	uploadReq := httptest.NewRequest(http.MethodPut, uploadURL.RequestURI(), strings.NewReader("short"))
+	if err := manager.storeMediaUpload(uploadReq, prepared.Media.ID); err == nil || !strings.Contains(err.Error(), "size mismatch") {
+		t.Fatalf("expected size mismatch error, got %v", err)
+	}
+}
+
+func TestThirdPartyGatewayAcceptsServerMediaURLOnlyReference(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	p := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
+	prepared, err := manager.prepareMedia(p, coreim.ThirdPartyMediaPrepareRequest{
+		ClientID: "client-a",
+		Type:     "file",
+		FileName: "report.txt",
+		MimeType: "text/plain",
+	}, "http://127.0.0.1:18777/api/im-gateway/v1")
+	if err != nil {
+		t.Fatalf("prepareMedia: %v", err)
+	}
+	uploadURL, err := url.Parse(prepared.Upload.URL)
+	if err != nil {
+		t.Fatalf("parse upload url: %v", err)
+	}
+	uploadReq := httptest.NewRequest(http.MethodPut, uploadURL.RequestURI(), strings.NewReader("report-body"))
+	if err := manager.storeMediaUpload(uploadReq, prepared.Media.ID); err != nil {
+		t.Fatalf("storeMediaUpload: %v", err)
+	}
+	req := srvThirdPartyIncomingRequest{
+		ClientID:       "client-a",
+		EventID:        "evt-server-url",
+		ConversationID: "room-a",
+		Message: srvThirdPartyMessageBody{
+			Type:        "file",
+			Attachments: []srvThirdPartyMessageMediaRef{{Type: "file", URL: prepared.Media.URL}},
+		},
+	}
+	if err := normalizeThirdPartyIncomingRequest(&req); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if err := manager.validateIncomingMediaReferences(p, &req); err != nil {
+		t.Fatalf("validate server media url: %v", err)
+	}
+	if req.Message.Attachments[0].ID != prepared.Media.ID || req.Message.Attachments[0].FileName != "report.txt" {
+		t.Fatalf("server media URL should be normalized to id and metadata: %#v", req.Message.Attachments[0])
+	}
+	content, attachments := manager.thirdPartyAgentInput(p, req)
+	if len(attachments) != 1 || !strings.Contains(content, "attached inline") {
+		t.Fatalf("server media should be passed to agent: attachments=%#v content=%q", attachments, content)
+	}
+}
+
+func TestThirdPartyGatewayNormalizesMediaMessages(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		message      srvThirdPartyMessageBody
+		wantType     string
+		wantContains []string
+	}{
+		{
+			name: "image single reference",
+			message: srvThirdPartyMessageBody{
+				Type:     "image",
+				Text:     "please inspect",
+				FileName: "screen.png",
+				MimeType: "image/png",
+				URL:      "http://gateway.example/api/im-gateway/v1/media/image-media-id?mediaToken=token",
+			},
+			wantType:     "image",
+			wantContains: []string{"[Third-party image message]", "fileName=screen.png", "mimeType=image/png", "url=http://gateway.example/api/im-gateway/v1/media/image-media-id?mediaToken=token"},
+		},
+		{
+			name: "file attachment array",
+			message: srvThirdPartyMessageBody{
+				Type: "file",
+				Attachments: []srvThirdPartyMessageMediaRef{{
+					FileName:  "report.pdf",
+					MimeType:  "application/pdf",
+					URL:       "http://gateway.example/api/im-gateway/v1/media/file-media-id?mediaToken=token",
+					SizeBytes: 12345,
+				}},
+			},
+			wantType:     "file",
+			wantContains: []string{"[Third-party file message]", "fileName=report.pdf", "sizeBytes=12345"},
+		},
+		{
+			name: "audio alias becomes voice",
+			message: srvThirdPartyMessageBody{
+				Type:       "audio",
+				FileName:   "voice.ogg",
+				MimeType:   "audio/ogg",
+				URL:        "http://gateway.example/api/im-gateway/v1/media/voice-media-id?mediaToken=token",
+				DurationMs: 3200,
+			},
+			wantType:     "voice",
+			wantContains: []string{"[Third-party voice message]", "durationMs=3200"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := srvThirdPartyIncomingRequest{
+				ClientID:       "client-a",
+				EventID:        "evt-" + tc.name,
+				ConversationID: "room-a",
+				Message:        tc.message,
+			}
+			if err := normalizeThirdPartyIncomingRequest(&req); err != nil {
+				t.Fatalf("normalize media message: %v", err)
+			}
+			if req.Message.Type != tc.wantType {
+				t.Fatalf("message type = %q, want %q", req.Message.Type, tc.wantType)
+			}
+			if len(req.Message.Attachments) == 0 {
+				t.Fatalf("expected normalized attachments")
+			}
+			content := coreim.ThirdPartyIncomingContent(req)
+			for _, want := range tc.wantContains {
+				if !strings.Contains(content, want) {
+					t.Fatalf("content missing %q: %q", want, content)
+				}
+			}
+		})
+	}
+}
+
+func TestThirdPartyGatewayRejectsInvalidMediaMessages(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		message srvThirdPartyMessageBody
+	}{
+		{name: "unsupported type", message: srvThirdPartyMessageBody{Type: "video", URL: "https://example.test/v.mp4"}},
+		{name: "missing reference", message: srvThirdPartyMessageBody{Type: "image"}},
+		{name: "negative size", message: srvThirdPartyMessageBody{Type: "file", FileName: "bad.bin", SizeBytes: -1}},
+		{name: "too many attachments", message: srvThirdPartyMessageBody{Type: "file", Attachments: make([]srvThirdPartyMessageMediaRef, coreim.ThirdPartyMaxAttachments+1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "too many attachments" {
+				for i := range tc.message.Attachments {
+					tc.message.Attachments[i] = srvThirdPartyMessageMediaRef{FileName: fmt.Sprintf("file-%d.txt", i)}
+				}
+			}
+			req := srvThirdPartyIncomingRequest{
+				ClientID:       "client-a",
+				EventID:        "evt-invalid-" + tc.name,
+				ConversationID: "room-a",
+				Message:        tc.message,
+			}
+			if err := normalizeThirdPartyIncomingRequest(&req); err == nil {
+				t.Fatalf("expected invalid media message to fail")
+			}
+		})
 	}
 }
 
@@ -7241,7 +7625,7 @@ func TestThirdPartyGatewayRejectsOversizedProtocolFields(t *testing.T) {
 		t.Fatalf("UpdateUserConfig: %v", err)
 	}
 	server := NewHTTPServer(svc, "admin-secret", nil)
-	longID := strings.Repeat("a", srvThirdPartyMaxIDChars+1)
+	longID := strings.Repeat("a", coreim.ThirdPartyMaxIDChars+1)
 	for _, tc := range []struct {
 		name   string
 		method string

@@ -11,7 +11,7 @@ func normalizeMISDatasetAgentViewFieldType(value string) agentViewFieldType {
 	case "date":
 		return agentViewFieldTypeDate
 	case "datetime", "timestamp":
-		return agentViewFieldType("datetime")
+		return agentViewFieldTypeDateTime
 	case "file_ref":
 		return agentViewFieldTypeFile
 	case "person_ref", "user_ref":

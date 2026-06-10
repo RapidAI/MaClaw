@@ -17,7 +17,6 @@ func init() {
 	agent.RegisterHandlerFactory(func(cfg agent.Config) agent.Handler {
 		// Convert agent.Config → gui.StandaloneConfig
 		sc := StandaloneConfig{
-			WorkflowEngine:        cfg.WorkflowEngine,
 			SteeringStore:         cfg.SteeringStore,
 			MemoryStore:           cfg.MemoryStore,
 			UsageTracker:          cfg.UsageTracker,

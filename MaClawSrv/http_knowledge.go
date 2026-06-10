@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -664,6 +665,159 @@ func (s *HTTPServer) handleKnowledgeImportJobStatus(w http.ResponseWriter, r *ht
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+type userKnowledgeImportBatch struct {
+	ID            string    `json:"id"`
+	DisplayName   string    `json:"display_name"`
+	RootName      string    `json:"root_name,omitempty"`
+	Status        string    `json:"status"`
+	TopicHint     string    `json:"topic_hint,omitempty"`
+	Recursive     bool      `json:"recursive"`
+	TotalFiles    int       `json:"total_files"`
+	QueuedFiles   int       `json:"queued_files"`
+	ImportedFiles int       `json:"imported_files"`
+	SkippedFiles  int       `json:"skipped_files"`
+	FailedFiles   int       `json:"failed_files"`
+	SampleFiles   []string  `json:"sample_files,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+func (s *HTTPServer) handleKnowledgeImportBatches(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	limit := parsePositiveIntQuery(r, "limit", 10, 50)
+	page := parsePositiveIntQuery(r, "page", 1, 1000000)
+	offset := (page - 1) * limit
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	out, err := s.knowledgeMgr.Store().ListImportBatchesPage(ctx, knowledge.ListImportBatchesOptions{
+		TenantID: p.TenantID,
+		OwnerID:  p.UserID,
+		Limit:    limit,
+		Offset:   offset,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("list import batches failed: %v", err))})
+		return
+	}
+	items := make([]userKnowledgeImportBatch, 0, len(out.Batches))
+	for _, batch := range out.Batches {
+		items = append(items, s.userKnowledgeImportBatchSummary(ctx, batch))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  items,
+		"total":  out.Total,
+		"page":   page,
+		"limit":  limit,
+		"offset": offset,
+	})
+}
+
+func (s *HTTPServer) handleKnowledgeDeleteImportBatch(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	batchID := strings.TrimSpace(r.PathValue("batchId"))
+	if batchID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "batchId is required"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	out, err := s.knowledgeMgr.Store().DeleteImportBatch(ctx, knowledge.ImportBatchDeleteRequest{
+		BatchID:  batchID,
+		TenantID: p.TenantID,
+		OwnerID:  p.UserID,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "batch not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("delete import batch failed: %v", err))})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "batch_id": out.BatchID, "deleted_sources": out.DeletedSources, "deleted_batches": out.DeletedBatches})
+}
+
+func parsePositiveIntQuery(r *http.Request, key string, fallback, max int) int {
+	if fallback <= 0 {
+		fallback = 1
+	}
+	value := fallback
+	if raw := strings.TrimSpace(r.URL.Query().Get(key)); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			value = n
+		}
+	}
+	if max > 0 && value > max {
+		value = max
+	}
+	return value
+}
+
+func (s *HTTPServer) userKnowledgeImportBatchSummary(ctx context.Context, batch knowledge.ImportBatch) userKnowledgeImportBatch {
+	summary := userKnowledgeImportBatch{
+		ID:            batch.ID,
+		DisplayName:   knowledgeBatchDisplayName(batch, nil),
+		RootName:      filepath.Base(batch.RootPath),
+		Status:        batch.Status,
+		TopicHint:     batch.TopicHint,
+		Recursive:     batch.Recursive,
+		TotalFiles:    batch.TotalFiles,
+		QueuedFiles:   batch.QueuedFiles,
+		ImportedFiles: batch.Imported,
+		SkippedFiles:  batch.Skipped,
+		FailedFiles:   batch.Failed,
+		CreatedAt:     batch.CreatedAt,
+		UpdatedAt:     batch.UpdatedAt,
+	}
+	items, err := s.knowledgeMgr.Store().ListImportItems(ctx, batch.ID, 4)
+	if err == nil {
+		summary.SampleFiles = knowledgeBatchSampleFiles(items)
+		summary.DisplayName = knowledgeBatchDisplayName(batch, items)
+	}
+	return summary
+}
+
+func knowledgeBatchDisplayName(batch knowledge.ImportBatch, items []knowledge.ImportItem) string {
+	if batch.TopicHint != "" {
+		return batch.TopicHint
+	}
+	samples := knowledgeBatchSampleFiles(items)
+	if len(samples) == 1 {
+		return samples[0]
+	}
+	if len(samples) > 1 {
+		return fmt.Sprintf("%s +%d", samples[0], len(samples)-1)
+	}
+	if base := strings.TrimSpace(filepath.Base(batch.RootPath)); base != "" && base != "." && base != string(filepath.Separator) {
+		return base
+	}
+	return batch.ID
+}
+
+func knowledgeBatchSampleFiles(items []knowledge.ImportItem) []string {
+	out := make([]string, 0, len(items))
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		name := strings.TrimSpace(item.RelativePath)
+		if name == "" {
+			name = filepath.Base(item.FilePath)
+		}
+		if name == "" || name == "." || name == string(filepath.Separator) {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
 }
 
 // --- Query endpoints ---

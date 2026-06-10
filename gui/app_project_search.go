@@ -476,25 +476,21 @@ func (a *App) activeWorkflowForRecentTaskPath(projectPath string) *ProjectWorkfl
 
 func (a *App) activeWorkflowForProject(projectPath string) *ProjectWorkflowState {
 	projectPath = normalizeProjectSessionPath(projectPath)
-	if a == nil || projectPath == "" || a.workflowEngine == nil || a.workflowDisabled.Load() {
+	if a == nil || projectPath == "" || a.workflowDisabled.Load() {
 		return nil
 	}
-	ws := a.workflowEngine.GetActiveWorkflow(projectSessionOwnerID(projectPath))
-	if ws == nil {
-		return nil
+	// V2 workflow: check if there's an active V2 workflow for this project.
+	if a.workflowV2 != nil {
+		ownerID := projectSessionOwnerID(projectPath)
+		if state := a.workflowV2.machine.GetActive(ownerID); state != nil {
+			return &ProjectWorkflowState{
+				Type:        state.Type,
+				ProjectPath: state.ProjectPath,
+				Phase:       state.ActivePhase().ID,
+			}
+		}
 	}
-	workflowProjectPath := normalizeProjectSessionPath(ws.ProjectPath)
-	if workflowProjectPath == "" {
-		workflowProjectPath = projectPath
-	}
-	return &ProjectWorkflowState{
-		ID:            ws.ID,
-		Type:          string(ws.Type),
-		Phase:         ws.CurrentPhase,
-		Status:        string(ws.Status),
-		ProjectPath:   workflowProjectPath,
-		PendingReview: strings.TrimSpace(ws.PendingReviewPhaseID) != "",
-	}
+	return nil
 }
 
 func normalizeRecentTaskPathKey(path string) string {
@@ -808,13 +804,10 @@ func (a *App) ResumeProject(projectPath string) string {
 		runtime.EventsEmit(a.ctx, "config-changed", *updatedCfg)
 	}
 
-	// 1. Cancel any active workflow (user is switching projects).
-	//    Do this BEFORE clearing conversation — CancelWorkflow may
-	//    reference conversation state.
-	if a.workflowEngine != nil {
-		ws := a.workflowEngine.GetActiveWorkflow(userID)
-		if ws != nil {
-			_ = a.workflowEngine.CancelWorkflow(userID)
+	// 1. Cancel any active V2 workflow (user is switching projects).
+	if a.workflowV2 != nil {
+		if state := a.workflowV2.machine.GetActive(userID); state != nil {
+			a.workflowV2.machine.Cancel(userID)
 		}
 	}
 

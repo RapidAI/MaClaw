@@ -398,7 +398,7 @@ func TestToolRunSkill_RejectsSkillWithoutExecutableSteps(t *testing.T) {
 	}
 }
 
-func TestToolRunSkill_ReportsRunAndSessionMeta(t *testing.T) {
+func TestToolRunSkill_ReportsRunMeta(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -409,23 +409,14 @@ func TestToolRunSkill_ReportsRunAndSessionMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.RemoteEnabled = true
-	cfg.Projects = []corelib.ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
-	cfg.CurrentProject = "proj-1"
-	cfg.Claude = corelib.ToolConfig{
-		CurrentModel: "Original",
-		Models:       []corelib.ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
-	}
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "demo-skill",
 		Description: "demo",
 		Status:      "active",
 		Steps: []corelib.NLSkillStep{{
-			Action: "create_session",
+			Action: "bash",
 			Params: map[string]interface{}{
-				"tool":       "claude",
-				"project_id": "proj-1",
-				"task":       "修复代码中的 bug",
+				"command": "echo run-meta-ok",
 			},
 		}},
 	}}
@@ -433,20 +424,11 @@ func TestToolRunSkill_ReportsRunAndSessionMeta(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	provider := &fakeProviderAdapter{cmd: CommandSpec{Command: "claude.exe"}}
-	app.remoteSessions = NewRemoteSessionManager(app)
-	app.remoteSessions.providerFactory = func(tool string) (ProviderAdapter, error) {
-		return provider, nil
-	}
-	app.remoteSessions.executionFactory = func(spec LaunchSpec) (ExecutionStrategy, error) {
-		return &fakeExecutionStrategy{handle: newFakeExecutionHandle(302)}, nil
-	}
-	app.skillExecutor = NewSkillExecutor(app, nil, app.remoteSessions)
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	app.skillRunner = NewSkillRunner(app.skillExecutor)
-	app.sessionStarter = NewCodingSessionStarter(app)
 
 	h := &IMMessageHandler{app: app}
-	got := h.toolRunSkill(map[string]interface{}{"name": "demo-skill"}, nil)
+	got := h.toolRunSkill(map[string]interface{}{"name": "demo-skill", "wait_seconds": float64(0)}, nil)
 	if !strings.Contains(got, "✅ Skill 已启动") {
 		t.Fatalf("expected started message, got %s", got)
 	}
@@ -461,9 +443,6 @@ func TestToolRunSkill_ReportsRunAndSessionMeta(t *testing.T) {
 	}
 	if !strings.Contains(got, "## 下一步") {
 		t.Fatalf("expected next-step section, got %s", got)
-	}
-	if !strings.Contains(got, "get_skill_run(run_id)") {
-		t.Fatalf("expected get_skill_run next step, got %s", got)
 	}
 }
 

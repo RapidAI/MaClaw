@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
@@ -211,17 +212,18 @@ type Session struct {
 }
 
 type Message struct {
-	ID         string            `json:"id"`
-	SessionID  string            `json:"session_id"`
-	TenantID   string            `json:"tenant_id"`
-	UserID     string            `json:"user_id"`
-	InstanceID string            `json:"instance_id"`
-	Role       MessageRole       `json:"role"`
-	InputType  string            `json:"input_type,omitempty"`
-	OutputType string            `json:"output_type,omitempty"`
-	Content    string            `json:"content"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-	CreatedAt  time.Time         `json:"created_at"`
+	ID          string                    `json:"id"`
+	SessionID   string                    `json:"session_id"`
+	TenantID    string                    `json:"tenant_id"`
+	UserID      string                    `json:"user_id"`
+	InstanceID  string                    `json:"instance_id"`
+	Role        MessageRole               `json:"role"`
+	InputType   string                    `json:"input_type,omitempty"`
+	OutputType  string                    `json:"output_type,omitempty"`
+	Content     string                    `json:"content"`
+	Attachments []agent.MessageAttachment `json:"attachments,omitempty"`
+	Metadata    map[string]string         `json:"metadata,omitempty"`
+	CreatedAt   time.Time                 `json:"created_at"`
 }
 
 type Run struct {
@@ -943,21 +945,23 @@ type UpdateSessionInput struct {
 }
 
 type PostMessageInput struct {
-	Content   string            `json:"content"`
-	InputType string            `json:"input_type,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	Content     string                    `json:"content"`
+	InputType   string                    `json:"input_type,omitempty"`
+	Attachments []agent.MessageAttachment `json:"attachments,omitempty"`
+	Metadata    map[string]string         `json:"metadata,omitempty"`
 }
 
 type SendMessageInput struct {
-	SessionID        string            `json:"session_id,omitempty"`
-	AgentID          string            `json:"agent_id,omitempty"`
-	Title            string            `json:"title,omitempty"`
-	Content          string            `json:"content"`
-	InputType        string            `json:"input_type,omitempty"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
-	SessionMetadata  map[string]string `json:"session_metadata,omitempty"`
-	ClientSessionKey string            `json:"client_session_key,omitempty"`
-	ClientMessageID  string            `json:"client_message_id,omitempty"`
+	SessionID        string                    `json:"session_id,omitempty"`
+	AgentID          string                    `json:"agent_id,omitempty"`
+	Title            string                    `json:"title,omitempty"`
+	Content          string                    `json:"content"`
+	InputType        string                    `json:"input_type,omitempty"`
+	Attachments      []agent.MessageAttachment `json:"attachments,omitempty"`
+	Metadata         map[string]string         `json:"metadata,omitempty"`
+	SessionMetadata  map[string]string         `json:"session_metadata,omitempty"`
+	ClientSessionKey string                    `json:"client_session_key,omitempty"`
+	ClientMessageID  string                    `json:"client_message_id,omitempty"`
 }
 
 type AgentToolCapability struct {

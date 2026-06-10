@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -18,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // VEMessageHandler processes incoming A2A messages when this maclaw instance
@@ -362,24 +364,65 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 		}
 	}
 
-	// Run the agent loop (reusing IMMessageHandler pattern). Do not stream raw
-	// LLM deltas here: intermediate assistant deltas can be tool-call planning
-	// content. Only publish the final loop result below.
-	fullResponse, err := h.runAgentForVE(ctx, sessionID, userMessage, requestID, nil)
+	// Stream LLM deltas to the frontend in real-time so the user sees progressive
+	// output instead of a static "思考中..." indicator. The agent loop calls
+	// OnToken for intermediate rounds (tool-planning text) and the final round's
+	// text is returned via LoopResult.Text (not via OnToken — see loop.go:302).
+	// Both paths emit ve:stream_chunk events, giving a seamless streaming experience.
+	//
+	// IMPORTANT: onToken emits LOCAL Wails events only (no Hub network calls).
+	// Hub sync uses the final aggregated response after the agent loop completes.
+	var streamingStarted int32
+	senderID := h.getLocalAgentID() // cache once — avoid per-token config lock
+	onToken := func(delta string) {
+		if delta == "" {
+			return
+		}
+		// Signal first visible output so the timeout watcher knows we're alive.
+		if atomic.CompareAndSwapInt32(&streamingStarted, 0, 1) {
+			select {
+			case firstChunkSent <- struct{}{}:
+			default:
+			}
+		}
+		h.emitStreamChunkLocalWithSender(sessionID, delta, senderID)
+	}
+
+	fullResponse, err := h.runAgentForVE(ctx, sessionID, userMessage, requestID, onToken)
 	if err != nil {
+		// If streaming was already in progress, close it so the frontend doesn't
+		// hang in the streaming state with a blinking cursor forever.
+		if atomic.LoadInt32(&streamingStarted) != 0 {
+			h.emitStreamEndLocal(sessionID)
+		}
 		return err
 	}
 
 	if ctx.Err() != nil {
+		if atomic.LoadInt32(&streamingStarted) != 0 {
+			h.emitStreamEndLocal(sessionID)
+		}
 		return ctx.Err()
 	}
 
-	// Send the final loop result as a single stream_chunk + stream_end.
+	// The streaming LLM request already called onToken for each text delta during
+	// the final round (doLLMRequestWithToolsStream emits deltas in real-time).
+	// Only send fullResponse as a local chunk if no streaming occurred (e.g. the
+	// streaming path fell back to non-streaming, or the loop produced text without
+	// ever calling onToken).
 	if strings.TrimSpace(fullResponse) != "" {
+		if atomic.LoadInt32(&streamingStarted) == 0 {
+			// No streaming occurred — send final text locally for immediate display.
+			h.emitStreamChunkLocal(sessionID, fullResponse)
+		}
+		// Sync the final aggregated response to Hub for remote devices and history.
+		// Hub's isOwnMessage filter prevents local double-display.
 		h.SendStreamChunk(sessionID, fullResponse)
 	}
 
-	// Signal end of streaming
+	// Signal end of streaming locally (frontend transitions from streaming to final message).
+	h.emitStreamEndLocal(sessionID)
+	// Sync stream_end to Hub for remote devices.
 	h.SendStreamEnd(sessionID)
 	return nil
 }
@@ -1116,6 +1159,64 @@ func (h *VEMessageHandler) SendStreamEnd(sessionID string) {
 	})
 }
 
+// emitStreamChunkLocal sends a ve:stream_chunk event directly to the local frontend
+// via Wails runtime, bypassing Hub network. Used for real-time token streaming where
+// per-token HTTP calls would be prohibitively expensive.
+func (h *VEMessageHandler) emitStreamChunkLocal(sessionID, chunk string) {
+	if chunk == "" {
+		return
+	}
+	h.emitStreamChunkLocalWithSender(sessionID, chunk, h.getLocalAgentID())
+}
+
+// emitStreamChunkLocalWithSender is the inner implementation that accepts a pre-resolved
+// sender ID to avoid per-token config lock acquisition during high-frequency streaming.
+func (h *VEMessageHandler) emitStreamChunkLocalWithSender(sessionID, chunk, senderID string) {
+	if h.app == nil || h.app.ctx == nil || chunk == "" {
+		return
+	}
+	runtime.EventsEmit(h.app.ctx, "ve:stream_chunk", map[string]any{
+		"session_id":  sessionID,
+		"content":     chunk,
+		"chunk":       chunk,
+		"sender_name": "本机AI",
+		"sender_id":   senderID,
+	})
+}
+
+// emitStreamEndLocal sends a ve:stream_end event directly to the local frontend.
+func (h *VEMessageHandler) emitStreamEndLocal(sessionID string) {
+	if h.app == nil || h.app.ctx == nil {
+		return
+	}
+	senderID := h.getLocalAgentID()
+	runtime.EventsEmit(h.app.ctx, "ve:stream_end", map[string]any{
+		"session_id":  sessionID,
+		"content":     "",
+		"chunk":       "",
+		"sender_name": "本机AI",
+		"sender_id":   senderID,
+	})
+}
+
+// getLocalAgentID returns the local machine/client ID for sender identification.
+func (h *VEMessageHandler) getLocalAgentID() string {
+	if h.app == nil {
+		return "local-maclaw"
+	}
+	cfg, err := h.app.LoadConfig()
+	if err != nil {
+		return "local-maclaw"
+	}
+	if id := cfg.RemoteMachineID; id != "" {
+		return id
+	}
+	if id := cfg.RemoteClientID; id != "" {
+		return id
+	}
+	return "local-maclaw"
+}
+
 // CloseSession closes a VE session and cleans up resources.
 func (h *VEMessageHandler) CloseSession(sessionID string) {
 	h.mu.Lock()
@@ -1134,4 +1235,13 @@ func (h *VEMessageHandler) ActiveSessionCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.activeSessions)
+}
+
+// IsActiveSession returns true if the given session ID is currently active in this VE handler.
+// Used by Hub echo filtering to suppress duplicate frontend display for locally-streamed responses.
+func (h *VEMessageHandler) IsActiveSession(sessionID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, exists := h.activeSessions[sessionID]
+	return exists
 }

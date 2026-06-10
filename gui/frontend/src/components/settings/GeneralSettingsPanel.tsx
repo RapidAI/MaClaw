@@ -115,6 +115,17 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
             <label className="general-settings-option">
                 <input
                     type="checkbox"
+                    aria-label={textForLang(lang, 'Enable Workflow', '\u6253\u5f00\u5de5\u4f5c\u6d41', '\u958b\u555f\u5de5\u4f5c\u6d41')}
+                    checked={effectiveConfig?.workflow_enabled !== false}
+                    onChange={(e) => saveConfigPatch({ workflow_enabled: e.target.checked })}
+                />
+                <span>{textForLang(lang, 'Enable Workflow', '\u6253\u5f00\u5de5\u4f5c\u6d41', '\u958b\u555f\u5de5\u4f5c\u6d41')}</span>
+                <small>{textForLang(lang, 'Enable multi-phase guided workflows (coding, PPT design, etc.). When off, all messages go directly to the agent.', '\u542f\u7528\u591a\u9636\u6bb5\u5f15\u5bfc\u5f0f\u5de5\u4f5c\u6d41\uff08\u7f16\u7801\u3001PPT \u8bbe\u8ba1\u7b49\uff09\u3002\u5173\u95ed\u540e\u6240\u6709\u6d88\u606f\u76f4\u63a5\u8fdb\u5165 Agent \u5904\u7406\u3002', '\u555f\u7528\u591a\u968e\u6bb5\u5f15\u5c0e\u5f0f\u5de5\u4f5c\u6d41\uff08\u7de8\u78bc\u3001PPT \u8a2d\u8a08\u7b49\uff09\u3002\u95dc\u9589\u5f8c\u6240\u6709\u8a0a\u606f\u76f4\u63a5\u9032\u5165 Agent \u8655\u7406\u3002')}</small>
+            </label>
+
+            <label className="general-settings-option">
+                <input
+                    type="checkbox"
                     aria-label={textForLang(lang, 'Record LLM trajectory', '\u8bb0\u5f55 LLM \u8f68\u8ff9', '\u8a18\u9304 LLM \u8ecc\u8de1')}
                     checked={effectiveConfig?.llm_trajectory_logging || false}
                     onChange={(e) => saveConfigPatch({ llm_trajectory_logging: e.target.checked })}

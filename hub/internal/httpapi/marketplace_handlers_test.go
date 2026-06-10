@@ -658,7 +658,7 @@ func TestMoveEnterpriseSkillPackageIntoPlaceReplacesWrongExistingFile(t *testing
 	}
 }
 
-func TestCapabilitySkillSubmitRejectsOversizedExportPayload(t *testing.T) {
+func TestCapabilitySkillSubmitAllowsExportPayloadWithinUploadLimit(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)
 	files := map[string]string{"skill.yaml": "name: bulky-skill\ndescription: bulky\n"}
@@ -673,8 +673,100 @@ func TestCapabilitySkillSubmitRejectsOversizedExportPayload(t *testing.T) {
 
 	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, t.TempDir())(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCapabilitySkillSubmitExportsBinaryResource(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	dataDir := t.TempDir()
+	resource := strings.Repeat("x", 300<<10)
+	files := map[string]string{
+		"skill.yaml":       "name: resource-skill\ndescription: carries local resource\n",
+		"README.md":        "docs",
+		"assets/model.bin": resource,
+	}
+	body, contentType := makeEnterpriseSkillUploadBody(t, files)
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, dataDir)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	items, err := svc.List(capability.WithTenant(context.Background(), "tenant_a"), corelib.CapabilityTypeSkill)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("capabilities=%+v err=%v", items, err)
+	}
+	metadata := mapFromRawJSON(json.RawMessage(items[0].MetadataJSON))
+	packageFile := strings.TrimSpace(stringFromMap(metadata, "package_file"))
+	packagePath, err := enterpriseSkillPackagePath(dataDir, "tenant_a", packageFile)
+	if err != nil {
+		t.Fatalf("package path: %v", err)
+	}
+	meta, err := readEnterpriseSkillPackageMeta(packagePath)
+	if err != nil {
+		t.Fatalf("readEnterpriseSkillPackageMeta() error = %v", err)
+	}
+	encoded := meta.Files["assets/model.bin"]
+	if encoded == "" {
+		t.Fatalf("download metadata missing binary resource: %+v", meta.Files)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || string(decoded) != resource {
+		t.Fatalf("binary resource mismatch len=%d err=%v", len(decoded), err)
+	}
+}
+
+func TestCapabilitySkillSubmitStoresManifestWithoutExportingAsFile(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	dataDir := t.TempDir()
+	manifest := `{"skill_name":"manifest-skill","quality":{"score":100}}`
+	files := map[string]string{
+		"skill.yaml":                  "name: manifest-skill\ndescription: carries manifest\n",
+		"README.md":                   "docs",
+		"skill_package_manifest.json": manifest,
+	}
+	body, contentType := makeEnterpriseSkillUploadBody(t, files)
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, dataDir)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	items, err := svc.List(capability.WithTenant(context.Background(), "tenant_a"), corelib.CapabilityTypeSkill)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("capabilities=%+v err=%v", items, err)
+	}
+	versions, err := svc.ListVersions(capability.WithTenant(context.Background(), "tenant_a"), items[0].ID)
+	if err != nil || len(versions) == 0 {
+		t.Fatalf("versions=%+v err=%v", versions, err)
+	}
+	if strings.TrimSpace(versions[0].ManifestJSON) != manifest {
+		t.Fatalf("ManifestJSON = %s, want %s", versions[0].ManifestJSON, manifest)
+	}
+	metadata := mapFromRawJSON(json.RawMessage(items[0].MetadataJSON))
+	packageFile := strings.TrimSpace(stringFromMap(metadata, "package_file"))
+	packagePath, err := enterpriseSkillPackagePath(dataDir, "tenant_a", packageFile)
+	if err != nil {
+		t.Fatalf("package path: %v", err)
+	}
+	meta, err := readEnterpriseSkillPackageMeta(packagePath)
+	if err != nil {
+		t.Fatalf("readEnterpriseSkillPackageMeta() error = %v", err)
+	}
+	if _, ok := meta.Files["skill_package_manifest.json"]; ok {
+		t.Fatalf("manifest should not be exported as install file: %+v", meta.Files)
 	}
 }
 
@@ -710,6 +802,44 @@ func TestCapabilitySkillSubmitRejectsSkillDefinitionWithoutName(t *testing.T) {
 	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, t.TempDir())(rec, req)
 
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "must declare name") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCapabilitySkillSubmitRejectsMissingBundledFileReference(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	body, contentType := makeEnterpriseSkillUploadBody(t, map[string]string{
+		"skill.yaml": "name: missing-file-skill\ndescription: missing bundled script\nsteps:\n  - action: bash\n    params:\n      command: python {baseDir}/scripts/missing.py\n",
+		"README.md":  "docs",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, t.TempDir())(rec, req)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Missing bundled files") || !strings.Contains(rec.Body.String(), "missing.py") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCapabilitySkillSubmitRejectsUnsafeZipPath(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	body, contentType := makeEnterpriseSkillUploadBody(t, map[string]string{
+		"skill.yaml":    "name: unsafe-path-skill\ndescription: unsafe zip path\n",
+		"../secret.txt": "nope",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, t.TempDir())(rec, req)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unsafe path") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

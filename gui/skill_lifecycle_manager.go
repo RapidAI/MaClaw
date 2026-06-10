@@ -277,9 +277,16 @@ func (m *SkillLifecycleManager) UploadNowWithCompletedTargets(ctx context.Contex
 	defer os.Remove(zipPath)
 	defer os.RemoveAll(tmpDir)
 
-	report, err := skill.ValidateSkillPortability(tmpDir)
+	preflight, err := skill.PrepareSkillForUpload(tmpDir)
 	if err != nil {
-		return "", fmt.Errorf("portability validation failed: %w", err)
+		return "", fmt.Errorf("upload preflight failed: %w", err)
+	}
+	if !preflight.Portable() {
+		return "", &skillUploadBlockedError{Message: skill.FormatUploadPreflight(preflight), Score: 0}
+	}
+	report := preflight.Report
+	if report == nil {
+		return "", fmt.Errorf("upload preflight produced no portability report")
 	}
 	target := m.findRegisteredSkill(skillName)
 	qualityEntry, loadErr := loadMarketPackageSkillEntry(tmpDir, target)
@@ -384,9 +391,16 @@ func (m *SkillLifecycleManager) UploadDirNowWithCompletedTargets(ctx context.Con
 	if err := writePackageViewSkillYAML(tmpDir, entry); err != nil {
 		return "", err
 	}
-	tmpReport, err := skill.ValidateSkillPortability(tmpDir)
+	tmpPreflight, err := skill.PrepareSkillForUpload(tmpDir)
 	if err != nil {
 		return "", fmt.Errorf("validate skill package: %w", err)
+	}
+	if !tmpPreflight.Portable() {
+		return "", &skillUploadBlockedError{Message: skill.FormatUploadPreflight(tmpPreflight), Score: 0}
+	}
+	tmpReport := tmpPreflight.Report
+	if tmpReport == nil {
+		return "", fmt.Errorf("validate skill package: upload preflight produced no portability report")
 	}
 	packageQuality := evaluateSkillQualityForDir(entry, tmpReport, requireRuntimeProof, tmpDir)
 	if !packageQuality.MarketReady {

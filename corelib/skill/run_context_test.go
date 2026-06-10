@@ -929,6 +929,19 @@ func TestDetectImplicitRunRequiredArgsScansCraftToolTask(t *testing.T) {
 	}
 }
 
+func TestDetectImplicitRunRequiredArgsIgnoresCraftToolInstructions(t *testing.T) {
+	missing := DetectImplicitRunRequiredArgs([]corelib.NLSkillStep{{
+		Action: "craft_tool",
+		Params: map[string]interface{}{
+			"instructions": "Use the examples literally: {{name}} and {{variable}}.",
+		},
+	}}, nil, nil, nil)
+
+	if len(missing) != 0 {
+		t.Fatalf("DetectImplicitRunRequiredArgs() = %#v, want instructions ignored", missing)
+	}
+}
+
 func TestDetectImplicitRequiredArgsDoesNotMutateStepParams(t *testing.T) {
 	steps := []corelib.NLSkillStep{{
 		Action: "run",

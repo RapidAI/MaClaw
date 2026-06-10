@@ -2,7 +2,9 @@ package knowledge
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -416,6 +418,162 @@ func TestSQLiteStoreImportDirectory(t *testing.T) {
 	}
 	if len(staleDirectoryResults) != 0 {
 		t.Fatalf("stale directory content leaked into search: %#v", staleDirectoryResults)
+	}
+}
+
+func TestSQLiteStoreDeleteImportBatchScoped(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "alpha.md"), []byte("Alpha batch knowledge."))
+	first, err := store.ImportDirectory(ctx, DirectoryImportRequest{
+		RootPath:     root,
+		TenantID:     "tenant-a",
+		OwnerID:      "user-a",
+		Recursive:    true,
+		IncludeExts:  []string{".md"},
+		MaxFileBytes: 1024,
+	})
+	if err != nil {
+		t.Fatalf("first ImportDirectory: %v", err)
+	}
+	otherRoot := t.TempDir()
+	mustWrite(t, filepath.Join(otherRoot, "beta.md"), []byte("Beta batch knowledge."))
+	other, err := store.ImportDirectory(ctx, DirectoryImportRequest{
+		RootPath:     otherRoot,
+		TenantID:     "tenant-a",
+		OwnerID:      "user-b",
+		Recursive:    true,
+		IncludeExts:  []string{".md"},
+		MaxFileBytes: 1024,
+	})
+	if err != nil {
+		t.Fatalf("other ImportDirectory: %v", err)
+	}
+	firstSources, err := store.ListSources(ctx, ListSourcesOptions{TenantID: "tenant-a", OwnerID: "user-a", BatchID: first.BatchID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources by batch: %v", err)
+	}
+	if len(firstSources) != 1 {
+		t.Fatalf("ListSources by batch = %d, want 1", len(firstSources))
+	}
+	if _, err := store.DeleteImportBatch(ctx, ImportBatchDeleteRequest{BatchID: first.BatchID, TenantID: "tenant-a", OwnerID: "user-b"}); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("DeleteImportBatch wrong owner err = %v, want sql.ErrNoRows", err)
+	}
+	out, err := store.DeleteImportBatch(ctx, ImportBatchDeleteRequest{BatchID: first.BatchID, TenantID: "tenant-a", OwnerID: "user-a"})
+	if err != nil {
+		t.Fatalf("DeleteImportBatch: %v", err)
+	}
+	if out.DeletedBatches != 1 || out.DeletedSources != 1 {
+		t.Fatalf("unexpected delete result: %#v", out)
+	}
+	if _, err := store.GetImportBatch(ctx, first.BatchID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleted batch err = %v, want sql.ErrNoRows", err)
+	}
+	items, err := store.ListImportItems(ctx, first.BatchID, 10)
+	if err != nil {
+		t.Fatalf("ListImportItems deleted batch: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("deleted batch items remain: %#v", items)
+	}
+	page, err := store.ListImportBatchesPage(ctx, ListImportBatchesOptions{TenantID: "tenant-a", OwnerID: "user-b", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListImportBatchesPage other user: %v", err)
+	}
+	if page.Total != 1 || len(page.Batches) != 1 || page.Batches[0].ID != other.BatchID {
+		t.Fatalf("other user batch was affected: %#v", page)
+	}
+}
+
+func TestSQLiteStoreDeleteImportBatchLargeBatch(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	now := formatTime(time.Now().UTC())
+	_, err = store.db.ExecContext(ctx, `INSERT INTO knowledge_import_batches
+		(id, root_path, owner_id, tenant_id, project_path, topic_hint, recursive, include_exts_json, exclude_globs_json, max_file_bytes,
+		 status, total_files, queued_files, imported_files, skipped_files, failed_files, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"batch-large", "D:/large", "user-a", "tenant-a", "", "", true, "[]", "[]", 1024,
+		ImportStatusCompleted, 805, 0, 805, 0, 0, now, now)
+	if err != nil {
+		t.Fatalf("insert large batch: %v", err)
+	}
+	_, err = store.db.ExecContext(ctx, `INSERT INTO knowledge_import_batches
+		(id, root_path, owner_id, tenant_id, project_path, topic_hint, recursive, include_exts_json, exclude_globs_json, max_file_bytes,
+		 status, total_files, queued_files, imported_files, skipped_files, failed_files, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"batch-other", "D:/other", "user-a", "tenant-a", "", "", true, "[]", "[]", 1024,
+		ImportStatusCompleted, 1, 0, 1, 0, 0, now, now)
+	if err != nil {
+		t.Fatalf("insert other batch: %v", err)
+	}
+	for i := 0; i < 805; i++ {
+		sourceID := fmt.Sprintf("src-large-%03d", i)
+		if err := store.SaveSource(ctx, Source{
+			ID:           sourceID,
+			Kind:         SourceKindText,
+			URI:          fmt.Sprintf("file:///large/%03d.txt", i),
+			ContentHash:  fmt.Sprintf("hash-large-%03d", i),
+			OwnerID:      "user-a",
+			TenantID:     "tenant-a",
+			BatchID:      "batch-large",
+			RelativePath: fmt.Sprintf("%03d.txt", i),
+			Status:       StatusParsed,
+			FetchedAt:    time.Now().UTC(),
+			CreatedAt:    time.Now().UTC(),
+			UpdatedAt:    time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("SaveSource large %d: %v", i, err)
+		}
+	}
+	if err := store.SaveSource(ctx, Source{
+		ID:           "src-other",
+		Kind:         SourceKindText,
+		URI:          "file:///other/keep.txt",
+		ContentHash:  "hash-other",
+		OwnerID:      "user-a",
+		TenantID:     "tenant-a",
+		BatchID:      "batch-other",
+		RelativePath: "keep.txt",
+		Status:       StatusParsed,
+		FetchedAt:    time.Now().UTC(),
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSource other: %v", err)
+	}
+
+	out, err := store.DeleteImportBatch(ctx, ImportBatchDeleteRequest{BatchID: "batch-large", TenantID: "tenant-a", OwnerID: "user-a"})
+	if err != nil {
+		t.Fatalf("DeleteImportBatch large: %v", err)
+	}
+	if out.DeletedSources != 805 || out.DeletedBatches != 1 {
+		t.Fatalf("unexpected large delete result: %#v", out)
+	}
+	largeSources, err := store.ListSources(ctx, ListSourcesOptions{TenantID: "tenant-a", OwnerID: "user-a", BatchID: "batch-large", Limit: 1000})
+	if err != nil {
+		t.Fatalf("ListSources large: %v", err)
+	}
+	if len(largeSources) != 0 {
+		t.Fatalf("large batch sources remain: %d", len(largeSources))
+	}
+	otherSources, err := store.ListSources(ctx, ListSourcesOptions{TenantID: "tenant-a", OwnerID: "user-a", BatchID: "batch-other", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources other: %v", err)
+	}
+	if len(otherSources) != 1 || otherSources[0].ID != "src-other" {
+		t.Fatalf("other batch affected: %#v", otherSources)
 	}
 }
 

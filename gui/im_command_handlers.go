@@ -146,12 +146,6 @@ func (h *IMMessageHandler) handleExitCommand(userID, lang string) *IMAgentRespon
 	// Flush evidence batch and reset session on exit.
 	h.flushEvidenceOnSessionEnd(userID)
 	// Reset workflow working directory and suggest_maximize dedup flag.
-	if h.getWorkflowEngine() != nil {
-		if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
-			adapter.ResetWorkingDir()
-			adapter.ResetSuggestMaximize(userID)
-		}
-	}
 
 	var b strings.Builder
 	if len(killed) > 0 {

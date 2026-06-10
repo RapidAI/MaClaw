@@ -95,7 +95,16 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	pendingReplyElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()
 
-	workflowRoute := h.routeWorkflowIMMessage(*msg, trimmed, opts.ConfirmedWorkflowAgentLoop, result.HasPendingUserReply)
+	// V2 workflow engine is the sole workflow routing path.
+	// V1 routeWorkflowIMMessage is kept for compilation but never called.
+	var workflowRoute workflowIMRouteResult
+	v2State := h.getWorkflowV2()
+	v2Disabled := h.app != nil && h.app.workflowDisabled.Load()
+	log.Printf("[workflow-v2-debug] entry_context: v2=%v disabled=%v user=%s", v2State != nil, v2Disabled, msg.UserID)
+	if v2State != nil && !v2Disabled {
+		workflowRoute = h.routeWithWorkflowV2(*msg, trimmed)
+	}
+	// V1 fallback removed — V2 is the only workflow engine.
 	if workflowRoute.Response != nil {
 		workflowRouteElapsed = time.Since(lastPhaseAt)
 		result.Handled = true

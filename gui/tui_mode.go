@@ -683,8 +683,8 @@ func (a *tuiModeApp) ensureHandler() (*IMMessageHandler, error) {
 	if a.app == nil {
 		return nil, fmt.Errorf(guiTUIAppNotInitializedMsg)
 	}
-	if a.app.workflowEngine == nil {
-		a.app.initWorkflowEngine()
+	if a.app.workflowV2 == nil {
+		a.app.workflowV2 = a.app.initWorkflowV2()
 	}
 	if a.app.steeringStore == nil {
 		a.app.initSteeringStore()

@@ -983,6 +983,11 @@ func (h *IMMessageHandler) runUploadPortabilityGate(name string) string {
 	}
 
 	if !result.Portable() {
+		if len(result.AutoFixed) > 0 {
+			if restoreErr := restoreSkillDirFromSnapshot(skillDir, snapshotDir); restoreErr != nil {
+				return fmt.Sprintf("%s; rollback failed: %v", cskill.FormatUploadPreflight(result), restoreErr)
+			}
+		}
 		return cskill.FormatUploadPreflight(result)
 	}
 	return ""

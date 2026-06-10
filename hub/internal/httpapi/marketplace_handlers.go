@@ -33,7 +33,7 @@ const capabilityMarketPolicySettingKey = "capability_market_policy"
 var errCapabilityRefAmbiguous = errors.New("capability_ref matches multiple capabilities")
 
 const enterpriseSkillUploadMaxBytes = 10 << 20
-const enterpriseSkillPackageExportMaxBytes = 1 << 20
+const enterpriseSkillPackageExportMaxBytes = enterpriseSkillUploadMaxBytes
 
 func MarketplacePageHandler(product string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -2754,21 +2754,29 @@ func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta
 		return nil, err
 	}
 	defer zr.Close()
+	stagingDir, err := os.MkdirTemp("", "enterprise-skill-preflight-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(stagingDir)
 	meta := &enterpriseSkillPackageMeta{Files: map[string]string{}, Version: "1.0.0"}
 	exportedBytes := 0
 	foundDefinition := false
 	for _, f := range zr.File {
-		if f.FileInfo().IsDir() || f.FileInfo().Mode()&os.ModeSymlink != 0 || !enterpriseSkillZipPathAllowed(f.Name) {
+		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("skill package contains symlink %s", f.Name)
+		}
+		if !enterpriseSkillZipPathAllowed(f.Name) {
+			return nil, fmt.Errorf("skill package contains unsafe path %s", f.Name)
+		}
+		if f.FileInfo().IsDir() {
 			continue
 		}
 		name := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(f.Name)), "./")
 		base := strings.ToLower(filepath.Base(name))
 		isManifest := base == "skill_package_manifest.json"
 		isDefinition := base == "skill.yaml" || base == "skill.yml"
-		isExportable := enterpriseSkillFileExtensionExportable(name)
-		if !isManifest && !isDefinition && !isExportable {
-			continue
-		}
+		isExportable := enterpriseSkillFileExportable(name, int(f.UncompressedSize64))
 		maxBytes := maxSingleEnterpriseSkillFileBytes(name)
 		if f.UncompressedSize64 > uint64(maxBytes) {
 			return nil, fmt.Errorf("skill package file %s exceeds %d bytes", name, maxBytes)
@@ -2776,6 +2784,12 @@ func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta
 		data, err := readEnterpriseSkillZipFile(f, maxBytes)
 		if err != nil {
 			return nil, fmt.Errorf("read skill package file %s: %w", name, err)
+		}
+		if err := writeEnterpriseSkillStagingFile(stagingDir, name, data); err != nil {
+			return nil, err
+		}
+		if !isManifest && !isDefinition && !isExportable {
+			continue
 		}
 		switch base {
 		case "skill_package_manifest.json":
@@ -2804,7 +2818,7 @@ func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta
 				meta.Steps = append(meta.Steps, corelib.NLSkillStep{Action: step.Action, Params: step.Params, OnError: onError, Name: step.Name, Condition: step.Condition})
 			}
 		}
-		if enterpriseSkillFileExportable(name, len(data)) {
+		if !isManifest && enterpriseSkillFileExportable(name, len(data)) {
 			exportedBytes += len(data)
 			if exportedBytes > enterpriseSkillPackageExportMaxBytes {
 				return nil, fmt.Errorf("skill package exportable files exceed %d bytes", enterpriseSkillPackageExportMaxBytes)
@@ -2821,7 +2835,151 @@ func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta
 	if len(meta.Files) == 0 {
 		return nil, errors.New("skill package has no exportable skill files")
 	}
+	if err := validateEnterpriseSkillPackagePreflight(stagingDir); err != nil {
+		return nil, err
+	}
 	return meta, nil
+}
+
+func writeEnterpriseSkillStagingFile(root, name string, data []byte) error {
+	target := filepath.Join(root, filepath.FromSlash(name))
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return err
+	}
+	if rel == "." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || rel == ".." {
+		return fmt.Errorf("skill package contains unsafe path %s", name)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetAbs), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(targetAbs, data, 0o644)
+}
+
+func validateEnterpriseSkillPackagePreflight(skillDir string) error {
+	report, err := coreskill.ValidateSkillPortability(skillDir)
+	if err != nil {
+		return fmt.Errorf("skill package preflight failed: %w", err)
+	}
+	entry, err := loadEnterpriseSkillPackageEntryForPreflight(skillDir)
+	if err != nil {
+		return fmt.Errorf("skill package preflight failed: %w", err)
+	}
+	preflight := &coreskill.UploadPreflightResult{SkillDir: skillDir, Report: report}
+	if report != nil {
+		preflight.SkillName = report.SkillName
+		for _, issue := range report.Issues {
+			switch issue.Category {
+			case "hardcoded_path", "missing_basedir":
+				preflight.BlockingPaths = append(preflight.BlockingPaths, coreskill.PortabilityPathIssue{
+					Path:       issue.Message,
+					File:       issue.File,
+					Suggestion: issue.Suggestion,
+				})
+			case "missing_platforms", "incomplete_metadata":
+				preflight.Warnings = append(preflight.Warnings, fmt.Sprintf("[%s] %s", issue.Category, issue.Message))
+			default:
+				if issue.Severity == coreskill.SeverityWarning || issue.Severity == coreskill.SeverityInfo {
+					preflight.Warnings = append(preflight.Warnings, fmt.Sprintf("[%s] %s", issue.Category, issue.Message))
+				}
+			}
+		}
+	}
+	if entry != nil {
+		preflight.MissingFiles = coreskill.CollectMissingPackageFileReferences(entry)
+	}
+	if !preflight.Portable() {
+		return fmt.Errorf("%s", coreskill.FormatUploadPreflight(preflight))
+	}
+	return nil
+}
+
+func loadEnterpriseSkillPackageEntryForPreflight(skillDir string) (*corelib.NLSkillEntry, error) {
+	for _, name := range []string{"skill.yaml", "skill.yml"} {
+		path := filepath.Join(skillDir, name)
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		sf, err := coreskill.ParseSkillDefinitionFile(data, strings.TrimPrefix(filepath.Ext(name), "."))
+		if err != nil {
+			return nil, err
+		}
+		entry := &corelib.NLSkillEntry{
+			Name:                    strings.TrimSpace(sf.Name),
+			Description:             sf.Description,
+			Triggers:                append([]string(nil), sf.Triggers...),
+			SkillDir:                skillDir,
+			Steps:                   enterpriseSkillYAMLStepsForPreflight(sf.Steps),
+			Params:                  enterpriseSkillYAMLParamsForPreflight(sf.Params),
+			RequiredCredentialFiles: append([]string(nil), sf.RequiredCredentialFiles...),
+			Pipeline:                enterpriseSkillYAMLPipelineForPreflight(sf.Pipeline),
+		}
+		return entry, nil
+	}
+	return nil, errors.New("skill package must contain skill.yaml or skill.yml")
+}
+
+func enterpriseSkillYAMLStepsForPreflight(steps []coreskill.SkillYAMLStep) []corelib.NLSkillStep {
+	out := make([]corelib.NLSkillStep, 0, len(steps))
+	for _, step := range steps {
+		params := step.Params
+		if params == nil {
+			params = map[string]interface{}{}
+		}
+		out = append(out, corelib.NLSkillStep{
+			Action:    step.Action,
+			Params:    params,
+			OnError:   firstNonEmpty(step.OnError, "stop"),
+			Name:      step.Name,
+			Condition: step.Condition,
+			When:      step.When,
+			Label:     step.Label,
+			Capture:   step.Capture,
+		})
+	}
+	return out
+}
+
+func enterpriseSkillYAMLParamsForPreflight(params []coreskill.SkillYAMLParam) []corelib.NLSkillParam {
+	out := make([]corelib.NLSkillParam, 0, len(params))
+	for _, param := range params {
+		out = append(out, corelib.NLSkillParam{
+			Name:        param.Name,
+			Description: param.Description,
+			Aliases:     append([]string(nil), param.Aliases...),
+			CLIFlag:     param.CLIFlag,
+			Default:     param.Default,
+			Required:    param.Required,
+		})
+	}
+	return out
+}
+
+func enterpriseSkillYAMLPipelineForPreflight(steps []coreskill.SkillYAMLPipelineStep) []corelib.SkillPipelineStep {
+	out := make([]corelib.SkillPipelineStep, 0, len(steps))
+	for _, step := range steps {
+		out = append(out, corelib.SkillPipelineStep{
+			Skill:              step.Skill,
+			Params:             step.Params,
+			Checkpoint:         step.Checkpoint,
+			CheckpointMessage:  step.CheckpointMessage,
+			ContinueOnFail:     step.ContinueOnFail,
+			TimeImpactOnReject: step.TimeImpactOnReject,
+		})
+	}
+	return out
 }
 
 func enterpriseSkillZipPathAllowed(name string) bool {
@@ -2854,23 +3012,33 @@ func maxSingleEnterpriseSkillFileBytes(name string) int64 {
 	if strings.EqualFold(filepath.Base(name), "skill_package_manifest.json") {
 		return 1 << 20
 	}
-	return 256 << 10
-}
-
-func enterpriseSkillFileExtensionExportable(name string) bool {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".sh", ".py", ".js", ".yaml", ".yml", ".json", ".txt", ".md":
-		return true
-	default:
-		return false
-	}
+	return enterpriseSkillUploadMaxBytes
 }
 
 func enterpriseSkillFileExportable(name string, size int) bool {
-	if size <= 0 || size > 256<<10 {
+	if size <= 0 || size > enterpriseSkillUploadMaxBytes {
 		return false
 	}
-	return enterpriseSkillFileExtensionExportable(name)
+	if enterpriseSkillPathHasRuntimeArtifact(name) {
+		return false
+	}
+	return true
+}
+
+func enterpriseSkillPathHasRuntimeArtifact(name string) bool {
+	parts := strings.Split(filepath.ToSlash(strings.TrimSpace(name)), "/")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		if i == len(parts)-1 {
+			return coreskill.IsSkillRuntimePackageFile(part)
+		}
+		if coreskill.IsSkillRuntimePackageDir(part) {
+			return true
+		}
+	}
+	return false
 }
 
 func enterpriseHubPublicBaseURL(r *http.Request) string {

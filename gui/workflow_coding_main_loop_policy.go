@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 var codingWorkflowImplementationMainLoopAllowedTools = map[string]bool{
@@ -20,13 +19,7 @@ func codingWorkflowImplementationMainLoopRequiredTools() []string {
 }
 
 func (h *IMMessageHandler) shouldConstrainCodingWorkflowImplementationMainLoop(policyUserID string) bool {
-	engine := h.getWorkflowEngine()
-	policyUserID = strings.TrimSpace(policyUserID)
-	if engine == nil || policyUserID == "" || !engine.IsActivePhaseExecutionOrchestrator(policyUserID) {
-		return false
-	}
-	ws := engine.GetActiveWorkflow(policyUserID)
-	return ws != nil && ws.Type == workflow.WorkflowCoding && ws.CurrentPhase == workflow.PhaseCodingImplementation
+	return false
 }
 
 func isCodingWorkflowImplementationMainLoopToolAllowed(name string) bool {

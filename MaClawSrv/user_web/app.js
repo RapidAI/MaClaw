@@ -246,6 +246,10 @@ Object.assign(I18N.zh, {
   channelOverviewHint: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram \u548c\u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002"
 });
 Object.assign(I18N.zh, { loading: "\u52a0\u8f7d\u4e2d...", knowledgeImport: "\u77e5\u8bc6\u5e93\u5bfc\u5165", knowledgeImportHint: "\u5c06\u6587\u672c\u3001\u5355\u6587\u6863\u3001\u6587\u6863\u538b\u7f29\u5305\u6216\u6307\u5b9a\u6df1\u5ea6\u7684 URL \u6293\u53d6\u7ed3\u679c\u5bfc\u5165\u5f53\u524d\u7528\u6237\u77e5\u8bc6\u5e93\u3002", connectedKnowledge: "\u53ef\u8bbf\u95ee\u77e5\u8bc6\u5e93", connectedKnowledgeHint: "\u5f53\u524d\u7528\u6237\u53ef\u8bfb\u7684\u77e5\u8bc6\u5e93\u5217\u8868\u3002\u5bfc\u5165\u53ea\u5199\u5165\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\u3002", noConnectedKnowledge: "\u6682\u65e0\u53ef\u8bbf\u95ee\u77e5\u8bc6\u5e93", selfKnowledge: "\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93", publicKnowledge: "\u516c\u5171\u77e5\u8bc6\u5e93", otherUserKnowledge: "\u5176\u5b83\u7528\u6237\u7684\u77e5\u8bc6\u5e93", knowledgeOwner: "\u5c5e\u4e3b", knowledgeTenant: "\u79df\u6237", knowledgeScopeIDs: "\u539f\u59cb ID", knowledgeCurrentUser: "\u5f53\u524d\u7528\u6237", knowledgePublicOwner: "\u516c\u5171", importText: "\u6587\u672c", importFile: "\u6587\u4ef6/\u538b\u7f29\u5305", importURL: "URL \u679a\u4e3e", title: "\u6807\u9898", topicHint: "\u4e3b\u9898\u63d0\u793a", labels: "\u6807\u7b7e", textToImport: "\u5bfc\u5165\u6587\u672c", chooseFiles: "\u9009\u62e9\u6587\u6863\u3001ZIP \u6216 RAR", urlsToImport: "\u5bfc\u5165 URL", crawlDepth: "\u679a\u4e3e\u6df1\u5ea6", sameDomainOnly: "\u4ec5\u540c\u57df\u540d", import: "\u5bfc\u5165", importing: "\u5bfc\u5165\u4e2d...", importStarted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5f00\u59cb", importedKnowledge: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importCompleted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importStillRunning: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u4ecd\u5728\u8fd0\u884c", importTextPlaceholder: "\u7c98\u8d34\u8981\u5bfc\u5165\u7684\u6587\u672c...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "\u6a21\u677f", insertTemplate: "\u63d2\u5165\u6a21\u677f", urlExample: "URL \u793a\u4f8b", addURL: "\u6dfb\u52a0 URL", importJob: "\u5bfc\u5165\u4efb\u52a1", importStatus: "\u72b6\u6001", importSource: "\u6765\u6e90", importTitle: "\u6807\u9898", importKind: "\u7c7b\u578b", importFiles: "\u6587\u4ef6", importUrls: "URL", importProcessed: "\u5df2\u5904\u7406", importImported: "\u5df2\u5bfc\u5165", importFailed: "\u5931\u8d25", importSkipped: "\u8df3\u8fc7", importDuplicates: "\u91cd\u590d", importWarnings: "\u8b66\u544a" });
+Object.assign(I18N.en, { ownKnowledgeImports: "Own import batches", ownKnowledgeImportsHint: "Batches imported into this user's own knowledge base.", knowledgeBatchName: "File or folder", knowledgeBatchFiles: "Files", knowledgeBatchUpdated: "Updated", knowledgeBatchEmpty: "No import batches", knowledgeBatchSamples: "Samples", knowledgeBatchMeta: "{imported} imported / {skipped} skipped / {failed} failed" });
+Object.assign(I18N.zh, { ownKnowledgeImports: "\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\u5217\u8868", ownKnowledgeImportsHint: "\u6309\u5bfc\u5165\u6279\u6b21\u5217\u51fa\u5f53\u524d\u7528\u6237\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\u5185\u5bb9\u3002", knowledgeBatchName: "\u6587\u4ef6\u540d/\u76ee\u5f55\u540d", knowledgeBatchFiles: "\u6587\u4ef6\u6570", knowledgeBatchUpdated: "\u66f4\u65b0\u65f6\u95f4", knowledgeBatchEmpty: "\u6682\u65e0\u5bfc\u5165\u6279\u6b21", knowledgeBatchSamples: "\u793a\u4f8b\u6587\u4ef6", knowledgeBatchMeta: "\u5df2\u5bfc\u5165 {imported} / \u8df3\u8fc7 {skipped} / \u5931\u8d25 {failed}" });
+Object.assign(I18N.en, { deleteKnowledgeBatch: "Delete", deleteKnowledgeBatchTitle: "Delete import batch", deleteKnowledgeBatchConfirm: "Delete import batch \"{name}\" and its imported knowledge? This cannot be undone.", deleteKnowledgeBatchDone: "Deleted import batch. Sources deleted: {count}" });
+Object.assign(I18N.zh, { deleteKnowledgeBatch: "\u5220\u9664", deleteKnowledgeBatchTitle: "\u5220\u9664\u5bfc\u5165\u6279\u6b21", deleteKnowledgeBatchConfirm: "\u786e\u8ba4\u5220\u9664\u5bfc\u5165\u6279\u6b21\u201c{name}\u201d\u53ca\u5176\u5bfc\u5165\u7684\u77e5\u8bc6\u5185\u5bb9\uff1f\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\u3002", deleteKnowledgeBatchDone: "\u5df2\u5220\u9664\u5bfc\u5165\u6279\u6b21\uff0c\u5220\u9664\u6765\u6e90\u6570\uff1a{count}" });
 Object.assign(I18N.zh, { clearOwnKnowledge: "\u6e05\u9664", clearOwnKnowledgeConfirm: "\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\u4e2d\u7684\u6240\u6709\u6570\u636e\u5c06\u88ab\u6e05\u9664\uff0c\u4e14\u4e0d\u53ef\u6062\u590d\u3002\u786e\u8ba4\u7ee7\u7eed\uff1f", clearOwnKnowledgePasswordPrompt: "\u8bf7\u8f93\u5165\u7ba1\u7406\u5458\u5bc6\u7801\u6216 Admin Secret\uff0c\u7528\u4e8e\u6e05\u9664\u8be5\u77e5\u8bc6\u5e93\uff1a", clearOwnKnowledgeDone: "\u77e5\u8bc6\u5e93\u5df2\u6e05\u9664\uff0c\u5220\u9664\u6765\u6e90\u6570\uff1a{count}", clearOwnKnowledgeAuthRequired: "\u9700\u8981\u8f93\u5165\u7ba1\u7406\u5458\u51ed\u636e\u3002" });
 Object.assign(I18N.en, { enterTextFirst: "Enter text before importing.", chooseFileFirst: "Choose at least one document or archive.", enterURLFirst: "Enter at least one URL.", customTopicRequired: "Enter the custom topic hint.", customLabelRequired: "Enter the custom labels.", customTitleRequired: "Enter the custom title.", importQueued: "Import submitted. Checking progress...", importProgress: "Checking progress {current}/{total}..." });
 Object.assign(I18N.zh, { enterTextFirst: "\u8bf7\u5148\u8f93\u5165\u8981\u5bfc\u5165\u7684\u6587\u672c\u3002", chooseFileFirst: "\u8bf7\u5148\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u6587\u6863\u6216\u538b\u7f29\u5305\u3002", enterURLFirst: "\u8bf7\u5148\u8f93\u5165\u81f3\u5c11\u4e00\u4e2a URL\u3002", customTopicRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u4e3b\u9898\u63d0\u793a\u3002", customLabelRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u6807\u7b7e\u3002", customTitleRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u6807\u9898\u3002", importQueued: "\u5bfc\u5165\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u67e5\u8be2\u8fdb\u5ea6...", importProgress: "\u6b63\u5728\u67e5\u8be2\u8fdb\u5ea6 {current}/{total}..." });
@@ -381,7 +385,7 @@ function configIssueMessage(issue = {}) { const msg = String(issue.message || ""
 const TOKEN_REFRESH_GRACE_MS = 2 * 60 * 1000;
 const TOKEN_REFRESH_ACTIVITY_WINDOW_MS = 10 * 60 * 1000;
 const TOKEN_REFRESH_RECHECK_MS = 60 * 1000;
-const state = { token: "", tokenExpiresAt: 0, tokenRefreshTimer: 0, tokenRefreshPromise: null, lastActivityAt: 0, me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", skillPage: 1, mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, imAuditItems: [], imAuditContacts: [], imAuditStats: null, imAuditCleanupBefore: "", imAuditContactsPlatform: null, imAuditHasMore: false, imAuditNextBefore: "", imAuditLoading: false, imAuditLoaded: false, imAuditPlatform: "", imAuditQuery: "", imAuditContact: "", imAuditOpen: false, imSubTab: "qq", imRuntimes: {}, weixinRuntime: null, weixinQRCodeURL: "", weixinQRToken: "", weixinQRStatus: "", weixinQRMessage: "", weixinQRPollTimer: 0, imStartingKey: "", settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
+const state = { token: "", tokenExpiresAt: 0, tokenRefreshTimer: 0, tokenRefreshPromise: null, lastActivityAt: 0, me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", skillPage: 1, mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, knowledgeBatchPage: 1, knowledgeBatchTotal: 0, imAuditItems: [], imAuditContacts: [], imAuditStats: null, imAuditCleanupBefore: "", imAuditContactsPlatform: null, imAuditHasMore: false, imAuditNextBefore: "", imAuditLoading: false, imAuditLoaded: false, imAuditPlatform: "", imAuditQuery: "", imAuditContact: "", imAuditOpen: false, imSubTab: "qq", imRuntimes: {}, weixinRuntime: null, weixinQRCodeURL: "", weixinQRToken: "", weixinQRStatus: "", weixinQRMessage: "", weixinQRPollTimer: 0, imStartingKey: "", settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
 const saved = sessionStorage.getItem("maclaw.user.token") || "";
 const savedExpiry = sessionStorage.getItem("maclaw.user.token_expires_at") || "";
 const launchToken = params.get("launch_token") || "";
@@ -596,6 +600,7 @@ async function renderKnowledge() {
   bindKnowledgeQuery();
   bindKnowledgeImporter();
   loadKnowledgeAccessSummary();
+  loadKnowledgeImportBatches();
 }
 function renderKnowledgeQuery() {
   return `<div class="knowledge-search" role="search" aria-label="${esc(t("knowledgeQuery"))}"><div class="knowledge-section-head"><strong>${esc(t("knowledgeQuery"))}</strong><span class="helper">${esc(t("knowledgeQueryHint"))}</span></div><form id="knowledgeSearchForm" class="knowledge-search-form"><label class="knowledge-search-main" for="knowledgeQueryText">${esc(t("knowledgeQuery"))}<input id="knowledgeQueryText" type="search" placeholder="${esc(t("knowledgeQueryPlaceholder"))}" autocomplete="off"></label><label class="knowledge-search-limit" for="knowledgeQueryLimit">${esc(t("knowledgeLimit"))}<select id="knowledgeQueryLimit"><option value="5">5</option><option value="8" selected>8</option><option value="12">12</option><option value="20">20</option></select></label><button id="knowledgeSearchBtn" type="submit" class="primary">${esc(t("search"))}</button></form><div id="knowledgeSearchResults" class="knowledge-result-list" aria-live="polite"></div></div>`;
@@ -1589,7 +1594,7 @@ function renderKnowledgeImporter() {
     `<label class="inline-check knowledge-check"><input id="knowledgeSameDomain" type="checkbox" checked>${esc(t("sameDomainOnly"))}</label>`,
     `<button id="knowledgeURLImportBtn" type="button" class="secondary knowledge-span-2">${esc(t("import"))}</button>`
   ].join("");
-  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="knowledge-section-head"><strong>${esc(t("connectedKnowledge"))}</strong><span class="helper">${esc(t("connectedKnowledgeHint"))}</span></div><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="knowledge-section-head"><strong>${esc(t("knowledgeImport"))}</strong><span class="helper">${esc(t("knowledgeImportHint"))}</span></div><div class="knowledge-import-grid"><section><h3>${esc(t("importText"))}</h3><div class="knowledge-import-fields">${textFields}</div></section><section><h3>${esc(t("importFile"))}</h3><div class="knowledge-import-fields">${fileFields}</div></section><section><h3>${esc(t("importURL"))}</h3><div class="knowledge-import-fields">${urlFields}</div></section></div><div id="knowledgeImportProgress" class="knowledge-progress" role="status" aria-live="polite"></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
+  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="knowledge-section-head"><strong>${esc(t("connectedKnowledge"))}</strong><span class="helper">${esc(t("connectedKnowledgeHint"))}</span></div><div class="knowledge-access-layout"><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div><section class="knowledge-batch-panel" aria-label="${esc(t("ownKnowledgeImports"))}"><div class="knowledge-batch-head"><div><strong>${esc(t("ownKnowledgeImports"))}</strong><span class="helper">${esc(t("ownKnowledgeImportsHint"))}</span></div><span id="knowledgeBatchCount" class="badge">0</span></div><div id="knowledgeBatchList" class="knowledge-batch-list" aria-live="polite">${esc(t("loading"))}</div><div id="knowledgeBatchPager" class="knowledge-batch-pager"></div></section></div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="knowledge-section-head"><strong>${esc(t("knowledgeImport"))}</strong><span class="helper">${esc(t("knowledgeImportHint"))}</span></div><div class="knowledge-import-grid"><section><h3>${esc(t("importText"))}</h3><div class="knowledge-import-fields">${textFields}</div></section><section><h3>${esc(t("importFile"))}</h3><div class="knowledge-import-fields">${fileFields}</div></section><section><h3>${esc(t("importURL"))}</h3><div class="knowledge-import-fields">${urlFields}</div></section></div><div id="knowledgeImportProgress" class="knowledge-progress" role="status" aria-live="polite"></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
 }
 function bindKnowledgeImporter() {
   if (!$('knowledgeTextImportBtn')) return;
@@ -1730,6 +1735,111 @@ function bindKnowledgeAccessActions() {
     btn.onclick = (event) => clearOwnKnowledgeBase(event.currentTarget);
   });
 }
+function renderKnowledgeImportBatches(data) {
+  const batches = items(data?.items || []);
+  const total = Number(data?.total || 0);
+  state.knowledgeBatchTotal = total;
+  const count = $("knowledgeBatchCount");
+  if (count) count.textContent = String(total);
+  if (!batches.length) return `<p class="helper">${esc(t("knowledgeBatchEmpty"))}</p>`;
+  return batches.map((batch) => {
+    const samples = items(batch.sample_files || []).slice(0, 3);
+    const meta = t("knowledgeBatchMeta", { imported: batch.imported_files || 0, skipped: batch.skipped_files || 0, failed: batch.failed_files || 0 });
+    const sampleText = samples.length ? `${t("knowledgeBatchSamples")}: ${samples.join(", ")}` : "";
+    const name = batch.display_name || batch.root_name || batch.id || "-";
+    const topic = batch.topic_hint && batch.topic_hint !== name ? `<span class="knowledge-batch-topic">${esc(batch.topic_hint)}</span>` : "";
+    return `<article class="knowledge-batch-row" data-knowledge-batch-id="${esc(batch.id || "")}" data-knowledge-batch-name="${esc(name)}"><div class="knowledge-batch-title"><strong title="${esc(name)}">${esc(name)}</strong><div class="knowledge-batch-actions">${topic}<button type="button" class="danger knowledge-batch-delete" data-delete-knowledge-batch>${esc(t("deleteKnowledgeBatch"))}</button></div></div><div class="knowledge-batch-meta"><span>${esc(t("importStatus"))}: ${esc(batch.status || "-")}</span><span>${esc(t("knowledgeBatchFiles"))}: ${esc(String(batch.total_files || 0))}</span><span>${esc(t("knowledgeBatchUpdated"))}: ${esc(fmtMemoryDate(batch.updated_at || batch.created_at || ""))}</span><span>${esc(meta)}</span>${sampleText ? `<span title="${esc(sampleText)}">${esc(sampleText)}</span>` : ""}</div></article>`;
+  }).join("");
+}
+function renderKnowledgeBatchPager() {
+  const el = $("knowledgeBatchPager");
+  if (!el) return;
+  const totalPages = Math.max(1, Math.ceil((state.knowledgeBatchTotal || 0) / 10));
+  el.innerHTML = state.knowledgeBatchTotal > 10 ? `<button type="button" class="secondary" data-knowledge-batch-page="prev" ${state.knowledgeBatchPage <= 1 ? "disabled" : ""}>${esc(t("previous"))}</button><span class="helper">${esc(t("pageStatus", { page: state.knowledgeBatchPage, pages: totalPages }))}</span><button type="button" class="secondary" data-knowledge-batch-page="next" ${state.knowledgeBatchPage >= totalPages ? "disabled" : ""}>${esc(t("nextPage"))}</button>` : "";
+  el.querySelectorAll("[data-knowledge-batch-page]").forEach((btn) => {
+    btn.onclick = async () => {
+      const totalPages = Math.max(1, Math.ceil((state.knowledgeBatchTotal || 0) / 10));
+      state.knowledgeBatchPage = btn.dataset.knowledgeBatchPage === "next" ? Math.min(totalPages, state.knowledgeBatchPage + 1) : Math.max(1, state.knowledgeBatchPage - 1);
+      await loadKnowledgeImportBatches();
+    };
+  });
+}
+async function loadKnowledgeImportBatches() {
+  const list = $("knowledgeBatchList");
+  if (!list) return;
+  try {
+    list.innerHTML = `<p class="helper">${esc(t("loading"))}</p>`;
+    const out = await api(`/api/v1/knowledge/import/batches?page=${state.knowledgeBatchPage}&limit=10`);
+    const total = Number(out?.total || 0);
+    const totalPages = Math.max(1, Math.ceil(total / 10));
+    if (!items(out?.items || []).length && total > 0 && state.knowledgeBatchPage > totalPages) {
+      state.knowledgeBatchPage = totalPages;
+      await loadKnowledgeImportBatches();
+      return;
+    }
+    list.innerHTML = renderKnowledgeImportBatches(out);
+    bindKnowledgeBatchActions();
+    renderKnowledgeBatchPager();
+  } catch (e) {
+    if (!handleAPIError(e)) list.innerHTML = `<p class="error">${esc(e.message || t("loadFailed"))}</p>`;
+  }
+}
+function bindKnowledgeBatchActions() {
+  document.querySelectorAll("[data-delete-knowledge-batch]").forEach((btn) => {
+    btn.onclick = (event) => deleteKnowledgeBatch(event.currentTarget);
+  });
+}
+async function deleteKnowledgeBatch(btn) {
+  const row = btn?.closest?.("[data-knowledge-batch-id]");
+  const batchID = row?.dataset?.knowledgeBatchId || "";
+  const name = row?.dataset?.knowledgeBatchName || batchID;
+  if (!batchID || btn?.disabled) return;
+  const ok = await requestDangerConfirm({ title: t("deleteKnowledgeBatchTitle"), message: t("deleteKnowledgeBatchConfirm", { name }) });
+  if (!ok) return;
+  const oldText = btn.textContent || "";
+  try {
+    btn.disabled = true;
+    btn.textContent = t("busy");
+    const out = await api(`/api/v1/knowledge/import/batches/${encodeURIComponent(batchID)}`, { method: "DELETE" });
+    toast(t("deleteKnowledgeBatchDone", { count: out.deleted_sources || 0 }));
+    await loadKnowledgeImportBatches();
+  } catch (e) {
+    if (!handleAPIError(e)) toast(e.message || t("loadFailed"));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText || t("deleteKnowledgeBatch");
+  }
+}
+function requestDangerConfirm({ title, message }) {
+  return new Promise((resolve) => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    let closed = false;
+    const dialogID = `dangerConfirm${Date.now()}${Math.floor(Math.random() * 100000)}`;
+    const titleID = `${dialogID}Title`;
+    const messageID = `${dialogID}Message`;
+    const backdrop = document.createElement("div");
+    backdrop.className = "danger-modal-backdrop";
+    backdrop.innerHTML = `<section class="danger-modal" role="dialog" aria-modal="true" aria-labelledby="${esc(titleID)}" aria-describedby="${esc(messageID)}"><div class="danger-modal-head"><h2 id="${esc(titleID)}">${esc(title)}</h2><button type="button" class="ghost danger-modal-close" aria-label="${esc(t("cancel"))}">x</button></div><p id="${esc(messageID)}">${esc(message)}</p><div class="danger-modal-actions"><button type="button" class="secondary" data-danger-cancel>${esc(t("cancel"))}</button><button type="button" class="danger" data-danger-confirm>${esc(t("confirm"))}</button></div></section>`;
+    const cleanup = (value) => {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener("keydown", onKey);
+      backdrop.remove();
+      previousFocus?.focus?.({ preventScroll: true });
+      resolve(value);
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") cleanup(false);
+      if (event.key === "Enter") cleanup(true);
+    };
+    backdrop.querySelector("[data-danger-cancel]").onclick = () => cleanup(false);
+    backdrop.querySelector(".danger-modal-close").onclick = () => cleanup(false);
+    backdrop.querySelector("[data-danger-confirm]").onclick = () => cleanup(true);
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(backdrop);
+    backdrop.querySelector("[data-danger-confirm]")?.focus({ preventScroll: true });
+  });
+}
 function requestDangerPassword({ title, message, passwordLabel }) {
   return new Promise((resolve) => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -1781,6 +1891,8 @@ async function clearOwnKnowledgeBase(btn) {
     toast(t("clearOwnKnowledgeDone", { count }));
     setKnowledgeImportStatus(out, true);
     await loadKnowledgeAccessSummary();
+    state.knowledgeBatchPage = 1;
+    await loadKnowledgeImportBatches();
   } catch (e) {
     if (!handleAPIError(e)) toast(e.message);
   } finally {
@@ -1821,10 +1933,11 @@ function toastKnowledgeImportResult(job) {
 async function finishKnowledgeImport(out) {
   setKnowledgeImportStatus(out, true);
   const jobID = String(out?.job_id || out?.id || "").trim();
-  if (!jobID) { toastKnowledgeImportResult(out); return out; }
+  if (!jobID) { toastKnowledgeImportResult(out); await loadKnowledgeImportBatches(); return out; }
   toast(t("importStarted"));
   const finalJob = await watchKnowledgeImportJob(jobID);
   toastKnowledgeImportResult(finalJob || out);
+  await loadKnowledgeImportBatches();
   return finalJob || out;
 }
 async function importKnowledgeText() {

@@ -2413,7 +2413,8 @@ func installSkillStepProcessEnv(action string, extraEnv map[string]string) func(
 }
 
 func installSkillStepProcessEnvForRun(runID, ownerID, action string, extraEnv map[string]string) func() {
-	if !classifySkillStepAction(action).UsesManagedProcessEnv() || len(extraEnv) == 0 {
+	actionKind := classifySkillStepAction(action)
+	if !actionKind.UsesManagedProcessEnv() && !actionKind.UsesLegacySessionProcessEnv() || len(extraEnv) == 0 {
 		return func() {}
 	}
 	waitStart := time.Now()

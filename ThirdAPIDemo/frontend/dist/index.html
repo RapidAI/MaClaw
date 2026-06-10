@@ -13,7 +13,7 @@
         <span class="brand-mark">M</span>
         <div>
           <h1>MaClaw 第三方 API Demo</h1>
-          <p>输入网关 URL 和 apikey，进入简单聊天界面。</p>
+          <p>输入网关 URL 和 API Key，进入聊天界面，可发送文字、图片、文件和语音。</p>
         </div>
       </div>
       <form id="connectForm" class="connect-form">
@@ -60,8 +60,15 @@
       </header>
       <div id="messages" class="messages" aria-live="polite"></div>
       <form id="chatForm" class="composer">
-        <textarea id="messageInput" rows="3" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
-        <button id="sendButton" type="submit">发送</button>
+        <div class="composer-main">
+          <textarea id="messageInput" rows="3" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+          <div id="attachmentList" class="attachment-list hidden"></div>
+        </div>
+        <div class="composer-actions">
+          <button id="attachButton" class="secondary-button" type="button">选择文件</button>
+          <button id="clearAttachmentsButton" class="secondary-button" type="button" disabled>清空附件</button>
+          <button id="sendButton" type="submit">发送</button>
+        </div>
       </form>
       <p id="chatStatus" class="status-text"></p>
     </section>

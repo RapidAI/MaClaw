@@ -808,6 +808,7 @@ func TestSkillLifecycleUploadNowUsesPackageViewForQuality(t *testing.T) {
 	}
 
 	var submittedYAML string
+	var submittedManifest string
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -839,29 +840,33 @@ func TestSkillLifecycleUploadNowUsesPackageViewForQuality(t *testing.T) {
 				return
 			}
 			for _, f := range zr.File {
-				if f.Name != "skill.yaml" {
+				if f.Name != "skill.yaml" && f.Name != "skill_package_manifest.json" {
 					continue
 				}
 				rc, err := f.Open()
 				if err != nil {
-					t.Errorf("Open(skill.yaml) error = %v", err)
+					t.Errorf("Open(%s) error = %v", f.Name, err)
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
-				yamlData, err := io.ReadAll(rc)
+				fileData, err := io.ReadAll(rc)
 				closeErr := rc.Close()
 				if err != nil {
-					t.Errorf("ReadAll(skill.yaml) error = %v", err)
+					t.Errorf("ReadAll(%s) error = %v", f.Name, err)
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
 				if closeErr != nil {
-					t.Errorf("Close(skill.yaml) error = %v", closeErr)
+					t.Errorf("Close(%s) error = %v", f.Name, closeErr)
 					http.Error(w, closeErr.Error(), http.StatusBadRequest)
 					return
 				}
-				submittedYAML = string(yamlData)
-				break
+				switch f.Name {
+				case "skill.yaml":
+					submittedYAML = string(fileData)
+				case "skill_package_manifest.json":
+					submittedManifest = string(fileData)
+				}
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"submission_id": "sub-upload-now"})
 		default:
@@ -906,6 +911,12 @@ func TestSkillLifecycleUploadNowUsesPackageViewForQuality(t *testing.T) {
 	}
 	if submittedYAML == "" {
 		t.Fatalf("submitted zip did not contain skill.yaml")
+	}
+	if submittedManifest == "" {
+		t.Fatalf("submitted zip did not contain skill_package_manifest.json")
+	}
+	if !strings.Contains(submittedManifest, `"skill_name": "upload-now-package-view"`) {
+		t.Fatalf("submitted manifest = %s, want skill name", submittedManifest)
 	}
 	if strings.Contains(filepath.ToSlash(submittedYAML), filepath.ToSlash(skillDir)) || !strings.Contains(submittedYAML, "{baseDir}/run.py") {
 		t.Fatalf("submitted skill.yaml = %s, want package-relative baseDir script without local path", submittedYAML)
@@ -1089,7 +1100,10 @@ func TestZipDirectoryExcludesRuntimeFiles(t *testing.T) {
 	if !seen["skill.yaml"] || !seen["README.md"] {
 		t.Fatalf("zip missing real skill files: %+v", seen)
 	}
-	for _, ignored := range []string{"upload_status.json", "quality_status.json", "skill_package_manifest.json", "skill.yaml.bak", ".patches.json", ".git/config", "__pycache__/tool.pyc", ".pytest_cache/README.md", "node_modules/pkg/x.js"} {
+	if !seen["skill_package_manifest.json"] {
+		t.Fatalf("zip missing generated package manifest: %+v", seen)
+	}
+	for _, ignored := range []string{"upload_status.json", "quality_status.json", "skill.yaml.bak", ".patches.json", ".git/config", "__pycache__/tool.pyc", ".pytest_cache/README.md", "node_modules/pkg/x.js"} {
 		if seen[ignored] {
 			t.Fatalf("zip included runtime file %s: %+v", ignored, seen)
 		}
@@ -1959,7 +1973,7 @@ func TestSkillLifecycleProcessMovesUploadTimeQualityFailureToBlocked(t *testing.
 	if len(items) != 1 || items[0].Status != skillUploadStatusBlocked || items[0].Attempts != 0 || items[0].NextAttemptAt != "" {
 		t.Fatalf("queue after upload-time quality failure = %+v", items)
 	}
-	if !strings.Contains(items[0].LastError, "quality gate") || !strings.Contains(items[0].LastError, "missing referenced local file") {
+	if !strings.Contains(items[0].LastError, "Upload blocked") || !strings.Contains(items[0].LastError, "Missing bundled files") {
 		t.Fatalf("LastError = %q", items[0].LastError)
 	}
 }

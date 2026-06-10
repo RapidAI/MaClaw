@@ -89,6 +89,10 @@ func ExtractRequirements(skill *corelib.NLSkillEntry, ctx ...*CheckContext) []Re
 	}
 
 	for _, env := range extractRequiredEnvNames(skill) {
+		if requiredEnvNameLooksLikeCommand(env) {
+			reqs = append(reqs, Requirement{Type: "command", Name: env, Source: "explicit"})
+			continue
+		}
 		req := Requirement{Type: "env", Name: env, Source: "explicit"}
 		if checkContextProvidesEnv(cc, env) {
 			req.Provided = true
@@ -160,6 +164,21 @@ func checkContextProvidesEnv(cc *CheckContext, name string) bool {
 		}
 	}
 	return false
+}
+
+func requiredEnvNameLooksLikeCommand(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	switch name {
+	case "python", "python3", "node", "npm", "npx", "pnpm", "yarn",
+		"git", "ffmpeg", "pandoc", "magick", "convert", "tesseract",
+		"xparse", "xparse-cli":
+		return true
+	default:
+		return false
+	}
 }
 
 // inferCommandRequirements scans bash step commands for system commands.

@@ -49,35 +49,8 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 }
 
 func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, loopCtx *LoopContext, resp *IMAgentResponse, workflowAgentLoop bool) {
-	if !workflowAgentLoop || h.getWorkflowEngine() == nil || msg.IsBackground || resp == nil || resp.HardExit || len(resp.Text) <= 50 {
-		return
-	}
-	ownerID := h.workflowPolicyOwnerID(msg.UserID, loopCtx)
-	if h.app != nil && h.app.workflowArtifactSaver != nil {
-		h.app.workflowArtifactSaver.SetCurrentUserID(ownerID)
-	}
-	if h.shouldRejectInvalidCodingTaskBreakdownOutput(h.getWorkflowEngine(), ownerID, resp.Text) {
-		log.Printf("[WorkflowEngine] post-loop doc capture rejected invalid coding task breakdown: user=%s owner=%s len=%d", msg.UserID, ownerID, len(resp.Text))
-		if h.reopenInvalidCodingTaskBreakdownForRepair(h.getWorkflowEngine(), ownerID) {
-			log.Printf("[WorkflowEngine] scheduled invalid coding task breakdown repair: user=%s owner=%s", msg.UserID, ownerID)
-			if h.app != nil && h.app.ctx != nil {
-				if _, err := h.app.continueAIAssistantWorkflowMessage(ownerID, invalidCodingTaskBreakdownFeedbackText(), ""); err != nil {
-					log.Printf("[WorkflowEngine] failed to auto-continue invalid coding task breakdown repair: user=%s owner=%s err=%v", msg.UserID, ownerID, err)
-				}
-			}
-		}
-		return
-	}
-	if phaseID, advResp, err := h.getWorkflowEngine().SavePhaseOutputAndMaybeAdvance(ownerID, resp.Text); err != nil {
-		log.Printf("[WorkflowEngine] post-loop doc capture failed: user=%s owner=%s err=%v", msg.UserID, ownerID, err)
-	} else if phaseID != "" {
-		h.recordWorkflowPhaseCompletedExperience(msg, loopCtx, phaseID)
-		if cb := h.getWorkflowEngine().GetCallbacks(); cb != nil {
-			_ = cb.EmitDocUpdate(ownerID, phaseID, resp.Text)
-			log.Printf("[WorkflowEngine] post-loop doc capture: emitted doc_update for user=%s owner=%s phase=%s len=%d", msg.UserID, ownerID, phaseID, len(resp.Text))
-		}
-		h.applyWorkflowAutoAdvanceResponse(ownerID, advResp, msg.Platform)
-	}
+	// V1 engine removed - post-loop doc capture is now handled by V2 workflow engine.
+	return
 }
 
 func (h *IMMessageHandler) recordAgentLoopTerminalExperience(loopCtx *LoopContext, resp *IMAgentResponse) {
@@ -164,37 +137,5 @@ func (h *IMMessageHandler) recordExperienceLifecycleEvent(event lifecycle.Event)
 }
 
 func (h *IMMessageHandler) applyWorkflowAutoAdvanceResponse(userID string, advResp *workflow.WorkflowResponse, platform string) {
-	if advResp == nil {
-		return
-	}
-	engine := h.getWorkflowEngine()
-	if engine == nil {
-		return
-	}
-	if advResp.ShowForm && advResp.FormSchema != nil {
-		formResp := h.workflowFormResponse(engine, userID, platform, advResp)
-		if formResp != nil && formResp.Text != "" {
-			if cb := engine.GetCallbacks(); cb != nil {
-				_ = cb.SendTextToUser(userID, formResp.Text)
-			}
-		}
-		return
-	}
-	if advResp.Text != "" {
-		if cb := engine.GetCallbacks(); cb != nil {
-			_ = cb.SendTextToUser(userID, advResp.Text)
-		}
-	}
-	if advResp.Complete {
-		if cb := engine.GetCallbacks(); cb != nil {
-			if adapter, ok := cb.(*GUIWorkflowAdapter); ok {
-				adapter.ResetSuggestMaximize(userID)
-			}
-		}
-		return
-	}
-	if advResp.RunAgentLoop && advResp.PhasePrompt != "" {
-		h.stashedPhasePrompt.Store(userID, advResp.PhasePrompt)
-		h.workflowAgentLoopMarker.Store(userID, true)
-	}
+	return
 }

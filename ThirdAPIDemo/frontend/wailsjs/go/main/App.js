@@ -6,8 +6,20 @@ export function Connect(arg1) {
   return window['go']['main']['App']['Connect'](arg1);
 }
 
+export function Download(arg1) {
+  return window['go']['main']['App']['Download'](arg1);
+}
+
+export function ExecuteToolMessage(arg1) {
+  return window['go']['main']['App']['ExecuteToolMessage'](arg1);
+}
+
 export function Poll(arg1) {
   return window['go']['main']['App']['Poll'](arg1);
+}
+
+export function SelectUploadFiles(arg1) {
+  return window['go']['main']['App']['SelectUploadFiles'](arg1);
 }
 
 export function Send(arg1) {

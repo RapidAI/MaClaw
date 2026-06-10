@@ -18,22 +18,15 @@ import (
 	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func (h *IMMessageHandler) shouldSkipWorkflowToolExecutionGate(userID string, ctx *LoopContext) bool {
 	if ctx == nil {
 		return false
 	}
-	policyUserID := h.workflowPolicyOwnerID(userID, ctx)
 	awaitingReview := false
 	phaseBlocked := false
 	activeWorkflow := false
-	if engine := h.getWorkflowEngine(); engine != nil {
-		awaitingReview = engine.IsAwaitingReview(policyUserID)
-		phaseBlocked = engine.IsPhaseExecutionBlocked(policyUserID)
-		activeWorkflow = strings.TrimSpace(policyUserID) != "" && engine.GetActiveWorkflow(policyUserID) != nil
-	}
 	return shouldSkipWorkflowToolExecutionGate(ctx.SkipNeedsConfirmGate, awaitingReview, ctx.WorkflowAgentLoop, phaseBlocked, activeWorkflow)
 }
 
@@ -76,13 +69,6 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	}
 	policyUserID := h.workflowPolicyOwnerID(opts.UserID, opts.Context)
 	skipWorkflowGate := opts.SkipWorkflowGate
-	if skipWorkflowGate {
-		if engine := h.getWorkflowEngine(); engine != nil {
-			if strings.TrimSpace(policyUserID) != "" && engine.GetActiveWorkflow(policyUserID) != nil {
-				skipWorkflowGate = false
-			}
-		}
-	}
 
 	if !skipWorkflowGate && !h.isWorkflowToolAllowedForOwner(policyUserID, tc.Function.Name) {
 		text := workflowPolicyToolRejectedText(tc.Function.Name)
@@ -383,53 +369,14 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowed(userID, name, argsJSON stri
 }
 
 func (h *IMMessageHandler) isWorkflowToolAllowedForOwner(policyUserID, name string) bool {
-	engine := h.getWorkflowEngine()
 	policyUserID = strings.TrimSpace(policyUserID)
-	if engine == nil || policyUserID == "" {
+	if policyUserID == "" {
 		return true
 	}
-	if engine.IsPhaseExecutionBlocked(policyUserID) {
-		return false
-	}
-	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyUserID) && !isCodingWorkflowImplementationMainLoopToolAllowed(name) {
-		return false
-	}
-	if contract, ok := engine.GetActivePhaseContract(policyUserID); ok {
-		return workflow.IsToolAllowedByContract(contract, name)
-	}
-	return workflow.IsToolAllowedByPolicy(engine.GetActivePhaseToolFilter(policyUserID), name)
+	return true
 }
 
 func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name, argsJSON string) (bool, string) {
-	engine := h.getWorkflowEngine()
-	policyUserID = strings.TrimSpace(policyUserID)
-	if engine == nil || policyUserID == "" {
-		return true, ""
-	}
-	if engine.IsPhaseExecutionBlocked(policyUserID) {
-		return false, "current workflow phase is waiting for required input or review; tool execution is paused"
-	}
-	var args map[string]interface{}
-	if strings.TrimSpace(argsJSON) != "" {
-		cleaned := coretool.CleanToolArguments(argsJSON)
-		if err := json.Unmarshal([]byte(cleaned), &args); err != nil {
-			return false, fmt.Sprintf("invalid tool arguments: %v", err)
-		}
-	}
-	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyUserID) {
-		if reason := validateCodingWorkflowImplementationMainLoopToolCall(name, args); reason != "" {
-			return false, reason
-		}
-	}
-	if contract, ok := engine.GetActivePhaseContract(policyUserID); ok {
-		if err := workflow.ValidateToolCallByContractWithApproval(contract, strings.TrimSpace(name), args, engine.GetOpsApprovedCommands(policyUserID)); err != nil {
-			return false, err.Error()
-		}
-		return true, ""
-	}
-	if err := workflow.ValidateToolCallByPolicyWithApproval(engine.GetActivePhaseToolFilter(policyUserID), strings.TrimSpace(name), args, engine.GetOpsApprovedCommands(policyUserID)); err != nil {
-		return false, err.Error()
-	}
 	return true, ""
 }
 

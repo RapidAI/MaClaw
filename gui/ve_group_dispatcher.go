@@ -6,9 +6,11 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -190,20 +192,34 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 	}
 
 	// Group-executor LLM rounds may produce assistant content before choosing
-	// tool calls. That content is part of the agent loop, not a user-visible VE
-	// answer. Publish only the final IM response after the handler has resolved
-	// all tool calls.
+	// tool calls. Stream deltas to the frontend in real-time so the user sees
+	// progressive output instead of a static "思考中..." indicator.
 
 	// hubSyncCh serializes Hub sync messages to avoid goroutine explosion and
 	// preserve final response ordering.
 
-	resp := handler.HandleIMMessageWithProgressAndStream(imMsg, nil, nil, nil, nil)
+	var streamedAny int32
+	var onToken llm.TokenCallback
+	if localDispatch {
+		onToken = func(delta string) {
+			if delta == "" {
+				return
+			}
+			atomic.StoreInt32(&streamedAny, 1)
+			d.emitStreamToFrontend(sess.SessionID, delta)
+		}
+	}
+
+	resp := handler.HandleIMMessageWithProgressAndStream(imMsg, nil, onToken, nil, nil)
 	if resp != nil {
 		chunk := strings.TrimSpace(resp.Text)
 		if chunk != "" {
 			if localDispatch {
-				// Emit directly to frontend after tool resolution.
-				d.emitStreamToFrontend(sess.SessionID, chunk)
+				// Only send the final response as a chunk if streaming didn't already
+				// deliver it (e.g. non-streaming fallback or tool-only rounds).
+				if atomic.LoadInt32(&streamedAny) == 0 {
+					d.emitStreamToFrontend(sess.SessionID, chunk)
+				}
 				// Queue for ordered Hub sync (single goroutine, preserves order)
 				select {
 				case hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk, Content: chunk}:
@@ -236,7 +252,12 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 			})
 		}
 	} else if localDispatch {
-		// No response - still need to close the sync channel.
+		// No response — if streaming was in progress, close it so the frontend
+		// doesn't hang in streaming state with a blinking cursor.
+		if atomic.LoadInt32(&streamedAny) != 0 {
+			d.emitStreamToFrontend(sess.SessionID, "")
+		}
+		// Still need to close the sync channel.
 		finishHubSync()
 	}
 }

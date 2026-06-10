@@ -1955,6 +1955,10 @@ func (s *Store) recallDynamicCore(query string, category Category, projectPath s
 // policy is passed in via opts.excludeWhenNoCategory, making the engine
 // agnostic to caller-specific filtering needs.
 func (s *Store) recallDynamicCoreWithOptions(query string, category Category, projectPath string, opts recallFilterOptions, ownerID ...string) []Entry {
+	// Single time reference for the entire recall operation — ensures consistent
+	// temporal scoring, demotion, and recency calculations across all stages.
+	now := time.Now()
+
 	// Query Expand: extract entities for multi-query BM25 + tokens for tag matching.
 	expanded := ExpandQuery(query)
 
@@ -1976,7 +1980,7 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 	if s.semanticGraph != nil {
 		temporalMode, asOf := semanticTemporalOptionsFromQuery(query)
 		for _, hit := range s.semanticGraph.SearchWithOptions(expanded.Entities, SemanticSearchOptions{
-			Now:             time.Now(),
+			Now:             now,
 			AsOf:            asOf,
 			OwnerID:         firstOwnerID(ownerID...),
 			ProjectPath:     projectPath,
@@ -1997,7 +2001,7 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 	var derivedFacts []DerivedFact
 	if s.inferenceEngine != nil && len(expanded.Entities) > 0 {
 		derivedFacts = s.inferenceEngine.Infer(expanded.Entities, InferenceOptions{
-			Now:             time.Now(),
+			Now:             now,
 			OwnerID:         firstOwnerID(ownerID...),
 			ProjectPath:     projectPath,
 			MaxDerived:      10,
@@ -2019,7 +2023,6 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 	const maxTokens = 2500
 
 	projectLower := semanticNormalizeProjectPath(projectPath)
-	now := time.Now()
 
 	// Extract optional ownerID for multi-tenant filtering.
 	filterOwner := ""
@@ -2121,7 +2124,31 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 	})
 
 	// 1-hop graph expansion: expand top candidates to discover related entries.
+	preExpandLen := len(candidates)
 	candidates = s.graphExpand(candidates, graphExpandSeeds)
+
+	// Apply tag/alias boost to newly expanded entries — they only have a
+	// graph-derived score and missed the initial boost passes.
+	if len(candidates) > preExpandLen {
+		// Pre-compute alias slice once outside loop.
+		var aliasOnly []string
+		if s.aliasIndex != nil && len(aliasExpanded) > len(expanded.Entities) {
+			aliasOnly = aliasExpanded[len(expanded.Entities):]
+		}
+		for i := preExpandLen; i < len(candidates); i++ {
+			if len(expanded.Entities) > 0 {
+				candidates[i].score += tagExactMatchBoost(candidates[i].entry, expanded.Entities)
+			}
+			if len(aliasOnly) > 0 {
+				aliasBoost := tagExactMatchBoost(candidates[i].entry, aliasOnly)
+				if aliasBoost > AliasMatchBoost {
+					aliasBoost = AliasMatchBoost
+				}
+				candidates[i].score += aliasBoost
+			}
+			candidates[i].score += candidates[i].entry.Stability.StabilityBoost()
+		}
+	}
 
 	// Re-apply the full dynamic visibility contract after graph expansion: graph
 	// edges can cross owner, project, or category boundaries that the seed set had
@@ -2181,15 +2208,29 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 // entry/token limits. Used by CursorPaginator to cache the full candidate
 // set for subsequent page slicing.
 func (s *Store) recallScoredForPagination(query string, category Category, projectPath string, ownerID string) []recallScored {
+	// Single time reference for the entire operation.
+	now := time.Now()
+
 	// Query Expand: extract entities for multi-query BM25 + tokens for tag matching.
 	expanded := ExpandQuery(query)
-	bm25Scores := s.multiQueryBM25(query, expanded.Entities)
+
+	// Alias expansion: augment entities with known aliases from the AliasIndex.
+	// Mirrors recallDynamicCoreWithOptions to bridge the write-recall semantic gap.
+	aliasExpanded := expanded.Entities
+	if s.aliasIndex != nil && len(expanded.Entities) > 0 {
+		aliases := s.aliasIndex.Expand(expanded.Entities)
+		if len(aliases) > 0 {
+			aliasExpanded = append(append([]string(nil), expanded.Entities...), aliases...)
+		}
+	}
+
+	bm25Scores := s.multiQueryBM25(query, aliasExpanded)
 	vecScores := s.vecIndex.score(s.queryEmbeddingCached(query))
 	semanticScores := map[string]float64{}
 	if s.semanticGraph != nil {
 		temporalMode, asOf := semanticTemporalOptionsFromQuery(query)
 		for _, hit := range s.semanticGraph.SearchWithOptions(expanded.Entities, SemanticSearchOptions{
-			Now:             time.Now(),
+			Now:             now,
 			AsOf:            asOf,
 			OwnerID:         ownerID,
 			ProjectPath:     projectPath,
@@ -2206,7 +2247,7 @@ func (s *Store) recallScoredForPagination(query string, category Category, proje
 	// Multi-hop inference: derive implicit facts.
 	if s.inferenceEngine != nil && len(expanded.Entities) > 0 {
 		derivedFacts := s.inferenceEngine.Infer(expanded.Entities, InferenceOptions{
-			Now:             time.Now(),
+			Now:             now,
 			OwnerID:         ownerID,
 			ProjectPath:     projectPath,
 			MaxDerived:      10,
@@ -2226,7 +2267,6 @@ func (s *Store) recallScoredForPagination(query string, category Category, proje
 	defer s.mu.RUnlock()
 
 	projectLower := semanticNormalizeProjectPath(projectPath)
-	now := time.Now()
 
 	type rawCandidate struct {
 		entry Entry
@@ -2280,6 +2320,21 @@ func (s *Store) recallScoredForPagination(query string, category Category, proje
 		}
 	}
 
+	// Alias match boost: when alias expansion produced additional entities
+	// that match an entry's tag, apply a moderate boost (+2.0).
+	if s.aliasIndex != nil && len(aliasExpanded) > len(expanded.Entities) {
+		aliasOnly := aliasExpanded[len(expanded.Entities):]
+		for i := range candidates {
+			boost := tagExactMatchBoost(candidates[i].entry, aliasOnly)
+			if boost > 0 {
+				if boost > AliasMatchBoost {
+					boost = AliasMatchBoost
+				}
+				candidates[i].score += boost
+			}
+		}
+	}
+
 	// Stability boost/penalty.
 	for i := range candidates {
 		candidates[i].score += candidates[i].entry.Stability.StabilityBoost()
@@ -2290,7 +2345,30 @@ func (s *Store) recallScoredForPagination(query string, category Category, proje
 	})
 
 	// 1-hop graph expansion.
+	preExpandLen := len(candidates)
 	candidates = s.graphExpand(candidates, graphExpandSeeds)
+
+	// Apply tag/alias/stability boost to newly expanded entries.
+	if len(candidates) > preExpandLen {
+		// Pre-compute alias slice once outside loop.
+		var aliasOnly []string
+		if s.aliasIndex != nil && len(aliasExpanded) > len(expanded.Entities) {
+			aliasOnly = aliasExpanded[len(expanded.Entities):]
+		}
+		for i := preExpandLen; i < len(candidates); i++ {
+			if len(expanded.Entities) > 0 {
+				candidates[i].score += tagExactMatchBoost(candidates[i].entry, expanded.Entities)
+			}
+			if len(aliasOnly) > 0 {
+				aliasBoost := tagExactMatchBoost(candidates[i].entry, aliasOnly)
+				if aliasBoost > AliasMatchBoost {
+					aliasBoost = AliasMatchBoost
+				}
+				candidates[i].score += aliasBoost
+			}
+			candidates[i].score += candidates[i].entry.Stability.StabilityBoost()
+		}
+	}
 
 	// Re-apply visibility filters after graph expansion.
 	candidates = filterRecallDynamicCandidatesWithExclusions(candidates, category, projectLower, ownerID, proactiveRecallExcludeCategories)

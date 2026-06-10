@@ -13,6 +13,7 @@ const (
 	agentViewFieldTypeSelect        agentViewFieldType = "select"
 	agentViewFieldTypeMultiSelect   agentViewFieldType = "multiselect"
 	agentViewFieldTypeDate          agentViewFieldType = "date"
+	agentViewFieldTypeDateTime      agentViewFieldType = "datetime"
 	agentViewFieldTypeFile          agentViewFieldType = "file"
 	agentViewFieldTypeDirectory     agentViewFieldType = "directory"
 	agentViewFieldTypeArrayTable    agentViewFieldType = "array_table"
@@ -40,6 +41,8 @@ func normalizeAgentViewFieldType(fieldType string) agentViewFieldType {
 		return agentViewFieldTypeMultiSelect
 	case agentViewFieldTypeDate:
 		return agentViewFieldTypeDate
+	case agentViewFieldTypeDateTime:
+		return agentViewFieldTypeDateTime
 	case agentViewFieldTypeFile:
 		return agentViewFieldTypeFile
 	case agentViewFieldTypeDirectory:

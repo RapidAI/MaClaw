@@ -216,6 +216,16 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 			isOwnMessage = true
 		}
 	}
+	// Also check VE 1:1 handler sessions — responses are streamed locally and
+	// then synced to Hub; the Hub echo must not duplicate frontend display.
+	if !isOwnMessage {
+		if veHandler := c.digitalEmployeeMessageHandler(); veHandler != nil && veHandler.IsActiveSession(sessionID) {
+			localMachineID := veHandler.getLocalAgentID()
+			if localMachineID != "" && veGroupParticipantIdentityMatches(envelope.Message.FromID, localMachineID) {
+				isOwnMessage = true
+			}
+		}
+	}
 
 	switch envelope.Message.Kind {
 	case a2a.MessageStreamChunk:

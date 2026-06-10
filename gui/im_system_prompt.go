@@ -13,7 +13,6 @@ import (
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
-	cworkflow "github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func (h *IMMessageHandler) buildSystemPrompt() string {
@@ -46,11 +45,9 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	}
 	resumeElapsed := time.Since(resumeStart)
 
-	if workflowAgentLoop && h.getWorkflowEngine() != nil {
+	if workflowAgentLoop {
 		if stashed, ok := h.stashedPhasePrompt.LoadAndDelete(msg.UserID); ok {
 			systemPrompt += "\n" + stashed.(string)
-		} else if phasePrompt := h.getWorkflowEngine().BuildPhasePrompt(msg.UserID); phasePrompt != "" {
-			systemPrompt += "\n" + phasePrompt
 		}
 	} else {
 		h.stashedPhasePrompt.Delete(msg.UserID)
@@ -539,11 +536,6 @@ func (h *IMMessageHandler) proactiveExperienceProviderForUser(userID string) lif
 		if len(skills) > 0 {
 			providers = append(providers, cskill.NewExperienceProvider(skills))
 			providers = append(providers, cskill.NewGovernanceDraftProvider(skills, cskill.SkillMaintenancePlanOptions{MaxActions: 12}))
-		}
-	}
-	if engine := h.getWorkflowEngine(); engine != nil {
-		if ws := engine.GetActiveWorkflow(strings.TrimSpace(userID)); ws != nil {
-			providers = append(providers, cworkflow.NewExperienceProvider(ws))
 		}
 	}
 	return lifecycle.NewCompositeProvider(providers...)

@@ -1,0 +1,266 @@
+package v2
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// TaskRunStatus is the result status of a single task execution.
+type TaskRunStatus string
+
+const (
+	TaskPassed  TaskRunStatus = "passed"
+	TaskFailed  TaskRunStatus = "failed"
+	TaskSkipped TaskRunStatus = "skipped"
+)
+
+// TaskRunResult is the outcome of running a single task.
+type TaskRunResult struct {
+	TaskIndex     int           `json:"task_index"`
+	Title         string        `json:"title"`
+	Status        TaskRunStatus `json:"status"`
+	Summary       string        `json:"summary,omitempty"`
+	FilesCreated  []string      `json:"files_created,omitempty"`
+	FilesModified []string      `json:"files_modified,omitempty"`
+	Error         string        `json:"error,omitempty"`
+	Duration      time.Duration `json:"duration"`
+}
+
+// TaskRunnerConfig holds configuration for the task runner.
+type TaskRunnerConfig struct {
+	ProjectPath     string
+	RequirementsCtx string // truncated requirements summary
+	DesignCtx       string // truncated design summary
+	MaxRetries      int    // per-task retry limit (default 2)
+}
+
+// SubAgentFunc is the function signature for running a single task with a SubAgent.
+// The caller provides the implementation (GUI provides the real SubAgent, tests provide mocks).
+type SubAgentFunc func(ctx context.Context, task *TaskItem, config TaskRunnerConfig, onToken func(string), onProgress func(string)) *TaskRunResult
+
+// TaskRunner orchestrates the execution of parsed tasks using SubAgents.
+type TaskRunner struct {
+	config       TaskRunnerConfig
+	subAgentFunc SubAgentFunc
+	results      []TaskRunResult
+}
+
+func NewTaskRunner(config TaskRunnerConfig, subAgentFunc SubAgentFunc) *TaskRunner {
+	if config.MaxRetries <= 0 {
+		config.MaxRetries = 2
+	}
+	return &TaskRunner{
+		config:       config,
+		subAgentFunc: subAgentFunc,
+	}
+}
+
+// RunAll executes all tasks sequentially, respecting dependencies.
+// Returns results for each task.
+func (r *TaskRunner) RunAll(ctx context.Context, tasks []*TaskItem, onToken func(string), onProgress func(string)) []TaskRunResult {
+	r.results = make([]TaskRunResult, len(tasks))
+
+	for i, task := range tasks {
+		select {
+		case <-ctx.Done():
+			// Mark remaining as skipped
+			for j := i; j < len(tasks); j++ {
+				r.results[j] = TaskRunResult{
+					TaskIndex: tasks[j].Index,
+					Title:     tasks[j].Title,
+					Status:    TaskSkipped,
+					Error:     "cancelled",
+				}
+			}
+			return r.results
+		default:
+		}
+
+		// Check dependencies
+		if !r.dependenciesMet(task, tasks) {
+			r.results[i] = TaskRunResult{
+				TaskIndex: task.Index,
+				Title:     task.Title,
+				Status:    TaskSkipped,
+				Error:     "dependency not met",
+			}
+			if onProgress != nil {
+				onProgress(fmt.Sprintf("⏭️ T%d: %s — 跳过（依赖未满足）", task.Index, task.Title))
+			}
+			continue
+		}
+
+		if onProgress != nil {
+			onProgress(fmt.Sprintf("▶️ T%d/%d: %s", task.Index, len(tasks), task.Title))
+		}
+
+		result := r.runWithRetry(ctx, task, onToken, onProgress)
+		r.results[i] = result
+
+		if onProgress != nil {
+			icon := "✅"
+			if result.Status == TaskFailed {
+				icon = "❌"
+			}
+			onProgress(fmt.Sprintf("%s T%d: %s — %s", icon, task.Index, task.Title, result.Status))
+		}
+	}
+
+	return r.results
+}
+
+// runWithRetry runs a task with retries on failure.
+func (r *TaskRunner) runWithRetry(ctx context.Context, task *TaskItem, onToken func(string), onProgress func(string)) TaskRunResult {
+	var lastResult *TaskRunResult
+
+	for attempt := 0; attempt <= r.config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			if onProgress != nil {
+				onProgress(fmt.Sprintf("🔄 T%d: 重试 (%d/%d)", task.Index, attempt, r.config.MaxRetries))
+			}
+		}
+
+		start := time.Now()
+		result := r.subAgentFunc(ctx, task, r.config, onToken, onProgress)
+		if result == nil {
+			result = &TaskRunResult{
+				TaskIndex: task.Index,
+				Title:     task.Title,
+				Status:    TaskFailed,
+				Error:     "SubAgent returned nil",
+			}
+		}
+		result.Duration = time.Since(start)
+		lastResult = result
+
+		if result.Status == TaskPassed {
+			return *result
+		}
+
+		// Don't retry on cancellation
+		if ctx.Err() != nil {
+			result.Status = TaskSkipped
+			result.Error = "cancelled"
+			return *result
+		}
+	}
+
+	return *lastResult
+}
+
+// dependenciesMet checks if all dependencies of a task have passed.
+func (r *TaskRunner) dependenciesMet(task *TaskItem, allTasks []*TaskItem) bool {
+	for _, depIdx := range task.DependsOn {
+		found := false
+		for i, t := range allTasks {
+			if t.Index == depIdx {
+				if i >= len(r.results) || r.results[i].Status != TaskPassed {
+					return false
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// FinalReport generates a human-readable summary of all task results.
+func (r *TaskRunner) FinalReport() string {
+	var sb strings.Builder
+	sb.WriteString("## 执行报告\n\n")
+
+	passed, failed, skipped := 0, 0, 0
+	for _, result := range r.results {
+		switch result.Status {
+		case TaskPassed:
+			passed++
+		case TaskFailed:
+			failed++
+		case TaskSkipped:
+			skipped++
+		}
+	}
+
+	sb.WriteString(fmt.Sprintf("**总计**: %d 个任务 | ✅ %d 通过 | ❌ %d 失败 | ⏭️ %d 跳过\n\n", len(r.results), passed, failed, skipped))
+
+	for _, result := range r.results {
+		icon := "✅"
+		switch result.Status {
+		case TaskFailed:
+			icon = "❌"
+		case TaskSkipped:
+			icon = "⏭️"
+		}
+		sb.WriteString(fmt.Sprintf("%s **T%d: %s** (%s, %s)\n", icon, result.TaskIndex, result.Title, result.Status, result.Duration.Round(time.Second)))
+		if result.Error != "" {
+			sb.WriteString(fmt.Sprintf("   错误: %s\n", result.Error))
+		}
+		if result.Summary != "" {
+			sb.WriteString(fmt.Sprintf("   摘要: %s\n", result.Summary))
+		}
+	}
+
+	return sb.String()
+}
+
+// --- SubAgent security helpers ---
+
+// ValidateWritePath checks if a write operation targets a path within the project.
+func ValidateWritePath(targetPath, projectPath string) error {
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return fmt.Errorf("invalid target path: %w", err)
+	}
+	absProject, err := filepath.Abs(projectPath)
+	if err != nil {
+		return fmt.Errorf("invalid project path: %w", err)
+	}
+	rel, err := filepath.Rel(absProject, absTarget)
+	if err != nil {
+		return fmt.Errorf("cannot determine relative path: %w", err)
+	}
+	if strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("write path %s is outside project directory %s", targetPath, projectPath)
+	}
+	return nil
+}
+
+// EnsureProjectDir creates the project directory if it doesn't exist.
+func EnsureProjectDir(projectPath string) error {
+	info, err := os.Stat(projectPath)
+	if err == nil && info.IsDir() {
+		return nil
+	}
+	log.Printf("[workflow-v2] creating project directory: %s", projectPath)
+	return os.MkdirAll(projectPath, 0o755)
+}
+
+// IsDangerousCommand checks if a bash command is destructive.
+func IsDangerousCommand(cmd string) bool {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	dangerous := []string{
+		"rm -rf /",
+		"rm -rf /*",
+		"rmdir /s /q c:",
+		"format c:",
+		"del /s /q c:",
+		"rd /s /q c:",
+		"mkfs",
+		"> /dev/sda",
+	}
+	for _, d := range dangerous {
+		if strings.Contains(lower, d) {
+			return true
+		}
+	}
+	return false
+}

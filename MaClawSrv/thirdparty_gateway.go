@@ -2,34 +2,40 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
-	"encoding/json"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
 
 const (
-	srvThirdPartyProtocolVersion = "1"
+	srvThirdPartyProtocolVersion = coreim.ThirdPartyProtocolVersion
 	srvThirdPartyRuntimeKey      = "maclawsrv:im:thirdparty"
 	srvThirdPartySessionAgent    = "default"
-	srvThirdPartyPollTimeoutSec  = 20
-	srvThirdPartyMaxTimeoutSec   = 60
-	srvThirdPartyMaxBatchSize    = 20
-	srvThirdPartyMaxLimit        = 100
-	srvThirdPartyMaxTextChars    = 20000
+	srvThirdPartyPollTimeoutSec  = coreim.ThirdPartyPollTimeoutSec
+	srvThirdPartyMaxTimeoutSec   = coreim.ThirdPartyMaxTimeoutSec
+	srvThirdPartyMaxBatchSize    = coreim.ThirdPartyMaxBatchSize
+	srvThirdPartyMaxLimit        = coreim.ThirdPartyMaxPollLimit
+	srvThirdPartyMaxTextChars    = coreim.ThirdPartyMaxTextChars
+	srvThirdPartyMaxBodyBytes    = coreim.ThirdPartyMaxBodyBytes
+	srvThirdPartyMaxMediaBytes   = coreim.ThirdPartyMaxMediaBytes
+	srvThirdPartyMaxMediaObjects = 500
 	srvThirdPartyMaxStoredMsgs   = 500
 	srvThirdPartyMaxSeenEvents   = 2000
-	srvThirdPartyMaxIDChars      = 128
-	srvThirdPartyMaxAckIDs       = 100
+	srvThirdPartyMaxAckIDs       = coreim.ThirdPartyMaxAckIDs
 )
 
 type srvThirdPartyGatewayManager struct {
@@ -38,6 +44,7 @@ type srvThirdPartyGatewayManager struct {
 	mu               sync.Mutex
 	clients          map[string]*srvThirdPartyClientState
 	runtimeInstances map[string]srvThirdPartyRuntimeInstance
+	media            map[string]*srvThirdPartyMediaObject
 }
 
 type srvThirdPartyRuntimeInstance struct {
@@ -54,56 +61,45 @@ type srvThirdPartyClientState struct {
 	Notify    chan struct{}
 }
 
+type srvThirdPartyMediaObject struct {
+	Principal      agentservice.Principal
+	ClientID       string
+	ID             string
+	Token          string
+	Type           string
+	FileName       string
+	MimeType       string
+	SizeBytes      int64
+	DurationMs     int64
+	Data           []byte
+	Uploaded       bool
+	CreatedAt      time.Time
+	LastAccessedAt time.Time
+}
+
 type srvThirdPartyPrincipal struct {
 	Principal agentservice.Principal
 	Config    corelib.AppConfig
 }
 
-type srvThirdPartyHandshakeRequest struct {
-	ClientID string `json:"clientId"`
-}
+type srvThirdPartyHandshakeRequest = coreim.ThirdPartyHandshakeRequest
 
-type srvThirdPartyIncomingRequest struct {
-	ClientID       string                   `json:"clientId"`
-	EventID        string                   `json:"eventId"`
-	ConversationID string                   `json:"conversationId"`
-	User           srvThirdPartyUser        `json:"user"`
-	Message        srvThirdPartyMessageBody `json:"message"`
-	Metadata       map[string]string        `json:"metadata,omitempty"`
-}
+type srvThirdPartyIncomingRequest = coreim.ThirdPartyIncomingRequest
 
-type srvThirdPartyUser struct {
-	ID          string `json:"id,omitempty"`
-	DisplayName string `json:"displayName,omitempty"`
-}
+type srvThirdPartyUser = coreim.ThirdPartyUserRef
 
-type srvThirdPartyMessageBody struct {
-	ID       string `json:"id,omitempty"`
-	Type     string `json:"type,omitempty"`
-	Text     string `json:"text,omitempty"`
-	FileName string `json:"fileName,omitempty"`
-}
+type srvThirdPartyMessageBody = coreim.ThirdPartyMessagePayload
 
-type srvThirdPartyAckRequest struct {
-	ClientID   string   `json:"clientId"`
-	MessageIDs []string `json:"messageIds"`
-	Status     string   `json:"status,omitempty"`
-}
+type srvThirdPartyMessageMediaRef = coreim.ThirdPartyMediaReference
 
-type srvThirdPartyOutgoingMessage struct {
-	ID             string            `json:"id"`
-	ReplyTo        string            `json:"replyTo,omitempty"`
-	ClientID       string            `json:"clientId"`
-	ConversationID string            `json:"conversationId,omitempty"`
-	Type           string            `json:"type"`
-	Text           string            `json:"text,omitempty"`
-	CreatedAt      int64             `json:"createdAt"`
-	Metadata       map[string]string `json:"metadata,omitempty"`
-	Cursor         string            `json:"cursor"`
-}
+type srvThirdPartyAckRequest = coreim.ThirdPartyAckRequest
+
+type srvThirdPartyToolResultRequest = coreim.ThirdPartyToolResultRequest
+
+type srvThirdPartyOutgoingMessage = coreim.ThirdPartyOutgoingMessage
 
 func newSrvThirdPartyGatewayManager(svc *agentservice.Service) *srvThirdPartyGatewayManager {
-	return &srvThirdPartyGatewayManager{svc: svc, clients: map[string]*srvThirdPartyClientState{}, runtimeInstances: map[string]srvThirdPartyRuntimeInstance{}}
+	return &srvThirdPartyGatewayManager{svc: svc, clients: map[string]*srvThirdPartyClientState{}, runtimeInstances: map[string]srvThirdPartyRuntimeInstance{}, media: map[string]*srvThirdPartyMediaObject{}}
 }
 
 func (s *HTTPServer) handleThirdPartyGatewayHealth(w http.ResponseWriter, r *http.Request) {
@@ -111,13 +107,7 @@ func (s *HTTPServer) handleThirdPartyGatewayHealth(w http.ResponseWriter, r *htt
 		writeThirdPartyGatewayError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":              true,
-		"requestId":       newThirdPartyGatewayRequestID(),
-		"status":          "connected",
-		"protocolVersion": srvThirdPartyProtocolVersion,
-		"serverTime":      time.Now().UnixMilli(),
-	})
+	writeJSON(w, http.StatusOK, coreim.NewThirdPartyGatewayHealthResponse(newThirdPartyGatewayRequestID(), time.Now().UnixMilli()))
 }
 
 func (s *HTTPServer) handleThirdPartyGatewayHandshake(w http.ResponseWriter, r *http.Request) {
@@ -133,28 +123,81 @@ func (s *HTTPServer) handleThirdPartyGatewayHandshake(w http.ResponseWriter, r *
 	if !decodeThirdPartyGatewayJSON(w, r, &req) {
 		return
 	}
-	clientID := normalizeThirdPartyGatewayID(req.ClientID)
-	if err := validateThirdPartyGatewayID("clientId", clientID); err != nil {
+	if err := coreim.NormalizeThirdPartyHandshakeRequest(&req); err != nil {
 		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	clientID := req.ClientID
 	s.thirdPartyIM.ensureClient(thirdPartyClientKey(tp.Principal, clientID))
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":              true,
-		"requestId":       newThirdPartyGatewayRequestID(),
-		"channelId":       "thirdparty:" + clientID,
-		"protocolVersion": srvThirdPartyProtocolVersion,
-		"serverTime":      time.Now().UnixMilli(),
-		"mode":            "maclawsrv",
-		"capabilities":    []string{"text", "long_poll", "ack", "idempotency"},
-		"poll": map[string]int{
-			"recommendedTimeoutSec": srvThirdPartyPollTimeoutSec,
-			"maxTimeoutSec":         srvThirdPartyMaxTimeoutSec,
-			"defaultLimit":          srvThirdPartyMaxBatchSize,
-			"maxLimit":              srvThirdPartyMaxLimit,
-		},
-		"limits": map[string]int{"maxTextChars": srvThirdPartyMaxTextChars},
-	})
+	writeJSON(w, http.StatusOK, coreim.NewThirdPartyGatewayHandshakeResponse(coreim.ThirdPartyGatewayConfig{
+		RequestID:      newThirdPartyGatewayRequestID(),
+		ChannelID:      "thirdparty:" + clientID,
+		ServerTime:     time.Now().UnixMilli(),
+		MaxBodyBytes:   srvThirdPartyMaxBodyBytes,
+		MaxMediaBytes:  srvThirdPartyMaxMediaBytes,
+		PollTimeoutSec: srvThirdPartyPollTimeoutSec,
+		MaxTimeoutSec:  srvThirdPartyMaxTimeoutSec,
+		MaxBatchSize:   srvThirdPartyMaxBatchSize,
+		MaxPollLimit:   srvThirdPartyMaxLimit,
+	}))
+}
+
+func (s *HTTPServer) handleThirdPartyGatewayMediaUploadURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeThirdPartyGatewayError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	tp, ok := s.authorizeThirdPartyGateway(w, r)
+	if !ok {
+		return
+	}
+	var req coreim.ThirdPartyMediaPrepareRequest
+	if !decodeThirdPartyGatewayJSON(w, r, &req) {
+		return
+	}
+	if err := coreim.NormalizeThirdPartyMediaPrepareRequest(&req, srvThirdPartyMaxMediaBytes); err != nil {
+		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	media, err := s.thirdPartyIM.prepareMedia(tp.Principal, req, thirdPartyGatewayBaseURL(r))
+	if err != nil {
+		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, media)
+}
+
+func (s *HTTPServer) handleThirdPartyGatewayMediaUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		writeThirdPartyGatewayError(w, http.StatusMethodNotAllowed, "method_not_allowed", "PUT required")
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("mediaId"))
+	if err := s.thirdPartyIM.storeMediaUpload(r, id); err != nil {
+		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, coreim.NewThirdPartyMediaUploadCompleteResponse(newThirdPartyGatewayRequestID(), id))
+}
+
+func (s *HTTPServer) handleThirdPartyGatewayMediaDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeThirdPartyGatewayError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("mediaId"))
+	media, err := s.thirdPartyIM.mediaForDownload(r, id)
+	if err != nil {
+		writeThirdPartyGatewayError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if media.MimeType != "" {
+		w.Header().Set("Content-Type", media.MimeType)
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", media.FileName))
+	w.Header().Set("Content-Length", strconv.FormatInt(int64(len(media.Data)), 10))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(media.Data)
 }
 
 func (s *HTTPServer) handleThirdPartyGatewayIncoming(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +217,10 @@ func (s *HTTPServer) handleThirdPartyGatewayIncoming(w http.ResponseWriter, r *h
 		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	if err := s.thirdPartyIM.validateIncomingMediaReferences(tp.Principal, &req); err != nil {
+		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 	maclawID := fmt.Sprintf("mc_in_%d_%s", time.Now().UnixMilli(), sanitizeThirdPartyGatewayID(req.EventID))
 	clientKey := thirdPartyClientKey(tp.Principal, req.ClientID)
 	duplicate, storedID := s.thirdPartyIM.markIncoming(clientKey, req.EventID, maclawID)
@@ -181,13 +228,7 @@ func (s *HTTPServer) handleThirdPartyGatewayIncoming(w http.ResponseWriter, r *h
 	if !duplicate {
 		go s.thirdPartyIM.processIncoming(context.Background(), tp.Principal, req, maclawID)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":              true,
-		"requestId":       newThirdPartyGatewayRequestID(),
-		"accepted":        true,
-		"duplicate":       duplicate,
-		"maclawMessageId": maclawID,
-	})
+	writeJSON(w, http.StatusOK, coreim.NewThirdPartyIncomingAcceptedResponse(newThirdPartyGatewayRequestID(), maclawID, duplicate))
 }
 
 func (s *HTTPServer) handleThirdPartyGatewayOutgoing(w http.ResponseWriter, r *http.Request) {
@@ -199,49 +240,34 @@ func (s *HTTPServer) handleThirdPartyGatewayOutgoing(w http.ResponseWriter, r *h
 	if !ok {
 		return
 	}
-	clientID := normalizeThirdPartyGatewayID(r.URL.Query().Get("clientId"))
-	if err := validateThirdPartyGatewayID("clientId", clientID); err != nil {
+	poll, err := coreim.ParseThirdPartyPollQuery(r.URL.Query(), coreim.ThirdPartyGatewayConfig{
+		PollTimeoutSec: srvThirdPartyPollTimeoutSec,
+		MaxTimeoutSec:  srvThirdPartyMaxTimeoutSec,
+		MaxBatchSize:   srvThirdPartyMaxBatchSize,
+		MaxPollLimit:   srvThirdPartyMaxLimit,
+	})
+	if err != nil {
 		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	cursor, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("cursor")), 10, 64)
-	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
-	if limit <= 0 {
-		limit = srvThirdPartyMaxBatchSize
-	}
-	if limit > srvThirdPartyMaxLimit {
-		limit = srvThirdPartyMaxLimit
-	}
-	timeoutSec := srvThirdPartyPollTimeoutSec
-	if raw := strings.TrimSpace(r.URL.Query().Get("timeout")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 0 {
-			writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", "timeout must be a non-negative integer")
-			return
-		}
-		timeoutSec = parsed
-	}
-	if timeoutSec > srvThirdPartyMaxTimeoutSec {
-		timeoutSec = srvThirdPartyMaxTimeoutSec
-	}
-	clientKey := thirdPartyClientKey(tp.Principal, clientID)
-	timer := time.NewTimer(time.Duration(timeoutSec) * time.Second)
-	if timeoutSec == 0 {
+	clientKey := thirdPartyClientKey(tp.Principal, poll.ClientID)
+	timer := time.NewTimer(time.Duration(poll.TimeoutSec) * time.Second)
+	if poll.TimeoutSec == 0 {
 		timer.Stop()
 	}
 	defer timer.Stop()
 	for {
-		msgs, next, hasMore, notify := s.thirdPartyIM.messagesAfter(clientKey, cursor, limit)
-		if len(msgs) > 0 || timeoutSec == 0 {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "requestId": newThirdPartyGatewayRequestID(), "messages": msgs, "nextCursor": strconv.FormatInt(next, 10), "hasMore": hasMore})
+		msgs, next, hasMore, notify := s.thirdPartyIM.messagesAfter(clientKey, poll.Cursor, poll.Limit)
+		if len(msgs) > 0 || poll.TimeoutSec == 0 {
+			writeJSON(w, http.StatusOK, coreim.NewThirdPartyOutgoingPollResponse(newThirdPartyGatewayRequestID(), msgs, next, hasMore))
 			return
 		}
 		select {
 		case <-r.Context().Done():
 			return
 		case <-timer.C:
-			_, next, _, _ = s.thirdPartyIM.messagesAfter(clientKey, cursor, limit)
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "requestId": newThirdPartyGatewayRequestID(), "messages": []srvThirdPartyOutgoingMessage{}, "nextCursor": strconv.FormatInt(next, 10), "hasMore": false})
+			_, next, _, _ = s.thirdPartyIM.messagesAfter(clientKey, poll.Cursor, poll.Limit)
+			writeJSON(w, http.StatusOK, coreim.NewThirdPartyOutgoingPollResponse(newThirdPartyGatewayRequestID(), nil, next, false))
 			return
 		case <-notify:
 		}
@@ -261,17 +287,56 @@ func (s *HTTPServer) handleThirdPartyGatewayAck(w http.ResponseWriter, r *http.R
 	if !decodeThirdPartyGatewayJSON(w, r, &req) {
 		return
 	}
-	clientID := normalizeThirdPartyGatewayID(req.ClientID)
-	if err := validateThirdPartyGatewayID("clientId", clientID); err != nil {
+	if err := coreim.NormalizeThirdPartyAckRequest(&req, srvThirdPartyMaxAckIDs); err != nil {
 		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	if len(req.MessageIDs) > srvThirdPartyMaxAckIDs {
-		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("messageIds exceeds %d items", srvThirdPartyMaxAckIDs))
+	s.thirdPartyIM.ack(thirdPartyClientKey(tp.Principal, req.ClientID), req)
+	writeJSON(w, http.StatusOK, coreim.NewThirdPartyGatewayOKResponse(newThirdPartyGatewayRequestID()))
+}
+
+func (s *HTTPServer) handleThirdPartyGatewayToolResult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeThirdPartyGatewayError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
-	s.thirdPartyIM.ack(thirdPartyClientKey(tp.Principal, clientID), req)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "requestId": newThirdPartyGatewayRequestID()})
+	tp, ok := s.authorizeThirdPartyGateway(w, r)
+	if !ok {
+		return
+	}
+	var req srvThirdPartyToolResultRequest
+	if !decodeThirdPartyGatewayJSON(w, r, &req) {
+		return
+	}
+	if err := coreim.NormalizeThirdPartyToolResultRequest(&req); err != nil {
+		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	maclawID := fmt.Sprintf("mc_tool_%d_%s", time.Now().UnixMilli(), sanitizeThirdPartyGatewayID(firstNonEmptyThirdParty(req.ToolCallID, req.ToolPlanID)))
+	eventID := coreim.ThirdPartyToolResultEventID(req)
+	incoming := srvThirdPartyIncomingRequest{
+		ClientID:       req.ClientID,
+		EventID:        eventID,
+		MessageID:      maclawID,
+		ConversationID: firstNonEmptyThirdParty(req.ConversationID, "default"),
+		User:           srvThirdPartyUser{ID: "client-tool:" + req.ClientID, Name: "Client Tool"},
+		Message:        srvThirdPartyMessageBody{Type: "text", Text: coreim.ThirdPartyToolResultContent(req)},
+		Metadata: map[string]string{
+			"message_kind": "tool_result",
+			"tool_call_id": req.ToolCallID,
+			"tool_plan_id": req.ToolPlanID,
+			"tool_step_id": req.StepID,
+			"tool_status":  req.Status,
+		},
+		CreatedAt: time.Now().UnixMilli(),
+	}
+	clientKey := thirdPartyClientKey(tp.Principal, req.ClientID)
+	duplicate, storedID := s.thirdPartyIM.markIncoming(clientKey, incoming.EventID, maclawID)
+	maclawID = storedID
+	if !duplicate {
+		go s.thirdPartyIM.processIncoming(context.Background(), tp.Principal, incoming, maclawID)
+	}
+	writeJSON(w, http.StatusOK, coreim.NewThirdPartyIncomingAcceptedResponse(newThirdPartyGatewayRequestID(), maclawID, duplicate))
 }
 
 func (s *HTTPServer) authorizeThirdPartyGateway(w http.ResponseWriter, r *http.Request) (srvThirdPartyPrincipal, bool) {
@@ -384,18 +449,22 @@ func (m *srvThirdPartyGatewayManager) processIncoming(parent context.Context, p 
 		Platform:  "thirdparty",
 		ContactID: req.ClientID + ":" + req.ConversationID,
 		Extra: map[string]string{
-			"runtime":         "maclawsrv",
-			"client_id":       req.ClientID,
-			"conversation_id": req.ConversationID,
-			"event_id":        req.EventID,
-			"maclaw_id":       maclawID,
+			"runtime":          "maclawsrv",
+			"client_id":        req.ClientID,
+			"conversation_id":  req.ConversationID,
+			"event_id":         req.EventID,
+			"maclaw_id":        maclawID,
+			"message_type":     req.Message.Type,
+			"attachment_count": strconv.Itoa(len(req.Message.Attachments)),
 		},
 	})
+	content, attachments := m.thirdPartyAgentInput(p, req)
 	sendInput := agentservice.SendMessageInput{
 		AgentID:          srvThirdPartySessionAgent,
 		Title:            "Third-party " + req.ClientID,
-		Content:          req.Message.Text,
+		Content:          content,
 		InputType:        "text/plain",
+		Attachments:      attachments,
 		Metadata:         metadata,
 		SessionMetadata:  metadata,
 		ClientSessionKey: "thirdparty:" + req.ClientID + ":" + req.ConversationID,
@@ -428,6 +497,162 @@ func (m *srvThirdPartyGatewayManager) processIncoming(parent context.Context, p 
 		})
 	}
 	_ = parent
+}
+
+func (m *srvThirdPartyGatewayManager) thirdPartyAgentInput(p agentservice.Principal, req srvThirdPartyIncomingRequest) (string, []agent.MessageAttachment) {
+	content := coreim.ThirdPartyIncomingContent(req)
+	if len(req.Message.Attachments) == 0 {
+		return content, nil
+	}
+	var attachments []agent.MessageAttachment
+	var notes []string
+	for _, ref := range req.Message.Attachments {
+		data, ok := m.thirdPartyAttachmentBytes(p, ref)
+		if ok && len(data) <= coreim.ThirdPartyMaxDirectBytes {
+			attachments = append(attachments, agent.MessageAttachment{
+				Type:     ref.Type,
+				FileName: ref.FileName,
+				MimeType: ref.MimeType,
+				Data:     base64.StdEncoding.EncodeToString(data),
+				Size:     int64(len(data)),
+			})
+			notes = append(notes, fmt.Sprintf("- %s %s attached inline for agent reading/vision (%d bytes)", ref.Type, firstNonEmptyThirdParty(ref.FileName, ref.ID, "attachment"), len(data)))
+			if text, ok := thirdPartyReadableTextAttachment(ref, data); ok {
+				notes = append(notes, fmt.Sprintf("  content:\n%s", indentThirdPartyAttachmentText(text)))
+			}
+			continue
+		}
+		if ok && len(data) > coreim.ThirdPartyMaxDirectBytes {
+			if strings.TrimSpace(ref.URL) != "" {
+				notes = append(notes, fmt.Sprintf("- %s %s available at server media URL; size=%d bytes; url=%s", ref.Type, firstNonEmptyThirdParty(ref.FileName, ref.ID, "attachment"), len(data), ref.URL))
+			} else {
+				notes = append(notes, fmt.Sprintf("- %s %s available as server media id %s; size=%d bytes", ref.Type, firstNonEmptyThirdParty(ref.FileName, ref.ID, "attachment"), ref.ID, len(data)))
+			}
+			continue
+		}
+	}
+	if len(notes) > 0 {
+		if strings.TrimSpace(content) != "" {
+			content += "\n\n"
+		}
+		content += "[Attachment access for agent]\n" + strings.Join(notes, "\n")
+		if len(attachments) > 0 {
+			content += "\nInline attachments are passed as agent attachments; image-capable models can inspect images directly."
+		}
+	}
+	return content, attachments
+}
+
+func thirdPartyReadableTextAttachment(ref coreim.ThirdPartyMediaReference, data []byte) (string, bool) {
+	mimeType := strings.ToLower(strings.TrimSpace(ref.MimeType))
+	name := strings.ToLower(strings.TrimSpace(ref.FileName))
+	if !(strings.HasPrefix(mimeType, "text/") ||
+		strings.Contains(mimeType, "json") ||
+		strings.Contains(mimeType, "xml") ||
+		strings.Contains(mimeType, "csv") ||
+		strings.HasSuffix(name, ".txt") ||
+		strings.HasSuffix(name, ".md") ||
+		strings.HasSuffix(name, ".json") ||
+		strings.HasSuffix(name, ".csv") ||
+		strings.HasSuffix(name, ".xml") ||
+		strings.HasSuffix(name, ".yaml") ||
+		strings.HasSuffix(name, ".yml")) {
+		return "", false
+	}
+	const maxInlineText = 64 * 1024
+	text := strings.ToValidUTF8(string(data), "\uFFFD")
+	if len(text) > maxInlineText {
+		text = text[:maxInlineText] + "\n[truncated]"
+	}
+	return text, strings.TrimSpace(text) != ""
+}
+
+func indentThirdPartyAttachmentText(text string) string {
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = "    " + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *srvThirdPartyGatewayManager) thirdPartyAttachmentBytes(p agentservice.Principal, ref coreim.ThirdPartyMediaReference) ([]byte, bool) {
+	if strings.TrimSpace(ref.Data) != "" {
+		data, err := base64.StdEncoding.DecodeString(ref.Data)
+		return data, err == nil
+	}
+	id := strings.TrimSpace(ref.ID)
+	if id == "" {
+		return nil, false
+	}
+	m.mu.Lock()
+	media := m.media[id]
+	m.mu.Unlock()
+	if media == nil || !media.Uploaded || media.Principal.TenantID != p.TenantID || media.Principal.UserID != p.UserID {
+		return nil, false
+	}
+	if ref.MimeType == "" {
+		ref.MimeType = media.MimeType
+	}
+	return append([]byte(nil), media.Data...), true
+}
+
+func (m *srvThirdPartyGatewayManager) validateIncomingMediaReferences(p agentservice.Principal, req *srvThirdPartyIncomingRequest) error {
+	for i := range req.Message.Attachments {
+		ref := &req.Message.Attachments[i]
+		if strings.TrimSpace(ref.URL) != "" {
+			id, mediaReq, err := srvThirdPartyServerMediaRequestFromURL(ref.URL)
+			if err != nil {
+				return fmt.Errorf("message.attachments[%d].url: %w", i, err)
+			}
+			media, err := m.mediaForDownload(mediaReq, id)
+			if err != nil {
+				return fmt.Errorf("message.attachments[%d].url media not found", i)
+			}
+			if media.Principal.TenantID != p.TenantID || media.Principal.UserID != p.UserID {
+				return fmt.Errorf("message.attachments[%d].url media not found", i)
+			}
+			ref.ID = id
+			if ref.FileName == "" {
+				ref.FileName = media.FileName
+			}
+			if ref.MimeType == "" {
+				ref.MimeType = media.MimeType
+			}
+			if ref.SizeBytes == 0 {
+				ref.SizeBytes = media.SizeBytes
+			}
+		}
+		if strings.TrimSpace(ref.Data) != "" {
+			continue
+		}
+		if strings.TrimSpace(ref.ID) != "" {
+			media, ok := m.mediaObjectForPrincipal(p, ref.ID)
+			if !ok {
+				return fmt.Errorf("message.attachments[%d].id media not found", i)
+			}
+			if ref.FileName == "" {
+				ref.FileName = media.FileName
+			}
+			if ref.MimeType == "" {
+				ref.MimeType = media.MimeType
+			}
+			if ref.SizeBytes == 0 {
+				ref.SizeBytes = media.SizeBytes
+			}
+		}
+	}
+	return nil
+}
+
+func (m *srvThirdPartyGatewayManager) mediaObjectForPrincipal(p agentservice.Principal, id string) (srvThirdPartyMediaObject, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	media := m.media[strings.TrimSpace(id)]
+	if media == nil || !media.Uploaded || media.Principal.TenantID != p.TenantID || media.Principal.UserID != p.UserID {
+		return srvThirdPartyMediaObject{}, false
+	}
+	media.LastAccessedAt = time.Now().UTC()
+	return *media, true
 }
 
 func (m *srvThirdPartyGatewayManager) ensureThirdPartyInstance(ctx context.Context, p agentservice.Principal) (string, error) {
@@ -491,6 +716,11 @@ func (m *srvThirdPartyGatewayManager) StopPrincipal(p agentservice.Principal) {
 			delete(m.clients, key)
 		}
 	}
+	for key, media := range m.media {
+		if media.Principal.TenantID == p.TenantID && media.Principal.UserID == p.UserID {
+			delete(m.media, key)
+		}
+	}
 	delete(m.runtimeInstances, principalRuntimeKey(p))
 }
 
@@ -511,6 +741,11 @@ func (m *srvThirdPartyGatewayManager) StopTenant(tenantID string) {
 			delete(m.runtimeInstances, key)
 		}
 	}
+	for key, media := range m.media {
+		if media.Principal.TenantID == tenantID {
+			delete(m.media, key)
+		}
+	}
 }
 
 func (m *srvThirdPartyGatewayManager) StopAll() {
@@ -521,6 +756,129 @@ func (m *srvThirdPartyGatewayManager) StopAll() {
 	defer m.mu.Unlock()
 	m.clients = map[string]*srvThirdPartyClientState{}
 	m.runtimeInstances = map[string]srvThirdPartyRuntimeInstance{}
+	m.media = map[string]*srvThirdPartyMediaObject{}
+}
+
+func (m *srvThirdPartyGatewayManager) prepareMedia(p agentservice.Principal, req coreim.ThirdPartyMediaPrepareRequest, baseURL string) (*coreim.ThirdPartyMediaPrepareResponse, error) {
+	if err := coreim.NormalizeThirdPartyMediaPrepareRequest(&req, srvThirdPartyMaxMediaBytes); err != nil {
+		return nil, err
+	}
+	id, err := randomThirdPartyGatewayToken()
+	if err != nil {
+		return nil, err
+	}
+	token, err := randomThirdPartyGatewayToken()
+	if err != nil {
+		return nil, err
+	}
+	fileName := coreim.SafeThirdPartyFileName(req.FileName)
+	mimeType := strings.TrimSpace(req.MimeType)
+	downloadURL := fmt.Sprintf("%s/media/%s?mediaToken=%s", strings.TrimRight(baseURL, "/"), id, token)
+	uploadURL := fmt.Sprintf("%s/media/%s/upload?mediaToken=%s", strings.TrimRight(baseURL, "/"), id, token)
+	obj := &srvThirdPartyMediaObject{
+		Principal:      p,
+		ClientID:       req.ClientID,
+		ID:             id,
+		Token:          token,
+		Type:           req.Type,
+		FileName:       fileName,
+		MimeType:       mimeType,
+		SizeBytes:      req.SizeBytes,
+		DurationMs:     req.DurationMs,
+		CreatedAt:      time.Now().UTC(),
+		LastAccessedAt: time.Now().UTC(),
+	}
+	m.mu.Lock()
+	m.pruneMediaLocked(time.Now().UTC())
+	m.media[id] = obj
+	m.mu.Unlock()
+	ref := coreim.ThirdPartyMediaReference{ID: id, Type: req.Type, FileName: fileName, MimeType: mimeType, URL: downloadURL, SizeBytes: req.SizeBytes, DurationMs: req.DurationMs}
+	return &coreim.ThirdPartyMediaPrepareResponse{
+		OK:        true,
+		RequestID: newThirdPartyGatewayRequestID(),
+		Media:     ref,
+		Upload:    coreim.ThirdPartyMediaUpload{Method: http.MethodPut, URL: uploadURL, ContentType: mimeType, MaxBytes: srvThirdPartyMaxMediaBytes},
+		Download:  coreim.ThirdPartyMediaDownload{URL: downloadURL},
+		ExpiresAt: time.Now().Add(24 * time.Hour).UnixMilli(),
+	}, nil
+}
+
+func (m *srvThirdPartyGatewayManager) storeMediaUpload(r *http.Request, id string) error {
+	m.mu.Lock()
+	media := m.media[id]
+	m.mu.Unlock()
+	if media == nil {
+		return errors.New("media not found")
+	}
+	if !coreim.ThirdPartyMediaTokenOK(r, media.Token) {
+		return errors.New("invalid media token")
+	}
+	if r.ContentLength > srvThirdPartyMaxMediaBytes {
+		return fmt.Errorf("media exceeds %d bytes", srvThirdPartyMaxMediaBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, srvThirdPartyMaxMediaBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > srvThirdPartyMaxMediaBytes {
+		return fmt.Errorf("media exceeds %d bytes", srvThirdPartyMaxMediaBytes)
+	}
+	if media.SizeBytes > 0 && int64(len(data)) != media.SizeBytes {
+		return fmt.Errorf("media size mismatch: got %d bytes, want %d", len(data), media.SizeBytes)
+	}
+	m.mu.Lock()
+	media.Data = data
+	media.Uploaded = true
+	media.SizeBytes = int64(len(data))
+	if media.MimeType == "" {
+		media.MimeType = strings.TrimSpace(r.Header.Get("Content-Type"))
+	}
+	media.LastAccessedAt = time.Now().UTC()
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *srvThirdPartyGatewayManager) mediaForDownload(r *http.Request, id string) (*srvThirdPartyMediaObject, error) {
+	m.mu.Lock()
+	media := m.media[id]
+	m.mu.Unlock()
+	if media == nil || !media.Uploaded {
+		return nil, errors.New("media not found")
+	}
+	if !coreim.ThirdPartyMediaTokenOK(r, media.Token) {
+		return nil, errors.New("media not found")
+	}
+	m.mu.Lock()
+	media.LastAccessedAt = time.Now().UTC()
+	out := *media
+	m.mu.Unlock()
+	return &out, nil
+}
+
+func (m *srvThirdPartyGatewayManager) pruneMediaLocked(now time.Time) {
+	if len(m.media) == 0 {
+		return
+	}
+	cutoff := now.Add(-24 * time.Hour)
+	for id, media := range m.media {
+		if media.LastAccessedAt.Before(cutoff) {
+			delete(m.media, id)
+		}
+	}
+	for len(m.media) > srvThirdPartyMaxMediaObjects {
+		var oldestID string
+		var oldest time.Time
+		for id, media := range m.media {
+			if oldestID == "" || media.LastAccessedAt.Before(oldest) {
+				oldestID = id
+				oldest = media.LastAccessedAt
+			}
+		}
+		if oldestID == "" {
+			return
+		}
+		delete(m.media, oldestID)
+	}
 }
 
 func (m *srvThirdPartyGatewayManager) cachedRuntimeInstanceID(p agentservice.Principal) (string, bool) {
@@ -653,10 +1011,7 @@ func (m *srvThirdPartyGatewayManager) ack(clientKey string, req srvThirdPartyAck
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	state := m.ensureClientLocked(clientKey)
-	status := strings.TrimSpace(req.Status)
-	if status == "" {
-		status = "delivered"
-	}
+	status := coreim.NormalizeThirdPartyAckStatus(req.Status)
 	known := map[string]bool{}
 	for _, msg := range state.Messages {
 		known[msg.ID] = true
@@ -672,47 +1027,11 @@ func (m *srvThirdPartyGatewayManager) ack(clientKey string, req srvThirdPartyAck
 }
 
 func normalizeThirdPartyIncomingRequest(req *srvThirdPartyIncomingRequest) error {
-	req.ClientID = normalizeThirdPartyGatewayID(req.ClientID)
-	req.EventID = strings.TrimSpace(req.EventID)
-	req.ConversationID = strings.TrimSpace(req.ConversationID)
-	req.Message.Type = strings.ToLower(strings.TrimSpace(req.Message.Type))
-	if req.Message.Type == "" {
-		req.Message.Type = "text"
-	}
-	req.Message.Text = strings.TrimSpace(req.Message.Text)
-	if req.ClientID == "" {
-		return errors.New("clientId is required")
-	}
-	if err := validateThirdPartyGatewayID("clientId", req.ClientID); err != nil {
-		return err
-	}
-	if req.EventID == "" {
-		return errors.New("eventId is required")
-	}
-	if utf8.RuneCountInString(req.EventID) > srvThirdPartyMaxIDChars {
-		return fmt.Errorf("eventId exceeds %d characters", srvThirdPartyMaxIDChars)
-	}
-	if req.ConversationID == "" {
-		req.ConversationID = "default"
-	}
-	if utf8.RuneCountInString(req.ConversationID) > srvThirdPartyMaxIDChars {
-		return fmt.Errorf("conversationId exceeds %d characters", srvThirdPartyMaxIDChars)
-	}
-	if req.Message.Type != "text" {
-		return errors.New("only text messages are currently supported by MaClawSrv third-party gateway")
-	}
-	if req.Message.Text == "" {
-		return errors.New("message.text is required")
-	}
-	if len(req.Message.Text) > srvThirdPartyMaxTextChars {
-		return fmt.Errorf("message.text exceeds %d characters", srvThirdPartyMaxTextChars)
-	}
-	return nil
+	return coreim.NormalizeThirdPartyIncomingRequest(req, coreim.ThirdPartyNormalizeOptions{DefaultConversationID: "default", MaxTextChars: srvThirdPartyMaxTextChars})
 }
 
 func decodeThirdPartyGatewayJSON(w http.ResponseWriter, r *http.Request, out any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
-	if err := json.NewDecoder(r.Body).Decode(out); err != nil {
+	if err := coreim.DecodeThirdPartyGatewayJSON(w, r, out, int64(srvThirdPartyMaxBodyBytes)); err != nil {
 		writeThirdPartyGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return false
 	}
@@ -720,7 +1039,7 @@ func decodeThirdPartyGatewayJSON(w http.ResponseWriter, r *http.Request, out any
 }
 
 func writeThirdPartyGatewayError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]any{"ok": false, "requestId": newThirdPartyGatewayRequestID(), "error": map[string]string{"code": code, "message": message}})
+	writeJSON(w, status, coreim.NewThirdPartyGatewayErrorResponse(newThirdPartyGatewayRequestID(), code, message))
 }
 
 func thirdPartyBearerToken(r *http.Request) string {
@@ -732,7 +1051,7 @@ func thirdPartyBearerToken(r *http.Request) string {
 }
 
 func newThirdPartyGatewayRequestID() string {
-	return fmt.Sprintf("req_%d", time.Now().UnixNano())
+	return fmt.Sprintf("gw_%d", time.Now().UnixNano())
 }
 
 func thirdPartyClientKey(p agentservice.Principal, clientID string) string {
@@ -740,30 +1059,11 @@ func thirdPartyClientKey(p agentservice.Principal, clientID string) string {
 }
 
 func normalizeThirdPartyGatewayID(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	var b strings.Builder
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == '-', r == '_', r == '.', r == ':':
-			b.WriteRune(r)
-		}
-	}
-	return strings.Trim(b.String(), ".:-_")
+	return coreim.NormalizeThirdPartyID(value)
 }
 
 func validateThirdPartyGatewayID(field, value string) error {
-	if strings.TrimSpace(value) == "" {
-		return fmt.Errorf("%s is required", field)
-	}
-	if utf8.RuneCountInString(value) > srvThirdPartyMaxIDChars {
-		return fmt.Errorf("%s exceeds %d characters", field, srvThirdPartyMaxIDChars)
-	}
-	return nil
+	return coreim.ValidateThirdPartyID(field, value)
 }
 
 func sanitizeThirdPartyGatewayID(value string) string {
@@ -772,4 +1072,45 @@ func sanitizeThirdPartyGatewayID(value string) string {
 		return "unknown"
 	}
 	return value
+}
+
+func randomThirdPartyGatewayToken() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf[:]), nil
+}
+
+func thirdPartyGatewayBaseURL(r *http.Request) string {
+	scheme := thirdPartyGatewayForwardedScheme(r.Header.Get("X-Forwarded-Proto"), r.TLS != nil)
+	host := platformLaunchHost(firstNonEmptyThirdParty(r.Header.Get("X-Forwarded-Host"), r.Host))
+	return scheme + "://" + host + "/api/im-gateway/v1"
+}
+
+func srvThirdPartyServerMediaRequestFromURL(rawURL string) (string, *http.Request, error) {
+	return coreim.ThirdPartyServerMediaRequestFromURL(rawURL)
+}
+
+func thirdPartyGatewayForwardedScheme(value string, isTLS bool) string {
+	scheme := strings.ToLower(platformForwardedHeaderFirst(value))
+	switch scheme {
+	case "https":
+		return "https"
+	case "http":
+		return "http"
+	}
+	if isTLS && scheme == "" {
+		return "https"
+	}
+	return "http"
+}
+
+func firstNonEmptyThirdParty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

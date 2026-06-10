@@ -356,17 +356,7 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 		msg.Text = confirmationApprovedText(pending)
 		*trimmed = strings.TrimSpace(msg.Text)
 		result := pendingExecutionConfirmationResult{ConfirmedResume: true}
-		if h.getWorkflowEngine() != nil && !msg.IsBackground {
-			if wfResp := h.handleWorkflowInterception(msg.UserID, *trimmed, msg.Platform); wfResp != nil {
-				h.pendingAskUser.Delete(msg.UserID)
-				result.Handled = true
-				result.Response = wfResp
-				return result
-			}
-			if _, ok := h.workflowAgentLoopMarker.LoadAndDelete(msg.UserID); ok {
-				result.WorkflowAgentLoop = true
-			}
-		}
+		// V1 workflow interception removed — V2 handles routing in im_entry_context.
 		return result
 	}
 

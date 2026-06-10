@@ -700,7 +700,7 @@ func TestToolUploadSkill_PortabilityGateBlocksMachinePath(t *testing.T) {
 	h := &IMMessageHandler{app: app}
 
 	got := h.toolUploadSkill(map[string]interface{}{"name": "upload-gate"})
-	if !strings.Contains(got, "上传被阻止") {
+	if !strings.Contains(got, "Upload blocked") {
 		t.Fatalf("expected portability block message, got %q", got)
 	}
 	if !strings.Contains(got, "/opt/acme/secret/config.json") {
@@ -754,5 +754,51 @@ func TestToolUploadSkill_PortabilityGateAutoFixesInDirPath(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "{baseDir}/scripts/run.py") {
 		t.Fatalf("skill.yaml was not persistently auto-fixed:\n%s", string(data))
+	}
+}
+
+func TestToolUploadSkill_PortabilityGateRollsBackAutoFixWhenBlocked(t *testing.T) {
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	skillDir := filepath.Join(tempHome, "skills", "upload-autofix-blocked")
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "scripts", "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	absScript := filepath.Join(skillDir, "scripts", "run.py")
+	yaml := "name: upload-autofix-blocked\ndescription: A skill with a safe auto-fix and a missing input file.\ntriggers:\n  - upload-autofix-blocked\nplatforms:\n  - universal\nparams:\n  - name: input_file\n    default: data.csv\nsteps:\n  - action: bash\n    params:\n      command: python " + absScript + "\n"
+	yamlPath := filepath.Join(skillDir, "skill.yaml")
+	if err := os.WriteFile(yamlPath, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# upload-autofix-blocked\n\nRuns a bundled script.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{Name: "upload-autofix-blocked", SkillDir: skillDir, Source: "test", UsageCount: 5, SuccessCount: 5})
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	h := &IMMessageHandler{app: app}
+
+	gate := h.runUploadPortabilityGate("upload-autofix-blocked")
+	if !strings.Contains(gate, "Upload blocked") || !strings.Contains(gate, "data.csv") {
+		t.Fatalf("expected missing input file block, got:\n%s", gate)
+	}
+	data, err := os.ReadFile(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != yaml {
+		t.Fatalf("skill.yaml was not rolled back after blocked upload:\n%s", string(data))
+	}
+	if _, statErr := os.Stat(yamlPath + ".bak"); !os.IsNotExist(statErr) {
+		t.Fatalf("skill.yaml.bak exists after rollback, statErr=%v", statErr)
 	}
 }

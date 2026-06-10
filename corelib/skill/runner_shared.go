@@ -90,7 +90,7 @@ func implicitRequiredPlaceholderContexts(step corelib.NLSkillStep) []string {
 	case "bash":
 		return stringParamContexts(step.Params, "command", "working_dir")
 	case "craft_tool":
-		return stringParamContexts(step.Params, "task", "instructions", "input", "output", "content", "prompt", "description")
+		return stringParamContexts(step.Params, "task", "input", "output", "content", "prompt", "description")
 	default:
 		return nil
 	}

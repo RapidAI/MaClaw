@@ -16,7 +16,7 @@ import (
 //
 //   Stage 1 (BM25): guaranteed within 200ms
 //   Stage 2 (+Vector): target within 500ms
-//   Stage 3 (+Semantic Graph + Page Index + Alias expansion): target within 1500ms
+//   Stage 3 (+Semantic Graph + Alias expansion + Graph expansion): target within 1500ms
 //
 // Requirements: 9.1, 9.2, 9.3, 9.4, 9.5
 // ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ const (
 // Recall executes staged retrieval within the given deadline.
 // Stage 1 (BM25): guaranteed within 200ms
 // Stage 2 (+Vector): target within 500ms
-// Stage 3 (+Semantic Graph + Page Index + Alias expansion): target within 1500ms
+// Stage 3 (+Semantic Graph + Alias expansion + Graph expansion): target within 1500ms
 func (p *StagedRecallPipeline) Recall(ctx context.Context, store *Store, query string, opts ProactiveRecallOptions, deadline time.Time) StagedRecallResult {
 	start := time.Now()
 
@@ -57,6 +57,16 @@ func (p *StagedRecallPipeline) Recall(ctx context.Context, store *Store, query s
 	// === Query understanding (shared across all stages) ===
 	expanded := ExpandQuery(query)
 
+	// Alias expansion: augment entities with known aliases from the AliasIndex.
+	// Mirrors recallDynamicCoreWithOptions to bridge the write-recall semantic gap.
+	aliasExpanded := expanded.Entities
+	if store.aliasIndex != nil && len(expanded.Entities) > 0 {
+		aliases := store.aliasIndex.Expand(expanded.Entities)
+		if len(aliases) > 0 {
+			aliasExpanded = append(append([]string(nil), expanded.Entities...), aliases...)
+		}
+	}
+
 	// Determine filtering parameters.
 	ownerID := opts.OwnerID
 	projectPath := opts.ProjectPath
@@ -66,7 +76,7 @@ func (p *StagedRecallPipeline) Recall(ctx context.Context, store *Store, query s
 	}
 
 	// === Stage 1: BM25 (guaranteed within 200ms) ===
-	bm25Scores := store.multiQueryBM25(query, expanded.Entities)
+	bm25Scores := store.multiQueryBM25(query, aliasExpanded)
 	bm25Entries := p.rankBM25(store, bm25Scores, ownerID, projectPath, expanded.QueryTokens, maxEntries)
 
 	if deadlineExceeded(ctx, deadline, stageVecBudget) {
@@ -95,7 +105,9 @@ func (p *StagedRecallPipeline) Recall(ctx context.Context, store *Store, query s
 		}
 	}
 
-	// === Stage 3: +Semantic Graph + Page Index + Alias expansion (target within 1500ms) ===
+	// === Stage 3: +Semantic Graph + Alias expansion + Graph expansion (target within 1500ms) ===
+	// Note: Page Index integration happens in ProactiveContextForPrompt as a
+	// separate additive path (queryPageIndexForPrompt), not inside this pipeline.
 	stage3Entries := p.rankFull(store, bm25Scores, vecScores, expanded, ownerID, projectPath, maxEntries, query)
 
 	elapsed := time.Since(start)
@@ -298,7 +310,31 @@ func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[
 	})
 
 	// Graph expansion for top candidates.
+	preExpandLen := len(scored)
 	scored = store.graphExpand(scored, graphExpandSeeds)
+
+	// Apply tag/alias/stability boost to newly expanded entries.
+	if len(scored) > preExpandLen {
+		// Pre-compute alias list once (same for all expanded entries).
+		var aliasTerms []string
+		if store.aliasIndex != nil && len(expanded.Entities) > 0 {
+			aliasTerms = store.aliasIndex.Expand(expanded.Entities)
+		}
+		for i := preExpandLen; i < len(scored); i++ {
+			if len(expanded.Entities) > 0 {
+				scored[i].score += tagExactMatchBoost(scored[i].entry, expanded.Entities)
+			}
+			if len(aliasTerms) > 0 {
+				aliasBoost := tagExactMatchBoost(scored[i].entry, aliasTerms)
+				if aliasBoost > AliasMatchBoost {
+					aliasBoost = AliasMatchBoost
+				}
+				scored[i].score += aliasBoost
+			}
+			scored[i].score += scored[i].entry.Stability.StabilityBoost()
+		}
+	}
+
 	scored = filterRecallProjectOthers(scored, projectLower)
 
 	// Temporal demotion: stale/invalidated entries rank lower.

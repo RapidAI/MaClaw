@@ -9,7 +9,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 type agentLoopCodingGateResult struct {
@@ -222,29 +221,7 @@ func syncAssistantTurnToolCalls(assistantMsg map[string]interface{}, conversatio
 }
 
 func (h *IMMessageHandler) emitCodingGateForceReturnDocUpdate(userID, platform, strippedContent string, steeringDetector *SteeringWorkflowDetector) {
-	if !normalizeIMMessagePlatformKind(platform).IsDesktop() || h.getWorkflowEngine() == nil {
-		return
-	}
-	trimmedStripped := strings.TrimSpace(strippedContent)
-	emitted := false
-	if steeringDetector != nil {
-		steeringDetector.interceptTextOutput(trimmedStripped, func(phaseID, content string) {
-			if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
-				_ = adapter.EmitDocUpdate(userID, phaseID, content)
-				log.Printf("[SteeringWorkflow] emitted doc_update from gate force-return for user=%s phase=%s len=%d", userID, phaseID, len(content))
-				emitted = true
-			}
-		})
-	}
-	if emitted || len(trimmedStripped) < 50 {
-		return
-	}
-	if ws := h.getWorkflowEngine().GetActiveWorkflow(userID); ws != nil {
-		if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
-			_ = adapter.EmitDocUpdate(userID, ws.CurrentPhase, trimmedStripped)
-			log.Printf("[WorkflowEngine] emitted doc_update from gate force-return for user=%s phase=%s len=%d", userID, ws.CurrentPhase, len(trimmedStripped))
-		}
-	}
+	// V1 engine removed — this function was entirely V1-dependent. No-op.
 }
 
 func shouldSkipCodingGate(ctx *LoopContext, gateConfig codingToolGateConfig) bool {
@@ -258,20 +235,17 @@ func (h *IMMessageHandler) shouldBypassCodingGateForWorkflowAgentLoop(userID str
 	if ctx == nil || !ctx.WorkflowAgentLoop {
 		return false
 	}
-	engine := h.getWorkflowEngine()
-	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
-	if engine == nil || engine.GetActiveWorkflow(policyOwnerID) == nil {
-		return false
+	// V2 workflow: when V2 has an active workflow, bypass the coding gate
+	// so that the workflow's own ToolPolicy controls tool availability.
+	if h.isWorkflowV2Active(userID) {
+		return true
 	}
-	return engine.GetPhaseToolFilter(policyOwnerID) != workflow.ToolFilterNone
+	return false
 }
 
 func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, baseTools []map[string]interface{}, phase agentLoopPhase, gateConfig codingToolGateConfig, skipCodingGate bool, orchestratorActive func() bool) ([]map[string]interface{}, int, bool) {
 	tools := baseTools
 	directModeToolsFiltered := false
-	if engine := h.getWorkflowEngine(); engine != nil && strings.TrimSpace(userID) != "" && engine.GetActiveWorkflow(userID) != nil {
-		tools = h.applyWorkflowToolFilterWithCatalog(userID, tools, h.getTools())
-	}
 	if gateConfig.active && !skipCodingGate && !orchestratorActive() {
 		gateFiltered := make([]map[string]interface{}, 0, len(tools))
 		for _, t := range tools {
@@ -339,27 +313,6 @@ func (h *IMMessageHandler) activateSteeringWorkflowDetector(userID, userText, pl
 		log.Printf("[SteeringWorkflow] detector NOT activated: shouldActivate=false gateActive=%v gateReason=%q user=%s", gateConfig.active, gateConfig.reason, userID)
 		return nil
 	}
-	hasEngineWorkflow := false
-	if h.getWorkflowEngine() != nil {
-		hasEngineWorkflow = h.getWorkflowEngine().HasActiveWorkflow(policyOwnerID)
-	}
-	if hasEngineWorkflow {
-		log.Printf("[SteeringWorkflow] detector NOT activated: engine has active workflow for user=%s policy_owner=%s gateActive=%v", userID, policyOwnerID, gateConfig.active)
-		return nil
-	}
 	log.Printf("[SteeringWorkflow] detector activated for user=%s task=%q gateActive=%v", userID, truncateRunes(userText, 60), gateConfig.active)
-	if gateConfig.active && normalizeIMMessagePlatformKind(platform).IsDesktop() && h.getWorkflowEngine() != nil {
-		if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
-			if adapter.GetWorkingDir() == "" {
-				projectPath := strings.TrimSpace(h.getCurrentProjectPath())
-				if projectPath != "" {
-					adapter.SetWorkingDir(policyOwnerID, projectPath)
-				}
-			}
-			adapter.EmitSuggestMaximize(policyOwnerID, "coding")
-			detector.suggestMaximizeEmitted = true
-			log.Printf("[SteeringWorkflow] emitted early suggest_maximize for desktop user=%s policy_owner=%s (classifier confirmed new_project)", userID, policyOwnerID)
-		}
-	}
 	return detector
 }

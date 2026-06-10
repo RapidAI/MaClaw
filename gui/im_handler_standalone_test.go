@@ -102,9 +102,6 @@ func TestNewIMMessageHandlerStandalone_AccessorsWork(t *testing.T) {
 	}
 
 	// Nil optional accessors should return nil gracefully (not panic).
-	if h.getWorkflowEngine() != nil {
-		t.Error("expected nil workflow engine")
-	}
 	if h.getUnifiedClassifier() == nil {
 		t.Error("expected default unified classifier")
 	}

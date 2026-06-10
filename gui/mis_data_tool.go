@@ -72,29 +72,7 @@ func (a *App) DismissAgentView(payload AgentViewDismissPayload) (*IMAgentRespons
 	if phaseID, ok := strings.CutPrefix(strings.TrimSpace(payload.ViewID), "workflow:form:"); ok {
 		phaseID = strings.TrimSpace(phaseID)
 		workflowLifecyclePayload := workflowFormLifecyclePayloadFor("", phaseID, "", payload.Data)
-		cleared := false
-		hubClient := a.ensureHubClient()
-		if hubClient != nil {
-			handler := hubClient.ensureIMHandler()
-			if engine := handler.getWorkflowEngine(); engine != nil {
-				userID := resolveWorkflowFormUserID(handler, engine, phaseID, payload.Data)
-				if ws := engine.GetActiveWorkflow(userID); ws != nil && ws.CurrentPhase == phaseID {
-					workflowLifecyclePayload = workflowFormLifecyclePayloadWithFallback(ws.ID, phaseID, userID, payload.Data)
-				}
-				if workflowFormMatchesActiveWorkflow(engine, userID, phaseID, payload.Data) {
-					if err := engine.SkipPhaseForm(userID); err != nil {
-						return nil, fmt.Errorf("skip workflow form: %w", err)
-					}
-				}
-				a.clearAgentViewWithPayload(payload.ViewID, workflowLifecyclePayload)
-				cleared = true
-				// Closing a stale or ambiguous workflow form should not block panel dismissal.
-				// Submit still validates workflow identity; dismiss can safely be best-effort.
-			}
-		}
-		if !cleared {
-			a.clearAgentViewWithPayload(payload.ViewID, workflowLifecyclePayload)
-		}
+		a.clearAgentViewWithPayload(payload.ViewID, workflowLifecyclePayload)
 	} else {
 		a.clearAgentView(payload.ViewID)
 	}

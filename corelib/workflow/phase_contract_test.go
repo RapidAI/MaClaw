@@ -154,17 +154,21 @@ func TestValidateWorkflowTemplateContractBuiltinTemplates(t *testing.T) {
 }
 
 func TestValidateWorkflowTemplateContractRejectsDirectorySemanticTextField(t *testing.T) {
-	tmpl := &WorkflowTemplate{Type: "bad_directory_field", Phases: []PhaseTemplate{{
-		ID:         "intake",
-		ToolPolicy: ToolFilterDocOnly,
-		InputSchema: &PhaseInputSchema{Fields: []PhaseInputField{{
-			Name: "project_path",
-			Type: "text",
-		}}},
-	}}}
+	for _, fieldName := range []string{"project_path", "project_root", "repo_path", "repository_root", "workspace_root", "worktree_path"} {
+		t.Run(fieldName, func(t *testing.T) {
+			tmpl := &WorkflowTemplate{Type: "bad_directory_field", Phases: []PhaseTemplate{{
+				ID:         "intake",
+				ToolPolicy: ToolFilterDocOnly,
+				InputSchema: &PhaseInputSchema{Fields: []PhaseInputField{{
+					Name: fieldName,
+					Type: "text",
+				}}},
+			}}}
 
-	if errs := ValidateWorkflowTemplateContract(tmpl); len(errs) == 0 {
-		t.Fatal("expected project_path text field to violate directory picker contract")
+			if errs := ValidateWorkflowTemplateContract(tmpl); len(errs) == 0 {
+				t.Fatalf("expected %s text field to violate directory picker contract", fieldName)
+			}
+		})
 	}
 }
 

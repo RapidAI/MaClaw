@@ -20,9 +20,23 @@ import (
 func (s *Store) RecallExhaustive(query string, category Category, projectPath string, ownerID ...string) *ExhaustiveResult {
 	const minRelevanceThreshold = 0.10
 
+	// Single time reference for the entire operation.
+	now := time.Now()
+
 	// === Phase 1: Query Understanding ===
 	expanded := ExpandQuery(query)
-	bm25Scores := s.multiQueryBM25(query, expanded.Entities)
+
+	// Alias expansion: augment entities with known aliases from the AliasIndex.
+	// Mirrors recallDynamicCoreWithOptions to bridge the write-recall semantic gap.
+	aliasExpanded := expanded.Entities
+	if s.aliasIndex != nil && len(expanded.Entities) > 0 {
+		aliases := s.aliasIndex.Expand(expanded.Entities)
+		if len(aliases) > 0 {
+			aliasExpanded = append(append([]string(nil), expanded.Entities...), aliases...)
+		}
+	}
+
+	bm25Scores := s.multiQueryBM25(query, aliasExpanded)
 	vecScores := s.vecIndex.score(s.queryEmbeddingCached(query))
 
 	// Semantic graph scores (same as RecallDynamic).
@@ -30,7 +44,7 @@ func (s *Store) RecallExhaustive(query string, category Category, projectPath st
 	if s.semanticGraph != nil {
 		temporalMode, asOf := semanticTemporalOptionsFromQuery(query)
 		for _, hit := range s.semanticGraph.SearchWithOptions(expanded.Entities, SemanticSearchOptions{
-			Now:             time.Now(),
+			Now:             now,
 			MaxHits:         30,
 			MaxVisitedFacts: 500,
 			OwnerID:         firstOwnerID(ownerID...),
@@ -47,7 +61,7 @@ func (s *Store) RecallExhaustive(query string, category Category, projectPath st
 	// Multi-hop inference boost (same as RecallDynamic).
 	if s.inferenceEngine != nil && len(expanded.Entities) > 0 {
 		derivedFacts := s.inferenceEngine.Infer(expanded.Entities, InferenceOptions{
-			Now:             time.Now(),
+			Now:             now,
 			OwnerID:         firstOwnerID(ownerID...),
 			ProjectPath:     projectPath,
 			MaxDerived:      10,
@@ -67,7 +81,6 @@ func (s *Store) RecallExhaustive(query string, category Category, projectPath st
 	s.mu.RLock()
 
 	projectLower := semanticNormalizeProjectPath(projectPath)
-	now := time.Now()
 	filterOwner := firstOwnerID(ownerID...)
 
 	type rawCandidate struct {
@@ -128,6 +141,16 @@ func (s *Store) RecallExhaustive(query string, category Category, projectPath st
 			sc += tagExactMatchBoost(c.entry, expanded.Entities)
 		}
 
+		// Alias match boost (same as RecallDynamic).
+		if s.aliasIndex != nil && len(aliasExpanded) > len(expanded.Entities) {
+			aliasOnly := aliasExpanded[len(expanded.Entities):]
+			aliasBoost := tagExactMatchBoost(c.entry, aliasOnly)
+			if aliasBoost > AliasMatchBoost {
+				aliasBoost = AliasMatchBoost
+			}
+			sc += aliasBoost
+		}
+
 		// Stability boost/penalty (same as RecallDynamic).
 		sc += c.entry.Stability.StabilityBoost()
 
@@ -135,6 +158,12 @@ func (s *Store) RecallExhaustive(query string, category Category, projectPath st
 	}
 
 	s.mu.RUnlock()
+
+	// Note: graphExpand is intentionally NOT applied in exhaustive mode.
+	// Exhaustive mode returns all *directly matching* entries (FusionScore > 0.10).
+	// Graph expansion would introduce indirectly-related entries that don't match
+	// the query themselves, which contradicts the "exhaustive match" semantic.
+	// Users wanting related entries should use standard RecallDynamic with pagination.
 
 	// === Phase 4: Filter by minimum relevance threshold ===
 	var aboveThreshold []scoredCandidate

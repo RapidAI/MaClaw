@@ -314,7 +314,8 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
 .memory-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .memory-tags span { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; font-weight: 700; }
 .memory-load-more { justify-self: center; min-width: 160px; }
-.knowledge-scope-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 520px)); justify-content: start; gap: 12px; min-height: 36px; align-items: stretch; }
+.knowledge-access-layout { display: grid; grid-template-columns: minmax(320px, 520px) minmax(380px, 1fr); gap: 14px; align-items: start; }
+.knowledge-scope-list { display: grid; grid-template-columns: 1fr; justify-content: start; gap: 12px; min-height: 36px; align-items: stretch; }
 .knowledge-scope-chip { display: grid; grid-template-rows: auto 1fr auto; gap: 10px; min-width: 0; width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
 .knowledge-scope-chip strong { font-size: 14px; line-height: 1.3; overflow-wrap: anywhere; }
 .knowledge-scope-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px; min-width: 0; }
@@ -331,6 +332,23 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
 .knowledge-scope-chip code { white-space: normal; overflow-wrap: anywhere; }
 .knowledge-scope-ids { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .knowledge-scope-ids code { max-width: 100%; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); font-size: 11px; font-family: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.knowledge-batch-panel { display: grid; gap: 10px; min-width: 0; }
+.knowledge-batch-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; }
+.knowledge-batch-head > div { display: grid; gap: 3px; min-width: 0; }
+.knowledge-batch-head strong { font-size: 14px; line-height: 1.25; }
+.knowledge-batch-list { display: grid; gap: 6px; min-height: 36px; }
+.knowledge-batch-row { display: grid; grid-template-rows: auto auto; gap: 4px; min-width: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); overflow: hidden; }
+.knowledge-batch-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.knowledge-batch-title strong { min-width: 0; font-size: 13px; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knowledge-batch-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; max-width: 52%; min-width: 0; }
+.knowledge-batch-topic { flex: 0 0 auto; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; font-weight: 700; }
+.knowledge-batch-delete { min-height: 26px; padding: 3px 8px; border-radius: 7px; font-size: 11px; line-height: 1.2; box-shadow: none; }
+.knowledge-batch-meta { display: flex; align-items: center; gap: 10px; min-width: 0; color: var(--muted); font-size: 11px; line-height: 1.25; white-space: nowrap; overflow: hidden; }
+.knowledge-batch-meta span { flex: 0 0 auto; max-width: 32%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knowledge-batch-meta span:last-child { flex: 1 1 auto; max-width: none; }
+.knowledge-batch-pager { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 32px; }
+.knowledge-batch-pager:empty { display: none; }
+.knowledge-batch-pager button { min-height: 32px; padding: 4px 10px; }
 .knowledge-import-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
 .knowledge-import-grid section { display: grid; grid-template-rows: auto 1fr; gap: 12px; min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
 .knowledge-import-grid section:nth-child(3) { grid-column: 1 / -1; }
@@ -399,6 +417,7 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
   .assistant-rail { min-height: 0; }
   .chat { min-height: 620px; }
   .message { max-width: 92%; }
+  .knowledge-access-layout { grid-template-columns: 1fr; }
   .knowledge-search-form { grid-template-columns: 1fr; }
   .knowledge-import-grid { grid-template-columns: 1fr; }
   .knowledge-import-grid section:nth-child(3) { grid-column: auto; }
@@ -429,6 +448,12 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
   .knowledge-scope-head { grid-template-columns: 1fr; }
   .knowledge-scope-actions { justify-content: flex-start; flex-wrap: wrap; }
   .knowledge-clear-btn { min-width: 84px; }
+  .knowledge-batch-title { align-items: center; flex-direction: row; }
+  .knowledge-batch-actions { justify-content: flex-end; max-width: 58%; flex-wrap: nowrap; }
+  .knowledge-batch-topic { max-width: 48%; }
+  .knowledge-batch-meta { flex-wrap: nowrap; white-space: nowrap; }
+  .knowledge-batch-pager { align-items: stretch; flex-direction: column; }
+  .knowledge-batch-pager button { width: 100%; }
   .knowledge-span-2 { grid-column: auto; }
   .knowledge-import-fields > button { justify-self: stretch; width: 100%; }
   .secret-input { grid-template-columns: 1fr; }
@@ -455,7 +480,7 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
   .sidebar, .chat-toolbar, .composer, .cfg-group > .field { background:#151b22; }
   button:hover { background:#1d2630; }
   .primary:hover { background:#14b8a6; border-color:#14b8a6; color:#052522; }
-  .secondary, .cfg-tabs, .knowledge-import-grid section, .knowledge-search-form, .instance, .mcp-market, .mcp-add, .mcp-row, .skill-row, .skill-card, .knowledge-result, .knowledge-scope-chip { background:#121922; }
+  .secondary, .cfg-tabs, .knowledge-import-grid section, .knowledge-search-form, .instance, .mcp-market, .mcp-add, .mcp-row, .skill-row, .skill-card, .knowledge-result, .knowledge-scope-chip, .knowledge-batch-row { background:#121922; }
   .secondary:hover, .nav button:hover, .instance:hover { background:#1d2630; }
   .nav button { color:#d6e0ea; }
   .messages { background:#121922; }

@@ -8,7 +8,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient *http.Client, loopCtx *LoopContext, history []agent.ConversationEntry, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, []agent.ConversationEntry, bool) {
@@ -39,7 +38,6 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 		})
 		runCompleted := taskOrch.AllDone()
 		runCancelled := loopCtx != nil && loopCtx.IsCancelled()
-		runHasPassedTasks := taskOrch.HasPassedTasks()
 
 		// Keep incomplete runs active so a later user turn can resume after transient
 		// provider failures such as LLM rate limits.
@@ -49,71 +47,8 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 			}
 		}()
 
-		workflowSaveAllowed := shouldSaveSubAgentWorkflowOutput(runCompleted, runCancelled, runHasPassedTasks)
-		integrationFailed := false
-		if engine := h.getWorkflowEngine(); engine != nil {
-			if h.app != nil && h.app.workflowArtifactSaver != nil {
-				h.app.workflowArtifactSaver.SetCurrentUserID(ownerID)
-			}
-
-			// Run integration before saving the implementation deliverable. The engine
-			// should persist the final phase artifact, not an intermediate report that
-			// is missing integration output.
-			if workflowSaveAllowed {
-				integrationPrompt := taskOrch.BuildIntegrationPrompt()
-				if integrationPrompt != "" {
-					integrationIndex := taskOrch.TaskCount()
-					if onProgress != nil {
-						onProgress("Starting integration phase...")
-					}
-					integrationResult := RunTaskWithSubAgent(
-						h, cfg, httpClient,
-						&TaskItem{
-							Index:         integrationIndex,
-							DisplayNumber: integrationIndex + 1,
-							Title:         "Integration",
-							Description:   integrationPrompt,
-						},
-						taskOrch.ProjectPath,
-						taskOrch.RequirementsContext,
-						taskOrch.DesignContext,
-						runner.collectPreviousOutputs(),
-						loopCtx, onToken,
-						func(text string) {
-							if onProgress != nil {
-								onProgress(text)
-							}
-						},
-					)
-					if !subAgentIntegrationPassed(integrationResult) {
-						workflowSaveAllowed = false
-						integrationFailed = true
-					}
-					if integrationResult != nil {
-						emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, taskOrch.ProjectPath, integrationResult.FilesModified, integrationResult.FilesCreated)
-						report += "\n\n## Integration\n\n" + integrationResult.Summary
-					}
-				}
-			}
-
-			// Use the same phase-completion transition as the main agent loop. A
-			// cancelled SubAgent run is conversation evidence, not a durable phase
-			// deliverable, so it must not mutate workflow output/review state.
-			if runCancelled {
-				log.Printf("[WorkflowEngine] subagent phase output not saved after cancellation: user=%s owner=%s", msg.UserID, ownerID)
-			} else if !workflowSaveAllowed {
-				logSubAgentWorkflowSaveBlocked(ownerID, runCompleted, runHasPassedTasks, integrationFailed)
-			} else {
-				_, advResp, err := engine.SavePhaseOutputAndMaybeAdvance(ownerID, report)
-				if err != nil {
-					log.Printf("[WorkflowEngine] subagent phase output save failed: user=%s owner=%s err=%v", msg.UserID, ownerID, err)
-				}
-				h.applyWorkflowAutoAdvanceResponse(ownerID, advResp, msg.Platform)
-				if advResp != nil && advResp.Text != "" {
-					report += "\n\n---\n" + advResp.Text
-				}
-			}
-		}
+		// V1 workflow engine code removed — engine is always nil since
+		// im_workflow_engine_stub.go was deleted.
 
 		// Preserve SubAgent execution context in conversation history so the LLM has
 		// context for follow-up messages about the implementation.
@@ -131,24 +66,6 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 }
 
 func (h *IMMessageHandler) workflowAllowsSubAgentExecutionForOwner(ownerID string) (bool, string) {
-	if h == nil {
-		return true, ""
-	}
-	engine := h.getWorkflowEngine()
-	ownerID = strings.TrimSpace(ownerID)
-	if engine == nil || ownerID == "" || engine.GetActiveWorkflow(ownerID) == nil {
-		return true, ""
-	}
-	if engine.IsPhaseExecutionBlocked(ownerID) {
-		return false, "current workflow phase is waiting for required input or review"
-	}
-	if !engine.IsActivePhaseExecutionOrchestrator(ownerID) {
-		policy := engine.GetActivePhaseToolFilter(ownerID)
-		if policy != workflow.ToolFilterFull {
-			return false, "current workflow phase policy is " + string(policy)
-		}
-		return false, "current workflow phase is not an orchestrated execution phase"
-	}
 	return true, ""
 }
 

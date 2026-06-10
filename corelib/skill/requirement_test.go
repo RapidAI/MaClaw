@@ -152,6 +152,29 @@ func TestExtractRequirements_StepRequiredEnvDeduplicatesWithSkillLevel(t *testin
 	}
 }
 
+func TestExtractRequirements_RequiredEnvCommandCompatibility(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		RequiredEnv: []string{"python", "OPENAI_API_KEY"},
+	}
+
+	reqs := ExtractRequirements(skill)
+	var sawPythonCommand, sawPythonEnv, sawAPIEnv bool
+	for _, r := range reqs {
+		if r.Name == "python" && r.Type == "command" {
+			sawPythonCommand = true
+		}
+		if r.Name == "python" && r.Type == "env" {
+			sawPythonEnv = true
+		}
+		if r.Name == "OPENAI_API_KEY" && r.Type == "env" {
+			sawAPIEnv = true
+		}
+	}
+	if !sawPythonCommand || sawPythonEnv || !sawAPIEnv {
+		t.Fatalf("requirements = %#v, want python as command and OPENAI_API_KEY as env", reqs)
+	}
+}
+
 func TestExtractRequirements_StepRequiredEnvCanBeProvidedByStepEnv(t *testing.T) {
 	skill := &corelib.NLSkillEntry{
 		Steps: []corelib.NLSkillStep{{

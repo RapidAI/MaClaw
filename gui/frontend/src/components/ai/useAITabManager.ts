@@ -524,7 +524,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         const histories = loadPersistedProjectTabHistories();
         for (const [tabId, history] of Object.entries(histories)) {
             if (Array.isArray(history) && history.length > 0) {
-                tabStatesRef.current.set(tabId, { history, scrollTop: 0, inputText: "" });
+                tabStatesRef.current.set(tabId, { history, scrollTop: 0, inputText: "", lastActiveAt: 1 });
             }
         }
     }

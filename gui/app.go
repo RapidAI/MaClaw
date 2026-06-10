@@ -198,7 +198,8 @@ type App struct {
 	aiAssistantReadyAt                atomic.Int64
 	aiAssistantFirstChatLogged        atomic.Bool
 	docGenerator                      *swarm.SwarmDocGenerator // cached PDF doc generator
-	workflowEngine                    *workflow.WorkflowEngine // maclaw agent workflow engine (corelib/workflow)
+	workflowEngine                    *workflow.WorkflowEngine // V1 engine REMOVED from production; field retained for test compatibility only
+	workflowV2                        *workflowV2State         // V2 workflow engine (clean state machine)
 	workflowArtifactSaver             *deferredArtifactSaver   // shared artifact saver for OwnerID injection
 	workflowDisabled                  atomic.Bool              // true when user disables workflow in settings; checked by getWorkflowEngine()
 	steeringStore                     *steering.Store          // declarative rule injection (corelib/steering)
@@ -280,11 +281,7 @@ func (a *App) resolveExperienceProviderForAttribution() lifecycle.Provider {
 			providers = append(providers, skill.NewGovernanceDraftProvider(skills, skill.SkillMaintenancePlanOptions{MaxActions: 12}))
 		}
 	}
-	if a.workflowEngine != nil {
-		if ws := a.workflowEngine.GetActiveWorkflow(a.workflowOwnerIDForCurrentProject()); ws != nil {
-			providers = append(providers, workflow.NewExperienceProvider(ws))
-		}
-	}
+	// V1 workflowEngine experience provider removed — V2 doesn't provide experience context.
 	return lifecycle.NewCompositeProvider(providers...)
 }
 
@@ -1802,8 +1799,10 @@ func (a *App) startup(ctx context.Context) {
 			}(config)
 		}
 
-		// Initialize workflow engine (SQLite store + registry + cleanup goroutine).
-		go a.initWorkflowEngine()
+		// V1 workflow engine disabled — V2 is the sole workflow engine.
+		// go a.initWorkflowEngine()
+		// Initialize V2 workflow engine (clean state machine).
+		a.workflowV2 = a.initWorkflowV2()
 		// Initialize steering store (declarative rule injection from ~/.maclaw/steering/).
 		go a.initSteeringStore()
 		// Initialize TTS manager if assets are already present.
@@ -1949,6 +1948,12 @@ func (a *App) shutdown(ctx context.Context) {
 	a.stopMemoryPipelineSchedule("shutdown")
 	if a.memoryStore != nil {
 		a.memoryStore.Stop()
+	}
+	// Close V2 workflow SQLite store.
+	if a.workflowV2 != nil {
+		if closer, ok := a.workflowV2.store.(interface{ Close() error }); ok {
+			closer.Close()
+		}
 	}
 	// OpenHuman modules shutdown
 	if a.ohModules.toolMemory != nil {
@@ -2633,49 +2638,27 @@ func (a *App) SelectWorkingDir() string {
 }
 
 // SetWorkflowWorkingDir sets the working directory for the current coding
-// workflow session. Called from the frontend when the user confirms or
-// changes the working directory via the workflow banner.
+// SetWorkflowWorkingDir is a frontend binding — V1 engine removed, now no-op.
+// V2 workflow project path is set at workflow creation time and is immutable.
 func (a *App) SetWorkflowWorkingDir(dir string) {
-	if a.workflowEngine == nil {
-		return
-	}
-	trimmed, _, err := normalizeWorkflowProjectPath(dir)
-	if err != nil {
-		log.Printf("[WorkflowAdapter] invalid workflow working directory %s: %v", strings.TrimSpace(dir), err)
-		return
-	}
-	dir = trimmed
-	ownerID := a.workflowOwnerIDForCurrentProject()
-	if adapter, ok := a.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
-		adapter.SetWorkingDir(ownerID, dir)
-	} else if err := a.workflowEngine.SetProjectPath(ownerID, dir); err != nil {
-		log.Printf("[WorkflowAdapter] failed to persist workflow project path: %v", err)
-	}
+	// V2 project path is set at creation and stored in WorkflowState.ProjectPath.
+	// No runtime change is needed.
 }
 
 func (a *App) workflowOwnerIDForCurrentProject() string {
 	if a == nil {
 		return desktopUserID
 	}
-	projectOwnerID := projectSessionOwnerID(a.GetCurrentProjectPath())
-	if a.workflowEngine != nil {
-		if projectOwnerID != desktopUserID && a.workflowEngine.GetActiveWorkflow(projectOwnerID) != nil {
-			return projectOwnerID
-		}
-		if a.workflowEngine.GetActiveWorkflow(desktopUserID) != nil {
-			return desktopUserID
-		}
-	}
-	return projectOwnerID
+	return projectSessionOwnerID(a.GetCurrentProjectPath())
 }
 
 // GetWorkflowWorkingDir returns the current workflow working directory.
 func (a *App) GetWorkflowWorkingDir() string {
-	if a.workflowEngine == nil {
-		return ""
-	}
-	if adapter, ok := a.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
-		return adapter.GetWorkingDir()
+	// V2: return the active workflow's project path if available.
+	if a.workflowV2 != nil {
+		if state := a.workflowV2.machine.GetActive(desktopUserID); state != nil {
+			return state.ProjectPath
+		}
 	}
 	return ""
 }

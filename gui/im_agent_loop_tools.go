@@ -6,6 +6,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 type agentLoopToolSet struct {
@@ -57,12 +58,11 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	workflowFilterSkipped := false
 	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
 	policyOwnerID, applyWorkflowFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx)
-	if engine := h.getWorkflowEngine(); engine != nil && applyWorkflowFilter {
-		policy := engine.GetActivePhaseToolFilter(policyOwnerID)
-		if policy != "" {
-			workflowFilterPolicy = workflowToolFilterDecision(policy)
-		}
-		tools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, tools, allTools)
+	_ = policyOwnerID // V1 engine removed; policyOwnerID retained for future V2 use
+	if applyWorkflowFilter && h.isWorkflowV2Active(userID) {
+		// V2 workflow tool filter: strip coding/write tools during doc_only phases.
+		workflowFilterPolicy = workflowToolFilterDecision(string(workflow.ToolFilterDocOnly))
+		tools = workflow.FilterToolDefinitions(workflow.ToolFilterDocOnly, tools)
 	} else if skipNeedsConfirmGate {
 		workflowFilterPolicy = workflowToolFilterSkippedConfirmBypass
 		workflowFilterSkipped = true
@@ -87,13 +87,21 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 
 func (h *IMMessageHandler) workflowToolFilterOwnerAndDecision(userID string, ctx *LoopContext) (string, bool) {
 	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
-	engine := h.getWorkflowEngine()
-	if engine == nil {
-		return policyOwnerID, false
+	// V2 workflow: apply doc_only filter when V2 has an active workflow in a doc phase.
+	// This applies regardless of WorkflowAgentLoop flag — even pass-through messages
+	// should not expose write tools during doc phases.
+	if h.isWorkflowV2Active(userID) {
+		wf := h.getWorkflowV2()
+		if wf != nil {
+			if state := wf.machine.GetActive(userID); state != nil {
+				phase := state.ActivePhase()
+				if phase != nil && phase.ToolPolicy == v2.ToolPolicyDocOnly {
+					return policyOwnerID, true
+				}
+			}
+		}
 	}
-	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
-	workflowAgentLoop := ctx != nil && ctx.WorkflowAgentLoop
-	return policyOwnerID, shouldApplyWorkflowFilter(skipNeedsConfirmGate, engine.IsAwaitingReview(policyOwnerID), workflowAgentLoop, engine.IsPhaseExecutionBlocked(policyOwnerID), engine.GetActiveWorkflow(policyOwnerID) != nil)
+	return policyOwnerID, false
 }
 
 func agentLoopToolNamesForLog(tools []map[string]interface{}) []string {

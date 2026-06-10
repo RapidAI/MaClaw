@@ -133,7 +133,8 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		opsApprovedCommands: append([]workflow.OpsApprovedCommand(nil),
 			req.OpsApprovedCommands...),
 	}
-	result := agent.RunLoop(cb, req.Message.Content, convertHistoryToEntries(req.History, req.Message.ID), cb.httpClient)
+	userContent := agent.BuildUserContent(req.Message.Content, req.Message.Attachments, llmCfg.Protocol, llmCfg.SupportsVision, nil)
+	result := agent.RunLoopWithUserContent(cb, req.Message.Content, userContent, convertHistoryToEntries(req.History, req.Message.ID), cb.httpClient)
 	if result.Error != "" {
 		return nil, errors.New(result.Error)
 	}

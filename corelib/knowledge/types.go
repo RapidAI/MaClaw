@@ -522,6 +522,20 @@ type ImportBatch struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+type ListImportBatchesOptions struct {
+	OwnerID  string `json:"owner_id,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+	Offset   int    `json:"offset,omitempty"`
+}
+
+type ImportBatchPage struct {
+	Batches []ImportBatch `json:"batches"`
+	Total   int           `json:"total"`
+	Limit   int           `json:"limit"`
+	Offset  int           `json:"offset"`
+}
+
 // ImportItem tracks one file within an import batch.
 type ImportItem struct {
 	ID           string    `json:"id"`
@@ -587,9 +601,22 @@ type ImportRetryRequest struct {
 	DistillMode    string   `json:"distill_mode,omitempty"`
 }
 
+type ImportBatchDeleteRequest struct {
+	BatchID  string `json:"batch_id"`
+	OwnerID  string `json:"owner_id,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+type ImportBatchDeleteResult struct {
+	BatchID        string `json:"batch_id"`
+	DeletedSources int    `json:"deleted_sources"`
+	DeletedBatches int    `json:"deleted_batches"`
+}
+
 type ListSourcesOptions struct {
 	OwnerID         string   `json:"owner_id,omitempty"`
 	TenantID        string   `json:"tenant_id,omitempty"`
+	BatchID         string   `json:"batch_id,omitempty"`
 	SearchScope     string   `json:"search_scope,omitempty"`
 	ProjectPath     string   `json:"project_path,omitempty"`
 	SourceIDs       []string `json:"source_ids,omitempty"`

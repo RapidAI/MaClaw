@@ -2,6 +2,7 @@ package agentservice
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,9 +18,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
+
+const maxMessageAttachments = coreim.ThirdPartyMaxAttachments
 
 type Config struct {
 	DataRoot         string
@@ -2199,7 +2204,7 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, instanceID strin
 		}
 		metadata["client_message_id"] = clientMessageID
 	}
-	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Metadata: metadata})
+	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Attachments: in.Attachments, Metadata: metadata})
 	if err != nil {
 		return sess, run, msg, err
 	}
@@ -2314,8 +2319,11 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	}
 	cfg.AppConfig = effectiveLLMFlatConfig(cfg.AppConfig)
 	content := strings.TrimSpace(in.Content)
-	if content == "" {
+	if content == "" && len(in.Attachments) == 0 {
 		return nil, nil, fmt.Errorf("content is required")
+	}
+	if err := validateMessageAttachments(in.Attachments); err != nil {
+		return nil, nil, err
 	}
 	if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricMessages); err != nil {
 		return nil, nil, err
@@ -2325,7 +2333,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	}
 	effectiveContent, pendingAskReq := buildEffectiveUserContent(sess, content)
 	now := s.now()
-	userMsg := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleUser, InputType: defaultString(in.InputType, "text/plain"), Content: content, Metadata: cloneMap(in.Metadata), CreatedAt: now}
+	userMsg := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleUser, InputType: defaultString(in.InputType, "text/plain"), Content: content, Attachments: append([]agent.MessageAttachment(nil), in.Attachments...), Metadata: cloneMap(in.Metadata), CreatedAt: now}
 	if err := s.store.SaveMessage(userMsg); err != nil {
 		return nil, nil, err
 	}
@@ -2411,6 +2419,25 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	_ = s.store.SaveSession(sess)
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.succeeded", ResourceType: "run", ResourceID: run.ID, ActorType: "system", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID, "session_id": sessionID, "assistant_message_id": assistant.ID}})
 	return &run, &assistant, nil
+}
+
+func validateMessageAttachments(attachments []agent.MessageAttachment) error {
+	if len(attachments) > maxMessageAttachments {
+		return fmt.Errorf("attachments exceeds %d items", maxMessageAttachments)
+	}
+	for i, att := range attachments {
+		if strings.TrimSpace(att.Data) == "" {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(att.Data)
+		if err != nil {
+			return fmt.Errorf("attachments[%d].data must be base64", i)
+		}
+		if len(decoded) > coreim.ThirdPartyMaxDirectBytes {
+			return fmt.Errorf("attachments[%d].data exceeds %d bytes", i, coreim.ThirdPartyMaxDirectBytes)
+		}
+	}
+	return nil
 }
 
 func toolPolicyFromMetadata(messageMetadata, sessionMetadata map[string]string) workflow.ToolFilterPolicy {

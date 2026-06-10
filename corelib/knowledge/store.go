@@ -476,6 +476,7 @@ func (s *SQLiteStore) DistillAndSaveCardsWithMode(ctx context.Context, tx *sql.T
 func (s *SQLiteStore) ListSources(ctx context.Context, opts ListSourcesOptions) ([]Source, error) {
 	opts.OwnerID = strings.TrimSpace(opts.OwnerID)
 	opts.TenantID = strings.TrimSpace(opts.TenantID)
+	opts.BatchID = strings.TrimSpace(opts.BatchID)
 	opts.ProjectPath = strings.TrimSpace(opts.ProjectPath)
 	opts.SearchScope = strings.ToLower(strings.TrimSpace(opts.SearchScope))
 	opts.Status = strings.ToLower(strings.TrimSpace(opts.Status))
@@ -499,6 +500,10 @@ func (s *SQLiteStore) ListSources(ctx context.Context, opts ListSourcesOptions) 
 	if opts.OwnerID != "" {
 		where = append(where, "owner_id = ?")
 		args = append(args, opts.OwnerID)
+	}
+	if opts.BatchID != "" {
+		where = append(where, "batch_id = ?")
+		args = append(args, opts.BatchID)
 	}
 	switch opts.SearchScope {
 	case SaveScopePersonal, SaveScopeLocalOnly, "local":
@@ -1210,6 +1215,31 @@ func (s *SQLiteStore) DeleteSource(ctx context.Context, id string) error {
 // and their derived data (nodes, cards, facts, FTS entries) in a single transaction.
 // Returns the number of sources deleted.
 func (s *SQLiteStore) DeleteSourcesByFilter(ctx context.Context, opts ListSourcesOptions) (int, error) {
+	ids, err := s.sourceIDsByFilter(ctx, opts)
+	if err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if err := deleteSourcesByIDsTx(ctx, tx, ids); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(ids), nil
+}
+
+func (s *SQLiteStore) sourceIDsByFilter(ctx context.Context, opts ListSourcesOptions) ([]string, error) {
+	opts.TenantID = strings.TrimSpace(opts.TenantID)
+	opts.OwnerID = strings.TrimSpace(opts.OwnerID)
+	opts.BatchID = strings.TrimSpace(opts.BatchID)
 	where := []string{"1=1"}
 	args := make([]interface{}, 0)
 	if opts.TenantID != "" {
@@ -1220,70 +1250,119 @@ func (s *SQLiteStore) DeleteSourcesByFilter(ctx context.Context, opts ListSource
 		where = append(where, "owner_id = ?")
 		args = append(args, opts.OwnerID)
 	}
+	if opts.BatchID != "" {
+		where = append(where, "batch_id = ?")
+		args = append(args, opts.BatchID)
+	}
 	if opts.TenantID == "" && opts.OwnerID == "" {
-		return 0, fmt.Errorf("at least one of tenant_id or owner_id is required for bulk delete")
+		return nil, fmt.Errorf("at least one of tenant_id or owner_id is required for bulk delete")
 	}
-
-	// Collect source IDs matching the filter
-	query := `SELECT id FROM knowledge_sources WHERE ` + strings.Join(where, " AND ")
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM knowledge_sources WHERE `+strings.Join(where, " AND "), args...)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
+	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return 0, err
+			return nil, err
 		}
 		ids = append(ids, id)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
+	return ids, rows.Err()
+}
+
+func deleteSourcesByIDsTx(ctx context.Context, tx *sql.Tx, ids []string) error {
 	if len(ids) == 0 {
-		return 0, nil
+		return nil
 	}
-
-	// Delete all in a single transaction
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
+	const maxDeleteSourceIDsPerStmt = 400
+	for start := 0; start < len(ids); start += maxDeleteSourceIDsPerStmt {
+		end := start + maxDeleteSourceIDsPerStmt
+		if end > len(ids) {
+			end = len(ids)
+		}
+		if err := deleteSourceIDChunkTx(ctx, tx, ids[start:end]); err != nil {
+			return err
+		}
 	}
-	defer tx.Rollback()
+	return nil
+}
 
-	// Batch delete derived data using IN clause instead of per-ID loop.
+func deleteSourceIDChunkTx(ctx context.Context, tx *sql.Tx, ids []string) error {
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
 	deleteArgs := make([]interface{}, len(ids))
 	for i, id := range ids {
 		deleteArgs[i] = id
 	}
-
 	derivedDeletes := []string{
 		`DELETE FROM document_nodes_fts WHERE node_id IN (SELECT id FROM document_nodes WHERE source_id IN (` + placeholders + `))`,
 		`DELETE FROM knowledge_cards_fts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE source_id IN (` + placeholders + `))`,
 		`DELETE FROM knowledge_facts_fts WHERE fact_id IN (SELECT id FROM knowledge_facts WHERE source_id IN (` + placeholders + `))`,
+		`DELETE FROM knowledge_card_suppressions WHERE card_id IN (SELECT id FROM knowledge_cards WHERE source_id IN (` + placeholders + `))`,
 		`DELETE FROM knowledge_facts WHERE source_id IN (` + placeholders + `)`,
 		`DELETE FROM knowledge_cards WHERE source_id IN (` + placeholders + `)`,
-		`DELETE FROM knowledge_card_suppressions WHERE card_id IN (SELECT id FROM knowledge_cards WHERE source_id IN (` + placeholders + `))`,
 		`DELETE FROM document_nodes WHERE source_id IN (` + placeholders + `)`,
+		`DELETE FROM knowledge_source_link_events WHERE source_id IN (` + placeholders + `) OR related_source_id IN (` + placeholders + `)`,
+		`DELETE FROM knowledge_source_links WHERE source_id IN (` + placeholders + `) OR related_source_id IN (` + placeholders + `)`,
+		`DELETE FROM knowledge_source_labels WHERE source_id IN (` + placeholders + `)`,
+		`DELETE FROM knowledge_source_versions WHERE source_id IN (` + placeholders + `)`,
+		`DELETE FROM knowledge_sources WHERE id IN (` + placeholders + `)`,
 	}
 	for _, stmt := range derivedDeletes {
-		if _, err := tx.ExecContext(ctx, stmt, deleteArgs...); err != nil {
-			return 0, err
+		args := deleteArgs
+		if strings.Contains(stmt, " OR related_source_id IN ") {
+			args = append(append([]interface{}{}, deleteArgs...), deleteArgs...)
+		}
+		if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	// Delete sources themselves
-	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_sources WHERE id IN (`+placeholders+`)`, deleteArgs...); err != nil {
-		return 0, err
+func (s *SQLiteStore) DeleteImportBatch(ctx context.Context, req ImportBatchDeleteRequest) (ImportBatchDeleteResult, error) {
+	req.BatchID = strings.TrimSpace(req.BatchID)
+	req.OwnerID = strings.TrimSpace(req.OwnerID)
+	req.TenantID = strings.TrimSpace(req.TenantID)
+	if req.BatchID == "" {
+		return ImportBatchDeleteResult{}, fmt.Errorf("batch id is required")
+	}
+	batch, err := s.GetImportBatch(ctx, req.BatchID)
+	if err != nil {
+		return ImportBatchDeleteResult{}, err
+	}
+	if req.TenantID != "" && batch.TenantID != req.TenantID {
+		return ImportBatchDeleteResult{}, sql.ErrNoRows
+	}
+	if req.OwnerID != "" && batch.OwnerID != req.OwnerID {
+		return ImportBatchDeleteResult{}, sql.ErrNoRows
+	}
+	ids, err := s.sourceIDsByFilter(ctx, ListSourcesOptions{TenantID: batch.TenantID, OwnerID: batch.OwnerID, BatchID: batch.ID})
+	if err != nil {
+		return ImportBatchDeleteResult{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ImportBatchDeleteResult{}, err
+	}
+	defer tx.Rollback()
+	if err := deleteSourcesByIDsTx(ctx, tx, ids); err != nil {
+		return ImportBatchDeleteResult{}, err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM knowledge_import_batches WHERE id = ? AND tenant_id = ? AND owner_id = ?`, batch.ID, batch.TenantID, batch.OwnerID)
+	if err != nil {
+		return ImportBatchDeleteResult{}, err
+	}
+	deletedBatches64, err := result.RowsAffected()
+	if err != nil {
+		return ImportBatchDeleteResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return ImportBatchDeleteResult{}, err
 	}
-	return len(ids), nil
+	return ImportBatchDeleteResult{BatchID: batch.ID, DeletedSources: len(ids), DeletedBatches: int(deletedBatches64)}, nil
 }
 
 func (s *SQLiteStore) DisableSource(ctx context.Context, id string) (Source, error) {
@@ -3208,25 +3287,58 @@ func (s *SQLiteStore) ScanDirectory(ctx context.Context, req DirectoryImportRequ
 }
 
 func (s *SQLiteStore) ListImportBatches(ctx context.Context, limit int) ([]ImportBatch, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, root_path, owner_id, tenant_id, project_path, topic_hint, recursive, include_exts_json, exclude_globs_json, max_file_bytes,
-		status, total_files, queued_files, imported_files, skipped_files, failed_files, created_at, updated_at
-		FROM knowledge_import_batches ORDER BY updated_at DESC LIMIT ?`, limit)
+	page, err := s.ListImportBatchesPage(ctx, ListImportBatchesOptions{Limit: limit})
 	if err != nil {
 		return nil, err
+	}
+	return page.Batches, nil
+}
+
+func (s *SQLiteStore) ListImportBatchesPage(ctx context.Context, opts ListImportBatchesOptions) (ImportBatchPage, error) {
+	if opts.Limit <= 0 || opts.Limit > 200 {
+		opts.Limit = 50
+	}
+	if opts.Offset < 0 {
+		opts.Offset = 0
+	}
+	where := make([]string, 0, 2)
+	args := make([]any, 0, 4)
+	if strings.TrimSpace(opts.TenantID) != "" {
+		where = append(where, "tenant_id = ?")
+		args = append(args, strings.TrimSpace(opts.TenantID))
+	}
+	if strings.TrimSpace(opts.OwnerID) != "" {
+		where = append(where, "owner_id = ?")
+		args = append(args, strings.TrimSpace(opts.OwnerID))
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " WHERE " + strings.Join(where, " AND ")
+	}
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_import_batches`+whereSQL, args...).Scan(&total); err != nil {
+		return ImportBatchPage{}, err
+	}
+	queryArgs := append(append([]any{}, args...), opts.Limit, opts.Offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, root_path, owner_id, tenant_id, project_path, topic_hint, recursive, include_exts_json, exclude_globs_json, max_file_bytes,
+		status, total_files, queued_files, imported_files, skipped_files, failed_files, created_at, updated_at
+		FROM knowledge_import_batches`+whereSQL+` ORDER BY updated_at DESC LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return ImportBatchPage{}, err
 	}
 	defer rows.Close()
 	batches := make([]ImportBatch, 0)
 	for rows.Next() {
 		batch, err := scanImportBatch(rows)
 		if err != nil {
-			return nil, err
+			return ImportBatchPage{}, err
 		}
 		batches = append(batches, batch)
 	}
-	return batches, rows.Err()
+	if err := rows.Err(); err != nil {
+		return ImportBatchPage{}, err
+	}
+	return ImportBatchPage{Batches: batches, Total: total, Limit: opts.Limit, Offset: opts.Offset}, nil
 }
 
 func (s *SQLiteStore) GetImportBatch(ctx context.Context, batchID string) (ImportBatch, error) {
@@ -3891,6 +4003,9 @@ func deleteSourceCardsAndFacts(ctx context.Context, tx *sql.Tx, sourceID string)
 	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_facts_fts WHERE fact_id IN (SELECT id FROM knowledge_facts WHERE source_id = ?)`, sourceID); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_card_suppressions WHERE card_id IN (SELECT id FROM knowledge_cards WHERE source_id = ?)`, sourceID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_facts WHERE source_id = ?`, sourceID); err != nil {
 		return err
 	}
@@ -4129,6 +4244,7 @@ func stringSlicesEqual(a, b []string) bool {
 func hasListSourceFilters(opts ListSourcesOptions) bool {
 	return strings.TrimSpace(opts.OwnerID) != "" ||
 		strings.TrimSpace(opts.TenantID) != "" ||
+		strings.TrimSpace(opts.BatchID) != "" ||
 		strings.TrimSpace(opts.SearchScope) != "" ||
 		strings.TrimSpace(opts.ProjectPath) != "" ||
 		strings.TrimSpace(opts.Status) != "" ||

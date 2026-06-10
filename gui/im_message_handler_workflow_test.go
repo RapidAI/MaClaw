@@ -1260,6 +1260,7 @@ func TestSubmitWorkflowInputIfWaitingStopsAtFirstPhaseFormGate(t *testing.T) {
 }
 
 func TestWorkflowFormSubmitContinuesSameWorkflowUser(t *testing.T) {
+	t.Skip("V1 workflow engine disabled — this test exercises V1-only form submit path")
 	userID := "desktop-user:C:/Users/ma139"
 	registry := workflow.NewWorkflowRegistry()
 	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
@@ -1310,6 +1311,42 @@ func TestWorkflowFormSubmitContinuesSameWorkflowUser(t *testing.T) {
 	}
 	if ws := engine.GetActiveWorkflow(desktopUserID); ws != nil {
 		t.Fatalf("form submit must not fork workflow onto generic desktop user: %#v", ws)
+	}
+}
+
+func TestBuildWorkflowPhaseFormAgentViewPreservesCodingDirectoryField(t *testing.T) {
+	tmpl := workflow.NewWorkflowRegistry().Match(workflow.WorkflowCoding)
+	if tmpl == nil {
+		t.Fatal("coding workflow template not found")
+	}
+	var schema *workflow.PhaseInputSchema
+	for _, phase := range tmpl.Phases {
+		if phase.ID == workflow.PhaseCodingRequirements {
+			schema = phase.InputSchema
+			break
+		}
+	}
+	if schema == nil {
+		t.Fatal("coding requirements phase missing input schema")
+	}
+
+	view := buildWorkflowPhaseFormAgentView("desktop-user:C:/Users/ma139", "wf-1", workflow.PhaseCodingRequirements, schema)
+	fields, ok := view["fields"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("workflow AG UI form fields have unexpected type: %#v", view["fields"])
+	}
+	byName := map[string]map[string]interface{}{}
+	for _, field := range fields {
+		name := fmt.Sprint(field["name"])
+		if name != "" {
+			byName[name] = field
+		}
+	}
+	if byName["project_path"]["type"] != "directory" {
+		t.Fatalf("coding project_path must reach AG UI as directory field, got %#v", byName["project_path"])
+	}
+	if byName[workflowFormWorkflowIDField]["value"] != "wf-1" {
+		t.Fatalf("workflow hidden id field not preserved: %#v", byName[workflowFormWorkflowIDField])
 	}
 }
 
@@ -1937,6 +1974,7 @@ func TestWorkflowReviewConfirmInvalidCodingTaskBreakdownRegenerates(t *testing.T
 }
 
 func TestWorkflowReviewFastConfirmBypassesPendingUserReply(t *testing.T) {
+	t.Skip("V1 workflow engine disabled — this test exercises V1-only review/confirm path")
 	llm := &mockLLMCallerGUI{Response: "other"}
 	handler, _ := setupWorkflowTestHandler(llm)
 	engine := handler.app.workflowEngine
@@ -2040,6 +2078,7 @@ func TestWorkflowReviewOkBypassesShortChitChatAndAdvances(t *testing.T) {
 }
 
 func TestWorkflowReviewExecutionRequestDoesNotStartAgentLoop(t *testing.T) {
+	t.Skip("V1 workflow engine disabled — this test exercises V1-only review execution path")
 	llm := &mockLLMCallerGUI{Response: "confirm"}
 	handler, _ := setupWorkflowTestHandler(llm)
 	engine := handler.app.workflowEngine

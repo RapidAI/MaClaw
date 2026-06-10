@@ -20,7 +20,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 type IMMessageHandler struct {
@@ -40,7 +39,7 @@ type IMMessageHandler struct {
 	// the accessor methods fall through to h.app.XXX as a bridge.
 	// For TUI: h.app is nil, these fields are the sole source.
 
-	workflowEngine    *workflow.WorkflowEngine
+	// workflowEngine removed — V2 is the sole workflow engine.
 	unifiedClassifier *intent.UnifiedIntentClassifier
 	steeringStore     *steering.Store
 
@@ -451,7 +450,6 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		client:            chatClient,
 		taskClient:        taskClient,
 		agentActivity:     NewAgentActivityStore(),
-		workflowEngine:    app.workflowEngine,
 		unifiedClassifier: app.unifiedClassifier,
 		steeringStore:     app.steeringStore,
 	}

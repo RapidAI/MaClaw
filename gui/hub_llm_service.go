@@ -269,17 +269,26 @@ func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *corelib.AppConfig) {
 			*cfg = recovered
 			// Fall through to the normal status-fetch path below.
 		} else {
-			_, _ = a.syncHubLLMServiceStatusToConfig(HubLLMServiceStatus{}, false)
-			if freshCfg, err := a.LoadConfig(); err == nil {
-				*cfg = freshCfg
-			}
+			// Viewer token recovery failed. This is a transient condition
+			// (network issue, hub temporarily down, token expired and re-enroll
+			// not possible right now). Do NOT clear the hub provider from config
+			// — that would destructively switch the user's active LLM provider
+			// and require manual reconfiguration. The hub provider entry stays
+			// in the list; next heartbeat/connect will retry recovery.
+			log.Printf("[hub-llm-service] viewer token recovery failed, preserving existing provider config: %v", err)
 			return
 		}
 	}
 	status, err := a.fetchHubLLMServiceStatusWithTimeout(*cfg, hubServiceStatusTimeout)
 	if err != nil {
+		// Transient failure (503, timeout, network error). Preserve existing
+		// config — do not remove the hub provider on transient errors.
+		log.Printf("[hub-llm-service] status fetch failed (transient), preserving config: %v", err)
 		return
 	}
+	// Only apply status if Hub explicitly returned a response.
+	// An empty/zero status (Active=false, no grants, no base URL) from a
+	// successful HTTP 200 response means the entitlement was genuinely revoked.
 	_, _ = a.syncHubLLMServiceStatusToConfig(status, false)
 	if freshCfg, err := a.LoadConfig(); err == nil {
 		// Update the caller's copy so syncedMaclawLLMProviders returns fresh data.

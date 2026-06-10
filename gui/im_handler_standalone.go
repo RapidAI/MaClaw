@@ -28,7 +28,9 @@ import (
 // functionality gracefully (the accessor methods in im_app_accessors.go return
 // nil/zero when both the direct field and h.app are nil).
 type StandaloneConfig struct {
-	// WorkflowEngine is the corelib workflow engine (19 templates, phase management).
+	// WorkflowEngine is retained for test compatibility but not used at runtime.
+	// V2 is the sole workflow engine. Tests that create a V1 engine assign it here
+	// and the test helper sets h.app.workflowEngine directly.
 	WorkflowEngine *workflow.WorkflowEngine
 
 	// UnifiedClassifier is the three-layer intent classifier (UIC).
@@ -136,7 +138,6 @@ func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 		client:            chatClient,
 		taskClient:        chatClient, // TUI shares one pool
 		agentActivity:     NewAgentActivityStore(),
-		workflowEngine:    cfg.WorkflowEngine,
 		unifiedClassifier: localClassifier,
 		steeringStore:     cfg.SteeringStore,
 	}

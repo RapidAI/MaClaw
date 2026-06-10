@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -27,6 +28,9 @@ func (EchoExecutor) DescribeCapabilities(ctx context.Context, req ExecuteRequest
 func (EchoExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
 	_ = ctx
 	content := fmt.Sprintf("instance=%s\nmaclaw executor adapter is not wired yet.\nreceived: %s", req.Instance.ID, req.Message.Content)
+	if len(req.Message.Attachments) > 0 {
+		content += fmt.Sprintf("\nattachments: %d", len(req.Message.Attachments))
+	}
 	return &ExecuteResult{Content: content, OutputType: "text/plain", Metadata: map[string]string{"agent_id": req.Session.AgentID}}, nil
 }
 
@@ -47,7 +51,7 @@ func (e SimpleLLMExecutor) Execute(ctx context.Context, req ExecuteRequest) (*Ex
 	if err != nil {
 		return nil, err
 	}
-	messages := buildConversation(req)
+	messages := buildConversation(req, llmCfg)
 	client := e.clientFor(llmCfg)
 	respText, err := simpleLLMRequest(ctx, llmCfg, messages, client)
 	if err != nil {
@@ -123,7 +127,7 @@ func TestLLMConfig(ctx context.Context, cfg corelib.AppConfig, client *http.Clie
 	return result
 }
 
-func buildConversation(req ExecuteRequest) []interface{} {
+func buildConversation(req ExecuteRequest, cfg corelib.MaclawLLMConfig) []interface{} {
 	conversation := make([]interface{}, 0, len(req.History)+2)
 	conversation = append(conversation, map[string]string{"role": "system", "content": serviceSystemPrompt(req)})
 	for _, msg := range req.History {
@@ -136,7 +140,8 @@ func buildConversation(req ExecuteRequest) []interface{} {
 		}
 		conversation = append(conversation, map[string]string{"role": role, "content": msg.Content})
 	}
-	conversation = append(conversation, map[string]string{"role": "user", "content": req.Message.Content})
+	userContent := agent.BuildUserContent(req.Message.Content, req.Message.Attachments, cfg.Protocol, cfg.SupportsVision, nil)
+	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 	return conversation
 }
 

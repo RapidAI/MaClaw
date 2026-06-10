@@ -3097,7 +3097,7 @@ func zipDirectory(srcDir, zipPath string) (err error) {
 		if entry.IsDir() && isSkillRuntimePackageDir(base) {
 			return filepath.SkipDir
 		}
-		if !entry.IsDir() && isSkillRuntimePackageFile(base) {
+		if !entry.IsDir() && isSkillRuntimePackageFile(base) && base != "skill_package_manifest.json" {
 			return nil
 		}
 		zipName := filepath.ToSlash(rel)

@@ -100,11 +100,6 @@ func (h *IMMessageHandler) resolveTaskContext(
 	}
 
 	hasActiveUnderstanding := false
-	if engine := h.getWorkflowEngine(); engine != nil {
-		if understanding := engine.GetUnderstanding(); understanding != nil {
-			hasActiveUnderstanding = understanding.HasActiveSession(userID)
-		}
-	}
 
 	if ctx == nil {
 		ctx = context.Background()

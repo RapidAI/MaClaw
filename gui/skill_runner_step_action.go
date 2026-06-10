@@ -50,6 +50,15 @@ func (k skillStepActionKind) IsCraftTool() bool {
 	return k == skillStepActionCraftTool
 }
 
+func (k skillStepActionKind) UsesLegacySessionProcessEnv() bool {
+	switch k {
+	case skillStepActionCreateSession, skillStepActionSendInput, skillStepActionSendAndObserve, skillStepActionControlSession:
+		return true
+	default:
+		return false
+	}
+}
+
 func (k skillStepActionKind) UsesManagedProcessEnv() bool {
 	switch k {
 	case skillStepActionBash, skillStepActionCraftTool, skillStepActionPoll:

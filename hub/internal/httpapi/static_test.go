@@ -383,6 +383,75 @@ func TestHubProfessionalStylesheetsAreAsciiAndTokenized(t *testing.T) {
 	}
 }
 
+func TestConnectorPageDocumentsServerOwnedMediaProtocol(t *testing.T) {
+	indexPath := filepath.Join("..", "..", "web", "connector", "index.html")
+	body, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read connector index: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		`/media/upload-url`,
+		`server_media_upload`,
+		`server_media_download`,
+		`maxDirectBytes`,
+		`maxBodyBytes`,
+		`maxMediaBytes`,
+		`mediaToken`,
+		`message.id`,
+		`attachments[].id`,
+		`message.fileName`,
+		`does not replace <code>id</code>, <code>data</code>, or server <code>url</code>`,
+		`Client Tool Execution Extension`,
+		`client_tools`,
+		`tool_call`,
+		`tool_plan`,
+		`POST /tool-result`,
+		`resultId`,
+		`idempotencyKey`,
+		`requiresApproval`,
+		`"risk": "write"`,
+		`success</code>, <code>error</code>, <code>rejected</code>, <code>cancelled</code>, or <code>timeout`,
+		`replyToMessageId`,
+		`nextCursor`,
+		`The client must not provide its own download URL for the server to fetch.`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("connector page missing protocol contract %q", want)
+		}
+	}
+	for _, stale := range []string{
+		`"protocolVersion": "1.0"`,
+		`"sender":`,
+		`"timestamp":`,
+		`"replyToEventId":`,
+		`riskLevel`,
+		`stopOnError`,
+	} {
+		if strings.Contains(content, stale) {
+			t.Fatalf("connector page still contains stale protocol field %q", stale)
+		}
+	}
+
+	cssPath := filepath.Join("..", "..", "web", "connector", "professional.css")
+	css, err := os.ReadFile(cssPath)
+	if err != nil {
+		t.Fatalf("read connector css: %v", err)
+	}
+	cssContent := string(css)
+	for _, want := range []string{
+		`body{margin:0`,
+		`main{max-width:1040px;margin:0 auto`,
+		`.lang-panel{display:none}`,
+		`.lang-panel.active{display:block}`,
+		`pre{white-space:pre-wrap;word-break:break-word}`,
+	} {
+		if !strings.Contains(cssContent, want) {
+			t.Fatalf("connector css missing contract %q", want)
+		}
+	}
+}
+
 func TestHubStaticPagesKeepAccessibilityContracts(t *testing.T) {
 	read := func(t *testing.T, parts ...string) string {
 		t.Helper()

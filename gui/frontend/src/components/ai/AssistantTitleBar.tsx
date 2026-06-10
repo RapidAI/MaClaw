@@ -56,6 +56,7 @@ interface AssistantTitleBarProps {
     ttsPlaying: boolean;
     toggleProjectSearch: () => void;
     updateAvailable?: AssistantUpdatePayload | null;
+    workflowActive?: boolean;
 }
 
 const stopMouse = (handler: () => void) => (e: MouseEvent) => {
@@ -64,7 +65,7 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
     handler();
 };
 
-export function AssistantTitleBar({ clearHistory, codingAgentProgress, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onToggleMaximize, projectSearchOpen, refreshNews, setThemeMode, setTtsEnabled, showMaximizeToggle, theme: t, themeMode, title, trialReflectEnabled, ttsEnabled, ttsPlaying, toggleProjectSearch, updateAvailable }: AssistantTitleBarProps) {
+export function AssistantTitleBar({ clearHistory, codingAgentProgress, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onToggleMaximize, projectSearchOpen, refreshNews, setThemeMode, setTtsEnabled, showMaximizeToggle, theme: t, themeMode, title, trialReflectEnabled, ttsEnabled, ttsPlaying, toggleProjectSearch, updateAvailable, workflowActive }: AssistantTitleBarProps) {
     const toggleTts = () => setTtsEnabled(!ttsEnabled);
     const toggleTheme = () => setThemeMode(themeMode === "dark" ? "light" : "dark");
     const normalizedCodingAgentProgress = codingAgentProgress ? normalizeCodingAgentProgress(codingAgentProgress) : null;
@@ -76,6 +77,7 @@ export function AssistantTitleBar({ clearHistory, codingAgentProgress, inline, l
                 {!inline && <div style={{ display: "flex", gap: "5px", flexShrink: 0 }}><span style={{ ...dotBase, background: "#ff5f57" }} onClick={onClose} title={lang === "en" ? "Close" : "\u5173\u95ed"} /></div>}
                 <span style={{ color: t.titleText, fontSize: "11px", fontWeight: 600, letterSpacing: "0.02em", fontFamily: "'Segoe UI', 'SF Pro Text', system-ui, sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", transform: "translateY(-0.5px)" }}>{title}</span>
                 {trialReflectEnabled && <span style={{ fontSize: "10px", lineHeight: 1, padding: "3px 6px", borderRadius: "999px", background: "rgba(99, 102, 241, 0.12)", color: t.headingColor, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{lang === "en" ? "Trial+Reflect" : "\u8bd5\u9519\u53cd\u601d"}</span>}
+                {workflowActive && <span className="workflow-active-indicator" style={{ fontSize: "10px", lineHeight: 1, padding: "3px 8px", borderRadius: "999px", background: "rgba(34, 197, 94, 0.15)", color: "#16a34a", border: "1px solid rgba(34, 197, 94, 0.3)", flexShrink: 0, fontWeight: 600, animation: "workflow-pulse 1.5s ease-in-out infinite" }} title={lang === "en" ? "Workflow in progress" : "\u5de5\u4f5c\u6d41\u8fdb\u884c\u4e2d"}>{lang === "en" ? "\u26a1 Workflow" : "\u26a1 \u5de5\u4f5c\u6d41"}</span>}
                 {normalizedCodingAgentProgress && codingTone && <span className={codingAgentStatusClassName(normalizedCodingAgentProgress, "title-bar")} data-testid="coding-agent-title-status" {...codingAgentStatusDataAttrs(normalizedCodingAgentProgress, "title-bar")} role="status" aria-live="polite" aria-label={codingDisplayText} title={codingDisplayText} style={{ fontSize: "10px", lineHeight: 1, padding: "3px 6px", borderRadius: "999px", background: codingTone.bg, color: codingTone.accent, border: `1px solid ${codingTone.border}`, flexShrink: 0, fontWeight: 700 }}>{codingAgentCompactText(normalizedCodingAgentProgress, lang)}</span>}
             </div>
             <div style={{ display: "flex", alignItems: "center", flexShrink: 0, paddingRight: inline ? 0 : 2, ...(inline ? { "--wails-draggable": "no-drag", position: "relative", zIndex: 30010 } satisfies WailsDragStyle : {}) }}>

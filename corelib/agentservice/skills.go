@@ -548,28 +548,66 @@ func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in 
 	if baseURL == "" {
 		baseURL = strings.TrimRight(remote.DefaultRemoteHubCenterURL, "/")
 	}
-	report, err := skill.ValidateSkillPortability(dir)
+	snapshot, err := zipDirectoryBytes(dir)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot skill before upload preflight: %w", err)
+	}
+	preflight, err := skill.PrepareSkillForUpload(dir)
+	if err != nil {
+		if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
+			return nil, fmt.Errorf("upload preflight failed: %w; rollback failed: %v", err, restoreErr)
+		}
+		return nil, err
+	}
+	if !preflight.Portable() {
+		_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.rejected", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"phase": "upload_preflight", "summary": skill.PreflightSummaryLine(preflight)}})
+		if len(preflight.AutoFixed) > 0 {
+			if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
+				return nil, fmt.Errorf("%s; rollback failed: %v", skill.FormatUploadPreflight(preflight), restoreErr)
+			}
+		}
+		return nil, fmt.Errorf("%s", skill.FormatUploadPreflight(preflight))
+	}
+	uploadEntry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		if len(preflight.AutoFixed) > 0 {
+			if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
+				return nil, fmt.Errorf("reload skill after upload preflight: %w; rollback failed: %v", err, restoreErr)
+			}
+		}
+		return nil, fmt.Errorf("reload skill after upload preflight: %w", err)
+	}
+	if strings.TrimSpace(uploadEntry.Name) == "" {
+		uploadEntry.Name = entry.Name
+	}
+	uploadEntry.SkillDir = dir
+	if err := s.scanSkillForOutbound(ctx, p, *uploadEntry, dir, "upload"); err != nil {
+		if len(preflight.AutoFixed) > 0 {
+			if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
+				return nil, fmt.Errorf("%w; rollback failed: %v", err, restoreErr)
+			}
+		}
+		return nil, err
+	}
+	archive, err := zipSkillUploadArchiveBytes(dir)
 	if err != nil {
 		return nil, err
 	}
-	if report.Summary.Errors > 0 {
-		return nil, fmt.Errorf("upload blocked: %d portability error(s) found", report.Summary.Errors)
+	fileName := normalizeSkillDirName(uploadEntry.Name)
+	if fileName == "" {
+		fileName = normalizeSkillDirName(entry.Name)
 	}
-	if err := s.scanSkillForOutbound(ctx, p, entry, dir, "upload"); err != nil {
-		return nil, err
+	if fileName == "" {
+		fileName = "skill"
 	}
-	archive, err := zipDirectoryBytes(dir)
-	if err != nil {
-		return nil, err
-	}
-	submissionID, err := submitSkillArchive(ctx, baseURL, email, normalizeSkillDirName(entry.Name)+".zip", archive, strings.TrimSpace(in.AuthToken))
+	submissionID, err := submitSkillArchive(ctx, baseURL, email, fileName+".zip", archive, strings.TrimSpace(in.AuthToken))
 	if err != nil {
 		return nil, err
 	}
 	statusPath := filepath.Join(dir, "upload_status.json")
 	statusBody, _ := json.MarshalIndent(map[string]string{"submission_id": submissionID, "uploaded_at": s.now().Format(time.RFC3339)}, "", "  ")
 	_ = fileutil.AtomicWriteFile(statusPath, append(statusBody, '\n'), 0o600)
-	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.uploaded", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"submission_id": submissionID}})
+	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.uploaded", ResourceType: "skill", ResourceID: uploadEntry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"submission_id": submissionID}})
 	return &SkillUploadResult{SubmissionID: submissionID, Status: "submitted"}, nil
 }
 
@@ -1365,6 +1403,14 @@ func copyDirContents(src, dst string) error {
 }
 
 func zipDirectoryBytes(srcDir string) ([]byte, error) {
+	return zipDirectoryBytesFiltered(srcDir, nil)
+}
+
+func zipSkillUploadArchiveBytes(srcDir string) ([]byte, error) {
+	return zipDirectoryBytesFiltered(srcDir, shouldSkipSkillUploadArchiveEntry)
+}
+
+func zipDirectoryBytesFiltered(srcDir string, skip func(rel string, info os.FileInfo) bool) ([]byte, error) {
 	var buf bytes.Buffer
 	writer := zip.NewWriter(&buf)
 	err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
@@ -1376,6 +1422,12 @@ func zipDirectoryBytes(srcDir string) ([]byte, error) {
 			return err
 		}
 		if rel == "." {
+			return nil
+		}
+		if skip != nil && skip(rel, info) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -1414,6 +1466,13 @@ func zipDirectoryBytes(srcDir string) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func shouldSkipSkillUploadArchiveEntry(rel string, info os.FileInfo) bool {
+	if info.IsDir() {
+		return skill.IsSkillRuntimePackageDir(rel)
+	}
+	return skill.IsSkillRuntimePackageFile(rel)
 }
 
 func firstNonEmpty(values ...string) string {

@@ -134,6 +134,13 @@ type LoopResult struct {
 //
 // hooks is optional — pass nil to use DefaultLoopHooks.
 func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, httpClient *http.Client, hooks ...LoopHooks) LoopResult {
+	return RunLoopWithUserContent(cb, userText, userText, history, httpClient, hooks...)
+}
+
+// RunLoopWithUserContent executes the core agent loop with a prebuilt user
+// content payload. userText remains the plain text used for prompt/context
+// construction, while userContent may be a multimodal content array.
+func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent interface{}, history []ConversationEntry, httpClient *http.Client, hooks ...LoopHooks) LoopResult {
 	var h LoopHooks = DefaultLoopHooks{}
 	if len(hooks) > 0 && hooks[0] != nil {
 		h = hooks[0]
@@ -161,7 +168,7 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 	for _, entry := range history {
 		conversation = append(conversation, entry.ToMessage())
 	}
-	conversation = append(conversation, map[string]string{"role": "user", "content": userText})
+	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 
 	if httpClient == nil {
 		httpClient = &http.Client{

@@ -25,6 +25,21 @@ func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow
 	}
 	schema = localizeWorkflowPhaseInputSchema(schema, h.getWorkflowLang())
 
+	var ws *workflow.WorkflowState
+	workflowID := ""
+	if ws != nil {
+		workflowID = ws.ID
+	}
+
+	view := buildWorkflowPhaseFormAgentView(userID, workflowID, phaseID, schema)
+	h.app.emitAgentView(view)
+	log.Printf("[workflow-form] emitted AG UI form: phase=%s fields=%d", phaseID, len(schema.Fields))
+}
+
+func buildWorkflowPhaseFormAgentView(userID, workflowID, phaseID string, schema *workflow.PhaseInputSchema) map[string]interface{} {
+	if schema == nil {
+		return nil
+	}
 	fields := make([]map[string]interface{}, 0, len(schema.Fields)+3)
 	for _, f := range schema.Fields {
 		field := map[string]interface{}{
@@ -69,15 +84,6 @@ func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow
 		fields = append(fields, field)
 	}
 
-	var ws *workflow.WorkflowState
-	if engine := h.getWorkflowEngine(); engine != nil {
-		ws = engine.GetActiveWorkflow(userID)
-	}
-	workflowID := ""
-	if ws != nil {
-		workflowID = ws.ID
-	}
-
 	// Hidden fields carrying stable workflow routing. The agent loop clears
 	// lastUserID after it finishes, so form submit must not depend on that
 	// transient field.
@@ -110,8 +116,7 @@ func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow
 			"phase_id": phaseID,
 		},
 	}
-	h.app.emitAgentView(view)
-	log.Printf("[workflow-form] emitted AG UI form: phase=%s fields=%d", phaseID, len(schema.Fields))
+	return view
 }
 
 // handleWorkflowFormAgentViewSubmit processes the user's form submission from
@@ -129,122 +134,12 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 	}
 	handler := hubClient.ensureIMHandler()
 	lang := handler.getWorkflowLang()
-	engine := handler.getWorkflowEngine()
-	if engine == nil {
-		return &IMAgentResponse{
-			Text:           i18n.T(i18n.MsgWorkflowUnavailable, lang),
-			Error:          "no workflow engine",
-			ResponseSource: imResponseSourceAgentViewSubmit.String(),
-		}
-	}
-
-	if submittedPhaseID := workflowFormStringField(data, workflowFormPhaseField); submittedPhaseID != "" && submittedPhaseID != phaseID {
-		return &IMAgentResponse{
-			Text:           i18n.T(i18n.MsgWorkflowFormPhaseStale, lang),
-			Error:          fmt.Sprintf("workflow phase field mismatch: expected %s, got %s", phaseID, submittedPhaseID),
-			ResponseSource: imResponseSourceAgentViewSubmit.String(),
-		}
-	}
-
-	userID := resolveWorkflowFormUserID(handler, engine, phaseID, data)
-	ws := engine.GetActiveWorkflow(userID)
-	if ws == nil {
-		return &IMAgentResponse{
-			Text:           i18n.T(i18n.MsgWorkflowFormNoActive, lang),
-			Error:          "no active workflow",
-			ResponseSource: imResponseSourceAgentViewSubmit.String(),
-		}
-	}
-	if submittedWorkflowID := workflowFormStringField(data, workflowFormWorkflowIDField); submittedWorkflowID != "" && ws.ID != submittedWorkflowID {
-		return &IMAgentResponse{
-			Text:           i18n.T(i18n.MsgWorkflowFormStale, lang),
-			Error:          fmt.Sprintf("workflow mismatch: expected %s, got %s", ws.ID, submittedWorkflowID),
-			ResponseSource: imResponseSourceAgentViewSubmit.String(),
-		}
-	}
-	if ws.CurrentPhase != phaseID {
-		return &IMAgentResponse{
-			Text:           i18n.T(i18n.MsgWorkflowFormPhaseChanged, lang),
-			Error:          fmt.Sprintf("phase mismatch: expected %s, got %s", ws.CurrentPhase, phaseID),
-			ResponseSource: imResponseSourceAgentViewSubmit.String(),
-		}
-	}
-
-	// Remove hidden/internal fields from form data before passing to engine.
-	cleanData := make(map[string]interface{}, len(data))
-	for k, v := range data {
-		if !strings.HasPrefix(k, "_") {
-			cleanData[k] = v
-		}
-	}
-	formProjectPath := ""
-	if projectPath := workflowFormStringField(cleanData, workflowFormProjectPathField); projectPath != "" {
-		normalizedPath, _, err := normalizeWorkflowProjectPath(projectPath)
-		if err != nil {
-			return &IMAgentResponse{
-				Text:           i18n.T(i18n.MsgWorkflowFormSubmitError, lang),
-				Error:          err.Error(),
-				ResponseSource: imResponseSourceAgentViewSubmit.String(),
-			}
-		}
-		formProjectPath = normalizedPath
-		cleanData[workflowFormProjectPathField] = normalizedPath
-	}
-
-	resp, err := engine.SubmitPhaseForm(userID, cleanData)
-	if err != nil {
-		return &IMAgentResponse{
-			Text:           i18n.T(i18n.MsgWorkflowFormSubmitError, lang),
-			Error:          err.Error(),
-			ResponseSource: imResponseSourceAgentViewSubmit.String(),
-		}
-	}
-	if formProjectPath != "" {
-		if err := engine.SetProjectPath(userID, formProjectPath); err != nil {
-			return &IMAgentResponse{
-				Text:           i18n.T(i18n.MsgWorkflowFormSubmitError, lang),
-				Error:          err.Error(),
-				ResponseSource: imResponseSourceAgentViewSubmit.String(),
-			}
-		}
-	}
-
-	a.clearAgentViewWithPayload("workflow:form:"+phaseID, workflowFormLifecyclePayloadFor(ws.ID, phaseID, userID, data))
-
-	if resp.RunAgentLoop && resp.PhasePrompt != "" {
-		log.Printf("[workflow-form] form submitted: user=%s phase=%s fields=%d; triggering agent loop via workflow continuation",
-			userID, phaseID, len(cleanData))
-
-		handler.stashedPhasePrompt.Store(userID, resp.PhasePrompt)
-		handler.workflowAgentLoopMarker.Store(userID, true)
-
-		requestID, err := a.continueAIAssistantWorkflowMessage(userID, buildFormSubmissionSummary(cleanData), requestID)
-		if err != nil {
-			handler.stashedPhasePrompt.Delete(userID)
-			handler.workflowAgentLoopMarker.Delete(userID)
-			return &IMAgentResponse{
-				Text:           i18n.T(i18n.MsgWorkflowFormContinueError, lang),
-				Error:          err.Error(),
-				ResponseSource: imResponseSourceAgentViewSubmit.String(),
-			}
-		}
-
-		return &IMAgentResponse{
-			RequestID:      requestID,
-			Deferred:       true,
-			Text:           i18n.T(i18n.MsgWorkflowFormGenerating, lang),
-			ResponseSource: imResponseSourceAgentViewSubmit.String(),
-		}
-	}
-
-	if resp.Text != "" {
-		return &IMAgentResponse{
-			Text:           resp.Text,
-			ResponseSource: imResponseSourceAgentViewSubmit.String(),
-		}
-	}
+	_ = handler
+	_ = data
+	_ = requestID
 	return &IMAgentResponse{
-		Text:           i18n.T(i18n.MsgWorkflowFormSubmitted, lang),
+		Text:           i18n.T(i18n.MsgWorkflowUnavailable, lang),
+		Error:          "no workflow engine",
 		ResponseSource: imResponseSourceAgentViewSubmit.String(),
 	}
 }

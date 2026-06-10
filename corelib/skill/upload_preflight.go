@@ -2,6 +2,7 @@ package skill
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -50,6 +51,10 @@ type PortabilityPathIssue struct {
 	Suggestion string `json:"suggestion"`
 }
 
+type UploadPreflightOptions struct {
+	AutoFix bool
+}
+
 // Portable reports whether the skill is safe to upload: no remaining absolute
 // paths and no missing bundled files.
 func (r *UploadPreflightResult) Portable() bool {
@@ -77,6 +82,10 @@ func (r *UploadPreflightResult) Portable() bool {
 // caller is responsible for the security scan, quality score, and the actual
 // network submission.
 func PrepareSkillForUpload(skillDir string) (*UploadPreflightResult, error) {
+	return PrepareSkillForUploadWithOptions(skillDir, UploadPreflightOptions{AutoFix: true})
+}
+
+func PrepareSkillForUploadWithOptions(skillDir string, opts UploadPreflightOptions) (*UploadPreflightResult, error) {
 	skillDir = strings.TrimSpace(skillDir)
 	if skillDir == "" {
 		return nil, fmt.Errorf("skill directory is empty")
@@ -84,14 +93,14 @@ func PrepareSkillForUpload(skillDir string) (*UploadPreflightResult, error) {
 
 	result := &UploadPreflightResult{SkillDir: skillDir}
 
-	// Step 1: apply safe auto-fixes in place (persisting, with .bak backups).
-	changes, fixErr := AutoFixPortability(skillDir)
-	if fixErr != nil {
-		return nil, fmt.Errorf("auto-fix portability: %w", fixErr)
+	if opts.AutoFix {
+		changes, fixErr := AutoFixPortability(skillDir)
+		if fixErr != nil {
+			return nil, fmt.Errorf("auto-fix portability: %w", fixErr)
+		}
+		result.AutoFixed = changes
 	}
-	result.AutoFixed = changes
 
-	// Step 2: re-validate against the post-fix state.
 	report, err := ValidateSkillPortability(skillDir)
 	if err != nil {
 		return nil, fmt.Errorf("validate portability: %w", err)
@@ -102,21 +111,18 @@ func PrepareSkillForUpload(skillDir string) (*UploadPreflightResult, error) {
 	for _, issue := range report.Issues {
 		switch issue.Category {
 		case "hardcoded_path", "missing_basedir":
-			// Absolute paths that survived auto-fix are machine-specific and
-			// must be converted by the agent.
 			result.BlockingPaths = append(result.BlockingPaths, PortabilityPathIssue{
 				Path:       extractIssuePath(issue.Message),
 				File:       issue.File,
 				Suggestion: issue.Suggestion,
 			})
 		default:
-			if issue.Severity == SeverityWarning {
+			if issue.Severity == SeverityWarning || issue.Severity == SeverityInfo {
 				result.Warnings = append(result.Warnings, formatPreflightWarning(issue))
 			}
 		}
 	}
 
-	// Step 3: verify referenced local files are bundled inside the package.
 	result.MissingFiles = missingBundledFileReferences(skillDir, report.SkillName)
 
 	return result, nil
@@ -130,7 +136,6 @@ func PrepareSkillForUpload(skillDir string) (*UploadPreflightResult, error) {
 func missingBundledFileReferences(skillDir, fallbackName string) []string {
 	entry, _, err := loadSkillFromDir(skillDir, fallbackName)
 	if err != nil || entry == nil {
-		// SKILL.md-only or markdown skills: fall back to the markdown loader.
 		if parsed, mdErr := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{NameFallback: fallbackName}); mdErr == nil {
 			entry = parsed
 		} else {
@@ -138,7 +143,7 @@ func missingBundledFileReferences(skillDir, fallbackName string) []string {
 		}
 	}
 	entry.SkillDir = skillDir
-	return CollectMissingStepFileReferences(entry)
+	return CollectMissingPackageFileReferences(entry)
 }
 
 // extractIssuePath pulls the quoted path out of a portability issue message
@@ -163,10 +168,28 @@ func formatPreflightWarning(issue PortabilityIssue) string {
 	return fmt.Sprintf("[%s] %s", issue.Category, issue.Message)
 }
 
+func IsSkillRuntimePackageFile(name string) bool {
+	base := strings.ToLower(filepath.Base(name))
+	return strings.HasSuffix(base, ".bak") ||
+		base == "upload_status.json" ||
+		base == "quality_status.json" ||
+		base == "skill_package_manifest.json" ||
+		base == ".patches.json"
+}
+
+func IsSkillRuntimePackageDir(name string) bool {
+	base := strings.ToLower(filepath.Base(name))
+	switch base {
+	case ".git", ".hg", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache", "node_modules":
+		return true
+	default:
+		return false
+	}
+}
+
 // FormatUploadPreflight renders an UploadPreflightResult as an agent-readable
-// report. When the skill is not portable, the report lists the concrete
-// absolute paths / missing files and how to fix each one so the agent can
-// patch the skill and retry the upload.
+// report. When the skill is not portable, the report lists concrete absolute
+// paths / missing files and how to fix each one.
 func FormatUploadPreflight(result *UploadPreflightResult) string {
 	if result == nil {
 		return ""
@@ -174,60 +197,60 @@ func FormatUploadPreflight(result *UploadPreflightResult) string {
 	var b strings.Builder
 
 	if len(result.AutoFixed) > 0 {
-		b.WriteString(fmt.Sprintf("🔧 已自动修正 %d 处可移植性问题（原路径已替换为 {baseDir}/相对路径/$HOME，并生成 .bak 备份）：\n", len(result.AutoFixed)))
+		b.WriteString(fmt.Sprintf("Auto-fixed %d portable path issue(s). Backups were written as .bak files.\n", len(result.AutoFixed)))
 		for _, c := range result.AutoFixed {
 			where := c.File
 			if c.Field != "" {
 				where = fmt.Sprintf("%s [%s]", c.File, c.Field)
 			}
-			b.WriteString(fmt.Sprintf("  • %s\n      - %s\n      + %s\n", where, c.Original, c.Replacement))
+			b.WriteString(fmt.Sprintf("  - %s\n      - %s\n      + %s\n", where, c.Original, c.Replacement))
 		}
 		b.WriteByte('\n')
 	}
 
 	if result.Portable() {
-		b.WriteString("✅ 可移植性检查通过：未发现影响其它机器安装/运行的绝对路径或缺失文件。\n")
+		b.WriteString("Upload preflight passed: no blocking absolute paths or missing bundled files were found.\n")
 		if len(result.Warnings) > 0 {
-			b.WriteString("\n⚠️ 以下为非阻塞警告，建议关注：\n")
+			b.WriteString("\nNon-blocking warnings:\n")
 			for _, w := range result.Warnings {
-				b.WriteString("  • " + w + "\n")
+				b.WriteString("  - " + w + "\n")
 			}
 		}
 		return b.String()
 	}
 
-	b.WriteString("❌ 上传被阻止：发现会影响其它机器使用的问题，请修正后重试。\n")
+	b.WriteString("Upload blocked: preflight found portability/completeness problems that would break on another machine.\n")
 
 	if len(result.BlockingPaths) > 0 {
-		b.WriteString(fmt.Sprintf("\n绝对路径（%d 处，需改为 SkillRunner 支持的宏或相对路径）：\n", len(result.BlockingPaths)))
+		b.WriteString(fmt.Sprintf("\nBlocking absolute paths (%d):\n", len(result.BlockingPaths)))
 		for _, p := range result.BlockingPaths {
-			b.WriteString(fmt.Sprintf("  • %s（位于 %s）\n", p.Path, p.File))
+			b.WriteString(fmt.Sprintf("  - %s (in %s)\n", p.Path, p.File))
 			suggestion := strings.TrimSpace(p.Suggestion)
 			if suggestion == "" {
-				suggestion = "改为 {baseDir}/相对路径（指向 skill 包内文件），或改为运行时参数 {{key}}（指向用户提供的路径）"
+				suggestion = "Change it to {baseDir}/relative/path for bundled files, or to a runtime parameter such as {{input}}."
 			}
-			b.WriteString("      💡 " + suggestion + "\n")
+			b.WriteString("      Fix: " + suggestion + "\n")
 		}
 	}
 
 	if len(result.MissingFiles) > 0 {
-		b.WriteString(fmt.Sprintf("\n缺失的依赖文件（%d 处，skill 引用了但未打包进 skill 目录）：\n", len(result.MissingFiles)))
+		b.WriteString(fmt.Sprintf("\nMissing bundled files (%d):\n", len(result.MissingFiles)))
 		for _, f := range result.MissingFiles {
-			b.WriteString("  • " + f + "\n")
+			b.WriteString("  - " + f + "\n")
 		}
-		b.WriteString("      💡 将这些脚本/文件复制到 skill 目录内，并在命令中用 {baseDir}/文件名 引用\n")
+		b.WriteString("      Fix: copy these scripts/assets into the skill directory and reference them with {baseDir}/...\n")
 	}
 
-	b.WriteString("\nSkillRunner 支持的可移植引用方式：\n")
-	b.WriteString("  • {baseDir}/scripts/run.py —— 指向 skill 包内的文件（推荐，运行时自动展开为 skill 目录）\n")
-	b.WriteString("  • $HOME/... —— 指向用户主目录下的文件\n")
-	b.WriteString("  • {{input}} / {{output}} / {{key}} —— 运行时由用户/调用方提供的参数\n")
-	b.WriteString("\n修正后用 manage_skill(action=\"upload\", name=\"" + result.SkillName + "\") 重新上传。\n")
+	b.WriteString("\nPortable references supported by SkillRunner:\n")
+	b.WriteString("  - {baseDir}/scripts/run.py: bundled file inside the skill package.\n")
+	b.WriteString("  - $HOME/...: user-home file, when truly user-specific.\n")
+	b.WriteString("  - {{input}} / {{output}} / {{key}}: runtime parameter supplied by caller/user.\n")
+	b.WriteString("\nAfter fixing, retry with manage_skill(action=\"upload\", name=\"" + result.SkillName + "\").\n")
 
 	if len(result.Warnings) > 0 {
-		b.WriteString("\n⚠️ 另有非阻塞警告：\n")
+		b.WriteString("\nNon-blocking warnings:\n")
 		for _, w := range result.Warnings {
-			b.WriteString("  • " + w + "\n")
+			b.WriteString("  - " + w + "\n")
 		}
 	}
 

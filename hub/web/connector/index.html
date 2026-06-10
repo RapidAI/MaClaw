@@ -1,54 +1,462 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MaClaw 第三方软件接入</title><style>:root{color-scheme:light dark}body{margin:0;background:#f7f8fb;color:#172033;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:980px;margin:0 auto;padding:32px 22px 64px}.toolbar{display:flex;justify-content:flex-end;gap:6px;margin-bottom:18px}.lang-btn{border:1px solid #b8c2d4;border-radius:999px;background:#fff;color:#172033;padding:6px 12px;cursor:pointer;font-weight:600}.lang-btn.active{background:#172033;color:#fff;border-color:#172033}h1{font-size:30px;margin:0 0 10px}h2{font-size:20px;margin-top:34px;border-top:1px solid #dfe4ee;padding-top:22px}h3{font-size:16px;margin-top:22px}p,li{line-height:1.72}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}pre{overflow:auto;background:#111827;color:#eef2ff;padding:14px;border-radius:8px}table{width:100%;border-collapse:collapse;margin:12px 0;background:#fff}th,td{border:1px solid #dfe4ee;padding:9px 10px;text-align:left;vertical-align:top}th{background:#eef2f8}.lead{color:#516070;font-size:16px}.pill{display:inline-block;border:1px solid #b8c2d4;border-radius:999px;padding:3px 10px;margin:4px 6px 4px 0;background:#fff}.lang-panel{display:none}.lang-panel.active{display:block}@media(prefers-color-scheme:dark){body{background:#0b1020;color:#e8edf7}.lead{color:#aeb8ca}table,.pill,.lang-btn{background:#11182a;color:#e8edf7}.lang-btn.active{background:#e8edf7;color:#11182a;border-color:#e8edf7}th{background:#18223a}th,td,h2,.pill,.lang-btn{border-color:#2b3856}}</style><link rel="stylesheet" href="/connector/professional.css"></head><body><main><div class="toolbar" aria-label="Language"><button class="lang-btn" data-lang="zh" type="button">&#20013;&#25991;</button><button class="lang-btn" data-lang="en" type="button">English</button></div><section class="lang-panel" data-lang-panel="zh"><h1>MaClaw 第三方软件接入协议 v1</h1><p class="lead">第三方软件主动连接 MaClaw 本机 HTTP 网关，通过简洁的 JSON 协议发送用户消息，并用长轮询获取 Agent 回复。接入方不需要提供公网回调地址。</p><p><span class="pill">默认地址 http://127.0.0.1:18777/api/im-gateway/v1</span><span class="pill">认证 Bearer Token</span><span class="pill">客户端主动长轮询</span></p><h2>1. 接入流程</h2><ol><li>在 MaClaw 桌面端打开“设置 / 消息接入 / 第三方软件接入”。</li><li>配置 Host、Port 和 Token，默认监听本机 127.0.0.1:18777。</li><li>第三方软件调用 /handshake 获取能力和会话参数。</li><li>调用 /incoming 提交用户消息。</li><li>调用 /outgoing 使用 cursor 长轮询拉取回复，并用 /ack 确认已处理。</li></ol><h2>2. 认证</h2><p>所有接口建议携带 HTTP 头：</p><pre>Authorization: Bearer &lt;token&gt;</pre><p>所有 API 调用都必须携带 Token。建议在 MaClaw 里点击“生成 Token”获取强随机密钥。如果 Token 可能泄露，请重新生成并更新第三方配置。</p><h2>3. 接口</h2><h3>GET /health</h3><pre>{ "ok": true, "status": "connected" }</pre><h3>POST /handshake</h3><pre>{
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MaClaw 第三方软件接入协�?/title>
+  <link rel="stylesheet" href="/connector/professional.css">
+</head>
+<body>
+<main>
+  <div class="toolbar" aria-label="Language">
+    <button class="lang-btn" data-lang="zh" type="button">中文</button>
+    <button class="lang-btn" data-lang="en" type="button">English</button>
+  </div>
+
+  <section class="lang-panel" data-lang-panel="zh">
+    <h1>MaClaw 第三方软件接入协�?v1</h1>
+    <p class="lead">第三方软件主动连�?MaClaw HTTP 网关，通过 JSON 协议发送用户消息，并用 cursor 长轮询获�?Agent 回复。接入方不需要提供公网回调或文件下载服务；文件上传、下�?URL �?MaClaw 服务端提供�?/p>
+    <p>
+      <span class="pill">默认地址 http://127.0.0.1:18777/api/im-gateway/v1</span>
+      <span class="pill">Bearer Token</span>
+      <span class="pill">小文件直�?/span>
+      <span class="pill">大文件服务端 URL</span>
+    </p>
+
+    <h2>1. 接入流程</h2>
+    <ol>
+      <li>�?MaClaw 桌面端打开“设�?/ 消息接入 / 第三方接入”�?/li>
+      <li>配置 Host、Port �?Token，默认监听本�?<code>127.0.0.1:18777</code>�?/li>
+      <li>调用 <code>POST /handshake</code> 获取能力、限制和轮询参数�?/li>
+      <li>小文件可�?<code>POST /incoming</code> 直接�?base64 <code>data</code> 发送�?/li>
+      <li>大文件先调用 <code>POST /media/upload-url</code> 获取服务端上�?URL，再由客户端 <code>PUT</code> 上传，随后在消息中引用返回的 <code>media.id</code> �?<code>media.url</code>�?/li>
+      <li>调用 <code>GET /outgoing</code> 使用 cursor 长轮询拉取回复，并用 <code>POST /ack</code> 确认已处理�?/li>
+    </ol>
+
+    <h2>2. 认证</h2>
+    <p>�?<code>/health</code> 和带 <code>mediaToken</code> 的媒体上�?下载 URL 外，请求应携带：</p>
+    <pre>Authorization: Bearer &lt;token&gt;</pre>
+    <p>请在 MaClaw 里生成强随机 Token。如�?Token 可能泄露，请重新生成并更新第三方配置。媒�?URL 内的 <code>mediaToken</code> 是服务端生成的临时访问令牌，客户端只使用它上传或下载，不应自行构造�?/p>
+
+    <h2>3. 能力与限�?/h2>
+    <p><code>/handshake</code> 返回�?<code>capabilities</code> 包含�?/p>
+    <pre>["text","image","file","voice","audio","attachments","server_media_upload","server_media_download","long_poll","ack","idempotency","client_tools","tool_call","tool_plan","tool_result","tool_cancel"]</pre>
+    <table>
+      <thead><tr><th>限制</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>maxTextChars</code></td><td>文本消息最大字符数�?/td></tr>
+        <tr><td><code>maxMediaCaption</code></td><td>图片、文件、语音消息说明文字最大字符数�?/td></tr>
+        <tr><td><code>maxAttachments</code></td><td>单条消息最大附件数，当前为 10�?/td></tr>
+        <tr><td><code>maxDirectBytes</code></td><td>可直接放�?<code>data</code> 的最大文件大小，当前�?256 KiB。更大的文件必须走服务端媒体 URL�?/td></tr>
+        <tr><td><code>maxBodyBytes</code></td><td>Maximum JSON request body size, currently 16 MiB.</td></tr>
+        <tr><td><code>maxMediaBytes</code></td><td>Maximum server-media upload size, currently 50 MiB for both MaClawSrv and MaClaw GUI.</td></tr>
+        <tr><td><code>maxAckIds</code></td><td>Maximum message IDs in one <code>POST /ack</code> request, currently 100.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>4. 接口</h2>
+    <h3>GET /health</h3>
+    <pre>{ "ok": true, "requestId": "gw_1760000000000000000", "status": "connected", "protocolVersion": "1" }</pre>
+
+    <h3>POST /handshake</h3>
+    <pre>{
   "clientId": "demo-client",
   "clientName": "Demo CRM",
-  "protocolVersion": "1.0"
-}</pre><h3>POST /incoming</h3><pre>{
-  "eventId": "evt-20260502-0001",
+  "protocolVersion": "1"
+}</pre>
+
+    <h3>POST /incoming</h3>
+    <pre>{
+  "eventId": "evt-20260610-0001",
   "clientId": "demo-client",
   "conversationId": "customer-42",
-  "sender": { "id": "u42", "name": "张三" },
-  "message": { "type": "text", "text": "帮我查一下订单状态" },
-  "timestamp": "2026-05-02T10:00:00+08:00"
-}</pre><p><code>eventId</code> 用于幂等，重复提交不会重复触发处理。</p><h3>GET /outgoing</h3><pre>GET /outgoing?clientId=demo-client&amp;cursor=0&amp;timeout=25</pre><pre>{
+  "user": { "id": "u42", "name": "张三" },
+  "message": { "type": "text", "text": "帮我查一下订单状�? },
+  "createdAt": 1781028000000
+}</pre>
+    <p><code>eventId</code> 用于幂等，重复提交不会重复触发处理。支持的 <code>message.type</code> �?<code>text</code>�?code>image</code>�?code>file</code>�?code>voice</code>�?code>audio</code> 会按 <code>voice</code> 处理�?/p>
+
+    <h3>小文件直�?/h3>
+    <pre>{
+  "eventId": "evt-image-1",
+  "clientId": "demo-client",
+  "conversationId": "customer-42",
+  "user": { "id": "u42", "name": "张三" },
+  "message": {
+    "type": "image",
+    "text": "请看这张截图",
+    "fileName": "screen.png",
+    "mimeType": "image/png",
+    "data": "&lt;base64&gt;",
+    "sizeBytes": 12345
+  }
+}</pre>
+
+    <h3>大文件上�?URL</h3>
+    <pre>POST /media/upload-url
+{
+  "clientId": "demo-client",
+  "type": "file",
+  "fileName": "report.pdf",
+  "mimeType": "application/pdf",
+  "sizeBytes": 7340032
+}</pre>
+    <pre>{
   "ok": true,
-  "cursor": 12,
+  "media": {
+    "id": "server-media-id",
+    "type": "file",
+    "fileName": "report.pdf",
+    "mimeType": "application/pdf",
+    "url": "http://127.0.0.1:18777/api/im-gateway/v1/media/server-media-id?mediaToken=..."
+  },
+  "upload": {
+    "method": "PUT",
+    "url": "http://127.0.0.1:18777/api/im-gateway/v1/media/server-media-id/upload?mediaToken=...",
+    "contentType": "application/pdf",
+    "maxBytes": 52428800
+  },
+  "download": {
+    "url": "http://127.0.0.1:18777/api/im-gateway/v1/media/server-media-id?mediaToken=..."
+  }
+}</pre>
+    <p>客户端随后对 <code>upload.url</code> 执行二进�?<code>PUT</code>，再发送消息引用服务端返回的媒体对象。客户端不能把自己提供的下载 URL 交给服务端使用�?/p>
+    <pre>{
+  "eventId": "evt-file-1",
+  "clientId": "demo-client",
+  "conversationId": "customer-42",
+  "user": { "id": "u42", "name": "张三" },
+  "message": {
+    "type": "file",
+    "text": "请阅读这份报�?,
+    "attachments": [{
+      "id": "server-media-id",
+      "type": "file",
+      "fileName": "report.pdf",
+      "mimeType": "application/pdf",
+      "url": "http://127.0.0.1:18777/api/im-gateway/v1/media/server-media-id?mediaToken=...",
+      "sizeBytes": 7340032
+    }]
+  }
+}</pre>
+    <p>同一服务端媒体也可以只传 <code>id</code>。小文件会被 Agent 以内联附件读取或用于图片视觉理解；大文件会以服务端媒�?ID/URL 的形式出现在 Agent 上下文中�?/p>
+
+    <h3>GET /outgoing</h3>
+    <pre>GET /outgoing?clientId=demo-client&amp;cursor=0&amp;timeout=25&amp;limit=20</pre>
+    <p><code>cursor</code>, <code>limit</code>, and <code>timeout</code> must be non-negative integers. <code>limit</code> is clamped to <code>poll.maxLimit</code>; <code>timeout=0</code> performs an immediate non-blocking poll.</p>
+    <pre>{
+  "ok": true,
   "messages": [{
     "id": "reply-12",
+    "cursor": "12",
     "conversationId": "customer-42",
-    "replyToEventId": "evt-20260502-0001",
-    "message": { "type": "text", "text": "订单正在配送中。" }
-  }]
-}</pre><h3>POST /ack</h3><pre>{ "clientId": "demo-client", "messageIds": ["reply-12"] }</pre><h2>4. 字段约定</h2><table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody><tr><td><code>clientId</code></td><td>第三方软件实例标识，建议稳定且唯一。</td></tr><tr><td><code>conversationId</code></td><td>第三方侧会话、客户、工单或群聊 ID。</td></tr><tr><td><code>eventId</code></td><td>入站消息唯一 ID，用于重试幂等。</td></tr><tr><td><code>cursor</code></td><td>出站消息游标，客户端保存上次返回值。</td></tr><tr><td><code>timeout</code></td><td>长轮询等待秒数，建议 15 到 30 秒。</td></tr></tbody></table><h2>4.1 请求跟踪、错误和 ACK 语义</h2><p>所有响应都会返回 requestId，第三方排查问题时建议一并提供。错误响应统一包含 ok、code、message、requestId。outgoing 使用 cursor 保证至少一次投递，第三方需要按 message.id 去重。/ack 表示第三方已将回复投递到自己的用户或业务系统，不代替 cursor 存储。</p><pre>{
+    "replyToMessageId": "third_api_demo_1781028000000",
+    "type": "text",
+    "text": "订单正在配送中�?,
+    "createdAt": 1781028005123
+  }],
+  "nextCursor": "12",
+  "hasMore": false
+}</pre>
+
+    <h3>POST /ack</h3>
+    <pre>{ "clientId": "demo-client", "messageIds": ["reply-12"], "status": "delivered" }</pre>
+    <p>A single ACK request may include up to <code>limits.maxAckIds</code> message IDs. Unknown IDs are ignored; acknowledged known messages are not returned again by subsequent <code>/outgoing</code> polls.</p>
+
+    <h2>5. 字段约定</h2>
+    <table>
+      <thead><tr><th>字段</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>clientId</code></td><td>第三方软件实例标识，建议稳定且唯一�?/td></tr>
+        <tr><td><code>conversationId</code></td><td>第三方侧会话、客户、工单或群聊 ID�?/td></tr>
+        <tr><td><code>eventId</code></td><td>入站消息唯一 ID，用于重试幂等�?/td></tr>
+        <tr><td><code>message.id</code> / <code>attachments[].id</code></td><td>服务端媒�?ID，可单独作为媒体引用�?/td></tr>
+        <tr><td><code>message.data</code> / <code>attachments[].data</code></td><td>base64 小文件内容，必须小于 <code>maxDirectBytes</code>�?/td></tr>
+        <tr><td><code>message.url</code> / <code>attachments[].url</code></td><td>服务端提供的媒体下载 URL，客户端只访问它�?/td></tr>
+        <tr><td><code>message.fileName</code> / <code>attachments[].fileName</code></td><td>仅作为媒体元数据，不能替�?<code>id</code>�?code>data</code> 或服务端 <code>url</code>�?/td></tr>
+        <tr><td><code>cursor</code></td><td>出站消息游标，客户端保存上次返回值�?/td></tr>
+      </tbody>
+    </table>
+
+    <h2>6. 请求追踪、错误和 ACK 语义</h2>
+    <p>响应通常包含 <code>requestId</code>。排查问题时请一并提供�?code>/outgoing</code> 使用 cursor 保证至少一次投递，第三方需要按 <code>message.id</code> 去重�?code>/ack</code> 表示第三方已将回复投递到自己的用户或业务系统，不替代 cursor 存储�?/p>
+    <pre>{
   "ok": false,
-  "code": "bad_request",
-  "message": "clientId is required",
-  "requestId": "gw_1760000000000000000"
-}</pre><h2>5. 测试客户端</h2><pre>$env:MACLAW_GATEWAY_TOKEN = "你的 Token"
-go run ./cmd/connnectMaClaw -text "你好，确认第三方通道是否可用"</pre><h2>6. 错误处理</h2><table><thead><tr><th>HTTP</th><th>含义</th><th>建议</th></tr></thead><tbody><tr><td>401</td><td>Token 缺失或错误</td><td>检查 Authorization 头。</td></tr><tr><td>409</td><td>重复事件或状态冲突</td><td>按幂等成功处理或重新获取 cursor。</td></tr><tr><td>429</td><td>请求过快</td><td>指数退避后重试。</td></tr><tr><td>5xx</td><td>MaClaw 处理失败</td><td>保留 eventId，延迟重试。</td></tr></tbody></table></section><section class="lang-panel" data-lang-panel="en"><h1>MaClaw Third-Party Software Access Protocol v1</h1><p class="lead">Third-party software connects to the local MaClaw HTTP gateway, sends user messages through a compact JSON protocol, and retrieves Agent replies through cursor-based long polling. The integrating system does not need to expose a public callback URL.</p><p><span class="pill">Default endpoint http://127.0.0.1:18777/api/im-gateway/v1</span><span class="pill">Bearer Token</span><span class="pill">Client long polling</span></p><h2>1. Integration Flow</h2><ol><li>Open <code>Settings / Message Access / Third-party Access</code> in MaClaw.</li><li>Configure <code>Host</code>, <code>Port</code>, and <code>Token</code>. The default listener is <code>127.0.0.1:18777</code>.</li><li>Call <code>/handshake</code> to negotiate protocol and capabilities.</li><li>Call <code>/incoming</code> to submit user messages.</li><li>Call <code>/outgoing</code> with a <code>cursor</code> to long-poll replies, then call <code>/ack</code>.</li></ol><h2>2. Authentication</h2><p>Send the token with every request:</p><pre>Authorization: Bearer &lt;token&gt;</pre><p>A token is required for every API call. Use Generate Token in MaClaw to create a strong random key. If the token may have leaked, regenerate it and update the third-party configuration.</p><h2>3. Endpoints</h2><h3>GET /health</h3><pre>{ "ok": true, "status": "connected" }</pre><h3>POST /handshake</h3><pre>{
+  "requestId": "gw_1760000000000000000",
+  "error": {
+    "code": "bad_request",
+    "message": "clientId is required"
+  }
+}</pre>
+
+    <h2>7. 测试客户�?/h2>
+    <pre>$env:MACLAW_GATEWAY_TOKEN = "你的 Token"
+go run ./cmd/connnectMaClaw -text "你好，确认第三方通道是否可用"</pre>
+
+    <h2>8. 错误处理</h2>
+    <table>
+      <thead><tr><th>HTTP</th><th>含义</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td>400</td><td>请求格式、字段或媒体引用无效</td><td>检�?JSON、base64、附件大小和媒体 ID�?/td></tr>
+        <tr><td>401</td><td>Token 缺失或错�?/td><td>检�?Authorization 头�?/td></tr>
+        <tr><td>404</td><td>媒体不存在或 mediaToken 错误</td><td>重新请求上传 URL 或检查媒体是否过期�?/td></tr>
+        <tr><td>409</td><td>重复事件或状态冲�?/td><td>按幂等成功处理或重新获取 cursor�?/td></tr>
+        <tr><td>429</td><td>请求过快</td><td>指数退避后重试�?/td></tr>
+        <tr><td>5xx</td><td>MaClaw 处理失败</td><td>保留 eventId，延迟重试�?/td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="lang-panel" data-lang-panel="en">
+    <h1>MaClaw Third-Party Software Access Protocol v1</h1>
+    <p class="lead">Third-party software connects to the MaClaw HTTP gateway, sends user messages with JSON, and retrieves Agent replies through cursor-based long polling. The client does not need to expose public callback or file download URLs; MaClaw provides upload and download URLs for files.</p>
+    <p>
+      <span class="pill">Default endpoint http://127.0.0.1:18777/api/im-gateway/v1</span>
+      <span class="pill">Bearer Token</span>
+      <span class="pill">Small files inline</span>
+      <span class="pill">Large files by server URL</span>
+    </p>
+
+    <h2>1. Integration Flow</h2>
+    <ol>
+      <li>Open <code>Settings / Message Access / Third-party Access</code> in MaClaw.</li>
+      <li>Configure <code>Host</code>, <code>Port</code>, and <code>Token</code>. The default listener is <code>127.0.0.1:18777</code>.</li>
+      <li>Call <code>POST /handshake</code> to discover capabilities, limits, and polling settings.</li>
+      <li>For small files, send base64 <code>data</code> directly in <code>POST /incoming</code>.</li>
+      <li>For large files, call <code>POST /media/upload-url</code>, upload bytes with the returned <code>PUT</code> URL, then reference the returned <code>media.id</code> or <code>media.url</code> in the message.</li>
+      <li>Call <code>GET /outgoing</code> with a <code>cursor</code> to long-poll replies, then call <code>POST /ack</code>.</li>
+    </ol>
+
+    <h2>2. Authentication</h2>
+    <p>Except for <code>/health</code> and media URLs protected by <code>mediaToken</code>, requests should include:</p>
+    <pre>Authorization: Bearer &lt;token&gt;</pre>
+    <p>Use Generate Token in MaClaw to create a strong random key. If it may have leaked, regenerate it and update the third-party configuration. The <code>mediaToken</code> inside upload/download URLs is generated by MaClaw; clients should only use those URLs, not construct them.</p>
+
+    <h2>3. Capabilities and Limits</h2>
+    <p>Protocol structs, validators, default limits, feature flags, strict JSON decoding, and handshake response construction are centralized in <code>corelib/im</code>. MaClawSrv and MaClaw GUI use the same core implementation, so a ThirdAPIDemo client sees the same protocol behavior from either endpoint. The handshake <code>mode</code> is <code>maclaw</code> for both server implementations.</p>
+    <p><code>/handshake</code> returns these capabilities:</p>
+    <pre>["text","image","file","voice","audio","attachments","server_media_upload","server_media_download","long_poll","ack","idempotency","client_tools","tool_call","tool_plan","tool_result","tool_cancel"]</pre>
+    <table>
+      <thead><tr><th>Limit</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>maxTextChars</code></td><td>Maximum text message length.</td></tr>
+        <tr><td><code>maxMediaCaption</code></td><td>Maximum caption length for image, file, and voice messages.</td></tr>
+        <tr><td><code>maxAttachments</code></td><td>Maximum attachments per message, currently 10.</td></tr>
+        <tr><td><code>maxDirectBytes</code></td><td>Maximum bytes allowed in direct base64 <code>data</code>, currently 256 KiB. Larger files must use server media URLs.</td></tr>
+        <tr><td><code>maxBodyBytes</code></td><td>Maximum JSON request body size, currently 16 MiB.</td></tr>
+        <tr><td><code>maxMediaBytes</code></td><td>Maximum server-media upload size, currently 50 MiB for both MaClawSrv and MaClaw GUI.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>4. Endpoints</h2>
+    <h3>GET /health</h3>
+    <pre>{ "ok": true, "requestId": "gw_1760000000000000000", "status": "connected", "protocolVersion": "1" }</pre>
+
+    <h3>POST /handshake</h3>
+    <pre>{
   "clientId": "demo-client",
   "clientName": "Demo CRM",
-  "protocolVersion": "1.0"
-}</pre><h3>POST /incoming</h3><pre>{
-  "eventId": "evt-20260502-0001",
+  "protocolVersion": "1"
+}</pre>
+
+    <h3>POST /incoming</h3>
+    <pre>{
+  "eventId": "evt-20260610-0001",
   "clientId": "demo-client",
   "conversationId": "customer-42",
-  "sender": { "id": "u42", "name": "Zhang San" },
+  "user": { "id": "u42", "name": "Zhang San" },
   "message": { "type": "text", "text": "Check order status" },
-  "timestamp": "2026-05-02T10:00:00+08:00"
-}</pre><p><code>eventId</code> is idempotent. Retrying the same event will not trigger duplicate handling.</p><h3>GET /outgoing</h3><pre>GET /outgoing?clientId=demo-client&amp;cursor=0&amp;timeout=25</pre><pre>{
+  "createdAt": 1781028000000
+}</pre>
+    <p><code>eventId</code> is idempotent. Retrying the same event will not trigger duplicate processing. Supported <code>message.type</code> values are <code>text</code>, <code>image</code>, <code>file</code>, and <code>voice</code>; <code>audio</code> is normalized to <code>voice</code>.</p>
+
+    <h3>Small Direct Media</h3>
+    <pre>{
+  "eventId": "evt-image-1",
+  "clientId": "demo-client",
+  "conversationId": "customer-42",
+  "user": { "id": "u42", "name": "Zhang San" },
+  "message": {
+    "type": "image",
+    "text": "Please inspect this screenshot",
+    "fileName": "screen.png",
+    "mimeType": "image/png",
+    "data": "&lt;base64&gt;",
+    "sizeBytes": 12345
+  }
+}</pre>
+    <p>For direct <code>data</code>, <code>sizeBytes</code> is optional. When it is greater than zero, it must equal the decoded base64 byte count or the gateway returns <code>400</code>.</p>
+
+    <h3>Large File Upload URL</h3>
+    <pre>POST /media/upload-url
+{
+  "clientId": "demo-client",
+  "type": "file",
+  "fileName": "report.pdf",
+  "mimeType": "application/pdf",
+  "sizeBytes": 7340032
+}</pre>
+    <pre>{
   "ok": true,
-  "cursor": 12,
+  "media": {
+    "id": "server-media-id",
+    "type": "file",
+    "fileName": "report.pdf",
+    "mimeType": "application/pdf",
+    "url": "http://127.0.0.1:18777/api/im-gateway/v1/media/server-media-id?mediaToken=..."
+  },
+  "upload": {
+    "method": "PUT",
+    "url": "http://127.0.0.1:18777/api/im-gateway/v1/media/server-media-id/upload?mediaToken=...",
+    "contentType": "application/pdf",
+    "maxBytes": 52428800
+  },
+  "download": {
+    "url": "http://127.0.0.1:18777/api/im-gateway/v1/media/server-media-id?mediaToken=..."
+  }
+}</pre>
+    <p>The client then sends raw bytes to <code>upload.url</code> with <code>PUT</code>, and references the returned media object in the message. The client must not provide its own download URL for the server to fetch. <code>upload.maxBytes</code> is enforced by the gateway; when <code>sizeBytes</code> is greater than zero, the uploaded byte count must match it exactly or the gateway returns <code>400</code>.</p>
+    <pre>{
+  "eventId": "evt-file-1",
+  "clientId": "demo-client",
+  "conversationId": "customer-42",
+  "user": { "id": "u42", "name": "Zhang San" },
+  "message": {
+    "type": "file",
+    "text": "Please read this report",
+    "attachments": [{
+      "id": "server-media-id",
+      "type": "file",
+      "fileName": "report.pdf",
+      "mimeType": "application/pdf",
+      "url": "http://127.0.0.1:18777/api/im-gateway/v1/media/server-media-id?mediaToken=...",
+      "sizeBytes": 7340032
+    }]
+  }
+}</pre>
+    <p>The same server media can also be referenced by <code>id</code> only. Small files are passed to the Agent as inline attachments for reading or vision; large files are represented in Agent context by server media ID/URL.</p>
+
+    <h3>GET /outgoing</h3>
+    <pre>GET /outgoing?clientId=demo-client&amp;cursor=0&amp;timeout=25&amp;limit=20</pre>
+    <pre>{
+  "ok": true,
   "messages": [{
     "id": "reply-12",
+    "cursor": "12",
     "conversationId": "customer-42",
-    "replyToEventId": "evt-20260502-0001",
-    "message": { "type": "text", "text": "The order is being delivered." }
+    "replyToMessageId": "third_api_demo_1781028000000",
+    "type": "text",
+    "text": "The order is being delivered.",
+    "createdAt": 1781028005123
+  }],
+  "nextCursor": "12",
+  "hasMore": false
+}</pre>
+
+    <h3>POST /ack</h3>
+    <pre>{ "clientId": "demo-client", "messageIds": ["reply-12"], "status": "delivered" }</pre>
+
+    <h2>5. Client Tool Execution Extension</h2>
+    <p>This optional extension is for industrial control, desktop automation, and other integrations where the connected client can execute a small whitelist of tools. It is not enabled unless the client advertises <code>client_tools</code> during <code>/handshake</code>.</p>
+    <pre>{
+  "capabilities": { "client_tools": true },
+  "tools": [{
+    "name": "plc.write_register",
+    "risk": "write",
+    "requiresApproval": true,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "address": { "type": "integer" },
+        "value": { "type": "integer" }
+      },
+      "required": ["address", "value"]
+    }
   }]
-}</pre><h3>POST /ack</h3><pre>{ "clientId": "demo-client", "messageIds": ["reply-12"] }</pre><h2>4. Field Contract</h2><table><thead><tr><th>Field</th><th>Description</th></tr></thead><tbody><tr><td><code>clientId</code></td><td>Stable unique ID for the third-party software instance.</td></tr><tr><td><code>conversationId</code></td><td>Conversation, customer, ticket, or group ID from the third-party system.</td></tr><tr><td><code>eventId</code></td><td>Unique inbound message ID for retry idempotency.</td></tr><tr><td><code>cursor</code></td><td>Outgoing message cursor. The client stores the last returned value.</td></tr><tr><td><code>timeout</code></td><td>Long polling wait seconds. Recommended range: 15 to 30.</td></tr></tbody></table><h2>4.1 Request Tracing, Errors, and ACK Semantics</h2><p>Every response includes <code>requestId</code>. Third-party integrators should include it when reporting issues. Error responses consistently include <code>ok</code>, <code>code</code>, <code>message</code>, and <code>requestId</code>. <code>/outgoing</code> provides at-least-once delivery by cursor, so clients should deduplicate by <code>message.id</code>. <code>/ack</code> is a delivery receipt after the third-party system has delivered the reply to its user or business system; it does not replace client-side cursor persistence.</p><pre>{
+}</pre>
+    <p>MaClaw may return <code>type: "tool_call"</code> for one operation or <code>type: "tool_plan"</code> for multiple steps. Tool plans can use <code>sequential</code>, <code>parallel</code>, <code>dag</code>, or <code>interactive</code> mode. For industrial control, prefer <code>sequential</code> or <code>dag</code>; dangerous writes should require approval per step.</p>
+    <pre>{
+  "type": "tool_plan",
+  "toolPlan": {
+    "id": "tp_001",
+    "mode": "sequential",
+    "steps": [
+      { "id": "step_1", "tool": "plc.read_register", "arguments": { "address": 40001 } },
+      { "id": "step_2", "tool": "plc.write_register", "arguments": { "address": 40002, "valueFrom": "step_1.value" }, "dependsOn": ["step_1"], "requiresApproval": true }
+    ]
+  }
+}</pre>
+    <p>Execution completion must be reported to <code>POST /tool-result</code> with stable <code>resultId</code> or <code>idempotencyKey</code>, and <code>status</code> set to <code>success</code>, <code>error</code>, <code>rejected</code>, <code>cancelled</code>, or <code>timeout</code>. <code>/ack</code> only means the client received the outgoing message; it does not mean a tool completed. Every write-like call should have an <code>idempotencyKey</code>, timeout, audit record, and local client-side policy check. Large tool outputs should use the same server-owned media flow instead of large JSON payloads.</p>
+
+    <h2>6. Field Contract</h2>
+    <table>
+      <thead><tr><th>Field</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>clientId</code></td><td>Stable unique ID for the third-party software instance.</td></tr>
+        <tr><td><code>conversationId</code></td><td>Conversation, customer, ticket, or group ID from the third-party system.</td></tr>
+        <tr><td><code>eventId</code></td><td>Unique inbound message ID for retry idempotency.</td></tr>
+        <tr><td><code>message.id</code> / <code>attachments[].id</code></td><td>Server media ID. It can be used as the only media reference.</td></tr>
+        <tr><td><code>message.data</code> / <code>attachments[].data</code></td><td>Base64 content for small files. Must be smaller than <code>maxDirectBytes</code>.</td></tr>
+        <tr><td><code>message.url</code> / <code>attachments[].url</code></td><td>Server-provided media download URL. Clients only access it.</td></tr>
+        <tr><td><code>message.fileName</code> / <code>attachments[].fileName</code></td><td>Media metadata only. It does not replace <code>id</code>, <code>data</code>, or server <code>url</code>.</td></tr>
+        <tr><td><code>toolCall.id</code></td><td>Unique tool call ID generated by MaClaw.</td></tr>
+        <tr><td><code>toolCall.idempotencyKey</code></td><td>Stable key used by the client to prevent duplicate execution.</td></tr>
+        <tr><td><code>tool-result.resultId</code> / <code>tool-result.idempotencyKey</code></td><td>Stable result identity. Reusing it on retry prevents duplicate Agent injection.</td></tr>
+        <tr><td><code>toolPlan.steps[].dependsOn</code></td><td>Step dependency list for <code>dag</code> or guarded sequential execution.</td></tr>
+        <tr><td><code>cursor</code></td><td>Outgoing message cursor. The client stores the last returned value.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>7. Request Tracing, Errors, and ACK Semantics</h2>
+    <p>Responses usually include <code>requestId</code>. Include it when reporting issues. <code>/outgoing</code> provides at-least-once delivery by cursor, so clients should deduplicate by <code>message.id</code>. <code>/ack</code> is a delivery receipt after the third-party system has delivered the reply to its user or business system; it does not replace client-side cursor persistence.</p>
+    <pre>{
   "ok": false,
-  "code": "bad_request",
-  "message": "clientId is required",
-  "requestId": "gw_1760000000000000000"
-}</pre><h2>5. Test Client</h2><pre>$env:MACLAW_GATEWAY_TOKEN = "your-token"
-go run ./cmd/connnectMaClaw -text "hello, check gateway"</pre><h2>6. Error Handling</h2><table><thead><tr><th>HTTP</th><th>Meaning</th><th>Action</th></tr></thead><tbody><tr><td>401</td><td>Missing or invalid token</td><td>Check the Authorization header.</td></tr><tr><td>409</td><td>Duplicate event or state conflict</td><td>Treat idempotent duplicates as success, or refresh cursor.</td></tr><tr><td>429</td><td>Too many requests</td><td>Retry with exponential backoff.</td></tr><tr><td>5xx</td><td>MaClaw processing failure</td><td>Keep the same eventId and retry later.</td></tr></tbody></table></section></main><script>(function(){var saved=localStorage.getItem('maclawConnectorLang');var lang=saved||((navigator.language||'').toLowerCase().startsWith('zh')?'zh':'en');function setLang(next){lang=next==='en'?'en':'zh';document.documentElement.lang=lang==='zh'?'zh-CN':'en';localStorage.setItem('maclawConnectorLang',lang);document.querySelectorAll('[data-lang-panel]').forEach(function(el){el.classList.toggle('active',el.getAttribute('data-lang-panel')===lang)});document.querySelectorAll('[data-lang]').forEach(function(btn){btn.classList.toggle('active',btn.getAttribute('data-lang')===lang)})}document.querySelectorAll('[data-lang]').forEach(function(btn){btn.addEventListener('click',function(){setLang(btn.getAttribute('data-lang'))})});setLang(lang)})();</script></body></html>
+  "requestId": "gw_1760000000000000000",
+  "error": {
+    "code": "bad_request",
+    "message": "clientId is required"
+  }
+}</pre>
+    <p>MaClawSrv and MaClaw GUI return the same error envelope. Read <code>error.code</code> and <code>error.message</code>; do not depend on top-level <code>code</code> or <code>message</code> fields.</p>
+
+    <h2>8. Test Client</h2>
+    <pre>$env:MACLAW_GATEWAY_TOKEN = "your-token"
+go run ./cmd/connnectMaClaw -text "hello, check gateway"</pre>
+
+    <h2>9. Error Handling</h2>
+    <table>
+      <thead><tr><th>HTTP</th><th>Meaning</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td>400</td><td>Invalid request shape, field, or media reference</td><td>Check JSON, base64, attachment size, and media ID.</td></tr>
+        <tr><td>401</td><td>Missing or invalid token</td><td>Check the Authorization header.</td></tr>
+        <tr><td>404</td><td>Media not found or invalid mediaToken</td><td>Request a new upload URL or check expiry.</td></tr>
+        <tr><td>409</td><td>Duplicate event or state conflict</td><td>Treat idempotent duplicates as success, or refresh cursor.</td></tr>
+        <tr><td>429</td><td>Too many requests</td><td>Retry with exponential backoff.</td></tr>
+        <tr><td>5xx</td><td>MaClaw processing failure</td><td>Keep the same eventId and retry later.</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+<script>
+(function(){
+  var saved = localStorage.getItem("maclawConnectorLang");
+  var lang = saved || ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
+  function setLang(next){
+    lang = next === "en" ? "en" : "zh";
+    document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+    localStorage.setItem("maclawConnectorLang", lang);
+    document.querySelectorAll("[data-lang-panel]").forEach(function(el){
+      el.classList.toggle("active", el.getAttribute("data-lang-panel") === lang);
+    });
+    document.querySelectorAll("[data-lang]").forEach(function(btn){
+      btn.classList.toggle("active", btn.getAttribute("data-lang") === lang);
+    });
+  }
+  document.querySelectorAll("[data-lang]").forEach(function(btn){
+    btn.addEventListener("click", function(){ setLang(btn.getAttribute("data-lang")); });
+  });
+  setLang(lang);
+})();
+</script>
+</body>
+</html>

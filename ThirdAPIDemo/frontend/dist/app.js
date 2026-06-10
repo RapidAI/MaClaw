@@ -3,6 +3,7 @@ const state = {
   cursor: "0",
   polling: false,
   pollAbort: null,
+  attachments: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -17,6 +18,9 @@ const connectButton = $("connectButton");
 const sendButton = $("sendButton");
 const connectError = $("connectError");
 const chatStatus = $("chatStatus");
+const attachButton = $("attachButton");
+const clearAttachmentsButton = $("clearAttachmentsButton");
+const attachmentList = $("attachmentList");
 
 const wailsApp = () => window.go?.main?.App;
 
@@ -31,7 +35,7 @@ connectForm.addEventListener("submit", async (event) => {
     state.config = res.config;
     state.cursor = res.cursor || "0";
     showChat();
-    appendMessage("assistant", "已连接 MaClaw。可以开始聊天。");
+    appendMessage("assistant", "已连接 MaClaw，可以开始聊天或发送附件。");
     startPolling();
   } catch (error) {
     connectError.textContent = error.message;
@@ -53,12 +57,40 @@ messageInput.addEventListener("keydown", async (event) => {
   }
 });
 
+attachButton.addEventListener("click", async () => {
+  if (!state.config) {
+    chatStatus.textContent = "请先连接网关";
+    return;
+  }
+  attachButton.disabled = true;
+  chatStatus.textContent = "选择文件中...";
+  try {
+    const selected = await callWails("SelectUploadFiles", state.config);
+    state.attachments.push(...(Array.isArray(selected) ? selected : []));
+    renderAttachmentList();
+    chatStatus.textContent = state.attachments.length ? "附件已准备，可发送" : "";
+  } catch (error) {
+    chatStatus.textContent = `选择文件失败：${error.message}`;
+  } finally {
+    attachButton.disabled = false;
+    messageInput.focus();
+  }
+});
+
+clearAttachmentsButton.addEventListener("click", () => {
+  state.attachments = [];
+  renderAttachmentList();
+  messageInput.focus();
+});
+
 $("disconnectButton").addEventListener("click", () => {
   stopPolling();
   state.config = null;
   state.cursor = "0";
+  state.attachments = [];
   messages.innerHTML = "";
   chatStatus.textContent = "";
+  renderAttachmentList();
   chatView.classList.add("hidden");
   connectView.classList.remove("hidden");
 });
@@ -83,13 +115,17 @@ function showChat() {
 
 async function sendCurrentMessage() {
   const text = messageInput.value.trim();
-  if (!text || !state.config) return;
-  appendMessage("user", text);
+  const attachments = [...state.attachments];
+  if ((!text && attachments.length === 0) || !state.config) return;
+  const messageType = attachments.length ? attachments[0].type || "file" : "text";
+  appendMessage("user", text || `[${messageType}]`, attachments);
   messageInput.value = "";
+  state.attachments = [];
+  renderAttachmentList();
   sendButton.disabled = true;
   chatStatus.textContent = "发送中...";
   try {
-    await callWails("Send", { ...state.config, text });
+    await callWails("Send", { ...state.config, text, messageType, attachments });
     chatStatus.textContent = "已发送，等待回复...";
     if (!state.polling) startPolling();
   } catch (error) {
@@ -145,6 +181,10 @@ async function pollLoop() {
 
 function renderOutgoingMessage(msg) {
   if (!msg) return;
+  if (msg.type === "tool_call" || msg.type === "tool_plan" || msg.type === "tool_cancel") {
+    appendToolMessage(msg);
+    return;
+  }
   if (msg.progress) {
     appendMessage("progress", msg.text || "处理中...");
     return;
@@ -153,11 +193,68 @@ function renderOutgoingMessage(msg) {
     appendMessage("assistant", `错误：${msg.error}`);
     return;
   }
-  const text = msg.text || msg.caption || `[${msg.type || "message"}]`;
-  appendMessage("assistant", text);
+  const attachments = outgoingAttachments(msg);
+  const text = msg.text || msg.caption || (attachments.length ? `[${msg.type || "attachment"}]` : `[${msg.type || "message"}]`);
+  appendMessage("assistant", text, attachments);
 }
 
-function appendMessage(role, content) {
+function appendToolMessage(msg) {
+  const item = document.createElement("article");
+  item.className = "message assistant";
+  const meta = document.createElement("div");
+  meta.className = "message-meta";
+  meta.textContent = "MaClaw Tool";
+  const body = document.createElement("div");
+  body.className = "markdown";
+  const title = msg.type === "tool_plan" ? "Client tool plan" : msg.type === "tool_cancel" ? "Client tool cancel" : "Client tool call";
+  body.innerHTML = renderMarkdown(`**${title}**\n\n\`\`\`json\n${JSON.stringify(msg.toolCall || msg.toolPlan || msg.toolCancel || msg, null, 2)}\n\`\`\``);
+  item.append(meta, body);
+  if (msg.type === "tool_call" || msg.type === "tool_plan") {
+    const actions = document.createElement("div");
+    actions.className = "attachment-block";
+    const row = document.createElement("div");
+    row.className = "attachment-row";
+    const label = document.createElement("span");
+    label.textContent = msg.type === "tool_plan" ? "Execute allowed plan steps" : "Execute allowed tool";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "inline-button";
+    button.textContent = "Execute";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        const result = await callWails("ExecuteToolMessage", { ...state.config, message: msg });
+        chatStatus.textContent = result.message || "Tool result submitted";
+      } catch (error) {
+        chatStatus.textContent = `Tool execution failed: ${error.message}`;
+      } finally {
+        button.disabled = false;
+      }
+    });
+    row.append(label, button);
+    actions.appendChild(row);
+    item.appendChild(actions);
+  }
+  messages.appendChild(item);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function outgoingAttachments(msg) {
+  const items = Array.isArray(msg.attachments) ? [...msg.attachments] : [];
+  if (msg.url || msg.fileName || msg.mimeType || msg.contentType) {
+    items.unshift({
+      type: msg.type || "file",
+      fileName: msg.fileName || "attachment",
+      mimeType: msg.mimeType || msg.contentType || "",
+      url: msg.url || "",
+      sizeBytes: msg.sizeBytes || 0,
+      durationMs: msg.durationMs || 0,
+    });
+  }
+  return items.filter((item) => item && (item.url || item.fileName));
+}
+
+function appendMessage(role, content, attachments = []) {
   const item = document.createElement("article");
   item.className = `message ${role}`;
   const meta = document.createElement("div");
@@ -167,8 +264,71 @@ function appendMessage(role, content) {
   body.className = "markdown";
   body.innerHTML = renderMarkdown(content);
   item.append(meta, body);
+  if (attachments.length) {
+    item.appendChild(renderAttachmentBlock(attachments, role === "assistant"));
+  }
   messages.appendChild(item);
   messages.scrollTop = messages.scrollHeight;
+}
+
+function renderAttachmentList() {
+  if (!state.attachments.length) {
+    attachmentList.classList.add("hidden");
+    attachmentList.innerHTML = "";
+    clearAttachmentsButton.disabled = true;
+    return;
+  }
+  attachmentList.classList.remove("hidden");
+  clearAttachmentsButton.disabled = false;
+  attachmentList.innerHTML = state.attachments
+    .map((item, index) => `<span class="attachment-chip">${escapeHTML(item.type || "file")} · ${escapeHTML(item.fileName || "attachment")} <button type="button" data-remove-attachment="${index}" aria-label="移除附件">×</button></span>`)
+    .join("");
+  attachmentList.querySelectorAll("[data-remove-attachment]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.attachments.splice(Number(button.dataset.removeAttachment), 1);
+      renderAttachmentList();
+    });
+  });
+}
+
+function renderAttachmentBlock(attachments, downloadable) {
+  const box = document.createElement("div");
+  box.className = "attachment-block";
+  attachments.forEach((att) => {
+    const row = document.createElement("div");
+    row.className = "attachment-row";
+    const label = document.createElement("span");
+    label.textContent = `${att.type || "file"} · ${att.fileName || "attachment"}${att.sizeBytes ? ` · ${formatBytes(att.sizeBytes)}` : ""}`;
+    row.appendChild(label);
+    if (att.url) {
+      const open = document.createElement("a");
+      open.href = att.url;
+      open.target = "_blank";
+      open.rel = "noreferrer";
+      open.textContent = "打开";
+      row.appendChild(open);
+    }
+    if (downloadable && att.url) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "inline-button";
+      button.textContent = "下载";
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          const result = await callWails("Download", { ...state.config, url: att.url, fileName: att.fileName || "attachment" });
+          chatStatus.textContent = `已保存：${result.path}`;
+        } catch (error) {
+          chatStatus.textContent = `下载失败：${error.message}`;
+        } finally {
+          button.disabled = false;
+        }
+      });
+      row.appendChild(button);
+    }
+    box.appendChild(row);
+  });
+  return box;
 }
 
 async function callWails(method, payload) {
@@ -181,6 +341,19 @@ async function callWails(method, payload) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatBytes(value) {
+  const size = Number(value || 0);
+  if (!Number.isFinite(size) || size <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let n = size;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i += 1;
+  }
+  return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 function renderMarkdown(input) {
