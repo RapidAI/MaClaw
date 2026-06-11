@@ -613,8 +613,8 @@ const submitButtonDisabledStyle: CSSProperties = {
 
 const submitErrorStyle: CSSProperties = {
     padding: "10px 14px",
-    background: "#fce4ec",
-    border: "1px solid #ef9a9a",
+    background: "var(--theme-danger-bg, #fbf1f0)",
+    border: "1px solid color-mix(in srgb, var(--theme-danger, #b42318) 34%, transparent)",
     borderRadius: "6px",
     fontSize: "0.8rem",
     color: "var(--theme-danger, #b42318)",

@@ -192,9 +192,9 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                                 padding: "6px 10px",
                                 height: "32px",
                                 ...(mode.value === "developer" ? {
-                                    borderColor: securityMode === "developer" ? "#f59e0b" : colors.border,
-                                    background: securityMode === "developer" ? "#78350f" : undefined,
-                                    color: securityMode === "developer" ? "#fbbf24" : colors.textMuted,
+                                    borderColor: securityMode === "developer" ? colors.warning : colors.border,
+                                    background: securityMode === "developer" ? colors.warningBg : undefined,
+                                    color: securityMode === "developer" ? colors.warning : colors.textMuted,
                                 } : {}),
                             }}
                             disabled={readOnly}
@@ -218,7 +218,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Relaxed", "宽松", "寬鬆")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Standard", "标准", "標準")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Strict", "严格", "嚴格")}</th>
-                            <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600, color: "#f59e0b" }}>{t("Dev", "开发者", "開發者")}</th>
+                            <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600, color: colors.warning }}>{t("Dev", "开发者", "開發者")}</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -229,7 +229,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{renderSecurityTableCell(row.relaxed)}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{renderSecurityTableCell(row.standard)}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{renderSecurityTableCell(row.strict)}</td>
-                                <td style={{ textAlign: "center", padding: "3px 6px", color: "#f59e0b" }}>{renderSecurityTableCell(row.developer)}</td>
+                                <td style={{ textAlign: "center", padding: "3px 6px", color: colors.warning }}>{renderSecurityTableCell(row.developer)}</td>
                             </tr>
                         ))}
                     </tbody>

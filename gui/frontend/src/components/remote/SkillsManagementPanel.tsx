@@ -388,9 +388,9 @@ function getStatusBadgeVariant(status: string): CSSProperties {
         case "disabled":
             return { background: colors.surfaceMuted, color: colors.textMuted, border: `1px solid ${colors.border}` };
         case "needs_setup":
-            return { background: "#2d2000", color: "#f59e0b", border: "1px solid #f59e0b" };
+            return { background: colors.warningBg, color: colors.warning, border: `1px solid ${colors.warning}` };
         case "needs_review":
-            return { background: "#1a1a2e", color: "#818cf8", border: "1px solid #818cf8" };
+            return { background: colors.infoBg, color: colors.primaryDark, border: `1px solid ${colors.primary}` };
         default:
             return { background: colors.surfaceMuted, color: colors.textMuted, border: `1px solid ${colors.border}` };
     }

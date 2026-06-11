@@ -180,7 +180,7 @@ html, body {
 .floating-assistant-container--pet[data-interaction-mode="quiet"] .floating-assistant-pet-status {
     transform: scale(0.78);
     opacity: 0.72;
-    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.12);
+    box-shadow: 0 0 0 3px rgba(79, 127, 111, 0.12);
 }
 
 .floating-assistant-container--pet[data-interaction-mode="active"] .floating-assistant-halo {
@@ -347,8 +347,8 @@ html, body {
 }
 
 @keyframes pet-status-ready {
-    0%, 100% { box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.18); }
-    50% { box-shadow: 0 0 0 7px rgba(34, 197, 94, 0.08); }
+    0%, 100% { box-shadow: 0 0 0 4px rgba(79, 127, 111, 0.16); }
+    50% { box-shadow: 0 0 0 7px rgba(79, 127, 111, 0.08); }
 }
 
 .floating-assistant-container--pet[data-motion="off"] .floating-assistant-pet,

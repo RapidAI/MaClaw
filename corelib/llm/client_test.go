@@ -530,7 +530,7 @@ func TestOpenAI_RequestBody_SanitizesInvalidReplayedToolArguments(t *testing.T) 
 
 func TestOpenAI_RequestBody_SanitizesTypedMapToolArguments(t *testing.T) {
 	_, body, err := BuildOpenAIChatRequestData(
-		corelib.MaclawLLMConfig{URL: "https://example.test/v1", Model: "test-model"},
+		corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b"},
 		[]interface{}{map[string]interface{}{
 			"role": "assistant",
 			"tool_calls": []map[string]interface{}{{
@@ -610,6 +610,77 @@ func TestOpenAI_RequestBody_StripsEmptyToolCalls(t *testing.T) {
 	for i, message := range req.Messages {
 		if _, ok := message["tool_calls"]; ok {
 			t.Fatalf("message %d leaked empty tool_calls: %#v", i, message)
+		}
+	}
+}
+
+func TestOpenAI_RequestBody_StripsTrailingOrphanedToolCalls(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b"},
+		[]interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+			map[string]interface{}{
+				"role":    "assistant",
+				"content": "",
+				"tool_calls": []interface{}{map[string]interface{}{
+					"id":   "call_1",
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":      "search",
+						"arguments": `{"q":"x"}`,
+					},
+				}},
+			},
+		},
+		OpenAIChatRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if _, ok := req.Messages[1]["tool_calls"]; ok {
+		t.Fatalf("trailing orphaned tool_calls leaked: %#v", req.Messages[1])
+	}
+}
+
+func TestOpenAI_RequestBody_DropsOrphanedToolMessagesAfterPartialToolResults(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://example.test/v1", Model: "test-model"},
+		[]interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+			map[string]interface{}{
+				"role":    "assistant",
+				"content": "",
+				"tool_calls": []interface{}{
+					map[string]interface{}{"id": "call_1", "type": "function", "function": map[string]interface{}{"name": "a", "arguments": `{}`}},
+					map[string]interface{}{"id": "call_2", "type": "function", "function": map[string]interface{}{"name": "b", "arguments": `{}`}},
+				},
+			},
+			map[string]interface{}{"role": "tool", "tool_call_id": "call_1", "content": "partial"},
+			map[string]interface{}{"role": "user", "content": "next"},
+		},
+		OpenAIChatRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	for i, message := range req.Messages {
+		if _, ok := message["tool_calls"]; ok {
+			t.Fatalf("message %d leaked orphaned tool_calls: %#v", i, message)
+		}
+		if role, _ := message["role"].(string); role == "tool" {
+			t.Fatalf("message %d leaked orphaned tool result: %#v", i, message)
 		}
 	}
 }

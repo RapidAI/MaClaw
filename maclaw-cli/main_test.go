@@ -845,6 +845,29 @@ func TestAcquireLockFileRemovesStaleLock(t *testing.T) {
 	lock.Release()
 }
 
+func TestStateLockHeartbeatRefreshesMTime(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "state.json.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("create lock: %v", err)
+	}
+	lock := &stateLock{path: lockPath, file: f, heartbeat: make(chan struct{})}
+	lock.startHeartbeat(3 * time.Second)
+	defer lock.Release()
+	old := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(lockPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1200 * time.Millisecond)
+	info, err := os.Stat(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().After(old) {
+		t.Fatalf("heartbeat did not refresh mtime: %v <= %v", info.ModTime(), old)
+	}
+}
+
 func TestAcquireRunLockAllowsDifferentClientSession(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	first, err := acquireRunLock(config{StatePath: statePath, ClientID: "agent-a", ConversationID: "task-1"})

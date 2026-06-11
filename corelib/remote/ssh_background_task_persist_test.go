@@ -391,6 +391,14 @@ func TestNormalizeCommandForDedup(t *testing.T) {
 		{"echo '[maclaw] hint' && apt-get update", "apt-get update"},
 		{"", ""},
 		{"  sudo -n   docker pull img  ", "docker pull img"},
+		// Environment variable prefix stripping
+		{"SSHPASS='secret' sshpass -e ssh root@host", "sshpass -e ssh root@host"},
+		{"SSHPASS='C-?9Z0Q?3rpFq%6f' timeout 60 sshpass -e ssh -o Pref=password root@host", "sshpass -e ssh -o Pref=password root@host"},
+		// Timeout prefix stripping
+		{"timeout 120 git clone https://github.com/user/repo", "git clone https://github.com/user/repo"},
+		{"timeout 15 scp file.tar user@host:/tmp/", "scp file.tar user@host:/tmp/"},
+		// Combined: env + timeout + sudo
+		{"MY_VAR=123 timeout 30 sudo -n docker pull img:latest", "docker pull img:latest"},
 	}
 	for _, tc := range cases {
 		got := normalizeCommandForDedup(tc.input)

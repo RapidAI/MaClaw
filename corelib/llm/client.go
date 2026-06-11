@@ -79,7 +79,7 @@ func buildOpenAIChatRequestBody(
 	}
 	messages = sanitizeEmptyToolCalls(messages)
 	messages = sanitizeInvalidToolCallArguments(messages)
-	messages = sanitizeOrphanedToolCalls(messages)
+	messages = sanitizeOrphanedToolCalls(messages, cfg.NeedsConservativeOpenAICompatSanitization())
 
 	model := cfg.UpstreamModel()
 	reqBody := map[string]interface{}{
@@ -394,10 +394,10 @@ func sanitizeToolCallMapInvalidArguments(callMap map[string]interface{}) (map[st
 	return patchedCall, true
 }
 
-// sanitizeOrphanedToolCalls detects assistant messages with tool_calls that
-// are NOT followed by the corresponding tool result messages, and strips the
-// tool_calls field from those orphaned messages. This prevents HTTP 400 errors
-// from providers like DeepSeek that strictly enforce:
+// sanitizeOrphanedToolCalls detects assistant messages with tool_calls that are
+// not followed by a complete set of matching tool result messages. It strips
+// the orphaned tool_calls field and drops orphaned role:"tool" messages. This
+// prevents HTTP 400 errors from providers that strictly enforce:
 //
 //	"An assistant message with 'tool_calls' must be followed by tool messages
 //	 responding to each 'tool_call_id'."
@@ -407,17 +407,15 @@ func sanitizeToolCallMapInvalidArguments(callMap map[string]interface{}) (map[st
 // the second-pass recentStart calculation). The root cause is fixed in
 // gui/im_conversation_trim.go  - new compactions will not produce orphans.
 // This function handles pre-existing corrupted data gracefully.
-func sanitizeOrphanedToolCalls(messages []interface{}) []interface{} {
+func sanitizeOrphanedToolCalls(messages []interface{}, stripTrailing bool) []interface{} {
 	if len(messages) == 0 {
 		return messages
 	}
 
-	// Scan for assistant messages with tool_calls and verify each has
-	// corresponding tool messages immediately following.
-	// Only flag as orphaned if there IS a following message that isn't a tool
-	// message  - if the assistant(tool_calls) is the last message, the API
-	// expects tool results to come in the next request (normal flow).
-	needsFix := false
+	stripToolCalls := make(map[int]bool)
+	validToolMessages := make(map[int]bool)
+	dropToolMessages := make(map[int]bool)
+
 	for i, m := range messages {
 		if !msgIsAssistantWithToolCalls(m) {
 			continue
@@ -426,7 +424,12 @@ func sanitizeOrphanedToolCalls(messages []interface{}) []interface{} {
 		if len(tcIDs) == 0 {
 			continue
 		}
-		// Collect tool_call_ids from immediately following tool messages.
+
+		idSet := make(map[string]bool, len(tcIDs))
+		for _, id := range tcIDs {
+			idSet[id] = true
+		}
+
 		j := i + 1
 		for j < len(messages) {
 			mm, ok := toMapInterface(messages[j])
@@ -438,94 +441,83 @@ func sanitizeOrphanedToolCalls(messages []interface{}) []interface{} {
 			}
 			j++
 		}
-		// If we reached the end of messages, this is the last group  - not orphaned.
-		if j >= len(messages) {
+		if j >= len(messages) && !stripTrailing {
 			continue
 		}
-		// There are messages after the tool group. Check if all tool_call_ids
-		// have corresponding tool messages.
+
 		foundIDs := make(map[string]bool)
+		hasExtraToolMessage := false
 		for k := i + 1; k < j; k++ {
 			mm, ok := toMapInterface(messages[k])
 			if !ok {
 				break
 			}
 			if tcID, _ := mm["tool_call_id"].(string); tcID != "" {
-				foundIDs[tcID] = true
+				if idSet[tcID] {
+					foundIDs[tcID] = true
+				} else {
+					hasExtraToolMessage = true
+				}
+			} else {
+				hasExtraToolMessage = true
 			}
 		}
+		complete := !hasExtraToolMessage && len(foundIDs) == len(idSet)
 		for _, id := range tcIDs {
 			if !foundIDs[id] {
-				needsFix = true
+				complete = false
 				break
 			}
 		}
-		if needsFix {
-			break
+		if complete {
+			for k := i + 1; k < j; k++ {
+				validToolMessages[k] = true
+			}
+			continue
+		}
+		stripToolCalls[i] = true
+		for k := i + 1; k < j; k++ {
+			dropToolMessages[k] = true
 		}
 	}
 
-	if !needsFix {
+	for i, m := range messages {
+		if !isToolRoleMessage(m) {
+			continue
+		}
+		if !validToolMessages[i] {
+			dropToolMessages[i] = true
+		}
+	}
+
+	if len(stripToolCalls) == 0 && len(dropToolMessages) == 0 {
 		return messages
 	}
 
-	// Build a fixed copy, stripping tool_calls from orphaned assistant messages.
 	result := make([]interface{}, 0, len(messages))
 	for i, m := range messages {
-		if !msgIsAssistantWithToolCalls(m) {
+		if dropToolMessages[i] {
+			log.Printf("[LLM sanitize] dropping orphaned tool message at index %d", i)
+			continue
+		}
+		if !stripToolCalls[i] {
 			result = append(result, m)
 			continue
 		}
-		tcIDs := extractToolCallIDs(m)
-		if len(tcIDs) == 0 {
-			result = append(result, m)
-			continue
-		}
-		// Find the end of the following tool messages.
-		j := i + 1
-		for j < len(messages) {
-			mm, ok := toMapInterface(messages[j])
-			if !ok {
-				break
-			}
-			if role, _ := mm["role"].(string); role != "tool" {
-				break
-			}
-			j++
-		}
-		// If this is the last group (no messages after), keep as-is.
-		if j >= len(messages) {
-			result = append(result, m)
-			continue
-		}
-		// Check following tool messages for completeness.
-		foundIDs := make(map[string]bool)
-		for k := i + 1; k < j; k++ {
-			mm, ok := toMapInterface(messages[k])
-			if !ok {
-				break
-			}
-			if tcID, _ := mm["tool_call_id"].(string); tcID != "" {
-				foundIDs[tcID] = true
-			}
-		}
-		allPresent := true
-		for _, id := range tcIDs {
-			if !foundIDs[id] {
-				allPresent = false
-				break
-			}
-		}
-		if allPresent {
-			result = append(result, m)
-			continue
-		}
-		// Orphaned: strip tool_calls from a copy of the message.
-		log.Printf("[LLM sanitize] stripping orphaned tool_calls from assistant message at index %d (ids=%v)", i, tcIDs)
+		log.Printf("[LLM sanitize] stripping orphaned tool_calls from assistant message at index %d (ids=%v)", i, extractToolCallIDs(m))
 		patched := copyMapWithout(m, "tool_calls")
 		result = append(result, patched)
 	}
 	return result
+}
+
+func isToolRoleMessage(m interface{}) bool {
+	mm, ok := toMapInterface(m)
+	if !ok {
+		return false
+	}
+	role, _ := mm["role"].(string)
+	return role == "tool"
 }
 
 // msgIsAssistantWithToolCalls checks if a message is an assistant message

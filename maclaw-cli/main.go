@@ -61,8 +61,9 @@ type cli struct {
 }
 
 type stateLock struct {
-	path string
-	file *os.File
+	path      string
+	file      *os.File
+	heartbeat chan struct{}
 }
 
 type gatewayAPIError struct {
@@ -1448,7 +1449,9 @@ func acquireLockFile(lockPath, label string, timeoutSec int) (*stateLock, error)
 		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 		if err == nil {
 			_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
-			return &stateLock{path: lockPath, file: f}, nil
+			lock := &stateLock{path: lockPath, file: f, heartbeat: make(chan struct{})}
+			lock.startHeartbeat(staleAfter)
+			return lock, nil
 		}
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("acquire %s: %w", label, err)
@@ -1483,12 +1486,42 @@ func (l *stateLock) Release() {
 	if l == nil {
 		return
 	}
+	if l.heartbeat != nil {
+		close(l.heartbeat)
+		l.heartbeat = nil
+	}
 	if l.file != nil {
 		_ = l.file.Close()
 	}
 	if l.path != "" {
 		_ = os.Remove(l.path)
 	}
+}
+
+func (l *stateLock) startHeartbeat(staleAfter time.Duration) {
+	if l == nil || l.path == "" || l.heartbeat == nil {
+		return
+	}
+	interval := staleAfter / 3
+	if interval > 10*time.Second {
+		interval = 10 * time.Second
+	}
+	if interval < time.Second {
+		interval = time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				now := time.Now()
+				_ = os.Chtimes(l.path, now, now)
+			case <-l.heartbeat:
+				return
+			}
+		}
+	}()
 }
 
 func findSession(st cliState, id string) *sessionState {

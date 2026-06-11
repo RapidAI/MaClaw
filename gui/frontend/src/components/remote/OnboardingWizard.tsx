@@ -718,7 +718,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         }} data-ai-theme={portalTheme}>
             {showRegistrationToast && regResult && (
                 <div style={{ position: "absolute", top: 116, left: "50%", transform: "translateX(-50%)", zIndex: 20001, width: "min(420px, calc(100vw - 36px))", maxHeight: "calc(100vh - 148px)", overflowY: "auto", boxSizing: "border-box" }} role={regResult.ok ? "status" : "alert"} aria-live="polite">
-                    <div style={{ ...wizardBannerStyle(regResultWarning ? "warning" : regResult.ok ? "success" : "error"), marginTop: 0, background: "var(--theme-surface)", border: `1px solid ${regResultWarning ? "rgba(245,158,11,0.65)" : regResult.ok ? "rgba(34,197,94,0.65)" : "rgba(239,68,68,0.65)"}`, borderLeft: `3px solid ${regResultWarning ? colors.warning : regResult.ok ? colors.success : colors.danger}`, boxShadow: "0 14px 36px rgba(0,0,0,0.28)" }}>
+                    <div style={{ ...wizardBannerStyle(regResultWarning ? "warning" : regResult.ok ? "success" : "error"), marginTop: 0, background: "var(--theme-surface)", border: `1px solid ${regResultWarning ? colors.warning : regResult.ok ? colors.success : colors.danger}`, borderLeft: `3px solid ${regResultWarning ? colors.warning : regResult.ok ? colors.success : colors.danger}`, boxShadow: "0 14px 36px rgba(0,0,0,0.28)" }}>
                         <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                             <span aria-hidden="true" style={{ flexShrink: 0, fontSize: "1rem", lineHeight: 1.35 }}>
                                 {regResultWarning ? "⚠️" : regResult.ok ? "✅" : "❌"}
@@ -1214,7 +1214,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             {wxDone ? (
                                 <div style={{
                                     padding: "16px", textAlign: "center", borderRadius: 8,
-                                    background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)",
+                                    background: colors.successBg, border: `1px solid color-mix(in srgb, ${colors.success} 30%, transparent)`,
                                 }}>
                                     <div style={{ fontSize: "1.4rem", marginBottom: 4 }}>✅</div>
                                     <div style={{ fontSize: "0.82rem", color: colors.success, fontWeight: 600 }}>

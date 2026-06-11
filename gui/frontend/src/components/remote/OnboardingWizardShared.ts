@@ -158,9 +158,9 @@ export const wizardStatusBannerStyle: CSSProperties = {
 export type WizardBannerTone = "success" | "error" | "warning";
 
 const wizardBannerPalette: Record<WizardBannerTone, { bg: string; border: string; color: string }> = {
-    success: { bg: "rgba(34,197,94,0.1)", border: "rgba(34,197,94,0.3)", color: colors.success },
-    error: { bg: "rgba(239,68,68,0.1)", border: "rgba(239,68,68,0.3)", color: colors.danger },
-    warning: { bg: "rgba(245,158,11,0.10)", border: "rgba(245,158,11,0.28)", color: colors.warning },
+    success: { bg: "var(--theme-success-bg)", border: "color-mix(in srgb, var(--theme-success) 34%, transparent)", color: colors.success },
+    error: { bg: "var(--theme-danger-bg)", border: "color-mix(in srgb, var(--theme-danger) 34%, transparent)", color: colors.danger },
+    warning: { bg: "var(--theme-warning-bg)", border: "color-mix(in srgb, var(--theme-warning) 34%, transparent)", color: colors.warning },
 };
 
 export const wizardBannerStyle = (tone: WizardBannerTone): CSSProperties => {

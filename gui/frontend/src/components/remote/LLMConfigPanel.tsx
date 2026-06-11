@@ -561,7 +561,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             {isNone && !hasHubEntitlement && (
                 <div className="llm-config-alert llm-config-alert--danger" style={{
                     padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
-                    background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: colors.danger,
+                    background: colors.dangerBg, border: `1px solid color-mix(in srgb, ${colors.danger} 30%, transparent)`, color: colors.danger,
                 }}>
                     提示 {t("Without a provider, MaClaw remote will be disabled.", "未配置服务商时，MaClaw 远程能力将不可用。")}
                 </div>
@@ -657,7 +657,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                         {dlgIsNone && (
                             <div className="llm-config-alert llm-config-alert--danger" style={{
                                 padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
-                                background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: colors.danger,
+                                background: colors.dangerBg, border: `1px solid color-mix(in srgb, ${colors.danger} 30%, transparent)`, color: colors.danger,
                                 marginBottom: 16,
                             }}>
                                 {t("Without a provider, MaClaw remote will be disabled.", "不配置服务商，MaClaw 远程将失效。")}
@@ -975,7 +975,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                             <div style={{
                                                 display: "flex", alignItems: "center", gap: 10,
                                                 padding: "8px 12px", borderRadius: 4,
-                                                background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
+                                                background: colors.successBg, border: `1px solid color-mix(in srgb, ${colors.success} 30%, transparent)`,
                                             }}>
                                                 <span style={{ fontSize: "0.76rem", color: colors.success, flex: 1 }}>
                                                     已认证 {t("OAuth authenticated", "OAuth 已认证")}

@@ -307,7 +307,7 @@ function ResultBadge({ result }: { result: string }) {
     return (
         <span style={{
             ...badgeBaseStyle,
-            background: isApproved ? "#e8f5e9" : "#fce4ec",
+            background: isApproved ? "var(--theme-success-bg, rgba(79, 127, 111, 0.10))" : "var(--theme-danger-bg, #fbf1f0)",
             color: isApproved ? "var(--theme-success, #4f7f6f)" : "var(--theme-danger, #b42318)",
         }}>
             {isApproved ? "✓ 通过" : "✗ 驳回"}

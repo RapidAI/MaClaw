@@ -91,7 +91,7 @@ Use `--lock-timeout <sec>` or `MACLAW_CLI_LOCK_TIMEOUT_SEC` when another process
 | Send prompt and wait for reply | `maclaw-cli continue --client A --session S "..."` |
 | Send prompt only | `maclaw-cli send --client A --session S --text "..."` |
 | Fetch pending replies | `maclaw-cli poll --client A --session S` |
-| Keep reading replies as JSONL | `maclaw-cli watch --client A --session S` |
+| Keep reading replies as JSONL | `maclaw-cli watch --client A --session S --count 10` |
 | Register client tools | `maclaw-cli handshake --tools tools.json --client A --session S` |
 | Return tool execution result | `maclaw-cli tool-result ... --client A --session S` |
 | Inspect sessions | `maclaw-cli session list` |
@@ -150,6 +150,8 @@ Supported `action` values:
 - `tool-result`
 - `doctor`
 - `bootstrap`
+
+For `invoke` with `action:"watch"`, pass `count` unless an endless subprocess is intentional.
 
 ### One-Shot Agent Step
 

@@ -30,7 +30,7 @@ export function RemoteSmokeSummaryCard({ remoteSmokeReport, getRemoteSmokeDetail
                         fontSize: "12px",
                         fontWeight: 700,
                         color: remoteSmokeReport?.success ? colors.success : colors.danger,
-                        background: remoteSmokeReport?.success ? "rgba(34,197,94,0.12)" : "rgba(244,63,94,0.12)",
+                        background: remoteSmokeReport?.success ? colors.successBg : colors.dangerBg,
                     }}
                 >
                     {remoteSmokeReport ? (remoteSmokeReport.success ? "Success" : "Needs Attention") : "Not Run"}

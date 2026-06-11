@@ -252,19 +252,68 @@ func (m *SSHBackgroundTaskManager) findDuplicateActiveTask(command string) *SSHB
 }
 
 // normalizeCommandForDedup 提取命令的核心部分用于去重比较。
-// 去除常见的 wrapper（echo 前缀、cd 前缀、环境变量设置等），
+// 去除常见的 wrapper（echo 前缀、sudo 前缀、环境变量前缀等），
 // 保留实际执行的命令。
 func normalizeCommandForDedup(cmd string) string {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
 		return ""
 	}
-	// 去除 sudo -n / sudo 前缀（降级后的命令可能加了 sudo -n）
-	cmd = strings.TrimPrefix(cmd, "sudo -n ")
-	cmd = strings.TrimPrefix(cmd, "sudo ")
+	// 去除 VAR=value 环境变量前缀（如 SSHPASS='...' timeout 60 sshpass ...）
+	for strings.Contains(cmd, "=") {
+		// 检查是否以 WORD= 开头（环境变量赋值）
+		spaceIdx := strings.IndexByte(cmd, ' ')
+		eqIdx := strings.IndexByte(cmd, '=')
+		if eqIdx > 0 && (spaceIdx < 0 || eqIdx < spaceIdx) {
+			// 跳过这个 VAR=value token
+			// value 可能被引号包裹
+			rest := cmd[eqIdx+1:]
+			if len(rest) > 0 && (rest[0] == '\'' || rest[0] == '"') {
+				quote := rest[0]
+				closeIdx := strings.IndexByte(rest[1:], quote)
+				if closeIdx >= 0 {
+					cmd = strings.TrimSpace(rest[closeIdx+2:])
+					continue
+				}
+			}
+			// value 无引号，到下一个空格结束
+			if spaceAfterVal := strings.IndexByte(rest, ' '); spaceAfterVal >= 0 {
+				cmd = strings.TrimSpace(rest[spaceAfterVal+1:])
+				continue
+			}
+			break // value 是最后一个 token
+		}
+		break
+	}
+	// 去除 timeout N 前缀
+	if strings.HasPrefix(cmd, "timeout ") {
+		parts := strings.SplitN(cmd, " ", 3)
+		if len(parts) >= 3 {
+			// parts[1] 应该是数字
+			allDigit := true
+			for _, c := range parts[1] {
+				if c < '0' || c > '9' {
+					allDigit = false
+					break
+				}
+			}
+			if allDigit {
+				cmd = strings.TrimSpace(parts[2])
+			}
+		}
+	}
+	// 去除 sudo -n / sudo 前缀
+	if strings.HasPrefix(cmd, "sudo ") {
+		after := strings.TrimSpace(cmd[5:])
+		if strings.HasPrefix(after, "-n ") {
+			cmd = strings.TrimSpace(after[3:])
+		} else {
+			cmd = after
+		}
+	}
 	// 去除 echo + && 前缀（maclaw 的 sudo 降级会加 echo '[maclaw]...' &&）
 	if idx := strings.Index(cmd, "' && "); idx > 0 && strings.HasPrefix(cmd, "echo '") {
-		cmd = cmd[idx+5:]
+		cmd = strings.TrimSpace(cmd[idx+5:])
 	}
 	// 去除多余空白
 	cmd = strings.TrimSpace(cmd)
