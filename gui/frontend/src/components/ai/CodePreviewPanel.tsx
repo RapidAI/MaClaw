@@ -125,6 +125,85 @@ function HighlightedLine({ line, language, theme }: {
     );
 }
 
+// ── Markdown Preview ──
+
+function MarkdownPreview({ content, theme }: { content: string; theme: CodePreviewTheme }) {
+    const lines = content.split('\n');
+    const elements: React.ReactNode[] = [];
+    let i = 0;
+    while (i < lines.length) {
+        const line = lines[i];
+        // Code blocks
+        if (line.startsWith('```')) {
+            const lang = line.slice(3).trim();
+            const codeLines: string[] = [];
+            i++;
+            while (i < lines.length && !lines[i].startsWith('```')) {
+                codeLines.push(lines[i]);
+                i++;
+            }
+            i++; // skip closing ```
+            elements.push(
+                <pre key={elements.length} style={{ background: theme.lineNumBg, border: `1px solid ${theme.border}`, borderRadius: 6, padding: '10px 14px', margin: '8px 0', overflow: 'auto', fontSize: 13, lineHeight: 1.5 }}>
+                    <code style={{ color: theme.text, fontFamily: "'Cascadia Code', 'Consolas', monospace" }}>
+                        {lang && <span style={{ color: theme.textMuted, fontSize: 11, display: 'block', marginBottom: 4 }}>{lang}</span>}
+                        {codeLines.join('\n')}
+                    </code>
+                </pre>
+            );
+            continue;
+        }
+        // Headers
+        if (line.startsWith('# ')) {
+            elements.push(<h1 key={elements.length} style={{ fontSize: 22, fontWeight: 700, margin: '16px 0 8px', color: theme.tabActiveText }}>{renderMdInline(line.slice(2), theme)}</h1>);
+        } else if (line.startsWith('## ')) {
+            elements.push(<h2 key={elements.length} style={{ fontSize: 18, fontWeight: 700, margin: '14px 0 6px', color: theme.tabActiveText }}>{renderMdInline(line.slice(3), theme)}</h2>);
+        } else if (line.startsWith('### ')) {
+            elements.push(<h3 key={elements.length} style={{ fontSize: 15, fontWeight: 700, margin: '12px 0 4px', color: theme.tabActiveText }}>{renderMdInline(line.slice(4), theme)}</h3>);
+        } else if (line.startsWith('- ') || line.startsWith('* ')) {
+            elements.push(<div key={elements.length} style={{ paddingLeft: 16, margin: '2px 0' }}>• {renderMdInline(line.slice(2), theme)}</div>);
+        } else if (/^\d+\.\s/.test(line)) {
+            const match = line.match(/^(\d+\.)\s(.*)$/);
+            elements.push(<div key={elements.length} style={{ paddingLeft: 16, margin: '2px 0' }}>{match?.[1]} {renderMdInline(match?.[2] || '', theme)}</div>);
+        } else if (line.trim() === '') {
+            elements.push(<div key={elements.length} style={{ height: 8 }} />);
+        } else {
+            elements.push(<p key={elements.length} style={{ margin: '4px 0', lineHeight: 1.6 }}>{renderMdInline(line, theme)}</p>);
+        }
+        i++;
+    }
+    return (
+        <div style={{ padding: '16px 20px', fontSize: 14, lineHeight: 1.6, color: theme.text, fontFamily: 'inherit', wordBreak: 'break-word' }}>
+            {elements}
+        </div>
+    );
+}
+
+function renderMdInline(text: string, theme: CodePreviewTheme): React.ReactNode {
+    // Simple inline rendering: bold, inline code, links
+    const parts: React.ReactNode[] = [];
+    const re = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    let key = 0;
+    while ((match = re.exec(text)) !== null) {
+        if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+        const m = match[0];
+        if (m.startsWith('`')) {
+            parts.push(<code key={key++} style={{ background: theme.lineNumBg, padding: '1px 4px', borderRadius: 3, fontSize: 12, color: theme.syntaxString }}>{m.slice(1, -1)}</code>);
+        } else if (m.startsWith('**')) {
+            parts.push(<strong key={key++}>{m.slice(2, -2)}</strong>);
+        } else if (m.startsWith('[')) {
+            const linkMatch = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+            if (linkMatch) parts.push(<span key={key++} style={{ color: theme.syntaxFunction, textDecoration: 'underline' }}>{linkMatch[1]}</span>);
+            else parts.push(m);
+        }
+        lastIndex = match.index + m.length;
+    }
+    if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+    return <>{parts}</>;
+}
+
 // ── Plain Code View ──
 
 function PlainCodeView({ content, language, theme }: {
@@ -466,7 +545,9 @@ export function CodePreviewPanel({
                 }}
             >
                 {activeFile ? (
-                    diffLines ? (
+                    activeFile.language === 'markdown' ? (
+                        <MarkdownPreview content={activeFile.content} theme={theme} />
+                    ) : diffLines ? (
                         <DiffView diffLines={diffLines} theme={theme} />
                     ) : (
                         <PlainCodeView

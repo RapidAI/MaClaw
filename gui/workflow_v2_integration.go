@@ -203,12 +203,11 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.HandleResult) workflowIMRouteResult {
 	switch hr.Action {
 	case v2.ActionRunPhase:
-		// Check if we're entering an execution phase (e.g. after advancing from task_breakdown).
-		if hr.Phase != nil && hr.Phase.ToolPolicy == v2.ToolPolicyFull && hr.State.Type == "coding" {
-			// Only invoke SubAgent for the implementation phase.
-			// Verification phase runs as a normal agent loop with full tools.
-			if hr.Phase.ID == "implementation" {
-				log.Printf("[workflow-v2] ActionRunPhase: entering execution phase for user=%s, deferring SubAgent to agent loop", msg.UserID)
+		// Route based on ExecMode declared in template — no hardcoded phase IDs.
+		if hr.Phase != nil {
+			switch hr.Phase.ExecMode {
+			case v2.ExecModeSubAgent:
+				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=subagent for phase=%s, deferring SubAgent", hr.Phase.ID)
 				if wf := h.getWorkflowV2(); wf != nil {
 					if phase := hr.State.ActivePhase(); phase != nil {
 						phase.Status = v2.PhaseExecuting
@@ -223,14 +222,23 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 					WorkflowAgentLoop: true,
 					WorkflowDocPhase:  false,
 				}
+			case v2.ExecModeAutoFromPrev:
+				// Auto-complete from previous phase output — no execution needed.
+				// This is used for phases like "verification" where the prior
+				// phase (implementation) already produced the verification report.
+				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=auto_from_prev for phase=%s, auto-completing", hr.Phase.ID)
+				// Already handled by RecordOutput auto-advance in the prior phase.
+				// If we get here, the prior phase's auto-advance already completed this phase.
+				// Just emit progress and return empty (workflow should be completed).
+				if wf := h.getWorkflowV2(); wf != nil {
+					if updatedState := wf.machine.GetActive(msg.UserID); updatedState != nil {
+						h.emitWorkflowV2Progress(msg.UserID, updatedState)
+					}
+				}
+				return workflowIMRouteResult{Response: &IMAgentResponse{Text: "✅ 工作流已完成"}}
+			default:
+				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=default for phase=%s, running as agent loop", hr.Phase.ID)
 			}
-			// Verification and other ToolPolicyFull phases: run as normal agent loop
-			log.Printf("[workflow-v2] ActionRunPhase: phase=%s is ToolPolicyFull but not implementation, running as normal agent loop", hr.Phase.ID)
-		} else if hr.Phase != nil {
-			log.Printf("[workflow-v2] ActionRunPhase: NOT execution phase. phase=%s toolPolicy=%s type=%s (need ToolPolicyFull=%s + type=coding)",
-				hr.Phase.ID, hr.Phase.ToolPolicy, hr.State.Type, v2.ToolPolicyFull)
-		} else {
-			log.Printf("[workflow-v2] ActionRunPhase: hr.Phase is nil!")
 		}
 		return h.runWorkflowV2Phase(msg.UserID, hr.State, "")
 
@@ -545,6 +553,13 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 	report := runner.FinalReport()
 	if wf := h.getWorkflowV2(); wf != nil {
 		wf.machine.RecordOutput(userID, report)
+		// Auto-complete next phase if it's ExecModeAutoFromPrev
+		if updatedState := wf.machine.GetActive(userID); updatedState != nil {
+			if nextPhase := updatedState.ActivePhase(); nextPhase != nil && nextPhase.ExecMode == v2.ExecModeAutoFromPrev {
+				log.Printf("[workflow-v2] auto-completing phase=%s (ExecMode=auto_from_prev)", nextPhase.ID)
+				wf.machine.RecordOutput(userID, report)
+			}
+		}
 		if updatedState := wf.machine.GetActive(userID); updatedState != nil {
 			h.emitWorkflowV2Progress(userID, updatedState)
 		} else {
@@ -682,6 +697,15 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID str
 
 	if wf := h.getWorkflowV2(); wf != nil {
 		wf.machine.RecordOutput(userID, report)
+		// If the next phase has ExecMode=auto_from_prev, auto-complete it with this report.
+		// This eliminates the need for a separate execution step — the prior phase's
+		// output IS the next phase's output (e.g. SubAgent report includes verification results).
+		if updatedState := wf.machine.GetActive(userID); updatedState != nil {
+			if nextPhase := updatedState.ActivePhase(); nextPhase != nil && nextPhase.ExecMode == v2.ExecModeAutoFromPrev {
+				log.Printf("[workflow-v2] auto-completing phase=%s (ExecMode=auto_from_prev) with prior output", nextPhase.ID)
+				wf.machine.RecordOutput(userID, report)
+			}
+		}
 		if updatedState := wf.machine.GetActive(userID); updatedState != nil {
 			h.emitWorkflowV2Progress(userID, updatedState)
 		} else {

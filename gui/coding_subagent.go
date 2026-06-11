@@ -2466,6 +2466,7 @@ func (c *codingSubAgentCallbacks) emitReadFilePreview(filePath string) {
 		SessionID:   c.codeSessionID(),
 		FilePath:    normalized.displayPath,
 		FileName:    fileName,
+		AbsPath:     normalized.absPath,
 		Content:     string(data),
 		OpType:      "read",
 		Language:    detectLanguageFromExt(fileName),

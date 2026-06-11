@@ -200,6 +200,17 @@ func phaseInstruction(phaseID string) string {
 输出完毕后等待用户确认。
 `
 	default:
-		return ""
+		// Generic instruction for doc-only phases without specific prompts.
+		return `## 阶段指令
+
+请基于前序阶段的产出物和用户需求，生成本阶段的完整文档内容（Markdown 格式）。
+内容要详实、结构清晰、有可操作性。
+
+## 重要约束（违反将导致错误）
+- 只生成一份文档，输出完毕后立即停止。
+- 【严禁】输出确认提示语、分隔线或任何后续内容。
+- 【严禁】自己模拟用户确认。
+- 你只负责输出文档本身，系统会自动提示用户确认。
+`
 	}
 }

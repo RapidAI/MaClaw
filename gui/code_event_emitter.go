@@ -12,9 +12,10 @@ type CodeFileEvent struct {
 	SessionID   string `json:"session_id"`
 	FilePath    string `json:"file_path"`
 	FileName    string `json:"file_name"`
+	AbsPath     string `json:"abs_path,omitempty"`    // absolute path for tooltip/context menu
 	Content     string `json:"content"`
 	Original    string `json:"original,omitempty"`    // empty for new files
-	OpType      string `json:"op_type"`               // "create" or "modify"
+	OpType      string `json:"op_type"`               // "create", "modify", or "read"
 	Language    string `json:"language"`              // detected from extension
 	ForceOpen   bool   `json:"force_open,omitempty"`  // true when backend should override a manually closed preview
 	ProjectPath string `json:"project_path,omitempty"` // project/working directory for frontend tab routing
@@ -102,7 +103,49 @@ func detectLanguageFromExt(fileName string) string {
 		return "markdown"
 	case ".sh", ".bash":
 		return "shell"
+	case ".bat", ".cmd":
+		return "batch"
+	case ".ps1", ".psm1", ".psd1":
+		return "powershell"
+	case ".rb":
+		return "ruby"
+	case ".php":
+		return "php"
+	case ".swift":
+		return "swift"
+	case ".kt", ".kts":
+		return "kotlin"
+	case ".cs":
+		return "csharp"
+	case ".sql":
+		return "sql"
+	case ".r", ".R":
+		return "r"
+	case ".lua":
+		return "lua"
+	case ".toml":
+		return "toml"
+	case ".xml", ".xsl", ".xsd", ".svg":
+		return "xml"
+	case ".dockerfile":
+		return "dockerfile"
+	case ".tf", ".hcl":
+		return "hcl"
+	case ".cmake":
+		return "cmake"
 	default:
+		// Handle special filenames without extensions
+		baseName := strings.ToLower(filepath.Base(fileName))
+		switch baseName {
+		case "dockerfile", "containerfile":
+			return "dockerfile"
+		case "makefile", "gnumakefile":
+			return "makefile"
+		case "cmakelists.txt":
+			return "cmake"
+		case ".gitignore", ".dockerignore":
+			return "shell"
+		}
 		return "plaintext"
 	}
 }

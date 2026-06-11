@@ -48,6 +48,28 @@ const extensionMap: Record<string, string> = {
     '.md': 'markdown',
     '.sh': 'shell',
     '.bash': 'shell',
+    '.bat': 'batch',
+    '.cmd': 'batch',
+    '.ps1': 'powershell',
+    '.psm1': 'powershell',
+    '.psd1': 'powershell',
+    '.rb': 'ruby',
+    '.php': 'php',
+    '.swift': 'swift',
+    '.kt': 'kotlin',
+    '.kts': 'kotlin',
+    '.cs': 'csharp',
+    '.sql': 'sql',
+    '.r': 'r',
+    '.lua': 'lua',
+    '.toml': 'toml',
+    '.xml': 'xml',
+    '.xsl': 'xml',
+    '.xsd': 'xml',
+    '.svg': 'xml',
+    '.tf': 'hcl',
+    '.hcl': 'hcl',
+    '.cmake': 'cmake',
 };
 
 /**
@@ -373,6 +395,363 @@ function buildYAMLRules(): TokenRule[] {
     ];
 }
 
+/** Build rules for Windows Batch (.bat/.cmd) files. */
+function buildBatchRules(): TokenRule[] {
+    const batchKeywords = [
+        'if', 'else', 'for', 'do', 'in', 'goto', 'call', 'exit', 'set', 'setlocal',
+        'endlocal', 'echo', 'rem', 'pause', 'cls', 'title', 'color', 'pushd', 'popd',
+        'not', 'exist', 'defined', 'equ', 'neq', 'lss', 'leq', 'gtr', 'geq',
+        'errorlevel', 'cmdextversion', 'enabledelayedexpansion', 'off', 'on',
+    ];
+    return [
+        // REM comment
+        { pattern: /^(?:rem|REM)\b.*/, type: 'comment' },
+        // :: comment
+        { pattern: /^::.*/, type: 'comment' },
+        // Labels
+        { pattern: /^:\w+/, type: 'function' },
+        // Double-quoted string
+        { pattern: /^"(?:[^"\\]|\\.)*"/, type: 'string' },
+        // Variables %var% and !var!
+        { pattern: /^%~?[a-zA-Z0-9_*]+%/, type: 'type' },
+        { pattern: /^![a-zA-Z0-9_]+!/, type: 'type' },
+        // %1-%9 parameters
+        { pattern: /^%~?[0-9]/, type: 'type' },
+        // Numbers
+        { pattern: /^\d+/, type: 'number' },
+        // Operators
+        { pattern: /^(?:>>|<<|&&|\|\||[|><&^])/, type: 'operator' },
+        // @echo off pattern
+        { pattern: /^@/, type: 'operator' },
+        // Keywords (case-insensitive)
+        { pattern: new RegExp(`^(?:${batchKeywords.join('|')})\\b`, 'i'), type: 'keyword' },
+    ];
+}
+
+/** Build rules for PowerShell (.ps1/.psm1/.psd1) files. */
+function buildPowerShellRules(): TokenRule[] {
+    const psKeywords = [
+        'if', 'else', 'elseif', 'switch', 'while', 'for', 'foreach', 'do', 'until',
+        'break', 'continue', 'return', 'exit', 'throw', 'try', 'catch', 'finally',
+        'trap', 'begin', 'process', 'end', 'function', 'filter', 'param', 'class',
+        'enum', 'using', 'workflow', 'parallel', 'sequence', 'inlinescript',
+    ];
+    const psCmdlets = [
+        'Write-Host', 'Write-Output', 'Write-Error', 'Write-Warning', 'Write-Verbose',
+        'Get-Content', 'Set-Content', 'Get-Item', 'Set-Item', 'New-Item', 'Remove-Item',
+        'Get-ChildItem', 'Test-Path', 'Invoke-Expression', 'Invoke-Command',
+        'Start-Process', 'Stop-Process', 'Get-Process', 'Select-Object', 'Where-Object',
+        'ForEach-Object', 'Sort-Object', 'Group-Object', 'Measure-Object',
+    ];
+    return [
+        // Comment
+        { pattern: /^#.*/, type: 'comment' },
+        // Block comment <# ... #> (single-line portion)
+        { pattern: /^<#.*?#>/, type: 'comment' },
+        // Double-quoted string (with interpolation)
+        { pattern: /^"(?:[^"\\`]|\\.|`[^])*"/, type: 'string' },
+        // Single-quoted string
+        { pattern: /^'[^']*'/, type: 'string' },
+        // Here-string markers
+        { pattern: /^@["']/, type: 'string' },
+        // Variables
+        { pattern: /^\$(?:\{[^}]+\}|\w+)/, type: 'type' },
+        // Numbers
+        { pattern: /^\d+(?:\.\d+)?/, type: 'number' },
+        // Cmdlet-style names (Verb-Noun)
+        { pattern: new RegExp(`^(?:${psCmdlets.join('|')})\\b`), type: 'function' },
+        // General Verb-Noun cmdlet pattern
+        { pattern: /^[A-Z][a-z]+-[A-Z]\w+/, type: 'function' },
+        // Operators
+        { pattern: /^(?:-eq|-ne|-lt|-gt|-le|-ge|-match|-notmatch|-like|-notlike|-contains|-in|-notin|-replace|-split|-join|-and|-or|-not|-band|-bor|-bnot|-shl|-shr|\||\+\+|--|[+\-*/%=!<>])/, type: 'operator' },
+        // Type accelerators [type]
+        { pattern: /^\[[a-zA-Z.]+\]/, type: 'type' },
+        // Keywords
+        { pattern: keywordRegex(psKeywords), type: 'keyword' },
+    ];
+}
+
+/** Build rules for Ruby. */
+function buildRubyRules(): TokenRule[] {
+    const rubyKeywords = [
+        'def', 'end', 'class', 'module', 'if', 'elsif', 'else', 'unless', 'while',
+        'until', 'for', 'do', 'begin', 'rescue', 'ensure', 'raise', 'return', 'yield',
+        'block_given?', 'self', 'super', 'nil', 'true', 'false', 'and', 'or', 'not',
+        'then', 'when', 'case', 'require', 'require_relative', 'include', 'extend',
+        'attr_accessor', 'attr_reader', 'attr_writer', 'puts', 'print', 'p',
+    ];
+    return [
+        { pattern: /^#.*/, type: 'comment' },
+        { pattern: /^"(?:[^"\\]|\\.)*"/, type: 'string' },
+        { pattern: /^'(?:[^'\\]|\\.)*'/, type: 'string' },
+        { pattern: /^\/(?:[^/\\]|\\.)*\/[gimxo]*/, type: 'string' },
+        { pattern: /^:\w+/, type: 'string' }, // symbols
+        { pattern: /^@{1,2}\w+/, type: 'type' }, // instance/class vars
+        { pattern: /^\$\w+/, type: 'type' }, // global vars
+        { pattern: /^\d+(?:\.\d+)?/, type: 'number' },
+        { pattern: /^[A-Z]\w*/, type: 'type' }, // constants/class names
+        { pattern: /^\w+[?!]?(?=\s*[({])/, type: 'function' },
+        { pattern: /^(?:=>|->|<=>|&&|\|\||\.\.\.?|[+\-*/%=!<>&|^~])/, type: 'operator' },
+        { pattern: keywordRegex(rubyKeywords), type: 'keyword' },
+    ];
+}
+
+/** Build rules for PHP. */
+function buildPHPRules(): TokenRule[] {
+    const phpKeywords = [
+        'if', 'else', 'elseif', 'while', 'for', 'foreach', 'do', 'switch', 'case',
+        'break', 'continue', 'return', 'function', 'class', 'interface', 'trait',
+        'extends', 'implements', 'new', 'public', 'private', 'protected', 'static',
+        'abstract', 'final', 'const', 'var', 'use', 'namespace', 'require', 'include',
+        'echo', 'print', 'throw', 'try', 'catch', 'finally', 'yield', 'match',
+        'true', 'false', 'null', 'self', 'parent', 'fn',
+    ];
+    return [
+        { pattern: /^\/\/.*/, type: 'comment' },
+        { pattern: /^#.*/, type: 'comment' },
+        { pattern: /^\/\*.*?\*\//, type: 'comment' },
+        { pattern: /^"(?:[^"\\]|\\.)*"/, type: 'string' },
+        { pattern: /^'(?:[^'\\]|\\.)*'/, type: 'string' },
+        { pattern: /^\$\w+/, type: 'type' }, // variables
+        { pattern: /^\d+(?:\.\d+)?/, type: 'number' },
+        { pattern: /^[A-Z]\w*(?=\s*::|\s*\()/, type: 'type' },
+        { pattern: /^\w+(?=\s*\()/, type: 'function' },
+        { pattern: /^(?:=>|->|::|\?\?|\.\.\.|\.\.|[+\-*/%=!<>&|^~.])/, type: 'operator' },
+        { pattern: keywordRegex(phpKeywords), type: 'keyword' },
+    ];
+}
+
+/** Build rules for Swift. */
+function buildSwiftRules(): TokenRule[] {
+    const swiftKeywords = [
+        'func', 'var', 'let', 'class', 'struct', 'enum', 'protocol', 'extension',
+        'if', 'else', 'guard', 'switch', 'case', 'for', 'while', 'repeat', 'return',
+        'break', 'continue', 'throw', 'throws', 'try', 'catch', 'defer', 'import',
+        'self', 'Self', 'super', 'nil', 'true', 'false', 'init', 'deinit',
+        'public', 'private', 'internal', 'fileprivate', 'open', 'static', 'override',
+        'mutating', 'nonmutating', 'lazy', 'weak', 'unowned', 'async', 'await',
+        'typealias', 'associatedtype', 'where', 'in', 'is', 'as',
+    ];
+    const swiftTypes = ['Int', 'String', 'Bool', 'Double', 'Float', 'Array', 'Dictionary', 'Set', 'Optional', 'Void', 'Any', 'AnyObject'];
+    return buildCFamilyRules(swiftKeywords, swiftTypes);
+}
+
+/** Build rules for Kotlin. */
+function buildKotlinRules(): TokenRule[] {
+    const kotlinKeywords = [
+        'fun', 'val', 'var', 'class', 'object', 'interface', 'enum', 'sealed',
+        'if', 'else', 'when', 'for', 'while', 'do', 'return', 'break', 'continue',
+        'throw', 'try', 'catch', 'finally', 'import', 'package', 'is', 'as', 'in',
+        'null', 'true', 'false', 'this', 'super', 'override', 'open', 'abstract',
+        'private', 'protected', 'internal', 'public', 'companion', 'data', 'inline',
+        'suspend', 'lateinit', 'by', 'constructor', 'init', 'typealias',
+    ];
+    const kotlinTypes = ['Int', 'Long', 'Short', 'Byte', 'Float', 'Double', 'Boolean', 'Char', 'String', 'Unit', 'Any', 'Nothing', 'Array', 'List', 'Map', 'Set'];
+    return buildCFamilyRules(kotlinKeywords, kotlinTypes);
+}
+
+/** Build rules for C#. */
+function buildCSharpRules(): TokenRule[] {
+    const csKeywords = [
+        'if', 'else', 'switch', 'case', 'for', 'foreach', 'while', 'do', 'break',
+        'continue', 'return', 'throw', 'try', 'catch', 'finally', 'using', 'namespace',
+        'class', 'struct', 'interface', 'enum', 'delegate', 'event', 'new', 'this',
+        'base', 'null', 'true', 'false', 'void', 'var', 'const', 'readonly', 'static',
+        'public', 'private', 'protected', 'internal', 'abstract', 'virtual', 'override',
+        'sealed', 'async', 'await', 'yield', 'ref', 'out', 'in', 'params', 'is', 'as',
+        'typeof', 'sizeof', 'nameof', 'get', 'set', 'value', 'where', 'record',
+    ];
+    const csTypes = ['int', 'long', 'short', 'byte', 'float', 'double', 'decimal', 'bool', 'char', 'string', 'object', 'dynamic', 'Task', 'List', 'Dictionary', 'IEnumerable'];
+    return buildCFamilyRules(csKeywords, csTypes);
+}
+
+/** Build rules for SQL. */
+function buildSQLRules(): TokenRule[] {
+    const sqlKeywords = [
+        'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'IN', 'BETWEEN', 'LIKE',
+        'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE', 'CREATE', 'ALTER',
+        'DROP', 'TABLE', 'INDEX', 'VIEW', 'DATABASE', 'SCHEMA', 'IF', 'EXISTS',
+        'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES', 'UNIQUE', 'NULL', 'DEFAULT',
+        'JOIN', 'LEFT', 'RIGHT', 'INNER', 'OUTER', 'FULL', 'CROSS', 'ON', 'AS',
+        'ORDER', 'BY', 'GROUP', 'HAVING', 'LIMIT', 'OFFSET', 'UNION', 'ALL',
+        'DISTINCT', 'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'CASE', 'WHEN', 'THEN',
+        'ELSE', 'END', 'BEGIN', 'COMMIT', 'ROLLBACK', 'TRANSACTION', 'GRANT', 'REVOKE',
+    ];
+    return [
+        { pattern: /^--.*/, type: 'comment' },
+        { pattern: /^\/\*.*?\*\//, type: 'comment' },
+        { pattern: /^'(?:[^'\\]|\\.)*'/, type: 'string' },
+        { pattern: /^"(?:[^"\\]|\\.)*"/, type: 'string' },
+        { pattern: /^\d+(?:\.\d+)?/, type: 'number' },
+        { pattern: /^(?:<=|>=|<>|!=|[+\-*/%=<>.,;()])/, type: 'operator' },
+        { pattern: new RegExp(`^(?:${sqlKeywords.join('|')})\\b`, 'i'), type: 'keyword' },
+        { pattern: /^[A-Z]\w*(?=\s*\()/, type: 'function' },
+    ];
+}
+
+/** Build rules for Lua. */
+function buildLuaRules(): TokenRule[] {
+    const luaKeywords = [
+        'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function',
+        'goto', 'if', 'in', 'local', 'nil', 'not', 'or', 'repeat', 'return', 'then',
+        'true', 'until', 'while',
+    ];
+    return [
+        { pattern: /^--\[\[.*/, type: 'comment' },
+        { pattern: /^--.*/, type: 'comment' },
+        { pattern: /^"(?:[^"\\]|\\.)*"/, type: 'string' },
+        { pattern: /^'(?:[^'\\]|\\.)*'/, type: 'string' },
+        { pattern: /^\[\[[\s\S]*?\]\]/, type: 'string' },
+        { pattern: /^\d+(?:\.\d+)?(?:e[+-]?\d+)?/, type: 'number' },
+        { pattern: /^\w+(?=\s*[({])/, type: 'function' },
+        { pattern: /^(?:\.\.|\.\.\.|[+\-*/%^#=<>~])/, type: 'operator' },
+        { pattern: keywordRegex(luaKeywords), type: 'keyword' },
+    ];
+}
+
+/** Build rules for TOML. */
+function buildTOMLRules(): TokenRule[] {
+    return [
+        { pattern: /^#.*/, type: 'comment' },
+        { pattern: /^"""[\s\S]*?"""/, type: 'string' },
+        { pattern: /^"(?:[^"\\]|\\.)*"/, type: 'string' },
+        { pattern: /^'[^']*'/, type: 'string' },
+        { pattern: /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?/, type: 'number' }, // datetime
+        { pattern: /^[+-]?\d+(?:\.\d+)?(?:e[+-]?\d+)?/, type: 'number' },
+        { pattern: /^(?:true|false)\b/, type: 'keyword' },
+        { pattern: /^\[\[?[^\]]*\]\]?/, type: 'type' }, // table headers
+        { pattern: /^\w[\w.-]*(?=\s*=)/, type: 'function' }, // keys
+        { pattern: /^=/, type: 'operator' },
+    ];
+}
+
+/** Build rules for XML/SVG. */
+function buildXMLRules(): TokenRule[] {
+    return [
+        { pattern: /^<!--.*?-->/, type: 'comment' },
+        { pattern: /^<!\[CDATA\[[\s\S]*?\]\]>/, type: 'string' },
+        { pattern: /^<\/?[\w:.-]+/, type: 'keyword' }, // tag names
+        { pattern: /^\/>|>/, type: 'keyword' },
+        { pattern: /^"[^"]*"/, type: 'string' },
+        { pattern: /^'[^']*'/, type: 'string' },
+        { pattern: /^[\w:.-]+(?=\s*=)/, type: 'function' }, // attribute names
+        { pattern: /^=/, type: 'operator' },
+        { pattern: /^&\w+;/, type: 'number' }, // entities
+    ];
+}
+
+/** Build rules for Dockerfile. */
+function buildDockerfileRules(): TokenRule[] {
+    const dockerKeywords = [
+        'FROM', 'RUN', 'CMD', 'LABEL', 'MAINTAINER', 'EXPOSE', 'ENV', 'ADD', 'COPY',
+        'ENTRYPOINT', 'VOLUME', 'USER', 'WORKDIR', 'ARG', 'ONBUILD', 'STOPSIGNAL',
+        'HEALTHCHECK', 'SHELL', 'AS',
+    ];
+    return [
+        { pattern: /^#.*/, type: 'comment' },
+        { pattern: /^"(?:[^"\\]|\\.)*"/, type: 'string' },
+        { pattern: /^'[^']*'/, type: 'string' },
+        { pattern: /^\$\{?\w+\}?/, type: 'type' }, // variables
+        { pattern: /^\d+/, type: 'number' },
+        { pattern: new RegExp(`^(?:${dockerKeywords.join('|')})\\b`), type: 'keyword' },
+        { pattern: /^(?:&&|\\|\|\|)/, type: 'operator' },
+    ];
+}
+
+/** Build rules for Makefile. */
+function buildMakefileRules(): TokenRule[] {
+    return [
+        { pattern: /^#.*/, type: 'comment' },
+        { pattern: /^"(?:[^"\\]|\\.)*"/, type: 'string' },
+        { pattern: /^'[^']*'/, type: 'string' },
+        { pattern: /^\$[({]\w+[)}]/, type: 'type' }, // $(VAR) or ${VAR}
+        { pattern: /^\$[@<^?*%]/, type: 'type' }, // automatic variables
+        { pattern: /^[\w.-]+(?=\s*[:+?]?=)/, type: 'function' }, // variable assignments
+        { pattern: /^[\w%./-]+(?=\s*:)/, type: 'keyword' }, // targets
+        { pattern: /^\t/, type: 'plain' }, // recipe prefix
+        { pattern: /^(?::=|\?=|\+=|::|[=:;|&\\])/, type: 'operator' },
+        { pattern: keywordRegex(['ifeq', 'ifneq', 'ifdef', 'ifndef', 'else', 'endif', 'include', 'define', 'endef', 'override', 'export', 'unexport', 'vpath', '.PHONY', '.DEFAULT', '.PRECIOUS', '.SUFFIXES']), type: 'keyword' },
+    ];
+}
+
+/** Build rules for HCL (Terraform). */
+function buildHCLRules(): TokenRule[] {
+    const hclKeywords = [
+        'resource', 'data', 'variable', 'output', 'locals', 'module', 'provider',
+        'terraform', 'backend', 'required_providers', 'required_version',
+        'for_each', 'count', 'depends_on', 'lifecycle', 'dynamic', 'content',
+        'true', 'false', 'null',
+    ];
+    return [
+        { pattern: /^#.*/, type: 'comment' },
+        { pattern: /^\/\/.*/, type: 'comment' },
+        { pattern: /^\/\*.*?\*\//, type: 'comment' },
+        { pattern: /^"(?:[^"\\]|\\.)*"/, type: 'string' },
+        { pattern: /^\$\{[^}]*\}/, type: 'type' }, // interpolation
+        { pattern: /^\d+(?:\.\d+)?/, type: 'number' },
+        { pattern: /^\w+(?=\s*[({])/, type: 'function' },
+        { pattern: /^(?:=>|[={}[\]])/, type: 'operator' },
+        { pattern: keywordRegex(hclKeywords), type: 'keyword' },
+    ];
+}
+
+/** Build rules for R. */
+function buildRRules(): TokenRule[] {
+    const rKeywords = [
+        'if', 'else', 'for', 'while', 'repeat', 'in', 'next', 'break', 'function',
+        'return', 'library', 'require', 'source', 'TRUE', 'FALSE', 'NULL', 'NA',
+        'NA_integer_', 'NA_real_', 'NA_complex_', 'NA_character_', 'Inf', 'NaN',
+    ];
+    return [
+        { pattern: /^#.*/, type: 'comment' },
+        { pattern: /^"(?:[^"\\]|\\.)*"/, type: 'string' },
+        { pattern: /^'(?:[^'\\]|\\.)*'/, type: 'string' },
+        { pattern: /^\d+(?:\.\d+)?(?:e[+-]?\d+)?[Li]?/, type: 'number' },
+        { pattern: /^\w+(?=\s*\()/, type: 'function' },
+        { pattern: /^(?:<-|->|%%|%in%|%\*%|%>%|\|\||&&|[+\-*/%^~!<>=&|$@])/, type: 'operator' },
+        { pattern: keywordRegex(rKeywords), type: 'keyword' },
+    ];
+}
+
+/** Build rules for CMake (CMakeLists.txt / .cmake). */
+function buildCMakeRules(): TokenRule[] {
+    const cmakeKeywords = [
+        'if', 'elseif', 'else', 'endif', 'foreach', 'endforeach', 'while', 'endwhile',
+        'function', 'endfunction', 'macro', 'endmacro', 'return', 'break', 'continue',
+        'set', 'unset', 'option', 'cmake_minimum_required', 'project', 'add_executable',
+        'add_library', 'target_link_libraries', 'target_include_directories',
+        'target_compile_definitions', 'target_compile_options', 'target_sources',
+        'find_package', 'find_library', 'find_path', 'find_program', 'include',
+        'include_directories', 'link_directories', 'add_subdirectory',
+        'install', 'message', 'list', 'string', 'file', 'math', 'configure_file',
+        'add_custom_command', 'add_custom_target', 'execute_process',
+        'set_target_properties', 'get_target_property', 'add_definitions',
+        'add_compile_options', 'cmake_policy', 'enable_testing', 'add_test',
+    ];
+    return [
+        // Comment
+        { pattern: /^#.*/, type: 'comment' },
+        // Bracket comment #[[ ... ]]
+        { pattern: /^#\[\[[\s\S]*?\]\]/, type: 'comment' },
+        // Quoted string
+        { pattern: /^"(?:[^"\\]|\\.)*"/, type: 'string' },
+        // Variables ${VAR} and $ENV{VAR}
+        { pattern: /^\$(?:ENV)?\{[^}]*\}/, type: 'type' },
+        // Generator expressions $<...>
+        { pattern: /^\$<[^>]*>/, type: 'type' },
+        // Numbers
+        { pattern: /^\d+(?:\.\d+)?/, type: 'number' },
+        // Boolean/constants
+        { pattern: /^(?:TRUE|FALSE|ON|OFF|YES|NO|NOTFOUND)\b/, type: 'number' },
+        // Operators
+        { pattern: /^(?:STREQUAL|STRLESS|STRGREATER|EQUAL|LESS|GREATER|AND|OR|NOT|MATCHES|VERSION_EQUAL|VERSION_LESS|VERSION_GREATER)\b/, type: 'operator' },
+        // CMake commands (case-insensitive)
+        { pattern: new RegExp(`^(?:${cmakeKeywords.join('|')})(?=\\s*\\()`, 'i'), type: 'keyword' },
+        // Other function-like calls
+        { pattern: /^[a-zA-Z_]\w*(?=\s*\()/, type: 'function' },
+    ];
+}
+
 // ── Rule cache ──
 
 const rulesCache = new Map<string, TokenRule[]>();
@@ -422,6 +801,54 @@ function getRules(language: string): TokenRule[] | undefined {
             break;
         case 'shell':
             rules = buildShellRules();
+            break;
+        case 'batch':
+            rules = buildBatchRules();
+            break;
+        case 'powershell':
+            rules = buildPowerShellRules();
+            break;
+        case 'ruby':
+            rules = buildRubyRules();
+            break;
+        case 'php':
+            rules = buildPHPRules();
+            break;
+        case 'swift':
+            rules = buildSwiftRules();
+            break;
+        case 'kotlin':
+            rules = buildKotlinRules();
+            break;
+        case 'csharp':
+            rules = buildCSharpRules();
+            break;
+        case 'sql':
+            rules = buildSQLRules();
+            break;
+        case 'lua':
+            rules = buildLuaRules();
+            break;
+        case 'toml':
+            rules = buildTOMLRules();
+            break;
+        case 'xml':
+            rules = buildXMLRules();
+            break;
+        case 'dockerfile':
+            rules = buildDockerfileRules();
+            break;
+        case 'makefile':
+            rules = buildMakefileRules();
+            break;
+        case 'hcl':
+            rules = buildHCLRules();
+            break;
+        case 'r':
+            rules = buildRRules();
+            break;
+        case 'cmake':
+            rules = buildCMakeRules();
             break;
         default:
             return undefined;

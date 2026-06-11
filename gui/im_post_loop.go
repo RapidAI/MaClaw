@@ -7,6 +7,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 func (h *IMMessageHandler) finalizeIMAgentLoopResponse(msg IMUserMessage, loopCtx *LoopContext, resp *IMAgentResponse, workflowAgentLoop bool, clearUIAfterContextSwitch bool, confirmedResume bool) *IMAgentResponse {
@@ -94,6 +95,16 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 		if docText != "" {
 			h.recordWorkflowV2Output(msg.UserID, docText)
 			log.Printf("[workflow-v2] post-loop doc capture: user=%s len=%d source=%s", msg.UserID, len([]rune(docText)), source)
+			// After recording, check if the next phase is ExecModeAutoFromPrev
+			// and auto-complete it (same logic as SubAgent path).
+			if wf := h.getWorkflowV2(); wf != nil {
+				if updatedState := wf.machine.GetActive(msg.UserID); updatedState != nil {
+					if nextPhase := updatedState.ActivePhase(); nextPhase != nil && nextPhase.ExecMode == v2.ExecModeAutoFromPrev {
+						log.Printf("[workflow-v2] post-loop auto-completing phase=%s (ExecMode=auto_from_prev)", nextPhase.ID)
+						wf.machine.RecordOutput(msg.UserID, docText)
+					}
+				}
+			}
 		}
 	}
 }

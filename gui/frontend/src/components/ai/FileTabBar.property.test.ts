@@ -52,7 +52,7 @@ const arbBareFileName = arbPathSegment;
 const arbFilePath = fc.oneof(arbUnixPath, arbWindowsPath, arbBareFileName);
 
 /** Generate an opType value. */
-const arbOpType = fc.constantFrom('create' as const, 'modify' as const);
+const arbOpType = fc.constantFrom('create' as const, 'modify' as const, 'read' as const);
 
 // ── Property Tests ──
 
@@ -65,7 +65,8 @@ describe('FileTabBar — Property Tests', () => {
      *
      * For any file in the files map, the tab visual indicator SHALL reflect
      * the file's opType: 'modify' → modification indicator (✏️),
-     * 'create' → creation indicator (➕). Pure function of opType.
+     * 'create' → creation indicator (➕), 'read' → view indicator (👁).
+     * Pure function of opType.
      */
     it('Property 8: Tab indicator matches operation type', () => {
         fc.assert(
@@ -76,6 +77,8 @@ describe('FileTabBar — Property Tests', () => {
 
                     if (opType === 'modify') {
                         expect(indicator).toBe('✏️');
+                    } else if (opType === 'read') {
+                        expect(indicator).toBe('👁');
                     } else {
                         expect(indicator).toBe('➕');
                     }

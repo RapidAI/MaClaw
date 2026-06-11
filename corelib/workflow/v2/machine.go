@@ -82,6 +82,7 @@ func (m *StateMachine) Create(userID, workflowType, projectPath, summary string)
 			Name:         pt.Name,
 			NeedsConfirm: pt.NeedsConfirm,
 			ToolPolicy:   pt.ToolPolicy,
+			ExecMode:     pt.ExecMode,
 			Status:       status,
 		}
 	}

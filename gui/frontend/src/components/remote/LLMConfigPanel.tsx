@@ -919,21 +919,21 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                 <input
                                                     type="text"
                                                     style={{ ...inputStyle, flex: 1 }}
-                                                    list="llm-provider-model-options"
+                                                    list={`llm-provider-models-${dlgSelectedIdx}`}
                                                     value={dlgProvider.model || ""}
                                                     onChange={e => dlgUpdateField("model", e.target.value)}
                                                     placeholder={providerModelsFetching
                                                         ? t("Loading...", "加载中...")
                                                         : providerModels.length > 0
                                                             ? t("Select or type model name", "选择或输入模型名称", "選擇或輸入模型名稱")
-                                                            : t("Type model name or click Fetch", "输入模型名称或点击 Fetch", "輸入模型名稱或點擊 Fetch")}
+                                                            : t("Type model name or click Fetch", "输入模型名称或点击《获取》", "輸入模型名稱或點擊《獲取》")}
                                                     disabled={providerModelsFetching}
                                                     autoCapitalize="off"
                                                     autoCorrect="off"
                                                     spellCheck={false}
                                                     autoComplete="off"
                                                 />
-                                                <datalist id="llm-provider-model-options">
+                                                <datalist id={`llm-provider-models-${dlgSelectedIdx}`}>
                                                     {providerModels.map(m => (
                                                         <option key={m.id} value={m.id}>
                                                             {m.name !== m.id ? m.name : ''}

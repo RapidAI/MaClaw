@@ -12,6 +12,7 @@
  */
 import React, { useState } from 'react';
 import type { CodeFile } from './useCodePreviewState';
+import { ShowItemInFolder, OpenSystemUrl } from '../../../wailsjs/go/main/App';
 
 // ── Theme Interface ──
 
@@ -84,12 +85,98 @@ export interface FileTabBarProps {
     theme: CodePreviewTheme;
 }
 
+// ── Context Menu ──
+
+interface ContextMenuState {
+    filePath: string;
+    absPath: string;
+    x: number;
+    y: number;
+}
+
+function FileTabContextMenu({ menu, theme, onClose }: { menu: ContextMenuState; theme: CodePreviewTheme; onClose: () => void }) {
+    const handleRevealInExplorer = () => {
+        onClose();
+        void ShowItemInFolder(menu.absPath);
+    };
+    const handleOpenExternal = () => {
+        onClose();
+        void OpenSystemUrl(menu.absPath);
+    };
+
+    React.useEffect(() => {
+        const dismiss = (e: MouseEvent) => {
+            if (!(e.target as HTMLElement)?.closest?.('[data-file-tab-context-menu]')) onClose();
+        };
+        const dismissKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') onClose();
+        };
+        document.addEventListener('mousedown', dismiss);
+        document.addEventListener('keydown', dismissKey);
+        return () => {
+            document.removeEventListener('mousedown', dismiss);
+            document.removeEventListener('keydown', dismissKey);
+        };
+    }, [onClose]);
+
+    const itemStyle: React.CSSProperties = {
+        display: 'block',
+        width: '100%',
+        padding: '6px 14px',
+        border: 'none',
+        background: 'none',
+        color: theme.text,
+        fontSize: 12,
+        textAlign: 'left',
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+    };
+
+    return (
+        <div
+            data-file-tab-context-menu
+            style={{
+                position: 'fixed',
+                left: Math.min(menu.x, window.innerWidth - 180),
+                top: Math.min(menu.y, window.innerHeight - 80),
+                background: theme.bg,
+                border: `1px solid ${theme.border}`,
+                borderRadius: 6,
+                boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+                zIndex: 99999,
+                padding: '4px 0',
+                minWidth: 160,
+            }}
+        >
+            <button type="button" style={itemStyle} onClick={handleRevealInExplorer}
+                onMouseEnter={e => { e.currentTarget.style.background = theme.tabHoverBg; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+                📂 在资源管理器中显示
+            </button>
+            <button type="button" style={itemStyle} onClick={handleOpenExternal}
+                onMouseEnter={e => { e.currentTarget.style.background = theme.tabHoverBg; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
+                🔗 用其他工具打开
+            </button>
+        </div>
+    );
+}
+
 // ── Component ──
 
 export function FileTabBar({ files, activeFilePath, onSelectFile, theme }: FileTabBarProps) {
     const [hoveredPath, setHoveredPath] = useState<string | null>(null);
+    const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+
+    const handleContextMenu = (e: React.MouseEvent, filePath: string, absPath: string | undefined) => {
+        if (!absPath) return; // no absolute path available, skip context menu
+        e.preventDefault();
+        setContextMenu({ filePath, absPath, x: e.clientX, y: e.clientY });
+    };
 
     return (
+        <>
+        {contextMenu && <FileTabContextMenu menu={contextMenu} theme={theme} onClose={() => setContextMenu(null)} />}
         <div
             style={{
                 display: 'flex',
@@ -116,8 +203,9 @@ export function FileTabBar({ files, activeFilePath, onSelectFile, theme }: FileT
                 return (
                     <button
                         key={filePath}
-                        title={filePath}
+                        title={file.absPath || filePath}
                         onClick={() => onSelectFile(filePath)}
+                        onContextMenu={(e) => handleContextMenu(e, filePath, file.absPath)}
                         onMouseEnter={() => setHoveredPath(filePath)}
                         onMouseLeave={() => setHoveredPath(null)}
                         style={{
@@ -142,5 +230,6 @@ export function FileTabBar({ files, activeFilePath, onSelectFile, theme }: FileT
                 );
             })}
         </div>
+        </>
     );
 }

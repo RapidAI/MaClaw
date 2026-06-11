@@ -7,7 +7,7 @@ import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ForkRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels } from "../wailsjs/go/main/App";
 
-import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
+import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
 import { useRemotePanel } from './components/remote/useRemotePanel';
@@ -308,11 +308,12 @@ function App() {
     const restoreAIPanelOwnedWindowMaximize = useCallback(async () => {
         aiPanelMaximizedWindowRef.current = false;
         try {
-            if (await callBackend(() => WindowIsMaximised())) {
-                void callBackend(() => WindowToggleMaximise());
-                setWindowMaximized(false);
-                return true;
-            }
+            // Use WindowUnmaximise (idempotent) instead of check+toggle to avoid
+            // race conditions between the async WindowIsMaximised() call and
+            // Wails native drag-region behavior.
+            void callBackend(() => WindowUnmaximise());
+            setWindowMaximized(false);
+            return true;
         } catch {
             // Window state can be unavailable while closing; CSS restore still applies.
         }
@@ -3887,36 +3888,36 @@ ${instruction}`;
                                                 const modelOptions = fetchedModelList.length > 0
                                                     ? fetchedModelList
                                                     : getKnownModelOptions(activeTool, currentModel.model_name);
-                                                    const datalistId = `model-options-${activeTool}-${activeTab}`;
-                                                    return (
-                                                        <>
-                                                            <input
-                                                                type="text"
-                                                                className="form-input provider-config-model-select"
-                                                                data-field="model-id"
-                                                                list={datalistId}
-                                                                value={currentModel.model_id || ''}
-                                                                onChange={(e) => handleModelIdChange(e.target.value)}
-                                                                placeholder={fetchingModelList
-                                                                    ? localizeText("Loading...", "加载中...", "載入中...")
-                                                                    : modelOptions.length > 0
-                                                                        ? localizeText("Select or type model name", "选择或输入模型名称", "選擇或輸入模型名稱")
-                                                                        : localizeText("Type model name or click Models", "输入模型名称或点击 Models", "輸入模型名稱或點擊 Models")}
-                                                                disabled={fetchingModelList}
-                                                                autoCapitalize="off"
-                                                                autoCorrect="off"
-                                                                spellCheck={false}
-                                                                autoComplete="off"
-                                                            />
-                                                            <datalist id={datalistId}>
-                                                                {modelOptions.map((m, i) => (
-                                                                    <option key={`${m.id}-${i}`} value={m.id}>
-                                                                        {m.name && m.name !== m.id ? m.name : ''}
-                                                                    </option>
-                                                                ))}
-                                                            </datalist>
-                                                        </>
-                                                    );
+                                                const datalistId = `model-options-${activeTool}-${activeTab}`;
+                                                return (
+                                                    <>
+                                                        <input
+                                                            type="text"
+                                                            className="form-input provider-config-model-select"
+                                                            data-field="model-id"
+                                                            list={datalistId}
+                                                            value={currentModel.model_id || ''}
+                                                            onChange={(e) => handleModelIdChange(e.target.value)}
+                                                            placeholder={fetchingModelList
+                                                                ? localizeText("Loading...", "加载中...", "載入中...")
+                                                                : modelOptions.length > 0
+                                                                    ? localizeText("Select or type model name", "选择或输入模型名称", "選擇或輸入模型名稱")
+                                                                    : localizeText("Type model name or click Models", "输入模型名称或点击《模型》获取", "輸入模型名稱或點擊《模型》獲取")}
+                                                            disabled={fetchingModelList}
+                                                            autoCapitalize="off"
+                                                            autoCorrect="off"
+                                                            spellCheck={false}
+                                                            autoComplete="off"
+                                                        />
+                                                        <datalist id={datalistId}>
+                                                            {modelOptions.map((m, i) => (
+                                                                <option key={`${m.id}-${i}`} value={m.id}>
+                                                                    {m.name && m.name !== m.id ? m.name : ''}
+                                                                </option>
+                                                            ))}
+                                                        </datalist>
+                                                    </>
+                                                );
                                                 })()}
                                             <button
                                                 className="btn-link provider-config-fetch-button"

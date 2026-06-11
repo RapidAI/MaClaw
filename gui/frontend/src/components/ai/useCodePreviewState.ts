@@ -8,6 +8,7 @@ export interface CodeFile {
     sessionID?: string;
     filePath: string;
     fileName: string;
+    absPath?: string;        // absolute path for tooltip/context menu
     content: string;
     original?: string;       // undefined for new files
     opType: 'create' | 'modify' | 'read';
@@ -219,9 +220,10 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
                 sessionID: data.session_id || "",
                 filePath: data.file_path,
                 fileName: data.file_name || data.file_path.split(/[/\\]/).pop() || data.file_path,
+                absPath: data.abs_path || undefined,
                 content: data.content,
                 original: data.original || undefined,
-                opType: data.op_type === "modify" ? "modify" : "create",
+                opType: data.op_type === "modify" ? "modify" : data.op_type === "read" ? "read" : "create",
                 language: data.language || "plaintext",
                 updatedAt: Date.now(),
                 forceOpen: data.force_open === true,

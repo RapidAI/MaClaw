@@ -398,15 +398,29 @@ const taskContextClassifierPrompt = `You are a task context classifier. Decide w
 
 Rules:
 - If the message modifies, converts, supplements, or refers to current task output, choose continue.
+- If the message asks to act on items/issues/suggestions from the recent assistant reply (e.g. "fix these", "do the above", "implement those 4 changes"), choose continue.
+- If the message uses pronouns or demonstratives that reference the current conversation ("this", "that", "these", "those", "above", "上面的", "这些", "那几个"), choose continue.
 - If the message is unrelated to the current task, choose new.
 - If the message asks to resume an archived task, choose recall:<task_id>.
-- When unsure, choose continue. Only a clear unrelated request should be classified as new.
+- When unsure, choose continue. Only a clearly unrelated request should be classified as new.
 
 Reply only with continue, new, or recall:<task_id>. Do not explain.`
 
 // --- Helper functions ---
 
 // buildCurrentTaskSummary extracts a compact summary of the current conversation.
+//
+// The summary must preserve enough referential anchors for the classifier LLM
+// to correctly determine whether the next user message ("fix these 4 issues",
+// "do the above", etc.) refers to the current task's output.
+//
+// Strategy:
+//   - firstUserMsg: the original task request (150 rune budget)
+//   - lastAssistantMsg: structural skeleton of the most recent assistant output.
+//     For structured outputs (numbered lists, markdown headings, bullet points),
+//     all item titles/headings are preserved so that back-references like
+//     "fix those 4 problems" have explicit anchors in the summary.
+//     For plain prose, a generous truncation (500 runes) is used.
 func buildCurrentTaskSummary(history []ConversationEntry) string {
 	if len(history) == 0 {
 		return "(none)"
@@ -423,12 +437,32 @@ func buildCurrentTaskSummary(history []ConversationEntry) string {
 	}
 
 	var lastAssistantMsg string
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == "assistant" {
-			if text, ok := history[i].Content.(string); ok && strings.TrimSpace(text) != "" {
-				lastAssistantMsg = TruncateRunes(strings.TrimSpace(text), 200)
-				break
-			}
+	// Scan backward through assistant messages to find the best skeleton.
+	// Prefer a message with structural content (numbered list, headings,
+	// bullets) because it contains the referential anchors the classifier
+	// needs (e.g., "4 problems" → the 4 numbered items). If only short
+	// prose is found, use that. Limit scan to 4 assistant messages.
+	assistantScanned := 0
+	for i := len(history) - 1; i >= 0 && assistantScanned < 4; i-- {
+		if history[i].Role != "assistant" {
+			continue
+		}
+		text, ok := history[i].Content.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			assistantScanned++
+			continue
+		}
+		candidate := strings.TrimSpace(text)
+		assistantScanned++
+
+		if hasStructuralContent(candidate) {
+			// Found a structured message — use its skeleton and stop.
+			lastAssistantMsg = extractStructuralSkeleton(candidate)
+			break
+		}
+		if lastAssistantMsg == "" {
+			// Capture the most recent assistant message as fallback.
+			lastAssistantMsg = extractStructuralSkeleton(candidate)
 		}
 	}
 
@@ -446,6 +480,131 @@ func buildCurrentTaskSummary(history []ConversationEntry) string {
 		return "(history exists but has no text content)"
 	}
 	return sb.String()
+}
+
+// extractStructuralSkeleton extracts the structural skeleton of a text.
+//
+// For structured outputs (numbered lists, markdown headings, bullet points),
+// it preserves all item titles/headings so that back-references like
+// "fix those 4 problems" or "do the 3rd item" can be anchored.
+//
+// For plain prose without structure, it falls back to a generous truncation.
+//
+// This is the mechanism that ensures the task-context classifier has enough
+// referential anchors to correctly classify continuation messages. Without
+// this, a 200-char blind truncation loses all structure beyond the first
+// item, making it impossible for the classifier to match "4 problems" to
+// the actual 4 items in the output.
+func extractStructuralSkeleton(text string) string {
+	lines := strings.Split(text, "\n")
+
+	// Detect structured lines: numbered items, bullet points, markdown headings.
+	var structured []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if isStructuredLine(trimmed) {
+			structured = append(structured, trimmed)
+		}
+	}
+
+	// If the text has meaningful structure (>=2 structured lines), extract
+	// all structured lines as the skeleton. Each line is truncated to keep
+	// descriptions short, but titles/numbers are preserved in full.
+	if len(structured) >= 2 {
+		var sb strings.Builder
+		// Include a brief context preamble from the first non-structured line.
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			if !isStructuredLine(trimmed) {
+				sb.WriteString(TruncateRunes(trimmed, 80))
+				sb.WriteString("\n")
+				break
+			}
+		}
+		for _, sl := range structured {
+			// Preserve the full structured line title but truncate long
+			// descriptions that follow the title on the same line.
+			sb.WriteString(TruncateRunes(sl, 120))
+			sb.WriteString("\n")
+		}
+		result := strings.TrimSpace(sb.String())
+		// Hard cap the total skeleton to avoid token explosion for very
+		// long lists (e.g., 50-item changelogs).
+		return TruncateRunes(result, 800)
+	}
+
+	// No meaningful structure detected — fall back to generous truncation.
+	// 500 runes is enough for 2-3 paragraphs of prose, providing the
+	// classifier with sufficient semantic context.
+	return TruncateRunes(text, 500)
+}
+
+// hasStructuralContent reports whether a text contains at least 2 structured
+// lines (numbered items, bullet points, or headings). Used to decide whether
+// to prefer this message's skeleton over a later short prose message.
+func hasStructuralContent(text string) bool {
+	count := 0
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && isStructuredLine(trimmed) {
+			count++
+			if count >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isStructuredLine reports whether a line looks like a structural element:
+// numbered list item, bullet point, or markdown heading.
+func isStructuredLine(line string) bool {
+	if len(line) == 0 {
+		return false
+	}
+	// Markdown headings: # ... , ## ... , ### ...
+	if line[0] == '#' {
+		return true
+	}
+	// Bullet points: - ... , * ... , • ...
+	if len(line) >= 2 && (line[0] == '-' || line[0] == '*') && line[1] == ' ' {
+		return true
+	}
+	if strings.HasPrefix(line, "• ") || strings.HasPrefix(line, "· ") {
+		return true
+	}
+	// Numbered list: 1. ... , 1) ... , (1) ...
+	// Check if line starts with digit(s) followed by . or )
+	i := 0
+	for i < len(line) && i < 4 && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i > 0 && i < len(line) {
+		if line[i] == '.' || line[i] == ')' {
+			return true
+		}
+		// Chinese numbered list: 1、 2、
+		if strings.HasPrefix(line[i:], "、") {
+			return true
+		}
+	}
+	// Parenthesized numbers: (1) ...
+	if line[0] == '(' {
+		j := 1
+		for j < len(line) && j < 5 && line[j] >= '0' && line[j] <= '9' {
+			j++
+		}
+		if j > 1 && j < len(line) && line[j] == ')' {
+			return true
+		}
+	}
+	return false
 }
 
 // buildArchivedTaskSummaries formats archived tasks for the LLM prompt.
