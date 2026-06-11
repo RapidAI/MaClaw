@@ -16,6 +16,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -1149,10 +1150,24 @@ func applyCodeGenOpenAIMapCompatibility(payload map[string]interface{}, model st
 	if payload == nil {
 		return nil
 	}
-	if !isQwenFlashModel(model) {
-		return nil
-	}
 	var notes []string
+	if tools, ok := payload["tools"]; ok {
+		sanitized := corelib.SanitizeCodeGenOpenAIChatToolsValue(tools)
+		if !reflect.DeepEqual(sanitized, tools) {
+			payload["tools"] = sanitized
+			notes = append(notes, fmt.Sprintf("codegen_sanitize_tools:%d", logArrayLen(sanitized)))
+		}
+	}
+	if functions, ok := payload["functions"]; ok {
+		sanitized := corelib.SanitizeCodeGenOpenAIFunctionsValue(functions)
+		if !reflect.DeepEqual(sanitized, functions) {
+			payload["functions"] = sanitized
+			notes = append(notes, fmt.Sprintf("codegen_sanitize_functions:%d", logArrayLen(sanitized)))
+		}
+	}
+	if !isQwenFlashModel(model) {
+		return notes
+	}
 	if before, after, changed := sanitizeQwenFlashSystemMessages(payload); changed {
 		notes = append(notes, fmt.Sprintf("qwen_flash_sanitize_system:%d->%d", before, after))
 	}
@@ -1189,6 +1204,9 @@ func applyCodeGenOpenAIRequestCompatibility(req *openaiChatRequest) []string {
 		return nil
 	}
 	var notes []string
+	if sanitized := sanitizeCodeGenOpenAITypedFunctions(req.Tools, req.Functions); sanitized > 0 {
+		notes = append(notes, fmt.Sprintf("codegen_sanitize_tool_schemas:%d", sanitized))
+	}
 	if isQwenFlashModel(req.Model) {
 		if beforeMessages, afterMessages, beforeBytes, afterBytes, changed := normalizeQwenFlashAnthropicSystemMessages(&req.Messages); changed {
 			notes = append(notes, fmt.Sprintf("qwen_flash_normalize_system:messages:%d->%d,bytes:%d->%d", beforeMessages, afterMessages, beforeBytes, afterBytes))
@@ -1216,6 +1234,27 @@ func applyCodeGenOpenAIRequestCompatibility(req *openaiChatRequest) []string {
 		}
 	}
 	return notes
+}
+
+func sanitizeCodeGenOpenAITypedFunctions(tools []openaiTool, functions []openaiFunction) int {
+	sanitized := 0
+	for i := range tools {
+		before := tools[i].Function.Parameters
+		after := corelib.SanitizeCodeGenOpenAIToolSchemaValue(before)
+		if !reflect.DeepEqual(after, before) {
+			tools[i].Function.Parameters = after
+			sanitized++
+		}
+	}
+	for i := range functions {
+		before := functions[i].Parameters
+		after := corelib.SanitizeCodeGenOpenAIToolSchemaValue(before)
+		if !reflect.DeepEqual(after, before) {
+			functions[i].Parameters = after
+			sanitized++
+		}
+	}
+	return sanitized
 }
 
 func detectQwenFlashRepeatedToolLoop(messages []openaiMessage) (int, int, bool) {

@@ -2,15 +2,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -125,6 +130,11 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 	if wf == nil {
 		log.Printf("[workflow-v2] routeWithWorkflowV2: wf is nil, app=%v app.workflowV2=%v", h.app != nil, h.app != nil && h.app.workflowV2 != nil)
 		return workflowIMRouteResult{}
+	}
+
+	// Lazily set the complexity function using available LLM (only once)
+	if wf.router != nil && wf.router.GetComplexityFunc() == nil {
+		wf.router.SetComplexityFunc(h.buildComplexityFunc())
 	}
 	log.Printf("[workflow-v2] routing: user=%s text_len=%d", msg.UserID, len([]rune(trimmed)))
 
@@ -894,4 +904,153 @@ func (h *IMMessageHandler) runDirectCodingSubAgent(userID, userText, projectPath
 	return &IMAgentResponse{
 		Text: fmt.Sprintf("✅ 编码完成\n项目路径：%s\n\n%s", projectPath, report),
 	}
+}
+
+// buildComplexityFunc returns a ComplexityFunc that uses the configured LLM
+// to assess whether a coding task is simple (direct SubAgent) or complex (full SDD).
+func (h *IMMessageHandler) buildComplexityFunc() v2.ComplexityFunc {
+	return func(text string) v2.TaskComplexity {
+		cfg := h.getMaclawLLMConfig()
+		if cfg.Key == "" && cfg.URL == "" {
+			// No LLM available — default to complex (safe)
+			return v2.ComplexityComplex
+		}
+
+		systemPrompt := `You are a task classifier. Given a user request, respond with ONLY one word: "simple", "complex", or "none".
+
+"simple" — This is a coding task that can be done directly without planning:
+- Bug fixes, typo corrections in code
+- Hello World, single-file programs
+- Add one function, one API endpoint, one button
+- Write a script or small utility (< 100 lines)
+- Configuration file changes
+- Code that does ONE thing (calculator, timer, converter)
+
+"complex" — This is a coding task that needs requirements → design → task breakdown:
+- Multi-module systems with 5+ components
+- Games with rendering, physics, AI, audio subsystems
+- Full applications needing architecture decisions
+- Projects with database, auth, deployment needs
+- 500+ lines across multiple interdependent files
+
+"none" — This is NOT a coding task at all:
+- Document generation (reports, summaries, translations)
+- File operations (copy, move, convert formats)
+- Information lookup or research
+- Anything that doesn't involve writing/modifying source code
+
+CRITICAL RULES:
+- "hello world" or single-output programs → "simple"
+- "修bug"/"fix bug" in actual code → "simple"
+- "生成报告"/"generate report" even if it mentions "BUG" → "none" (it's document work, not coding)
+- "写测试用例" without actual code context → "none"
+- Games, apps, systems with multiple features → "complex"
+
+Respond with ONLY one word: simple, complex, or none.`
+
+		result := h.callLightweightLLM(cfg, systemPrompt, text, 5)
+		result = strings.TrimSpace(strings.ToLower(result))
+
+		switch {
+		case result == "none" || strings.Contains(result, "none"):
+			// Not a coding task — route to agent loop (normal non-coding handling)
+			log.Printf("[workflow-v2] complexity assessment: NONE (not coding) for %q", truncateRunesV2(text, 60))
+			return v2.ComplexityNone
+		case result == "simple" || (strings.Contains(result, "simple") && !strings.Contains(result, "complex")):
+			log.Printf("[workflow-v2] complexity assessment: SIMPLE for %q", truncateRunesV2(text, 60))
+			return v2.ComplexitySimple
+		case result == "complex" || strings.Contains(result, "complex"):
+			log.Printf("[workflow-v2] complexity assessment: COMPLEX for %q", truncateRunesV2(text, 60))
+			return v2.ComplexityComplex
+		default:
+			log.Printf("[workflow-v2] complexity assessment: AMBIGUOUS (%q) → defaulting to COMPLEX for %q", result, truncateRunesV2(text, 60))
+			return v2.ComplexityComplex
+		}
+	}
+}
+
+// callLightweightLLM makes a quick non-streaming LLM call for classification.
+// Returns the response text or empty string on failure.
+func (h *IMMessageHandler) callLightweightLLM(cfg corelib.MaclawLLMConfig, systemPrompt, userText string, timeoutSec int) string {
+	if h == nil || h.client == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	messages := []map[string]string{
+		{"role": "system", "content": systemPrompt},
+		{"role": "user", "content": userText},
+	}
+
+	body := map[string]interface{}{
+		"model":       cfg.UpstreamModel(),
+		"messages":    messages,
+		"max_tokens":  200, // Reasoning models need space for thinking + answer
+		"temperature": 0,
+	}
+
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return ""
+	}
+
+	url := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
+	log.Printf("[workflow-v2] callLightweightLLM: POST %s model=%s configured_model=%s", url, cfg.UpstreamModel(), cfg.Model)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if cfg.Key != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Key)
+	}
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		log.Printf("[workflow-v2] callLightweightLLM: HTTP error: %v", err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		log.Printf("[workflow-v2] callLightweightLLM: HTTP %d from %s", resp.StatusCode, url)
+		return ""
+	}
+
+	// Read full body
+	bodyData, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		log.Printf("[workflow-v2] callLightweightLLM: body read error: %v", readErr)
+		return ""
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(bodyData, &result); err != nil {
+		log.Printf("[workflow-v2] callLightweightLLM: JSON decode error: %v body_len=%d", err, len(bodyData))
+		return ""
+	}
+	if len(result.Choices) == 0 {
+		return ""
+	}
+	content := result.Choices[0].Message.Content
+	// Reasoning models may put the answer in reasoning_content when max_tokens cuts off content
+	if content == "" && result.Choices[0].Message.ReasoningContent != "" {
+		reasoning := strings.ToLower(result.Choices[0].Message.ReasoningContent)
+		if strings.Contains(reasoning, "simple") && !strings.Contains(reasoning, "complex") {
+			content = "simple"
+		} else if strings.Contains(reasoning, "complex") {
+			content = "complex"
+		} else if strings.Contains(reasoning, "none") || strings.Contains(reasoning, "not a coding") {
+			content = "none"
+		}
+	}
+	return content
 }

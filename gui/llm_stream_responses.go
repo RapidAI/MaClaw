@@ -75,33 +75,34 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestWithContext(ctx context.Conte
 		return nil, err
 	}
 	traceFields := llm.RequestTraceLogFields(req.Context())
-	log.Printf("[LLM] POST %s model=%s wire_api=responses %s", endpoint, cfg.Model, traceFields)
+	upstreamModel := cfg.UpstreamModel()
+	log.Printf("[LLM] POST %s model=%s configured_model=%s wire_api=responses %s", endpoint, upstreamModel, cfg.Model, traceFields)
 
 	startedAt := time.Now()
 	resp, err := httpClient.Do(req)
 	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
-		log.Printf("[LLM] done %s model=%s wire_api=responses status=error elapsed=%s err=%v %s", endpoint, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
+		log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		log.Printf("[LLM] done %s model=%s wire_api=responses status=%d elapsed=%s body_len=%d %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+		log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 		if resp.StatusCode == http.StatusInternalServerError {
-			err := dumpLLMContext(resp.StatusCode, classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName), data, h.getTempDir())
+			err := dumpLLMContext(resp.StatusCode, classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName), data, h.getTempDir())
 			globalLLMScheduler.ObserveResult(trace, err)
 			return nil, err
 		}
-		err := fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName))
+		err := fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName))
 		globalLLMScheduler.ObserveResult(trace, err)
 		return nil, err
 	}
 
 	parsed, parseErr := llm.ParseNonStreamResponsesAPIResponse(resp)
 	globalLLMScheduler.ObserveResult(trace, parseErr)
-	log.Printf("[LLM] done %s model=%s wire_api=responses status=%d elapsed=%s parse_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
+	log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses status=%d elapsed=%s parse_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
 	return parsed, parseErr
 }
 
@@ -128,7 +129,8 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	if metrics != nil {
 		metrics.RequestBuildNanos += time.Since(requestBuildStartedAt).Nanoseconds()
 	}
-	log.Printf("[LLM Stream] POST %s model=%s wire_api=responses %s", endpoint, cfg.Model, llm.RequestTraceLogFields(reqCtx))
+	upstreamModel := cfg.UpstreamModel()
+	log.Printf("[LLM Stream] POST %s model=%s configured_model=%s wire_api=responses %s", endpoint, upstreamModel, cfg.Model, llm.RequestTraceLogFields(reqCtx))
 
 	httpDoStartedAt := time.Now()
 	resp, err := httpClient.Do(req)
@@ -145,15 +147,15 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	// -----------------------------------------------------------------------
 	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("HTTP 404 (endpoint=%s, model=%s, wire_api=responses, body_len=%d)", endpoint, cfg.Model, len(body))
+		return nil, fmt.Errorf("HTTP 404 (endpoint=%s, model=%s, wire_api=responses, body_len=%d)", endpoint, upstreamModel, len(body))
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName))
+		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName))
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName))
+		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName))
 	}
 
 	// -----------------------------------------------------------------------

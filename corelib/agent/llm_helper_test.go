@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,6 +41,43 @@ func TestDoSimpleLLMRequest_OpenAISSEFallback(t *testing.T) {
 	if got := resp.Content; got != "Hello world" {
 		t.Fatalf("content = %q, want %q", got, "Hello world")
 	}
+}
+
+func TestDoSimpleLLMRequest_NormalizesCodeGenAutoModel(t *testing.T) {
+	var gotModel string
+	client := &http.Client{Transport: agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("Decode: %v", err)
+		}
+		gotModel, _ = body["model"].(string)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	cfg := corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto"}
+	resp, err := DoSimpleLLMRequest(cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	}, client, 2*time.Second)
+	if err != nil {
+		t.Fatalf("DoSimpleLLMRequest returned error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q, want ok", resp.Content)
+	}
+	if gotModel != corelib.CodeGenDefaultModelID {
+		t.Fatalf("model = %q, want %q", gotModel, corelib.CodeGenDefaultModelID)
+	}
+}
+
+type agentRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f agentRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 func TestDoSimpleLLMRequest_OpenAIReasoningFallback(t *testing.T) {

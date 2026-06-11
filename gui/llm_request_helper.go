@@ -108,7 +108,7 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	}
 
 	reqBody := map[string]interface{}{
-		"model":      cfg.Model,
+		"model":      cfg.UpstreamModel(),
 		"messages":   anthropicMsgs,
 		"max_tokens": 4096,
 	}
@@ -132,17 +132,18 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
 	traceFields := llm.RequestTraceLogFields(ctx)
-	log.Printf("[LLM] POST %s model=%s protocol=anthropic simple=true %s", endpoint, cfg.Model, traceFields)
+	upstreamModel := cfg.UpstreamModel()
+	log.Printf("[LLM] POST %s model=%s configured_model=%s protocol=anthropic simple=true %s", endpoint, upstreamModel, cfg.Model, traceFields)
 	startedAt := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[LLM] done %s model=%s protocol=anthropic simple=true status=error elapsed=%s err=%v %s", endpoint, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
+		log.Printf("[LLM] done %s model=%s configured_model=%s protocol=anthropic simple=true status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	log.Printf("[LLM] done %s model=%s protocol=anthropic simple=true status=%d elapsed=%s body_len=%d %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+	log.Printf("[LLM] done %s model=%s configured_model=%s protocol=anthropic simple=true status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 	if resp.StatusCode != http.StatusOK {
 		msg := fmt.Sprintf("llm request failed body_len=%d", len(body))
 		return nil, dumpLLMContext(resp.StatusCode, msg, data, "")

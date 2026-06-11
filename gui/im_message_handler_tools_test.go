@@ -1635,6 +1635,91 @@ func TestToolCallMCPToolAcceptsCleanableArgumentsJSONString(t *testing.T) {
 	}
 }
 
+func TestPreCheckToolArgsForAgentLoopPromotesNestedMCPRoutingFields(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name:        "call_mcp_tool",
+		Description: "Call MCP tool",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"server_id": map[string]interface{}{"type": "string"},
+				"tool_name": map[string]interface{}{"type": "string"},
+				"arguments": map[string]interface{}{"type": "object"},
+			},
+			"required": []interface{}{"server_id", "tool_name"},
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	mgr := NewLocalMCPManager(nil)
+	mgr.clients["docx"] = &LocalMCPClient{
+		entry: corelib.LocalMCPServerEntry{ID: "docx", Name: "DOCX Toolkit"},
+		tools: []MCPToolView{{
+			Name: "parse_file",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{"type": "string"},
+				},
+				"required": []interface{}{"path"},
+			},
+		}},
+		running: true,
+	}
+	handler := &IMMessageHandler{app: &App{localMCPManager: mgr}, registry: registry}
+
+	result := handler.preCheckToolArgsForAgentLoop("call_mcp_tool", `{"server_id":"DOCX Toolkit","arguments":{"tool_name":"parse_file","path":"E:\\中再集团-U1SP5测试报告.docx"}}`, 5)
+	if result != nil {
+		t.Fatalf("nested tool_name with valid MCP args should pass precheck, got: %+v", *result)
+	}
+}
+
+func TestNormalizeMCPToolCallArgsForAgentLoopRemovesNestedRoutingFields(t *testing.T) {
+	args, err := normalizeMCPToolCallArgsForAgentLoop(map[string]interface{}{
+		"server_id": "DOCX Toolkit",
+		"arguments": map[string]interface{}{
+			"tool_name": "parse_file",
+			"path":      `E:\中再集团-U1SP5测试报告.docx`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalizeMCPToolCallArgsForAgentLoop: %v", err)
+	}
+	if got := args["tool_name"]; got != "parse_file" {
+		t.Fatalf("tool_name = %#v, want parse_file", got)
+	}
+	toolArgs, ok := args["arguments"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("arguments = %#v, want map", args["arguments"])
+	}
+	if _, ok := toolArgs["tool_name"]; ok {
+		t.Fatalf("nested tool_name should be removed from MCP arguments: %#v", toolArgs)
+	}
+	if got := toolArgs["path"]; got != `E:\中再集团-U1SP5测试报告.docx` {
+		t.Fatalf("path = %#v", got)
+	}
+}
+
+func TestToolCallMCPToolPromotesNestedRoutingFields(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	out := handler.toolCallMCPTool(map[string]interface{}{
+		"server_id": "unknown-external",
+		"arguments": map[string]interface{}{
+			"tool_name": "parse_file",
+			"path":      `E:\中再集团-U1SP5测试报告.docx`,
+		},
+	})
+	if strings.Contains(out, "缺少") || strings.Contains(out, "tool_name 参数") {
+		t.Fatalf("nested tool_name should be promoted before routing validation, got: %q", out)
+	}
+	if !strings.Contains(out, "MCP") {
+		t.Fatalf("expected MCP resolution path after promotion, got: %q", out)
+	}
+}
+
 func TestPreCheckToolArgsForAgentLoopRejectsInvalidMCPArgumentsShape(t *testing.T) {
 	registry := NewToolRegistry()
 	if err := registry.Register(RegisteredTool{

@@ -97,6 +97,16 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 		return disabledExternalCodingSessionToolText(toolName)
 	}
 	if serverRef == "" || toolName == "" {
+		if nested, err := mcpToolArgumentsFromAny(args["arguments"]); err == nil {
+			promoteMCPRoutingFields(args, nested)
+			serverRef, _ = args["server_id"].(string)
+			toolName, _ = args["tool_name"].(string)
+		}
+	}
+	if isDisabledExternalCodingSessionTool(toolName) {
+		return disabledExternalCodingSessionToolText(toolName)
+	}
+	if serverRef == "" || toolName == "" {
 		return "缺少 server_id 或 tool_name 参数；server_id 支持 MCP Server 的 ID 或 Name"
 	}
 
@@ -114,6 +124,12 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	}
 	if toolArgs == nil {
 		toolArgs = map[string]interface{}{}
+	}
+	promoteMCPRoutingFields(args, toolArgs)
+	serverRef, _ = args["server_id"].(string)
+	toolName, _ = args["tool_name"].(string)
+	if serverRef == "" || toolName == "" {
+		return "缺少 server_id 或 tool_name 参数；server_id 支持 MCP Server 的 ID 或 Name"
 	}
 
 	if builtin := h.builtinToolServerRef(serverRef); builtin != "" {

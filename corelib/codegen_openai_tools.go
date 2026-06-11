@@ -71,7 +71,7 @@ func sanitizeCodeGenOpenAIChatTool(tool map[string]interface{}) (map[string]inte
 	for _, key := range []string{"name", "description", "parameters"} {
 		if val, ok := function[key]; ok {
 			if key == "parameters" {
-				patchedFunction[key] = sanitizeCodeGenOpenAIToolSchemaValue(val)
+				patchedFunction[key] = SanitizeCodeGenOpenAIToolSchemaValue(val)
 			} else {
 				patchedFunction[key] = val
 			}
@@ -97,7 +97,7 @@ func sanitizeCodeGenOpenAIFunction(function map[string]interface{}) map[string]i
 	for _, key := range []string{"name", "description", "parameters"} {
 		if val, ok := function[key]; ok {
 			if key == "parameters" {
-				patched[key] = sanitizeCodeGenOpenAIToolSchemaValue(val)
+				patched[key] = SanitizeCodeGenOpenAIToolSchemaValue(val)
 			} else {
 				patched[key] = val
 			}
@@ -112,7 +112,7 @@ func sanitizeCodeGenOpenAIFunction(function map[string]interface{}) map[string]i
 	return patched
 }
 
-func sanitizeCodeGenOpenAIToolSchemaValue(v interface{}) interface{} {
+func SanitizeCodeGenOpenAIToolSchemaValue(v interface{}) interface{} {
 	switch x := v.(type) {
 	case map[string]interface{}:
 		out := make(map[string]interface{}, len(x)+1)
@@ -120,7 +120,7 @@ func sanitizeCodeGenOpenAIToolSchemaValue(v interface{}) interface{} {
 			if codeGenOpenAIToolSchemaUnsupportedKey(k) {
 				continue
 			}
-			out[k] = sanitizeCodeGenOpenAIToolSchemaValue(val)
+			out[k] = SanitizeCodeGenOpenAIToolSchemaValue(val)
 		}
 		if _, ok := out["properties"].(map[string]interface{}); ok {
 			if _, hasType := out["type"]; !hasType {
@@ -153,13 +153,13 @@ func sanitizeCodeGenOpenAIToolSchemaValue(v interface{}) interface{} {
 	case []interface{}:
 		out := make([]interface{}, len(x))
 		for i, val := range x {
-			out[i] = sanitizeCodeGenOpenAIToolSchemaValue(val)
+			out[i] = SanitizeCodeGenOpenAIToolSchemaValue(val)
 		}
 		return out
 	case []map[string]interface{}:
 		out := make([]map[string]interface{}, len(x))
 		for i, val := range x {
-			if patched, ok := sanitizeCodeGenOpenAIToolSchemaValue(val).(map[string]interface{}); ok {
+			if patched, ok := SanitizeCodeGenOpenAIToolSchemaValue(val).(map[string]interface{}); ok {
 				out[i] = patched
 			} else {
 				out[i] = val

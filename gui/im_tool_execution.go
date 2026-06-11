@@ -916,15 +916,27 @@ func normalizeMCPToolCallArgsForAgentLoop(args map[string]interface{}) (map[stri
 	if err != nil {
 		return nil, err
 	}
-	if _, alreadyMap := raw.(map[string]interface{}); alreadyMap {
-		return args, nil
-	}
 	normalized := make(map[string]interface{}, len(args))
 	for key, value := range args {
 		normalized[key] = value
 	}
+	promoteMCPRoutingFields(normalized, toolArgs)
 	normalized["arguments"] = toolArgs
 	return normalized, nil
+}
+
+func promoteMCPRoutingFields(args map[string]interface{}, toolArgs map[string]interface{}) {
+	if args == nil || toolArgs == nil {
+		return
+	}
+	for _, key := range []string{"server_id", "tool_name"} {
+		if strings.TrimSpace(nonEmptyStringFromAny(args[key])) == "" {
+			if value := strings.TrimSpace(nonEmptyStringFromAny(toolArgs[key])); value != "" {
+				args[key] = value
+			}
+		}
+		delete(toolArgs, key)
+	}
 }
 
 func (h *IMMessageHandler) preCheckMCPToolArgsForAgentLoop(args map[string]interface{}, iteration int) *toolExecutionResult {

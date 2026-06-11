@@ -44,9 +44,12 @@ func TestRoute_SkipSignal(t *testing.T) {
 
 func TestRoute_BugFix(t *testing.T) {
 	r := setupTestRouter()
+	// "修复加载卡住的bug" doesn't match any template keywords (coding template
+	// requires "开发"/"写代码" etc). Without keyword match → RouteToAgentLoop.
+	// Bug fixes are handled by the normal agent loop with full tools.
 	result := r.Route("user1", "修复加载卡住的bug", nil)
 	if result.Target != RouteToAgentLoop {
-		t.Fatalf("target = %q, want agent_loop (bug fix)", result.Target)
+		t.Fatalf("target = %q, want agent_loop (no keyword match)", result.Target)
 	}
 }
 

@@ -838,7 +838,8 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	if metrics != nil {
 		metrics.RequestBuildNanos += time.Since(requestBuildStartedAt).Nanoseconds()
 	}
-	log.Printf("[LLM Stream] POST %s model=%s protocol=%s %s", endpoint, cfg.Model, cfg.Protocol, llm.RequestTraceLogFields(reqCtx))
+	upstreamModel := cfg.UpstreamModel()
+	log.Printf("[LLM Stream] POST %s model=%s configured_model=%s protocol=%s %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, llm.RequestTraceLogFields(reqCtx))
 
 	httpDoStartedAt := time.Now()
 	resp, err := httpClient.Do(req)
@@ -853,7 +854,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		log.Printf("[LLM Stream] HTTP 404: endpoint=%s content_type=%q body_len=%d", endpoint, resp.Header.Get("Content-Type"), len(body))
-		return nil, fmt.Errorf("HTTP 404 (endpoint=%s, model=%s, protocol=%s, body_len=%d)", endpoint, cfg.Model, cfg.Protocol, len(body))
+		return nil, fmt.Errorf("HTTP 404 (endpoint=%s, model=%s, protocol=%s, body_len=%d)", endpoint, upstreamModel, cfg.Protocol, len(body))
 	}
 
 	// Provide friendly HTTP errors instead of raw HTML/JSON bodies.
@@ -861,7 +862,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		log.Printf("[LLM Stream] HTTP %d: endpoint=%s content_type=%q body_len=%d", resp.StatusCode, endpoint, resp.Header.Get("Content-Type"), len(body))
 		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
-		return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, cfg.Model)
+		return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, upstreamModel)
 	}
 
 	// Detect SSE: check Content-Type first, then sniff the body prefix.
@@ -1182,7 +1183,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
-		return nil, fmt.Errorf("%s [url=%s model=%s protocol=anthropic]", friendlyMsg, endpoint, cfg.Model)
+		return nil, fmt.Errorf("%s [url=%s model=%s protocol=anthropic]", friendlyMsg, endpoint, cfg.UpstreamModel())
 	}
 
 	// Fallback: if provider doesn't return SSE

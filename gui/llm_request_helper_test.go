@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,6 +31,68 @@ func TestDoSimpleOpenAIRequest_ContentResponse(t *testing.T) {
 	}
 	if got := resp.Content; got != "hello world" {
 		t.Fatalf("content = %q, want %q", got, "hello world")
+	}
+}
+
+func TestDoSimpleOpenAIRequest_NormalizesCodeGenAutoModel(t *testing.T) {
+	var gotModel string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("Decode: %v", err)
+		}
+		gotModel, _ = body["model"].(string)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	cfg := corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto"}
+	resp, err := doSimpleOpenAIRequest(context.Background(), cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	}, client, 2*time.Second)
+	if err != nil {
+		t.Fatalf("doSimpleOpenAIRequest returned error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q, want ok", resp.Content)
+	}
+	if gotModel != corelib.CodeGenDefaultModelID {
+		t.Fatalf("model = %q, want %q", gotModel, corelib.CodeGenDefaultModelID)
+	}
+}
+
+func TestDoSimpleAnthropicRequest_NormalizesCodeGenAutoModel(t *testing.T) {
+	var gotModel string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("Decode: %v", err)
+		}
+		gotModel, _ = body["model"].(string)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"ok"}]}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	cfg := corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto", Protocol: "anthropic"}
+	resp, err := doSimpleAnthropicRequest(context.Background(), cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	}, client, 2*time.Second)
+	if err != nil {
+		t.Fatalf("doSimpleAnthropicRequest returned error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q, want ok", resp.Content)
+	}
+	if gotModel != corelib.CodeGenDefaultModelID {
+		t.Fatalf("model = %q, want %q", gotModel, corelib.CodeGenDefaultModelID)
 	}
 }
 

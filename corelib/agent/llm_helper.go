@@ -145,7 +145,7 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[LLM Simple] POST %s model=%s protocol=%s (stream=true)", endpoint, cfg.Model, cfg.Protocol)
+	log.Printf("[LLM Simple] POST %s model=%s configured_model=%s protocol=%s (stream=true)", endpoint, cfg.UpstreamModel(), cfg.Model, cfg.Protocol)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -203,7 +203,7 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	}
 
 	reqBody := map[string]interface{}{
-		"model":      cfg.Model,
+		"model":      cfg.UpstreamModel(),
 		"messages":   anthropicMsgs,
 		"max_tokens": 4096,
 	}

@@ -541,18 +541,19 @@ func DoOpenAIRequestRaw(
 		return nil, nil, err
 	}
 	traceFields := RequestTraceLogFields(ctx)
-	log.Printf("[LLM] POST %s model=%s protocol=%s %s", endpoint, cfg.Model, cfg.Protocol, traceFields)
+	upstreamModel := cfg.UpstreamModel()
+	log.Printf("[LLM] POST %s model=%s configured_model=%s protocol=%s %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, traceFields)
 
 	startedAt := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[LLM] done %s model=%s protocol=%s status=error elapsed=%s err=%v %s", endpoint, cfg.Model, cfg.Protocol, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
+		log.Printf("[LLM] done %s model=%s configured_model=%s protocol=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, nil, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	log.Printf("[LLM] done %s model=%s protocol=%s status=%d elapsed=%s body_len=%d %s", endpoint, cfg.Model, cfg.Protocol, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+	log.Printf("[LLM] done %s model=%s configured_model=%s protocol=%s status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 	if resp.StatusCode != http.StatusOK {
 		return nil, body, &HTTPStatusError{StatusCode: resp.StatusCode, Body: body}
 	}

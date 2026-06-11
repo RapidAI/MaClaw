@@ -308,9 +308,6 @@ function App() {
     const restoreAIPanelOwnedWindowMaximize = useCallback(async () => {
         aiPanelMaximizedWindowRef.current = false;
         try {
-            // Call WindowUnmaximise synchronously — bypassing callBackend's
-            // microtask wrapper to avoid race conditions with Wails native
-            // drag-region event handling on Windows.
             WindowUnmaximise();
             setWindowMaximized(false);
             return true;

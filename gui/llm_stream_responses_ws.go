@@ -51,14 +51,18 @@ func buildResponsesWSFrame(
 	}
 	frame := map[string]interface{}{
 		"type":  "response.create",
-		"model": cfg.Model,
+		"model": cfg.UpstreamModel(),
 		"input": input,
 		"store": false,
 	}
 	if converted.Instructions != "" {
 		frame["instructions"] = converted.Instructions
 	}
-	if convTools := llm.ConvertToResponsesTools(tools); len(convTools) > 0 {
+	toolsInput := tools
+	if corelib.IsCodeGenURL(cfg.URL) {
+		toolsInput = corelib.SanitizeCodeGenOpenAIChatTools(tools)
+	}
+	if convTools := llm.ConvertToResponsesTools(toolsInput); len(convTools) > 0 {
 		frame["tools"] = convTools
 	}
 	return json.Marshal(frame)
@@ -91,7 +95,8 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 	// 1. Construct WebSocket URL
 	// -------------------------------------------------------------------
 	wsURL := responsesWSEndpoint(cfg.URL)
-	log.Printf("[LLM Stream] WS %s model=%s wire_api=responses-ws", wsURL, cfg.Model)
+	upstreamModel := cfg.UpstreamModel()
+	log.Printf("[LLM Stream] WS %s model=%s configured_model=%s wire_api=responses-ws", wsURL, upstreamModel, cfg.Model)
 
 	// -------------------------------------------------------------------
 	// 2. Extract TLS config from httpClient transport if available
@@ -129,7 +134,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 		if resp != nil {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
-			return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, wsURL, cfg.Model, cfg.ProviderName))
+			return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, wsURL, upstreamModel, cfg.ProviderName))
 		}
 		return nil, fmt.Errorf("WebSocket dial failed: %w [url=%s]", err, wsURL)
 	}

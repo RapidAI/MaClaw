@@ -127,14 +127,119 @@ function HighlightedLine({ line, language, theme }: {
 
 // ── Markdown Preview ──
 
+/** Detect a pipe-delimited table row */
+function isMdPreviewTableRow(line: string): boolean {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('|') && trimmed.length > 1) return true;
+    if (!trimmed.includes('|')) return false;
+    // At least 2 cells when split by unescaped pipes
+    return parseMdPreviewTableCells(trimmed).length >= 2;
+}
+
+/** Detect a separator row like |---|---| or |:---:|---:| */
+function isMdPreviewSeparatorRow(line: string): boolean {
+    const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+    return /^[\s|:\-]+$/.test(trimmed) && trimmed.includes('-');
+}
+
+/** Parse cells from a pipe-delimited row */
+function parseMdPreviewTableCells(line: string): string[] {
+    let trimmed = line.trim();
+    if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
+    if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
+    return trimmed.split('|').map(c => c.trim());
+}
+
+/** Render a markdown table as an HTML <table> */
+function renderMdPreviewTable(tableLines: string[], key: number, theme: CodePreviewTheme): React.ReactNode | null {
+    const dataRows = tableLines.filter(l => !isMdPreviewSeparatorRow(l));
+    if (dataRows.length === 0 || tableLines.length < 2) return null;
+    // Need a separator or all rows must start with |
+    const hasSeparator = tableLines.some(isMdPreviewSeparatorRow);
+    const allOuterPipes = tableLines.every(l => l.trim().startsWith('|'));
+    if (!hasSeparator && !allOuterPipes) return null;
+
+    const headerCells = parseMdPreviewTableCells(dataRows[0]);
+    if (headerCells.length < 2) return null;
+    const bodyRows = dataRows.slice(1);
+
+    // Parse column alignments from separator row
+    const separatorLine = tableLines.find(isMdPreviewSeparatorRow) || '';
+    const alignments = parseMdPreviewTableCells(separatorLine).map(cell => {
+        const m = cell.trim();
+        const left = m.startsWith(':');
+        const right = m.endsWith(':');
+        if (left && right) return 'center' as const;
+        if (right) return 'right' as const;
+        return 'left' as const;
+    });
+
+    const cellStyle: React.CSSProperties = {
+        border: `1px solid ${theme.border}`,
+        padding: '6px 10px',
+        fontSize: 13,
+        lineHeight: 1.5,
+        verticalAlign: 'top',
+    };
+
+    return (
+        <div key={key} style={{ overflowX: 'auto', margin: '8px 0' }}>
+            <table style={{ borderCollapse: 'collapse', width: '100%', color: theme.text }}>
+                <thead>
+                    <tr>
+                        {headerCells.map((cell, ci) => (
+                            <th key={ci} style={{ ...cellStyle, textAlign: alignments[ci] || 'left', fontWeight: 600, background: theme.lineNumBg }}>
+                                {renderMdInline(cell, theme)}
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
+                {bodyRows.length > 0 && (
+                    <tbody>
+                        {bodyRows.map((row, ri) => {
+                            const cells = parseMdPreviewTableCells(row);
+                            return (
+                                <tr key={ri} style={{ background: ri % 2 === 1 ? theme.lineNumBg : undefined }}>
+                                    {headerCells.map((_, ci) => (
+                                        <td key={ci} style={{ ...cellStyle, textAlign: alignments[ci] || 'left' }}>
+                                            {renderMdInline(cells[ci] || '', theme)}
+                                        </td>
+                                    ))}
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                )}
+            </table>
+        </div>
+    );
+}
+
 function MarkdownPreview({ content, theme }: { content: string; theme: CodePreviewTheme }) {
     const lines = content.split('\n');
     const elements: React.ReactNode[] = [];
     let i = 0;
+    let tableLines: string[] = [];
+
+    const flushTable = () => {
+        if (tableLines.length === 0) return;
+        const rendered = renderMdPreviewTable(tableLines, elements.length, theme);
+        if (rendered) {
+            elements.push(rendered);
+        } else {
+            // Not a valid table structure — render as paragraphs
+            for (const tl of tableLines) {
+                elements.push(<p key={elements.length} style={{ margin: '4px 0', lineHeight: 1.6 }}>{renderMdInline(tl, theme)}</p>);
+            }
+        }
+        tableLines = [];
+    };
+
     while (i < lines.length) {
         const line = lines[i];
         // Code blocks
         if (line.startsWith('```')) {
+            flushTable();
             const lang = line.slice(3).trim();
             const codeLines: string[] = [];
             i++;
@@ -153,6 +258,14 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
             );
             continue;
         }
+        // Table rows: collect consecutive pipe-delimited lines
+        if (isMdPreviewTableRow(line)) {
+            tableLines.push(line);
+            i++;
+            continue;
+        }
+        // Non-table line — flush any pending table
+        flushTable();
         // Headers
         if (line.startsWith('# ')) {
             elements.push(<h1 key={elements.length} style={{ fontSize: 22, fontWeight: 700, margin: '16px 0 8px', color: theme.tabActiveText }}>{renderMdInline(line.slice(2), theme)}</h1>);
@@ -160,11 +273,17 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
             elements.push(<h2 key={elements.length} style={{ fontSize: 18, fontWeight: 700, margin: '14px 0 6px', color: theme.tabActiveText }}>{renderMdInline(line.slice(3), theme)}</h2>);
         } else if (line.startsWith('### ')) {
             elements.push(<h3 key={elements.length} style={{ fontSize: 15, fontWeight: 700, margin: '12px 0 4px', color: theme.tabActiveText }}>{renderMdInline(line.slice(4), theme)}</h3>);
+        } else if (line.startsWith('#### ')) {
+            elements.push(<h4 key={elements.length} style={{ fontSize: 14, fontWeight: 700, margin: '10px 0 4px', color: theme.tabActiveText }}>{renderMdInline(line.slice(5), theme)}</h4>);
         } else if (line.startsWith('- ') || line.startsWith('* ')) {
             elements.push(<div key={elements.length} style={{ paddingLeft: 16, margin: '2px 0' }}>• {renderMdInline(line.slice(2), theme)}</div>);
         } else if (/^\d+\.\s/.test(line)) {
             const match = line.match(/^(\d+\.)\s(.*)$/);
             elements.push(<div key={elements.length} style={{ paddingLeft: 16, margin: '2px 0' }}>{match?.[1]} {renderMdInline(match?.[2] || '', theme)}</div>);
+        } else if (/^[-*_]{3,}\s*$/.test(line.trim())) {
+            elements.push(<hr key={elements.length} style={{ border: 'none', borderTop: `1px solid ${theme.border}`, margin: '12px 0' }} />);
+        } else if (line.startsWith('> ')) {
+            elements.push(<div key={elements.length} style={{ borderLeft: `3px solid ${theme.border}`, paddingLeft: 12, margin: '4px 0', color: theme.textMuted, fontStyle: 'italic' }}>{renderMdInline(line.slice(2), theme)}</div>);
         } else if (line.trim() === '') {
             elements.push(<div key={elements.length} style={{ height: 8 }} />);
         } else {
@@ -172,6 +291,7 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
         }
         i++;
     }
+    flushTable(); // flush any trailing table
     return (
         <div style={{ padding: '16px 20px', fontSize: 14, lineHeight: 1.6, color: theme.text, fontFamily: 'inherit', wordBreak: 'break-word' }}>
             {elements}

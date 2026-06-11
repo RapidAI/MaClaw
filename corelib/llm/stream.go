@@ -37,19 +37,20 @@ func DoOpenAIRequestStream(
 		return nil, err
 	}
 	traceFields := RequestTraceLogFields(ctx)
-	log.Printf("[LLM-stream] POST %s model=%s %s", endpoint, cfg.Model, traceFields)
+	upstreamModel := cfg.UpstreamModel()
+	log.Printf("[LLM-stream] POST %s model=%s configured_model=%s %s", endpoint, upstreamModel, cfg.Model, traceFields)
 
 	startedAt := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[LLM-stream] done %s model=%s status=error elapsed=%s err=%v %s", endpoint, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		log.Printf("[LLM-stream] done %s model=%s status=%d elapsed=%s body_len=%d %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 		return nil, fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(body))
 	}
 
@@ -63,7 +64,7 @@ func DoOpenAIRequestStream(
 	if strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, "event:") {
 		// True SSE stream  - parse incrementally, calling onToken per chunk.
 		result, parseErr := parseSSEStream(peekReader, onToken)
-		log.Printf("[LLM-stream] done %s model=%s status=%d elapsed=%s parse_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s parse_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
 		return result, parseErr
 	}
 
@@ -71,18 +72,18 @@ func DoOpenAIRequestStream(
 	// Read the full body and parse as non-stream response.
 	body, err := io.ReadAll(io.LimitReader(peekReader, 512*1024))
 	if err != nil {
-		log.Printf("[LLM-stream] done %s model=%s status=%d elapsed=%s read_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s read_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	result, err := ParseNonStreamOpenAIResponseBody(body)
 	if err != nil {
-		log.Printf("[LLM-stream] done %s model=%s status=%d elapsed=%s body_len=%d parse_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d parse_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
 		return nil, err
 	}
 	if onToken != nil && len(result.Choices) > 0 && result.Choices[0].Message.Content != "" {
 		onToken(result.Choices[0].Message.Content)
 	}
-	log.Printf("[LLM-stream] done %s model=%s status=%d elapsed=%s body_len=%d fallback=json %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+	log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d fallback=json %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 	return result, nil
 }
 
@@ -112,18 +113,19 @@ func DoAnthropicRequestStream(
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
 	traceFields := RequestTraceLogFields(ctx)
-	log.Printf("[LLM-stream] POST %s model=%s protocol=anthropic %s", endpoint, cfg.Model, traceFields)
+	upstreamModel := cfg.UpstreamModel()
+	log.Printf("[LLM-stream] POST %s model=%s configured_model=%s protocol=anthropic %s", endpoint, upstreamModel, cfg.Model, traceFields)
 	startedAt := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[LLM-stream] done %s model=%s protocol=anthropic status=error elapsed=%s err=%v %s", endpoint, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		log.Printf("[LLM-stream] done %s model=%s protocol=anthropic status=%d elapsed=%s body_len=%d %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 		return nil, fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(body))
 	}
 
@@ -135,25 +137,25 @@ func DoAnthropicRequestStream(
 	if strings.HasPrefix(trimmed, "event:") || strings.HasPrefix(trimmed, "data:") {
 		// True SSE stream  - parse incrementally.
 		result, parseErr := parseAnthropicSSEStream(peekReader, onToken)
-		log.Printf("[LLM-stream] done %s model=%s protocol=anthropic status=%d elapsed=%s parse_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s parse_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
 		return result, parseErr
 	}
 
 	// Fallback: server returned plain JSON despite stream=true.
 	body, err := io.ReadAll(io.LimitReader(peekReader, 512*1024))
 	if err != nil {
-		log.Printf("[LLM-stream] done %s model=%s protocol=anthropic status=%d elapsed=%s read_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s read_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	result, err := parseAnthropicResponseBody(body)
 	if err != nil {
-		log.Printf("[LLM-stream] done %s model=%s protocol=anthropic status=%d elapsed=%s body_len=%d parse_err=%v %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d parse_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
 		return nil, err
 	}
 	if onToken != nil && len(result.Choices) > 0 && result.Choices[0].Message.Content != "" {
 		onToken(result.Choices[0].Message.Content)
 	}
-	log.Printf("[LLM-stream] done %s model=%s protocol=anthropic status=%d elapsed=%s body_len=%d fallback=json %s", endpoint, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+	log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d fallback=json %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 	return result, nil
 }
 

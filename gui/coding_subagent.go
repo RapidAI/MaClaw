@@ -540,7 +540,18 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		// Avoid raw bash heartbeat rows in chat; tool_started/tool_finished events
 		// already keep the AI assistant panel updated while the command runs.
 		commandResult := executeCodingBash(bashArgs, nil)
-		c.trackCommandResult(bashArgs, commandResult.Text, commandResult.Kind == codingCommandResultOK)
+		// Treat exit code 1 with meaningful stdout as success — many tools return exit 1
+		// for informational "not found" results (grep, Get-ChildItem, test runners).
+		// But stderr-only output with exit 1 is still a real error (compilation failure, etc.)
+		succeeded := commandResult.Kind == codingCommandResultOK
+		if !succeeded && commandResult.Kind == codingCommandResultExitError && commandResult.ExitCode == 1 {
+			text := commandResult.Text
+			// If output starts with [stderr], it's an error with no useful stdout → still failed
+			if !strings.HasPrefix(text, "[stderr]") && len(text) > 20 {
+				succeeded = true
+			}
+		}
+		c.trackCommandResult(bashArgs, commandResult.Text, succeeded)
 		return commandResult.toolResult()
 	case "list_directory":
 		listArgs := c.withProjectRelativePath(args, true)

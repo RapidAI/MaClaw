@@ -232,7 +232,7 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 			anthropicMsgs = append(anthropicMsgs, mm)
 		}
 	}
-	bodyMap := map[string]interface{}{"model": cfg.Model, "messages": anthropicMsgs, "max_tokens": 4096}
+	bodyMap := map[string]interface{}{"model": cfg.UpstreamModel(), "messages": anthropicMsgs, "max_tokens": 4096}
 	if systemText != "" {
 		bodyMap["system"] = systemText
 	}

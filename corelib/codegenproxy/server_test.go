@@ -1136,6 +1136,137 @@ func TestClassifyToolArguments(t *testing.T) {
 	}
 }
 
+func TestCodeGenOpenAICompatibilitySanitizesToolsForAnyModel(t *testing.T) {
+	payload := map[string]interface{}{
+		"model": "qax-codegen/Auto",
+		"tools": []interface{}{
+			map[string]interface{}{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":   "strict_tool",
+					"strict": true,
+					"parameters": map[string]interface{}{
+						"additionalProperties": false,
+						"properties": map[string]interface{}{
+							"values": map[string]interface{}{
+								"type": "array",
+								"oneOf": []interface{}{
+									map[string]interface{}{"type": "string"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"functions": []interface{}{
+			map[string]interface{}{
+				"name":   "legacy_tool",
+				"strict": true,
+				"parameters": map[string]interface{}{
+					"properties": map[string]interface{}{
+						"ids": map[string]interface{}{"type": "array"},
+					},
+				},
+			},
+		},
+	}
+
+	notes := applyCodeGenOpenAIMapCompatibility(payload, "qax-codegen/Auto")
+
+	if !containsPrefix(notes, "codegen_sanitize_tools:") {
+		t.Fatalf("notes missing tools sanitize entry: %#v", notes)
+	}
+	if !containsPrefix(notes, "codegen_sanitize_functions:") {
+		t.Fatalf("notes missing functions sanitize entry: %#v", notes)
+	}
+	tool := payload["tools"].([]interface{})[0].(map[string]interface{})
+	fn := tool["function"].(map[string]interface{})
+	if _, ok := fn["strict"]; ok {
+		t.Fatalf("strict leaked into tool: %#v", fn)
+	}
+	params := fn["parameters"].(map[string]interface{})
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("additionalProperties=false leaked: %#v", params)
+	}
+	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
+	if _, ok := values["oneOf"]; ok {
+		t.Fatalf("oneOf leaked: %#v", values)
+	}
+	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
+		t.Fatalf("array items type = %#v, want string", got)
+	}
+	legacy := payload["functions"].([]interface{})[0].(map[string]interface{})
+	if _, ok := legacy["strict"]; ok {
+		t.Fatalf("legacy strict leaked: %#v", legacy)
+	}
+	legacyParams := legacy["parameters"].(map[string]interface{})
+	ids := legacyParams["properties"].(map[string]interface{})["ids"].(map[string]interface{})
+	if got := ids["items"].(map[string]interface{})["type"]; got != "string" {
+		t.Fatalf("legacy array items type = %#v, want string", got)
+	}
+}
+
+func TestCodeGenOpenAIRequestCompatibilitySanitizesTypedToolSchemasForAnyModel(t *testing.T) {
+	req := &openaiChatRequest{
+		Model: "qax-codegen/Auto",
+		Tools: []openaiTool{{
+			Type: "function",
+			Function: openaiFunction{
+				Name: "strict_tool",
+				Parameters: map[string]interface{}{
+					"additionalProperties": false,
+					"properties": map[string]interface{}{
+						"values": map[string]interface{}{
+							"type":     "array",
+							"nullable": true,
+						},
+					},
+				},
+			},
+		}},
+		Functions: []openaiFunction{{
+			Name: "legacy_tool",
+			Parameters: map[string]interface{}{
+				"properties": map[string]interface{}{
+					"ids": map[string]interface{}{"type": "array"},
+				},
+			},
+		}},
+	}
+
+	notes := applyCodeGenOpenAIRequestCompatibility(req)
+
+	if !containsPrefix(notes, "codegen_sanitize_tool_schemas:") {
+		t.Fatalf("notes missing typed schema sanitize entry: %#v", notes)
+	}
+	params := req.Tools[0].Function.Parameters.(map[string]interface{})
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("additionalProperties=false leaked: %#v", params)
+	}
+	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
+	if _, ok := values["nullable"]; ok {
+		t.Fatalf("nullable leaked: %#v", values)
+	}
+	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
+		t.Fatalf("array items type = %#v, want string", got)
+	}
+	legacyParams := req.Functions[0].Parameters.(map[string]interface{})
+	ids := legacyParams["properties"].(map[string]interface{})["ids"].(map[string]interface{})
+	if got := ids["items"].(map[string]interface{})["type"]; got != "string" {
+		t.Fatalf("legacy array items type = %#v, want string", got)
+	}
+}
+
+func containsPrefix(values []string, prefix string) bool {
+	for _, value := range values {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSummarizeStreamToolIncludesKeysAndSchemaMissing(t *testing.T) {
 	schemas := map[string]toolSchemaSummary{
 		"Write": {

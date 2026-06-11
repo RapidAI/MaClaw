@@ -80,7 +80,7 @@ func DoAnthropicRequest(
 	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
-	log.Printf("[LLM] POST %s model=%s protocol=anthropic %s", endpoint, cfg.Model, RequestTraceLogFields(ctx))
+	log.Printf("[LLM] POST %s model=%s configured_model=%s protocol=anthropic %s", endpoint, cfg.UpstreamModel(), cfg.Model, RequestTraceLogFields(ctx))
 
 	resp, err := client.Do(req)
 	if err != nil {

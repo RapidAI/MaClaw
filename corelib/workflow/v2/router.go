@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"log"
 	"regexp"
 	"strings"
 )
@@ -38,6 +39,7 @@ type TaskComplexity string
 const (
 	ComplexitySimple  TaskComplexity = "simple"  // Direct SubAgent execution, no SDD
 	ComplexityComplex TaskComplexity = "complex" // Full SDD workflow (requirements → design → tasks → code)
+	ComplexityNone    TaskComplexity = "none"    // Not a coding task — route to normal agent loop
 )
 
 // ComplexityFunc assesses whether a coding task is simple (direct coding) or complex (needs SDD).
@@ -66,6 +68,11 @@ func NewWorkflowRouter(machine *StateMachine, templates *TemplateRegistry, llmFu
 // SetComplexityFunc sets the LLM-based complexity assessor.
 func (r *WorkflowRouter) SetComplexityFunc(fn ComplexityFunc) {
 	r.complexityFunc = fn
+}
+
+// GetComplexityFunc returns the current complexity function (nil if not set).
+func (r *WorkflowRouter) GetComplexityFunc() ComplexityFunc {
+	return r.complexityFunc
 }
 
 // Route decides whether a message should go to a workflow or the normal agent loop.
@@ -106,10 +113,9 @@ func (r *WorkflowRouter) Route(userID, text string, attachments []Attachment) *R
 		return &RouteResult{Target: RouteToAgentLoop}
 	}
 
-	// Step 4: Bug-fix / maintenance tasks → agent loop (no three-phase needed)
-	if isBugFixOnly(text) {
-		return &RouteResult{Target: RouteToAgentLoop}
-	}
+	// Step 4: (Removed) Bug-fix detection was keyword-based and caused false positives.
+	// e.g. "BUG修复验证报告" (document task) was misclassified as a code bug fix.
+	// All classification now goes through LLM complexity assessment in Step 7.
 
 	// Step 5: Keyword match against templates
 	matched := r.templates.MatchByKeywords(text)
@@ -124,11 +130,16 @@ func (r *WorkflowRouter) Route(userID, text string, attachments []Attachment) *R
 		}
 	}
 
-	// Step 7: For coding tasks, assess complexity to decide SDD vs direct coding.
-	// Simple/medium tasks go directly to SubAgent without the full workflow.
+	// Step 7: For coding tasks only, assess complexity via LLM.
+	// Non-coding templates (PPT, business plan, etc.) always go to full workflow.
 	if matched.Type == "coding" {
 		complexity := r.assessComplexity(text)
-		if complexity == ComplexitySimple {
+		switch complexity {
+		case ComplexityNone:
+			// LLM says this isn't actually a coding task — agent loop handles it
+			return &RouteResult{Target: RouteToAgentLoop}
+		case ComplexitySimple:
+			// Simple coding task — direct SubAgent, skip SDD
 			projectPath := ExtractProjectPathFromText(text)
 			return &RouteResult{
 				Target:       RouteToDirectCoding,
@@ -136,6 +147,7 @@ func (r *WorkflowRouter) Route(userID, text string, attachments []Attachment) *R
 				ProjectPath:  projectPath,
 			}
 		}
+		// ComplexityComplex → fall through to full SDD workflow
 	}
 
 	// Step 8: Extract project path from text
@@ -153,13 +165,13 @@ func (r *WorkflowRouter) Route(userID, text string, attachments []Attachment) *R
 // Without LLM, defaults to complex (full SDD) — the safe choice that preserves
 // the three-phase design process. Direct coding only triggers with LLM confirmation.
 func (r *WorkflowRouter) assessComplexity(text string) TaskComplexity {
+	log.Printf("[workflow-v2] assessComplexity called: text_len=%d hasFunc=%v", len([]rune(text)), r.complexityFunc != nil)
 	// Use LLM-based complexity assessment when available
 	if r.complexityFunc != nil {
 		return r.complexityFunc(text)
 	}
-	// Without LLM: always default to complex (full SDD).
-	// Bug-fix tasks are already handled by isBugFixOnly() in Step 4.
-	// Users can say "直接做" (skip signal) to bypass SDD entirely.
+	// Without LLM: always default to complex (full SDD) — the safe choice.
+	log.Printf("[workflow-v2] assessComplexity: no complexityFunc, defaulting to complex")
 	return ComplexityComplex
 }
 
@@ -194,6 +206,13 @@ var creationKeywords = []string{
 	"写代码", "编写", "实现", "创建",
 }
 
+// documentTaskKeywords indicate the message is about document/report generation,
+// not actual bug-fix coding — even if it mentions "BUG修复" in the topic.
+var documentTaskKeywords = []string{
+	"报告", "文档", "生成报告", "测试报告", "用例", "xlsx", "docx", "pdf",
+	"report", "document", "总结", "梳理", "整理",
+}
+
 func isBugFixOnly(text string) bool {
 	lower := strings.ToLower(text)
 	hasBugFix := false
@@ -205,6 +224,12 @@ func isBugFixOnly(text string) bool {
 	}
 	if !hasBugFix {
 		return false
+	}
+	// Exclude document/report tasks that mention "bug fix" as a topic, not as a coding action
+	for _, kw := range documentTaskKeywords {
+		if strings.Contains(lower, kw) {
+			return false
+		}
 	}
 	for _, kw := range creationKeywords {
 		if strings.Contains(lower, kw) {

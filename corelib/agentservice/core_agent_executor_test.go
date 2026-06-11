@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -279,6 +280,48 @@ func TestCoreAgentExecutorReturnsPromptBundleMetadata(t *testing.T) {
 			t.Fatalf("expected metadata %s, got %#v", key, result.Metadata)
 		}
 	}
+}
+
+func TestSimpleLLMExecutorNormalizesCodeGenAutoModel(t *testing.T) {
+	var gotModel string
+	executor := SimpleLLMExecutor{HTTPClient: &http.Client{Transport: agentServiceRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("Decode: %v", err)
+		}
+		gotModel, _ = body["model"].(string)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)),
+			Request:    r,
+		}, nil
+	})}}
+
+	result, err := executor.Execute(context.Background(), ExecuteRequest{
+		Config: corelib.AppConfig{
+			MaclawLLMUrl:   "https://codegen.qianxin-inc.cn/api/v1",
+			MaclawLLMKey:   "test-key",
+			MaclawLLMModel: "auto",
+		},
+		Session: Session{AgentID: "agent-a"},
+		Message: Message{Content: "hello"},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Content != "ok" {
+		t.Fatalf("content = %q, want ok", result.Content)
+	}
+	if gotModel != corelib.CodeGenDefaultModelID {
+		t.Fatalf("model = %q, want %q", gotModel, corelib.CodeGenDefaultModelID)
+	}
+}
+
+type agentServiceRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f agentServiceRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 type noOpKnowledgeStore struct{}
