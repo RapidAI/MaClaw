@@ -85,6 +85,8 @@ build/maclawsrv_deploy/stage/
 
 # Binary and resource files — covers hub.exe, hub/hub.exe, *.syso, etc.
 hub.exe
+hub/audit_program.exe
+hub/cmd/hub/hub.exe
 *.syso
 **/build/bin/*.exe
 
@@ -153,10 +155,12 @@ iWorkerCenter/cmd/iworkercenter/web/admin/assets/index-*.css
 /srvdemo.exe
 /MaClawSrv.exe
 /MaClawSrv/maclawsrv_local.exe
+/MaClawSrv/maclaw_srv_linux*
 /datasrv/maclaw-data-srv.exe
 build/deploy-ha/debug-*
 build/deploy-ha/agentnet.patch
 build/deploy-ha/manual-test/
+deploy/build-temp/
 
 # Unrelated third-party reference project
 xpay-code/
