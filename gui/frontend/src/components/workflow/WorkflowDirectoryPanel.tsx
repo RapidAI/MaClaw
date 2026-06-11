@@ -268,7 +268,7 @@ export function WorkflowDirectoryPanel({ hubBaseUrl, getWorkflowDirectory }: Wor
                 style={panelStyle}
             >
                 {loading && <CenteredMessage>加载中...</CenteredMessage>}
-                {!loading && error && <CenteredMessage color="#c62828">加载失败: {error}</CenteredMessage>}
+                {!loading && error && <CenteredMessage color="var(--theme-danger, #b42318)">加载失败: {error}</CenteredMessage>}
                 {!loading && !error && items.length === 0 && (
                     <CenteredMessage>
                         <span style={{ fontSize: "1.5rem", display: "block", marginBottom: 8 }}>📋</span>
@@ -381,7 +381,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function ResultBadge({ result }: { result: string }) {
-    const color = result === "approved" ? "#2e7d32" : result === "rejected" ? "#c62828" : "#616161";
+    const color = result === "approved" ? "var(--theme-success, #4f7f6f)" : result === "rejected" ? "var(--theme-danger, #b42318)" : "var(--theme-text-muted, #64748b)";
     const label = result === "approved" ? "通过" : result === "rejected" ? "驳回" : result;
     return <span style={{ fontSize: "0.72rem", fontWeight: 500, color, marginLeft: 4 }}>{label}</span>;
 }
@@ -389,11 +389,11 @@ function ResultBadge({ result }: { result: string }) {
 function UrgencyIndicator({ urgency, timeRemaining }: { urgency?: string; timeRemaining?: number }) {
     if (!urgency || urgency === "normal") return null;
     if (urgency === "overdue") {
-        return <span style={{ color: "#c62828", fontWeight: 600, fontSize: "0.72rem", marginLeft: 6 }}>⚠️ 已超时</span>;
+        return <span style={{ color: "var(--theme-danger, #b42318)", fontWeight: 600, fontSize: "0.72rem", marginLeft: 6 }}>⚠️ 已超时</span>;
     }
     if (urgency === "approaching_timeout") {
         const remaining = timeRemaining != null ? ` (${timeRemaining}h)` : "";
-        return <span style={{ color: "#e65100", fontWeight: 500, fontSize: "0.72rem", marginLeft: 6 }}>⏰ 即将超时{remaining}</span>;
+        return <span style={{ color: "var(--theme-warning, #64748b)", fontWeight: 500, fontSize: "0.72rem", marginLeft: 6 }}>⏰ 即将超时{remaining}</span>;
     }
     return null;
 }
@@ -427,9 +427,9 @@ function getStatusBadgeColors(status: string): CSSProperties {
     switch (status) {
         case "running": return { background: "#e3f2fd", color: "#1565c0" };
         case "completed": return { background: "#e8f5e9", color: "#2e7d32" };
-        case "withdrawn": return { background: "#fce4ec", color: "#c62828" };
+        case "withdrawn": return { background: "var(--theme-danger-bg, #fbf1f0)", color: "var(--theme-danger, #b42318)" };
         case "failed": return { background: "#fbe9e7", color: "#d84315" };
-        case "blocked": return { background: "#fff3e0", color: "#e65100" };
+        case "blocked": return { background: "var(--theme-warning-bg, #f8fafc)", color: "var(--theme-warning, #64748b)" };
         case "cancelled": return { background: "#f3e5f5", color: "#6a1b9a" };
         default: return { background: "#f5f5f5", color: "#616161" };
     }

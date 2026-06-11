@@ -308,7 +308,7 @@ function ResultBadge({ result }: { result: string }) {
         <span style={{
             ...badgeBaseStyle,
             background: isApproved ? "#e8f5e9" : "#fce4ec",
-            color: isApproved ? "#2e7d32" : "#c62828",
+            color: isApproved ? "var(--theme-success, #4f7f6f)" : "var(--theme-danger, #b42318)",
         }}>
             {isApproved ? "✓ 通过" : "✗ 驳回"}
         </span>
@@ -321,7 +321,7 @@ function DecisionBadge({ decision }: { decision: string }) {
         <span style={{
             fontSize: "0.72rem",
             fontWeight: 500,
-            color: isApproved ? "#2e7d32" : "#c62828",
+            color: isApproved ? "var(--theme-success, #4f7f6f)" : "var(--theme-danger, #b42318)",
         }}>
             {isApproved ? "通过" : "驳回"}
         </span>
@@ -330,7 +330,7 @@ function DecisionBadge({ decision }: { decision: string }) {
 
 function ConfirmStatusBadge({ status }: { status: string }) {
     const colors: Record<string, CSSProperties> = {
-        pending: { background: "#fff3e0", color: "#e65100" },
+        pending: { background: "var(--theme-warning-bg, #f8fafc)", color: "var(--theme-warning, #64748b)" },
         confirmed: { background: "#e8f5e9", color: "#2e7d32" },
         auto_closed: { background: "#f3e5f5", color: "#6a1b9a" },
     };
@@ -523,7 +523,7 @@ const notesCounterStyle: CSSProperties = {
 const errorStyle: CSSProperties = {
     margin: 0,
     fontSize: "0.78rem",
-    color: "#c62828",
+    color: "var(--theme-danger, #b42318)",
 };
 
 const confirmButtonStyle: CSSProperties = {

@@ -443,7 +443,7 @@ const warningStyle: CSSProperties = {
     border: "1px solid #ffcc80",
     borderRadius: "6px",
     fontSize: "0.8rem",
-    color: "#e65100",
+    color: "var(--theme-warning, #64748b)",
 };
 
 const warningIconStyle: CSSProperties = {
@@ -560,7 +560,7 @@ const userItemNameStyle: CSSProperties = {
 const removeButtonStyle: CSSProperties = {
     border: "none",
     background: "transparent",
-    color: "#c62828",
+    color: "var(--theme-danger, #b42318)",
     cursor: "pointer",
     fontSize: "0.9rem",
     padding: "2px 6px",

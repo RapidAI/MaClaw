@@ -398,7 +398,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                             width: '8px',
                             height: '8px',
                             borderRadius: '50%',
-                            background: slot.online ? '#22c55e' : '#9ca3af',
+                            background: slot.online ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-text-muted, #64748b)',
                             border: '1.5px solid var(--theme-page-bg)',
                         }} />
                     </div>
@@ -547,7 +547,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                             onRemove(contextMenu.slot.veId);
                             setContextMenu(null);
                         }}
-                        style={{ ...menuItemStyle, color: 'var(--theme-danger, #dc2626)', opacity: contextMenu.slot.resident ? 0.4 : 1, cursor: contextMenu.slot.resident ? 'default' : 'pointer' }}
+                        style={{ ...menuItemStyle, color: 'var(--theme-danger, #b42318)', opacity: contextMenu.slot.resident ? 0.4 : 1, cursor: contextMenu.slot.resident ? 'default' : 'pointer' }}
                         onMouseEnter={contextMenu.slot.resident ? undefined : menuItemHover}
                         onMouseLeave={menuItemUnhover}
                     >
@@ -609,7 +609,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                                 }}
                             />
                             {renameError && (
-                                <span id="favorite-employee-rename-error" role="alert" style={{ color: 'var(--theme-danger, #dc2626)', fontSize: 12, lineHeight: 1.4 }}>
+                                <span id="favorite-employee-rename-error" role="alert" style={{ color: 'var(--theme-danger, #b42318)', fontSize: 12, lineHeight: 1.4 }}>
                                     {renameError}
                                 </span>
                             )}
@@ -692,7 +692,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                                 <span style={{
                                     position: 'absolute', bottom: 2, right: 2,
                                     width: 14, height: 14, borderRadius: '50%',
-                                    background: viewInfoSlot.online ? '#22c55e' : '#9ca3af',
+                                    background: viewInfoSlot.online ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-text-muted, #64748b)',
                                     border: '2.5px solid var(--theme-page-bg)',
                                 }} />
                             </div>
@@ -700,7 +700,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                                 {viewInfoSlot.name}
                             </h2>
                             {viewInfoSlot.resident && (
-                                <span style={{ fontSize: 11, color: 'var(--theme-primary)', background: 'var(--theme-hover, rgba(99,102,241,0.1))', padding: '2px 8px', borderRadius: 4, fontWeight: 600 }}>
+                                <span style={{ fontSize: 11, color: 'var(--theme-primary)', background: 'var(--theme-hover, rgba(47,95,152,0.08))', padding: '2px 8px', borderRadius: 4, fontWeight: 600 }}>
                                     {text.infoResident}
                                 </span>
                             )}
@@ -711,7 +711,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                             {/* Status */}
                             <div style={infoRowStyle}>
                                 <span style={infoLabelStyle}>{text.infoStatus}</span>
-                                <span style={{ ...infoValueStyle, color: viewInfoSlot.online ? '#22c55e' : '#9ca3af', fontWeight: 600 }}>
+                                <span style={{ ...infoValueStyle, color: viewInfoSlot.online ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-text-muted, #64748b)', fontWeight: 600 }}>
                                     ● {viewInfoSlot.online ? text.infoOnline : text.infoOffline}
                                 </span>
                             </div>

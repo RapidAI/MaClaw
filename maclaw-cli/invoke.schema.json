@@ -25,6 +25,7 @@
     "timeoutSec": { "type": "integer", "minimum": 0 },
     "lockTimeoutSec": { "type": "integer", "minimum": 1, "description": "State/run lock wait timeout seconds." },
     "limit": { "type": "integer", "minimum": 1 },
+    "count": { "type": "integer", "minimum": 1, "description": "watch poll count; omit for endless watch." },
     "cursor": { "type": "string" },
     "waitPolls": { "type": "integer", "minimum": 1 },
     "ack": { "type": "boolean" },

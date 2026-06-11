@@ -602,18 +602,18 @@ export function RemoteSessionList(props: Props) {
                         style={{
                             border: "none",
                             background: sessionTab === "background" ? colors.surface : "transparent",
-                            borderBottom: sessionTab === "background" ? `2px solid #7c3aed` : "2px solid transparent",
+                            borderBottom: sessionTab === "background" ? `2px solid ${colors.primaryDark}` : "2px solid transparent",
                             padding: "8px 16px",
                             fontSize: "0.8rem",
                             fontWeight: sessionTab === "background" ? 700 : 500,
-                            color: sessionTab === "background" ? "#7c3aed" : colors.textMuted,
+                            color: sessionTab === "background" ? colors.primaryDark : colors.textMuted,
                             cursor: "pointer",
                             transition: "all 0.15s",
                         }}
                     >
                         ⚙️ {localizeText("Background", "后台", "後台")}
                         {bgTotalCount > 0 && (
-                            <span style={{ marginLeft: "6px", fontSize: "0.68rem", background: "#f0e6ff", color: "#6b21a8", padding: "1px 6px", borderRadius: "999px" }}>
+                            <span style={{ marginLeft: "6px", fontSize: "0.68rem", background: colors.surfaceMuted, color: colors.primaryDark, padding: "1px 6px", borderRadius: "999px" }}>
                                 {bgTotalCount}
                             </span>
                         )}
@@ -623,11 +623,11 @@ export function RemoteSessionList(props: Props) {
                         style={{
                             border: "none",
                             background: sessionTab === "scheduled" ? colors.surface : "transparent",
-                            borderBottom: sessionTab === "scheduled" ? `2px solid #059669` : "2px solid transparent",
+                            borderBottom: sessionTab === "scheduled" ? `2px solid ${colors.success}` : "2px solid transparent",
                             padding: "8px 16px",
                             fontSize: "0.8rem",
                             fontWeight: sessionTab === "scheduled" ? 700 : 500,
-                            color: sessionTab === "scheduled" ? "#059669" : colors.textMuted,
+                            color: sessionTab === "scheduled" ? colors.success : colors.textMuted,
                             cursor: "pointer",
                             transition: "all 0.15s",
                         }}

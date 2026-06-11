@@ -510,7 +510,7 @@ const labelStyle: CSSProperties = {
 };
 
 const requiredMarkStyle: CSSProperties = {
-    color: "#c62828",
+    color: "var(--theme-danger, #b42318)",
 };
 
 const inputStyle: CSSProperties = {
@@ -525,7 +525,7 @@ const inputStyle: CSSProperties = {
 
 const inputErrorStyle: CSSProperties = {
     ...inputStyle,
-    borderColor: "#c62828",
+    borderColor: "var(--theme-danger, #b42318)",
 };
 
 const textareaStyle: CSSProperties = {
@@ -537,7 +537,7 @@ const textareaStyle: CSSProperties = {
 
 const textareaErrorStyle: CSSProperties = {
     ...textareaStyle,
-    borderColor: "#c62828",
+    borderColor: "var(--theme-danger, #b42318)",
 };
 
 const selectStyle: CSSProperties = {
@@ -548,7 +548,7 @@ const selectStyle: CSSProperties = {
 
 const selectErrorStyle: CSSProperties = {
     ...selectStyle,
-    borderColor: "#c62828",
+    borderColor: "var(--theme-danger, #b42318)",
 };
 
 const fileInputStyle: CSSProperties = {
@@ -577,7 +577,7 @@ const checkboxTextStyle: CSSProperties = {
 
 const fieldErrorStyle: CSSProperties = {
     fontSize: "0.75rem",
-    color: "#c62828",
+    color: "var(--theme-danger, #b42318)",
     marginTop: "2px",
 };
 
@@ -617,7 +617,7 @@ const submitErrorStyle: CSSProperties = {
     border: "1px solid #ef9a9a",
     borderRadius: "6px",
     fontSize: "0.8rem",
-    color: "#c62828",
+    color: "var(--theme-danger, #b42318)",
 };
 
 const successContainerStyle: CSSProperties = {

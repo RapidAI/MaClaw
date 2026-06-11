@@ -120,8 +120,8 @@ function scheduleDesc(t: ScheduledTask, lang: string): string {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-    active: "#059669",
-    paused: "#d97706",
+    active: "var(--theme-success)",
+    paused: "var(--theme-warning)",
     expired: "var(--theme-text-muted)",
 };
 

@@ -82,10 +82,10 @@ const CATEGORY_COLORS: Record<string, string> = {
     preference: "var(--theme-info, #0891b2)",
     project_knowledge: "var(--theme-success)",
     instruction: "var(--theme-warning)",
-    conversation_summary: "var(--theme-primary-strong, #8b5cf6)",
+    conversation_summary: "var(--theme-primary-strong, #183b63)",
     session_checkpoint: "var(--theme-text-muted)",
-    task_artifact: "#f97316",
-    profile: "#14b8a6",
+    task_artifact: "var(--theme-text-muted)",
+    profile: "var(--theme-success)",
 };
 
 type TraceFocus = { value?: string; seq?: number };
@@ -253,19 +253,19 @@ interface MemoryStatusData {
 
 // Pie chart color palette — visually distinct, works on both light and dark themes.
 const PIE_COLORS = [
-    "#3b82f6", // blue
-    "#10b981", // emerald
-    "#f59e0b", // amber
-    "#ef4444", // red
-    "#8b5cf6", // violet
-    "#ec4899", // pink
-    "#06b6d4", // cyan
-    "#f97316", // orange
-    "#14b8a6", // teal
-    "#6366f1", // indigo
-    "#a855f7", // purple
-    "#84cc16", // lime
-    "#e11d48", // rose
+    "#2f5f98",
+    "#4f7f6f",
+    "#64748b",
+    "#183b63",
+    "#5b7898",
+    "#8aa4bf",
+    "#526579",
+    "#7f8da1",
+    "#3f5872",
+    "#6b8baa",
+    "#789185",
+    "#94a3b8",
+    "#b7c5d4",
 ];
 
 function MemoryStatusTab({ t, lang, traceFocus }: { t: (en: string, zhHans: string, zhHant?: string) => string; lang: string; traceFocus?: TraceFocus }) {

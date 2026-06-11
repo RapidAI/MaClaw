@@ -678,6 +678,13 @@ func TestLockTimeoutCanComeFromEnvAndInvoke(t *testing.T) {
 	if !containsAdjacent(args, "--lock-timeout", "23") {
 		t.Fatalf("invoke args missing lock timeout: %#v", args)
 	}
+	action, args, err = invokeArgs(invokeRequest{Action: "watch", ClientID: "planner", SessionID: "task-123", Count: 2}, "watch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action != "watch" || !containsAdjacent(args, "--count", "2") {
+		t.Fatalf("watch invoke args = action %q args %#v", action, args)
+	}
 }
 
 func TestVersionIsMachineReadable(t *testing.T) {
@@ -820,6 +827,22 @@ func TestAcquireRunLockBlocksSameClientSession(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("second lock did not acquire after release")
 	}
+}
+
+func TestAcquireLockFileRemovesStaleLock(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "state.json.lock")
+	if err := os.WriteFile(lockPath, []byte("dead\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(lockPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireLockFile(lockPath, "state lock", 1)
+	if err != nil {
+		t.Fatalf("acquire stale lock: %v", err)
+	}
+	lock.Release()
 }
 
 func TestAcquireRunLockAllowsDifferentClientSession(t *testing.T) {
