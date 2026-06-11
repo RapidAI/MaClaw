@@ -139,6 +139,37 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 	case v2.RouteToAgentLoop:
 		return workflowIMRouteResult{}
 
+	case v2.RouteToDirectCoding:
+		// Simple/medium task: skip SDD, go directly to SubAgent with user request as the task.
+		log.Printf("[workflow-v2] RouteToDirectCoding: user=%s, direct SubAgent execution", msg.UserID)
+		projectPath := result.ProjectPath
+		if projectPath == "" {
+			if h.app != nil {
+				projectPath = strings.TrimSpace(h.app.GetCurrentProjectPath())
+			}
+		}
+		if projectPath != "" {
+			if cleaned := v2.TruncateToValidPathChars(projectPath); cleaned != "" {
+				projectPath = cleaned
+			}
+		}
+		if projectPath == "" {
+			projectPath = "."
+		}
+		// Cancel any existing workflow
+		if wf := h.getWorkflowV2(); wf != nil && wf.machine.GetActive(msg.UserID) != nil {
+			wf.machine.Cancel(msg.UserID)
+			emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
+		}
+		h.pendingV2SubAgentExecution.Store(msg.UserID, true)
+		h.pendingDirectCodingProjectPath.Store(msg.UserID, projectPath)
+		h.workflowAgentLoopMarker.Store(msg.UserID, true)
+		h.workflowOriginalRequest.Store(msg.UserID, msg.Text)
+		return workflowIMRouteResult{
+			WorkflowAgentLoop: true,
+			WorkflowDocPhase:  false,
+		}
+
 	case v2.RouteToWorkflow:
 		if result.HandleResult != nil {
 			// Active workflow handled the message
@@ -769,4 +800,98 @@ func emitWorkflowV2Event(a *App, eventName string, data interface{}) {
 		return
 	}
 	runtime.EventsEmit(a.ctx, eventName, data)
+}
+
+// runDirectCodingSubAgent executes a single coding task directly via SubAgent
+// without going through the full SDD workflow. Used for simple/medium tasks.
+func (h *IMMessageHandler) runDirectCodingSubAgent(userID, userText, projectPath string, onProgress func(string), onToken func(string)) *IMAgentResponse {
+	if err := v2.EnsureProjectDir(projectPath); err != nil {
+		log.Printf("[workflow-v2] direct coding: failed to ensure project dir %s: %v", projectPath, err)
+	}
+
+	// Create a single task from the user's request
+	task := &v2.TaskItem{
+		Index:       1,
+		Title:       userText,
+		Description: userText,
+	}
+	tasks := []*v2.TaskItem{task}
+
+	log.Printf("[workflow-v2] direct coding: user=%s project=%s task=%q", userID, projectPath, truncateRunesV2(userText, 80))
+
+	if onProgress != nil {
+		onProgress("🚀 直接编码模式：开始执行")
+	}
+
+	cfg := h.getMaclawLLMConfig()
+	httpClient := h.client
+	subAgentFn := func(ctx context.Context, t *v2.TaskItem, config v2.TaskRunnerConfig, onTk func(string), onPr func(string)) *v2.TaskRunResult {
+		v1Task := &TaskItem{
+			Index:       t.Index,
+			Title:       t.Title,
+			Description: t.Description,
+			Files:       t.Files,
+			DependsOn:   t.DependsOn,
+		}
+		var fn subAgentTaskFunc
+		if runTaskWithSubAgent != nil {
+			fn = runTaskWithSubAgent
+		} else {
+			fn = RunTaskWithSubAgent
+		}
+		v1Result := fn(h, cfg, httpClient, v1Task, config.ProjectPath, "", "", nil, nil, onTk, onPr)
+		if v1Result == nil {
+			return &v2.TaskRunResult{TaskIndex: t.Index, Title: t.Title, Status: v2.TaskFailed, Error: "SubAgent returned nil"}
+		}
+		status := v2.TaskFailed
+		switch v1Result.Status {
+		case TaskExecPassed:
+			status = v2.TaskPassed
+		case TaskExecSkipped:
+			status = v2.TaskSkipped
+		}
+		return &v2.TaskRunResult{
+			TaskIndex:     t.Index,
+			Title:         t.Title,
+			Status:        status,
+			Summary:       v1Result.Summary,
+			FilesCreated:  v1Result.FilesCreated,
+			FilesModified: v1Result.FilesModified,
+			Error:         v1Result.Error,
+		}
+	}
+
+	config := v2.TaskRunnerConfig{
+		ProjectPath: projectPath,
+		MaxRetries:  2,
+		TDDMode:     true,
+	}
+
+	// Route SubAgent thinking to reasoning panel (collapsed)
+	reasoningToken := onToken
+	if onToken != nil {
+		reasoningToken = func(delta string) {
+			onToken("\x01" + delta)
+		}
+	}
+
+	runner := v2.NewTaskRunner(config, subAgentFn)
+	runner.RunAll(context.Background(), tasks, reasoningToken, func(progress string) {
+		log.Printf("[workflow-v2-direct] %s", progress)
+		if onProgress != nil {
+			onProgress(progress)
+		}
+	})
+	report := runner.FinalReport()
+
+	// Push final report as visible content
+	if onToken != nil {
+		onToken("\n\n" + report)
+	}
+
+	log.Printf("[workflow-v2] direct coding complete: user=%s\n%s", userID, report)
+
+	return &IMAgentResponse{
+		Text: fmt.Sprintf("✅ 编码完成\n项目路径：%s\n\n%s", projectPath, report),
+	}
 }

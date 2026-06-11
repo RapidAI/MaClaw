@@ -9,8 +9,9 @@ import (
 type RouteTarget string
 
 const (
-	RouteToAgentLoop RouteTarget = "agent_loop"
-	RouteToWorkflow  RouteTarget = "workflow"
+	RouteToAgentLoop    RouteTarget = "agent_loop"
+	RouteToWorkflow     RouteTarget = "workflow"
+	RouteToDirectCoding RouteTarget = "direct_coding" // Skip SDD, go straight to SubAgent
 )
 
 // RouteResult is returned by WorkflowRouter.Route.
@@ -31,12 +32,27 @@ type Attachment struct {
 // Returns true if the message should trigger a workflow.
 type LLMConfirmFunc func(text, workflowType string) bool
 
+// TaskComplexity represents the assessed complexity of a coding task.
+type TaskComplexity string
+
+const (
+	ComplexitySimple  TaskComplexity = "simple"  // Direct SubAgent execution, no SDD
+	ComplexityComplex TaskComplexity = "complex" // Full SDD workflow (requirements → design → tasks → code)
+)
+
+// ComplexityFunc assesses whether a coding task is simple (direct coding) or complex (needs SDD).
+// Returns ComplexitySimple for quick tasks (bug fix, hello world, add a button).
+// Returns ComplexityComplex for projects needing design/planning.
+// When nil, falls back to heuristic (message length + project path).
+type ComplexityFunc func(text string) TaskComplexity
+
 // WorkflowRouter is the single decision point for message routing.
 // It replaces QuickFilter + UIC + IUM + GateIntentClassifier + SteeringDetector.
 type WorkflowRouter struct {
-	machine   *StateMachine
-	templates *TemplateRegistry
-	llmFunc   LLMConfirmFunc // optional; nil = keyword-only
+	machine        *StateMachine
+	templates      *TemplateRegistry
+	llmFunc        LLMConfirmFunc // optional; nil = keyword-only
+	complexityFunc ComplexityFunc // optional; nil = heuristic fallback
 }
 
 func NewWorkflowRouter(machine *StateMachine, templates *TemplateRegistry, llmFunc LLMConfirmFunc) *WorkflowRouter {
@@ -45,6 +61,11 @@ func NewWorkflowRouter(machine *StateMachine, templates *TemplateRegistry, llmFu
 		templates: templates,
 		llmFunc:   llmFunc,
 	}
+}
+
+// SetComplexityFunc sets the LLM-based complexity assessor.
+func (r *WorkflowRouter) SetComplexityFunc(fn ComplexityFunc) {
+	r.complexityFunc = fn
 }
 
 // Route decides whether a message should go to a workflow or the normal agent loop.
@@ -103,7 +124,21 @@ func (r *WorkflowRouter) Route(userID, text string, attachments []Attachment) *R
 		}
 	}
 
-	// Step 7: Extract project path from text
+	// Step 7: For coding tasks, assess complexity to decide SDD vs direct coding.
+	// Simple/medium tasks go directly to SubAgent without the full workflow.
+	if matched.Type == "coding" {
+		complexity := r.assessComplexity(text)
+		if complexity == ComplexitySimple {
+			projectPath := ExtractProjectPathFromText(text)
+			return &RouteResult{
+				Target:       RouteToDirectCoding,
+				WorkflowType: "coding",
+				ProjectPath:  projectPath,
+			}
+		}
+	}
+
+	// Step 8: Extract project path from text
 	projectPath := ExtractProjectPathFromText(text)
 
 	return &RouteResult{
@@ -111,6 +146,21 @@ func (r *WorkflowRouter) Route(userID, text string, attachments []Attachment) *R
 		WorkflowType: matched.Type,
 		ProjectPath:  projectPath,
 	}
+}
+
+// assessComplexity determines whether a coding task is simple (direct SubAgent)
+// or complex (needs full SDD workflow). Uses LLM semantic judgment when available.
+// Without LLM, defaults to complex (full SDD) — the safe choice that preserves
+// the three-phase design process. Direct coding only triggers with LLM confirmation.
+func (r *WorkflowRouter) assessComplexity(text string) TaskComplexity {
+	// Use LLM-based complexity assessment when available
+	if r.complexityFunc != nil {
+		return r.complexityFunc(text)
+	}
+	// Without LLM: always default to complex (full SDD).
+	// Bug-fix tasks are already handled by isBugFixOnly() in Step 4.
+	// Users can say "直接做" (skip signal) to bypass SDD entirely.
+	return ComplexityComplex
 }
 
 // --- Skip Signals ---

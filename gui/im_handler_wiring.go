@@ -221,6 +221,10 @@ type IMMessageHandler struct {
 	// the system prompt builder's LoadAndDelete).
 	pendingV2SubAgentExecution sync.Map
 
+	// pendingDirectCodingProjectPath stores the project path for direct coding
+	// (RouteToDirectCoding) — simple tasks that skip SDD and go straight to SubAgent.
+	pendingDirectCodingProjectPath sync.Map
+
 	// workflowReviewExperienceContext carries the trace/task context of the
 	// phase output currently awaiting review. Keyed by userID; consumed by
 	// review-intent events so user feedback can update the same injected

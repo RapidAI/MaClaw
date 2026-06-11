@@ -99,13 +99,24 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	// which gets consumed by system prompt builder via LoadAndDelete).
 	if opts.WorkflowAgentLoop && !opts.WorkflowDocPhase {
 		if _, pending := h.pendingV2SubAgentExecution.LoadAndDelete(msg.UserID); pending {
-			log.Printf("[workflow-v2] SubAgent execution triggered in agent loop context, user=%s request_id=%s", msg.UserID, requestID)
-			wf := h.getWorkflowV2()
-			if wf != nil {
-				if state := wf.machine.GetActive(msg.UserID); state != nil {
-					execResp := h.handleWorkflowV2ExecutionPhaseWithProgress(msg.UserID, state, opts.OnProgress, opts.OnToken)
-					if execResp != nil {
-						return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
+			// Check if this is a direct coding request (no workflow, single task from user text)
+			if projectPathRaw, isDirectCoding := h.pendingDirectCodingProjectPath.LoadAndDelete(msg.UserID); isDirectCoding {
+				projectPath := projectPathRaw.(string)
+				log.Printf("[workflow-v2] Direct coding SubAgent: user=%s project=%s request_id=%s", msg.UserID, projectPath, requestID)
+				execResp := h.runDirectCodingSubAgent(msg.UserID, msg.Text, projectPath, opts.OnProgress, opts.OnToken)
+				if execResp != nil {
+					return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
+				}
+			} else {
+				// Workflow SubAgent (implementation phase with parsed tasks)
+				log.Printf("[workflow-v2] SubAgent execution triggered in agent loop context, user=%s request_id=%s", msg.UserID, requestID)
+				wf := h.getWorkflowV2()
+				if wf != nil {
+					if state := wf.machine.GetActive(msg.UserID); state != nil {
+						execResp := h.handleWorkflowV2ExecutionPhaseWithProgress(msg.UserID, state, opts.OnProgress, opts.OnToken)
+						if execResp != nil {
+							return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
+						}
 					}
 				}
 			}

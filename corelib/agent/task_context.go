@@ -515,13 +515,24 @@ func extractStructuralSkeleton(text string) string {
 	// descriptions short, but titles/numbers are preserved in full.
 	if len(structured) >= 2 {
 		var sb strings.Builder
-		// Include a brief context preamble from the first non-structured line.
-		for _, line := range lines {
+		// Include a brief context preamble: the last non-empty, non-structured,
+		// non-code-fence line that appears BEFORE the first structured line.
+		// This captures the introductory sentence (e.g., "发现以下 4 个问题：")
+		// without accidentally picking up code block contents.
+		firstStructIdx := -1
+		for i, line := range lines {
 			trimmed := strings.TrimSpace(line)
-			if trimmed == "" {
-				continue
+			if trimmed != "" && isStructuredLine(trimmed) {
+				firstStructIdx = i
+				break
 			}
-			if !isStructuredLine(trimmed) {
+		}
+		if firstStructIdx > 0 {
+			for i := firstStructIdx - 1; i >= 0; i-- {
+				trimmed := strings.TrimSpace(lines[i])
+				if trimmed == "" || strings.HasPrefix(trimmed, "```") {
+					continue
+				}
 				sb.WriteString(TruncateRunes(trimmed, 80))
 				sb.WriteString("\n")
 				break

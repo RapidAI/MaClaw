@@ -165,12 +165,31 @@ func TestIsStructuredLine(t *testing.T) {
 		"This is plain text.",
 		"No structure here, just prose.",
 		"",
-		"a) not a number",        // starts with letter, not digit
+		"a) not a number",           // starts with letter, not digit
 		"import React from 'react'", // code
 	}
 	for _, line := range negatives {
 		if isStructuredLine(line) {
 			t.Errorf("expected isStructuredLine(%q) = false", line)
 		}
+	}
+}
+
+func TestExtractStructuralSkeleton_SkipsCodeFencePreamble(t *testing.T) {
+	text := "```go\npackage main\n```\n\n分析结果：\n1. 问题 A\n2. 问题 B\n3. 问题 C"
+
+	skeleton := extractStructuralSkeleton(text)
+
+	// Code fence should NOT appear as the preamble.
+	if strings.Contains(skeleton, "```") {
+		t.Errorf("skeleton should not include code fence:\n%s", skeleton)
+	}
+	// The prose preamble "分析结果" should be captured.
+	if !strings.Contains(skeleton, "分析结果") {
+		t.Errorf("skeleton missing prose preamble:\n%s", skeleton)
+	}
+	// Numbered items must be present.
+	if !strings.Contains(skeleton, "1.") || !strings.Contains(skeleton, "3.") {
+		t.Errorf("skeleton missing numbered items:\n%s", skeleton)
 	}
 }

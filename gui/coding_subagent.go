@@ -2847,6 +2847,10 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	if normalizedRemotePlatform() == "windows" {
 		b.WriteString("注意: bash 工具通过 PowerShell 执行。使用 PowerShell 语法（如 `;` 分隔命令，`Remove-Item` 删除文件）。\n")
 		b.WriteString("Windows shell contract: do not use bash-only syntax such as `mkdir -p` or `&&`; use `working_dir` for command location and PowerShell syntax for commands. Do not switch CMake generators inside an existing build directory; reuse the existing generator or use a separate build directory.\n")
+		b.WriteString("C/C++ compilation: `cl.exe` is NOT in PATH by default. To compile with MSVC, use a build script (build.bat) that calls vcvars64.bat first, or use `g++`/`gcc` from MinGW if available. Example build.bat:\n")
+		b.WriteString("```\n@echo off\ncall \"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat\" >nul 2>&1\ncl.exe /std:c++17 /EHsc /Fe:output.exe main.cpp\n```\n")
+		b.WriteString("Then run: `bash(command=\".\\build.bat\", working_dir=\"project_path\")`\n")
+		b.WriteString("Alternative: use `g++ -o output.exe main.cpp` if g++ is available (check with `where g++`).\n")
 	}
 
 	if reqCtx != "" {
