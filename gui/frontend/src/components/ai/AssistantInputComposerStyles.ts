@@ -67,7 +67,7 @@ export function getAssistantInputComposerStyles({ cancelPending, hasInputOverlay
             padding: "4px 4px 6px 4px",
             resize: "none",
             overflow: "auto",
-            minHeight: "32px",
+            minHeight: "74px",
             maxHeight: isExpandedInput ? "none" : "120px",
             lineHeight: 1.5,
             opacity: (!ready || cancelPending) ? 0.5 : 1,

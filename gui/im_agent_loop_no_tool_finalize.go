@@ -516,8 +516,10 @@ func noToolBranchRequiresExecution(ctx *LoopContext, gateConfig codingToolGateCo
 		// the loop, resulting in duplicated document output.
 		// Only implementation/verification phases require tool calls.
 		if ctx.WorkflowDocPhase {
+			log.Printf("[noToolBranchRequiresExecution] WorkflowDocPhase=true, returning false")
 			return false
 		}
+		log.Printf("[noToolBranchRequiresExecution] WorkflowAgentLoop=true but WorkflowDocPhase=false, returning true")
 		return true
 	}
 	switch gateConfig.intent {

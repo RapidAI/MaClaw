@@ -94,6 +94,53 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	imPerfLog("im_pre_loop", execStart, requestID, msg.UserID, "gates", gatesDone, "history_load", historyElapsed, "loop_ctx", loopCtxElapsed, "system_prompt", promptElapsed, "history_len", len(history), "prompt_len", len(systemPrompt), "exec_layer", loopCtx.Runtime.Execution.Layer, "exec_task", loopCtx.Runtime.Execution.TaskType)
 
 	agentLoopUserText := h.agentLoopUserTextForWorkflow(msg, opts.WorkflowAgentLoop)
+
+	// V2 SubAgent execution: check the dedicated marker (not stashedPhasePrompt
+	// which gets consumed by system prompt builder via LoadAndDelete).
+	if opts.WorkflowAgentLoop && !opts.WorkflowDocPhase {
+		if _, pending := h.pendingV2SubAgentExecution.LoadAndDelete(msg.UserID); pending {
+			log.Printf("[workflow-v2] SubAgent execution triggered in agent loop context, user=%s request_id=%s", msg.UserID, requestID)
+			wf := h.getWorkflowV2()
+			if wf != nil {
+				if state := wf.machine.GetActive(msg.UserID); state != nil {
+					execResp := h.handleWorkflowV2ExecutionPhaseWithProgress(msg.UserID, state, opts.OnProgress, opts.OnToken)
+					if execResp != nil {
+						return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
+					}
+				}
+			}
+			log.Printf("[workflow-v2] SubAgent execution returned nil, falling back to agent loop")
+		}
+	}
+
 	resp := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, agentLoopUserText, msg.Attachments, opts.OnProgress, opts.OnToken, opts.OnNewRound, opts.OnStreamDone, msg.MinIterations, msg.Platform)
+
+	// V2 workflow doc phase: append confirmation hint to response text.
+	// The phase prompt forbids the LLM from outputting confirmation prompts
+	// (to prevent self-confirmation loops). The hint is added by the system instead.
+	// Check both resp.Text (finalize path) and WorkflowDocBuffer (multi-iteration accumulation).
+	if opts.WorkflowDocPhase && resp != nil && resp.Error == "" {
+		hasContent := resp.Text != "" || (loopCtx != nil && loopCtx.WorkflowDocBuffer.Len() > 0)
+		if hasContent {
+			phaseName := ""
+			if wf := h.getWorkflowV2(); wf != nil {
+				if state := wf.machine.GetActive(msg.UserID); state != nil {
+					if p := state.ActivePhase(); p != nil {
+						phaseName = p.Name
+					}
+				}
+			}
+			if phaseName == "" {
+				phaseName = "当前阶段"
+			}
+			hint := "\n\n---\n📋 请确认以上「" + phaseName + "」文档是否符合预期，或提出修改意见。"
+			resp.Text += hint
+			// Also send hint via onToken so streaming UI shows it immediately
+			if opts.OnToken != nil {
+				opts.OnToken(hint)
+			}
+		}
+	}
+
 	return h.finalizeIMAgentLoopResponse(msg, loopCtx, resp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 }

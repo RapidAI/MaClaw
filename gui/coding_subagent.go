@@ -455,6 +455,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		result := executeCodingReadFile(fileArgs)
 		if p, _ := fileArgs["path"].(string); p != "" && result.Outcome == codingToolOutcomeSuccess {
 			c.trackReadFile(p)
+			// Emit code:file_update so the code preview panel shows the file being read.
+			c.emitReadFilePreview(p)
 		}
 		return result
 	case "write_file":
@@ -688,10 +690,16 @@ func redactCodingSubAgentFreeformLogText(text string) string {
 }
 
 func codingOutcomeFromSearchOutcome(outcome agent.SearchToolOutcome) codingToolOutcome {
-	if outcome == agent.SearchToolOutcomeMatched {
+	switch outcome {
+	case agent.SearchToolOutcomeMatched:
 		return codingToolOutcomeSuccess
+	case agent.SearchToolOutcomeNoMatch:
+		// "No matches" is a normal search result, not an error.
+		// The SubAgent is exploring — it shouldn't count as a failure.
+		return codingToolOutcomeSuccess
+	default:
+		return codingToolOutcomeFailed
 	}
-	return codingToolOutcomeFailed
 }
 
 func (c *codingSubAgentCallbacks) withDefaultProjectPath(args map[string]interface{}) map[string]interface{} {
@@ -776,23 +784,53 @@ func rejectDisallowedCodingBashCommand(command string) string {
 	if normalized == "" {
 		return ""
 	}
-	if normalizedRemotePlatform() == "windows" && strings.Contains(normalized, "&&") {
-		return fmt.Sprintf("拒绝执行与当前 shell 不兼容的命令：%s。coding SubAgent 的 bash 工具在 Windows 上通过 PowerShell 执行；请使用 working_dir 指定目录，并用 PowerShell 语法或分号分隔命令。", command)
-	}
+	// Windows && is handled by auto-conversion in the bash executor, not by rejection.
+	// The SubAgent's bash tool already wraps commands in PowerShell on Windows.
 	disallowed := false
 	switch {
 	case hasDisallowedGitCommand(normalized):
 		disallowed = true
 	case hasDisallowedRecursiveDeleteCommand(normalized):
-		disallowed = true
-	// hasDisallowedShellFileMutation removed: SubAgent needs to create/delete/move
-	// files within the project directory. Project scope is enforced by
-	// requireProjectWriteScope, not by blocking shell commands.
+		// Only block recursive deletes that target paths outside the project or root paths.
+		// Within the project dir, SubAgent should be free to clean up build artifacts.
+		if isRootPathDelete(normalized) {
+			disallowed = true
+		}
 	}
 	if !disallowed {
 		return ""
 	}
-	return fmt.Sprintf("拒绝执行高风险命令：%s。编码 SubAgent 不允许自动执行破坏性删除、清理、Git 工作区改写或 shell 文件写入命令；请改用更小范围的文件编辑工具。", command)
+	return fmt.Sprintf("拒绝执行高风险命令：%s。编码 SubAgent 不允许自动执行 Git 工作区改写或根路径破坏性删除；请改用更小范围的操作。", command)
+}
+
+// isRootPathDelete checks if a recursive delete targets a root/system path (not project-relative).
+func isRootPathDelete(normalizedCommand string) bool {
+	// Check common dangerous patterns
+	dangerous := []string{
+		"rm -rf /", "rm -rf /*",
+		"rmdir /s /q c:", "rmdir /s /q d:",
+		"remove-item -recurse -force c:", "remove-item -recurse -force d:",
+		"remove-item -recurse c:\\", "remove-item -recurse d:\\",
+		"del /s /q c:", "del /s /q d:",
+	}
+	for _, d := range dangerous {
+		if strings.Contains(normalizedCommand, d) {
+			return true
+		}
+	}
+	// Detect recursive delete of root drive paths (e.g. "rm -rf c:\", "rm -rf d:\users")
+	// but NOT project-relative paths (e.g. "rm -rf ./build", "rm -rf build/")
+	if (strings.Contains(normalizedCommand, "rm -rf") || strings.Contains(normalizedCommand, "rm -r")) &&
+		!strings.Contains(normalizedCommand, "./") &&
+		!strings.Contains(normalizedCommand, "build") {
+		// Check if targeting a root absolute path
+		for _, drive := range []string{"c:\\", "d:\\", "e:\\", "/"} {
+			if strings.Contains(normalizedCommand, "rm -rf "+drive) || strings.Contains(normalizedCommand, "rm -r "+drive) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasDisallowedRecursiveDeleteCommand(normalizedCommand string) bool {
@@ -1382,33 +1420,17 @@ func (c *codingSubAgentCallbacks) requireProjectWriteScope(path string) string {
 }
 
 func (c *codingSubAgentCallbacks) requireProjectReadScope(path, toolName string) string {
-	projectPath := c.projectPath()
-	if projectPath == "" {
-		return ""
-	}
-	ok, err := isPathWithinDir(path, projectPath)
-	if err != nil {
-		return fmt.Sprintf("无法确认 %s 读取路径是否位于项目目录内：%s", toolName, err.Error())
-	}
-	if ok {
-		return ""
-	}
-	return fmt.Sprintf("拒绝读取项目目录外的路径：%s。编码 SubAgent 的 %s 只能访问项目路径 %s 内的内容。", path, toolName, projectPath)
+	// Read operations are non-destructive. Allow reading outside project directory
+	// since SubAgent may need to check system headers, SDK paths, compiler locations, etc.
+	// Only write operations are restricted to the project directory.
+	return ""
 }
 
 func (c *codingSubAgentCallbacks) requireProjectWorkingDirScope(path string) string {
-	projectPath := c.projectPath()
-	if projectPath == "" {
-		return ""
-	}
-	ok, err := isPathWithinDir(path, projectPath)
-	if err != nil {
-		return fmt.Sprintf("无法确认命令工作目录是否位于项目目录内：%s", err.Error())
-	}
-	if ok {
-		return ""
-	}
-	return fmt.Sprintf("拒绝在项目目录外执行命令：%s。编码 SubAgent 只能在项目路径 %s 内运行命令。", path, projectPath)
+	// Allow SubAgent to run commands with any working directory.
+	// The project scope is already enforced for write operations (file creation).
+	// Build tools often need to run from parent dirs or build subdirs.
+	return ""
 }
 
 func (c *codingSubAgentCallbacks) requireProjectDiffScope(path string) string {
@@ -2413,6 +2435,47 @@ func (c *codingSubAgentCallbacks) emitToolStartedEvent(name string) {
 	event.Event = codingAgentEventKindToolStarted.String()
 	event.Detail = strings.TrimSpace(name)
 	emitCodingAgentEvent(c.subagent.onProgress, event)
+}
+
+// emitReadFilePreview sends a code:file_update event for a file that was
+// successfully read, so the code preview panel shows it during execution.
+// It reads the raw file content from disk (not the formatted tool output).
+func (c *codingSubAgentCallbacks) emitReadFilePreview(filePath string) {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil {
+		return
+	}
+	app := c.subagent.handler.app
+	if app == nil || app.codeEventEmitter == nil {
+		return
+	}
+	projectPath := c.projectPath()
+	normalized := normalizeSubAgentCodeEventPath(filePath, projectPath)
+	if normalized.displayPath == "" || normalized.absPath == "" {
+		return
+	}
+	data, err := os.ReadFile(normalized.absPath)
+	if err != nil {
+		return
+	}
+	// Skip large or binary files.
+	if len(data) > 256*1024 || !isCodePreviewTextContent(data) {
+		return
+	}
+	fileName := filepath.Base(normalized.displayPath)
+	app.codeEventEmitter.EmitCodeFileEvent(CodeFileEvent{
+		SessionID:   c.codeSessionID(),
+		FilePath:    normalized.displayPath,
+		FileName:    fileName,
+		Content:     string(data),
+		OpType:      "read",
+		Language:    detectLanguageFromExt(fileName),
+		ProjectPath: projectPath,
+	})
+}
+
+// codeSessionID returns the active code session ID for preview routing.
+func (c *codingSubAgentCallbacks) codeSessionID() string {
+	return "subagent-workflow"
 }
 
 func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, result string, outcome codingToolOutcome, duration time.Duration) {

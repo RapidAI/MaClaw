@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -330,6 +331,31 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 				opts.Context.WorkflowDocBuffer.WriteString("\n\n")
 			}
 			opts.Context.WorkflowDocBuffer.WriteString(cleaned)
+		}
+	}
+
+	// V2 workflow doc phase: force finalize after the first iteration that produces
+	// substantial text output. Doc phases should only run one LLM round — any
+	// ContinueLoop from downstream logic (coding gate, hallucination correction,
+	// no-tool stall recovery, etc.) is incorrect for text-only doc generation.
+	if opts.Context != nil && opts.Context.WorkflowDocPhase && opts.Iteration == 0 {
+		trimmed := strings.TrimSpace(stripThinkingTags(msgContent))
+		if len([]rune(trimmed)) >= 200 && len(choice.Message.ToolCalls) == 0 {
+			// Substantial doc output produced in iteration 0 with no tool calls.
+			// Force finalize — do not allow any continue path to trigger iteration 1.
+			if opts.Phase != nil {
+				opts.Phase.Stage = agentStageFinalize
+			}
+			finalText := stripThinkingTags(msgContent)
+			resp := &IMAgentResponse{Text: finalText}
+			if opts.AttachLLMTelemetry != nil {
+				opts.AttachLLMTelemetry(resp)
+			}
+			if opts.AttachPendingVisibleArtifacts != nil {
+				opts.AttachPendingVisibleArtifacts(resp)
+			}
+			h.saveConversationHistoryTimed(opts.UserID, *opts.History, resp)
+			return agentLoopIterationDispatchResult{Response: resp}
 		}
 	}
 

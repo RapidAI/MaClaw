@@ -37,6 +37,7 @@ type TaskRunnerConfig struct {
 	RequirementsCtx string // truncated requirements summary
 	DesignCtx       string // truncated design summary
 	MaxRetries      int    // per-task retry limit (default 2)
+	TDDMode         bool   // if true, each task runs in two phases: test-first → implement
 }
 
 // SubAgentFunc is the function signature for running a single task with a SubAgent.
@@ -98,6 +99,10 @@ func (r *TaskRunner) RunAll(ctx context.Context, tasks []*TaskItem, onToken func
 		if onProgress != nil {
 			onProgress(fmt.Sprintf("▶️ T%d/%d: %s", task.Index, len(tasks), task.Title))
 		}
+		// Send task separator via onToken so the streaming UI shows clear task boundaries
+		if onToken != nil {
+			onToken(fmt.Sprintf("\n\n---\n### 📝 T%d: %s\n\n", task.Index, task.Title))
+		}
 
 		result := r.runWithRetry(ctx, task, onToken, onProgress)
 		r.results[i] = result
@@ -115,13 +120,89 @@ func (r *TaskRunner) RunAll(ctx context.Context, tasks []*TaskItem, onToken func
 }
 
 // runWithRetry runs a task with retries on failure.
+// When TDDMode is enabled, splits execution into two phases:
+//   Phase 1 (test-first): SubAgent generates test cases only (no implementation)
+//   Phase 2 (implement): SubAgent writes implementation and runs tests
+// Transient errors (HTTP 502/503/504/429, network timeouts) get extra retries
+// with exponential backoff before counting as a permanent failure.
 func (r *TaskRunner) runWithRetry(ctx context.Context, task *TaskItem, onToken func(string), onProgress func(string)) TaskRunResult {
-	var lastResult *TaskRunResult
+	// TDD Mode: run test-first phase before implementation
+	if r.config.TDDMode {
+		testTask := &TaskItem{
+			Index:       task.Index,
+			Title:       task.Title + " (tests)",
+			Description: "[TEST-ONLY PHASE] Write test cases for this task. Do NOT write implementation code.\n\nOriginal task: " + task.Title + "\n\n" + task.Description + "\n\nRequirements:\n1. Create test file(s)\n2. Write tests covering main functionality\n3. Run tests to confirm they FAIL (red light - not yet implemented)\n4. Do NOT write the implementation being tested",
+			Files:       task.Files,
+			DependsOn:   task.DependsOn,
+		}
+		if onProgress != nil {
+			onProgress(fmt.Sprintf("🧪 T%d: generating tests (TDD red phase)", task.Index))
+		}
+		if onToken != nil {
+			onToken("\n\n#### 🧪 TDD Red Phase: Writing Tests\n\n")
+		}
+		testResult := r.runSingleAttempt(ctx, testTask, onToken, onProgress)
+		if testResult != nil && testResult.Status == TaskFailed {
+			if onProgress != nil {
+				onProgress(fmt.Sprintf("⚠️ T%d: test generation failed, continuing to implementation", task.Index))
+			}
+		}
+		// Now run implementation with instruction to make tests pass
+		task = &TaskItem{
+			Index:       task.Index,
+			Title:       task.Title,
+			Description: "[IMPLEMENTATION PHASE - Make tests pass]\n\n" + task.Description + "\n\nNote: Test cases were generated in the previous step. Now write implementation code to make ALL tests pass (green light).\nAfter implementation, run tests to confirm they all pass.",
+			Files:       task.Files,
+			DependsOn:   task.DependsOn,
+		}
+		if onProgress != nil {
+			onProgress(fmt.Sprintf("💻 T%d: implementing (TDD green phase)", task.Index))
+		}
+		if onToken != nil {
+			onToken("\n\n#### 💻 TDD Green Phase: Implementation\n\n")
+		}
+	}
 
-	for attempt := 0; attempt <= r.config.MaxRetries; attempt++ {
+	return r.runSingleTaskWithRetry(ctx, task, onToken, onProgress)
+}
+
+// runSingleAttempt runs a task with at most one retry for transient errors.
+func (r *TaskRunner) runSingleAttempt(ctx context.Context, task *TaskItem, onToken func(string), onProgress func(string)) *TaskRunResult {
+	result := r.subAgentFunc(ctx, task, r.config, onToken, onProgress)
+	if result != nil && result.Status == TaskFailed && isTransientTaskError(result.Error) {
+		// One retry for transient errors in test generation phase
+		select {
+		case <-ctx.Done():
+			return result
+		case <-time.After(3 * time.Second):
+		}
+		if onProgress != nil {
+			onProgress(fmt.Sprintf("🔄 T%d: test phase transient error, retrying once", task.Index))
+		}
+		if retry := r.subAgentFunc(ctx, task, r.config, onToken, onProgress); retry != nil {
+			return retry
+		}
+	}
+	return result
+}
+
+// runSingleTaskWithRetry runs a task with retries (the original retry logic).
+func (r *TaskRunner) runSingleTaskWithRetry(ctx context.Context, task *TaskItem, onToken func(string), onProgress func(string)) TaskRunResult {
+	var lastResult *TaskRunResult
+	maxRetries := r.config.MaxRetries
+	const maxTransientRetries = 5
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			if onProgress != nil {
-				onProgress(fmt.Sprintf("🔄 T%d: 重试 (%d/%d)", task.Index, attempt, r.config.MaxRetries))
+				onProgress(fmt.Sprintf("🔄 T%d: 重试 (%d/%d)", task.Index, attempt, maxRetries))
+			}
+			// Exponential backoff: 3s, 6s, 12s...
+			backoff := time.Duration(3<<(attempt-1)) * time.Second
+			select {
+			case <-ctx.Done():
+				return TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskSkipped, Error: "cancelled"}
+			case <-time.After(backoff):
 			}
 		}
 
@@ -148,6 +229,14 @@ func (r *TaskRunner) runWithRetry(ctx context.Context, task *TaskItem, onToken f
 			result.Error = "cancelled"
 			return *result
 		}
+
+		// For transient errors (502/503/504/429/timeout), allow extra retries beyond MaxRetries
+		if isTransientTaskError(result.Error) && attempt == maxRetries && maxRetries < maxTransientRetries {
+			if onProgress != nil {
+				onProgress(fmt.Sprintf("⚠️ T%d: 临时网络错误，额外重试...", task.Index))
+			}
+			maxRetries++
+		}
 	}
 
 	return *lastResult
@@ -155,6 +244,10 @@ func (r *TaskRunner) runWithRetry(ctx context.Context, task *TaskItem, onToken f
 
 // dependenciesMet checks if all dependencies of a task have passed.
 func (r *TaskRunner) dependenciesMet(task *TaskItem, allTasks []*TaskItem) bool {
+	// If task has no declared dependencies, always proceed
+	if len(task.DependsOn) == 0 {
+		return true
+	}
 	for _, depIdx := range task.DependsOn {
 		found := false
 		for i, t := range allTasks {
@@ -259,6 +352,31 @@ func IsDangerousCommand(cmd string) bool {
 	}
 	for _, d := range dangerous {
 		if strings.Contains(lower, d) {
+			return true
+		}
+	}
+	return false
+}
+
+// isTransientTaskError checks if a task error message indicates a temporary
+// infrastructure problem (gateway errors, rate limits, network timeouts) that
+// is worth retrying rather than a permanent task failure.
+func isTransientTaskError(errMsg string) bool {
+	if errMsg == "" {
+		return false
+	}
+	lower := strings.ToLower(errMsg)
+	transientPatterns := []string{
+		"502", "503", "504", "429",
+		"bad gateway", "service unavailable", "gateway timeout",
+		"rate limit", "too many requests",
+		"timeout", "timed out",
+		"connection refused", "connection reset",
+		"eof", "broken pipe",
+		"temporary failure", "network",
+	}
+	for _, p := range transientPatterns {
+		if strings.Contains(lower, p) {
 			return true
 		}
 	}

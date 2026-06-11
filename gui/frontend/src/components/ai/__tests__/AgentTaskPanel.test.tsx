@@ -26,7 +26,7 @@ describe("AgentTaskPanel", () => {
 
         render(<AgentTaskPanel view={view} onDismiss={onDismiss} theme={lightTheme} />);
 
-        expect(screen.getByTestId("agent-task-panel-header").style.getPropertyValue("--wails-draggable")).toBe("drag");
+        expect(screen.getByTestId("agent-task-panel-header").style.getPropertyValue("--wails-draggable")).toBe("no-drag");
         expect(screen.getByRole("button", { name: "Close" }).style.getPropertyValue("--wails-draggable")).toBe("no-drag");
     });
 

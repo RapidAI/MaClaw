@@ -35,6 +35,15 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 	if resp != nil {
 		respSnapshot = *resp
 	}
+
+	// V2 workflow doc phase: capture output SYNCHRONOUSLY before returning to the caller.
+	// If captured asynchronously in the goroutine, the next user message ("确认") may
+	// arrive before the goroutine runs, causing the state machine to advance without
+	// the phase output being recorded — SubAgent then sees empty tasks output.
+	if workflowAgentLoop && h.isWorkflowV2Active(msg.UserID) {
+		h.captureWorkflowDocAfterAgentLoop(msg, loopCtx, &respSnapshot, workflowAgentLoop)
+	}
+
 	go func() {
 		startedAt := time.Now()
 		defer func() {
@@ -44,7 +53,10 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 			log.Printf("[post-loop] done user=%s duration=%s workflow=%v", msg.UserID, time.Since(startedAt).Round(time.Millisecond), workflowAgentLoop)
 		}()
 		h.runEvidenceCollection(msg.UserID, msg.Text)
-		h.captureWorkflowDocAfterAgentLoop(msg, loopCtx, &respSnapshot, workflowAgentLoop)
+		// V2 capture already done synchronously above; skip in goroutine to avoid double-recording.
+		if !(workflowAgentLoop && h.isWorkflowV2Active(msg.UserID)) {
+			h.captureWorkflowDocAfterAgentLoop(msg, loopCtx, &respSnapshot, workflowAgentLoop)
+		}
 		h.recordAgentLoopTerminalExperience(loopCtx, &respSnapshot)
 	}()
 }
@@ -54,6 +66,14 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 		return
 	}
 	if h.isWorkflowV2Active(msg.UserID) && h.getWorkflowV2() != nil {
+		// Skip if the phase output was already recorded (e.g. by SubAgent execution path)
+		wf := h.getWorkflowV2()
+		if state := wf.machine.GetActive(msg.UserID); state != nil {
+			if p := state.ActivePhase(); p != nil && p.Output != "" {
+				log.Printf("[workflow-v2] post-loop doc capture skipped: phase already has output (len=%d)", len([]rune(p.Output)))
+				return
+			}
+		}
 		// Prefer the accumulated WorkflowDocBuffer (captures all iterations' text)
 		// over resp.Text (which only contains the last iteration's finalized text).
 		var docText string

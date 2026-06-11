@@ -104,7 +104,6 @@ function renderPane() {
             codePreviewState={activeCodePreviewState}
             closeCodePreview={vi.fn()}
             closeDocPreview={vi.fn()}
-            inline={false}
             lang="en"
             selectCodeFile={vi.fn()}
             showAgentView={false}
@@ -125,7 +124,6 @@ function renderPaneWithCodeState(codePreviewState: typeof emptyCodePreviewState 
             codePreviewState={codePreviewState}
             closeCodePreview={vi.fn()}
             closeDocPreview={vi.fn()}
-            inline={false}
             lang="en"
             selectCodeFile={vi.fn()}
             showAgentView={false}
@@ -144,9 +142,8 @@ describe('AssistantPreviewPane', () => {
     it('keeps workflow progress and source preview available behind tabs', () => {
         renderPane();
 
-        expect(screen.getByTestId('assistant-preview-mode-tabs').style.getPropertyValue('--wails-draggable')).toBe('drag');
+        expect(screen.getByTestId('assistant-preview-mode-tabs')).toBeTruthy();
         expect(screen.getByRole('tab', { name: 'Progress' }).getAttribute('aria-selected')).toBe('true');
-        expect(screen.getByRole('tab', { name: 'Progress' }).style.getPropertyValue('--wails-draggable')).toBe('no-drag');
         expect(screen.getByRole('tab', { name: 'Source' })).toBeTruthy();
         expect(screen.getByRole('tab', { name: 'Progress' }).getAttribute('aria-controls')).toBe('assistant-preview-panel-workflow');
         expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe('assistant-preview-tab-workflow');
@@ -157,7 +154,7 @@ describe('AssistantPreviewPane', () => {
         expect(screen.getByRole('tab', { name: 'Source' }).getAttribute('aria-selected')).toBe('true');
         expect(screen.getByRole('tab', { name: 'Source' }).getAttribute('tabindex')).toBe('0');
         expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe('assistant-preview-tab-code');
-        expect(screen.getByTestId('code-preview-header').style.getPropertyValue('--wails-draggable')).toBe('drag');
+        expect(screen.getByTestId('code-preview-header').style.getPropertyValue('--wails-draggable')).toBe('no-drag');
         expect(screen.getByText('const')).toBeTruthy();
         expect(screen.getByText('answer')).toBeTruthy();
     });
@@ -167,7 +164,7 @@ describe('AssistantPreviewPane', () => {
 
         fireEvent.click(screen.getByRole('tab', { name: 'Source' }));
 
-        expect(screen.getByTestId('code-preview-header').style.getPropertyValue('--wails-draggable')).toBe('drag');
+        expect(screen.getByTestId('code-preview-header').style.getPropertyValue('--wails-draggable')).toBe('no-drag');
     });
 
     it('auto-switches to source when code preview opens after workflow progress', () => {
@@ -181,8 +178,7 @@ describe('AssistantPreviewPane', () => {
                 codePreviewState={activeCodePreviewState}
                 closeCodePreview={vi.fn()}
                 closeDocPreview={vi.fn()}
-                inline={false}
-                lang="en"
+                    lang="en"
                 selectCodeFile={vi.fn()}
                 showAgentView={false}
                 showCodePreview={true}

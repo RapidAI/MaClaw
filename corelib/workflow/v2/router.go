@@ -60,6 +60,16 @@ func (r *WorkflowRouter) Route(userID, text string, attachments []Attachment) *R
 			// (e.g. workflow is in PhaseExecuting, or confirm classifier said "unrelated").
 			// Fall through to keyword matching below — the user may be starting a NEW workflow.
 			// If no keyword match, the message goes to the normal agent loop.
+		} else if result.Action == ActionRunPhase {
+			// Phase is pending/running. Check if the user's message looks like a
+			// completely new workflow task (not a continuation of the current one).
+			// If so, fall through to keyword matching which will start a new workflow.
+			// startNewWorkflowV2 handles cancelling the old workflow before creating the new one.
+			if r.looksLikeNewWorkflowTask(text) {
+				// Fall through to keyword matching → startNewWorkflowV2 will cancel old + create new
+			} else {
+				return &RouteResult{Target: RouteToWorkflow, HandleResult: result}
+			}
 		} else {
 			return &RouteResult{Target: RouteToWorkflow, HandleResult: result}
 		}
@@ -154,6 +164,39 @@ func isBugFixOnly(text string) bool {
 	return true
 }
 
+// looksLikeNewWorkflowTask checks whether a user message is a completely new
+// workflow request unrelated to the current running phase. Uses the optional
+// LLM confirmation function for semantic judgment when available, falling back
+// to a conservative heuristic (template keyword match + minimum length) only
+// when no LLM is configured.
+//
+// The LLM path asks: "The user already has an active coding workflow in progress.
+// Is this message a brand new, independent project request?" — this avoids
+// false positives from sub-task descriptions within the current project.
+func (r *WorkflowRouter) looksLikeNewWorkflowTask(text string) bool {
+	// Short messages (< 15 runes) are never new tasks — they are continuations
+	// like "继续", "开工", "确认", "好的" etc.
+	if len([]rune(text)) < 15 {
+		return false
+	}
+	// Must match at least one template to even be a candidate
+	matched := r.templates.MatchByKeywords(text)
+	if matched == nil {
+		return false
+	}
+	// Use LLM semantic judgment when available
+	if r.llmFunc != nil {
+		return r.llmFunc(text, matched.Type)
+	}
+	// No LLM available — conservative fallback: only trigger if message is
+	// long enough and contains an explicit project path (strong new-task signal)
+	if len([]rune(text)) >= 20 && ExtractProjectPathFromText(text) != "" {
+		return true
+	}
+	// Without LLM, be conservative: don't cancel the running workflow
+	return false
+}
+
 // --- Project Path Extraction ---
 
 var projectPathPatterns = []*regexp.Regexp{
@@ -173,8 +216,42 @@ func ExtractProjectPathFromText(text string) string {
 	for _, re := range projectPathPatterns {
 		if matches := re.FindStringSubmatch(text); len(matches) > 1 {
 			path := strings.TrimRight(matches[1], " 下里中内目录")
-			return path
+			// Truncate at the first non-path character (Chinese, etc.)
+			// Valid path chars: ASCII letters, digits, _, -, ., \, /, space, ()
+			path = truncateToValidPathChars(path)
+			if path != "" {
+				return path
+			}
 		}
 	}
 	return ""
+}
+
+// TruncateToValidPathChars removes trailing non-ASCII/non-path characters.
+// Stops at the first rune that's not a valid Windows/Unix path character.
+// Returns empty string if the result is too short to be a meaningful path
+// (e.g. just a drive letter like "D:").
+func TruncateToValidPathChars(path string) string {
+	return truncateToValidPathChars(path)
+}
+
+// truncateToValidPathChars removes trailing non-ASCII/non-path characters.
+// Stops at the first rune that's not a valid Windows/Unix path character.
+// Returns empty string if the result is too short to be a meaningful path
+// (e.g. just a drive letter like "D:").
+func truncateToValidPathChars(path string) string {
+	runes := []rune(path)
+	end := len(runes)
+	for i, r := range runes {
+		if r > 127 { // Non-ASCII (Chinese, etc.) — not part of a path
+			end = i
+			break
+		}
+	}
+	result := strings.TrimRight(string(runes[:end]), " \\/")
+	// A bare drive letter (e.g. "D:") is not a valid project path
+	if len(result) <= 2 {
+		return ""
+	}
+	return result
 }

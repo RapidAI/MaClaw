@@ -306,7 +306,6 @@ function App() {
     const aiPanelMaximizeSeqRef = useRef(0);
     const [windowMaximized, setWindowMaximized] = useState(false);
     const restoreAIPanelOwnedWindowMaximize = useCallback(async () => {
-        if (!aiPanelMaximizedWindowRef.current) return false;
         aiPanelMaximizedWindowRef.current = false;
         try {
             if (await callBackend(() => WindowIsMaximised())) {

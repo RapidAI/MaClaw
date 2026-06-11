@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { CodePreviewPanel, darkCodePreviewTheme, lightCodePreviewTheme } from "./CodePreviewPanel";
 import { WorkflowDocPreview } from "./WorkflowDocPreview";
 import type { Theme } from "./aiAssistantPanelTheme";
@@ -13,9 +13,7 @@ interface AssistantPreviewPaneProps {
     closeCodePreview: () => void;
     closeDocPreview: () => void;
     dismissAgentView?: (viewId: string | undefined, data?: Record<string, unknown>) => void | Promise<void>;
-    inline: boolean;
     lang: string;
-    onToggleMaximize?: () => void;
     selectCodeFile: (filePath: string) => void;
     submitAgentView?: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;
     showCodePreview: boolean;
@@ -30,33 +28,36 @@ interface AssistantPreviewPaneProps {
 
 type PreviewPaneMode = "workflow" | "code";
 
-function previewTabID(mode: PreviewPaneMode): string {
-    return `assistant-preview-tab-${mode}`;
+function previewTabIcon(mode: PreviewPaneMode): string {
+    return mode === "workflow" ? "\u{1F4CB}" : "\u{1F4C4}"; // 📋 / 📄
 }
 
-function previewPanelID(mode: PreviewPaneMode): string {
-    return `assistant-preview-panel-${mode}`;
-}
-
-function previewTabLabel(mode: PreviewPaneMode, lang: string): string {
+function previewTabTooltip(mode: PreviewPaneMode, lang: string): string {
     if (mode === "workflow") {
         return lang === "en" ? "Progress" : "\u6d41\u7a0b/\u8fdb\u5ea6";
     }
     return lang === "en" ? "Source" : "\u6e90\u7801\u67e5\u770b";
 }
 
-function PreviewModeTabs({
+/**
+ * Vertical tab rail on the right edge of the preview pane.
+ * Contains mode tabs + close button.
+ */
+function PreviewTabRail({
     activeMode,
+    availableModes,
     lang,
+    onClose,
     onSelectMode,
     theme,
 }: {
     activeMode: PreviewPaneMode;
+    availableModes: PreviewPaneMode[];
     lang: string;
+    onClose: () => void;
     onSelectMode: (mode: PreviewPaneMode) => void;
     theme: Theme;
 }) {
-    const modes: PreviewPaneMode[] = ["workflow", "code"];
     const tabRefs = useRef<Partial<Record<PreviewPaneMode, HTMLButtonElement>>>({});
     const selectMode = (mode: PreviewPaneMode, focusTab = false) => {
         onSelectMode(mode);
@@ -67,75 +68,107 @@ function PreviewModeTabs({
     const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
         if (event.key === "Home") {
             event.preventDefault();
-            selectMode(modes[0], true);
+            selectMode(availableModes[0], true);
             return;
         }
         if (event.key === "End") {
             event.preventDefault();
-            selectMode(modes[modes.length - 1], true);
+            selectMode(availableModes[availableModes.length - 1], true);
             return;
         }
-        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
             event.preventDefault();
-            const currentIndex = modes.indexOf(activeMode);
-            const offset = event.key === "ArrowRight" ? 1 : -1;
-            const nextMode = modes[(currentIndex + offset + modes.length) % modes.length];
+            const currentIndex = availableModes.indexOf(activeMode);
+            const offset = event.key === "ArrowDown" ? 1 : -1;
+            const nextMode = availableModes[(currentIndex + offset + availableModes.length) % availableModes.length];
             selectMode(nextMode, true);
         }
     };
     return (
         <div
             data-testid="assistant-preview-mode-tabs"
-            data-preview-no-maximize="true"
-            role="tablist"
-            aria-label={lang === "en" ? "Preview mode" : "\u9884\u89c8\u6a21\u5f0f"}
-            onKeyDown={handleKeyDown}
             style={{
                 display: "flex",
+                flexDirection: "column",
                 alignItems: "center",
-                gap: "6px",
-                padding: "6px 10px",
-                borderBottom: `1px solid ${theme.divider}`,
+                gap: "4px",
+                padding: "8px 4px",
+                borderLeft: `1px solid ${theme.divider}`,
                 background: theme.titleBarBg,
                 flexShrink: 0,
-                '--wails-draggable': 'drag',
-            } as any}
+                width: "32px",
+            }}
         >
-            {modes.map((mode) => {
+            <button
+                type="button"
+                onClick={onClose}
+                style={{
+                    width: "26px",
+                    height: "26px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: "14px",
+                    padding: 0,
+                    borderRadius: "4px",
+                    color: theme.textMuted,
+                    lineHeight: 1,
+                    marginBottom: "4px",
+                }}
+                title={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
+                aria-label={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
+            >
+                ×
+            </button>
+            <div
+                role="tablist"
+                aria-orientation="vertical"
+                aria-label={lang === "en" ? "Preview mode" : "\u9884\u89c8\u6a21\u5f0f"}
+                onKeyDown={handleKeyDown}
+                style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px" }}
+            >
+            {availableModes.map((mode) => {
                 const active = activeMode === mode;
                 return (
                     <button
                         key={mode}
                         type="button"
                         role="tab"
-                        id={previewTabID(mode)}
+                        id={`assistant-preview-tab-${mode}`}
                         ref={(node) => {
                             if (node) tabRefs.current[mode] = node;
                             else delete tabRefs.current[mode];
                         }}
                         aria-selected={active}
-                        aria-controls={previewPanelID(mode)}
+                        aria-controls={`assistant-preview-panel-${mode}`}
                         tabIndex={active ? 0 : -1}
                         onClick={() => selectMode(mode)}
                         style={{
-                            border: `1px solid ${active ? theme.headingColor : theme.divider}`,
+                            width: "26px",
+                            height: "26px",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            border: `1px solid ${active ? theme.headingColor : "transparent"}`,
                             background: active ? theme.codeBg : "transparent",
                             color: active ? theme.headingColor : theme.textMuted,
                             borderRadius: "6px",
                             cursor: "pointer",
-                            fontSize: "12px",
-                            fontWeight: active ? 700 : 600,
+                            fontSize: "14px",
                             lineHeight: 1,
-                            padding: "6px 10px",
-                            minHeight: "28px",
-                            whiteSpace: "nowrap",
-                            '--wails-draggable': 'no-drag',
-                        } as any}
+                            padding: 0,
+                        }}
+                        title={previewTabTooltip(mode, lang)}
+                        aria-label={previewTabTooltip(mode, lang)}
                     >
-                        {previewTabLabel(mode, lang)}
+                        {previewTabIcon(mode)}
                     </button>
                 );
             })}
+            </div>
         </div>
     );
 }
@@ -146,9 +179,7 @@ export function AssistantPreviewPane({
     closeCodePreview,
     closeDocPreview,
     dismissAgentView,
-    inline,
     lang,
-    onToggleMaximize,
     selectCodeFile,
     submitAgentView,
     showCodePreview,
@@ -187,11 +218,40 @@ export function AssistantPreviewPane({
         }
     }, [activeMode, showCodePreview, showWorkflowPreview]);
 
+    const docPreviewTheme = useMemo(() => ({
+        bg: theme.bg,
+        text: theme.text,
+        textMuted: theme.textMuted,
+        border: theme.divider,
+        headerBg: theme.titleBarBg,
+        accentColor: theme.headingColor,
+        accentBg: themeMode === "dark" ? "rgba(99,102,241,0.15)" : "rgba(99,102,241,0.08)",
+        codeBg: theme.codeBg,
+        codeText: theme.codeText,
+        codeBlockBg: theme.codeBlockBg,
+        codeBlockBorder: theme.codeBlockBorder,
+        headingColor: theme.headingColor,
+        linkColor: theme.linkColor,
+        quoteBorder: theme.quoteBorder,
+        quoteText: theme.quoteText,
+        quoteBg: themeMode === "dark" ? "rgba(99,102,241,0.08)" : "rgba(99,102,241,0.04)",
+    }), [theme, themeMode]);
+
+    const codeTheme = useMemo(
+        () => themeMode === "dark" ? darkCodePreviewTheme : lightCodePreviewTheme,
+        [themeMode],
+    );
+
     const paneStyle: React.CSSProperties = {
         flex: Math.max(0.2, 1 - splitRatio),
         minWidth: 0,
         height: "100%",
+        display: "flex",
+        flexDirection: "row",
+        position: "relative",
     };
+
+    // AgentTaskPanel has its own layout (no tab rail needed)
     if (showAgentView && agentView) {
         return (
             <div style={paneStyle}>
@@ -199,7 +259,6 @@ export function AssistantPreviewPane({
                     view={agentView}
                     onDismiss={dismissAgentView}
                     onResizeStart={startPreviewResize}
-                    onToggleMaximize={inline ? onToggleMaximize : undefined}
                     onSubmit={submitAgentView}
                     theme={theme}
                     lang={lang}
@@ -207,119 +266,118 @@ export function AssistantPreviewPane({
             </div>
         );
     }
-    if (showWorkflowPreview && showCodePreview) {
-        return (
-            <div style={{ ...paneStyle, display: "flex", flexDirection: "column" }}>
-                <PreviewModeTabs activeMode={activeMode} lang={lang} onSelectMode={setActiveMode} theme={theme} />
-                <div
-                    id={previewPanelID(activeMode)}
-                    role="tabpanel"
-                    aria-labelledby={previewTabID(activeMode)}
-                    style={{ flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}
-                >
-                    {activeMode === "workflow" ? (
-                        <WorkflowPreviewContent closeDocPreview={closeDocPreview} inline={inline} lang={lang} onToggleMaximize={onToggleMaximize} startPreviewResize={startPreviewResize} theme={theme} themeMode={themeMode} workflowState={workflowState} />
-                    ) : (
-                        <CodePreviewContent codePreviewState={codePreviewState} closeCodePreview={closeCodePreview} inline={inline} onToggleMaximize={onToggleMaximize} selectCodeFile={selectCodeFile} startPreviewResize={startPreviewResize} themeMode={themeMode} />
-                    )}
-                </div>
-            </div>
-        );
-    }
-    if (showWorkflowPreview) {
-        return (
-            <div style={paneStyle}>
-                <WorkflowPreviewContent closeDocPreview={closeDocPreview} inline={inline} lang={lang} onToggleMaximize={onToggleMaximize} startPreviewResize={startPreviewResize} theme={theme} themeMode={themeMode} workflowState={workflowState} />
-            </div>
-        );
-    }
-    if (!showCodePreview) return null;
+
+    // Determine which modes are available
+    const availableModes: PreviewPaneMode[] = [];
+    if (showWorkflowPreview) availableModes.push("workflow");
+    if (showCodePreview) availableModes.push("code");
+    if (availableModes.length === 0) return null;
+
+    // Ensure activeMode is valid
+    const effectiveMode = availableModes.includes(activeMode) ? activeMode : availableModes[0];
+
+    const handleClose = () => {
+        // Close the entire preview pane (both modes)
+        if (showWorkflowPreview) closeDocPreview();
+        if (showCodePreview) closeCodePreview();
+    };
+
     return (
         <div style={paneStyle}>
-            <CodePreviewContent codePreviewState={codePreviewState} closeCodePreview={closeCodePreview} inline={inline} onToggleMaximize={onToggleMaximize} selectCodeFile={selectCodeFile} startPreviewResize={startPreviewResize} themeMode={themeMode} />
+            {/* ── Drag handle for resizing ── */}
+            <div
+                onMouseDown={(e) => { e.preventDefault(); startPreviewResize(); }}
+                style={{
+                    position: "absolute",
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: "6px",
+                    cursor: "col-resize",
+                    background: theme.divider,
+                    transition: "background 0.15s",
+                    zIndex: 1,
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.headingColor; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = theme.divider; }}
+            />
+            {/* ── Content area ── */}
+            <div
+                id={`assistant-preview-panel-${effectiveMode}`}
+                role="tabpanel"
+                aria-labelledby={`assistant-preview-tab-${effectiveMode}`}
+                style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", marginLeft: "6px" }}
+            >
+                {effectiveMode === "workflow" ? (
+                    <WorkflowDocPreview
+                        phaseDocuments={workflowState.phaseDocuments}
+                        currentPhaseID={workflowState.currentPhaseID}
+                        latestDocumentPhaseID={workflowState.latestDocumentPhaseID}
+                        phases={workflowState.phases}
+                        workflowType={workflowState.workflowType}
+                        gateResults={workflowState.gateResults}
+                        lang={lang}
+                        theme={docPreviewTheme}
+                    />
+                ) : (
+                    <CodePreviewPanel
+                        files={codePreviewState.files}
+                        activeFilePath={codePreviewState.activeFilePath}
+                        onSelectFile={selectCodeFile}
+                        onClose={closeCodePreview}
+                        onResizeStart={startPreviewResize}
+                        theme={codeTheme}
+                    />
+                )}
+            </div>
+            {/* ── Vertical tab rail on right edge ── */}
+            {availableModes.length > 1 && (
+                <PreviewTabRail
+                    activeMode={effectiveMode}
+                    availableModes={availableModes}
+                    lang={lang}
+                    onClose={handleClose}
+                    onSelectMode={setActiveMode}
+                    theme={theme}
+                />
+            )}
+            {/* ── Close button when only one mode (no tab rail) ── */}
+            {availableModes.length === 1 && (
+                <div style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    padding: "8px 4px",
+                    borderLeft: `1px solid ${theme.divider}`,
+                    background: theme.titleBarBg,
+                    flexShrink: 0,
+                    width: "32px",
+                }}>
+                    <button
+                        type="button"
+                        onClick={handleClose}
+                        style={{
+                            width: "26px",
+                            height: "26px",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            fontSize: "14px",
+                            padding: 0,
+                            borderRadius: "4px",
+                            color: theme.textMuted,
+                            lineHeight: 1,
+                        }}
+                        title={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
+                        aria-label={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
+                    >
+                        ×
+                    </button>
+                </div>
+            )}
         </div>
-    );
-}
-
-function CodePreviewContent({
-    codePreviewState,
-    closeCodePreview,
-    inline,
-    onToggleMaximize,
-    selectCodeFile,
-    startPreviewResize,
-    themeMode,
-}: {
-    codePreviewState: CodePreviewUIState;
-    closeCodePreview: () => void;
-    inline: boolean;
-    onToggleMaximize?: () => void;
-    selectCodeFile: (filePath: string) => void;
-    startPreviewResize: () => void;
-    themeMode: "dark" | "light";
-}) {
-    return (
-        <CodePreviewPanel
-            files={codePreviewState.files}
-            activeFilePath={codePreviewState.activeFilePath}
-            onSelectFile={selectCodeFile}
-            onClose={closeCodePreview}
-            onResizeStart={startPreviewResize}
-            onToggleMaximize={inline ? onToggleMaximize : undefined}
-            theme={themeMode === "dark" ? darkCodePreviewTheme : lightCodePreviewTheme}
-        />
-    );
-}
-
-function WorkflowPreviewContent({
-    closeDocPreview,
-    inline,
-    lang,
-    onToggleMaximize,
-    startPreviewResize,
-    theme,
-    themeMode,
-    workflowState,
-}: {
-    closeDocPreview: () => void;
-    inline: boolean;
-    lang: string;
-    onToggleMaximize?: () => void;
-    startPreviewResize: () => void;
-    theme: Theme;
-    themeMode: "dark" | "light";
-    workflowState: WorkflowUIState;
-}) {
-    return (
-        <WorkflowDocPreview
-            phaseDocuments={workflowState.phaseDocuments}
-            currentPhaseID={workflowState.currentPhaseID}
-            latestDocumentPhaseID={workflowState.latestDocumentPhaseID}
-            phases={workflowState.phases}
-            workflowType={workflowState.workflowType}
-            gateResults={workflowState.gateResults}
-            lang={lang}
-            onClose={closeDocPreview}
-            onToggleMaximize={inline ? onToggleMaximize : undefined}
-            onResizeStart={startPreviewResize}
-            theme={{
-                bg: theme.bg,
-                text: theme.text,
-                textMuted: theme.textMuted,
-                border: theme.divider,
-                headerBg: theme.titleBarBg,
-                accentColor: theme.headingColor,
-                accentBg: themeMode === "dark" ? "rgba(99,102,241,0.15)" : "rgba(99,102,241,0.08)",
-                codeBg: theme.codeBg,
-                codeText: theme.codeText,
-                codeBlockBg: theme.codeBlockBg,
-                codeBlockBorder: theme.codeBlockBorder,
-                headingColor: theme.headingColor,
-                linkColor: theme.linkColor,
-                quoteBorder: theme.quoteBorder,
-                quoteText: theme.quoteText,
-                quoteBg: themeMode === "dark" ? "rgba(99,102,241,0.08)" : "rgba(99,102,241,0.04)",
-            }}
-        />
     );
 }

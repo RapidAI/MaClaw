@@ -83,7 +83,6 @@ export interface CodePreviewPanelProps {
     onSelectFile: (filePath: string) => void;
     onClose: () => void;
     onResizeStart?: () => void;
-    onToggleMaximize?: () => void;
     theme: CodePreviewTheme;
 }
 
@@ -105,11 +104,6 @@ function tokenColor(type: HighlightToken['type'], theme: CodePreviewTheme): stri
 }
 
 // ── Highlighted Line Renderer ──
-
-function isHeaderInteractiveTarget(target: EventTarget | null, currentTarget: HTMLElement): boolean {
-    if (!(target instanceof HTMLElement) || target === currentTarget) return false;
-    return !!target.closest('button, a, input, select, textarea, [role="button"], [data-preview-no-maximize="true"]');
-}
 
 function HighlightedLine({ line, language, theme }: {
     line: string;
@@ -279,13 +273,11 @@ export function CodePreviewPanel({
     onSelectFile,
     onClose,
     onResizeStart,
-    onToggleMaximize,
     theme,
 }: CodePreviewPanelProps) {
     const scrollRef = useRef<HTMLDivElement>(null);
     const savedScrollTop = useRef<number>(0);
     const prevContentRef = useRef<string>('');
-    const suppressNextHeaderDoubleClickRef = useRef(false);
 
     const activeFile = files.get(activeFilePath);
 
@@ -296,21 +288,6 @@ export function CodePreviewPanel({
     }, [activeFile?.original, activeFile?.content]);
 
     const currentContent = activeFile?.content ?? '';
-    const handleHeaderMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-        if (isHeaderInteractiveTarget(e.target, e.currentTarget)) return;
-        if (e.detail !== 2) return;
-        e.preventDefault();
-        suppressNextHeaderDoubleClickRef.current = true;
-        onToggleMaximize?.();
-    };
-    const handleHeaderDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-        if (isHeaderInteractiveTarget(e.target, e.currentTarget)) return;
-        if (suppressNextHeaderDoubleClickRef.current) {
-            suppressNextHeaderDoubleClickRef.current = false;
-            return;
-        }
-        onToggleMaximize?.();
-    };
 
     // Save scroll position before DOM update, restore after re-render
     useLayoutEffect(() => {
@@ -363,8 +340,6 @@ export function CodePreviewPanel({
                     {/* Header */}
                     <div
                         data-testid="code-preview-header"
-                        onMouseDown={handleHeaderMouseDown}
-                        onDoubleClick={handleHeaderDoubleClick}
                         style={{
                             display: 'flex',
                             alignItems: 'center',
@@ -373,7 +348,7 @@ export function CodePreviewPanel({
                             borderBottom: `1px solid ${theme.border}`,
                             background: theme.tabBg,
                             flexShrink: 0,
-                            '--wails-draggable': 'drag',
+                            '--wails-draggable': 'no-drag',
                         } as any}
                     >
                         <button
@@ -441,8 +416,6 @@ export function CodePreviewPanel({
             {/* Header with close button — double-click to toggle maximize */}
             <div
                 data-testid="code-preview-header"
-                onMouseDown={handleHeaderMouseDown}
-                onDoubleClick={handleHeaderDoubleClick}
                 style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -450,7 +423,7 @@ export function CodePreviewPanel({
                     borderBottom: `1px solid ${theme.border}`,
                     background: theme.tabBg,
                     flexShrink: 0,
-                    '--wails-draggable': 'drag',
+                    '--wails-draggable': 'no-drag',
                 } as any}
             >
                 <div data-preview-no-maximize="true" style={{ flex: 1, minWidth: 0, '--wails-draggable': 'no-drag' } as any}>

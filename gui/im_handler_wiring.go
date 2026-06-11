@@ -214,6 +214,13 @@ type IMMessageHandler struct {
 	// so the workflow can advance via NeedsConfirm.
 	workflowAgentLoopMarker sync.Map
 
+	// pendingV2SubAgentExecution is set when the V2 workflow advances to an
+	// execution phase (implementation). It signals executePreparedIMEntry to
+	// run CodingSubAgent instead of the normal agent loop. Using a dedicated
+	// map avoids conflicts with stashedPhasePrompt (which gets consumed by
+	// the system prompt builder's LoadAndDelete).
+	pendingV2SubAgentExecution sync.Map
+
 	// workflowReviewExperienceContext carries the trace/task context of the
 	// phase output currently awaiting review. Keyed by userID; consumed by
 	// review-intent events so user feedback can update the same injected

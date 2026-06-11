@@ -180,10 +180,7 @@ interface WorkflowDocPreviewProps {
     workflowType?: string;
     gateResults: Map<string, QualityGateResult>;
     lang?: string;
-    onClose: () => void;
     theme: DocPreviewTheme;
-    onResizeStart?: () => void;
-    onToggleMaximize?: () => void;
 }
 
 // phaseLabels mirrors the backend templates (the single source of truth) verbatim:
@@ -1178,11 +1175,6 @@ function renderInline(text: string, theme: DocPreviewTheme): React.ReactNode {
     return parts.length === 1 ? parts[0] : <>{parts}</>;
 }
 
-function isPreviewHeaderInteractiveTarget(target: EventTarget | null, currentTarget: HTMLElement): boolean {
-    if (!(target instanceof HTMLElement) || target === currentTarget) return false;
-    return !!target.closest('button, a, input, select, textarea, [role="button"], [data-preview-no-maximize="true"]');
-}
-
 /**
  * WorkflowDocPreview renders the right-side document preview panel
  * during workflow execution. Supports Markdown rendering, dark mode,
@@ -1196,15 +1188,11 @@ export function WorkflowDocPreview({
     workflowType,
     gateResults,
     lang,
-    onClose,
     theme,
-    onResizeStart,
-    onToggleMaximize,
 }: WorkflowDocPreviewProps) {
     const [viewingPhaseID, setViewingPhaseID] = useState(latestDocumentPhaseID || currentPhaseID);
     const userSelectedPhaseRef = useRef("");
     const lastLatestDocumentPhaseRef = useRef(latestDocumentPhaseID || "");
-    const suppressNextHeaderDoubleClickRef = useRef(false);
     const progress = useMemo(
         () => deriveProgressPhases(workflowType, phases, phaseDocuments, currentPhaseID),
         [workflowType, phases, phaseDocuments, currentPhaseID],
@@ -1263,94 +1251,16 @@ export function WorkflowDocPreview({
     const content = phaseDocuments.get(activePhaseID) || "";
     const gateResult = gateResults.get(activePhaseID);
     const gateItems = Array.isArray(gateResult?.items) ? gateResult.items : [];
-    const handleHeaderMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-        if (isPreviewHeaderInteractiveTarget(e.target, e.currentTarget)) return;
-        if (e.detail !== 2) return;
-        e.preventDefault();
-        suppressNextHeaderDoubleClickRef.current = true;
-        onToggleMaximize?.();
-    };
-    const handleHeaderDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-        if (isPreviewHeaderInteractiveTarget(e.target, e.currentTarget)) return;
-        if (suppressNextHeaderDoubleClickRef.current) {
-            suppressNextHeaderDoubleClickRef.current = false;
-            return;
-        }
-        onToggleMaximize?.();
-    };
 
     return (
         <div style={{
             display: "flex",
-            flexDirection: "row",
+            flexDirection: "column",
             height: "100%",
             minWidth: 0,
+            background: theme.bg,
+            color: theme.text,
         }}>
-            {/* ── Drag handle for resizing ── */}
-            <div
-                onMouseDown={(e) => {
-                    e.preventDefault();
-                    onResizeStart?.();
-                }}
-                style={{
-                    width: "6px",
-                    cursor: "col-resize",
-                    background: theme.border,
-                    flexShrink: 0,
-                    transition: "background 0.15s",
-                }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.accentColor; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = theme.border; }}
-            />
-            {/* ── Main preview content ── */}
-            <div style={{
-                display: "flex",
-                flexDirection: "column",
-                flex: 1,
-                minWidth: 0,
-                height: "100%",
-                background: theme.bg,
-                color: theme.text,
-            }}>
-                {/* Header: title + close button — double-click to toggle maximize */}
-                <div
-                    data-testid="workflow-doc-preview-header"
-                    onMouseDown={handleHeaderMouseDown}
-                    onDoubleClick={handleHeaderDoubleClick}
-                    style={{
-                    display: "flex",
-                    alignItems: "center",
-                    padding: "8px 14px",
-                    borderBottom: `1px solid ${theme.border}`,
-                    background: theme.headerBg,
-                    gap: "4px",
-                    flexWrap: "wrap",
-                    flexShrink: 0,
-                    '--wails-draggable': 'drag',
-                } as any}>
-                    <div style={{ fontSize: "13px", fontWeight: 700, color: theme.text }}>
-                        文档预览
-                    </div>
-                    <div style={{ flex: 1 }} />
-                    <button
-                        onClick={onClose}
-                        style={{
-                            background: "none",
-                            border: "none",
-                            cursor: "pointer",
-                            fontSize: "16px",
-                            padding: "2px 6px",
-                            borderRadius: "4px",
-                            color: theme.textMuted,
-                            lineHeight: 1,
-                            '--wails-draggable': 'no-drag',
-                        } as any}
-                        title="关闭文档预览"
-                    >
-                        ×
-                    </button>
-                </div>
-
                 <WorkflowProgressBoard
                     activePhaseID={activePhaseID}
                     currentPhaseID={currentPhaseID}
@@ -1419,7 +1329,6 @@ export function WorkflowDocPreview({
                         )
                     }
                 </div>
-            </div>
         </div>
     );
 }

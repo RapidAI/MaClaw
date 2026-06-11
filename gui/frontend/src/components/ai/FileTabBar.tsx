@@ -66,11 +66,13 @@ export function extractFileName(filePath: string): string {
 /**
  * Get the visual indicator for a file's operation type.
  *
- * @param opType - 'modify' or 'create'
- * @returns Indicator string: "✏️" for modify, "➕" for create
+ * @param opType - 'modify', 'create', or 'read'
+ * @returns Indicator string: "✏️" for modify, "➕" for create, "👁" for read
  */
-export function getOpTypeIndicator(opType: 'create' | 'modify'): string {
-    return opType === 'modify' ? '✏️' : '➕';
+export function getOpTypeIndicator(opType: 'create' | 'modify' | 'read'): string {
+    if (opType === 'modify') return '✏️';
+    if (opType === 'read') return '👁';
+    return '➕';
 }
 
 // ── Component Props ──

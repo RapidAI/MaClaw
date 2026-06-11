@@ -172,6 +172,13 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 			projectPath = strings.TrimSpace(h.app.GetCurrentProjectPath())
 		}
 	}
+	// Ensure project path is ASCII-safe for SubAgent (LLMs struggle with Chinese paths)
+	if projectPath != "" {
+		cleaned := v2.TruncateToValidPathChars(projectPath)
+		if cleaned != "" {
+			projectPath = cleaned
+		}
+	}
 	if projectPath == "" {
 		projectPath = "."
 	}
@@ -198,21 +205,32 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 	case v2.ActionRunPhase:
 		// Check if we're entering an execution phase (e.g. after advancing from task_breakdown).
 		if hr.Phase != nil && hr.Phase.ToolPolicy == v2.ToolPolicyFull && hr.State.Type == "coding" {
-			log.Printf("[workflow-v2] ActionRunPhase: entering execution phase for user=%s, invoking SubAgent", msg.UserID)
-			execResp := h.handleWorkflowV2ExecutionPhase(msg.UserID, hr.State)
-			if execResp != nil {
-				return workflowIMRouteResult{Response: execResp}
-			}
-			log.Printf("[workflow-v2] ActionRunPhase: SubAgent returned nil (task parse failed), falling back to agent loop")
-			// SubAgent couldn't parse tasks — fall through to normal agent loop with full tools.
-			if wf := h.getWorkflowV2(); wf != nil {
-				if phase := hr.State.ActivePhase(); phase != nil {
-					phase.Status = v2.PhaseExecuting
-					wf.store.Save(hr.State)
+			// Only invoke SubAgent for the implementation phase.
+			// Verification phase runs as a normal agent loop with full tools.
+			if hr.Phase.ID == "implementation" {
+				log.Printf("[workflow-v2] ActionRunPhase: entering execution phase for user=%s, deferring SubAgent to agent loop", msg.UserID)
+				if wf := h.getWorkflowV2(); wf != nil {
+					if phase := hr.State.ActivePhase(); phase != nil {
+						phase.Status = v2.PhaseExecuting
+						wf.store.Save(hr.State)
+					}
+				}
+				h.emitWorkflowV2Progress(msg.UserID, hr.State)
+				h.pendingV2SubAgentExecution.Store(msg.UserID, true)
+				h.workflowAgentLoopMarker.Store(msg.UserID, true)
+				h.workflowOriginalRequest.Store(msg.UserID, "执行编码任务")
+				return workflowIMRouteResult{
+					WorkflowAgentLoop: true,
+					WorkflowDocPhase:  false,
 				}
 			}
+			// Verification and other ToolPolicyFull phases: run as normal agent loop
+			log.Printf("[workflow-v2] ActionRunPhase: phase=%s is ToolPolicyFull but not implementation, running as normal agent loop", hr.Phase.ID)
 		} else if hr.Phase != nil {
-			log.Printf("[workflow-v2] ActionRunPhase: phase=%s toolPolicy=%s type=%s", hr.Phase.ID, hr.Phase.ToolPolicy, hr.State.Type)
+			log.Printf("[workflow-v2] ActionRunPhase: NOT execution phase. phase=%s toolPolicy=%s type=%s (need ToolPolicyFull=%s + type=coding)",
+				hr.Phase.ID, hr.Phase.ToolPolicy, hr.State.Type, v2.ToolPolicyFull)
+		} else {
+			log.Printf("[workflow-v2] ActionRunPhase: hr.Phase is nil!")
 		}
 		return h.runWorkflowV2Phase(msg.UserID, hr.State, "")
 
@@ -422,6 +440,18 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 	// Parse tasks from the task breakdown phase output
 	tasksPhaseOutput := getPhaseOutput(state, "tasks")
 	if tasksPhaseOutput == "" {
+		// Also try loading fresh state from store in case of stale reference
+		if wf := h.getWorkflowV2(); wf != nil {
+			if fresh := wf.machine.GetActive(userID); fresh != nil {
+				tasksPhaseOutput = getPhaseOutput(fresh, "tasks")
+				if tasksPhaseOutput != "" {
+					log.Printf("[workflow-v2] execution phase: tasks output was empty in passed state but found in fresh load (len=%d)", len(tasksPhaseOutput))
+					state = fresh
+				}
+			}
+		}
+	}
+	if tasksPhaseOutput == "" {
 		log.Printf("[workflow-v2] execution phase but no task breakdown output (phase outputs: %v), falling back to agent loop", listPhaseIDs(state))
 		return nil
 	}
@@ -498,6 +528,7 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 		RequirementsCtx: reqCtx,
 		DesignCtx:       designCtx,
 		MaxRetries:      2,
+		TDDMode:         true,
 	}
 
 	// Run tasks synchronously — keeps the frontend spinner active until completion.
@@ -512,6 +543,143 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 		}
 	})
 	report := runner.FinalReport()
+	if wf := h.getWorkflowV2(); wf != nil {
+		wf.machine.RecordOutput(userID, report)
+		if updatedState := wf.machine.GetActive(userID); updatedState != nil {
+			h.emitWorkflowV2Progress(userID, updatedState)
+		} else {
+			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
+				"status": "completed",
+			})
+		}
+	}
+	log.Printf("[workflow-v2] execution complete: user=%s\n%s", userID, report)
+
+	return &IMAgentResponse{
+		Text: fmt.Sprintf("🚀 执行完成 %d 个编码任务\n项目路径：%s\n\n%s\n\n%s",
+			len(tasks), state.ProjectPath, formatTaskListBrief(tasks), report),
+	}
+}
+
+// handleWorkflowV2ExecutionPhaseWithProgress wraps handleWorkflowV2ExecutionPhase
+// but uses the provided onProgress callback (which carries request_id context)
+// instead of raw runtime.EventsEmit. This ensures progress events reach the frontend
+// with the correct request_id for the active round.
+func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID string, state *v2.WorkflowState, onProgress func(string), onToken func(string)) *IMAgentResponse {
+	if state == nil || !state.IsExecutionPhase() {
+		return nil
+	}
+
+	tasksPhaseOutput := getPhaseOutput(state, "tasks")
+	if tasksPhaseOutput == "" {
+		if wf := h.getWorkflowV2(); wf != nil {
+			if fresh := wf.machine.GetActive(userID); fresh != nil {
+				tasksPhaseOutput = getPhaseOutput(fresh, "tasks")
+				if tasksPhaseOutput != "" {
+					state = fresh
+				}
+			}
+		}
+	}
+	if tasksPhaseOutput == "" {
+		log.Printf("[workflow-v2] execution phase (with progress) but no task breakdown output, falling back")
+		return nil
+	}
+
+	tasks := v2.ParseTaskList(tasksPhaseOutput)
+	if len(tasks) == 0 {
+		log.Printf("[workflow-v2] no tasks parsed from breakdown (output_len=%d), falling back", len(tasksPhaseOutput))
+		return nil
+	}
+
+	if err := v2.EnsureProjectDir(state.ProjectPath); err != nil {
+		log.Printf("[workflow-v2] failed to ensure project dir %s: %v", state.ProjectPath, err)
+	}
+
+	reqCtx := truncateRunesV2(getPhaseOutput(state, "requirements"), 500)
+	designCtx := truncateRunesV2(getPhaseOutput(state, "design"), 500)
+
+	log.Printf("[workflow-v2] starting execution (with progress): %d tasks, project=%s", len(tasks), state.ProjectPath)
+
+	h.emitWorkflowV2Progress(userID, state)
+
+	// Send initial progress so frontend shows "coding started"
+	if onProgress != nil {
+		onProgress(fmt.Sprintf("🚀 开始编码执行：%d 个任务", len(tasks)))
+	}
+
+	// Wrap onToken to route SubAgent text output to the reasoning/thinking UI
+	// (collapsible panel). Frontend uses \x01 prefix to distinguish reasoning
+	// tokens from content tokens — they render in a collapsed "thinking" area.
+	reasoningToken := onToken
+	if onToken != nil {
+		reasoningToken = func(delta string) {
+			onToken("\x01" + delta)
+		}
+	}
+
+	cfg := h.getMaclawLLMConfig()
+	httpClient := h.client
+	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, onToken func(string), onProgressFn func(string)) *v2.TaskRunResult {
+		v1Task := &TaskItem{
+			Index:       task.Index,
+			Title:       task.Title,
+			Description: task.Description,
+			Files:       task.Files,
+			DependsOn:   task.DependsOn,
+		}
+		var fn subAgentTaskFunc
+		if runTaskWithSubAgent != nil {
+			fn = runTaskWithSubAgent
+		} else {
+			fn = RunTaskWithSubAgent
+		}
+		v1Result := fn(h, cfg, httpClient, v1Task, config.ProjectPath, config.RequirementsCtx, config.DesignCtx, nil, nil, onToken, onProgressFn)
+		if v1Result == nil {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "SubAgent returned nil"}
+		}
+		status := v2.TaskFailed
+		switch v1Result.Status {
+		case TaskExecPassed:
+			status = v2.TaskPassed
+		case TaskExecSkipped:
+			status = v2.TaskSkipped
+		}
+		return &v2.TaskRunResult{
+			TaskIndex:     task.Index,
+			Title:         task.Title,
+			Status:        status,
+			Summary:       v1Result.Summary,
+			FilesCreated:  v1Result.FilesCreated,
+			FilesModified: v1Result.FilesModified,
+			Error:         v1Result.Error,
+		}
+	}
+
+	config := v2.TaskRunnerConfig{
+		ProjectPath:     state.ProjectPath,
+		RequirementsCtx: reqCtx,
+		DesignCtx:       designCtx,
+		MaxRetries:      2,
+		TDDMode:         true,
+	}
+
+	runner := v2.NewTaskRunner(config, subAgentFn)
+	runner.RunAll(context.Background(), tasks, reasoningToken, func(progress string) {
+		log.Printf("[workflow-v2-exec] %s", progress)
+		// Use the onProgress callback which carries request_id context
+		if onProgress != nil {
+			onProgress(progress)
+		}
+	})
+	report := runner.FinalReport()
+
+	// Push the final report through regular onToken (NOT reasoning) so it appears
+	// as visible content, not hidden in the collapsed thinking panel.
+	if onToken != nil {
+		onToken("\n\n" + report)
+	}
+
 	if wf := h.getWorkflowV2(); wf != nil {
 		wf.machine.RecordOutput(userID, report)
 		if updatedState := wf.machine.GetActive(userID); updatedState != nil {

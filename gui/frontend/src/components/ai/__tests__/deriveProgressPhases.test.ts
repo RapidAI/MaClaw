@@ -217,7 +217,6 @@ describe('WorkflowProgressBoard highlighting and progress', () => {
             phases: codingPhases,
             workflowType: 'coding',
             gateResults: new Map(),
-            onClose: () => undefined,
             theme: testTheme,
         }));
 
@@ -243,7 +242,6 @@ describe('WorkflowProgressBoard highlighting and progress', () => {
             phases: codingPhases,
             workflowType: 'coding',
             gateResults: new Map(),
-            onClose: () => undefined,
             theme: testTheme,
         }));
 
@@ -268,8 +266,7 @@ describe('WorkflowProgressBoard highlighting and progress', () => {
                 latestDocumentPhaseID: '',
                 workflowType: 'coding',
                 gateResults: new Map(),
-                onClose: () => undefined,
-                theme: testTheme,
+                    theme: testTheme,
             }));
             percents.push(readProgressPercent(container));
             unmount();
@@ -298,7 +295,6 @@ describe('WorkflowProgressBoard highlighting and progress', () => {
             latestDocumentPhaseID: '',
             workflowType: 'coding',
             gateResults: new Map(),
-            onClose: () => undefined,
             theme: testTheme,
         }));
 

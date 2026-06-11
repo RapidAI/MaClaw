@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type React from "react";
 import type { AgentView, AgentViewField, AgentViewOption, AgentViewTableColumn, AgentViewVariant, AgentViewWizardStep } from "./agentViewTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
@@ -878,7 +878,6 @@ function isPanelHeaderInteractiveTarget(target: EventTarget | null, currentTarge
 
 export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximize, onSubmit, theme, lang }: AgentTaskPanelProps) {
     const s = useMemo(() => agentViewStrings(lang || "en"), [lang]);
-    const suppressNextHeaderDoubleClickRef = useRef(false);
     const [activeVariantId, setActiveVariantId] = useState<string | undefined>(() => {
         const variant = activeVariantFor(view);
         return variant?.id;
@@ -974,19 +973,8 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
             return base;
         });
     };
-    const handleHeaderMouseDown = (event: React.MouseEvent<HTMLElement>) => {
-        if (isPanelHeaderInteractiveTarget(event.target, event.currentTarget)) return;
-        if (event.detail !== 2) return;
-        event.preventDefault();
-        suppressNextHeaderDoubleClickRef.current = true;
-        onToggleMaximize?.();
-    };
     const handleHeaderDoubleClick = (event: React.MouseEvent<HTMLElement>) => {
         if (isPanelHeaderInteractiveTarget(event.target, event.currentTarget)) return;
-        if (suppressNextHeaderDoubleClickRef.current) {
-            suppressNextHeaderDoubleClickRef.current = false;
-            return;
-        }
         onToggleMaximize?.();
     };
     const submitAgentView = async (nextData: Record<string, unknown>, overrideViewId?: string) => {
@@ -1040,11 +1028,10 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
             />
             <header
                 data-testid="agent-task-panel-header"
-                onMouseDown={handleHeaderMouseDown}
                 onDoubleClick={handleHeaderDoubleClick}
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 14px", borderBottom: `1px solid ${theme.divider}`, background: theme.titleBarBg, "--wails-draggable": "drag" } as React.CSSProperties}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 14px", borderBottom: `1px solid ${theme.divider}`, background: theme.titleBarBg, "--wails-draggable": "no-drag" } as React.CSSProperties}
             >
-                <div style={{ minWidth: 0, "--wails-draggable": "drag" } as React.CSSProperties}>
+                <div style={{ minWidth: 0 }}>
                     <div style={{ color: theme.titleText, fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {view.title}
                     </div>

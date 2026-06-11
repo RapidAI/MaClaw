@@ -10,7 +10,7 @@ export interface CodeFile {
     fileName: string;
     content: string;
     original?: string;       // undefined for new files
-    opType: 'create' | 'modify';
+    opType: 'create' | 'modify' | 'read';
     language: string;
     updatedAt: number;
     forceOpen?: boolean;
@@ -82,11 +82,15 @@ export function applyFileUpdate(
     nextFiles.set(file.filePath, file);
 
     const shouldAutoOpen = file.forceOpen || !state.userClosed;
+    // Auto-select: always for create/modify, but for read only when panel
+    // is first opening (no active file yet). This prevents rapid tab-switching
+    // during the SubAgent's initial file exploration phase.
+    const shouldAutoSelect = file.opType !== 'read' || !state.activeFilePath;
 
     return {
         ...state,
         files: nextFiles,
-        activeFilePath: file.filePath,
+        activeFilePath: shouldAutoSelect ? file.filePath : state.activeFilePath,
         sessionID: file.sessionID || state.sessionID,
         active: shouldAutoOpen ? true : state.active,
         userClosed: file.forceOpen ? false : state.userClosed,

@@ -57,9 +57,13 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
+		// Auto-convert bash-style && to PowerShell-compatible ; (sequential execution).
+		// LLMs frequently generate && despite being told to use PowerShell syntax.
+		// PowerShell 5.1 doesn't support && (only 7+ does).
+		psCommand := strings.ReplaceAll(command, " && ", " ; ")
 		shellName = "powershell"
 		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command",
-			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + command}
+			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + psCommand}
 	} else {
 		shellName = "bash"
 		shellArgs = []string{"-c", command}
