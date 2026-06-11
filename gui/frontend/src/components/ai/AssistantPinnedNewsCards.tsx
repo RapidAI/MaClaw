@@ -24,21 +24,38 @@ export function AssistantPinnedNewsCards({ messages, theme: t }: AssistantPinned
                     <div key={msg.id} className="pinned-news-card" title={tooltipText} style={{
                         padding: "6px 8px",
                         borderRadius: "6px",
-                        background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(139,92,246,0.06))",
-                        borderLeft: `3px solid ${t.promptColor}`,
+                        background: t.fieldBg,
+                        border: `1px solid ${t.fieldBorder}`,
                         color: t.text,
                         fontSize: "11px",
                         lineHeight: "1.4",
                         overflow: "hidden",
                     }}>
                         <div style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
                             fontWeight: 600,
                         }}>
-                            <span>{news.icon} </span>
-                            {renderInlineMarkdown(news.title, t)}
+                            <span style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                minWidth: "28px",
+                                height: "16px",
+                                padding: "0 5px",
+                                borderRadius: "3px",
+                                background: t.codeBg,
+                                color: t.pathColor,
+                                fontSize: "9px",
+                                fontWeight: 700,
+                                lineHeight: 1,
+                                flexShrink: 0,
+                            }}>{news.icon}</span>
+                            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{renderInlineMarkdown(news.title, t)}</span>
                         </div>
                         {news.body && (
                             <div style={{

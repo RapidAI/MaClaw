@@ -58,7 +58,7 @@ func TestFilterToolDefinitionsDocOnlyCanReturnEmpty(t *testing.T) {
 }
 
 func TestDocOnlyPolicyBlocksExecutionAndMutationTools(t *testing.T) {
-	for _, name := range []string{"read_file", "list_directory", "send_file"} {
+	for _, name := range []string{"read_file", "list_directory", "send_file", "manage_skill", "search_and_install_skill", "get_skill_run"} {
 		if !IsToolAllowedByPolicy(ToolFilterDocOnly, name) {
 			t.Fatalf("expected %s to be allowed by doc-only workflow policy", name)
 		}
@@ -90,7 +90,7 @@ func TestDocOnlyPolicyBlocksExecutionAndMutationTools(t *testing.T) {
 }
 
 func TestPlanningPolicyAllowsInspectionButBlocksImplementationTools(t *testing.T) {
-	for _, name := range []string{"read_file", "list_directory", "send_file", "web_search", "web_fetch"} {
+	for _, name := range []string{"read_file", "list_directory", "send_file", "web_search", "web_fetch", "manage_skill", "search_and_install_skill", "get_skill_run"} {
 		if !IsToolAllowedByPolicy(ToolFilterPlanning, name) {
 			t.Fatalf("expected %s to be allowed by planning workflow policy", name)
 		}

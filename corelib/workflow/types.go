@@ -103,16 +103,22 @@ const (
 // delegate execution. Both GUI and TUI should reference this set instead of
 // maintaining separate copies.
 var DocOnlyAllowedTools = map[string]bool{
-	"read_file":      true,
-	"memory":         true,
-	"generate_pdf":   true,
-	"office":         true,
-	"send_file":      true,
-	"web_search":     true,
-	"web_fetch":      true,
-	"open":           true,
-	"set_nickname":   true,
-	"list_directory": true,
+	"read_file":                true,
+	"memory":                   true,
+	"generate_pdf":             true,
+	"office":                   true,
+	"send_file":                true,
+	"web_search":               true,
+	"web_fetch":                true,
+	"open":                     true,
+	"set_nickname":             true,
+	"list_directory":           true,
+	"manage_skill":             true,
+	"get_skill_run":            true,
+	"list_skills":              true,
+	"search_skill_hub":         true,
+	"install_skill_hub":        true,
+	"search_and_install_skill": true,
 }
 
 // PlanningAllowedTools is the canonical set for reviewable coding-planning
@@ -121,14 +127,20 @@ var DocOnlyAllowedTools = map[string]bool{
 // project-mutation tools. Project setup such as mkdir/CMake/src file creation
 // belongs to the confirmed implementation phase.
 var PlanningAllowedTools = map[string]bool{
-	"read_file":      true,
-	"list_directory": true,
-	"memory":         true,
-	"send_file":      true,
-	"web_search":     true,
-	"web_fetch":      true,
-	"open":           true,
-	"set_nickname":   true,
+	"read_file":                true,
+	"list_directory":           true,
+	"memory":                   true,
+	"send_file":                true,
+	"web_search":               true,
+	"web_fetch":                true,
+	"open":                     true,
+	"set_nickname":             true,
+	"manage_skill":             true,
+	"get_skill_run":            true,
+	"list_skills":              true,
+	"search_skill_hub":         true,
+	"install_skill_hub":        true,
+	"search_and_install_skill": true,
 }
 
 // OpsControlledAllowedTools is the canonical tool set for controlled server

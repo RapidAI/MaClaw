@@ -49,91 +49,91 @@ export interface Theme {
 }
 
 export const overlayTheme: Theme = {
-    bg: "#eef0f5",
-    titleBarBg: "#e2e4ea",
-    titleBarBorder: "#c8cad0",
-    titleText: "#555",
-    text: "#2d2d2d",
-    textMuted: "#777",
+    bg: "#f3f5f8",
+    titleBarBg: "#eef2f7",
+    titleBarBorder: "#d8dee8",
+    titleText: "#334155",
+    text: "#1f2937",
+    textMuted: "#64748b",
     inputBarBg: "#ffffff",
-    inputBarBorder: "#6366f1",
-    inputText: "#222",
-    codeBg: "#e4e6ec",
-    codeText: "#b5314a",
-    codeBlockBg: "#e8eaf0",
-    codeBlockBorder: "#c8cad0",
-    codeBlockLang: "#999",
-    borderLeft: "#c8cad0",
-    responseBorderLeft: "#b4b6d4",
-    headingColor: "#5558d6",
-    linkColor: "#5558d6",
-    pathColor: "#059669",
-    promptColor: "#5558d6",
-    userColor: "#5558d6",
-    divider: "#d0d2d8",
-    fieldBg: "#e8eaf0",
-    fieldBorder: "#c8cad0",
-    fieldLabel: "#777",
-    errorText: "#dc2626",
-    errorBg: "rgba(220, 38, 38, 0.06)",
-    errorBorder: "#dc2626",
-    emptyHint: "#999",
-    boldColor: "#1a1a1a",
-    italicColor: "#333",
-    bulletColor: "#888",
-    quoteBorder: "#b4b6d4",
-    quoteText: "#666",
-    btnColor: "#5558d6",
-    btnBorder: "#5558d6",
-    actionBtnColor: "#777",
-    closeBtnColor: "#888",
+    inputBarBorder: "#cbd5e1",
+    inputText: "#111827",
+    codeBg: "#eef2f7",
+    codeText: "#334155",
+    codeBlockBg: "#f8fafc",
+    codeBlockBorder: "#d8dee8",
+    codeBlockLang: "#64748b",
+    borderLeft: "#d8dee8",
+    responseBorderLeft: "#8aa4bf",
+    headingColor: "#1f2937",
+    linkColor: "#2f5f98",
+    pathColor: "#334155",
+    promptColor: "#334155",
+    userColor: "#334155",
+    divider: "#d8dee8",
+    fieldBg: "#f8fafc",
+    fieldBorder: "#d8dee8",
+    fieldLabel: "#64748b",
+    errorText: "#b42318",
+    errorBg: "rgba(180, 35, 24, 0.06)",
+    errorBorder: "#b42318",
+    emptyHint: "#94a3b8",
+    boldColor: "#111827",
+    italicColor: "#334155",
+    bulletColor: "#64748b",
+    quoteBorder: "#b7c5d4",
+    quoteText: "#526579",
+    btnColor: "#2f5f98",
+    btnBorder: "#b7c5d4",
+    actionBtnColor: "#64748b",
+    closeBtnColor: "#64748b",
     sendBtnColor: "#fff",
-    sendBtnBorder: "#5558d6",
-    sendBtnBg: "#5558d6",
+    sendBtnBorder: "#2f5f98",
+    sendBtnBg: "#2f5f98",
 };
 
 export const lightTheme: Theme = {
-    bg: "#fafbff",
-    titleBarBg: "#f0f1f5",
-    titleBarBorder: "#ddd",
-    titleText: "#666",
-    text: "#333",
-    textMuted: "#888",
-    inputBarBg: "#f5f6fa",
-    inputBarBorder: "#ddd",
-    inputText: "#333",
-    codeBg: "#f0f0f5",
-    codeText: "#c7254e",
-    codeBlockBg: "#f5f6fa",
-    codeBlockBorder: "#ddd",
-    codeBlockLang: "#aaa",
-    borderLeft: "#ddd",
-    responseBorderLeft: "#d4d4f7",
-    headingColor: "#6366f1",
-    linkColor: "#6366f1",
-    pathColor: "#059669",
-    promptColor: "#6366f1",
-    userColor: "#6366f1",
-    divider: "#e5e7eb",
-    fieldBg: "#f5f6fa",
-    fieldBorder: "#ddd",
-    fieldLabel: "#888",
-    errorText: "#dc2626",
-    errorBg: "rgba(220, 38, 38, 0.06)",
-    errorBorder: "#dc2626",
-    emptyHint: "#aaa",
-    boldColor: "#222",
-    italicColor: "#444",
-    bulletColor: "#999",
-    quoteBorder: "#d4d4f7",
-    quoteText: "#777",
-    btnColor: "#6366f1",
-    btnBorder: "#6366f1",
-    actionBtnColor: "#888",
-    closeBtnColor: "#999",
+    bg: "#f7f9fc",
+    titleBarBg: "#eef2f7",
+    titleBarBorder: "#d8dee8",
+    titleText: "#334155",
+    text: "#1f2937",
+    textMuted: "#64748b",
+    inputBarBg: "#ffffff",
+    inputBarBorder: "#cbd5e1",
+    inputText: "#111827",
+    codeBg: "#eef2f7",
+    codeText: "#334155",
+    codeBlockBg: "#f8fafc",
+    codeBlockBorder: "#d8dee8",
+    codeBlockLang: "#64748b",
+    borderLeft: "#d8dee8",
+    responseBorderLeft: "#8aa4bf",
+    headingColor: "#1f2937",
+    linkColor: "#2f5f98",
+    pathColor: "#334155",
+    promptColor: "#334155",
+    userColor: "#334155",
+    divider: "#d8dee8",
+    fieldBg: "#f8fafc",
+    fieldBorder: "#d8dee8",
+    fieldLabel: "#64748b",
+    errorText: "#b42318",
+    errorBg: "rgba(180, 35, 24, 0.06)",
+    errorBorder: "#b42318",
+    emptyHint: "#94a3b8",
+    boldColor: "#111827",
+    italicColor: "#334155",
+    bulletColor: "#64748b",
+    quoteBorder: "#b7c5d4",
+    quoteText: "#526579",
+    btnColor: "#2f5f98",
+    btnBorder: "#b7c5d4",
+    actionBtnColor: "#64748b",
+    closeBtnColor: "#64748b",
     sendBtnColor: "#ffffff",
-    sendBtnBorder: "#6366f1",
-    sendBtnBg: "#6366f1",
+    sendBtnBorder: "#2f5f98",
+    sendBtnBg: "#2f5f98",
 };
 
 
@@ -149,37 +149,37 @@ export const darkTheme: Theme = {
     inputBarBorder: "#334155",
     inputText: "#e5e7eb",
     codeBg: "#1e293b",
-    codeText: "#7dd3fc",
+    codeText: "#b7d3ef",
     codeBlockBg: "#0f172a",
     codeBlockBorder: "#1e3a5f",
-    codeBlockLang: "#38bdf8",
+    codeBlockLang: "#8fb4dc",
     borderLeft: "#334155",
-    responseBorderLeft: "#4f46e5",
-    headingColor: "#a5b4fc",
-    linkColor: "#93c5fd",
-    pathColor: "#34d399",
-    promptColor: "#a5b4fc",
-    userColor: "#c4b5fd",
+    responseBorderLeft: "#5b7898",
+    headingColor: "#d9e7f5",
+    linkColor: "#9bc2ea",
+    pathColor: "#b7d3ef",
+    promptColor: "#b7d3ef",
+    userColor: "#c7d7e8",
     divider: "#1e293b",
     fieldBg: "#111827",
     fieldBorder: "#334155",
     fieldLabel: "#94a3b8",
-    errorText: "#fca5a5",
-    errorBg: "rgba(239, 68, 68, 0.08)",
-    errorBorder: "#ef4444",
+    errorText: "#e08b84",
+    errorBg: "rgba(180, 35, 24, 0.10)",
+    errorBorder: "#b95b52",
     emptyHint: "#64748b",
     boldColor: "#f8fafc",
     italicColor: "#e2e8f0",
     bulletColor: "#64748b",
-    quoteBorder: "#6366f1",
-    quoteText: "#a5b4fc",
+    quoteBorder: "#5b7898",
+    quoteText: "#c7d7e8",
     actionBtnColor: "#cbd5e1",
     closeBtnColor: "#cbd5e1",
-    btnColor: "#818cf8",
-    btnBorder: "#818cf8",
+    btnColor: "#b7d3ef",
+    btnBorder: "#5b7898",
     sendBtnColor: "#ffffff",
-    sendBtnBorder: "#818cf8",
-    sendBtnBg: "#818cf8",
+    sendBtnBorder: "#5b7898",
+    sendBtnBg: "#2f5f98",
 };
 
 export const AI_THEME_MODE_STORAGE_KEY = "ai_assistant_theme_mode";
@@ -240,7 +240,7 @@ export const baseInputBtnStyle: React.CSSProperties = {
     transition: "transform 120ms ease, box-shadow 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease",
 };
 
-export type AssistantInputIconName = "paperclip" | "mic" | "cornerDownLeft" | "stop";
+export type AssistantInputIconName = "paperclip" | "mic" | "cornerDownLeft" | "stop" | "edit" | "trash";
 
 export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIconName; size?: number }) {
     const common = {
@@ -268,6 +268,21 @@ export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIc
             {name === "stop" && (
                 <rect {...common} x="7" y="7" width="10" height="10" rx="1.8" />
             )}
+            {name === "edit" && (
+                <>
+                    <path {...common} d="M12 20h9" />
+                    <path {...common} d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                </>
+            )}
+            {name === "trash" && (
+                <>
+                    <path {...common} d="M3 6h18" />
+                    <path {...common} d="M8 6V4h8v2" />
+                    <path {...common} d="M6 6l1 14h10l1-14" />
+                    <path {...common} d="M10 11v5" />
+                    <path {...common} d="M14 11v5" />
+                </>
+            )}
         </svg>
     );
 }
@@ -280,12 +295,12 @@ export function getInputActionButtonStyle(
 ): React.CSSProperties {
     const dark = themeMode === 'dark';
     const palette = {
-        neutral: { color: t.textMuted, border: dark ? "rgba(148, 163, 184, 0.28)" : "rgba(99, 102, 241, 0.16)", bg: dark ? "rgba(15, 23, 42, 0.72)" : "rgba(255, 255, 255, 0.86)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.04)" : "0 1px 2px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.82)" },
-        attach: { color: dark ? "#67e8f9" : "#0891b2", border: dark ? "rgba(34, 211, 238, 0.38)" : "rgba(8, 145, 178, 0.28)", bg: dark ? "rgba(8, 145, 178, 0.10)" : "rgba(236, 254, 255, 0.86)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.05)" : "0 1px 2px rgba(8,145,178,0.08), inset 0 1px 0 rgba(255,255,255,0.9)" },
+        neutral: { color: t.textMuted, border: dark ? "rgba(148, 163, 184, 0.28)" : "rgba(47, 95, 152, 0.12)", bg: dark ? "rgba(15, 23, 42, 0.72)" : "rgba(255, 255, 255, 0.92)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.04)" : "0 1px 2px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.88)" },
+        attach: { color: dark ? "#b7d3ef" : "#2f5f98", border: dark ? "rgba(91, 120, 152, 0.44)" : "rgba(47, 95, 152, 0.24)", bg: dark ? "rgba(91, 120, 152, 0.12)" : "rgba(243, 247, 251, 0.94)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.05)" : "0 1px 2px rgba(47,95,152,0.07), inset 0 1px 0 rgba(255,255,255,0.9)" },
         voice: { color: dark ? "#cbd5e1" : "#475569", border: dark ? "rgba(148, 163, 184, 0.30)" : "rgba(71, 85, 105, 0.20)", bg: dark ? "rgba(15, 23, 42, 0.74)" : "rgba(248, 250, 252, 0.92)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.04)" : "0 1px 2px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.86)" },
-        voiceHold: { color: dark ? "#fbbf24" : "#dc2626", border: dark ? "rgba(251, 191, 36, 0.48)" : "rgba(220, 38, 38, 0.34)", bg: dark ? "rgba(251, 191, 36, 0.13)" : "rgba(254, 242, 242, 0.96)", shadow: dark ? "0 0 0 2px rgba(251, 191, 36, 0.10), inset 0 1px 0 rgba(255,255,255,0.05)" : "0 0 0 2px rgba(248, 113, 113, 0.12), inset 0 1px 0 rgba(255,255,255,0.9)" },
-        send: { color: "#ffffff", border: dark ? "rgba(129, 140, 248, 0.78)" : "rgba(79, 70, 229, 0.72)", bg: dark ? "linear-gradient(180deg, #818cf8 0%, #6366f1 100%)" : "linear-gradient(180deg, #6366f1 0%, #4f46e5 100%)", shadow: dark ? "0 8px 18px rgba(79,70,229,0.28), inset 0 1px 0 rgba(255,255,255,0.18)" : "0 8px 18px rgba(79,70,229,0.20), inset 0 1px 0 rgba(255,255,255,0.22)" },
-        cancel: { color: dark ? "#ddd6fe" : "#4f46e5", border: dark ? "rgba(129, 140, 248, 0.56)" : "rgba(79, 70, 229, 0.34)", bg: dark ? "rgba(99, 102, 241, 0.16)" : "rgba(238, 242, 255, 0.94)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.05)" : "0 1px 2px rgba(79,70,229,0.08), inset 0 1px 0 rgba(255,255,255,0.9)" },
+        voiceHold: { color: dark ? "#c7d7e8" : "#475569", border: dark ? "rgba(148, 163, 184, 0.42)" : "rgba(100, 116, 139, 0.28)", bg: dark ? "rgba(148, 163, 184, 0.12)" : "rgba(248, 250, 252, 0.94)", shadow: dark ? "0 0 0 2px rgba(148, 163, 184, 0.10), inset 0 1px 0 rgba(255,255,255,0.05)" : "0 0 0 2px rgba(100, 116, 139, 0.08), inset 0 1px 0 rgba(255,255,255,0.9)" },
+        send: { color: "#ffffff", border: dark ? "rgba(91, 120, 152, 0.78)" : "rgba(47, 95, 152, 0.70)", bg: dark ? "#386b9f" : "#2f5f98", shadow: dark ? "0 4px 10px rgba(47,95,152,0.22), inset 0 1px 0 rgba(255,255,255,0.10)" : "0 3px 8px rgba(47,95,152,0.14), inset 0 1px 0 rgba(255,255,255,0.16)" },
+        cancel: { color: dark ? "#c7d7e8" : "#2f5f98", border: dark ? "rgba(91, 120, 152, 0.55)" : "rgba(47, 95, 152, 0.24)", bg: dark ? "rgba(91, 120, 152, 0.14)" : "rgba(243, 247, 251, 0.96)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.05)" : "0 1px 2px rgba(47,95,152,0.07), inset 0 1px 0 rgba(255,255,255,0.9)" },
     }[tone];
     return { ...baseInputBtnStyle, color: palette.color, borderColor: palette.border, background: palette.bg, boxShadow: palette.shadow, opacity: disabled ? 0.45 : 1, cursor: disabled ? "default" : "pointer" };
 }
@@ -337,24 +352,24 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
         50% { transform: scale(1.03); opacity: 0.92; }
     }
     @keyframes maclaw-brand-shimmer {
-        0%, 100% { filter: drop-shadow(0 0 3px rgba(74, 158, 255, 0.5)) brightness(1); }
-        50% { filter: drop-shadow(0 0 8px rgba(74, 158, 255, 0.8)) brightness(1.15); }
+        0%, 100% { filter: drop-shadow(0 0 3px rgba(47, 95, 152, 0.28)) brightness(1); }
+        50% { filter: drop-shadow(0 0 7px rgba(47, 95, 152, 0.38)) brightness(1.08); }
     }
     @keyframes ai-update-notice-pulse {
-        0%, 100% { box-shadow: inset 0 0 0 1px rgba(20, 184, 166, 0.42), 0 0 0 0 rgba(20, 184, 166, 0.42); }
-        50% { box-shadow: inset 0 0 0 1px rgba(20, 184, 166, 0.72), 0 0 0 5px rgba(20, 184, 166, 0.12); }
+        0%, 100% { box-shadow: inset 0 0 0 1px rgba(79, 127, 111, 0.34), 0 0 0 0 rgba(79, 127, 111, 0.28); }
+        50% { box-shadow: inset 0 0 0 1px rgba(79, 127, 111, 0.52), 0 0 0 5px rgba(79, 127, 111, 0.10); }
     }
     .pinned-news-card > div { margin-top: 0 !important; margin-bottom: 0 !important; }
     .ai-window-control:hover { background: var(--ai-window-control-hover-bg, rgba(148, 163, 184, 0.14)) !important; }
     .ai-window-control:active { filter: brightness(0.96); }
     .ai-window-control:focus-visible {
-        outline: 2px solid rgba(99, 102, 241, 0.55);
+        outline: 2px solid rgba(47, 95, 152, 0.48);
         outline-offset: 1px;
     }
     .ai-titlebar-tool:hover { background: var(--ai-titlebar-tool-hover-bg, rgba(148, 163, 184, 0.12)) !important; }
     .ai-titlebar-tool:active { filter: brightness(0.96); }
     .ai-titlebar-tool:focus-visible {
-        outline: 2px solid rgba(99, 102, 241, 0.4);
+        outline: 2px solid rgba(47, 95, 152, 0.38);
         outline-offset: 1px;
     }
     .ai-update-notice-button { animation: ai-update-notice-pulse 1.35s ease-in-out infinite; }
@@ -369,9 +384,9 @@ export function getTitleBarToolButtonStyle(t: Theme, variant: "default" | "dange
     const isActive = variant === "active";
     return {
         ...baseActionBtnStyle,
-        color: isDanger ? "#b91c1c" : (isActive ? t.text : t.actionBtnColor),
-        background: isDanger ? "rgba(220, 38, 38, 0.04)" : (isActive ? t.divider : "transparent"),
+        color: isDanger ? t.errorText : (isActive ? t.text : t.actionBtnColor),
+        background: isDanger ? t.errorBg : (isActive ? t.divider : "transparent"),
         boxShadow: isActive ? `inset 0 0 0 1px ${t.fieldBorder}` : "none",
-        ['--ai-titlebar-tool-hover-bg' as any]: isDanger ? "rgba(220, 38, 38, 0.12)" : (isActive ? t.divider : "rgba(148, 163, 184, 0.12)"),
+        ['--ai-titlebar-tool-hover-bg' as any]: isDanger ? t.errorBg : (isActive ? t.divider : "rgba(148, 163, 184, 0.12)"),
     };
 }

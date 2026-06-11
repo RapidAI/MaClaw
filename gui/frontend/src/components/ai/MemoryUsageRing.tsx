@@ -76,10 +76,10 @@ export function MemoryUsageRing({ theme: t, themeMode, lang, size = 22 }: Memory
 
     // Color based on usage level
     const ringColor = percent >= 90
-        ? (themeMode === "dark" ? "#f87171" : "#dc2626")  // red — critical
+        ? (themeMode === "dark" ? "#e08b84" : "#b42318")  // muted red — critical
         : percent >= 70
-            ? (themeMode === "dark" ? "#fbbf24" : "#d97706")  // amber — warning
-            : (themeMode === "dark" ? "#34d399" : "#059669"); // green — healthy
+            ? (themeMode === "dark" ? "#c7d7e8" : "#64748b")  // neutral attention
+            : (themeMode === "dark" ? "#7aa89a" : "#4f7f6f"); // muted green — healthy
 
     const trackColor = themeMode === "dark" ? "rgba(148, 163, 184, 0.18)" : "rgba(15, 23, 42, 0.08)";
 

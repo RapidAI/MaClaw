@@ -29,7 +29,7 @@ interface AssistantPreviewPaneProps {
 type PreviewPaneMode = "workflow" | "code";
 
 function previewTabIcon(mode: PreviewPaneMode): string {
-    return mode === "workflow" ? "\u{1F4CB}" : "\u{1F4C4}"; // 📋 / 📄
+    return mode === "workflow" ? "WF" : "SRC";
 }
 
 function previewTabTooltip(mode: PreviewPaneMode, lang: string): string {
@@ -76,10 +76,10 @@ function PreviewTabRail({
             selectMode(availableModes[availableModes.length - 1], true);
             return;
         }
-        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        if (event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight") {
             event.preventDefault();
             const currentIndex = availableModes.indexOf(activeMode);
-            const offset = event.key === "ArrowDown" ? 1 : -1;
+            const offset = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
             const nextMode = availableModes[(currentIndex + offset + availableModes.length) % availableModes.length];
             selectMode(nextMode, true);
         }
@@ -121,7 +121,7 @@ function PreviewTabRail({
                 title={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
                 aria-label={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
             >
-                ×
+                X
             </button>
             <div
                 role="tablist"
@@ -157,7 +157,9 @@ function PreviewTabRail({
                             color: active ? theme.headingColor : theme.textMuted,
                             borderRadius: "6px",
                             cursor: "pointer",
-                            fontSize: "14px",
+                            fontSize: "9px",
+                            fontWeight: 700,
+                            letterSpacing: "0",
                             lineHeight: 1,
                             padding: 0,
                         }}
@@ -219,22 +221,22 @@ export function AssistantPreviewPane({
     }, [activeMode, showCodePreview, showWorkflowPreview]);
 
     const docPreviewTheme = useMemo(() => ({
-        bg: theme.bg,
-        text: theme.text,
-        textMuted: theme.textMuted,
-        border: theme.divider,
-        headerBg: theme.titleBarBg,
-        accentColor: theme.headingColor,
-        accentBg: themeMode === "dark" ? "rgba(99,102,241,0.15)" : "rgba(99,102,241,0.08)",
-        codeBg: theme.codeBg,
-        codeText: theme.codeText,
-        codeBlockBg: theme.codeBlockBg,
-        codeBlockBorder: theme.codeBlockBorder,
-        headingColor: theme.headingColor,
-        linkColor: theme.linkColor,
-        quoteBorder: theme.quoteBorder,
-        quoteText: theme.quoteText,
-        quoteBg: themeMode === "dark" ? "rgba(99,102,241,0.08)" : "rgba(99,102,241,0.04)",
+        bg: themeMode === "dark" ? theme.bg : "#ffffff",
+        text: themeMode === "dark" ? theme.text : "#1f2937",
+        textMuted: themeMode === "dark" ? theme.textMuted : "#6b7280",
+        border: themeMode === "dark" ? theme.divider : "#e5e7eb",
+        headerBg: themeMode === "dark" ? theme.titleBarBg : "#f7f8fa",
+        accentColor: themeMode === "dark" ? "#b7d3ef" : "#3f5872",
+        accentBg: themeMode === "dark" ? "rgba(91, 120, 152, 0.16)" : "#f5f7fa",
+        codeBg: themeMode === "dark" ? theme.codeBg : "#f1f4f7",
+        codeText: themeMode === "dark" ? theme.codeText : "#334155",
+        codeBlockBg: themeMode === "dark" ? theme.codeBlockBg : "#f8fafc",
+        codeBlockBorder: themeMode === "dark" ? theme.codeBlockBorder : "#e5e7eb",
+        headingColor: themeMode === "dark" ? "#d9e7f5" : "#1f2937",
+        linkColor: themeMode === "dark" ? "#9bc2ea" : "#2f5f98",
+        quoteBorder: themeMode === "dark" ? theme.quoteBorder : "#c7d1dc",
+        quoteText: themeMode === "dark" ? theme.quoteText : "#4b5563",
+        quoteBg: themeMode === "dark" ? "rgba(91, 120, 152, 0.12)" : "#f8fafc",
     }), [theme, themeMode]);
 
     const codeTheme = useMemo(

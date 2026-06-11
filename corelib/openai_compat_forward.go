@@ -76,7 +76,9 @@ func forwardOpenAICompatStreamRequest(ctx context.Context, cfg MaclawLLMConfig, 
 	fwd["model"] = cfg.UpstreamModel()
 	fwd["stream"] = true
 	sanitizeCodeGenOpenAICompatForwardBody(cfg, fwd)
-	ensureOpenAIStreamUsage(fwd)
+	if !cfg.NeedsConservativeOpenAICompatSanitization() {
+		ensureOpenAIStreamUsage(fwd)
+	}
 
 	jsonBody, err := json.Marshal(fwd)
 	if err != nil {
@@ -263,15 +265,10 @@ func forwardOpenAICompatRequest(ctx context.Context, cfg MaclawLLMConfig, body m
 }
 
 func sanitizeCodeGenOpenAICompatForwardBody(cfg MaclawLLMConfig, body map[string]interface{}) {
-	if body == nil || !IsCodeGenURL(cfg.URL) {
+	if body == nil || !cfg.NeedsConservativeOpenAICompatSanitization() {
 		return
 	}
-	if tools, ok := body["tools"]; ok {
-		body["tools"] = SanitizeCodeGenOpenAIChatToolsValue(tools)
-	}
-	if functions, ok := body["functions"]; ok {
-		body["functions"] = SanitizeCodeGenOpenAIFunctionsValue(functions)
-	}
+	SanitizeCodeGenOpenAICompatBody(body)
 }
 
 func forwardAnthropicCompatRequest(ctx context.Context, cfg MaclawLLMConfig, body map[string]interface{}, client *http.Client, responseModel string) ([]byte, int, error) {

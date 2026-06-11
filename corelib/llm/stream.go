@@ -29,7 +29,7 @@ func DoOpenAIRequestStream(
 	client *http.Client,
 	onToken TokenCallback,
 ) (*Response, error) {
-	req, _, endpoint, err := NewOpenAIChatRequest(ctx, cfg, messages, OpenAIChatRequestOptions{
+	req, reqBody, endpoint, err := NewOpenAIChatRequest(ctx, cfg, messages, OpenAIChatRequestOptions{
 		Stream: true,
 		Tools:  tools,
 	})
@@ -50,8 +50,30 @@ func DoOpenAIRequestStream(
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
-		return nil, fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(body))
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
+		if ShouldRetryOpenAIWithoutTools(cfg, resp.StatusCode, messages, tools) {
+			log.Printf("[LLM-stream] retry_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400 tools=%d %s", endpoint, upstreamModel, cfg.Model, len(tools), traceFields)
+			req, reqBody, endpoint, err = NewOpenAIChatRequest(ctx, cfg, messages, OpenAIChatRequestOptions{Stream: true})
+			if err != nil {
+				return nil, err
+			}
+			retryStartedAt := time.Now()
+			resp, err = client.Do(req)
+			if err != nil {
+				log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(retryStartedAt).Round(time.Millisecond), err, traceFields)
+				return nil, fmt.Errorf("[%s] %w", endpoint, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(retryStartedAt).Round(time.Millisecond), traceFields)
+			} else {
+				body, _ = io.ReadAll(io.LimitReader(resp.Body, 4096))
+				log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(retryStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
+				return nil, fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(body))
+			}
+		} else {
+			return nil, fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(body))
+		}
 	}
 
 	// Peek at the first bytes to detect SSE vs JSON without buffering the

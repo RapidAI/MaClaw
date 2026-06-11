@@ -56,14 +56,14 @@ describe("GroupParticipantPanel", () => {
         );
 
         const dot = screen.getByTestId("participant-status-ve-1");
-        expect(dot.style.background).toBe("rgb(34, 197, 94)");
+        expect(dot.style.background).toBe("rgb(79, 127, 111)");
 
         act(() => {
             for (const handler of eventHandlers.get("ve:status_change") || []) {
                 handler({ ve_id: "ve-other", online_status: "offline" });
             }
         });
-        expect(dot.style.background).toBe("rgb(34, 197, 94)");
+        expect(dot.style.background).toBe("rgb(79, 127, 111)");
 
         act(() => {
             for (const handler of eventHandlers.get("ve:status_change") || []) {

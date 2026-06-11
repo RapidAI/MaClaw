@@ -42,3 +42,39 @@ func TestCallLightweightLLMNormalizesCodeGenAutoModel(t *testing.T) {
 		t.Fatalf("model = %q, want %q", gotModel, corelib.CodeGenDefaultModelID)
 	}
 }
+
+func TestCallLightweightLLMSanitizesQwenOpenAICompatRequest(t *testing.T) {
+	handler := &IMMessageHandler{
+		client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("Decode: %v", err)
+			}
+			for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
+				if _, ok := body[key]; ok {
+					t.Fatalf("Qwen lightweight request leaked %s: %#v", key, body)
+				}
+			}
+			if got := body["stream"]; got != false {
+				t.Fatalf("stream = %#v, want false", got)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"complex"}}]}`)),
+				Request:    r,
+			}, nil
+		})},
+	}
+
+	got := handler.callLightweightLLM(
+		corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b", ProviderName: "Qwen"},
+		"classify",
+		"hi",
+		2,
+	)
+
+	if strings.TrimSpace(got) != "complex" {
+		t.Fatalf("response = %q, want complex", got)
+	}
+}

@@ -1151,6 +1151,12 @@ func applyCodeGenOpenAIMapCompatibility(payload map[string]interface{}, model st
 		return nil
 	}
 	var notes []string
+	for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
+		if _, ok := payload[key]; ok {
+			delete(payload, key)
+			notes = append(notes, "codegen_drop_"+key)
+		}
+	}
 	if tools, ok := payload["tools"]; ok {
 		sanitized := corelib.SanitizeCodeGenOpenAIChatToolsValue(tools)
 		if !reflect.DeepEqual(sanitized, tools) {

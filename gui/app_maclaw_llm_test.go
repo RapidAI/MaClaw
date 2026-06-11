@@ -51,6 +51,52 @@ func TestDoFetchModelsRequestDefaultsCodeGenUserAgentToTigerclaw(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
+func TestOpenAIModelsEndpointCandidates(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseURL  string
+		protocol string
+		want     []string
+	}{
+		{
+			name:    "openai bare base includes v1 fallback",
+			baseURL: "https://example.test/api",
+			want: []string{
+				"https://example.test/api/models",
+				"https://example.test/api/v1/models",
+			},
+		},
+		{
+			name:    "openai v1 base does not duplicate v1",
+			baseURL: "https://example.test/api/v1",
+			want:    []string{"https://example.test/api/v1/models"},
+		},
+		{
+			name:    "models endpoint stays unchanged",
+			baseURL: "https://example.test/api/v1/models",
+			want:    []string{"https://example.test/api/v1/models"},
+		},
+		{
+			name:     "anthropic bare base prefers v1 then legacy",
+			baseURL:  "https://example.test/anthropic",
+			protocol: "anthropic",
+			want: []string{
+				"https://example.test/anthropic/v1/models",
+				"https://example.test/anthropic/models",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := openAIModelsEndpointCandidates(tt.baseURL, tt.protocol)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("openAIModelsEndpointCandidates() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCodeGenClientNameForModelConfigPrefersModelAgentType(t *testing.T) {
 	model := corelib.ModelConfig{
 		ModelName: "CodeGen",
@@ -127,6 +173,31 @@ func TestProbeVisionAnthropic_ReturnsTrueForRedResponse(t *testing.T) {
 
 	if !probeVisionAnthropic(srv.URL, "", "test-model", "abc", "test-agent") {
 		t.Fatal("probeVisionAnthropic() = false, want true")
+	}
+}
+
+func TestProbeVisionResponsesAPI_SanitizesQwenStoreAndNormalizesEndpoint(t *testing.T) {
+	var captured map[string]interface{}
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"red"}]}]}`))
+	}))
+	defer srv.Close()
+
+	if !probeVisionResponsesAPI(srv.URL, "key", "qwen-vl-plus", "test-agent") {
+		t.Fatal("probeVisionResponsesAPI() = false, want true")
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if _, ok := captured["store"]; ok {
+		t.Fatalf("Qwen Responses vision probe leaked store: %#v", captured)
 	}
 }
 

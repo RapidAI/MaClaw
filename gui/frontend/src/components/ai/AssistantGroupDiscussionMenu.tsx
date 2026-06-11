@@ -44,8 +44,8 @@ export function AssistantGroupDiscussionMenu(props: AssistantGroupDiscussionMenu
     const { groupDiscussionStatus, groupDiscussionOpen, groupPendingInvites, inline, lang, setGroupDiscussionOpen, theme: t } = props;
     const [copiedHandoff, setCopiedHandoff] = useState(false);
     const title = lang === "en" ? `Group discussion (${GROUP_DISCUSSION_SHORT_LABEL}): ${props.groupDiscussionLabel}` : `\u7fa4\u7ec4\u8ba8\u8bba\uff1a${props.groupDiscussionLabel}`;
-    const buttonColor = props.groupDiscussionEnabled ? (props.groupDiscussionDiscoverable ? "#047857" : "#92400e") : t.actionBtnColor;
-    const statusColor = props.groupDiscussionEnabled ? (props.groupDiscussionDiscoverable ? "#10b981" : "#f59e0b") : "#94a3b8";
+    const buttonColor = props.groupDiscussionEnabled ? (props.groupDiscussionDiscoverable ? "#3f6f62" : t.textMuted) : t.actionBtnColor;
+    const statusColor = props.groupDiscussionEnabled ? (props.groupDiscussionDiscoverable ? "#4f7f6f" : "#64748b") : "#94a3b8";
     const primaryTraceFocus = getPrimaryDiscussionTraceFocus(groupDiscussionStatus);
     const safeHandoff = useMemo(() => buildGroupDiscussionStatusSafeHandoff(groupDiscussionStatus, primaryTraceFocus), [groupDiscussionStatus, primaryTraceFocus]);
     const copySafeHandoff = async () => {
@@ -64,8 +64,8 @@ export function AssistantGroupDiscussionMenu(props: AssistantGroupDiscussionMenu
 
     return (
         <div style={{ position: "relative", zIndex: 30010 }}>
-            <button className="ai-titlebar-tool" {...toggleProps} aria-label={title} title={title} style={{ ...getTitleBarToolButtonStyle(t), width: "32px", minWidth: "32px", padding: 0, position: "relative", color: buttonColor, boxShadow: groupDiscussionOpen ? `inset 0 0 0 1px ${t.fieldBorder}` : (groupPendingInvites.length > 0 ? "inset 0 0 0 1px rgba(245, 158, 11, 0.55)" : undefined) }}>
-                <span aria-hidden="true" style={{ fontSize: "15px", lineHeight: 1, transform: "translateY(-0.5px)" }}>{"\u{1F465}"}</span>
+            <button className="ai-titlebar-tool" {...toggleProps} aria-label={title} title={title} style={{ ...getTitleBarToolButtonStyle(t), width: "32px", minWidth: "32px", padding: 0, position: "relative", color: buttonColor, boxShadow: groupDiscussionOpen ? `inset 0 0 0 1px ${t.fieldBorder}` : (groupPendingInvites.length > 0 ? "inset 0 0 0 1px rgba(100, 116, 139, 0.34)" : undefined) }}>
+                <span aria-hidden="true" style={{ fontSize: "10px", fontWeight: 800, letterSpacing: 0, lineHeight: 1 }}>GD</span>
                 <span aria-hidden="true" style={{ position: "absolute", right: "6px", bottom: "5px", width: "5px", height: "5px", borderRadius: "999px", background: statusColor, boxShadow: `0 0 0 1.5px ${t.titleBarBg}` }} />
                 {groupPendingInvites.length > 0 && <span aria-hidden="true" style={inviteBadgeStyle}>{groupPendingInvites.length > 9 ? "9+" : groupPendingInvites.length}</span>}
             </button>
@@ -83,7 +83,7 @@ const inviteBadgeStyle: CSSProperties = {
     padding: "0 3px",
     boxSizing: "border-box",
     borderRadius: "999px",
-    background: "#f59e0b",
+    background: "#3f5872",
     color: "white",
     fontSize: "8px",
     lineHeight: "13px",

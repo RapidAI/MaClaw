@@ -39,6 +39,11 @@ func BuildResponsesAPIRequestData(
 ) (endpoint string, body []byte, err error) {
 	endpoint = BuildResponsesEndpoint(cfg.URL)
 
+	if cfg.NeedsConservativeOpenAICompatSanitization() {
+		messages = SanitizeConservativeOpenAICompatMessages(messages)
+	} else {
+		messages = sanitizeEmptyToolCalls(messages)
+	}
 	converted := ConvertToResponsesInput(messages)
 
 	reqBody := map[string]interface{}{
@@ -50,7 +55,7 @@ func BuildResponsesAPIRequestData(
 		reqBody["instructions"] = converted.Instructions
 	}
 	toolsInput := opts.Tools
-	if corelib.IsCodeGenURL(cfg.URL) {
+	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		toolsInput = corelib.SanitizeCodeGenOpenAIChatTools(opts.Tools)
 	}
 	if tools := ConvertToResponsesTools(toolsInput); len(tools) > 0 {
@@ -61,6 +66,9 @@ func BuildResponsesAPIRequestData(
 			continue
 		}
 		reqBody[k] = v
+	}
+	if cfg.NeedsConservativeOpenAICompatSanitization() {
+		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)
 	}
 
 	body, err = json.Marshal(reqBody)

@@ -32,9 +32,18 @@ func responsesWSEndpoint(baseURL string) string {
 	u = strings.Replace(u, "https://", "wss://", 1)
 	u = strings.Replace(u, "http://", "ws://", 1)
 	if llm.IsCodexSubscriptionEndpoint(u) {
+		if strings.HasSuffix(u, "/codex/responses") {
+			return u
+		}
 		return u + "/codex/responses"
 	}
-	return u + "/responses"
+	if strings.HasSuffix(u, "/responses") {
+		return u
+	}
+	if strings.HasSuffix(u, "/v1") {
+		return u + "/responses"
+	}
+	return u + "/v1/responses"
 }
 
 // buildResponsesWSFrame constructs the JSON frame for a response.create
@@ -44,6 +53,9 @@ func buildResponsesWSFrame(
 	messages []interface{},
 	tools []map[string]interface{},
 ) ([]byte, error) {
+	if cfg.NeedsConservativeOpenAICompatSanitization() {
+		messages = llm.SanitizeConservativeOpenAICompatMessages(messages)
+	}
 	converted := llm.ConvertToResponsesInput(messages)
 	input := converted.Input
 	if input == nil {
@@ -53,13 +65,15 @@ func buildResponsesWSFrame(
 		"type":  "response.create",
 		"model": cfg.UpstreamModel(),
 		"input": input,
-		"store": false,
+	}
+	if !cfg.NeedsConservativeOpenAICompatSanitization() {
+		frame["store"] = false
 	}
 	if converted.Instructions != "" {
 		frame["instructions"] = converted.Instructions
 	}
 	toolsInput := tools
-	if corelib.IsCodeGenURL(cfg.URL) {
+	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		toolsInput = corelib.SanitizeCodeGenOpenAIChatTools(tools)
 	}
 	if convTools := llm.ConvertToResponsesTools(toolsInput); len(convTools) > 0 {

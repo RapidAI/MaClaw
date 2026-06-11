@@ -8,6 +8,6 @@ export const MarkdownLink = ({ node, ...props }: any) => (
             e.preventDefault();
             if (props.href) BrowserOpenURL(props.href);
         }}
-        style={{ cursor: 'pointer', color: '#6366f1', textDecoration: 'underline' }}
+        style={{ cursor: 'pointer', color: 'var(--theme-link-color, #2f5f98)', textDecoration: 'underline' }}
     />
 );

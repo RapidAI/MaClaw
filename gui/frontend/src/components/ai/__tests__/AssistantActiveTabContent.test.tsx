@@ -133,7 +133,7 @@ describe("AssistantActiveTabContent", () => {
         );
 
         expect(screen.getByTestId("participant-status-machine-a").style.background).toBe("rgb(107, 114, 128)");
-        expect(screen.getByTestId("participant-status-local-maclaw").style.background).toBe("rgb(34, 197, 94)");
+        expect(screen.getByTestId("participant-status-local-maclaw").style.background).toBe("rgb(79, 127, 111)");
     });
 
     it("uses participant names across ve aliases in panel and mentions", () => {

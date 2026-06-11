@@ -29,8 +29,8 @@ export type RecentProject = {
 export type TaskContextMenu = { x: number; y: number; projectPath: string; name: string; pinned: boolean } | null;
 
 const taskIconForProject = (proj: RecentProject) => {
-    if (proj.pinned) return '\uD83D\uDCCC';
-    return proj.tags?.includes('forked_task') ? '\uD83D\uDD16' : '\uD83D\uDE80';
+    if (proj.pinned) return 'PIN';
+    return proj.tags?.includes('forked_task') ? 'REF' : 'TASK';
 };
 
 function emitProjectTaskClosed(projectPath: string) {
@@ -186,7 +186,7 @@ export const SidebarRecentTasks = ({
         ) : visibleRecentProjects.map(proj => (
             <div key={proj.id || proj.project_path}>
                 <div onDoubleClick={() => { void handleTaskDoubleClick(proj.project_path); }} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: openingTaskPath === proj.project_path ? 'progress' : 'pointer', transition: 'background 0.15s', opacity: openingTaskPath === proj.project_path ? 0.78 : 1 }} title={`${proj.name || proj.project_path}\n${proj.project_path}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                    <span style={{ flexShrink: 0, color: '#ff3b73', fontSize: '0.82rem', lineHeight: '1.2', width: '16px', textAlign: 'center', overflow: 'hidden' }}>{taskIconForProject(proj)}</span>
+                    <span style={{ flexShrink: 0, color: 'var(--theme-text-muted)', fontSize: '0.54rem', lineHeight: '1.35', width: '24px', textAlign: 'center', overflow: 'hidden', fontWeight: 800, letterSpacing: 0 }}>{taskIconForProject(proj)}</span>
                     <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
                         {proj.active_workflow && <span title={`${proj.active_workflow.type || 'workflow'} ${proj.active_workflow.phase || ''}`.trim()} style={{ display: 'inline-flex', maxWidth: '100%', marginBottom: '3px', padding: '1px 5px', borderRadius: '999px', border: '1px solid color-mix(in srgb, var(--theme-primary) 42%, transparent)', color: 'var(--theme-primary)', background: 'color-mix(in srgb, var(--theme-primary) 8%, transparent)', fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{textForLang(lang, 'Stage output', '\u9636\u6bb5\u4ea7\u51fa', '\u968e\u6bb5\u7522\u51fa')}</span>}
                         {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshRecentProjects(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{proj.name || proj.project_path}</span>}
@@ -216,7 +216,7 @@ export const SidebarRecentTasks = ({
                 >
                     <div className="modal-header">
                         <h3 style={{ fontSize: '0.88rem', margin: 0 }}>{textForLang(lang, 'Create task', '创建任务', '建立任務')}</h3>
-                        <button type="button" className="btn-close" onClick={closeCreateDialog} disabled={creatingTask}>×</button>
+                        <button type="button" className="btn-close" onClick={closeCreateDialog} disabled={creatingTask}>X</button>
                     </div>
                     <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                         <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }} htmlFor="recent-task-name-input">
@@ -248,9 +248,9 @@ export const SidebarRecentTasks = ({
             <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setTaskContextMenu(null)} />
             <div style={{ position: 'fixed', left: taskContextMenu.x, top: taskContextMenu.y, zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '132px' }}>
                 {[
-                    { label: textForLang(lang, 'Rename', '\u91cd\u547d\u540d', '\u91cd\u547d\u540d'), icon: '\u270F\uFE0F', action: () => { setRenamingTaskPath(taskContextMenu.projectPath); setRenameValue(taskContextMenu.name); setTaskContextMenu(null); } },
-                    { label: taskContextMenu.pinned ? textForLang(lang, 'Unpin', '\u53d6\u6d88\u7f6e\u9876', '\u53d6\u6d88\u7f6e\u9802') : textForLang(lang, 'Pin', '\u7f6e\u9876', '\u7f6e\u9802'), icon: '\uD83D\uDCCC', action: async () => { await pinTask(taskContextMenu.projectPath, !taskContextMenu.pinned); refreshRecentProjects(); setTaskContextMenu(null); } },
-                    { label: textForLang(lang, 'Remove', '\u5220\u9664', '\u522a\u9664'), icon: '\uD83D\uDDD1\uFE0F', action: async () => { await hideTask(taskContextMenu.projectPath); emitProjectTaskClosed(taskContextMenu.projectPath); refreshRecentProjects(); setTaskContextMenu(null); } },
+                    { label: textForLang(lang, 'Rename', '\u91cd\u547d\u540d', '\u91cd\u547d\u540d'), icon: 'edit', action: () => { setRenamingTaskPath(taskContextMenu.projectPath); setRenameValue(taskContextMenu.name); setTaskContextMenu(null); } },
+                    { label: taskContextMenu.pinned ? textForLang(lang, 'Unpin', '\u53d6\u6d88\u7f6e\u9876', '\u53d6\u6d88\u7f6e\u9802') : textForLang(lang, 'Pin', '\u7f6e\u9876', '\u7f6e\u9802'), icon: 'PIN', action: async () => { await pinTask(taskContextMenu.projectPath, !taskContextMenu.pinned); refreshRecentProjects(); setTaskContextMenu(null); } },
+                    { label: textForLang(lang, 'Remove', '\u5220\u9664', '\u522a\u9664'), icon: 'X', action: async () => { await hideTask(taskContextMenu.projectPath); emitProjectTaskClosed(taskContextMenu.projectPath); refreshRecentProjects(); setTaskContextMenu(null); } },
                 ].map(item => <div key={item.label} onClick={item.action} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 12px', cursor: 'pointer', fontSize: '0.78rem', color: 'var(--theme-text-primary)' }}><span>{item.icon}</span><span>{item.label}</span></div>)}
             </div>
         </>)}

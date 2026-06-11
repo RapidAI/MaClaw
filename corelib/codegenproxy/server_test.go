@@ -1138,7 +1138,16 @@ func TestClassifyToolArguments(t *testing.T) {
 
 func TestCodeGenOpenAICompatibilitySanitizesToolsForAnyModel(t *testing.T) {
 	payload := map[string]interface{}{
-		"model": "qax-codegen/Auto",
+		"model":               "qax-codegen/Auto",
+		"metadata":            map[string]interface{}{"trace": "x"},
+		"parallel_tool_calls": true,
+		"tool_choice":         "auto",
+		"function_call":       "auto",
+		"logprobs":            true,
+		"top_logprobs":        2,
+		"response_format":     map[string]interface{}{"type": "json_schema"},
+		"store":               true,
+		"stream_options":      map[string]interface{}{"include_usage": true},
 		"tools": []interface{}{
 			map[string]interface{}{
 				"type": "function",
@@ -1185,6 +1194,14 @@ func TestCodeGenOpenAICompatibilitySanitizesToolsForAnyModel(t *testing.T) {
 	}
 	if !containsPrefix(notes, "codegen_sanitize_functions:") {
 		t.Fatalf("notes missing functions sanitize entry: %#v", notes)
+	}
+	for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
+		if !containsPrefix(notes, "codegen_drop_"+key) {
+			t.Fatalf("notes missing %s drop entry: %#v", key, notes)
+		}
+		if _, ok := payload[key]; ok {
+			t.Fatalf("%s leaked into CodeGen request: %#v", key, payload)
+		}
 	}
 	tool := payload["tools"].([]interface{})[0].(map[string]interface{})
 	fn := tool["function"].(map[string]interface{})

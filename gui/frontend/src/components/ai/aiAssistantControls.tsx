@@ -66,7 +66,7 @@ export function VoiceLevelVisualizer({ onAudioLevelRef, isSpeaking, themeColor, 
 }
 
 export function getWindowControlButtonStyle(t: Theme, variant: "hide" | "fullscreen", active = false): React.CSSProperties {
-    const hoverBg = variant === "hide" ? "rgba(148, 163, 184, 0.14)" : "rgba(99, 102, 241, 0.16)";
+    const hoverBg = variant === "hide" ? "rgba(148, 163, 184, 0.14)" : "rgba(47, 95, 152, 0.14)";
     return {
         ...baseWindowControlBtnStyle,
         color: active ? t.text : t.actionBtnColor,

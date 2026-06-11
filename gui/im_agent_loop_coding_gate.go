@@ -284,6 +284,9 @@ func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, baseTool
 			tools = truncFiltered
 		}
 	}
+	if _, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, nil); applyFilter {
+		tools = h.applyWorkflowToolFilterWithCatalog(userID, tools, h.getTools())
+	}
 	tools = stripExecutionContractMetadataForLLM(tools)
 	return tools, estimateToolsTokens(tools), directModeToolsFiltered
 }

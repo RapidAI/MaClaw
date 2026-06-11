@@ -105,7 +105,7 @@ export const SidebarNavRail = ({
                         <img src={currentIcon} alt="Logo" style={{ width: '64px', height: '48px', objectFit: 'contain', transform: 'translateY(-2px)' }} />
                     </div>
                 )}
-                <div style={{ color: isTigerClaw ? '#7c3aed' : '#d94b3d', fontSize: isTigerClaw ? '0.64rem' : '0.72rem', fontWeight: 800, lineHeight: 1, fontFamily: 'Georgia, serif' }}>{brandSidebarName}</div>
+                <div style={{ color: isTigerClaw ? 'var(--theme-primary-strong)' : 'var(--theme-primary)', fontSize: isTigerClaw ? '0.64rem' : '0.72rem', fontWeight: 800, lineHeight: 1, fontFamily: 'Georgia, serif' }}>{brandSidebarName}</div>
             </div>
 
             {/* AI Assistant Button — clear entry point style */}
@@ -123,7 +123,7 @@ export const SidebarNavRail = ({
                     height: '36px',
                     borderRadius: '10px',
                     background: navTab === 'ai'
-                        ? 'linear-gradient(135deg, var(--theme-primary), color-mix(in srgb, var(--theme-primary) 70%, #7c3aed))'
+                        ? 'linear-gradient(135deg, var(--theme-primary), var(--theme-primary-strong))'
                         : 'linear-gradient(135deg, color-mix(in srgb, var(--theme-primary) 85%, transparent), color-mix(in srgb, var(--theme-primary) 60%, transparent))',
                     boxShadow: navTab === 'ai'
                         ? '0 2px 8px color-mix(in srgb, var(--theme-primary) 40%, transparent), 0 0 0 2px color-mix(in srgb, var(--theme-primary) 20%, transparent)'

@@ -301,55 +301,55 @@ describe('CodingAgentProgressStatus', () => {
     it('normalizes coding-agent guardrail labels and tones', () => {
         expect(codingAgentGuardrailStatusLabel('blocked', 'en')).toBe('Blocked');
         expect(codingAgentGuardrailStatusLabel('blocked', 'zh-Hans')).toBe('\u5df2\u62e6\u622a');
-        expect(codingAgentGuardrailStatusTone('blocked').accent).toBe('#d97706');
+        expect(codingAgentGuardrailStatusTone('blocked').accent).toBe('#64748b');
     });
 
     it('normalizes coding-agent command labels and tones', () => {
         expect(codingAgentCommandStatusLabel('passed', 'en')).toBe('Passed');
         expect(codingAgentCommandStatusLabel('none', 'en')).toBe('None');
         expect(codingAgentCommandStatusLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
-        expect(codingAgentCommandStatusTone('passed').accent).toBe('#059669');
-        expect(codingAgentCommandStatusTone('failed').accent).toBe('#dc2626');
+        expect(codingAgentCommandStatusTone('passed').accent).toBe('#4f7f6f');
+        expect(codingAgentCommandStatusTone('failed').accent).toBe('#b42318');
     });
 
     it('normalizes coding-agent file activity labels and tones', () => {
         expect(codingAgentFileActivityStatusLabel('changed', 'en')).toBe('Changed');
         expect(codingAgentFileActivityStatusLabel('read_only', 'en')).toBe('Read only');
         expect(codingAgentFileActivityStatusLabel('none', 'zh-Hans')).toBe('\u65e0\u52a8\u4f5c');
-        expect(codingAgentFileActivityStatusTone('changed').accent).toBe('#059669');
-        expect(codingAgentFileActivityStatusTone('read_only').accent).toBe('#2563eb');
+        expect(codingAgentFileActivityStatusTone('changed').accent).toBe('#4f7f6f');
+        expect(codingAgentFileActivityStatusTone('read_only').accent).toBe('#2f5f98');
     });
 
     it('normalizes coding-agent quality labels and tones', () => {
         expect(codingAgentQualityStatusLabel('passed', 'en')).toBe('Passed');
         expect(codingAgentQualityStatusLabel('warning', 'en')).toBe('Warning');
         expect(codingAgentQualityStatusLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
-        expect(codingAgentQualityStatusTone('passed').accent).toBe('#059669');
-        expect(codingAgentQualityStatusTone('warning').accent).toBe('#d97706');
-        expect(codingAgentQualityStatusTone('failed').accent).toBe('#dc2626');
+        expect(codingAgentQualityStatusTone('passed').accent).toBe('#4f7f6f');
+        expect(codingAgentQualityStatusTone('warning').accent).toBe('#64748b');
+        expect(codingAgentQualityStatusTone('failed').accent).toBe('#b42318');
     });
 
     it('normalizes coding-agent exploration labels and tones', () => {
         expect(codingAgentExplorationStatusLabel('explored', 'en')).toBe('Explored');
         expect(codingAgentExplorationStatusLabel('read_only', 'en')).toBe('Read');
         expect(codingAgentExplorationStatusLabel('missing', 'zh-Hans')).toBe('\u672a\u63a2\u7d22');
-        expect(codingAgentExplorationStatusTone('explored').accent).toBe('#059669');
-        expect(codingAgentExplorationStatusTone('missing').accent).toBe('#d97706');
+        expect(codingAgentExplorationStatusTone('explored').accent).toBe('#4f7f6f');
+        expect(codingAgentExplorationStatusTone('missing').accent).toBe('#64748b');
     });
 
     it('normalizes coding-agent verification labels and tones', () => {
         expect(codingAgentVerificationStatusLabel('passed', 'en')).toBe('Passed');
         expect(codingAgentVerificationStatusLabel('missing', 'en')).toBe('Not run');
         expect(codingAgentVerificationStatusLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
-        expect(codingAgentVerificationStatusTone('failed').accent).toBe('#dc2626');
-        expect(codingAgentVerificationStatusTone('missing').accent).toBe('#d97706');
+        expect(codingAgentVerificationStatusTone('failed').accent).toBe('#b42318');
+        expect(codingAgentVerificationStatusTone('missing').accent).toBe('#64748b');
     });
 
     it('normalizes coding-agent diff check labels and tones', () => {
         expect(codingAgentDiffCheckStatusLabel('checked', 'en')).toBe('Checked');
         expect(codingAgentDiffCheckStatusLabel('skipped', 'en')).toBe('Skipped');
         expect(codingAgentDiffCheckStatusLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
-        expect(codingAgentDiffCheckStatusTone('checked').accent).toBe('#059669');
+        expect(codingAgentDiffCheckStatusTone('checked').accent).toBe('#4f7f6f');
         expect(codingAgentDiffCheckStatusTone('skipped').accent).toBe('#64748b');
     });
 
@@ -358,9 +358,9 @@ describe('CodingAgentProgressStatus', () => {
         expect(codingAgentToolOutcomeLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
         expect(codingAgentToolOutcomeLabel('blocked', 'zh-Hans')).toBe('\u5df2\u963b\u65ad');
         expect(codingAgentToolOutcomeLabel('other', 'en')).toBe('Unknown');
-        expect(codingAgentToolOutcomeTone('success').accent).toBe('#059669');
-        expect(codingAgentToolOutcomeTone('failed').accent).toBe('#dc2626');
-        expect(codingAgentToolOutcomeTone('blocked').accent).toBe('#d97706');
+        expect(codingAgentToolOutcomeTone('success').accent).toBe('#4f7f6f');
+        expect(codingAgentToolOutcomeTone('failed').accent).toBe('#b42318');
+        expect(codingAgentToolOutcomeTone('blocked').accent).toBe('#64748b');
         expect(formatCodingAgentDuration(0)).toBe('0ms');
         expect(formatCodingAgentDuration(250)).toBe('250ms');
         expect(formatCodingAgentDuration(1250)).toBe('1.3s');
@@ -554,13 +554,13 @@ describe('CodingAgentProgressStatus', () => {
     });
 
     it('maps status phases to distinct semantic tones', () => {
-        expect(codingAgentStatusTone('running').accent).toBe('#2563eb');
-        expect(codingAgentStatusTone('retrying').accent).toBe('#d97706');
-        expect(codingAgentStatusTone('failed').accent).toBe('#dc2626');
-        expect(codingAgentStatusTone('completed').accent).toBe('#059669');
-        expect(codingAgentStatusTone('result').accent).toBe('#059669');
+        expect(codingAgentStatusTone('running').accent).toBe('#2f5f98');
+        expect(codingAgentStatusTone('retrying').accent).toBe('#64748b');
+        expect(codingAgentStatusTone('failed').accent).toBe('#b42318');
+        expect(codingAgentStatusTone('completed').accent).toBe('#4f7f6f');
+        expect(codingAgentStatusTone('result').accent).toBe('#4f7f6f');
         expect(codingAgentStatusTone('skipped').accent).toBe('#64748b');
-        expect(codingAgentStatusTone('queued').accent).toBe('#2563eb');
+        expect(codingAgentStatusTone('queued').accent).toBe('#2f5f98');
         expect(codingAgentStatusLabel('queued', 'en')).toBe('Status');
         expect(codingAgentStatusLabel('queued', 'zh-Hans')).toBe('\u72b6\u6001');
     });

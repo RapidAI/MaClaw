@@ -5843,3 +5843,91 @@ SubAgent 激活路径仅保留两条：
 - 所有 18 个 DirectCodingSubAgent 测试通过
 - 所有 CodingGate / GateIntent / ShouldUseSubAgent / RouteTools / RouteSubAgent 测试通过
 - GUI `go vet` 通过
+
+
+### 103. SSH 后台任务注册表持久化 + Orphan 任务重新发现
+
+**来源**：用户反馈——SSH 后台任务在 agent loop 中断/进程重启后丢失，LLM 无法发现已运行的后台任务导致重复创建（截图显示 6 个相同的 sshpass 后台任务并行运行）。
+
+**根因**：`SSHBackgroundTaskManager.tasks` 是纯内存 `map[string]*SSHBackgroundTask`，没有任何持久化机制。当 maclaw 进程重启（或 agent loop 因各种原因终止后重新启动）时：
+1. `NewSSHBackgroundTaskManager()` 创建全新的空 map
+2. `list_tasks` 返回 "当前无后台任务"
+3. `check_task(旧task_id)` 返回 "background task not found"
+4. 但远程服务器上的进程仍在运行（通过 `nohup` 保证存活）
+5. 日志文件 `/tmp/maclaw_bg_*.log` 和 PID 文件 `/tmp/maclaw_bg_*.pid` 仍在远程服务器上
+6. LLM 看到 list_tasks 为空，以为没有任务在跑，重新提交相同命令
+
+**修复（两层机制性修复）**：
+
+#### Layer 1: 任务注册表持久化到磁盘
+
+- `corelib/remote/ssh_background_task_persist.go`：新文件
+  - `SetPersistDir(dir string)`：设置持久化目录，调用后立即从文件加载已有任务
+  - `saveToDisk()`：将 active 或最近 24 小时内的任务序列化为 JSON 写入 `{dir}/ssh_bg_tasks.json`（原子写入：临时文件 + rename）
+  - `loadPersistedTasks()`：从文件恢复 active 状态的任务到内存 map（不覆盖已有的内存任务）
+  - `signalPersist()`：异步 debounced 触发持久化（150ms 去抖，避免频繁写盘）
+  - `persistLoop()`：后台 goroutine，消费 debounce 信号后执行 `saveToDisk()`
+  - `extractHostIDFromSessionID()`：从 session ID 格式 `ssh_user@host:port_N` 中提取 host ID
+- `corelib/remote/ssh_background_task.go`：
+  - `SSHBackgroundTaskManager` 新增 `persistDir`、`persistCh`、`persistOnce` 字段
+  - `Submit()` 成功后调用 `signalPersist()`
+  - `CheckTask()` 状态变更后调用 `signalPersist()`
+  - `KillTask()` 后调用 `signalPersist()`
+- `gui/im_ssh_tools.go`：`ensureSSHManager()` 创建 `bgTaskMgr` 后调用 `SetPersistDir(app.GetDataDir())`
+- `tui/app.go`：创建 `bgTaskMgr` 后调用 `SetPersistDir(filepath.Join(dataDir, "data"))`
+- `tui/pipe_mode.go`：同步添加持久化
+
+#### Layer 2: SSH 重连时重新发现 Orphan 任务
+
+- `corelib/remote/ssh_background_task_persist.go`：
+  - `RediscoverOrphanTasks(sessionID string)`：SSH 连接成功后调用
+    1. 扫描远程服务器 `/tmp/maclaw_bg_*.pid` 文件
+    2. 读取每个 PID 文件内容
+    3. 检查 PID 是否存活（`kill -0`）
+    4. 存活且注册表中没有 → 重新注册到 `tasks` map
+    5. 注册后触发 `saveToDisk()` 持久化
+- `gui/im_ssh_tools.go`：
+  - 新建 SSH 会话成功后异步调用 `bgTaskMgr.RediscoverOrphanTasks(session.ID)`
+  - 重连成功后同步调用
+- `tui/app.go`：TUI 的 `OnConnected` 回调中异步调用 `RediscoverOrphanTasks`
+
+**持久化文件格式**：
+```json
+{
+  "tasks": [
+    {
+      "task_id": "bg_1781147540_31",
+      "session_id": "ssh_root@api.example.com:22_1",
+      "host_id": "root@api.example.com:22",
+      "command": "pip install torch",
+      "log_file": "/tmp/maclaw_bg_bg_1781147540_31.log",
+      "pid_file": "/tmp/maclaw_bg_bg_1781147540_31.pid",
+      "status": "running",
+      "pid": "12345",
+      "started_at": "2026-06-11T10:00:00Z"
+    }
+  ],
+  "updated_at": "2026-06-11T10:05:00Z"
+}
+```
+
+**机制性特征**：
+- **单一数据源**：`SetPersistDir` 是持久化配置的唯一入口，GUI/TUI 共享同一套持久化逻辑
+- **不修改现有 API**：`ListTasks()`、`CheckTask()`、`Submit()` 行为不变，持久化对消费方透明
+- **自动清理**：只持久化 active 或 24 小时内的任务，文件不会无限膨胀
+- **重新发现**：远程进程通过 PID 文件和 `kill -0` 验证存活，不依赖本地注册表
+- **向后兼容**：不调用 `SetPersistDir` 时行为完全不变（纯内存）
+
+**测试**：5 个新增测试全部通过
+- `TestSetPersistDir_SavesAndLoadsActiveTasks`：active 任务持久化后恢复，completed 不恢复
+- `TestSetPersistDir_DoesNotOverwriteExistingInMemoryTask`：磁盘加载不覆盖内存中的最新状态
+- `TestExtractHostIDFromSessionID`：session ID → host ID 解析正确
+- `TestSignalPersist_NoPersistDirIsNoop`：未配置持久化时不 panic
+- `TestSaveToDisk_ExpiresOldNonActiveTasks`：>24h 的非 active 任务不持久化
+
+**验收标准**：
+- 进程重启后 `list_tasks` 能列出之前仍在运行的后台任务
+- SSH 重连后自动发现远程服务器上的 orphan 进程并注册
+- LLM 不再因 `list_tasks` 返回空而创建重复的后台任务
+- 所有 11 个 corelib/remote SSH 测试通过
+- GUI / TUI / corelib 编译通过、`go vet` 通过

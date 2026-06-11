@@ -74,6 +74,10 @@ func buildOpenAIChatRequestBody(
 	if corelib.NeedsSystemMerge(cfg) {
 		messages = corelib.MergeSystemIntoUser(messages)
 	}
+	if cfg.NeedsConservativeOpenAICompatSanitization() {
+		messages = sanitizeConservativeOpenAICompatMessages(messages)
+	}
+	messages = sanitizeEmptyToolCalls(messages)
 	messages = sanitizeInvalidToolCallArguments(messages)
 	messages = sanitizeOrphanedToolCalls(messages)
 
@@ -84,7 +88,7 @@ func buildOpenAIChatRequestBody(
 		"stream":   opts.Stream,
 	}
 	if len(opts.Tools) > 0 {
-		if corelib.IsCodeGenURL(cfg.URL) {
+		if cfg.NeedsConservativeOpenAICompatSanitization() {
 			reqBody["tools"] = corelib.SanitizeCodeGenOpenAIChatTools(opts.Tools)
 		} else {
 			reqBody["tools"] = opts.Tools
@@ -111,6 +115,9 @@ func buildOpenAIChatRequestBody(
 			reqBody[k] = v
 		}
 	}
+	if cfg.NeedsConservativeOpenAICompatSanitization() {
+		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)
+	}
 	return reqBody
 }
 
@@ -119,9 +126,20 @@ func BuildOpenAIChatRequestData(
 	messages []interface{},
 	opts OpenAIChatRequestOptions,
 ) (endpoint string, body []byte, err error) {
-	endpoint = strings.TrimRight(cfg.URL, "/") + "/chat/completions"
+	endpoint = BuildOpenAIChatCompletionsEndpoint(cfg.URL)
 	body, err = json.Marshal(buildOpenAIChatRequestBody(cfg, messages, opts))
 	return endpoint, body, err
+}
+
+func BuildOpenAIChatCompletionsEndpoint(rawURL string) string {
+	endpoint := strings.TrimRight(strings.TrimSpace(rawURL), "/")
+	if strings.HasSuffix(endpoint, "/chat/completions") {
+		return endpoint
+	}
+	if strings.HasSuffix(endpoint, "/v1") {
+		return endpoint + "/chat/completions"
+	}
+	return endpoint + "/v1/chat/completions"
 }
 
 func NewOpenAIChatRequest(
@@ -145,6 +163,117 @@ func NewOpenAIChatRequest(
 	}
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	return req, data, endpoint, nil
+}
+
+func SummarizeOpenAIChatRequestBody(body []byte) string {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return fmt.Sprintf("invalid_json req_len=%d", len(body))
+	}
+	messagesLen := jsonArrayLen(payload["messages"])
+	toolsLen := jsonArrayLen(payload["tools"])
+	functionsLen := jsonArrayLen(payload["functions"])
+	_, hasStreamOptions := payload["stream_options"]
+	_, hasToolChoice := payload["tool_choice"]
+	_, hasResponseFormat := payload["response_format"]
+	return fmt.Sprintf("req_len=%d model=%q stream=%v messages=%d tools=%d functions=%d stream_options=%t tool_choice=%t response_format=%t",
+		len(body), payload["model"], payload["stream"], messagesLen, toolsLen, functionsLen, hasStreamOptions, hasToolChoice, hasResponseFormat)
+}
+
+func jsonArrayLen(value interface{}) int {
+	switch v := value.(type) {
+	case []interface{}:
+		return len(v)
+	case []map[string]interface{}:
+		return len(v)
+	default:
+		return 0
+	}
+}
+
+func sanitizeConservativeOpenAICompatMessages(messages []interface{}) []interface{} {
+	normalized := make([]interface{}, 0, len(messages))
+	for _, message := range messages {
+		switch m := message.(type) {
+		case map[string]interface{}:
+			_, hasReasoning := m["reasoning_content"]
+			contentIsNil := false
+			if content, ok := m["content"]; ok && content == nil {
+				contentIsNil = true
+			}
+			if !hasReasoning && !contentIsNil {
+				normalized = append(normalized, message)
+				continue
+			}
+			patched := make(map[string]interface{}, len(m))
+			for k, v := range m {
+				if k == "reasoning_content" {
+					continue
+				}
+				if k == "content" && v == nil {
+					patched[k] = ""
+					continue
+				}
+				patched[k] = v
+			}
+			normalized = append(normalized, patched)
+		case map[string]string:
+			if _, ok := m["reasoning_content"]; !ok {
+				normalized = append(normalized, message)
+				continue
+			}
+			patched := make(map[string]string, len(m)-1)
+			for k, v := range m {
+				if k == "reasoning_content" {
+					continue
+				}
+				patched[k] = v
+			}
+			normalized = append(normalized, patched)
+		default:
+			normalized = append(normalized, message)
+		}
+	}
+	return normalized
+}
+
+func SanitizeConservativeOpenAICompatMessages(messages []interface{}) []interface{} {
+	messages = sanitizeConservativeOpenAICompatMessages(messages)
+	return sanitizeEmptyToolCalls(messages)
+}
+
+func sanitizeEmptyToolCalls(messages []interface{}) []interface{} {
+	normalized := make([]interface{}, 0, len(messages))
+	for _, message := range messages {
+		if !hasEmptyToolCalls(message) {
+			normalized = append(normalized, message)
+			continue
+		}
+		normalized = append(normalized, copyMapWithout(message, "tool_calls"))
+	}
+	return normalized
+}
+
+func hasEmptyToolCalls(message interface{}) bool {
+	m, ok := toMapInterface(message)
+	if !ok {
+		return false
+	}
+	raw, exists := m["tool_calls"]
+	if !exists || raw == nil {
+		return false
+	}
+	switch v := raw.(type) {
+	case []interface{}:
+		return len(v) == 0
+	case []ToolCall:
+		return len(v) == 0
+	case []map[string]interface{}:
+		return len(v) == 0
+	default:
+		data, err := json.Marshal(v)
+		return err == nil && string(data) == "[]"
+	}
 }
 
 func sanitizeInvalidToolCallArguments(messages []interface{}) []interface{} {
@@ -533,7 +662,7 @@ func DoOpenAIRequestRaw(
 	tools []map[string]interface{},
 	client *http.Client,
 ) (*Response, []byte, error) {
-	req, _, endpoint, err := NewOpenAIChatRequest(ctx, cfg, messages, OpenAIChatRequestOptions{
+	req, reqBody, endpoint, err := NewOpenAIChatRequest(ctx, cfg, messages, OpenAIChatRequestOptions{
 		Stream: false,
 		Tools:  tools,
 	})
@@ -553,8 +682,39 @@ func DoOpenAIRequestRaw(
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	log.Printf("[LLM] done %s model=%s configured_model=%s protocol=%s status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+	requestSummary := ""
 	if resp.StatusCode != http.StatusOK {
+		requestSummary = " request=" + SummarizeOpenAIChatRequestBody(reqBody)
+	}
+	log.Printf("[LLM] done %s model=%s configured_model=%s protocol=%s status=%d elapsed=%s body_len=%d%s %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), requestSummary, traceFields)
+	if resp.StatusCode != http.StatusOK {
+		if ShouldRetryOpenAIWithoutTools(cfg, resp.StatusCode, messages, tools) {
+			log.Printf("[LLM] retry_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400 tools=%d %s", endpoint, upstreamModel, cfg.Model, len(tools), traceFields)
+			req, reqBody, endpoint, err = NewOpenAIChatRequest(ctx, cfg, messages, OpenAIChatRequestOptions{Stream: false})
+			if err != nil {
+				return nil, body, err
+			}
+			retryStartedAt := time.Now()
+			resp, err = client.Do(req)
+			if err != nil {
+				log.Printf("[LLM] retry_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(retryStartedAt).Round(time.Millisecond), err, traceFields)
+				return nil, body, fmt.Errorf("[%s] %w", endpoint, err)
+			}
+			defer resp.Body.Close()
+			body, _ = io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+			requestSummary = ""
+			if resp.StatusCode != http.StatusOK {
+				requestSummary = " request=" + SummarizeOpenAIChatRequestBody(reqBody)
+			}
+			log.Printf("[LLM] retry_without_tools done %s model=%s configured_model=%s protocol=%s status=%d elapsed=%s body_len=%d%s %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, resp.StatusCode, time.Since(retryStartedAt).Round(time.Millisecond), len(body), requestSummary, traceFields)
+			if resp.StatusCode == http.StatusOK {
+				result, err := ParseNonStreamOpenAIResponseBody(body)
+				if err != nil {
+					return nil, body, err
+				}
+				return result, body, nil
+			}
+		}
 		return nil, body, &HTTPStatusError{StatusCode: resp.StatusCode, Body: body}
 	}
 
@@ -563,6 +723,47 @@ func DoOpenAIRequestRaw(
 		return nil, body, err
 	}
 	return result, body, nil
+}
+
+func ShouldRetryOpenAIWithoutTools(cfg corelib.MaclawLLMConfig, statusCode int, messages []interface{}, tools []map[string]interface{}) bool {
+	return statusCode == http.StatusBadRequest &&
+		len(tools) > 0 &&
+		cfg.NeedsConservativeOpenAICompatSanitization() &&
+		!hasOpenAIToolInteractionMessages(messages)
+}
+
+func hasOpenAIToolInteractionMessages(messages []interface{}) bool {
+	for _, message := range messages {
+		m, ok := toMapInterface(message)
+		if !ok {
+			continue
+		}
+		role, _ := m["role"].(string)
+		if role == "tool" || role == "function" {
+			return true
+		}
+		if _, ok := m["tool_calls"]; ok {
+			return msgIsAssistantWithToolCalls(m)
+		}
+		if raw, ok := m["function_call"]; ok && !isEmptyFunctionCall(raw) {
+			return true
+		}
+	}
+	return false
+}
+
+func isEmptyFunctionCall(raw interface{}) bool {
+	if raw == nil {
+		return true
+	}
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		return len(v) == 0
+	case map[string]string:
+		return len(v) == 0
+	default:
+		return false
+	}
 }
 
 // sseChunk represents a single SSE chunk from an OpenAI-compatible streaming response.

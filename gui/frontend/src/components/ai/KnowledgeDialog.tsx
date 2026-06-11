@@ -118,7 +118,7 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
             <div style={{ ...modalStyle, position: "relative", background: theme.bg, border: `1px solid ${theme.divider}` }}>
                 <div style={{ ...headerStyle, borderBottom: `1px solid ${theme.divider}` }}>
                     <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 600, color: theme.text }}>
-                        📚 {title}
+                        {title}
                     </h3>
                     <button
                         onClick={onClose}
@@ -135,7 +135,7 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
                         title={lang === "en" ? "Close" : "关闭"}
                         aria-label={lang === "en" ? "Close" : "关闭"}
                     >
-                        ✕
+                        X
                     </button>
                 </div>
                 <div style={bodyStyle}>

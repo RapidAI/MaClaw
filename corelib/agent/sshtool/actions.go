@@ -275,6 +275,17 @@ func SSHExecBackground(deps SSHToolDeps, args map[string]interface{}) string {
 		deps.OnExecIteration(sessionID)
 	}
 
+	if task.Reused {
+		elapsed := time.Since(task.StartedAt).Round(time.Second)
+		return fmt.Sprintf("♻️ 检测到相同命令的任务已在运行，复用已有任务（避免重复创建）\n"+
+			"任务 ID: %s\n"+
+			"命令: %s\n"+
+			"PID: %s\n"+
+			"已运行: %s\n\n"+
+			"💡 使用 check_task (task_id=%s) 查看进度",
+			task.TaskID, task.Command, task.PID, elapsed, task.TaskID)
+	}
+
 	return fmt.Sprintf("✅ 后台任务已提交\n"+
 		"任务 ID: %s\n"+
 		"命令: %s\n"+
@@ -335,8 +346,13 @@ func SSHListTasks(deps SSHToolDeps) string {
 	sb.WriteString(fmt.Sprintf("后台任务（%d 个）:\n", len(tasks)))
 	for _, t := range tasks {
 		elapsed := time.Since(t.StartedAt).Round(time.Second)
+		statusStr := string(t.Status)
+		// 对于从磁盘恢复且超过 2 分钟未验证的 running 任务，标注状态待验证
+		if t.Status.IsActive() && !t.LastCheck.IsZero() && time.Since(t.LastCheck) > 2*time.Minute {
+			statusStr += " (状态待验证，请用 check_task 确认)"
+		}
 		sb.WriteString(fmt.Sprintf("  - %s | PID: %s | 状态: %s | 已运行: %s\n    命令: %s\n",
-			t.TaskID, t.PID, t.Status, elapsed, t.Command))
+			t.TaskID, t.PID, statusStr, elapsed, t.Command))
 	}
 	return sb.String()
 }

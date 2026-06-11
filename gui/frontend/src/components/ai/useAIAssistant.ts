@@ -2337,7 +2337,7 @@ function appendBackgroundLaunchMessages(messages: ChatMessage[], outgoingText: s
 }
 
 function createNewsMessage(article: any): ChatMessage {
-    const iconByCategory: Record<Exclude<NewsCategory, ''>, string> = { notice: '📙', update: '🚀', tip: '💡', alert: '⚠️' };
+    const iconByCategory: Record<Exclude<NewsCategory, ''>, string> = { notice: 'INFO', update: 'NEW', tip: 'TIP', alert: 'ALERT' };
     const category = normalizeNewsCategory(article?.category);
     const title = typeof article?.title === 'string' ? article.title : '';
     const body = typeof article?.content === 'string' ? article.content : '';
@@ -2352,7 +2352,7 @@ function createNewsMessage(article: any): ChatMessage {
             category,
             title,
             body,
-            icon: category ? iconByCategory[category] : '📰',
+            icon: category ? iconByCategory[category] : 'INFO',
         },
         timestamp: Date.now(),
     };
@@ -2382,7 +2382,7 @@ function isTraditionalSkillConfirmLang(lang: string): boolean {
 function criticalConfirmFeedback(lang: string, confirmed: boolean): string {
     const normalized = lang.trim().toLowerCase();
     if (normalized === 'en' || normalized.startsWith('en-')) {
-        return confirmed ? '\n\n✓ Confirmed. Installing...' : '\n\n✕ Installation rejected.';
+        return confirmed ? '\n\nConfirmed. Installing...' : '\n\nInstallation rejected.';
     }
     if (isTraditionalSkillConfirmLang(normalized)) {
         return confirmed ? '\n\nConfirmed. Installing...' : '\n\nInstallation rejected.';
@@ -3905,7 +3905,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             ));
         } catch (err: any) {
             setMessages(prev => prev.map(m =>
-                m.id === assistantMsgId ? { ...m, content: `❌ /btw 查询失败: ${err?.message || String(err)}` } : m
+                m.id === assistantMsgId ? { ...m, content: `ERROR /btw 查询失败: ${err?.message || String(err)}` } : m
             ));
         } finally {
             offBtwToken();
@@ -4343,7 +4343,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             if (accepted) {
                 // Show the injected text as a user message in the chat area
                 // so the user has visual confirmation.
-                setMessages(prev => [...prev, createUserMessage("💬 " + text, sessionKey || 'desktop-user')]);
+                setMessages(prev => [...prev, createUserMessage(text, sessionKey || 'desktop-user')]);
             }
             return accepted;
         } catch {

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rapidai.local/maclaw-cli/invoke.schema.json",
+  "title": "maclaw-cli invoke request",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "Command action. Defaults to continue.",
+      "enum": ["continue", "ask", "run", "send", "poll", "watch", "handshake", "ack", "tool-result", "doctor", "bootstrap"]
+    },
+    "clientId": { "type": "string", "description": "Stable calling agent id; part of state key." },
+    "sessionId": { "type": "string", "description": "Stable task/session id; part of state key." },
+    "conversationId": { "type": "string", "description": "Protocol conversation id override." },
+    "text": { "type": "string", "description": "Prompt text or tool-result text." },
+    "message": { "type": "object", "description": "Full ThirdPartyMessagePayload for send.", "additionalProperties": true },
+    "attachments": {
+      "type": "array",
+      "description": "ThirdPartyMediaReference array for send.",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "eventId": { "type": "string", "description": "Stable incoming event id for send idempotency." },
+    "messageId": { "type": "string", "description": "Stable source message id for send idempotency." },
+    "timeoutSec": { "type": "integer", "minimum": 0 },
+    "lockTimeoutSec": { "type": "integer", "minimum": 1, "description": "State/run lock wait timeout seconds." },
+    "limit": { "type": "integer", "minimum": 1 },
+    "cursor": { "type": "string" },
+    "waitPolls": { "type": "integer", "minimum": 1 },
+    "ack": { "type": "boolean" },
+    "requireSession": { "type": "boolean", "default": true },
+    "pretty": { "type": "boolean" },
+    "toolsPath": { "type": "string" },
+    "messageIds": { "type": "array", "items": { "type": "string" } },
+    "status": { "type": "string", "enum": ["success", "error", "rejected", "cancelled", "canceled", "timeout", "delivered"] },
+    "toolCallId": { "type": "string" },
+    "toolPlanId": { "type": "string" },
+    "stepId": { "type": "string" },
+    "resultId": { "type": "string" },
+    "idempotencyKey": { "type": "string", "description": "Stable idempotency key for tool-result." },
+    "result": { "type": "object", "additionalProperties": true },
+    "errorCode": { "type": "string" },
+    "errorMessage": { "type": "string" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "action": { "const": "ack" } }, "required": ["action"] },
+      "then": { "required": ["messageIds"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "tool-result" } }, "required": ["action"] },
+      "then": { "required": ["status"] }
+    }
+  ],
+  "examples": [
+    { "action": "continue", "clientId": "planner", "sessionId": "task-123", "text": "Continue the task", "requireSession": true },
+    { "action": "poll", "clientId": "planner", "sessionId": "task-123" },
+    { "action": "tool-result", "clientId": "desktop-agent", "sessionId": "task-123", "toolCallId": "tc_001", "status": "success", "result": { "ok": true } }
+  ]
+}

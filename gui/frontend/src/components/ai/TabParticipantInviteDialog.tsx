@@ -81,7 +81,7 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
                     <button data-testid="tab-participant-invite-close" type="button" disabled={!!addingId} onClick={onClose} style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: addingId ? "default" : "pointer", fontSize: 16, lineHeight: 1, opacity: addingId ? 0.45 : 1 }}>x</button>
                 </div>
                 {loading && <div style={{ padding: "10px 8px", fontSize: 12, color: theme.textMuted }}>{isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}</div>}
-                {!loading && error && <div data-testid="tab-participant-invite-error" style={{ padding: "10px 8px", fontSize: 12, color: theme.errorText || "#dc2626" }}>{error}</div>}
+                {!loading && error && <div data-testid="tab-participant-invite-error" style={{ padding: "10px 8px", fontSize: 12, color: theme.errorText || "#b42318" }}>{error}</div>}
                 {!loading && !error && available.length === 0 && <div data-testid="tab-participant-invite-empty" style={{ padding: "10px 8px", fontSize: 12, color: theme.textMuted }}>{isZh ? "\u6ca1\u6709\u53ef\u6dfb\u52a0\u7684\u6570\u5b57\u5458\u5de5" : "No available digital employees"}</div>}
                 {!loading && !error && available.map((ve, index) => {
                     const participantId = virtualEmployeeParticipantId(ve);
@@ -100,7 +100,7 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
                             setAddingId("");
                         }
                     }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", border: "none", background: "transparent", color: theme.text, cursor: addingId ? "default" : "pointer", textAlign: "left", borderRadius: 6, opacity: addingId && addingId !== participantId ? 0.55 : 1 }}>
-                        <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#22c55e", flexShrink: 0 }} />
+                        <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#4f7f6f", flexShrink: 0 }} />
                         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{addingId === participantId ? (isZh ? "\u6dfb\u52a0\u4e2d..." : "Adding...") : displayName}</span>
                     </button>;
                 })}

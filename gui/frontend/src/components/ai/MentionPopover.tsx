@@ -129,7 +129,7 @@ export function MentionPopover({
                             fontSize: 12,
                             color: theme.text || "#e0e0e0",
                             background: idx === selectedIndex
-                                ? (theme.sendBtnBg || "#3b82f6") + "20"
+                                ? (theme.sendBtnBg || "#2f5f98") + "20"
                                 : "transparent",
                             cursor: "pointer",
                             transition: "background 0.1s",
@@ -141,7 +141,7 @@ export function MentionPopover({
                                 width: 7,
                                 height: 7,
                                 borderRadius: "50%",
-                                background: p.online ? "#22c55e" : "#6b7280",
+                                background: p.online ? "#4f7f6f" : "#6b7280",
                                 flexShrink: 0,
                             }}
                         />

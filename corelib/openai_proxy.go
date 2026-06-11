@@ -525,6 +525,7 @@ func (p *OpenAIProxy) forwardOpenAI(body map[string]interface{}) ([]byte, int, e
 
 	// Force stream to false
 	fwd["stream"] = false
+	delete(fwd, "stream_options")
 
 	// Marshal body back to JSON
 	jsonBody, err := json.Marshal(fwd)

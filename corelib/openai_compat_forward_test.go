@@ -208,6 +208,11 @@ func TestForwardOpenAICompatStreamRequestNormalizesCodeGenAutoModel(t *testing.T
 		if got := body["stream"]; got != true {
 			t.Fatalf("stream = %#v, want true", got)
 		}
+		for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
+			if _, ok := body[key]; ok {
+				t.Fatalf("%s leaked into CodeGen stream request: %#v", key, body)
+			}
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -217,7 +222,89 @@ func TestForwardOpenAICompatStreamRequestNormalizesCodeGenAutoModel(t *testing.T
 	})}
 
 	resp, err := ForwardOpenAICompatStreamRequest(context.Background(), MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto"}, map[string]any{
+		"messages":            []any{},
+		"metadata":            map[string]any{"trace": "x"},
+		"parallel_tool_calls": true,
+		"tool_choice":         "auto",
+		"function_call":       "auto",
+		"logprobs":            true,
+		"top_logprobs":        2,
+		"response_format":     map[string]any{"type": "json_schema"},
+		"store":               true,
+		"stream_options":      map[string]any{"include_usage": true},
+	}, client)
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatStreamRequest() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestForwardOpenAICompatStreamRequestAddsUsageForNonCodeGen(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		streamOptions, _ := body["stream_options"].(map[string]any)
+		if streamOptions == nil {
+			t.Fatalf("stream_options missing from non-CodeGen stream request: %#v", body)
+		}
+		if got := streamOptions["include_usage"]; got != true {
+			t.Fatalf("stream_options.include_usage = %#v, want true", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(bytes.NewBufferString("data: [DONE]\n\n")),
+			Request:    req,
+		}, nil
+	})}
+
+	resp, err := ForwardOpenAICompatStreamRequest(context.Background(), MaclawLLMConfig{URL: "https://api.example.com/v1", Model: "gpt-test"}, map[string]any{
 		"messages": []any{},
+	}, client)
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatStreamRequest() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestForwardOpenAICompatStreamRequestSanitizesQwenProvider(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
+			if _, ok := body[key]; ok {
+				t.Fatalf("%s leaked into Qwen stream request: %#v", key, body)
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(bytes.NewBufferString("data: [DONE]\n\n")),
+			Request:    req,
+		}, nil
+	})}
+
+	resp, err := ForwardOpenAICompatStreamRequest(context.Background(), MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b"}, map[string]any{
+		"messages":            []any{},
+		"metadata":            map[string]any{"trace": "x"},
+		"parallel_tool_calls": true,
+		"tool_choice":         "auto",
+		"function_call":       "auto",
+		"logprobs":            true,
+		"top_logprobs":        2,
+		"response_format":     map[string]any{"type": "json_schema"},
+		"store":               true,
+		"stream_options":      map[string]any{"include_usage": true},
 	}, client)
 	if err != nil {
 		t.Fatalf("ForwardOpenAICompatStreamRequest() error = %v", err)

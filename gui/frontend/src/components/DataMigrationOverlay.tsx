@@ -76,7 +76,7 @@ export const DataMigrationOverlay = () => {
                     <div style={{
                         width: `${Math.min(100, progress.percent)}%`,
                         height: '100%',
-                        background: progress.phase === 'error' ? '#ef4444' : progress.phase === 'done' ? '#22c55e' : '#3b82f6',
+                        background: progress.phase === 'error' ? 'var(--theme-danger, #b42318)' : progress.phase === 'done' ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-primary, #2f5f98)',
                         borderRadius: '4px',
                         transition: 'width 0.3s ease',
                     }} />

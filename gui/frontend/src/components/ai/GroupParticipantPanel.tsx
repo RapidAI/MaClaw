@@ -62,9 +62,9 @@ function participantIconStyle(p: Participant, theme: Theme): CSSProperties {
         alignItems: "center",
         justifyContent: "center",
         flexShrink: 0,
-        color: isLocal ? "#34d399" : theme.btnColor,
-        background: isLocal ? "rgba(52, 211, 153, 0.12)" : "rgba(99, 102, 241, 0.12)",
-        border: `1px solid ${isLocal ? "rgba(52, 211, 153, 0.28)" : "rgba(99, 102, 241, 0.24)"}`,
+        color: isLocal ? "#4f7f6f" : (theme.btnColor || "#2f5f98"),
+        background: isLocal ? "rgba(52, 211, 153, 0.12)" : "rgba(47, 95, 152, 0.10)",
+        border: `1px solid ${isLocal ? "rgba(52, 211, 153, 0.28)" : "rgba(47, 95, 152, 0.22)"}`,
     };
 }
 
@@ -104,7 +104,7 @@ function ParticipantTypeIcon({ participant, theme }: { participant: Participant;
                     width: 7,
                     height: 7,
                     borderRadius: "50%",
-                    background: participant.online ? "#22c55e" : "#6b7280",
+                    background: participant.online ? "#4f7f6f" : "#6b7280",
                     border: `1.5px solid ${theme.titleBarBg}`,
                     boxSizing: "border-box",
                 }}
@@ -491,7 +491,7 @@ export function GroupParticipantPanel({
                             color: theme.text,
                             cursor: "pointer",
                         }}
-                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = (theme.sendBtnBg || "#3b82f6") + "20"; }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = (theme.sendBtnBg || "#2f5f98") + "20"; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
                         {isZh ? "\u4e0e\u5b83\u4ea4\u8c08" : "Talk to"}

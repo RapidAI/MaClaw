@@ -107,6 +107,22 @@ func TestNormalizeCodeGenSSOProvider(t *testing.T) {
 	}
 }
 
+func TestQwenOpenAICompatNeedsConservativeSanitization(t *testing.T) {
+	for _, cfg := range []MaclawLLMConfig{
+		{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "custom-model"},
+		{URL: "https://llm.example.test/v1", Model: "qwen-27b"},
+		{URL: "https://llm.example.test/v1", Model: "Qwen3-27B-A3B"},
+		{URL: "https://llm.example.test/v1", Model: "custom-model", ProviderName: "通义千问"},
+	} {
+		if !cfg.NeedsConservativeOpenAICompatSanitization() {
+			t.Fatalf("expected conservative sanitization for %#v", cfg)
+		}
+	}
+	if (MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-4o"}).NeedsConservativeOpenAICompatSanitization() {
+		t.Fatal("standard OpenAI provider should not use conservative sanitization")
+	}
+}
+
 func TestSanitizeCodeGenOpenAIChatToolsValue(t *testing.T) {
 	tools := SanitizeCodeGenOpenAIChatToolsValue([]interface{}{map[string]interface{}{
 		"type":                 "function",

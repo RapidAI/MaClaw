@@ -33,5 +33,11 @@ func BuildResponsesEndpoint(rawURL string) string {
 		}
 		return endpoint
 	}
-	return endpoint + "/responses"
+	if strings.HasSuffix(endpoint, "/responses") {
+		return endpoint
+	}
+	if strings.HasSuffix(endpoint, "/v1") {
+		return endpoint + "/responses"
+	}
+	return endpoint + "/v1/responses"
 }

@@ -104,8 +104,8 @@ function EmployeeAvatar({ ve, displayName }: { ve: VirtualEmployeeEntry; display
                 alignItems: "center",
                 justifyContent: "center",
                 flexShrink: 0,
-                background: "rgba(99, 102, 241, 0.12)",
-                color: "#6366f1",
+                background: "rgba(47, 95, 152, 0.10)",
+                color: "#2f5f98",
                 fontSize: 11,
                 fontWeight: 700,
             }}
@@ -519,7 +519,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                 width: 8,
                                 height: 8,
                                 borderRadius: "50%",
-                                background: isVirtualEmployeeOnline(ve) ? "#22c55e" : "#9ca3af",
+                                background: isVirtualEmployeeOnline(ve) ? "#4f7f6f" : "#9ca3af",
                                 border: `1.5px solid ${theme.bg}`,
                                 boxSizing: "border-box",
                             }}
@@ -541,9 +541,9 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                         fontSize: 10,
                                         padding: "1px 4px",
                                         borderRadius: 3,
-                                        background: theme.errorBg || "#fef2f2",
-                                        color: theme.errorText || "#dc2626",
-                                        border: `1px solid ${theme.errorBorder || "#fecaca"}`,
+                                        background: theme.errorBg || "#fbf1f0",
+                                        color: theme.errorText || "#b42318",
+                                        border: `1px solid ${theme.errorBorder || "rgba(180, 35, 24, 0.24)"}`,
                                         whiteSpace: "nowrap",
                                         flexShrink: 0,
                                     }}
@@ -591,7 +591,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        <span style={{ width: 16, textAlign: "center", fontSize: 14, flexShrink: 0 }}>💬</span>
+                        <span style={{ width: 28, textAlign: "center", fontSize: 9, fontWeight: 700, letterSpacing: "0", color: theme.textMuted, flexShrink: 0 }}>Chat</span>
                         <span>{isZh ? "对话" : "Chat"}</span>
                     </div>
                     {/* 设为常用 / 取消常用 — only when callbacks are wired */}
@@ -695,13 +695,13 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                     font: "inherit",
                                 }}
                             />
-                            {renameError && <span role="alert" style={{ color: theme.errorText || "#dc2626", fontSize: 12, lineHeight: 1.4 }}>{renameError}</span>}
+                            {renameError && <span role="alert" style={{ color: theme.errorText || "#b42318", fontSize: 12, lineHeight: 1.4 }}>{renameError}</span>}
                         </label>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
                             <button type="button" onClick={() => setRenamingEmployee(null)} disabled={renameSaving} style={{ minWidth: 72, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.divider}`, background: theme.bg, color: theme.text, font: "inherit", fontWeight: 700 }}>
                                 {isZh ? "\u53d6\u6d88" : "Cancel"}
                             </button>
-                            <button type="submit" disabled={!renameValue.trim() || renameSaving} data-testid="ve-rename-save" style={{ minWidth: 72, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.btnBorder || theme.divider}`, background: theme.btnColor || "#6366f1", color: "#fff", font: "inherit", fontWeight: 700, opacity: renameValue.trim() && !renameSaving ? 1 : 0.55 }}>
+                            <button type="submit" disabled={!renameValue.trim() || renameSaving} data-testid="ve-rename-save" style={{ minWidth: 72, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.btnBorder || theme.divider}`, background: theme.btnColor || "#2f5f98", color: "#fff", font: "inherit", fontWeight: 700, opacity: renameValue.trim() && !renameSaving ? 1 : 0.55 }}>
                                 {isZh ? "\u4fdd\u5b58" : "Save"}
                             </button>
                         </div>
@@ -755,7 +755,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                     <span style={{
                                         width: 72, height: 72, borderRadius: "50%",
                                         display: "inline-flex", alignItems: "center", justifyContent: "center",
-                                        background: "rgba(99, 102, 241, 0.12)", color: "#6366f1",
+                                        background: "rgba(47, 95, 152, 0.10)", color: "#2f5f98",
                                         fontSize: 28, fontWeight: 700,
                                         border: `3px solid ${theme.divider}`,
                                     }}>
@@ -765,7 +765,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                 <span style={{
                                     position: "absolute", bottom: 2, right: 2,
                                     width: 14, height: 14, borderRadius: "50%",
-                                    background: isVirtualEmployeeOnline(viewInfoVE.ve) ? "#22c55e" : "#9ca3af",
+                                    background: isVirtualEmployeeOnline(viewInfoVE.ve) ? "#4f7f6f" : "#9ca3af",
                                     border: `2.5px solid ${theme.bg}`,
                                 }} />
                             </div>
@@ -773,7 +773,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                 {viewInfoVE.displayName}
                             </h2>
                             {viewInfoVE.ve.resident && (
-                                <span style={{ fontSize: 11, color: theme.btnColor || "#6366f1", background: theme.fieldBg, padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
+                                <span style={{ fontSize: 11, color: theme.btnColor || "#2f5f98", background: theme.fieldBg, padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
                                     {isZh ? "\u5e38\u9a7b" : "Resident"}
                                 </span>
                             )}
@@ -784,7 +784,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             {/* Status */}
                             <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
                                 <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u72b6\u6001" : "Status"}</span>
-                                <span style={{ fontSize: 13, color: isVirtualEmployeeOnline(viewInfoVE.ve) ? "#22c55e" : "#9ca3af", fontWeight: 600 }}>
+                                <span style={{ fontSize: 13, color: isVirtualEmployeeOnline(viewInfoVE.ve) ? "#4f7f6f" : "#9ca3af", fontWeight: 600 }}>
                                     ● {isVirtualEmployeeOnline(viewInfoVE.ve) ? (isZh ? "\u5728\u7ebf" : "Online") : (isZh ? "\u79bb\u7ebf" : "Offline")}
                                 </span>
                             </div>

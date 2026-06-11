@@ -738,6 +738,45 @@ func TestForwardOpenAI_Success(t *testing.T) {
 	}
 }
 
+func TestForwardOpenAI_DropsStreamOptionsWhenForcingNonStream(t *testing.T) {
+	var got map[string]interface{}
+	p := NewOpenAIProxy(OpenAIProxyConfig{
+		URL:   "https://api.example.test/v1",
+		Key:   "test-key",
+		Model: "configured-model",
+	})
+	p.client = &http.Client{Transport: openAIProxyRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl-test","choices":[]}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	_, statusCode, err := p.forwardOpenAI(map[string]interface{}{
+		"model":          "gpt-4",
+		"messages":       []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		"stream":         true,
+		"stream_options": map[string]interface{}{"include_usage": true},
+	})
+	if err != nil {
+		t.Fatalf("forwardOpenAI: %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", statusCode, http.StatusOK)
+	}
+	if got["stream"] != false {
+		t.Fatalf("stream = %#v, want false", got["stream"])
+	}
+	if _, ok := got["stream_options"]; ok {
+		t.Fatalf("stream_options leaked into forced non-stream proxy request: %#v", got)
+	}
+}
+
 func TestForwardOpenAI_NormalizesCodeGenAutoModelAndSanitizesTools(t *testing.T) {
 	var got map[string]interface{}
 	p := NewOpenAIProxy(OpenAIProxyConfig{

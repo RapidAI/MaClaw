@@ -34,6 +34,26 @@ func TestBuildResponsesWSHeadersSkipsNonCodeGenURL(t *testing.T) {
 	}
 }
 
+func TestResponsesWSEndpointNormalizesBaseURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"bare https", "https://api.example.com", "wss://api.example.com/v1/responses"},
+		{"v1 https", "https://api.example.com/v1", "wss://api.example.com/v1/responses"},
+		{"full wss", "wss://api.example.com/v1/responses", "wss://api.example.com/v1/responses"},
+		{"qwen compatible", "https://dashscope.aliyuncs.com/compatible-mode/v1", "wss://dashscope.aliyuncs.com/compatible-mode/v1/responses"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := responsesWSEndpoint(tt.url); got != tt.want {
+				t.Fatalf("endpoint = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildResponsesWSFrameNormalizesCodeGenAutoModelAndSanitizesTools(t *testing.T) {
 	data, err := buildResponsesWSFrame(
 		corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto"},
@@ -65,6 +85,48 @@ func TestBuildResponsesWSFrameNormalizesCodeGenAutoModelAndSanitizesTools(t *tes
 	tool := frame["tools"].([]interface{})[0].(map[string]interface{})
 	if _, ok := tool["strict"]; ok {
 		t.Fatalf("strict leaked into Responses WS tool: %#v", tool)
+	}
+	params := tool["parameters"].(map[string]interface{})
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("additionalProperties=false leaked: %#v", params)
+	}
+	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
+	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
+		t.Fatalf("array items type = %#v, want string", got)
+	}
+}
+
+func TestBuildResponsesWSFrameSanitizesQwenOpenAICompatProvider(t *testing.T) {
+	data, err := buildResponsesWSFrame(
+		corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b", ProviderName: "Qwen"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		[]map[string]interface{}{{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":   "strict_tool",
+				"strict": true,
+				"parameters": map[string]interface{}{
+					"additionalProperties": false,
+					"properties": map[string]interface{}{
+						"values": map[string]interface{}{"type": "array"},
+					},
+				},
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("buildResponsesWSFrame: %v", err)
+	}
+	var frame map[string]interface{}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if _, ok := frame["store"]; ok {
+		t.Fatalf("store leaked into Qwen Responses WS frame: %#v", frame)
+	}
+	tool := frame["tools"].([]interface{})[0].(map[string]interface{})
+	if _, ok := tool["strict"]; ok {
+		t.Fatalf("strict leaked into Qwen Responses WS tool: %#v", tool)
 	}
 	params := tool["parameters"].(map[string]interface{})
 	if _, ok := params["additionalProperties"]; ok {

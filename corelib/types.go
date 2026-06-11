@@ -582,6 +582,36 @@ func (c MaclawLLMConfig) UpstreamModel() string {
 	return NormalizeCodeGenModelForURL(c.URL, c.Model)
 }
 
+func (c MaclawLLMConfig) NeedsConservativeOpenAICompatSanitization() bool {
+	if IsCodeGenURL(c.URL) {
+		return true
+	}
+	return IsQwenOpenAICompat(c)
+}
+
+func IsQwenOpenAICompat(cfg MaclawLLMConfig) bool {
+	text := strings.ToLower(strings.Join([]string{
+		cfg.Model,
+		cfg.ProviderName,
+		cfg.URL,
+	}, " "))
+	for _, token := range []string{
+		"qwen",
+		"tongyi",
+		"dashscope",
+		"bailian",
+		"aliyuncs.com",
+		"阿里",
+		"通义",
+		"百炼",
+	} {
+		if strings.Contains(text, strings.ToLower(token)) {
+			return true
+		}
+	}
+	return false
+}
+
 // EffectiveTimeoutSec returns the configured response-header timeout in seconds,
 // clamped to the supported agent range.
 func (c MaclawLLMConfig) EffectiveTimeoutSec() int {

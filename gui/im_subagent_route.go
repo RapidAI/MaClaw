@@ -8,6 +8,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient *http.Client, loopCtx *LoopContext, history []agent.ConversationEntry, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, []agent.ConversationEntry, bool) {
@@ -66,6 +67,20 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 }
 
 func (h *IMMessageHandler) workflowAllowsSubAgentExecutionForOwner(ownerID string) (bool, string) {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return true, ""
+	}
+	_, policy, apply := h.workflowToolFilterOwnerPolicyAndDecision(ownerID, nil)
+	if !apply {
+		return true, ""
+	}
+	if policy == workflow.ToolFilterNone {
+		return false, "current workflow phase is blocked"
+	}
+	if !workflow.IsToolAllowedByPolicy(policy, "delegate_task") {
+		return false, "delegate_task is not allowed by the current workflow tool policy"
+	}
 	return true, ""
 }
 

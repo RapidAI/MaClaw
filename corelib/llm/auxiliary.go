@@ -1,7 +1,7 @@
 package llm
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,28 +65,16 @@ func (c *AuxiliaryCaller) ChatCall(messages []map[string]string) (string, error)
 		})
 	}
 
-	body := map[string]interface{}{
-		"model":    c.Config.Model,
-		"messages": msgs,
+	cfg := corelib.MaclawLLMConfig{
+		URL:      auxiliaryOpenAIBaseURL(c.Config.URL),
+		Key:      c.Config.Key,
+		Model:    c.Config.Model,
+		Protocol: c.Config.Protocol,
 	}
-
-	data, err := json.Marshal(body)
-	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
-	}
-
-	url := strings.TrimRight(c.Config.URL, "/")
-	if !strings.HasSuffix(url, "/v1") {
-		url += "/v1"
-	}
-	url += "/chat/completions"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+	req, data, _, err := NewOpenAIChatRequest(context.Background(), cfg, interfaceMessages(msgs), OpenAIChatRequestOptions{Stream: false})
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.Config.Key)
-	corelib.SetCodeGenClientNameHeaderIfNeeded(req)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -96,7 +84,7 @@ func (c *AuxiliaryCaller) ChatCall(messages []map[string]string) (string, error)
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(respBody))
+		return "", fmt.Errorf("HTTP %d: body_len=%d request=%s", resp.StatusCode, len(respBody), SummarizeOpenAIChatRequestBody(data))
 	}
 
 	var result struct {
@@ -113,4 +101,20 @@ func (c *AuxiliaryCaller) ChatCall(messages []map[string]string) (string, error)
 		return "", fmt.Errorf("no choices in response")
 	}
 	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+}
+
+func auxiliaryOpenAIBaseURL(raw string) string {
+	url := strings.TrimRight(raw, "/")
+	if !strings.HasSuffix(strings.ToLower(url), "/v1") {
+		url += "/v1"
+	}
+	return url
+}
+
+func interfaceMessages(messages []map[string]interface{}) []interface{} {
+	out := make([]interface{}, 0, len(messages))
+	for _, message := range messages {
+		out = append(out, message)
+	}
+	return out
 }

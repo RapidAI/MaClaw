@@ -34,8 +34,8 @@ interface Props {
 export function AssistantGroupDiscussionDropdown(props: Props) {
     const { bindGroupDiscussionPress, groupDiscussion, groupDiscussionStatus, groupPendingInvites, lang, theme: t, themeMode } = props;
     const actionGridColumns = groupDiscussion.onOpenExperienceTrace ? "repeat(3, minmax(0, 1fr))" : "repeat(2, minmax(0, 1fr))";
-    const dangerTextColor = themeMode === "dark" ? "#fbbf24" : "#b91c1c";
-    const dangerBorderColor = themeMode === "dark" ? "rgba(251, 191, 36, 0.40)" : "#fecaca";
+    const dangerTextColor = themeMode === "dark" ? "#cbd5e1" : "#475569";
+    const dangerBorderColor = themeMode === "dark" ? "rgba(148, 163, 184, 0.34)" : "rgba(100, 116, 139, 0.24)";
     return (
         <div style={wailsDragStyle({ position: "absolute", right: 0, top: "30px", width: "min(280px, calc(100vw - 96px))", maxWidth: "calc(100vw - 96px)", padding: "12px", borderRadius: "12px", border: `1px solid ${t.titleBarBorder}`, background: themeMode === "dark" ? "#0f172a" : t.bg, boxShadow: themeMode === "dark" ? "0 22px 60px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(148, 163, 184, 0.16)" : "0 18px 45px rgba(15, 23, 42, 0.18)", color: t.text, zIndex: 30020, "--wails-draggable": "no-drag" })}>
             <Header {...props} />
@@ -72,10 +72,10 @@ function SafeHandoff({ bindGroupDiscussionPress, copiedHandoff, copySafeHandoff,
     const summary = lang === "en"
         ? [groupActiveTalks > 0 && `${groupActiveTalks} active`, groupReadyTalks > 0 && `${groupReadyTalks} ready`, groupWaitingTalks > 0 && `${groupWaitingTalks} waiting`, groupPendingInvites.length > 0 && `${groupPendingInvites.length} invite(s)`].filter(Boolean).join(" · ") || "Context available"
         : [groupActiveTalks > 0 && `${groupActiveTalks} 进行中`, groupReadyTalks > 0 && `${groupReadyTalks} 可收尾`, groupWaitingTalks > 0 && `${groupWaitingTalks} 等待中`, groupPendingInvites.length > 0 && `${groupPendingInvites.length} 待处理邀请`].filter(Boolean).join(" · ") || "上下文可用";
-    return <div style={{ marginBottom: "8px", padding: "7px", borderRadius: "9px", background: themeMode === "dark" ? "rgba(34, 197, 94, 0.10)" : "rgba(16, 185, 129, 0.08)", border: `1px solid ${themeMode === "dark" ? "rgba(34, 197, 94, 0.22)" : "rgba(16, 185, 129, 0.22)"}` }}>
+    return <div style={{ marginBottom: "8px", padding: "7px", borderRadius: "9px", background: themeMode === "dark" ? "rgba(79, 127, 111, 0.12)" : "rgba(79, 127, 111, 0.08)", border: `1px solid ${themeMode === "dark" ? "rgba(79, 127, 111, 0.24)" : "rgba(79, 127, 111, 0.20)"}` }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, flex: 1 }}>
-                <strong style={{ fontSize: "10px", color: themeMode === "dark" ? "#86efac" : "#047857", flexShrink: 0 }}>{lang === "en" ? "Safe Handoff" : "\u5b89\u5168\u4ea4\u63a5"}</strong>
+                <strong style={{ fontSize: "10px", color: themeMode === "dark" ? "#b7d3ef" : "#3f5872", flexShrink: 0 }}>{lang === "en" ? "Safe Handoff" : "\u5b89\u5168\u4ea4\u63a5"}</strong>
                 <span style={{ fontSize: "9px", color: t.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{summary}</span>
             </div>
             <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
@@ -108,7 +108,7 @@ function InviteRow(props: Props & { invite: GroupDiscussionInvite; dangerTextCol
     const inviteID = invite.invite_id || invite.id || "";
     const title = fallbackInviteTitle(invite.topic, lang);
     const sender = readableInviteName(invite.from_name, invite.from_id, lang);
-    return <div style={{ padding: "8px 0", borderTop: `1px solid ${t.divider}` }}><div data-testid="group-discussion-invite-title" style={{ fontSize: "11px", fontWeight: 600, marginBottom: "2px" }}>{title}</div><div data-testid="group-discussion-invite-sender" style={{ fontSize: "10px", color: t.textMuted, marginBottom: "6px" }}>{sender}</div><div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px" }}><button type="button" style={{ ...miniActionButtonStyle, background: t.fieldBg, color: themeMode === "dark" ? "#86efac" : "#047857", borderColor: themeMode === "dark" ? "rgba(134, 239, 172, 0.45)" : "#86efac" }} disabled={!!groupDiscussionBusy} {...bindGroupDiscussionPress(() => runGroupDiscussionAction("accept", () => groupDiscussion.onAcceptInvite?.(inviteID)))}>{lang === "en" ? "Accept" : "\u63a5\u53d7"}</button><button type="button" style={{ ...miniActionButtonStyle, background: t.fieldBg, color: props.dangerTextColor, borderColor: props.dangerBorderColor }} disabled={!!groupDiscussionBusy} {...bindGroupDiscussionPress(() => runGroupDiscussionAction("reject", () => groupDiscussion.onRejectInvite?.(inviteID)))}>{lang === "en" ? "Reject" : "\u62d2\u7edd"}</button></div></div>;
+    return <div style={{ padding: "8px 0", borderTop: `1px solid ${t.divider}` }}><div data-testid="group-discussion-invite-title" style={{ fontSize: "11px", fontWeight: 600, marginBottom: "2px" }}>{title}</div><div data-testid="group-discussion-invite-sender" style={{ fontSize: "10px", color: t.textMuted, marginBottom: "6px" }}>{sender}</div><div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px" }}><button type="button" style={{ ...miniActionButtonStyle, background: t.fieldBg, color: themeMode === "dark" ? "#b7d3ef" : "#2f5f98", borderColor: themeMode === "dark" ? "rgba(91, 120, 152, 0.48)" : "rgba(47, 95, 152, 0.30)" }} disabled={!!groupDiscussionBusy} {...bindGroupDiscussionPress(() => runGroupDiscussionAction("accept", () => groupDiscussion.onAcceptInvite?.(inviteID)))}>{lang === "en" ? "Accept" : "\u63a5\u53d7"}</button><button type="button" style={{ ...miniActionButtonStyle, background: t.fieldBg, color: props.dangerTextColor, borderColor: props.dangerBorderColor }} disabled={!!groupDiscussionBusy} {...bindGroupDiscussionPress(() => runGroupDiscussionAction("reject", () => groupDiscussion.onRejectInvite?.(inviteID)))}>{lang === "en" ? "Reject" : "\u62d2\u7edd"}</button></div></div>;
 }
 
 function actionButtonStyle(t: Theme, themeMode: "light" | "dark", enabled: boolean): CSSProperties {

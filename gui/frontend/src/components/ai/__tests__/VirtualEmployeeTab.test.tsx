@@ -342,7 +342,7 @@ describe('VirtualEmployeeTab', () => {
             renderVETab();
             await act(async () => { await Promise.resolve(); });
             const onlineIndicator = screen.getByTestId("ve-status-ve-1");
-            expect(onlineIndicator.style.background).toBe("rgb(34, 197, 94)"); // #22c55e
+            expect(onlineIndicator.style.background).toBe("rgb(79, 127, 111)"); // #4f7f6f
             expect(screen.queryByTestId("ve-status-ve-4")).toBeNull();
         });
 

@@ -37,6 +37,20 @@ func (r codingCommandExecutionResult) toolResult() codingToolExecutionResult {
 		outcome = codingToolOutcomeSuccess
 	case codingCommandResultTimeout:
 		outcome = codingToolOutcomeTimeout
+	case codingCommandResultExitError:
+		// Exit code 1 with meaningful stdout is informational (not a real error).
+		// The "command exited with code N" suffix doesn't count as meaningful output.
+		cleanText := r.Text
+		if idx := strings.Index(cleanText, "\ncommand exited with code"); idx >= 0 {
+			cleanText = cleanText[:idx]
+		} else if strings.HasPrefix(cleanText, "command exited with code") {
+			cleanText = ""
+		}
+		if r.ExitCode == 1 && !strings.HasPrefix(cleanText, "[stderr]") && len(strings.TrimSpace(cleanText)) > 10 {
+			outcome = codingToolOutcomeSuccess
+		} else {
+			outcome = codingToolOutcomeFailed
+		}
 	default:
 		outcome = codingToolOutcomeFailed
 	}

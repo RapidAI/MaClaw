@@ -64,8 +64,7 @@ describe('FileTabBar — Property Tests', () => {
      * Property 8: Tab indicator matches operation type
      *
      * For any file in the files map, the tab visual indicator SHALL reflect
-     * the file's opType: 'modify' → modification indicator (✏️),
-     * 'create' → creation indicator (➕), 'read' → view indicator (👁).
+     * the file's opType: 'modify' -> MOD, 'create' -> NEW, 'read' -> READ.
      * Pure function of opType.
      */
     it('Property 8: Tab indicator matches operation type', () => {
@@ -76,11 +75,11 @@ describe('FileTabBar — Property Tests', () => {
                     const indicator = getOpTypeIndicator(opType);
 
                     if (opType === 'modify') {
-                        expect(indicator).toBe('✏️');
+                        expect(indicator).toBe('MOD');
                     } else if (opType === 'read') {
-                        expect(indicator).toBe('👁');
+                        expect(indicator).toBe('READ');
                     } else {
-                        expect(indicator).toBe('➕');
+                        expect(indicator).toBe('NEW');
                     }
 
                     // Indicator is deterministic — same opType always gives same result

@@ -83,7 +83,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
     // Each tab type has a distinct silhouette for instant recognition.
     // Color encodes state: active tab uses btnColor, online VE/group uses green, others use textMuted.
     const iconColor = isOnline
-        ? "#22c55e"  // green for online VE/group — replaces the separate green dot
+        ? "#4f7f6f"  // muted green for online VE/group — replaces the separate green dot
         : (active ? theme.btnColor : theme.textMuted);
 
     const tabIconElement = avatarDataURL ? (
@@ -105,7 +105,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
                         width: 6,
                         height: 6,
                         borderRadius: "50%",
-                        background: isOnline ? "#22c55e" : "#6b7280",
+                        background: isOnline ? "#4f7f6f" : "#6b7280",
                         border: `1px solid ${active ? theme.bg : theme.titleBarBg || theme.bg}`,
                         boxSizing: "border-box",
                     }}

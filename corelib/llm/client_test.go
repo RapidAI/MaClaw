@@ -336,6 +336,46 @@ func TestNewOpenAIChatRequest_SetsHeaders(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatCompletionsEndpointNormalizesBaseURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"bare", "https://api.example.com", "https://api.example.com/v1/chat/completions"},
+		{"v1", "https://api.example.com/v1", "https://api.example.com/v1/chat/completions"},
+		{"full", "https://api.example.com/v1/chat/completions", "https://api.example.com/v1/chat/completions"},
+		{"qwen compatible", "https://dashscope.aliyuncs.com/compatible-mode/v1", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := BuildOpenAIChatCompletionsEndpoint(tt.url); got != tt.want {
+				t.Fatalf("endpoint = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResponsesEndpointNormalizesBaseURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"bare", "https://api.example.com", "https://api.example.com/v1/responses"},
+		{"v1", "https://api.example.com/v1", "https://api.example.com/v1/responses"},
+		{"full", "https://api.example.com/v1/responses", "https://api.example.com/v1/responses"},
+		{"qwen compatible", "https://dashscope.aliyuncs.com/compatible-mode/v1", "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := BuildResponsesEndpoint(tt.url); got != tt.want {
+				t.Fatalf("endpoint = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMiniMax_RequestBody_SanitizesInvalidReplayedToolArguments(t *testing.T) {
 	var capturedBody []byte
 
@@ -549,6 +589,31 @@ func TestOpenAI_RequestBody_DoesNotInventMissingToolFunction(t *testing.T) {
 	}
 }
 
+func TestOpenAI_RequestBody_StripsEmptyToolCalls(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://example.test/v1", Model: "test-model"},
+		[]interface{}{
+			map[string]interface{}{"role": "assistant", "content": "done", "tool_calls": []interface{}{}},
+			map[string]interface{}{"role": "assistant", "content": "done again", "tool_calls": []ToolCall{}},
+		},
+		OpenAIChatRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	for i, message := range req.Messages {
+		if _, ok := message["tool_calls"]; ok {
+			t.Fatalf("message %d leaked empty tool_calls: %#v", i, message)
+		}
+	}
+}
+
 func TestOpenAI_RequestBody_NormalizesCodeGenAutoModel(t *testing.T) {
 	_, body, err := BuildOpenAIChatRequestData(
 		corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto"},
@@ -579,6 +644,310 @@ func TestOpenAI_RequestBody_NormalizesCodeGenAutoModel(t *testing.T) {
 	}
 	if got := req["model"]; got != "auto" {
 		t.Fatalf("non-CodeGen model = %#v, want auto", got)
+	}
+}
+
+func TestOpenAI_RequestBody_StripsCodeGenUnsupportedStreamOptions(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "auto"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		OpenAIChatRequestOptions{
+			Stream: true,
+			ExtraBody: map[string]interface{}{
+				"metadata":       map[string]interface{}{"trace": "x"},
+				"store":          true,
+				"stream_options": map[string]interface{}{"include_usage": true},
+			},
+			PassThrough: map[string]interface{}{
+				"parallel_tool_calls": true,
+				"logprobs":            true,
+				"top_logprobs":        2,
+			},
+			ToolChoice: "auto",
+			ResponseFormat: map[string]interface{}{
+				"type": "json_schema",
+				"json_schema": map[string]interface{}{
+					"name":   "codegen",
+					"schema": map[string]interface{}{"type": "object"},
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
+		if _, ok := req[key]; ok {
+			t.Fatalf("CodeGen request leaked %s: %#v", key, req)
+		}
+	}
+	if got := req["stream"]; got != true {
+		t.Fatalf("stream = %#v, want true", got)
+	}
+}
+
+func TestOpenAI_RequestBody_SanitizesQwenOpenAICompatProvider(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b", ProviderName: "Qwen 27B"},
+		[]interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+			map[string]interface{}{"role": "assistant", "content": "previous", "reasoning_content": "hidden"},
+			map[string]interface{}{"role": "assistant", "content": nil},
+		},
+		OpenAIChatRequestOptions{
+			Stream: true,
+			Tools: []map[string]interface{}{{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":   "strict_tool",
+					"strict": true,
+					"parameters": map[string]interface{}{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties": map[string]interface{}{
+							"ids": map[string]interface{}{"type": "array"},
+						},
+					},
+				},
+			}},
+			ExtraBody: map[string]interface{}{
+				"metadata":       map[string]interface{}{"trace": "x"},
+				"store":          true,
+				"stream_options": map[string]interface{}{"include_usage": true},
+			},
+			PassThrough: map[string]interface{}{
+				"parallel_tool_calls": true,
+				"logprobs":            true,
+				"top_logprobs":        2,
+			},
+			ToolChoice: "auto",
+			ResponseFormat: map[string]interface{}{
+				"type": "json_schema",
+				"json_schema": map[string]interface{}{
+					"name":   "intent",
+					"schema": map[string]interface{}{"type": "object"},
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
+		if _, ok := req[key]; ok {
+			t.Fatalf("Qwen request leaked %s: %#v", key, req)
+		}
+	}
+	for _, message := range req["messages"].([]interface{}) {
+		msg := message.(map[string]interface{})
+		if _, ok := msg["reasoning_content"]; ok {
+			t.Fatalf("Qwen request leaked reasoning_content in message: %#v", message)
+		}
+		if content, ok := msg["content"]; ok && content == nil {
+			t.Fatalf("Qwen request leaked null content in message: %#v", message)
+		}
+	}
+	fn := req["tools"].([]interface{})[0].(map[string]interface{})["function"].(map[string]interface{})
+	if _, ok := fn["strict"]; ok {
+		t.Fatalf("Qwen tool leaked strict: %#v", fn)
+	}
+	params := fn["parameters"].(map[string]interface{})
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("Qwen tool schema leaked additionalProperties: %#v", params)
+	}
+	items := params["properties"].(map[string]interface{})["ids"].(map[string]interface{})["items"].(map[string]interface{})
+	if got := items["type"]; got != "string" {
+		t.Fatalf("array items type = %#v, want string", got)
+	}
+}
+
+func TestOpenAI_RequestBody_PreservesReasoningContentForNonConservativeProvider(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-test"},
+		[]interface{}{map[string]interface{}{"role": "assistant", "content": "previous", "reasoning_content": "keep"}},
+		OpenAIChatRequestOptions{Stream: false},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	message := req["messages"].([]interface{})[0].(map[string]interface{})
+	if got := message["reasoning_content"]; got != "keep" {
+		t.Fatalf("reasoning_content = %#v, want keep", got)
+	}
+}
+
+func TestDoOpenAIRequest_RetriesQwenWithoutToolsOnBadRequest(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if attempts == 1 {
+			if _, ok := body["tools"]; !ok {
+				t.Fatalf("first attempt missing tools: %#v", body)
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"tools unsupported"}}`))
+			return
+		}
+		if _, ok := body["tools"]; ok {
+			t.Fatalf("retry leaked tools: %#v", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id": "chatcmpl-retry",
+			"choices": []map[string]interface{}{{
+				"message": map[string]interface{}{"role": "assistant", "content": "ok"},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	tools := []map[string]interface{}{{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":       "read_file",
+			"parameters": map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		},
+	}}
+	resp, err := DoOpenAIRequest(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "qwen-27b", Protocol: "openai"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		tools,
+		srv.Client(),
+	)
+	if err != nil {
+		t.Fatalf("DoOpenAIRequest returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if got := resp.Choices[0].Message.Content; got != "ok" {
+		t.Fatalf("content = %q, want ok", got)
+	}
+}
+
+func TestDoOpenAIRequest_DoesNotRetryWithoutToolsAfterToolHistory(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request"}}`))
+	}))
+	defer srv.Close()
+
+	tools := []map[string]interface{}{{
+		"type":     "function",
+		"function": map[string]interface{}{"name": "read_file", "parameters": map[string]interface{}{"type": "object"}},
+	}}
+	_, err := DoOpenAIRequest(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "qwen-27b", Protocol: "openai"},
+		[]interface{}{
+			map[string]interface{}{"role": "assistant", "tool_calls": []interface{}{map[string]interface{}{"id": "call_1"}}},
+			map[string]interface{}{"role": "tool", "tool_call_id": "call_1", "content": "result"},
+		},
+		tools,
+		srv.Client(),
+	)
+	if err == nil {
+		t.Fatal("expected HTTP 400 error")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestShouldRetryOpenAIWithoutToolsIgnoresEmptyToolCalls(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b"}
+	messages := []interface{}{
+		map[string]interface{}{"role": "assistant", "content": "done", "tool_calls": []interface{}{}},
+		map[string]interface{}{"role": "assistant", "content": "done", "function_call": map[string]interface{}{}},
+	}
+	tools := []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "read_file"}}}
+	if !ShouldRetryOpenAIWithoutTools(cfg, http.StatusBadRequest, messages, tools) {
+		t.Fatal("expected retry when only empty historical tool fields are present")
+	}
+}
+
+func TestDoOpenAIRequestStream_RetriesQwenWithoutToolsOnBadRequest(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if attempts == 1 {
+			if _, ok := body["tools"]; !ok {
+				t.Fatalf("first attempt missing tools: %#v", body)
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"tools unsupported"}}`))
+			return
+		}
+		if _, ok := body["tools"]; ok {
+			t.Fatalf("retry leaked tools: %#v", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	resp, err := DoOpenAIRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "qwen-27b", Protocol: "openai"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		[]map[string]interface{}{{
+			"type":     "function",
+			"function": map[string]interface{}{"name": "read_file", "parameters": map[string]interface{}{"type": "object"}},
+		}},
+		srv.Client(),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("DoOpenAIRequestStream returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if got := resp.Choices[0].Message.Content; got != "ok" {
+		t.Fatalf("content = %q, want ok", got)
+	}
+}
+
+func TestSummarizeOpenAIChatRequestBodyOmitsPromptContent(t *testing.T) {
+	body := []byte(`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"SECRET_PROMPT"}],"tools":[{"type":"function"}],"stream_options":{"include_usage":true},"tool_choice":"auto","response_format":{"type":"json_object"}}`)
+	got := SummarizeOpenAIChatRequestBody(body)
+	for _, want := range []string{
+		`model="gpt-test"`,
+		"stream=true",
+		"messages=1",
+		"tools=1",
+		"stream_options=true",
+		"tool_choice=true",
+		"response_format=true",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary %q missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "SECRET_PROMPT") || strings.Contains(got, "content") {
+		t.Fatalf("summary leaked prompt content: %q", got)
 	}
 }
 
@@ -636,6 +1005,63 @@ func TestProviderRequestBodies_NormalizeCodeGenAutoModel(t *testing.T) {
 	req = BuildAnthropicMessagesRequestBody(cfg, messages, AnthropicMessagesRequestOptions{})
 	if got := req["model"]; got != corelib.CodeGenDefaultModelID {
 		t.Fatalf("Anthropic CodeGen model = %#v, want %q", got, corelib.CodeGenDefaultModelID)
+	}
+}
+
+func TestResponsesAPIRequestData_SanitizesQwenOpenAICompatProvider(t *testing.T) {
+	_, body, err := BuildResponsesAPIRequestData(
+		corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b", ProviderName: "Qwen"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		ResponsesAPIRequestOptions{
+			Tools: []map[string]interface{}{{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":   "strict_tool",
+					"strict": true,
+					"parameters": map[string]interface{}{
+						"additionalProperties": false,
+						"properties": map[string]interface{}{
+							"values": map[string]interface{}{"type": "array"},
+						},
+					},
+				},
+			}},
+			ExtraBody: map[string]interface{}{
+				"metadata":            map[string]interface{}{"trace": "x"},
+				"parallel_tool_calls": true,
+				"tool_choice":         "auto",
+				"function_call":       "auto",
+				"logprobs":            true,
+				"top_logprobs":        2,
+				"response_format":     map[string]interface{}{"type": "json_schema"},
+				"store":               false,
+				"stream_options":      map[string]interface{}{"include_usage": true},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildResponsesAPIRequestData returned error: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse responses request body: %v", err)
+	}
+	for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
+		if _, ok := req[key]; ok {
+			t.Fatalf("Qwen Responses request leaked %s: %#v", key, req)
+		}
+	}
+	tool := req["tools"].([]interface{})[0].(map[string]interface{})
+	if _, ok := tool["strict"]; ok {
+		t.Fatalf("Qwen Responses strict leaked: %#v", tool)
+	}
+	params := tool["parameters"].(map[string]interface{})
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("Qwen Responses additionalProperties leaked: %#v", params)
+	}
+	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
+	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
+		t.Fatalf("array items type = %#v, want string", got)
 	}
 }
 

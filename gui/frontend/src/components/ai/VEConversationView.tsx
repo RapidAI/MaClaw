@@ -1487,9 +1487,9 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     data-testid="ve-error-banner"
                     style={{
                         padding: "8px 12px",
-                        background: theme.errorBg || "#fef2f2",
-                        color: theme.errorText || "#dc2626",
-                        borderBottom: `1px solid ${theme.errorBorder || "#fecaca"}`,
+                        background: theme.errorBg || "#fbf1f0",
+                        color: theme.errorText || "#b42318",
+                        borderBottom: `1px solid ${theme.errorBorder || "rgba(180, 35, 24, 0.24)"}`,
                         fontSize: 12,
                         display: "flex",
                         alignItems: "center",
@@ -1531,7 +1531,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 {/* Awaiting visible response */}
                 {awaitingReplyVisible && !state.streaming && (
                     <div data-testid="ve-thinking-indicator" style={{ marginTop: 8 }}>
-                        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 12px", borderRadius: 8, background: theme.fieldBg, borderLeft: `3px solid ${theme.responseBorderLeft}`, fontSize: 13, color: theme.textMuted || theme.text }}>
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 12px", borderRadius: 8, background: theme.fieldBg, border: `1px solid ${theme.fieldBorder}`, fontSize: 13, color: theme.textMuted || theme.text }}>
                             <span>{isZh ? "思考中" : "Thinking"}</span>
                             <span className="ve-cursor-blink">...</span>
                         </div>
@@ -1547,7 +1547,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                                 padding: "8px 12px",
                                 borderRadius: 8,
                                 background: theme.fieldBg,
-                                borderLeft: `3px solid ${theme.responseBorderLeft}`,
+                                border: `1px solid ${theme.fieldBorder}`,
                                 fontSize: 13,
                                 color: theme.text,
                                 wordBreak: "break-word",
@@ -1843,8 +1843,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
                         padding: "8px 12px",
                         borderRadius: 8,
                         background: isUser ? theme.sendBtnBg + "15" : (isLocalIntro ? theme.sendBtnBg + "0D" : theme.fieldBg),
-                        borderLeft: isUser ? "none" : `3px solid ${isLocalIntro ? theme.btnColor : theme.responseBorderLeft}`,
-                        borderRight: isUser ? `3px solid ${theme.borderLeft}` : "none",
+                        border: `1px solid ${isUser ? theme.borderLeft : theme.fieldBorder}`,
                         fontSize: 13,
                         color: theme.text,
                         wordBreak: "break-word",
@@ -1856,7 +1855,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
                     {message.sendFailed && (
                         <span
                             data-testid={`ve-msg-failed-${message.id}`}
-                            style={{ color: theme.errorText || "#dc2626", fontSize: 11, marginLeft: hasContent ? 6 : 0 }}
+                            style={{ color: theme.errorText || "#b42318", fontSize: 11, marginLeft: hasContent ? 6 : 0 }}
                         >
                             {isZh ? "\u53d1\u9001\u5931\u8d25" : "Failed"}
                         </span>

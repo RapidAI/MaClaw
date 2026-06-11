@@ -17,6 +17,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // VisionLLMConfig is the configuration for the optional Vision LLM used by
@@ -24,12 +27,12 @@ import (
 // Uses OpenAI-compatible /v1/chat/completions endpoint with image_url content blocks.
 type VisionLLMConfig struct {
 	Enabled     bool   `json:"enabled"`
-	BaseURL     string `json:"base_url"`     // e.g. "https://api.openai.com/v1"
+	BaseURL     string `json:"base_url"` // e.g. "https://api.openai.com/v1"
 	APIKey      string `json:"api_key"`
-	Model       string `json:"model"`        // e.g. "gpt-4o-mini", "glm-4v-flash", "qwen-vl-plus"
-	MaxTokens   int    `json:"max_tokens"`   // default 500
-	TimeoutSec  int    `json:"timeout_sec"`  // default 30
-	Verified    bool   `json:"verified"`     // set true after successful health check
+	Model       string `json:"model"`         // e.g. "gpt-4o-mini", "glm-4v-flash", "qwen-vl-plus"
+	MaxTokens   int    `json:"max_tokens"`    // default 500
+	TimeoutSec  int    `json:"timeout_sec"`   // default 30
+	Verified    bool   `json:"verified"`      // set true after successful health check
 	FromMainLLM bool   `json:"from_main_llm"` // true when auto-derived from main LLM config (auto-verified)
 }
 
@@ -194,40 +197,36 @@ func (v *VisionDescriber) callVisionAPI(ctx context.Context, imageBase64, mimeTy
 
 	dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, imageBase64)
 
-	reqBody := map[string]interface{}{
-		"model": v.cfg.Model,
-		"messages": []map[string]interface{}{
-			{
-				"role": "user",
-				"content": []map[string]interface{}{
-					{
-						"type": "text",
-						"text": prompt,
-					},
-					{
-						"type": "image_url",
-						"image_url": map[string]string{
-							"url": dataURL,
-						},
+	messages := []interface{}{
+		map[string]interface{}{
+			"role": "user",
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": prompt,
+				},
+				{
+					"type": "image_url",
+					"image_url": map[string]string{
+						"url": dataURL,
 					},
 				},
 			},
 		},
-		"max_tokens": maxTokens,
 	}
-
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
-	}
-
-	url := strings.TrimRight(v.cfg.BaseURL, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	req, bodyBytes, endpoint, err := llm.NewOpenAIChatRequest(ctx,
+		corelib.MaclawLLMConfig{URL: v.cfg.BaseURL, Key: v.cfg.APIKey, Model: v.cfg.Model, Protocol: "openai"},
+		messages,
+		llm.OpenAIChatRequestOptions{
+			Stream: false,
+			ExtraBody: map[string]interface{}{
+				"max_tokens": maxTokens,
+			},
+		},
+	)
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+v.cfg.APIKey)
 
 	resp, err := v.client.Do(req)
 	if err != nil {
@@ -241,7 +240,7 @@ func (v *VisionDescriber) callVisionAPI(ctx context.Context, imageBase64, mimeTy
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("vision API returned HTTP %d: %s", resp.StatusCode, truncateBytes(respBody, 200))
+		return "", fmt.Errorf("vision API returned HTTP %d: %s request=%s endpoint=%s", resp.StatusCode, truncateBytes(respBody, 200), llm.SummarizeOpenAIChatRequestBody(bodyBytes), endpoint)
 	}
 
 	// Parse OpenAI-compatible response.

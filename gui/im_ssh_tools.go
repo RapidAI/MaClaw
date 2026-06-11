@@ -28,6 +28,14 @@ func (h *IMMessageHandler) ensureSSHManager() *remote.SSHSessionManager {
 		}
 		if h.bgTaskMgr == nil {
 			h.bgTaskMgr = remote.NewSSHBackgroundTaskManager(h.sshMgr)
+			// Layer 1: 持久化任务注册表到磁盘。
+			// 进程重启后自动恢复 active 状态的任务。
+			if h.app != nil {
+				persistDir := h.app.GetDataDir()
+				if persistDir != "" {
+					h.bgTaskMgr.SetPersistDir(persistDir)
+				}
+			}
 		}
 
 		// When an SSH session exits (abnormal disconnect, remote close, etc.)
@@ -161,6 +169,10 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 					h.registerSSHBackgroundLoop(existing, cfg)
 					// Wait for shell init after reconnect.
 					time.Sleep(2 * time.Second)
+					// Rediscover orphan tasks after reconnect (sync to avoid PTY race).
+					if h.bgTaskMgr != nil {
+						h.bgTaskMgr.RediscoverOrphanTasks(existing.ID)
+					}
 					preview := strings.Join(existing.PreviewTail(10), "\n")
 					result := fmt.Sprintf("♻️ 复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: running",
 						existing.ID, targetID)
@@ -203,10 +215,27 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	// Wait for shell init.
 	time.Sleep(2 * time.Second)
 
+	// Layer 2: 在 SSH 连接成功后，扫描远程服务器上的 orphan 后台任务。
+	// 将仍在运行但本地注册表中没有的任务重新注册，避免 LLM 创建重复任务。
+	// 同步执行（在 shell init 后、返回结果前）避免与后续 exec 命令竞争 PTY。
+	activeTasks := 0
+	if h.bgTaskMgr != nil {
+		h.bgTaskMgr.RediscoverOrphanTasks(session.ID)
+		// 统计当前 running 的后台任务数
+		for _, t := range h.bgTaskMgr.ListTasks() {
+			if t.Status.IsActive() {
+				activeTasks++
+			}
+		}
+	}
+
 	preview := strings.Join(session.PreviewTail(20), "\n")
 
 	result := fmt.Sprintf("✅ SSH 连接成功\n会话 ID: %s\n主机: %s\n状态: running",
 		session.ID, cfg.SSHHostID())
+	if activeTasks > 0 {
+		result += fmt.Sprintf("\n\n⚠️ 该服务器有 %d 个后台任务仍在运行，请先用 list_tasks 查看再决定是否需要新建任务。", activeTasks)
+	}
 	if preview != "" {
 		result += "\n\n--- 初始输出 ---\n" + preview
 	}
@@ -346,6 +375,11 @@ func (h *IMMessageHandler) sshExecBackground(args map[string]interface{}) string
 	mgr := h.ensureSSHManager()
 	if h.bgTaskMgr == nil {
 		h.bgTaskMgr = remote.NewSSHBackgroundTaskManager(mgr)
+		if h.app != nil {
+			if persistDir := h.app.GetDataDir(); persistDir != "" {
+				h.bgTaskMgr.SetPersistDir(persistDir)
+			}
+		}
 	}
 
 	sessionID, _ := args["session_id"].(string)
@@ -375,6 +409,17 @@ func (h *IMMessageHandler) sshExecBackground(args map[string]interface{}) string
 
 	h.emitAppEvent("background-loops-changed")
 	h.bumpSSHLoopIteration(sessionID)
+
+	if task.Reused {
+		elapsed := time.Since(task.StartedAt).Round(time.Second)
+		return fmt.Sprintf("♻️ 检测到相同命令的任务已在运行，复用已有任务（避免重复创建）\n"+
+			"任务 ID: %s\n"+
+			"命令: %s\n"+
+			"PID: %s\n"+
+			"已运行: %s\n\n"+
+			"💡 使用 check_task (task_id=%s) 查看进度",
+			task.TaskID, task.Command, task.PID, elapsed, task.TaskID)
+	}
 
 	return fmt.Sprintf("✅ 后台任务已提交\n"+
 		"任务 ID: %s\n"+

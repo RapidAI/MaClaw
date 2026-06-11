@@ -2,13 +2,11 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,6 +14,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -226,8 +225,15 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 
 	state, err := wf.machine.Create(msg.UserID, routeResult.WorkflowType, projectPath, msg.Text)
 	if err != nil {
-		log.Printf("[workflow-v2] Create failed: user=%s type=%s err=%v", msg.UserID, routeResult.WorkflowType, err)
-		return workflowIMRouteResult{}
+		// If project path was rejected (temp/test directory), retry with "." for non-coding workflows
+		if routeResult.WorkflowType != "coding" && projectPath != "." {
+			log.Printf("[workflow-v2] Create failed with path %q, retrying with '.': %v", projectPath, err)
+			state, err = wf.machine.Create(msg.UserID, routeResult.WorkflowType, ".", msg.Text)
+		}
+		if err != nil {
+			log.Printf("[workflow-v2] Create failed: user=%s type=%s err=%v", msg.UserID, routeResult.WorkflowType, err)
+			return workflowIMRouteResult{}
+		}
 	}
 
 	log.Printf("[workflow-v2] started: user=%s type=%s project=%s id=%s", msg.UserID, state.Type, state.ProjectPath, state.ID)
@@ -670,6 +676,11 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID str
 	reasoningToken := onToken
 	if onToken != nil {
 		reasoningToken = func(delta string) {
+			// Strip Browser: role prefix hallucination from reasoning output
+			if strings.HasPrefix(delta, "Browser:") || strings.HasPrefix(delta, "Browser：") {
+				delta = strings.TrimPrefix(strings.TrimPrefix(delta, "Browser:"), "Browser：")
+				delta = strings.TrimLeft(delta, " ")
+			}
 			onToken("\x01" + delta)
 		}
 	}
@@ -881,6 +892,11 @@ func (h *IMMessageHandler) runDirectCodingSubAgent(userID, userText, projectPath
 	reasoningToken := onToken
 	if onToken != nil {
 		reasoningToken = func(delta string) {
+			// Strip Browser: role prefix hallucination from reasoning output
+			if strings.HasPrefix(delta, "Browser:") || strings.HasPrefix(delta, "Browser：") {
+				delta = strings.TrimPrefix(strings.TrimPrefix(delta, "Browser:"), "Browser：")
+				delta = strings.TrimLeft(delta, " ")
+			}
 			onToken("\x01" + delta)
 		}
 	}
@@ -978,33 +994,23 @@ func (h *IMMessageHandler) callLightweightLLM(cfg corelib.MaclawLLMConfig, syste
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	messages := []map[string]string{
-		{"role": "system", "content": systemPrompt},
-		{"role": "user", "content": userText},
+	messages := []interface{}{
+		map[string]string{"role": "system", "content": systemPrompt},
+		map[string]string{"role": "user", "content": userText},
 	}
 
-	body := map[string]interface{}{
-		"model":       cfg.UpstreamModel(),
-		"messages":    messages,
-		"max_tokens":  200, // Reasoning models need space for thinking + answer
-		"temperature": 0,
-	}
-
-	bodyBytes, err := json.Marshal(body)
+	req, bodyBytes, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
+		Stream: false,
+		ExtraBody: map[string]interface{}{
+			"max_tokens":  200, // Reasoning models need space for thinking + answer
+			"temperature": 0,
+		},
+	})
 	if err != nil {
 		return ""
 	}
 
-	url := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
-	log.Printf("[workflow-v2] callLightweightLLM: POST %s model=%s configured_model=%s", url, cfg.UpstreamModel(), cfg.Model)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return ""
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if cfg.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Key)
-	}
+	log.Printf("[workflow-v2] callLightweightLLM: POST %s model=%s configured_model=%s", endpoint, cfg.UpstreamModel(), cfg.Model)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -1014,7 +1020,7 @@ func (h *IMMessageHandler) callLightweightLLM(cfg corelib.MaclawLLMConfig, syste
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		log.Printf("[workflow-v2] callLightweightLLM: HTTP %d from %s", resp.StatusCode, url)
+		log.Printf("[workflow-v2] callLightweightLLM: HTTP %d from %s request=%s", resp.StatusCode, endpoint, llm.SummarizeOpenAIChatRequestBody(bodyBytes))
 		return ""
 	}
 

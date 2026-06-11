@@ -57,12 +57,10 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	workflowFilterPolicy := workflowToolFilterNone
 	workflowFilterSkipped := false
 	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
-	policyOwnerID, applyWorkflowFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx)
-	_ = policyOwnerID // V1 engine removed; policyOwnerID retained for future V2 use
-	if applyWorkflowFilter && h.isWorkflowV2Active(userID) {
-		// V2 workflow tool filter: strip coding/write tools during doc_only phases.
-		workflowFilterPolicy = workflowToolFilterDecision(string(workflow.ToolFilterDocOnly))
-		tools = workflow.FilterToolDefinitions(workflow.ToolFilterDocOnly, tools)
+	policyOwnerID, policy, applyWorkflowFilter := h.workflowToolFilterOwnerPolicyAndDecision(userID, ctx)
+	if applyWorkflowFilter {
+		workflowFilterPolicy = workflowToolFilterDecision(string(policy))
+		tools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, tools, allTools)
 	} else if skipNeedsConfirmGate {
 		workflowFilterPolicy = workflowToolFilterSkippedConfirmBypass
 		workflowFilterSkipped = true
@@ -86,22 +84,45 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 }
 
 func (h *IMMessageHandler) workflowToolFilterOwnerAndDecision(userID string, ctx *LoopContext) (string, bool) {
+	ownerID, _, apply := h.workflowToolFilterOwnerPolicyAndDecision(userID, ctx)
+	return ownerID, apply
+}
+
+func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID string, ctx *LoopContext) (string, workflow.ToolFilterPolicy, bool) {
 	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
-	// V2 workflow: apply doc_only filter when V2 has an active workflow in a doc phase.
-	// This applies regardless of WorkflowAgentLoop flag — even pass-through messages
-	// should not expose write tools during doc phases.
-	if h.isWorkflowV2Active(userID) {
+	if policyOwnerID == "" {
+		policyOwnerID = h.workflowPolicyUserID(userID)
+	}
+	if policyOwnerID == "" {
+		return policyOwnerID, workflow.ToolFilterNone, false
+	}
+	if h.isWorkflowV2Active(policyOwnerID) {
 		wf := h.getWorkflowV2()
 		if wf != nil {
-			if state := wf.machine.GetActive(userID); state != nil {
+			if state := wf.machine.GetActive(policyOwnerID); state != nil {
 				phase := state.ActivePhase()
-				if phase != nil && phase.ToolPolicy == v2.ToolPolicyDocOnly {
-					return policyOwnerID, true
+				if phase != nil {
+					switch phase.ToolPolicy {
+					case v2.ToolPolicyDocOnly:
+						return policyOwnerID, workflow.ToolFilterDocOnly, true
+					}
 				}
 			}
 		}
 	}
-	return policyOwnerID, false
+	if h.app != nil && h.app.workflowEngine != nil {
+		policy := h.app.workflowEngine.GetActivePhaseToolFilter(policyOwnerID)
+		if policy == workflow.ToolFilterNone {
+			policy = h.app.workflowEngine.GetPhaseToolFilter(policyOwnerID)
+		}
+		if policy != workflow.ToolFilterNone {
+			return policyOwnerID, policy, true
+		}
+		if h.app.workflowEngine.IsPhaseExecutionBlocked(policyOwnerID) {
+			return policyOwnerID, workflow.ToolFilterNone, true
+		}
+	}
+	return policyOwnerID, workflow.ToolFilterNone, false
 }
 
 func agentLoopToolNamesForLog(tools []map[string]interface{}) []string {

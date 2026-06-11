@@ -977,6 +977,7 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 
 	endpoint := strings.TrimRight(baseURL, "/")
 	endpoint = llm.BuildResponsesEndpoint(endpoint)
+	probeCfg := corelib.MaclawLLMConfig{URL: baseURL, Key: key, Model: model, Protocol: "openai"}
 	reqBody := map[string]interface{}{
 		"model": model,
 		"store": false,
@@ -991,6 +992,9 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 			},
 		},
 		"stream": false,
+	}
+	if probeCfg.NeedsConservativeOpenAICompatSanitization() {
+		delete(reqBody, "store")
 	}
 	data, _ := json.Marshal(reqBody)
 	req, err := http.NewRequestWithContext(scheduledCtx, http.MethodPost, endpoint, bytes.NewReader(data))
@@ -1020,7 +1024,7 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[LLM] vision probe ResponsesAPI: HTTP %d", resp.StatusCode)
+		log.Printf("[LLM] vision probe ResponsesAPI: HTTP %d request=%s", resp.StatusCode, llm.SummarizeOpenAIChatRequestBody(data))
 		globalLLMScheduler.ObserveResult(trace, fmt.Errorf("HTTP %d", resp.StatusCode))
 		return false
 	}
@@ -1133,17 +1137,54 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 		return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
 	}
 
-	online, err2 := maclawLLMProbe(baseURL+"/models", key, ua)
-	if err2 == nil {
-		return MaclawLLMStatus{Online: online, Configured: true}
+	var err2 error
+	for _, endpoint := range openAIModelsEndpointCandidates(baseURL, protocol) {
+		online, probeErr := maclawLLMProbe(endpoint, key, ua)
+		if probeErr == nil {
+			return MaclawLLMStatus{Online: online, Configured: true}
+		}
+		err2 = probeErr
 	}
 
-	online, err2 = maclawLLMProbe(baseURL+"/chat/completions", key, ua)
+	online, err2 := maclawLLMProbe(llm.BuildOpenAIChatCompletionsEndpoint(baseURL), key, ua)
 	if err2 == nil {
 		return MaclawLLMStatus{Online: online, Configured: true}
 	}
 
 	return MaclawLLMStatus{Online: false, Configured: true, Error: err2.Error()}
+}
+
+func openAIModelsEndpointCandidates(baseURL, protocol string) []string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		return nil
+	}
+	if strings.HasSuffix(baseURL, "/models") {
+		return []string{baseURL}
+	}
+	candidates := []string{baseURL + "/models"}
+	if strings.TrimSpace(protocol) == "anthropic" {
+		candidates = []string{baseURL + "/v1/models", baseURL + "/models"}
+	} else if !strings.HasSuffix(baseURL, "/v1") {
+		candidates = append(candidates, baseURL+"/v1/models")
+	}
+	return dedupeStrings(candidates)
+}
+
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 // maclawLLMProbe sends a GET request to endpoint and returns true when the
@@ -2287,20 +2328,7 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 		return nil, fmt.Errorf("API Key 为空，请先填写 API Key")
 	}
 
-	// 构建 models 端点候选 URL 列表。
-	// OpenAI 协议：baseURL 通常已包含 /v1（如 https://api.openai.com/v1），直接拼 /models。
-	// Anthropic 协议：baseURL 可能不含 /v1（如 http://127.0.0.1:5001/anthropic），
-	//   需要插入 /v1 前缀，否则请求 /anthropic/models 会 404（正确路径是 /anthropic/v1/models）。
-	// 首选路径 404 时尝试备选路径，兼容不同代理的路由注册方式。
-	hasV1 := strings.HasSuffix(baseURL, "/v1")
-	candidates := []string{baseURL + "/models"}
-	if protocol == "anthropic" && !hasV1 {
-		// Anthropic 代理通常注册 /anthropic/v1/models，优先尝试
-		candidates = []string{baseURL + "/v1/models", baseURL + "/models"}
-	} else if !hasV1 {
-		// OpenAI 代理 baseURL 不含 /v1 时，备选带 /v1 的路径
-		candidates = append(candidates, baseURL+"/v1/models")
-	}
+	candidates := openAIModelsEndpointCandidates(baseURL, protocol)
 
 	client := &http.Client{Timeout: 15 * time.Second}
 

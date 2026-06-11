@@ -36,15 +36,15 @@ export const ToolConfiguration = ({
 
     const getBadge = (model: any): { bg: string; label: string } | null => {
         const name = model.model_name.toLowerCase();
-        if (model.model_name === "Original") return { bg: '#6366f1', label: t("originalFlag") };
-        if (model.has_subscription) return { bg: '#ec4899', label: t("subscription") };
+        if (model.model_name === "Original") return { bg: 'var(--theme-primary, #2f5f98)', label: t("originalFlag") };
+        if (model.has_subscription) return { bg: 'var(--theme-primary-strong, #183b63)', label: t("subscription") };
         if (name.includes("glm") || name.includes("kimi") || name.includes("doubao") || name.includes("minimax"))
-            return { bg: '#ec4899', label: t("monthly") };
-        if (name.includes("deepseek")) return { bg: '#f59e0b', label: t("premium") };
-        if (name.includes("xiaomi")) return { bg: '#f59e0b', label: t("bigSpender") };
-        if (model.is_custom) return { bg: '#9ca3af', label: t("customized") };
+            return { bg: 'var(--theme-primary-strong, #183b63)', label: t("monthly") };
+        if (name.includes("deepseek")) return { bg: 'var(--theme-text-muted, #64748b)', label: t("premium") };
+        if (name.includes("xiaomi")) return { bg: 'var(--theme-text-muted, #64748b)', label: t("bigSpender") };
+        if (model.is_custom) return { bg: 'var(--theme-text-muted, #64748b)', label: t("customized") };
         if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "coderelay"].some(p => name.includes(p)))
-            return { bg: '#14b8a6', label: t("forward") };
+            return { bg: 'var(--theme-success, #4f7f6f)', label: t("forward") };
         return null;
     };
 

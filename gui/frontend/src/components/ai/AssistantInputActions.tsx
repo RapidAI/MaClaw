@@ -40,7 +40,7 @@ export function AssistantInputActionsLeft({ attachButtonTestId, browseFile, inpu
                 {voiceInput.state === "transcribing" ? (
                     <span aria-hidden="true" style={{ display: "inline-block", width: "14px", height: "14px", borderRadius: "50%", border: `2px solid ${t.textMuted}`, borderTopColor: "transparent", animation: "ai-spinner-spin 0.8s linear infinite" }} />
                 ) : voiceInput.state === "listening" ? (
-                    <VoiceLevelVisualizer onAudioLevelRef={voiceInput.onAudioLevelRef} isSpeaking={voiceInput.isSpeaking} themeColor="#ffffff" speakingColor={themeMode === "dark" ? "#fbbf24" : "#dc2626"} />
+                    <VoiceLevelVisualizer onAudioLevelRef={voiceInput.onAudioLevelRef} isSpeaking={voiceInput.isSpeaking} themeColor="#ffffff" speakingColor={themeMode === "dark" ? "#c7d7e8" : "#475569"} />
                 ) : (
                     <AssistantInputIcon name="mic" size={13} />
                 )}
@@ -54,7 +54,7 @@ export function AssistantInputActionsLeft({ attachButtonTestId, browseFile, inpu
 export function AssistantInputActionsRight({ canSend, cancelSession, handleCancel, handleSend, isBusy, lang, showBusySpinner, theme: t, themeMode, sendButtonTestId, sendButtonStyle }: Pick<AssistantInputActionsProps, "canSend" | "cancelSession" | "handleCancel" | "handleSend" | "isBusy" | "lang" | "ready" | "showBusySpinner" | "theme" | "themeMode" | "sendButtonTestId" | "sendButtonStyle">) {
     return isBusy && cancelSession ? (
         <button type="button" onClick={handleCancel} data-testid="ai-cancel-progress" style={getInputActionButtonStyle(t, themeMode, "cancel")} title={localizeText(lang, "Cancel", "\u53d6\u6d88")} aria-label={localizeText(lang, "Cancel", "\u53d6\u6d88")}>
-            {showBusySpinner ? <span aria-hidden="true" style={{ width: "14px", height: "14px", borderRadius: "50%", border: `2px solid ${themeMode === "dark" ? "rgba(221, 214, 254, 0.24)" : "rgba(79, 70, 229, 0.18)"}`, borderTopColor: themeMode === "dark" ? "#ddd6fe" : "#4f46e5", borderRightColor: themeMode === "dark" ? "#ddd6fe" : "#4f46e5", animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="stop" size={13} />}
+            {showBusySpinner ? <span aria-hidden="true" style={{ width: "14px", height: "14px", borderRadius: "50%", border: `2px solid ${themeMode === "dark" ? "rgba(199, 215, 232, 0.24)" : "rgba(47, 95, 152, 0.18)"}`, borderTopColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, borderRightColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="stop" size={13} />}
             <span style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}>{localizeText(lang, "Cancel", "\u53d6\u6d88")}</span>
         </button>
     ) : (

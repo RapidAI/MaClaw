@@ -35,60 +35,77 @@ export interface Theme {
 
 export const FILE_TYPE_ICONS: Record<string, string> = {
     // Document
-    ".pdf": "📕",
-    ".doc": "📘",
-    ".docx": "📘",
-    ".xls": "📗",
-    ".xlsx": "📗",
-    ".ppt": "📙",
-    ".pptx": "📙",
-    ".txt": "📝",
-    ".md": "📝",
-    ".csv": "📊",
+    ".pdf": "PDF",
+    ".doc": "DOC",
+    ".docx": "DOC",
+    ".xls": "XLS",
+    ".xlsx": "XLS",
+    ".ppt": "PPT",
+    ".pptx": "PPT",
+    ".txt": "TXT",
+    ".md": "MD",
+    ".csv": "CSV",
     // Code
-    ".js": "🟨",
-    ".jsx": "🟨",
-    ".ts": "🔷",
-    ".tsx": "🔷",
-    ".py": "🐍",
-    ".go": "🔵",
-    ".rs": "🦀",
-    ".java": "☕",
-    ".c": "🔧",
-    ".cpp": "🔧",
-    ".h": "🔧",
-    ".cs": "🟣",
-    ".html": "🌐",
-    ".css": "🎨",
-    ".json": "📋",
-    ".xml": "📋",
-    ".yaml": "📋",
-    ".yml": "📋",
-    ".toml": "📋",
+    ".js": "JS",
+    ".jsx": "JSX",
+    ".ts": "TS",
+    ".tsx": "TSX",
+    ".py": "PY",
+    ".go": "GO",
+    ".rs": "RS",
+    ".java": "JAV",
+    ".c": "C",
+    ".cpp": "CPP",
+    ".h": "H",
+    ".cs": "CS",
+    ".html": "HTM",
+    ".css": "CSS",
+    ".json": "JSON",
+    ".xml": "XML",
+    ".yaml": "YML",
+    ".yml": "YML",
+    ".toml": "TOML",
     // Image
-    ".png": "🖼️",
-    ".jpg": "🖼️",
-    ".jpeg": "🖼️",
-    ".gif": "🖼️",
-    ".svg": "🖼️",
-    ".webp": "🖼️",
-    ".bmp": "🖼️",
+    ".png": "IMG",
+    ".jpg": "IMG",
+    ".jpeg": "IMG",
+    ".gif": "IMG",
+    ".svg": "SVG",
+    ".webp": "IMG",
+    ".bmp": "IMG",
     // Archive
-    ".zip": "📦",
-    ".tar": "📦",
-    ".gz": "📦",
-    ".rar": "📦",
+    ".zip": "ZIP",
+    ".tar": "TAR",
+    ".gz": "GZ",
+    ".rar": "RAR",
     // Script
-    ".sh": "⚙️",
-    ".bat": "⚙️",
-    ".ps1": "⚙️",
+    ".sh": "SH",
+    ".bat": "BAT",
+    ".ps1": "PS1",
 };
 
-const DEFAULT_FILE_ICON = "📄";
+const DEFAULT_FILE_ICON = "FILE";
 
 export function getFileTypeIcon(extension: string): string {
     return FILE_TYPE_ICONS[extension.toLowerCase()] || DEFAULT_FILE_ICON;
 }
+
+const fileTypeLabelStyle: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: "22px",
+    height: "16px",
+    padding: "0 3px",
+    borderRadius: "3px",
+    background: "rgba(47, 95, 152, 0.08)",
+    color: "#334155",
+    fontSize: "9px",
+    fontWeight: 700,
+    lineHeight: 1,
+    letterSpacing: "0",
+    boxSizing: "border-box",
+};
 
 // ---------------------------------------------------------------------------
 // Props
@@ -497,9 +514,9 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                                         }}
                                     />
                                 ) : att.isImage ? (
-                                    <span>🖼️</span>
+                                    <span style={fileTypeLabelStyle}>IMG</span>
                                 ) : (
-                                    <span>{getFileTypeIcon(att.extension)}</span>
+                                    <span style={fileTypeLabelStyle}>{getFileTypeIcon(att.extension)}</span>
                                 )}
                                 <span
                                     style={{
@@ -530,7 +547,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                                         "移除附件",
                                     )}
                                 >
-                                    ✕
+                                    X
                                 </button>
                             </div>
                         ))}
@@ -559,7 +576,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                         }}
                         aria-label={localizeText(lang, "Cancel edit", "取消编辑", "取消編輯")}
                     >
-                        ✕
+                        X
                     </button>
                     <button
                         data-testid={`buffer-entry-confirm-${entry.id}`}
@@ -574,7 +591,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                         }}
                         aria-label={localizeText(lang, "Confirm edit", "确认编辑", "確認編輯")}
                     >
-                        ✓
+                        OK
                     </button>
                 </div>
             </div>
@@ -673,9 +690,9 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                                 }}
                             />
                         ) : att.isImage ? (
-                            <span style={{ fontSize: "12px" }}>🖼️</span>
+                            <span style={fileTypeLabelStyle}>IMG</span>
                         ) : (
-                            <span style={{ fontSize: "12px" }}>
+                            <span style={fileTypeLabelStyle}>
                                 {getFileTypeIcon(att.extension)}
                             </span>
                         )}
@@ -725,7 +742,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                 aria-label={localizeText(lang, "Edit entry", "编辑条目", "編輯條目")}
                 title={localizeText(lang, "Edit", "编辑", "編輯")}
             >
-                ✏️
+                <AssistantInputIcon name="edit" size={12} />
             </button>
             <button
                 data-testid={`delete-btn-${entry.id}`}
@@ -745,7 +762,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                 aria-label={localizeText(lang, "Delete entry", "删除条目", "刪除條目")}
                 title={localizeText(lang, "Delete", "删除", "刪除")}
             >
-                🗑
+                <AssistantInputIcon name="trash" size={12} />
             </button>
         </div>
     );

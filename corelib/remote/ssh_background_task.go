@@ -23,17 +23,27 @@ type SSHBackgroundTask struct {
 	PID       string                  `json:"pid,omitempty"`
 	StartedAt time.Time               `json:"started_at"`
 	LastCheck time.Time               `json:"last_check,omitempty"`
+	Reused    bool                    `json:"-"` // transient: Submit 返回已有任务而非新建时为 true
 }
 
 // SSHBackgroundTaskManager 管理远程后台任务的生命周期。
 // 长时间运行的命令（pip install、apt、make 等）通过 nohup + 日志文件执行，
 // 避免 SSH 断连导致任务丢失。
+//
+// 持久化：调用 SetPersistDir 后，任务注册表会持久化到磁盘。
+// 进程重启后自动恢复 active 状态的任务。SSH 重连时通过
+// RediscoverOrphanTasks 扫描远程服务器上的 orphan 进程并重新注册。
 type SSHBackgroundTaskManager struct {
 	mu         sync.RWMutex
 	tasks      map[string]*SSHBackgroundTask
 	refreshing map[string]struct{}
 	sshMgr     *SSHSessionManager
 	counter    int
+
+	// 持久化相关字段
+	persistDir  string        // 持久化目录（空则不持久化）
+	persistCh   chan struct{} // debounce 信号通道
+	persistOnce sync.Once     // 确保 persistLoop 只启动一次
 }
 
 // NewSSHBackgroundTaskManager 创建后台任务管理器。
@@ -63,6 +73,15 @@ func (m *SSHBackgroundTaskManager) SubmitWithRole(sessionID, command, role strin
 		return nil, fmt.Errorf("ssh session %s not found", sessionID)
 	}
 	role = normalizeSSHBackgroundTaskRole(role, command)
+
+	// 去重检查：如果已有相同（或高度相似）命令的 active 任务正在运行，
+	// 直接返回已有任务而非创建重复。这是防止 LLM 重复提交的最终防线。
+	if existing := m.findDuplicateActiveTask(command); existing != nil {
+		existing.mu.Lock()
+		existing.Reused = true
+		existing.mu.Unlock()
+		return existing, nil
+	}
 
 	// sudo 检测与降级
 	if containsSudo(command) {
@@ -152,6 +171,8 @@ func (m *SSHBackgroundTaskManager) SubmitWithRole(sessionID, command, role strin
 	m.tasks[taskID] = task
 	m.mu.Unlock()
 
+	m.signalPersist()
+
 	return task, nil
 }
 
@@ -167,7 +188,17 @@ func (m *SSHBackgroundTaskManager) CheckTask(taskID string, tailLines int) (*Bac
 
 	session, ok := m.sshMgr.Get(task.SessionID)
 	if !ok {
-		return nil, fmt.Errorf("ssh session %s not found", task.SessionID)
+		// Session from original submission no longer exists (process restart).
+		// Try to find any running session to the same host for task checking.
+		session = m.findAlternateSession(task)
+		if session == nil {
+			return nil, fmt.Errorf("ssh session %s not found (原始会话已断开，请先用 ssh connect 重新连接服务器)", task.SessionID)
+		}
+		// Rebind task to the new session for future checks.
+		task.mu.Lock()
+		task.SessionID = session.ID
+		task.mu.Unlock()
+		m.signalPersist()
 	}
 
 	if tailLines <= 0 {
@@ -233,6 +264,8 @@ func (m *SSHBackgroundTaskManager) CheckTask(taskID string, tailLines int) (*Bac
 	}
 	result.Status = task.Status
 	task.mu.Unlock()
+
+	m.signalPersist()
 
 	return result, nil
 }
@@ -313,15 +346,31 @@ func (m *SSHBackgroundTaskManager) KillTask(taskID string) error {
 		return fmt.Errorf("task %s has no PID", taskID)
 	}
 
+	// Ensure session is available; rebind if original session is gone.
+	sessionID := task.SessionID
+	if _, ok := m.sshMgr.Get(sessionID); !ok {
+		alt := m.findAlternateSession(task)
+		if alt == nil {
+			return fmt.Errorf("ssh session %s not found (请先用 ssh connect 重新连接服务器)", sessionID)
+		}
+		sessionID = alt.ID
+		task.mu.Lock()
+		task.SessionID = sessionID
+		task.mu.Unlock()
+		m.signalPersist()
+	}
+
 	// kill 进程组（负 PID）以确保子进程也被终止
 	killCmd := fmt.Sprintf("kill -- -%s 2>/dev/null; kill %s 2>/dev/null; kill -9 %s 2>/dev/null", task.PID, task.PID, task.PID)
-	if _, err := m.sshMgr.WriteInputChecked(task.SessionID, killCmd); err != nil {
+	if _, err := m.sshMgr.WriteInputChecked(sessionID, killCmd); err != nil {
 		return fmt.Errorf("kill task: %w", err)
 	}
 
 	task.mu.Lock()
 	task.Status = SSHBackgroundTaskStatusKilled
 	task.mu.Unlock()
+
+	m.signalPersist()
 
 	return nil
 }

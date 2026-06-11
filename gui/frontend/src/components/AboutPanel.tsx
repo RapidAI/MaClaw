@@ -203,7 +203,7 @@ export function AboutPanel({
                         {hasRegisteredMachine ? (
                             <button
                                 className="about-status-pill is-online"
-                                style={{ cursor: 'pointer', border: 'none', background: 'rgba(239,68,68,0.12)', color: '#ef4444' }}
+                                style={{ cursor: 'pointer', border: 'none', background: 'var(--theme-danger-bg)', color: 'var(--theme-danger)' }}
                                 onClick={onClearRegistration}
                                 title={t("aboutClearRegistration")}
                             >
@@ -354,7 +354,7 @@ export function AboutPanel({
                                     const isFatal = /fatal|panic/i.test(line);
                                     return (
                                         <div key={index} style={{
-                                            color: isFatal ? '#ef4444' : 'var(--theme-danger)',
+                                            color: 'var(--theme-danger)',
                                             fontWeight: isFatal ? 600 : 'normal',
                                             marginBottom: '2px',
                                             borderBottom: '1px solid var(--theme-border)',

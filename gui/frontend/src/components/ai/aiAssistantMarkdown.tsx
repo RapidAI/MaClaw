@@ -52,13 +52,20 @@ function extractPathFromContent(s: string): string | null {
 
 function renderPathLink(filePath: string, key: number, t: Theme): React.ReactNode {
     const display = stripPathWrapping(filePath);
+    const style: React.CSSProperties = {
+        color: t.pathColor,
+        textDecoration: "underline",
+        textDecorationStyle: "dotted",
+        textUnderlineOffset: "2px",
+        cursor: "pointer",
+    };
     return (
         <a key={key}
            href="#"
            onClick={(event) => openFileInFolder(event, display)}
-           style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }}
+           style={style}
            title={display}
-        >{"\uD83D\uDCC2 "}{display}</a>
+        >{display}</a>
     );
 }
 // CJK exclusion ranges used in path-detection regexes below:
@@ -69,7 +76,7 @@ function renderPathLink(filePath: string, key: number, t: Theme): React.ReactNod
 const codeBlockPathPattern = /([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))\/[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)/g;
 function renderCodePathLink(filePath: string, key: string, t: Theme): React.ReactNode {
     const display = stripPathWrapping(filePath);
-    return <a key={key} href="#" onClick={(event) => openFileInFolder(event, display)} style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }} title={display}>{display}</a>;
+    return <a key={key} href="#" onClick={(event) => openFileInFolder(event, display)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer" }} title={display}>{display}</a>;
 }
 function renderCodeBlockText(text: string, t: Theme): React.ReactNode[] {
     const parts: React.ReactNode[] = [];
@@ -165,7 +172,7 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
                     parts.push(<a key={idx++} href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(href); }} style={{ color: t.linkColor, textDecoration: "underline", cursor: "pointer" }}>{lm[1]}</a>);
                 } else if (looksLikeFilePath(href)) {
                     const filePath = stripPathWrapping(href);
-                    parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, filePath)} style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }} title={filePath}>{"\uD83D\uDCC2 "}{lm[1]}</a>);
+                    parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, filePath)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer" }} title={filePath}>{lm[1]}</a>);
                 } else {
                     parts.push(<span key={idx++} style={{ color: t.linkColor }}>{lm[1]}</span>);
                 }
@@ -250,7 +257,7 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
     if (/^>\s/.test(trimmed)) {
         return (
             <div key={key} style={{
-                borderLeft: `3px solid ${t.quoteBorder}`,
+                borderLeft: `1px solid ${t.quoteBorder}`,
                 paddingLeft: "10px",
                 color: t.quoteText,
                 fontStyle: "italic",
@@ -409,15 +416,15 @@ function renderFields(fields: Array<{ label: string; value: string }>, t: Theme)
                         borderRadius: "999px",
                         fontWeight: 700,
                         background: recoveryTone.includes('failed')
-                            ? "rgba(220, 38, 38, 0.12)"
+                            ? "rgba(180, 35, 24, 0.10)"
                             : recoveryTone.includes('partial')
-                                ? "rgba(245, 158, 11, 0.16)"
-                                : "rgba(34, 197, 94, 0.14)",
+                                ? "rgba(100, 116, 139, 0.10)"
+                                : "rgba(79, 127, 111, 0.12)",
                         color: recoveryTone.includes('failed')
-                            ? "#b91c1c"
+                            ? "#b42318"
                             : recoveryTone.includes('partial')
-                                ? "#b45309"
-                                : "#166534",
+                                ? "#64748b"
+                                : "#4f7f6f",
                     }
                     : { color: t.text };
                 return (
@@ -546,7 +553,7 @@ function renderConfirmationCard(
                 padding: "10px 12px",
                 borderRadius: "8px",
                 border: `1px solid ${t.inputBarBorder}`,
-                background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(99,102,241,0.02))",
+                background: t.fieldBg,
             }}
         >
             <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
@@ -663,7 +670,7 @@ function renderUnfinishedSlotCard(
                 padding: "10px 12px",
                 borderRadius: "8px",
                 border: `1px solid ${t.inputBarBorder}`,
-                background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.03))",
+                background: t.fieldBg,
             }}
         >
             <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
@@ -689,10 +696,10 @@ function renderUnfinishedSlotCard(
                     <a
                         href="#"
                         onClick={(event) => openFileInFolder(event, slot.projectPath!)}
-                        style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer", wordBreak: "break-all" }}
+                        style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }}
                         title={slot.projectPath}
                     >
-                        {"\u{1F4C1}"} {slot.projectPath}
+                        {slot.projectPath}
                     </a>
                 </div>
             )}
@@ -741,7 +748,7 @@ function renderRecoverableSessionCard(
                 padding: "10px 12px",
                 borderRadius: "8px",
                 border: `1px solid ${t.inputBarBorder}`,
-                background: "linear-gradient(135deg, rgba(14,165,233,0.08), rgba(14,165,233,0.03))",
+                background: t.fieldBg,
             }}
         >
             <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
@@ -767,10 +774,10 @@ function renderRecoverableSessionCard(
                     <a
                         href="#"
                         onClick={(event) => openFileInFolder(event, session.projectPath!)}
-                        style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer", wordBreak: "break-all" }}
+                        style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }}
                         title={session.projectPath}
                     >
-                        {"\u{1F4C1}"} {session.projectPath}
+                        {session.projectPath}
                     </a>
                 </div>
             )}
@@ -804,8 +811,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
             const screenshotBase64 = msg.thumbnailBase64 || msg.imageKey;
             return (
                 <div key={msg.id} style={{
-                    padding: "4px 0 4px 8px",
-                    borderLeft: `2px solid ${t.responseBorderLeft}`,
+                    padding: "4px 0",
                     margin: "2px 0",
                     color: t.text,
                 }}>
@@ -823,7 +829,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                         const shouldOpen = isLastAssistant && isStreaming;
                         return (
                             <details key={shouldOpen ? "reasoning-open" : "reasoning-closed"} open={shouldOpen || undefined} style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
-                                <summary style={{ cursor: "pointer", opacity: 0.8 }}>💭 {lang === "en" ? "Thinking..." : "思考过程 ..."}</summary>
+                                <summary style={{ cursor: "pointer", opacity: 0.8 }}>Reasoning...</summary>
                                 <div style={{ padding: "4px 8px", color: t.text, opacity: 0.75, maxHeight: "400px", overflow: "auto" }}>
                                     {renderContentWithCodeBlocks(msg.reasoning, t)}
                                 </div>
@@ -835,7 +841,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
                     {msg.recoverableSession && renderRecoverableSessionCard(msg.recoverableSession, executeAction, t, lang)}
                     {savedPaths.length > 0 && <div style={{ margin: "4px 0" }}>{savedPaths.map((fp, i) => (
-                        <div key={i} style={{ padding: "2px 0" }}><a href="#" onClick={(event) => openFileInFolder(event, fp)} style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer", wordBreak: "break-all" }} title={fp}>{"\u{1F4C4}"} {savedFileLabel}: {"\u{1F4C1}"} {fp}</a></div>
+                        <div key={i} style={{ padding: "2px 0" }}><a href="#" onClick={(event) => openFileInFolder(event, fp)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }} title={fp}>{savedFileLabel}: {fp}</a></div>
                     ))}</div>}
                     {msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
                     {!msg.confirmation && msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t, lang)}
@@ -850,14 +856,14 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
             return <div key={msg.id} style={{ color: t.textMuted, fontSize: "11px", padding: "2px 0", fontStyle: "italic" }}>{msg.content}</div>;
         case "system":
             return (
-                <div key={msg.id} style={{ padding: "8px 12px", margin: "4px 0", borderRadius: "6px", background: t.fieldBg, borderLeft: `3px solid ${t.promptColor}`, color: t.text, fontSize: "12px", lineHeight: "1.6" }}>
+                <div key={msg.id} style={{ padding: "8px 12px", margin: "4px 0", borderRadius: "6px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.6" }}>
                     {msg.kind === 'trace' && msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
                     {renderContentWithCodeBlocks(msg.content, t)}
                 </div>
             );
         case "error":
             return (
-                <div key={msg.id} style={{ color: t.errorText, background: t.errorBg, borderLeft: `2px solid ${t.errorBorder}`, padding: "4px 8px", margin: "2px 0", borderRadius: "2px", fontSize: "12px" }}>{">"} {msg.content}</div>
+                <div key={msg.id} style={{ color: t.errorText, background: t.errorBg, border: `1px solid ${t.errorBorder}`, padding: "6px 8px", margin: "3px 0", borderRadius: "6px", fontSize: "12px" }}>{msg.content}</div>
             );
         default:
             return null;

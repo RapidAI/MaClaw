@@ -45,7 +45,7 @@ export const ApiStoreProviderCard = ({ provider, t }: ApiStoreProviderCardProps)
         onClick={() => BrowserOpenURL(provider.url)}
     >
         {provider.isRelay && <div style={badgeStyle('var(--theme-primary)')}>{t('relayService')}</div>}
-        {provider.hasSubscription && <div style={badgeStyle('var(--theme-accent-pink, #ec4899)')}>{t('subscription')}</div>}
+        {provider.hasSubscription && <div style={badgeStyle('var(--theme-primary-strong, #183b63)')}>{t('subscription')}</div>}
         {provider.isBilling && <div style={badgeStyle('var(--theme-warning)')}>{t('billing')}</div>}
         <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--theme-primary)', marginBottom: '8px' }}>
             {provider.name}

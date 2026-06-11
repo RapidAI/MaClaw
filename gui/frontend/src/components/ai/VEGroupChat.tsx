@@ -109,16 +109,16 @@ export function buildGroupTabTitle(participants: GroupParticipant[]): string {
 
 /** Assign a color to a participant based on their index. */
 const PARTICIPANT_COLORS = [
-    "#3b82f6", // blue
-    "#10b981", // emerald
-    "#f59e0b", // amber
-    "#8b5cf6", // violet
-    "#ef4444", // red
-    "#06b6d4", // cyan
-    "#ec4899", // pink
-    "#14b8a6", // teal
-    "#f97316", // orange
-    "#6366f1", // indigo
+    "#2f5f98", // steel blue
+    "#3f7f7b", // teal
+    "#4f7f6f", // green
+    "#5f6f82", // blue gray
+    "#466276", // blue gray
+    "#2f6f73", // deep teal
+    "#6f7d4f", // olive
+    "#5f6f89", // slate
+    "#8a6f3f", // muted ochre
+    "#385f7d", // deep blue
 ];
 
 export function getParticipantColor(index: number): string {
@@ -363,9 +363,9 @@ export function ParticipantSelector({
                         position: "absolute",
                         top: 32,
                         right: 0,
-                        background: theme.errorBg || "#fef2f2",
-                        color: theme.errorText || "#dc2626",
-                        border: `1px solid ${theme.errorBorder || "#fecaca"}`,
+                        background: theme.errorBg || "#fbf1f0",
+                        color: theme.errorText || "#b42318",
+                        border: `1px solid ${theme.errorBorder || "rgba(180, 35, 24, 0.24)"}`,
                         borderRadius: 6,
                         padding: "6px 10px",
                         fontSize: 12,
@@ -459,7 +459,7 @@ export function ParticipantSelector({
                                             width: 6,
                                             height: 6,
                                             borderRadius: "50%",
-                                            background: "#22c55e",
+                                            background: "#4f7f6f",
                                             flexShrink: 0,
                                         }}
                                     />
@@ -517,7 +517,7 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                     padding: "8px 12px",
                     borderRadius: 8,
                     background: isUser ? `${theme.sendBtnBg}15` : theme.fieldBg,
-                    borderLeft: isUser ? "none" : `3px solid ${color}`,
+                    border: `1px solid ${isUser ? theme.borderLeft : theme.fieldBorder}`,
                     fontSize: 13,
                     color: theme.text,
                     wordBreak: "break-word",

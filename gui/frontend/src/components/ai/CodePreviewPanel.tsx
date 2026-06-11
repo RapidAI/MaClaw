@@ -27,52 +27,52 @@ export type { CodePreviewTheme } from './FileTabBar';
 
 /** Dark theme for the code preview panel. */
 export const darkCodePreviewTheme: CodePreviewTheme = {
-    bg: '#1e1e1e',
-    text: '#d4d4d4',
-    textMuted: '#808080',
-    border: '#333333',
-    lineNumBg: '#1e1e1e',
-    lineNumText: '#858585',
-    tabBg: '#252526',
-    tabActiveBg: '#1e1e1e',
-    tabActiveText: '#ffffff',
-    tabHoverBg: '#2a2d2e',
-    diffAddBg: 'rgba(35, 134, 54, 0.2)',
-    diffAddText: '#b5e8b5',
-    diffDeleteBg: 'rgba(218, 54, 51, 0.2)',
-    diffDeleteText: '#f0a8a8',
-    syntaxKeyword: '#569cd6',
-    syntaxString: '#ce9178',
-    syntaxComment: '#6a9955',
-    syntaxNumber: '#b5cea8',
-    syntaxFunction: '#dcdcaa',
-    syntaxType: '#4ec9b0',
-    syntaxOperator: '#d4d4d4',
+    bg: '#0f1720',
+    text: '#d7dee8',
+    textMuted: '#8d9aae',
+    border: '#263447',
+    lineNumBg: '#111b27',
+    lineNumText: '#6f7d90',
+    tabBg: '#111b27',
+    tabActiveBg: '#162233',
+    tabActiveText: '#edf3f9',
+    tabHoverBg: '#1a293b',
+    diffAddBg: 'rgba(122, 168, 154, 0.16)',
+    diffAddText: '#b8d7cf',
+    diffDeleteBg: 'rgba(180, 35, 24, 0.12)',
+    diffDeleteText: '#e2aaa5',
+    syntaxKeyword: '#9bc2ea',
+    syntaxString: '#b8d7cf',
+    syntaxComment: '#7d8c9e',
+    syntaxNumber: '#b7d3ef',
+    syntaxFunction: '#d7dee8',
+    syntaxType: '#b7d3ef',
+    syntaxOperator: '#c3ccd8',
 };
 
 /** Light theme for the code preview panel. */
 export const lightCodePreviewTheme: CodePreviewTheme = {
     bg: '#ffffff',
-    text: '#1f1f1f',
-    textMuted: '#6e7681',
-    border: '#d0d7de',
-    lineNumBg: '#f6f8fa',
-    lineNumText: '#8b949e',
-    tabBg: '#f6f8fa',
+    text: '#1f2937',
+    textMuted: '#64748b',
+    border: '#d8dee8',
+    lineNumBg: '#f8fafc',
+    lineNumText: '#94a3b8',
+    tabBg: '#f8fafc',
     tabActiveBg: '#ffffff',
-    tabActiveText: '#1f1f1f',
-    tabHoverBg: '#eaeef2',
-    diffAddBg: 'rgba(46, 160, 67, 0.15)',
-    diffAddText: '#1a7f37',
-    diffDeleteBg: 'rgba(248, 81, 73, 0.15)',
-    diffDeleteText: '#cf222e',
-    syntaxKeyword: '#0550ae',
-    syntaxString: '#0a3069',
-    syntaxComment: '#6e7781',
-    syntaxNumber: '#0550ae',
-    syntaxFunction: '#8250df',
-    syntaxType: '#0550ae',
-    syntaxOperator: '#1f1f1f',
+    tabActiveText: '#111827',
+    tabHoverBg: '#eef2f7',
+    diffAddBg: 'rgba(79, 127, 111, 0.12)',
+    diffAddText: '#4f7f6f',
+    diffDeleteBg: 'rgba(180, 35, 24, 0.10)',
+    diffDeleteText: '#b42318',
+    syntaxKeyword: '#2f5f98',
+    syntaxString: '#4f7f6f',
+    syntaxComment: '#64748b',
+    syntaxNumber: '#2f5f98',
+    syntaxFunction: '#334155',
+    syntaxType: '#2f5f98',
+    syntaxOperator: '#334155',
 };
 
 // ── Props ──
@@ -297,7 +297,7 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
                 i++;
             }
             elements.push(
-                <blockquote key={elements.length} style={{ borderLeft: `3px solid ${theme.border}`, paddingLeft: 12, margin: '6px 0', color: theme.textMuted, fontStyle: 'italic', lineHeight: 1.6 }}>
+                <blockquote key={elements.length} style={{ borderLeft: `1px solid ${theme.border}`, paddingLeft: 12, margin: '6px 0', color: theme.textMuted, fontStyle: 'italic', lineHeight: 1.6 }}>
                     {quoteLines.map((ql, qi) => (
                         <div key={qi}>{ql.trim() === '' ? <br /> : renderMdInline(ql, theme)}</div>
                     ))}
@@ -463,7 +463,7 @@ function renderMdInline(text: string, theme: CodePreviewTheme): React.ReactNode 
             parts.push(<del key={key++} style={{ opacity: 0.7 }}>{m.slice(2, -2)}</del>);
         } else if (m.startsWith('==')) {
             // Highlight
-            parts.push(<mark key={key++} style={{ background: '#fef08a', padding: '0 2px', borderRadius: 2 }}>{m.slice(2, -2)}</mark>);
+            parts.push(<mark key={key++} style={{ background: theme.tabHoverBg, color: theme.tabActiveText, padding: '0 2px', borderRadius: 2 }}>{m.slice(2, -2)}</mark>);
         } else if (m.startsWith('![')) {
             // Inline image
             const imgM = m.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
@@ -725,9 +725,9 @@ export function CodePreviewPanel({
                                 lineHeight: 1,
                                 '--wails-draggable': 'no-drag',
                             } as any}
-                            title="关闭代码预览"
+                            title="Close code preview"
                         >
-                            ×
+                            X
                         </button>
                     </div>
                     <div style={{
@@ -738,7 +738,7 @@ export function CodePreviewPanel({
                         color: theme.textMuted,
                         fontSize: 14,
                     }}>
-                        暂无代码文件
+                        No code files
                     </div>
                 </div>
             </div>
@@ -810,9 +810,9 @@ export function CodePreviewPanel({
                         marginLeft: 4,
                         '--wails-draggable': 'no-drag',
                     } as any}
-                    title="关闭代码预览"
+                    title="Close code preview"
                 >
-                    ×
+                    X
                 </button>
             </div>
 
@@ -845,7 +845,7 @@ export function CodePreviewPanel({
                         fontSize: 14,
                         textAlign: 'center',
                     }}>
-                        文件未找到
+                        File not found
                     </div>
                 )}
             </div>

@@ -15,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 type agentLoopNeedsConfirmGateResult struct {
@@ -83,7 +84,7 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 	// Each doc phase runs as an independent agent loop. The loop runs until the LLM
 	// finishes (no more tool calls, no more text). The final response IS the document.
 	// recordWorkflowV2Output is called AFTER the loop returns (in im_message_handler.go).
-	// No mid-loop interception is needed — that was a V1 pattern.
+	// No mid-loop interception is needed; that was a V1 pattern.
 	if workflowAgentLoop && h.isWorkflowV2Active(userID) {
 		// V2 workflow agent loop: NeedsConfirm is not used. Let the loop run to completion.
 		return result
@@ -153,7 +154,7 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 }
 
 func (h *IMMessageHandler) emitNeedsConfirmDocPreview(userID, docPreviewText string, engineGateActive bool, steeringDetector *SteeringWorkflowDetector) {
-	// V1 engine removed — this function was entirely V1-dependent. No-op.
+	// V1 engine removed; this function was entirely V1-dependent. No-op.
 }
 
 func (h *IMMessageHandler) applyAgentLoopToolBranchNeedsConfirmGate(
@@ -236,13 +237,13 @@ func (h *IMMessageHandler) shouldNeedsConfirmToolBranch(ctx *LoopContext, userID
 	}
 	// V2 workflow: tool branch NeedsConfirm is not used. Let the loop run to completion.
 	if !needsConfirm && workflowAgentLoop && h.isWorkflowV2Active(userID) {
-		return needsConfirm // false — don't intercept
+		return needsConfirm // false; don't intercept
 	}
 	return needsConfirm
 }
 
 func (h *IMMessageHandler) emitToolBranchNeedsConfirmDocPreview(userID, trimmedAfterTools string, steeringDetector *SteeringWorkflowDetector) {
-	// V1 engine removed — this function was entirely V1-dependent. No-op.
+	// V1 engine removed; this function was entirely V1-dependent. No-op.
 }
 
 // getTaskOrchestrator returns the per-user task execution orchestrator.
@@ -351,7 +352,7 @@ type workflowIMRouteResult struct {
 }
 
 func (h *IMMessageHandler) routeWorkflowIMMessage(msg IMUserMessage, trimmed string, confirmedResume, hasPendingUserReply bool) workflowIMRouteResult {
-	// V1 workflow routing disabled — V2 engine handles all workflow routing
+	// V1 workflow routing disabled; V2 engine handles all workflow routing
 	// via routeWithWorkflowV2 in im_entry_context.go.
 	// This stub is retained only for test compatibility.
 	result := workflowIMRouteResult{WorkflowAgentLoop: confirmedResume}
@@ -502,7 +503,7 @@ func buildWorkflowConfirmationResponse(item *pendingConfirmation, lang string) *
 
 func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pending *pendingConfirmation, platform string) pendingExecutionConfirmationResult {
 	lang := h.getWorkflowLang()
-	// V1 engine removed — workflow confirmation is no longer supported via V1 path.
+	// V1 engine removed; workflow confirmation is no longer supported via V1 path.
 	return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.T(i18n.MsgWorkflowUnavailable, lang)}}
 }
 
@@ -607,7 +608,7 @@ func (h *IMMessageHandler) handlePostStartWorkflow(
 // Called from handleIMMessageWithLoop after slash commands and LLM config check,
 // before the main agent loop logic.
 func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform string, attachments ...[]MessageAttachment) *IMAgentResponse {
-	// V1 engine removed — workflow interception now handled entirely by V2.
+	// V1 engine removed; workflow interception now handled entirely by V2.
 	return nil
 }
 
@@ -1563,8 +1564,45 @@ func (h *IMMessageHandler) applyWorkflowToolFilter(userID string, tools []map[st
 }
 
 func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalog(userID string, tools, allTools []map[string]interface{}) []map[string]interface{} {
-	// V1 engine removed — tool filtering is now handled by V2 workflow engine.
-	return tools
+	return h.applyWorkflowToolFilterWithCatalogV2Compat(userID, tools, allTools)
+}
+
+func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalogV2Compat(userID string, tools, allTools []map[string]interface{}) []map[string]interface{} {
+	policy := workflow.ToolFilterNone
+	if h != nil && h.isWorkflowV2Active(userID) {
+		if wf := h.getWorkflowV2(); wf != nil {
+			if state := wf.machine.GetActive(userID); state != nil {
+				if phase := state.ActivePhase(); phase != nil {
+					switch phase.ToolPolicy {
+					case v2.ToolPolicyDocOnly:
+						policy = workflow.ToolFilterDocOnly
+					}
+				}
+			}
+		}
+	}
+	if policy == workflow.ToolFilterNone && h != nil && h.app != nil && h.app.workflowEngine != nil {
+		policy = h.app.workflowEngine.GetActivePhaseToolFilter(userID)
+		if policy == workflow.ToolFilterNone {
+			policy = h.app.workflowEngine.GetPhaseToolFilter(userID)
+		}
+		if policy == workflow.ToolFilterNone && h.app.workflowEngine.IsPhaseExecutionBlocked(userID) {
+			return nil
+		}
+	}
+	if len(allTools) == 0 && h != nil {
+		allTools = h.getTools()
+	}
+	if policy == workflow.ToolFilterNone || policy == workflow.ToolFilterFull {
+		if h != nil && h.shouldConstrainCodingWorkflowImplementationMainLoop(userID) {
+			tools = ensureWorkflowRequiredToolsForNames(codingWorkflowImplementationMainLoopRequiredTools(), tools, allTools)
+			tools = filterCodingWorkflowImplementationMainLoopTools(tools)
+			return specializeCodingWorkflowImplementationMainLoopTools(tools)
+		}
+		return tools
+	}
+	tools = ensureWorkflowRequiredTools(policy, tools, allTools)
+	return workflow.FilterToolDefinitions(policy, tools)
 }
 
 // getLastAssistantSnippet returns the tail of the last assistant message from

@@ -18,6 +18,7 @@ import (
 	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func (h *IMMessageHandler) shouldSkipWorkflowToolExecutionGate(userID string, ctx *LoopContext) bool {
@@ -373,10 +374,58 @@ func (h *IMMessageHandler) isWorkflowToolAllowedForOwner(policyUserID, name stri
 	if policyUserID == "" {
 		return true
 	}
-	return true
+	if h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.IsPhaseExecutionBlocked(policyUserID) {
+		return false
+	}
+	_, policy, apply := h.workflowToolFilterOwnerPolicyAndDecision(policyUserID, nil)
+	if !apply {
+		return true
+	}
+	if policy == workflow.ToolFilterNone {
+		return false
+	}
+	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyUserID) {
+		return isCodingWorkflowImplementationMainLoopToolAllowed(name)
+	}
+	return workflow.IsToolAllowedByPolicy(policy, name)
 }
 
 func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name, argsJSON string) (bool, string) {
+	policyUserID = strings.TrimSpace(policyUserID)
+	if policyUserID == "" {
+		return true, ""
+	}
+	if h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.IsPhaseExecutionBlocked(policyUserID) {
+		return false, fmt.Sprintf("%s is not allowed while the current workflow phase is blocked", strings.TrimSpace(name))
+	}
+	_, policy, apply := h.workflowToolFilterOwnerPolicyAndDecision(policyUserID, nil)
+	if !apply {
+		return true, ""
+	}
+	if policy == workflow.ToolFilterNone {
+		return false, fmt.Sprintf("%s is not allowed while the current workflow phase is blocked", strings.TrimSpace(name))
+	}
+	var args map[string]interface{}
+	if strings.TrimSpace(argsJSON) != "" {
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return false, fmt.Sprintf("%s arguments are invalid JSON: %v", strings.TrimSpace(name), err)
+		}
+	}
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyUserID) {
+		if reason := validateCodingWorkflowImplementationMainLoopToolCall(name, args); reason != "" {
+			return false, reason
+		}
+	}
+	approved := []workflow.OpsApprovedCommand(nil)
+	if policy == workflow.ToolFilterOpsControlled && h.app != nil && h.app.workflowEngine != nil {
+		approved = h.app.workflowEngine.GetOpsApprovedCommands(policyUserID)
+	}
+	if err := workflow.ValidateToolCallByPolicyWithApproval(policy, name, args, approved); err != nil {
+		return false, err.Error()
+	}
 	return true, ""
 }
 
@@ -739,9 +788,6 @@ func loopContextHasExplicitRuntimeOwner(ctx *LoopContext) bool {
 
 func (h *IMMessageHandler) workflowPolicyOwnerID(userID string, ctx *LoopContext) string {
 	if ctx != nil {
-		if strings.TrimSpace(ctx.Runtime.RequestID) != "" {
-			return strings.TrimSpace(ctx.Runtime.PolicyOwnerID)
-		}
 		if ownerID := strings.TrimSpace(ctx.Runtime.PolicyOwnerID); ownerID != "" {
 			return ownerID
 		}

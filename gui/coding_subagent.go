@@ -478,6 +478,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				if created {
 					c.trackCreatedFile(p)
 				}
+				// refreshFileSnapshot also sets filesRead[key]=true, which allows
+				// subsequent write_file to the same file without read_file first.
 				c.refreshFileSnapshot(p)
 			}
 			return result
@@ -546,8 +548,14 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		succeeded := commandResult.Kind == codingCommandResultOK
 		if !succeeded && commandResult.Kind == codingCommandResultExitError && commandResult.ExitCode == 1 {
 			text := commandResult.Text
-			// If output starts with [stderr], it's an error with no useful stdout → still failed
-			if !strings.HasPrefix(text, "[stderr]") && len(text) > 20 {
+			// Strip "command exited with code N" suffix — not meaningful output
+			if idx := strings.Index(text, "\ncommand exited with code"); idx >= 0 {
+				text = text[:idx]
+			} else if strings.HasPrefix(text, "command exited with code") {
+				text = ""
+			}
+			// Has real stdout content (not just stderr or empty) → informational, not error
+			if !strings.HasPrefix(text, "[stderr]") && len(strings.TrimSpace(text)) > 10 {
 				succeeded = true
 			}
 		}
@@ -2822,7 +2830,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
   3. 编写实现代码
   4. 运行测试 → 确认测试通过（绿灯）
   5. 如果测试失败，修复代码后重新运行，直到通过
-  6. 将测试用例和测试结果写入项目目录下的 TEST_REPORT.md 文件（追加模式）
+  6. 将测试用例和测试结果写入项目目录下的 TEST_REPORT.md 文件（使用 write_file mode=append，禁止用 edit_file 修改此文件）
 - TEST_REPORT.md 每个任务的格式：
   - 标题行：## T{N}: {任务标题}
   - 测试文件路径
@@ -2859,9 +2867,10 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 		b.WriteString("注意: bash 工具通过 PowerShell 执行。使用 PowerShell 语法（如 `;` 分隔命令，`Remove-Item` 删除文件）。\n")
 		b.WriteString("Windows shell contract: do not use bash-only syntax such as `mkdir -p` or `&&`; use `working_dir` for command location and PowerShell syntax for commands. Do not switch CMake generators inside an existing build directory; reuse the existing generator or use a separate build directory.\n")
 		b.WriteString("C/C++ compilation: `cl.exe` is NOT in PATH by default. To compile with MSVC, use a build script (build.bat) that calls vcvars64.bat first, or use `g++`/`gcc` from MinGW if available. Example build.bat:\n")
-		b.WriteString("```\n@echo off\ncall \"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat\" >nul 2>&1\ncl.exe /std:c++17 /EHsc /Fe:output.exe main.cpp\n```\n")
+		b.WriteString("```\n@echo off\ncall \"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat\" >nul 2>&1\ncl.exe /std:c++17 /EHsc /utf-8 /Fe:output.exe main.cpp\n```\n")
 		b.WriteString("Then run: `bash(command=\".\\build.bat\", working_dir=\"project_path\")`\n")
 		b.WriteString("Alternative: use `g++ -o output.exe main.cpp` if g++ is available (check with `where g++`).\n")
+		b.WriteString("IMPORTANT: Always add `/utf-8` flag to cl.exe to avoid code page 936 warnings with Chinese comments.\n")
 	}
 
 	if reqCtx != "" {

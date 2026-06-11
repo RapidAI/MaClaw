@@ -21,9 +21,9 @@ interface VEStatusDotProps {
 }
 
 const STATUS_COLORS: Record<VEOnlineStatus, string> = {
-    online: "#22c55e",
+    online: "#4f7f6f",
     offline: "#6b7280",
-    unknown: "#f59e0b",
+    unknown: "#64748b",
 };
 
 // Keyframes ID for deduplication in the DOM

@@ -128,11 +128,17 @@ func runPrompt(promptText string) {
 	}
 
 	// Register tools.
+	pipeBGTaskMgr := remote.NewSSHBackgroundTaskManager(sshMgr)
+	pipeBGTaskMgr.SetPersistDir(dataSubDir)
 	sshHandler := func(args map[string]interface{}) string {
 		deps := sshtool.SSHToolDeps{
-			Manager: sshMgr,
+			Manager:   sshMgr,
+			BGTaskMgr: pipeBGTaskMgr,
 			HostLoader: func() []corelib.SSHHostEntry {
 				return app.appConfig.SSHHosts
+			},
+			OnConnected: func(session *remote.SSHManagedSession, cfg remote.SSHHostConfig) {
+				pipeBGTaskMgr.RediscoverOrphanTasks(session.ID)
 			},
 		}
 		return sshtool.ToolSSH(deps, args)

@@ -125,7 +125,7 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
                 fontSize: "12px",
                 color: theme.textMuted,
             }}>
-                <div style={{ marginBottom: "4px", color: theme.textMuted }}>⚠️ Mermaid render failed: {error}</div>
+                <div style={{ marginBottom: "4px", color: theme.textMuted }}>WARN Mermaid render failed: {error}</div>
                 <code style={{ color: theme.codeText }}>{code}</code>
             </pre>
         );
@@ -139,7 +139,7 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
     } else {
         content = (
             <div style={{ margin: "8px 0", padding: "12px", color: theme.textMuted, fontSize: "12px" }}>
-                ⏳ Rendering diagram...
+                Rendering diagram...
             </div>
         );
     }
@@ -711,17 +711,17 @@ function WorkflowProgressBoard({
                     const accent = cardState.tone === "current"
                         ? theme.accentColor
                         : cardState.tone === "done"
-                            ? "#10b981"
+                            ? "#4f7f6f"
                             : cardState.tone === "attention"
-                                ? "#f59e0b"
+                                ? theme.textMuted
                                 : theme.textMuted;
-                    const nodeLabel = cardState.tone === "done" ? "✓" : cardState.tone === "attention" ? "!" : String(index + 1);
+                    const nodeLabel = cardState.tone === "done" ? "OK" : cardState.tone === "attention" ? "!" : String(index + 1);
                     const softToneBg = cardState.tone === "current"
                         ? theme.accentBg
                         : cardState.tone === "done"
-                            ? "rgba(16, 185, 129, 0.10)"
+                            ? "rgba(79, 127, 111, 0.08)"
                             : cardState.tone === "attention"
-                                ? "rgba(245, 158, 11, 0.11)"
+                                ? theme.accentBg
                                 : "transparent";
                     const phaseLabel = workflowPhaseLabel(lang, pid, phaseLabelMap);
                     const statusLabel = workflowPhaseStatusLabel(lang, cardState.status);
@@ -737,9 +737,9 @@ function WorkflowProgressBoard({
                             style={{
                                 minHeight: "68px",
                                 padding: "8px 10px",
-                                borderRadius: "8px",
+                                borderRadius: "7px",
                                 border: `1px solid ${isCurrent ? theme.accentColor : theme.border}`,
-                                background: isCurrent ? theme.accentBg : `linear-gradient(180deg, ${softToneBg}, ${theme.bg})`,
+                                background: isCurrent ? theme.accentBg : (cardState.emphasized ? softToneBg : theme.bg),
                                 boxShadow: isCurrent
                                     ? `0 0 0 1px ${theme.accentColor} inset`
                                     : isViewingOnly
@@ -770,8 +770,8 @@ function WorkflowProgressBoard({
                                     display: "inline-flex",
                                     alignItems: "center",
                                     justifyContent: "center",
-                                    fontSize: "11px",
-                                    fontWeight: 800,
+                                    fontSize: nodeLabel.length > 1 ? "9px" : "11px",
+                                    fontWeight: 700,
                                     lineHeight: 1,
                                     flexShrink: 0,
                                 }}>{nodeLabel}</span>
@@ -781,7 +781,7 @@ function WorkflowProgressBoard({
                                     border: `1px solid ${accent}`,
                                     borderRadius: "999px",
                                     padding: "1px 6px",
-                                    background: softToneBg,
+                                    background: cardState.emphasized ? softToneBg : "transparent",
                                     maxWidth: "82px",
                                     whiteSpace: "nowrap",
                                     overflow: "hidden",
@@ -790,7 +790,7 @@ function WorkflowProgressBoard({
                                     {statusLabel}
                                 </span>
                             </span>
-                            <span style={{ fontSize: "12px", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                            <span style={{ fontSize: "12px", fontWeight: 700, color: theme.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                 {phaseLabel}
                             </span>
                         </button>
@@ -1046,7 +1046,7 @@ function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
             }
             nodes.push(
                 <blockquote key={`bq-${nodes.length}`} style={{
-                    borderLeft: `3px solid ${theme.quoteBorder}`,
+                    borderLeft: `1px solid ${theme.quoteBorder}`,
                     margin: "8px 0",
                     padding: "6px 12px",
                     color: theme.quoteText,
@@ -1283,17 +1283,17 @@ export function WorkflowDocPreview({
                         padding: "6px 14px",
                         fontSize: "12px",
                         borderBottom: `1px solid ${theme.border}`,
-                        background: gateResult.passed ? "rgba(16,185,129,0.1)" : "rgba(245,158,11,0.1)",
+                        background: gateResult.passed ? "rgba(79,127,111,0.10)" : theme.accentBg,
                         color: theme.text,
                         flexShrink: 0,
                     }}>
-                        {gateResult.passed ? "✅" : "⚠️"} 质量门禁：
+                        {gateResult.passed ? "OK" : "WARN"} 质量门禁：
                         {gateItems.length === 0 && (
                             <span style={{ marginLeft: "8px", color: theme.textMuted }}>暂无检查项</span>
                         )}
                         {gateItems.map((item, i) => (
                             <span key={i} style={{ marginLeft: "8px" }}>
-                                {item.passed ? "✅" : "⚠️"} {item.description}
+                                {item.passed ? "OK" : "WARN"} {item.description}
                             </span>
                         ))}
                     </div>
@@ -1304,9 +1304,9 @@ export function WorkflowDocPreview({
                     flex: 1,
                     overflowY: "auto",
                     overflowX: "hidden",
-                    padding: "16px 20px 16px 24px",
+                    padding: "18px 24px 18px 28px",
                     fontSize: "14px",
-                    lineHeight: "1.6",
+                    lineHeight: "1.65",
                     fontFamily: "inherit",
                     minHeight: 0,
                     boxSizing: "border-box",

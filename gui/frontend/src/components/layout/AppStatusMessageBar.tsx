@@ -52,16 +52,21 @@ export const AppStatusMessageBar = ({
     const showWarning = (!maclawLLMOnline || !remoteActivated || showImWarning) && !(navTab === 'settings' && settingsTab === 'llm');
     const isImIssue = maclawLLMOnline && remoteActivated && showImWarning;
     const successMarker = backgroundInstallStatus.startsWith('?') || backgroundInstallStatus.startsWith('??');
+    const statusTone = (status.includes("Error") || status.includes("!"))
+        ? 'var(--theme-danger, #b42318)'
+        : 'var(--theme-success, #4f7f6f)';
+    const noticeTone = 'var(--theme-text-muted, #64748b)';
+    const progressTone = successMarker ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-text-muted, #64748b)';
 
     return (
         <div className="status-message" style={{ padding: '0 20px 4px 20px', minHeight: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span key={status} style={{ color: (status.includes("Error") || status.includes("!") || status.includes("first")) ? '#ef4444' : '#10b981' }}>
+            <span key={status} style={{ color: statusTone }}>
                 {status}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 {showWarning && (
                     <span
-                        style={{ fontSize: '0.72rem', color: '#f59e0b', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
+                        style={{ fontSize: '0.72rem', color: noticeTone, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
                         onClick={() => { if (isImIssue) { onOpenIMSettings(); } else { onOpenLLMSettings(); } }}
                         title={lang?.startsWith('zh') ? 'Click to configure' : 'Click to configure'}
                     >
@@ -81,7 +86,7 @@ export const AppStatusMessageBar = ({
                 {backgroundInstallStatus && (
                     <span style={{
                         fontSize: '0.75rem',
-                        color: successMarker ? '#10b981' : '#9ca3af',
+                        color: progressTone,
                         display: 'flex',
                         alignItems: 'center',
                         gap: '4px'
@@ -91,7 +96,7 @@ export const AppStatusMessageBar = ({
                                 display: 'inline-block',
                                 width: '10px',
                                 height: '10px',
-                                border: '2px solid #9ca3af',
+                                border: '2px solid var(--theme-text-muted, #64748b)',
                                 borderTopColor: 'transparent',
                                 borderRadius: '50%',
                                 animation: 'spin 1s linear infinite'

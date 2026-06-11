@@ -29,27 +29,27 @@ export function useToast(): ToastContextValue {
 
 const TYPE_STYLES: Record<ToastType, { bg: string; color: string; border: string; icon: string }> = {
     success: {
-        bg: 'var(--theme-success-bg, #e6f9e6)',
-        color: 'var(--theme-success, #22c55e)',
-        border: 'var(--theme-success, #22c55e)',
+        bg: 'var(--theme-success-bg, rgba(79, 127, 111, 0.10))',
+        color: 'var(--theme-success, #4f7f6f)',
+        border: 'var(--theme-success, #4f7f6f)',
         icon: '✓',
     },
     error: {
-        bg: 'var(--theme-danger-bg, #fde8e8)',
-        color: 'var(--theme-danger, #ef4444)',
-        border: 'var(--theme-danger, #ef4444)',
+        bg: 'var(--theme-danger-bg, #fbf1f0)',
+        color: 'var(--theme-danger, #b42318)',
+        border: 'var(--theme-danger, #b42318)',
         icon: '✕',
     },
     warning: {
-        bg: 'var(--theme-warning-bg, #fff8e1)',
-        color: 'var(--theme-warning, #f59e0b)',
-        border: 'var(--theme-warning, #f59e0b)',
+        bg: 'var(--theme-warning-bg, #f8fafc)',
+        color: 'var(--theme-warning, #64748b)',
+        border: 'var(--theme-warning, #64748b)',
         icon: '⚠',
     },
     info: {
-        bg: 'var(--theme-info-bg, #e8f0fe)',
-        color: 'var(--theme-primary, #3b82f6)',
-        border: 'var(--theme-primary, #3b82f6)',
+        bg: 'var(--theme-info-bg, #f3f7fb)',
+        color: 'var(--theme-primary, #2f5f98)',
+        border: 'var(--theme-primary, #2f5f98)',
         icon: 'ℹ',
     },
 };

@@ -194,11 +194,19 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 
 	// Register tools: definition + handler bound together.
 	startupIndicator.Stage(78, "注册工具")
+	bgTaskMgr := remote.NewSSHBackgroundTaskManager(sshMgr)
+	bgTaskMgr.SetPersistDir(filepath.Join(dataDir, "data"))
 	sshHandler := func(args map[string]interface{}) string {
 		deps := sshtool.SSHToolDeps{
-			Manager: sshMgr,
+			Manager:   sshMgr,
+			BGTaskMgr: bgTaskMgr,
 			HostLoader: func() []corelib.SSHHostEntry {
 				return app.appConfig.SSHHosts
+			},
+			OnConnected: func(session *remote.SSHManagedSession, cfg remote.SSHHostConfig) {
+				// Rediscover orphan tasks after SSH connect (sync to avoid PTY race
+				// with the next exec command LLM sends).
+				bgTaskMgr.RediscoverOrphanTasks(session.ID)
 			},
 		}
 		return sshtool.ToolSSH(deps, args)

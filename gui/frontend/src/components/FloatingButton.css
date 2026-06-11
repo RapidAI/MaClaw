@@ -28,7 +28,7 @@ html, body {
     position: absolute;
     inset: -4px;
     border-radius: 50%;
-    border: 2px solid rgba(99, 102, 241, 0.6);
+    border: 2px solid rgba(47, 95, 152, 0.42);
     animation: halo-pulse 2s ease-in-out infinite;
     pointer-events: none;
     will-change: box-shadow, opacity;
@@ -38,14 +38,14 @@ html, body {
 @keyframes halo-pulse {
     0%, 100% {
         box-shadow:
-            0 0 8px rgba(99, 102, 241, 0.4),
-            0 0 16px rgba(99, 102, 241, 0.2);
+            0 0 8px rgba(47, 95, 152, 0.24),
+            0 0 16px rgba(47, 95, 152, 0.12);
         opacity: 1;
     }
     50% {
         box-shadow:
-            0 0 16px rgba(99, 102, 241, 0.6),
-            0 0 32px rgba(99, 102, 241, 0.3);
+            0 0 14px rgba(47, 95, 152, 0.34),
+            0 0 26px rgba(47, 95, 152, 0.18);
         opacity: 0.8;
     }
 }
@@ -151,25 +151,25 @@ html, body {
     width: 16%;
     aspect-ratio: 1;
     border-radius: 50%;
-    background: #22c55e;
+    background: #4f7f6f;
     border: 2px solid rgba(255, 255, 255, 0.92);
-    box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.18);
+    box-shadow: 0 0 0 4px rgba(79, 127, 111, 0.16);
     z-index: 2;
 }
 
 .floating-assistant-container--pet[data-pet-state="listening"] .floating-assistant-pet-status {
-    background: #0ea5e9;
-    box-shadow: 0 0 0 5px rgba(14, 165, 233, 0.2);
+    background: #2f5f98;
+    box-shadow: 0 0 0 5px rgba(47, 95, 152, 0.18);
 }
 
 .floating-assistant-container--pet[data-pet-state="thinking"] .floating-assistant-pet-status {
-    background: #f59e0b;
-    box-shadow: 0 0 0 5px rgba(245, 158, 11, 0.22);
+    background: #64748b;
+    box-shadow: 0 0 0 5px rgba(100, 116, 139, 0.18);
 }
 
 .floating-assistant-container--pet[data-pet-state="speaking"] .floating-assistant-pet-status {
-    background: #a855f7;
-    box-shadow: 0 0 0 5px rgba(168, 85, 247, 0.22);
+    background: #5b7898;
+    box-shadow: 0 0 0 5px rgba(91, 120, 152, 0.18);
 }
 
 .floating-assistant-container--pet[data-interaction-mode="quiet"] .floating-assistant-halo {
@@ -196,11 +196,11 @@ html, body {
 }
 
 .floating-assistant-container--pet[data-pet-skin="mini-claw"] .floating-assistant-halo {
-    border-color: rgba(37, 99, 235, 0.58);
+    border-color: rgba(47, 95, 152, 0.46);
 }
 
 .floating-assistant-container--pet[data-pet-skin="dev-claw"] .floating-assistant-halo {
-    border-color: rgba(34, 211, 238, 0.6);
+    border-color: rgba(91, 120, 152, 0.50);
 }
 
 .floating-assistant-container--pet[data-pet-skin="focus-claw"] .floating-assistant-halo {
@@ -534,7 +534,7 @@ html, body {
     position: absolute;
     inset: 8%;
     border-radius: 999px;
-    border: 2px solid rgba(99, 102, 241, 0.42);
+    border: 2px solid rgba(47, 95, 152, 0.30);
     opacity: 0;
     pointer-events: none;
     z-index: 2;
@@ -542,16 +542,16 @@ html, body {
 }
 
 .floating-assistant-container--pet[data-pet-state="listening"] .floating-assistant-motion-burst {
-    border-color: rgba(14, 165, 233, 0.42);
+    border-color: rgba(47, 95, 152, 0.34);
 }
 
 .floating-assistant-container--pet[data-pet-state="thinking"] .floating-assistant-motion-burst {
-    border-color: rgba(245, 158, 11, 0.42);
+    border-color: rgba(100, 116, 139, 0.34);
     animation-name: pet-motion-burst-think;
 }
 
 .floating-assistant-container--pet[data-pet-state="speaking"] .floating-assistant-motion-burst {
-    border-color: rgba(168, 85, 247, 0.42);
+    border-color: rgba(91, 120, 152, 0.36);
     animation-duration: 460ms;
 }
 
@@ -569,7 +569,7 @@ html, body {
     width: 12%;
     height: 12%;
     border-radius: 999px;
-    border: 2px solid rgba(99, 102, 241, 0.72);
+    border: 2px solid rgba(47, 95, 152, 0.52);
     border-left-color: transparent;
     border-bottom-color: transparent;
     opacity: 0;

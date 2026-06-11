@@ -4,7 +4,7 @@
  * Renders one tab per file in the files map. Each tab shows:
  *   - File name only as label (extracted from full path)
  *   - Full file path as tooltip (title attribute)
- *   - Visual indicator for opType: ✏️ (modify) or ➕ (create)
+ *   - Compact opType label: MOD, NEW, or READ
  *   - Active tab highlighted with distinct theme colors
  *
  * Supports horizontal scrolling via overflow-x: auto when tabs overflow.
@@ -68,12 +68,12 @@ export function extractFileName(filePath: string): string {
  * Get the visual indicator for a file's operation type.
  *
  * @param opType - 'modify', 'create', or 'read'
- * @returns Indicator string: "✏️" for modify, "➕" for create, "👁" for read
+ * @returns Compact label for modify, create, or read.
  */
 export function getOpTypeIndicator(opType: 'create' | 'modify' | 'read'): string {
-    if (opType === 'modify') return '✏️';
-    if (opType === 'read') return '👁';
-    return '➕';
+    if (opType === 'modify') return 'MOD';
+    if (opType === 'read') return 'READ';
+    return 'NEW';
 }
 
 // ── Component Props ──
@@ -151,12 +151,12 @@ function FileTabContextMenu({ menu, theme, onClose }: { menu: ContextMenuState; 
             <button type="button" style={itemStyle} onClick={handleRevealInExplorer}
                 onMouseEnter={e => { e.currentTarget.style.background = theme.tabHoverBg; }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
-                📂 在资源管理器中显示
+                Reveal in Explorer
             </button>
             <button type="button" style={itemStyle} onClick={handleOpenExternal}
                 onMouseEnter={e => { e.currentTarget.style.background = theme.tabHoverBg; }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}>
-                🔗 用其他工具打开
+                Open with default app
             </button>
         </div>
     );
@@ -224,7 +224,16 @@ export function FileTabBar({ files, activeFilePath, onSelectFile, theme }: FileT
                             lineHeight: '28px',
                         }}
                     >
-                        <span style={{ fontSize: 12 }}>{indicator}</span>
+                        <span style={{
+                            minWidth: 24,
+                            padding: '0 4px',
+                            borderRadius: 3,
+                            border: `1px solid ${theme.border}`,
+                            color: theme.textMuted,
+                            fontSize: 10,
+                            fontWeight: 700,
+                            lineHeight: '16px',
+                        }}>{indicator}</span>
                         <span>{fileName}</span>
                     </button>
                 );

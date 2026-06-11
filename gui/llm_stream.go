@@ -823,7 +823,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	metrics *llmStreamMetrics,
 ) (*llm.Response, error) {
 	requestBuildStartedAt := time.Now()
-	req, _, endpoint, err := llm.NewOpenAIChatRequest(reqCtx, cfg, messages, llm.OpenAIChatRequestOptions{
+	req, reqBody, endpoint, err := llm.NewOpenAIChatRequest(reqCtx, cfg, messages, llm.OpenAIChatRequestOptions{
 		Stream: true,
 		Tools:  tools,
 		ExtraBody: map[string]interface{}{
@@ -853,16 +853,40 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 
 	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		log.Printf("[LLM Stream] HTTP 404: endpoint=%s content_type=%q body_len=%d", endpoint, resp.Header.Get("Content-Type"), len(body))
+		log.Printf("[LLM Stream] HTTP 404: endpoint=%s content_type=%q body_len=%d request=%s", endpoint, resp.Header.Get("Content-Type"), len(body), llm.SummarizeOpenAIChatRequestBody(reqBody))
 		return nil, fmt.Errorf("HTTP 404 (endpoint=%s, model=%s, protocol=%s, body_len=%d)", endpoint, upstreamModel, cfg.Protocol, len(body))
 	}
 
 	// Provide friendly HTTP errors instead of raw HTML/JSON bodies.
 	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		log.Printf("[LLM Stream] HTTP %d: endpoint=%s content_type=%q body_len=%d", resp.StatusCode, endpoint, resp.Header.Get("Content-Type"), len(body))
-		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
-		return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, upstreamModel)
+		log.Printf("[LLM Stream] HTTP %d: endpoint=%s content_type=%q body_len=%d request=%s", resp.StatusCode, endpoint, resp.Header.Get("Content-Type"), len(body), llm.SummarizeOpenAIChatRequestBody(reqBody))
+		if llm.ShouldRetryOpenAIWithoutTools(cfg, resp.StatusCode, messages, tools) {
+			log.Printf("[LLM Stream] retry_without_tools endpoint=%s model=%s configured_model=%s reason=conservative_openai_compat_400 tools=%d %s", endpoint, upstreamModel, cfg.Model, len(tools), llm.RequestTraceLogFields(reqCtx))
+			req, reqBody, endpoint, err = llm.NewOpenAIChatRequest(reqCtx, cfg, messages, llm.OpenAIChatRequestOptions{Stream: true})
+			if err != nil {
+				return nil, err
+			}
+			httpDoStartedAt = time.Now()
+			resp, err = httpClient.Do(req)
+			if metrics != nil {
+				metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
+			}
+			if err != nil {
+				return nil, fmt.Errorf("[%s] %w", endpoint, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 400 {
+				body, _ = io.ReadAll(io.LimitReader(resp.Body, 4096))
+				log.Printf("[LLM Stream] retry_without_tools HTTP %d: endpoint=%s content_type=%q body_len=%d request=%s", resp.StatusCode, endpoint, resp.Header.Get("Content-Type"), len(body), llm.SummarizeOpenAIChatRequestBody(reqBody))
+				friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
+				return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, upstreamModel)
+			}
+			// Continue below with the successful retry response.
+		} else {
+			friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
+			return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, upstreamModel)
+		}
 	}
 
 	// Detect SSE: check Content-Type first, then sniff the body prefix.

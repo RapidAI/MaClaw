@@ -19,6 +19,12 @@ export type CodingAgentExplorationStatus = "explored" | "read_only" | "missing" 
 export type CodingAgentVerificationStatus = "passed" | "failed" | "missing" | "not_needed" | "unknown";
 export type CodingAgentDiffCheckStatus = "checked" | "skipped" | "failed" | "unknown";
 
+const neutralAttentionTone: CodingAgentStatusTone = {
+    accent: "#64748b",
+    bg: "rgba(100, 116, 139, 0.08)",
+    border: "rgba(100, 116, 139, 0.20)",
+};
+
 export interface CodingAgentProgress {
     phase: CodingAgentStatusPhase;
     taskID?: string;
@@ -93,14 +99,14 @@ const CODING_AGENT_PHASE_LABELS: Record<CodingAgentStatusPhase, { en: string; zh
 };
 
 const CODING_AGENT_PHASE_TONES: Record<CodingAgentStatusPhase, CodingAgentStatusTone> = {
-    starting: { accent: "#2563eb", bg: "rgba(37, 99, 235, 0.08)", border: "rgba(37, 99, 235, 0.22)" },
-    running: { accent: "#2563eb", bg: "rgba(37, 99, 235, 0.08)", border: "rgba(37, 99, 235, 0.22)" },
-    completed: { accent: "#059669", bg: "rgba(5, 150, 105, 0.08)", border: "rgba(5, 150, 105, 0.22)" },
-    failed: { accent: "#dc2626", bg: "rgba(220, 38, 38, 0.08)", border: "rgba(220, 38, 38, 0.22)" },
-    retrying: { accent: "#d97706", bg: "rgba(217, 119, 6, 0.10)", border: "rgba(217, 119, 6, 0.24)" },
+    starting: { accent: "#2f5f98", bg: "rgba(47, 95, 152, 0.08)", border: "rgba(47, 95, 152, 0.22)" },
+    running: { accent: "#2f5f98", bg: "rgba(47, 95, 152, 0.08)", border: "rgba(47, 95, 152, 0.22)" },
+    completed: { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" },
+    failed: { accent: "#b42318", bg: "rgba(180, 35, 24, 0.08)", border: "rgba(180, 35, 24, 0.22)" },
+    retrying: neutralAttentionTone,
     skipped: { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" },
-    result: { accent: "#059669", bg: "rgba(5, 150, 105, 0.08)", border: "rgba(5, 150, 105, 0.22)" },
-    unknown: { accent: "#2563eb", bg: "rgba(37, 99, 235, 0.08)", border: "rgba(37, 99, 235, 0.22)" },
+    result: { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" },
+    unknown: { accent: "#2f5f98", bg: "rgba(47, 95, 152, 0.08)", border: "rgba(47, 95, 152, 0.22)" },
 };
 
 export function isCodingAgentKnownPhase(phase: string): phase is CodingAgentKnownPhase {
@@ -262,7 +268,6 @@ export function renderCodingAgentProgressStatus(msg: ChatMessage, t: CodingAgent
                 margin: "4px 0",
                 padding: "5px 8px",
                 border: `1px solid ${tone.border}`,
-                borderLeft: `3px solid ${tone.accent}`,
                 borderRadius: "6px",
                 background: tone.bg,
                 color: t.text,
@@ -566,11 +571,11 @@ export function codingAgentToolOutcomeLabel(outcome: string | undefined, lang: s
 export function codingAgentToolOutcomeTone(outcome: string | undefined): CodingAgentStatusTone {
     switch (normalizeCodingAgentToolOutcome(outcome)) {
         case "success":
-            return { accent: "#059669", bg: "rgba(5, 150, 105, 0.08)", border: "rgba(5, 150, 105, 0.22)" };
+            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
         case "failed":
-            return { accent: "#dc2626", bg: "rgba(220, 38, 38, 0.08)", border: "rgba(220, 38, 38, 0.22)" };
+            return { accent: "#b42318", bg: "rgba(180, 35, 24, 0.08)", border: "rgba(180, 35, 24, 0.22)" };
         case "blocked":
-            return { accent: "#d97706", bg: "rgba(217, 119, 6, 0.10)", border: "rgba(217, 119, 6, 0.24)" };
+            return neutralAttentionTone;
         default:
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
     }
@@ -598,7 +603,7 @@ export function codingAgentGuardrailStatusLabel(status: string | undefined, lang
 export function codingAgentGuardrailStatusTone(status: string | undefined): CodingAgentStatusTone {
     switch (normalizeCodingAgentGuardrailStatus(status)) {
         case "blocked":
-            return { accent: "#d97706", bg: "rgba(217, 119, 6, 0.10)", border: "rgba(217, 119, 6, 0.24)" };
+            return neutralAttentionTone;
         default:
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
     }
@@ -630,9 +635,9 @@ export function codingAgentCommandStatusLabel(status: string | undefined, lang: 
 export function codingAgentCommandStatusTone(status: string | undefined): CodingAgentStatusTone {
     switch (normalizeCodingAgentCommandStatus(status)) {
         case "passed":
-            return { accent: "#059669", bg: "rgba(5, 150, 105, 0.08)", border: "rgba(5, 150, 105, 0.22)" };
+            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
         case "failed":
-            return { accent: "#dc2626", bg: "rgba(220, 38, 38, 0.08)", border: "rgba(220, 38, 38, 0.22)" };
+            return { accent: "#b42318", bg: "rgba(180, 35, 24, 0.08)", border: "rgba(180, 35, 24, 0.22)" };
         case "none":
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
         default:
@@ -666,9 +671,9 @@ export function codingAgentFileActivityStatusLabel(status: string | undefined, l
 export function codingAgentFileActivityStatusTone(status: string | undefined): CodingAgentStatusTone {
     switch (normalizeCodingAgentFileActivityStatus(status)) {
         case "changed":
-            return { accent: "#059669", bg: "rgba(5, 150, 105, 0.08)", border: "rgba(5, 150, 105, 0.22)" };
+            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
         case "read_only":
-            return { accent: "#2563eb", bg: "rgba(37, 99, 235, 0.08)", border: "rgba(37, 99, 235, 0.22)" };
+            return { accent: "#2f5f98", bg: "rgba(47, 95, 152, 0.08)", border: "rgba(47, 95, 152, 0.22)" };
         case "none":
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
         default:
@@ -702,11 +707,11 @@ export function codingAgentQualityStatusLabel(status: string | undefined, lang: 
 export function codingAgentQualityStatusTone(status: string | undefined): CodingAgentStatusTone {
     switch (normalizeCodingAgentQualityStatus(status)) {
         case "passed":
-            return { accent: "#059669", bg: "rgba(5, 150, 105, 0.08)", border: "rgba(5, 150, 105, 0.22)" };
+            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
         case "warning":
-            return { accent: "#d97706", bg: "rgba(217, 119, 6, 0.10)", border: "rgba(217, 119, 6, 0.24)" };
+            return neutralAttentionTone;
         case "failed":
-            return { accent: "#dc2626", bg: "rgba(220, 38, 38, 0.08)", border: "rgba(220, 38, 38, 0.22)" };
+            return { accent: "#b42318", bg: "rgba(180, 35, 24, 0.08)", border: "rgba(180, 35, 24, 0.22)" };
         default:
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
     }
@@ -742,9 +747,9 @@ export function codingAgentExplorationStatusTone(status: string | undefined): Co
         case "explored":
         case "read_only":
         case "not_needed":
-            return { accent: "#059669", bg: "rgba(5, 150, 105, 0.08)", border: "rgba(5, 150, 105, 0.22)" };
+            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
         case "missing":
-            return { accent: "#d97706", bg: "rgba(217, 119, 6, 0.10)", border: "rgba(217, 119, 6, 0.24)" };
+            return neutralAttentionTone;
         default:
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
     }
@@ -779,11 +784,11 @@ export function codingAgentVerificationStatusTone(status: string | undefined): C
     switch (normalizeCodingAgentVerificationStatus(status)) {
         case "passed":
         case "not_needed":
-            return { accent: "#059669", bg: "rgba(5, 150, 105, 0.08)", border: "rgba(5, 150, 105, 0.22)" };
+            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
         case "failed":
-            return { accent: "#dc2626", bg: "rgba(220, 38, 38, 0.08)", border: "rgba(220, 38, 38, 0.22)" };
+            return { accent: "#b42318", bg: "rgba(180, 35, 24, 0.08)", border: "rgba(180, 35, 24, 0.22)" };
         case "missing":
-            return { accent: "#d97706", bg: "rgba(217, 119, 6, 0.10)", border: "rgba(217, 119, 6, 0.24)" };
+            return neutralAttentionTone;
         default:
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
     }
@@ -815,9 +820,9 @@ export function codingAgentDiffCheckStatusLabel(status: string | undefined, lang
 export function codingAgentDiffCheckStatusTone(status: string | undefined): CodingAgentStatusTone {
     switch (normalizeCodingAgentDiffCheckStatus(status)) {
         case "checked":
-            return { accent: "#059669", bg: "rgba(5, 150, 105, 0.08)", border: "rgba(5, 150, 105, 0.22)" };
+            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
         case "failed":
-            return { accent: "#dc2626", bg: "rgba(220, 38, 38, 0.08)", border: "rgba(220, 38, 38, 0.22)" };
+            return { accent: "#b42318", bg: "rgba(180, 35, 24, 0.08)", border: "rgba(180, 35, 24, 0.22)" };
         case "skipped":
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
         default:

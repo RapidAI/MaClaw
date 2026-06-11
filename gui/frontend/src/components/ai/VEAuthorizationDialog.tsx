@@ -307,9 +307,9 @@ export function VEAuthorizationDialog({
                                 style={{
                                     padding: "5px 14px",
                                     borderRadius: 5,
-                                    border: `1px solid ${theme.errorBorder || "#fecaca"}`,
-                                    background: theme.errorBg || "#fef2f2",
-                                    color: theme.errorText || "#dc2626",
+                                    border: `1px solid ${theme.errorBorder || "rgba(180, 35, 24, 0.24)"}`,
+                                    background: theme.errorBg || "#fbf1f0",
+                                    color: theme.errorText || "#b42318",
                                     cursor: responding === req.id ? "not-allowed" : "pointer",
                                     fontSize: 12,
                                     opacity: responding === req.id ? 0.5 : 1,
@@ -558,7 +558,7 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                     borderRadius: 6,
                     border: `1px solid ${theme.errorBorder || theme.titleBarBorder}`,
                     background: theme.errorBg || "rgba(248,113,113,0.14)",
-                    color: theme.errorText || "#ef4444",
+                    color: theme.errorText || "#b42318",
                     display: "inline-flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -599,7 +599,7 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                         <div>
                             <div style={{ fontSize: 14, fontWeight: 800, color: theme.headingColor || theme.text }}>{title}</div>
                             <div style={{ fontSize: 12, lineHeight: 1.45, color: theme.textMuted, marginTop: 3 }}>{hint}</div>
-                            {respondError && <div role="alert" style={{ fontSize: 12, lineHeight: 1.45, color: theme.errorText || "#dc2626", marginTop: 6 }}>{respondError}</div>}
+                            {respondError && <div role="alert" style={{ fontSize: 12, lineHeight: 1.45, color: theme.errorText || "#b42318", marginTop: 6 }}>{respondError}</div>}
                         </div>
                         <button type="button" onClick={() => setOpen(false)} aria-label={isZh ? "关闭" : "Close"} style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
                     </div>
@@ -726,10 +726,10 @@ export function VEAuthBlinkingIndicator({ theme, lang }: VEAuthBlinkingIndicator
                 gap: 3,
                 padding: "2px 6px",
                 borderRadius: 10,
-                background: visible ? (theme.errorBg || "#fef2f2") : "transparent",
-                border: `1px solid ${visible ? (theme.errorBorder || "#fecaca") : "transparent"}`,
+                background: visible ? (theme.errorBg || "#fbf1f0") : "transparent",
+                border: `1px solid ${visible ? (theme.errorBorder || "rgba(180, 35, 24, 0.24)") : "transparent"}`,
                 fontSize: 10,
-                color: theme.errorText || "#dc2626",
+                color: theme.errorText || "#b42318",
                 transition: "opacity 0.2s",
                 opacity: visible ? 1 : 0.3,
             }}

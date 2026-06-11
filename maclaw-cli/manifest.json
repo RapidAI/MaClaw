@@ -1,0 +1,28 @@
+{
+  "name": "maclaw-cli",
+  "version": "0.1.0",
+  "description": "Zero-config local CLI for agents to control MaClaw GUI through the third-party IM gateway.",
+  "entrypoints": {
+    "binary": "maclaw-cli",
+    "version": "maclaw-cli version",
+    "agentHelp": "maclaw-cli agent-help",
+    "agentSpec": "maclaw-cli agent-spec",
+    "invokeSchema": "maclaw-cli invoke-schema"
+  },
+  "build": {
+    "windows": "go build -o maclaw-cli.exe ./maclaw-cli",
+    "default": "go build -o maclaw-cli ./maclaw-cli"
+  },
+  "state": {
+    "path": "~/.maclaw/maclaw-cli/state.json",
+    "key": "clientId + sessionId",
+    "runLockDir": "~/.maclaw/maclaw-cli/runs/",
+    "lockTimeoutSec": 5
+  },
+  "recommendedAutomationCall": "maclaw-cli continue --json-errors --require-session --client <agent-id> --session <task-id> \"<instruction>\"",
+  "schema": "invoke.schema.json",
+  "docs": [
+    "README.md",
+    "AGENT_USAGE.md"
+  ]
+}

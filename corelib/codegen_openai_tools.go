@@ -16,6 +16,33 @@ func SanitizeCodeGenOpenAIChatTools(tools []map[string]interface{}) []map[string
 	return out
 }
 
+func SanitizeCodeGenOpenAICompatBody(body map[string]interface{}) {
+	if body == nil {
+		return
+	}
+	for _, key := range codeGenOpenAIUnsupportedTopLevelKeys {
+		delete(body, key)
+	}
+	if tools, ok := body["tools"]; ok {
+		body["tools"] = SanitizeCodeGenOpenAIChatToolsValue(tools)
+	}
+	if functions, ok := body["functions"]; ok {
+		body["functions"] = SanitizeCodeGenOpenAIFunctionsValue(functions)
+	}
+}
+
+var codeGenOpenAIUnsupportedTopLevelKeys = []string{
+	"stream_options",
+	"parallel_tool_calls",
+	"store",
+	"metadata",
+	"response_format",
+	"tool_choice",
+	"function_call",
+	"logprobs",
+	"top_logprobs",
+}
+
 func SanitizeCodeGenOpenAIChatToolsValue(tools interface{}) interface{} {
 	switch x := tools.(type) {
 	case []map[string]interface{}:
