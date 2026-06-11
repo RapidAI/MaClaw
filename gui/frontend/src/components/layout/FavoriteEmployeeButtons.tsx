@@ -483,7 +483,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         onMouseEnter={menuItemHover}
                         onMouseLeave={menuItemUnhover}
                     >
-                        <span aria-hidden="true" style={menuIconStyle}>✏️</span>
+                        <span aria-hidden="true" style={menuIconStyle}>EDIT</span>
                         {text.rename}
                     </button>
                     )}
@@ -497,7 +497,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         onMouseEnter={menuItemHover}
                         onMouseLeave={menuItemUnhover}
                     >
-                        <span aria-hidden="true" style={menuIconStyle}>ℹ️</span>
+                        <span aria-hidden="true" style={menuIconStyle}>INFO</span>
                         {text.viewInfo}
                     </button>
 
@@ -551,7 +551,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         onMouseEnter={contextMenu.slot.resident ? undefined : menuItemHover}
                         onMouseLeave={menuItemUnhover}
                     >
-                        <span aria-hidden="true" style={menuIconStyle}>🗑</span>
+                        <span aria-hidden="true" style={menuIconStyle}>DEL</span>
                         {text.remove}
                     </button>
                     </>)}
@@ -831,8 +831,10 @@ function menuItemUnhover(e: { currentTarget: EventTarget & Element }) {
 }
 
 const menuIconStyle: CSSProperties = {
-    width: '18px',
-    fontSize: '13px',
+    width: '30px',
+    fontSize: '9px',
+    fontWeight: 700,
+    letterSpacing: 0,
     textAlign: 'center',
     flexShrink: 0,
 };

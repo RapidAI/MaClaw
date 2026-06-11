@@ -55,21 +55,21 @@ const getStatusBadge = (status?: string, localizeText?: (en: string, zhHans: str
     if (s === "waiting_input") return { label: localizeText ? localizeText("Waiting input", "等待输入", "等待輸入") : "等待输入", bg: colors.warningBg, color: colors.warning };
     if (s === "paused") return { label: localizeText ? localizeText("Paused", "已暂停", "已暫停") : "已暂停", bg: colors.warningBg, color: colors.warning };
     if (terminalStatuses.has(s)) return { label: status || "stopped", bg: colors.bg, color: colors.textSecondary };
-    return { label: status || "running", bg: "#eef2ff", color: "#4338ca" };
+    return { label: status || "running", bg: colors.surfaceMuted, color: colors.primaryDark };
 };
 
 const getLaunchSourceTag = (source: string | undefined, localizeText: (en: string, zhHans: string, zhHant: string) => string): { label: string; bg: string; color: string } => {
-    if (source === "ai") return { label: "🤖 AI", bg: "#f0e6ff", color: "#6b21a8" };
-    if (source === "mobile") return { label: `📱 ${localizeText("Mobile", "手机", "手機")}`, bg: colors.successBg, color: "#276749" };
-    if (source === "handoff") return { label: `🔀 ${localizeText("Handoff", "转远程", "轉遠端")}`, bg: "#f3f0ff", color: "#553c9a" };
-    return { label: `☁️ ${localizeText("Remote", "远程", "遠端")}`, bg: colors.bg, color: colors.textSecondary };
+    if (source === "ai") return { label: "AI", bg: colors.surfaceMuted, color: colors.primaryDark };
+    if (source === "mobile") return { label: localizeText("Mobile", "手机", "手機"), bg: colors.successBg, color: colors.success };
+    if (source === "handoff") return { label: localizeText("Handoff", "转远程", "轉遠端"), bg: colors.surfaceMuted, color: colors.primaryDark };
+    return { label: localizeText("Remote", "远程", "遠端"), bg: colors.bg, color: colors.textSecondary };
 };
 
 const getSlotKindTag = (kind: string, localizeText: (en: string, zhHans: string, zhHant: string) => string): { icon: string; label: string } => {
-    if (kind === "coding") return { icon: "🤖", label: localizeText("Coding", "编程", "編程") };
-    if (kind === "scheduled") return { icon: "⏰", label: localizeText("Scheduled", "定时", "定時") };
-    if (kind === "auto") return { icon: "🌐", label: localizeText("Auto", "自动", "自動") };
-    return { icon: "⚙️", label: kind };
+    if (kind === "coding") return { icon: "CODE", label: localizeText("Coding", "编程", "編程") };
+    if (kind === "scheduled") return { icon: "SCHED", label: localizeText("Scheduled", "定时", "定時") };
+    if (kind === "auto") return { icon: "AUTO", label: localizeText("Auto", "自动", "自動") };
+    return { icon: "BG", label: kind };
 };
 
 const isAISession = (s: RemoteSessionView) => (s.launch_source || "") === "ai";
@@ -423,9 +423,9 @@ export function RemoteSessionList(props: Props) {
                                                 padding: "4px 12px", background: "#2d2d2d",
                                                 borderBottom: "1px solid #3a3a3a",
                                             }}>
-                                                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#ff5f57", display: "inline-block" }} />
-                                                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#febc2e", display: "inline-block" }} />
-                                                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#28c840", display: "inline-block" }} />
+                                                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--theme-text-muted)", display: "inline-block" }} />
+                                                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--theme-border)", display: "inline-block" }} />
+                                                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--theme-primary)", display: "inline-block" }} />
                                                 <span style={{ flex: 1, textAlign: "center", fontSize: "0.65rem", color: "#888", fontFamily: "monospace" }}>
                                                     {session.tool || "terminal"} — {previewLines.length} {localizeText("lines", "行", "行")}
                                                 </span>
@@ -500,7 +500,7 @@ export function RemoteSessionList(props: Props) {
                                     onMouseLeave={(e) => { e.currentTarget.style.background = colors.surface; }}
                                 >
                                     <td style={tdStyle}>
-                                        <span style={badgeStyle("#f0e6ff", "#6b21a8")}>{tag.icon} {tag.label}</span>
+                                        <span style={badgeStyle(colors.surfaceMuted, colors.primaryDark)}>{tag.icon} {tag.label}</span>
                                     </td>
                                     <td style={tdStyle}>
                                         <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={loop.description}>
@@ -590,9 +590,9 @@ export function RemoteSessionList(props: Props) {
                             transition: "all 0.15s",
                         }}
                     >
-                        ☁️ {localizeText("Remote", "远程", "遠端")}
+                        {localizeText("Remote", "远程", "遠端")}
                         {remoteLiveCount > 0 && (
-                            <span style={{ marginLeft: "6px", fontSize: "0.68rem", background: "#eef2ff", color: "#4338ca", padding: "1px 6px", borderRadius: "999px" }}>
+                            <span style={{ marginLeft: "6px", fontSize: "0.68rem", background: colors.surfaceMuted, color: colors.primaryDark, padding: "1px 6px", borderRadius: "999px" }}>
                                 {remoteLiveCount}
                             </span>
                         )}
@@ -611,7 +611,7 @@ export function RemoteSessionList(props: Props) {
                             transition: "all 0.15s",
                         }}
                     >
-                        ⚙️ {localizeText("Background", "后台", "後台")}
+                        {localizeText("Background", "后台", "後台")}
                         {bgTotalCount > 0 && (
                             <span style={{ marginLeft: "6px", fontSize: "0.68rem", background: colors.surfaceMuted, color: colors.primaryDark, padding: "1px 6px", borderRadius: "999px" }}>
                                 {bgTotalCount}
@@ -632,7 +632,7 @@ export function RemoteSessionList(props: Props) {
                             transition: "all 0.15s",
                         }}
                     >
-                        ⏰ {localizeText("Scheduled", "计划任务", "計劃任務")}
+                        {localizeText("Scheduled", "计划任务", "計劃任務")}
                     </button>
                     <button
                         onClick={() => { setSessionTab("passthrough"); setShowHistory(false); }}

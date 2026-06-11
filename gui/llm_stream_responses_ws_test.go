@@ -137,3 +137,36 @@ func TestBuildResponsesWSFrameSanitizesQwenOpenAICompatProvider(t *testing.T) {
 		t.Fatalf("array items type = %#v, want string", got)
 	}
 }
+
+func TestBuildResponsesWSFrameDropsQwenOrphanedToolHistory(t *testing.T) {
+	data, err := buildResponsesWSFrame(
+		corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b", ProviderName: "Qwen"},
+		[]interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+			map[string]interface{}{
+				"role":    "assistant",
+				"content": "",
+				"tool_calls": []interface{}{
+					map[string]interface{}{"id": "call_1", "type": "function", "function": map[string]interface{}{"name": "a", "arguments": "{"}},
+					map[string]interface{}{"id": "call_2", "type": "function", "function": map[string]interface{}{"name": "b", "arguments": `{}`}},
+				},
+			},
+			map[string]interface{}{"role": "tool", "tool_call_id": "call_1", "content": "partial"},
+			map[string]interface{}{"role": "user", "content": "next"},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildResponsesWSFrame: %v", err)
+	}
+	var frame map[string]interface{}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	for i, item := range frame["input"].([]interface{}) {
+		m, _ := item.(map[string]interface{})
+		if typ, _ := m["type"].(string); typ == "function_call" || typ == "function_call_output" {
+			t.Fatalf("input item %d leaked orphaned tool history: %#v", i, m)
+		}
+	}
+}

@@ -12,7 +12,7 @@
     },
     "clientId": { "type": "string", "description": "Stable calling agent id; part of state key." },
     "sessionId": { "type": "string", "description": "Stable task/session id; part of state key." },
-    "conversationId": { "type": "string", "description": "Protocol conversation id override." },
+    "conversationId": { "type": "string", "description": "Protocol conversation id override. With sessionId, it does not change the saved state key." },
     "text": { "type": "string", "description": "Prompt text or tool-result text." },
     "message": { "type": "object", "description": "Full ThirdPartyMessagePayload for send.", "additionalProperties": true },
     "attachments": {

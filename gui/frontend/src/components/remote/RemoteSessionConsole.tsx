@@ -927,9 +927,9 @@ export function RemoteSessionConsole(props: Props) {
             <div style={titleBarStyle}>
                 <div style={titleLeftStyle}>
                     <div style={trafficLightsStyle}>
-                        <span style={{ ...dotBase, background: "#ff5f57" }} />
-                        <span style={{ ...dotBase, background: "#febc2e" }} />
-                        <span style={{ ...dotBase, background: "#28c840" }} />
+                        <span style={{ ...dotBase, background: "var(--theme-text-muted)" }} />
+                        <span style={{ ...dotBase, background: "var(--theme-border)" }} />
+                        <span style={{ ...dotBase, background: "var(--theme-primary)" }} />
                     </div>
                     <span style={{ color: statusColor, fontSize: "9px", flexShrink: 0 }}>●</span>
                     <span style={titleTextStyle}>
@@ -944,7 +944,7 @@ export function RemoteSessionConsole(props: Props) {
                         ⌧
                     </button>
                     <button onClick={handleToggleFullscreen}
-                        style={{ ...actionBtnStyle, color: isFullscreen ? "#28c840" : "#888" }}
+                        style={{ ...actionBtnStyle, color: isFullscreen ? "var(--theme-success)" : "#888" }}
                         title={localizeText(currentLang, "Toggle fullscreen", "切换全屏", "切換全螢幕")}>
                         {isFullscreen ? "⛷" : "⛶"}
                     </button>

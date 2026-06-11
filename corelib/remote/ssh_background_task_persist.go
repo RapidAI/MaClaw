@@ -106,7 +106,7 @@ func (m *SSHBackgroundTaskManager) saveToDisk() {
 
 	// 原子写入（写临时文件再 rename）
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		log.Printf("[ssh-bg-persist] write failed: %v", err)
 		return
 	}

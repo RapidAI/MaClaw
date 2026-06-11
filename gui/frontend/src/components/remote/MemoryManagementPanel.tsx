@@ -79,7 +79,7 @@ const CATEGORIES = [
 const CATEGORY_COLORS: Record<string, string> = {
     self_identity: "var(--theme-danger)",
     user_fact: "var(--theme-primary)",
-    preference: "var(--theme-info, #0891b2)",
+    preference: "var(--theme-info, var(--theme-primary))",
     project_knowledge: "var(--theme-success)",
     instruction: "var(--theme-warning)",
     conversation_summary: "var(--theme-primary-strong, #183b63)",
@@ -586,8 +586,8 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
                                 <div style={{ fontSize: "0.66rem", color: colors.textMuted, marginTop: 4, textAlign: "left" }}>{t("Updated", "更新")}: {fmtDate(entry.updated_at, lang)} · {t("Access", "访问")}: {entry.access_count}</div>
                             </div>
                             <div style={{ display: "flex", gap: 4, flexShrink: 0, alignSelf: "flex-start" }}>
-                                <button onClick={() => openEdit(entry)} aria-label={t("Edit", "编辑")} title={t("Edit", "编辑")} style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary }}>✏️</button>
-                                <button onClick={() => setDeleteTarget(entry.id)} aria-label={t("Delete", "删除")} title={t("Delete", "删除")} style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.danger }}>🗑️</button>
+                                <button onClick={() => openEdit(entry)} aria-label={t("Edit", "编辑")} title={t("Edit", "编辑")} style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary }}>EDIT</button>
+                                <button onClick={() => setDeleteTarget(entry.id)} aria-label={t("Delete", "删除")} title={t("Delete", "删除")} style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.danger }}>DEL</button>
                             </div>
                         </div>
                     </div>
@@ -850,11 +850,11 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
                                 <button onClick={() => setRestoreTarget(bk.name)} aria-label={`${t("Restore", "恢复")} ${bk.name}`} title={t("Restore", "恢复")} style={{
                                     padding: "3px 10px", fontSize: "0.7rem", cursor: "pointer", fontWeight: 600,
                                     background: colors.successBg, color: colors.success, border: `1px solid ${colors.success}`, borderRadius: radius.sm,
-                                }}>⏪ {t("Restore", "恢复")}</button>
+                                }}>RESTORE</button>
                                 <button onClick={() => setDeleteTarget(bk.name)} aria-label={`${t("Delete", "删除")} ${bk.name}`} title={t("Delete", "删除")} style={{
                                     padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer",
                                     background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.danger,
-                                }}>🗑️</button>
+                                }}>DEL</button>
                             </div>
                         </div>
                     </div>

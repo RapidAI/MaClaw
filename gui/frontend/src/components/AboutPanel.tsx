@@ -212,7 +212,7 @@ export function AboutPanel({
                         ) : (
                             <button
                                 className="about-status-pill"
-                                style={{ cursor: 'pointer', border: 'none', background: 'rgba(59,130,246,0.12)', color: '#3b82f6' }}
+                                style={{ cursor: 'pointer', border: 'none', background: 'var(--theme-primary-soft)', color: 'var(--theme-primary)' }}
                                 onClick={onRegister}
                                 title={t("aboutRegisterHub")}
                             >

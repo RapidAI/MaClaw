@@ -239,7 +239,9 @@ func sanitizeConservativeOpenAICompatMessages(messages []interface{}) []interfac
 
 func SanitizeConservativeOpenAICompatMessages(messages []interface{}) []interface{} {
 	messages = sanitizeConservativeOpenAICompatMessages(messages)
-	return sanitizeEmptyToolCalls(messages)
+	messages = sanitizeEmptyToolCalls(messages)
+	messages = sanitizeInvalidToolCallArguments(messages)
+	return sanitizeOrphanedToolCalls(messages, true)
 }
 
 func sanitizeEmptyToolCalls(messages []interface{}) []interface{} {

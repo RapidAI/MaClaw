@@ -42,6 +42,7 @@ Use stable IDs:
 
 - `--client`: the calling agent identity, such as `planner`, `executor`, `reviewer`, `codex`.
 - `--session`: the task/conversation identity, such as `task-123`, `repo-audit-2026-06-11`.
+- `--conversation`: exact protocol conversation id override; when used with `--session`, state still stays under `clientId + sessionId`.
 
 Same `clientId + sessionId` means one continuous stream. Different `clientId + sessionId` means independent cursor state.
 
@@ -102,6 +103,7 @@ Use `--lock-timeout <sec>` or `MACLAW_CLI_LOCK_TIMEOUT_SEC` when another process
 ### JSON Invoke
 
 Use `invoke` when the supervising agent wants to avoid shell quoting issues.
+The request is decoded strictly; unknown fields fail instead of being ignored.
 
 ```bash
 echo '{"action":"continue","clientId":"planner","sessionId":"task-123","text":"Continue the task","requireSession":true,"timeoutSec":30}' | maclaw-cli invoke

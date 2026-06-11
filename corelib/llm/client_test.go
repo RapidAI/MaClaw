@@ -1136,6 +1136,39 @@ func TestResponsesAPIRequestData_SanitizesQwenOpenAICompatProvider(t *testing.T)
 	}
 }
 
+func TestResponsesAPIRequestData_DropsQwenOrphanedToolHistory(t *testing.T) {
+	_, body, err := BuildResponsesAPIRequestData(
+		corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b", ProviderName: "Qwen"},
+		[]interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+			map[string]interface{}{
+				"role":    "assistant",
+				"content": "",
+				"tool_calls": []interface{}{
+					map[string]interface{}{"id": "call_1", "type": "function", "function": map[string]interface{}{"name": "a", "arguments": "{"}},
+					map[string]interface{}{"id": "call_2", "type": "function", "function": map[string]interface{}{"name": "b", "arguments": `{}`}},
+				},
+			},
+			map[string]interface{}{"role": "tool", "tool_call_id": "call_1", "content": "partial"},
+			map[string]interface{}{"role": "user", "content": "next"},
+		},
+		ResponsesAPIRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildResponsesAPIRequestData returned error: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse responses request body: %v", err)
+	}
+	for i, item := range req["input"].([]interface{}) {
+		m, _ := item.(map[string]interface{})
+		if typ, _ := m["type"].(string); typ == "function_call" || typ == "function_call_output" {
+			t.Fatalf("input item %d leaked orphaned tool history: %#v", i, m)
+		}
+	}
+}
+
 func TestOpenAI_RequestBody_AddsMissingArrayItemsInToolSchema(t *testing.T) {
 	_, body, err := BuildOpenAIChatRequestData(
 		corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "test-model"},

@@ -126,6 +126,8 @@ maclaw-cli ask --session project-42 --text "Continue project 42"
 maclaw-cli ask --conversation external-ticket-9 --text "Use exact protocol conversation id"
 ```
 
+When both `--session` and `--conversation` are provided, `--session` stays the saved state key and `--conversation` is only the protocol conversation id.
+
 For other agents that launch `maclaw-cli` as one-shot subprocesses, pass `--session` on every call. The CLI will still load and update that session's saved cursor:
 
 ```bash

@@ -310,8 +310,8 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
                                     <span style={{ fontSize: "0.8rem", fontWeight: 600, color: colors.text }}>{task.name}</span>
                                 </div>
                                 <div style={{ fontSize: "0.72rem", color: colors.textMuted, wordBreak: "break-word", maxHeight: 120, overflowY: "auto", whiteSpace: "pre-wrap" }}>
-                                    🎯 {task.action}
-                                    {"\n"}⏰ {scheduleDesc(task, lang)}
+                                    Action: {task.action}
+                                    {"\n"}Schedule: {scheduleDesc(task, lang)}
                                     {task.next_run_at && <>{"\n"}{t("Next", "下次")}: {fmtDate(task.next_run_at, lang)}</>}
                                     {task.run_count > 0 && <>{" · "}{t("Runs", "已执行")}: {task.run_count}</>}
                                 </div>
@@ -325,23 +325,23 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
                                         disabled={triggering === task.id}
                                         title={t("Run Now", "立即运行")}
                                         style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.primary, opacity: triggering === task.id ? 0.5 : 1 }}>
-                                        {triggering === task.id ? "⏳" : "▶️"}
+                                        {triggering === task.id ? "..." : "RUN"}
                                     </button>
                                 )}
                                 {task.status !== "expired" && (
                                     <button onClick={() => handleTogglePause(task)}
                                         title={task.status === "active" ? t("Pause", "暂停") : t("Resume", "恢复")}
                                         style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary }}>
-                                        {task.status === "active" ? "⏸️" : "▶️"}
+                                        {task.status === "active" ? "PAUSE" : "RUN"}
                                     </button>
                                 )}
                                 <button onClick={() => openEdit(task)} title={t("Edit", "编辑")}
                                     style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary }}>
-                                    ✏️
+                                    EDIT
                                 </button>
                                 <button onClick={() => setDeleteTarget(task.id)} title={t("Delete", "删除")}
                                     style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.danger }}>
-                                    🗑️
+                                    DEL
                                 </button>
                             </div>
                         </div>

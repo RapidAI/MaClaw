@@ -750,7 +750,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 border: "1px solid var(--theme-border)", display: "flex", flexDirection: "column",
             }}>
                 <div style={{
-                    background: "linear-gradient(135deg, var(--theme-info-bg, #eef2ff) 0%, var(--theme-primary-soft, #e0e7ff) 100%)",
+                    background: "linear-gradient(135deg, var(--theme-info-bg, #f3f7fb) 0%, var(--theme-primary-soft, #e8f0f7) 100%)",
                     padding: "20px 22px 18px", position: "relative", flexShrink: 0,
                     borderBottom: "1px solid var(--theme-border)",
                 }}>
@@ -937,7 +937,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                             {/* MaClaw 模型 */}
                                             <div style={{ marginBottom: 10 }}>
                                                 <label style={{ fontSize: "0.72rem", color: colors.textSecondary, display: "block", marginBottom: 4 }}>
-                                                    🤖 {t(`${displayName} Agent 模型`, `${displayName} Agent Model`)}
+                                                    AI {t(`${displayName} Agent 模型`, `${displayName} Agent Model`)}
                                                 </label>
                                                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                                     {codegenModels.map(m => (

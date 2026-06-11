@@ -78,11 +78,12 @@ type gatewayErrorEnvelope struct {
 }
 
 type askResult struct {
-	Incoming   any                                `json:"incoming,omitempty"`
-	SessionID  string                             `json:"sessionId"`
-	Messages   []coreim.ThirdPartyOutgoingMessage `json:"messages"`
-	NextCursor string                             `json:"nextCursor"`
-	HasMore    bool                               `json:"hasMore"`
+	Incoming       any                                `json:"incoming,omitempty"`
+	SessionID      string                             `json:"sessionId"`
+	ConversationID string                             `json:"conversationId,omitempty"`
+	Messages       []coreim.ThirdPartyOutgoingMessage `json:"messages"`
+	NextCursor     string                             `json:"nextCursor"`
+	HasMore        bool                               `json:"hasMore"`
 }
 
 type invokeRequest struct {
@@ -238,7 +239,7 @@ func (c *cli) runInvoke(args []string) error {
 		return err
 	}
 	var req invokeRequest
-	if err := json.Unmarshal(data, &req); err != nil {
+	if err := decodeInvokeRequest(data, &req); err != nil {
 		return fmt.Errorf("decode invoke request: %w", err)
 	}
 	action := strings.ToLower(strings.TrimSpace(req.Action))
@@ -253,6 +254,18 @@ func (c *cli) runInvoke(args []string) error {
 		return writeJSON(c.stdout, map[string]any{"ok": true, "action": action, "argv": append([]string{action}, cmdArgs...)}, true)
 	}
 	return c.run(append([]string{action}, cmdArgs...))
+}
+
+func decodeInvokeRequest(data []byte, req *invokeRequest) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(req); err != nil {
+		return err
+	}
+	if dec.Decode(&struct{}{}) != io.EOF {
+		return errors.New("multiple JSON values")
+	}
+	return nil
 }
 
 func invokeArgs(req invokeRequest, action string) (string, []string, error) {
@@ -516,11 +529,8 @@ func (c *cli) runSend(args []string) error {
 	}
 	cfg := finalizeConfig(*cfgp)
 	var err error
-	cfg, err = c.applySession(cfg, true)
-	if err != nil {
-		return err
-	}
-	runLock, err := acquireRunLock(cfg)
+	var runLock *stateLock
+	cfg, runLock, err = c.applySessionWithRunLock(cfg, true)
 	if err != nil {
 		return err
 	}
@@ -578,11 +588,8 @@ func (c *cli) runPoll(args []string, silent bool) error {
 	}
 	cfg := finalizeConfig(*cfgp)
 	var err error
-	cfg, err = c.applySession(cfg, true)
-	if err != nil {
-		return err
-	}
-	runLock, err := acquireRunLock(cfg)
+	var runLock *stateLock
+	cfg, runLock, err = c.applySessionWithRunLock(cfg, true)
 	if err != nil {
 		return err
 	}
@@ -616,11 +623,8 @@ func (c *cli) runWatch(args []string) error {
 	}
 	cfg := finalizeConfig(*cfgp)
 	var err error
-	cfg, err = c.applySession(cfg, true)
-	if err != nil {
-		return err
-	}
-	runLock, err := acquireRunLock(cfg)
+	var runLock *stateLock
+	cfg, runLock, err = c.applySessionWithRunLock(cfg, true)
 	if err != nil {
 		return err
 	}
@@ -698,11 +702,8 @@ func (c *cli) runToolResult(args []string) error {
 	}
 	cfg := finalizeConfig(*cfgp)
 	var err error
-	cfg, err = c.applySession(cfg, true)
-	if err != nil {
-		return err
-	}
-	runLock, err := acquireRunLock(cfg)
+	var runLock *stateLock
+	cfg, runLock, err = c.applySessionWithRunLock(cfg, true)
 	if err != nil {
 		return err
 	}
@@ -752,11 +753,8 @@ func (c *cli) runAsk(args []string) error {
 	}
 	cfg := finalizeConfig(*cfgp)
 	var err error
-	cfg, err = c.applySession(cfg, true)
-	if err != nil {
-		return err
-	}
-	runLock, err := acquireRunLock(cfg)
+	var runLock *stateLock
+	cfg, runLock, err = c.applySessionWithRunLock(cfg, true)
 	if err != nil {
 		return err
 	}
@@ -818,7 +816,7 @@ func (c *cli) runAsk(args []string) error {
 	if err := c.updateSessionCursor(cfg, next); err != nil {
 		return err
 	}
-	return writeJSON(c.stdout, askResult{Incoming: incoming, SessionID: cfg.ConversationID, Messages: all, NextCursor: next, HasMore: hasMore}, cfg.Pretty)
+	return writeJSON(c.stdout, askResult{Incoming: incoming, SessionID: cfg.SessionID, ConversationID: cfg.ConversationID, Messages: all, NextCursor: next, HasMore: hasMore}, cfg.Pretty)
 }
 
 func (c *cli) runSession(args []string) error {
@@ -881,7 +879,7 @@ func (c *cli) runSession(args []string) error {
 			}
 			sess.ID = to
 			sess.UpdatedAt = c.now().UnixMilli()
-			if st.CurrentSession == from {
+			if st.CurrentSession == from && !hasSessionID(*st, from) {
 				st.CurrentSession = to
 			}
 			currentSession = st.CurrentSession
@@ -897,8 +895,12 @@ func (c *cli) runSession(args []string) error {
 		}
 		currentSession := ""
 		if err := withCLIState(cfg.StatePath, cfg.LockTimeoutSec, true, func(st *cliState) error {
-			st.Sessions = removeSessionForClient(st.Sessions, sessionID, cfg.ClientID)
-			if st.CurrentSession == sessionID {
+			var removed bool
+			st.Sessions, removed = removeSessionForClient(st.Sessions, sessionID, cfg.ClientID)
+			if !removed {
+				return fmt.Errorf("session %q not found", sessionID)
+			}
+			if st.CurrentSession == sessionID && !hasSessionID(*st, sessionID) {
 				st.CurrentSession = ""
 			}
 			currentSession = st.CurrentSession
@@ -934,7 +936,7 @@ func (c *cli) runSession(args []string) error {
 		}
 		var sess *sessionState
 		if err := withCLIState(cfg.StatePath, cfg.LockTimeoutSec, false, func(st *cliState) error {
-			if found := findSessionForClient(*st, cfg.ConversationID, cfg.ClientID); found != nil {
+			if found := findSessionForClient(*st, cfg.SessionID, cfg.ClientID); found != nil {
 				copied := *found
 				sess = &copied
 			}
@@ -942,7 +944,7 @@ func (c *cli) runSession(args []string) error {
 		}); err != nil {
 			return err
 		}
-		return writeJSON(c.stdout, map[string]any{"ok": true, "currentSession": cfg.ConversationID, "session": sess, "statePath": cfg.StatePath}, cfg.Pretty)
+		return writeJSON(c.stdout, map[string]any{"ok": true, "currentSession": cfg.SessionID, "conversationId": cfg.ConversationID, "session": sess, "statePath": cfg.StatePath}, cfg.Pretty)
 	case "list":
 		var st cliState
 		if err := withCLIState(cfg.StatePath, cfg.LockTimeoutSec, false, func(loaded *cliState) error {
@@ -1100,6 +1102,57 @@ func finalizeConfig(cfg config) config {
 	return cfg
 }
 
+func (c *cli) applySessionWithRunLock(cfg config, create bool) (config, *stateLock, error) {
+	cfg, explicit := normalizeSessionIDs(cfg)
+	if cfg.RequireSession && !explicit {
+		return cfg, nil, errors.New("missing explicit session; pass --session <id> for concurrent/agent use")
+	}
+	if explicit {
+		runLock, err := acquireRunLock(cfg)
+		if err != nil {
+			return cfg, nil, err
+		}
+		cfg, err = c.applySession(cfg, create)
+		if err != nil {
+			runLock.Release()
+			return cfg, nil, err
+		}
+		return cfg, runLock, nil
+	}
+	cursorOverride := strings.TrimSpace(cfg.Cursor) != ""
+	var err error
+	cfg, err = c.applySession(cfg, create)
+	if err != nil {
+		return cfg, nil, err
+	}
+	runLock, err := acquireRunLock(cfg)
+	if err != nil {
+		return cfg, nil, err
+	}
+	if !cursorOverride {
+		cfg.Cursor = ""
+	}
+	cfg, err = c.applySession(cfg, create)
+	if err != nil {
+		runLock.Release()
+		return cfg, nil, err
+	}
+	return cfg, runLock, nil
+}
+
+func normalizeSessionIDs(cfg config) (config, bool) {
+	cfg.SessionID = strings.TrimSpace(cfg.SessionID)
+	cfg.ConversationID = strings.TrimSpace(cfg.ConversationID)
+	explicit := cfg.SessionID != "" || cfg.ConversationID != ""
+	if cfg.SessionID == "" {
+		cfg.SessionID = cfg.ConversationID
+	}
+	if cfg.ConversationID == "" {
+		cfg.ConversationID = cfg.SessionID
+	}
+	return cfg, explicit
+}
+
 func (c *cli) applySession(cfg config, create bool) (config, error) {
 	lock, err := acquireStateLockWithTimeout(cfg.StatePath, cfg.LockTimeoutSec)
 	if err != nil {
@@ -1110,15 +1163,7 @@ func (c *cli) applySession(cfg config, create bool) (config, error) {
 }
 
 func (c *cli) applySessionLocked(cfg config, create bool) (config, error) {
-	explicitSession := false
-	if strings.TrimSpace(cfg.SessionID) != "" {
-		cfg.ConversationID = strings.TrimSpace(cfg.SessionID)
-		explicitSession = true
-	}
-	if strings.TrimSpace(cfg.ConversationID) != "" {
-		cfg.SessionID = cfg.ConversationID
-		explicitSession = true
-	}
+	cfg, explicitSession := normalizeSessionIDs(cfg)
 	if cfg.RequireSession && !explicitSession {
 		return cfg, errors.New("missing explicit session; pass --session <id> for concurrent/agent use")
 	}
@@ -1128,16 +1173,16 @@ func (c *cli) applySessionLocked(cfg config, create bool) (config, error) {
 	}
 	if explicitSession {
 		now := c.now().UnixMilli()
-		sess := findSessionForClient(st, cfg.ConversationID, cfg.ClientID)
+		sess := findSessionForClient(st, cfg.SessionID, cfg.ClientID)
 		if sess == nil {
-			if legacy := findSessionLegacy(st, cfg.ConversationID); legacy != nil {
-				upsertSession(&st, sessionState{ID: cfg.ConversationID, ClientID: cfg.ClientID, Cursor: legacy.Cursor, CreatedAt: legacy.CreatedAt, UpdatedAt: now})
-				sess = findSessionForClient(st, cfg.ConversationID, cfg.ClientID)
+			if legacy := findSessionLegacy(st, cfg.SessionID); legacy != nil {
+				upsertSession(&st, sessionState{ID: cfg.SessionID, ClientID: cfg.ClientID, Cursor: legacy.Cursor, CreatedAt: legacy.CreatedAt, UpdatedAt: now})
+				sess = findSessionForClient(st, cfg.SessionID, cfg.ClientID)
 			}
 		}
 		if sess == nil && create {
-			upsertSession(&st, sessionState{ID: cfg.ConversationID, ClientID: cfg.ClientID, Cursor: "0", CreatedAt: now, UpdatedAt: now})
-			sess = findSessionForClient(st, cfg.ConversationID, cfg.ClientID)
+			upsertSession(&st, sessionState{ID: cfg.SessionID, ClientID: cfg.ClientID, Cursor: "0", CreatedAt: now, UpdatedAt: now})
+			sess = findSessionForClient(st, cfg.SessionID, cfg.ClientID)
 		}
 		if sess != nil && cfg.Cursor == "" {
 			cfg.Cursor = firstNonEmpty(sess.Cursor, "0")
@@ -1145,7 +1190,7 @@ func (c *cli) applySessionLocked(cfg config, create bool) (config, error) {
 		if cfg.Cursor == "" {
 			cfg.Cursor = "0"
 		}
-		st.CurrentSession = cfg.ConversationID
+		st.CurrentSession = cfg.SessionID
 		if create {
 			if err := saveCLIState(cfg.StatePath, st); err != nil {
 				return cfg, err
@@ -1187,7 +1232,7 @@ func (c *cli) applySessionLocked(cfg config, create bool) (config, error) {
 }
 
 func (c *cli) updateSessionCursor(cfg config, cursor string) error {
-	if strings.TrimSpace(cfg.ConversationID) == "" || strings.TrimSpace(cursor) == "" {
+	if strings.TrimSpace(cfg.SessionID) == "" || strings.TrimSpace(cursor) == "" {
 		return nil
 	}
 	lock, err := acquireStateLockWithTimeout(cfg.StatePath, cfg.LockTimeoutSec)
@@ -1200,13 +1245,13 @@ func (c *cli) updateSessionCursor(cfg config, cursor string) error {
 		return err
 	}
 	now := c.now().UnixMilli()
-	existing := findSessionForClient(st, cfg.ConversationID, cfg.ClientID)
+	existing := findSessionForClient(st, cfg.SessionID, cfg.ClientID)
 	created := now
 	if existing != nil && existing.CreatedAt != 0 {
 		created = existing.CreatedAt
 	}
-	upsertSession(&st, sessionState{ID: cfg.ConversationID, ClientID: cfg.ClientID, Cursor: cursor, CreatedAt: created, UpdatedAt: now})
-	st.CurrentSession = cfg.ConversationID
+	upsertSession(&st, sessionState{ID: cfg.SessionID, ClientID: cfg.ClientID, Cursor: cursor, CreatedAt: created, UpdatedAt: now})
+	st.CurrentSession = cfg.SessionID
 	return saveCLIState(cfg.StatePath, st)
 }
 
@@ -1413,17 +1458,17 @@ func acquireStateLockWithTimeout(statePath string, timeoutSec int) (*stateLock, 
 }
 
 func acquireRunLock(cfg config) (*stateLock, error) {
-	if strings.TrimSpace(cfg.ConversationID) == "" {
+	if strings.TrimSpace(cfg.SessionID) == "" {
 		return nil, nil
 	}
 	statePath := cfg.StatePath
 	if strings.TrimSpace(statePath) == "" {
 		statePath = defaultStatePath()
 	}
-	lockPath := sessionRunLockPath(statePath, cfg.ClientID, cfg.ConversationID)
+	lockPath := sessionRunLockPath(statePath, cfg.ClientID, cfg.SessionID)
 	lock, err := acquireLockFile(lockPath, "run lock", cfg.LockTimeoutSec)
 	if err != nil {
-		return nil, fmt.Errorf("%w for clientId=%q sessionId=%q", err, cfg.ClientID, cfg.ConversationID)
+		return nil, fmt.Errorf("%w for clientId=%q sessionId=%q", err, cfg.ClientID, cfg.SessionID)
 	}
 	return lock, nil
 }
@@ -1556,6 +1601,15 @@ func findSessionLegacy(st cliState, id string) *sessionState {
 	return nil
 }
 
+func hasSessionID(st cliState, id string) bool {
+	for _, sess := range st.Sessions {
+		if sess.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func findSessionForClientOrLegacy(st cliState, id, clientID string) *sessionState {
 	if sess := findSessionForClient(st, id, clientID); sess != nil {
 		return sess
@@ -1582,25 +1636,17 @@ func upsertSession(st *cliState, sess sessionState) {
 	st.Sessions = append(st.Sessions, sess)
 }
 
-func removeSession(sessions []sessionState, id string) []sessionState {
+func removeSessionForClient(sessions []sessionState, id, clientID string) ([]sessionState, bool) {
 	out := sessions[:0]
-	for _, sess := range sessions {
-		if sess.ID != id {
-			out = append(out, sess)
-		}
-	}
-	return out
-}
-
-func removeSessionForClient(sessions []sessionState, id, clientID string) []sessionState {
-	out := sessions[:0]
+	removed := false
 	for _, sess := range sessions {
 		if sess.ID == id && (sess.ClientID == clientID || sess.ClientID == "") {
+			removed = true
 			continue
 		}
 		out = append(out, sess)
 	}
-	return out
+	return out, removed
 }
 
 func netJoinHostPortForURL(host string, port int) string {
@@ -1907,7 +1953,7 @@ func agentSpec() map[string]any {
 			"path":           "~/.maclaw/maclaw-cli/state.json",
 			"lockPath":       "~/.maclaw/maclaw-cli/state.json.lock",
 			"runLockDir":     "~/.maclaw/maclaw-cli/runs/",
-			"key":            "clientId + sessionId",
+			"key":            "clientId + sessionId. If --conversation is provided with --session, --session remains the state key and --conversation is only the protocol id.",
 			"cursor":         "Saved per clientId + sessionId after ask/continue/poll/watch.",
 			"doNotUse":       "session use in automation",
 			"concurrency":    "Different clientId + sessionId pairs are independent. Stateful calls with the same key are serialized by a run lock; a second process waits and then fails with 'run lock busy' after timeout.",
@@ -1985,7 +2031,7 @@ func agentSpec() map[string]any {
 		"importantFlags": map[string]string{
 			"--client":          "Stable calling agent id. Part of state key.",
 			"--session":         "Stable task/conversation id. Part of state key and default protocol conversationId.",
-			"--conversation":    "Protocol conversation id override. Use only when exact external conversation id is required.",
+			"--conversation":    "Protocol conversation id override. With --session, it does not change the saved state key.",
 			"--require-session": "Fail fast if explicit session is missing.",
 			"--lock-timeout":    "State/run lock wait timeout seconds. Default 5.",
 			"--json-errors":     "Emit machine-readable JSON error envelope to stderr on failure.",
@@ -1995,7 +2041,7 @@ func agentSpec() map[string]any {
 			"--ack":             "Ack received messages. Default true.",
 		},
 		"outputFields": map[string]any{
-			"askResult":            []string{"incoming", "sessionId", "messages", "nextCursor", "hasMore"},
+			"askResult":            []string{"incoming", "sessionId", "conversationId", "messages", "nextCursor", "hasMore"},
 			"outgoingMessageTypes": []string{"text", "image", "file", "voice", "audio", "tool_call", "tool_plan", "tool_cancel"},
 			"toolCallPath":         "messages[].toolCall",
 			"toolPlanPath":         "messages[].toolPlan",
@@ -2035,7 +2081,7 @@ func invokeSchema() map[string]any {
 			},
 			"clientId":       map[string]any{"type": "string", "description": "Stable calling agent id; part of state key."},
 			"sessionId":      map[string]any{"type": "string", "description": "Stable task/session id; part of state key."},
-			"conversationId": map[string]any{"type": "string", "description": "Protocol conversation id override."},
+			"conversationId": map[string]any{"type": "string", "description": "Protocol conversation id override. With sessionId, it does not change the saved state key."},
 			"text":           map[string]any{"type": "string", "description": "Prompt text or tool-result text."},
 			"message":        map[string]any{"type": "object", "description": "Full ThirdPartyMessagePayload for send.", "additionalProperties": true},
 			"attachments":    map[string]any{"type": "array", "description": "ThirdPartyMediaReference array for send.", "items": map[string]any{"type": "object", "additionalProperties": true}},

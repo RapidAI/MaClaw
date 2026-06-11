@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -274,6 +275,46 @@ func TestContinueAliasUsesPositionalPromptAndSavedCursor(t *testing.T) {
 	}
 }
 
+func TestConversationOverridesSessionForProtocolID(t *testing.T) {
+	var incoming coreim.ThirdPartyIncomingRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/im-gateway/v1/incoming":
+			if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
+				t.Fatalf("decode incoming: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(coreim.NewThirdPartyIncomingAcceptedResponse("req-in", "mc-1", false))
+		case "/api/im-gateway/v1/outgoing":
+			_ = json.NewEncoder(w).Encode(coreim.NewThirdPartyOutgoingPollResponse("req-out", nil, 1, false))
+		default:
+			_ = json.NewEncoder(w).Encode(coreim.NewThirdPartyGatewayOKResponse("req"))
+		}
+	}))
+	defer server.Close()
+
+	cfgPath := writeConfig(t, corelib.AppConfig{ThirdPartyGatewayEnabled: true, ThirdPartyGatewayToken: "token", ThirdPartyGatewayHost: "127.0.0.1", ThirdPartyGatewayPort: mustPort(t, server.URL)})
+	t.Setenv("MACLAW_CONFIG", cfgPath)
+	t.Setenv("MACLAW_CLI_STATE", filepath.Join(t.TempDir(), "state.json"))
+
+	var stdout, stderr bytes.Buffer
+	if err := testCLI(&stdout, &stderr).run([]string{"continue", "--session", "task-123", "--conversation", "external-9", "--timeout", "0", "go"}); err != nil {
+		t.Fatalf("continue: %v stderr=%s", err, stderr.String())
+	}
+	if incoming.ConversationID != "external-9" {
+		t.Fatalf("conversation = %q", incoming.ConversationID)
+	}
+	st, err := loadCLIState(os.Getenv("MACLAW_CLI_STATE"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findSessionForClient(st, "external-9", defaultClientID) != nil {
+		t.Fatalf("conversation override created state session: %#v", st)
+	}
+	if sess := findSessionForClient(st, "task-123", defaultClientID); sess == nil || sess.Cursor != "1" {
+		t.Fatalf("state session = %#v", st)
+	}
+}
+
 func TestExplicitSessionLoadsSavedCursorForSingleShotAgentCalls(t *testing.T) {
 	var cursors []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -407,6 +448,16 @@ func TestInvokeDryRunNormalizesAskAndRun(t *testing.T) {
 	}
 }
 
+func TestInvokeRejectsUnknownAndTrailingFields(t *testing.T) {
+	var req invokeRequest
+	if err := decodeInvokeRequest([]byte(`{"action":"poll","client":"typo"}`), &req); err == nil || !strings.Contains(err.Error(), `unknown field "client"`) {
+		t.Fatalf("unknown field error = %v", err)
+	}
+	if err := decodeInvokeRequest([]byte(`{"action":"poll"} {"action":"poll"}`), &req); err == nil || !strings.Contains(err.Error(), "multiple JSON values") {
+		t.Fatalf("trailing JSON error = %v", err)
+	}
+}
+
 func TestInvokeSendSupportsRichPayload(t *testing.T) {
 	var incoming coreim.ThirdPartyIncomingRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -522,6 +573,142 @@ func TestSameSessionDifferentClientsKeepIndependentCursors(t *testing.T) {
 	}
 }
 
+func TestSameClientSessionConcurrentContinueRefreshesCursorAfterRunLock(t *testing.T) {
+	var mu sync.Mutex
+	var cursors []string
+	firstPollStarted := make(chan struct{})
+	releaseFirstPoll := make(chan struct{})
+	firstPollOnce := sync.Once{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/im-gateway/v1/incoming":
+			_ = json.NewEncoder(w).Encode(coreim.NewThirdPartyIncomingAcceptedResponse("req-in", "mc-1", false))
+		case "/api/im-gateway/v1/outgoing":
+			cursor := r.URL.Query().Get("cursor")
+			mu.Lock()
+			cursors = append(cursors, cursor)
+			call := len(cursors)
+			mu.Unlock()
+			if call == 1 {
+				firstPollOnce.Do(func() { close(firstPollStarted) })
+				<-releaseFirstPoll
+			}
+			next := int64(1)
+			if cursor == "1" {
+				next = 2
+			}
+			_ = json.NewEncoder(w).Encode(coreim.NewThirdPartyOutgoingPollResponse("req-out", nil, next, false))
+		default:
+			_ = json.NewEncoder(w).Encode(coreim.NewThirdPartyGatewayOKResponse("req"))
+		}
+	}))
+	defer server.Close()
+
+	cfgPath := writeConfig(t, corelib.AppConfig{ThirdPartyGatewayEnabled: true, ThirdPartyGatewayToken: "token", ThirdPartyGatewayHost: "127.0.0.1", ThirdPartyGatewayPort: mustPort(t, server.URL)})
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := saveCLIState(statePath, cliState{Sessions: []sessionState{{ID: "same", ClientID: "agent-a", Cursor: "0", CreatedAt: 1, UpdatedAt: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MACLAW_CONFIG", cfgPath)
+	t.Setenv("MACLAW_CLI_STATE", statePath)
+
+	errs := make(chan error, 2)
+	go func() {
+		var out, errOut bytes.Buffer
+		errs <- testCLI(&out, &errOut).run([]string{"continue", "--client", "agent-a", "--session", "same", "--timeout", "0", "first"})
+	}()
+	select {
+	case <-firstPollStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first poll did not start")
+	}
+	go func() {
+		var out, errOut bytes.Buffer
+		errs <- testCLI(&out, &errOut).run([]string{"continue", "--client", "agent-a", "--session", "same", "--timeout", "0", "second"})
+	}()
+	time.Sleep(150 * time.Millisecond)
+	close(releaseFirstPoll)
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("continue %d: %v", i, err)
+		}
+	}
+	mu.Lock()
+	got := strings.Join(cursors, ",")
+	mu.Unlock()
+	if got != "0,1" {
+		t.Fatalf("cursors = %s", got)
+	}
+}
+
+func TestImplicitCurrentConcurrentContinueRefreshesCursorAfterRunLock(t *testing.T) {
+	var mu sync.Mutex
+	var cursors []string
+	firstPollStarted := make(chan struct{})
+	releaseFirstPoll := make(chan struct{})
+	firstPollOnce := sync.Once{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/im-gateway/v1/incoming":
+			_ = json.NewEncoder(w).Encode(coreim.NewThirdPartyIncomingAcceptedResponse("req-in", "mc-1", false))
+		case "/api/im-gateway/v1/outgoing":
+			cursor := r.URL.Query().Get("cursor")
+			mu.Lock()
+			cursors = append(cursors, cursor)
+			call := len(cursors)
+			mu.Unlock()
+			if call == 1 {
+				firstPollOnce.Do(func() { close(firstPollStarted) })
+				<-releaseFirstPoll
+			}
+			next := int64(1)
+			if cursor == "1" {
+				next = 2
+			}
+			_ = json.NewEncoder(w).Encode(coreim.NewThirdPartyOutgoingPollResponse("req-out", nil, next, false))
+		default:
+			_ = json.NewEncoder(w).Encode(coreim.NewThirdPartyGatewayOKResponse("req"))
+		}
+	}))
+	defer server.Close()
+
+	cfgPath := writeConfig(t, corelib.AppConfig{ThirdPartyGatewayEnabled: true, ThirdPartyGatewayToken: "token", ThirdPartyGatewayHost: "127.0.0.1", ThirdPartyGatewayPort: mustPort(t, server.URL)})
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := saveCLIState(statePath, cliState{CurrentSession: "implicit", Sessions: []sessionState{{ID: "implicit", ClientID: defaultClientID, Cursor: "0", CreatedAt: 1, UpdatedAt: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MACLAW_CONFIG", cfgPath)
+	t.Setenv("MACLAW_CLI_STATE", statePath)
+
+	errs := make(chan error, 2)
+	go func() {
+		var out, errOut bytes.Buffer
+		errs <- testCLI(&out, &errOut).run([]string{"continue", "--timeout", "0", "first"})
+	}()
+	select {
+	case <-firstPollStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first poll did not start")
+	}
+	go func() {
+		var out, errOut bytes.Buffer
+		errs <- testCLI(&out, &errOut).run([]string{"continue", "--timeout", "0", "second"})
+	}()
+	time.Sleep(150 * time.Millisecond)
+	close(releaseFirstPoll)
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("continue %d: %v", i, err)
+		}
+	}
+	mu.Lock()
+	got := strings.Join(cursors, ",")
+	mu.Unlock()
+	if got != "0,1" {
+		t.Fatalf("cursors = %s", got)
+	}
+}
+
 func TestSessionRenameDeleteAndResetCursor(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	if err := saveCLIState(statePath, cliState{CurrentSession: "old", Sessions: []sessionState{{ID: "old", Cursor: "5", CreatedAt: 1, UpdatedAt: 1}}}); err != nil {
@@ -583,6 +770,9 @@ func TestSessionCommandsRespectClientKey(t *testing.T) {
 	if findSessionForClient(st, "renamed", "agent-a") == nil || findSessionForClient(st, "same", "agent-b") == nil {
 		t.Fatalf("after client rename = %#v", st)
 	}
+	if st.CurrentSession != "same" {
+		t.Fatalf("current session changed while another client kept old id: %#v", st)
+	}
 	if err := c.run([]string{"session", "reset-cursor", "--client", "agent-b", "--id", "same"}); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
@@ -596,6 +786,13 @@ func TestSessionCommandsRespectClientKey(t *testing.T) {
 	st, _ = loadCLIState(statePath)
 	if findSessionForClient(st, "same", "agent-b") != nil || findSessionForClient(st, "renamed", "agent-a") == nil {
 		t.Fatalf("after client delete = %#v", st)
+	}
+	if st.CurrentSession != "" {
+		t.Fatalf("current session should clear after last matching id deleted: %#v", st)
+	}
+	err := c.run([]string{"session", "delete", "--client", "agent-b", "renamed"})
+	if err == nil || !strings.Contains(err.Error(), `session "renamed" not found`) {
+		t.Fatalf("expected client-scoped delete failure, got %v", err)
 	}
 }
 
