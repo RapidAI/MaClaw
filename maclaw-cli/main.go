@@ -1502,6 +1502,8 @@ func (l *stateLock) startHeartbeat(staleAfter time.Duration) {
 	if l == nil || l.path == "" || l.heartbeat == nil {
 		return
 	}
+	path := l.path
+	stop := l.heartbeat
 	interval := staleAfter / 3
 	if interval > 10*time.Second {
 		interval = 10 * time.Second
@@ -1516,8 +1518,8 @@ func (l *stateLock) startHeartbeat(staleAfter time.Duration) {
 			select {
 			case <-ticker.C:
 				now := time.Now()
-				_ = os.Chtimes(l.path, now, now)
-			case <-l.heartbeat:
+				_ = os.Chtimes(path, now, now)
+			case <-stop:
 				return
 			}
 		}
@@ -1952,7 +1954,7 @@ func agentSpec() map[string]any {
 			},
 			"watch": map[string]any{
 				"use":      "Long-running poll loop. Emits JSONL.",
-				"template": "maclaw-cli watch --require-session --client <agent-id> --session <task-id>",
+				"template": "maclaw-cli watch --require-session --client <agent-id> --session <task-id> --count 10",
 				"stdout":   "JSONL; one outgoing message per line",
 				"stateful": true,
 			},

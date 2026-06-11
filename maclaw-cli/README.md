@@ -77,7 +77,7 @@ maclaw-cli continue --session task-123 "Continue current task"
 maclaw-cli ask --text "Summarize current project status"
 maclaw-cli send --text "Run daily report"
 maclaw-cli poll --cursor 0
-maclaw-cli watch
+maclaw-cli watch --count 10
 ```
 
 All normal commands emit JSON. `watch` emits JSONL, one outgoing message per line.
