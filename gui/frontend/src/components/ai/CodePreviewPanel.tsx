@@ -227,7 +227,6 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
         if (rendered) {
             elements.push(rendered);
         } else {
-            // Not a valid table structure — render as paragraphs
             for (const tl of tableLines) {
                 elements.push(<p key={elements.length} style={{ margin: '4px 0', lineHeight: 1.6 }}>{renderMdInline(tl, theme)}</p>);
             }
@@ -237,17 +236,23 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
 
     while (i < lines.length) {
         const line = lines[i];
-        // Code blocks
-        if (line.startsWith('```')) {
+
+        // Code blocks — detect ``` or ~~~ fences (with optional leading whitespace)
+        const fenceMatch = line.match(/^(\s*)(```|~~~)/);
+        if (fenceMatch) {
             flushTable();
-            const lang = line.slice(3).trim();
+            const fence = fenceMatch[2];
+            const lang = line.slice(fenceMatch[0].length).trim();
             const codeLines: string[] = [];
             i++;
-            while (i < lines.length && !lines[i].startsWith('```')) {
+            while (i < lines.length) {
+                if (lines[i].trimStart().startsWith(fence) && lines[i].trim() === fence) {
+                    break;
+                }
                 codeLines.push(lines[i]);
                 i++;
             }
-            i++; // skip closing ```
+            i++; // skip closing fence
             elements.push(
                 <pre key={elements.length} style={{ background: theme.lineNumBg, border: `1px solid ${theme.border}`, borderRadius: 6, padding: '10px 14px', margin: '8px 0', overflow: 'auto', fontSize: 13, lineHeight: 1.5 }}>
                     <code style={{ color: theme.text, fontFamily: "'Cascadia Code', 'Consolas', monospace" }}>
@@ -258,40 +263,170 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
             );
             continue;
         }
+
         // Table rows: collect consecutive pipe-delimited lines
         if (isMdPreviewTableRow(line)) {
             tableLines.push(line);
             i++;
             continue;
         }
+
         // Non-table line — flush any pending table
         flushTable();
-        // Headers
-        if (line.startsWith('# ')) {
-            elements.push(<h1 key={elements.length} style={{ fontSize: 22, fontWeight: 700, margin: '16px 0 8px', color: theme.tabActiveText }}>{renderMdInline(line.slice(2), theme)}</h1>);
-        } else if (line.startsWith('## ')) {
-            elements.push(<h2 key={elements.length} style={{ fontSize: 18, fontWeight: 700, margin: '14px 0 6px', color: theme.tabActiveText }}>{renderMdInline(line.slice(3), theme)}</h2>);
-        } else if (line.startsWith('### ')) {
-            elements.push(<h3 key={elements.length} style={{ fontSize: 15, fontWeight: 700, margin: '12px 0 4px', color: theme.tabActiveText }}>{renderMdInline(line.slice(4), theme)}</h3>);
-        } else if (line.startsWith('#### ')) {
-            elements.push(<h4 key={elements.length} style={{ fontSize: 14, fontWeight: 700, margin: '10px 0 4px', color: theme.tabActiveText }}>{renderMdInline(line.slice(5), theme)}</h4>);
-        } else if (line.startsWith('- ') || line.startsWith('* ')) {
-            elements.push(<div key={elements.length} style={{ paddingLeft: 16, margin: '2px 0' }}>• {renderMdInline(line.slice(2), theme)}</div>);
-        } else if (/^\d+\.\s/.test(line)) {
-            const match = line.match(/^(\d+\.)\s(.*)$/);
-            elements.push(<div key={elements.length} style={{ paddingLeft: 16, margin: '2px 0' }}>{match?.[1]} {renderMdInline(match?.[2] || '', theme)}</div>);
-        } else if (/^[-*_]{3,}\s*$/.test(line.trim())) {
-            elements.push(<hr key={elements.length} style={{ border: 'none', borderTop: `1px solid ${theme.border}`, margin: '12px 0' }} />);
-        } else if (line.startsWith('> ')) {
-            elements.push(<div key={elements.length} style={{ borderLeft: `3px solid ${theme.border}`, paddingLeft: 12, margin: '4px 0', color: theme.textMuted, fontStyle: 'italic' }}>{renderMdInline(line.slice(2), theme)}</div>);
-        } else if (line.trim() === '') {
-            elements.push(<div key={elements.length} style={{ height: 8 }} />);
-        } else {
-            elements.push(<p key={elements.length} style={{ margin: '4px 0', lineHeight: 1.6 }}>{renderMdInline(line, theme)}</p>);
+
+        // Headings (# through ######)
+        const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+        if (headingMatch) {
+            const level = headingMatch[1].length;
+            const sizes: Record<number, number> = { 1: 22, 2: 18, 3: 15, 4: 14, 5: 13, 6: 12 };
+            const margins: Record<number, string> = { 1: '16px 0 8px', 2: '14px 0 6px', 3: '12px 0 4px', 4: '10px 0 4px', 5: '8px 0 3px', 6: '8px 0 3px' };
+            elements.push(
+                <div key={elements.length} style={{ fontSize: sizes[level], fontWeight: level <= 2 ? 700 : 600, margin: margins[level], color: theme.tabActiveText, borderBottom: level <= 2 ? `1px solid ${theme.border}` : undefined, paddingBottom: level <= 2 ? 4 : undefined }}>
+                    {renderMdInline(headingMatch[2], theme)}
+                </div>
+            );
+            i++;
+            continue;
         }
+
+        // Multi-line blockquote — collect consecutive > lines
+        if (line.startsWith('>') || line.startsWith('> ')) {
+            const quoteLines: string[] = [];
+            while (i < lines.length && (lines[i].startsWith('> ') || lines[i] === '>' || lines[i].startsWith('>'))) {
+                quoteLines.push(lines[i].replace(/^>\s?/, ''));
+                i++;
+            }
+            elements.push(
+                <blockquote key={elements.length} style={{ borderLeft: `3px solid ${theme.border}`, paddingLeft: 12, margin: '6px 0', color: theme.textMuted, fontStyle: 'italic', lineHeight: 1.6 }}>
+                    {quoteLines.map((ql, qi) => (
+                        <div key={qi}>{ql.trim() === '' ? <br /> : renderMdInline(ql, theme)}</div>
+                    ))}
+                </blockquote>
+            );
+            continue;
+        }
+
+        // Task list: - [ ] or - [x] or * [ ] or * [x] — collect consecutive items
+        const taskMatch = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.*)/);
+        if (taskMatch) {
+            const taskItems: { checked: boolean; text: string }[] = [];
+            while (i < lines.length) {
+                const tm = lines[i].match(/^\s*[-*]\s+\[([ xX])\]\s+(.*)/);
+                if (!tm) break;
+                taskItems.push({ checked: tm[1].toLowerCase() === 'x', text: tm[2] });
+                i++;
+            }
+            elements.push(
+                <div key={elements.length} style={{ margin: '4px 0', paddingLeft: 4 }}>
+                    {taskItems.map((item, ti) => (
+                        <div key={ti} style={{ paddingLeft: 12, margin: '2px 0', display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                            <span style={{ flexShrink: 0, fontSize: 14 }}>{item.checked ? '☑' : '☐'}</span>
+                            <span style={{ textDecoration: item.checked ? 'line-through' : undefined, opacity: item.checked ? 0.7 : 1 }}>{renderMdInline(item.text, theme)}</span>
+                        </div>
+                    ))}
+                </div>
+            );
+            continue;
+        }
+
+        // Unordered list — collect consecutive items (supports indentation for nesting)
+        if (/^\s*[-*+]\s/.test(line)) {
+            const listItems: { indent: number; text: string }[] = [];
+            while (i < lines.length && /^\s*[-*+]\s/.test(lines[i])) {
+                const m = lines[i].match(/^(\s*)[-*+]\s+(.*)/);
+                if (m) {
+                    listItems.push({ indent: m[1].length, text: m[2] });
+                }
+                i++;
+            }
+            const baseIndent = Math.min(...listItems.map(it => it.indent));
+            elements.push(
+                <ul key={elements.length} style={{ margin: '4px 0', paddingLeft: 20, listStyleType: 'disc' }}>
+                    {listItems.map((item, li) => (
+                        <li key={li} style={{ marginLeft: (item.indent - baseIndent) * 10, marginBottom: 2 }}>
+                            {renderMdInline(item.text, theme)}
+                        </li>
+                    ))}
+                </ul>
+            );
+            continue;
+        }
+
+        // Ordered list — collect consecutive numbered items
+        if (/^\s*\d+[.)]\s/.test(line)) {
+            const olItems: { indent: number; num: string; text: string }[] = [];
+            while (i < lines.length && /^\s*\d+[.)]\s/.test(lines[i])) {
+                const m = lines[i].match(/^(\s*)(\d+)[.)]\s+(.*)/);
+                if (m) {
+                    olItems.push({ indent: m[1].length, num: m[2], text: m[3] });
+                }
+                i++;
+            }
+            const baseIndent = Math.min(...olItems.map(it => it.indent));
+            elements.push(
+                <ol key={elements.length} style={{ margin: '4px 0', paddingLeft: 20 }}>
+                    {olItems.map((item, li) => (
+                        <li key={li} value={parseInt(item.num, 10)} style={{ marginLeft: (item.indent - baseIndent) * 10, marginBottom: 2 }}>
+                            {renderMdInline(item.text, theme)}
+                        </li>
+                    ))}
+                </ol>
+            );
+            continue;
+        }
+
+        // Horizontal rule
+        if (/^[-*_]{3,}\s*$/.test(line.trim()) && !line.trim().startsWith('|')) {
+            elements.push(<hr key={elements.length} style={{ border: 'none', borderTop: `1px solid ${theme.border}`, margin: '12px 0' }} />);
+            i++;
+            continue;
+        }
+
+        // Image on its own line: ![alt](url)
+        const imgMatch = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+        if (imgMatch) {
+            elements.push(
+                <div key={elements.length} style={{ margin: '8px 0', textAlign: 'center' }}>
+                    <img src={imgMatch[2]} alt={imgMatch[1]} style={{ maxWidth: '100%', borderRadius: 4, border: `1px solid ${theme.border}` }} />
+                    {imgMatch[1] && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 4 }}>{imgMatch[1]}</div>}
+                </div>
+            );
+            i++;
+            continue;
+        }
+
+        // Definition list: term followed by : definition
+        if (i + 1 < lines.length && line.trim() !== '' && /^\s*:\s+/.test(lines[i + 1])) {
+            const term = line.trim();
+            const defs: string[] = [];
+            i++;
+            while (i < lines.length && /^\s*:\s+/.test(lines[i])) {
+                defs.push(lines[i].replace(/^\s*:\s+/, ''));
+                i++;
+            }
+            elements.push(
+                <dl key={elements.length} style={{ margin: '6px 0' }}>
+                    <dt style={{ fontWeight: 600 }}>{renderMdInline(term, theme)}</dt>
+                    {defs.map((d, di) => (
+                        <dd key={di} style={{ marginLeft: 20, margin: '2px 0 2px 20px', color: theme.text }}>{renderMdInline(d, theme)}</dd>
+                    ))}
+                </dl>
+            );
+            continue;
+        }
+
+        // Empty line
+        if (line.trim() === '') {
+            elements.push(<div key={elements.length} style={{ height: 8 }} />);
+            i++;
+            continue;
+        }
+
+        // Default: paragraph
+        elements.push(<p key={elements.length} style={{ margin: '4px 0', lineHeight: 1.6 }}>{renderMdInline(line, theme)}</p>);
         i++;
     }
-    flushTable(); // flush any trailing table
+    flushTable();
     return (
         <div style={{ padding: '16px 20px', fontSize: 14, lineHeight: 1.6, color: theme.text, fontFamily: 'inherit', wordBreak: 'break-word' }}>
             {elements}
@@ -300,9 +435,14 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
 }
 
 function renderMdInline(text: string, theme: CodePreviewTheme): React.ReactNode {
-    // Simple inline rendering: bold, inline code, links
     const parts: React.ReactNode[] = [];
-    const re = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g;
+    // Order matters: longer/more specific patterns first.
+    // Patterns: inline code, bold+italic (***), bold (**), strikethrough (~~),
+    //           highlight (==), image (![]()), link ([]()), italic (*)
+    // NOTE: italic(*) requires non-space after opening * and before closing * to avoid
+    //       matching multiplication like "2 * 3 * 4".
+    //       Underscore italic (_) is NOT supported to avoid false positives in identifiers.
+    const re = /(`[^`]+`|\*\*\*(?!\s)[^*]+\*\*\*|\*\*[^*]+\*\*|~~[^~]+~~|==[^=]+==|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)|\*(?!\s)[^*\n]+(?<!\s)\*)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let key = 0;
@@ -310,13 +450,35 @@ function renderMdInline(text: string, theme: CodePreviewTheme): React.ReactNode 
         if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
         const m = match[0];
         if (m.startsWith('`')) {
-            parts.push(<code key={key++} style={{ background: theme.lineNumBg, padding: '1px 4px', borderRadius: 3, fontSize: 12, color: theme.syntaxString }}>{m.slice(1, -1)}</code>);
+            // Inline code
+            parts.push(<code key={key++} style={{ background: theme.lineNumBg, padding: '1px 4px', borderRadius: 3, fontSize: '0.9em', color: theme.syntaxString }}>{m.slice(1, -1)}</code>);
+        } else if (m.startsWith('***') && m.endsWith('***')) {
+            // Bold + italic
+            parts.push(<strong key={key++}><em>{m.slice(3, -3)}</em></strong>);
         } else if (m.startsWith('**')) {
+            // Bold
             parts.push(<strong key={key++}>{m.slice(2, -2)}</strong>);
-        } else if (m.startsWith('[')) {
-            const linkMatch = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-            if (linkMatch) parts.push(<span key={key++} style={{ color: theme.syntaxFunction, textDecoration: 'underline' }}>{linkMatch[1]}</span>);
+        } else if (m.startsWith('~~')) {
+            // Strikethrough
+            parts.push(<del key={key++} style={{ opacity: 0.7 }}>{m.slice(2, -2)}</del>);
+        } else if (m.startsWith('==')) {
+            // Highlight
+            parts.push(<mark key={key++} style={{ background: '#fef08a', padding: '0 2px', borderRadius: 2 }}>{m.slice(2, -2)}</mark>);
+        } else if (m.startsWith('![')) {
+            // Inline image
+            const imgM = m.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+            if (imgM) parts.push(<img key={key++} src={imgM[2]} alt={imgM[1]} style={{ maxHeight: 200, verticalAlign: 'middle', borderRadius: 3 }} />);
             else parts.push(m);
+        } else if (m.startsWith('[')) {
+            // Link
+            const linkMatch = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+            if (linkMatch) parts.push(<span key={key++} style={{ color: theme.syntaxFunction, textDecoration: 'underline', cursor: 'pointer' }}>{linkMatch[1]}</span>);
+            else parts.push(m);
+        } else if (m.startsWith('*') && m.endsWith('*')) {
+            // Italic
+            parts.push(<em key={key++}>{m.slice(1, -1)}</em>);
+        } else {
+            parts.push(m);
         }
         lastIndex = match.index + m.length;
     }

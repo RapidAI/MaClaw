@@ -709,6 +709,12 @@ func TestOpenAI_RequestBody_StripsProviderIncompatibleToolSchemaFields(t *testin
 								"nullable": true,
 								"type":     "string",
 							},
+							"metadata": map[string]interface{}{
+								"type": "object",
+								"additionalProperties": map[string]interface{}{
+									"type": "string",
+								},
+							},
 						},
 					},
 				},
@@ -747,6 +753,10 @@ func TestOpenAI_RequestBody_StripsProviderIncompatibleToolSchemaFields(t *testin
 		if _, ok := mode[bad]; ok {
 			t.Fatalf("unsupported schema key %q should be stripped: %#v", bad, mode)
 		}
+	}
+	metadata := props["metadata"].(map[string]interface{})
+	if _, ok := metadata["additionalProperties"]; ok {
+		t.Fatalf("additionalProperties schema should be stripped: %#v", metadata)
 	}
 }
 

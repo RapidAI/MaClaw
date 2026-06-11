@@ -122,6 +122,12 @@ func TestSanitizeCodeGenOpenAIChatToolsValue(t *testing.T) {
 						"oneOf":   []interface{}{map[string]interface{}{"type": "string"}},
 						"default": []interface{}{"x"},
 					},
+					"metadata": map[string]interface{}{
+						"type": "object",
+						"additionalProperties": map[string]interface{}{
+							"type": "string",
+						},
+					},
 				},
 			},
 		},
@@ -144,6 +150,10 @@ func TestSanitizeCodeGenOpenAIChatToolsValue(t *testing.T) {
 		if _, ok := values[bad]; ok {
 			t.Fatalf("%s leaked: %#v", bad, values)
 		}
+	}
+	metadata := params["properties"].(map[string]interface{})["metadata"].(map[string]interface{})
+	if _, ok := metadata["additionalProperties"]; ok {
+		t.Fatalf("additionalProperties schema leaked: %#v", metadata)
 	}
 	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
 		t.Fatalf("array items type = %#v, want string", got)

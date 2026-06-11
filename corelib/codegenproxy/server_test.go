@@ -1154,6 +1154,12 @@ func TestCodeGenOpenAICompatibilitySanitizesToolsForAnyModel(t *testing.T) {
 									map[string]interface{}{"type": "string"},
 								},
 							},
+							"metadata": map[string]interface{}{
+								"type": "object",
+								"additionalProperties": map[string]interface{}{
+									"type": "string",
+								},
+							},
 						},
 					},
 				},
@@ -1196,6 +1202,10 @@ func TestCodeGenOpenAICompatibilitySanitizesToolsForAnyModel(t *testing.T) {
 	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
 		t.Fatalf("array items type = %#v, want string", got)
 	}
+	metadata := params["properties"].(map[string]interface{})["metadata"].(map[string]interface{})
+	if _, ok := metadata["additionalProperties"]; ok {
+		t.Fatalf("additionalProperties schema leaked: %#v", metadata)
+	}
 	legacy := payload["functions"].([]interface{})[0].(map[string]interface{})
 	if _, ok := legacy["strict"]; ok {
 		t.Fatalf("legacy strict leaked: %#v", legacy)
@@ -1220,6 +1230,12 @@ func TestCodeGenOpenAIRequestCompatibilitySanitizesTypedToolSchemasForAnyModel(t
 						"values": map[string]interface{}{
 							"type":     "array",
 							"nullable": true,
+						},
+						"metadata": map[string]interface{}{
+							"type": "object",
+							"additionalProperties": map[string]interface{}{
+								"type": "string",
+							},
 						},
 					},
 				},
@@ -1250,6 +1266,10 @@ func TestCodeGenOpenAIRequestCompatibilitySanitizesTypedToolSchemasForAnyModel(t
 	}
 	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
 		t.Fatalf("array items type = %#v, want string", got)
+	}
+	metadata := params["properties"].(map[string]interface{})["metadata"].(map[string]interface{})
+	if _, ok := metadata["additionalProperties"]; ok {
+		t.Fatalf("additionalProperties schema leaked: %#v", metadata)
 	}
 	legacyParams := req.Functions[0].Parameters.(map[string]interface{})
 	ids := legacyParams["properties"].(map[string]interface{})["ids"].(map[string]interface{})

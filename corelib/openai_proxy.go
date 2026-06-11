@@ -518,8 +518,10 @@ func (p *OpenAIProxy) forwardOpenAI(body map[string]interface{}) ([]byte, int, e
 		fwd[k] = v
 	}
 
-	// Replace model with config value
-	fwd["model"] = p.config.Model
+	// Replace model with normalized upstream model and apply provider quirks.
+	cfg := p.maclawLLMConfig()
+	fwd["model"] = cfg.UpstreamModel()
+	sanitizeCodeGenOpenAICompatForwardBody(cfg, fwd)
 
 	// Force stream to false
 	fwd["stream"] = false
@@ -834,7 +836,8 @@ func anthropicToOpenAI(resp map[string]interface{}, model string) map[string]int
 // and converts the response back to OpenAI format.
 func (p *OpenAIProxy) forwardAnthropic(body map[string]interface{}) ([]byte, int, error) {
 	// 1. Convert request to Anthropic format
-	anthropicReq := openaiToAnthropic(body, p.config.Model)
+	cfg := p.maclawLLMConfig()
+	anthropicReq := openaiToAnthropic(body, cfg.UpstreamModel())
 
 	// 2. Marshal to JSON
 	jsonBody, err := json.Marshal(anthropicReq)
@@ -887,7 +890,7 @@ func (p *OpenAIProxy) forwardAnthropic(body map[string]interface{}) ([]byte, int
 		return nil, 0, fmt.Errorf("parse anthropic response: %w", err)
 	}
 
-	openaiResp := anthropicToOpenAI(respMap, p.config.Model)
+	openaiResp := anthropicToOpenAI(respMap, cfg.UpstreamModel())
 	data, err := json.Marshal(openaiResp)
 	if err != nil {
 		return nil, 0, fmt.Errorf("marshal openai response: %w", err)
@@ -900,7 +903,12 @@ func (p *OpenAIProxy) forwardAnthropic(body map[string]interface{}) ([]byte, int
 // and converts the response back to OpenAI format.
 func (p *OpenAIProxy) forwardResponses(body map[string]interface{}) ([]byte, int, error) {
 	// 1. Convert request to Responses API format
-	responsesReq := openaiToResponses(body, p.config.Model)
+	cfg := p.maclawLLMConfig()
+	if IsCodeGenURL(cfg.URL) {
+		body = cloneOpenAICompatBody(body)
+		sanitizeCodeGenOpenAICompatForwardBody(cfg, body)
+	}
+	responsesReq := openaiToResponses(body, cfg.UpstreamModel())
 
 	// 2. Marshal to JSON
 	jsonBody, err := json.Marshal(responsesReq)
@@ -952,11 +960,35 @@ func (p *OpenAIProxy) forwardResponses(body map[string]interface{}) ([]byte, int
 		return nil, 0, fmt.Errorf("parse responses api response: %w", err)
 	}
 
-	openaiResp := responsesToOpenAI(respMap, p.config.Model)
+	openaiResp := responsesToOpenAI(respMap, cfg.UpstreamModel())
 	data, err := json.Marshal(openaiResp)
 	if err != nil {
 		return nil, 0, fmt.Errorf("marshal openai response: %w", err)
 	}
 
 	return data, http.StatusOK, nil
+}
+
+func (p *OpenAIProxy) maclawLLMConfig() MaclawLLMConfig {
+	if p == nil {
+		return MaclawLLMConfig{}
+	}
+	return MaclawLLMConfig{
+		URL:      p.config.URL,
+		Key:      p.config.Key,
+		Model:    p.config.Model,
+		Protocol: p.config.Protocol,
+		WireAPI:  p.config.WireAPI,
+	}
+}
+
+func cloneOpenAICompatBody(body map[string]interface{}) map[string]interface{} {
+	if body == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(body))
+	for k, v := range body {
+		out[k] = v
+	}
+	return out
 }

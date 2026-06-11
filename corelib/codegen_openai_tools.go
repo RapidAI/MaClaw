@@ -132,7 +132,7 @@ func SanitizeCodeGenOpenAIToolSchemaValue(v interface{}) interface{} {
 				out["items"] = map[string]interface{}{"type": "string"}
 			}
 		}
-		if additional, ok := out["additionalProperties"].(bool); ok && !additional {
+		if _, ok := out["additionalProperties"]; ok {
 			delete(out, "additionalProperties")
 		}
 		return out

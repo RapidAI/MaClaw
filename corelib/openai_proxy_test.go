@@ -3,6 +3,7 @@ package corelib
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -737,6 +738,85 @@ func TestForwardOpenAI_Success(t *testing.T) {
 	}
 }
 
+func TestForwardOpenAI_NormalizesCodeGenAutoModelAndSanitizesTools(t *testing.T) {
+	var got map[string]interface{}
+	p := NewOpenAIProxy(OpenAIProxyConfig{
+		URL:   "https://codegen.qianxin-inc.cn/api/v1",
+		Key:   "test-key",
+		Model: "auto",
+	})
+	p.client = &http.Client{Transport: openAIProxyRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != "https://codegen.qianxin-inc.cn/api/v1/chat/completions" {
+			t.Fatalf("upstream URL = %s", r.URL.String())
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl-test","choices":[]}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	body := map[string]interface{}{
+		"model": "gpt-4",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+		"tools": []interface{}{map[string]interface{}{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":   "strict_tool",
+				"strict": true,
+				"parameters": map[string]interface{}{
+					"additionalProperties": false,
+					"properties": map[string]interface{}{
+						"values": map[string]interface{}{
+							"type":     "array",
+							"nullable": true,
+						},
+					},
+				},
+			},
+		}},
+	}
+
+	_, statusCode, err := p.forwardOpenAI(body)
+	if err != nil {
+		t.Fatalf("forwardOpenAI: %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want 200", statusCode)
+	}
+	if got["model"] != CodeGenDefaultModelID {
+		t.Fatalf("model = %#v, want %q", got["model"], CodeGenDefaultModelID)
+	}
+	tool := got["tools"].([]interface{})[0].(map[string]interface{})
+	fn := tool["function"].(map[string]interface{})
+	if _, ok := fn["strict"]; ok {
+		t.Fatalf("strict leaked: %#v", fn)
+	}
+	params := fn["parameters"].(map[string]interface{})
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("additionalProperties=false leaked: %#v", params)
+	}
+	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
+	if _, ok := values["nullable"]; ok {
+		t.Fatalf("nullable leaked: %#v", values)
+	}
+	if gotType := values["items"].(map[string]interface{})["type"]; gotType != "string" {
+		t.Fatalf("array items type = %#v, want string", gotType)
+	}
+}
+
+type openAIProxyRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f openAIProxyRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
 func TestForwardOpenAI_UpstreamError(t *testing.T) {
 	// Mock upstream that returns 429
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1330,6 +1410,73 @@ func TestForwardResponses_Success(t *testing.T) {
 	}
 	if usage["total_tokens"] != float64(18) {
 		t.Errorf("total_tokens = %v, want 18", usage["total_tokens"])
+	}
+}
+
+func TestForwardResponses_NormalizesCodeGenAutoModelAndSanitizesTools(t *testing.T) {
+	var got map[string]interface{}
+	p := NewOpenAIProxy(OpenAIProxyConfig{
+		URL:     "https://codegen.qianxin-inc.cn/api/v1",
+		Key:     "test-key",
+		Model:   "auto",
+		WireAPI: "responses",
+	})
+	p.client = &http.Client{Transport: openAIProxyRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != "https://codegen.qianxin-inc.cn/api/v1/responses" {
+			t.Fatalf("upstream URL = %s", r.URL.String())
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp-test","output":[]}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	body := map[string]interface{}{
+		"model": "gpt-4",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+		"tools": []interface{}{map[string]interface{}{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":   "strict_tool",
+				"strict": true,
+				"parameters": map[string]interface{}{
+					"additionalProperties": false,
+					"properties": map[string]interface{}{
+						"values": map[string]interface{}{"type": "array"},
+					},
+				},
+			},
+		}},
+	}
+
+	_, statusCode, err := p.forwardResponses(body)
+	if err != nil {
+		t.Fatalf("forwardResponses: %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want 200", statusCode)
+	}
+	if got["model"] != CodeGenDefaultModelID {
+		t.Fatalf("model = %#v, want %q", got["model"], CodeGenDefaultModelID)
+	}
+	tool := got["tools"].([]interface{})[0].(map[string]interface{})
+	if _, ok := tool["strict"]; ok {
+		t.Fatalf("strict leaked: %#v", tool)
+	}
+	params := tool["parameters"].(map[string]interface{})
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("additionalProperties=false leaked: %#v", params)
+	}
+	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
+	if gotType := values["items"].(map[string]interface{})["type"]; gotType != "string" {
+		t.Fatalf("array items type = %#v, want string", gotType)
 	}
 }
 
