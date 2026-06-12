@@ -263,6 +263,13 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 	normalizeOpenAICompatForwardToolChoice(body)
 	isDeepSeekFlash := IsDeepSeekFlashOpenAICompat(cfg)
 	isGLMCodingPlan := IsGLMCodingPlanOpenAICompat(cfg)
+	if IsDeepSeekThinking(cfg) {
+		// DeepSeek V4+ thinking mode: explicitly enable thinking so the API
+		// returns reasoning_content. Required for deepseek-v4-flash and similar.
+		if _, hasThinking := body["thinking"]; !hasThinking {
+			body["thinking"] = map[string]interface{}{"type": "enabled"}
+		}
+	}
 	if isDeepSeekFlash {
 		normalizeDeepSeekFlashForwardBody(body)
 	}

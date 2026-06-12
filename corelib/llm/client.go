@@ -143,6 +143,15 @@ func buildOpenAIChatRequestBody(
 		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)
 	}
 	sanitizeOpenAIChatRequestBodyForSDKCompatibility(reqBody)
+	if corelib.IsDeepSeekThinking(cfg) {
+		// DeepSeek V4+ thinking mode: explicitly enable thinking so the API
+		// returns reasoning_content in the response. Without this parameter,
+		// the API may not produce the thinking/reasoning output even though
+		// the documentation states "defaults to enabled".
+		if _, hasThinking := reqBody["thinking"]; !hasThinking {
+			reqBody["thinking"] = map[string]interface{}{"type": "enabled"}
+		}
+	}
 	if corelib.IsDeepSeekFlashOpenAICompat(cfg) {
 		normalizeDeepSeekFlashUnsupportedOptions(reqBody)
 		ensureDeepSeekFlashJSONResponseInstruction(reqBody)
