@@ -574,6 +574,77 @@ func TestAnthropicSDKClientCanStreamFromCodeGenProxy(t *testing.T) {
 	}
 }
 
+func TestAnthropicSDKClientCanStreamToolUseFromCodeGenProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if !req.Stream {
+			t.Errorf("stream = false, want true")
+		}
+		if len(req.Tools) != 1 || req.Tools[0].Function.Name != "read_file" {
+			t.Fatalf("upstream tools = %+v, want read_file", req.Tools)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_read\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"README.md\\\"}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := anthropic.NewClient(
+		anthropicoption.WithBaseURL("http://"+srv.Addr().String()+"/anthropic"),
+		anthropicoption.WithAPIKey("local-key"),
+	)
+	stream := client.Messages.NewStreaming(context.Background(), anthropic.MessageNewParams{
+		Model:     "qax-codegen/Auto",
+		MaxTokens: 128,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("read README")),
+		},
+		Tools: []anthropic.ToolUnionParam{
+			anthropic.ToolUnionParamOfTool(anthropic.ToolInputSchemaParam{
+				Properties: map[string]interface{}{
+					"path": map[string]interface{}{"type": "string"},
+				},
+			}, "read_file"),
+		},
+	})
+
+	var msg anthropic.Message
+	for stream.Next() {
+		if err := msg.Accumulate(stream.Current()); err != nil {
+			t.Fatalf("accumulate stream event: %v", err)
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("anthropic SDK stream failed: %v", err)
+	}
+	if msg.StopReason != "tool_use" {
+		t.Fatalf("stop_reason = %q, want tool_use; message=%s", msg.StopReason, msg.RawJSON())
+	}
+	if len(msg.Content) != 1 || msg.Content[0].Type != "tool_use" {
+		t.Fatalf("content = %+v, want one tool_use", msg.Content)
+	}
+	toolUse := msg.Content[0].AsToolUse()
+	if toolUse.ID != "call_read" || toolUse.Name != "read_file" {
+		t.Fatalf("tool_use id/name = %q/%q, want call_read/read_file", toolUse.ID, toolUse.Name)
+	}
+	if string(toolUse.Input) != `{"path":"README.md"}` {
+		t.Fatalf("tool input = %s, want README path", toolUse.Input)
+	}
+}
+
 func TestAnthropicCountTokensEndpointEstimatesInputTokens(t *testing.T) {
 	srv, cancel := startTestServer(t)
 	defer cancel()
