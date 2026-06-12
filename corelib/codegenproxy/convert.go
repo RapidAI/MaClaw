@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	llmcompat "github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // ── Anthropic request/response types ──
@@ -782,14 +784,6 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 		result.StopReason = "max_tokens"
 	}
 
-	// Convert text content
-	if text, ok := choice.Message.Content.(string); ok && text != "" {
-		result.Content = append(result.Content, anthropicContentBlock{
-			Type: "text",
-			Text: text,
-		})
-	}
-
 	// Convert tool calls
 	hasToolUse := false
 	for _, tc := range choice.Message.ToolCalls {
@@ -817,6 +811,30 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 			})
 		}
 	}
+
+	// Some OpenAI-compatible providers emit tool calls as assistant text
+	// instead of populating tool_calls. Convert those into Anthropic
+	// tool_use blocks so Claude Code executes them instead of rendering XML/JSON.
+	if !hasToolUse {
+		if text, ok := choice.Message.Content.(string); ok && text != "" {
+			if blocks := contentToolCallsToAnthropicBlocks(text); len(blocks) > 0 {
+				hasToolUse = true
+				result.Content = append(result.Content, blocks...)
+			} else {
+				result.Content = append(result.Content, anthropicContentBlock{
+					Type: "text",
+					Text: text,
+				})
+			}
+		}
+	} else if text, ok := choice.Message.Content.(string); ok && text != "" {
+		if blocks := contentToolCallsToAnthropicBlocks(text); len(blocks) == 0 {
+			result.Content = append([]anthropicContentBlock{{
+				Type: "text",
+				Text: text,
+			}}, result.Content...)
+		}
+	}
 	if hasToolUse {
 		result.StopReason = "tool_use"
 	}
@@ -826,6 +844,35 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 	}
 
 	return result
+}
+
+func contentToolCallsToAnthropicBlocks(content string) []anthropicContentBlock {
+	calls, _ := llmcompat.ParseContentToolCallsDetailed(content)
+	if len(calls) == 0 {
+		return nil
+	}
+	blocks := make([]anthropicContentBlock, 0, len(calls))
+	for i, call := range calls {
+		name := strings.TrimSpace(call.Function.Name)
+		if name == "" {
+			continue
+		}
+		input, ok := parseOpenAIToolArguments(call.Function.Arguments)
+		if !ok {
+			continue
+		}
+		id := strings.TrimSpace(call.ID)
+		if id == "" {
+			id = fmt.Sprintf("call_content_%d_%d", time.Now().UnixNano(), i)
+		}
+		blocks = append(blocks, anthropicContentBlock{
+			Type:  "tool_use",
+			ID:    id,
+			Name:  name,
+			Input: input,
+		})
+	}
+	return blocks
 }
 
 func parseOpenAIToolArguments(raw string) (map[string]interface{}, bool) {
