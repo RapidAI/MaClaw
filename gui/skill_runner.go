@@ -127,6 +127,11 @@ type SkillRunner struct {
 	packageFn     func(skillName string) (string, error) // packageSkillForMarket
 	activeRuns    atomic.Int64
 
+	// evolutionPipeline is the async background self-evolution engine.
+	// Receives notifications after each skill execution; handles optimization,
+	// nudge promotion, and upload triggering independently of the main agent loop.
+	evolutionPipeline *cskill.EvolutionPipeline
+
 	// recentRepairs tracks skills that were recently auto-repaired.
 	// Consumed by the system prompt builder to notify the LLM about
 	// repaired skills so it can adjust its calling strategy.
@@ -1917,9 +1922,35 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	r.finalizeRunOutcome(run, finalStatus, execStart)
 
 	r.updateUsageStats(skill, execErr)
+	r.recordSkillUsageExperience(skill, execErr, run.runArgs)
 
 	// 自动上传触发
 	r.tryAutoUpload(originalSkill, run)
+
+	// Notify evolution pipeline (async, non-blocking).
+	if r.evolutionPipeline != nil {
+		var runArgsStr map[string]string
+		if run.runArgs != nil {
+			runArgsStr = make(map[string]string, len(run.runArgs))
+			for k, v := range run.runArgs {
+				switch val := v.(type) {
+				case string:
+					runArgsStr[k] = val
+				case nil:
+					// skip
+				default:
+					// Best-effort for non-string values (e.g. nested maps).
+					// RepairGate primarily needs the top-level string params
+					// (input, output, message) for replay.
+					runArgsStr[k] = fmt.Sprintf("%v", val)
+				}
+			}
+		}
+		r.evolutionPipeline.NotifySkillExecution(skill.Name, skill, &cskill.SkillExecutionResultCompat{
+			Success:       execErr == nil,
+			OutputQuality: "basic",
+		}, runArgsStr)
+	}
 }
 
 func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr error) {
@@ -1989,7 +2020,6 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 	if shouldEmit && r.executor.app != nil {
 		r.executor.app.emitEvent("skill:usage_updated")
 	}
-	r.recordSkillUsageExperience(skill, execErr)
 
 	// A successful verified run is runtime proof for previously blocked uploads.
 	if successfulSkillName != "" && r.executor.app != nil {
@@ -2016,7 +2046,7 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 	}
 }
 
-func (r *SkillRunner) recordSkillUsageExperience(skill *corelib.NLSkillEntry, execErr error) {
+func (r *SkillRunner) recordSkillUsageExperience(skill *corelib.NLSkillEntry, execErr error, runArgs map[string]interface{}) {
 	if r == nil || r.executor == nil || r.executor.app == nil || r.executor.app.usageTracker == nil || skill == nil {
 		return
 	}
@@ -2034,6 +2064,22 @@ func (r *SkillRunner) recordSkillUsageExperience(skill *corelib.NLSkillEntry, ex
 		followUp = "abandon"
 		errorClass = cskill.ExtractErrorClass(formatExecErrorForStorage(execErr))
 	}
+	// Convert runArgs to string map for UsageTracker persistence.
+	// These are used by RepairGate.Verify to replay historical executions.
+	var argsStr map[string]string
+	if len(runArgs) > 0 {
+		argsStr = make(map[string]string, len(runArgs))
+		for k, v := range runArgs {
+			switch val := v.(type) {
+			case string:
+				argsStr[k] = val
+			case nil:
+				// skip
+			default:
+				argsStr[k] = fmt.Sprintf("%v", val)
+			}
+		}
+	}
 	r.executor.app.usageTracker.RecordExperience(coretool.ToolExperience{
 		ToolName:     "skill:" + skill.Name,
 		QueryTokens:  tokens,
@@ -2042,6 +2088,7 @@ func (r *SkillRunner) recordSkillUsageExperience(skill *corelib.NLSkillEntry, ex
 		TaskType:     "skill_execution",
 		ErrorClass:   errorClass,
 		FinalOutcome: finalOutcome,
+		RunArgs:      argsStr,
 	})
 }
 
@@ -2083,6 +2130,31 @@ func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 	if err != nil {
 		log.Printf("[skill-repair-gui] repair failed for %q: %v", entry.Name, err)
 		return
+	}
+
+	// RepairGate verification: replay historical args in sandbox before applying.
+	if r.evolutionPipeline != nil && r.evolutionPipeline.Gate != nil && result.Repaired && len(result.NewSteps) > 0 {
+		var historicalArgs []map[string]string
+		if r.executor != nil && r.executor.app != nil && r.executor.app.usageTracker != nil {
+			historicalArgs = r.executor.app.usageTracker.RecentRunArgs("skill:"+entry.Name, 3)
+		}
+		if len(historicalArgs) > 0 {
+			gateCtx, gateCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			nlSteps := make([]corelib.NLSkillStep, len(result.NewSteps))
+			for i, s := range result.NewSteps {
+				nlSteps[i] = corelib.NLSkillStep{Action: s.Action, Params: s.Params, OnError: s.OnError}
+			}
+			gateResult, gateErr := r.evolutionPipeline.Gate.Verify(gateCtx, entry, nlSteps, historicalArgs)
+			gateCancel()
+			if gateErr != nil {
+				log.Printf("[skill-repair-gui] gate verification error for %q: %v", entry.Name, gateErr)
+			} else if !gateResult.Passed {
+				log.Printf("[skill-repair-gui] gate REJECTED repair for %q: %s", entry.Name, gateResult.Reason)
+				return
+			} else {
+				log.Printf("[skill-repair-gui] gate PASSED repair for %q: %s", entry.Name, gateResult.Reason)
+			}
+		}
 	}
 
 	originalSteps := cloneSkillSteps(entry.Steps)

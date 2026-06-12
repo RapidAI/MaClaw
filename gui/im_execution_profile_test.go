@@ -180,6 +180,48 @@ func TestClassifyIMExecutionProfileDirectRequiresExplicitContract(t *testing.T) 
 	}
 }
 
+func TestClassifyIMExecutionProfileLocalCurrentTimeFallbackUsesDirectTool(t *testing.T) {
+	profile := classifyIMExecutionProfileWithSemanticAndContracts(IMUserMessage{Text: "\u73b0\u5728\u51e0\u70b9\uff1f"}, false, false, nil, explicitInferredExecutionContractForTest)
+	if !profile.IsDirect() || profile.DirectToolName != "current_datetime" {
+		t.Fatalf("profile = %+v, want direct current_datetime from local time intent", profile)
+	}
+	if profile.Reason != "local deterministic current time intent" {
+		t.Fatalf("reason = %q, want local deterministic current time intent", profile.Reason)
+	}
+}
+
+func TestClassifyIMExecutionProfileLocalCurrentTimeAllowsLongPoliteQuery(t *testing.T) {
+	msg := IMUserMessage{Text: "\u9ebb\u70e6\u4f60\u770b\u4e00\u4e0b\u6211\u8fd9\u8fb9\u7684\u5f53\u524d\u65f6\u95f4\uff0c\u73b0\u5728\u51e0\u70b9\u4e86\uff1f\u987a\u4fbf\u544a\u8bc9\u6211\u4eca\u5929\u5468\u51e0\uff0c\u8c22\u8c22"}
+	profile := classifyIMExecutionProfileWithSemanticAndContracts(msg, false, false, nil, explicitInferredExecutionContractForTest)
+	if !profile.IsDirect() || profile.DirectToolName != "current_datetime" {
+		t.Fatalf("profile = %+v, want direct current_datetime for long polite current-time query", profile)
+	}
+}
+
+func TestClassifyIMExecutionProfileLocalCurrentTimeStillSkipsAttachments(t *testing.T) {
+	msg := IMUserMessage{
+		Text:        "\u73b0\u5728\u51e0\u70b9\uff1f",
+		Attachments: []MessageAttachment{{FileName: "note.txt"}},
+	}
+	profile := classifyIMExecutionProfileWithSemanticAndContracts(msg, false, false, nil, explicitInferredExecutionContractForTest)
+	if profile.IsDirect() {
+		t.Fatalf("profile = %+v, want non-direct for attachment message", profile)
+	}
+}
+
+func TestClassifyIMExecutionProfileLocalCurrentTimeAvoidsScheduleQuestions(t *testing.T) {
+	for _, text := range []string{
+		"\u4f1a\u8bae\u51e0\u70b9\u949f\u5f00\u59cb\uff1f",
+		"\u73b0\u5728\u65f6\u95f4\u590d\u6742\u5ea6\u662f\u591a\u5c11\uff1f",
+		"what is the current time complexity?",
+	} {
+		profile := classifyIMExecutionProfileWithSemanticAndContracts(IMUserMessage{Text: text}, false, false, nil, explicitInferredExecutionContractForTest)
+		if profile.IsDirect() {
+			t.Fatalf("profile = %+v, want non-direct for %q", profile, text)
+		}
+	}
+}
+
 func TestHandlerClassifyIMExecutionProfileUsesUnifiedIntentToolAffinity(t *testing.T) {
 	uic := intent.New(intent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
 		return `{"top":[{"skill":"current_time","score":0.98}]} `, nil
@@ -210,6 +252,37 @@ func TestHandlerClassifyIMExecutionProfileUsesUnifiedIntentToolAffinity(t *testi
 	}
 }
 
+func TestHandlerClassifyIMExecutionProfileLocalCurrentTimeSkipsUIC(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name:        "current_datetime",
+		Description: "clock",
+		Status:      RegToolAvailable,
+		ExecutionContract: map[string]interface{}{
+			"capabilities":            []interface{}{"time"},
+			"deterministic":           true,
+			"supports_direct":         true,
+			"requires_agent_planning": false,
+		},
+		Handler: func(args map[string]interface{}) string {
+			return "clock"
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := &IMMessageHandler{
+		registry: registry,
+		unifiedClassifier: intent.New(intent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+			t.Fatal("current local time query should not call UIC")
+			return "", nil
+		}}),
+	}
+	profile := h.classifyIMExecutionProfile(IMUserMessage{Text: "\u73b0\u5728\u51e0\u70b9\uff1f"}, false, false)
+	if !profile.IsDirect() || profile.DirectToolName != "current_datetime" {
+		t.Fatalf("profile = %+v, want direct current_datetime without UIC", profile)
+	}
+}
+
 func TestExecutionProfileSemanticResultReusedByCodingGate(t *testing.T) {
 	calls := 0
 	uic := intent.New(intent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
@@ -225,7 +298,7 @@ func TestExecutionProfileSemanticResultReusedByCodingGate(t *testing.T) {
 	ctx := NewLoopContext("chat", 300, nil)
 	ctx.Runtime.Execution = profile
 	ctx.Runtime.SemanticIntent = semantic
-	h.prepareAgentLoopCodingGate(msg.UserID, msg.Text, ctx, nil)
+	// V1 coding gate removed — UIC classification happens during execution profile.
 	if calls != 1 {
 		t.Fatalf("UIC calls = %d, want 1", calls)
 	}
@@ -610,6 +683,15 @@ func TestTryDirectExecutionProfileRunsToolAndSavesHistory(t *testing.T) {
 	history := h.memory.Load(userID)
 	if len(history) != 2 || history[0].Role != "user" || history[1].Role != "assistant" {
 		t.Fatalf("history = %+v, want user+assistant entries", history)
+	}
+}
+
+func TestTryImmediateCurrentTimeDirectSkipsProvidedLoop(t *testing.T) {
+	h := &IMMessageHandler{}
+	loopCtx := NewLoopContext("existing", 1, nil)
+	resp, handled := h.tryImmediateCurrentTimeDirect(IMUserMessage{Text: "\u73b0\u5728\u51e0\u70b9\uff1f"}, loopCtx)
+	if handled || resp != nil {
+		t.Fatalf("tryImmediateCurrentTimeDirect handled provided loop response=%+v handled=%v, want skip", resp, handled)
 	}
 }
 

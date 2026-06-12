@@ -3,8 +3,8 @@ import { OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/ma
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
-import { normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
-import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
+import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
+import { buildMarkdownTableModel, isMarkdownTableRow, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
 import { localizeText } from "./aiAssistantI18n";
 import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
@@ -17,6 +17,8 @@ const pathLeadingWrappingPattern = /^[`'"\u2018\u2019\u201c\u201d]+/;
 const pathTrailingPunctuationPattern = /[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/;
 const pathTrailingWrappingPattern = /[`'"\u2018\u2019\u201c\u201d]+$/;
 const pathTrailingWrapperPunctuationPattern = /([`'"\u2018\u2019\u201c\u201d])[\s.,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/;
+const inlineWrapStyle: React.CSSProperties = { overflowWrap: "anywhere", wordBreak: "break-word" };
+const blockWrapStyle: React.CSSProperties = { minWidth: 0, ...inlineWrapStyle };
 
 function stripPathWrapping(s: string): string {
     let value = s.trim();
@@ -58,6 +60,7 @@ function renderPathLink(filePath: string, key: number, t: Theme): React.ReactNod
         textDecorationStyle: "dotted",
         textUnderlineOffset: "2px",
         cursor: "pointer",
+        ...inlineWrapStyle,
     };
     return (
         <a key={key}
@@ -148,33 +151,33 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
                 parts.push(renderPathLink(path, idx++, t));
             } else {
                 // Path is a minor substring; render as inline code.
-                parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{inner}</code>);
+                parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em", ...inlineWrapStyle }}>{inner}</code>);
             }
         } else if (match[3]) {
             // Generic inline code (no path inside)
             const inner = m.slice(1, -1);
-            parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{inner}</code>);
+            parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em", ...inlineWrapStyle }}>{inner}</code>);
         } else if (match[4]) {
             // Bold
             const inner = m.slice(2, -2);
             if (looksLikeFilePath(inner)) {
                 parts.push(renderPathLink(inner, idx++, t));
             } else {
-                parts.push(<strong key={idx++} style={{ color: t.boldColor, fontWeight: 700 }}>{inner}</strong>);
+                parts.push(<strong key={idx++} style={{ color: t.boldColor, fontWeight: 700, ...inlineWrapStyle }}>{inner}</strong>);
             }
         } else if (match[5]) {
-            parts.push(<em key={idx++} style={{ color: t.italicColor }}>{m.slice(1, -1)}</em>);
+            parts.push(<em key={idx++} style={{ color: t.italicColor, ...inlineWrapStyle }}>{m.slice(1, -1)}</em>);
         } else if (match[6]) {
             const lm = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
             if (lm) {
                 const href = lm[2];
                 if (/^https?:\/\//i.test(href)) {
-                    parts.push(<a key={idx++} href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(href); }} style={{ color: t.linkColor, textDecoration: "underline", cursor: "pointer" }}>{lm[1]}</a>);
+                    parts.push(<a key={idx++} href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(href); }} style={{ color: t.linkColor, textDecoration: "underline", cursor: "pointer", ...inlineWrapStyle }}>{lm[1]}</a>);
                 } else if (looksLikeFilePath(href)) {
                     const filePath = stripPathWrapping(href);
-                    parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, filePath)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer" }} title={filePath}>{lm[1]}</a>);
+                    parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, filePath)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", ...inlineWrapStyle }} title={filePath}>{lm[1]}</a>);
                 } else {
-                    parts.push(<span key={idx++} style={{ color: t.linkColor }}>{lm[1]}</span>);
+                    parts.push(<span key={idx++} style={{ color: t.linkColor, ...inlineWrapStyle }}>{lm[1]}</span>);
                 }
             } else {
                 parts.push(m);
@@ -207,17 +210,20 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
     if (kbImageMatch) {
         const [, assetId, dataUrl, originalPath] = kbImageMatch;
         return (
-            <div key={key} style={{ margin: "6px 0" }}>
+            <div key={key} style={{ margin: "6px 0", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", overflow: "hidden" }}>
                 <img
                     src={dataUrl}
                     alt={assetId}
                     title={originalPath ? `Click to open: ${originalPath}` : assetId}
                     loading="lazy"
                     style={{
-                        maxWidth: "120px",
+                        width: "120px",
+                        maxWidth: "100%",
                         maxHeight: "120px",
                         borderRadius: "6px",
                         border: `1px solid ${t.divider}`,
+                        boxSizing: "border-box",
+                        display: "block",
                         cursor: originalPath ? "pointer" : "default",
                         transition: "transform 0.15s",
                     }}
@@ -248,6 +254,7 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
                 color: t.headingColor,
                 margin: margins[level] || "0.4em 0 0.2em",
                 letterSpacing: level === 1 ? "0.01em" : undefined,
+                ...blockWrapStyle,
             }}>
                 {renderInlineMarkdown(headingMatch[2], t)}
             </div>
@@ -263,6 +270,7 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
                 fontStyle: "italic",
                 minHeight: "1.4em",
                 margin: "2px 0",
+                ...blockWrapStyle,
             }}>
                 {renderInlineMarkdown(trimmed.slice(2), t)}
             </div>
@@ -275,7 +283,7 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
 
     if (/^[-*]\s/.test(trimmed)) {
         return (
-            <div key={key} style={{ paddingLeft: "1em", textIndent: "-0.7em", minHeight: "1.4em" }}>
+            <div key={key} style={{ paddingLeft: "1em", textIndent: "-0.7em", minHeight: "1.4em", ...blockWrapStyle }}>
                 <span style={{ color: t.bulletColor }}>{"\u2022"}</span>{" "}
                 {renderInlineMarkdown(trimmed.slice(2), t)}
             </div>
@@ -285,15 +293,15 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
     const numMatch = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
     if (numMatch) {
         return (
-            <div key={key} style={{ display: "flex", minHeight: "1.4em" }}>
+            <div key={key} style={{ display: "flex", minHeight: "1.4em", ...blockWrapStyle }}>
                 <span style={{ color: t.bulletColor, flexShrink: 0, minWidth: "1.8em" }}>{numMatch[1]}.</span>
-                <span style={{ flex: 1 }}>{renderInlineMarkdown(numMatch[2], t)}</span>
+                <span style={{ flex: 1, ...blockWrapStyle }}>{renderInlineMarkdown(numMatch[2], t)}</span>
             </div>
         );
     }
 
     return (
-        <div key={key} style={{ minHeight: "1.4em" }}>
+        <div key={key} style={{ minHeight: "1.4em", ...blockWrapStyle }}>
             {renderInlineMarkdown(text, t) || "\u00A0"}
         </div>
     );
@@ -305,10 +313,6 @@ function isTableRow(line: string): boolean {
     return isMarkdownTableRow(line);
 }
 
-function isSeparatorRow(line: string): boolean {
-    return isMarkdownTableSeparatorRow(line);
-}
-
 function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNode {
     const model = buildMarkdownTableModel(tableLines);
     if (!model) return null;
@@ -316,13 +320,13 @@ function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNo
     const { headerCells, bodyRows, columnAlignments, minTableWidth, prefix, notes } = repaired;
     const cellStyle: React.CSSProperties = { border: `1px solid ${t.fieldBorder}`, boxSizing: "border-box", overflowWrap: "anywhere", padding: "6px 10px", textAlign: "left", verticalAlign: "top", wordBreak: "break-word", fontSize: "0.9em", lineHeight: 1.5 };
     return (
-        <div key={key} data-testid="markdown-table-block" style={{ maxWidth: "100%", overflowX: "auto", margin: "6px 0", whiteSpace: "normal" }}>
-            {prefix && <div data-testid="markdown-table-prefix" style={{ marginBottom: 6 }}>{renderInlineMarkdown(prefix, t)}</div>}
+        <div key={key} data-testid="markdown-table-block" style={{ width: "100%", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", overflowX: "auto", overscrollBehaviorX: "contain", margin: "6px 0", whiteSpace: "normal" }}>
+            {prefix && <div data-testid="markdown-table-prefix" style={{ marginBottom: 6, ...blockWrapStyle }}>{renderInlineMarkdown(prefix, t)}</div>}
             <table data-testid="markdown-table" style={{ borderCollapse: "collapse", minWidth: minTableWidth, tableLayout: "fixed", width: "100%", color: t.text, whiteSpace: "normal", wordBreak: "normal" }}>
                 <thead><tr>{headerCells.map((cell, ci) => <th key={ci} style={{ ...cellStyle, textAlign: columnAlignments[ci], fontWeight: 600, background: t.fieldBg, color: t.headingColor, fontSize: "0.88em", letterSpacing: "0.02em" }}>{renderInlineMarkdown(cell, t)}</th>)}</tr></thead>
                 {bodyRows.length > 0 && <tbody>{bodyRows.map((row, ri) => { const cells = parseMarkdownTableCells(row); return <tr key={ri} style={{ background: ri % 2 === 1 ? t.fieldBg : undefined }}>{headerCells.map((_, ci) => <td key={ci} style={{ ...cellStyle, textAlign: columnAlignments[ci] }}>{renderInlineMarkdown(cells[ci] || "", t)}</td>)}</tr>; })}</tbody>}
             </table>
-            {notes.map((note, index) => <div key={`note-${index}`} data-testid="markdown-table-note" style={{ marginTop: 6 }}>{renderInlineMarkdown(note, t)}</div>)}
+            {notes.map((note, index) => <div key={`note-${index}`} data-testid="markdown-table-note" style={{ marginTop: 6, ...blockWrapStyle }}>{renderInlineMarkdown(note, t)}</div>)}
         </div>
     );
 }
@@ -331,7 +335,8 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
     const elements: React.ReactNode[] = [];
     // Normalize compact LLM output outside fenced code blocks.
     const normalized = normalizeInlineListMarkers(content);
-    const lines = normalized.split("\n");
+    const rawLines = normalized.split("\n");
+    const lines = normalized.includes("#") ? attachBareHeadingMarkers(rawLines) : rawLines;
     let inCodeBlock = false;
     let codeBlockLines: string[] = [];
     let codeBlockLang = "";
@@ -339,7 +344,7 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
     let lineIdx = 0;
 
     const flushCodeBlock = () => {
-        if (codeBlockLines.length > 0) {
+        if (inCodeBlock || codeBlockLines.length > 0) {
             elements.push(
                 <pre key={`code-${elements.length}`} style={{
                     background: t.codeBlockBg,
@@ -348,12 +353,17 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
                     padding: "10px 12px",
                     margin: "6px 0",
                     fontSize: "0.88em",
+                    width: "100%",
+                    maxWidth: "100%",
+                    minWidth: 0,
+                    boxSizing: "border-box",
                     overflowX: "auto",
+                    overscrollBehaviorX: "contain",
                     color: t.codeText,
                     lineHeight: 1.6,
                 }}>
                     {codeBlockLang && <div style={{ color: t.codeBlockLang, fontSize: "0.8em", marginBottom: "6px", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.05em", opacity: 0.8 }}>{codeBlockLang}</div>}
-                    <code>{renderCodeBlockText(codeBlockLines.join("\n"), t)}</code>
+                    <code>{codeBlockLines.length > 0 ? renderCodeBlockText(codeBlockLines.join("\n"), t) : "\u00A0"}</code>
                 </pre>
             );
         }

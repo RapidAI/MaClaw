@@ -485,7 +485,7 @@ describe('VirtualEmployeeTab', () => {
     // --- Real-time updates (throttled refresh) ---
 
     describe('real-time updates', () => {
-        it('refreshes on ve:list_update event with 500ms throttle', async () => {
+        it('refreshes on ve:list_update event with event coalescing throttle', async () => {
             const { listFn } = renderVETab();
             await act(async () => { await Promise.resolve(); });
             expect(listFn).toHaveBeenCalledTimes(1);
@@ -494,12 +494,12 @@ describe('VirtualEmployeeTab', () => {
             act(() => { eventHandlers.get("ve:list_update")?.(); });
             expect(listFn).toHaveBeenCalledTimes(2);
 
-            // Second event within 500ms should be throttled
+            // Second event within the coalescing window should be throttled
             act(() => { eventHandlers.get("ve:list_update")?.(); });
             expect(listFn).toHaveBeenCalledTimes(2); // still 2
 
-            // After 500ms, pending refresh fires
-            await act(async () => { vi.advanceTimersByTime(500); });
+            // After the coalescing window, pending refresh fires
+            await act(async () => { vi.advanceTimersByTime(1500); });
             expect(listFn).toHaveBeenCalledTimes(3);
         });
 
@@ -607,13 +607,40 @@ describe('VirtualEmployeeTab', () => {
             expect(screen.queryByTestId("ve-empty-hub")).toBeNull();
         });
 
-        it('refreshes every 30 seconds', async () => {
+        it('polls periodically with jittered load-smoothing delay', async () => {
             const { listFn } = renderVETab();
             await act(async () => { await Promise.resolve(); });
             expect(listFn).toHaveBeenCalledTimes(1);
 
-            await act(async () => { vi.advanceTimersByTime(30000); });
+            await act(async () => { vi.advanceTimersByTime(56000); });
             expect(listFn).toHaveBeenCalledTimes(2);
+        });
+
+        it('backs off polling after refresh failures', async () => {
+            const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+            const listFn = vi.fn().mockRejectedValue(new Error("hub unavailable"));
+            renderVETab({ listVirtualEmployees: listFn });
+            await act(async () => { await Promise.resolve(); });
+            expect(listFn).toHaveBeenCalledTimes(1);
+
+            await act(async () => {
+                vi.advanceTimersByTime(45000);
+                await Promise.resolve();
+            });
+            expect(listFn).toHaveBeenCalledTimes(2);
+
+            await act(async () => {
+                vi.advanceTimersByTime(89999);
+                await Promise.resolve();
+            });
+            expect(listFn).toHaveBeenCalledTimes(2);
+
+            await act(async () => {
+                vi.advanceTimersByTime(1);
+                await Promise.resolve();
+            });
+            expect(listFn).toHaveBeenCalledTimes(3);
+            randomSpy.mockRestore();
         });
     });
 });

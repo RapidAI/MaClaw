@@ -36,8 +36,9 @@ const macLawSrvRuntimeRegistryKey = "maclawsrv_runtime_registry"
 const platformRequestNonceRegistryKey = "ve_platform_request_nonce_registry"
 const platformRequestReplayWindow = 10 * time.Minute
 const platformSignedBodyMaxBytes = int64(veAvatarDataURLMaxSize + 512*1024)
-const platformA2ADeliveryTimeout = time.Duration(corelib.DefaultAgentTimeoutSec) * time.Second
 const maclawSrvRuntimePlatformID = "maclawsrv"
+
+var platformA2ADeliveryTimeout = time.Duration(veIntEnv("HUB_VE_RUNTIME_DELIVERY_TIMEOUT_SECONDS", int(corelib.DefaultAgentTimeoutSec), 1, 3600)) * time.Second
 
 type platformProviderRegistry struct {
 	Providers []platformProviderEntry `json:"providers"`
@@ -2577,13 +2578,23 @@ func (s platformAwareMachineSender) SendDiscussionMessage(session *corea2a.Sessi
 	}
 	log.Printf("[ve-platform-delivery] route discussion session=%s from=%s target=%s tenant=%s employee=%s kind=%s msg_id=%s msg_kind=%s", groupDiscussionSessionID(session), msg.FromID, targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, deliveryTarget.kind, msg.ID, msg.Kind)
 	if deliveryTarget.kind == maclawSrvRuntimePlatformID {
+		circuitKey := veRuntimeDeliveryCircuitKey(deliveryTarget.tenantID, deliveryTarget.entry, deliveryTarget.runtime)
+		if !veRuntimeDeliveryCircuitAllows(circuitKey, time.Now()) {
+			return true, nil, newVETemporaryDeliveryError("VE_RUNTIME_CIRCUIT_OPEN", fmt.Sprintf("MaClawSrv runtime delivery circuit is open for platform employee %s", targetID), int(veRuntimeCircuitOpenDuration.Seconds()))
+		}
+		release, acquired := acquireVERuntimeDeliverySlot()
+		if !acquired {
+			return true, nil, newVETemporaryDeliveryError("VE_RUNTIME_BUSY", fmt.Sprintf("MaClawSrv runtime delivery is busy for platform employee %s", targetID), 1)
+		}
 		reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(session, msg, targetID, target.RoleCode))
+		if err == nil && strings.TrimSpace(reply) == "" {
+			err = errors.New("MaClawSrv runtime response did not include assistant content")
+		}
+		release(err)
+		recordVERuntimeDeliveryResult(circuitKey, err, time.Now())
 		if err != nil {
 			log.Printf("[ve-platform-delivery] runtime delivery failed session=%s target=%s tenant=%s employee=%s platform_employee=%s: %v", groupDiscussionSessionID(session), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), err)
 			return true, nil, err
-		}
-		if strings.TrimSpace(reply) == "" {
-			return true, nil, errors.New("MaClawSrv runtime response did not include assistant content")
 		}
 		return true, &corea2a.GroupDiscussionMessage{ID: macLawSrvReplyMessageID(msg, targetID), FromID: targetID, Kind: corea2a.MessageAnswer, Content: strings.TrimSpace(reply), CreatedAt: time.Now().UTC()}, nil
 	}
@@ -2620,6 +2631,14 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 	}
 	log.Printf("[ve-platform-delivery] queue discussion session=%s from=%s target=%s tenant=%s employee=%s kind=%s msg_id=%s msg_kind=%s", groupDiscussionSessionID(session), msg.FromID, targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, deliveryTarget.kind, msg.ID, msg.Kind)
 	if deliveryTarget.kind == maclawSrvRuntimePlatformID {
+		circuitKey := veRuntimeDeliveryCircuitKey(deliveryTarget.tenantID, deliveryTarget.entry, deliveryTarget.runtime)
+		if !veRuntimeDeliveryCircuitAllows(circuitKey, time.Now()) {
+			return true, newVETemporaryDeliveryError("VE_RUNTIME_CIRCUIT_OPEN", fmt.Sprintf("MaClawSrv runtime delivery circuit is open for platform employee %s", targetID), int(veRuntimeCircuitOpenDuration.Seconds()))
+		}
+		release, acquired := acquireVERuntimeDeliverySlot()
+		if !acquired {
+			return true, newVETemporaryDeliveryError("VE_RUNTIME_BUSY", fmt.Sprintf("MaClawSrv runtime delivery is busy for platform employee %s", targetID), 1)
+		}
 		sessionCopy := cloneSession(session)
 		msgCopy := msg
 		targetCopy := target
@@ -2658,6 +2677,12 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 				})
 			}
 			reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), chunkCb)
+			deliveryErr := err
+			if deliveryErr == nil && strings.TrimSpace(reply) == "" {
+				deliveryErr = errors.New("MaClawSrv runtime response did not include assistant content")
+			}
+			release(deliveryErr)
+			recordVERuntimeDeliveryResult(circuitKey, deliveryErr, time.Now())
 			if err != nil {
 				log.Printf("[ve-platform-delivery] async runtime delivery failed session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started), err)
 				return
@@ -3106,6 +3131,15 @@ func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.C
 	// Handle SSE streaming response — parse each chunk and return aggregated content.
 	contentType := resp.Header.Get("Content-Type")
 	log.Printf("[VE-STREAMING] ===== HUB STAGE B: response received ===== status=%d content_type=%q", resp.StatusCode, contentType)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		log.Printf("[ve-platform-delivery] post runtime failed tenant=%s employee=%s platform_employee=%s status=%d duration=%s bytes=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), resp.StatusCode, time.Since(started), len(respBody))
+		detail := strings.TrimSpace(string(respBody))
+		if detail != "" {
+			return "", fmt.Errorf("MaClawSrv runtime returned status %d: %s", resp.StatusCode, sanitizeRuntimeDeliveryErrorText(detail, entry.PlatformEmployeeID))
+		}
+		return "", fmt.Errorf("MaClawSrv runtime returned status %d", resp.StatusCode)
+	}
 	if strings.Contains(contentType, "text/event-stream") {
 		log.Printf("[VE-STREAMING] ===== HUB STAGE C: consuming SSE stream =====")
 		var chunkCb func(string)
@@ -3118,13 +3152,6 @@ func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.C
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	log.Printf("[ve-platform-delivery] post runtime done tenant=%s employee=%s platform_employee=%s status=%d duration=%s bytes=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), resp.StatusCode, time.Since(started), len(respBody))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		detail := strings.TrimSpace(string(respBody))
-		if detail != "" {
-			return "", fmt.Errorf("MaClawSrv runtime returned status %d: %s", resp.StatusCode, sanitizeRuntimeDeliveryErrorText(detail, entry.PlatformEmployeeID))
-		}
-		return "", fmt.Errorf("MaClawSrv runtime returned status %d", resp.StatusCode)
-	}
 	reply := macLawSrvRuntimeReplyContent(respBody)
 	if reply == "" {
 		return "", errors.New("MaClawSrv runtime response did not include assistant content")

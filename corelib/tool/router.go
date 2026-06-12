@@ -509,6 +509,89 @@ func normalizeSkillCapability(cap string) string {
 	return strings.Join(parts, "_")
 }
 
+// IsLocalStoredInfoQuery reports whether the user is asking what the agent
+// already knows/remembers from local memory or the knowledge base, especially
+// for operational details like servers, environments, credentials, and configs.
+func IsLocalStoredInfoQuery(userMessage string) bool {
+	text := strings.ToLower(strings.TrimSpace(userMessage))
+	if text == "" {
+		return false
+	}
+	hasLookupIntent := strings.Contains(text, "\u77e5\u9053") ||
+		strings.Contains(text, "\u8bb0\u5f97") ||
+		strings.Contains(text, "\u6709\u6ca1\u6709") ||
+		strings.Contains(text, "\u662f\u5426") ||
+		strings.Contains(text, "\u67e5\u4e00\u4e0b") ||
+		strings.Contains(text, "\u67e5\u8be2") ||
+		strings.Contains(text, "what do you remember") ||
+		strings.Contains(text, "do you know") ||
+		strings.Contains(text, "use the saved")
+	if !hasLookupIntent {
+		return false
+	}
+	hasLocalSubject := strings.Contains(text, "\u670d\u52a1\u5668") ||
+		containsASCIIToken(text, "server") ||
+		strings.Contains(text, "\u4e3b\u673a") ||
+		strings.Contains(text, "\u73af\u5883") ||
+		containsASCIIToken(text, "env") ||
+		strings.Contains(text, "\u914d\u7f6e") ||
+		containsASCIIToken(text, "config") ||
+		strings.Contains(text, "\u8d26\u53f7") ||
+		strings.Contains(text, "\u8d26\u6237") ||
+		strings.Contains(text, "\u5bc6\u7801") ||
+		strings.Contains(text, "\u51ed\u636e") ||
+		containsASCIIToken(text, "credential") ||
+		containsASCIIToken(text, "credentials") ||
+		containsASCIIToken(text, "endpoint") ||
+		isNamedLocalAPIReference(text) ||
+		strings.Contains(text, "local corpus") ||
+		strings.Contains(text, "saved corpus") ||
+		containsASCIIToken(text, "document") ||
+		containsASCIIToken(text, "docs") ||
+		strings.Contains(text, "\u8d44\u6599") ||
+		strings.Contains(text, "\u6587\u6863")
+	if hasLocalSubject {
+		return true
+	}
+	return strings.Contains(text, "\u77e5\u8bc6\u5e93") ||
+		strings.Contains(text, "\u8bb0\u5fc6") ||
+		containsASCIIToken(text, "memory") ||
+		containsASCIIToken(text, "knowledge")
+}
+
+func containsASCIIToken(text, token string) bool {
+	if token == "" {
+		return false
+	}
+	for start := 0; ; {
+		idx := strings.Index(text[start:], token)
+		if idx < 0 {
+			return false
+		}
+		pos := start + idx
+		beforeOK := pos == 0 || !isASCIIAlphaNum(text[pos-1])
+		after := pos + len(token)
+		afterOK := after >= len(text) || !isASCIIAlphaNum(text[after])
+		if beforeOK && afterOK {
+			return true
+		}
+		start = pos + 1
+	}
+}
+
+func isASCIIAlphaNum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+func isNamedLocalAPIReference(text string) bool {
+	for i := 0; i+3 < len(text); i++ {
+		if text[i] == 'a' && text[i+1] == 'p' && text[i+2] == 'i' && text[i+3] >= '0' && text[i+3] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
 // SetRegistry sets the Registry used for dynamic builtin detection and tag-based scoring.
 func (r *Router) SetRegistry(reg *Registry) {
 	r.registry = reg
@@ -583,6 +666,23 @@ func (r *Router) ActivateSessionTool(name string) {
 // avoid removing a tool that was previously used in this session.
 func (r *Router) IsSessionPinned(name string) bool {
 	return r.sessionTools[name]
+}
+
+// SessionPinnedToolsMissing returns session-pinned tool names that are NOT
+// in the provided currentNames set. This is used by the agent loop to detect
+// tools that were session-pinned mid-loop (e.g. by discover_tool) but are
+// not yet in the LLM's tool definition list.
+func (r *Router) SessionPinnedToolsMissing(currentNames map[string]bool) []string {
+	if len(r.sessionTools) == 0 {
+		return nil
+	}
+	var missing []string
+	for name := range r.sessionTools {
+		if !currentNames[name] {
+			missing = append(missing, name)
+		}
+	}
+	return missing
 }
 
 // ResetSession clears session-activated tools.
@@ -738,9 +838,9 @@ func isPathPrefixToken(prefix, full string) bool {
 	return next == '\\' || next == '/' || unicode.IsSpace(rune(next))
 }
 
-var windowsKnownFilePathPattern = regexp.MustCompile(`[A-Za-z]:[\\/][^\r\n<>|"'，,。；;]+?\.(?i:pdf|docx?|xlsx?|pptx?|txt|md|csv|json|html?|xml|rtf|png|jpe?g|webp|gif|zip|7z|rar)`)
+var windowsKnownFilePathPattern = regexp.MustCompile(`[A-Za-z]:[\\/][^\r\n<>|"',\x{ff0c}\x{3002}\x{ff1b};]+?\.(?i:pdf|docx?|xlsx?|pptx?|txt|md|csv|json|html?|xml|rtf|png|jpe?g|webp|gif|zip|7z|rar)`)
 
-var windowsLocalPathPattern = regexp.MustCompile(`[A-Za-z]:[\\/][^\s<>|"'，,。；;]+`)
+var windowsLocalPathPattern = regexp.MustCompile(`[A-Za-z]:[\\/][^\s<>|"',\x{ff0c}\x{3002}\x{ff1b};]+`)
 
 func trimKnowledgePayloadToken(s string) string {
 	return strings.TrimFunc(s, func(r rune) bool {
@@ -748,7 +848,7 @@ func trimKnowledgePayloadToken(s string) string {
 			return true
 		}
 		switch r {
-		case '<', '>', '[', ']', '(', ')', '{', '}', '"', '\'', '`', ',', '.', ';', ':', '，', '。', '；', '：':
+		case '<', '>', '[', ']', '(', ')', '{', '}', '"', '\'', '`', ',', '.', ';', ':', '\uff0c', '\u3002', '\uff1b', '\uff1a':
 			return true
 		default:
 			return false
@@ -972,6 +1072,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	var skillCapabilityConstrained bool
 	suppressedTools := map[string]bool{}
 	skillInstallEligible := true
+	localStoredInfoQuery := IsLocalStoredInfoQuery(userMessage)
 
 	if r.unifiedClassifier != nil {
 		// UIC path: use UnifiedIntentClassifier to determine which conditional
@@ -1082,9 +1183,22 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 	browserPublishAffordance := intent.BrowserPublicationAffordance(userMessage)
+	skillUploadRequest := isSkillUploadRequest(userMessage)
 	if browserPublishAffordance {
 		condKeep["browser"] = true
 		delete(condFilterOut, "browser")
+	}
+	if skillUploadRequest {
+		skillInstallEligible = false
+		suppressedTools["search_and_install_skill"] = true
+		delete(suppressedTools, "manage_skill")
+	}
+	if localStoredInfoQuery {
+		condKeep["knowledge_search"] = true
+		condKeep["knowledge_context_pack"] = true
+		for name := range knowledgeWriteToolNames {
+			suppressedTools[name] = true
+		}
 	}
 	if !skillInstallEligible {
 		suppressedTools["search_and_install_skill"] = true
@@ -1207,7 +1321,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	// Skill match has already been computed before suppression so manage_skill's
 	// execution contract does not depend on dynamic candidate routing being active.
 	mustKeepCore := map[string]bool{}
-	if len(matchedSkills) > 0 {
+	if len(matchedSkills) > 0 || skillUploadRequest {
 		mustKeepCore["manage_skill"] = true
 	}
 	matchedSkillCapabilities := r.matchedSkillCapabilities(matchedSkills)
@@ -1480,7 +1594,7 @@ func isExplicitScreenshotRequest(userMessage string) bool {
 	if strings.Contains(msg, "screenshot") || strings.Contains(msg, "screen shot") {
 		return true
 	}
-	for _, marker := range []string{"截图", "截屏", "屏幕截图", "桌面截图", "截个图", "截一下图"} {
+	for _, marker := range []string{"\u622a\u56fe", "\u622a\u5c4f", "\u5c4f\u5e55\u622a\u56fe", "\u684c\u9762\u622a\u56fe", "\u622a\u4e2a\u56fe", "\u622a\u4e00\u4e0b\u56fe"} {
 		if strings.Contains(msg, marker) {
 			return true
 		}
@@ -1502,6 +1616,56 @@ func isExplicitGitRequest(userMessage string) bool {
 		}
 	}
 	return false
+}
+
+func isSkillUploadRequest(userMessage string) bool {
+	msg := strings.ToLower(strings.TrimSpace(userMessage))
+	if msg == "" {
+		return false
+	}
+	hasSkill := false
+	for _, marker := range []string{"\u6280\u80fd", "\u80fd\u529b"} {
+		if strings.Contains(msg, marker) {
+			hasSkill = true
+			break
+		}
+	}
+	if !hasSkill {
+		hasSkill = containsASCIIToken(msg, "skill") ||
+			strings.Contains(msg, "skillmarket") ||
+			strings.Contains(msg, "skill market") ||
+			strings.Contains(msg, "skillhub")
+	}
+	if !hasSkill {
+		return false
+	}
+	hasUploadVerb := false
+	for _, marker := range []string{"\u4e0a\u4f20", "\u767c\u5e03", "\u53d1\u5e03", "\u4e0a\u67b6", "\u63d0\u4ea4"} {
+		if strings.Contains(msg, marker) {
+			hasUploadVerb = true
+			break
+		}
+	}
+	if !hasUploadVerb {
+		for _, marker := range []string{"upload", "publish", "submit"} {
+			if containsASCIIToken(msg, marker) {
+				hasUploadVerb = true
+				break
+			}
+		}
+	}
+	if !hasUploadVerb {
+		return false
+	}
+	for _, marker := range []string{"skillmarket", "skill market", "hubcenter", "hub center", "\u80fd\u529b\u5e02\u573a", "\u80fd\u529b\u5e02\u5834", "skillhub"} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	if containsASCIIToken(msg, "hub") {
+		return true
+	}
+	return strings.Contains(msg, "\u4e0a\u4f20") || strings.Contains(msg, "\u53d1\u5e03") || strings.Contains(msg, "\u767c\u5e03") || strings.Contains(msg, "\u4e0a\u67b6")
 }
 
 var knowledgeWriteToolList = []string{
@@ -1587,7 +1751,7 @@ func enrichRunSkillDescription(def map[string]interface{}, skillNames, skillCapa
 		return def
 	}
 	desc, _ := fn["description"].(string)
-	suffix := " 可用 Skill: " + strings.Join(skillNames, ", ") + ". Matched local Skill(s): " + strings.Join(skillNames, ", ") + `. Prefer manage_skill(action="run", name=<matched skill>) before generic fallback tools when the user request matches one.`
+	suffix := " \u53ef\u7528 Skill: " + strings.Join(skillNames, ", ") + ". Matched local Skill(s): " + strings.Join(skillNames, ", ") + `. Prefer manage_skill(action="run", name=<matched skill>) before generic fallback tools when the user request matches one.`
 	newFn := make(map[string]interface{}, len(fn))
 	for k, v := range fn {
 		newFn[k] = v

@@ -34,6 +34,23 @@ func TestRoute_NonCodingTask(t *testing.T) {
 	}
 }
 
+func TestRoute_NilDependenciesFallBackToAgentLoop(t *testing.T) {
+	var nilRouter *WorkflowRouter
+	if result := nilRouter.Route("user1", "build a backend service", nil); result.Target != RouteToAgentLoop {
+		t.Fatalf("nil router target = %q, want agent_loop", result.Target)
+	}
+
+	r := &WorkflowRouter{}
+	if result := r.Route("user1", "build a backend service", nil); result.Target != RouteToAgentLoop {
+		t.Fatalf("missing template registry target = %q, want agent_loop", result.Target)
+	}
+
+	r = &WorkflowRouter{templates: NewTemplateRegistry()}
+	if result := r.Route("user1", "build a backend service", nil); result.Target != RouteToAgentLoop {
+		t.Fatalf("missing state machine target = %q, want agent_loop", result.Target)
+	}
+}
+
 func TestRoute_SkipSignal(t *testing.T) {
 	r := setupTestRouter()
 	result := r.Route("user1", "直接做一个贪吃蛇游戏", nil)
@@ -44,12 +61,11 @@ func TestRoute_SkipSignal(t *testing.T) {
 
 func TestRoute_BugFix(t *testing.T) {
 	r := setupTestRouter()
-	// "修复加载卡住的bug" doesn't match any template keywords (coding template
-	// requires "开发"/"写代码" etc). Without keyword match → RouteToAgentLoop.
-	// Bug fixes are handled by the normal agent loop with full tools.
+	// A plain bug fix should not start a coding workflow; it is handled by the
+	// normal agent loop with full tools.
 	result := r.Route("user1", "修复加载卡住的bug", nil)
 	if result.Target != RouteToAgentLoop {
-		t.Fatalf("target = %q, want agent_loop (no keyword match)", result.Target)
+		t.Fatalf("target = %q, want agent_loop (plain bug fix)", result.Target)
 	}
 }
 
@@ -59,6 +75,51 @@ func TestRoute_BugFixWithCreation(t *testing.T) {
 	result := r.Route("user1", "开发一个bug追踪系统", nil)
 	if result.Target != RouteToWorkflow {
 		t.Fatalf("target = %q, want workflow (creation overrides bug-fix)", result.Target)
+	}
+}
+
+func TestRoute_LLMConfirmationCanRejectStructuredTemplateMatch(t *testing.T) {
+	store := NewMemoryStore()
+	templates := NewTemplateRegistry()
+	RegisterBuiltinTemplates(templates)
+	machine := NewStateMachine(store, templates)
+	router := NewWorkflowRouter(machine, templates, func(text, workflowType string) bool {
+		return false
+	})
+
+	result := router.Route("user1", "build backend service with APIs and database migrations", nil)
+	if result.Target != RouteToAgentLoop {
+		t.Fatalf("target = %q, want agent_loop when LLM rejects candidate", result.Target)
+	}
+}
+
+func TestRoute_CodingComplexityNoneFallsBackToAgentLoop(t *testing.T) {
+	r := setupTestRouter()
+	r.SetComplexityFunc(func(text string) TaskComplexity {
+		return ComplexityNone
+	})
+
+	result := r.Route("user1", "build backend service with APIs and database migrations", nil)
+	if result.Target != RouteToAgentLoop {
+		t.Fatalf("target = %q, want agent_loop for ComplexityNone", result.Target)
+	}
+}
+
+func TestRoute_CodingComplexitySimpleGoesDirectCoding(t *testing.T) {
+	r := setupTestRouter()
+	r.SetComplexityFunc(func(text string) TaskComplexity {
+		return ComplexitySimple
+	})
+
+	result := r.Route("user1", "d:\\service build backend service with APIs and database migrations", nil)
+	if result.Target != RouteToDirectCoding {
+		t.Fatalf("target = %q, want direct_coding", result.Target)
+	}
+	if result.WorkflowType != "coding" {
+		t.Fatalf("workflowType = %q, want coding", result.WorkflowType)
+	}
+	if result.ProjectPath != "d:\\service" {
+		t.Fatalf("projectPath = %q, want d:\\service", result.ProjectPath)
 	}
 }
 

@@ -51,7 +51,7 @@ export const CodingAgentCompactStatus = ({ progress, lang, testId, variant }: Co
                 padding: isSidebar ? '7px 8px' : '2px 8px',
                 borderRadius: '7px',
                 border: `1px solid ${tone.border}`,
-                borderLeft: isSidebar ? `3px solid ${tone.accent}` : undefined,
+                boxShadow: isSidebar ? `inset 0 0 0 1px ${tone.border}` : undefined,
                 background: tone.bg,
                 color: isSidebar ? 'var(--theme-text)' : tone.accent,
                 fontSize: '0.72rem',

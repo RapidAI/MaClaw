@@ -59,7 +59,7 @@ func (h *IMMessageHandler) toolBashBackgroundForOwner(command, workDir, taskRole
 		workDir = h.projectTabWorkDirForOwner(ownerID)
 	}
 
-	task, err := mgr.SubmitWithRole(command, workDir, taskRole)
+	task, err := mgr.SubmitWithOwner(command, workDir, taskRole, ownerID)
 	if err != nil {
 		return fmt.Sprintf("[错误] 后台任务启动失败: %v", err)
 	}
@@ -88,22 +88,29 @@ func (h *IMMessageHandler) toolAsyncWait(args map[string]interface{}, onProgress
 
 	switch action {
 	case asyncWaitActionCheck:
-		return h.asyncWaitCheck(mgr, args)
+		return h.asyncWaitCheckForOwner(mgr, args, ownerID)
 	case asyncWaitActionWait:
 		return h.asyncWaitWaitForOwner(mgr, args, onProgress, ownerID)
 	case asyncWaitActionKill:
-		return h.asyncWaitKill(mgr, args)
+		return h.asyncWaitKillForOwner(mgr, args, ownerID)
 	case asyncWaitActionList:
-		return h.asyncWaitList(mgr)
+		return h.asyncWaitList(mgr, ownerID)
 	default:
 		return fmt.Sprintf("不支持的 action: %s。支持: check, wait, kill, list", action)
 	}
 }
 
 func (h *IMMessageHandler) asyncWaitCheck(mgr *coretool.LocalBackgroundTaskManager, args map[string]interface{}) string {
+	return h.asyncWaitCheckForOwner(mgr, args, h.currentRuntimePolicyOwnerID())
+}
+
+func (h *IMMessageHandler) asyncWaitCheckForOwner(mgr *coretool.LocalBackgroundTaskManager, args map[string]interface{}, ownerID string) string {
 	taskID := stringVal(args, "task_id")
 	if taskID == "" {
 		return "缺少 task_id 参数"
+	}
+	if err := authorizeLocalBackgroundTaskOwner(mgr, taskID, ownerID); err != nil {
+		return fmt.Sprintf("[error] %v", err)
 	}
 
 	tailLines := asyncWaitDefaultTail
@@ -111,9 +118,9 @@ func (h *IMMessageHandler) asyncWaitCheck(mgr *coretool.LocalBackgroundTaskManag
 		tailLines = int(n)
 	}
 
-	status, err := mgr.Check(taskID, tailLines)
+	status, err := mgr.CheckForOwner(taskID, tailLines, ownerID)
 	if err != nil {
-		return fmt.Sprintf("[错误] %v", err)
+		return fmt.Sprintf("[error] %v%s", err, localBackgroundTaskSnapshotForOwner(mgr, taskID, ownerID))
 	}
 
 	return formatTaskStatus(status)
@@ -127,6 +134,9 @@ func (h *IMMessageHandler) asyncWaitWaitForOwner(mgr *coretool.LocalBackgroundTa
 	taskID := stringVal(args, "task_id")
 	if taskID == "" {
 		return "缺少 task_id 参数"
+	}
+	if err := authorizeLocalBackgroundTaskOwner(mgr, taskID, ownerID); err != nil {
+		return fmt.Sprintf("[error] %v", err)
 	}
 
 	timeout := 60 // default 60s
@@ -154,9 +164,9 @@ func (h *IMMessageHandler) asyncWaitWaitForOwner(mgr *coretool.LocalBackgroundTa
 		defer cancel()
 	}
 
-	status, err := mgr.Wait(ctx, taskID, time.Duration(timeout)*time.Second, tailLines)
+	status, err := mgr.WaitForOwner(ctx, taskID, time.Duration(timeout)*time.Second, tailLines, ownerID)
 	if err != nil {
-		return fmt.Sprintf("[错误] %v", err)
+		return fmt.Sprintf("[error] %v%s", err, localBackgroundTaskSnapshotForOwner(mgr, taskID, ownerID))
 	}
 
 	return formatTaskStatus(status)
@@ -174,36 +184,90 @@ func (h *IMMessageHandler) runtimeLoopContextForOwner(ownerID string) *LoopConte
 }
 
 func (h *IMMessageHandler) asyncWaitKill(mgr *coretool.LocalBackgroundTaskManager, args map[string]interface{}) string {
+	return h.asyncWaitKillForOwner(mgr, args, h.currentRuntimePolicyOwnerID())
+}
+
+func (h *IMMessageHandler) asyncWaitKillForOwner(mgr *coretool.LocalBackgroundTaskManager, args map[string]interface{}, ownerID string) string {
 	taskID := stringVal(args, "task_id")
 	if taskID == "" {
 		return "缺少 task_id 参数"
 	}
+	if err := authorizeLocalBackgroundTaskOwner(mgr, taskID, ownerID); err != nil {
+		return fmt.Sprintf("[error] %v", err)
+	}
 
-	if err := mgr.Kill(taskID); err != nil {
-		return fmt.Sprintf("[错误] %v", err)
+	if err := mgr.KillForOwner(taskID, ownerID); err != nil {
+		return fmt.Sprintf("[error] %v%s", err, localBackgroundTaskSnapshotForOwner(mgr, taskID, ownerID))
 	}
 
 	return fmt.Sprintf("✅ 后台任务 %s 已终止", taskID)
 }
 
-func (h *IMMessageHandler) asyncWaitList(mgr *coretool.LocalBackgroundTaskManager) string {
-	tasks := mgr.List()
+func authorizeLocalBackgroundTaskOwner(mgr *coretool.LocalBackgroundTaskManager, taskID, ownerID string) error {
+	return mgr.AuthorizeTaskOwner(taskID, ownerID)
+}
+
+func (h *IMMessageHandler) asyncWaitList(mgr *coretool.LocalBackgroundTaskManager, ownerID string) string {
+	tasks := mgr.ListForOwner(ownerID)
 	if len(tasks) == 0 {
 		return "当前没有后台任务"
 	}
 
-	var b strings.Builder
-	fmt.Fprintf(&b, "后台任务列表（%d 个）:\n", len(tasks))
+	rows := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		t.Lock()
 		status := t.Status
 		elapsed := time.Since(t.StartedAt).Round(time.Second).String()
 		cmd := truncateCmd(t.Command, 60)
+		taskID := t.TaskID
+		pid := t.PID
 		t.Unlock()
-		fmt.Fprintf(&b, "- %s [%s] PID=%d 已运行=%s 命令=%s\n",
-			t.TaskID, status, t.PID, elapsed, cmd)
+		rows = append(rows, fmt.Sprintf("- %s [%s] PID=%d 已运行=%s 命令=%s\n",
+			taskID, status, pid, elapsed, cmd))
+	}
+	if len(rows) == 0 {
+		return "当前没有后台任务"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "后台任务列表（%d 个）:\n", len(rows))
+	for _, row := range rows {
+		b.WriteString(row)
 	}
 	return b.String()
+}
+
+func localBackgroundTaskSnapshot(mgr *coretool.LocalBackgroundTaskManager, taskID string) string {
+	return localBackgroundTaskSnapshotForOwner(mgr, taskID, "")
+}
+
+func localBackgroundTaskSnapshotForOwner(mgr *coretool.LocalBackgroundTaskManager, taskID, ownerID string) string {
+	if mgr == nil {
+		return ""
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return ""
+	}
+	if err := mgr.AuthorizeTaskOwner(taskID, ownerID); err != nil {
+		return ""
+	}
+	for _, t := range mgr.List() {
+		t.Lock()
+		matches := strings.TrimSpace(t.TaskID) == taskID
+		taskID := t.TaskID
+		status := t.Status
+		pid := t.PID
+		startedAt := t.StartedAt
+		command := t.Command
+		t.Unlock()
+		if !matches {
+			continue
+		}
+		elapsed := time.Since(startedAt).Round(time.Second)
+		return fmt.Sprintf("\n\n--- last known task snapshot ---\ntask_id: %s\nstatus: %s\npid: %d\nelapsed: %s\ncommand: %s",
+			taskID, status, pid, elapsed, truncateRunesMiddle(command, 1200, 1200))
+	}
+	return "\n\n--- last known task snapshot ---\nnot found in local background task registry"
 }
 
 func formatTaskStatus(s *coretool.LocalTaskStatus) string {

@@ -3,7 +3,6 @@ package main
 // LLM HTTP client: OpenAI-compatible and Anthropic Messages API request/response handling.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -89,28 +88,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestWithContext(ctx context.Context,
 		globalLLMScheduler.ObserveResult(trace, err)
 		return resp, err
 	}
-	endpoint, data, err := llm.BuildAnthropicMessagesRequestData(cfg, messages, llm.AnthropicMessagesRequestOptions{Stream: false, Tools: tools})
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(scheduledCtx, http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	req.Header.Set("anthropic-version", "2023-06-01")
-	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
-	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
-
-	resp, err := httpClient.Do(req)
-	globalLLMScheduler.ObserveResult(trace, err)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	parsed, err := llm.ParseNonStreamAnthropicResponse(resp)
+	parsed, err := llm.DoAnthropicRequest(scheduledCtx, cfg, messages, tools, httpClient)
 	globalLLMScheduler.ObserveResult(trace, err)
 	return parsed, err
 }

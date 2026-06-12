@@ -39,6 +39,7 @@ import (
 // RuntimeTaskInfo represents a single background task (local or SSH).
 type RuntimeTaskInfo struct {
 	TaskID    string
+	OwnerID   string
 	Source    runtimeTaskSource
 	Status    runtimeTaskStatus
 	Command   string
@@ -92,8 +93,13 @@ func (h *IMMessageHandler) collectRuntimeStatusForOwner(ownerID string) RuntimeS
 	if h.localBgTaskMgr != nil {
 		for _, t := range h.localBgTaskMgr.List() {
 			t.Lock()
+			if !backgroundTaskOwnerMatches(t.OwnerID, ownerID) {
+				t.Unlock()
+				continue
+			}
 			rs.Tasks = append(rs.Tasks, RuntimeTaskInfo{
 				TaskID:    t.TaskID,
+				OwnerID:   t.OwnerID,
 				Source:    runtimeTaskSourceLocal,
 				Status:    normalizeRuntimeTaskStatus(t.Status),
 				Command:   t.Command,
@@ -108,8 +114,12 @@ func (h *IMMessageHandler) collectRuntimeStatusForOwner(ownerID string) RuntimeS
 	// SSH background tasks.
 	if h.bgTaskMgr != nil {
 		for _, t := range h.bgTaskMgr.ListTasks() {
+			if !backgroundTaskOwnerMatches(t.OwnerID, ownerID) {
+				continue
+			}
 			rs.Tasks = append(rs.Tasks, RuntimeTaskInfo{
 				TaskID:    t.TaskID,
+				OwnerID:   t.OwnerID,
 				Source:    runtimeTaskSourceSSH,
 				Status:    normalizeRuntimeTaskStatus(t.Status),
 				Command:   t.Command,
@@ -191,7 +201,7 @@ func (h *IMMessageHandler) toolAgentStatus(args map[string]interface{}) string {
 
 	// If a specific task_id is provided, do a targeted lookup with log tail.
 	if taskID != "" {
-		return h.agentStatusByTaskID(taskID)
+		return h.agentStatusByTaskID(taskID, ownerID)
 	}
 
 	rs := h.collectRuntimeStatusForOwner(ownerID)
@@ -243,17 +253,17 @@ func (h *IMMessageHandler) toolAgentStatus(args map[string]interface{}) string {
 
 // agentStatusByTaskID looks up a specific task by ID across all managers.
 // Returns detailed status + log tail (not available from collectRuntimeStatus).
-func (h *IMMessageHandler) agentStatusByTaskID(taskID string) string {
+func (h *IMMessageHandler) agentStatusByTaskID(taskID, ownerID string) string {
 	// Try local background tasks first.
 	if h.localBgTaskMgr != nil {
-		if status, err := h.localBgTaskMgr.Check(taskID, 30); err == nil {
+		if status, err := h.localBgTaskMgr.CheckForOwner(taskID, 30, ownerID); err == nil {
 			return formatTaskStatus(status)
 		}
 	}
 
 	// Try SSH background tasks.
 	if h.bgTaskMgr != nil {
-		if status, err := h.bgTaskMgr.CheckTask(taskID, 30); err == nil {
+		if status, err := h.bgTaskMgr.CheckTaskForOwner(taskID, 30, ownerID); err == nil {
 			return formatSSHTaskStatusForBtw(status)
 		}
 	}
@@ -317,7 +327,11 @@ func formatSSHTaskStatusForBtw(s *remote.BackgroundTaskStatus) string {
 	var b strings.Builder
 	icon := normalizeRuntimeTaskStatus(s.Status).Icon()
 	fmt.Fprintf(&b, "%s SSH 任务 %s: %s\n", icon, s.TaskID, s.Status)
-	fmt.Fprintf(&b, "已运行: %s | 日志大小: %s\n", s.Elapsed, s.LogSize)
+	exitCode := "unknown"
+	if s.ExitCodeKnown {
+		exitCode = fmt.Sprintf("%d", s.ExitCode)
+	}
+	fmt.Fprintf(&b, "已运行: %s | exit_code: %s | 日志大小: %s\n", s.Elapsed, exitCode, s.LogSize)
 	if s.LogTail != "" {
 		fmt.Fprintf(&b, "\n--- 日志最后内容 ---\n%s", s.LogTail)
 	}
@@ -418,6 +432,70 @@ func pendingBackgroundTasksFromStatus(rs RuntimeStatus, loopStart time.Time) []R
 		return pending[i].StartedAt.Before(pending[j].StartedAt)
 	})
 	return pending
+}
+
+func (h *IMMessageHandler) hasActiveCommandBackgroundTaskForOwner(ownerID string) bool {
+	if h == nil {
+		return false
+	}
+	if h.localBgTaskMgr != nil {
+		for _, t := range h.localBgTaskMgr.List() {
+			if strings.TrimSpace(t.TaskID) == "" || !isCommandRuntimeTaskRole(t.TaskRole) {
+				continue
+			}
+			if !backgroundTaskOwnerMatches(t.OwnerID, ownerID) {
+				continue
+			}
+			if status, err := h.localBgTaskMgr.Check(t.TaskID, 1); err == nil {
+				if normalizeRuntimeTaskStatus(string(status.Status)).IsActive() {
+					return true
+				}
+				continue
+			}
+			if normalizeRuntimeTaskStatus(string(t.Status)).IsActive() {
+				return true
+			}
+		}
+	}
+	if h.bgTaskMgr != nil {
+		for _, t := range h.bgTaskMgr.ListTasks() {
+			taskID := strings.TrimSpace(t.TaskID)
+			if taskID == "" || !isCommandRuntimeTaskRole(t.TaskRole) {
+				continue
+			}
+			if !backgroundTaskOwnerMatches(t.OwnerID, ownerID) {
+				continue
+			}
+			if !normalizeRuntimeTaskStatus(string(t.Status)).IsActive() {
+				continue
+			}
+			// SSH task lists are cached snapshots. Schedule a bounded refresh so
+			// future decisions converge, but preserve context for this turn unless
+			// a later check proves the task has reached a terminal state.
+			h.bgTaskMgr.RefreshTaskStatusAsyncForOwner(taskID, 1, ownerID)
+			return true
+		}
+	}
+	rs := h.collectRuntimeStatusForOwner(ownerID)
+	if rs.MainAgentRunning {
+		return true
+	}
+	for _, t := range rs.Tasks {
+		if strings.TrimSpace(t.TaskID) == "" {
+			continue
+		}
+		if !isCommandRuntimeTaskRole(t.TaskRole) {
+			continue
+		}
+		if t.Status.IsActive() {
+			return true
+		}
+	}
+	return false
+}
+
+func backgroundTaskOwnerMatches(taskOwnerID, filterOwnerID string) bool {
+	return remote.SSHBackgroundTaskOwnerMatches(taskOwnerID, filterOwnerID)
 }
 
 func isCommandRuntimeTaskRole(role string) bool {

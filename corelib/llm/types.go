@@ -142,6 +142,10 @@ type openAIWireMessage struct {
 	Content          interface{} `json:"content"`
 	ReasoningContent string      `json:"reasoning_content,omitempty"`
 	ToolCalls        []ToolCall  `json:"tool_calls,omitempty"`
+	FunctionCall     *struct {
+		Name      string          `json:"name,omitempty"`
+		Arguments json.RawMessage `json:"arguments,omitempty"`
+	} `json:"function_call,omitempty"`
 }
 
 // TokenCallback is called with each text delta from the LLM streaming response.
@@ -204,6 +208,17 @@ func ParseNonStreamAnthropicResponse(resp *http.Response) (*Response, error) {
 	} else if anthropicResp.StopReason == "max_tokens" {
 		finishReason = "length"
 	}
+	if len(msg.ToolCalls) == 0 {
+		rawContent := strings.Join(textParts, "\n")
+		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
+			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
+			msg.Content = ""
+			finishReason = "tool_calls"
+		} else if malformed {
+			msg.Content = MalformedContentToolCallErrorMsg
+			finishReason = "stop"
+		}
+	}
 
 	return &Response{
 		Choices: []Choice{{Message: msg, FinishReason: finishReason}},
@@ -217,32 +232,34 @@ func normalizeOpenAIMessageContent(raw interface{}) (string, interface{}) {
 		return "", nil
 	case string:
 		return v, v
-	case []interface{}:
-		parts := make([]string, 0, len(v))
-		for _, item := range v {
-			m, ok := item.(map[string]interface{})
-			if !ok {
+	default:
+		items := toInterfaceSlice(v)
+		if len(items) == 0 {
+			b, err := json.Marshal(v)
+			if err != nil {
+				return fmt.Sprintf("%v", v), v
+			}
+			return string(b), v
+		}
+		parts := make([]string, 0, len(items))
+		for _, item := range items {
+			m := toStringInterfaceMap(item)
+			if m == nil {
 				continue
 			}
-			typ, _ := m["type"].(string)
+			typ := stringField(m, "type")
 			switch typ {
 			case "text", "input_text", "output_text":
-				if text, _ := m["text"].(string); text != "" {
+				if text := stringField(m, "text"); text != "" {
 					parts = append(parts, text)
 					continue
 				}
-				if text, _ := m["content"].(string); text != "" {
+				if text := stringField(m, "content"); text != "" {
 					parts = append(parts, text)
 				}
 			}
 		}
 		return strings.Join(parts, "\n"), v
-	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return fmt.Sprintf("%v", v), v
-		}
-		return string(b), v
 	}
 }
 
@@ -254,15 +271,37 @@ func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
 	result.Choices = make([]Choice, 0, len(wire.Choices))
 	for _, choice := range wire.Choices {
 		content, rawContent := normalizeOpenAIMessageContent(choice.Message.Content)
+		msg := Message{
+			Role:             choice.Message.Role,
+			Content:          StripAllExtra(content),
+			ReasoningContent: choice.Message.ReasoningContent,
+			ToolCalls:        choice.Message.ToolCalls,
+			RawContent:       rawContent,
+		}
+		finishReason := choice.FinishReason
+		if finishReason == "function_call" {
+			finishReason = "tool_calls"
+		}
+		if len(msg.ToolCalls) == 0 && choice.Message.FunctionCall != nil {
+			if call, ok := normalizePlainContentToolCallWithID("", "function", choice.Message.FunctionCall.Name, choice.Message.FunctionCall.Arguments); ok {
+				msg.ToolCalls = append(msg.ToolCalls, call)
+				msg.Content = ""
+				finishReason = "tool_calls"
+			}
+		}
+		if len(msg.ToolCalls) == 0 {
+			if contentCalls, malformed := ParseContentToolCallsDetailed(content); len(contentCalls) > 0 {
+				msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
+				msg.Content = ""
+				finishReason = "tool_calls"
+			} else if malformed {
+				msg.Content = MalformedContentToolCallErrorMsg
+				finishReason = "stop"
+			}
+		}
 		result.Choices = append(result.Choices, Choice{
-			Message: Message{
-				Role:             choice.Message.Role,
-				Content:          StripAllExtra(content),
-				ReasoningContent: choice.Message.ReasoningContent,
-				ToolCalls:        choice.Message.ToolCalls,
-				RawContent:       rawContent,
-			},
-			FinishReason: choice.FinishReason,
+			Message:      msg,
+			FinishReason: finishReason,
 		})
 	}
 	return result

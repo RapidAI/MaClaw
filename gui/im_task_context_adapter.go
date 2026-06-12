@@ -116,6 +116,7 @@ func (h *IMMessageHandler) resolveTaskContext(
 		IsConfirmedResume:             isConfirmedResume,
 		HasActiveUnderstandingSession: hasActiveUnderstanding,
 		HasIncompleteTaskMarker:       hasIncompleteTaskMarker(history),
+		HasActiveBackgroundTask:       h.hasActiveCommandBackgroundTaskForOwner(userID),
 		ExplicitNewTask:               explicitNewTask,
 	}
 

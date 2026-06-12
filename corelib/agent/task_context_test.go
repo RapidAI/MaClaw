@@ -85,6 +85,25 @@ func TestResolve_ActiveUnderstandingSession_IsContinue(t *testing.T) {
 	}
 }
 
+func TestResolve_ActiveBackgroundTask_IsContinue(t *testing.T) {
+	llm := &mockLLMClassifier{response: "new"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage:             "please also group these PII types",
+		History:                 []ConversationEntry{{Role: "user", Content: "run GPU84 eval"}, {Role: "assistant", Content: "background task is running"}},
+		HasActiveBackgroundTask: true,
+	})
+	if d.Action != TaskContinue {
+		t.Fatalf("expected TaskContinue for active background task, got %s", d.Action)
+	}
+	if d.Source != "runtime" {
+		t.Fatalf("expected source=runtime, got %s", d.Source)
+	}
+	if llm.calls != 0 {
+		t.Fatalf("active background task should bypass LLM classifier, got %d calls", llm.calls)
+	}
+}
+
 func TestResolve_EmptyHistory_IsNewTask(t *testing.T) {
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), nil)
 	d := mgr.Resolve(ResolveInput{

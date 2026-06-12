@@ -41,6 +41,7 @@ import (
 func newManageSkillHandler(app *TUIApp) func(args map[string]interface{}) string {
 	return func(args map[string]interface{}) string {
 		action, _ := args["action"].(string)
+		action = skill.NormalizeManageSkillAction(action)
 		switch action {
 		case "list":
 			return skillList(app)

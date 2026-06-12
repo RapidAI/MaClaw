@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
@@ -17,33 +18,69 @@ func TestGuiSSEIdleTimeoutIsConservative(t *testing.T) {
 
 func TestClassifyOpenAIHTTPErrorUsesConfiguredProviderName(t *testing.T) {
 	body := []byte(`{"error":{"message":"forbidden","type":"forbidden"}}`)
-	got := classifyOpenAIHTTPError(403, body, "MaClaw官方")
-	if !strings.Contains(got, "MaClaw官方 拒绝访问") {
+	got := classifyOpenAIHTTPError(403, body, "MaClawOfficial")
+	if !strings.Contains(got, "MaClawOfficial") || !strings.Contains(got, "HTTP 403") {
 		t.Fatalf("expected configured provider name in error, got %q", got)
 	}
-	if strings.Contains(got, "OpenAI 拒绝访问") {
+	if strings.Contains(got, "OpenAI") {
 		t.Fatalf("error should not present OpenAI as the provider: %q", got)
+	}
+}
+
+func TestClassifyOpenAIHTTPErrorSurfacesBadRequestMessage(t *testing.T) {
+	body := []byte(`{"error":{"message":"messages[0].role: unknown variant developer","type":"invalid_request_error"}}`)
+	got := classifyOpenAIHTTPError(400, body, "Qwen")
+	if !strings.Contains(got, "Qwen API invalid request (HTTP 400)") {
+		t.Fatalf("expected provider-specific HTTP 400 message, got %q", got)
+	}
+	if !strings.Contains(got, "unknown variant developer") {
+		t.Fatalf("expected upstream error.message to be surfaced, got %q", got)
+	}
+}
+
+func TestClassifyOpenAIHTTPErrorSurfacesTopLevelBadRequestMessage(t *testing.T) {
+	body := []byte(`{"message":"messages[1].role must not be system"}`)
+	got := classifyOpenAIHTTPError(400, body, "Qwen")
+	if !strings.Contains(got, "Qwen API invalid request (HTTP 400)") {
+		t.Fatalf("expected provider-specific HTTP 400 message, got %q", got)
+	}
+	if !strings.Contains(got, "messages[1].role must not be system") {
+		t.Fatalf("expected top-level message to be surfaced, got %q", got)
+	}
+}
+
+func TestSummarizeProviderHTTPErrorMessageTruncatesRunes(t *testing.T) {
+	msg := strings.Repeat("请求参数错误", 80)
+	got := summarizeProviderHTTPErrorMessage(msg)
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected ellipsis, got %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated message is not valid UTF-8: %q", got)
+	}
+	if runeCount := len([]rune(strings.TrimSuffix(got, "..."))); runeCount != 300 {
+		t.Fatalf("truncated rune count = %d, want 300", runeCount)
 	}
 }
 
 func TestClassifyResponsesAPIHTTPErrorUsesConfiguredProviderName(t *testing.T) {
 	body := []byte(`{"error":{"message":"forbidden","type":"forbidden"}}`)
-	got := classifyResponsesAPIHTTPError(403, body, "https://example.test/v1/responses", "gpt-test", "MaClaw官方")
-	if !strings.Contains(got, "MaClaw官方 拒绝访问") {
+	got := classifyResponsesAPIHTTPError(403, body, "https://example.test/v1/responses", "gpt-test", "MaClawOfficial")
+	if !strings.Contains(got, "MaClawOfficial") || !strings.Contains(got, "HTTP 403") {
 		t.Fatalf("expected configured provider name in responses error, got %q", got)
 	}
-	if strings.Contains(got, "OpenAI 拒绝访问") || strings.Contains(got, "ChatGPT") {
+	if strings.Contains(got, "OpenAI") || strings.Contains(got, "ChatGPT") {
 		t.Fatalf("responses error should not present protocol/product names as provider: %q", got)
 	}
 }
 
 func TestClassifyHTTPErrorDoesNotEchoUnknownBody(t *testing.T) {
 	body := []byte(`Browser: SECRET_CLASSIFY_BODY`)
-	openAI := classifyOpenAIHTTPError(418, body, "MaClaw官方")
+	openAI := classifyOpenAIHTTPError(418, body, "MaClawOfficial")
 	if strings.Contains(openAI, "SECRET_CLASSIFY_BODY") || strings.Contains(openAI, "Browser:") {
 		t.Fatalf("OpenAI-compatible error echoed body: %q", openAI)
 	}
-	responses := classifyResponsesAPIHTTPError(418, body, "https://example.test/v1/responses", "gpt-test", "MaClaw官方")
+	responses := classifyResponsesAPIHTTPError(418, body, "https://example.test/v1/responses", "gpt-test", "MaClawOfficial")
 	if strings.Contains(responses, "SECRET_CLASSIFY_BODY") || strings.Contains(responses, "Browser:") {
 		t.Fatalf("Responses API error echoed body: %q", responses)
 	}
@@ -51,57 +88,57 @@ func TestClassifyHTTPErrorDoesNotEchoUnknownBody(t *testing.T) {
 
 func TestClassifyResponsesAPIHTTPErrorReportsHubPeriodLimit(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":90}`)
-	got := classifyResponsesAPIHTTPError(403, body, "https://example.test/v1/responses", "gpt-test", "MaClaw\u5b98\u65b9")
-	if !strings.Contains(got, "\u5468\u671f\u9650\u6d41") || !strings.Contains(got, "2 \u5206\u949f") {
+	got := classifyResponsesAPIHTTPError(403, body, "https://example.test/v1/responses", "gpt-test", "MaClawOfficial")
+	if !strings.Contains(got, "quota is rate-limited") || !strings.Contains(got, "2 分钟") {
 		t.Fatalf("expected period-limit retry message, got %q", got)
 	}
-	if strings.Contains(got, "\u62d2\u7edd\u8bbf\u95ee") || strings.Contains(got, "Responses API") {
+	if strings.Contains(got, "Responses API") || strings.Contains(got, "forbidden") {
 		t.Fatalf("period limit should not be presented as a generic responses error: %q", got)
 	}
 }
 
 func TestClassifyResponsesAPIHTTPErrorParsesStringRetryAfterSeconds(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":"90"}`)
-	got := classifyResponsesAPIHTTPError(403, body, "https://example.test/v1/responses", "gpt-test", "MaClaw\u5b98\u65b9")
-	if !strings.Contains(got, "\u5468\u671f\u9650\u6d41") || !strings.Contains(got, "2 \u5206\u949f") {
+	got := classifyResponsesAPIHTTPError(403, body, "https://example.test/v1/responses", "gpt-test", "MaClawOfficial")
+	if !strings.Contains(got, "quota is rate-limited") || !strings.Contains(got, "2 分钟") {
 		t.Fatalf("expected period-limit retry message from string retry_after_seconds, got %q", got)
 	}
 }
 
 func TestClassifyResponsesAPIHTTPErrorSurfacesTopLevelHubUpstreamRateLimit(t *testing.T) {
-	body := []byte(`{"ok":false,"code":"LLM_UPSTREAM_RATE_LIMITED","message":"官方上游通道限流，请稍后再试"}`)
-	got := classifyResponsesAPIHTTPError(429, body, "https://example.test/v1/responses", "gpt-test", "MaClaw\u5b98\u65b9")
-	if got != "官方上游通道限流，请稍后再试" {
+	body := []byte(`{"ok":false,"code":"LLM_UPSTREAM_RATE_LIMITED","message":"upstream limited"}`)
+	got := classifyResponsesAPIHTTPError(429, body, "https://example.test/v1/responses", "gpt-test", "MaClawOfficial")
+	if got != "upstream limited" {
 		t.Fatalf("expected top-level upstream rate-limit message, got %q", got)
 	}
-	if strings.Contains(got, "订阅额度") || strings.Contains(got, "Responses API") {
+	if strings.Contains(got, "Responses API") {
 		t.Fatalf("upstream rate limit should not be presented as a generic responses error: %q", got)
 	}
 }
 
 func TestClassifyOpenAICompatibleHTTPErrorUsesConfiguredProviderName(t *testing.T) {
-	got, ok := classifyOpenAICompatibleHTTPError(errors.New("[https://example.test/v1/chat/completions] HTTP 403: forbidden"), "MaClaw官方")
+	got, ok := classifyOpenAICompatibleHTTPError(errors.New("[https://example.test/v1/chat/completions] HTTP 403: forbidden"), "MaClawOfficial")
 	if !ok {
 		t.Fatal("expected HTTP error to be classified")
 	}
-	if !strings.Contains(got, "MaClaw官方 拒绝访问") {
+	if !strings.Contains(got, "MaClawOfficial") || !strings.Contains(got, "HTTP 403") {
 		t.Fatalf("expected configured provider name in normalized error, got %q", got)
 	}
-	if strings.Contains(got, "OpenAI 拒绝访问") {
+	if strings.Contains(got, "OpenAI") {
 		t.Fatalf("normalized error should not present OpenAI as the provider: %q", got)
 	}
 }
 
 func TestClassifyOpenAICompatibleHTTPErrorUsesStructuredBody(t *testing.T) {
 	err := &llm.HTTPStatusError{StatusCode: 429, Body: []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"limit","retry_after_seconds":90}`)}
-	got, ok := classifyOpenAICompatibleHTTPError(err, "MaClaw\u5b98\u65b9")
+	got, ok := classifyOpenAICompatibleHTTPError(err, "MaClawOfficial")
 	if !ok {
 		t.Fatal("expected structured HTTP error to be classified")
 	}
-	if !strings.Contains(got, "\u5468\u671f\u9650\u6d41") || !strings.Contains(got, "2 \u5206\u949f") {
+	if !strings.Contains(got, "quota is rate-limited") || !strings.Contains(got, "2 分钟") {
 		t.Fatalf("expected hub period-limit message from structured body, got %q", got)
 	}
-	if strings.Contains(got, "body_len") || strings.Contains(got, "limit") {
+	if strings.Contains(got, "body_len") || strings.Contains(got, `"message":"limit"`) {
 		t.Fatalf("structured body should inform classification without being echoed: %q", got)
 	}
 }
@@ -128,52 +165,52 @@ func TestIsLLMHTTPStatusErrorUsesStructuredStatus(t *testing.T) {
 
 func TestClassifyOpenAIHTTPErrorReportsHubPeriodLimit(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":90,"retry_after_at":"2026-05-05T06:00:00Z"}`)
-	got := classifyOpenAIHTTPError(403, body, "MaClaw官方")
-	if !strings.Contains(got, "周期限流") || !strings.Contains(got, "2 分钟") {
+	got := classifyOpenAIHTTPError(403, body, "MaClawOfficial")
+	if !strings.Contains(got, "quota is rate-limited") || !strings.Contains(got, "2 分钟") {
 		t.Fatalf("expected period-limit retry message, got %q", got)
 	}
-	if strings.Contains(got, "拒绝访问") || strings.Contains(got, "LLM 服务") {
+	if strings.Contains(got, "forbidden") || strings.Contains(got, "rate_limit") {
 		t.Fatalf("period limit should not be presented as a generic service error: %q", got)
 	}
 }
 
 func TestClassifyOpenAIHTTPErrorReportsHubPeriodLimitFromHTTP429(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":90}`)
-	got := classifyOpenAIHTTPError(429, body, "MaClaw官方")
-	if !strings.Contains(got, "周期限流") || !strings.Contains(got, "2 分钟") {
+	got := classifyOpenAIHTTPError(429, body, "MaClawOfficial")
+	if !strings.Contains(got, "quota is rate-limited") || !strings.Contains(got, "2 分钟") {
 		t.Fatalf("expected period-limit retry message from HTTP 429, got %q", got)
 	}
-	if strings.Contains(got, "请求频率") || strings.Contains(got, "rate_limit") {
+	if strings.Contains(got, "rate_limit") {
 		t.Fatalf("period limit should not be presented as generic provider rate limit: %q", got)
 	}
 }
 
 func TestClassifyOpenAIHTTPErrorSurfacesTopLevelHubUpstreamAuthFailure(t *testing.T) {
-	body := []byte(`{"ok":false,"code":"LLM_UPSTREAM_AUTH_FAILED","message":"官方上游服务认证失败，请联系管理员检查服务商配置"}`)
-	got := classifyOpenAIHTTPError(502, body, "MaClaw官方")
-	if got != "官方上游服务认证失败，请联系管理员检查服务商配置" {
+	body := []byte(`{"ok":false,"code":"LLM_UPSTREAM_AUTH_FAILED","message":"upstream auth failed"}`)
+	got := classifyOpenAIHTTPError(502, body, "MaClawOfficial")
+	if got != "upstream auth failed" {
 		t.Fatalf("expected top-level upstream auth message, got %q", got)
 	}
-	if strings.Contains(got, "网关错误") || strings.Contains(got, "HTTP 502") {
+	if strings.Contains(got, "HTTP 502") {
 		t.Fatalf("upstream auth failure should not be presented as generic gateway error: %q", got)
 	}
 }
 
 func TestClassifyOpenAIHTTPErrorReportsHubCreditsExhausted(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_CREDITS_EXHAUSTED","message":"selected model grant credits are exhausted"}`)
-	got := classifyOpenAIHTTPError(403, body, "MaClaw官方")
-	if !strings.Contains(got, "额度已用尽") {
+	got := classifyOpenAIHTTPError(403, body, "MaClawOfficial")
+	if !strings.Contains(got, "credits are exhausted") {
 		t.Fatalf("expected credits exhausted message, got %q", got)
 	}
 }
 
 func TestClassifyOpenAIHTTPErrorReportsHubQueuedGrant(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_GRANT_QUEUED","message":"selected model grant is not active yet","retry_after_seconds":7200}`)
-	got := classifyOpenAIHTTPError(403, body, "MaClaw官方")
-	if !strings.Contains(got, "授权尚未生效") || !strings.Contains(got, "2 小时") {
+	got := classifyOpenAIHTTPError(403, body, "MaClawOfficial")
+	if !strings.Contains(got, "grant is not active yet") || !strings.Contains(got, "2 小时") {
 		t.Fatalf("expected queued grant retry message, got %q", got)
 	}
-	if strings.Contains(got, "授权已过期") || strings.Contains(got, "拒绝访问") {
+	if strings.Contains(got, "expired") || strings.Contains(got, "forbidden") {
 		t.Fatalf("queued grant should not be presented as expired or forbidden: %q", got)
 	}
 }
@@ -255,7 +292,7 @@ func TestThinkFilter_TrailingWhitespace(t *testing.T) {
 }
 
 func TestThinkFilter_PartialOpenNeverCompleted(t *testing.T) {
-	// "<thi" at end of stream is not a real tag — should be emitted
+	// "<thi" at end of stream is not a real tag 閳?should be emitted
 	var out strings.Builder
 	tf := newThinkFilter(func(s string) { out.WriteString(s) })
 	tf.Write("hello <thi")
@@ -323,21 +360,21 @@ func TestFuncCallFilter_FullBlock(t *testing.T) {
 func TestFuncCallFilter_TextAfterBlock(t *testing.T) {
 	var out strings.Builder
 	f := newFuncCallFilter(func(s string) { out.WriteString(s) })
-	f.Write(`<|FunctionCallBegin|>stuff<|FunctionCallEnd|>继续`)
+	f.Write(`<|FunctionCallBegin|>stuff<|FunctionCallEnd|>after`)
 	f.Flush()
-	if got := out.String(); got != "继续" {
-		t.Errorf("expected %q, got %q", "继续", got)
+	if got := out.String(); got != "after" {
+		t.Errorf("expected %q, got %q", "after", got)
 	}
 }
 
 func TestFuncCallFilter_SplitAcrossChunks(t *testing.T) {
 	var out strings.Builder
 	f := newFuncCallFilter(func(s string) { out.WriteString(s) })
-	f.Write("好的<|FunctionCall")
-	f.Write("Begin|>中间<|FunctionCallEnd|>后面")
+	f.Write("before<|FunctionCall")
+	f.Write("Begin|>hidden<|FunctionCallEnd|>after")
 	f.Flush()
-	if got := out.String(); got != "好的后面" {
-		t.Errorf("expected %q, got %q", "好的后面", got)
+	if got := out.String(); got != "beforeafter" {
+		t.Errorf("expected %q, got %q", "beforeafter", got)
 	}
 }
 
@@ -348,6 +385,67 @@ func TestFuncCallFilter_NoMarkers(t *testing.T) {
 	f.Flush()
 	if got := out.String(); got != "normal text" {
 		t.Errorf("expected %q, got %q", "normal text", got)
+	}
+}
+
+func TestToolCallFilter_CodexBlockSplitAcrossChunks(t *testing.T) {
+	var out strings.Builder
+	f := newToolCallFilter(func(s string) { out.WriteString(s) })
+	f.Write("before<turn: tool")
+	f.Write(`_call><invoke name="bash"><parameter name="command">dir</parameter></invoke></turn>after`)
+	f.Flush()
+	if got := out.String(); got != "beforeafter" {
+		t.Errorf("expected %q, got %q", "beforeafter", got)
+	}
+}
+
+func TestToolCallFilter_PlainToolCallSuppressesJSON(t *testing.T) {
+	var out strings.Builder
+	f := newToolCallFilter(func(s string) { out.WriteString(s) })
+	f.Write("步骤1：查看磁盘\nTOOL")
+	f.Write(`_CALL
+{
+  "function": "ssh_execute_command",
+  "args": {"host":"example.com","password":"<redacted>","command":"df -h"}
+}`)
+	f.Flush()
+	if got := out.String(); got != "步骤1：查看磁盘\n" {
+		t.Errorf("expected visible prefix only, got %q", got)
+	}
+}
+
+func TestToolCallFilter_BareJSONToolCallsSuppressesJSON(t *testing.T) {
+	var out strings.Builder
+	f := newToolCallFilter(func(s string) { out.WriteString(s) })
+	f.Write(`{"tool_calls":[{"function":{"name":"bash",`)
+	f.Write(`"arguments":"{\"command\":\"dir\"}"}}]}`)
+	f.Flush()
+	if got := out.String(); got != "" {
+		t.Errorf("expected bare JSON tool call to be suppressed, got %q", got)
+	}
+}
+
+func TestToolCallFilter_BareJSONLegacyFunctionCallSuppressesJSON(t *testing.T) {
+	var out strings.Builder
+	f := newToolCallFilter(func(s string) { out.WriteString(s) })
+	f.Write(`{"function_call":{"name":"bash",`)
+	f.Write(`"arguments":"{\"command\":\"dir\"}"}}`)
+	f.Flush()
+	if got := out.String(); got != "" {
+		t.Errorf("expected bare JSON function_call to be suppressed, got %q", got)
+	}
+}
+
+func TestToolCallFilter_BareJSONAllowsOrdinaryJSON(t *testing.T) {
+	var out strings.Builder
+	f := newToolCallFilter(func(s string) { out.WriteString(s) })
+	f.Write(`{"name":"Alice","city":"Beijing"}`)
+	if got := out.String(); got != "" {
+		t.Errorf("expected ordinary JSON to buffer until flush, got %q", got)
+	}
+	f.Flush()
+	if got := out.String(); got != `{"name":"Alice","city":"Beijing"}` {
+		t.Errorf("expected ordinary JSON to pass through, got %q", got)
 	}
 }
 
@@ -362,15 +460,15 @@ func TestFuncCallFilter_MultipleBlocks(t *testing.T) {
 }
 
 func TestFuncCallFilter_CharByChar(t *testing.T) {
-	input := "前<|FunctionCallBegin|>中<|FunctionCallEnd|>后"
+	input := "before<|FunctionCallBegin|>hidden<|FunctionCallEnd|>after"
 	var out strings.Builder
 	f := newFuncCallFilter(func(s string) { out.WriteString(s) })
 	for _, c := range input {
 		f.Write(string(c))
 	}
 	f.Flush()
-	if got := out.String(); got != "前后" {
-		t.Errorf("expected %q, got %q", "前后", got)
+	if got := out.String(); got != "beforeafter" {
+		t.Errorf("expected %q, got %q", "beforeafter", got)
 	}
 }
 
@@ -379,7 +477,7 @@ func TestStripFunctionCalls(t *testing.T) {
 		input, want string
 	}{
 		{"hello world", "hello world"},
-		{`好的<|FunctionCallBegin|>[{"name":"x"}]<|FunctionCallEnd|>`, "好的"},
+		{`before<|FunctionCallBegin|>[{"name":"x"}]<|FunctionCallEnd|>`, "before"},
 		{`a<|FunctionCallBegin|>x<|FunctionCallEnd|>b<|FunctionCallBegin|>y<|FunctionCallEnd|>c`, "abc"},
 	}
 	for _, tt := range tests {
@@ -391,14 +489,13 @@ func TestStripFunctionCalls(t *testing.T) {
 }
 
 func TestThinkAndFuncCallFilterChained(t *testing.T) {
-	// Simulate the real chain: thinkFilter -> funcCallFilter -> output
 	var out strings.Builder
 	fcf := newFuncCallFilter(func(s string) { out.WriteString(s) })
 	tf := newThinkFilter(func(s string) { fcf.Write(s) })
-	tf.Write("<think>reasoning</think>好的<|FunctionCallBegin|>call<|FunctionCallEnd|>结果")
+	tf.Write("<think>reasoning</think>before<|FunctionCallBegin|>call<|FunctionCallEnd|>after")
 	tf.Flush()
 	fcf.Flush()
-	if got := out.String(); got != "好的结果" {
-		t.Errorf("expected %q, got %q", "好的结果", got)
+	if got := out.String(); got != "beforeafter" {
+		t.Errorf("expected %q, got %q", "beforeafter", got)
 	}
 }

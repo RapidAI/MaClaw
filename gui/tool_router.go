@@ -110,6 +110,12 @@ func (r *ToolRouter) IsSessionPinned(name string) bool {
 	return r.inner.IsSessionPinned(name)
 }
 
+// SessionPinnedToolsMissing returns session-pinned tool names that are NOT
+// in the provided currentNames set.
+func (r *ToolRouter) SessionPinnedToolsMissing(currentNames map[string]bool) []string {
+	return r.inner.SessionPinnedToolsMissing(currentNames)
+}
+
 // ResetSession delegates to corelib/tool.Router.ResetSession.
 func (r *ToolRouter) ResetSession() {
 	r.inner.ResetSession()

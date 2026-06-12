@@ -372,6 +372,9 @@ func (a *App) sendVEAttachmentMessage(sessionID string, content string, filePath
 		}
 		remoteMsg.ToIDs = targets.RemoteToIDs
 
+		if err := a.sendVEA2AMessage(sessionID, remoteMsg); err != nil {
+			return err
+		}
 		if !a.tryLocalExecutorDispatch(sessionID, localMsg) {
 			if _, err := a.RegisterLocalExecutorInGroup(sessionID); err != nil {
 				return fmt.Errorf("local AI is not ready in this group: %w", err)
@@ -380,7 +383,7 @@ func (a *App) sendVEAttachmentMessage(sessionID string, content string, filePath
 				return fmt.Errorf("local AI is not ready in this group; please add it again")
 			}
 		}
-		return a.sendVEA2AMessage(sessionID, remoteMsg)
+		return nil
 	}
 
 	if targets.Explicit && len(targets.RemoteToIDs) > 0 && !targets.Local {

@@ -116,7 +116,7 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
                 <input
                     type="checkbox"
                     aria-label={textForLang(lang, 'Enable Workflow', '\u6253\u5f00\u5de5\u4f5c\u6d41', '\u958b\u555f\u5de5\u4f5c\u6d41')}
-                    checked={effectiveConfig?.workflow_enabled !== false}
+                    checked={effectiveConfig?.workflow_enabled === true}
                     onChange={(e) => saveConfigPatch({ workflow_enabled: e.target.checked })}
                 />
                 <span>{textForLang(lang, 'Enable Workflow', '\u6253\u5f00\u5de5\u4f5c\u6d41', '\u958b\u555f\u5de5\u4f5c\u6d41')}</span>

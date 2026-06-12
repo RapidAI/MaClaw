@@ -428,7 +428,7 @@ func TestExecuteAgentLoopDelegateTaskRejectsWhenClassifierUnavailable(t *testing
 }
 
 func TestExecuteAgentLoopDelegateTaskRejectsDegradedCodingIntent(t *testing.T) {
-	result := GateIntentResult{Intent: GateIntentBugFix, Confidence: 0.95, Layer: 2, Degraded: true, Reason: "embedding-only fallback"}
+	result := intent.ClassificationResult{Primary: intent.LabelBugFix, Confidence: 0.95, Layer: 3, Degraded: true, Reason: "embedding-only fallback"}
 
 	if isSemanticCodingWorkflowDelegateResult(result) {
 		t.Fatal("degraded coding intent must not be enough to run CodingSubAgent")

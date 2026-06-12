@@ -12,18 +12,21 @@ export function renderScreenshotPreview(
             src={`data:image/png;base64,${screenshotBase64}`}
             alt="screenshot"
             style={{
-                maxWidth: "180px",
+                width: "180px",
+                maxWidth: "100%",
                 maxHeight: "120px",
                 borderRadius: "4px",
                 border: `1px solid ${t.borderLeft}`,
+                boxSizing: "border-box",
+                display: "block",
                 objectFit: "contain",
             }}
         />
     );
     return (
-        <div style={{ margin: "4px 0 6px 0" }}>
+        <div data-testid="screenshot-preview-block" style={{ margin: "4px 0 6px 0", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", overflow: "hidden" }}>
             {localFilePath ? (
-                <a href="#" onClick={(event) => openFile(event, localFilePath)} style={{ display: "inline-block", cursor: "pointer" }} title={localFilePath}>
+                <a href="#" onClick={(event) => openFile(event, localFilePath)} style={{ display: "inline-block", maxWidth: "100%", cursor: "pointer" }} title={localFilePath}>
                     {image}
                 </a>
             ) : image}

@@ -32,25 +32,25 @@ const TYPE_STYLES: Record<ToastType, { bg: string; color: string; border: string
         bg: 'var(--theme-success-bg, rgba(79, 127, 111, 0.10))',
         color: 'var(--theme-success, #4f7f6f)',
         border: 'var(--theme-success, #4f7f6f)',
-        icon: '✓',
+        icon: 'OK',
     },
     error: {
         bg: 'var(--theme-danger-bg, #fbf1f0)',
-        color: 'var(--theme-danger, #b42318)',
-        border: 'var(--theme-danger, #b42318)',
-        icon: '✕',
+        color: 'var(--theme-danger, #c43d34)',
+        border: 'var(--theme-danger, #c43d34)',
+        icon: 'ERR',
     },
     warning: {
         bg: 'var(--theme-warning-bg, #f8fafc)',
         color: 'var(--theme-warning, #64748b)',
         border: 'var(--theme-warning, #64748b)',
-        icon: '⚠',
+        icon: 'WARN',
     },
     info: {
         bg: 'var(--theme-info-bg, #f3f7fb)',
         color: 'var(--theme-primary, #2f5f98)',
         border: 'var(--theme-primary, #2f5f98)',
-        icon: 'ℹ',
+        icon: 'INFO',
     },
 };
 

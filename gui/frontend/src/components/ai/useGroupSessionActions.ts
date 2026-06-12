@@ -169,7 +169,8 @@ export function useGroupSessionActions(options: UseGroupSessionActionsOptions = 
             return { success: false, available: [], sessionId };
         }
         try {
-            const employees = await listFn();
+            const rawEmployees = await listFn();
+            const employees = Array.isArray(rawEmployees) ? rawEmployees : [];
             const currentIds = participantIdentitySet(ctx.participants);
             const available: AvailableVE[] = (employees || [])
                 .filter((ve: any) => {

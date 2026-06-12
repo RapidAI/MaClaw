@@ -2,7 +2,10 @@ package remote
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -12,18 +15,50 @@ import (
 
 // SSHBackgroundTask 表示一个在远程服务器上通过 nohup 运行的后台任务。
 type SSHBackgroundTask struct {
-	mu        sync.Mutex
-	TaskID    string                  `json:"task_id"`
-	SessionID string                  `json:"session_id"`
-	Command   string                  `json:"command"`
-	TaskRole  string                  `json:"task_role,omitempty"`
-	LogFile   string                  `json:"log_file"`
-	PIDFile   string                  `json:"pid_file"`
-	Status    SSHBackgroundTaskStatus `json:"status"` // pending, running, completed, failed, unknown
-	PID       string                  `json:"pid,omitempty"`
-	StartedAt time.Time               `json:"started_at"`
-	LastCheck time.Time               `json:"last_check,omitempty"`
-	Reused    bool                    `json:"-"` // transient: Submit 返回已有任务而非新建时为 true
+	mu         sync.Mutex
+	TaskID     string                  `json:"task_id"`
+	OwnerID    string                  `json:"owner_id,omitempty"`
+	SessionID  string                  `json:"session_id"`
+	Command    string                  `json:"command"`
+	TaskRole   string                  `json:"task_role,omitempty"`
+	LogFile    string                  `json:"log_file"`
+	PIDFile    string                  `json:"pid_file"`
+	MirrorFile string                  `json:"mirror_file,omitempty"`
+	Status     SSHBackgroundTaskStatus `json:"status"` // pending, running, completed, failed, unknown
+	PID        string                  `json:"pid,omitempty"`
+	StartedAt  time.Time               `json:"started_at"`
+	LastCheck  time.Time               `json:"last_check,omitempty"`
+	Reused     bool                    `json:"-"` // transient: Submit 返回已有任务而非新建时为 true
+}
+
+func (m *SSHBackgroundTaskManager) findDuplicateActiveTaskForOwner(command, ownerID string) *SSHBackgroundTask {
+	normalized := normalizeCommandForDedup(command)
+	if normalized == "" {
+		return nil
+	}
+	ownerID = strings.TrimSpace(ownerID)
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, t := range m.tasks {
+		t.mu.Lock()
+		status := t.Status
+		taskOwnerID := strings.TrimSpace(t.OwnerID)
+		existingCmd := t.Command
+		t.mu.Unlock()
+
+		if !status.IsActive() {
+			continue
+		}
+		if ownerID != "" && taskOwnerID != "" && taskOwnerID != ownerID {
+			continue
+		}
+		if existingCmd == command || normalizeCommandForDedup(existingCmd) == normalized {
+			return t
+		}
+	}
+	return nil
 }
 
 // SSHBackgroundTaskManager 管理远程后台任务的生命周期。
@@ -39,6 +74,7 @@ type SSHBackgroundTaskManager struct {
 	refreshing map[string]struct{}
 	sshMgr     *SSHSessionManager
 	counter    int
+	mirrorDir  string
 
 	// 持久化相关字段
 	persistDir  string        // 持久化目录（空则不持久化）
@@ -55,6 +91,28 @@ func NewSSHBackgroundTaskManager(sshMgr *SSHSessionManager) *SSHBackgroundTaskMa
 	}
 }
 
+func (m *SSHBackgroundTaskManager) SetMirrorDir(dir string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.mirrorDir = strings.TrimSpace(dir)
+	m.mu.Unlock()
+}
+
+func (m *SSHBackgroundTaskManager) localMirrorFile(taskID string) string {
+	if m == nil {
+		return ""
+	}
+	m.mu.RLock()
+	dir := m.mirrorDir
+	m.mu.RUnlock()
+	if strings.TrimSpace(dir) == "" || strings.TrimSpace(taskID) == "" {
+		return ""
+	}
+	return filepath.Join(dir, taskID+".log")
+}
+
 // Submit 提交一个后台任务。
 // 命令会被包装为: nohup bash -c '<command>' > <logfile> 2>&1 & echo $! > <pidfile>
 //
@@ -68,15 +126,20 @@ func (m *SSHBackgroundTaskManager) Submit(sessionID, command string) (*SSHBackgr
 }
 
 func (m *SSHBackgroundTaskManager) SubmitWithRole(sessionID, command, role string) (*SSHBackgroundTask, error) {
+	return m.SubmitWithOwner(sessionID, command, role, "")
+}
+
+func (m *SSHBackgroundTaskManager) SubmitWithOwner(sessionID, command, role, ownerID string) (*SSHBackgroundTask, error) {
 	session, ok := m.sshMgr.Get(sessionID)
 	if !ok {
 		return nil, fmt.Errorf("ssh session %s not found", sessionID)
 	}
 	role = normalizeSSHBackgroundTaskRole(role, command)
+	ownerID = strings.TrimSpace(ownerID)
 
 	// 去重检查：如果已有相同（或高度相似）命令的 active 任务正在运行，
 	// 直接返回已有任务而非创建重复。这是防止 LLM 重复提交的最终防线。
-	if existing := m.findDuplicateActiveTask(command); existing != nil {
+	if existing := m.findDuplicateActiveTaskForOwner(command, ownerID); existing != nil {
 		existing.mu.Lock()
 		existing.Reused = true
 		existing.mu.Unlock()
@@ -119,6 +182,7 @@ func (m *SSHBackgroundTaskManager) SubmitWithRole(sessionID, command, role strin
 
 	logFile := fmt.Sprintf("/tmp/maclaw_bg_%s.log", taskID)
 	pidFile := fmt.Sprintf("/tmp/maclaw_bg_%s.pid", taskID)
+	mirrorFile := m.localMirrorFile(taskID)
 
 	// 构建后台执行命令：
 	// 写一个临时脚本到远程，然后 nohup 执行它。
@@ -156,15 +220,17 @@ func (m *SSHBackgroundTaskManager) SubmitWithRole(sessionID, command, role strin
 	pid := extractPID(newLines)
 
 	task := &SSHBackgroundTask{
-		TaskID:    taskID,
-		SessionID: sessionID,
-		Command:   command,
-		TaskRole:  role,
-		LogFile:   logFile,
-		PIDFile:   pidFile,
-		Status:    SSHBackgroundTaskStatusRunning,
-		PID:       pid,
-		StartedAt: time.Now(),
+		TaskID:     taskID,
+		OwnerID:    ownerID,
+		SessionID:  sessionID,
+		Command:    command,
+		TaskRole:   role,
+		LogFile:    logFile,
+		PIDFile:    pidFile,
+		MirrorFile: mirrorFile,
+		Status:     SSHBackgroundTaskStatusRunning,
+		PID:        pid,
+		StartedAt:  time.Now(),
 	}
 
 	m.mu.Lock()
@@ -242,10 +308,12 @@ func (m *SSHBackgroundTaskManager) CheckTask(taskID string, tailLines int) (*Bac
 
 	result := parseCheckOutput(newLines)
 	result.TaskID = taskID
+	result.OwnerID = task.OwnerID
 	result.Command = task.Command
 	result.TaskRole = task.TaskRole
 	result.StartedAt = task.StartedAt
 	result.Elapsed = time.Since(task.StartedAt).Round(time.Second).String()
+	result.MirrorFile = task.MirrorFile
 
 	// 更新任务状态
 	task.mu.Lock()
@@ -263,8 +331,10 @@ func (m *SSHBackgroundTaskManager) CheckTask(taskID string, tailLines int) (*Bac
 		}
 	}
 	result.Status = task.Status
+	result.MirrorFile = task.MirrorFile
 	task.mu.Unlock()
 
+	m.writeTaskMirror(result)
 	m.signalPersist()
 
 	return result, nil
@@ -278,16 +348,18 @@ func (m *SSHBackgroundTaskManager) ListTasks() []*SSHBackgroundTask {
 	for _, t := range m.tasks {
 		t.mu.Lock()
 		snapshot := &SSHBackgroundTask{
-			TaskID:    t.TaskID,
-			SessionID: t.SessionID,
-			Command:   t.Command,
-			TaskRole:  t.TaskRole,
-			LogFile:   t.LogFile,
-			PIDFile:   t.PIDFile,
-			Status:    t.Status,
-			PID:       t.PID,
-			StartedAt: t.StartedAt,
-			LastCheck: t.LastCheck,
+			TaskID:     t.TaskID,
+			OwnerID:    t.OwnerID,
+			SessionID:  t.SessionID,
+			Command:    t.Command,
+			TaskRole:   t.TaskRole,
+			LogFile:    t.LogFile,
+			PIDFile:    t.PIDFile,
+			MirrorFile: t.MirrorFile,
+			Status:     t.Status,
+			PID:        t.PID,
+			StartedAt:  t.StartedAt,
+			LastCheck:  t.LastCheck,
 		}
 		t.mu.Unlock()
 		result = append(result, snapshot)
@@ -295,10 +367,70 @@ func (m *SSHBackgroundTaskManager) ListTasks() []*SSHBackgroundTask {
 	return result
 }
 
+func SSHBackgroundTaskOwnerMatches(taskOwnerID, filterOwnerID string) bool {
+	taskOwnerID = strings.TrimSpace(taskOwnerID)
+	filterOwnerID = strings.TrimSpace(filterOwnerID)
+	if filterOwnerID == "" || taskOwnerID == "" {
+		return true
+	}
+	return taskOwnerID == filterOwnerID
+}
+
+func (m *SSHBackgroundTaskManager) AuthorizeTaskOwner(taskID, ownerID string) error {
+	if m == nil {
+		return fmt.Errorf("background task manager is not initialized")
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return fmt.Errorf("task_id is required")
+	}
+	m.mu.RLock()
+	task, ok := m.tasks[taskID]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+	task.mu.Lock()
+	taskOwnerID := task.OwnerID
+	task.mu.Unlock()
+	if !SSHBackgroundTaskOwnerMatches(taskOwnerID, ownerID) {
+		return fmt.Errorf("task %s belongs to another runtime owner", taskID)
+	}
+	return nil
+}
+
+func (m *SSHBackgroundTaskManager) ListTasksForOwner(ownerID string) []*SSHBackgroundTask {
+	if m == nil {
+		return nil
+	}
+	tasks := m.ListTasks()
+	if strings.TrimSpace(ownerID) == "" {
+		return tasks
+	}
+	filtered := make([]*SSHBackgroundTask, 0, len(tasks))
+	for _, task := range tasks {
+		if SSHBackgroundTaskOwnerMatches(task.OwnerID, ownerID) {
+			filtered = append(filtered, task)
+		}
+	}
+	return filtered
+}
+
+func (m *SSHBackgroundTaskManager) CheckTaskForOwner(taskID string, tailLines int, ownerID string) (*BackgroundTaskStatus, error) {
+	if err := m.AuthorizeTaskOwner(taskID, ownerID); err != nil {
+		return nil, err
+	}
+	return m.CheckTask(taskID, tailLines)
+}
+
 // RefreshTaskStatusAsync schedules a bounded background status refresh for a
 // task. It is used by UI status surfaces so task counts eventually converge
 // after remote processes exit without making list calls block on SSH output.
 func (m *SSHBackgroundTaskManager) RefreshTaskStatusAsync(taskID string, tailLines int) bool {
+	return m.RefreshTaskStatusAsyncForOwner(taskID, tailLines, "")
+}
+
+func (m *SSHBackgroundTaskManager) RefreshTaskStatusAsyncForOwner(taskID string, tailLines int, ownerID string) bool {
 	taskID = strings.TrimSpace(taskID)
 	if m == nil || m.sshMgr == nil || taskID == "" {
 		return false
@@ -309,6 +441,13 @@ func (m *SSHBackgroundTaskManager) RefreshTaskStatusAsync(taskID string, tailLin
 	}
 	task, ok := m.tasks[taskID]
 	if !ok {
+		m.mu.Unlock()
+		return false
+	}
+	task.mu.Lock()
+	taskOwnerID := task.OwnerID
+	task.mu.Unlock()
+	if !SSHBackgroundTaskOwnerMatches(taskOwnerID, ownerID) {
 		m.mu.Unlock()
 		return false
 	}
@@ -328,7 +467,7 @@ func (m *SSHBackgroundTaskManager) RefreshTaskStatusAsync(taskID string, tailLin
 			delete(m.refreshing, taskID)
 			m.mu.Unlock()
 		}()
-		_, _ = m.CheckTask(taskID, tailLines)
+		_, _ = m.CheckTaskForOwner(taskID, tailLines, ownerID)
 	}()
 	return true
 }
@@ -375,17 +514,28 @@ func (m *SSHBackgroundTaskManager) KillTask(taskID string) error {
 	return nil
 }
 
+func (m *SSHBackgroundTaskManager) KillTaskForOwner(taskID, ownerID string) error {
+	if err := m.AuthorizeTaskOwner(taskID, ownerID); err != nil {
+		return err
+	}
+	return m.KillTask(taskID)
+}
+
 // BackgroundTaskStatus 是 CheckTask 的返回结果。
 type BackgroundTaskStatus struct {
-	TaskID    string                  `json:"task_id"`
-	Command   string                  `json:"command"`
-	TaskRole  string                  `json:"task_role,omitempty"`
-	Status    SSHBackgroundTaskStatus `json:"status"`
-	IsAlive   bool                    `json:"is_alive"`
-	LogTail   string                  `json:"log_tail"`
-	LogSize   string                  `json:"log_size"`
-	StartedAt time.Time               `json:"started_at"`
-	Elapsed   string                  `json:"elapsed"`
+	TaskID        string                  `json:"task_id"`
+	OwnerID       string                  `json:"owner_id,omitempty"`
+	Command       string                  `json:"command"`
+	TaskRole      string                  `json:"task_role,omitempty"`
+	Status        SSHBackgroundTaskStatus `json:"status"`
+	IsAlive       bool                    `json:"is_alive"`
+	ExitCode      int                     `json:"exit_code,omitempty"`
+	ExitCodeKnown bool                    `json:"exit_code_known,omitempty"`
+	MirrorFile    string                  `json:"mirror_file,omitempty"`
+	LogTail       string                  `json:"log_tail"`
+	LogSize       string                  `json:"log_size"`
+	StartedAt     time.Time               `json:"started_at"`
+	Elapsed       string                  `json:"elapsed"`
 }
 
 func normalizeSSHBackgroundTaskRole(role, command string) string {
@@ -485,7 +635,53 @@ func parseCheckOutput(lines []string) *BackgroundTaskStatus {
 	}
 
 	result.LogTail = strings.Join(logLines, "\n")
+	result.ExitCode, result.ExitCodeKnown = parseBackgroundTaskExitCodeKnown(result.LogTail)
 	return result
+}
+
+var backgroundTaskExitCodeRe = regexp.MustCompile(`(?m)^EXIT:\s*(-?\d+)\s*$`)
+
+func parseBackgroundTaskExitCode(logTail string) int {
+	code, _ := parseBackgroundTaskExitCodeKnown(logTail)
+	return code
+}
+
+func parseBackgroundTaskExitCodeKnown(logTail string) (int, bool) {
+	matches := backgroundTaskExitCodeRe.FindStringSubmatch(logTail)
+	if len(matches) != 2 {
+		return 0, false
+	}
+	code, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, false
+	}
+	return code, true
+}
+
+func (m *SSHBackgroundTaskManager) writeTaskMirror(status *BackgroundTaskStatus) {
+	if m == nil || status == nil || strings.TrimSpace(status.MirrorFile) == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(status.MirrorFile), 0o700); err != nil {
+		return
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "task_id: %s\n", status.TaskID)
+	if strings.TrimSpace(status.OwnerID) != "" {
+		fmt.Fprintf(&b, "owner_id: %s\n", status.OwnerID)
+	}
+	fmt.Fprintf(&b, "status: %s\n", status.Status)
+	if status.ExitCodeKnown {
+		fmt.Fprintf(&b, "exit_code: %d\n", status.ExitCode)
+	} else {
+		b.WriteString("exit_code: unknown\n")
+	}
+	fmt.Fprintf(&b, "process_alive: %v\n", status.IsAlive)
+	fmt.Fprintf(&b, "started_at: %s\n", status.StartedAt.Format(time.RFC3339))
+	fmt.Fprintf(&b, "elapsed: %s\n", status.Elapsed)
+	fmt.Fprintf(&b, "command: %s\n", status.Command)
+	fmt.Fprintf(&b, "\n--- latest log ---\n%s", status.LogTail)
+	_ = os.WriteFile(status.MirrorFile, []byte(b.String()), 0o600)
 }
 
 // --- sudo 检测与降级 ---

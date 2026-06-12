@@ -713,9 +713,9 @@ function WorkflowProgressBoard({
                         : cardState.tone === "done"
                             ? "#4f7f6f"
                             : cardState.tone === "attention"
-                                ? theme.textMuted
+                                ? theme.accentColor
                                 : theme.textMuted;
-                    const nodeLabel = cardState.tone === "done" ? "OK" : cardState.tone === "attention" ? "!" : String(index + 1);
+                    const nodeLabel = cardState.tone === "done" ? "OK" : cardState.tone === "attention" ? "REV" : String(index + 1);
                     const softToneBg = cardState.tone === "current"
                         ? theme.accentBg
                         : cardState.tone === "done"
@@ -1154,7 +1154,7 @@ function renderInline(text: string, theme: DocPreviewTheme): React.ReactNode {
         if (match[1]) { // bold
             parts.push(<strong key={key++} style={{ fontWeight: 600 }}>{match[2]}</strong>);
         } else if (match[3]) { // italic
-            parts.push(<em key={key++} style={{ fontStyle: "italic", color: theme.textMuted }}>{match[4]}</em>);
+            parts.push(<em key={key++} style={{ fontStyle: "italic", color: theme.text, fontWeight: 500 }}>{match[4]}</em>);
         } else if (match[5]) { // inline code
             parts.push(<code key={key++} style={{
                 background: theme.codeBg,

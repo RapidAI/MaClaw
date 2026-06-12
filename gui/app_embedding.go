@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/RapidAI/CodeClaw/corelib"
 	"io"
 	"log"
 	"net/http"
@@ -52,12 +51,6 @@ func (a *App) initEarlyClassifier() {
 			LLMTimeout: 30 * time.Second,
 		})
 		a.unifiedClassifier = uic
-
-		// Create GIC with nil embedder; it delegates to UIC or LLM when available.
-		gic := NewGateIntentClassifier(nil)
-		gic.SetLLMConfig(func() corelib.MaclawLLMConfig { return a.GetMaclawLLMConfig() }, &http.Client{Timeout: 35 * time.Second})
-		gic.SetUnifiedClassifier(uic)
-		a.gateIntentClassifier = gic
 
 		// Wire to all consumers so they see the classifier immediately.
 		if a.toolRouter != nil {

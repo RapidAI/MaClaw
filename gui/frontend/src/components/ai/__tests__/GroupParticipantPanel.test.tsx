@@ -164,6 +164,52 @@ describe("GroupParticipantPanel", () => {
         expect(screen.queryByLabelText("Local AI")).toBeNull();
     });
 
+    it("coalesces concurrent avatar list refreshes across mounted panels", async () => {
+        const avatar = "data:image/png;base64,iVBORw0KGgo=";
+        let resolveList: ((value: unknown) => void) | undefined;
+        listVirtualEmployeesMock.mockImplementation(() => new Promise((resolve) => { resolveList = resolve; }));
+
+        render(
+            <>
+                <GroupParticipantPanel
+                    participants={[{ id: "machine-1", name: "Agent 1", online: true }]}
+                    theme={theme}
+                    lang="en"
+                />
+                <GroupParticipantPanel
+                    participants={[{ id: "machine-2", name: "Agent 2", online: true }]}
+                    theme={theme}
+                    lang="en"
+                />
+            </>
+        );
+
+        await waitFor(() => expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(1));
+        resolveList?.([
+            { id: "ve-profile-1", machine_id: "machine-1", name: "Agent 1", online_status: "online", avatar_data_url: avatar },
+            { id: "ve-profile-2", machine_id: "machine-2", name: "Agent 2", online_status: "online", avatar_data_url: avatar },
+        ]);
+
+        expect(await screen.findByTestId("participant-avatar-machine-1")).toBeTruthy();
+        expect(await screen.findByTestId("participant-avatar-machine-2")).toBeTruthy();
+    });
+
+    it("ignores malformed avatar list responses without flicker", async () => {
+        listVirtualEmployeesMock.mockResolvedValue({ employees: [] });
+
+        render(
+            <GroupParticipantPanel
+                participants={[{ id: "machine-1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        await waitFor(() => expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(1));
+        expect(screen.queryByTestId("participant-avatar-machine-1")).toBeNull();
+        expect(screen.getByText("Agent 1")).toBeTruthy();
+    });
+
     it("resolves avatars for hub-generated ve aliases", async () => {
         const avatar = "data:image/png;base64,iVBORw0KGgo=";
         listVirtualEmployeesMock.mockResolvedValue([

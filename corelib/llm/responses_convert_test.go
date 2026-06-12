@@ -39,6 +39,41 @@ func TestConvertToResponsesInput_MultipleSystemMessages(t *testing.T) {
 	}
 }
 
+func TestConvertToResponsesInput_DeveloperMessage(t *testing.T) {
+	msgs := []interface{}{
+		map[string]interface{}{"role": "developer", "content": "Follow developer instructions."},
+		map[string]interface{}{"role": "user", "content": "Hi"},
+	}
+	got := ConvertToResponsesInput(msgs)
+	if got.Instructions != "Follow developer instructions." {
+		t.Fatalf("Instructions = %q, want developer content", got.Instructions)
+	}
+	if len(got.Input) != 1 {
+		t.Fatalf("len(Input) = %d, want 1", len(got.Input))
+	}
+}
+
+func TestConvertToResponsesInput_SystemAndDeveloperContentBlocks(t *testing.T) {
+	msgs := []interface{}{
+		map[string]interface{}{"role": "system", "content": []interface{}{
+			map[string]interface{}{"type": "text", "text": "system one"},
+			map[string]interface{}{"type": "text", "text": "system two"},
+		}},
+		map[string]interface{}{"role": "developer", "content": []interface{}{
+			map[string]interface{}{"type": "input_text", "text": "developer note"},
+		}},
+		map[string]interface{}{"role": "user", "content": "Hi"},
+	}
+	got := ConvertToResponsesInput(msgs)
+	want := "system one\nsystem two\ndeveloper note"
+	if got.Instructions != want {
+		t.Fatalf("Instructions = %q, want %q", got.Instructions, want)
+	}
+	if len(got.Input) != 1 {
+		t.Fatalf("len(Input) = %d, want 1", len(got.Input))
+	}
+}
+
 func TestConvertToResponsesInput_MapStringString(t *testing.T) {
 	msgs := []interface{}{
 		map[string]string{"role": "system", "content": "sys"},
@@ -50,6 +85,34 @@ func TestConvertToResponsesInput_MapStringString(t *testing.T) {
 	}
 	if len(got.Input) != 1 {
 		t.Fatalf("len(Input) = %d, want 1", len(got.Input))
+	}
+}
+
+func TestConvertToResponsesInput_TypedMessageWithContentBlocks(t *testing.T) {
+	type contentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	type message struct {
+		Role    string         `json:"role"`
+		Content []contentBlock `json:"content"`
+	}
+	msgs := []interface{}{
+		message{Role: "user", Content: []contentBlock{
+			{Type: "text", Text: "hello"},
+			{Type: "image_url"},
+			{Type: "text", Text: "world"},
+		}},
+	}
+	got := ConvertToResponsesInput(msgs)
+	if len(got.Input) != 1 {
+		t.Fatalf("len(Input) = %d, want 1", len(got.Input))
+	}
+	item := got.Input[0].(map[string]interface{})
+	content := item["content"].([]interface{})
+	part := content[0].(map[string]interface{})
+	if part["text"] != "hello\nworld" {
+		t.Fatalf("content text = %#v, want joined text blocks", part["text"])
 	}
 }
 
@@ -160,6 +223,64 @@ func TestConvertToResponsesInput_AssistantToolCalls_Untyped(t *testing.T) {
 	}
 }
 
+func TestConvertToResponsesInput_AssistantToolCalls_TypedWholeMessage(t *testing.T) {
+	type toolFunction struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	type toolCall struct {
+		ID       string       `json:"id"`
+		Type     string       `json:"type"`
+		Function toolFunction `json:"function"`
+	}
+	type message struct {
+		Role      string     `json:"role"`
+		ToolCalls []toolCall `json:"tool_calls"`
+	}
+	msgs := []interface{}{
+		message{Role: "assistant", ToolCalls: []toolCall{{
+			ID:       "call_typed",
+			Type:     "function",
+			Function: toolFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`},
+		}}},
+	}
+	got := ConvertToResponsesInput(msgs)
+	if len(got.Input) != 1 {
+		t.Fatalf("len(Input) = %d, want 1", len(got.Input))
+	}
+	item := got.Input[0].(map[string]interface{})
+	if item["type"] != "function_call" || item["call_id"] != "call_typed" || item["name"] != "read_file" {
+		t.Fatalf("unexpected typed function_call item: %#v", item)
+	}
+}
+
+func TestConvertToResponsesInput_AssistantToolCalls_MapSlice(t *testing.T) {
+	msgs := []interface{}{
+		map[string]interface{}{
+			"role":    "assistant",
+			"content": "",
+			"tool_calls": []map[string]interface{}{
+				{
+					"id":   "call_map_slice",
+					"type": "function",
+					"function": map[string]string{
+						"name":      "bash",
+						"arguments": `{"cmd":"pwd"}`,
+					},
+				},
+			},
+		},
+	}
+	got := ConvertToResponsesInput(msgs)
+	if len(got.Input) != 1 {
+		t.Fatalf("len(Input) = %d, want 1", len(got.Input))
+	}
+	item := got.Input[0].(map[string]interface{})
+	if item["call_id"] != "call_map_slice" || item["name"] != "bash" {
+		t.Fatalf("unexpected map-slice function_call item: %#v", item)
+	}
+}
+
 func TestConvertToResponsesInput_AssistantContentAndToolCalls(t *testing.T) {
 	msgs := []interface{}{
 		map[string]interface{}{
@@ -213,6 +334,24 @@ func TestConvertToResponsesInput_ToolResult(t *testing.T) {
 	}
 	if item["output"] != "file contents here" {
 		t.Fatalf("output = %v, want 'file contents here'", item["output"])
+	}
+}
+
+func TestConvertToResponsesInput_ToolResultObjectContent(t *testing.T) {
+	msgs := []interface{}{
+		map[string]interface{}{
+			"role":         "tool",
+			"tool_call_id": "call_json",
+			"content":      map[string]interface{}{"ok": true},
+		},
+	}
+	got := ConvertToResponsesInput(msgs)
+	if len(got.Input) != 1 {
+		t.Fatalf("len(Input) = %d, want 1", len(got.Input))
+	}
+	item := got.Input[0].(map[string]interface{})
+	if item["output"] != `{"ok":true}` {
+		t.Fatalf("output = %#v, want JSON string", item["output"])
 	}
 }
 
@@ -278,6 +417,33 @@ func TestConvertToResponsesTools(t *testing.T) {
 	params, _ := json.Marshal(flat["parameters"])
 	if len(params) == 0 {
 		t.Fatal("parameters should not be empty")
+	}
+}
+
+func TestConvertToResponsesTools_TypedFunction(t *testing.T) {
+	type functionDef struct {
+		Name        string                 `json:"name"`
+		Description string                 `json:"description"`
+		Parameters  map[string]interface{} `json:"parameters"`
+		Strict      bool                   `json:"strict"`
+	}
+	tools := []map[string]interface{}{
+		{
+			"type": "function",
+			"function": functionDef{
+				Name:        "typed_tool",
+				Description: "typed",
+				Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+				Strict:      true,
+			},
+		},
+	}
+	got := ConvertToResponsesTools(tools)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0]["name"] != "typed_tool" || got[0]["strict"] != true {
+		t.Fatalf("typed function not flattened correctly: %#v", got[0])
 	}
 }
 

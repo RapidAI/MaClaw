@@ -145,7 +145,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                     disabled={saving}
                                     className="web-search-config__save"
                                 >
-                                    {saving ? t("Saving...", "保存中...") : saved ? t("Saved ✓", "已保存 ✓") : t("Save", "保存")}
+                                    {saving ? t("Saving...", "保存中...") : saved ? t("Saved OK", "已保存 OK") : t("Save", "保存")}
                                 </button>
                             </div>
                         </>

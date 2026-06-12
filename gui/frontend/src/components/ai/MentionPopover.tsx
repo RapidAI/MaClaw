@@ -95,8 +95,8 @@ export function MentionPopover({
                 maxWidth: 240,
                 maxHeight: 200,
                 overflowY: "auto",
-                background: theme.fieldBg || "#1e1e2e",
-                border: `1px solid ${theme.divider || "#333"}`,
+                background: theme.fieldBg || "#0f1720",
+                border: `1px solid ${theme.divider || "#263447"}`,
                 borderRadius: 6,
                 boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
                 padding: "4px 0",
@@ -107,7 +107,7 @@ export function MentionPopover({
                     style={{
                         padding: "8px 12px",
                         fontSize: 12,
-                        color: theme.textMuted || "#888",
+                        color: theme.textMuted || "#94a3b8",
                         textAlign: "center",
                     }}
                 >
@@ -127,7 +127,7 @@ export function MentionPopover({
                             gap: 8,
                             padding: "6px 12px",
                             fontSize: 12,
-                            color: theme.text || "#e0e0e0",
+                            color: theme.text || "#d7dee8",
                             background: idx === selectedIndex
                                 ? (theme.sendBtnBg || "#2f5f98") + "20"
                                 : "transparent",

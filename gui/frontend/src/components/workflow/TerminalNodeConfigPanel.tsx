@@ -211,10 +211,10 @@ export function TerminalNodeConfigPanel({
         <div style={containerStyle} role="form" aria-label="Terminal Node 配置">
             <h3 style={headingStyle}>Terminal Node 配置</h3>
 
-            {/* Warning: no executor */}
+            {/* Notice: no executor */}
             {hasNoExecutor && (
                 <div style={warningStyle} role="alert" aria-live="polite">
-                    <span style={warningIconStyle}>⚠️</span>
+                    <span style={warningIconStyle}>INFO</span>
                     <span>未配置结果执行人。工作流完成后将无人负责执行操作。</span>
                 </div>
             )}
@@ -238,7 +238,7 @@ export function TerminalNodeConfigPanel({
                         role="combobox"
                         aria-autocomplete="list"
                     />
-                    {executorSearching && <span style={searchSpinnerStyle}>⏳</span>}
+                    {executorSearching && <span style={searchSpinnerStyle}>...</span>}
                     {executorSearchResults.length > 0 && (
                         <ul id="executor-search-results" style={searchResultsStyle} role="listbox">
                             {executorSearchResults.map((user) => (
@@ -273,7 +273,7 @@ export function TerminalNodeConfigPanel({
                                         style={removeButtonStyle}
                                         aria-label={`移除 ${exec.user_name || exec.user_id}`}
                                     >
-                                        ✕
+                                        DEL
                                     </button>
                                 </div>
                                 <div style={configRowStyle}>
@@ -331,7 +331,7 @@ export function TerminalNodeConfigPanel({
                         role="combobox"
                         aria-autocomplete="list"
                     />
-                    {notifierSearching && <span style={searchSpinnerStyle}>⏳</span>}
+                    {notifierSearching && <span style={searchSpinnerStyle}>...</span>}
                     {notifierSearchResults.length > 0 && (
                         <ul id="notifier-search-results" style={searchResultsStyle} role="listbox">
                             {notifierSearchResults.map((user) => (
@@ -366,7 +366,7 @@ export function TerminalNodeConfigPanel({
                                         style={removeButtonStyle}
                                         aria-label={`移除 ${notif.user_name || notif.user_id}`}
                                     >
-                                        ✕
+                                        DEL
                                     </button>
                                 </div>
                                 <div style={configRowStyle}>
@@ -431,7 +431,7 @@ const headingStyle: CSSProperties = {
     margin: 0,
     fontSize: "1rem",
     fontWeight: 600,
-    color: "#212121",
+    color: "var(--theme-text-primary, #1a202c)",
 };
 
 const warningStyle: CSSProperties = {
@@ -439,15 +439,21 @@ const warningStyle: CSSProperties = {
     alignItems: "center",
     gap: "8px",
     padding: "10px 14px",
-    background: "var(--theme-warning-bg, #f8fafc)",
-    border: "1px solid color-mix(in srgb, var(--theme-warning, #64748b) 34%, transparent)",
+    background: "var(--theme-info-bg, #f3f7fb)",
+    border: "1px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 26%, transparent)",
     borderRadius: "6px",
     fontSize: "0.8rem",
-    color: "var(--theme-warning, #64748b)",
+    color: "var(--theme-primary, #2f5f98)",
 };
 
 const warningIconStyle: CSSProperties = {
-    fontSize: "1rem",
+    fontSize: "0.68rem",
+    fontWeight: 700,
+    letterSpacing: 0,
+    padding: "2px 6px",
+    borderRadius: "999px",
+    border: "1px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 32%, transparent)",
+    background: "var(--theme-surface, #ffffff)",
     flexShrink: 0,
 };
 
@@ -461,13 +467,13 @@ const sectionHeadingStyle: CSSProperties = {
     margin: 0,
     fontSize: "0.88rem",
     fontWeight: 600,
-    color: "#333",
+    color: "var(--theme-text-primary, #1a202c)",
 };
 
 const sectionDescStyle: CSSProperties = {
     margin: 0,
     fontSize: "0.75rem",
-    color: "#888",
+    color: "var(--theme-text-muted, #8b95a5)",
 };
 
 const searchContainerStyle: CSSProperties = {
@@ -478,7 +484,7 @@ const searchInputStyle: CSSProperties = {
     width: "100%",
     padding: "8px 12px",
     fontSize: "0.82rem",
-    border: "1px solid #ddd",
+    border: "1px solid var(--theme-border, #e1e4e8)",
     borderRadius: "6px",
     outline: "none",
     boxSizing: "border-box",
@@ -499,14 +505,14 @@ const searchResultsStyle: CSSProperties = {
     listStyle: "none",
     margin: 0,
     padding: 0,
-    background: "#fff",
-    border: "1px solid #ddd",
+    background: "var(--theme-surface, #ffffff)",
+    border: "1px solid var(--theme-border, #e1e4e8)",
     borderTop: "none",
     borderRadius: "0 0 6px 6px",
     maxHeight: "180px",
     overflow: "auto",
     zIndex: 100,
-    boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+    boxShadow: "0 4px 12px rgba(15, 23, 42, 0.08)",
 };
 
 const searchResultItemStyle: CSSProperties = {
@@ -515,17 +521,17 @@ const searchResultItemStyle: CSSProperties = {
     display: "flex",
     alignItems: "center",
     gap: "8px",
-    borderBottom: "1px solid #f5f5f5",
+    borderBottom: "1px solid var(--theme-border-subtle, #edf2f7)",
 };
 
 const userNameStyle: CSSProperties = {
     fontWeight: 500,
-    color: "#333",
+    color: "var(--theme-text-primary, #1a202c)",
 };
 
 const userEmailStyle: CSSProperties = {
     fontSize: "0.72rem",
-    color: "#999",
+    color: "var(--theme-text-muted, #8b95a5)",
 };
 
 const userListStyle: CSSProperties = {
@@ -539,9 +545,9 @@ const userListStyle: CSSProperties = {
 
 const userItemStyle: CSSProperties = {
     padding: "10px 12px",
-    background: "#f9f9f9",
+    background: "var(--theme-surface-muted, #f7f8fa)",
     borderRadius: "6px",
-    border: "1px solid #eee",
+    border: "1px solid var(--theme-border-subtle, #edf2f7)",
 };
 
 const userItemHeaderStyle: CSSProperties = {
@@ -553,16 +559,17 @@ const userItemHeaderStyle: CSSProperties = {
 
 const userItemNameStyle: CSSProperties = {
     fontWeight: 600,
-    color: "#333",
+    color: "var(--theme-text-primary, #1a202c)",
     fontSize: "0.82rem",
 };
 
 const removeButtonStyle: CSSProperties = {
     border: "none",
     background: "transparent",
-    color: "var(--theme-danger, #b42318)",
+    color: "var(--theme-danger, #c43d34)",
     cursor: "pointer",
-    fontSize: "0.9rem",
+    fontSize: "0.68rem",
+    fontWeight: 700,
     padding: "2px 6px",
     borderRadius: "4px",
 };
@@ -578,14 +585,14 @@ const configLabelStyle: CSSProperties = {
     flexDirection: "column",
     gap: "3px",
     fontSize: "0.72rem",
-    color: "#666",
+    color: "var(--theme-text-secondary, #5a6577)",
 };
 
 const configInputStyle: CSSProperties = {
     width: "80px",
     padding: "4px 8px",
     fontSize: "0.8rem",
-    border: "1px solid #ddd",
+    border: "1px solid var(--theme-border, #e1e4e8)",
     borderRadius: "4px",
     outline: "none",
 };
@@ -594,14 +601,14 @@ const footerStyle: CSSProperties = {
     display: "flex",
     justifyContent: "flex-end",
     paddingTop: "8px",
-    borderTop: "1px solid #eee",
+    borderTop: "1px solid var(--theme-border-subtle, #edf2f7)",
 };
 
 const saveButtonStyle: CSSProperties = {
     padding: "8px 20px",
     fontSize: "0.82rem",
     fontWeight: 500,
-    background: "#1565c0",
+    background: "var(--theme-primary, #2f5f98)",
     color: "#fff",
     border: "none",
     borderRadius: "6px",

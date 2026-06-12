@@ -144,7 +144,7 @@ export function RemoteRoutingCard(props: Props) {
                 <div style={{ fontSize: "0.7rem", color: colors.textSecondary, wordBreak: "break-word" }}>
                     {translate("remoteToolPath")}: <span style={{ color: colors.text, fontWeight: 600 }}>{selectedRemoteToolInfo?.tool_path || translate("remoteNotInstalled")}</span>
                 </div>
-                {!selectedRemoteToolCanStart && <div style={{ fontSize: "0.7rem", color: colors.warning }}>{formatText("remoteUnavailable", { reason: selectedRemoteToolUnavailableReason })}</div>}
+                {!selectedRemoteToolCanStart && <div style={{ fontSize: "0.7rem", color: colors.danger }}>{formatText("remoteUnavailable", { reason: selectedRemoteToolUnavailableReason })}</div>}
                 {remoteSuggestedAction && (
                     <div style={{ ...remoteMutedCardStyle, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
                         <div style={{ minWidth: 0 }}>

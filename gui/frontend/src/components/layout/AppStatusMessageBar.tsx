@@ -53,7 +53,7 @@ export const AppStatusMessageBar = ({
     const isImIssue = maclawLLMOnline && remoteActivated && showImWarning;
     const successMarker = backgroundInstallStatus.startsWith('?') || backgroundInstallStatus.startsWith('??');
     const statusTone = (status.includes("Error") || status.includes("!"))
-        ? 'var(--theme-danger, #b42318)'
+        ? 'var(--theme-danger, #c43d34)'
         : 'var(--theme-success, #4f7f6f)';
     const noticeTone = 'var(--theme-text-muted, #64748b)';
     const progressTone = successMarker ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-text-muted, #64748b)';

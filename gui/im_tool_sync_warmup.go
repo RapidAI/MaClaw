@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // WarmupTools pre-builds and caches the tool definitions so the first user
@@ -33,7 +34,11 @@ func (h *IMMessageHandler) WarmupHTTPConn() {
 	}
 	key := strings.TrimSpace(cfg.Key)
 	ua := cfg.UserAgent()
-	endpoint := baseURL + "/models"
+	modelEndpoints := llm.BuildOpenAIModelsEndpointCandidates(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(baseURL, ua), cfg.Protocol)
+	if len(modelEndpoints) == 0 {
+		return
+	}
+	endpoint := modelEndpoints[0]
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return

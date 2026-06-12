@@ -669,7 +669,7 @@ func TestSkillRunnerRecordSkillUsageExperienceSuccess(t *testing.T) {
 		Name:        "pdf-helper",
 		Description: "convert pdf files",
 		Triggers:    []string{"pdf", "convert"},
-	}, nil)
+	}, nil, nil)
 
 	if score := tracker.OutcomeScore("skill:pdf-helper"); score != 1 {
 		t.Fatalf("OutcomeScore(skill:pdf-helper) = %.2f, want 1", score)
@@ -691,9 +691,9 @@ func TestSkillRunnerRecordSkillUsageExperienceFailure(t *testing.T) {
 		Triggers:    []string{"api", "key"},
 	}
 
-	runner.recordSkillUsageExperience(skill, assertErrorString("Error: API_KEY environment variable not set"))
-	runner.recordSkillUsageExperience(skill, assertErrorString("Error: API_KEY environment variable not set"))
-	runner.recordSkillUsageExperience(skill, assertErrorString("Error: API_KEY environment variable not set"))
+	runner.recordSkillUsageExperience(skill, assertErrorString("Error: API_KEY environment variable not set"), nil)
+	runner.recordSkillUsageExperience(skill, assertErrorString("Error: API_KEY environment variable not set"), nil)
+	runner.recordSkillUsageExperience(skill, assertErrorString("Error: API_KEY environment variable not set"), nil)
 
 	if score := tracker.OutcomeScore("skill:missing-env-skill"); score != 0 {
 		t.Fatalf("OutcomeScore(skill:missing-env-skill) = %.2f, want 0", score)

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	securitypkg "github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
+	"golang.org/x/sync/singleflight"
 )
 
 func tenantAdminContext(ctx context.Context, tenantID string) context.Context {
@@ -43,10 +45,20 @@ type fakeVEMachineLookup struct {
 
 type fakeVEMachineEventSender struct {
 	messages []sentVEMachineEvent
+	err      error
 }
 
 type fakeVEMachinePresence struct {
 	infos map[string]*device.MachineRuntimeInfo
+}
+
+type slowVEMachinePresence struct {
+	infos   map[string]*device.MachineRuntimeInfo
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	count   int
 }
 
 type fakeVEVisibilityResolver struct {
@@ -64,7 +76,7 @@ const testAvatarPNGDataURL = "data:image/png;base64,iVBORw0KGgo="
 func (f *fakeVEMachineEventSender) SendToMachine(machineID string, msg any) error {
 	mapped, _ := msg.(map[string]any)
 	f.messages = append(f.messages, sentVEMachineEvent{machineID: machineID, msg: mapped})
-	return nil
+	return f.err
 }
 
 func (f fakeVEOwnerLookup) GetByID(ctx context.Context, id string) (*store.User, error) {
@@ -92,6 +104,25 @@ func (f fakeVEMachineAuth) AuthenticateMachine(ctx context.Context, machineID, r
 func (f fakeVEMachinePresence) GetMachineInfo(ctx context.Context, machineID string) (*device.MachineRuntimeInfo, error) {
 	_ = ctx
 	return f.infos[machineID], nil
+}
+
+func (f *slowVEMachinePresence) GetMachineInfo(ctx context.Context, machineID string) (*device.MachineRuntimeInfo, error) {
+	f.mu.Lock()
+	f.count++
+	f.mu.Unlock()
+	f.once.Do(func() { close(f.started) })
+	select {
+	case <-f.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return f.infos[machineID], nil
+}
+
+func (f *slowVEMachinePresence) Count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.count
 }
 
 func (f fakeVEVisibilityResolver) RequesterGroupPath(ctx context.Context, tenantID, userID string) ([]string, error) {
@@ -2581,6 +2612,731 @@ func TestDigitalEmployeeAuthorizationBlocksRegisterAndDiscovery(t *testing.T) {
 	}
 }
 
+func TestVEDiscoverableReturnsETagAndNotModified(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"machine-b": {TenantID: "tenant-a", UserID: "user-b", MachineID: "machine-b"},
+		},
+	}
+	if rr := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{"name": "Legal Researcher"}, "machine-a", "machine-token"); rr.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/approve", nil)
+	approveReq = approveReq.WithContext(tenantAdminContext(approveReq.Context(), "tenant-a"))
+	approveReq.SetPathValue("id", "ve_machine-a")
+	approveRec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+
+	handler := VEDiscoverableHandler(settings, authn)
+	firstRR := doVEMachineJSON(t, handler, http.MethodGet, "/api/ve/discoverable", nil, "machine-b", "machine-token")
+	if firstRR.Code != http.StatusOK {
+		t.Fatalf("first discover status=%d body=%s", firstRR.Code, firstRR.Body.String())
+	}
+	etag := firstRR.Header().Get("ETag")
+	if etag == "" {
+		t.Fatalf("expected ETag on discoverable response")
+	}
+	if cacheControl := firstRR.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "max-age=5") {
+		t.Fatalf("unexpected Cache-Control: %q", cacheControl)
+	}
+	if firstRR.Header().Get("X-VE-Cache") != "miss" {
+		t.Fatalf("expected initial cache miss header, got %q", firstRR.Header().Get("X-VE-Cache"))
+	}
+	if !bytes.Contains(firstRR.Body.Bytes(), []byte(`"id":"ve_machine-a"`)) {
+		t.Fatalf("discoverable response should include approved employee: %s", firstRR.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/discoverable", nil)
+	req.Header.Set("X-Machine-ID", "machine-b")
+	req.Header.Set("Authorization", "Bearer machine-token")
+	req.Header.Set("If-None-Match", etag)
+	secondRR := httptest.NewRecorder()
+	handler.ServeHTTP(secondRR, req)
+	if secondRR.Code != http.StatusNotModified {
+		t.Fatalf("second discover status=%d body=%s", secondRR.Code, secondRR.Body.String())
+	}
+	if secondRR.Header().Get("X-VE-Cache") != "hit" {
+		t.Fatalf("expected cache hit header on 304, got %q", secondRR.Header().Get("X-VE-Cache"))
+	}
+	if secondRR.Body.Len() != 0 {
+		t.Fatalf("304 response should be empty, got %q", secondRR.Body.String())
+	}
+}
+
+func TestVEMetricsTracksDiscoverableRequests(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"machine-b": {TenantID: "tenant-a", UserID: "user-b", MachineID: "machine-b"},
+		},
+	}
+	if rr := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{"name": "Legal Researcher"}, "machine-a", "machine-token"); rr.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/approve", nil)
+	approveReq = approveReq.WithContext(tenantAdminContext(approveReq.Context(), "tenant-a"))
+	approveReq.SetPathValue("id", "ve_machine-a")
+	approveRec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+
+	before := globalVEMetrics.snapshot().Discoverable
+	handler := VEDiscoverableHandler(settings, authn)
+	firstRR := doVEMachineJSON(t, handler, http.MethodGet, "/api/ve/discoverable", nil, "machine-b", "machine-token")
+	if firstRR.Code != http.StatusOK {
+		t.Fatalf("first discover status=%d body=%s", firstRR.Code, firstRR.Body.String())
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/discoverable", nil)
+	req.Header.Set("X-Machine-ID", "machine-b")
+	req.Header.Set("Authorization", "Bearer machine-token")
+	req.Header.Set("If-None-Match", firstRR.Header().Get("ETag"))
+	secondRR := httptest.NewRecorder()
+	handler.ServeHTTP(secondRR, req)
+	if secondRR.Code != http.StatusNotModified {
+		t.Fatalf("second discover status=%d body=%s", secondRR.Code, secondRR.Body.String())
+	}
+	after := globalVEMetrics.snapshot().Discoverable
+	if got := veMetricUint(after, "requests_total") - veMetricUint(before, "requests_total"); got != 2 {
+		t.Fatalf("requests delta=%d, want 2; metrics=%#v", got, after)
+	}
+	if got := veMetricUint(after, "success_total") - veMetricUint(before, "success_total"); got != 1 {
+		t.Fatalf("success delta=%d, want 1; metrics=%#v", got, after)
+	}
+	if got := veMetricUint(after, "not_modified_total") - veMetricUint(before, "not_modified_total"); got != 1 {
+		t.Fatalf("not_modified delta=%d, want 1; metrics=%#v", got, after)
+	}
+	if got := veMetricUint(after, "employees_returned_total") - veMetricUint(before, "employees_returned_total"); got != 1 {
+		t.Fatalf("employees_returned delta=%d, want 1; metrics=%#v", got, after)
+	}
+
+	metricsRR := httptest.NewRecorder()
+	metricsReq := httptest.NewRequest(http.MethodGet, "/api/admin/ve/metrics", nil)
+	metricsReq = metricsReq.WithContext(tenantAdminContext(metricsReq.Context(), "tenant-a"))
+	VEMetricsHandler().ServeHTTP(metricsRR, metricsReq)
+	if metricsRR.Code != http.StatusOK || !bytes.Contains(metricsRR.Body.Bytes(), []byte(`"discoverable"`)) {
+		t.Fatalf("metrics status=%d body=%s", metricsRR.Code, metricsRR.Body.String())
+	}
+}
+
+func TestVEMetricsExposeOperationalLimits(t *testing.T) {
+	rr := httptest.NewRecorder()
+	VEMetricsHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/admin/ve/metrics", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("metrics status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var snapshot veMetricsSnapshot
+	if err := json.Unmarshal(rr.Body.Bytes(), &snapshot); err != nil {
+		t.Fatalf("decode metrics: %v body=%s", err, rr.Body.String())
+	}
+	if veMetricUint(snapshot.Discoverable, "build_concurrency_limit") != uint64(veDiscoverableBuildConcurrency) {
+		t.Fatalf("discoverable limits missing/wrong: %#v", snapshot.Discoverable)
+	}
+	if veMetricUint(snapshot.Discoverable, "cache_max_keys") != uint64(veDiscoverableCacheMaxKeys) {
+		t.Fatalf("discoverable cache max missing/wrong: %#v", snapshot.Discoverable)
+	}
+	if veMetricUint(snapshot.RuntimeDelivery, "concurrency_limit") != uint64(veRuntimeDeliveryConcurrency) {
+		t.Fatalf("runtime limits missing/wrong: %#v", snapshot.RuntimeDelivery)
+	}
+	if veMetricUint(snapshot.RuntimeDelivery, "delivery_timeout_sec") != uint64(platformA2ADeliveryTimeout.Seconds()) {
+		t.Fatalf("runtime timeout missing/wrong: %#v", snapshot.RuntimeDelivery)
+	}
+	if veMetricUint(snapshot.RuntimeDelivery, "circuit_failure_limit") != uint64(veRuntimeCircuitFailureLimit) {
+		t.Fatalf("runtime circuit config missing/wrong: %#v", snapshot.RuntimeDelivery)
+	}
+	if veMetricUint(snapshot.RuntimeDelivery, "circuit_failure_window_seconds") != uint64(veRuntimeCircuitFailureWindow.Seconds()) {
+		t.Fatalf("runtime circuit failure window missing/wrong: %#v", snapshot.RuntimeDelivery)
+	}
+}
+
+func TestVEMetricsTrackInFlightHighWaterMarks(t *testing.T) {
+	globalVEMetrics.BuildInFlightMax.Store(0)
+	globalVERuntimeDeliveryMetrics.InFlightMax.Store(0)
+	beforeRuntimeInFlight := globalVERuntimeDeliveryMetrics.InFlight.Load()
+
+	releaseDiscoverableOne, ok := acquireVEDiscoverableBuildSlot()
+	if !ok {
+		t.Fatal("expected first discoverable build slot")
+	}
+	defer releaseDiscoverableOne()
+	releaseDiscoverableTwo, ok := acquireVEDiscoverableBuildSlot()
+	if !ok {
+		t.Fatal("expected second discoverable build slot")
+	}
+	defer releaseDiscoverableTwo()
+	releaseRuntimeOne, ok := acquireVERuntimeDeliverySlot()
+	if !ok {
+		t.Fatal("expected first runtime delivery slot")
+	}
+	defer releaseRuntimeOne(nil)
+	releaseRuntimeTwo, ok := acquireVERuntimeDeliverySlot()
+	if !ok {
+		t.Fatal("expected second runtime delivery slot")
+	}
+	defer releaseRuntimeTwo(nil)
+
+	snapshot := globalVEMetrics.snapshot()
+	if got := veMetricUint(snapshot.Discoverable, "build_in_flight_max"); got < 2 {
+		t.Fatalf("build_in_flight_max=%d, want >=2; metrics=%#v", got, snapshot.Discoverable)
+	}
+	if got := veMetricUint(snapshot.RuntimeDelivery, "in_flight_max"); got < uint64(beforeRuntimeInFlight+2) {
+		t.Fatalf("in_flight_max=%d, want >=%d; metrics=%#v", got, beforeRuntimeInFlight+2, snapshot.RuntimeDelivery)
+	}
+}
+
+func TestVESlotReleaseIsIdempotent(t *testing.T) {
+	beforeRuntimeInFlight := globalVERuntimeDeliveryMetrics.InFlight.Load()
+	beforeRuntimeCompleted := globalVERuntimeDeliveryMetrics.CompletedTotal.Load()
+
+	releaseDiscoverable, ok := acquireVEDiscoverableBuildSlot()
+	if !ok {
+		t.Fatal("expected discoverable build slot")
+	}
+	releaseDiscoverable()
+	done := make(chan struct{})
+	go func() {
+		releaseDiscoverable()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("second discoverable release blocked")
+	}
+
+	releaseRuntime, ok := acquireVERuntimeDeliverySlot()
+	if !ok {
+		t.Fatal("expected runtime delivery slot")
+	}
+	releaseRuntime(nil)
+	releaseRuntime(errors.New("ignored duplicate release"))
+	if got := globalVERuntimeDeliveryMetrics.InFlight.Load(); got != beforeRuntimeInFlight {
+		t.Fatalf("runtime in_flight=%d, want %d", got, beforeRuntimeInFlight)
+	}
+	if got := globalVERuntimeDeliveryMetrics.CompletedTotal.Load() - beforeRuntimeCompleted; got != 1 {
+		t.Fatalf("runtime completed delta=%d, want 1", got)
+	}
+}
+
+func TestVEDiscoverableCacheExpiryBoundaries(t *testing.T) {
+	now := time.Now()
+	key := "tenant-a|user-cache-boundary|machine-cache-boundary"
+	payload := []byte(`{"employees":[],"max_group_participants":3}`)
+	etag := veResponseETag(payload)
+
+	veDiscoverableCache.Lock()
+	veDiscoverableCache.Entries = map[string]veDiscoverableCacheEntry{
+		key: {Data: payload, ETag: etag, ExpiresAt: now, Employees: 0},
+	}
+	veDiscoverableCache.Unlock()
+	if _, ok := getVEDiscoverableCache(key, now.Add(-time.Nanosecond)); !ok {
+		t.Fatal("cache should be fresh before ExpiresAt")
+	}
+	if _, ok := getVEDiscoverableCache(key, now); ok {
+		t.Fatal("cache should expire at ExpiresAt")
+	}
+
+	veDiscoverableCache.Lock()
+	veDiscoverableCache.Entries = map[string]veDiscoverableCacheEntry{
+		key: {Data: payload, ETag: etag, ExpiresAt: now, Employees: 0},
+	}
+	veDiscoverableCache.Unlock()
+	if _, ok := getVEDiscoverableStaleCache(key, now.Add(veDiscoverableStaleTTL-time.Nanosecond)); !ok {
+		t.Fatal("cache should be stale-servable before stale TTL")
+	}
+	if _, ok := getVEDiscoverableStaleCache(key, now.Add(veDiscoverableStaleTTL)); ok {
+		t.Fatal("cache should not be stale-servable at stale TTL")
+	}
+	if size := veDiscoverableCacheSize(); size != 0 {
+		t.Fatalf("expired stale cache entry should be removed, size=%d", size)
+	}
+}
+
+func TestVEDiscoverableCacheEvictsOldestEntryWhenFull(t *testing.T) {
+	originalMaxKeys := veDiscoverableCacheMaxKeys
+	veDiscoverableCacheMaxKeys = 2
+	defer func() { veDiscoverableCacheMaxKeys = originalMaxKeys }()
+	now := time.Now()
+	payload := []byte(`{"employees":[],"max_group_participants":3}`)
+	etag := veResponseETag(payload)
+
+	veDiscoverableCache.Lock()
+	veDiscoverableCache.Entries = map[string]veDiscoverableCacheEntry{
+		"old": {Data: payload, ETag: etag, ExpiresAt: now.Add(time.Second), Employees: 0},
+		"new": {Data: payload, ETag: etag, ExpiresAt: now.Add(time.Hour), Employees: 0},
+	}
+	veDiscoverableCache.Unlock()
+
+	setVEDiscoverableCache("inserted", payload, etag, 0, now)
+
+	if size := veDiscoverableCacheSize(); size != 2 {
+		t.Fatalf("cache size=%d, want 2", size)
+	}
+	if _, ok := getVEDiscoverableCache("old", now); ok {
+		t.Fatal("oldest entry should be evicted")
+	}
+	if _, ok := getVEDiscoverableCache("new", now); !ok {
+		t.Fatal("newer entry should be retained")
+	}
+	if _, ok := getVEDiscoverableCache("inserted", now); !ok {
+		t.Fatal("inserted entry should be retained")
+	}
+}
+
+func TestVERuntimeCircuitOpenMetricOnlyCountsTransitions(t *testing.T) {
+	key := "tenant-a|ve-circuit-transition"
+	now := time.Now()
+	veRuntimeDeliveryCircuit.Lock()
+	veRuntimeDeliveryCircuit.Entries = map[string]veRuntimeDeliveryCircuitEntry{}
+	veRuntimeDeliveryCircuit.Unlock()
+	before := globalVEMetrics.snapshot().RuntimeDelivery
+
+	for i := 0; i < veRuntimeCircuitFailureLimit+2; i++ {
+		recordVERuntimeDeliveryResult(key, errors.New("MaClawSrv runtime returned status 502"), now)
+	}
+	afterFirstOpen := globalVEMetrics.snapshot().RuntimeDelivery
+	if got := veMetricUint(afterFirstOpen, "circuit_open_total") - veMetricUint(before, "circuit_open_total"); got != 1 {
+		t.Fatalf("first open delta=%d, want 1; metrics=%#v", got, afterFirstOpen)
+	}
+
+	reopenAt := now.Add(veRuntimeCircuitOpenDuration)
+	recordVERuntimeDeliveryResult(key, errors.New("MaClawSrv runtime returned status 502"), reopenAt)
+	afterFirstPostExpiryFailure := globalVEMetrics.snapshot().RuntimeDelivery
+	if got := veMetricUint(afterFirstPostExpiryFailure, "circuit_open_total") - veMetricUint(afterFirstOpen, "circuit_open_total"); got != 0 {
+		t.Fatalf("post-expiry first failure reopen delta=%d, want 0; metrics=%#v", got, afterFirstPostExpiryFailure)
+	}
+
+	for i := 1; i < veRuntimeCircuitFailureLimit; i++ {
+		recordVERuntimeDeliveryResult(key, errors.New("MaClawSrv runtime returned status 502"), reopenAt)
+	}
+	afterReopen := globalVEMetrics.snapshot().RuntimeDelivery
+	if got := veMetricUint(afterReopen, "circuit_open_total") - veMetricUint(afterFirstPostExpiryFailure, "circuit_open_total"); got != 1 {
+		t.Fatalf("reopen delta=%d, want 1; metrics=%#v", got, afterReopen)
+	}
+}
+
+func TestVERuntimeCircuitFailureWindowResetsOldFailures(t *testing.T) {
+	key := "tenant-a|ve-circuit-window"
+	now := time.Now()
+	veRuntimeDeliveryCircuit.Lock()
+	veRuntimeDeliveryCircuit.Entries = map[string]veRuntimeDeliveryCircuitEntry{}
+	veRuntimeDeliveryCircuit.Unlock()
+	before := globalVEMetrics.snapshot().RuntimeDelivery
+
+	for i := 0; i < veRuntimeCircuitFailureLimit; i++ {
+		recordVERuntimeDeliveryResult(key, errors.New("MaClawSrv runtime returned status 502"), now.Add(time.Duration(i)*(veRuntimeCircuitFailureWindow+time.Second)))
+	}
+	afterSlowFailures := globalVEMetrics.snapshot().RuntimeDelivery
+	if got := veMetricUint(afterSlowFailures, "circuit_open_total") - veMetricUint(before, "circuit_open_total"); got != 0 {
+		t.Fatalf("slow failure open delta=%d, want 0; metrics=%#v", got, afterSlowFailures)
+	}
+
+	for i := 0; i < veRuntimeCircuitFailureLimit; i++ {
+		recordVERuntimeDeliveryResult(key, errors.New("MaClawSrv runtime returned status 502"), now.Add(10*veRuntimeCircuitFailureWindow))
+	}
+	afterBurstFailures := globalVEMetrics.snapshot().RuntimeDelivery
+	if got := veMetricUint(afterBurstFailures, "circuit_open_total") - veMetricUint(afterSlowFailures, "circuit_open_total"); got != 1 {
+		t.Fatalf("burst failure open delta=%d, want 1; metrics=%#v", got, afterBurstFailures)
+	}
+}
+
+func TestVERuntimeCircuitOpenRefreshesMetricsTimestamp(t *testing.T) {
+	key := "tenant-a|ve-circuit-updated"
+	veRuntimeDeliveryCircuit.Lock()
+	veRuntimeDeliveryCircuit.Entries = map[string]veRuntimeDeliveryCircuitEntry{}
+	veRuntimeDeliveryCircuit.Unlock()
+	previousUpdated := globalVERuntimeDeliveryMetrics.LastUpdatedUnix.Load()
+
+	for i := 0; i < veRuntimeCircuitFailureLimit; i++ {
+		recordVERuntimeDeliveryResult(key, errors.New("MaClawSrv runtime returned status 502"), time.Now())
+	}
+	if got := globalVERuntimeDeliveryMetrics.LastUpdatedUnix.Load(); got < previousUpdated || got == 0 {
+		t.Fatalf("last_updated_unix=%d, previous=%d", got, previousUpdated)
+	}
+}
+
+func TestVERuntimeCircuitIgnoresLateSuccessWhileOpen(t *testing.T) {
+	key := "tenant-a|ve-circuit-late-success"
+	now := time.Now()
+	veRuntimeDeliveryCircuit.Lock()
+	veRuntimeDeliveryCircuit.Entries = map[string]veRuntimeDeliveryCircuitEntry{}
+	veRuntimeDeliveryCircuit.Unlock()
+
+	for i := 0; i < veRuntimeCircuitFailureLimit; i++ {
+		recordVERuntimeDeliveryResult(key, errors.New("MaClawSrv runtime returned status 502"), now)
+	}
+	recordVERuntimeDeliveryResult(key, nil, now.Add(time.Second))
+	if veRuntimeDeliveryCircuitAllows(key, now.Add(2*time.Second)) {
+		t.Fatal("late success should not close an open circuit")
+	}
+
+	recordVERuntimeDeliveryResult(key, nil, now.Add(veRuntimeCircuitOpenDuration+time.Second))
+	if !veRuntimeDeliveryCircuitAllows(key, now.Add(veRuntimeCircuitOpenDuration+2*time.Second)) {
+		t.Fatal("success after open window should allow runtime delivery")
+	}
+}
+
+func TestVERuntimeCircuitSuccessClearsFailureAccumulator(t *testing.T) {
+	key := "tenant-a|ve-circuit-success-clear"
+	now := time.Now()
+	veRuntimeDeliveryCircuit.Lock()
+	veRuntimeDeliveryCircuit.Entries = map[string]veRuntimeDeliveryCircuitEntry{}
+	veRuntimeDeliveryCircuit.Unlock()
+	before := globalVEMetrics.snapshot().RuntimeDelivery
+
+	recordVERuntimeDeliveryResult(key, errors.New("MaClawSrv runtime returned status 502"), now)
+	recordVERuntimeDeliveryResult(key, nil, now.Add(time.Second))
+	for i := 0; i < veRuntimeCircuitFailureLimit-1; i++ {
+		recordVERuntimeDeliveryResult(key, errors.New("MaClawSrv runtime returned status 502"), now.Add(2*time.Second))
+	}
+	after := globalVEMetrics.snapshot().RuntimeDelivery
+	if got := veMetricUint(after, "circuit_open_total") - veMetricUint(before, "circuit_open_total"); got != 0 {
+		t.Fatalf("circuit_open delta=%d, want 0 after success cleared accumulator; metrics=%#v", got, after)
+	}
+}
+
+func TestVEIntEnvUsesConfiguredValueWithinBounds(t *testing.T) {
+	t.Setenv("HUB_VE_TEST_INT", "42")
+	if got := veIntEnv("HUB_VE_TEST_INT", 7, 1, 100); got != 42 {
+		t.Fatalf("veIntEnv returned %d, want 42", got)
+	}
+}
+
+func TestVEIntEnvFallsBackForInvalidOrOutOfRangeValues(t *testing.T) {
+	t.Setenv("HUB_VE_TEST_INT_INVALID", "nope")
+	if got := veIntEnv("HUB_VE_TEST_INT_INVALID", 7, 1, 100); got != 7 {
+		t.Fatalf("invalid env returned %d, want fallback 7", got)
+	}
+	t.Setenv("HUB_VE_TEST_INT_LOW", "0")
+	if got := veIntEnv("HUB_VE_TEST_INT_LOW", 7, 1, 100); got != 7 {
+		t.Fatalf("low env returned %d, want fallback 7", got)
+	}
+	t.Setenv("HUB_VE_TEST_INT_HIGH", "101")
+	if got := veIntEnv("HUB_VE_TEST_INT_HIGH", 7, 1, 100); got != 7 {
+		t.Fatalf("high env returned %d, want fallback 7", got)
+	}
+}
+
+func TestClassifyVERuntimeDeliveryFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, want: "timeout"},
+		{name: "timeout text", err: errors.New("Client.Timeout exceeded while awaiting headers"), want: "timeout"},
+		{name: "http status", err: errors.New("MaClawSrv runtime returned status 502: down"), want: "http_status"},
+		{name: "empty json reply", err: errors.New("MaClawSrv runtime response did not include assistant content"), want: "empty_reply"},
+		{name: "empty sse reply", err: errors.New("MaClawSrv runtime SSE response did not include content"), want: "empty_reply"},
+		{name: "transport", err: errors.New("MaClawSrv runtime delivery failed: dial tcp refused"), want: "transport"},
+		{name: "other", err: errors.New("unexpected runtime error"), want: "other"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyVERuntimeDeliveryFailure(tc.err); got != tc.want {
+				t.Fatalf("classify=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestVEDiscoverableUsesShortServerCache(t *testing.T) {
+	veDiscoverableCache.Lock()
+	veDiscoverableCache.Entries = map[string]veDiscoverableCacheEntry{}
+	veDiscoverableCache.Unlock()
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-cache-a": {TenantID: "tenant-a", UserID: "user-cache-a", MachineID: "machine-cache-a"},
+			"machine-cache-b": {TenantID: "tenant-a", UserID: "user-cache-b", MachineID: "machine-cache-b"},
+		},
+	}
+	if rr := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{"name": "Cache Researcher"}, "machine-cache-a", "machine-token"); rr.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-cache-a/approve", nil)
+	approveReq = approveReq.WithContext(tenantAdminContext(approveReq.Context(), "tenant-a"))
+	approveReq.SetPathValue("id", "ve_machine-cache-a")
+	approveRec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+
+	before := globalVEMetrics.snapshot().Discoverable
+	handler := VEDiscoverableHandler(settings, authn)
+	firstRR := doVEMachineJSON(t, handler, http.MethodGet, "/api/ve/discoverable", nil, "machine-cache-b", "machine-token")
+	if firstRR.Code != http.StatusOK {
+		t.Fatalf("first discover status=%d body=%s", firstRR.Code, firstRR.Body.String())
+	}
+	secondRR := doVEMachineJSON(t, handler, http.MethodGet, "/api/ve/discoverable", nil, "machine-cache-b", "machine-token")
+	if secondRR.Code != http.StatusOK {
+		t.Fatalf("second discover status=%d body=%s", secondRR.Code, secondRR.Body.String())
+	}
+	if firstRR.Header().Get("X-VE-Cache") != "miss" {
+		t.Fatalf("expected initial cache miss header, got %q", firstRR.Header().Get("X-VE-Cache"))
+	}
+	if secondRR.Header().Get("X-VE-Cache") != "hit" {
+		t.Fatalf("expected short cache hit header, got %q", secondRR.Header().Get("X-VE-Cache"))
+	}
+	after := globalVEMetrics.snapshot().Discoverable
+	if got := veMetricUint(after, "cache_miss_total") - veMetricUint(before, "cache_miss_total"); got != 1 {
+		t.Fatalf("cache miss delta=%d, want 1; metrics=%#v", got, after)
+	}
+	if got := veMetricUint(after, "cache_hit_total") - veMetricUint(before, "cache_hit_total"); got != 1 {
+		t.Fatalf("cache hit delta=%d, want 1; metrics=%#v", got, after)
+	}
+	if firstRR.Body.String() != secondRR.Body.String() {
+		t.Fatalf("cached response should match first response\nfirst=%s\nsecond=%s", firstRR.Body.String(), secondRR.Body.String())
+	}
+}
+
+func TestVEDiscoverableCoalescesConcurrentCacheMisses(t *testing.T) {
+	veDiscoverableCache.Lock()
+	veDiscoverableCache.Entries = map[string]veDiscoverableCacheEntry{}
+	veDiscoverableCache.Unlock()
+	veDiscoverableSingleflight = singleflight.Group{}
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-slow-a": {TenantID: "tenant-a", UserID: "user-slow-a", MachineID: "machine-slow-a"},
+			"machine-slow-b": {TenantID: "tenant-a", UserID: "user-slow-b", MachineID: "machine-slow-b"},
+		},
+	}
+	if rr := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{"name": "Slow Researcher"}, "machine-slow-a", "machine-token"); rr.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-slow-a/approve", nil)
+	approveReq = approveReq.WithContext(tenantAdminContext(approveReq.Context(), "tenant-a"))
+	approveReq.SetPathValue("id", "ve_machine-slow-a")
+	approveRec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+	presence := &slowVEMachinePresence{
+		infos:   map[string]*device.MachineRuntimeInfo{"machine-slow-a": {MachineID: "machine-slow-a", Online: true}},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	handler := VEDiscoverableHandler(settings, authn, presence)
+	before := globalVEMetrics.snapshot().Discoverable
+	const requests = 6
+	results := make(chan *httptest.ResponseRecorder, requests)
+	var wg sync.WaitGroup
+	wg.Add(requests)
+	go func() {
+		defer wg.Done()
+		results <- doVEMachineJSON(t, handler, http.MethodGet, "/api/ve/discoverable", nil, "machine-slow-b", "machine-token")
+	}()
+	<-presence.started
+	for i := 1; i < requests; i++ {
+		go func() {
+			defer wg.Done()
+			results <- doVEMachineJSON(t, handler, http.MethodGet, "/api/ve/discoverable", nil, "machine-slow-b", "machine-token")
+		}()
+	}
+	time.Sleep(25 * time.Millisecond)
+	close(presence.release)
+	wg.Wait()
+	close(results)
+	for rr := range results {
+		if rr.Code != http.StatusOK {
+			t.Fatalf("discover status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if !bytes.Contains(rr.Body.Bytes(), []byte(`"id":"ve_machine-slow-a"`)) {
+			t.Fatalf("discover response missing employee: %s", rr.Body.String())
+		}
+	}
+	if got := presence.Count(); got != 1 {
+		t.Fatalf("presence calls=%d, want 1 coalesced build", got)
+	}
+	after := globalVEMetrics.snapshot().Discoverable
+	if got := veMetricUint(after, "coalesced_total") - veMetricUint(before, "coalesced_total"); got == 0 {
+		t.Fatalf("coalesced_total did not increase; metrics=%#v", after)
+	}
+}
+
+func TestVEDiscoverableServesStaleCacheWhenBuildsOverloaded(t *testing.T) {
+	veDiscoverableCache.Lock()
+	veDiscoverableCache.Entries = map[string]veDiscoverableCacheEntry{}
+	veDiscoverableCache.Unlock()
+	veDiscoverableSingleflight = singleflight.Group{}
+	veDiscoverableBuildSemaphore = make(chan struct{}, veDiscoverableBuildConcurrency)
+	for i := 0; i < veDiscoverableBuildConcurrency; i++ {
+		veDiscoverableBuildSemaphore <- struct{}{}
+	}
+	defer func() { veDiscoverableBuildSemaphore = make(chan struct{}, veDiscoverableBuildConcurrency) }()
+
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-stale-b": {TenantID: "tenant-a", UserID: "user-stale-b", MachineID: "machine-stale-b"},
+		},
+	}
+	payload := []byte(`{"employees":[{"id":"ve_stale","machine_id":"machine-stale-a","owner_user_id":"user-stale-a","name":"Stale Researcher","skill_description":"","access_policy":"","status":"active","online_status":"online"}],"max_group_participants":3}`)
+	etag := veResponseETag(payload)
+	cacheKey := strings.ToLower("tenant-a|user-stale-b|machine-stale-b")
+	veDiscoverableCache.Lock()
+	veDiscoverableCache.Entries[cacheKey] = veDiscoverableCacheEntry{Data: payload, ETag: etag, Employees: 1, ExpiresAt: time.Now().Add(-time.Second)}
+	veDiscoverableCache.Unlock()
+	before := globalVEMetrics.snapshot().Discoverable
+
+	rr := doVEMachineJSON(t, VEDiscoverableHandler(settings, authn), http.MethodGet, "/api/ve/discoverable", nil, "machine-stale-b", "machine-token")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("discover status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("X-VE-Cache") != "stale" {
+		t.Fatalf("expected stale cache header, got %q", rr.Header().Get("X-VE-Cache"))
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`"id":"ve_stale"`)) {
+		t.Fatalf("stale response missing employee: %s", rr.Body.String())
+	}
+	after := globalVEMetrics.snapshot().Discoverable
+	if got := veMetricUint(after, "overloaded_total") - veMetricUint(before, "overloaded_total"); got != 0 {
+		t.Fatalf("overloaded_total delta=%d, stale response should not count as failed overload; metrics=%#v", got, after)
+	}
+	if got := veMetricUint(after, "stale_served_total") - veMetricUint(before, "stale_served_total"); got != 1 {
+		t.Fatalf("stale_served delta=%d, want 1; metrics=%#v", got, after)
+	}
+}
+
+func TestVEDiscoverableReturnsTooManyRequestsWhenOverloadedWithoutCache(t *testing.T) {
+	veDiscoverableCache.Lock()
+	veDiscoverableCache.Entries = map[string]veDiscoverableCacheEntry{}
+	veDiscoverableCache.Unlock()
+	veDiscoverableSingleflight = singleflight.Group{}
+	veDiscoverableBuildSemaphore = make(chan struct{}, veDiscoverableBuildConcurrency)
+	for i := 0; i < veDiscoverableBuildConcurrency; i++ {
+		veDiscoverableBuildSemaphore <- struct{}{}
+	}
+	defer func() { veDiscoverableBuildSemaphore = make(chan struct{}, veDiscoverableBuildConcurrency) }()
+
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-busy-b": {TenantID: "tenant-a", UserID: "user-busy-b", MachineID: "machine-busy-b"},
+		},
+	}
+	before := globalVEMetrics.snapshot().Discoverable
+	rr := doVEMachineJSON(t, VEDiscoverableHandler(settings, authn), http.MethodGet, "/api/ve/discoverable", nil, "machine-busy-b", "machine-token")
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("discover status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Retry-After") != "1" {
+		t.Fatalf("Retry-After=%q, want 1", rr.Header().Get("Retry-After"))
+	}
+	after := globalVEMetrics.snapshot().Discoverable
+	if got := veMetricUint(after, "overloaded_total") - veMetricUint(before, "overloaded_total"); got != 1 {
+		t.Fatalf("overloaded delta=%d, want 1; metrics=%#v", got, after)
+	}
+}
+
+func TestVEMetricsTracksInitiateAndAuthResponseOutcomes(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"machine-b": {TenantID: "tenant-a", UserID: "user-b", MachineID: "machine-b"},
+		},
+	}
+	if rr := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{"name": "Legal Researcher"}, "machine-a", "machine-token"); rr.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/approve", nil)
+	approveReq = approveReq.WithContext(tenantAdminContext(approveReq.Context(), "tenant-a"))
+	approveReq.SetPathValue("id", "ve_machine-a")
+	approveRec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+
+	before := globalVEMetrics.snapshot()
+	initReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
+	initReq.Header.Set("X-Machine-ID", "machine-b")
+	initReq.Header.Set("Authorization", "Bearer machine-token")
+	initReq.SetPathValue("id", "ve_machine-a")
+	initRec := httptest.NewRecorder()
+	VEInitiateHandler(settings, NewGroupDiscussionService(), authn).ServeHTTP(initRec, initReq)
+	if initRec.Code != http.StatusCreated {
+		t.Fatalf("initiate status=%d body=%s", initRec.Code, initRec.Body.String())
+	}
+
+	authRR := doVEMachineJSON(t, VEAuthRespondHandler(settings, authn), http.MethodPost, "/api/ve/auth/respond", map[string]any{"request_id": "missing", "decision": "allow_once"}, "machine-a", "machine-token")
+	if authRR.Code != http.StatusNotFound {
+		t.Fatalf("auth respond status=%d body=%s", authRR.Code, authRR.Body.String())
+	}
+	after := globalVEMetrics.snapshot()
+	if got := veMetricUint(after.Initiate, "created_session_total") - veMetricUint(before.Initiate, "created_session_total"); got != 1 {
+		t.Fatalf("created session delta=%d, want 1; metrics=%#v", got, after.Initiate)
+	}
+	if got := veMetricUint(after.AuthResponse, "not_found_total") - veMetricUint(before.AuthResponse, "not_found_total"); got != 1 {
+		t.Fatalf("auth not_found delta=%d, want 1; metrics=%#v", got, after.AuthResponse)
+	}
+}
+
+func TestVEControlDeliveryMetricsClassifyAuthResultFailures(t *testing.T) {
+	sender := &fakeVEMachineEventSender{err: fmt.Errorf("%w: %w", device.ErrMachineOffline, device.ErrMachineSendBufferFull)}
+	req := digitalEmployeeAccessRequest{
+		ID:                 "req-control-1",
+		RequesterMachineID: "machine-gui",
+		TargetMachineID:    "machine-ve",
+		TargetVEID:         "ve_machine-ve",
+		TargetVEName:       "Control Worker",
+	}
+	before := globalVEMetrics.snapshot().ControlDelivery
+
+	emitVEAuthResult(sender, req, "allow_once", "allowed")
+
+	after := globalVEMetrics.snapshot().ControlDelivery
+	if len(sender.messages) != 2 {
+		t.Fatalf("sent messages=%d, want 2", len(sender.messages))
+	}
+	if got := veMetricUint(after, "failed_total") - veMetricUint(before, "failed_total"); got != 2 {
+		t.Fatalf("failed delta=%d, want 2; metrics=%#v", got, after)
+	}
+	if got := veMetricUint(after, "buffer_full_total") - veMetricUint(before, "buffer_full_total"); got != 2 {
+		t.Fatalf("buffer_full delta=%d, want 2; metrics=%#v", got, after)
+	}
+}
+
+func TestVEControlDeliveryMetricsTrackAdminActionEvents(t *testing.T) {
+	sender := &fakeVEMachineEventSender{}
+	before := globalVEMetrics.snapshot().ControlDelivery
+
+	emitVEAdminActionEvent(sender, "approve", digitalEmployeeEntry{ID: "ve_machine-a", MachineID: "machine-a", Name: "Control Worker"})
+
+	after := globalVEMetrics.snapshot().ControlDelivery
+	if len(sender.messages) != 3 {
+		t.Fatalf("sent messages=%d, want 3", len(sender.messages))
+	}
+	if got := veMetricUint(after, "sent_total") - veMetricUint(before, "sent_total"); got != 3 {
+		t.Fatalf("sent delta=%d, want 3; metrics=%#v", got, after)
+	}
+}
+
 func TestDigitalEmployeeAuthorizationRequiresTenantGrant(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	hubAuth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Quota: 5, Enabled: true, ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour).Format(time.RFC3339)}, time.Now().UTC())
@@ -3366,6 +4122,19 @@ func doPlainJSON(t *testing.T, handler http.HandlerFunc, method, target string, 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr
+}
+
+func veMetricUint(metrics map[string]any, key string) uint64 {
+	switch value := metrics[key].(type) {
+	case uint64:
+		return value
+	case int:
+		return uint64(value)
+	case float64:
+		return uint64(value)
+	default:
+		return 0
+	}
 }
 
 func enableVEDigitalEmployeeAuthorization(t *testing.T, settings *testSystemSettingsRepo, quota int) {

@@ -1000,6 +1000,298 @@ func TestGroupDiscussionMessageReturnsBeforeSlowMacLawSrvRuntimeReply(t *testing
 	})
 }
 
+func TestPlatformRuntimeDeliveryLimiterRejectsWhenFull(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtimeCalled := false
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{{"employee_id": "platform-employee-1", "runtime_status": "ready"}}})
+			return
+		}
+		runtimeCalled = true
+		writeJSON(w, http.StatusOK, map[string]any{"message": map[string]any{"content": "should not run"}})
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	veRuntimeDeliverySemaphore = make(chan struct{}, veRuntimeDeliveryConcurrency)
+	for i := 0; i < veRuntimeDeliveryConcurrency; i++ {
+		veRuntimeDeliverySemaphore <- struct{}{}
+	}
+	defer func() { veRuntimeDeliverySemaphore = make(chan struct{}, veRuntimeDeliveryConcurrency) }()
+	before := globalVEMetrics.snapshot().RuntimeDelivery
+
+	sender := platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}}
+	session := &corea2a.Session{ID: "session-runtime-busy", TenantID: "tenant-a", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_employee_1", RoleCode: "speak"}}}
+	handled, reply, err := sender.SendDiscussionMessage(session, corea2a.GroupDiscussionMessage{ID: "msg-runtime-busy", FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: "hello"}, corea2a.Participant{ID: "ve_employee_1", RoleCode: "speak"})
+	if !handled || reply != nil || err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("handled=%v reply=%#v err=%v, want busy handled error", handled, reply, err)
+	}
+	if runtimeCalled {
+		t.Fatal("runtime message endpoint should not be called when limiter is full")
+	}
+	after := globalVEMetrics.snapshot().RuntimeDelivery
+	if got := veMetricUint(after, "rejected_total") - veMetricUint(before, "rejected_total"); got != 1 {
+		t.Fatalf("runtime rejected delta=%d, want 1; metrics=%#v", got, after)
+	}
+}
+
+func TestGroupDiscussionMessageReturnsServiceUnavailableWhenRuntimeBusy(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{{"employee_id": "platform-employee-1", "runtime_status": "ready"}}})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"message": map[string]any{"content": "should not run"}})
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	veRuntimeDeliverySemaphore = make(chan struct{}, veRuntimeDeliveryConcurrency)
+	for i := 0; i < veRuntimeDeliveryConcurrency; i++ {
+		veRuntimeDeliverySemaphore <- struct{}{}
+	}
+	defer func() { veRuntimeDeliverySemaphore = make(chan struct{}, veRuntimeDeliveryConcurrency) }()
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Runtime busy", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_employee_1", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"id":"hub-msg-runtime-busy","from_id":"maclaw-gui","content":"hello"}`))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("Retry-After") != "1" || !bytes.Contains(w.Body.Bytes(), []byte("VE_RUNTIME_BUSY")) {
+		t.Fatalf("unexpected busy response headers=%v body=%s", w.Header(), w.Body.String())
+	}
+}
+
+func TestGroupDiscussionMessageReturnsServiceUnavailableWhenRuntimeCircuitOpen(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{{"employee_id": "platform-employee-1", "runtime_status": "ready"}}})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"message": map[string]any{"content": "should not run"}})
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	runtimeEntry := macLawSrvRuntimeEntry{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{runtimeEntry}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	employee := digitalEmployeeEntry{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{employee}}); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	circuitKey := veRuntimeDeliveryCircuitKey("tenant-a", employee, runtimeEntry)
+	veRuntimeDeliveryCircuit.Lock()
+	veRuntimeDeliveryCircuit.Entries = map[string]veRuntimeDeliveryCircuitEntry{circuitKey: {Failures: veRuntimeCircuitFailureLimit, OpenUntil: time.Now().Add(veRuntimeCircuitOpenDuration)}}
+	veRuntimeDeliveryCircuit.Unlock()
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Runtime circuit", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_employee_1", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"id":"hub-msg-runtime-circuit-open","from_id":"maclaw-gui","content":"hello"}`))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("Retry-After") != "5" || !bytes.Contains(w.Body.Bytes(), []byte("VE_RUNTIME_CIRCUIT_OPEN")) {
+		t.Fatalf("unexpected circuit response headers=%v body=%s", w.Header(), w.Body.String())
+	}
+}
+
+func TestPlatformRuntimeDeliveryCircuitOpensAfterFailures(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtimeCalls := 0
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{{"employee_id": "platform-employee-1", "runtime_status": "ready"}}})
+			return
+		}
+		runtimeCalls++
+		http.Error(w, "runtime down", http.StatusBadGateway)
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	veRuntimeDeliveryCircuit.Lock()
+	veRuntimeDeliveryCircuit.Entries = map[string]veRuntimeDeliveryCircuitEntry{}
+	veRuntimeDeliveryCircuit.Unlock()
+	before := globalVEMetrics.snapshot().RuntimeDelivery
+	sender := platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}}
+	session := &corea2a.Session{ID: "session-runtime-circuit", TenantID: "tenant-a", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_employee_1", RoleCode: "speak"}}}
+	msg := corea2a.GroupDiscussionMessage{ID: "msg-runtime-circuit", FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: "hello"}
+	for i := 0; i < veRuntimeCircuitFailureLimit; i++ {
+		handled, _, err := sender.SendDiscussionMessage(session, msg, corea2a.Participant{ID: "ve_employee_1", RoleCode: "speak"})
+		if !handled || err == nil {
+			t.Fatalf("attempt %d handled=%v err=%v, want runtime failure", i+1, handled, err)
+		}
+	}
+	handled, _, err := sender.SendDiscussionMessage(session, msg, corea2a.Participant{ID: "ve_employee_1", RoleCode: "speak"})
+	if !handled || err == nil || !strings.Contains(err.Error(), "circuit is open") {
+		t.Fatalf("circuit attempt handled=%v err=%v, want open circuit", handled, err)
+	}
+	if runtimeCalls != veRuntimeCircuitFailureLimit {
+		t.Fatalf("runtime calls=%d, want %d; open circuit should skip runtime", runtimeCalls, veRuntimeCircuitFailureLimit)
+	}
+	after := globalVEMetrics.snapshot().RuntimeDelivery
+	if got := veMetricUint(after, "circuit_open_total") - veMetricUint(before, "circuit_open_total"); got != 1 {
+		t.Fatalf("circuit_open delta=%d, want 1; metrics=%#v", got, after)
+	}
+	if got := veMetricUint(after, "http_status_failed_total") - veMetricUint(before, "http_status_failed_total"); got != uint64(veRuntimeCircuitFailureLimit) {
+		t.Fatalf("http_status_failed delta=%d, want %d; metrics=%#v", got, veRuntimeCircuitFailureLimit, after)
+	}
+	if got := veMetricUint(after, "circuit_rejected_total") - veMetricUint(before, "circuit_rejected_total"); got != 1 {
+		t.Fatalf("circuit_rejected delta=%d, want 1; metrics=%#v", got, after)
+	}
+}
+
+func TestPlatformRuntimeDeliveryCountsEmptyReplyFailure(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{{"employee_id": "platform-employee-empty", "runtime_status": "ready"}}})
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"done\":true,\"content\":\"   \"}\n\n"))
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-empty", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_empty", MachineID: "runtime-machine-empty", PlatformID: "platform-empty", PlatformEmployeeID: "platform-employee-empty", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	veRuntimeDeliveryCircuit.Lock()
+	veRuntimeDeliveryCircuit.Entries = map[string]veRuntimeDeliveryCircuitEntry{}
+	veRuntimeDeliveryCircuit.Unlock()
+	before := globalVEMetrics.snapshot().RuntimeDelivery
+	sender := platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}}
+	session := &corea2a.Session{ID: "session-runtime-empty", TenantID: "tenant-a", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_employee_empty", RoleCode: "speak"}}}
+
+	handled, reply, err := sender.SendDiscussionMessage(session, corea2a.GroupDiscussionMessage{ID: "msg-runtime-empty", FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: "hello"}, corea2a.Participant{ID: "ve_employee_empty", RoleCode: "speak"})
+	if !handled || reply != nil || err == nil || !strings.Contains(err.Error(), "assistant content") {
+		t.Fatalf("handled=%v reply=%#v err=%v, want empty reply error", handled, reply, err)
+	}
+	after := globalVEMetrics.snapshot().RuntimeDelivery
+	if got := veMetricUint(after, "empty_reply_total") - veMetricUint(before, "empty_reply_total"); got != 1 {
+		t.Fatalf("empty_reply delta=%d, want 1; metrics=%#v", got, after)
+	}
+	if got := veMetricUint(after, "failed_total") - veMetricUint(before, "failed_total"); got != 1 {
+		t.Fatalf("failed delta=%d, want 1; metrics=%#v", got, after)
+	}
+}
+
+func TestPlatformRuntimeDeliveryClassifiesEventStreamHTTPStatusFailure(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/platform/runtime/report" {
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "users": []map[string]any{{"employee_id": "platform-employee-sse-fail", "runtime_status": "ready"}}})
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("data: {\"error\":\"runtime down\"}\n\n"))
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-sse-fail", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_sse_fail", MachineID: "runtime-machine-sse-fail", PlatformID: "platform-sse-fail", PlatformEmployeeID: "platform-employee-sse-fail", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	veRuntimeDeliveryCircuit.Lock()
+	veRuntimeDeliveryCircuit.Entries = map[string]veRuntimeDeliveryCircuitEntry{}
+	veRuntimeDeliveryCircuit.Unlock()
+	before := globalVEMetrics.snapshot().RuntimeDelivery
+	sender := platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}}
+	session := &corea2a.Session{ID: "session-runtime-sse-fail", TenantID: "tenant-a", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_employee_sse_fail", RoleCode: "speak"}}}
+
+	handled, reply, err := sender.SendDiscussionMessage(session, corea2a.GroupDiscussionMessage{ID: "msg-runtime-sse-fail", FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: "hello"}, corea2a.Participant{ID: "ve_employee_sse_fail", RoleCode: "speak"})
+	if !handled || reply != nil || err == nil || !strings.Contains(err.Error(), "returned status 502") {
+		t.Fatalf("handled=%v reply=%#v err=%v, want HTTP status error", handled, reply, err)
+	}
+	after := globalVEMetrics.snapshot().RuntimeDelivery
+	if got := veMetricUint(after, "http_status_failed_total") - veMetricUint(before, "http_status_failed_total"); got != 1 {
+		t.Fatalf("http_status_failed delta=%d, want 1; metrics=%#v", got, after)
+	}
+}
+
+func TestPlatformRuntimeDeliveryCircuitPrunesExpiredEntries(t *testing.T) {
+	veRuntimeDeliveryCircuit.Lock()
+	veRuntimeDeliveryCircuit.Entries = map[string]veRuntimeDeliveryCircuitEntry{
+		"expired":       {Failures: veRuntimeCircuitFailureLimit, OpenUntil: time.Now().Add(-time.Second)},
+		"active":        {Failures: veRuntimeCircuitFailureLimit, OpenUntil: time.Now().Add(time.Second)},
+		"stale-failure": {Failures: 1, LastFailure: time.Now().Add(-veRuntimeCircuitFailureWindow - time.Second)},
+		"fresh-failure": {Failures: 1, LastFailure: time.Now()},
+	}
+	veRuntimeDeliveryCircuit.Unlock()
+
+	size := veRuntimeDeliveryCircuitSize()
+	if size != 2 {
+		t.Fatalf("circuit size=%d, want 2 active/fresh entries", size)
+	}
+	snapshot := globalVEMetrics.snapshot().RuntimeDelivery
+	if got := veMetricUint(snapshot, "circuit_entries"); got != 2 {
+		t.Fatalf("circuit_entries=%d, want 2; metrics=%#v", got, snapshot)
+	}
+}
+
 func TestGroupDiscussionMessageRoutesMacLawSrvEmployeeDirectly(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	runtimePayloads := make(chan map[string]any, 2)

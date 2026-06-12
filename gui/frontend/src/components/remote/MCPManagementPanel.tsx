@@ -405,7 +405,7 @@ function LocalMCPPanel({ translate }: Props) {
                                     </button>
                                     <button className="btn-secondary" style={smallBtnStyle} onClick={() => openEditForm(s)} disabled={busy}>{translate("mcpEdit")}</button>
                                     {s.managed ? (
-                                        <span style={{ display: "inline-flex", alignItems: "center", gap: "2px", padding: "1px 8px", borderRadius: "999px", fontSize: "0.68rem", fontWeight: 600, color: colors.textMuted, border: `1px solid ${colors.border}`, background: colors.surfaceMuted, cursor: "default" }} title={translate("mcpCannotDeleteManaged")}>🔒 {translate("mcpManagedLabel")}</span>
+                                        <span style={{ display: "inline-flex", alignItems: "center", gap: "2px", padding: "1px 8px", borderRadius: "999px", fontSize: "0.68rem", fontWeight: 600, color: colors.textMuted, border: `1px solid ${colors.border}`, background: colors.surfaceMuted, cursor: "default" }} title={translate("mcpCannotDeleteManaged")}>{translate("mcpManagedLabel")}</span>
                                     ) : (
                                         <button className="btn-secondary btn-danger" style={smallBtnStyle} onClick={() => setDeleteTarget(s)} disabled={busy}>{translate("mcpDelete")}</button>
                                     )}
@@ -436,7 +436,7 @@ function LocalMCPPanel({ translate }: Props) {
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(280px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpConfirmDelete")}</h3>
-                            <button className="btn-close" onClick={() => setDeleteTarget(null)}>&times;</button>
+                            <button className="btn-close" onClick={() => setDeleteTarget(null)}>X</button>
                         </div>
                         <div className="modal-body">
                             <p style={{ ...mcpDescriptionTextStyle, fontSize: "0.8rem", margin: 0 }}>
@@ -457,7 +457,7 @@ function LocalMCPPanel({ translate }: Props) {
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(480px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpImportJsonTitle")}</h3>
-                            <button className="btn-close" onClick={() => setShowJsonImport(false)}>&times;</button>
+                            <button className="btn-close" onClick={() => setShowJsonImport(false)}>X</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                             <div style={mcpDescriptionTextStyle}>
@@ -500,7 +500,7 @@ function LocalMCPPanel({ translate }: Props) {
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(440px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{editingServer ? translate("mcpEditLocalServer") : translate("mcpAddLocalServer")}</h3>
-                            <button className="btn-close" onClick={closeForm}>&times;</button>
+                            <button className="btn-close" onClick={closeForm}>X</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                             <div className="form-group" style={{ marginBottom: 0 }}>
@@ -552,7 +552,7 @@ function LocalMCPPanel({ translate }: Props) {
                                             placeholder="value"
                                             spellCheck={false}
                                         />
-                                        <button className="btn-secondary btn-danger" style={{ fontSize: "0.68rem", padding: "2px 6px" }} onClick={() => setEnvPairs(envPairs.filter((_, i) => i !== idx))}>&times;</button>
+                                        <button className="btn-secondary btn-danger" style={{ fontSize: "0.68rem", padding: "2px 6px" }} onClick={() => setEnvPairs(envPairs.filter((_, i) => i !== idx))}>DEL</button>
                                     </div>
                                 ))}
                                 <button className="btn-secondary" style={{ fontSize: "0.72rem", padding: "2px 8px" }} onClick={() => setEnvPairs([...envPairs, { key: "", value: "" }])}>
@@ -1032,7 +1032,7 @@ function RemoteMCPPanel({ translate }: Props) {
     const healthColor = (status: string): string => {
         switch (status) {
             case "healthy": return "var(--theme-success)";
-            case "slow": return "var(--theme-warning)";
+            case "slow": return "var(--theme-primary)";
             case "unavailable": return "var(--theme-danger)";
             case "checking": return colors.textMuted;
             default: return colors.textMuted; // "unknown"
@@ -1041,7 +1041,7 @@ function RemoteMCPPanel({ translate }: Props) {
     const healthBg = (status: string): string => {
         switch (status) {
             case "healthy": return "var(--theme-success-bg)";
-            case "slow": return "var(--theme-warning-bg)";
+            case "slow": return "var(--theme-info-bg)";
             case "unavailable": return "var(--theme-danger-bg)";
             case "checking": return colors.surfaceMuted;
             default: return colors.surfaceMuted;
@@ -1050,7 +1050,7 @@ function RemoteMCPPanel({ translate }: Props) {
     const healthBorder = (status: string): string => {
         switch (status) {
             case "healthy": return "var(--theme-success)";
-            case "slow": return "var(--theme-warning)";
+            case "slow": return "var(--theme-primary)";
             case "unavailable": return "var(--theme-danger)";
             case "checking": return colors.border;
             default: return colors.border;
@@ -1130,7 +1130,7 @@ function RemoteMCPPanel({ translate }: Props) {
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(280px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpConfirmDelete")}</h3>
-                            <button className="btn-close" onClick={() => setDeleteTarget(null)}>&times;</button>
+                            <button className="btn-close" onClick={() => setDeleteTarget(null)}>X</button>
                         </div>
                         <div className="modal-body">
                             <p style={{ ...mcpDescriptionTextStyle, fontSize: "0.8rem", margin: 0 }}>
@@ -1151,7 +1151,7 @@ function RemoteMCPPanel({ translate }: Props) {
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(420px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{editingServer ? translate("mcpEditServer") : translate("mcpRegisterServerTitle")}</h3>
-                            <button className="btn-close" onClick={closeForm}>&times;</button>
+                            <button className="btn-close" onClick={closeForm}>X</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                             <div className="form-group" style={{ marginBottom: 0 }}>
@@ -1227,7 +1227,7 @@ function RemoteMCPPanel({ translate }: Props) {
                                                     style={{ fontSize: "0.68rem", padding: "2px 6px", lineHeight: "1.4", flexShrink: 0 }}
                                                     onClick={() => setHeaderPairs(headerPairs.filter((_, i) => i !== idx))}
                                                 >
-                                                    &times;
+                                                    DEL
                                                 </button>
                                             </div>
                                         ))}
@@ -1256,7 +1256,7 @@ function RemoteMCPPanel({ translate }: Props) {
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(500px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpRemoteImportJsonTitle")}</h3>
-                            <button className="btn-close" onClick={() => setShowJsonImport(false)}>&times;</button>
+                            <button className="btn-close" onClick={() => setShowJsonImport(false)}>X</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                             <div style={mcpDescriptionTextStyle}>

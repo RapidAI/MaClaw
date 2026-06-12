@@ -355,6 +355,10 @@ type NLSkillEntry struct {
 	RepairAttemptCount int                 `json:"repair_attempt_count,omitempty"`
 	LastRepairAt       string              `json:"last_repair_at,omitempty"`
 	RepairHistory      []SkillRepairRecord `json:"repair_history,omitempty"`
+	OptimizationCount  int                 `json:"optimization_count,omitempty"`
+	LastOptimizedAt    string              `json:"last_optimized_at,omitempty"`
+	DiscoveredFrom     string              `json:"discovered_from,omitempty"`   // nudge candidate ContextKey (auto_discovered skills)
+	TotalTokensCost    int                 `json:"total_tokens_cost,omitempty"` // cumulative LLM tokens across all invocations
 
 	// Params is the parameter schema for this skill. When explicitly declared
 	// in skill.yaml, it provides aliases, CLI flags, defaults, and descriptions.
@@ -586,7 +590,15 @@ func (c MaclawLLMConfig) NeedsConservativeOpenAICompatSanitization() bool {
 	if IsCodeGenURL(c.URL) {
 		return true
 	}
+	if IsMaclawOfficialHubLLMURL(c.URL) {
+		return true
+	}
 	return IsQwenOpenAICompat(c)
+}
+
+func IsMaclawOfficialHubLLMURL(rawURL string) bool {
+	text := strings.ToLower(strings.TrimSpace(rawURL))
+	return strings.Contains(text, "hub.mypapers.top/api/llm/v1")
 }
 
 func IsQwenOpenAICompat(cfg MaclawLLMConfig) bool {
@@ -624,6 +636,19 @@ func (c MaclawLLMConfig) EffectiveTimeoutSec() int {
 // This avoids double "/v1" when the base URL is e.g. "https://host/api/v1".
 func AnthropicMessagesEndpoint(baseURL string) string {
 	return appendV1Path(baseURL, "/messages")
+}
+
+// AnthropicBaseURL returns the SDK base URL for an Anthropic-compatible
+// endpoint, stripping message-specific suffixes if the caller provided them.
+func AnthropicBaseURL(raw string) string {
+	base := strings.TrimRight(strings.TrimSpace(raw), "/")
+	lower := strings.ToLower(base)
+	for _, suffix := range []string{"/v1/messages", "/messages", "/v1"} {
+		if strings.HasSuffix(lower, suffix) {
+			return strings.TrimRight(base[:len(base)-len(suffix)], "/")
+		}
+	}
+	return base
 }
 
 // SetAnthropicAuthHeaders sets both x-api-key and Authorization Bearer headers
@@ -666,6 +691,58 @@ func IsDeepSeekThinking(cfg MaclawLLMConfig) bool {
 	}
 	model := strings.ToLower(cfg.Model)
 	return strings.HasPrefix(model, "deepseek")
+}
+
+func IsDeepSeekFlashOpenAICompat(cfg MaclawLLMConfig) bool {
+	text := strings.ToLower(strings.Join([]string{
+		cfg.Model,
+		cfg.ProviderName,
+		cfg.URL,
+	}, " "))
+	return strings.Contains(text, "deepseek") && strings.Contains(text, "flash")
+}
+
+func IsGLMCodingPlanUserAgent(agent string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(agent))
+	for _, supported := range []string{
+		"claude code",
+		"cline",
+		"opencode",
+		"roo code",
+		"kilo code",
+		"cursor",
+		"crush",
+		"goose",
+	} {
+		if normalized == supported {
+			return true
+		}
+	}
+	return false
+}
+
+func NormalizeGLMCodingPlanOpenAIBaseURL(rawURL, agent string) string {
+	if !IsGLMCodingPlanUserAgent(agent) {
+		return rawURL
+	}
+	text := strings.TrimSpace(rawURL)
+	lower := strings.ToLower(text)
+	const from = "open.bigmodel.cn/api/paas/v4"
+	if !strings.Contains(lower, from) || strings.Contains(lower, "open.bigmodel.cn/api/coding/paas/v4") {
+		return rawURL
+	}
+	idx := strings.Index(lower, from)
+	if idx < 0 {
+		return rawURL
+	}
+	return text[:idx] + "open.bigmodel.cn/api/coding/paas/v4" + text[idx+len(from):]
+}
+
+func IsGLMCodingPlanOpenAICompat(cfg MaclawLLMConfig) bool {
+	if !IsGLMCodingPlanUserAgent(cfg.UserAgent()) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent())), "open.bigmodel.cn/api/coding/paas/v4")
 }
 
 // MergeSystemIntoUser extracts system messages and prepends their content to

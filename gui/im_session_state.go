@@ -53,6 +53,7 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 	h.workflowReviewExperienceContext.Delete(userID)
 	h.stashedPhasePrompt.Delete(userID)
 	h.workflowOriginalRequest.Delete(userID)
+	h.pendingCancelExecuteRequest.Delete(userID)
 	if h.confirmationStore != nil {
 		h.confirmationStore.clear(userID)
 	}

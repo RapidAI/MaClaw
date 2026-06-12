@@ -60,6 +60,33 @@ func (h *IMMessageHandler) tryDirectExecutionProfile(msg IMUserMessage, loopCtx 
 	return resp, true
 }
 
+func (h *IMMessageHandler) tryImmediateCurrentTimeDirect(msg IMUserMessage, providedLoopCtx *LoopContext) (*IMAgentResponse, bool) {
+	if h == nil || !isLocalCurrentTimeQuery(msg.Text) {
+		return nil, false
+	}
+	if providedLoopCtx != nil {
+		return nil, false
+	}
+	if _, forced := hardStructuralFullExecutionProfile(msg, false, false); forced {
+		return nil, false
+	}
+	profile, ok := localCurrentTimeExecutionProfile(msg.Text, h.executionContractForRegisteredToolName)
+	if !ok || !profile.IsDirect() {
+		return nil, false
+	}
+	loopCtx := NewLoopContext("chat", 1, nil)
+	loopCtx.Runtime = runtimeContextFromIMMessage(msg)
+	loopCtx.Runtime.Execution = profile
+	loopCtx.Platform = msg.Platform
+	loopCtx.UserID = msg.UserID
+	loopCtx.Lang = msg.Lang
+	var history []agent.ConversationEntry
+	if h.memory != nil && strings.TrimSpace(msg.UserID) != "" {
+		history = h.memory.Load(msg.UserID)
+	}
+	return h.tryDirectExecutionProfile(msg, loopCtx, history)
+}
+
 func directExecutionToolName(profile ExecutionProfile) string {
 	return strings.TrimSpace(profile.DirectToolName)
 }

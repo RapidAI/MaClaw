@@ -13,7 +13,7 @@ export function HubStatusBadge({ connecting, t }: { connecting: boolean; t: Tran
     }
     return (
         <>
-            <span aria-hidden="true" className="hub-status-check">✓</span>
+            <span aria-hidden="true" className="hub-status-check">OK</span>
             <span>{t("Hub connected", "Hub 已连接", "Hub 已連接")}</span>
         </>
     );
@@ -25,9 +25,9 @@ export function HubRegisterButtonContent({ regBusy, regDone, hubConnecting, t }:
     }
     if (regDone) {
         if (hubConnecting) {
-            return <><span aria-hidden="true" className="hub-status-spinner" />{t("✅ Registered · Hub connecting...", "✅ 已注册 · 连接 Hub 中...", "✅ 已註冊 · 連接 Hub 中...")}</>;
+            return <><span aria-hidden="true" className="hub-status-spinner" />{t("Registered · Hub connecting...", "已注册 · 连接 Hub 中...", "已註冊 · 連接 Hub 中...")}</>;
         }
-        return <>{t("✅ Registered", "✅ 已注册", "✅ 已註冊")}</>;
+        return <>{t("Registered", "已注册", "已註冊")}</>;
     }
     return <>{t("Register", "注册", "註冊")}</>;
 }

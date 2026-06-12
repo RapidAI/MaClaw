@@ -8,6 +8,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 const maxConsecutiveNoTool = 5
@@ -25,6 +26,7 @@ type agentLoopEmptyNoToolResult struct {
 type agentLoopNoToolRecoverOptions struct {
 	Context                *LoopContext
 	UserID                 string
+	UserText               string
 	MessageContent         string
 	TrimmedVisibleContent  string
 	ToolCalls              []llm.ToolCall
@@ -51,7 +53,6 @@ type agentLoopNoToolBranchOptions struct {
 	UserText                 string
 	Iteration                int
 	Platform                 string
-	GateConfig               codingToolGateConfig
 	MessageContent           string
 	Choice                   llm.Choice
 	Phase                    *agentLoopPhase
@@ -61,7 +62,6 @@ type agentLoopNoToolBranchOptions struct {
 	History                  []agent.ConversationEntry
 	LengthContinuationBuffer *strings.Builder
 	TotalToolCallsInLoop     int
-	SteeringDetector         *SteeringWorkflowDetector
 	StreamDone               bool
 	RecordSystemMessages     func(int, []interface{})
 	AttachLLMTelemetry       func(*IMAgentResponse)
@@ -111,7 +111,6 @@ type agentLoopNoToolPathOptions struct {
 	UserText                 string
 	Iteration                int
 	Platform                 string
-	GateConfig               codingToolGateConfig
 	MessageContent           string
 	Choice                   llm.Choice
 	Phase                    *agentLoopPhase
@@ -121,7 +120,6 @@ type agentLoopNoToolPathOptions struct {
 	History                  []agent.ConversationEntry
 	LengthContinuationBuffer *strings.Builder
 	TotalToolCallsInLoop     int
-	SteeringDetector         *SteeringWorkflowDetector
 	StreamDone               bool
 	VoiceData                string
 	VoiceFileName            string
@@ -162,7 +160,6 @@ func (h *IMMessageHandler) handleAgentLoopNoToolPath(opts agentLoopNoToolPathOpt
 		UserText:                 opts.UserText,
 		Iteration:                opts.Iteration,
 		Platform:                 opts.Platform,
-		GateConfig:               opts.GateConfig,
 		MessageContent:           opts.MessageContent,
 		Choice:                   opts.Choice,
 		Phase:                    opts.Phase,
@@ -172,7 +169,6 @@ func (h *IMMessageHandler) handleAgentLoopNoToolPath(opts agentLoopNoToolPathOpt
 		History:                  opts.History,
 		LengthContinuationBuffer: opts.LengthContinuationBuffer,
 		TotalToolCallsInLoop:     opts.TotalToolCallsInLoop,
-		SteeringDetector:         opts.SteeringDetector,
 		StreamDone:               opts.StreamDone,
 		RecordSystemMessages:     opts.RecordSystemMessages,
 		AttachLLMTelemetry:       opts.AttachLLMTelemetry,
@@ -307,12 +303,18 @@ func (h *IMMessageHandler) handleAgentLoopNoToolBranch(opts agentLoopNoToolBranc
 		result.ContinueLoop = true
 		return result
 	}
+	localStoredInfoNeedsFirstLookup := tool.IsLocalStoredInfoQuery(opts.UserText) && opts.TotalToolCallsInLoop == 0
+	if intent, ok := classifyAgentNoToolReplyByHeuristic(result.MessageContent); ok && intent == agentNoToolReplyComplete && !localStoredInfoNeedsFirstLookup {
+		result.TrimmedVisibleContent = strings.TrimSpace(stripThinkingTags(result.MessageContent))
+		result.ReadyToFinalize = true
+		return result
+	}
 	if h.shouldContinueForPendingGuideReference(opts.UserID) {
 		result.ContinueLoop = true
 		return result
 	}
 
-	needsConfirmResult := h.applyAgentLoopNeedsConfirmGate(opts.Context, opts.UserID, opts.Iteration, opts.Platform, opts.GateConfig, result.MessageContent, opts.LengthContinuationBuffer.String(), phase, opts.SteeringDetector, opts.History, opts.StreamDone, opts.AttachLLMTelemetry, opts.AttachVisibleArtifacts)
+	needsConfirmResult := h.applyAgentLoopNeedsConfirmGate(opts.Context, opts.UserID, opts.Iteration, opts.Platform, result.MessageContent, opts.LengthContinuationBuffer.String(), phase, opts.History, opts.StreamDone, opts.AttachLLMTelemetry, opts.AttachVisibleArtifacts)
 	result.MessageContent = needsConfirmResult.MsgContent
 	if needsConfirmResult.PostStreamReturnPrepTime {
 		result.PostStreamReturnPrepTime = true
@@ -340,6 +342,7 @@ func (h *IMMessageHandler) handleAgentLoopNoToolBranch(opts agentLoopNoToolBranc
 	noToolRecover := h.handleAgentLoopNoToolRecover(agentLoopNoToolRecoverOptions{
 		Context:                opts.Context,
 		UserID:                 opts.UserID,
+		UserText:               opts.UserText,
 		MessageContent:         result.MessageContent,
 		TrimmedVisibleContent:  result.TrimmedVisibleContent,
 		ToolCalls:              opts.Choice.Message.ToolCalls,
@@ -348,7 +351,7 @@ func (h *IMMessageHandler) handleAgentLoopNoToolBranch(opts agentLoopNoToolBranc
 		History:                opts.History,
 		Iteration:              opts.Iteration,
 		TotalToolCallsInLoop:   opts.TotalToolCallsInLoop,
-		RequiresExecution:      noToolBranchRequiresExecution(opts.Context, opts.GateConfig, phase),
+		RequiresExecution:      noToolBranchRequiresExecution(opts.Context, phase) || (opts.TotalToolCallsInLoop == 0 && userRequestRequiresToolExecution(opts.UserText)),
 		RecordSystemMessages:   opts.RecordSystemMessages,
 		AttachLLMTelemetry:     opts.AttachLLMTelemetry,
 		AttachVisibleArtifacts: opts.AttachVisibleArtifacts,
@@ -407,7 +410,11 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 
 	emptyVisibleResult := opts.TrimmedVisibleContent == ""
 	intent, intentOK := h.classifyAgentNoToolReply(context.Background(), opts.MessageContent)
+	codingWorkflowImplementationRecover := h.shouldUseCodingWorkflowImplementationNoToolRecovery(opts.Context, opts.UserID)
 	promiseOnlyDeliverable := intentOK && intent == agentNoToolReplyPromise && len(opts.ToolCalls) == 0
+	if codingWorkflowImplementationRecover {
+		promiseOnlyDeliverable = false
+	}
 	promiseOnlyDeliverable = suppressPostToolPromiseOnlyDeliverable(promiseOnlyDeliverable, *phase, opts.TotalToolCallsInLoop, opts.Iteration)
 	noToolStall := emptyVisibleResult || promiseOnlyDeliverable || (intentOK && intent == agentNoToolReplyStall)
 	hasPendingSkillRun := strings.TrimSpace(phase.PreferredSkillRunID) != ""
@@ -435,7 +442,6 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 	}
 
 	phase.ConsecutiveEmptyResponses = 0
-	codingWorkflowImplementationRecover := h.shouldUseCodingWorkflowImplementationNoToolRecovery(opts.Context, opts.UserID)
 	if promiseOnlyDeliverable {
 		phase.DeliverableRecoverCount++
 		if phase.DeliverableRecoverCount >= effectiveNoToolRecoverThreshold {
@@ -455,11 +461,25 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 	}
 
 	phase.DeliverableRecoverCount = 0
+	if tool.IsLocalStoredInfoQuery(opts.UserText) && len(opts.ToolCalls) == 0 && opts.TotalToolCallsInLoop == 0 && !phase.LocalInfoRecallPrompted {
+		systemMessagesStart := len(result.Conversation)
+		result.Conversation = append(result.Conversation, map[string]string{
+			"role":    "system",
+			"content": buildLocalStoredInfoRecallPrompt(),
+		})
+		if opts.RecordSystemMessages != nil {
+			opts.RecordSystemMessages(systemMessagesStart, result.Conversation)
+		}
+		phase.LocalInfoRecallPrompted = true
+		result.ContinueLoop = true
+		return result
+	}
+
 	noToolPrompt := h.buildNoToolActionPromptForContext(codingWorkflowImplementationRecover, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID)
 	if shouldRestrictToSkillSearch(*phase) {
 		noToolPrompt = buildRemoteSkillSearchPrompt()
 	}
-	shouldPromptForAction := opts.RequiresExecution && !phase.NoToolActionPrompted
+	shouldPromptForAction := opts.RequiresExecution && !(intentOK && intent == agentNoToolReplyComplete) && !phase.NoToolActionPrompted
 	if phase.ConsecutiveNoTool == 1 && ((intentOK && intent == agentNoToolReplyStall) || hasPendingSkillRun || (phase.ForceSkillPreference && !phase.SkillAttempted) || shouldPromptForAction) {
 		systemMessagesStart := len(result.Conversation)
 		result.Conversation = append(result.Conversation, map[string]string{
@@ -478,6 +498,11 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 		result.ContinueLoop = true
 		return result
 	}
+	if opts.RequiresExecution && phase.NoToolActionPrompted && phase.TotalRecoverInjections == 0 && phase.ConsecutiveNoTool >= effectiveNoToolRecoverThreshold {
+		enterRecoverPhase(phase, agentRecoverNoToolStall, h.buildNoToolStallRecoverPromptForContext(codingWorkflowImplementationRecover, phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
+		result.ContinueLoop = true
+		return result
+	}
 	if noToolStall && (phase.ConsecutiveNoTool >= effectiveNoToolRecoverThreshold || phase.DeliverableRecoverCount >= effectiveNoToolRecoverThreshold || (phase.SkillFailed && phase.ConsecutiveNoTool >= 1)) {
 		enterRecoverPhase(phase, agentRecoverNoToolStall, h.buildNoToolStallRecoverPromptForContext(codingWorkflowImplementationRecover, phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
 		result.ContinueLoop = true
@@ -485,6 +510,12 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 	}
 
 	return result
+}
+
+func buildLocalStoredInfoRecallPrompt() string {
+	return "[Local stored info retrieval required]\n" +
+		"The user is asking whether saved/local information is known. Do not answer from memory wording alone. Immediately call memory(action=\"recall\") with focused query terms from the user request. If knowledge_search or knowledge_context_pack is available, call knowledge_search with the same focused query before giving a final answer. Only after tool results may you say whether local memory or the knowledge base has the requested information.\n" +
+		"[/Local stored info retrieval required]"
 }
 
 func (h *IMMessageHandler) shouldUseCodingWorkflowImplementationNoToolRecovery(ctx *LoopContext, userID string) bool {
@@ -505,16 +536,11 @@ func (h *IMMessageHandler) buildNoToolStallRecoverPromptForContext(codingWorkflo
 	return buildNoToolStallRecoverPrompt(consecutive, preferSkill, skillName, runID)
 }
 
-func noToolBranchRequiresExecution(ctx *LoopContext, gateConfig codingToolGateConfig, phase *agentLoopPhase) bool {
+func noToolBranchRequiresExecution(ctx *LoopContext, phase *agentLoopPhase) bool {
 	if phase != nil && phase.ForceSkillPreference {
 		return true
 	}
 	if ctx != nil && ctx.WorkflowAgentLoop {
-		// V2 workflow doc phases (requirements, design, tasks) produce only text —
-		// they do NOT require tool execution. Treating them as "requires execution"
-		// causes the no-tool recovery logic to inject action prompts and continue
-		// the loop, resulting in duplicated document output.
-		// Only implementation/verification phases require tool calls.
 		if ctx.WorkflowDocPhase {
 			log.Printf("[noToolBranchRequiresExecution] WorkflowDocPhase=true, returning false")
 			return false
@@ -522,14 +548,31 @@ func noToolBranchRequiresExecution(ctx *LoopContext, gateConfig codingToolGateCo
 		log.Printf("[noToolBranchRequiresExecution] WorkflowAgentLoop=true but WorkflowDocPhase=false, returning true")
 		return true
 	}
-	switch gateConfig.intent {
-	case intentSSH:
-		return true
-	case intentCoding:
-		return !gateConfig.active
-	default:
+	return false
+}
+
+func userRequestRequiresToolExecution(userText string) bool {
+	text := strings.ToLower(strings.TrimSpace(userText))
+	if text == "" {
 		return false
 	}
+	chineseActionMarkers := []string{
+		"\u751f\u6210", "\u521b\u5efa", "\u5236\u4f5c", "\u53d1\u6211", "\u53d1\u9001", "\u4e0a\u4f20", "\u4e0b\u8f7d", "\u5bfc\u51fa", "\u4fdd\u5b58", "\u5199\u5165", "\u4fee\u6539", "\u4fee\u590d", "\u8fd0\u884c", "\u6267\u884c", "\u68c0\u67e5", "\u67e5\u770b", "\u8bfb\u53d6", "\u67e5\u8be2", "\u67e5\u65e5\u5fd7", "\u8fde\u63a5", "\u90e8\u7f72", "\u5b89\u88c5",
+	}
+	for _, marker := range chineseActionMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	englishActionMarkers := []string{
+		"generate", "create", "make", "send", "upload", "download", "export", "save", "write", "edit", "fix", "run", "execute", "inspect", "check", "read", "query", "connect", "deploy", "install",
+	}
+	for _, marker := range englishActionMarkers {
+		if containsASCIIWord(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *IMMessageHandler) handleAgentLoopEmptyNoToolResponse(

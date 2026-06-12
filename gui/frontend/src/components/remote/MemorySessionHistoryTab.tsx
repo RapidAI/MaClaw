@@ -29,13 +29,6 @@ type SessionHistoryTabProps = {
 
 type ViewSession = { id: string; topic: string; platform: string; timestamp: string };
 
-const PLATFORM_ICONS: Record<string, string> = {
-    gui: "\u{1F5A5}\uFE0F",
-    tui: "\u2328\uFE0F",
-    im: "\u{1F4AC}",
-    desktop: "\u{1F5A5}\uFE0F",
-};
-
 export function SessionHistoryTab({ t, lang, onOpenTrace }: SessionHistoryTabProps) {
     const [sessions, setSessions] = useState<SessionSummaryItem[]>([]);
     const [searchResults, setSearchResults] = useState<SessionSearchHit[] | null>(null);
@@ -158,7 +151,7 @@ export function SessionHistoryTab({ t, lang, onOpenTrace }: SessionHistoryTabPro
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                                 <div style={{ flex: 1, minWidth: 0, overflow: "hidden", cursor: "pointer" }} onClick={() => handleView(sid, topic, platform, ts)}>
                                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
-                                        <span style={{ fontSize: "0.72rem" }}>{PLATFORM_ICONS[platform] || "\u{1F4C4}"}</span>
+                                        <span style={{ fontSize: "0.64rem", fontWeight: 700, color: colors.textMuted }}>{(platform || "doc").slice(0, 3).toUpperCase()}</span>
                                         <span style={platformBadgeStyle}>{platform || "unknown"}</span>
                                         {topic && <span style={{ fontSize: "0.76rem", color: colors.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{topic}</span>}
                                     </div>
@@ -169,8 +162,8 @@ export function SessionHistoryTab({ t, lang, onOpenTrace }: SessionHistoryTabPro
                                     </div>
                                 </div>
                                 <div style={{ display: "flex", gap: 4, flexShrink: 0, alignSelf: "flex-start" }}>
-                                    <button onClick={() => handleView(sid, topic, platform, ts)} title={t("View", "\u67e5\u770b")} style={iconBtnStyle}>{"\u{1F441}\uFE0F"}</button>
-                                    <button onClick={() => setDeleteTarget(sid)} title={t("Delete", "\u5220\u9664")} style={{ ...iconBtnStyle, color: colors.danger }}>{"\u{1F5D1}\uFE0F"}</button>
+                                    <button onClick={() => handleView(sid, topic, platform, ts)} title={t("View", "\u67e5\u770b")} style={iconBtnStyle}>VIEW</button>
+                                    <button onClick={() => setDeleteTarget(sid)} title={t("Delete", "\u5220\u9664")} style={{ ...iconBtnStyle, color: colors.danger }}>DEL</button>
                                 </div>
                             </div>
                         </div>
@@ -198,13 +191,13 @@ function SessionViewerModal({ t, lang, viewSession, fullText, loading, onClose, 
                 <div style={{ padding: "14px 18px 10px", borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
-                            <span style={{ fontSize: "0.82rem" }}>{PLATFORM_ICONS[viewSession.platform] || "\u{1F4C4}"}</span>
+                            <span style={{ fontSize: "0.64rem", fontWeight: 700, color: colors.textMuted }}>{(viewSession.platform || "doc").slice(0, 3).toUpperCase()}</span>
                             <span style={platformBadgeStyle}>{viewSession.platform || "unknown"}</span>
                             <span style={{ fontSize: "0.82rem", fontWeight: 600, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{viewSession.topic || t("(no topic)", "(\u65e0\u4e3b\u9898)")}</span>
                         </div>
                         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                             {onOpenTrace && <button onClick={() => onOpenTrace(viewSession.id)} style={{ ...neutralBtnStyle, color: colors.primaryDark }}>{t("Experience", "\u7ecf\u9a8c", "\u7d93\u9a57")}</button>}
-                            <button onClick={onClose} style={neutralBtnStyle}>{"\u00d7"}</button>
+                            <button onClick={onClose} style={neutralBtnStyle}>X</button>
                         </div>
                     </div>
                     <div style={{ fontSize: "0.66rem", color: colors.textMuted, marginTop: 4 }}>{fmtDate(viewSession.timestamp, lang)} {"\u00b7"} ID: {viewSession.id}</div>

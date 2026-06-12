@@ -59,6 +59,8 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		})
 	}
 
+	registerCurrentDateTimeTool(registry, ToolCategoryBuiltin, "builtin")
+
 	// --- Session management tools ---
 	reg("list_sessions", "列出当前所有远程会话及其状态",
 		ToolCategoryBuiltin, []string{"session", "list"},
@@ -637,7 +639,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"label":           map[string]string{"type": "string", "description": "主机标签（可选，如 prod-web-01）"},
 			"initial_command": map[string]string{"type": "string", "description": "连接后立即执行的命令（可选）"},
 			"session_id":      map[string]string{"type": "string", "description": "SSH 会话 ID（exec/exec_background/upload/download/close 时必填）"},
-			"command":         map[string]string{"type": "string", "description": "要执行的命令（exec/exec_background 时必填）"},
+			"command":         map[string]interface{}{"type": "string", "description": "Command to execute (required for exec/exec_background). For long scripts, write/upload a script file first, then execute that file.", "maxLength": maxAgentLoopInlineSSHCommandRunes},
 			"wait_seconds":    map[string]string{"type": "integer", "description": "等待输出秒数（exec 时可选，默认 5，最大 600）"},
 			"task_id":         map[string]string{"type": "string", "description": "后台任务 ID（check_task/wait_task/kill_task 时必填）"},
 			"tail_lines":      map[string]string{"type": "integer", "description": "查看日志尾部行数（check_task/wait_task 时可选，默认 50）"},

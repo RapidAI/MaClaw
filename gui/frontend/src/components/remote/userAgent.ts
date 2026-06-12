@@ -1,6 +1,21 @@
 import type { LLMProvider } from "./LLMConfigPanelShared";
 
-export const KNOWN_USER_AGENTS = ["openclaw", "claude-code/2.0.0", "tigerclaw"] as const;
+export const KNOWN_USER_AGENTS = [
+    "openclaw",
+    "Claude Code",
+    "Cline",
+    "OpenCode",
+    "Roo Code",
+    "Kilo Code",
+    "Cursor",
+    "Crush",
+    "Goose",
+    "claude code 2.0",
+    "claude-code/2.0.0",
+    "tigerclaw",
+] as const;
+
+const LEGACY_KNOWN_USER_AGENTS = ["opencode"] as const;
 
 export const defaultAgentTypeForProvider = (provider?: LLMProvider | null) => {
     if (provider?.name === "CodeGen" && provider?.auth_type === "sso") return "tigerclaw";
@@ -12,7 +27,8 @@ export const effectiveAgentType = (provider?: LLMProvider | null) => {
     return raw || defaultAgentTypeForProvider(provider);
 };
 
-export const isKnownUserAgent = (agent: string) => KNOWN_USER_AGENTS.some(known => known === agent);
+export const isKnownUserAgent = (agent: string) =>
+    KNOWN_USER_AGENTS.some(known => known === agent) || LEGACY_KNOWN_USER_AGENTS.some(known => known === agent);
 
 export const customAgentSeedForProvider = (provider?: LLMProvider | null) => {
     const current = effectiveAgentType(provider);

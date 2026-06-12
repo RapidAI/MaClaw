@@ -58,3 +58,35 @@ func TestManageSkillActionNames_Length(t *testing.T) {
 		t.Errorf("ManageSkillActionNames() returned %d names, want %d", len(names), len(ManageSkillActions))
 	}
 }
+
+func TestManageSkillUploadDescriptionDocumentsAliases(t *testing.T) {
+	desc := ManageSkillDescription()
+	for _, want := range []string{
+		`action="upload"`,
+		"SkillMarket",
+		"HubCenter",
+		"publish",
+		"pub",
+		"submit",
+		"发布",
+		"上架",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("ManageSkillDescription() missing upload alias %q: %s", want, desc)
+		}
+	}
+}
+
+func TestNormalizeManageSkillActionUploadAliases(t *testing.T) {
+	for _, action := range []string{"publish", "pub", "submit", "release", "发布", "發布", "上架", "提交"} {
+		if got := NormalizeManageSkillAction(action); got != "upload" {
+			t.Fatalf("NormalizeManageSkillAction(%q)=%q, want upload", action, got)
+		}
+	}
+	if got := NormalizeManageSkillAction(" RUN "); got != "run" {
+		t.Fatalf("NormalizeManageSkillAction trims/lowercases = %q, want run", got)
+	}
+	if got := NormalizeManageSkillAction("custom"); got != "custom" {
+		t.Fatalf("NormalizeManageSkillAction unknown = %q, want custom", got)
+	}
+}

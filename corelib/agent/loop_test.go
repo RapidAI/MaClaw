@@ -91,6 +91,19 @@ func (m *contextProviderCallbacks) LLMRequestContext(iteration int) (context.Con
 	}, nil
 }
 
+func responsesInputHasType(input []interface{}, typ string) bool {
+	for _, item := range input {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if m["type"] == typ {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRunLoop_UsesHostLLMRequestContext(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if got := r.Context().Value("loop-test-context"); got != "ok" {
@@ -301,6 +314,112 @@ func TestRunLoop_WithToolCall_ExecutesAndContinues(t *testing.T) {
 	}
 	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "bash" {
 		t.Fatalf("unexpected tool calls: %v", cb.toolCalls)
+	}
+}
+
+func TestRunLoop_UsesResponsesWireAPI(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("Decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`))
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{
+			URL:     server.URL + "/v1",
+			Model:   "test",
+			Key:     "test-key",
+			WireAPI: "responses",
+		},
+		maxIter:   3,
+		sysPrompt: "You are a helpful assistant.",
+	}
+
+	result := RunLoop(cb, "hi", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("RunLoop result = %+v, want done without error", result)
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if _, ok := gotBody["input"]; !ok {
+		t.Fatalf("request body missing Responses input: %#v", gotBody)
+	}
+	if _, ok := gotBody["messages"]; ok {
+		t.Fatalf("request body leaked chat messages: %#v", gotBody)
+	}
+	if strings.Join(cb.tokens, "") != "done" {
+		t.Fatalf("stream fallback tokens = %#v, want done", cb.tokens)
+	}
+}
+
+func TestRunLoop_ResponsesWireAPIExecutesTools(t *testing.T) {
+	callCount := 0
+	var secondBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("path = %q, want /v1/responses", r.URL.Path)
+		}
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			_, _ = w.Write([]byte(`{"id":"resp_tool","output":[{"type":"function_call","call_id":"call_1","name":"bash","arguments":"{\"command\":\"echo hi\"}"}]}`))
+			return
+		}
+		secondBody = body
+		_, _ = w.Write([]byte(`{"id":"resp_done","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"tool done"}]}]}`))
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{
+			URL:     server.URL + "/v1",
+			Model:   "test",
+			Key:     "test-key",
+			WireAPI: "responses",
+		},
+		maxIter:    5,
+		sysPrompt:  "You are a helpful assistant.",
+		toolResult: "hi\n",
+		tools: []map[string]interface{}{{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        "bash",
+				"description": "run command",
+				"parameters": map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{"command": map[string]interface{}{"type": "string"}},
+				},
+			},
+		}},
+	}
+
+	result := RunLoop(cb, "run echo hi", nil, server.Client())
+	if result.Error != "" || result.Text != "tool done" {
+		t.Fatalf("RunLoop result = %+v, want tool done without error", result)
+	}
+	if result.ToolCalls != 1 || len(cb.toolCalls) != 1 || cb.toolCalls[0] != "bash" {
+		t.Fatalf("tool calls result=%d executed=%v, want one bash", result.ToolCalls, cb.toolCalls)
+	}
+	input, ok := secondBody["input"].([]interface{})
+	if !ok {
+		t.Fatalf("second request input = %#v, want array", secondBody["input"])
+	}
+	if !responsesInputHasType(input, "function_call") || !responsesInputHasType(input, "function_call_output") {
+		t.Fatalf("second request missing function_call/function_call_output: %#v", input)
+	}
+	if _, ok := secondBody["messages"]; ok {
+		t.Fatalf("second request leaked chat messages: %#v", secondBody)
 	}
 }
 

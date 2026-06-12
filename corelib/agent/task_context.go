@@ -179,6 +179,12 @@ type ResolveInput struct {
 	// reached, session still running, etc.).
 	HasIncompleteTaskMarker bool
 
+	// HasActiveBackgroundTask is true when a local or SSH background command
+	// spawned from the current runtime is still active. Active work is a hard
+	// task boundary: a follow-up message must not destructively archive the
+	// current task unless the frontend explicitly starts a new one.
+	HasActiveBackgroundTask bool
+
 	// ExplicitNewTask is true if the frontend explicitly flagged this as a new task.
 	ExplicitNewTask bool
 }
@@ -225,6 +231,14 @@ func (m *TaskContextManager) Resolve(input ResolveInput) TaskContextDecision {
 			Action: TaskContinue,
 			Reason: "active workflow understanding session",
 			Source: "explicit",
+		}
+	}
+
+	if input.HasActiveBackgroundTask {
+		return TaskContextDecision{
+			Action: TaskContinue,
+			Reason: "active background task is still running",
+			Source: "runtime",
 		}
 	}
 

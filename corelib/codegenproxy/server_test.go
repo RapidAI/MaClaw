@@ -13,6 +13,12 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	anthropic "github.com/anthropics/anthropic-sdk-go"
+	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
+	openai "github.com/openai/openai-go"
+	openaioption "github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/responses"
+	"github.com/openai/openai-go/shared"
 )
 
 // startTestServer starts a proxy on :0 and waits for it to be ready.
@@ -130,6 +136,32 @@ func TestConvertAnthropicToOpenAI_ToolUse(t *testing.T) {
 	}
 	if len(result.Tools) != 1 || result.Tools[0].Function.Name != "get_weather" {
 		t.Fatalf("tools = %+v", result.Tools)
+	}
+}
+
+func TestConvertAnthropicToOpenAI_ObjectToolResultContent(t *testing.T) {
+	req := anthropicRequest{
+		Model: "claude-3",
+		Messages: []anthropicMessage{
+			{Role: "user", Content: []interface{}{
+				map[string]interface{}{
+					"type":        "tool_result",
+					"tool_use_id": "call_json",
+					"content":     map[string]interface{}{"ok": true},
+				},
+			}},
+		},
+	}
+
+	result := convertAnthropicToOpenAI(req)
+	if len(result.Messages) != 1 {
+		t.Fatalf("messages count = %d, want 1", len(result.Messages))
+	}
+	if result.Messages[0].Role != "tool" || result.Messages[0].ToolCallID != "call_json" {
+		t.Fatalf("tool message = %+v", result.Messages[0])
+	}
+	if got := result.Messages[0].Content; got != `{"ok":true}` {
+		t.Fatalf("tool result content = %q, want JSON object", got)
 	}
 }
 
@@ -428,6 +460,179 @@ func TestAnthropicProxyPreservesProviderPrefixedModel(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestAnthropicSDKClientCanCallCodeGenProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer fallback-key" {
+			t.Errorf("upstream Authorization = %q, want Bearer fallback-key", got)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", 400)
+			return
+		}
+		if req.Model != "qax-codegen/Auto" {
+			t.Errorf("upstream model = %q, want qax-codegen/Auto", req.Model)
+		}
+		if len(req.Messages) != 1 || req.Messages[0].Role != "user" {
+			t.Errorf("messages = %+v, want one user message", req.Messages)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-anthropic-sdk","choices":[{"message":{"role":"assistant","content":"anthropic sdk ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := anthropic.NewClient(
+		anthropicoption.WithBaseURL("http://"+srv.Addr().String()+"/anthropic"),
+		anthropicoption.WithAPIKey("local-key"),
+	)
+	msg, err := client.Messages.New(context.Background(), anthropic.MessageNewParams{
+		Model:     "qax-codegen/Auto",
+		MaxTokens: 128,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("hi")),
+		},
+	})
+	if err != nil {
+		t.Fatalf("anthropic SDK request failed: %v", err)
+	}
+	if msg.ID != "chatcmpl-anthropic-sdk" {
+		t.Fatalf("message id = %q, want chatcmpl-anthropic-sdk", msg.ID)
+	}
+	if len(msg.Content) != 1 || msg.Content[0].Text != "anthropic sdk ok" {
+		t.Fatalf("message content = %+v, want anthropic sdk ok", msg.Content)
+	}
+	if msg.Usage.InputTokens != 3 || msg.Usage.OutputTokens != 4 {
+		t.Fatalf("usage = %+v, want input 3 output 4", msg.Usage)
+	}
+}
+
+func TestAnthropicSDKClientCanStreamFromCodeGenProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", 400)
+			return
+		}
+		if !req.Stream {
+			t.Errorf("stream = false, want true")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\" sdk\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := anthropic.NewClient(
+		anthropicoption.WithBaseURL("http://"+srv.Addr().String()+"/anthropic"),
+		anthropicoption.WithAPIKey("local-key"),
+	)
+	stream := client.Messages.NewStreaming(context.Background(), anthropic.MessageNewParams{
+		Model:     "qax-codegen/Auto",
+		MaxTokens: 128,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("hi")),
+		},
+	})
+
+	var gotTypes []string
+	for stream.Next() {
+		gotTypes = append(gotTypes, string(stream.Current().Type))
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("anthropic SDK stream failed: %v", err)
+	}
+	wantTypes := []string{
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	}
+	if strings.Join(gotTypes, ",") != strings.Join(wantTypes, ",") {
+		t.Fatalf("stream event types = %v, want %v", gotTypes, wantTypes)
+	}
+}
+
+func TestAnthropicCountTokensEndpointEstimatesInputTokens(t *testing.T) {
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages/count_tokens",
+		strings.NewReader(`{
+			"model":"qax-codegen/Auto",
+			"system":"You are helpful.",
+			"messages":[{"role":"user","content":[{"type":"text","text":"hello world"}]}],
+			"tools":[{"name":"search","description":"search docs","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}}]
+		}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "local-key")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var out struct {
+		InputTokens int `json:"input_tokens"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode count_tokens response: %v", err)
+	}
+	if out.InputTokens <= 0 {
+		t.Fatalf("input_tokens = %d, want positive estimate", out.InputTokens)
+	}
+}
+
+func TestAnthropicSDKClientCanCallCountTokens(t *testing.T) {
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+
+	client := anthropic.NewClient(
+		anthropicoption.WithBaseURL("http://"+srv.Addr().String()+"/anthropic"),
+		anthropicoption.WithAPIKey("local-key"),
+	)
+	count, err := client.Messages.CountTokens(context.Background(), anthropic.MessageCountTokensParams{
+		Model: "qax-codegen/Auto",
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("hello count tokens")),
+		},
+		System: anthropic.MessageCountTokensParamsSystemUnion{
+			OfString: anthropic.String("You are helpful."),
+		},
+	})
+	if err != nil {
+		t.Fatalf("anthropic SDK CountTokens failed: %v", err)
+	}
+	if count.InputTokens <= 0 {
+		t.Fatalf("input_tokens = %d, want positive estimate", count.InputTokens)
 	}
 }
 
@@ -1169,6 +1374,9 @@ func TestCodeGenOpenAICompatibilitySanitizesToolsForAnyModel(t *testing.T) {
 									"type": "string",
 								},
 							},
+							"args": map[string]interface{}{
+								"type": "object",
+							},
 						},
 					},
 				},
@@ -1212,25 +1420,193 @@ func TestCodeGenOpenAICompatibilitySanitizesToolsForAnyModel(t *testing.T) {
 	if _, ok := params["additionalProperties"]; ok {
 		t.Fatalf("additionalProperties=false leaked: %#v", params)
 	}
-	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
+	properties := params["properties"].(map[string]interface{})
+	for _, bad := range []string{"type", "properties"} {
+		if _, ok := properties[bad]; ok {
+			t.Fatalf("properties container was treated as schema and leaked %q: %#v", bad, properties)
+		}
+	}
+	values := properties["values"].(map[string]interface{})
 	if _, ok := values["oneOf"]; ok {
 		t.Fatalf("oneOf leaked: %#v", values)
 	}
 	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
 		t.Fatalf("array items type = %#v, want string", got)
 	}
-	metadata := params["properties"].(map[string]interface{})["metadata"].(map[string]interface{})
+	metadata := properties["metadata"].(map[string]interface{})
 	if _, ok := metadata["additionalProperties"]; ok {
 		t.Fatalf("additionalProperties schema leaked: %#v", metadata)
+	}
+	args := properties["args"].(map[string]interface{})
+	if got := args["properties"]; got == nil {
+		t.Fatalf("object schema without properties should be completed: %#v", args)
 	}
 	legacy := payload["functions"].([]interface{})[0].(map[string]interface{})
 	if _, ok := legacy["strict"]; ok {
 		t.Fatalf("legacy strict leaked: %#v", legacy)
 	}
 	legacyParams := legacy["parameters"].(map[string]interface{})
-	ids := legacyParams["properties"].(map[string]interface{})["ids"].(map[string]interface{})
+	legacyProperties := legacyParams["properties"].(map[string]interface{})
+	for _, bad := range []string{"type", "properties"} {
+		if _, ok := legacyProperties[bad]; ok {
+			t.Fatalf("legacy properties container was treated as schema and leaked %q: %#v", bad, legacyProperties)
+		}
+	}
+	ids := legacyProperties["ids"].(map[string]interface{})
 	if got := ids["items"].(map[string]interface{})["type"]; got != "string" {
 		t.Fatalf("legacy array items type = %#v, want string", got)
+	}
+}
+
+func TestCodeGenOpenAICompatibilityNormalizesToolCallLinkage(t *testing.T) {
+	payload := map[string]interface{}{
+		"model": "qax-codegen/Auto",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+			map[string]interface{}{
+				"role": "assistant",
+				"tool_calls": []interface{}{map[string]interface{}{
+					"function": map[string]interface{}{
+						"name":      "read_file",
+						"arguments": map[string]interface{}{"path": "main.go"},
+					},
+				}},
+			},
+			map[string]interface{}{"role": "tool", "tool_call_id": "", "content": map[string]interface{}{"ok": true}},
+		},
+	}
+
+	notes := applyCodeGenOpenAIMapCompatibility(payload, "qax-codegen/Auto")
+	if !containsPrefix(notes, "codegen_sanitize_messages:") {
+		t.Fatalf("notes missing message sanitize entry: %#v", notes)
+	}
+	messages := payload["messages"].([]interface{})
+	assistant := messages[1].(map[string]interface{})
+	toolCalls := assistant["tool_calls"].([]interface{})
+	call := toolCalls[0].(map[string]interface{})
+	callID, _ := call["id"].(string)
+	if !strings.HasPrefix(callID, "call_") {
+		t.Fatalf("generated call id = %#v", call["id"])
+	}
+	if call["type"] != "function" {
+		t.Fatalf("tool call type = %#v", call["type"])
+	}
+	fn := call["function"].(map[string]interface{})
+	if fn["arguments"] != `{"path":"main.go"}` {
+		t.Fatalf("arguments = %#v", fn["arguments"])
+	}
+	tool := messages[2].(map[string]interface{})
+	if tool["tool_call_id"] != callID {
+		t.Fatalf("tool_call_id = %#v, want %q", tool["tool_call_id"], callID)
+	}
+	if tool["content"] != `{"ok":true}` {
+		t.Fatalf("tool content = %#v", tool["content"])
+	}
+}
+
+func TestCodeGenOpenAIMapCompatibilityHandlesTypedSlices(t *testing.T) {
+	type msg struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	type functionDef struct {
+		Name       string                 `json:"name"`
+		Strict     bool                   `json:"strict"`
+		Parameters map[string]interface{} `json:"parameters"`
+	}
+	payload := map[string]interface{}{
+		"messages": []msg{
+			{Role: "system", Content: "You are Claude Code using anthropic-version."},
+			{Role: "system", Content: "second system"},
+			{Role: "user", Content: "older"},
+			{Role: "user", Content: "newer"},
+		},
+		"tools": []map[string]interface{}{{
+			"type": "function",
+			"function": functionDef{
+				Name:   "typed_tool",
+				Strict: true,
+				Parameters: map[string]interface{}{
+					"additionalProperties": false,
+					"properties": map[string]interface{}{
+						"ids": map[string]interface{}{"type": "array", "nullable": true},
+					},
+				},
+			},
+		}},
+	}
+
+	notes := applyCodeGenOpenAIMapCompatibility(payload, "qax-codegen/Qwen-Flash")
+
+	if !containsPrefix(notes, "qwen_flash_sanitize_system:") {
+		t.Fatalf("notes missing typed system sanitize entry: %#v", notes)
+	}
+	if !containsPrefix(notes, "qwen_flash_merge_messages:") {
+		t.Fatalf("notes missing typed message merge entry: %#v", notes)
+	}
+	messages := payload["messages"].([]interface{})
+	if got := summarizeMessageRoles(messages); got != "system>user" {
+		t.Fatalf("message roles = %q, want system>user", got)
+	}
+	user := messages[1].(map[string]interface{})
+	if !strings.Contains(user["content"].(string), "older") || !strings.Contains(user["content"].(string), "newer") {
+		t.Fatalf("typed adjacent user messages were not merged: %#v", user)
+	}
+	tool := payload["tools"].([]map[string]interface{})[0]
+	fn := tool["function"].(map[string]interface{})
+	params := fn["parameters"].(map[string]interface{})
+	if _, ok := fn["strict"]; ok {
+		t.Fatalf("typed strict leaked: %#v", fn)
+	}
+	properties := params["properties"].(map[string]interface{})
+	for _, bad := range []string{"type", "properties"} {
+		if _, ok := properties[bad]; ok {
+			t.Fatalf("typed properties container was treated as schema and leaked %q: %#v", bad, properties)
+		}
+	}
+	ids := properties["ids"].(map[string]interface{})
+	if _, ok := ids["nullable"]; ok {
+		t.Fatalf("typed nullable leaked: %#v", ids)
+	}
+	if got := ids["items"].(map[string]interface{})["type"]; got != "string" {
+		t.Fatalf("typed array items type = %#v, want string", got)
+	}
+}
+
+func TestPrepareCodeGenCompactChatRetryBodyHandlesTypedMessages(t *testing.T) {
+	type msg struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	body, err := json.Marshal(map[string]interface{}{
+		"messages": []msg{
+			{Role: "system", Content: strings.Repeat("runtime context\n", 900)},
+			{Role: "user", Content: "latest typed request"},
+		},
+		"tools": []map[string]string{{"type": "function"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	compact, ok := prepareCodeGenCompactChatRetryBody("https://codegen.qianxin-inc.cn/api/v1", "qax-codegen/Auto", body, http.StatusBadRequest)
+	if !ok {
+		t.Fatal("expected typed compact retry body")
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(compact, &payload); err != nil {
+		t.Fatalf("decode compact body: %v", err)
+	}
+	messages := payload["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("compact messages len = %d, want 2: %#v", len(messages), messages)
+	}
+	if got := payload["tools"]; got != nil {
+		t.Fatalf("compact retry should omit tools, got %#v", got)
+	}
+	content := messages[1].(map[string]interface{})["content"].(string)
+	if !strings.Contains(content, "latest typed request") || strings.Contains(content, "runtime context\nruntime context") {
+		t.Fatalf("compact typed content = %.200q", content)
 	}
 }
 
@@ -1277,19 +1653,31 @@ func TestCodeGenOpenAIRequestCompatibilitySanitizesTypedToolSchemasForAnyModel(t
 	if _, ok := params["additionalProperties"]; ok {
 		t.Fatalf("additionalProperties=false leaked: %#v", params)
 	}
-	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
+	properties := params["properties"].(map[string]interface{})
+	for _, bad := range []string{"type", "properties"} {
+		if _, ok := properties[bad]; ok {
+			t.Fatalf("typed request properties container was treated as schema and leaked %q: %#v", bad, properties)
+		}
+	}
+	values := properties["values"].(map[string]interface{})
 	if _, ok := values["nullable"]; ok {
 		t.Fatalf("nullable leaked: %#v", values)
 	}
 	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
 		t.Fatalf("array items type = %#v, want string", got)
 	}
-	metadata := params["properties"].(map[string]interface{})["metadata"].(map[string]interface{})
+	metadata := properties["metadata"].(map[string]interface{})
 	if _, ok := metadata["additionalProperties"]; ok {
 		t.Fatalf("additionalProperties schema leaked: %#v", metadata)
 	}
 	legacyParams := req.Functions[0].Parameters.(map[string]interface{})
-	ids := legacyParams["properties"].(map[string]interface{})["ids"].(map[string]interface{})
+	legacyProperties := legacyParams["properties"].(map[string]interface{})
+	for _, bad := range []string{"type", "properties"} {
+		if _, ok := legacyProperties[bad]; ok {
+			t.Fatalf("legacy typed request properties container was treated as schema and leaked %q: %#v", bad, legacyProperties)
+		}
+	}
+	ids := legacyProperties["ids"].(map[string]interface{})
 	if got := ids["items"].(map[string]interface{})["type"]; got != "string" {
 		t.Fatalf("legacy array items type = %#v, want string", got)
 	}
@@ -1695,6 +2083,910 @@ func TestOpenAIChatCompletionsProxySetsUpstreamUserAgent(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatCompletionsProxyDefaultSDKNormalizesFullEndpoint(t *testing.T) {
+	var upstreamPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		if upstreamPath != "/v1/chat/completions" {
+			t.Errorf("upstream path = %q, want /v1/chat/completions", upstreamPath)
+		}
+		if got := r.Header.Get("User-Agent"); got != corelib.CodeGenClientName {
+			t.Errorf("User-Agent = %q, want %q", got, corelib.CodeGenClientName)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL+"/v1/chat/completions", "fallback-key")
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/v1/chat/completions",
+		strings.NewReader(`{"model":"qax-codegen/Auto","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if upstreamPath == "" {
+		t.Fatalf("upstream was not called")
+	}
+}
+
+func TestOpenAIChatCompletionsProxyStreamingUsesRawPassthrough(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Accept"); got != "text/event-stream" {
+			t.Errorf("Accept = %q, want text/event-stream", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/v1/chat/completions",
+		strings.NewReader(`{"model":"qax-codegen/Auto","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "data: [DONE]") {
+		t.Fatalf("stream body not passed through: %s", body)
+	}
+}
+
+func TestCodeGenProxyOpenAIEndpointBuildersNormalizeFullAndGLMURLs(t *testing.T) {
+	if got, want := codeGenProxyChatCompletionsEndpoint("https://api.example.com/v1/chat/completions", "openclaw"), "https://api.example.com/v1/chat/completions"; got != want {
+		t.Fatalf("chat endpoint = %q, want %q", got, want)
+	}
+	if got, want := codeGenProxyModelsEndpoint("https://api.example.com/v1/chat/completions", "openclaw", "openai"), "https://api.example.com/v1/models"; got != want {
+		t.Fatalf("models endpoint = %q, want %q", got, want)
+	}
+	if got, want := codeGenProxyChatCompletionsEndpoint("https://open.bigmodel.cn/api/paas/v4", "Kilo Code"), "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"; got != want {
+		t.Fatalf("GLM chat endpoint = %q, want %q", got, want)
+	}
+	if got, want := codeGenProxyModelsEndpoint("https://open.bigmodel.cn/api/paas/v4", "Kilo Code", "openai"), "https://open.bigmodel.cn/api/coding/paas/v4/models"; got != want {
+		t.Fatalf("GLM models endpoint = %q, want %q", got, want)
+	}
+}
+
+func TestOpenAIChatCompletionsProxyCompactsAfterToollessHTTP400(t *testing.T) {
+	var requests []map[string]interface{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, payload)
+		if len(requests) < 3 {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if logArrayLen(payload["tools"]) != 0 {
+			t.Errorf("compact retry leaked tools: %#v", payload)
+		}
+		msgs, _ := payload["messages"].([]interface{})
+		if len(msgs) != 2 {
+			t.Errorf("compact messages = %d, want 2", len(msgs))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	reqBody := `{
+		"model":"qax-codegen/Auto",
+		"stream":true,
+		"messages":[
+			{"role":"system","content":"large system"},
+			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"large tool result"},
+			{"role":"user","content":"please answer latest"}
+		],
+		"tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object"}}}]
+	}`
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/v1/chat/completions",
+		strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if len(requests) != 3 {
+		t.Fatalf("upstream requests = %d, want 3", len(requests))
+	}
+	if logArrayLen(requests[0]["tools"]) == 0 {
+		t.Fatalf("first request should include tools: %#v", requests[0])
+	}
+	if logArrayLen(requests[1]["tools"]) != 0 {
+		t.Fatalf("toolless retry leaked tools: %#v", requests[1])
+	}
+}
+
+func TestOpenAIChatCompletionsProxyCanUseOpenAISDKUpstreamClient(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Errorf("upstream path = %q, want /chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer fallback-key" {
+			t.Errorf("upstream Authorization = %q, want Bearer fallback-key", got)
+		}
+		if got := r.Header.Get("User-Agent"); got != "custom-agent" {
+			t.Errorf("upstream User-Agent = %q, want custom-agent", got)
+		}
+		if got := r.Header.Get(corelib.CodeGenClientNameHeader); got != "custom-agent" {
+			t.Errorf("upstream %s = %q, want custom-agent", corelib.CodeGenClientNameHeader, got)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", 400)
+			return
+		}
+		if req.Model != "qax-codegen/Auto" {
+			t.Errorf("upstream model = %q, want qax-codegen/Auto", req.Model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-sdk","choices":[{"message":{"role":"assistant","content":"sdk ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetOpenAIUpstreamClient(NewOpenAISDKUpstreamClient(nil))
+	srv.SetUpstreamWithClientName(upstream.URL, "fallback-key", "custom-agent")
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/v1/chat/completions",
+		strings.NewReader(`{"model":"qax-codegen/Auto","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "sdk ok") {
+		t.Fatalf("body = %s, want sdk ok", body)
+	}
+}
+
+func TestOpenAISDKClientCanCallChatCompletionsFromCodeGenProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Errorf("upstream path = %q, want /chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer fallback-key" {
+			t.Errorf("upstream Authorization = %q, want Bearer fallback-key", got)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", 400)
+			return
+		}
+		if req.Model != "qax-codegen/Auto" {
+			t.Errorf("upstream model = %q, want qax-codegen/Auto", req.Model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-openai-sdk-client","choices":[{"message":{"role":"assistant","content":"openai sdk client ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL("http://"+srv.Addr().String()+"/v1"),
+		openaioption.WithAPIKey("local-key"),
+	)
+	completion, err := client.Chat.Completions.New(context.Background(), openai.ChatCompletionNewParams{
+		Model: "qax-codegen/Auto",
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("hi"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("openai SDK Chat.Completions.New failed: %v", err)
+	}
+	if completion.ID != "chatcmpl-openai-sdk-client" {
+		t.Fatalf("completion id = %q, want chatcmpl-openai-sdk-client", completion.ID)
+	}
+	if len(completion.Choices) != 1 || completion.Choices[0].Message.Content != "openai sdk client ok" {
+		t.Fatalf("completion choices = %+v, want openai sdk client ok", completion.Choices)
+	}
+}
+
+func TestOpenAISDKClientCanCallResponsesFromCodeGenProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Errorf("upstream path = %q, want /chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer fallback-key" {
+			t.Errorf("upstream Authorization = %q, want Bearer fallback-key", got)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if req.Model != "qax-codegen/Auto" {
+			t.Errorf("upstream model = %q, want qax-codegen/Auto", req.Model)
+		}
+		if len(req.Messages) != 2 || req.Messages[0].Role != "system" || req.Messages[1].Role != "user" {
+			t.Errorf("upstream messages = %+v, want system then user", req.Messages)
+		}
+		if req.MaxTokens != 32 {
+			t.Errorf("max_tokens = %d, want 32", req.MaxTokens)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-openai-responses-client","choices":[{"message":{"role":"assistant","content":"responses sdk ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL("http://"+srv.Addr().String()+"/v1"),
+		openaioption.WithAPIKey("local-key"),
+	)
+	resp, err := client.Responses.New(context.Background(), responses.ResponseNewParams{
+		Model: shared.ResponsesModel("qax-codegen/Auto"),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String("hi"),
+		},
+		Instructions:    openai.String("You are helpful."),
+		MaxOutputTokens: openai.Int(32),
+	})
+	if err != nil {
+		t.Fatalf("openai SDK Responses.New failed: %v", err)
+	}
+	if resp.ID != "chatcmpl-openai-responses-client" {
+		t.Fatalf("response id = %q, want chatcmpl-openai-responses-client", resp.ID)
+	}
+	if got := resp.OutputText(); got != "responses sdk ok" {
+		t.Fatalf("OutputText = %q, want responses sdk ok", got)
+	}
+	if resp.Usage.InputTokens != 2 || resp.Usage.OutputTokens != 3 || resp.Usage.TotalTokens != 5 {
+		t.Fatalf("usage = %+v, want 2/3/5", resp.Usage)
+	}
+}
+
+func TestOpenAIChatResponseToResponsesOmitsEmptyTextForLegacyFunctionCall(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl-legacy-function",
+		"choices":[{
+			"message":{"role":"assistant","function_call":{"name":"read_file","arguments":"{\"path\":\"main.go\"}"}},
+			"finish_reason":"function_call"
+		}]
+	}`)
+	respBody, err := convertOpenAIChatResponseToResponses(body, "qax-codegen/Auto")
+	if err != nil {
+		t.Fatalf("convert chat response: %v", err)
+	}
+	var resp struct {
+		Output []struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		t.Fatalf("decode responses body: %v", err)
+	}
+	if len(resp.Output) != 1 || resp.Output[0].Type != "function_call" || resp.Output[0].Name != "read_file" {
+		t.Fatalf("output = %+v, want one legacy function_call", resp.Output)
+	}
+}
+
+func TestOpenAISDKClientCanStreamResponsesFromCodeGenProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Errorf("upstream path = %q, want /chat/completions", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if !req.Stream {
+			t.Errorf("stream = false, want true")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"responses\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\" stream\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL("http://"+srv.Addr().String()+"/v1"),
+		openaioption.WithAPIKey("local-key"),
+	)
+	stream := client.Responses.NewStreaming(context.Background(), responses.ResponseNewParams{
+		Model: shared.ResponsesModel("qax-codegen/Auto"),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String("hi"),
+		},
+	})
+	var got strings.Builder
+	var completed bool
+	for stream.Next() {
+		switch event := stream.Current().AsAny().(type) {
+		case responses.ResponseTextDeltaEvent:
+			got.WriteString(event.Delta)
+		case responses.ResponseCompletedEvent:
+			completed = true
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("openai SDK Responses.NewStreaming failed: %v", err)
+	}
+	if got.String() != "responses stream" {
+		t.Fatalf("stream content = %q, want responses stream", got.String())
+	}
+	if !completed {
+		t.Fatal("stream did not emit response.completed")
+	}
+}
+
+func TestResponsesRequestConvertsFunctionCallOutputToChatToolMessage(t *testing.T) {
+	body := []byte(`{
+		"model":"qax-codegen/Auto",
+		"input":[
+			{"type":"function_call","call_id":"call_read","name":"read_file","arguments":"{\"path\":\"main.go\"}"},
+			{"type":"function_call_output","call_id":"call_read","output":"package main"}
+		]
+	}`)
+	chatBody, model, err := convertOpenAIResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert responses request: %v", err)
+	}
+	if model != "qax-codegen/Auto" {
+		t.Fatalf("model = %q, want qax-codegen/Auto", model)
+	}
+	var req struct {
+		Messages []openaiMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(chatBody, &req); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	if len(req.Messages) != 2 {
+		t.Fatalf("messages = %+v, want 2", req.Messages)
+	}
+	if req.Messages[0].Role != "assistant" || len(req.Messages[0].ToolCalls) != 1 || req.Messages[0].ToolCalls[0].ID != "call_read" {
+		t.Fatalf("assistant tool call message = %+v", req.Messages[0])
+	}
+	if req.Messages[1].Role != "tool" || req.Messages[1].ToolCallID != "call_read" || req.Messages[1].Content != "package main" {
+		t.Fatalf("tool result message = %+v", req.Messages[1])
+	}
+}
+
+func TestResponsesRequestConvertsObjectFunctionCallData(t *testing.T) {
+	body := []byte(`{
+		"model":"qax-codegen/Auto",
+		"input":[
+			{"type":"function_call","call_id":"call_read","name":"read_file","arguments":{"path":"main.go"}},
+			{"type":"function_call_output","call_id":"call_read","output":{"ok":true}}
+		]
+	}`)
+	chatBody, _, err := convertOpenAIResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert responses request: %v", err)
+	}
+	var req struct {
+		Messages []openaiMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(chatBody, &req); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	if got := req.Messages[0].ToolCalls[0].Function.Arguments; got != `{"path":"main.go"}` {
+		t.Fatalf("tool call arguments = %q, want JSON object", got)
+	}
+	if got := req.Messages[1].Content; got != `{"ok":true}` {
+		t.Fatalf("tool output = %q, want JSON object", got)
+	}
+}
+
+func TestResponsesRequestConvertsTextFormatToChatResponseFormat(t *testing.T) {
+	body := []byte(`{
+		"model":"qax-codegen/Auto",
+		"input":"answer with json",
+		"text":{"format":{"type":"json_schema","name":"answer","schema":{"type":"object","properties":{"ok":{"type":"boolean"}}},"strict":true}}
+	}`)
+	chatBody, _, err := convertOpenAIResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert responses request: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(chatBody, &req); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	responseFormat := req["response_format"].(map[string]interface{})
+	if responseFormat["type"] != "json_schema" {
+		t.Fatalf("response_format.type = %#v, want json_schema", responseFormat["type"])
+	}
+	jsonSchema := responseFormat["json_schema"].(map[string]interface{})
+	if jsonSchema["name"] != "answer" || jsonSchema["strict"] != true {
+		t.Fatalf("json_schema = %#v, want name answer strict true", jsonSchema)
+	}
+	if _, ok := jsonSchema["schema"].(map[string]interface{}); !ok {
+		t.Fatalf("json_schema.schema missing: %#v", jsonSchema)
+	}
+}
+
+func TestResponsesRequestConvertsJSONObjectTextFormat(t *testing.T) {
+	body := []byte(`{
+		"model":"qax-codegen/Auto",
+		"input":"answer with json",
+		"text":{"format":{"type":"json_object"}}
+	}`)
+	chatBody, _, err := convertOpenAIResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert responses request: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(chatBody, &req); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	responseFormat := req["response_format"].(map[string]interface{})
+	if responseFormat["type"] != "json_object" {
+		t.Fatalf("response_format.type = %#v, want json_object", responseFormat["type"])
+	}
+}
+
+func TestResponsesRequestConvertsToolChoiceToChatToolChoice(t *testing.T) {
+	body := []byte(`{
+		"model":"qax-codegen/Auto",
+		"input":"use the selected tool",
+		"tools":[{"type":"function","name":"answer_tool","parameters":{"type":"object","properties":{}}}],
+		"tool_choice":{"type":"function","name":"answer_tool"}
+	}`)
+	chatBody, _, err := convertOpenAIResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert responses request: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(chatBody, &req); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	toolChoice := req["tool_choice"].(map[string]interface{})
+	fn := toolChoice["function"].(map[string]interface{})
+	if toolChoice["type"] != "function" || fn["name"] != "answer_tool" {
+		t.Fatalf("tool_choice = %#v, want function answer_tool", toolChoice)
+	}
+}
+
+func TestResponsesRequestDefaultsMissingFunctionCallArguments(t *testing.T) {
+	body := []byte(`{
+		"model":"qax-codegen/Auto",
+		"input":[{"type":"function_call","call_id":"call_ping","name":"ping"}]
+	}`)
+	chatBody, _, err := convertOpenAIResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert responses request: %v", err)
+	}
+	var req struct {
+		Messages []openaiMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(chatBody, &req); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	if got := req.Messages[0].ToolCalls[0].Function.Arguments; got != "{}" {
+		t.Fatalf("tool call arguments = %q, want {}", got)
+	}
+}
+
+func TestResponsesRequestDropsEmptyFunctionCallOutput(t *testing.T) {
+	body := []byte(`{
+		"model":"qax-codegen/Auto",
+		"input":[
+			{"role":"user","content":"hi"},
+			{"type":"function_call_output","call_id":"call_empty","output":null}
+		]
+	}`)
+	chatBody, _, err := convertOpenAIResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert responses request: %v", err)
+	}
+	var req struct {
+		Messages []openaiMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(chatBody, &req); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	if len(req.Messages) != 1 || req.Messages[0].Role != "user" || req.Messages[0].Content != "hi" {
+		t.Fatalf("messages = %+v, want only original user message", req.Messages)
+	}
+}
+
+func TestResponsesRequestPreservesToolRoleCallID(t *testing.T) {
+	body := []byte(`{
+		"model":"qax-codegen/Auto",
+		"input":[{"role":"tool","tool_call_id":"call_read","content":"package main"}]
+	}`)
+	chatBody, _, err := convertOpenAIResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert responses request: %v", err)
+	}
+	var req struct {
+		Messages []openaiMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(chatBody, &req); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	if len(req.Messages) != 1 || req.Messages[0].Role != "tool" || req.Messages[0].ToolCallID != "call_read" {
+		t.Fatalf("messages = %+v, want tool message with call id", req.Messages)
+	}
+}
+
+func TestResponsesRequestIgnoresImageOnlyContent(t *testing.T) {
+	body := []byte(`{
+		"model":"qax-codegen/Auto",
+		"input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,xx"}]}]
+	}`)
+	if _, _, err := convertOpenAIResponsesRequestToChat(body); err == nil || !strings.Contains(err.Error(), "input is required") {
+		t.Fatalf("convert responses request error = %v, want input required", err)
+	}
+}
+
+func TestResponsesRequestPreservesFunctionToolStrict(t *testing.T) {
+	body := []byte(`{
+		"model":"qax-codegen/Auto",
+		"input":"hi",
+		"tools":[{"type":"function","name":"read_file","description":"Read file","parameters":{"type":"object"},"strict":true}]
+	}`)
+	chatBody, _, err := convertOpenAIResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert responses request: %v", err)
+	}
+	var req struct {
+		Tools []struct {
+			Function struct {
+				Name   string      `json:"name"`
+				Strict interface{} `json:"strict"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(chatBody, &req); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	if len(req.Tools) != 1 || req.Tools[0].Function.Name != "read_file" || req.Tools[0].Function.Strict != true {
+		t.Fatalf("tools = %+v, want strict read_file", req.Tools)
+	}
+}
+
+func TestResponsesRequestDefaultsFunctionToolParameters(t *testing.T) {
+	body := []byte(`{
+		"model":"qax-codegen/Auto",
+		"input":"hi",
+		"tools":[{"type":"function","name":"ping"}]
+	}`)
+	chatBody, _, err := convertOpenAIResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert responses request: %v", err)
+	}
+	var req struct {
+		Tools []struct {
+			Function struct {
+				Parameters map[string]interface{} `json:"parameters"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(chatBody, &req); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	params := req.Tools[0].Function.Parameters
+	if params["type"] != "object" {
+		t.Fatalf("parameters = %+v, want object schema", params)
+	}
+}
+
+func TestOpenAIResponsesStreamConvertsToolCalls(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_read\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"main.go\\\"}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL("http://"+srv.Addr().String()+"/v1"),
+		openaioption.WithAPIKey("local-key"),
+	)
+	stream := client.Responses.NewStreaming(context.Background(), responses.ResponseNewParams{
+		Model: shared.ResponsesModel("qax-codegen/Auto"),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String("hi"),
+		},
+	})
+	var delta, doneArgs string
+	var completed bool
+	for stream.Next() {
+		switch event := stream.Current().AsAny().(type) {
+		case responses.ResponseFunctionCallArgumentsDeltaEvent:
+			delta += event.Delta
+		case responses.ResponseFunctionCallArgumentsDoneEvent:
+			doneArgs = event.Arguments
+		case responses.ResponseCompletedEvent:
+			completed = true
+			if len(event.Response.Output) != 1 || event.Response.Output[0].Type != "function_call" {
+				t.Fatalf("completed output = %+v, want one function_call", event.Response.Output)
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("openai SDK Responses.NewStreaming failed: %v", err)
+	}
+	if delta != `{"path":"main.go"}` || doneArgs != `{"path":"main.go"}` {
+		t.Fatalf("tool args delta=%q done=%q, want JSON args", delta, doneArgs)
+	}
+	if !completed {
+		t.Fatal("stream did not emit response.completed")
+	}
+}
+
+func TestOpenAIResponsesStreamIndexesToolThenTextOutputs(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_read\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"after tool\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/v1/responses",
+		strings.NewReader(`{"model":"qax-codegen/Auto","input":"hi","stream":true}`))
+	req.Header.Set("Authorization", "Bearer local-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"sequence_number":2,"type":"response.output_item.added"`) ||
+		!strings.Contains(string(body), `"output_index":0`) ||
+		!strings.Contains(string(body), `"type":"response.output_text.delta"`) ||
+		!strings.Contains(string(body), `"output_index":1`) {
+		t.Fatalf("stream body missing expected output indexes: %s", body)
+	}
+}
+
+func TestOpenAIResponsesStreamInvalidChunkEmitsError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {not-json}\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/v1/responses",
+		strings.NewReader(`{"model":"qax-codegen/Auto","input":"hi","stream":true}`))
+	req.Header.Set("Authorization", "Bearer local-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "event: error") {
+		t.Fatalf("stream body = %s, want error event", body)
+	}
+	if strings.Contains(string(body), "response.completed") {
+		t.Fatalf("stream body = %s, should not complete after invalid chunk", body)
+	}
+}
+
+func TestOpenAISDKClientCanStreamChatCompletionsFromCodeGenProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", 400)
+			return
+		}
+		if !req.Stream {
+			t.Errorf("stream = false, want true")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"openai\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\" stream\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL("http://"+srv.Addr().String()+"/v1"),
+		openaioption.WithAPIKey("local-key"),
+	)
+	stream := client.Chat.Completions.NewStreaming(context.Background(), openai.ChatCompletionNewParams{
+		Model: "qax-codegen/Auto",
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("hi"),
+		},
+	})
+	var got strings.Builder
+	for stream.Next() {
+		chunk := stream.Current()
+		if len(chunk.Choices) > 0 {
+			got.WriteString(chunk.Choices[0].Delta.Content)
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("openai SDK streaming failed: %v", err)
+	}
+	if got.String() != "openai stream" {
+		t.Fatalf("stream content = %q, want openai stream", got.String())
+	}
+}
+
+func TestOpenAISDKUpstreamClientPreservesAPIErrorStatusAndBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request from upstream","type":"invalid_request_error"}}`))
+	}))
+	defer upstream.Close()
+
+	client := NewOpenAISDKUpstreamClient(nil)
+	resp, err := client.DoChatCompletions(
+		context.Background(),
+		upstream.URL+"/chat/completions",
+		"fallback-key",
+		"custom-agent",
+		[]byte(`{"model":"qax-codegen/Auto","messages":[{"role":"user","content":"hi"}]}`),
+		"application/json",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("DoChatCompletions returned transport error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("response is nil")
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "bad request from upstream") {
+		t.Fatalf("body = %s, want upstream error body", body)
+	}
+}
+
+func TestAnthropicStreamProxyWithOpenAISDKClientFallsBackToRawHTTP(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", 400)
+			return
+		}
+		if !req.Stream {
+			t.Errorf("stream = false, want true")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetOpenAIUpstreamClient(NewOpenAISDKUpstreamClient(nil))
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	anthReq := `{
+		"model": "qax-codegen/Auto",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"max_tokens": 1024,
+		"stream": true
+	}`
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/anthropic/v1/messages",
+		strings.NewReader(anthReq))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "content_block_delta") || !strings.Contains(string(body), "hello") {
+		t.Fatalf("stream body = %s, want anthropic SSE hello", body)
+	}
+}
+
 func TestModelsProxySetsUpstreamUserAgent(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("User-Agent"); got != "custom-agent" {
@@ -1721,6 +3013,180 @@ func TestModelsProxySetsUpstreamUserAgent(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestOpenAISDKClientCanListModelsFromCodeGenProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("upstream path = %q, want /models", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer fallback-key" {
+			t.Errorf("upstream Authorization = %q, want Bearer fallback-key", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qax-codegen/Auto","object":"model","provider":"qax-codegen"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL("http://"+srv.Addr().String()+"/v1"),
+		openaioption.WithAPIKey("local-key"),
+	)
+	page, err := client.Models.List(context.Background())
+	if err != nil {
+		t.Fatalf("openai SDK Models.List failed: %v", err)
+	}
+	if page == nil || len(page.Data) != 1 {
+		t.Fatalf("models page = %+v, want one model", page)
+	}
+	if page.Data[0].ID != "qax-codegen/Auto" {
+		t.Fatalf("model id = %q, want qax-codegen/Auto", page.Data[0].ID)
+	}
+}
+
+func TestAnthropicSDKClientCanListModelsFromCodeGenProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("upstream path = %q, want /models", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qax-codegen/Auto","name":"Auto","provider":"qax-codegen"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := anthropic.NewClient(
+		anthropicoption.WithBaseURL("http://"+srv.Addr().String()+"/anthropic"),
+		anthropicoption.WithAPIKey("local-key"),
+	)
+	page, err := client.Models.List(context.Background(), anthropic.ModelListParams{})
+	if err != nil {
+		t.Fatalf("anthropic SDK Models.List failed: %v", err)
+	}
+	if page == nil || len(page.Data) != 1 {
+		t.Fatalf("models page = %+v, want one model", page)
+	}
+	if page.Data[0].ID != "qax-codegen/Auto" || page.Data[0].DisplayName != "Auto" {
+		t.Fatalf("model = %+v, want qax-codegen/Auto Auto", page.Data[0])
+	}
+}
+
+func TestOpenAISDKClientCanGetModelFromCodeGenProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("upstream path = %q, want /models", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qax-codegen/Auto","name":"Auto","provider":"qax-codegen"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL("http://"+srv.Addr().String()+"/v1"),
+		openaioption.WithAPIKey("local-key"),
+	)
+	model, err := client.Models.Get(context.Background(), "qax-codegen/Auto")
+	if err != nil {
+		t.Fatalf("openai SDK Models.Get failed: %v", err)
+	}
+	if model.ID != "qax-codegen/Auto" || model.Object != "model" {
+		t.Fatalf("model = %+v, want qax-codegen/Auto model", model)
+	}
+}
+
+func TestModelGetHandlesEscapedProviderPrefixedID(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qax-codegen/Qwen-Flash","name":"Qwen-Flash","provider":"qax-codegen"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	resp, err := http.Get("http://" + srv.Addr().String() + "/v1/models/qax-codegen%2FQwen-Flash")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var model struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &model); err != nil {
+		t.Fatalf("decode model: %v", err)
+	}
+	if model.ID != "qax-codegen/Qwen-Flash" {
+		t.Fatalf("model id = %q, want qax-codegen/Qwen-Flash", model.ID)
+	}
+}
+
+func TestModelGetReturnsNotFoundForUnknownModel(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qax-codegen/Auto","name":"Auto","provider":"qax-codegen"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	resp, err := http.Get("http://" + srv.Addr().String() + "/v1/models/missing-model")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 404; body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestAnthropicSDKClientCanGetModelFromCodeGenProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("upstream path = %q, want /models", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qax-codegen/Auto","name":"Auto","provider":"qax-codegen"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := anthropic.NewClient(
+		anthropicoption.WithBaseURL("http://"+srv.Addr().String()+"/anthropic"),
+		anthropicoption.WithAPIKey("local-key"),
+	)
+	model, err := client.Models.Get(context.Background(), "qax-codegen/Auto", anthropic.ModelGetParams{})
+	if err != nil {
+		t.Fatalf("anthropic SDK Models.Get failed: %v", err)
+	}
+	if model.ID != "qax-codegen/Auto" || model.DisplayName != "Auto" {
+		t.Fatalf("model = %+v, want qax-codegen/Auto Auto", model)
 	}
 }
 

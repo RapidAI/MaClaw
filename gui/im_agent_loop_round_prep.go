@@ -24,9 +24,7 @@ type agentLoopRoundPrepOptions struct {
 	Tools                   []map[string]interface{}
 	ToolsTokenBudget        int
 	BaseTools               []map[string]interface{}
-	GateConfig              codingToolGateConfig
-	SkipCodingGate          bool
-	OrchestratorActive      func() bool
+
 	DirectModeToolsFiltered bool
 	EffectiveTokenLimit     int
 	Phase                   *agentLoopPhase
@@ -106,8 +104,14 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	tools := opts.Tools
 	toolsTokenBudget := opts.ToolsTokenBudget
 	if injectedText != "" {
-		tools, toolsTokenBudget = h.augmentToolsFromInjection(ctx, opts.UserID, injectedText, tools, opts.BaseTools, opts.GateConfig.active)
+		tools, toolsTokenBudget = h.augmentToolsFromInjection(ctx, opts.UserID, injectedText, tools, opts.BaseTools, false)
 	}
+
+	// When discover_tool session-pins a conditional tool mid-loop, the tool
+	// definition may be missing from the current tool list (which was computed
+	// at loop start based on the original user message). Augment with any
+	// session-pinned tools that aren't already in the list.
+	tools, toolsTokenBudget = h.augmentToolsFromSessionPins(ctx, opts.UserID, tools, toolsTokenBudget)
 	forceLightFinalizeWithoutTools := shouldForceLightFinalizeWithoutTools(ctx, opts.Iteration, effectiveMax, opts.ChatFinalizeGrace)
 	if forceLightFinalizeWithoutTools {
 		tools = nil
@@ -141,9 +145,6 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		tools,
 		toolsTokenBudget,
 		opts.BaseTools,
-		opts.GateConfig,
-		opts.SkipCodingGate,
-		opts.OrchestratorActive,
 	)
 	conversation = recoverPromptResult.Conversation
 	tools = recoverPromptResult.Tools

@@ -14,6 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 type mockLLMCallerGUI struct {
@@ -1928,6 +1929,64 @@ func TestCaptureWorkflowDocAfterAgentLoopUsesRuntimePolicyOwner(t *testing.T) {
 	}
 	if _, ok := handler.workflowReviewExperienceContext.Load(desktopID); ok {
 		t.Fatal("review experience context must not be stored under message user")
+	}
+}
+
+func TestSchedulePostLoopSideEffectsUsesRuntimeOwnerForV2SyncCapture(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	handler.app.workflowV2 = buildWorkflowV2State(v2.NewMemoryStore())
+
+	desktopID := "desktop-v2-post-loop-sync"
+	remoteOwnerID := "remote:v2-post-loop-sync"
+	projectPath, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	if _, err := handler.app.workflowV2.machine.Create(remoteOwnerID, "coding", projectPath, "build app"); err != nil {
+		t.Fatalf("Create v2 workflow failed: %v", err)
+	}
+	ctx := &LoopContext{
+		ID:                "v2-post-loop-sync",
+		WorkflowAgentLoop: true,
+		Runtime:           RuntimeContext{RequestID: "req-v2-post-loop-sync", PolicyOwnerID: remoteOwnerID},
+	}
+	resp := &IMAgentResponse{Text: "requirements output"}
+
+	handler.schedulePostLoopSideEffects(IMUserMessage{UserID: desktopID}, ctx, resp, true)
+
+	state := handler.app.workflowV2.machine.GetActive(remoteOwnerID)
+	if state == nil || state.ActivePhase() == nil || state.ActivePhase().Output != "requirements output" {
+		t.Fatalf("runtime owner v2 workflow should be captured synchronously, got %#v", state)
+	}
+	if desktopState := handler.app.workflowV2.machine.GetActive(desktopID); desktopState != nil {
+		t.Fatalf("message user workflow must not be created or captured, got %#v", desktopState)
+	}
+}
+
+func TestBuildIMEntrySystemPromptUsesRuntimeOwnerStashedPhasePrompt(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	desktopID := "desktop-stashed-phase-prompt"
+	remoteOwnerID := "remote:stashed-phase-prompt"
+	ctx := &LoopContext{
+		ID:      "stashed-phase-prompt",
+		Runtime: RuntimeContext{RequestID: "req-stashed-phase-prompt", PolicyOwnerID: remoteOwnerID},
+	}
+	handler.stashedPhasePrompt.Store(remoteOwnerID, "PHASE_PROMPT_SENTINEL")
+	handler.stashedPhasePrompt.Store(desktopID, "WRONG_PROMPT")
+
+	prompt := handler.buildIMEntrySystemPrompt(IMUserMessage{UserID: desktopID, Text: "continue"}, nil, ctx, true, "", "", "")
+
+	if !strings.Contains(prompt, "PHASE_PROMPT_SENTINEL") {
+		t.Fatalf("system prompt missing runtime-owner stashed phase prompt")
+	}
+	if strings.Contains(prompt, "WRONG_PROMPT") {
+		t.Fatalf("system prompt used message-user stashed phase prompt")
+	}
+	if _, ok := handler.stashedPhasePrompt.Load(remoteOwnerID); ok {
+		t.Fatal("runtime-owner stashed phase prompt should be consumed")
+	}
+	if _, ok := handler.stashedPhasePrompt.Load(desktopID); !ok {
+		t.Fatal("message-user stashed phase prompt should remain untouched")
 	}
 }
 

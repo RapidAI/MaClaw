@@ -1361,7 +1361,6 @@ func TestRunAgentLoop_AttachesIntermediateScreenshotAndQRCodeURL(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
-	app.gateIntentClassifier = NewGateIntentClassifier(nil)
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.SetToolRegistry(NewToolRegistry())
@@ -2341,13 +2340,12 @@ func TestHandleIMMessageWithProgressAndStream_EnglishShortChitChatWithPunctuatio
 }
 
 func TestHandleIMMessageWithProgressAndStream_OkShortChitChatWithPunctuationReturnsDirectReply(t *testing.T) {
+	// "ok"/"okay" removed from short chitchat list to avoid intercepting
+	// workflow confirmation intents. Verify it no longer produces a canned response.
 	h := NewIMMessageHandler(&App{}, &RemoteSessionManager{app: &App{}, sessions: map[string]*RemoteSession{}})
 	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "okay.", Lang: "en"}, nil, nil, nil, nil)
-	if resp == nil {
-		t.Fatal("expected response")
-	}
-	if resp.Text != "Okay. I'm here if you need anything." {
-		t.Fatalf("resp.Text = %q", resp.Text)
+	if resp != nil && resp.Text == "Okay. I'm here if you need anything." {
+		t.Fatal("ok/okay should no longer be intercepted as short chitchat")
 	}
 }
 
@@ -2994,6 +2992,10 @@ func TestRunAgentLoop_EmptyAssistantAfterSkillFailureEscalatesToNoToolStallRecov
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"我已切换到其他真实工具继续处理。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 5:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"\\u5df2\\u5b8c\\u6210\\uff0c\\u4ee5\\u4e0b\\u662f\\u603b\\u7ed3\\uff1a\\u5df2\\u5728 Skill \\u5931\\u8d25\\u540e\\u5207\\u6362\\u5230\\u5176\\u5b83\\u771f\\u5b9e\\u5de5\\u5177\\u8def\\u5f84\\u7ee7\\u7eed\\u5904\\u7406\\u3002\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		default:
 			t.Fatalf("unexpected LLM call %d", currentCall)
 		}
@@ -3057,18 +3059,18 @@ func TestRunAgentLoop_EmptyAssistantAfterSkillFailureEscalatesToNoToolStallRecov
 	if resp.Error != "" {
 		t.Fatalf("resp.Error = %q", resp.Error)
 	}
-	if !strings.Contains(resp.Text, "切换到其他真实工具继续处理") {
+	if !strings.Contains(resp.Text, "\u5df2\u5b8c\u6210\uff0c\u4ee5\u4e0b\u662f\u603b\u7ed3") {
 		t.Fatalf("resp.Text = %q, want escalated response", resp.Text)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(requests) != 4 {
-		t.Fatalf("LLM request count = %d, want 4", len(requests))
+	if len(requests) != 5 {
+		t.Fatalf("LLM request count = %d, want 5", len(requests))
 	}
-	fifthMessages := requests[3].Messages
+	recoverPromptMessages := requests[3].Messages
 	foundRecoverPrompt := false
-	for _, msg := range fifthMessages {
+	for _, msg := range recoverPromptMessages {
 		role, _ := msg["role"].(string)
 		content, _ := msg["content"].(string)
 		if role == "system" && strings.Contains(content, "No real tool was called for") {
@@ -3077,7 +3079,7 @@ func TestRunAgentLoop_EmptyAssistantAfterSkillFailureEscalatesToNoToolStallRecov
 		}
 	}
 	if !foundRecoverPrompt {
-		t.Fatalf("fifth request messages = %#v, want no_tool_stall guidance after skill failure", fifthMessages)
+		t.Fatalf("recover prompt request messages = %#v, want no_tool_stall guidance after skill failure", recoverPromptMessages)
 	}
 }
 

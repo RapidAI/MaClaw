@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -41,6 +42,9 @@ func (c *RemoteHubClient) handleVEEvent(msg inboundHubEnvelope) {
 	if strings.TrimSpace(msg.Type) == veEventDiscussionRename {
 		c.cachePushedVEDiscussionRename(decodeVEEventPayloadMap(msg))
 	}
+	if shouldClearDiscoverableVECacheForEvent(msg.Type) {
+		c.app.clearDiscoverableVECache()
+	}
 	if c.app.ctx == nil {
 		return
 	}
@@ -66,6 +70,15 @@ func (c *RemoteHubClient) handleVEEvent(msg inboundHubEnvelope) {
 	runtime.EventsEmit(c.app.ctx, "ve-event", eventData)
 
 	log.Printf("[hub-client] handleVEEvent: forwarded %s to frontend", msg.Type)
+}
+
+func shouldClearDiscoverableVECacheForEvent(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case veEventListUpdate, veEventStatusChange, veEventApproved, veEventRejected, veEventDisabled:
+		return true
+	default:
+		return false
+	}
 }
 
 func decodeVEEventPayloadMap(msg inboundHubEnvelope) map[string]any {
@@ -415,43 +428,64 @@ func (c *RemoteHubClient) cachePushedVEDiscussionMessage(envelope a2a.GroupEnvel
 	}
 	go func() {
 		defer c.veDetailRefresh.Delete(sessionID)
+		sleepVEDetailRefreshDebounce()
 		for {
-			c.cachePushedVEDiscussionSnapshot(envelope)
 			state.mu.Lock()
+			state.dirty = false
+			state.mu.Unlock()
+			refreshed := c.cachePushedVEDiscussionSnapshot(envelope)
+			state.mu.Lock()
+			if !refreshed {
+				state.saturated++
+				if state.saturated <= veDetailRefreshMaxSaturated {
+					state.dirty = true
+				}
+			} else {
+				state.saturated = 0
+			}
 			if !state.dirty {
 				state.mu.Unlock()
 				return
 			}
 			state.dirty = false
+			saturated := state.saturated
 			state.mu.Unlock()
+			sleepVEDetailRefreshRetryDelay(saturated)
 		}
 	}()
 }
 
-func (c *RemoteHubClient) cachePushedVEDiscussionSnapshot(envelope a2a.GroupEnvelope) {
+func (c *RemoteHubClient) cachePushedVEDiscussionSnapshot(envelope a2a.GroupEnvelope) bool {
 	if c == nil || c.app == nil || envelope.Message == nil {
-		return
+		return true
 	}
 	sessionID := firstNonEmptyGroupString(envelope.SessionID, envelope.Message.SessionID)
 	if strings.TrimSpace(sessionID) == "" {
-		return
+		return true
 	}
 	client, cfg, err := c.app.veA2AHubClient()
 	if err != nil {
 		log.Printf("[hub-client] cachePushedVEDiscussionSnapshot: VE A2A client unavailable: %v", err)
-		return
+		return true
 	}
+	release, ok := acquireVEDetailRefreshSlot(2 * time.Second)
+	if !ok {
+		log.Printf("[hub-client] cachePushedVEDiscussionSnapshot: refresh %s skipped because refresh queue is saturated", sessionID)
+		return false
+	}
+	defer release()
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
 	detail, err := client.GetConsultationDetailForAgent(ctx, sessionID, groupDiscussionAgentID(cfg))
 	if err != nil {
 		log.Printf("[hub-client] cachePushedVEDiscussionSnapshot: refresh %s failed: %v", sessionID, err)
-		return
+		return true
 	}
 	if store, storeErr := c.app.openGroupDiscussionHistoryStore(); storeErr == nil {
 		_ = store.CacheDetail(ctx, detail, c.app.groupDiscussionAttachmentRoot)
 		_ = store.Close()
 	}
+	return true
 }
 
 func shouldDigitalEmployeeRespondToDiscussion(targetRole string, kind a2a.MessageKind) bool {

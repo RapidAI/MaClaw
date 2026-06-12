@@ -1340,9 +1340,9 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         }), { refreshSources: true, refreshHealth: true, successMessage: false });
         if (result) {
             if (result.save_status === 'duplicate') {
-                notifySuccess(t('⚠️ Content already exists in knowledge base (updated).', '⚠️ 内容已存在于知识库中（已更新）。'));
+                notifySuccess(t('Content already exists in knowledge base (updated).', '内容已存在于知识库中（已更新）。'));
             } else {
-                notifySuccess(t('✅ Text saved to knowledge base successfully.', '✅ 文本已成功保存到知识库。'));
+                notifySuccess(t('Text saved to knowledge base successfully.', '文本已成功保存到知识库。'));
             }
         }
     };
@@ -1360,9 +1360,9 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             if (urls.length === 1) {
                 // Single URL: result is a Source with save_status
                 if (result.save_status === 'duplicate') {
-                    notifySuccess(t('⚠️ URL already exists in knowledge base (updated).', '⚠️ URL 已存在于知识库中（已更新）。'));
+                    notifySuccess(t('URL already exists in knowledge base (updated).', 'URL 已存在于知识库中（已更新）。'));
                 } else {
-                    notifySuccess(t('✅ URL saved to knowledge base successfully.', '✅ URL 已成功保存到知识库。'));
+                    notifySuccess(t('URL saved to knowledge base successfully.', 'URL 已成功保存到知识库。'));
                 }
             } else {
                 // Batch URLs: result is URLBatchSaveResult with duplicates count
@@ -1373,13 +1373,13 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 const fresh = saved - duplicates;
                 let msg = '';
                 if (saved === 0 && skipped > 0) {
-                    msg = t(`⚠️ All ${skipped} URL(s) were duplicates in this batch (skipped).`, `⚠️ 本批次中全部 ${skipped} 个 URL 重复（已跳过）。`);
+                    msg = t(`All ${skipped} URL(s) were duplicates in this batch (skipped).`, `本批次中全部 ${skipped} 个 URL 重复（已跳过）。`);
                 } else if (duplicates > 0 && fresh === 0) {
-                    msg = t(`⚠️ All ${duplicates} URL(s) already exist in knowledge base (updated).`, `⚠️ 全部 ${duplicates} 个 URL 已存在于知识库中（已更新）。`);
+                    msg = t(`All ${duplicates} URL(s) already exist in knowledge base (updated).`, `全部 ${duplicates} 个 URL 已存在于知识库中（已更新）。`);
                 } else if (duplicates > 0) {
-                    msg = t(`✅ ${fresh} URL(s) saved, ${duplicates} already existed (updated).`, `✅ ${fresh} 个 URL 已保存，${duplicates} 个已存在（已更新）。`);
+                    msg = t(`${fresh} URL(s) saved, ${duplicates} already existed (updated).`, `${fresh} 个 URL 已保存，${duplicates} 个已存在（已更新）。`);
                 } else {
-                    msg = t(`✅ ${saved} URL(s) saved to knowledge base successfully.`, `✅ ${saved} 个 URL 已成功保存到知识库。`);
+                    msg = t(`${saved} URL(s) saved to knowledge base successfully.`, `${saved} 个 URL 已成功保存到知识库。`);
                 }
                 if (failed > 0) {
                     msg += t(` ${failed} failed.`, ` ${failed} 个失败。`);
@@ -1503,14 +1503,14 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         setConfirmDialog({
             show: true,
             title: t('Clear All', '清除全部'),
-            message: t('⚠️ This will permanently delete ALL knowledge base content (all imported documents, URLs, cards, facts). This cannot be undone.\n\nAre you sure?',
-                '⚠️ 此操作将永久删除知识库中的所有内容（所有导入的文档、URL、卡片、事实），且无法恢复。\n\n确定要继续吗？'),
+            message: t('This will permanently delete ALL knowledge base content (all imported documents, URLs, cards, facts). This cannot be undone.\n\nAre you sure?',
+                '此操作将永久删除知识库中的所有内容（所有导入的文档、URL、卡片、事实），且无法恢复。\n\n确定要继续吗？'),
             onConfirm: () => {
                 setConfirmDialog({
                     show: true,
                     title: t('Final Confirmation', '最终确认'),
-                    message: t('⚠️ FINAL CONFIRMATION: All knowledge base data will be permanently erased. Proceed?',
-                        '⚠️ 最终确认：知识库所有数据将被永久清除。确认执行？'),
+                    message: t('FINAL CONFIRMATION: All knowledge base data will be permanently erased. Proceed?',
+                        '最终确认：知识库所有数据将被永久清除。确认执行？'),
                     onConfirm: async () => {
                         setConfirmDialog(prev => ({ ...prev, show: false }));
                         await runTask('clearAll', async () => {
@@ -1664,7 +1664,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-search" aria-labelledby="knowledge-tab-search">
                     <div className="knowledge-search-hero">
                             <div className="knowledge-search-input-wrapper">
-                                <span className="knowledge-search-icon">🔍</span>
+                                <span className="knowledge-search-icon">SEARCH</span>
                                 <input
                                     className="knowledge-input knowledge-search-input--hero"
                                     value={searchForm.query}
@@ -1892,7 +1892,7 @@ function ResultList({ results, empty, query }: { results: SearchResult[]; empty:
                 )}
                 <div className="knowledge-row-main">
                     <strong>
-                        {isImage && <span className="knowledge-chip knowledge-chip--image">🖼️</span>}
+                        {isImage && <span className="knowledge-chip knowledge-chip--image">IMG</span>}
                         {highlightText(sourceLabel, regex)}
                     </strong>
                     <span className="knowledge-muted-line">{[result.result_type, result.source?.kind, result.source?.relative_path || result.source?.uri, result.score ? `score ${result.score.toFixed(3)}` : ''].filter(Boolean).join(' · ')}</span>

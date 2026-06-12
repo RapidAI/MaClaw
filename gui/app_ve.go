@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,20 +21,37 @@ import (
 )
 
 const (
-	veSessionActiveValidationTTL = 30 * time.Second
-	veDiscoverableCacheTTL       = 10 * time.Second
-	veAvatarImageMaxBytes        = 1024 * 1024
-	veAvatarDataURLMaxLength     = len("data:image/jpeg;base64,") + ((veAvatarImageMaxBytes+2)/3)*4
+	veSessionActiveValidationTTL  = 30 * time.Second
+	veDiscoverableCacheTTL        = 10 * time.Second
+	veDiscoverableFailureCacheTTL = 1500 * time.Millisecond
+	veAvatarImageMaxBytes         = 1024 * 1024
+	veAvatarDataURLMaxLength      = len("data:image/jpeg;base64,") + ((veAvatarImageMaxBytes+2)/3)*4
+	veHubHTTPGetTimeout           = 5 * time.Second
+	veHubHTTPWriteTimeout         = 10 * time.Second
+	veHubRetryMaxAttempts         = 3
+	veHubRetryMaxServerDelay      = 5 * time.Second
+	veDetailRefreshDebounce       = 150 * time.Millisecond
+	veDetailRefreshMaxConcurrent  = 4
+	veDetailRefreshMaxSaturated   = 6
 )
 
 var (
 	veGroupInviteJoinTimeout   = 8 * time.Second
 	veGroupInviteJoinPollDelay = 250 * time.Millisecond
+	veDiscoverableFlight       sync.Map // hubURL/token/localID -> *veDiscoverableInflight
+	veDetailRefreshSlots       = make(chan struct{}, veDetailRefreshMaxConcurrent)
 )
 
 type veDiscoverableCacheEntry struct {
 	expiresAt time.Time
 	employees []VirtualEmployeeEntry
+	err       error
+}
+
+type veDiscoverableInflight struct {
+	done      chan struct{}
+	employees []VirtualEmployeeEntry
+	err       error
 }
 
 // VirtualEmployeeEntry is the frontend-facing VE data structure.
@@ -137,6 +155,7 @@ func (a *App) clearDiscoverableVECache() {
 	if a == nil {
 		return
 	}
+	a.veDiscoverableCacheEpoch.Add(1)
 	a.veDiscoverableCache.Range(func(key, _ any) bool {
 		a.veDiscoverableCache.Delete(key)
 		return true
@@ -224,24 +243,7 @@ func (a *App) ListVirtualEmployees() ([]VirtualEmployeeEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg, cfgErr := a.LoadConfig()
-	if cfgErr != nil {
-		return nil, fmt.Errorf("load config: %w", cfgErr)
-	}
-
-	data, err := a.getHubJSON(hubURL, token, "/api/ve/discoverable")
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		Employees            []VirtualEmployeeEntry `json:"employees"`
-		MaxGroupParticipants int                    `json:"max_group_participants"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("decode digital employee list: %w", err)
-	}
-	return filterOnlineVirtualEmployees(filterOwnVirtualEmployees(resp.Employees, groupDiscussionAgentID(cfg))), nil
+	return a.loadDiscoverableVEEntries(hubURL, token)
 }
 
 func filterOnlineVirtualEmployees(employees []VirtualEmployeeEntry) []VirtualEmployeeEntry {
@@ -321,11 +323,18 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 	}
 	// Normalize and sort for consistent lookup key.
 	normalized := make([]string, 0, len(veIDs))
+	seenVEIDs := make(map[string]struct{}, len(veIDs))
 	for _, id := range veIDs {
 		id = strings.TrimSpace(id)
-		if id != "" {
-			normalized = append(normalized, id)
+		if id == "" {
+			continue
 		}
+		key := strings.ToLower(id)
+		if _, ok := seenVEIDs[key]; ok {
+			continue
+		}
+		seenVEIDs[key] = struct{}{}
+		normalized = append(normalized, id)
 	}
 	if len(normalized) == 0 {
 		return nil, fmt.Errorf("at least one veID is required")
@@ -347,6 +356,20 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 		return nil, fmt.Errorf("load config: %w", cfgErr)
 	}
 	agentID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	token := strings.TrimSpace(cfg.RemoteMachineToken)
+	employees, _ := a.loadDiscoverableVEEntries(hubURL, token)
+	inviteTargets := uniqueVEGroupInviteTargets(normalized, employees)
+	if len(inviteTargets) == 1 {
+		return a.InitiateVEConversation(inviteTargets[0].VEID)
+	}
+	responseVEIDs := veGroupInviteTargetVEIDs(inviteTargets)
+	inviteeIDs := veGroupInviteTargetInviteeIDs(inviteTargets)
+	profileIDs := veGroupInviteTargetProfileIDs(inviteTargets, employees)
+	if info := a.findActiveGroupSessionAny(responseVEIDs, inviteeIDs, profileIDs); info != nil {
+		return info, nil
+	}
+	returnVEIDs := preferredVEGroupReturnIDs(responseVEIDs, profileIDs)
 
 	req := a2a.GroupConsultationRequest{
 		FromID:    agentID,
@@ -371,19 +394,15 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 
 	// Invite all VEs to the group. Resolve invite IDs once, then send the
 	// independent invitations in parallel so group startup does not scale linearly.
-	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
-	token := strings.TrimSpace(cfg.RemoteMachineToken)
-	employees, _ := a.loadDiscoverableVEEntries(hubURL, token)
-	inviteErrs := make(chan error, len(normalized))
+	inviteErrs := make(chan error, len(inviteTargets))
 	var wg sync.WaitGroup
-	for _, veID := range normalized {
-		veID := veID
-		inviteeID := resolveVEInviteMachineID(employees, veID)
+	for _, target := range inviteTargets {
+		target := target
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := a.sendVEGroupInvitation(client, sessionID, agentID, inviteeID); err != nil {
-				inviteErrs <- fmt.Errorf("invite digital employee %q: %w", veID, err)
+			if _, err := a.sendVEGroupInvitation(client, sessionID, agentID, target.InviteeID); err != nil {
+				inviteErrs <- fmt.Errorf("invite digital employee %q: %w", target.VEID, err)
 			}
 		}()
 	}
@@ -395,15 +414,19 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 		}
 	}
 
-	// Cache the group session.
+	// Cache both the original request aliases and the deduplicated canonical set.
 	a.cacheGroupSession(normalized, sessionID)
-	if len(normalized) > 0 {
-		a.cacheVEGroupDefaultResponder(sessionID, resolveVEInviteMachineID(employees, normalized[0]))
+	a.cacheGroupSession(responseVEIDs, sessionID)
+	a.cacheGroupSession(inviteeIDs, sessionID)
+	a.cacheGroupSession(profileIDs, sessionID)
+	a.cacheGroupSessionReturnVEIDs(sessionID, returnVEIDs)
+	if len(inviteTargets) > 0 {
+		a.cacheVEGroupDefaultResponder(sessionID, inviteTargets[0].InviteeID)
 	}
 
 	return &VESessionInfo{
 		SessionID: sessionID,
-		VEID:      strings.Join(normalized, ","),
+		VEID:      strings.Join(returnVEIDs, ","),
 		VEName:    "Group",
 	}, nil
 }
@@ -413,8 +436,18 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 // discussion owner/default VE keeps the floor and local AI stays quiet unless
 // mentioned.
 func (a *App) SendVEMessage(sessionID, content string) error {
-	// Delegate to SendVEGroupMessage with no explicit mentions (single-responder routing)
-	return a.SendVEGroupMessage(sessionID, content, nil)
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("message content is empty")
+	}
+	if len([]rune(content)) > 32000 {
+		return fmt.Errorf("message exceeds 32,000 character limit")
+	}
+	return a.sendVEA2AMessage(sessionID, a2a.GroupDiscussionMessage{
+		Kind:      a2a.MessageStatement,
+		Content:   content,
+		ToIDs:     a.groupDiscussionUnmentionedTargetIDs(sessionID),
+		CreatedAt: time.Now(),
+	})
 }
 
 // SendVEGroupMessage sends a message in a VE group conversation with @mention-based routing.
@@ -783,6 +816,11 @@ func (a *App) discoverableVEParticipantIDs() map[string]string {
 	if err != nil {
 		return ids
 	}
+	if len(employees) == 0 {
+		if rawEmployees, rawErr := a.loadAllDiscoverableVEEntries(hubURL, token); rawErr == nil {
+			employees = rawEmployees
+		}
+	}
 	for _, employee := range employees {
 		machineID := strings.TrimSpace(employee.MachineID)
 		profileID := strings.TrimSpace(employee.ID)
@@ -791,6 +829,12 @@ func (a *App) discoverableVEParticipantIDs() map[string]string {
 			continue
 		}
 		ids[strings.ToLower(canonical)] = canonical
+		if profileID != "" {
+			ids[strings.ToLower(profileID)] = canonical
+		}
+		if machineID != "" {
+			ids[strings.ToLower(machineID)] = canonical
+		}
 		if profileID != "" {
 			addGroupDiscussionHistoryParticipantAliases(ids, profileID)
 			for key, value := range ids {
@@ -919,11 +963,16 @@ func (a *App) sendVEA2AMessage(sessionID string, msg a2a.GroupDiscussionMessage)
 	if msg.FromID == "" {
 		msg.FromID = groupDiscussionAgentID(cfg)
 	}
+	if strings.TrimSpace(msg.ID) == "" {
+		msg.ID = fmt.Sprintf("ve-msg-%d", time.Now().UnixNano())
+	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
 	started := time.Now()
 	log.Printf("[ve] send discussion message start session=%s from=%s to=%v kind=%s content_chars=%d", sessionID, msg.FromID, msg.ToIDs, msg.Kind, len([]rune(msg.Content)))
-	if err := client.SendDiscussionMessage(ctx, sessionID, msg); err != nil {
+	if err := withVEHubRetry(ctx, func(attemptCtx context.Context) error {
+		return client.SendDiscussionMessage(attemptCtx, sessionID, msg)
+	}); err != nil {
 		log.Printf("[ve] send discussion message failed session=%s from=%s to=%v kind=%s duration=%s: %v", sessionID, msg.FromID, msg.ToIDs, msg.Kind, time.Since(started), err)
 		return fmt.Errorf("send digital employee message: %w", err)
 	}
@@ -953,35 +1002,95 @@ func (a *App) cacheVEA2ADetailAsync(client *a2a.HubClient, sessionID, agentID st
 	}
 	go func() {
 		defer a.veDetailRefreshCache.Delete(sessionID)
+		sleepVEDetailRefreshDebounce()
 		for {
-			a.cacheVEA2ADetailSnapshot(client, sessionID, agentID)
 			state.mu.Lock()
+			state.dirty = false
+			state.mu.Unlock()
+			refreshed := a.cacheVEA2ADetailSnapshot(client, sessionID, agentID)
+			state.mu.Lock()
+			if !refreshed {
+				state.saturated++
+				if state.saturated <= veDetailRefreshMaxSaturated {
+					state.dirty = true
+				}
+			} else {
+				state.saturated = 0
+			}
 			if !state.dirty {
 				state.mu.Unlock()
 				return
 			}
 			state.dirty = false
+			saturated := state.saturated
 			state.mu.Unlock()
+			sleepVEDetailRefreshRetryDelay(saturated)
 		}
 	}()
 }
 
-func (a *App) cacheVEA2ADetailSnapshot(client *a2a.HubClient, sessionID, agentID string) {
-	ctx, cancel := groupDiscussionContext()
+func (a *App) cacheVEA2ADetailSnapshot(client *a2a.HubClient, sessionID, agentID string) bool {
+	release, ok := acquireVEDetailRefreshSlot(2 * time.Second)
+	if !ok {
+		log.Printf("[ve] async detail refresh skipped for session %s: refresh queue is saturated", sessionID)
+		return false
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	detail, err := client.GetConsultationDetailForAgent(ctx, sessionID, agentID)
 	if err != nil {
 		log.Printf("[ve] async detail refresh failed for session %s: %v", sessionID, err)
-		return
+		return true
 	}
 	store, storeErr := a.openGroupDiscussionHistoryStore()
 	if storeErr != nil {
 		log.Printf("[ve] async detail cache unavailable for session %s: %v", sessionID, storeErr)
-		return
+		return true
 	}
 	defer store.Close()
 	if err := store.CacheDetail(ctx, detail, a.groupDiscussionAttachmentRoot); err != nil {
 		log.Printf("[ve] async detail cache failed for session %s: %v", sessionID, err)
+	}
+	return true
+}
+
+func sleepVEDetailRefreshDebounce() {
+	if veDetailRefreshDebounce <= 0 {
+		return
+	}
+	time.Sleep(veDetailRefreshDebounce)
+}
+
+func sleepVEDetailRefreshRetryDelay(saturatedAttempts int) {
+	delay := veDetailRefreshDebounce
+	if saturatedAttempts > 0 {
+		delay *= time.Duration(minVEInt(saturatedAttempts+1, 6))
+	}
+	if delay <= 0 {
+		return
+	}
+	time.Sleep(delay)
+}
+
+func minVEInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func acquireVEDetailRefreshSlot(timeout time.Duration) (func(), bool) {
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case veDetailRefreshSlots <- struct{}{}:
+		return func() { <-veDetailRefreshSlots }, true
+	case <-timer.C:
+		return nil, false
 	}
 }
 
@@ -1017,6 +1126,8 @@ func (a *App) CloseVESession(sessionID string) error {
 		return true
 	})
 	a.veDefaultResponder.Delete(sessionID)
+	a.groupSessionReturnVEIDs.Delete(sessionID)
+	a.veDetailRefreshCache.Delete(sessionID)
 	a.groupSessionCache.Range(func(key, value any) bool {
 		if cachedSessionID, ok := value.(string); ok && cachedSessionID == sessionID {
 			a.groupSessionCache.Delete(key)
@@ -1260,11 +1371,102 @@ func (a *App) resolveVEInviteMachineID(hubURL, token, veID string) string {
 	if veID == "" {
 		return ""
 	}
-	employees, err := a.loadDiscoverableVEEntries(hubURL, token)
+	employees, err := a.loadAllDiscoverableVEEntries(hubURL, token)
 	if err != nil {
 		return veID
 	}
 	return resolveVEInviteMachineID(employees, veID)
+}
+
+type veGroupInviteTarget struct {
+	VEID      string
+	InviteeID string
+}
+
+func uniqueVEGroupInviteTargets(veIDs []string, employees []VirtualEmployeeEntry) []veGroupInviteTarget {
+	targets := make([]veGroupInviteTarget, 0, len(veIDs))
+	seen := make(map[string]struct{}, len(veIDs))
+	for _, veID := range veIDs {
+		veID = strings.TrimSpace(veID)
+		if veID == "" {
+			continue
+		}
+		inviteeID := strings.TrimSpace(resolveVEInviteMachineID(employees, veID))
+		if inviteeID == "" {
+			inviteeID = veID
+		}
+		key := strings.ToLower(inviteeID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		targets = append(targets, veGroupInviteTarget{VEID: veID, InviteeID: inviteeID})
+	}
+	return targets
+}
+
+func veGroupInviteTargetVEIDs(targets []veGroupInviteTarget) []string {
+	veIDs := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if veID := strings.TrimSpace(target.VEID); veID != "" {
+			veIDs = append(veIDs, veID)
+		}
+	}
+	return veIDs
+}
+
+func veGroupInviteTargetInviteeIDs(targets []veGroupInviteTarget) []string {
+	inviteeIDs := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if inviteeID := strings.TrimSpace(target.InviteeID); inviteeID != "" {
+			inviteeIDs = append(inviteeIDs, inviteeID)
+		}
+	}
+	return inviteeIDs
+}
+
+func veGroupInviteTargetProfileIDs(targets []veGroupInviteTarget, employees []VirtualEmployeeEntry) []string {
+	ids := make([]string, 0, len(targets))
+	for _, target := range targets {
+		id := strings.TrimSpace(target.VEID)
+		for _, employee := range employees {
+			if veGroupParticipantIdentityMatches(employee.MachineID, target.InviteeID) || veGroupParticipantIdentityMatches(employee.ID, target.InviteeID) {
+				if profileID := strings.TrimSpace(employee.ID); profileID != "" {
+					id = profileID
+				}
+				break
+			}
+		}
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func preferredVEGroupReturnIDs(responseVEIDs, profileIDs []string) []string {
+	if len(profileIDs) == len(responseVEIDs) && len(profileIDs) > 0 {
+		return cloneStringSlice(profileIDs)
+	}
+	return cloneStringSlice(responseVEIDs)
+}
+
+func dedupeNonEmptyStrings(values []string) []string {
+	cleaned := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		cleaned = append(cleaned, value)
+	}
+	return cleaned
 }
 
 func (a *App) loadDiscoverableVEEntries(hubURL, token string) ([]VirtualEmployeeEntry, error) {
@@ -1273,18 +1475,80 @@ func (a *App) loadDiscoverableVEEntries(hubURL, token string) ([]VirtualEmployee
 		return nil, cfgErr
 	}
 	localID := groupDiscussionAgentID(cfg)
-	cacheKey := strings.Join([]string{strings.TrimRight(strings.TrimSpace(hubURL), "/"), strings.TrimSpace(token), strings.TrimSpace(localID)}, "\x00")
-	if cacheKey != "\x00\x00" {
+	cacheKey := strings.Join([]string{"online", strings.TrimRight(strings.TrimSpace(hubURL), "/"), strings.TrimSpace(token), strings.TrimSpace(localID)}, "\x00")
+	cacheable := isDiscoverableVECacheable(hubURL, token, localID)
+	if cacheable {
 		if val, ok := a.veDiscoverableCache.Load(cacheKey); ok {
 			entry, ok := val.(veDiscoverableCacheEntry)
 			if ok && time.Now().Before(entry.expiresAt) {
+				if entry.err != nil {
+					return nil, entry.err
+				}
 				return cloneVirtualEmployeeEntries(entry.employees), nil
 			}
 			a.veDiscoverableCache.Delete(cacheKey)
 		}
 	}
+	epoch := a.veDiscoverableCacheEpoch.Load()
+	respEmployees, err := a.loadAllDiscoverableVEEntries(hubURL, token)
+	if err != nil {
+		return nil, err
+	}
+	employees := filterOnlineVirtualEmployees(filterOwnVirtualEmployees(respEmployees, localID))
+	if cacheable && a.veDiscoverableCacheEpoch.Load() == epoch {
+		a.veDiscoverableCache.Store(cacheKey, veDiscoverableCacheEntry{expiresAt: time.Now().Add(veDiscoverableCacheTTL), employees: cloneVirtualEmployeeEntries(employees)})
+	}
+	return employees, nil
+}
+
+func (a *App) loadAllDiscoverableVEEntries(hubURL, token string) ([]VirtualEmployeeEntry, error) {
+	cfg, cfgErr := a.LoadConfig()
+	if cfgErr != nil {
+		return nil, cfgErr
+	}
+	localID := groupDiscussionAgentID(cfg)
+	cacheKey := strings.Join([]string{"all", strings.TrimRight(strings.TrimSpace(hubURL), "/"), strings.TrimSpace(token), strings.TrimSpace(localID)}, "\x00")
+	cacheable := isDiscoverableVECacheable(hubURL, token, localID)
+	if cacheable {
+		if val, ok := a.veDiscoverableCache.Load(cacheKey); ok {
+			entry, ok := val.(veDiscoverableCacheEntry)
+			if ok && time.Now().Before(entry.expiresAt) {
+				if entry.err != nil {
+					return nil, entry.err
+				}
+				return cloneVirtualEmployeeEntries(entry.employees), nil
+			}
+			a.veDiscoverableCache.Delete(cacheKey)
+		}
+		epoch := a.veDiscoverableCacheEpoch.Load()
+		flightKey := fmt.Sprintf("%s\x00%d", cacheKey, epoch)
+		flight := &veDiscoverableInflight{done: make(chan struct{})}
+		if existing, loaded := veDiscoverableFlight.LoadOrStore(flightKey, flight); loaded {
+			if inflight, ok := existing.(*veDiscoverableInflight); ok && inflight != nil {
+				select {
+				case <-inflight.done:
+					return cloneVirtualEmployeeEntries(inflight.employees), inflight.err
+				case <-time.After(veHubHTTPGetTimeout*time.Duration(veHubRetryMaxAttempts) + time.Second):
+					return nil, fmt.Errorf("timed out waiting for discoverable digital employees")
+				}
+			}
+		} else {
+			defer veDiscoverableFlight.Delete(flightKey)
+			defer close(flight.done)
+			employees, err := a.fetchAllDiscoverableVEEntries(hubURL, token, localID, cacheKey, epoch)
+			flight.employees = cloneVirtualEmployeeEntries(employees)
+			flight.err = err
+			return employees, err
+		}
+	}
+
+	return a.fetchAllDiscoverableVEEntries(hubURL, token, localID, cacheKey, a.veDiscoverableCacheEpoch.Load())
+}
+
+func (a *App) fetchAllDiscoverableVEEntries(hubURL, token, localID, cacheKey string, epoch uint64) ([]VirtualEmployeeEntry, error) {
 	data, err := a.getHubJSON(hubURL, token, "/api/ve/discoverable")
 	if err != nil {
+		a.storeDiscoverableVEFailure(hubURL, token, localID, cacheKey, epoch, err)
 		return nil, err
 	}
 	var resp struct {
@@ -1293,11 +1557,31 @@ func (a *App) loadDiscoverableVEEntries(hubURL, token string) ([]VirtualEmployee
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, err
 	}
-	employees := filterOnlineVirtualEmployees(filterOwnVirtualEmployees(resp.Employees, localID))
-	if cacheKey != "\x00\x00" {
+	employees := normalizeDiscoverableVEEntries(filterOwnVirtualEmployees(resp.Employees, localID))
+	if isDiscoverableVECacheable(hubURL, token, localID) && a.veDiscoverableCacheEpoch.Load() == epoch {
 		a.veDiscoverableCache.Store(cacheKey, veDiscoverableCacheEntry{expiresAt: time.Now().Add(veDiscoverableCacheTTL), employees: cloneVirtualEmployeeEntries(employees)})
 	}
 	return employees, nil
+}
+
+func (a *App) storeDiscoverableVEFailure(hubURL, token, localID, cacheKey string, epoch uint64, err error) {
+	if a == nil || !isDiscoverableVECacheable(hubURL, token, localID) || a.veDiscoverableCacheEpoch.Load() != epoch || err == nil || !isTransientVEHubError(err) {
+		return
+	}
+	a.veDiscoverableCache.Store(cacheKey, veDiscoverableCacheEntry{expiresAt: time.Now().Add(veDiscoverableFailureCacheTTL), err: err})
+}
+
+func isDiscoverableVECacheable(hubURL, token, localID string) bool {
+	return strings.TrimSpace(hubURL) != "" && strings.TrimSpace(token) != "" && strings.TrimSpace(localID) != ""
+}
+
+func normalizeDiscoverableVEEntries(employees []VirtualEmployeeEntry) []VirtualEmployeeEntry {
+	for i := range employees {
+		if strings.TrimSpace(employees[i].OnlineStatus) == "" {
+			employees[i].OnlineStatus = "online"
+		}
+	}
+	return employees
 }
 
 func cloneVirtualEmployeeEntries(employees []VirtualEmployeeEntry) []VirtualEmployeeEntry {
@@ -1467,32 +1751,7 @@ func (a *App) getHubCredentials() (hubURL, token string, err error) {
 }
 
 func (a *App) getHubJSON(hubURL, token, path string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, hubURL+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-
-	cfg, _ := a.LoadConfig()
-	if machineID := strings.TrimSpace(groupDiscussionAgentID(cfg)); machineID != "" {
-		req.Header.Set("X-Machine-ID", machineID)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("hub returned %d: %s", resp.StatusCode, truncateVEStr(string(data), 200))
-	}
-	return data, nil
+	return a.doHubJSONWithTimeout(hubURL, token, http.MethodGet, path, nil, veHubHTTPGetTimeout)
 }
 
 func (a *App) postHubJSON(hubURL, token, path string, body any) ([]byte, error) {
@@ -1504,42 +1763,189 @@ func (a *App) putHubJSON(hubURL, token, path string, body any) ([]byte, error) {
 }
 
 func (a *App) doHubJSON(hubURL, token, method, path string, body any) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	return a.doHubJSONWithTimeout(hubURL, token, method, path, body, veHubHTTPWriteTimeout)
+}
 
-	var bodyReader io.Reader
+func (a *App) doHubJSONWithTimeout(hubURL, token, method, path string, body any, timeout time.Duration) ([]byte, error) {
+	var bodyData []byte
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
 			return nil, err
 		}
-		bodyReader = bytes.NewReader(data)
+		bodyData = data
 	}
-
-	req, err := http.NewRequestWithContext(ctx, method, hubURL+path, bodyReader)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
 
 	cfg, _ := a.LoadConfig()
-	if machineID := strings.TrimSpace(groupDiscussionAgentID(cfg)); machineID != "" {
-		req.Header.Set("X-Machine-ID", machineID)
+	machineID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	maxAttempts := veHubRetryMaxAttempts
+	if !isRetryableVEHubMethod(method) {
+		maxAttempts = 1
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		var bodyReader io.Reader
+		if bodyData != nil {
+			bodyReader = bytes.NewReader(bodyData)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, hubURL+path, bodyReader)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Accept", "application/json")
+		if bodyData != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if machineID != "" {
+			req.Header.Set("X-Machine-ID", machineID)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			cancel()
+			lastErr = err
+			if !isTransientVEHubError(err) || attempt == maxAttempts {
+				return nil, err
+			}
+			sleepVEHubRetryDelay(context.Background(), attempt, 0)
+			continue
+		}
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		cancel()
+		if resp.StatusCode < 300 {
+			return data, nil
+		}
+		statusErr := veHubStatusError{statusCode: resp.StatusCode, body: truncateVEStr(string(data), 200), retryAfter: parseVEHubRetryAfter(resp.Header.Get("Retry-After"))}
+		lastErr = statusErr
+		if !isRetryableVEHubStatus(resp.StatusCode) || attempt == maxAttempts {
+			return nil, statusErr
+		}
+		sleepVEHubRetryDelay(context.Background(), attempt, statusErr.retryAfter)
+	}
+	return nil, lastErr
+}
+
+type veHubStatusError struct {
+	statusCode int
+	body       string
+	retryAfter time.Duration
+}
+
+func (e veHubStatusError) Error() string {
+	return fmt.Sprintf("hub returned %d: %s", e.statusCode, e.body)
+}
+
+func withVEHubRetry(ctx context.Context, fn func(context.Context) error) error {
+	var lastErr error
+	for attempt := 1; attempt <= veHubRetryMaxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, veHubHTTPWriteTimeout)
+		err := fn(attemptCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isTransientVEHubError(err) || attempt == veHubRetryMaxAttempts {
+			return err
+		}
+		if !sleepVEHubRetryDelay(ctx, attempt, 0) {
+			return ctx.Err()
+		}
+	}
+	return lastErr
+}
+
+func isTransientVEHubError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "context canceled") {
+		return false
+	}
+	for _, token := range []string{
+		"timeout",
+		"deadline exceeded",
+		"connection reset",
+		"connection refused",
+		"no such host",
+		"temporary",
+		"eof",
+		"bad gateway",
+		"service unavailable",
+		"gateway timeout",
+		"too many requests",
+		"hub returned 408",
+		"hub returned 429",
+		"hub returned 500",
+		"hub returned 502",
+		"hub returned 503",
+		"hub returned 504",
+	} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRetryableVEHubStatus(statusCode int) bool {
+	return statusCode == http.StatusRequestTimeout || statusCode == http.StatusTooManyRequests || statusCode >= 500
+}
+
+func isRetryableVEHubMethod(method string) bool {
+	return strings.EqualFold(method, http.MethodGet)
+}
+
+func sleepVEHubRetryDelay(ctx context.Context, attempt int, serverDelay time.Duration) bool {
+	delay := time.Duration(120*attempt*attempt) * time.Millisecond
+	jitter := time.Duration(time.Now().UnixNano()%120) * time.Millisecond
+	if serverDelay > delay+jitter {
+		delay = serverDelay
+		jitter = 0
+	}
+	if delay > veHubRetryMaxServerDelay {
+		delay = veHubRetryMaxServerDelay
+		jitter = 0
+	}
+	timer := time.NewTimer(delay + jitter)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func parseVEHubRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	when, err := http.ParseTime(value)
 	if err != nil {
-		return nil, err
+		return 0
 	}
-	defer resp.Body.Close()
-
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("hub returned %d: %s", resp.StatusCode, truncateVEStr(string(data), 200))
+	delay := time.Until(when)
+	if delay <= 0 {
+		return 0
 	}
-	return data, nil
+	return delay
 }
 
 func truncateVEStr(s string, maxLen int) string {
@@ -1567,11 +1973,12 @@ func veGroupKey(veIDs []string) string {
 		if id == "" {
 			continue
 		}
-		if _, ok := seen[id]; ok {
+		key := strings.ToLower(id)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[id] = struct{}{}
-		sorted = append(sorted, id)
+		seen[key] = struct{}{}
+		sorted = append(sorted, key)
 	}
 	sort.Strings(sorted)
 	return strings.Join(sorted, "|")
@@ -1595,6 +2002,30 @@ func (a *App) cacheGroupSession(veIDs []string, sessionID string) {
 	}
 	a.groupSessionCache.Store(key, sessionID)
 	a.markVESessionActive(sessionID)
+}
+
+func (a *App) cacheGroupSessionReturnVEIDs(sessionID string, veIDs []string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	cleaned := dedupeNonEmptyStrings(veIDs)
+	if len(cleaned) == 0 {
+		return
+	}
+	a.groupSessionReturnVEIDs.Store(sessionID, cleaned)
+}
+
+func (a *App) groupSessionReturnVEID(sessionID string, fallback []string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID != "" {
+		if val, ok := a.groupSessionReturnVEIDs.Load(sessionID); ok {
+			if veIDs, ok := val.([]string); ok && len(veIDs) > 0 {
+				return strings.Join(cloneStringSlice(veIDs), ",")
+			}
+		}
+	}
+	return strings.Join(dedupeNonEmptyStrings(fallback), ",")
 }
 
 func (a *App) cacheVEGroupDefaultResponder(sessionID, responderID string) {
@@ -1642,12 +2073,23 @@ func (a *App) ArchiveVESession(veID string) {
 // ArchiveGroupSession removes a group session from the sticky cache.
 func (a *App) ArchiveGroupSession(veIDs []string) {
 	key := veGroupKey(veIDs)
+	sessionID := ""
 	if val, ok := a.groupSessionCache.Load(key); ok {
-		if sessionID, _ := val.(string); sessionID != "" {
+		if cachedSessionID, _ := val.(string); cachedSessionID != "" {
+			sessionID = cachedSessionID
 			a.veSessionActiveCache.Delete(sessionID)
 		}
 	}
 	a.groupSessionCache.Delete(key)
+	if sessionID != "" {
+		a.groupSessionReturnVEIDs.Delete(sessionID)
+		a.groupSessionCache.Range(func(cacheKey, value any) bool {
+			if cachedSessionID, ok := value.(string); ok && cachedSessionID == sessionID {
+				a.groupSessionCache.Delete(cacheKey)
+			}
+			return true
+		})
+	}
 }
 
 func (a *App) markVESessionActive(sessionID string) {
@@ -1764,7 +2206,7 @@ func baseVEDirectSessionCandidateIDs(veID string) map[string]struct{} {
 func (a *App) addDiscoverableVEDirectSessionCandidateIDs(cfg corelib.AppConfig, veID string, candidates map[string]struct{}) bool {
 	before := len(candidates)
 	if hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/"); hubURL != "" {
-		if employees, err := a.loadDiscoverableVEEntries(hubURL, strings.TrimSpace(cfg.RemoteMachineToken)); err == nil {
+		if employees, err := a.loadAllDiscoverableVEEntries(hubURL, strings.TrimSpace(cfg.RemoteMachineToken)); err == nil {
 			for _, employee := range employees {
 				if veGroupParticipantIdentityMatches(employee.ID, veID) || veGroupParticipantIdentityMatches(employee.MachineID, veID) {
 					for _, id := range []string{employee.ID, employee.MachineID, virtualEmployeeIDForMachine(employee.MachineID)} {
@@ -1832,15 +2274,66 @@ func (a *App) findActiveGroupSession(veIDs []string) *VESessionInfo {
 	}
 
 	if !a.isSessionActive(sessionID) {
-		a.groupSessionCache.Delete(key)
+		a.deleteGroupSessionCacheForSession(sessionID, key)
 		return nil
 	}
 
 	return &VESessionInfo{
 		SessionID: sessionID,
-		VEID:      strings.Join(veIDs, ","),
+		VEID:      a.groupSessionReturnVEID(sessionID, veIDs),
 		VEName:    "Group",
 	}
+}
+
+func (a *App) findActiveGroupSessionAny(candidateSets ...[]string) *VESessionInfo {
+	seenKeys := map[string]struct{}{}
+	checkedSessions := map[string]bool{}
+	for _, veIDs := range candidateSets {
+		key := veGroupKey(veIDs)
+		if key == "" {
+			continue
+		}
+		if _, seen := seenKeys[key]; seen {
+			continue
+		}
+		seenKeys[key] = struct{}{}
+		val, ok := a.groupSessionCache.Load(key)
+		if !ok {
+			continue
+		}
+		sessionID, _ := val.(string)
+		if sessionID == "" {
+			continue
+		}
+		active, checked := checkedSessions[sessionID]
+		if !checked {
+			active = a.isSessionActive(sessionID)
+			checkedSessions[sessionID] = active
+		}
+		if !active {
+			a.deleteGroupSessionCacheForSession(sessionID, key)
+			continue
+		}
+		return &VESessionInfo{SessionID: sessionID, VEID: a.groupSessionReturnVEID(sessionID, veIDs), VEName: "Group"}
+	}
+	return nil
+}
+
+func (a *App) deleteGroupSessionCacheForSession(sessionID string, fallbackKey string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if fallbackKey != "" {
+		a.groupSessionCache.Delete(fallbackKey)
+	}
+	if sessionID == "" {
+		return
+	}
+	a.groupSessionReturnVEIDs.Delete(sessionID)
+	a.groupSessionCache.Range(func(key, value any) bool {
+		if cachedSessionID, ok := value.(string); ok && strings.TrimSpace(cachedSessionID) == sessionID {
+			a.groupSessionCache.Delete(key)
+		}
+		return true
+	})
 }
 
 // isSessionActive checks if a session is still active (not archived/cancelled) on the Hub.

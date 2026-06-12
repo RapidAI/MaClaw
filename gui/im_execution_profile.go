@@ -59,7 +59,13 @@ func (h *IMMessageHandler) classifyIMExecutionProfile(msg IMUserMessage, workflo
 }
 
 func (h *IMMessageHandler) classifyIMExecutionProfileAndSemantic(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool) (ExecutionProfile, *intent.ClassificationResult) {
-	if profile, forced := structuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse); forced {
+	if profile, forced := hardStructuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse); forced {
+		return profile, nil
+	}
+	if profile, ok := localCurrentTimeExecutionProfile(msg.Text, h.executionContractForRegisteredToolName); ok {
+		return profile, nil
+	}
+	if profile, forced := lengthFullExecutionProfile(msg); forced {
 		return profile, nil
 	}
 	var semantic *intent.ClassificationResult
@@ -79,13 +85,26 @@ func classifyIMExecutionProfileWithSemantic(msg IMUserMessage, workflowAgentLoop
 }
 
 func classifyIMExecutionProfileWithSemanticAndContracts(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool, semantic *intent.ClassificationResult, contractForTool func(string) ToolExecutionContract) ExecutionProfile {
-	if profile, forced := structuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse); forced {
+	if profile, forced := hardStructuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse); forced {
+		return profile
+	}
+	if profile, ok := localCurrentTimeExecutionProfile(msg.Text, contractForTool); ok {
+		return profile
+	}
+	if profile, forced := lengthFullExecutionProfile(msg); forced {
 		return profile
 	}
 	return executionProfileFromSemanticIntent(semantic, contractForTool)
 }
 
 func structuralFullExecutionProfile(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool) (ExecutionProfile, bool) {
+	if profile, forced := hardStructuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse); forced {
+		return profile, true
+	}
+	return lengthFullExecutionProfile(msg)
+}
+
+func hardStructuralFullExecutionProfile(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool) (ExecutionProfile, bool) {
 	text := strings.TrimSpace(msg.Text)
 	switch {
 	case text == "":
@@ -100,11 +119,16 @@ func structuralFullExecutionProfile(msg IMUserMessage, workflowAgentLoop, isAskU
 		return fullExecutionProfile("attachments present"), true
 	case hasStructuralFullExecutionSignal(text):
 		return fullExecutionProfile("structural execution signal"), true
-	case utf8.RuneCountInString(text) > 40:
-		return fullExecutionProfile("message too long for light profile"), true
 	default:
 		return ExecutionProfile{}, false
 	}
+}
+
+func lengthFullExecutionProfile(msg IMUserMessage) (ExecutionProfile, bool) {
+	if utf8.RuneCountInString(strings.TrimSpace(msg.Text)) > 40 {
+		return fullExecutionProfile("message too long for light profile"), true
+	}
+	return ExecutionProfile{}, false
 }
 
 func executionProfileFromSemanticIntent(result *intent.ClassificationResult, contractForTool func(string) ToolExecutionContract) ExecutionProfile {
@@ -173,6 +197,61 @@ func directToolFromSemanticResult(result intent.ClassificationResult, contractFo
 		return toolName, contract
 	}
 	return "", ToolExecutionContract{}
+}
+
+func localCurrentTimeExecutionProfile(text string, contractForTool func(string) ToolExecutionContract) (ExecutionProfile, bool) {
+	if !isLocalCurrentTimeQuery(text) {
+		return ExecutionProfile{}, false
+	}
+	toolName := "current_datetime"
+	contract := executionContractForToolName(toolName, contractForTool)
+	if !contract.Explicit || !contract.SupportsDirect || !contract.Deterministic {
+		return ExecutionProfile{}, false
+	}
+	return ExecutionProfile{
+		Layer:                string(executionLayerDirect),
+		TaskType:             "direct_tool",
+		PromptProfile:        "none",
+		Confidence:           1,
+		Reason:               "local deterministic current time intent",
+		RequiredCapabilities: contract.Capabilities,
+		DirectToolName:       toolName,
+		ToolBudget:           1,
+		IterationBudget:      0,
+	}, true
+}
+
+func isLocalCurrentTimeQuery(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	compact := strings.NewReplacer(" ", "", "?", "", "？", "", "。", "", "！", "", "!", "").Replace(lower)
+	if strings.Contains(compact, "时间复杂度") || strings.Contains(lower, "time complexity") {
+		return false
+	}
+	if strings.Contains(compact, "几点") && (strings.Contains(compact, "会议") || strings.Contains(compact, "开始")) {
+		return false
+	}
+	cnSignals := []string{
+		"现在几点", "现在时间", "当前时间", "当前日期", "今天几号", "今天周几", "今天星期几",
+		"几点了", "几点啦", "现在几点钟", "啥时候了",
+	}
+	for _, signal := range cnSignals {
+		if strings.Contains(compact, signal) {
+			return true
+		}
+	}
+	enSignals := []string{
+		"what time is it", "current time", "local time", "date today", "today's date",
+		"what day is it", "current date", "date and time",
+	}
+	for _, signal := range enSignals {
+		if strings.Contains(lower, signal) {
+			return true
+		}
+	}
+	return false
 }
 
 type ToolExecutionContract struct {

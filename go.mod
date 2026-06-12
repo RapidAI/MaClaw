@@ -22,11 +22,12 @@ require (
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/mattn/go-isatty v0.0.20
 	github.com/mattn/go-runewidth v0.0.19
+	github.com/openai/openai-go v1.12.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/pkg/sftp v1.13.10
 	github.com/shakinm/xlsReader v0.9.12
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 	github.com/viterin/vek v0.4.3
 	github.com/wailsapp/wails/v2 v2.11.0
 	github.com/wdvxdr1123/go-silk v0.0.0-20220304095002-f67345df09ea
@@ -43,8 +44,19 @@ require (
 )
 
 require (
+	github.com/anthropics/anthropic-sdk-go v1.50.1
+	github.com/bahlo/generic-list-go v0.2.0 // indirect
+	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/go-audio/audio v1.0.0 // indirect
 	github.com/go-audio/riff v1.0.0 // indirect
+	github.com/invopop/jsonschema v0.14.0 // indirect
+	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
+	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.1 // indirect
+	github.com/tidwall/sjson v1.2.5 // indirect
+	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 )
 
 require (

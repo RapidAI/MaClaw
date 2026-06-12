@@ -1247,8 +1247,8 @@ function SkillDraftReviewQueueRows({ t, queues, onOpenTrace, onConfirmPreviewedS
                                 <span style={{ color: colors.textMuted, fontVariantNumeric: "tabular-nums" }}>{group.items.length}</span>
                             </span>
                             <span style={{ display: "block", marginTop: 2, color: colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{first.title || first.trace_id || "-"}</span>
-                            <span style={{ display: "block", marginTop: 1, color: first.stale ? colors.warning : colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>{status || first.latest_status || first.draft_id || "-"}</span>
-                            {first.stale_recommendation && <span style={{ display: "block", marginTop: 1, color: colors.warning, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.64rem" }}>{first.stale_recommendation}</span>}
+                            <span style={{ display: "block", marginTop: 1, color: first.stale ? colors.primaryDark : colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>{status || first.latest_status || first.draft_id || "-"}</span>
+                            {first.stale_recommendation && <span style={{ display: "block", marginTop: 1, color: colors.primaryDark, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.64rem" }}>{first.stale_recommendation}</span>}
                             </button>
                             {confirmAffordance && onConfirmPreviewedSkillDraft && (
                                 <button
@@ -1475,7 +1475,7 @@ function FollowUpSummaryRows({ t, items, onOpen }: { t: Translate; items: Follow
                         {item.latest_action_kind && <span style={{ display: "block", marginTop: 1, color: colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>{formatNextActionKind(t, item.latest_action_kind)}</span>}
                         {item.triggered_rollback && <span style={summaryAuditLineStyle}>{formatTriggeredRollbackSummaryLine(t, item.triggered_count, item.latest_note || item.recommended_reason)}</span>}
                         {item.recommended_trace_id && <span style={{ display: "block", marginTop: 1, color: colors.primaryDark, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 700 }}>{t("Recommended trace", "\u5efa\u8bae\u8f68\u8ff9", "\u5efa\u8b70\u8ecc\u8de1")}</span>}
-                        {item.triggered_rollback && <span style={{ display: "block", marginTop: 1, color: colors.warning, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 700 }}>{t("Triggered rollback", "\u5df2\u89e6\u53d1\u56de\u6eda", "\u5df2\u89f8\u767c\u56de\u6efe")}</span>}
+                        {item.triggered_rollback && <span style={{ display: "block", marginTop: 1, color: colors.danger, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 700 }}>{t("Triggered rollback", "\u5df2\u89e6\u53d1\u56de\u6eda", "\u5df2\u89f8\u767c\u56de\u6efe")}</span>}
                     </button>
                 ))}
             </div>
@@ -1499,7 +1499,7 @@ function FollowUpActionSummaryRows({ t, items, onOpen }: { t: Translate; items: 
                         {item.latest_status && <span style={{ display: "block", marginTop: 1, color: colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>{formatFollowUpStatus(t, item.latest_status) || item.latest_status}</span>}
                         {item.triggered_rollback && <span style={summaryAuditLineStyle}>{formatTriggeredRollbackSummaryLine(t, item.triggered_count, item.latest_note || item.recommended_reason)}</span>}
                         {item.recommended_trace_id && <span style={{ display: "block", marginTop: 1, color: colors.primaryDark, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 700 }}>{t("Recommended trace", "\u5efa\u8bae\u8f68\u8ff9", "\u5efa\u8b70\u8ecc\u8de1")}</span>}
-                        {item.triggered_rollback && <span style={{ display: "block", marginTop: 1, color: colors.warning, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 700 }}>{t("Triggered rollback", "\u5df2\u89e6\u53d1\u56de\u6eda", "\u5df2\u89f8\u767c\u56de\u6efe")}</span>}
+                        {item.triggered_rollback && <span style={{ display: "block", marginTop: 1, color: colors.danger, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 700 }}>{t("Triggered rollback", "\u5df2\u89e6\u53d1\u56de\u6eda", "\u5df2\u89f8\u767c\u56de\u6efe")}</span>}
                     </button>
                 ))}
             </div>
@@ -1926,7 +1926,7 @@ function TraceDetailPanel({ t, detail, recommendedRollbackTrace, recommendedRoll
     return (
         <div style={{ minWidth: 0, maxHeight: 260, overflowY: "auto", paddingRight: 4 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
-                <span style={{ ...kindBadgeStyle, color: detail.review_required ? colors.warning : colors.primaryDark, borderColor: detail.review_required ? colors.warning : colors.primary }}>{formatKind(t, detail.kind)}</span>
+                <span style={{ ...kindBadgeStyle, color: colors.primaryDark, borderColor: colors.primary }}>{formatKind(t, detail.kind)}</span>
                 {(detail.review_required || detail.review_status) && <span style={reviewStatusBadgeStyle(detail.review_status || (detail.review_required ? "required" : ""))}>{formatReviewStatus(t, detail.review_status || (detail.review_required ? "required" : ""))}</span>}
                 {triggeredRollbackReview && <span style={warningBadgeStyle}>{t("Triggered rollback", "\u5df2\u89e6\u53d1\u56de\u6eda", "\u5df2\u89f8\u767c\u56de\u6efe")}</span>}
                 {recommendedRollbackTrace && <span style={traceRecommendationBadgeStyle}>{t("Recommended rollback trace", "\u5efa\u8bae rollback \u8f68\u8ff9", "\u5efa\u8b70 rollback \u8ecc\u8de1")}</span>}
@@ -2295,7 +2295,7 @@ function formatGovernanceRecommendedToolCall(call: Record<string, any>, traceId 
         if (targetTitle || targetID) lines.push("关联轨迹: " + (targetTitle || targetID));
         if (reason) lines.push("原因: " + reason);
         const boundary = String(call.non_executing_boundary || "").trim();
-        if (call.non_executing) lines.push("⚠️ 仅供参考，不会自动执行");
+        if (call.non_executing) lines.push("WARN 仅供参考，不会自动执行");
         if (boundary) lines.push("安全边界: " + boundary);
         return lines.join("\n");
     } catch {
@@ -2451,7 +2451,7 @@ const tagStyle: CSSProperties = { border: "1px solid " + colors.borderLight, bor
 const kindBadgeStyle: CSSProperties = { border: "1px solid " + colors.primary, borderRadius: radius.pill, padding: "1px 7px", fontSize: "0.64rem", fontWeight: 700, background: colors.bg };
 const memoryMaintenanceNoticeStyle: CSSProperties = { borderTop: "1px solid " + colors.borderLight, paddingTop: 8, marginBottom: 10 };
 const governanceNoticeStyle: CSSProperties = { ...memoryMaintenanceNoticeStyle, borderTopColor: colors.border };
-const governanceNoticeAlertStyle: CSSProperties = { ...governanceNoticeStyle, borderTopColor: colors.warning };
+const governanceNoticeAlertStyle: CSSProperties = { ...governanceNoticeStyle, borderTopColor: colors.primary };
 const governanceTrackGridStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, marginTop: 8 };
 const governanceTrackStyle: CSSProperties = { borderTop: "1px solid " + colors.borderLight, paddingTop: 6, minWidth: 0 };
 const governancePriorityTraceStyle: CSSProperties = { marginTop: 6, padding: "7px 9px", borderRadius: radius.sm, border: "1px solid " + colors.borderLight, background: colors.surfaceMuted };
@@ -2465,10 +2465,10 @@ const governanceSkillQueueStyle: CSSProperties = { borderTop: "1px solid " + col
 const skillDraftConfirmReceiptStyle: CSSProperties = { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 5, fontSize: "0.64rem", color: colors.textMuted, lineHeight: 1.35 };
 const maintenanceTextStyle: CSSProperties = { fontSize: "0.7rem", color: colors.textSecondary, lineHeight: 1.45, overflowWrap: "anywhere" };
 const maintenanceMetaStyle: CSSProperties = { ...maintenanceTextStyle, color: colors.textMuted, marginTop: 3 };
-const warningBadgeStyle: CSSProperties = { border: "1px solid " + colors.warning, borderRadius: radius.pill, padding: "1px 7px", fontSize: "0.64rem", fontWeight: 700, color: colors.warning, background: colors.warningBg };
+const warningBadgeStyle: CSSProperties = { border: "1px solid " + colors.danger, borderRadius: radius.pill, padding: "1px 7px", fontSize: "0.64rem", fontWeight: 700, color: colors.danger, background: colors.dangerBg };
 const neutralBadgeStyle: CSSProperties = { border: "1px solid " + colors.borderLight, borderRadius: radius.pill, padding: "1px 7px", fontSize: "0.64rem", fontWeight: 700, color: colors.textMuted, background: colors.bg };
 const followUpPanelStyle: CSSProperties = { marginTop: 8, borderTop: "1px solid " + colors.borderLight, paddingTop: 8 };
-const triggeredRollbackNoticeStyle: CSSProperties = { marginTop: 8, border: "1px solid " + colors.warning, borderRadius: radius.md, background: colors.warningBg, color: colors.textSecondary, padding: "7px 8px", fontSize: "0.68rem", lineHeight: 1.45, overflowWrap: "anywhere" };
+const triggeredRollbackNoticeStyle: CSSProperties = { marginTop: 8, border: "1px solid " + colors.danger, borderRadius: radius.md, background: colors.dangerBg, color: colors.textSecondary, padding: "7px 8px", fontSize: "0.68rem", lineHeight: 1.45, overflowWrap: "anywhere" };
 const detailBlockHeaderStyle: CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 3 };
 const draftCopyButtonStyle: CSSProperties = { border: "1px solid " + colors.border, borderRadius: radius.pill, background: colors.bg, color: colors.textSecondary, padding: "1px 7px", fontSize: "0.62rem", fontWeight: 700, cursor: "pointer", lineHeight: 1.4 };
 const draftQueryInputStyle: CSSProperties = { width: "100%", boxSizing: "border-box", marginTop: 6, border: "1px solid " + colors.borderLight, borderRadius: radius.sm, background: colors.bg, color: colors.text, padding: "5px 7px", fontSize: "0.68rem", lineHeight: 1.4 };
@@ -2481,23 +2481,24 @@ const traceSafetyBoundaryStyle: CSSProperties = { marginTop: -2, marginBottom: 8
 const actionFocusStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 8, fontSize: "0.66rem", color: colors.textSecondary };
 const actionFocusHintStyle: CSSProperties = { marginTop: -3, marginBottom: 8, fontSize: "0.65rem", color: colors.textMuted, lineHeight: 1.45, overflowWrap: "anywhere" };
 const actionFocusClearStyle: CSSProperties = { border: "1px solid " + colors.border, borderRadius: radius.pill, background: colors.bg, color: colors.textSecondary, padding: "1px 7px", fontSize: "0.64rem", fontWeight: 700, cursor: "pointer" };
-const summaryAuditLineStyle: CSSProperties = { display: "block", marginTop: 1, color: colors.warning, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.64rem", fontWeight: 600 };
-const traceRecommendationBadgeStyle: CSSProperties = { display: "inline-block", marginTop: 3, border: "1px solid " + colors.warning, borderRadius: radius.pill, background: colors.warningBg, color: colors.warning, padding: "1px 6px", fontSize: "0.62rem", fontWeight: 700, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const summaryAuditLineStyle: CSSProperties = { display: "block", marginTop: 1, color: colors.danger, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.64rem", fontWeight: 600 };
+const traceRecommendationBadgeStyle: CSSProperties = { display: "inline-block", marginTop: 3, border: "1px solid " + colors.primary, borderRadius: radius.pill, background: colors.infoBg, color: colors.primaryDark, padding: "1px 6px", fontSize: "0.62rem", fontWeight: 700, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const traceRecommendationReasonStyle: CSSProperties = { display: "block", marginTop: 2, fontSize: "0.64rem", color: colors.textMuted, lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const nextActionSummaryStyle: CSSProperties = { border: "1px solid " + colors.borderLight, borderRadius: radius.md, background: colors.bg, color: colors.text, padding: "6px 8px", textAlign: "left", cursor: "pointer", minWidth: 0, fontSize: "0.68rem", fontWeight: 700 };
-const warningSummaryCardStyle: CSSProperties = { ...nextActionSummaryStyle, border: "1px solid " + colors.warning, background: colors.warningBg };
+const warningSummaryCardStyle: CSSProperties = { ...nextActionSummaryStyle, border: "1px solid " + colors.danger, background: colors.dangerBg };
 const protectedMemoryCardStyle: CSSProperties = { ...nextActionSummaryStyle, cursor: "default" };
 const skillDraftQueueInnerButtonStyle: CSSProperties = { width: "100%", border: 0, background: "transparent", color: "inherit", padding: 0, textAlign: "left", cursor: "pointer", font: "inherit" };
 
 function skillDraftQueueCardStyle(tone: string, stale?: boolean): CSSProperties {
-    if (stale || tone === "blocked") return warningSummaryCardStyle;
+    if (tone === "blocked") return warningSummaryCardStyle;
+    if (stale) return { ...nextActionSummaryStyle, border: "1px solid " + colors.primary, background: colors.infoBg };
     if (tone === "active") return { ...nextActionSummaryStyle, border: "1px solid " + colors.primary, background: colors.primaryLight };
     return nextActionSummaryStyle;
 }
 
 function nextActionSummaryCardStyle(kind?: string): CSSProperties {
     if (kind === "review_triggered_rollback_signal") {
-        return { ...nextActionSummaryStyle, border: "1px solid " + colors.warning, background: colors.warningBg };
+        return { ...nextActionSummaryStyle, border: "1px solid " + colors.danger, background: colors.dangerBg };
     }
     return nextActionSummaryStyle;
 }
@@ -2553,8 +2554,8 @@ function followUpButtonStyle(active: boolean): CSSProperties {
 }
 
 function reviewButtonStyle(kind: "approved" | "rejected" | "deferred", active: boolean): CSSProperties {
-    const tone = kind === "approved" ? colors.success : kind === "rejected" ? colors.danger : colors.warning;
-    const bg = kind === "approved" ? colors.successBg : kind === "rejected" ? colors.dangerBg : colors.warningBg;
+    const tone = kind === "approved" ? colors.success : kind === "rejected" ? colors.danger : colors.primary;
+    const bg = kind === "approved" ? colors.successBg : kind === "rejected" ? colors.dangerBg : colors.infoBg;
     return {
         border: "1px solid " + tone,
         borderRadius: radius.md,
@@ -2569,8 +2570,8 @@ function reviewButtonStyle(kind: "approved" | "rejected" | "deferred", active: b
 }
 
 function followUpOutcomeButtonStyle(kind: "completed" | "blocked" | "deferred", active: boolean): CSSProperties {
-    const tone = kind === "completed" ? colors.success : kind === "blocked" ? colors.danger : colors.warning;
-    const bg = kind === "completed" ? colors.successBg : kind === "blocked" ? colors.dangerBg : colors.warningBg;
+    const tone = kind === "completed" ? colors.success : kind === "blocked" ? colors.danger : colors.primary;
+    const bg = kind === "completed" ? colors.successBg : kind === "blocked" ? colors.dangerBg : colors.infoBg;
     return {
         border: "1px solid " + tone,
         borderRadius: radius.md,
@@ -2585,8 +2586,8 @@ function followUpOutcomeButtonStyle(kind: "completed" | "blocked" | "deferred", 
 }
 
 function reviewStatusBadgeStyle(status: string): CSSProperties {
-    const tone = status === "approved" ? colors.success : status === "rejected" ? colors.danger : colors.warning;
-    const bg = status === "approved" ? colors.successBg : status === "rejected" ? colors.dangerBg : colors.warningBg;
+    const tone = status === "approved" ? colors.success : status === "rejected" ? colors.danger : colors.primary;
+    const bg = status === "approved" ? colors.successBg : status === "rejected" ? colors.dangerBg : colors.infoBg;
     return {
         display: "inline-block",
         marginTop: 3,

@@ -181,7 +181,7 @@ function ExecutorView({
                         style={submitting ? confirmButtonDisabledStyle : confirmButtonStyle}
                         aria-label="确认已操作"
                     >
-                        {submitting ? "提交中..." : "✅ 确认已操作"}
+                        {submitting ? "提交中..." : "确认已操作"}
                     </button>
                 </section>
             )}
@@ -308,9 +308,9 @@ function ResultBadge({ result }: { result: string }) {
         <span style={{
             ...badgeBaseStyle,
             background: isApproved ? "var(--theme-success-bg, rgba(79, 127, 111, 0.10))" : "var(--theme-danger-bg, #fbf1f0)",
-            color: isApproved ? "var(--theme-success, #4f7f6f)" : "var(--theme-danger, #b42318)",
+            color: isApproved ? "var(--theme-success, #4f7f6f)" : "var(--theme-danger, #c43d34)",
         }}>
-            {isApproved ? "✓ 通过" : "✗ 驳回"}
+            {isApproved ? "通过" : "驳回"}
         </span>
     );
 }
@@ -321,7 +321,7 @@ function DecisionBadge({ decision }: { decision: string }) {
         <span style={{
             fontSize: "0.72rem",
             fontWeight: 500,
-            color: isApproved ? "var(--theme-success, #4f7f6f)" : "var(--theme-danger, #b42318)",
+            color: isApproved ? "var(--theme-success, #4f7f6f)" : "var(--theme-danger, #c43d34)",
         }}>
             {isApproved ? "通过" : "驳回"}
         </span>
@@ -330,9 +330,9 @@ function DecisionBadge({ decision }: { decision: string }) {
 
 function ConfirmStatusBadge({ status }: { status: string }) {
     const colors: Record<string, CSSProperties> = {
-        pending: { background: "var(--theme-warning-bg, #f8fafc)", color: "var(--theme-warning, #64748b)" },
-        confirmed: { background: "#e8f5e9", color: "#2e7d32" },
-        auto_closed: { background: "#f3e5f5", color: "#6a1b9a" },
+        pending: { background: "var(--theme-info-bg, #f3f7fb)", color: "var(--theme-primary, #2f5f98)" },
+        confirmed: { background: "var(--theme-success-bg, #f3f7f5)", color: "var(--theme-success, #4f7f6f)" },
+        auto_closed: { background: "var(--theme-surface-muted, #f7f8fa)", color: "var(--theme-text-muted, #64748b)" },
     };
     const labels: Record<string, string> = {
         pending: "待确认",
@@ -381,7 +381,7 @@ const headingStyle: CSSProperties = {
     margin: 0,
     fontSize: "1.1rem",
     fontWeight: 600,
-    color: "#212121",
+    color: "var(--theme-text-primary, #1a202c)",
 };
 
 const badgeBaseStyle: CSSProperties = {
@@ -409,31 +409,31 @@ const sectionHeadingStyle: CSSProperties = {
     margin: 0,
     fontSize: "0.88rem",
     fontWeight: 600,
-    color: "#333",
+    color: "var(--theme-text-primary, #1a202c)",
 };
 
 const formDataContainerStyle: CSSProperties = {
-    background: "#f9f9f9",
+    background: "var(--theme-surface-muted, #f7f8fa)",
     borderRadius: "6px",
     padding: "12px",
-    border: "1px solid #eee",
+    border: "1px solid var(--theme-border-subtle, #edf2f7)",
 };
 
 const formDataRowStyle: CSSProperties = {
     display: "flex",
     justifyContent: "space-between",
     padding: "4px 0",
-    borderBottom: "1px solid #f0f0f0",
+    borderBottom: "1px solid var(--theme-border-subtle, #edf2f7)",
 };
 
 const formDataKeyStyle: CSSProperties = {
     fontWeight: 500,
-    color: "#555",
+    color: "var(--theme-text-secondary, #5a6577)",
     fontSize: "0.8rem",
 };
 
 const formDataValueStyle: CSSProperties = {
-    color: "#333",
+    color: "var(--theme-text-primary, #1a202c)",
     fontSize: "0.8rem",
 };
 
@@ -448,9 +448,9 @@ const decisionListStyle: CSSProperties = {
 
 const decisionItemStyle: CSSProperties = {
     padding: "10px 12px",
-    background: "#f9f9f9",
+    background: "var(--theme-surface-muted, #f7f8fa)",
     borderRadius: "6px",
-    border: "1px solid #eee",
+    border: "1px solid var(--theme-border-subtle, #edf2f7)",
 };
 
 const decisionHeaderStyle: CSSProperties = {
@@ -462,20 +462,20 @@ const decisionHeaderStyle: CSSProperties = {
 
 const decisionApproverStyle: CSSProperties = {
     fontWeight: 600,
-    color: "#333",
+    color: "var(--theme-text-primary, #1a202c)",
     fontSize: "0.82rem",
 };
 
 const decisionDateStyle: CSSProperties = {
     fontSize: "0.72rem",
-    color: "#999",
+    color: "var(--theme-text-muted, #8b95a5)",
     marginLeft: "auto",
 };
 
 const decisionRationaleStyle: CSSProperties = {
     margin: "4px 0 0",
     fontSize: "0.78rem",
-    color: "#666",
+    color: "var(--theme-text-secondary, #5a6577)",
     fontStyle: "italic",
 };
 
@@ -484,9 +484,9 @@ const confirmSectionStyle: CSSProperties = {
     flexDirection: "column",
     gap: "10px",
     padding: "16px",
-    background: "#f5f9ff",
+    background: "var(--theme-info-bg, #f3f7fb)",
     borderRadius: "8px",
-    border: "1px solid #bbdefb",
+    border: "1px solid var(--theme-primary-soft, #dce7f4)",
 };
 
 const notesContainerStyle: CSSProperties = {
@@ -497,7 +497,7 @@ const notesContainerStyle: CSSProperties = {
 
 const notesLabelStyle: CSSProperties = {
     fontSize: "0.75rem",
-    color: "#666",
+    color: "var(--theme-text-secondary, #5a6577)",
     fontWeight: 500,
 };
 
@@ -506,7 +506,7 @@ const notesTextareaStyle: CSSProperties = {
     minHeight: "80px",
     padding: "8px 12px",
     fontSize: "0.82rem",
-    border: "1px solid #ddd",
+    border: "1px solid var(--theme-border, #e1e4e8)",
     borderRadius: "6px",
     outline: "none",
     resize: "vertical",
@@ -516,21 +516,21 @@ const notesTextareaStyle: CSSProperties = {
 
 const notesCounterStyle: CSSProperties = {
     fontSize: "0.7rem",
-    color: "#999",
+    color: "var(--theme-text-muted, #8b95a5)",
     textAlign: "right",
 };
 
 const errorStyle: CSSProperties = {
     margin: 0,
     fontSize: "0.78rem",
-    color: "var(--theme-danger, #b42318)",
+    color: "var(--theme-danger, #c43d34)",
 };
 
 const confirmButtonStyle: CSSProperties = {
     padding: "10px 24px",
     fontSize: "0.85rem",
     fontWeight: 600,
-    background: "#1565c0",
+    background: "var(--theme-primary, #2f5f98)",
     color: "#fff",
     border: "none",
     borderRadius: "6px",
@@ -546,14 +546,14 @@ const confirmButtonDisabledStyle: CSSProperties = {
 
 const confirmButtonNotifierStyle: CSSProperties = {
     ...confirmButtonStyle,
-    background: "#2e7d32",
+    background: "var(--theme-success, #4f7f6f)",
 };
 
 const summaryBoxStyle: CSSProperties = {
-    background: "#f9f9f9",
+    background: "var(--theme-surface-muted, #f7f8fa)",
     borderRadius: "6px",
     padding: "12px",
-    border: "1px solid #eee",
+    border: "1px solid var(--theme-border-subtle, #edf2f7)",
     display: "flex",
     flexDirection: "column",
     gap: "8px",
@@ -567,13 +567,13 @@ const summaryRowStyle: CSSProperties = {
 
 const summaryLabelStyle: CSSProperties = {
     fontSize: "0.78rem",
-    color: "#888",
+    color: "var(--theme-text-muted, #8b95a5)",
     minWidth: "60px",
 };
 
 const summaryValueStyle: CSSProperties = {
     fontSize: "0.82rem",
-    color: "#333",
+    color: "var(--theme-text-primary, #1a202c)",
     fontWeight: 500,
 };
 
@@ -588,9 +588,9 @@ const statusListStyle: CSSProperties = {
 
 const statusItemStyle: CSSProperties = {
     padding: "8px 12px",
-    background: "#fafafa",
+    background: "var(--theme-surface-muted, #f7f8fa)",
     borderRadius: "6px",
-    border: "1px solid #f0f0f0",
+    border: "1px solid var(--theme-border-subtle, #edf2f7)",
 };
 
 const statusItemHeaderStyle: CSSProperties = {
@@ -602,26 +602,26 @@ const statusItemHeaderStyle: CSSProperties = {
 
 const statusItemNameStyle: CSSProperties = {
     fontWeight: 500,
-    color: "#333",
+    color: "var(--theme-text-primary, #1a202c)",
     fontSize: "0.8rem",
 };
 
 const statusItemTypeStyle: CSSProperties = {
     fontSize: "0.7rem",
-    color: "#888",
-    background: "#f0f0f0",
+    color: "var(--theme-text-muted, #8b95a5)",
+    background: "var(--theme-surface, #ffffff)",
     padding: "1px 6px",
     borderRadius: "8px",
 };
 
 const statusItemDetailsStyle: CSSProperties = {
     fontSize: "0.72rem",
-    color: "#999",
+    color: "var(--theme-text-muted, #8b95a5)",
 };
 
 const statusItemNotesStyle: CSSProperties = {
     margin: "4px 0 0",
     fontSize: "0.75rem",
-    color: "#666",
+    color: "var(--theme-text-secondary, #5a6577)",
     fontStyle: "italic",
 };

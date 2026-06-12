@@ -10,9 +10,11 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	reThinkBlock    = regexp.MustCompile(`(?s)<think>.*?</think>\\s*`)
-	reFuncCallBlock = regexp.MustCompile(`(?s)<\\|FunctionCallBegin\\|>.*?<\\|FunctionCallEnd\\|>\\s*`)
-	reToolCallBlock = regexp.MustCompile(`(?s)<tool_call>.*?</tool_call>\\s*`)
+	reThinkBlock         = regexp.MustCompile(`(?s)<think>.*?</think>\\s*`)
+	reFuncCallBlock      = regexp.MustCompile(`(?s)<\\|FunctionCallBegin\\|>.*?<\\|FunctionCallEnd\\|>\\s*`)
+	reToolCallBlock      = regexp.MustCompile(`(?s)<tool_call>.*?</tool_call>\\s*`)
+	reCodexToolCallBlock = regexp.MustCompile(`(?s)<turn:\s*tool_call\s*>.*?</turn>\s*`)
+	rePlainToolCallTail  = regexp.MustCompile(`(?is)\bTOOL_CALL\b\s*\{.*\}\s*`)
 )
 
 func StripThinkTags(s string) string {
@@ -24,7 +26,10 @@ func StripFunctionCalls(s string) string {
 }
 
 func StripXMLToolCalls(s string) string {
-	return strings.TrimSpace(reToolCallBlock.ReplaceAllString(s, ""))
+	s = reToolCallBlock.ReplaceAllString(s, "")
+	s = reCodexToolCallBlock.ReplaceAllString(s, "")
+	s = rePlainToolCallTail.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }
 
 func StripAllExtra(s string) string {

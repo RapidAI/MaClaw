@@ -34,6 +34,12 @@
 !ifndef ARG_WAILS_ARM64_BINARY
 !define ARG_WAILS_ARM64_BINARY "..\..\..\dist\MaClaw_arm64.exe"
 !endif
+!ifndef ARG_MACLAWCLI_AMD64_BINARY
+!define ARG_MACLAWCLI_AMD64_BINARY "..\..\..\dist\maclaw-cli_amd64.exe"
+!endif
+!ifndef ARG_MACLAWCLI_ARM64_BINARY
+!define ARG_MACLAWCLI_ARM64_BINARY "..\..\..\dist\maclaw-cli_arm64.exe"
+!endif
 
 VIProductVersion "${INFO_PRODUCTVERSION}"
 VIFileVersion    "${INFO_PRODUCTVERSION}"
@@ -48,6 +54,7 @@ ManifestDPIAware true
 
 !include "MUI2.nsh"
 !include "x64.nsh"
+!include "WinMessages.nsh"
 
 !ifndef MUI_ICON_PATH
 !define MUI_ICON_PATH "..\icon.ico"
@@ -145,6 +152,16 @@ Function LaunchAsCurrentUser
     ExecShell "" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 FunctionEnd
 
+Function AddInstallDirToMachinePath
+    nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$i=''$INSTDIR''; $p=[Environment]::GetEnvironmentVariable(''Path'',''Machine''); $parts=@($p -split '';'' | Where-Object { $_ }); if(-not ($parts | Where-Object { $_.TrimEnd([char]92) -ieq $i.TrimEnd([char]92) })) { [Environment]::SetEnvironmentVariable(''Path'', (($parts + $i) -join '';''), ''Machine'') }"'
+    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+FunctionEnd
+
+Function un.RemoveInstallDirFromMachinePath
+    nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$i=''$INSTDIR''; $p=[Environment]::GetEnvironmentVariable(''Path'',''Machine''); $parts=@($p -split '';'' | Where-Object { $_ -and ($_.TrimEnd([char]92) -ine $i.TrimEnd([char]92)) }); [Environment]::SetEnvironmentVariable(''Path'', ($parts -join '';''), ''Machine'')"'
+    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+FunctionEnd
+
 Function .onInit
     # Auto-detect system language (no dialog)
     System::Call 'kernel32::GetUserDefaultUILanguage() i .r0'
@@ -209,6 +226,8 @@ Function .onInit
     Abort
 
     appNotRunning:
+    # Stop helper CLI if a long-running watch/poll is active before upgrade.
+    ExecWait 'taskkill /F /IM maclaw-cli.exe'
 
     # Check if already installed
     ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString"
@@ -232,9 +251,11 @@ Section
     ${If} ${IsNativeARM64}
         DetailPrint "Detected ARM64 Architecture"
         File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_ARM64_BINARY}"
+        File "/oname=maclaw-cli.exe" "${ARG_MACLAWCLI_ARM64_BINARY}"
     ${ElseIf} ${IsNativeAMD64}
         DetailPrint "Detected AMD64 Architecture"
         File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_AMD64_BINARY}"
+        File "/oname=maclaw-cli.exe" "${ARG_MACLAWCLI_AMD64_BINARY}"
     ${Else}
         MessageBox MB_OK|MB_ICONSTOP "Unsupported architecture."
         Abort
@@ -246,6 +267,10 @@ Section
     # Enable Windows Long Path Support (required for npm cache and AI tools)
     DetailPrint "Enabling Windows Long Path Support..."
     WriteRegDWORD HKLM "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
+
+    # Make bundled CLI discoverable by subprocess-based agents.
+    DetailPrint "Adding install directory to machine PATH for maclaw-cli..."
+    Call AddInstallDirToMachinePath
 
     # Create Shortcuts
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
@@ -277,10 +302,14 @@ Section "uninstall"
     
     # Kill app if running
     ExecWait "taskkill /F /IM ${PRODUCT_EXECUTABLE}"
+    ExecWait "taskkill /F /IM maclaw-cli.exe"
 
     Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    Delete "$INSTDIR\maclaw-cli.exe"
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"
+
+    Call un.RemoveInstallDirFromMachinePath
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"

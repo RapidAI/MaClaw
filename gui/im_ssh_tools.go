@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +35,7 @@ func (h *IMMessageHandler) ensureSSHManager() *remote.SSHSessionManager {
 			if h.app != nil {
 				persistDir := h.app.GetDataDir()
 				if persistDir != "" {
+					h.bgTaskMgr.SetMirrorDir(filepath.Join(persistDir, "ssh_bg_task_mirrors"))
 					h.bgTaskMgr.SetPersistDir(persistDir)
 				}
 			}
@@ -71,7 +74,7 @@ func (h *IMMessageHandler) toolSSH(args map[string]interface{}) string {
 	case sshToolActionWaitTask:
 		return h.sshWaitTask(args)
 	case sshToolActionListTasks:
-		return h.sshListTasks()
+		return h.sshListTasks(args)
 	case sshToolActionKillTask:
 		return h.sshKillTask(args)
 	case sshToolActionSudoPrepare:
@@ -93,6 +96,10 @@ func (h *IMMessageHandler) toolSSH(args map[string]interface{}) string {
 
 func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	mgr := h.ensureSSHManager()
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	}
 
 	host, _ := args["host"].(string)
 	user, _ := args["user"].(string)
@@ -171,7 +178,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 					time.Sleep(2 * time.Second)
 					// Rediscover orphan tasks after reconnect (sync to avoid PTY race).
 					if h.bgTaskMgr != nil {
-						h.bgTaskMgr.RediscoverOrphanTasks(existing.ID)
+						h.bgTaskMgr.RediscoverOrphanTasksForOwner(existing.ID, ownerID)
 					}
 					preview := strings.Join(existing.PreviewTail(10), "\n")
 					result := fmt.Sprintf("♻️ 复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: running",
@@ -220,9 +227,9 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	// 同步执行（在 shell init 后、返回结果前）避免与后续 exec 命令竞争 PTY。
 	activeTasks := 0
 	if h.bgTaskMgr != nil {
-		h.bgTaskMgr.RediscoverOrphanTasks(session.ID)
+		h.bgTaskMgr.RediscoverOrphanTasksForOwner(session.ID, ownerID)
 		// 统计当前 running 的后台任务数
-		for _, t := range h.bgTaskMgr.ListTasks() {
+		for _, t := range h.bgTaskMgr.ListTasksForOwner(ownerID) {
 			if t.Status.IsActive() {
 				activeTasks++
 			}
@@ -372,11 +379,16 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 
 // sshExecBackground runs a long-running command in the background via nohup.
 func (h *IMMessageHandler) sshExecBackground(args map[string]interface{}) string {
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	}
 	mgr := h.ensureSSHManager()
 	if h.bgTaskMgr == nil {
 		h.bgTaskMgr = remote.NewSSHBackgroundTaskManager(mgr)
 		if h.app != nil {
 			if persistDir := h.app.GetDataDir(); persistDir != "" {
+				h.bgTaskMgr.SetMirrorDir(filepath.Join(persistDir, "ssh_bg_task_mirrors"))
 				h.bgTaskMgr.SetPersistDir(persistDir)
 			}
 		}
@@ -402,13 +414,14 @@ func (h *IMMessageHandler) sshExecBackground(args map[string]interface{}) string
 		h.registerSSHBackgroundLoop(session, session.Spec.HostConfig)
 	}
 
-	task, err := h.bgTaskMgr.SubmitWithRole(sessionID, command, taskRole)
+	task, err := h.bgTaskMgr.SubmitWithOwner(sessionID, command, taskRole, ownerID)
 	if err != nil {
 		return fmt.Sprintf("提交后台任务失败: %v", err)
 	}
 
 	h.emitAppEvent("background-loops-changed")
 	h.bumpSSHLoopIteration(sessionID)
+	h.startSSHBackgroundTaskMirrorWatcher(task.TaskID, ownerID)
 
 	if task.Reused {
 		elapsed := time.Since(task.StartedAt).Round(time.Second)
@@ -432,15 +445,92 @@ func (h *IMMessageHandler) sshExecBackground(args map[string]interface{}) string
 		task.TaskID, task.Command, task.LogFile, task.PID, task.TaskID)
 }
 
+func (h *IMMessageHandler) startSSHBackgroundTaskMirrorWatcher(taskID, ownerID string) {
+	if h == nil || h.bgTaskMgr == nil {
+		return
+	}
+	taskID = strings.TrimSpace(taskID)
+	ownerID = strings.TrimSpace(ownerID)
+	if taskID == "" {
+		return
+	}
+	if !h.registerSSHBackgroundTaskMirrorWatcher(taskID) {
+		return
+	}
+	go func() {
+		defer h.unregisterSSHBackgroundTaskMirrorWatcher(taskID)
+		timer := time.NewTimer(15 * time.Second)
+		defer timer.Stop()
+		deadline := time.Now().Add(12 * time.Hour)
+		for {
+			select {
+			case <-timer.C:
+				status, err := h.bgTaskMgr.CheckTaskForOwner(taskID, 200, ownerID)
+				if err != nil {
+					return
+				}
+				if status == nil || !normalizeRuntimeTaskStatus(status.Status).IsActive() {
+					h.emitAppEvent("background-loops-changed")
+					return
+				}
+				if time.Now().After(deadline) {
+					return
+				}
+				timer.Reset(30 * time.Second)
+			}
+		}
+	}()
+}
+
+func (h *IMMessageHandler) registerSSHBackgroundTaskMirrorWatcher(taskID string) bool {
+	if h == nil {
+		return false
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return false
+	}
+	h.sshMirrorWatchMu.Lock()
+	defer h.sshMirrorWatchMu.Unlock()
+	if h.sshMirrorWatch == nil {
+		h.sshMirrorWatch = make(map[string]struct{})
+	}
+	if _, ok := h.sshMirrorWatch[taskID]; ok {
+		return false
+	}
+	h.sshMirrorWatch[taskID] = struct{}{}
+	return true
+}
+
+func (h *IMMessageHandler) unregisterSSHBackgroundTaskMirrorWatcher(taskID string) {
+	if h == nil {
+		return
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return
+	}
+	h.sshMirrorWatchMu.Lock()
+	delete(h.sshMirrorWatch, taskID)
+	h.sshMirrorWatchMu.Unlock()
+}
+
 // sshCheckTask checks the status and latest log output of a background task.
 func (h *IMMessageHandler) sshCheckTask(args map[string]interface{}) string {
 	if h.bgTaskMgr == nil {
 		return "错误: 无后台任务"
 	}
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	}
 
 	taskID, _ := args["task_id"].(string)
 	if taskID == "" {
 		return "错误: check_task 需要 task_id 参数"
+	}
+	if err := authorizeSSHBackgroundTaskOwner(h.bgTaskMgr, taskID, ownerID); err != nil {
+		return fmt.Sprintf("check_task failed: %v", err)
 	}
 
 	tailLines := 50
@@ -448,9 +538,9 @@ func (h *IMMessageHandler) sshCheckTask(args map[string]interface{}) string {
 		tailLines = int(t)
 	}
 
-	result, err := h.bgTaskMgr.CheckTask(taskID, tailLines)
+	result, err := h.bgTaskMgr.CheckTaskForOwner(taskID, tailLines, ownerID)
 	if err != nil {
-		return fmt.Sprintf("检查任务失败: %v", err)
+		return fmt.Sprintf("check_task failed: %v%s", err, sshBackgroundTaskSnapshotForOwner(h.bgTaskMgr, taskID, ownerID))
 	}
 
 	h.emitAppEvent("background-loops-changed")
@@ -459,12 +549,20 @@ func (h *IMMessageHandler) sshCheckTask(args map[string]interface{}) string {
 
 // sshWaitTask polls a background task until it reaches a terminal state or timeout.
 func (h *IMMessageHandler) sshWaitTask(args map[string]interface{}) string {
-	return waitSSHBackgroundTask(h.bgTaskMgr, args, "error: no SSH background task manager", "error: wait_task requires task_id", func() {
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	}
+	return waitSSHBackgroundTaskForOwner(h.bgTaskMgr, args, ownerID, "error: no SSH background task manager", "error: wait_task requires task_id", func() {
 		h.emitAppEvent("background-loops-changed")
 	})
 }
 
 func waitSSHBackgroundTask(bgTaskMgr *remote.SSHBackgroundTaskManager, args map[string]interface{}, noManagerMsg, missingTaskMsg string, onStatusChange func()) string {
+	return waitSSHBackgroundTaskForOwner(bgTaskMgr, args, "", noManagerMsg, missingTaskMsg, onStatusChange)
+}
+
+func waitSSHBackgroundTaskForOwner(bgTaskMgr *remote.SSHBackgroundTaskManager, args map[string]interface{}, ownerID, noManagerMsg, missingTaskMsg string, onStatusChange func()) string {
 	if bgTaskMgr == nil {
 		return noManagerMsg
 	}
@@ -473,13 +571,16 @@ func waitSSHBackgroundTask(bgTaskMgr *remote.SSHBackgroundTaskManager, args map[
 	if taskID == "" {
 		return missingTaskMsg
 	}
+	if err := authorizeSSHBackgroundTaskOwner(bgTaskMgr, taskID, ownerID); err != nil {
+		return fmt.Sprintf("wait_task failed: %v", err)
+	}
 	tailLines := boundedIntArg(args, "tail_lines", 50, 1, 1000)
 	timeout := boundedIntArg(args, "timeout", 60, 5, 600)
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 	for checks := 1; ; checks++ {
-		result, err := bgTaskMgr.CheckTask(taskID, tailLines)
+		result, err := bgTaskMgr.CheckTaskForOwner(taskID, tailLines, ownerID)
 		if err != nil {
-			return fmt.Sprintf("wait_task failed: %v", err)
+			return fmt.Sprintf("wait_task failed: %v%s", err, sshBackgroundTaskSnapshotForOwner(bgTaskMgr, taskID, ownerID))
 		}
 		if result == nil {
 			return "wait_task failed: empty task status"
@@ -501,6 +602,49 @@ func waitSSHBackgroundTask(bgTaskMgr *remote.SSHBackgroundTaskManager, args map[
 		}
 		time.Sleep(sleepFor)
 	}
+}
+
+func sshBackgroundTaskSnapshot(bgTaskMgr *remote.SSHBackgroundTaskManager, taskID string) string {
+	return sshBackgroundTaskSnapshotForOwner(bgTaskMgr, taskID, "")
+}
+
+func sshBackgroundTaskSnapshotForOwner(bgTaskMgr *remote.SSHBackgroundTaskManager, taskID, ownerID string) string {
+	if bgTaskMgr == nil {
+		return ""
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return ""
+	}
+	if err := bgTaskMgr.AuthorizeTaskOwner(taskID, ownerID); err != nil {
+		return ""
+	}
+	for _, t := range bgTaskMgr.ListTasks() {
+		if strings.TrimSpace(t.TaskID) != taskID {
+			continue
+		}
+		elapsed := time.Since(t.StartedAt).Round(time.Second)
+		return fmt.Sprintf("\n\n--- last known task snapshot ---\ntask_id: %s\nstatus: %s\npid: %s\nelapsed: %s\ncommand: %s%s",
+			t.TaskID, t.Status, t.PID, elapsed, truncateRunesMiddle(t.Command, 1200, 1200), sshBackgroundTaskMirrorSnapshot(t.MirrorFile))
+	}
+	return "\n\n--- last known task snapshot ---\nnot found in SSH background task registry"
+}
+
+func sshBackgroundTaskMirrorSnapshot(mirrorFile string) string {
+	mirrorFile = strings.TrimSpace(mirrorFile)
+	if mirrorFile == "" {
+		return ""
+	}
+	data, err := os.ReadFile(mirrorFile)
+	if err != nil || len(data) == 0 {
+		return fmt.Sprintf("\nlocal_mirror: %s", mirrorFile)
+	}
+	content := truncateRunesMiddle(string(data), 2000, 4000)
+	return fmt.Sprintf("\nlocal_mirror: %s\n\n--- last local mirror ---\n%s", mirrorFile, content)
+}
+
+func authorizeSSHBackgroundTaskOwner(bgTaskMgr *remote.SSHBackgroundTaskManager, taskID, ownerID string) error {
+	return bgTaskMgr.AuthorizeTaskOwner(taskID, ownerID)
 }
 
 func boundedIntArg(args map[string]interface{}, key string, defaultValue, minValue, maxValue int) int {
@@ -559,9 +703,13 @@ func formatSSHBackgroundTaskStatus(result *remote.BackgroundTaskStatus) string {
 		logTail = truncateRunesMiddle(logTail, 3000, 3000)
 	}
 
-	return fmt.Sprintf("%s task %s\ncommand: %s\nstatus: %s\nprocess_alive: %v\nelapsed: %s\n\n--- latest log ---\n%s",
+	exitCode := "unknown"
+	if result.ExitCodeKnown {
+		exitCode = fmt.Sprintf("%d", result.ExitCode)
+	}
+	return fmt.Sprintf("%s task %s\ncommand: %s\nstatus: %s\nexit_code: %s\nprocess_alive: %v\nelapsed: %s\nlocal_mirror: %s\n\n--- latest log ---\n%s",
 		statusEmoji, result.TaskID, result.Command, result.Status,
-		result.IsAlive, result.Elapsed, logTail)
+		exitCode, result.IsAlive, result.Elapsed, result.MirrorFile, logTail)
 }
 
 func truncateRunesMiddle(s string, prefixRunes, suffixRunes int) string {
@@ -579,18 +727,22 @@ func truncateRunesMiddle(s string, prefixRunes, suffixRunes int) string {
 }
 
 // sshListTasks lists all background tasks.
-func (h *IMMessageHandler) sshListTasks() string {
+func (h *IMMessageHandler) sshListTasks(args map[string]interface{}) string {
 	if h.bgTaskMgr == nil {
 		return "当前无后台任务"
 	}
 
-	tasks := h.bgTaskMgr.ListTasks()
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	}
+
+	tasks := h.bgTaskMgr.ListTasksForOwner(ownerID)
 	if len(tasks) == 0 {
 		return "当前无后台任务"
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("后台任务（%d 个）:\n", len(tasks)))
+	rows := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		elapsed := time.Since(t.StartedAt).Round(time.Second)
 		statusStr := string(t.Status)
@@ -598,8 +750,21 @@ func (h *IMMessageHandler) sshListTasks() string {
 		if t.Status.IsActive() && !t.LastCheck.IsZero() && time.Since(t.LastCheck) > 2*time.Minute {
 			statusStr += " (状态待验证，请用 check_task 确认)"
 		}
-		sb.WriteString(fmt.Sprintf("  - %s | PID: %s | 状态: %s | 已运行: %s\n    命令: %s\n",
-			t.TaskID, t.PID, statusStr, elapsed, t.Command))
+		var row strings.Builder
+		fmt.Fprintf(&row, "  - %s | PID: %s | 状态: %s | 已运行: %s\n    命令: %s\n",
+			t.TaskID, t.PID, statusStr, elapsed, t.Command)
+		if strings.TrimSpace(t.MirrorFile) != "" {
+			fmt.Fprintf(&row, "    local_mirror: %s\n", t.MirrorFile)
+		}
+		rows = append(rows, row.String())
+	}
+	if len(rows) == 0 {
+		return "当前无后台任务"
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "后台任务（%d 个）:\n", len(rows))
+	for _, row := range rows {
+		sb.WriteString(row)
 	}
 	return sb.String()
 }
@@ -609,13 +774,20 @@ func (h *IMMessageHandler) sshKillTask(args map[string]interface{}) string {
 	if h.bgTaskMgr == nil {
 		return "错误: 无后台任务"
 	}
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	}
 
 	taskID, _ := args["task_id"].(string)
 	if taskID == "" {
 		return "错误: kill_task 需要 task_id 参数"
 	}
+	if err := authorizeSSHBackgroundTaskOwner(h.bgTaskMgr, taskID, ownerID); err != nil {
+		return fmt.Sprintf("终止任务失败: %v", err)
+	}
 
-	if err := h.bgTaskMgr.KillTask(taskID); err != nil {
+	if err := h.bgTaskMgr.KillTaskForOwner(taskID, ownerID); err != nil {
 		return fmt.Sprintf("终止任务失败: %v", err)
 	}
 	h.emitAppEvent("background-loops-changed")

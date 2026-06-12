@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
@@ -227,6 +228,38 @@ func TestNewIMMessageHandlerStandalone_ShortChitChat(t *testing.T) {
 	}
 	if resp.Text == "" {
 		t.Fatal("expected non-empty text for chit-chat")
+	}
+}
+
+func TestNewIMMessageHandlerStandalone_CurrentTimeDirect(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		UnifiedClassifier: intent.New(intent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+			t.Fatal("current local time query should not call UIC in standalone mode")
+			return "", nil
+		}}),
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Model: "m", Key: "k", Protocol: "openai"}
+		},
+	})
+	defer h.memory.Stop()
+
+	resp := h.HandleIMMessage(IMUserMessage{
+		UserID:   "tui-time-user",
+		Platform: "tui",
+		Text:     "\u73b0\u5728\u51e0\u70b9\uff1f",
+		Lang:     "zh",
+	})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	if resp.ResponseSource != "direct_execution" {
+		t.Fatalf("response source = %q, want direct_execution", resp.ResponseSource)
+	}
+	if !strings.Contains(resp.Text, "\u5f53\u524d\u65e5\u671f\u65f6\u95f4") {
+		t.Fatalf("response text = %q, want current date/time", resp.Text)
 	}
 }
 

@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func TestCollectRuntimeStatusForOwnerDoesNotExposeOtherCurrentLoop(t *testing.T) {
@@ -119,5 +121,30 @@ func TestToolAgentStatusCurrentRuntimeOwnerMissingFailsClosed(t *testing.T) {
 	}
 	if strings.Contains(out, "desktop secret task") {
 		t.Fatalf("agent_status leaked desktop task from ownerless current runtime: %s", out)
+	}
+}
+
+func TestToolAgentStatusTaskIDUsesHiddenRuntimeOwner(t *testing.T) {
+	mgr := coretool.NewLocalBackgroundTaskManager(t.TempDir())
+	task, err := mgr.SubmitWithOwner("echo desktop secret", "", "command", "owner-a")
+	if err != nil {
+		t.Fatalf("SubmitWithOwner: %v", err)
+	}
+	h := &IMMessageHandler{localBgTaskMgr: mgr}
+
+	out := h.toolAgentStatus(map[string]interface{}{
+		"task_id":                        task.TaskID,
+		registeredToolPolicyOwnerIDField: "owner-b",
+	})
+	if strings.Contains(out, "desktop secret") || strings.Contains(out, task.TaskID+" [") {
+		t.Fatalf("agent_status task_id leaked cross-owner task: %s", out)
+	}
+
+	out = h.toolAgentStatus(map[string]interface{}{
+		"task_id":                        task.TaskID,
+		registeredToolPolicyOwnerIDField: "owner-a",
+	})
+	if !strings.Contains(out, task.TaskID) {
+		t.Fatalf("same-owner task_id lookup should include task evidence, got: %s", out)
 	}
 }

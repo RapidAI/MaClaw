@@ -261,6 +261,9 @@ describe('AIAssistantPanel property tests', () => {
         expect(output.style.minHeight).toBe('0px');
         expect(output.style.overflowY).toBe('auto');
         expect(output.style.overflowX).toBe('hidden');
+        expect(output.style.whiteSpace).toBe('normal');
+        expect(output.style.wordBreak).toBe('normal');
+        expect(output.style.overflowWrap).toBe('anywhere');
 
         const inputBar = getByTestId('ai-input-bar');
         expect(inputBar.style.flexShrink).toBe('0');
@@ -452,14 +455,16 @@ describe('AIAssistantPanel property tests', () => {
         });
     });
 
-    it('scrolls to top when only pinned news exist', () => {
+    it('shows welcome view with pinned news when only news messages exist', () => {
         const messages: ChatMessage[] = [
             makeNews('1'),
         ];
 
-        renderPanel({ state: { messages, scrollToTopSeq: 1, sending: false, streaming: false, ready: true } });
+        const { getByTestId } = renderPanel({ state: { messages, scrollToTopSeq: 1, sending: false, streaming: false, ready: true } });
 
-        expect(scrollToMock).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' });
+        // With only news messages and no conversation, the welcome view should be shown
+        // (news cards are integrated into the welcome view).
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
     });
 
     it('restores canceled text back into the textarea', async () => {

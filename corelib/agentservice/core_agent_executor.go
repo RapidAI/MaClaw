@@ -123,8 +123,9 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		loopID:               fmt.Sprintf("srv:%s:%s", req.Session.ID, req.Principal.UserID),
 		onToken:              req.OnToken,
 		sshDeps: sshtool.SSHToolDeps{
-			Manager:   sshResources.mgr,
-			BGTaskMgr: sshResources.bg,
+			Manager:       sshResources.mgr,
+			BGTaskMgr:     sshResources.bg,
+			PolicyOwnerID: memoryOwnerIDForPrincipal(req.Principal),
 			HostLoader: func() []corelib.SSHHostEntry {
 				return configuredSSHHostsFrom(req.Config.SSHHosts)
 			},

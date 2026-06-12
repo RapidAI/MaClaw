@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"net/http"
 	"net/http/httptest"
@@ -97,18 +98,18 @@ func TestTopicDetector_ShortMessageSkipsDetection(t *testing.T) {
 
 	// Short messages (< 4 words) should never trigger TopicNew.
 	shortMessages := []string{
-		"重启",             // 2 CJK words
-		"好的",             // 2 CJK words
-		"继续",             // 2 CJK words
-		"对",              // 1 CJK word
-		"是的",             // 2 CJK words
-		"重启下",            // 3 CJK words
-		"ok",             // 1 word
-		"restart",        // 1 word
-		"yes please",     // 2 words
-		"go on",          // 2 words
-		"帮我看",            // 3 CJK words
-		"do it",          // 2 words
+		"重启",         // 2 CJK words
+		"好的",         // 2 CJK words
+		"继续",         // 2 CJK words
+		"对",          // 1 CJK word
+		"是的",         // 2 CJK words
+		"重启下",        // 3 CJK words
+		"ok",         // 1 word
+		"restart",    // 1 word
+		"yes please", // 2 words
+		"go on",      // 2 words
+		"帮我看",        // 3 CJK words
+		"do it",      // 2 words
 	}
 	for _, msg := range shortMessages {
 		if got := d.detect(msg, "user1", mem); got != TopicSame {
@@ -252,6 +253,39 @@ func TestTopicDetector_ConfirmWithLLM_New(t *testing.T) {
 	}
 }
 
+func TestTopicDetector_ConfirmWithLLM_UsesResponsesWireAPI(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("Decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"new"}]}]}`))
+	}))
+	defer srv.Close()
+
+	d := newTopicSwitchDetector(func() (*http.Client, corelib.MaclawLLMConfig) {
+		return srv.Client(), corelib.MaclawLLMConfig{URL: srv.URL + "/v1", Model: "test-model", WireAPI: "responses"}
+	})
+	d.llmTimeout = 2 * time.Second
+
+	if got := d.confirmWithLLM("old topic", "new question"); got != TopicNew {
+		t.Fatalf("confirmWithLLM() = %v, want %v", got, TopicNew)
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if _, ok := gotBody["input"]; !ok {
+		t.Fatalf("request body missing input: %#v", gotBody)
+	}
+	if _, ok := gotBody["messages"]; ok {
+		t.Fatalf("request body leaked messages: %#v", gotBody)
+	}
+}
+
 func TestTopicDetector_ConfirmWithLLM_SameOnHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "gateway failed", http.StatusBadGateway)
@@ -369,18 +403,18 @@ func TestCountWords(t *testing.T) {
 		{"yes please", 2},
 		{"What is the meaning of life", 6},
 		// Mixed
-		{"帮我 restart", 3},       // 2 CJK + 1 English
-		{"Go HTTP 服务器", 5},      // 2 English + 3 CJK
-		{"hello你好", 3},          // 1 English + 2 CJK (no space between)
+		{"帮我 restart", 3},  // 2 CJK + 1 English
+		{"Go HTTP 服务器", 5}, // 2 English + 3 CJK
+		{"hello你好", 3},     // 1 English + 2 CJK (no space between)
 		// Japanese
-		{"はい", 2},             // 2 Hiragana
-		{"リスタート", 5},          // 5 Katakana (including ー prolonged sound mark)
+		{"はい", 2},    // 2 Hiragana
+		{"リスタート", 5}, // 5 Katakana (including ー prolonged sound mark)
 		// Korean
-		{"네", 1},              // 1 Hangul
+		{"네", 1}, // 1 Hangul
 		// Edge cases
 		{"", 0},
 		{"   ", 0},
-		{"hello, world!", 2},  // punctuation doesn't count as words
+		{"hello, world!", 2}, // punctuation doesn't count as words
 	}
 	for _, tt := range tests {
 		got := countWords(tt.input)

@@ -388,7 +388,7 @@ function getStatusBadgeVariant(status: string): CSSProperties {
         case "disabled":
             return { background: colors.surfaceMuted, color: colors.textMuted, border: `1px solid ${colors.border}` };
         case "needs_setup":
-            return { background: colors.warningBg, color: colors.warning, border: `1px solid ${colors.warning}` };
+            return { background: colors.infoBg, color: colors.primaryDark, border: `1px solid ${colors.primary}` };
         case "needs_review":
             return { background: colors.infoBg, color: colors.primaryDark, border: `1px solid ${colors.primary}` };
         default:
@@ -397,8 +397,8 @@ function getStatusBadgeVariant(status: string): CSSProperties {
 }
 
 function learnedSourceIcon(source: string): string {
-    if (source === "learned") return "📖";
-    if (source === "crafted") return "🔧";
+    if (source === "learned") return "REF";
+    if (source === "crafted") return "TOOL";
     return "📁";
 }
 
@@ -1206,10 +1206,10 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     setDiagLoading(false);
                                 }
                             }} disabled={diagLoading}>
-                                {diagLoading ? localizeText("Diagnosing...", "诊断中...", "診斷中...") : localizeText("🔍 Diagnose", "🔍 诊断", "🔍 診斷")}
+                                {diagLoading ? localizeText("Diagnosing...", "诊断中...", "診斷中...") : localizeText("Diagnose", "诊断", "診斷")}
                             </button>
                             <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={handleImportZip} disabled={busy || importing}>
-                                {importing ? localizeText("Importing...", "导入中...", "匯入中...") : localizeText("📦 Import Skill Pack", "📦 导入 Skill 包", "📦 匯入 Skill 包")}
+                                {importing ? localizeText("Importing...", "导入中...", "匯入中...") : localizeText("PACK Import Skill Pack", "PACK 导入 Skill 包", "PACK 匯入 Skill 包")}
                             </button>
                             <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={openCreateForm} disabled={busy}>
                                 + {localizeText("New Skill", "新建 Skill", "新建 Skill")}
@@ -1229,12 +1229,12 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     {diagEntries && diagEntries.length > 0 && (
                         <div style={{ ...remoteInfoPanelStyle, fontSize: "0.76rem" }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                                <span style={{ fontWeight: 500, color: colors.text }}>📋 {localizeText("Skill Directory Diagnosis", "Skill 目录诊断结果", "Skill 目錄診斷結果")}</span>
+                                <span style={{ fontWeight: 500, color: colors.text }}>{localizeText("Skill Directory Diagnosis", "Skill 目录诊断结果", "Skill 目錄診斷結果")}</span>
                                 <button className="btn-secondary" style={{ fontSize: "0.7rem", padding: "2px 8px" }} onClick={() => setDiagEntries(null)}>{localizeText("Close", "关闭", "關閉")}</button>
                             </div>
                             {diagEntries.map((d, i) => (
                                 <div key={i} style={{ display: "flex", gap: "6px", alignItems: "baseline", padding: "3px 0", borderTop: i > 0 ? `1px solid ${colors.borderLight}` : undefined }}>
-                                    <span>{d.ok ? "✅" : "❌"}</span>
+                                    <span>{d.ok ? "OK" : "ERR"}</span>
                                     <span style={{ fontWeight: 500, minWidth: "100px" }}>{d.dir}</span>
                                     {d.ok ? (
                                         <span style={{ color: colors.success }}>{localizeText("Loaded", "加载成功", "載入成功")}{d.name ? ` → ${d.name}` : ""}</span>
@@ -1478,7 +1478,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     )}
                                                     {skill.rating_count > 0 && (
                                                         <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
-                                                            <span style={{ color: colors.warning }}>{renderStars(skill.avg_rating)}</span>
+                                                            <span style={{ color: colors.primary }}>{renderStars(skill.avg_rating)}</span>
                                                             <span>({skill.rating_count})</span>
                                                         </span>
                                                     )}
@@ -1539,7 +1539,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                         {skill.downloads > 0 && <span>⬇ {formatDownloads(skill.downloads)}</span>}
                                                         {skill.rating_count > 0 && (
                                                             <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
-                                                                <span style={{ color: colors.warning }}>{renderStars(skill.avg_rating)}</span>
+                                                                <span style={{ color: colors.primary }}>{renderStars(skill.avg_rating)}</span>
                                                                 <span>({skill.rating_count})</span>
                                                             </span>
                                                         )}
@@ -1575,10 +1575,10 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 {experienceAuditLoading ? localizeText("Refreshing...", "\u5237\u65b0\u4e2d...", "\u91cd\u65b0\u6574\u7406\u4e2d...") : localizeText("Audit", "\u5ba1\u8ba1", "\u7a3d\u6838")}
                             </button>
                             <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={handleLearnedImport} disabled={learnedImporting}>
-                                {learnedImporting ? localizeText("Importing...", "导入中...", "匯入中...") : localizeText("📦 Import", "📦 导入", "📦 匯入")}
+                                {learnedImporting ? localizeText("Importing...", "导入中...", "匯入中...") : localizeText("PACK Import", "PACK 导入", "PACK 匯入")}
                             </button>
                             <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={handleLearnedExport} disabled={learnedExporting || learnedSelected.size === 0}>
-                                {learnedExporting ? localizeText("Exporting...", "导出中...", "匯出中...") : `📤 ${localizeText("Export", "导出", "匯出")}${learnedSelected.size > 0 ? ` (${learnedSelected.size})` : ""}`}
+                                {learnedExporting ? localizeText("Exporting...", "导出中...", "匯出中...") : `PACK ${localizeText("Export", "导出", "匯出")}${learnedSelected.size > 0 ? ` (${learnedSelected.size})` : ""}`}
                             </button>
                         </div>
                     </div>
@@ -1625,7 +1625,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 </div>
                             )}
                             {!experienceAuditError && experienceAuditHealth?.primary_issue && (
-                                <div style={{ fontSize: "0.72rem", color: colors.warning, marginBottom: "6px" }}>
+                                <div style={{ fontSize: "0.72rem", color: colors.primaryDark, marginBottom: "6px" }}>
                                     {localizeText("Primary issue", "\u4e3b\u8981\u95ee\u9898", "\u4e3b\u8981\u554f\u984c")}: {localizeAuditText(experienceAuditHealth.primary_issue)}
                                 </div>
                             )}
@@ -1672,7 +1672,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             </div>
                                         )}
                                         {unsupported.length > 0 && (
-                                            <div style={{ fontSize: "0.72rem", color: colors.warning, marginTop: "3px" }}>
+                                            <div style={{ fontSize: "0.72rem", color: colors.primaryDark, marginTop: "3px" }}>
                                                 {localizeText("Unsupported evidence", "Unsupported evidence", "Unsupported evidence")}: {unsupported.map(([step, count]) => `${step} x${count}`).join("; ")}
                                             </div>
                                         )}
@@ -1803,7 +1803,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     >
                                                         {uploadingSkill === s.name ? localizeText("Uploading...", "上传中...", "上傳中...") : s.hub_skill_id ? localizeText("⬆ Re-upload", "⬆ 重新上传", "⬆ 重新上傳") : localizeText("⬆ Upload", "⬆ 上传", "⬆ 上傳")}
                                                     </button>
-                                                    {s.hub_skill_id && <span title={localizeText("Uploaded to Capability Market", "已上传到能力市场", "已上傳到能力市場")} style={{ fontSize: "0.68rem", color: colors.success }}>✅</span>}
+                                                    {s.hub_skill_id && <span title={localizeText("Uploaded to Capability Market", "已上传到能力市场", "已上傳到能力市場")} style={{ fontSize: "0.68rem", color: colors.success }}>OK</span>}
                                                 </div>
                                             </td>
                                         </tr>
@@ -1919,9 +1919,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             <td style={{ ...tdStyle, textAlign: "center" }}>{d.skill_count}</td>
                                             <td style={tdStyle}>
                                                 {d.error ? (
-                                                    <span style={{ color: colors.danger, fontSize: "0.72rem" }}>⚠ {d.error}</span>
+                                                    <span style={{ color: colors.danger, fontSize: "0.72rem" }}>ERR {d.error}</span>
                                                 ) : (
-                                                    <span style={{ color: colors.success, fontSize: "0.72rem" }}>✅ {localizeText("OK", "正常", "正常")}</span>
+                                                    <span style={{ color: colors.success, fontSize: "0.72rem" }}>OK {localizeText("OK", "正常", "正常")}</span>
                                                 )}
                                             </td>
                                             <td style={tdStyle}>
@@ -1966,7 +1966,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 92vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{localizeText("Skill Details", "技能详情", "技能詳情")}</h3>
-                            <button className="btn-close" onClick={() => setDetailSkill(null)}>×</button>
+                            <button className="btn-close" onClick={() => setDetailSkill(null)}>X</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "70vh", overflowY: "auto" }}>
                             <div style={detailGridStyle}>
@@ -2020,7 +2020,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(420px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{editingSkill ? localizeText("Edit Skill", "编辑 Skill", "編輯 Skill") : localizeText("New Skill", "新建 Skill", "新建 Skill")}</h3>
-                            <button className="btn-close" onClick={closeForm}>×</button>
+                            <button className="btn-close" onClick={closeForm}>X</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                             <div className="form-group" style={{ marginBottom: 0 }}>
@@ -2049,7 +2049,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginBottom: "4px" }}>
                                     {formData.triggers.map((t, i) => (
                                         <span key={i} style={{ ...tagStyle, cursor: "pointer" }} onClick={() => removeTrigger(i)}>
-                                            {t} ×
+                                            {t} DEL
                                         </span>
                                     ))}
                                 </div>

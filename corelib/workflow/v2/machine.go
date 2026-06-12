@@ -13,18 +13,19 @@ import (
 type HandleAction string
 
 const (
-	ActionRunPhase    HandleAction = "run_phase"    // execute the current phase
-	ActionConfirmed   HandleAction = "confirmed"    // user confirmed, advanced to next (or completed)
-	ActionModify      HandleAction = "modify"       // user wants to modify, re-run current phase
-	ActionPassThrough HandleAction = "pass_through" // not relevant to workflow, use normal agent loop
-	ActionCancelled   HandleAction = "cancelled"    // workflow cancelled
+	ActionRunPhase         HandleAction = "run_phase"          // execute the current phase
+	ActionConfirmed        HandleAction = "confirmed"          // user confirmed, advanced to next (or completed)
+	ActionModify           HandleAction = "modify"             // user wants to modify, re-run current phase
+	ActionPassThrough      HandleAction = "pass_through"       // not relevant to workflow, use normal agent loop
+	ActionCancelled        HandleAction = "cancelled"          // workflow cancelled
+	ActionCancelAndExecute HandleAction = "cancel_and_execute" // cancel workflow but execute original task directly
 )
 
 // HandleResult is returned by StateMachine.HandleInput.
 type HandleResult struct {
 	Action     HandleAction
-	Phase      *Phase  // current phase to execute (RunPhase/Modify)
-	ModifyHint string  // user's modification request (Modify)
+	Phase      *Phase // current phase to execute (RunPhase/Modify)
+	ModifyHint string // user's modification request (Modify)
 	State      *WorkflowState
 }
 
@@ -46,7 +47,7 @@ func NewStateMachine(store WorkflowStore, templates *TemplateRegistry) *StateMac
 }
 
 // SetConfirmClassifier sets the LLM-based confirm intent classifier.
-// If nil, falls back to simple keyword matching.
+// If nil, falls back to conservative local confirmation handling.
 func (m *StateMachine) SetConfirmClassifier(fn ConfirmClassifier) {
 	m.confirmClassifier = fn
 }
@@ -180,6 +181,11 @@ func (m *StateMachine) HandleInput(userID, text string) (*HandleResult, error) {
 			m.store.Save(state)
 			m.mu.Unlock()
 			return &HandleResult{Action: ActionCancelled, State: state}, nil
+		case "cancel_execute":
+			state.Status = StatusCancelled
+			m.store.Save(state)
+			m.mu.Unlock()
+			return &HandleResult{Action: ActionCancelAndExecute, State: state}, nil
 		default:
 			// Unrelated message — let it go to normal agent loop
 			m.mu.Unlock()
@@ -323,6 +329,22 @@ func ClassifyConfirmIntentKeyword(text string) string {
 	cancelWords := []string{"取消", "cancel", "放弃", "不做了", "算了", "停止"}
 	for _, w := range cancelWords {
 		if strings.Contains(lower, w) {
+			// Check if user also wants direct execution after cancel
+			// e.g. "取消，直接处理" / "取消工作流，直接做" / "cancel and just do it"
+			// We require "直接" as the primary signal — bare "处理"/"做" alone
+			// might appear in pure cancellation phrases like "不做了".
+			cancelExecutePatterns := []string{
+				"直接处理", "直接做", "直接执行", "直接搞", "直接干",
+				"直接帮我", "直接来", "直接开始",
+				"just do", "directly", "do it directly",
+				"跳过流程", "跳过步骤", "跳过确认",
+				"不要流程", "不要工作流", "不走流程",
+			}
+			for _, ep := range cancelExecutePatterns {
+				if strings.Contains(lower, ep) {
+					return "cancel_execute"
+				}
+			}
 			return "cancel"
 		}
 	}

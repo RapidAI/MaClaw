@@ -89,8 +89,68 @@ func TestListVirtualEmployeesReturnsOnlineEmployeesOnly(t *testing.T) {
 	for _, employee := range employees {
 		got[employee.ID] = true
 	}
-	if len(employees) != 2 || !got["ve-online"] || !got["ve-spaced-online"] {
-		t.Fatalf("employees = %+v, want only online entries with status normalization", employees)
+	if len(employees) != 3 || !got["ve-online"] || !got["ve-spaced-online"] || !got["ve-blank"] {
+		t.Fatalf("employees = %+v, want online entries and missing-status entries normalized to online", employees)
+	}
+}
+
+func TestListVirtualEmployeesCoalescesConcurrentHubRequests(t *testing.T) {
+	discoverCalls := int32(0)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ve/discoverable" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt32(&discoverCalls, 1)
+		<-release
+		_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]any{
+			{"id": "ve-a", "machine_id": "machine-a", "name": "Remote A", "online_status": "online"},
+			{"id": "ve-local", "machine_id": "machine-local", "name": "Local", "online_status": "online"},
+		}})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-local",
+		RemoteMachineToken: "token-list-coalesce",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	const callers = 8
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			employees, err := app.ListVirtualEmployees()
+			if err != nil {
+				errs <- err
+				return
+			}
+			if len(employees) != 1 || employees[0].MachineID != "machine-a" {
+				errs <- fmt.Errorf("employees = %+v, want only remote machine-a", employees)
+			}
+		}()
+	}
+	for deadline := time.Now().Add(2 * time.Second); atomic.LoadInt32(&discoverCalls) == 0 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := atomic.LoadInt32(&discoverCalls); got != 1 {
+		t.Fatalf("discoverable calls = %d, want 1", got)
 	}
 }
 
@@ -305,6 +365,270 @@ func TestInitiateGroupConversationReturnsInviteFailure(t *testing.T) {
 	}
 	if _, ok := app.groupSessionCache.Load(veGroupKey([]string{"ve-a", "ve-b"})); ok {
 		t.Fatal("failed group session should not be cached")
+	}
+}
+
+func TestInitiateGroupConversationDeduplicatesInvitees(t *testing.T) {
+	consultationCalls := int32(0)
+	inviteCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations":
+			atomic.AddInt32(&consultationCalls, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "session-1", "status": "open"}})
+		case "/api/ve/discoverable":
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]string{
+				{"id": "ve-a", "machine_id": "machine-a"},
+				{"id": "ve-b", "machine_id": "machine-b"},
+			}})
+		case "/api/a2a/consultations/session-1/invites":
+			atomic.AddInt32(&inviteCalls, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"invite_id": fmt.Sprintf("invite-%d", atomic.LoadInt32(&inviteCalls))})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	info, err := app.InitiateGroupConversation([]string{" ve-a ", "VE-A", "machine-a", "ve-b", "machine-b", "ve-b"})
+	if err != nil {
+		t.Fatalf("InitiateGroupConversation: %v", err)
+	}
+	if info.VEID != "ve-a,ve-b" {
+		t.Fatalf("VEID = %q, want deduplicated ve-a,ve-b", info.VEID)
+	}
+	if got := atomic.LoadInt32(&inviteCalls); got != 2 {
+		t.Fatalf("invite calls = %d, want 2", got)
+	}
+	if _, ok := app.groupSessionCache.Load(veGroupKey([]string{"ve-a", "ve-b"})); !ok {
+		t.Fatal("deduplicated group session should be cached")
+	}
+
+	reused, err := app.InitiateGroupConversation([]string{"machine-a", "machine-b"})
+	if err != nil {
+		t.Fatalf("second InitiateGroupConversation: %v", err)
+	}
+	if reused.SessionID != "session-1" {
+		t.Fatalf("reused session id = %q, want session-1", reused.SessionID)
+	}
+	if reused.VEID != "ve-a,ve-b" {
+		t.Fatalf("reused VEID = %q, want stable profile ids ve-a,ve-b", reused.VEID)
+	}
+	if got := atomic.LoadInt32(&consultationCalls); got != 1 {
+		t.Fatalf("consultation calls = %d, want 1 after canonical cache hit", got)
+	}
+	if got := atomic.LoadInt32(&inviteCalls); got != 2 {
+		t.Fatalf("invite calls after canonical cache hit = %d, want 2", got)
+	}
+	app.ArchiveGroupSession([]string{" ve-a ", "VE-A", "machine-a", "ve-b", "machine-b", "ve-b"})
+	if _, ok := app.groupSessionCache.Load(veGroupKey([]string{"ve-a", "ve-b"})); ok {
+		t.Fatal("archive should remove canonical group session cache")
+	}
+	if _, ok := app.groupSessionCache.Load(veGroupKey([]string{"machine-a", "machine-b"})); ok {
+		t.Fatal("archive should remove invitee group session cache")
+	}
+}
+
+func TestInitiateGroupConversationReusesCanonicalProfileCache(t *testing.T) {
+	consultationCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "session-1", "status": "open"})
+		case "/api/ve/discoverable":
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]string{
+				{"id": "ve-a", "machine_id": "machine-a"},
+				{"id": "ve-b", "machine_id": "machine-b"},
+			}})
+		case "/api/a2a/consultations":
+			atomic.AddInt32(&consultationCalls, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "new-session", "status": "open"}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.cacheGroupSession([]string{"ve-a", "ve-b"}, "session-1")
+	app.cacheGroupSessionReturnVEIDs("session-1", []string{"ve-a", "ve-b"})
+
+	info, err := app.InitiateGroupConversation([]string{"machine-a", "machine-b"})
+	if err != nil {
+		t.Fatalf("InitiateGroupConversation: %v", err)
+	}
+	if info.SessionID != "session-1" {
+		t.Fatalf("session id = %q, want cached session-1", info.SessionID)
+	}
+	if info.VEID != "ve-a,ve-b" {
+		t.Fatalf("VEID = %q, want stable profile ids ve-a,ve-b", info.VEID)
+	}
+	if got := atomic.LoadInt32(&consultationCalls); got != 0 {
+		t.Fatalf("consultation calls = %d, want 0", got)
+	}
+}
+
+func TestInitiateGroupConversationCollapsesAliasDuplicateToDirectSession(t *testing.T) {
+	groupCreates := int32(0)
+	directCreates := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/discoverable":
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]string{
+				{"id": "ve-a", "machine_id": "machine-a"},
+			}})
+		case "/api/ve/ve-a/initiate":
+			atomic.AddInt32(&directCreates, 1)
+			_ = json.NewEncoder(w).Encode(map[string]string{"session_id": "direct-session", "ve_id": "ve-a", "ve_name": "A"})
+		case "/api/a2a/consultations":
+			atomic.AddInt32(&groupCreates, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "group-session", "status": "open"}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	info, err := app.InitiateGroupConversation([]string{"ve-a", "machine-a"})
+	if err != nil {
+		t.Fatalf("InitiateGroupConversation: %v", err)
+	}
+	if info.SessionID != "direct-session" || info.VEID != "ve-a" {
+		t.Fatalf("info = %+v, want direct ve-a session", info)
+	}
+	if got := atomic.LoadInt32(&groupCreates); got != 0 {
+		t.Fatalf("group creates = %d, want 0", got)
+	}
+	if got := atomic.LoadInt32(&directCreates); got != 1 {
+		t.Fatalf("direct creates = %d, want 1", got)
+	}
+}
+
+func TestFindActiveGroupSessionAnyRemovesAllInactiveAliases(t *testing.T) {
+	statusCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1":
+			atomic.AddInt32(&statusCalls, 1)
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "session-1", "status": "cancel"})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.cacheGroupSession([]string{"ve-a", "ve-b"}, "session-1")
+	app.cacheGroupSession([]string{"machine-a", "machine-b"}, "session-1")
+	app.cacheGroupSessionReturnVEIDs("session-1", []string{"ve-a", "ve-b"})
+	app.veSessionActiveCache.Delete("session-1")
+
+	if info := app.findActiveGroupSessionAny([]string{"ve-a", "ve-b"}, []string{"machine-a", "machine-b"}); info != nil {
+		t.Fatalf("findActiveGroupSessionAny = %+v, want nil inactive session", info)
+	}
+	if got := atomic.LoadInt32(&statusCalls); got != 1 {
+		t.Fatalf("status calls = %d, want 1 for same session aliases", got)
+	}
+	if _, ok := app.groupSessionCache.Load(veGroupKey([]string{"ve-a", "ve-b"})); ok {
+		t.Fatal("inactive profile alias key should be removed")
+	}
+	if _, ok := app.groupSessionCache.Load(veGroupKey([]string{"machine-a", "machine-b"})); ok {
+		t.Fatal("inactive machine alias key should be removed")
+	}
+	if _, ok := app.groupSessionReturnVEIDs.Load("session-1"); ok {
+		t.Fatal("inactive session return VE ids should be removed")
+	}
+}
+
+func TestCloseVESessionClearsGroupReturnAndRefreshCaches(t *testing.T) {
+	cancelCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/cancel":
+			atomic.AddInt32(&cancelCalls, 1)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.cacheVESession("ve-a", "session-1")
+	app.cacheGroupSession([]string{"ve-a", "ve-b"}, "session-1")
+	app.cacheGroupSessionReturnVEIDs("session-1", []string{"ve-a", "ve-b"})
+	app.cacheVEGroupDefaultResponder("session-1", "machine-a")
+	app.veDetailRefreshCache.Store("session-1", &veDetailRefreshState{})
+
+	if err := app.CloseVESession("session-1"); err != nil {
+		t.Fatalf("CloseVESession: %v", err)
+	}
+	if got := atomic.LoadInt32(&cancelCalls); got != 1 {
+		t.Fatalf("cancel calls = %d, want 1", got)
+	}
+	if _, ok := app.veSessionCache.Load("ve-a"); ok {
+		t.Fatal("direct session cache should be removed")
+	}
+	if _, ok := app.groupSessionCache.Load(veGroupKey([]string{"ve-a", "ve-b"})); ok {
+		t.Fatal("group session cache should be removed")
+	}
+	if _, ok := app.groupSessionReturnVEIDs.Load("session-1"); ok {
+		t.Fatal("group return VE ids should be removed")
+	}
+	if _, ok := app.veDefaultResponder.Load("session-1"); ok {
+		t.Fatal("default responder should be removed")
+	}
+	if _, ok := app.veDetailRefreshCache.Load("session-1"); ok {
+		t.Fatal("detail refresh cache should be removed")
 	}
 }
 
@@ -1123,6 +1447,178 @@ func TestSendVEMessageReturnsBeforeDetailCacheRefresh(t *testing.T) {
 	}
 	releaseDetailOnce.Do(func() { close(releaseDetail) })
 	time.Sleep(100 * time.Millisecond)
+}
+
+func TestVEAsyncDetailRefreshLimitsConcurrentHubFetches(t *testing.T) {
+	active := int32(0)
+	maxActive := int32(0)
+	detailCalls := int32(0)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/detail") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		current := atomic.AddInt32(&active, 1)
+		atomic.AddInt32(&detailCalls, 1)
+		for {
+			seen := atomic.LoadInt32(&maxActive)
+			if current <= seen || atomic.CompareAndSwapInt32(&maxActive, seen, current) {
+				break
+			}
+		}
+		<-release
+		atomic.AddInt32(&active, -1)
+		http.Error(w, "detail refresh held for concurrency test", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	client, _, err := app.veA2AHubClient()
+	if err != nil {
+		t.Fatalf("veA2AHubClient: %v", err)
+	}
+
+	const refreshes = veDetailRefreshMaxConcurrent * 2
+	var wg sync.WaitGroup
+	wg.Add(refreshes)
+	for i := 0; i < refreshes; i++ {
+		sessionID := fmt.Sprintf("session-%d", i)
+		go func() {
+			defer wg.Done()
+			app.cacheVEA2ADetailSnapshot(client, sessionID, "machine-1")
+		}()
+	}
+
+	for deadline := time.Now().Add(2 * time.Second); atomic.LoadInt32(&detailCalls) < veDetailRefreshMaxConcurrent && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&detailCalls); got != veDetailRefreshMaxConcurrent {
+		close(release)
+		t.Fatalf("detail calls before release = %d, want %d", got, veDetailRefreshMaxConcurrent)
+	}
+	if got := atomic.LoadInt32(&maxActive); got > veDetailRefreshMaxConcurrent {
+		close(release)
+		t.Fatalf("max active detail fetches = %d, want <= %d", got, veDetailRefreshMaxConcurrent)
+	}
+	close(release)
+	wg.Wait()
+	if got := atomic.LoadInt32(&detailCalls); got != refreshes {
+		t.Fatalf("detail calls = %d, want %d", got, refreshes)
+	}
+	if got := atomic.LoadInt32(&maxActive); got > veDetailRefreshMaxConcurrent {
+		t.Fatalf("max active detail fetches = %d, want <= %d", got, veDetailRefreshMaxConcurrent)
+	}
+}
+
+func TestVEAsyncDetailRefreshCoalescesBurstBeforeSnapshot(t *testing.T) {
+	detailCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/a2a/consultations/session-1/detail" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt32(&detailCalls, 1)
+		http.Error(w, "detail refresh held for coalescing test", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	client, _, err := app.veA2AHubClient()
+	if err != nil {
+		t.Fatalf("veA2AHubClient: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		app.cacheVEA2ADetailAsync(client, "session-1", "machine-1")
+	}
+	for deadline := time.Now().Add(2 * time.Second); atomic.LoadInt32(&detailCalls) == 0 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&detailCalls); got != 1 {
+		t.Fatalf("detail calls after burst = %d, want 1", got)
+	}
+	time.Sleep(veDetailRefreshDebounce*2 + 50*time.Millisecond)
+	if got := atomic.LoadInt32(&detailCalls); got != 1 {
+		t.Fatalf("detail calls after idle = %d, want 1", got)
+	}
+}
+
+func TestSendVEMessageRetriesTransientHubFailuresWithStableMessageID(t *testing.T) {
+	messageCalls := int32(0)
+	var seenIDs []string
+	var seenToIDs [][]string
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/messages":
+			call := atomic.AddInt32(&messageCalls, 1)
+			var msg a2a.GroupDiscussionMessage
+			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+				t.Errorf("decode message: %v", err)
+				return
+			}
+			mu.Lock()
+			seenIDs = append(seenIDs, msg.ID)
+			seenToIDs = append(seenToIDs, append([]string(nil), msg.ToIDs...))
+			mu.Unlock()
+			if call == 1 {
+				http.Error(w, "temporary overload", http.StatusServiceUnavailable)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "session-1"}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.cacheVEGroupDefaultResponder("session-1", "machine-default")
+
+	if err := app.SendVEMessage("session-1", "hello retry"); err != nil {
+		t.Fatalf("SendVEMessage: %v", err)
+	}
+	if got := atomic.LoadInt32(&messageCalls); got != 2 {
+		t.Fatalf("message calls = %d, want 2", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seenIDs) != 2 || seenIDs[0] == "" || seenIDs[0] != seenIDs[1] {
+		t.Fatalf("message IDs = %#v, want same non-empty id across retry", seenIDs)
+	}
+	if len(seenToIDs) != 2 || len(seenToIDs[0]) != 1 || seenToIDs[0][0] != "machine-default" || len(seenToIDs[1]) != 1 || seenToIDs[1][0] != "machine-default" {
+		t.Fatalf("message ToIDs = %#v, want default responder on every retry", seenToIDs)
+	}
 }
 
 func TestSendVEA2AMessageSkipsDetailRefreshForStreamChunk(t *testing.T) {
@@ -2050,6 +2546,385 @@ func TestLoadDiscoverableVEEntriesUsesShortLivedCache(t *testing.T) {
 	}
 	if len(second) != 1 || second[0].Name != "Remote A" || len(second[0].Whitelist) != 1 || second[0].Whitelist[0] != "team-a" {
 		t.Fatalf("cached employees were mutated: %+v", second)
+	}
+}
+
+func TestLoadDiscoverableVEEntriesRetriesTransientGetFailure(t *testing.T) {
+	discoverCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/discoverable":
+			call := atomic.AddInt32(&discoverCalls, 1)
+			if call == 1 {
+				http.Error(w, "temporary overload", http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]any{
+				{"id": "ve-a", "machine_id": "machine-a", "name": "Remote A"},
+			}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteMachineID: "machine-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	employees, err := app.loadDiscoverableVEEntries(server.URL, "token-1")
+	if err != nil {
+		t.Fatalf("loadDiscoverableVEEntries: %v", err)
+	}
+	if got := atomic.LoadInt32(&discoverCalls); got != 2 {
+		t.Fatalf("discoverable calls = %d, want 2", got)
+	}
+	if len(employees) != 1 || employees[0].MachineID != "machine-a" {
+		t.Fatalf("employees = %+v, want remote machine-a", employees)
+	}
+}
+
+func TestLoadDiscoverableVEEntriesShortCachesHubFailure(t *testing.T) {
+	discoverCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/discoverable":
+			atomic.AddInt32(&discoverCalls, 1)
+			http.Error(w, "temporary overload", http.StatusServiceUnavailable)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteMachineID: "machine-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if _, err := app.loadDiscoverableVEEntries(server.URL, "token-1"); err == nil {
+		t.Fatal("first loadDiscoverableVEEntries succeeded, want Hub failure")
+	}
+	if got := atomic.LoadInt32(&discoverCalls); got != int32(veHubRetryMaxAttempts) {
+		t.Fatalf("discoverable calls after first failure = %d, want %d", got, veHubRetryMaxAttempts)
+	}
+	if _, err := app.loadDiscoverableVEEntries(server.URL, "token-1"); err == nil {
+		t.Fatal("second loadDiscoverableVEEntries succeeded, want cached Hub failure")
+	}
+	if got := atomic.LoadInt32(&discoverCalls); got != int32(veHubRetryMaxAttempts) {
+		t.Fatalf("discoverable calls after cached failure = %d, want still %d", got, veHubRetryMaxAttempts)
+	}
+}
+
+func TestLoadDiscoverableVEEntriesRetriesAfterFailureCacheExpires(t *testing.T) {
+	discoverCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/discoverable":
+			call := atomic.AddInt32(&discoverCalls, 1)
+			if call <= int32(veHubRetryMaxAttempts) {
+				http.Error(w, "temporary overload", http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]any{
+				{"id": "ve-a", "machine_id": "machine-a", "name": "Remote A"},
+			}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteMachineID: "machine-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if _, err := app.loadDiscoverableVEEntries(server.URL, "token-1"); err == nil {
+		t.Fatal("first loadDiscoverableVEEntries succeeded, want Hub failure")
+	}
+	if got := atomic.LoadInt32(&discoverCalls); got != int32(veHubRetryMaxAttempts) {
+		t.Fatalf("discoverable calls after first failure = %d, want %d", got, veHubRetryMaxAttempts)
+	}
+	time.Sleep(veDiscoverableFailureCacheTTL + 50*time.Millisecond)
+	employees, err := app.loadDiscoverableVEEntries(server.URL, "token-1")
+	if err != nil {
+		t.Fatalf("loadDiscoverableVEEntries after failure cache expiry: %v", err)
+	}
+	if got := atomic.LoadInt32(&discoverCalls); got != int32(veHubRetryMaxAttempts+1) {
+		t.Fatalf("discoverable calls after cache expiry = %d, want %d", got, veHubRetryMaxAttempts+1)
+	}
+	if len(employees) != 1 || employees[0].MachineID != "machine-a" {
+		t.Fatalf("employees = %+v, want machine-a", employees)
+	}
+}
+
+func TestLoadDiscoverableVEEntriesDoesNotCachePermanentHubFailure(t *testing.T) {
+	discoverCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/discoverable":
+			atomic.AddInt32(&discoverCalls, 1)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteMachineID: "machine-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if _, err := app.loadDiscoverableVEEntries(server.URL, "token-1"); err == nil {
+			t.Fatalf("loadDiscoverableVEEntries call %d succeeded, want Hub failure", i+1)
+		}
+	}
+	if got := atomic.LoadInt32(&discoverCalls); got != 2 {
+		t.Fatalf("discoverable calls = %d, want 2 permanent failures not cached", got)
+	}
+}
+
+func TestRegisterVirtualEmployeeDoesNotRetryNonIdempotentPost(t *testing.T) {
+	registerCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/register":
+			atomic.AddInt32(&registerCalls, 1)
+			http.Error(w, "temporary overload", http.StatusServiceUnavailable)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	err := app.RegisterVirtualEmployee("Retry Guard", "work", "public", nil, "")
+	if err == nil {
+		t.Fatal("RegisterVirtualEmployee succeeded, want transient Hub error")
+	}
+	if got := atomic.LoadInt32(&registerCalls); got != 1 {
+		t.Fatalf("register calls = %d, want 1", got)
+	}
+}
+
+func TestUpdateVESettingsDoesNotRetryNonIdempotentPut(t *testing.T) {
+	updateCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/settings":
+			atomic.AddInt32(&updateCalls, 1)
+			http.Error(w, "temporary overload", http.StatusServiceUnavailable)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	err := app.UpdateVESettings("Retry Guard", "work", "public", nil, "")
+	if err == nil {
+		t.Fatal("UpdateVESettings succeeded, want transient Hub error")
+	}
+	if got := atomic.LoadInt32(&updateCalls); got != 1 {
+		t.Fatalf("settings update calls = %d, want 1", got)
+	}
+}
+
+func TestParseVEHubRetryAfter(t *testing.T) {
+	if got := parseVEHubRetryAfter("2"); got != 2*time.Second {
+		t.Fatalf("retry-after seconds = %s, want 2s", got)
+	}
+	future := time.Now().Add(2 * time.Second).UTC().Format(http.TimeFormat)
+	if got := parseVEHubRetryAfter(future); got <= 0 || got > 3*time.Second {
+		t.Fatalf("retry-after date = %s, want positive delay near 2s", got)
+	}
+	for _, value := range []string{"", "0", "-1", "soon"} {
+		if got := parseVEHubRetryAfter(value); got != 0 {
+			t.Fatalf("retry-after %q = %s, want 0", value, got)
+		}
+	}
+}
+
+func TestLoadDiscoverableVEEntriesCoalescesConcurrentHubRequests(t *testing.T) {
+	discoverCalls := int32(0)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/discoverable":
+			atomic.AddInt32(&discoverCalls, 1)
+			<-release
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]any{
+				{"id": "ve-a", "machine_id": "machine-a", "name": "Remote A"},
+				{"id": "ve_machine-1", "machine_id": "machine-1", "name": "Local"},
+			}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteMachineID: "machine-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	const callers = 8
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			employees, err := app.loadDiscoverableVEEntries(server.URL, "token-coalesce")
+			if err != nil {
+				errs <- err
+				return
+			}
+			if len(employees) != 1 || employees[0].MachineID != "machine-a" {
+				errs <- fmt.Errorf("employees = %+v, want only remote machine-a", employees)
+			}
+		}()
+	}
+	for deadline := time.Now().Add(2 * time.Second); atomic.LoadInt32(&discoverCalls) == 0 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := atomic.LoadInt32(&discoverCalls); got != 1 {
+		t.Fatalf("discoverable calls = %d, want 1", got)
+	}
+}
+
+func TestDiscoverableVEInFlightResultDoesNotRefillClearedCache(t *testing.T) {
+	discoverCalls := int32(0)
+	releaseFirst := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/discoverable":
+			call := atomic.AddInt32(&discoverCalls, 1)
+			if call == 1 {
+				<-releaseFirst
+				_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]any{
+					{"id": "ve-old", "machine_id": "machine-old", "name": "Old Remote"},
+				}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]any{
+				{"id": "ve-new", "machine_id": "machine-new", "name": "New Remote"},
+			}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteMachineID: "machine-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		employees, err := app.loadDiscoverableVEEntries(server.URL, "token-1")
+		if err != nil {
+			firstDone <- err
+			return
+		}
+		if len(employees) != 1 || employees[0].MachineID != "machine-old" {
+			firstDone <- fmt.Errorf("first employees = %+v, want machine-old", employees)
+			return
+		}
+		firstDone <- nil
+	}()
+	for deadline := time.Now().Add(2 * time.Second); atomic.LoadInt32(&discoverCalls) == 0 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&discoverCalls); got != 1 {
+		close(releaseFirst)
+		t.Fatalf("discoverable calls before cache clear = %d, want 1", got)
+	}
+
+	app.clearDiscoverableVECache()
+
+	secondDone := make(chan struct {
+		employees []VirtualEmployeeEntry
+		err       error
+	}, 1)
+	go func() {
+		employees, err := app.loadDiscoverableVEEntries(server.URL, "token-1")
+		secondDone <- struct {
+			employees []VirtualEmployeeEntry
+			err       error
+		}{employees: employees, err: err}
+	}()
+	for deadline := time.Now().Add(2 * time.Second); atomic.LoadInt32(&discoverCalls) < 2 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&discoverCalls); got != 2 {
+		close(releaseFirst)
+		t.Fatalf("discoverable calls after cleared in-flight result = %d, want 2", got)
+	}
+	second := <-secondDone
+	if second.err != nil {
+		close(releaseFirst)
+		t.Fatalf("second loadDiscoverableVEEntries: %v", second.err)
+	}
+	if len(second.employees) != 1 || second.employees[0].MachineID != "machine-new" {
+		close(releaseFirst)
+		t.Fatalf("second employees = %+v, want machine-new", second.employees)
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDiscoverableVEParticipantIDsUsesEntriesWithoutOnlineStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ve/discoverable" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]any{
+			{"id": "ve-remote", "machine_id": "machine-2", "name": "Remote VE"},
+		}})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	ids := app.discoverableVEParticipantIDs()
+	if ids["ve-remote"] != "machine-2" || ids["machine-2"] != "machine-2" {
+		t.Fatalf("discoverable IDs = %#v, want ve-remote and machine-2 mapped to machine-2", ids)
 	}
 }
 

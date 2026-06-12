@@ -153,6 +153,21 @@ func TestToolManageSkill_EmptyAction(t *testing.T) {
 	}
 }
 
+func TestToolManageSkill_UploadAliases(t *testing.T) {
+	app := &App{}
+	h := &IMMessageHandler{app: app}
+
+	for _, action := range []string{"publish", "pub", "submit", "发布", "上架"} {
+		got := h.toolManageSkill(map[string]interface{}{"action": action}, nil)
+		if strings.Contains(got, "未知 manage_skill action") {
+			t.Fatalf("alias %q should route to upload, got %q", action, got)
+		}
+		if !strings.Contains(got, "缺少 name") {
+			t.Fatalf("alias %q should reach upload handler and ask for name, got %q", action, got)
+		}
+	}
+}
+
 // TestToolManageSkill_AllCanonicalActionsHandled verifies that the GUI dispatcher
 // has a handler for every action in the canonical ManageSkillActions list.
 // If a new action is added to the single source of truth but not to the GUI

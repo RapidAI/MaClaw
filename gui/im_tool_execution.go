@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
@@ -285,40 +286,49 @@ func (h *IMMessageHandler) allowCodingWorkflowDelegate(request string, opts agen
 		return false, "semantic intent classifier is unavailable."
 	}
 	if !isSemanticCodingWorkflowDelegateResult(result) {
-		return false, fmt.Sprintf("classified as %s (confidence %.2f, layer %d): %s", result.Intent, result.Confidence, result.Layer, result.Reason)
+		gateIntent, confidence, _, layer, reason := result.ToGateIntent()
+		if strings.TrimSpace(reason) != "" {
+			return false, fmt.Sprintf("classified as %s (confidence %.2f, layer %d): %s", gateIntent, confidence, layer, reason)
+		}
+		return false, fmt.Sprintf("classified as %s (confidence %.2f, layer %d).", gateIntent, confidence, layer)
 	}
-	interactionContinuation := opts.Context != nil && opts.Context.IsAskUserResponse && result.Intent == GateIntentBugFix
+	gateIntent, _, _, _, _ := result.ToGateIntent()
+	interactionContinuation := opts.Context != nil && opts.Context.IsAskUserResponse && gateIntent == "bug_fix"
 	if reason := h.codingSubAgentAdmissionBlockReason(codingSubAgentAdmissionInput{
 		Text:                        text,
 		OwnerID:                     opts.UserID,
 		ProjectPath:                 projectPath,
 		InteractionContinuation:     interactionContinuation,
-		RequireExistingCodeEvidence: result.Intent == GateIntentBugFix,
+		RequireExistingCodeEvidence: gateIntent == "bug_fix",
 	}); reason != "" {
 		return false, reason + "."
 	}
 	return true, ""
 }
 
-func (h *IMMessageHandler) classifyCodingWorkflowDelegateIntent(text, userID string) (GateIntentResult, bool) {
+func (h *IMMessageHandler) classifyCodingWorkflowDelegateIntent(text, userID string) (intent.ClassificationResult, bool) {
 	if h == nil {
-		return GateIntentResult{}, false
+		return intent.ClassificationResult{}, false
 	}
 	if uic := h.getUnifiedClassifier(); uic != nil {
-		return classifyUnifiedGateIntent(uic, text, userID)
+		return uic.Classify(intent.MessageContext{Text: text, UserID: userID}), true
 	}
 	if uic := unifiedClassifierPtr.Load(); uic != nil {
-		return classifyUnifiedGateIntent(uic, text, userID)
+		return uic.Classify(intent.MessageContext{Text: text, UserID: userID}), true
 	}
-	return GateIntentResult{}, false
+	return intent.ClassificationResult{}, false
 }
 
-func isSemanticCodingWorkflowDelegateResult(result GateIntentResult) bool {
-	if !isTrustedSemanticGateResult(result) {
+func isSemanticCodingWorkflowDelegateResult(result intent.ClassificationResult) bool {
+	if result.Degraded || result.Confidence < 0.6 {
 		return false
 	}
-	switch result.Intent {
-	case GateIntentNewProject, GateIntentBugFix, GateIntentMaintenance:
+	gateIntent, _, _, layer, _ := result.ToGateIntent()
+	if layer != 3 && layer != 23 {
+		return false
+	}
+	switch gateIntent {
+	case "new_project", "bug_fix", "maintenance":
 		return true
 	default:
 		return false
@@ -753,7 +763,7 @@ func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 		"manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill",
 		"memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations",
 		"group_discussion", "screenshot", "call_mcp_tool",
-		"browser", "browser_session_start", "browser_connect", "tts":
+		"browser", "browser_session_start", "browser_connect", "ssh", "tts":
 		return true
 	default:
 		return false
@@ -833,7 +843,7 @@ func inferRegisteredToolOutcome(text string) toolOutcome {
 
 func preCheckAgentLoopInlinePayloadLimit(name, argsJSON string, iteration int) *toolExecutionResult {
 	name = strings.TrimSpace(name)
-	if name != "write_file" && name != "bash" {
+	if name != "write_file" && name != "bash" && name != "ssh" {
 		return nil
 	}
 	var args map[string]interface{}
@@ -856,6 +866,10 @@ func preCheckAgentLoopInlinePayloadLimit(name, argsJSON string, iteration int) *
 		field = "command"
 		value, _ = args[field].(string)
 		limit = maxAgentLoopInlineBashCommandRunes
+	case "ssh":
+		field = "command"
+		value, _ = args[field].(string)
+		limit = maxAgentLoopInlineSSHCommandRunes
 	}
 	valueRunes := len([]rune(value))
 	if value == "" || valueRunes <= limit {
@@ -865,7 +879,7 @@ func preCheckAgentLoopInlinePayloadLimit(name, argsJSON string, iteration int) *
 	if name == "write_file" {
 		text += " Split the content into chunks: first call mode=overwrite, then mode=append for later chunks."
 	} else {
-		text += " Do not embed generated file bodies in bash commands; use write_file chunks or craft_tool."
+		text += " Do not embed generated file bodies or long scripts in shell commands; write/upload a script file first, then execute that file."
 	}
 	log.Printf("[agent-loop] tool %s inline payload limit exceeded field=%s runes=%d limit=%d (iter=%d)", name, field, valueRunes, limit, iteration)
 	return &toolExecutionResult{

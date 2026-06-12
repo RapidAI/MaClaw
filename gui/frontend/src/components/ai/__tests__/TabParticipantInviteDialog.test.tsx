@@ -74,6 +74,29 @@ describe("TabParticipantInviteDialog", () => {
         expect(screen.queryByText("Contract Bot")).toBeNull();
     });
 
+    it("loads live detail and digital employee list in parallel", async () => {
+        let resolveDetail: ((value: unknown) => void) | undefined;
+        getDiscussionDetailMock.mockImplementation(() => new Promise((resolve) => { resolveDetail = resolve; }));
+        const historyTab: AITab = { id: "history-1", type: "group", title: "History", discussionId: "disc-1", participants: ["me", "machine-a"], closable: true };
+        render(<TabParticipantInviteDialog tab={historyTab} lang="en" theme={theme} onClose={vi.fn()} onAddParticipantToTab={vi.fn()} />);
+
+        await waitFor(() => expect(getDiscussionDetailMock).toHaveBeenCalledWith("disc-1"));
+        await waitFor(() => expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(1));
+
+        resolveDetail?.({
+            discussion: { participant_ids: ["me", "machine-a"] },
+            session: { participants: [{ id: "me" }, { id: "machine-a" }] },
+        });
+        await waitFor(() => expect(screen.getByText("Contract Bot")).toBeTruthy());
+    });
+
+    it("treats malformed digital employee list responses as empty", async () => {
+        listVirtualEmployeesMock.mockResolvedValue({ employees: [] });
+        render(<TabParticipantInviteDialog tab={baseTab} lang="en" theme={theme} onClose={vi.fn()} onAddParticipantToTab={vi.fn()} />);
+
+        await waitFor(() => expect(screen.getByTestId("tab-participant-invite-empty")).toBeTruthy());
+    });
+
     it("filters live history participants across hub ve_ machine aliases", async () => {
         getDiscussionDetailMock.mockResolvedValue({
             discussion: { participant_ids: ["me", "ve-machine-b"] },

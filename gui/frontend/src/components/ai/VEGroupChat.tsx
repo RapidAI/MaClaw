@@ -115,9 +115,9 @@ const PARTICIPANT_COLORS = [
     "#5f6f82", // blue gray
     "#466276", // blue gray
     "#2f6f73", // deep teal
-    "#6f7d4f", // olive
+    "#55708a", // blue gray
     "#5f6f89", // slate
-    "#8a6f3f", // muted ochre
+    "#486a7c", // muted blue
     "#385f7d", // deep blue
 ];
 
@@ -188,7 +188,7 @@ function readableGroupSpeakerName(
     const participant = String(participantName || "").trim();
     if (name && name !== id && !looksLikeRawParticipantId(name)) return name;
     if (participant && participant !== id && !looksLikeRawParticipantId(participant)) return participant;
-    if (isUser) return !lang || lang.startsWith("zh") ? "我" : "Me";
+    if (isUser) return !lang || lang.startsWith("zh") ? "?" : "Me";
     return !lang || lang.startsWith("zh") ? "数字员工" : "Digital employee";
 }
 
@@ -273,7 +273,8 @@ export function ParticipantSelector({
                 const mod = await getWailsAppModule();
                 fn = (mod as any).ListVirtualEmployees;
             }
-            const all = await fn!();
+            const rawList = await fn!();
+            const all = Array.isArray(rawList) ? rawList : [];
             // Filter out digital employees already in the group, including hub-generated ve_<machine> aliases.
             const currentIds = new Set<string>();
             currentParticipants.forEach((p) => addParticipantIdentityKeys(currentIds, p.id));
@@ -364,8 +365,8 @@ export function ParticipantSelector({
                         top: 32,
                         right: 0,
                         background: theme.errorBg || "#fbf1f0",
-                        color: theme.errorText || "#b42318",
-                        border: `1px solid ${theme.errorBorder || "rgba(180, 35, 24, 0.24)"}`,
+                        color: theme.errorText || "#c43d34",
+                        border: `1px solid ${theme.errorBorder || "rgba(196, 61, 52, 0.24)"}`,
                         borderRadius: 6,
                         padding: "6px 10px",
                         fontSize: 12,
@@ -464,7 +465,7 @@ export function ParticipantSelector({
                                         }}
                                     />
                                 )}
-                                <span>{addingId === ve.id ? (isZh ? "添加中..." : "Adding...") : virtualEmployeeDisplayName(ve, index, lang)}</span>
+                                <span>{addingId === ve.id ? (isZh ? "???..." : "Adding...") : virtualEmployeeDisplayName(ve, index, lang)}</span>
                             </div>
                             );
                         })}

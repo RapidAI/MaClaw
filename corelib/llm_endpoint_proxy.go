@@ -146,6 +146,10 @@ func ForwardOpenAICompatRequestWithRetry(ctx context.Context, cfg MaclawLLMConfi
 }
 
 func ShouldRetryLLMUpstream(statusCode int, err error) bool {
+	switch statusCode {
+	case http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return false
@@ -163,12 +167,7 @@ func ShouldRetryLLMUpstream(statusCode int, err error) bool {
 			strings.Contains(msg, "unexpected eof") ||
 			strings.Contains(msg, "timeout")
 	}
-	switch statusCode {
-	case http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 func (p LLMEndpointProvider) MaclawLLMConfig() MaclawLLMConfig {

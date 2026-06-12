@@ -506,6 +506,25 @@ describe("ParticipantSelector", () => {
             expect(screen.getByTestId("group-picker-empty")).toBeTruthy();
         });
     });
+
+    it("shows empty state for malformed VE list responses", async () => {
+        render(
+            <ParticipantSelector
+                sessionId="session-1"
+                currentParticipants={mockParticipants}
+                maxGroupParticipants={5}
+                theme={testTheme}
+                onAdd={vi.fn()}
+                listVirtualEmployees={() => Promise.resolve({ employees: [] } as any)}
+            />
+        );
+
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+
+        await waitFor(() => {
+            expect(screen.getByTestId("group-picker-empty")).toBeTruthy();
+        });
+    });
 });
 
 // ─── GroupMessageBubble ──────────────────────────────────────────────

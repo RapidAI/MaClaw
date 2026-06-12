@@ -10,15 +10,77 @@
       "description": "Command action. Defaults to continue.",
       "enum": ["continue", "ask", "run", "send", "poll", "watch", "handshake", "ack", "tool-result", "doctor", "bootstrap"]
     },
+    "baseUrl": { "type": "string", "description": "Gateway base URL override." },
+    "token": { "type": "string", "description": "Gateway bearer token override." },
+    "configPath": { "type": "string", "description": "MaClaw GUI config path override." },
+    "statePath": { "type": "string", "description": "maclaw-cli state file path override." },
+    "bootstrapHost": { "type": "string", "description": "Host written by bootstrap." },
+    "bootstrapPort": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "Port written by bootstrap." },
+    "forceToken": { "type": "boolean", "description": "Replace existing gateway token during bootstrap." },
     "clientId": { "type": "string", "description": "Stable calling agent id; part of state key." },
+    "clientName": { "type": "string", "description": "Human-readable client display name." },
     "sessionId": { "type": "string", "description": "Stable task/session id; part of state key." },
     "conversationId": { "type": "string", "description": "Protocol conversation id override. With sessionId, it does not change the saved state key." },
+    "userId": { "type": "string", "description": "External user id for the incoming message." },
+    "userName": { "type": "string", "description": "External user display name for the incoming message." },
     "text": { "type": "string", "description": "Prompt text or tool-result text." },
-    "message": { "type": "object", "description": "Full ThirdPartyMessagePayload for send.", "additionalProperties": true },
+    "message": {
+      "type": "object",
+      "description": "Strict ThirdPartyMessagePayload for send.",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["text", "image", "file", "voice", "audio"] },
+        "text": { "type": "string" },
+        "fileName": { "type": "string" },
+        "contentType": { "type": "string" },
+        "mimeType": { "type": "string" },
+        "data": { "type": "string", "description": "Base64 direct media data." },
+        "url": { "type": "string" },
+        "sizeBytes": { "type": "integer", "minimum": 0 },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "type": { "type": "string", "enum": ["image", "file", "voice", "audio"] },
+              "fileName": { "type": "string" },
+              "contentType": { "type": "string" },
+              "mimeType": { "type": "string" },
+              "data": { "type": "string", "description": "Base64 direct media data." },
+              "url": { "type": "string" },
+              "sizeBytes": { "type": "integer", "minimum": 0 },
+              "durationMs": { "type": "integer", "minimum": 0 },
+              "sha256": { "type": "string" },
+              "metadata": { "type": "object", "additionalProperties": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
     "attachments": {
       "type": "array",
-      "description": "ThirdPartyMediaReference array for send.",
-      "items": { "type": "object", "additionalProperties": true }
+      "description": "Strict ThirdPartyMediaReference array for send.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "type": "string", "enum": ["image", "file", "voice", "audio"] },
+          "fileName": { "type": "string" },
+          "contentType": { "type": "string" },
+          "mimeType": { "type": "string" },
+          "data": { "type": "string", "description": "Base64 direct media data." },
+          "url": { "type": "string" },
+          "sizeBytes": { "type": "integer", "minimum": 0 },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string" },
+          "metadata": { "type": "object", "additionalProperties": { "type": "string" } }
+        }
+      }
     },
     "eventId": { "type": "string", "description": "Stable incoming event id for send idempotency." },
     "messageId": { "type": "string", "description": "Stable source message id for send idempotency." },
@@ -29,11 +91,14 @@
     "cursor": { "type": "string" },
     "waitPolls": { "type": "integer", "minimum": 1 },
     "ack": { "type": "boolean" },
-    "requireSession": { "type": "boolean", "default": true },
+    "requireSession": { "type": "boolean", "default": true, "description": "Add --require-session for stateful actions." },
     "pretty": { "type": "boolean" },
     "toolsPath": { "type": "string" },
     "messageIds": { "type": "array", "items": { "type": "string" } },
-    "status": { "type": "string", "enum": ["success", "error", "rejected", "cancelled", "canceled", "timeout", "delivered"] },
+    "status": {
+      "type": "string",
+      "description": "Action-specific status. ack: delivered/read/failed. tool-result: success/error/rejected/cancelled/timeout."
+    },
     "toolCallId": { "type": "string" },
     "toolPlanId": { "type": "string" },
     "stepId": { "type": "string" },
@@ -41,16 +106,53 @@
     "idempotencyKey": { "type": "string", "description": "Stable idempotency key for tool-result." },
     "result": { "type": "object", "additionalProperties": true },
     "errorCode": { "type": "string" },
-    "errorMessage": { "type": "string" }
+    "errorMessage": { "type": "string" },
+    "errorRetryable": { "type": "boolean", "description": "Set tool-result error.retryable." },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "String metadata map for send, continue, or tool-result."
+    }
   },
   "allOf": [
     {
+      "if": { "not": { "required": ["action"] } },
+      "then": { "required": ["text"] }
+    },
+    {
       "if": { "properties": { "action": { "const": "ack" } }, "required": ["action"] },
-      "then": { "required": ["messageIds"] }
+      "then": {
+        "required": ["messageIds"],
+        "properties": {
+          "status": { "enum": ["delivered", "delivery", "read", "failed", "error", "ok", "success"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "action": { "enum": ["continue", "ask", "run"] } }, "required": ["action"] },
+      "then": { "required": ["text"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "send" } }, "required": ["action"] },
+      "then": {
+        "anyOf": [
+          { "required": ["text"] },
+          { "required": ["message"] }
+        ]
+      }
     },
     {
       "if": { "properties": { "action": { "const": "tool-result" } }, "required": ["action"] },
-      "then": { "required": ["status"] }
+      "then": {
+        "required": ["status"],
+        "properties": {
+          "status": { "enum": ["success", "error", "rejected", "cancelled", "canceled", "timeout"] }
+        },
+        "anyOf": [
+          { "required": ["toolCallId"] },
+          { "required": ["toolPlanId"] }
+        ]
+      }
     }
   ],
   "examples": [

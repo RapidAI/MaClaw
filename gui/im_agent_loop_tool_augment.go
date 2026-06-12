@@ -60,12 +60,6 @@ func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, i
 		if currentNames[name] {
 			continue
 		}
-		// Respect the coding gate: don't augment blocklisted tools when gate
-		// is active. This prevents injection from bypassing the three-phase
-		// workflow enforcement.
-		if gateActive && codingToolBlocklist[name] {
-			continue
-		}
 		// Look up the full definition from baseTools (which has all tools
 		// before workflow/gate filtering). If not in baseTools, use the
 		// definition from injectionRouted directly.
@@ -140,4 +134,64 @@ func stripGuideLaunchReferenceWrappers(text string) string {
 		kept = append(kept, lines[i])
 	}
 	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+
+// augmentToolsFromSessionPins checks if any session-pinned conditional tools
+// are missing from the current tool list and adds their definitions.
+//
+// This handles the case where discover_tool session-pins a tool (e.g. ssh)
+// mid-loop. The tool list was computed at loop start and doesn't include
+// tools that weren't activated by the original user message. After session-
+// pinning, the next Route() call would include them, but within the same
+// loop we need to proactively add them so the LLM can call them immediately.
+//
+// Respects the workflow tool filter: if the current workflow phase restricts
+// tools (e.g. doc_only), newly pinned tools that aren't in the allowed set
+// won't be added. This prevents discover_tool from bypassing workflow policy.
+func (h *IMMessageHandler) augmentToolsFromSessionPins(ctx *LoopContext, userID string, currentTools []map[string]interface{}, currentBudget int) ([]map[string]interface{}, int) {
+	if h == nil || h.toolRouter == nil {
+		return currentTools, currentBudget
+	}
+
+	// Build set of currently visible tool names.
+	currentNames := make(map[string]bool, len(currentTools))
+	for _, t := range currentTools {
+		if name, ok := t["name"].(string); ok {
+			currentNames[name] = true
+		}
+	}
+
+	// Check all session-pinned tools against what's currently visible.
+	pinnedMissing := h.toolRouter.SessionPinnedToolsMissing(currentNames)
+	if len(pinnedMissing) == 0 {
+		return currentTools, currentBudget
+	}
+
+	// Fetch fresh tool definitions (cache may have been invalidated by
+	// discover_tool) and find definitions for the missing pinned tools.
+	allTools := h.getTools()
+	var added []string
+	for _, name := range pinnedMissing {
+		def := findToolDef(allTools, name)
+		if def == nil {
+			continue
+		}
+		currentTools = append(currentTools, def)
+		currentNames[name] = true
+		added = append(added, name)
+	}
+
+	if len(added) > 0 {
+		// Re-apply workflow tool filter if active — don't let discover_tool
+		// bypass workflow phase policy (e.g. doc_only restrictions).
+		if policyOwnerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {
+			currentTools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, currentTools, allTools)
+		}
+		currentTools = stripExecutionContractMetadataForLLM(currentTools)
+		currentBudget = estimateToolsTokens(currentTools)
+		log.Printf("[session-pin-augment] added %d session-pinned tools to LLM tool list: %v", len(added), added)
+	}
+
+	return currentTools, currentBudget
 }

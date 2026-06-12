@@ -49,5 +49,46 @@ func (h *IMMessageHandler) classifyAgentNoToolReply(ctx context.Context, text st
 		return agentNoToolReplyUnknown, false
 	}
 	_ = ctx
+	if intent, ok := classifyAgentNoToolReplyByHeuristic(trimmed); ok {
+		return intent, true
+	}
+	return agentNoToolReplyUnknown, false
+}
+
+func classifyAgentNoToolReplyByHeuristic(text string) (agentNoToolReplyIntent, bool) {
+	s := strings.ToLower(strings.TrimSpace(text))
+	if s == "" {
+		return agentNoToolReplyUnknown, false
+	}
+	promiseMarkers := []string{
+		"\u9a6c\u4e0a", "\u7a0d\u540e", "\u7ee7\u7eed\u751f\u6210", "\u7ee7\u7eed\u5904\u7406", "\u4f1a\u53d1", "\u4f1a\u53d1\u7ed9\u4f60", "\u7a0d\u540e\u53d1\u7ed9\u4f60", "\u9a6c\u4e0a\u53d1\u7ed9\u4f60", "\u7a0d\u7b49", "\u9a6c\u4e0a\u7ee7\u7eed",
+		"going to", "i'll", "i will", "will send", "will continue",
+	}
+	summaryCompleteMarkers := []string{
+		"\u4ee5\u4e0b\u662f\u603b\u7ed3", "here is the summary", "final summary:", "final result:",
+	}
+	hasSummaryComplete := false
+	for _, marker := range summaryCompleteMarkers {
+		if strings.Contains(s, marker) {
+			hasSummaryComplete = true
+			break
+		}
+	}
+	for _, marker := range promiseMarkers {
+		if strings.Contains(s, marker) && !hasSummaryComplete {
+			return agentNoToolReplyPromise, true
+		}
+	}
+	completeMarkers := []string{
+		"\u5df2\u5b8c\u6210", "\u5df2\u7ecf\u5b8c\u6210", "\u5b8c\u6210\u4e86",
+	}
+	for _, marker := range summaryCompleteMarkers {
+		completeMarkers = append(completeMarkers, marker)
+	}
+	for _, marker := range completeMarkers {
+		if strings.Contains(s, marker) {
+			return agentNoToolReplyComplete, true
+		}
+	}
 	return agentNoToolReplyUnknown, false
 }

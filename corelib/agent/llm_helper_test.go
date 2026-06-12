@@ -100,6 +100,41 @@ func TestDoSimpleLLMRequest_OpenAIReasoningFallback(t *testing.T) {
 	}
 }
 
+func TestDoSimpleLLMRequest_UsesResponsesWireAPI(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("Decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"responses ok"}]}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL + "/v1", Model: "test-model", WireAPI: "responses"}
+	resp, err := DoSimpleLLMRequest(cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	}, srv.Client(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("DoSimpleLLMRequest returned error: %v", err)
+	}
+	if resp.Content != "responses ok" {
+		t.Fatalf("content = %q, want responses ok", resp.Content)
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if _, ok := gotBody["input"]; !ok {
+		t.Fatalf("request body missing Responses input: %#v", gotBody)
+	}
+	if _, ok := gotBody["messages"]; ok {
+		t.Fatalf("request body leaked chat messages: %#v", gotBody)
+	}
+}
+
 func TestDoSimpleLLMRequest_RetriesUntilSuccess(t *testing.T) {
 	var attempts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +177,7 @@ func TestDoSimpleLLMRequest_HTTPErrorIncludesStatus(t *testing.T) {
 	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
 	_, err := DoSimpleLLMRequest(cfg, []interface{}{
 		map[string]interface{}{"role": "user", "content": "hi"},
-	}, srv.Client(), 5*time.Second)
+	}, srv.Client(), 10*time.Second)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

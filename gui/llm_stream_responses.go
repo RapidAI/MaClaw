@@ -418,11 +418,15 @@ postLoop:
 		}
 	}
 
-	// Fallback: parse XML tool calls from content (same as OpenAI path).
+	// Fallback: parse tool calls emitted in content by compatible providers.
 	if len(msg.ToolCalls) == 0 {
-		if xmlCalls := parseXMLContentToolCalls(contentBuf.String()); len(xmlCalls) > 0 {
+		if xmlCalls, malformed := parseXMLContentToolCallsDetailed(contentBuf.String()); len(xmlCalls) > 0 {
 			msg.ToolCalls = append(msg.ToolCalls, xmlCalls...)
+			msg.Content = ""
 			finishReason = "tool_calls"
+		} else if malformed {
+			msg.Content = llm.MalformedContentToolCallErrorMsg
+			finishReason = "stop"
 		}
 	}
 

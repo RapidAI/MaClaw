@@ -41,6 +41,18 @@ func (h *IMMessageHandler) getWorkflowLang() string {
 }
 
 func (h *IMMessageHandler) agentLoopUserTextForWorkflow(msg IMUserMessage, workflowAgentLoop bool) string {
+	// Check if user cancelled a workflow but wants direct execution.
+	// In this case, replace the cancel message (e.g. "取消，直接处理") with
+	// the original task request that started the workflow.
+	if orig, ok := h.pendingCancelExecuteRequest.LoadAndDelete(msg.UserID); ok {
+		originalText, _ := orig.(string)
+		if strings.TrimSpace(originalText) != "" {
+			log.Printf("[WorkflowInterception] cancel_execute: replacing %q with original request %q",
+				truncateRunes(msg.Text, 30), truncateRunes(originalText, 80))
+			return originalText
+		}
+	}
+
 	if !workflowAgentLoop {
 		return msg.Text
 	}
@@ -60,101 +72,18 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 	userID string,
 	iteration int,
 	platform string,
-	gateConfig codingToolGateConfig,
 	msgContent string,
 	lengthContinuationText string,
 	phase *agentLoopPhase,
-	steeringDetector *SteeringWorkflowDetector,
 	history []agent.ConversationEntry,
 	streamDone bool,
 	attachLLMTelemetry func(*IMAgentResponse),
 	attachPendingVisibleArtifacts func(*IMAgentResponse),
 ) agentLoopNeedsConfirmGateResult {
-	result := agentLoopNeedsConfirmGateResult{MsgContent: msgContent}
-	workflowAgentLoop := ctx != nil && ctx.WorkflowAgentLoop
-	needsConfirmFromEngine := false
-	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
-	_ = policyOwnerID
-
-	needsConfirmFromSteering := false
-	if gateConfig.active && iteration > 0 {
-		needsConfirmFromSteering = true
-	}
-	// V2 workflow: WorkflowAgentLoop doc phases do NOT use the NeedsConfirm gate.
-	// Each doc phase runs as an independent agent loop. The loop runs until the LLM
-	// finishes (no more tool calls, no more text). The final response IS the document.
-	// recordWorkflowV2Output is called AFTER the loop returns (in im_message_handler.go).
-	// No mid-loop interception is needed; that was a V1 pattern.
-	if workflowAgentLoop && h.isWorkflowV2Active(userID) {
-		// V2 workflow agent loop: NeedsConfirm is not used. Let the loop run to completion.
-		return result
-	}
-	engineGateActive := needsConfirmFromEngine
-	if normalizeIMMessagePlatformKind(platform).IsDesktop() && (engineGateActive || needsConfirmFromSteering) {
-		log.Printf("[agent-loop] NeedsConfirm check: engine=%v steering=%v iteration=%d msgLen=%d steeringDetector=%v user=%s",
-			needsConfirmFromEngine, needsConfirmFromSteering, iteration, len(strings.TrimSpace(stripThinkingTags(msgContent))), steeringDetector != nil, userID)
-	}
-	if !engineGateActive && !needsConfirmFromSteering {
-		return result
-	}
-
-	trimmedForGate := strings.TrimSpace(stripThinkingTags(msgContent))
-	if containsSelfConfirmationPattern(trimmedForGate) {
-		originalLen := len(trimmedForGate)
-		trimmedForGate = truncateAtConfirmationBoundary(trimmedForGate)
-		msgContent = trimmedForGate
-		result.MsgContent = msgContent
-		log.Printf("NeedsConfirm gate: detected self-confirmation pattern, truncated at confirmation boundary (originalLen=%d truncatedLen=%d)", originalLen, len(trimmedForGate))
-		if h.traceService != nil && ctx != nil && ctx.RunID != "" {
-			h.appendTraceEvent(ctx, "gate.self_confirm_truncated", "warn",
-				fmt.Sprintf("Self-confirmation detected and truncated (originalLen=%d truncatedLen=%d)", originalLen, len(trimmedForGate)),
-				truncateTraceText(trimmedForGate, 220), "", "")
-		}
-	}
-
-	if trimmedForGate == "" {
-		return result
-	}
-	if !isSubstantivePhaseDocument(trimmedForGate) {
-		log.Printf("[agent-loop] NeedsConfirm gate: skipping non-substantive preamble (len=%d), allowing loop to continue", len([]rune(trimmedForGate)))
-		return result
-	}
-	if h.shouldRejectInvalidCodingTaskBreakdownOutput(nil, policyOwnerID, trimmedForGate) {
-		log.Printf("[agent-loop] NeedsConfirm gate: rejected invalid coding task breakdown (iteration=%d len=%d), allowing loop to continue", iteration, len(trimmedForGate))
-		return result
-	}
-
-	gateSource := needsConfirmGateSourceWorkflow
-	if needsConfirmFromSteering && !engineGateActive {
-		gateSource = needsConfirmGateSourceSteering
-	}
-	log.Printf("[agent-loop] NeedsConfirm gate (%s): returning response for user confirmation (iteration=%d len=%d)", gateSource, iteration, len(trimmedForGate))
-	if h.traceService != nil && ctx != nil && ctx.RunID != "" {
-		h.appendTraceEvent(ctx, "gate.needs_confirm", "info",
-			fmt.Sprintf("NeedsConfirm phase gate (%s) - pausing for user confirmation", gateSource),
-			truncateTraceText(trimmedForGate, 220), "", "")
-	}
-	if phase != nil {
-		phase.Stage = agentStageFinalize
-	}
-	gateText := lengthContinuationText + msgContent
-	finalResp := &IMAgentResponse{Text: stripThinkingTags(gateText)}
-	result.PostStreamReturnPrepTime = streamDone
-
-	docPreviewText := strings.TrimSpace(stripThinkingTags(gateText))
-	attachLLMTelemetry(finalResp)
-	attachPendingVisibleArtifacts(finalResp)
-	// V2 workflow: record the phase output so state machine transitions to waiting_confirm.
-	if workflowAgentLoop && h.getWorkflowV2() != nil {
-		h.recordWorkflowV2Output(userID, docPreviewText)
-	}
-	h.saveConversationHistoryTimed(userID, history, finalResp)
-	result.Response = finalResp
-	return result
-}
-
-func (h *IMMessageHandler) emitNeedsConfirmDocPreview(userID, docPreviewText string, engineGateActive bool, steeringDetector *SteeringWorkflowDetector) {
-	// V1 engine removed; this function was entirely V1-dependent. No-op.
+	// V2 workflow: NeedsConfirm gate is no longer used mid-loop.
+	// Each doc phase runs as a complete independent agent loop. Output capture
+	// happens AFTER the loop returns (via recordWorkflowV2Output in im_message_handler.go).
+	return agentLoopNeedsConfirmGateResult{MsgContent: msgContent}
 }
 
 func (h *IMMessageHandler) applyAgentLoopToolBranchNeedsConfirmGate(
@@ -162,11 +91,9 @@ func (h *IMMessageHandler) applyAgentLoopToolBranchNeedsConfirmGate(
 	userID string,
 	iteration int,
 	platform string,
-	gateConfig codingToolGateConfig,
 	msgContent string,
 	lengthContinuationText string,
 	phase *agentLoopPhase,
-	steeringDetector *SteeringWorkflowDetector,
 	history []agent.ConversationEntry,
 	voiceData string,
 	voiceFileName string,
@@ -174,77 +101,16 @@ func (h *IMMessageHandler) applyAgentLoopToolBranchNeedsConfirmGate(
 	attachLLMTelemetry func(*IMAgentResponse),
 	attachPendingVisibleArtifacts func(*IMAgentResponse),
 ) agentLoopToolBranchNeedsConfirmResult {
-	result := agentLoopToolBranchNeedsConfirmResult{MsgContent: msgContent}
-	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
-	needsConfirm := h.shouldNeedsConfirmToolBranch(ctx, userID, iteration, gateConfig)
-	if !needsConfirm {
-		return result
-	}
-	trimmedAfterTools := strings.TrimSpace(stripThinkingTags(msgContent))
-	if containsSelfConfirmationPattern(trimmedAfterTools) {
-		originalLen := len(trimmedAfterTools)
-		trimmedAfterTools = truncateAtConfirmationBoundary(trimmedAfterTools)
-		msgContent = trimmedAfterTools
-		result.MsgContent = msgContent
-		log.Printf("NeedsConfirm gate (tool branch): detected self-confirmation pattern, truncated at confirmation boundary (originalLen=%d truncatedLen=%d)", originalLen, len(trimmedAfterTools))
-		if h.traceService != nil && ctx != nil && ctx.RunID != "" {
-			h.appendTraceEvent(ctx, "gate.self_confirm_truncated", "warn",
-				fmt.Sprintf("Self-confirmation detected and truncated in tool branch (originalLen=%d truncatedLen=%d)", originalLen, len(trimmedAfterTools)),
-				truncateTraceText(trimmedAfterTools, 220), "", "")
-		}
-	}
-	if trimmedAfterTools == "" {
-		return result
-	}
-	if !isSubstantivePhaseDocument(trimmedAfterTools) {
-		log.Printf("[workflow-gate] NeedsConfirm (tool branch): skipping non-substantive preamble (len=%d), allowing loop to continue", len([]rune(trimmedAfterTools)))
-		return result
-	}
-	if h.shouldRejectInvalidCodingTaskBreakdownOutput(nil, policyOwnerID, trimmedAfterTools) {
-		log.Printf("[workflow-gate] NeedsConfirm (tool branch): rejected invalid coding task breakdown (iteration=%d len=%d), allowing loop to continue", iteration, len(trimmedAfterTools))
-		return result
-	}
-
-	log.Printf("[workflow-gate] NeedsConfirm (tool branch): force-returning after tool execution for user confirmation (iteration=%d len=%d)", iteration, len(trimmedAfterTools))
-	if phase != nil {
-		phase.Stage = agentStageFinalize
-	}
-	finalResp := &IMAgentResponse{Text: stripThinkingTags(lengthContinuationText + msgContent)}
-	attachLLMTelemetry(finalResp)
-	attachPendingVisibleArtifacts(finalResp)
-	attachVoiceArtifact(finalResp, voiceData, voiceFileName, voiceMimeType)
-	// V2 workflow: record the phase output so state machine transitions to waiting_confirm.
-	if ctx != nil && ctx.WorkflowAgentLoop && h.getWorkflowV2() != nil {
-		h.recordWorkflowV2Output(userID, trimmedAfterTools)
-	}
-	h.saveConversationHistoryTimed(userID, history, finalResp)
-	result.Response = finalResp
-	return result
+	// V2 workflow: tool-branch NeedsConfirm gate is no longer used.
+	// V2 runs each phase as a complete agent loop; output capture happens after.
+	return agentLoopToolBranchNeedsConfirmResult{MsgContent: msgContent}
 }
 
-func (h *IMMessageHandler) shouldNeedsConfirmToolBranch(ctx *LoopContext, userID string, iteration int, gateConfig codingToolGateConfig) bool {
-	needsConfirm := false
-	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
-	workflowAgentLoop := ctx != nil && ctx.WorkflowAgentLoop
-	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
-	_ = policyOwnerID
-	if gateConfig.active && iteration > 0 {
-		needsConfirm = true
-	}
-	if needsConfirm && shouldBypassNeedsConfirmGate(skipNeedsConfirmGate, gateConfig.active, false, workflowAgentLoop, false, false) {
-		log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: pending confirm classified as 'other' (iter=%d user=%s)", iteration, userID)
-		return false
-	}
-	// V2 workflow: tool branch NeedsConfirm is not used. Let the loop run to completion.
-	if !needsConfirm && workflowAgentLoop && h.isWorkflowV2Active(userID) {
-		return needsConfirm // false; don't intercept
-	}
-	return needsConfirm
+func (h *IMMessageHandler) shouldNeedsConfirmToolBranch(ctx *LoopContext, userID string, iteration int) bool {
+	// V2 workflow: NeedsConfirm tool-branch is not used. Always returns false.
+	return false
 }
 
-func (h *IMMessageHandler) emitToolBranchNeedsConfirmDocPreview(userID, trimmedAfterTools string, steeringDetector *SteeringWorkflowDetector) {
-	// V1 engine removed; this function was entirely V1-dependent. No-op.
-}
 
 // getTaskOrchestrator returns the per-user task execution orchestrator.
 // Creates one on demand if the registry exists but no orchestrator for

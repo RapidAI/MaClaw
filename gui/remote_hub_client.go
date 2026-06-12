@@ -79,8 +79,9 @@ type RemoteHubClient struct {
 }
 
 type veDetailRefreshState struct {
-	mu    sync.Mutex
-	dirty bool
+	mu        sync.Mutex
+	dirty     bool
+	saturated int
 }
 
 // pendingPreviewDelta accumulates preview lines for a session between flushes.

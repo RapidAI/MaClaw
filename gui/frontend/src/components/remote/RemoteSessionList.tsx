@@ -51,9 +51,9 @@ const getPathLeaf = (value?: string) => {
 
 const getStatusBadge = (status?: string, localizeText?: (en: string, zhHans: string, zhHant: string) => string): { label: string; bg: string; color: string } => {
     const s = String(status || "").toLowerCase();
-    if (s === "error" || s === "failed") return { label: status || "error", bg: colors.dangerBg, color: "#9b2c2c" };
-    if (s === "waiting_input") return { label: localizeText ? localizeText("Waiting input", "等待输入", "等待輸入") : "等待输入", bg: colors.warningBg, color: colors.warning };
-    if (s === "paused") return { label: localizeText ? localizeText("Paused", "已暂停", "已暫停") : "已暂停", bg: colors.warningBg, color: colors.warning };
+    if (s === "error" || s === "failed") return { label: status || "error", bg: colors.dangerBg, color: colors.danger };
+    if (s === "waiting_input") return { label: localizeText ? localizeText("Waiting input", "等待输入", "等待輸入") : "等待输入", bg: colors.infoBg, color: colors.primary };
+    if (s === "paused") return { label: localizeText ? localizeText("Paused", "已暂停", "已暫停") : "已暂停", bg: colors.infoBg, color: colors.primary };
     if (terminalStatuses.has(s)) return { label: status || "stopped", bg: colors.bg, color: colors.textSecondary };
     return { label: status || "running", bg: colors.surfaceMuted, color: colors.primaryDark };
 };
@@ -354,7 +354,7 @@ export function RemoteSessionList(props: Props) {
                                             title={isPreviewOpen ? localizeText("Collapse preview", "收起预览", "收起預覽") : localizeText("Expand preview", "展开预览", "展開預覽")}
                                             onClick={() => togglePreview(session.id)}
                                         >
-                                            {isPreviewOpen ? "▼" : "▶"}
+                                            {isPreviewOpen ? "HIDE" : "SHOW"}
                                         </button>
                                         {!isTerminal && (
                                             <>
@@ -363,15 +363,15 @@ export function RemoteSessionList(props: Props) {
                                                     title={isAITab ? localizeText("View terminal", "查看终端", "查看終端") : localizeText("Open console", "打开控制台", "打開控制台")}
                                                     onClick={() => openConsole(session.id, isAITab)}
                                                 >
-                                                    🖥
+                                                    OPEN
                                                 </button>
                                                 {!isAITab && (
                                                     <button
-                                                        style={{ ...iconBtnStyle, color: colors.warning }}
+                                                        style={{ ...iconBtnStyle, color: colors.primary }}
                                                         title={localizeText("Interrupt session", "中断实例", "中斷實例")}
                                                         onClick={() => handleInterrupt(session.id)}
                                                     >
-                                                        ⏸
+                                                        INT
                                                     </button>
                                                 )}
                                             </>
@@ -382,7 +382,7 @@ export function RemoteSessionList(props: Props) {
                                                 title={isTerminal ? localizeText("Remove", "移除", "移除") : localizeText("Stop session", "停止实例", "停止實例")}
                                                 onClick={() => isTerminal ? hideSession(session.id) : handleKill(session.id)}
                                             >
-                                                {isTerminal ? "✕" : "⏹"}
+                                                {isTerminal ? "X" : "STOP"}
                                             </button>
                                         )}
                                         {isAITab && isTerminal && (
@@ -391,7 +391,7 @@ export function RemoteSessionList(props: Props) {
                                                 title={localizeText("Remove", "移除", "移除")}
                                                 onClick={() => hideSession(session.id)}
                                             >
-                                                ✕
+                                                X
                                             </button>
                                         )}
                                     </div>
@@ -426,11 +426,11 @@ export function RemoteSessionList(props: Props) {
                                                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--theme-text-muted)", display: "inline-block" }} />
                                                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--theme-border)", display: "inline-block" }} />
                                                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--theme-primary)", display: "inline-block" }} />
-                                                <span style={{ flex: 1, textAlign: "center", fontSize: "0.65rem", color: "#888", fontFamily: "monospace" }}>
+                                                <span style={{ flex: 1, textAlign: "center", fontSize: "0.65rem", color: "var(--theme-text-muted)", fontFamily: "monospace" }}>
                                                     {session.tool || "terminal"} — {previewLines.length} {localizeText("lines", "行", "行")}
                                                 </span>
-                                                <span style={{ fontSize: "0.65rem", color: "#6a9955", fontFamily: "monospace", flexShrink: 0 }}>
-                                                    ⛶ {localizeText("Click fullscreen", "点击全屏", "點擊全螢幕")}
+                                                <span style={{ fontSize: "0.65rem", color: "var(--theme-success)", fontFamily: "monospace", flexShrink: 0 }}>
+                                                    OPEN {localizeText("Click fullscreen", "点击全屏", "點擊全螢幕")}
                                                 </span>
                                             </div>
                                             <div style={{
@@ -528,7 +528,7 @@ export function RemoteSessionList(props: Props) {
                                                     title={localizeText("View terminal", "查看终端", "查看終端")}
                                                     onClick={() => openConsole(loop.session_id, true)}
                                                 >
-                                                    🖥
+                                                    OPEN
                                                 </button>
                                             )}
                                             {isPaused && (
@@ -537,7 +537,7 @@ export function RemoteSessionList(props: Props) {
                                                     title={localizeText("Extend by +20 rounds", "续命 +20 轮", "續命 +20 輪")}
                                                     onClick={() => handleContinueLoop(loop.id)}
                                                 >
-                                                    ▶ {localizeText("Extend", "续命", "續命")}
+                                                    EXTEND {localizeText("Extend", "续命", "續命")}
                                                 </button>
                                             )}
                                             <button
@@ -639,11 +639,11 @@ export function RemoteSessionList(props: Props) {
                         style={{
                             border: "none",
                             background: sessionTab === "passthrough" ? colors.surface : "transparent",
-                            borderBottom: sessionTab === "passthrough" ? `2px solid ${colors.warning}` : "2px solid transparent",
+                            borderBottom: sessionTab === "passthrough" ? `2px solid ${colors.primary}` : "2px solid transparent",
                             padding: "8px 16px",
                             fontSize: "0.8rem",
                             fontWeight: sessionTab === "passthrough" ? 700 : 500,
-                            color: sessionTab === "passthrough" ? colors.warning : colors.textMuted,
+                            color: sessionTab === "passthrough" ? colors.primary : colors.textMuted,
                             cursor: "pointer",
                             transition: "all 0.15s",
                         }}

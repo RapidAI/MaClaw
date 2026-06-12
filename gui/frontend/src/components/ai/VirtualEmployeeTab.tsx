@@ -136,9 +136,15 @@ function displayNameForVirtualEmployee(ve: VirtualEmployeeEntry, index: number, 
  * instantly on tab re-entry while a background refresh runs.
  */
 let _cachedEmployees: VirtualEmployeeEntry[] | null = null;
+let _cachedEmployeesFetchedAt = 0;
+const VE_LIST_CACHE_TTL_MS = 15_000;
+const VE_LIST_EVENT_THROTTLE_MS = 1_500;
+const VE_LIST_POLL_BASE_MS = 45_000;
+const VE_LIST_POLL_MAX_MS = 180_000;
 
 export function __resetVirtualEmployeeTabCacheForTests() {
     _cachedEmployees = null;
+    _cachedEmployeesFetchedAt = 0;
 }
 
 export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtualEmployees, favoriteEmployeeIds, favoriteEmployeeNames, onSetFavorite, onRemoveFavorite, onRenameEmployee }: VETabProps) {
@@ -155,9 +161,11 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
     const [renameError, setRenameError] = useState("");
 
     const throttleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pollTimerRef = useRef<number | null>(null);
     const pendingRefreshRef = useRef(false);
     const mountedRef = useRef(true);
     const requestSeqRef = useRef(0);
+    const consecutiveRefreshFailuresRef = useRef(0);
     const isZh = !lang || lang.startsWith("zh");
 
     // Resolve the list function - use injected or dynamically import Wails binding
@@ -186,9 +194,34 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const fetchList = useCallback((options?: { showLoading?: boolean }) => {
+    const scheduleNextPoll = useCallback(() => {
+        if (pollTimerRef.current) {
+            window.clearTimeout(pollTimerRef.current);
+            pollTimerRef.current = null;
+        }
+        if (!mountedRef.current) return;
+        const failureCount = consecutiveRefreshFailuresRef.current;
+        const backoff = Math.min(VE_LIST_POLL_MAX_MS, VE_LIST_POLL_BASE_MS * Math.max(1, 2 ** Math.min(failureCount, 3)));
+        const jitter = Math.floor(Math.random() * 10_000);
+        pollTimerRef.current = window.setTimeout(() => {
+            pollTimerRef.current = null;
+            throttledRefresh();
+            scheduleNextPoll();
+        }, backoff + jitter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const fetchList = useCallback((options?: { showLoading?: boolean; force?: boolean }) => {
         const fn = listFnRef.current;
         if (!fn) return;
+        if (!options?.force && _cachedEmployees !== null && Date.now() - _cachedEmployeesFetchedAt < VE_LIST_CACHE_TTL_MS) {
+            if (mountedRef.current) {
+                setEmployees(_cachedEmployees);
+                setLoading(false);
+                setRefreshing(false);
+            }
+            return;
+        }
         const requestSeq = requestSeqRef.current + 1;
         requestSeqRef.current = requestSeq;
         // Stale-while-revalidate: if we have cached data, skip the loading spinner
@@ -200,19 +233,26 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
             .then((result) => {
                 const isCurrent = requestSeq === requestSeqRef.current;
                 if (!mountedRef.current) {
-                    // Component unmounted mid-flight — still update cache so
+                    // Component unmounted mid-flight - still update cache so
                     // the next mount shows fresh data (but only if not superseded).
-                    if (isCurrent && Array.isArray(result)) _cachedEmployees = result;
+                    if (isCurrent && Array.isArray(result)) {
+                        _cachedEmployees = result;
+                        _cachedEmployeesFetchedAt = Date.now();
+                        consecutiveRefreshFailuresRef.current = 0;
+                    }
                     return;
                 }
                 if (!isCurrent) return; // superseded by a newer request
                 const list = Array.isArray(result) ? result : [];
                 _cachedEmployees = list;
+                _cachedEmployeesFetchedAt = Date.now();
+                consecutiveRefreshFailuresRef.current = 0;
                 setEmployees(list);
                 setError("");
             })
             .catch(() => {
                 if (!mountedRef.current || requestSeq !== requestSeqRef.current) return;
+                consecutiveRefreshFailuresRef.current += 1;
                 // Only show error state if we have no cached data at all
                 if (_cachedEmployees === null) {
                     setError("hub_unavailable");
@@ -235,31 +275,34 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
         }
     }, [listVirtualEmployees, fetchList]);
 
-    // 500ms throttled refresh
-    const throttledRefresh = useCallback(() => {
+    // Throttled refresh: coalesce bursty websocket status/list events.
+    const throttledRefresh = useCallback((options?: { force?: boolean }) => {
         if (throttleRef.current) {
             pendingRefreshRef.current = true;
             return;
         }
-        fetchList({ showLoading: false });
+        fetchList({ showLoading: false, force: options?.force });
         throttleRef.current = setTimeout(() => {
             throttleRef.current = null;
             if (pendingRefreshRef.current) {
                 pendingRefreshRef.current = false;
-                fetchList({ showLoading: false });
+                fetchList({ showLoading: false, force: true });
             }
-        }, 500);
+        }, VE_LIST_EVENT_THROTTLE_MS);
     }, [fetchList]);
 
     // WebSocket event listeners
     useEffect(() => {
         mountedRef.current = true;
-        const unsub1 = EventsOn("ve:list_update", () => throttledRefresh());
-        const unsub2 = EventsOn("ve:status_change", () => throttledRefresh());
-        const interval = window.setInterval(() => throttledRefresh(), 30000);
+        const unsub1 = EventsOn("ve:list_update", () => throttledRefresh({ force: true }));
+        const unsub2 = EventsOn("ve:status_change", () => throttledRefresh({ force: true }));
+        scheduleNextPoll();
         return () => {
             mountedRef.current = false;
-            window.clearInterval(interval);
+            if (pollTimerRef.current) {
+                window.clearTimeout(pollTimerRef.current);
+                pollTimerRef.current = null;
+            }
             if (throttleRef.current) {
                 clearTimeout(throttleRef.current);
                 throttleRef.current = null;
@@ -269,7 +312,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
             if (typeof unsub2 === "function") unsub2();
             else EventsOff("ve:status_change");
         };
-    }, [throttledRefresh]);
+    }, [scheduleNextPoll, throttledRefresh]);
 
     // Close context menu on outside click
     useEffect(() => {
@@ -411,7 +454,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     aria-label={refreshLabel}
                     title={refreshLabel}
                     disabled={refreshing}
-                    onClick={() => fetchList({ showLoading: false })}
+                    onClick={() => fetchList({ showLoading: false, force: true })}
                     style={{
                         width: 26,
                         height: 26,
@@ -542,8 +585,8 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                         padding: "1px 4px",
                                         borderRadius: 3,
                                         background: theme.errorBg || "#fbf1f0",
-                                        color: theme.errorText || "#b42318",
-                                        border: `1px solid ${theme.errorBorder || "rgba(180, 35, 24, 0.24)"}`,
+                                        color: theme.errorText || "#c43d34",
+                                        border: `1px solid ${theme.errorBorder || "rgba(196, 61, 52, 0.24)"}`,
                                         whiteSpace: "nowrap",
                                         flexShrink: 0,
                                     }}
@@ -594,7 +637,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         <span style={{ width: 28, textAlign: "center", fontSize: 9, fontWeight: 700, letterSpacing: "0", color: theme.textMuted, flexShrink: 0 }}>Chat</span>
                         <span>{isZh ? "对话" : "Chat"}</span>
                     </div>
-                    {/* 设为常用 / 取消常用 — only when callbacks are wired */}
+                    {/* Favorite toggle - only when callbacks are wired */}
                     {hasFavAction && (
                         <div
                             data-testid="ve-menu-set-favorite"
@@ -611,7 +654,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
-                            <span style={{ width: 16, textAlign: "center", fontSize: 14, flexShrink: 0 }}>{isFav ? "☆" : "★"}</span>
+                            <span style={{ minWidth: 28, textAlign: "center", fontSize: 11, fontWeight: 700, flexShrink: 0, color: theme.textMuted }}>{isFav ? "SET" : "FAV"}</span>
                             <span>{isFav ? (isZh ? "取消常用" : "Remove from favorites") : (isZh ? "设为常用" : "Set as favorite")}</span>
                         </div>
                     )}
@@ -624,7 +667,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
-                            <span style={{ width: 16, textAlign: "center", fontSize: 14, flexShrink: 0 }}>✎</span>
+                            <span style={{ width: 28, textAlign: "center", fontSize: 9, fontWeight: 700, flexShrink: 0 }}>EDIT</span>
                             <span>{isZh ? "\u6539\u540d" : "Rename"}</span>
                         </div>
                     )}
@@ -637,7 +680,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        <span style={{ width: 16, textAlign: "center", fontSize: 14, flexShrink: 0 }}>ℹ️</span>
+                        <span style={{ width: 28, textAlign: "center", fontSize: 9, fontWeight: 700, flexShrink: 0 }}>INFO</span>
                         <span>{isZh ? "\u67e5\u770b\u4fe1\u606f" : "View Info"}</span>
                     </div>
                 </div>
@@ -695,7 +738,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                     font: "inherit",
                                 }}
                             />
-                            {renameError && <span role="alert" style={{ color: theme.errorText || "#b42318", fontSize: 12, lineHeight: 1.4 }}>{renameError}</span>}
+                            {renameError && <span role="alert" style={{ color: theme.errorText || "#c43d34", fontSize: 12, lineHeight: 1.4 }}>{renameError}</span>}
                         </label>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
                             <button type="button" onClick={() => setRenamingEmployee(null)} disabled={renameSaving} style={{ minWidth: 72, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.divider}`, background: theme.bg, color: theme.text, font: "inherit", fontWeight: 700 }}>
@@ -785,7 +828,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
                                 <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u72b6\u6001" : "Status"}</span>
                                 <span style={{ fontSize: 13, color: isVirtualEmployeeOnline(viewInfoVE.ve) ? "#4f7f6f" : "#9ca3af", fontWeight: 600 }}>
-                                    ● {isVirtualEmployeeOnline(viewInfoVE.ve) ? (isZh ? "\u5728\u7ebf" : "Online") : (isZh ? "\u79bb\u7ebf" : "Offline")}
+                                    {isVirtualEmployeeOnline(viewInfoVE.ve) ? (isZh ? "\u5728\u7ebf" : "Online") : (isZh ? "\u79bb\u7ebf" : "Offline")}
                                 </span>
                             </div>
 

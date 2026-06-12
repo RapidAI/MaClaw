@@ -269,7 +269,7 @@ export function VEAuthorizationDialog({
                         color: theme.headingColor || theme.text,
                     }}
                 >
-                    🔒 {isZh ? "授权请求" : "Authorization Request"}
+                    {isZh ? "授权请求" : "Authorization Request"}
                 </h3>
 
                 {requests.map((req) => (
@@ -307,9 +307,9 @@ export function VEAuthorizationDialog({
                                 style={{
                                     padding: "5px 14px",
                                     borderRadius: 5,
-                                    border: `1px solid ${theme.errorBorder || "rgba(180, 35, 24, 0.24)"}`,
+                                    border: `1px solid ${theme.errorBorder || "rgba(196, 61, 52, 0.24)"}`,
                                     background: theme.errorBg || "#fbf1f0",
-                                    color: theme.errorText || "#b42318",
+                                    color: theme.errorText || "#c43d34",
                                     cursor: responding === req.id ? "not-allowed" : "pointer",
                                     fontSize: 12,
                                     opacity: responding === req.id ? 0.5 : 1,
@@ -557,8 +557,8 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                     height: 28,
                     borderRadius: 6,
                     border: `1px solid ${theme.errorBorder || theme.titleBarBorder}`,
-                    background: theme.errorBg || "rgba(248,113,113,0.14)",
-                    color: theme.errorText || "#b42318",
+                    background: theme.errorBg || "rgba(196, 61, 52, 0.10)",
+                    color: theme.errorText || "#c43d34",
                     display: "inline-flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -599,9 +599,9 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                         <div>
                             <div style={{ fontSize: 14, fontWeight: 800, color: theme.headingColor || theme.text }}>{title}</div>
                             <div style={{ fontSize: 12, lineHeight: 1.45, color: theme.textMuted, marginTop: 3 }}>{hint}</div>
-                            {respondError && <div role="alert" style={{ fontSize: 12, lineHeight: 1.45, color: theme.errorText || "#b42318", marginTop: 6 }}>{respondError}</div>}
+                            {respondError && <div role="alert" style={{ fontSize: 12, lineHeight: 1.45, color: theme.errorText || "#c43d34", marginTop: 6 }}>{respondError}</div>}
                         </div>
-                        <button type="button" onClick={() => setOpen(false)} aria-label={isZh ? "关闭" : "Close"} style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+                        <button type="button" onClick={() => setOpen(false)} aria-label={isZh ? "关闭" : "Close"} style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: "pointer", fontSize: 12, lineHeight: 1, fontWeight: 700 }}>X</button>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                         {requests.map((req) => {
@@ -727,9 +727,9 @@ export function VEAuthBlinkingIndicator({ theme, lang }: VEAuthBlinkingIndicator
                 padding: "2px 6px",
                 borderRadius: 10,
                 background: visible ? (theme.errorBg || "#fbf1f0") : "transparent",
-                border: `1px solid ${visible ? (theme.errorBorder || "rgba(180, 35, 24, 0.24)") : "transparent"}`,
+                border: `1px solid ${visible ? (theme.errorBorder || "rgba(196, 61, 52, 0.24)") : "transparent"}`,
                 fontSize: 10,
-                color: theme.errorText || "#b42318",
+                color: theme.errorText || "#c43d34",
                 transition: "opacity 0.2s",
                 opacity: visible ? 1 : 0.3,
             }}

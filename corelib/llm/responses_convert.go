@@ -1,5 +1,7 @@
 package llm
 
+import "encoding/json"
+
 // ResponsesConvertedInput holds the result of converting OpenAI Chat Completions
 // messages into Responses API input format.
 type ResponsesConvertedInput struct {
@@ -23,6 +25,7 @@ type ResponsesConvertedInput struct {
 // item is emitted first, then the function_call items.
 func ConvertToResponsesInput(messages []interface{}) ResponsesConvertedInput {
 	var result ResponsesConvertedInput
+	messages = normalizeOpenAIChatToolCallLinkage(messages)
 	for _, m := range messages {
 		mm := toStringInterfaceMap(m)
 		if mm == nil {
@@ -30,8 +33,8 @@ func ConvertToResponsesInput(messages []interface{}) ResponsesConvertedInput {
 		}
 		role, _ := mm["role"].(string)
 		switch role {
-		case "system":
-			if content, _ := mm["content"].(string); content != "" {
+		case "system", "developer":
+			if content := extractContentString(mm); content != "" {
 				if result.Instructions != "" {
 					result.Instructions += "\n" + content
 				} else {
@@ -71,11 +74,10 @@ func ConvertToResponsesInput(messages []interface{}) ResponsesConvertedInput {
 			}
 		case "tool":
 			callID, _ := mm["tool_call_id"].(string)
-			content, _ := mm["content"].(string)
 			result.Input = append(result.Input, map[string]interface{}{
 				"type":    "function_call_output",
 				"call_id": callID,
-				"output":  content,
+				"output":  stringifyOpenAIToolContent(mm["content"]),
 			})
 		}
 	}
@@ -93,7 +95,7 @@ func ConvertToResponsesTools(tools []map[string]interface{}) []map[string]interf
 	}
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
-		fn, _ := t["function"].(map[string]interface{})
+		fn := toStringInterfaceMap(t["function"])
 		if fn == nil {
 			continue
 		}
@@ -107,6 +109,9 @@ func ConvertToResponsesTools(tools []map[string]interface{}) []map[string]interf
 		if params, ok := fn["parameters"]; ok {
 			flat["parameters"] = params
 		}
+		if strict, ok := fn["strict"].(bool); ok {
+			flat["strict"] = strict
+		}
 		out = append(out, flat)
 	}
 	return out
@@ -116,8 +121,8 @@ func ConvertToResponsesTools(tools []map[string]interface{}) []map[string]interf
 // helpers
 // ---------------------------------------------------------------------------
 
-// toStringInterfaceMap normalises a message to map[string]interface{}.
-// Handles both map[string]interface{} and map[string]string.
+// toStringInterfaceMap normalises a JSON-shaped value to map[string]interface{}.
+// Handles plain maps, string maps, and typed message structs used by callers.
 func toStringInterfaceMap(m interface{}) map[string]interface{} {
 	switch v := m.(type) {
 	case map[string]interface{}:
@@ -129,14 +134,21 @@ func toStringInterfaceMap(m interface{}) map[string]interface{} {
 		}
 		return out
 	default:
-		return nil
+		data, err := json.Marshal(v)
+		if err != nil || len(data) == 0 || string(data) == "null" {
+			return nil
+		}
+		var out map[string]interface{}
+		if err := json.Unmarshal(data, &out); err != nil || len(out) == 0 {
+			return nil
+		}
+		return out
 	}
 }
 
 // extractContentString extracts the "content" field as a string.
 func extractContentString(mm map[string]interface{}) string {
-	s, _ := mm["content"].(string)
-	return s
+	return textFromResponsesContent(mm["content"])
 }
 
 // extractToolCalls extracts tool calls from an assistant message.
@@ -150,26 +162,95 @@ func extractToolCalls(mm map[string]interface{}) []ToolCall {
 	if tcs, ok := raw.([]ToolCall); ok {
 		return tcs
 	}
-	// Untyped slice of maps
-	items, ok := raw.([]interface{})
-	if !ok {
+	items := toInterfaceSlice(raw)
+	if len(items) == 0 {
 		return nil
 	}
 	out := make([]ToolCall, 0, len(items))
 	for _, item := range items {
-		im, ok := item.(map[string]interface{})
-		if !ok {
+		im := toStringInterfaceMap(item)
+		if im == nil {
 			continue
 		}
 		tc := ToolCall{
 			ID:   stringField(im, "id"),
 			Type: stringField(im, "type"),
 		}
-		if fn, ok := im["function"].(map[string]interface{}); ok {
+		if fn := toStringInterfaceMap(im["function"]); fn != nil {
 			tc.Function.Name = stringField(fn, "name")
-			tc.Function.Arguments = stringField(fn, "arguments")
+			tc.Function.Arguments = normalizeOpenAIToolArgumentsString(fn["arguments"])
+		}
+		if tc.Type == "" {
+			tc.Type = "function"
+		}
+		if tc.ID == "" || tc.Function.Name == "" {
+			continue
 		}
 		out = append(out, tc)
+	}
+	return out
+}
+
+func toInterfaceSlice(raw interface{}) []interface{} {
+	switch v := raw.(type) {
+	case []interface{}:
+		return v
+	case nil:
+		return nil
+	default:
+		data, err := json.Marshal(v)
+		if err != nil || len(data) == 0 || string(data) == "null" {
+			return nil
+		}
+		var out []interface{}
+		if err := json.Unmarshal(data, &out); err != nil {
+			return nil
+		}
+		return out
+	}
+}
+
+func textFromResponsesContent(raw interface{}) string {
+	switch v := raw.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	default:
+		items := toInterfaceSlice(v)
+		if len(items) == 0 {
+			return stringValue(v)
+		}
+		parts := make([]string, 0, len(items))
+		for _, item := range items {
+			block := toStringInterfaceMap(item)
+			if block == nil {
+				continue
+			}
+			typ := stringField(block, "type")
+			switch typ {
+			case "text", "input_text", "output_text":
+				if text := stringField(block, "text"); text != "" {
+					parts = append(parts, text)
+				} else if text := stringField(block, "content"); text != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return joinNonEmptyResponsesText(parts)
+	}
+}
+
+func joinNonEmptyResponsesText(parts []string) string {
+	out := ""
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		if out != "" {
+			out += "\n"
+		}
+		out += part
 	}
 	return out
 }

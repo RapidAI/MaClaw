@@ -268,7 +268,7 @@ export function WorkflowDirectoryPanel({ hubBaseUrl, getWorkflowDirectory }: Wor
                 style={panelStyle}
             >
                 {loading && <CenteredMessage>加载中...</CenteredMessage>}
-                {!loading && error && <CenteredMessage color="var(--theme-danger, #b42318)">加载失败: {error}</CenteredMessage>}
+                {!loading && error && <CenteredMessage color="var(--theme-danger, #c43d34)">加载失败: {error}</CenteredMessage>}
                 {!loading && !error && items.length === 0 && (
                     <CenteredMessage>
                         <span style={{ fontSize: "1.5rem", display: "block", marginBottom: 8 }}>📋</span>
@@ -297,7 +297,7 @@ export function WorkflowDirectoryPanel({ hubBaseUrl, getWorkflowDirectory }: Wor
                     style={page <= 1 ? paginationBtnDisabledStyle : paginationBtnStyle}
                     aria-label="上一页"
                 >
-                    ‹ 上一页
+                    上一页
                 </button>
                 <span style={pageInfoStyle}>
                     第 {page} 页，共 {total} 条
@@ -308,7 +308,7 @@ export function WorkflowDirectoryPanel({ hubBaseUrl, getWorkflowDirectory }: Wor
                     style={page >= totalPages ? paginationBtnDisabledStyle : paginationBtnStyle}
                     aria-label="下一页"
                 >
-                    下一页 ›
+                    下一页
                 </button>
             </div>
         </div>
@@ -319,7 +319,7 @@ export function WorkflowDirectoryPanel({ hubBaseUrl, getWorkflowDirectory }: Wor
 
 function CenteredMessage({ children, color }: { children: ReactNode; color?: string }) {
     return (
-        <div style={{ ...centeredStyle, color: color || "#888" }}>
+        <div style={{ ...centeredStyle, color: color || "var(--theme-text-muted, #8b95a5)" }}>
             {children}
         </div>
     );
@@ -381,7 +381,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function ResultBadge({ result }: { result: string }) {
-    const color = result === "approved" ? "var(--theme-success, #4f7f6f)" : result === "rejected" ? "var(--theme-danger, #b42318)" : "var(--theme-text-muted, #64748b)";
+    const color = result === "approved" ? "var(--theme-success, #4f7f6f)" : result === "rejected" ? "var(--theme-danger, #c43d34)" : "var(--theme-text-muted, #64748b)";
     const label = result === "approved" ? "通过" : result === "rejected" ? "驳回" : result;
     return <span style={{ fontSize: "0.72rem", fontWeight: 500, color, marginLeft: 4 }}>{label}</span>;
 }
@@ -389,11 +389,11 @@ function ResultBadge({ result }: { result: string }) {
 function UrgencyIndicator({ urgency, timeRemaining }: { urgency?: string; timeRemaining?: number }) {
     if (!urgency || urgency === "normal") return null;
     if (urgency === "overdue") {
-        return <span style={{ color: "var(--theme-danger, #b42318)", fontWeight: 600, fontSize: "0.72rem", marginLeft: 6 }}>⚠️ 已超时</span>;
+        return <span style={{ color: "var(--theme-danger, #c43d34)", fontWeight: 600, fontSize: "0.72rem", marginLeft: 6 }}>已超时</span>;
     }
     if (urgency === "approaching_timeout") {
         const remaining = timeRemaining != null ? ` (${timeRemaining}h)` : "";
-        return <span style={{ color: "var(--theme-warning, #64748b)", fontWeight: 500, fontSize: "0.72rem", marginLeft: 6 }}>⏰ 即将超时{remaining}</span>;
+        return <span style={{ color: "var(--theme-warning, #64748b)", fontWeight: 500, fontSize: "0.72rem", marginLeft: 6 }}>即将超时{remaining}</span>;
     }
     return null;
 }
@@ -425,13 +425,13 @@ function getStatusLabel(status: string): string {
 
 function getStatusBadgeColors(status: string): CSSProperties {
     switch (status) {
-        case "running": return { background: "#e3f2fd", color: "#1565c0" };
-        case "completed": return { background: "#e8f5e9", color: "#2e7d32" };
-        case "withdrawn": return { background: "var(--theme-danger-bg, #fbf1f0)", color: "var(--theme-danger, #b42318)" };
-        case "failed": return { background: "#fbe9e7", color: "#d84315" };
+        case "running": return { background: "var(--theme-info-bg, #eef5fb)", color: "var(--theme-info, #2f5f98)" };
+        case "completed": return { background: "var(--theme-success-bg, rgba(79, 127, 111, 0.12))", color: "var(--theme-success, #4f7f6f)" };
+        case "withdrawn": return { background: "var(--theme-info-bg, #eef5fb)", color: "var(--theme-info, #2f5f98)" };
+        case "failed": return { background: "var(--theme-danger-bg, #fbf1f0)", color: "var(--theme-danger, #c43d34)" };
         case "blocked": return { background: "var(--theme-warning-bg, #f8fafc)", color: "var(--theme-warning, #64748b)" };
-        case "cancelled": return { background: "#f3e5f5", color: "#6a1b9a" };
-        default: return { background: "#f5f5f5", color: "#616161" };
+        case "cancelled": return { background: "var(--theme-surface-muted, #f8fafc)", color: "var(--theme-text-muted, #64748b)" };
+        default: return { background: "var(--theme-surface-muted, #f8fafc)", color: "var(--theme-text-muted, #64748b)" };
     }
 }
 
@@ -459,16 +459,16 @@ const tabBarStyle: CSSProperties = {
     display: "flex",
     gap: 0,
     padding: "0 12px",
-    borderBottom: "1px solid #e0e0e0",
+    borderBottom: "1px solid var(--theme-border, #e1e4e8)",
     flexShrink: 0,
-    background: "#fafafa",
+    background: "var(--theme-surface-muted, #f8fafc)",
 };
 
 const tabStyle: CSSProperties = {
     padding: "10px 16px",
     border: "none",
     background: "transparent",
-    color: "#666",
+    color: "var(--theme-text-secondary, #5a6577)",
     cursor: "pointer",
     fontSize: "0.82rem",
     fontWeight: 500,
@@ -479,8 +479,8 @@ const tabStyle: CSSProperties = {
 
 const activeTabStyle: CSSProperties = {
     ...tabStyle,
-    color: "#1565c0",
-    borderBottomColor: "#1565c0",
+    color: "var(--theme-primary, #2f5f98)",
+    borderBottomColor: "var(--theme-primary, #2f5f98)",
     fontWeight: 600,
 };
 
@@ -489,8 +489,8 @@ const filterBarStyle: CSSProperties = {
     flexWrap: "wrap",
     gap: "8px",
     padding: "10px 12px",
-    borderBottom: "1px solid #f0f0f0",
-    background: "#fafafa",
+    borderBottom: "1px solid var(--theme-border-subtle, #edf2f7)",
+    background: "var(--theme-surface-muted, #f8fafc)",
     flexShrink: 0,
     alignItems: "flex-end",
 };
@@ -504,17 +504,17 @@ const filterLabelStyle: CSSProperties = {
 
 const filterLabelTextStyle: CSSProperties = {
     fontSize: "0.7rem",
-    color: "#888",
+    color: "var(--theme-text-muted, #8b95a5)",
     fontWeight: 500,
 };
 
 const filterSelectStyle: CSSProperties = {
     padding: "4px 8px",
     fontSize: "0.78rem",
-    border: "1px solid #ddd",
+    border: "1px solid var(--theme-border, #e1e4e8)",
     borderRadius: "4px",
-    background: "#fff",
-    color: "#333",
+    background: "var(--theme-surface, #ffffff)",
+    color: "var(--theme-text-primary, #1a202c)",
     minWidth: "90px",
     outline: "none",
 };
@@ -522,10 +522,10 @@ const filterSelectStyle: CSSProperties = {
 const filterInputStyle: CSSProperties = {
     padding: "4px 8px",
     fontSize: "0.78rem",
-    border: "1px solid #ddd",
+    border: "1px solid var(--theme-border, #e1e4e8)",
     borderRadius: "4px",
-    background: "#fff",
-    color: "#333",
+    background: "var(--theme-surface, #ffffff)",
+    color: "var(--theme-text-primary, #1a202c)",
     minWidth: "100px",
     outline: "none",
 };
@@ -553,7 +553,7 @@ const listStyle: CSSProperties = {
 
 const listItemStyle: CSSProperties = {
     padding: "12px 16px",
-    borderBottom: "1px solid #f0f0f0",
+    borderBottom: "1px solid var(--theme-border-subtle, #edf2f7)",
     cursor: "pointer",
     transition: "background 0.12s",
 };
@@ -569,7 +569,7 @@ const itemRow1Style: CSSProperties = {
 const itemNameStyle: CSSProperties = {
     fontSize: "0.85rem",
     fontWeight: 600,
-    color: "#212121",
+    color: "var(--theme-text-primary, #1a202c)",
 };
 
 const badgeBaseStyle: CSSProperties = {
@@ -586,13 +586,13 @@ const itemRow2Style: CSSProperties = {
     flexWrap: "wrap",
     gap: "12px",
     fontSize: "0.75rem",
-    color: "#757575",
+    color: "var(--theme-text-secondary, #5a6577)",
     marginBottom: "2px",
 };
 
 const itemRow3Style: CSSProperties = {
     fontSize: "0.72rem",
-    color: "#9e9e9e",
+    color: "var(--theme-text-muted, #8b95a5)",
 };
 
 const paginationStyle: CSSProperties = {
@@ -601,18 +601,18 @@ const paginationStyle: CSSProperties = {
     alignItems: "center",
     gap: "12px",
     padding: "10px 12px",
-    borderTop: "1px solid #e0e0e0",
+    borderTop: "1px solid var(--theme-border, #e1e4e8)",
     flexShrink: 0,
-    background: "#fafafa",
+    background: "var(--theme-surface-muted, #f8fafc)",
 };
 
 const paginationBtnStyle: CSSProperties = {
     padding: "5px 12px",
     fontSize: "0.78rem",
-    border: "1px solid #e0e0e0",
+    border: "1px solid var(--theme-border, #e1e4e8)",
     borderRadius: "4px",
-    background: "#fff",
-    color: "#333",
+    background: "var(--theme-surface, #ffffff)",
+    color: "var(--theme-text-primary, #1a202c)",
     cursor: "pointer",
 };
 
@@ -624,5 +624,5 @@ const paginationBtnDisabledStyle: CSSProperties = {
 
 const pageInfoStyle: CSSProperties = {
     fontSize: "0.78rem",
-    color: "#666",
+    color: "var(--theme-text-secondary, #5a6577)",
 };

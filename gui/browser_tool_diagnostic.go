@@ -12,7 +12,7 @@ package main
 //
 //   CP1: Route()        - conditional keep rules + semantic confirm + session pin
 //   CP2: WorkflowFilter - applyWorkflowToolFilter (doc_only whitelist)
-//   CP3: CodingGate     - codingToolBlocklist filtering
+//   CP3: DirectMode     - directModeMainLoopBlocklist filtering (SubAgent active)
 //   CP4: FinalToolList  - the actual tool names sent to LLM
 //   CP5: StreamFilter   - rolePrefixStreamFilter detection
 //   CP6: PostProcess    - stripRolePrefixHallucination cleanup
@@ -165,22 +165,6 @@ func BrowserDiagCP2_WorkflowFilter(beforeCount int, afterTools []map[string]inte
 	}
 	log.Printf("[browser-diag] CP2_WorkflowFilter: before=%d after=%d policy=%s skipped=%v surviving=%v",
 		beforeCount, len(afterFound), policy, skipped, afterFound)
-}
-
-func BrowserDiagCP3_CodingGate(beforeCount int, afterTools []map[string]interface{}, gateActive bool, skipReason string) {
-	if beforeCount == 0 {
-		return
-	}
-	afterFound := browserDiagExtractNames(afterTools)
-	if beforeCount == len(afterFound) && gateActive {
-		log.Printf("[browser-diag] CP3_CodingGate: WARNING gate ACTIVE but browser tools survived: before=%d after=%d surviving=%v",
-			beforeCount, len(afterFound), afterFound)
-		return
-	}
-	if beforeCount != len(afterFound) || skipReason != "" {
-		log.Printf("[browser-diag] CP3_CodingGate: before=%d after=%d gateActive=%v skipReason=%q surviving=%v",
-			beforeCount, len(afterFound), gateActive, skipReason, afterFound)
-	}
 }
 
 func BrowserDiagCP4_FinalToolList(tools []map[string]interface{}, iteration int, totalToolCount int) {

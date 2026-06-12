@@ -40,10 +40,27 @@ func responsesWSEndpoint(baseURL string) string {
 	if strings.HasSuffix(u, "/responses") {
 		return u
 	}
-	if strings.HasSuffix(u, "/v1") {
+	if responsesWSEndpointHasVersionSuffix(u) {
 		return u + "/responses"
 	}
 	return u + "/v1/responses"
+}
+
+func responsesWSEndpointHasVersionSuffix(endpoint string) bool {
+	lastSlash := strings.LastIndex(endpoint, "/")
+	if lastSlash < 0 || lastSlash == len(endpoint)-1 {
+		return false
+	}
+	segment := strings.ToLower(endpoint[lastSlash+1:])
+	if len(segment) < 2 || segment[0] != 'v' {
+		return false
+	}
+	for _, r := range segment[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // buildResponsesWSFrame constructs the JSON frame for a response.create
@@ -55,6 +72,8 @@ func buildResponsesWSFrame(
 ) ([]byte, error) {
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		messages = llm.SanitizeConservativeOpenAICompatMessages(messages)
+	} else {
+		messages = llm.SanitizeOpenAICompatRequestMessages(messages, true)
 	}
 	converted := llm.ConvertToResponsesInput(messages)
 	input := converted.Input
@@ -72,9 +91,9 @@ func buildResponsesWSFrame(
 	if converted.Instructions != "" {
 		frame["instructions"] = converted.Instructions
 	}
-	toolsInput := tools
+	toolsInput := llm.SanitizeOpenAIChatToolsForSDK(tools)
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
-		toolsInput = corelib.SanitizeCodeGenOpenAIChatTools(tools)
+		toolsInput = corelib.SanitizeCodeGenOpenAIChatTools(toolsInput)
 	}
 	if convTools := llm.ConvertToResponsesTools(toolsInput); len(convTools) > 0 {
 		frame["tools"] = convTools
@@ -476,11 +495,15 @@ postLoop:
 		}
 	}
 
-	// Fallback: parse XML tool calls from content (same as SSE path).
+	// Fallback: parse tool calls emitted in content by compatible providers.
 	if len(msg.ToolCalls) == 0 {
-		if xmlCalls := parseXMLContentToolCalls(contentBuf.String()); len(xmlCalls) > 0 {
+		if xmlCalls, malformed := parseXMLContentToolCallsDetailed(contentBuf.String()); len(xmlCalls) > 0 {
 			msg.ToolCalls = append(msg.ToolCalls, xmlCalls...)
+			msg.Content = ""
 			finishReason = "tool_calls"
+		} else if malformed {
+			msg.Content = llm.MalformedContentToolCallErrorMsg
+			finishReason = "stop"
 		}
 	}
 

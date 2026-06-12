@@ -27,6 +27,19 @@ export interface Participant {
     avatarDataURL?: string;
 }
 
+let participantAvatarEmployeeListInFlight: Promise<unknown> | null = null;
+
+function loadParticipantAvatarEmployees(listFn: (() => Promise<unknown>) | undefined): Promise<unknown> {
+    if (typeof listFn !== "function") return Promise.resolve([]);
+    if (participantAvatarEmployeeListInFlight) return participantAvatarEmployeeListInFlight;
+    participantAvatarEmployeeListInFlight = Promise.resolve()
+        .then(() => listFn())
+        .finally(() => {
+            participantAvatarEmployeeListInFlight = null;
+        });
+    return participantAvatarEmployeeListInFlight;
+}
+
 
 function participantFallbackName(index: number, isZh: boolean): string {
     return isZh ? "\u53c2\u4e0e\u8005 " + (index + 1) : "Participant " + (index + 1);
@@ -63,8 +76,8 @@ function participantIconStyle(p: Participant, theme: Theme): CSSProperties {
         justifyContent: "center",
         flexShrink: 0,
         color: isLocal ? "#4f7f6f" : (theme.btnColor || "#2f5f98"),
-        background: isLocal ? "rgba(52, 211, 153, 0.12)" : "rgba(47, 95, 152, 0.10)",
-        border: `1px solid ${isLocal ? "rgba(52, 211, 153, 0.28)" : "rgba(47, 95, 152, 0.22)"}`,
+        background: isLocal ? "rgba(79, 127, 111, 0.12)" : "rgba(47, 95, 152, 0.10)",
+        border: `1px solid ${isLocal ? "rgba(79, 127, 111, 0.26)" : "rgba(47, 95, 152, 0.22)"}`,
     };
 }
 
@@ -290,7 +303,8 @@ export function GroupParticipantPanel({
         getWailsAppModule()
             .then(async (mod) => {
                 const listFn = (mod as any).ListVirtualEmployees;
-                const employees = typeof listFn === "function" ? await listFn() : [];
+                const rawEmployees = await loadParticipantAvatarEmployees(listFn);
+                const employees = Array.isArray(rawEmployees) ? rawEmployees : [];
                 if (cancelled) return;
                 const avatarsById: Record<string, string> = {};
                 for (const ve of employees || []) {
@@ -474,8 +488,8 @@ export function GroupParticipantPanel({
                         left: contextMenu.x,
                         top: contextMenu.y,
                         zIndex: 9999,
-                        background: theme.fieldBg || "#1e1e2e",
-                        border: `1px solid ${theme.divider || "#333"}`,
+                        background: theme.fieldBg || "#0f1720",
+                        border: `1px solid ${theme.divider || "#263447"}`,
                         borderRadius: 4,
                         boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
                         padding: "2px 0",

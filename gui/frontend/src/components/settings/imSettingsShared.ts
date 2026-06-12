@@ -45,7 +45,7 @@ export const connectionBadgeStyle = (status: string): CSSProperties => {
         fontSize: '0.7rem',
         padding: '2px 8px',
         borderRadius: '10px',
-        background: status === 'connected' ? 'var(--theme-success-bg)' : pending ? 'var(--theme-warning-bg)' : 'var(--theme-danger-bg)',
-        color: status === 'connected' ? 'var(--theme-success)' : pending ? 'var(--theme-warning)' : 'var(--theme-danger)',
+        background: status === 'connected' ? 'var(--theme-success-bg)' : pending ? 'var(--theme-info-bg)' : 'var(--theme-danger-bg)',
+        color: status === 'connected' ? 'var(--theme-success)' : pending ? 'var(--theme-primary)' : 'var(--theme-danger)',
     };
 };

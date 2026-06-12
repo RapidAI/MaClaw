@@ -41,20 +41,20 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
         getWailsAppModule().then(async (mod) => {
             const listFn = (mod as any).ListVirtualEmployees;
             const detailFn = (mod as any).GroupDiscussionGetConsultationDetail;
-            if (tab.discussionId && typeof detailFn === "function") {
-                try {
-                    const detail = await detailFn(tab.discussionId);
-                    for (const id of detail?.discussion?.participant_ids || []) {
-                        addParticipantIdentityKeys(currentIds, id);
-                    }
-                    for (const participant of detail?.session?.participants || []) {
-                        addParticipantIdentityKeys(currentIds, participant?.id || participant?.ID);
-                    }
-                } catch {
-                    // Fall back to tab metadata when detail refresh is unavailable.
-                }
+            const detailPromise = tab.discussionId && typeof detailFn === "function"
+                ? detailFn(tab.discussionId).catch(() => null)
+                : Promise.resolve(null);
+            const listPromise: Promise<VirtualEmployeeEntry[]> = typeof listFn === "function"
+                ? listFn()
+                : Promise.resolve([]);
+            const [detail, rawList] = await Promise.all([detailPromise, listPromise]);
+            const all = Array.isArray(rawList) ? rawList : [];
+            for (const id of detail?.discussion?.participant_ids || []) {
+                addParticipantIdentityKeys(currentIds, id);
             }
-            const all: VirtualEmployeeEntry[] = typeof listFn === "function" ? await listFn() : [];
+            for (const participant of detail?.session?.participants || []) {
+                addParticipantIdentityKeys(currentIds, participant?.id || participant?.ID);
+            }
             if (cancelled) return;
             setAvailable((all || []).filter((ve) => {
                 const keys = participantIdentityKeys(ve.id, ve.machine_id, virtualEmployeeParticipantId(ve));
@@ -81,7 +81,7 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
                     <button data-testid="tab-participant-invite-close" type="button" disabled={!!addingId} onClick={onClose} style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: addingId ? "default" : "pointer", fontSize: 16, lineHeight: 1, opacity: addingId ? 0.45 : 1 }}>x</button>
                 </div>
                 {loading && <div style={{ padding: "10px 8px", fontSize: 12, color: theme.textMuted }}>{isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}</div>}
-                {!loading && error && <div data-testid="tab-participant-invite-error" style={{ padding: "10px 8px", fontSize: 12, color: theme.errorText || "#b42318" }}>{error}</div>}
+                {!loading && error && <div data-testid="tab-participant-invite-error" style={{ padding: "10px 8px", fontSize: 12, color: theme.errorText || "#c43d34" }}>{error}</div>}
                 {!loading && !error && available.length === 0 && <div data-testid="tab-participant-invite-empty" style={{ padding: "10px 8px", fontSize: 12, color: theme.textMuted }}>{isZh ? "\u6ca1\u6709\u53ef\u6dfb\u52a0\u7684\u6570\u5b57\u5458\u5de5" : "No available digital employees"}</div>}
                 {!loading && !error && available.map((ve, index) => {
                     const participantId = virtualEmployeeParticipantId(ve);

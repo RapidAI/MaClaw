@@ -78,3 +78,42 @@ func TestCallLightweightLLMSanitizesQwenOpenAICompatRequest(t *testing.T) {
 		t.Fatalf("response = %q, want complex", got)
 	}
 }
+
+func TestCallLightweightLLMUsesResponsesWireAPI(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]interface{}
+	handler := &IMMessageHandler{
+		client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			gotPath = r.URL.Path
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Errorf("Decode: %v", err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"id":"resp_test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"none"}]}]}`)),
+				Request:    r,
+			}, nil
+		})},
+	}
+
+	got := handler.callLightweightLLM(
+		corelib.MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5.1", WireAPI: "responses"},
+		"classify",
+		"hi",
+		2,
+	)
+
+	if strings.TrimSpace(got) != "none" {
+		t.Fatalf("response = %q, want none", got)
+	}
+	if gotPath != "/api/paas/v4/responses" {
+		t.Fatalf("path = %q, want /api/paas/v4/responses", gotPath)
+	}
+	if _, ok := gotBody["input"]; !ok {
+		t.Fatalf("request body missing input: %#v", gotBody)
+	}
+	if _, ok := gotBody["messages"]; ok {
+		t.Fatalf("request body leaked messages: %#v", gotBody)
+	}
+}

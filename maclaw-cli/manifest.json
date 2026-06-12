@@ -15,11 +15,43 @@
   },
   "state": {
     "path": "~/.maclaw/maclaw-cli/state.json",
-    "key": "clientId + sessionId",
+    "key": "clientId + sessionId; conversationId only overrides the protocol id when sessionId is also set",
     "runLockDir": "~/.maclaw/maclaw-cli/runs/",
     "lockTimeoutSec": 5
   },
   "recommendedAutomationCall": "maclaw-cli continue --json-errors --require-session --client <agent-id> --session <task-id> \"<instruction>\"",
+  "remoteAccess": {
+    "purpose": "Configure and verify remote MaClawSrv third-party gateway access for the authenticated user.",
+    "simpleFlow": [
+      "maclaw-cli srv setup <maclawsrv-url> <user-api-token>",
+      "maclaw-cli srv info <maclawsrv-url> <user-api-token>",
+      "maclaw-cli srv test <maclawsrv-url> <gateway-token>"
+    ],
+    "commands": {
+      "setup": "Enable access. Generates and prints a gateway token only when no token exists or --gateway-token is supplied.",
+      "info": "Print existing integration credentials intentionally for handoff to a third-party client.",
+      "show": "Inspect current remote access status without printing the token by default.",
+      "token": "Rotate gateway token and print the new value once.",
+      "disable": "Disable third-party gateway access for the authenticated user.",
+      "test": "Handshake against <srv>/api/im-gateway/v1 using the gateway token."
+    },
+    "tokens": {
+      "userApiToken": "Second positional for setup/info/show/token/disable. Authenticates to MaClawSrv and selects the user.",
+      "gatewayToken": "Second positional for test, or MACLAWSRV_GATEWAY_TOKEN for test only. Bearer token used by third-party protocol clients."
+    },
+    "urlRules": "--srv and --endpoint must be absolute http:// or https:// URLs without query strings or fragments.",
+    "output": {
+      "token": "Present only when a new token is generated, explicitly set, rotated, or info/include-token intentionally reveals an existing token.",
+      "tokenPresent": "Boolean; true when a gateway token exists even if token is redacted.",
+      "next": "Human-readable next command. Prefer clientUse.testArgv or clientUse.env in automation.",
+      "clientUse.baseUrl": "Gateway protocol base URL for third-party clients.",
+      "clientUse.token": "Gateway bearer token when intentionally revealed; otherwise <token>.",
+      "clientUse.testArgv": "Array argv for testing gateway access without shell parsing.",
+      "clientUse.env": "Environment map for testing with maclaw-cli srv test and for passing credentials to another client."
+    },
+    "normalMode": "No tenant id or user id is required; the user API token identifies the MaClawSrv user.",
+    "adminFallback": "Use --admin-token --tenant --user only when an owner configures another user."
+  },
   "schema": "invoke.schema.json",
   "docs": [
     "README.md",

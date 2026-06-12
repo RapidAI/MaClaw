@@ -198,6 +198,17 @@ const MIN_AGENT_TIMEOUT_SEC = 240;
 const DEFAULT_AGENT_TIMEOUT_SEC = 600;
 const MAX_AGENT_TIMEOUT_SEC = 600;
 const LOCAL_CONFIG_CHANGED_EVENT = "maclaw-config-changed";
+
+/**
+ * Inactivity silence timeout (seconds). If the remote agent sends no activity
+ * signal (stream chunk, stream end, disconnect) within this window after the
+ * last activity, the response gate is released and input is unlocked.
+ *
+ * This is distinct from `agent_response_timeout_sec` (max total time).
+ * The silence timeout is a *sliding window* — refreshed on every activity
+ * signal from the remote. Only triggers when the remote goes truly silent.
+ */
+const SILENCE_TIMEOUT_SEC = 90;
 const RECONNECT_DELAYS = [2000, 4000, 8000, 16000, 30000]; // exponential backoff
 const MAX_RECONNECT_RETRIES = 5;
 const MENTION_TRIGGER_PATTERN = /(^|[^A-Za-z0-9_.-])@([^\s@]*)$/;
@@ -489,6 +500,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const awaitingReplyRef = useRef(false);
     const queueDrainRunningRef = useRef(false);
     const responseWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const authPendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const loadedHistorySessionRef = useRef<string>("");
     const sessionInitInFlightRef = useRef<Promise<boolean> | null>(null);
@@ -568,23 +580,54 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     }, []);
 
     const releaseResponseGate = useCallback(() => {
+        if (!awaitingReplyRef.current) return; // already released — idempotent guard
         awaitingReplyRef.current = false;
         hideAwaitingReply();
         if (responseWatchdogRef.current) {
             clearTimeout(responseWatchdogRef.current);
             responseWatchdogRef.current = null;
         }
+        if (silenceTimerRef.current) {
+            clearTimeout(silenceTimerRef.current);
+            silenceTimerRef.current = null;
+        }
         if (!mountedRef.current) return;
         setQueueDrainSignal((value) => value + 1);
     }, [hideAwaitingReply]);
 
+    /**
+     * Refresh the silence timer — called on every activity signal from the
+     * remote (stream chunk, stream end). Implements a sliding window: as long
+     * as the remote keeps sending signals, the silence timer never fires.
+     * Only when the remote goes truly silent for SILENCE_TIMEOUT_SEC does the
+     * gate release.
+     */
+    const refreshSilenceTimer = useCallback(() => {
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+        if (!awaitingReplyRef.current) return;
+        silenceTimerRef.current = setTimeout(() => {
+            silenceTimerRef.current = null;
+            releaseResponseGate();
+        }, SILENCE_TIMEOUT_SEC * 1000);
+    }, [releaseResponseGate]);
+
+    /**
+     * Arm the response watchdog — dual-layer timeout:
+     * 1. Silence timer (sliding window, SILENCE_TIMEOUT_SEC): refreshed on
+     *    every activity signal. Fires when remote goes truly silent.
+     * 2. Max total timer (responseWatchdogTimeoutSec): absolute upper bound.
+     *    Fires regardless of activity — prevents infinite wait.
+     */
     const armResponseWatchdog = useCallback(() => {
+        // Layer 1: silence timer (sliding window)
+        refreshSilenceTimer();
+        // Layer 2: max total timeout (one-shot absolute upper bound)
         if (responseWatchdogRef.current) clearTimeout(responseWatchdogRef.current);
         responseWatchdogRef.current = setTimeout(() => {
             responseWatchdogRef.current = null;
             releaseResponseGate();
         }, responseWatchdogTimeoutSec * 1000);
-    }, [releaseResponseGate, responseWatchdogTimeoutSec]);
+    }, [refreshSilenceTimer, releaseResponseGate, responseWatchdogTimeoutSec]);
 
     const scheduleInputFocus = useCallback((position?: number) => {
         if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
@@ -928,6 +971,9 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (responseWatchdogRef.current) {
                 clearTimeout(responseWatchdogRef.current);
             }
+            if (silenceTimerRef.current) {
+                clearTimeout(silenceTimerRef.current);
+            }
             clearAuthPendingTimer();
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1099,6 +1145,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (!mountedRef.current) return;
             const attachments = normalizeVEMessageAttachments(data?.attachments);
             hideAwaitingReply();
+            refreshSilenceTimer();
             const senderId = String(data?.from_id || data?.fromId || data?.sender_id || data?.senderId || "");
             const senderName = String(data?.from_name || data?.fromName || data?.sender_name || data?.senderName || "");
             setState((prev) => {
@@ -1197,7 +1244,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (typeof unsub3 === "function") unsub3();
             else EventsOff("ve:disconnected");
         };
-    }, [attemptReconnect, hideAwaitingReply, releaseResponseGate]);
+    }, [attemptReconnect, hideAwaitingReply, refreshSilenceTimer, releaseResponseGate]);
 
     // --- Message Sending ---
 
@@ -1235,29 +1282,45 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 if (mountedRef.current) {
                     const errorMessage = extractErrorMessage(err) || "Send failed";
                     const errorType = classifySendError(err);
-                    // Mark last user message as failed
+                    const recoverable = isRecoverableVESendError(err, errorType);
                     setState((prev) => {
                         const msgs = [...prev.messages];
                         const failedIdx = messageId
                             ? msgs.findIndex((m) => m.id === messageId)
                             : msgs.findLastIndex((m) => m.role === "user");
-                        if (failedIdx >= 0) {
+                        const failedMessage = failedIdx >= 0 ? msgs[failedIdx] : null;
+                        if (recoverable && failedMessage) {
+                            const queued: QueuedVEMessage = {
+                                id: failedMessage.id,
+                                content,
+                                message: { ...failedMessage, sendFailed: false },
+                                filePaths,
+                                attachments: queuedAttachmentsFromFailedMessage(failedMessage, filePaths),
+                            };
+                            if (!queuedMessagesRef.current.some((item) => item.id === queued.id)) {
+                                queuedMessagesRef.current.unshift(queued);
+                                setVisibleQueue((prevQueue) => prevQueue.some((item) => item.id === queued.id) ? prevQueue : [queued, ...prevQueue]);
+                            }
+                            msgs.splice(failedIdx, 1);
+                        } else if (failedIdx >= 0) {
                             msgs[failedIdx] = { ...msgs[failedIdx], sendFailed: true };
                         }
                         return {
                             ...prev,
                             messages: msgs,
+                            connectionState: recoverable ? "disconnected" : prev.connectionState,
                             error: {
                                 type: errorType,
                                 message: errorMessage,
                             },
                         };
                     });
+                    if (recoverable) attemptReconnect();
                 }
                 return false;
             }
         },
-        [participants, sendGroupMessage, sendGroupMessageWithAttachments, sendMessage, sendMessageWithAttachments, veId]
+        [attemptReconnect, participants, sendGroupMessage, sendGroupMessageWithAttachments, sendMessage, sendMessageWithAttachments, veId]
     );
 
     const drainQueuedMessages = useCallback(async () => {
@@ -1488,8 +1551,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     style={{
                         padding: "8px 12px",
                         background: theme.errorBg || "#fbf1f0",
-                        color: theme.errorText || "#b42318",
-                        borderBottom: `1px solid ${theme.errorBorder || "rgba(180, 35, 24, 0.24)"}`,
+                        color: theme.errorText || "#c43d34",
+                        borderBottom: `1px solid ${theme.errorBorder || "rgba(196, 61, 52, 0.24)"}`,
                         fontSize: 12,
                         display: "flex",
                         alignItems: "center",
@@ -1618,7 +1681,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 inputRowTestId="ve-input-row"
                 inputValue={inputText}
                 inline={false}
-                isBusy={sending}
+                isBusy={sending || awaitingReplyVisible || state.streaming}
                 isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary}
                 lang={lang || "zh"}
                 pendingAttachments={pendingAttachments}
@@ -1640,7 +1703,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 sendButtonStyle={{ minWidth: 54, width: 54, flexShrink: 0 }}
                 sendButtonTestId="ve-send-button"
                 setPendingAttachments={setPendingAttachments}
-                showBusySpinner={sending}
+                showBusySpinner={sending || awaitingReplyVisible || state.streaming}
                 showMemoryUsage={false}
                 showResizeHandle={true}
                 showVoiceInput={false}
@@ -1698,6 +1761,22 @@ function attachmentInfoFromPath(filePath: string): AttachmentInfo {
     const fileName = fileNameFromPath(filePath);
     const extension = `.${(fileName.split(".").pop() || "").toLowerCase()}`;
     return { filePath, fileName, extension, isImage: classifyAttachmentType(fileName) === "image" };
+}
+
+function queuedAttachmentsFromFailedMessage(message: VEMessage, filePaths?: string[]): AttachmentInfo[] {
+    if (message.attachments?.length) {
+        return message.attachments
+            .map((att) => {
+                const filePath = String(att.localPath || "").trim();
+                const fileName = String(att.filename || fileNameFromPath(filePath) || "").trim();
+                if (!filePath && !fileName) return null;
+                const sourcePath = filePath || fileName;
+                const extension = `.${(fileName.split(".").pop() || "").toLowerCase()}`;
+                return { filePath: sourcePath, fileName: fileName || fileNameFromPath(sourcePath), extension, isImage: att.type === "image" || classifyAttachmentType(fileName || sourcePath) === "image" } satisfies AttachmentInfo;
+            })
+            .filter((att): att is AttachmentInfo => att !== null);
+    }
+    return (filePaths || []).map(attachmentInfoFromPath);
 }
 
 function normalizeAgentTimeoutSeconds(value: unknown): number {
@@ -1770,7 +1849,29 @@ function classifySendError(err: unknown): VEConversationError["type"] {
     const message = extractErrorMessage(err) || String((err as any)?.message || err || "");
     const lower = message.toLowerCase();
     if (lower.includes("offline") || lower.includes("ve_offline")) return "ve_offline";
+    if (
+        lower.includes("network") ||
+        lower.includes("failed to fetch") ||
+        lower.includes("timeout") ||
+        lower.includes("deadline exceeded") ||
+        lower.includes("connection reset") ||
+        lower.includes("connection refused") ||
+        lower.includes("bad gateway") ||
+        lower.includes("service unavailable") ||
+        lower.includes("gateway timeout") ||
+        lower.includes("too many requests") ||
+        /hub returned\s+(408|429|5\d\d)/.test(lower)
+    ) {
+        return "hub_disconnected";
+    }
     return "send_failed";
+}
+
+function isRecoverableVESendError(err: unknown, type: VEConversationError["type"] = classifySendError(err)): boolean {
+    if (type !== "hub_disconnected") return false;
+    const message = extractErrorMessage(err) || String((err as any)?.message || err || "");
+    const lower = message.toLowerCase();
+    return !lower.includes("unauthorized") && !lower.includes("forbidden") && !lower.includes("access denied");
 }
 
 function MessageBubble({ message, sessionId, theme, isZh, assistantName, userName, assistantAvatarDataURL }: MessageBubbleProps) {
@@ -1855,7 +1956,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
                     {message.sendFailed && (
                         <span
                             data-testid={`ve-msg-failed-${message.id}`}
-                            style={{ color: theme.errorText || "#b42318", fontSize: 11, marginLeft: hasContent ? 6 : 0 }}
+                            style={{ color: theme.errorText || "#c43d34", fontSize: 11, marginLeft: hasContent ? 6 : 0 }}
                         >
                             {isZh ? "\u53d1\u9001\u5931\u8d25" : "Failed"}
                         </span>

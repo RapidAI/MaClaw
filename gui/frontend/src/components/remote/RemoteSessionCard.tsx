@@ -47,7 +47,7 @@ const getLaunchSourceLabel = (lang: string | undefined, source?: string) => {
 const getStatusStyle = (status?: string) => {
     const value = String(status || "").toLowerCase();
     if (value === "error" || value === "failed") return { background: colors.dangerBg, color: colors.danger };
-    if (value === "waiting_input") return { background: colors.warningBg, color: colors.warning };
+    if (value === "waiting_input") return { background: colors.infoBg, color: colors.primary };
     if (["stopped", "finished", "killed", "closed", "done", "completed", "terminated", "exited"].includes(value)) {
         return { background: colors.bg, color: colors.textSecondary };
     }
@@ -77,10 +77,10 @@ const getLaunchSourceStyle = (source: string) => {
 
 const getSeverityStyle = (severity?: string): React.CSSProperties => {
     switch (severity) {
-        case "error": return { borderLeft: `3px solid ${colors.danger}`, background: colors.dangerBg };
-        case "warning": return { borderLeft: `3px solid ${colors.warning}`, background: colors.warningBg };
-        case "success": return { borderLeft: `3px solid ${colors.success}`, background: colors.successBg };
-        default: return { borderLeft: `3px solid ${colors.border}`, background: colors.bg };
+        case "error": return { border: `1px solid color-mix(in srgb, ${colors.danger} 34%, transparent)`, background: colors.dangerBg };
+        case "warning": return { border: `1px solid color-mix(in srgb, ${colors.primary} 28%, transparent)`, background: colors.infoBg };
+        case "success": return { border: `1px solid color-mix(in srgb, ${colors.success} 34%, transparent)`, background: colors.successBg };
+        default: return { border: `1px solid ${colors.border}`, background: colors.bg };
     }
 };
 
@@ -150,8 +150,8 @@ export function RemoteSessionCard(props: Props) {
     const currentLang = getCurrentLang();
     const sendButtonLabel =
         sendStatus === "sending" ? localizeText(currentLang, "Sending…", "发送中…", "發送中…") :
-        sendStatus === "sent" ? localizeText(currentLang, "Sent ✓", "已发送 ✓", "已發送 ✓") :
-        sendStatus === "failed" ? localizeText(currentLang, "Failed ✗", "发送失败 ✗", "發送失敗 ✗") :
+        sendStatus === "sent" ? localizeText(currentLang, "Sent OK", "已发送 OK", "已發送 OK") :
+        sendStatus === "failed" ? localizeText(currentLang, "Failed ERR", "发送失败 ERR", "發送失敗 ERR") :
         localizeText(currentLang, "Send command", "发送指令", "發送指令");
 
     const sendButtonStyle: React.CSSProperties | undefined =
@@ -253,13 +253,13 @@ export function RemoteSessionCard(props: Props) {
                     {(pendingQuestion?.question || suggestedAction || lastCommand || importantFiles.length > 0 || hasTokenUsage) && (
                         <div style={{ display: "flex", gap: "6px", marginTop: "6px", flexWrap: "wrap", alignItems: "center" }}>
                             {pendingQuestion?.question && (
-                                <span style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: radius.pill, background: colors.warningBg, color: colors.warning, fontWeight: 600 }}>
+                                <span style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: radius.pill, background: colors.infoBg, color: colors.primary, fontWeight: 600 }}>
                                     ? {pendingQuestion.question}
                                 </span>
                             )}
                             {suggestedAction && (
-                                <span style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: radius.pill, background: colors.warningBg, color: colors.warning, fontWeight: 500 }}>
-                                    💡 {suggestedAction}
+                                <span style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: radius.pill, background: colors.infoBg, color: colors.primary, fontWeight: 500 }}>
+                                    Next: {suggestedAction}
                                 </span>
                             )}
                             {lastCommand && (
@@ -269,7 +269,7 @@ export function RemoteSessionCard(props: Props) {
                             )}
                             {importantFiles.length > 0 && (
                                 <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>
-                                    📁 {importantFiles.slice(0, 3).join(", ")}{importantFiles.length > 3 ? ` +${importantFiles.length - 3}` : ""}
+                                    FILE {importantFiles.slice(0, 3).join(", ")}{importantFiles.length > 3 ? ` +${importantFiles.length - 3}` : ""}
                                 </span>
                             )}
                             {hasTokenUsage && (
@@ -296,7 +296,7 @@ export function RemoteSessionCard(props: Props) {
                                 fontWeight: 500,
                             }}
                         >
-                            {showOutput ? "▼" : "▶"} {localizeText(currentLang, "Output", "输出", "輸出")} {hasOutput ? `(${previewLines.length})` : localizeText(currentLang, "(empty)", "(空)", "(空)")}
+                            {showOutput ? "HIDE" : "SHOW"} {localizeText(currentLang, "Output", "输出", "輸出")} {hasOutput ? `(${previewLines.length})` : localizeText(currentLang, "(empty)", "(空)", "(空)")}
                         </button>
                         {hasEvents && (
                             <button
@@ -312,7 +312,7 @@ export function RemoteSessionCard(props: Props) {
                                     fontWeight: 500,
                                 }}
                             >
-                                {showEvents ? "▼" : "▶"} {localizeText(currentLang, "Events", "事件", "事件")} ({events.length})
+                                {showEvents ? "HIDE" : "SHOW"} {localizeText(currentLang, "Events", "事件", "事件")} ({events.length})
                             </button>
                         )}
                     </div>
@@ -389,15 +389,13 @@ export function RemoteSessionCard(props: Props) {
                         padding: "5px 12px", background: "var(--theme-surface-muted)",
                         borderBottom: `1px solid ${colors.border}`,
                     }}>
-                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "var(--theme-danger)", display: "inline-block" }} />
-                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "var(--theme-warning)", display: "inline-block" }} />
-                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "var(--theme-success)", display: "inline-block" }} />
+                        <span style={{ fontSize: "0.62rem", fontWeight: 700, color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: 999, padding: "1px 6px" }}>LOG</span>
                         <span style={{ flex: 1, textAlign: "center", fontSize: "0.68rem", color: colors.textMuted, fontFamily: "monospace" }}>
                             {session.tool || "terminal"} — {previewLines.length} {localizeText(currentLang, "lines", "行", "行")}
                         </span>
                         {onOpenConsole && (
                             <span style={{ fontSize: "0.68rem", color: colors.success, fontFamily: "monospace", flexShrink: 0 }}>
-                                ⛶ {localizeText(currentLang, "Fullscreen", "全屏", "全螢幕")}
+                                OPEN {localizeText(currentLang, "Fullscreen", "全屏", "全螢幕")}
                             </span>
                         )}
                     </div>
@@ -434,7 +432,7 @@ export function RemoteSessionCard(props: Props) {
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
                                     <span style={{ fontWeight: 600, color: colors.text }}>
                                         {evt.title || evt.type || localizeText(currentLang, "Event", "事件", "事件")}
-                                        {evt.count && evt.count > 1 ? ` (×${evt.count})` : ""}
+                                        {evt.count && evt.count > 1 ? ` (x${evt.count})` : ""}
                                     </span>
                                     <span style={{ fontSize: "0.65rem", color: colors.textMuted, whiteSpace: "nowrap" }}>
                                         {formatEventTime(evt.created_at)}
@@ -449,7 +447,7 @@ export function RemoteSessionCard(props: Props) {
                                     </div>
                                 )}
                                 {evt.related_file && (
-                                    <div style={{ fontSize: "0.65rem", color: colors.textMuted, marginTop: "2px" }}>📁 {evt.related_file}</div>
+                                    <div style={{ fontSize: "0.65rem", color: colors.textMuted, marginTop: "2px" }}>FILE {evt.related_file}</div>
                                 )}
                             </div>
                         ))}

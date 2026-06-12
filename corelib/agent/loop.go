@@ -11,6 +11,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -489,10 +490,43 @@ func executionOutcomeFromToolOutcome(kind toolOutcomeKind) ToolExecutionOutcome 
 //   - "anthropic" → Anthropic Messages API
 //   - everything else → OpenAI-compatible chat completions
 func doLLMRequestWithTools(ctx context.Context, cfg corelib.MaclawLLMConfig, conversation []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
+	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
+		return doResponsesRequestWithTools(ctx, cfg, conversation, tools, httpClient)
+	}
 	if cfg.Protocol == "anthropic" {
 		return llm.DoAnthropicRequest(ctx, cfg, conversation, tools, httpClient)
 	}
 	return llm.DoOpenAIRequest(ctx, cfg, conversation, tools, httpClient)
+}
+
+func doResponsesRequestWithTools(ctx context.Context, cfg corelib.MaclawLLMConfig, conversation []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
+	req, _, endpoint, err := llm.NewResponsesAPIRequest(ctx, cfg, conversation, llm.ResponsesAPIRequestOptions{
+		Stream: false,
+		Tools:  tools,
+	})
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[agent-loop] POST %s model=%s configured_model=%s protocol=%s wire_api=%s (stream=false)", endpoint, cfg.UpstreamModel(), cfg.Model, cfg.Protocol, cfg.WireAPI)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if readErr != nil && len(body) == 0 {
+		return nil, readErr
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, newLLMHTTPError(resp.StatusCode, fmt.Sprintf("llm responses request failed body_len=%d", len(body)))
+	}
+	parsed, err := llm.ParseNonStreamResponsesAPIBody(body)
+	if err != nil {
+		return nil, err
+	}
+	return parsed, nil
 }
 
 // buildEmptyResponseRecovery constructs a context-aware recovery prompt when
@@ -650,6 +684,21 @@ func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfi
 		if err == nil && rolePrefixFilter != nil {
 			rolePrefixFilter.Flush()
 		}
+	}
+
+	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
+		resp, err := doResponsesRequestWithTools(ctx, cfg, conversation, tools, httpClient)
+		if err == nil && resp != nil && len(resp.Choices) > 0 && len(resp.Choices[0].Message.ToolCalls) == 0 {
+			text := resp.Choices[0].Message.Content
+			if text == "" {
+				text = resp.Choices[0].Message.ReasoningContent
+			}
+			if text != "" && onToken != nil {
+				onToken(text)
+			}
+		}
+		flushRolePrefixFilter(err)
+		return resp, err
 	}
 
 	if cfg.Protocol == "anthropic" {

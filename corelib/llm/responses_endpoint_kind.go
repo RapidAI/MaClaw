@@ -36,8 +36,25 @@ func BuildResponsesEndpoint(rawURL string) string {
 	if strings.HasSuffix(endpoint, "/responses") {
 		return endpoint
 	}
-	if strings.HasSuffix(endpoint, "/v1") {
+	if llmEndpointHasVersionSuffix(endpoint) {
 		return endpoint + "/responses"
 	}
 	return endpoint + "/v1/responses"
+}
+
+func llmEndpointHasVersionSuffix(endpoint string) bool {
+	lastSlash := strings.LastIndex(endpoint, "/")
+	if lastSlash < 0 || lastSlash == len(endpoint)-1 {
+		return false
+	}
+	segment := strings.ToLower(endpoint[lastSlash+1:])
+	if len(segment) < 2 || segment[0] != 'v' {
+		return false
+	}
+	for _, r := range segment[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

@@ -140,12 +140,7 @@ export function AboutPanel({
                     fontSize: '1.15em',
                     verticalAlign: 'baseline',
                     letterSpacing: '-0.02em',
-                    background: 'linear-gradient(180deg, #a8d4ff 0%, #4a9eff 30%, #1a6dd4 60%, #0d3f80 100%)',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent',
-                    backgroundClip: 'text',
-                    textShadow: '0 1px 2px rgba(26, 109, 212, 0.3)',
-                    filter: 'drop-shadow(0 0 1px rgba(74, 158, 255, 0.4))',
+                    color: 'var(--theme-primary-strong)',
                 }}>6</span>
                 {raw.slice(sixIndex + 1)}
             </>

@@ -6,20 +6,18 @@ package llm
 // Used by corelib/agent.RunLoop when cfg.Protocol == "anthropic".
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 type AnthropicMessagesRequestOptions struct {
-	Stream bool
-	Tools  []map[string]interface{}
+	Stream    bool
+	Tools     []map[string]interface{}
+	MaxTokens int
 }
 
 func BuildAnthropicMessagesRequestBody(
@@ -27,11 +25,16 @@ func BuildAnthropicMessagesRequestBody(
 	messages []interface{},
 	opts AnthropicMessagesRequestOptions,
 ) map[string]interface{} {
+	messages = SanitizeOpenAICompatRequestMessages(messages, true)
 	converted := ConvertToAnthropicMessages(messages)
+	maxTokens := opts.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 4096
+	}
 	reqBody := map[string]interface{}{
 		"model":      cfg.UpstreamModel(),
 		"messages":   converted.Messages,
-		"max_tokens": 4096,
+		"max_tokens": maxTokens,
 		"stream":     opts.Stream,
 	}
 	if converted.SystemText != "" {
@@ -65,36 +68,31 @@ func DoAnthropicRequest(
 	tools []map[string]interface{},
 	client *http.Client,
 ) (*Response, error) {
-	endpoint, data, err := BuildAnthropicMessagesRequestData(cfg, messages, AnthropicMessagesRequestOptions{Stream: false, Tools: tools})
+	return DoAnthropicRequestWithOptions(ctx, cfg, messages, tools, client, AnthropicMessagesRequestOptions{Stream: false, Tools: tools})
+}
+
+func DoAnthropicRequestWithOptions(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	client *http.Client,
+	opts AnthropicMessagesRequestOptions,
+) (*Response, error) {
+	opts.Stream = false
+	opts.Tools = tools
+	endpoint, data, err := BuildAnthropicMessagesRequestData(cfg, messages, opts)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	resp, status, body, err := anthropicSDKMessage(ctx, cfg, data, client)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("[%s] HTTP %d: body_len=%d: %w", endpoint, status, len(body), err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	req.Header.Set("anthropic-version", "2023-06-01")
-	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
-	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
-
-	log.Printf("[LLM] POST %s model=%s configured_model=%s protocol=anthropic %s", endpoint, cfg.UpstreamModel(), cfg.Model, RequestTraceLogFields(ctx))
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("[%s] %w", endpoint, err)
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d: body_len=%d", status, len(body))
 	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(body))
-	}
-
-	// Parse Anthropic response format.
-	return parseAnthropicResponseBody(body)
+	return resp, nil
 }
 
 // parseAnthropicResponseBody parses a non-streaming Anthropic Messages API response.
@@ -136,6 +134,17 @@ func parseAnthropicResponseBody(body []byte) (*Response, error) {
 		finishReason = "tool_calls"
 	} else if raw.StopReason == "max_tokens" {
 		finishReason = "length"
+	}
+	if len(msg.ToolCalls) == 0 {
+		rawContent := joinStrings(textParts)
+		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
+			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
+			msg.Content = ""
+			finishReason = "tool_calls"
+		} else if malformed {
+			msg.Content = MalformedContentToolCallErrorMsg
+			finishReason = "stop"
+		}
 	}
 
 	return &Response{

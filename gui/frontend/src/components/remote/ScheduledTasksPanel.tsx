@@ -121,7 +121,7 @@ function scheduleDesc(t: ScheduledTask, lang: string): string {
 
 const STATUS_COLORS: Record<string, string> = {
     active: "var(--theme-success)",
-    paused: "var(--theme-warning)",
+    paused: "var(--theme-primary)",
     expired: "var(--theme-text-muted)",
 };
 
@@ -316,7 +316,7 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
                                     {task.run_count > 0 && <>{" · "}{t("Runs", "已执行")}: {task.run_count}</>}
                                 </div>
                                 {task.last_error && (
-                                    <div style={{ fontSize: "0.68rem", color: colors.danger, marginTop: 2 }}>⚠️ {task.last_error}</div>
+                                    <div style={{ fontSize: "0.68rem", color: colors.danger, marginTop: 2 }}>Error: {task.last_error}</div>
                                 )}
                             </div>
                             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>

@@ -3,9 +3,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"path/filepath"
 	"strings"
@@ -14,6 +12,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -137,12 +136,31 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 	}
 	log.Printf("[workflow-v2] routing: user=%s text_len=%d", msg.UserID, len([]rune(trimmed)))
 
+	// VE group executor messages should not trigger workflow creation.
+	// They execute specific tasks delegated by the group conversation —
+	// workflow routing is for user-initiated tasks only.
+	// Background tasks (scheduled, auto-picked) also bypass workflow.
+	if msg.Platform == "ve_group_executor" || msg.IsBackground {
+		return workflowIMRouteResult{}
+	}
+
 	var attachments []v2.Attachment
 	for _, a := range msg.Attachments {
 		attachments = append(attachments, v2.Attachment{Type: a.Type, Name: a.FileName})
 	}
 
-	result := wf.router.Route(msg.UserID, trimmed, attachments)
+	// Use UIC embedding-only classification (<100ms) as a semantic hint for the router.
+	// This handles cases where BM25 text matching fails (user's message has paths,
+	// framework names, etc. that dilute BM25 relevance) but the intent is clearly coding.
+	var semanticHint string
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		embResult := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: trimmed, UserID: msg.UserID})
+		if embResult.Confidence >= 0.70 {
+			semanticHint = string(embResult.Primary)
+		}
+	}
+
+	result := wf.router.RouteWithHint(msg.UserID, trimmed, attachments, semanticHint)
 
 	switch result.Target {
 	case v2.RouteToAgentLoop:
@@ -298,7 +316,31 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "✅ 所有阶段已完成！工作流结束。"}}
 
 	case v2.ActionCancelled:
+		// Clear frontend workflow dashboard state.
+		emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
+		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "❌ 工作流已取消"}}
+
+	case v2.ActionCancelAndExecute:
+		// User wants to cancel the workflow but still execute the original task
+		// directly (without the multi-phase process). Retrieve the original
+		// request from state.Summary and let it fall through to the agent loop.
+		originalRequest := ""
+		if hr.State != nil {
+			originalRequest = hr.State.Summary
+		}
+		log.Printf("[workflow-v2] ActionCancelAndExecute: user=%s original_len=%d", msg.UserID, len([]rune(originalRequest)))
+		// Clear frontend workflow dashboard state.
+		emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
+		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
+		if originalRequest != "" {
+			// Stash the original request so the agent loop processes it
+			// instead of the "取消，直接处理" text.
+			h.pendingCancelExecuteRequest.Store(msg.UserID, originalRequest)
+		}
+		// SkipNeedsConfirmGate ensures the message goes to normal agent loop
+		// without being intercepted by any residual workflow gates.
+		return workflowIMRouteResult{SkipNeedsConfirmGate: true}
 
 	case v2.ActionPassThrough:
 		return workflowIMRouteResult{SkipNeedsConfirmGate: true}
@@ -308,8 +350,8 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 }
 
 // runWorkflowV2Phase runs the current phase as a single agent loop invocation.
-// The agent loop will produce the phase document, then the response is returned to the user.
-// No V1 NeedsConfirm gate is needed — the loop runs once and exits.
+// The agent loop produces the phase document, then the response is returned to the user.
+// The loop runs once to completion — output is captured post-loop by recordWorkflowV2Output.
 func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowState, modifyHint string) workflowIMRouteResult {
 	phase := state.ActivePhase()
 	if phase == nil {
@@ -991,72 +1033,18 @@ func (h *IMMessageHandler) callLightweightLLM(cfg corelib.MaclawLLMConfig, syste
 	if h == nil || h.client == nil {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
-	defer cancel()
-
 	messages := []interface{}{
 		map[string]string{"role": "system", "content": systemPrompt},
 		map[string]string{"role": "user", "content": userText},
 	}
-
-	req, bodyBytes, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
-		Stream: false,
-		ExtraBody: map[string]interface{}{
-			"max_tokens":  200, // Reasoning models need space for thinking + answer
-			"temperature": 0,
-		},
-	})
+	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "workflow-v2-lightweight"})
+	resp, err := doSimpleLLMRequest(ctx, cfg, messages, h.client, time.Duration(timeoutSec)*time.Second)
 	if err != nil {
+		log.Printf("[workflow-v2] callLightweightLLM: request failed: %v", err)
 		return ""
 	}
-
-	log.Printf("[workflow-v2] callLightweightLLM: POST %s model=%s configured_model=%s", endpoint, cfg.UpstreamModel(), cfg.Model)
-
-	resp, err := h.client.Do(req)
-	if err != nil {
-		log.Printf("[workflow-v2] callLightweightLLM: HTTP error: %v", err)
+	if resp == nil {
 		return ""
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		log.Printf("[workflow-v2] callLightweightLLM: HTTP %d from %s request=%s", resp.StatusCode, endpoint, llm.SummarizeOpenAIChatRequestBody(bodyBytes))
-		return ""
-	}
-
-	// Read full body
-	bodyData, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		log.Printf("[workflow-v2] callLightweightLLM: body read error: %v", readErr)
-		return ""
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(bodyData, &result); err != nil {
-		log.Printf("[workflow-v2] callLightweightLLM: JSON decode error: %v body_len=%d", err, len(bodyData))
-		return ""
-	}
-	if len(result.Choices) == 0 {
-		return ""
-	}
-	content := result.Choices[0].Message.Content
-	// Reasoning models may put the answer in reasoning_content when max_tokens cuts off content
-	if content == "" && result.Choices[0].Message.ReasoningContent != "" {
-		reasoning := strings.ToLower(result.Choices[0].Message.ReasoningContent)
-		if strings.Contains(reasoning, "simple") && !strings.Contains(reasoning, "complex") {
-			content = "simple"
-		} else if strings.Contains(reasoning, "complex") {
-			content = "complex"
-		} else if strings.Contains(reasoning, "none") || strings.Contains(reasoning, "not a coding") {
-			content = "none"
-		}
-	}
-	return content
+	return strings.TrimSpace(resp.Content)
 }

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	cagent "github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -216,6 +220,48 @@ func TestDecodeIntentClassificationContent_StripsCodeFence(t *testing.T) {
 	}
 	if parsed.Intent != "coding" {
 		t.Fatalf("expected coding intent, got %q", parsed.Intent)
+	}
+}
+
+func TestRequestIntentClassificationUsesResponsesWireAPI(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]interface{}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("Decode: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"intent\":\"coding\",\"confidence\":0.9,\"reason\":\"edit code\",\"evidence\":[\"fix\"]}"}]}]}`)),
+			Request:    r,
+		}, nil
+	})}
+	h := &IMMessageHandler{}
+
+	got, err := h.requestIntentClassification(corelib.MaclawLLMConfig{
+		URL:     "https://open.bigmodel.cn/api/paas/v4",
+		Model:   "glm-5.1",
+		WireAPI: "responses",
+	}, "user-1", []interface{}{map[string]interface{}{"role": "user", "content": "fix bug"}}, client)
+	if err != nil {
+		t.Fatalf("requestIntentClassification: %v", err)
+	}
+	if got.Intent != intentCoding || got.Confidence != 0.9 {
+		t.Fatalf("classification = %#v, want coding 0.9", got)
+	}
+	if gotPath != "/api/paas/v4/responses" {
+		t.Fatalf("path = %q, want /api/paas/v4/responses", gotPath)
+	}
+	if _, ok := gotBody["input"]; !ok {
+		t.Fatalf("request body missing input: %#v", gotBody)
+	}
+	if _, ok := gotBody["messages"]; ok {
+		t.Fatalf("request body leaked messages: %#v", gotBody)
+	}
+	if text, ok := gotBody["text"].(map[string]interface{}); !ok || text["format"] == nil {
+		t.Fatalf("responses text.format missing: %#v", gotBody)
 	}
 }
 

@@ -17,11 +17,12 @@ import (
 
 // OpenAIProxyConfig holds the upstream LLM configuration for the proxy.
 type OpenAIProxyConfig struct {
-	URL      string // upstream base URL (e.g. "https://open.bigmodel.cn/api/anthropic")
-	Key      string // upstream API key
-	Model    string // model name to use
-	Protocol string // "" or "openai" or "anthropic"
-	WireAPI  string // "" or "chat" or "responses" or "responses-ws"
+	URL       string // upstream base URL (e.g. "https://open.bigmodel.cn/api/anthropic")
+	Key       string // upstream API key
+	Model     string // model name to use
+	Protocol  string // "" or "openai" or "anthropic"
+	WireAPI   string // "" or "chat" or "responses" or "responses-ws"
+	AgentType string // optional User-Agent/client identity
 }
 
 // OpenAIProxy is a local HTTP proxy that provides an OpenAI-compatible
@@ -518,52 +519,49 @@ func (p *OpenAIProxy) forwardOpenAI(body map[string]interface{}) ([]byte, int, e
 		fwd[k] = v
 	}
 
-	// Replace model with normalized upstream model and apply provider quirks.
 	cfg := p.maclawLLMConfig()
-	fwd["model"] = cfg.UpstreamModel()
-	sanitizeCodeGenOpenAICompatForwardBody(cfg, fwd)
-
-	// Force stream to false
-	fwd["stream"] = false
-	delete(fwd, "stream_options")
-
-	// Marshal body back to JSON
-	jsonBody, err := json.Marshal(fwd)
-	if err != nil {
-		return nil, 0, fmt.Errorf("marshal request body: %w", err)
+	respBody, statusCode, err := ForwardOpenAICompatRequest(context.Background(), cfg, fwd, p.client, "")
+	if err != nil && openAICompatSDKError(err) != nil {
+		respBody = normalizeOpenAIProxyErrorBody(respBody)
+		return respBody, statusCode, nil
 	}
+	return respBody, statusCode, err
+}
 
-	// Construct upstream URL
-	upstreamURL := openAIChatCompletionsEndpoint(p.config.URL)
-
-	// Create HTTP request
-	req, err := http.NewRequest("POST", upstreamURL, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, 0, fmt.Errorf("create request: %w", err)
+func normalizeOpenAIProxyErrorBody(body []byte) []byte {
+	var payload map[string]interface{}
+	if len(body) == 0 || json.Unmarshal(body, &payload) != nil {
+		return body
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.config.Key)
-
-	// Execute request
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, 0, err
+	if _, ok := payload["error"]; ok {
+		return body
 	}
-	defer resp.Body.Close()
-
-	// Read response body
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, 0, fmt.Errorf("read response body: %w", err)
+	message, _ := payload["message"].(string)
+	if strings.TrimSpace(message) == "" {
+		return body
 	}
-
-	// Forward response body and status code as-is
-	return respBody, resp.StatusCode, nil
+	errType, _ := payload["type"].(string)
+	if strings.TrimSpace(errType) == "" {
+		errType = "server_error"
+	}
+	normalized, err := json.Marshal(map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": message,
+			"type":    errType,
+		},
+	})
+	if err != nil {
+		return body
+	}
+	return normalized
 }
 
 // openaiToAnthropic converts an OpenAI Chat Completions request body
 // to an Anthropic Messages API request body.
 func openaiToAnthropic(body map[string]interface{}, model string) map[string]interface{} {
+	body = cloneOpenAICompatBody(body)
+	sanitizeOpenAICompatForwardBodyWithOptions(MaclawLLMConfig{}, body, false, false)
+
 	anthropicReq := map[string]interface{}{
 		"model":  model,
 		"stream": false,
@@ -576,7 +574,7 @@ func openaiToAnthropic(body map[string]interface{}, model string) map[string]int
 		anthropicReq["max_tokens"] = 4096
 	}
 
-	messages, _ := body["messages"].([]interface{})
+	messages := openAICompatForwardMessageSlice(body["messages"])
 	converted := convertOpenAIToAnthropicMessages(messages)
 	if converted.SystemText != "" {
 		anthropicReq["system"] = converted.SystemText
@@ -585,10 +583,8 @@ func openaiToAnthropic(body map[string]interface{}, model string) map[string]int
 		converted.Messages = []interface{}{}
 	}
 	anthropicReq["messages"] = converted.Messages
-	if tools, ok := body["tools"].([]interface{}); ok && len(tools) > 0 {
+	if tools := openAICompatForwardSlice(body["tools"]); len(tools) > 0 {
 		anthropicReq["tools"] = convertAnthropicToolsAny(tools)
-	} else if tools, ok := body["tools"].([]map[string]interface{}); ok && len(tools) > 0 {
-		anthropicReq["tools"] = convertAnthropicTools(tools)
 	}
 
 	return anthropicReq
@@ -597,7 +593,7 @@ func openaiToAnthropic(body map[string]interface{}, model string) map[string]int
 func convertAnthropicToolsAny(tools []interface{}) []map[string]interface{} {
 	typed := make([]map[string]interface{}, 0, len(tools))
 	for _, item := range tools {
-		if m, ok := item.(map[string]interface{}); ok {
+		if m := mapFromAny(item); m != nil {
 			typed = append(typed, m)
 		}
 	}
@@ -618,8 +614,8 @@ func convertOpenAIToAnthropicMessages(messages []interface{}) anthropicConverted
 		}
 		role, _ := mm["role"].(string)
 		switch role {
-		case "system":
-			if content, _ := mm["content"].(string); content != "" {
+		case "system", "developer":
+			if content := openAICompatForwardTextContent(mm["content"]); content != "" {
 				if result.SystemText != "" {
 					result.SystemText += "\n"
 				}
@@ -627,7 +623,7 @@ func convertOpenAIToAnthropicMessages(messages []interface{}) anthropicConverted
 			}
 		case "assistant":
 			var blocks []interface{}
-			if text, _ := mm["content"].(string); text != "" {
+			if text := openAICompatForwardTextContent(mm["content"]); text != "" {
 				blocks = append(blocks, map[string]interface{}{"type": "text", "text": text})
 			}
 			for _, tc := range extractOpenAIToolCalls(mm) {
@@ -643,7 +639,7 @@ func convertOpenAIToAnthropicMessages(messages []interface{}) anthropicConverted
 			}
 		case "tool":
 			callID, _ := mm["tool_call_id"].(string)
-			content, _ := mm["content"].(string)
+			content := stringifyOpenAICompatForwardToolOutput(mm["content"])
 			block := map[string]interface{}{"type": "tool_result", "tool_use_id": callID, "content": content}
 			if callID != "" {
 				block["id"] = "toolrslt_" + callID
@@ -671,7 +667,7 @@ func convertOpenAIToAnthropicMessages(messages []interface{}) anthropicConverted
 func convertAnthropicTools(tools []map[string]interface{}) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
-		fn, _ := t["function"].(map[string]interface{})
+		fn := mapFromAny(t["function"])
 		if fn == nil {
 			continue
 		}
@@ -695,17 +691,20 @@ type openAIToolCallParts struct {
 
 func extractOpenAIToolCalls(mm map[string]interface{}) []openAIToolCallParts {
 	raw := mm["tool_calls"]
-	items, ok := raw.([]interface{})
-	if !ok {
+	items := openAICompatForwardSlice(raw)
+	if len(items) == 0 {
 		return nil
 	}
 	out := make([]openAIToolCallParts, 0, len(items))
 	for _, item := range items {
-		call, ok := item.(map[string]interface{})
-		if !ok {
+		call := mapFromAny(item)
+		if call == nil {
 			continue
 		}
-		fn, _ := call["function"].(map[string]interface{})
+		fn := mapFromAny(call["function"])
+		if fn == nil {
+			continue
+		}
 		out = append(out, openAIToolCallParts{
 			ID:        stringFromMap(call, "id"),
 			Name:      stringFromMap(fn, "name"),
@@ -726,7 +725,15 @@ func mapFromAny(v interface{}) map[string]interface{} {
 		}
 		return out
 	default:
-		return nil
+		data, err := json.Marshal(v)
+		if err != nil || len(data) == 0 || string(data) == "null" {
+			return nil
+		}
+		var out map[string]interface{}
+		if err := json.Unmarshal(data, &out); err != nil || len(out) == 0 {
+			return nil
+		}
+		return out
 	}
 }
 
@@ -744,35 +751,33 @@ func anthropicToOpenAI(resp map[string]interface{}, model string) map[string]int
 	// Extract and concatenate text content blocks
 	var contentBuilder strings.Builder
 	var toolCalls []interface{}
-	if contentArr, ok := resp["content"].([]interface{}); ok {
-		for _, block := range contentArr {
-			blockMap, ok := block.(map[string]interface{})
-			if !ok {
-				continue
+	for _, block := range openAICompatForwardSlice(resp["content"]) {
+		blockMap := mapFromAny(block)
+		if blockMap == nil {
+			continue
+		}
+		blockType, _ := blockMap["type"].(string)
+		switch blockType {
+		case "text":
+			text, _ := blockMap["text"].(string)
+			contentBuilder.WriteString(text)
+		case "tool_use":
+			id, _ := blockMap["id"].(string)
+			name, _ := blockMap["name"].(string)
+			input := blockMap["input"]
+			argsBytes, _ := json.Marshal(input)
+			if string(argsBytes) == "null" || len(argsBytes) == 0 {
+				argsBytes = []byte("{}")
 			}
-			blockType, _ := blockMap["type"].(string)
-			switch blockType {
-			case "text":
-				text, _ := blockMap["text"].(string)
-				contentBuilder.WriteString(text)
-			case "tool_use":
-				id, _ := blockMap["id"].(string)
-				name, _ := blockMap["name"].(string)
-				input := blockMap["input"]
-				argsBytes, _ := json.Marshal(input)
-				if string(argsBytes) == "null" || len(argsBytes) == 0 {
-					argsBytes = []byte("{}")
-				}
-				if id != "" && name != "" {
-					toolCalls = append(toolCalls, map[string]interface{}{
-						"id":   id,
-						"type": "function",
-						"function": map[string]interface{}{
-							"name":      name,
-							"arguments": string(argsBytes),
-						},
-					})
-				}
+			if id != "" && name != "" {
+				toolCalls = append(toolCalls, map[string]interface{}{
+					"id":   id,
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":      name,
+						"arguments": string(argsBytes),
+					},
+				})
 			}
 		}
 	}
@@ -801,9 +806,9 @@ func anthropicToOpenAI(resp map[string]interface{}, model string) map[string]int
 
 	// Map usage fields
 	var promptTokens, completionTokens float64
-	if usage, ok := resp["usage"].(map[string]interface{}); ok {
-		promptTokens, _ = usage["input_tokens"].(float64)
-		completionTokens, _ = usage["output_tokens"].(float64)
+	if usage := mapFromAny(resp["usage"]); usage != nil {
+		promptTokens = float64(numberToInt64(usage["input_tokens"]))
+		completionTokens = float64(numberToInt64(usage["output_tokens"]))
 	}
 	totalTokens := promptTokens + completionTokens
 
@@ -840,49 +845,15 @@ func (p *OpenAIProxy) forwardAnthropic(body map[string]interface{}) ([]byte, int
 	cfg := p.maclawLLMConfig()
 	anthropicReq := openaiToAnthropic(body, cfg.UpstreamModel())
 
-	// 2. Marshal to JSON
-	jsonBody, err := json.Marshal(anthropicReq)
+	respBody, statusCode, err := forwardAnthropicMessageWithSDK(context.Background(), cfg, anthropicReq, p.client)
 	if err != nil {
-		return nil, 0, fmt.Errorf("marshal anthropic request: %w", err)
-	}
-
-	// 3. Construct URL using AnthropicMessagesEndpoint
-	upstreamURL := AnthropicMessagesEndpoint(p.config.URL)
-
-	// 4. Create POST request
-	req, err := http.NewRequest("POST", upstreamURL, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, 0, fmt.Errorf("create request: %w", err)
-	}
-
-	// 5. Set headers
-	req.Header.Set("Content-Type", "application/json")
-	SetAnthropicAuthHeaders(req, p.config.Key)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	// 6. Execute request
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-
-	// 7. Read response body
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, 0, fmt.Errorf("read response body: %w", err)
-	}
-
-	// 8. On upstream 4xx/5xx: wrap error in OpenAI format
-	if resp.StatusCode >= 400 {
-		errResp := map[string]interface{}{
-			"error": map[string]interface{}{
-				"message": fmt.Sprintf("upstream error (HTTP %d): body_len=%d", resp.StatusCode, len(respBody)),
-				"type":    "server_error",
-			},
+		if statusCode >= 400 {
+			return openAICompatAnthropicUpstreamError(statusCode, respBody)
 		}
-		data, _ := json.Marshal(errResp)
-		return data, resp.StatusCode, nil
+		return nil, statusCode, err
+	}
+	if statusCode >= 400 {
+		return openAICompatAnthropicUpstreamError(statusCode, respBody)
 	}
 
 	// 9. Parse Anthropic response and convert to OpenAI format
@@ -905,11 +876,9 @@ func (p *OpenAIProxy) forwardAnthropic(body map[string]interface{}) ([]byte, int
 func (p *OpenAIProxy) forwardResponses(body map[string]interface{}) ([]byte, int, error) {
 	// 1. Convert request to Responses API format
 	cfg := p.maclawLLMConfig()
-	if IsCodeGenURL(cfg.URL) {
-		body = cloneOpenAICompatBody(body)
-		sanitizeCodeGenOpenAICompatForwardBody(cfg, body)
-	}
-	responsesReq := openaiToResponses(body, cfg.UpstreamModel())
+	fwd := cloneOpenAICompatBody(body)
+	sanitizeOpenAICompatForwardBodyForResponses(cfg, fwd)
+	responsesReq := openaiToResponses(fwd, cfg.UpstreamModel())
 
 	// 2. Marshal to JSON
 	jsonBody, err := json.Marshal(responsesReq)
@@ -929,6 +898,8 @@ func (p *OpenAIProxy) forwardResponses(body map[string]interface{}) ([]byte, int
 	// 5. Set headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.config.Key)
+	req.Header.Set("User-Agent", cfg.UserAgent())
+	SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
 	// 6. Execute request
 	resp, err := p.client.Do(req)
@@ -975,11 +946,12 @@ func (p *OpenAIProxy) maclawLLMConfig() MaclawLLMConfig {
 		return MaclawLLMConfig{}
 	}
 	return MaclawLLMConfig{
-		URL:      p.config.URL,
-		Key:      p.config.Key,
-		Model:    p.config.Model,
-		Protocol: p.config.Protocol,
-		WireAPI:  p.config.WireAPI,
+		URL:       p.config.URL,
+		Key:       p.config.Key,
+		Model:     p.config.Model,
+		Protocol:  p.config.Protocol,
+		WireAPI:   p.config.WireAPI,
+		AgentType: p.config.AgentType,
 	}
 }
 

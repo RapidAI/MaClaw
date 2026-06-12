@@ -50,6 +50,7 @@ var DefaultPriceTable = map[string]Price{
 	"deepseek-chat":     {InputPerMToken: 0.14, OutputPerMToken: 0.28},
 	"deepseek-coder":    {InputPerMToken: 0.14, OutputPerMToken: 0.28},
 	"deepseek-reasoner": {InputPerMToken: 0.55, OutputPerMToken: 2.19},
+	"deepseek-v4-flash": {InputPerMToken: 0.07, OutputPerMToken: 0.14},
 	// Anthropic Claude
 	"claude-sonnet-4-20250514":    {InputPerMToken: 3.0, OutputPerMToken: 15.0},
 	"claude-3-5-sonnet-20241022":  {InputPerMToken: 3.0, OutputPerMToken: 15.0},

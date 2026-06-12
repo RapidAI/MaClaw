@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/RapidAI/CodeClaw/corelib/config"
 	"io"
 	"log"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
@@ -27,14 +27,14 @@ const codegenProviderName = "CodeGen"
 
 const legacyHubServiceProviderName = "MaClaw\u6a21\u578b\u670d\u52a1"
 
-const legacyZhipuProviderName = "智谱"
-const zhipuLobsterProviderName = "智谱龙虾"
 const zhipuCodingProviderName = "智谱编程"
 
 // obsoleteProviderNames lists provider names that have been permanently removed.
 // They are stripped from the persisted provider list on load.
 var obsoleteProviderNames = map[string]bool{
-	"免费": true,
+	"免费":   true,
+	"智谱龙虾": true,
+	"智谱":   true,
 }
 
 var hubServiceProviderNameAliases = map[string]bool{
@@ -117,8 +117,8 @@ func markHubServiceProvider(provider corelib.MaclawLLMProvider) corelib.MaclawLL
 func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 	return []corelib.MaclawLLMProvider{
 		{Name: "OpenAI", URL: "https://chatgpt.com/backend-api", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses-ws"},
-		{Name: zhipuLobsterProviderName, URL: "https://open.bigmodel.cn/api/coding/paas/v4", Model: "glm-5-turbo", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
-		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude-code/2.0.0", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude code 2.0", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude-code/2.0.0"},
 		{Name: "讯飞星辰", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", Model: "astron-code-latest", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
@@ -193,15 +193,6 @@ func (a *App) GetMaclawLLMProviders() struct {
 	}
 	current := canonicalHubServiceProviderName(cfg.MaclawLLMCurrentProvider)
 	for i := range providers {
-		if providers[i].Name == legacyZhipuProviderName {
-			providers[i].Name = zhipuLobsterProviderName
-			if strings.TrimSpace(providers[i].URL) == "" || providers[i].URL == "https://open.bigmodel.cn/api/paas/v4" {
-				providers[i].URL = "https://open.bigmodel.cn/api/coding/paas/v4"
-			}
-			if strings.TrimSpace(providers[i].Model) == "" || providers[i].Model == "glm-5-turbo" {
-				providers[i].Model = "glm-5-turbo"
-			}
-		}
 		if providers[i].ContextLength == 0 {
 			if cl, ok := defaultCtx[providers[i].Name]; ok {
 				providers[i].ContextLength = cl
@@ -260,9 +251,6 @@ func (a *App) GetMaclawLLMProviders() struct {
 		updated = append(updated, d)
 		updated = append(updated, providers[insertAt:]...)
 		providers = updated
-	}
-	if current == legacyZhipuProviderName {
-		current = zhipuLobsterProviderName
 	}
 	// Migrate renamed Hub service provider: "MaClaw模型服务" → "MaClaw官方"
 	current = canonicalHubServiceProviderName(current)
@@ -1106,8 +1094,8 @@ var maclawLLMPingClient = &http.Client{Timeout: 10 * time.Second}
 // consumed).  If that returns 404 it falls back to a HEAD request on the
 // chat completions path.
 //
-// All requests carry a User-Agent of "claude-code/2.0.0" so LLM providers can
-// recognise the client for coding-plan eligibility.
+// All requests carry the configured User-Agent so LLM providers can recognise
+// the client for coding-plan eligibility.
 func (a *App) PingMaclawLLM() MaclawLLMStatus {
 	if err := a.ensureOAuthToken(); err != nil {
 		return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
@@ -1129,16 +1117,22 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 	log.Printf("[LLM] PingMaclawLLM: agent_type=%q user_agent=%q", llmCfg.AgentType, ua)
 
 	if protocol == "anthropic" {
-		probeEndpoint := corelib.AnthropicMessagesEndpoint(baseURL)
-		online, err := maclawAnthropicProbe(probeEndpoint, key, ua)
+		probeCfg := llmCfg
+		probeCfg.URL = baseURL
+		probeCfg.Key = key
+		probeCfg.Model = model
+		probeCfg.Protocol = "anthropic"
+		probeCfg.AgentType = ua
+		online, err := maclawAnthropicProbe(probeCfg)
 		if err == nil {
 			return MaclawLLMStatus{Online: online, Configured: true}
 		}
 		return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
 	}
 
+	probeBaseURL := normalizeOpenAIProbeBaseURL(baseURL, ua)
 	var err2 error
-	for _, endpoint := range openAIModelsEndpointCandidates(baseURL, protocol) {
+	for _, endpoint := range openAIModelsEndpointCandidates(probeBaseURL, protocol) {
 		online, probeErr := maclawLLMProbe(endpoint, key, ua)
 		if probeErr == nil {
 			return MaclawLLMStatus{Online: online, Configured: true}
@@ -1146,7 +1140,7 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 		err2 = probeErr
 	}
 
-	online, err2 := maclawLLMProbe(llm.BuildOpenAIChatCompletionsEndpoint(baseURL), key, ua)
+	online, err2 := maclawLLMProbe(llm.BuildOpenAIChatCompletionsEndpoint(probeBaseURL), key, ua)
 	if err2 == nil {
 		return MaclawLLMStatus{Online: online, Configured: true}
 	}
@@ -1154,21 +1148,12 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 	return MaclawLLMStatus{Online: false, Configured: true, Error: err2.Error()}
 }
 
+func normalizeOpenAIProbeBaseURL(baseURL, userAgent string) string {
+	return corelib.NormalizeGLMCodingPlanOpenAIBaseURL(baseURL, userAgent)
+}
+
 func openAIModelsEndpointCandidates(baseURL, protocol string) []string {
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if baseURL == "" {
-		return nil
-	}
-	if strings.HasSuffix(baseURL, "/models") {
-		return []string{baseURL}
-	}
-	candidates := []string{baseURL + "/models"}
-	if strings.TrimSpace(protocol) == "anthropic" {
-		candidates = []string{baseURL + "/v1/models", baseURL + "/models"}
-	} else if !strings.HasSuffix(baseURL, "/v1") {
-		candidates = append(candidates, baseURL+"/v1/models")
-	}
-	return dedupeStrings(candidates)
+	return llm.BuildOpenAIModelsEndpointCandidates(baseURL, protocol)
 }
 
 func dedupeStrings(values []string) []string {
@@ -1217,28 +1202,18 @@ func maclawLLMProbe(endpoint, key, userAgent string) (bool, error) {
 	return false, fmt.Errorf("HTTP %d", resp.StatusCode)
 }
 
-// maclawAnthropicProbe sends a GET request to the Anthropic endpoint with
-// the x-api-key and Authorization Bearer headers to verify connectivity.
-func maclawAnthropicProbe(endpoint, key, userAgent string) (bool, error) {
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
-	if err != nil {
-		return false, err
-	}
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	corelib.SetAnthropicAuthHeaders(req, key)
-
-	resp, err := maclawLLMPingClient.Do(req)
+// maclawAnthropicProbe sends a tiny Messages API request via anthropic-sdk-go
+// to verify the configured Anthropic-compatible endpoint.
+func maclawAnthropicProbe(cfg corelib.MaclawLLMConfig) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := llm.DoAnthropicRequestWithOptions(ctx, cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "ping"},
+	}, nil, maclawLLMPingClient, llm.AnthropicMessagesRequestOptions{MaxTokens: 8})
 	if err != nil {
 		return false, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
-	_, _ = io.ReadAll(io.LimitReader(resp.Body, 1024))
-
-	if resp.StatusCode < 500 {
-		return true, nil
-	}
-	return false, fmt.Errorf("HTTP %d", resp.StatusCode)
+	return resp != nil, nil
 }
 
 // GetLLMTrajectoryLogging returns the current trajectory logging toggle state.
@@ -2328,9 +2303,39 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 		return nil, fmt.Errorf("API Key 为空，请先填写 API Key")
 	}
 
-	candidates := openAIModelsEndpointCandidates(baseURL, protocol)
-
 	client := &http.Client{Timeout: 15 * time.Second}
+	if strings.EqualFold(protocol, "anthropic") {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		models, err := llm.ListAnthropicModelsWithSDK(ctx, corelib.MaclawLLMConfig{
+			URL:       baseURL,
+			Key:       apiKey,
+			Protocol:  "anthropic",
+			AgentType: userAgent,
+		}, client)
+		if err != nil {
+			return nil, fmt.Errorf("fetch anthropic models with sdk: %w", err)
+		}
+		items := make([]ProviderModelItem, 0, len(models))
+		for _, model := range models {
+			name := model.DisplayName
+			if name == "" {
+				name = model.ID
+			}
+			items = append(items, ProviderModelItem{ID: model.ID, Name: name})
+		}
+		if len(items) == 0 {
+			return nil, fmt.Errorf("anthropic sdk returned empty model list")
+		}
+		if sortModels {
+			sort.Slice(items, func(i, j int) bool {
+				return items[i].ID < items[j].ID
+			})
+		}
+		return items, nil
+	}
+
+	candidates := openAIModelsEndpointCandidates(normalizeOpenAIProbeBaseURL(baseURL, userAgent), protocol)
 
 	var resp *http.Response
 	var err error
@@ -2438,8 +2443,7 @@ func (a *App) doFetchModelsRequest(client *http.Client, endpoint, apiKey, protoc
 	}
 	req.Header.Set("User-Agent", ua)
 	if protocol == "anthropic" {
-		req.Header.Set("x-api-key", apiKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
+		corelib.SetAnthropicAuthHeaders(req, apiKey)
 	} else {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}

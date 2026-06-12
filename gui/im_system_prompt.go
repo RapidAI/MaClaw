@@ -45,12 +45,16 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	}
 	resumeElapsed := time.Since(resumeStart)
 
+	policyOwnerID := h.workflowPolicyOwnerID(msg.UserID, loopCtx)
 	if workflowAgentLoop {
-		if stashed, ok := h.stashedPhasePrompt.LoadAndDelete(msg.UserID); ok {
+		if stashed, ok := h.stashedPhasePrompt.LoadAndDelete(policyOwnerID); ok {
 			systemPrompt += "\n" + stashed.(string)
 		}
 	} else {
 		h.stashedPhasePrompt.Delete(msg.UserID)
+		if policyOwnerID != msg.UserID {
+			h.stashedPhasePrompt.Delete(policyOwnerID)
+		}
 		h.workflowOriginalRequest.Delete(msg.UserID)
 	}
 
@@ -69,7 +73,7 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	// (e.g. "只生成一份文档，输出完毕后立即停止，严禁输出确认提示语").
 	// The desktopWorkflowDocOverride says "输出文档后，仍然需要附带确认提示" which
 	// directly contradicts the phase prompt and can cause the LLM to self-confirm.
-	isV2WorkflowLoop := workflowAgentLoop && h.isWorkflowV2Active(msg.UserID)
+	isV2WorkflowLoop := workflowAgentLoop && h.isWorkflowV2Active(policyOwnerID)
 	if !profile.IsLight() && !isV2WorkflowLoop {
 		platformKind := normalizeIMMessagePlatformKind(msg.Platform)
 		if platformKind.IsDesktop() {

@@ -49,10 +49,6 @@ type agentLoopStartState struct {
 	ConversationStartedAt         time.Time
 	EffectiveMax                  int
 	ChatFinalizeGrace             int
-	GateConfig                    codingToolGateConfig
-	SkipCodingGate                bool
-	OrchestratorActive            func() bool
-	SteeringDetector              *SteeringWorkflowDetector
 	Cleanup                       func()
 }
 
@@ -101,15 +97,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 			ctx.Runtime.RequestID, opts.UserID, ctx.Runtime.Execution.Layer, ctx.Runtime.Execution.TaskType, ctx.Runtime.Execution.PromptProfile, ctx.Runtime.Execution.Confidence, ctx.Runtime.Execution.Reason, ctx.Runtime.Execution.ToolBudget, ctx.Runtime.Execution.IterationBudget)
 	}
 
-	gateConfig, workflowOff, orchestratorActive := h.prepareAgentLoopCodingGate(opts.UserID, opts.UserText, ctx, opts.MilestoneTracker)
-	skipCodingGate := shouldSkipCodingGate(ctx, gateConfig)
-	if h.shouldBypassCodingGateForWorkflowAgentLoop(opts.UserID, ctx) {
-		if gateConfig.active {
-			log.Printf("[coding-gate] bypassed: workflow agent loop uses workflow tool policy user=%s", opts.UserID)
-		}
-		skipCodingGate = true
-	}
-	tools, toolsTokenBudget = h.applyInitialCodingToolGate(tools, gateConfig, skipCodingGate, orchestratorActive)
+	// V1 coding gate removed; tools pass through unfiltered.
 
 	return agentLoopStartState{
 		Config:                        cfg,
@@ -134,10 +122,6 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		ConversationStartedAt:         conversationStart.StartedAt,
 		EffectiveMax:                  limits.EffectiveMax,
 		ChatFinalizeGrace:             limits.ChatFinalizeGrace,
-		GateConfig:                    gateConfig,
-		SkipCodingGate:                skipCodingGate,
-		OrchestratorActive:            orchestratorActive,
-		SteeringDetector:              h.activateSteeringWorkflowDetector(opts.UserID, opts.UserText, opts.Platform, ctx, gateConfig, workflowOff),
 		Cleanup: func() {
 			for i := len(cleanupFns) - 1; i >= 0; i-- {
 				if cleanupFns[i] != nil {

@@ -14,6 +14,7 @@ import (
 )
 
 var ErrMachineOffline = errors.New("machine is offline")
+var ErrMachineSendBufferFull = errors.New("machine send buffer full")
 
 type MachineRepository interface {
 	Create(ctx context.Context, machine *store.Machine) error
@@ -430,7 +431,14 @@ func (s *Service) SendToMachine(machineID string, msg any) error {
 	})
 	if !conn.Send(msg) {
 		log.Printf("[device] SendToMachine: Send returned false (buffer full) machine_id=%s", machineID)
-		return ErrMachineOffline
+		s.recordEvent(MachineEvent{
+			Timestamp: time.Now().Unix(),
+			MachineID: machineID,
+			UserID:    safeConnUserID(conn),
+			Type:      "send.failed",
+			Message:   "machine send buffer full during command dispatch",
+		})
+		return fmt.Errorf("%w: %w", ErrMachineOffline, ErrMachineSendBufferFull)
 	}
 	log.Printf("[device] SendToMachine: Send OK machine_id=%s", machineID)
 	return nil

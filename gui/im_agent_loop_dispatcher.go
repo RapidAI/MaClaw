@@ -89,10 +89,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	conversationStartedAt := startState.ConversationStartedAt
 	effectiveMax := startState.EffectiveMax
 	chatFinalizeGrace := startState.ChatFinalizeGrace
-	gateConfig := startState.GateConfig
-	skipCodingGate := startState.SkipCodingGate
-	orchestratorActive := startState.OrchestratorActive
-	steeringDetector := startState.SteeringDetector
 
 	runState := newAgentLoopRunState(cfg)
 
@@ -118,9 +114,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		MinIterations:                 minIterations,
 		ConfigMax:                     maxIter,
 		ChatFinalizeGrace:             chatFinalizeGrace,
-		GateConfig:                    gateConfig,
-		SkipCodingGate:                skipCodingGate,
-		OrchestratorActive:            orchestratorActive,
 		Phase:                         &phase,
 		GoalAnchor:                    loopGoalAnchor,
 		ProgressTracker:               loopProgressTracker,
@@ -135,7 +128,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		InFlightLifecycle:             inFlightLifecycle,
 		Recorder:                      recorder,
 		VisibleArtifacts:              visibleArtifacts,
-		SteeringDetector:              steeringDetector,
 		OnToken:                       onToken,
 		OnProgress:                    onProgress,
 		OnNewRound:                    onNewRound,

@@ -60,33 +60,3 @@ func TestShouldSkipWorkflowToolExecutionGate_WorkflowAgentLoopOverridesSkip(t *t
 	}
 }
 
-func TestShouldBypassNeedsConfirmGate_ReviewOverridesSkip(t *testing.T) {
-	cases := []struct {
-		name                 string
-		skipNeedsConfirmGate bool
-		codingGateActive     bool
-		awaitingReview       bool
-		workflowAgentLoop    bool
-		phaseBlocked         bool
-		activeWorkflow       bool
-		want                 bool
-	}{
-		{name: "no skip", skipNeedsConfirmGate: false, codingGateActive: false, awaitingReview: false, workflowAgentLoop: false, want: false},
-		{name: "non-workflow continuation may bypass", skipNeedsConfirmGate: true, codingGateActive: false, awaitingReview: false, workflowAgentLoop: false, want: true},
-		{name: "active workflow blocks bypass", skipNeedsConfirmGate: true, codingGateActive: false, awaitingReview: false, workflowAgentLoop: false, activeWorkflow: true, want: false},
-		{name: "coding gate active blocks bypass", skipNeedsConfirmGate: true, codingGateActive: true, awaitingReview: false, workflowAgentLoop: false, want: false},
-		{name: "review barrier blocks bypass", skipNeedsConfirmGate: true, codingGateActive: false, awaitingReview: true, workflowAgentLoop: false, want: false},
-		{name: "workflow agent loop blocks bypass", skipNeedsConfirmGate: true, codingGateActive: false, awaitingReview: false, workflowAgentLoop: true, want: false},
-		{name: "blocked phase blocks bypass", skipNeedsConfirmGate: true, codingGateActive: false, awaitingReview: false, workflowAgentLoop: false, phaseBlocked: true, want: false},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := shouldBypassNeedsConfirmGate(tc.skipNeedsConfirmGate, tc.codingGateActive, tc.awaitingReview, tc.workflowAgentLoop, tc.phaseBlocked, tc.activeWorkflow)
-			if got != tc.want {
-				t.Fatalf("shouldBypassNeedsConfirmGate(%v, %v, %v, %v, %v, %v)=%v, want %v",
-					tc.skipNeedsConfirmGate, tc.codingGateActive, tc.awaitingReview, tc.workflowAgentLoop, tc.phaseBlocked, tc.activeWorkflow, got, tc.want)
-			}
-		})
-	}
-}

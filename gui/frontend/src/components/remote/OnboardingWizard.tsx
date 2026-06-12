@@ -554,7 +554,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         }
                     }
                     if (!redeemNote) {
-                        redeemNote = `\n${t("✅ 服务兑换码已激活，LLM 配置步骤已自动跳过", "✅ Service code redeemed. LLM configuration step skipped automatically.", "✅ 服務兌換碼已啟用，LLM 配置步驟已自動跳過")}`;
+                        redeemNote = `\n${t("服务兑换码已激活，LLM 配置步骤已自动跳过", "Service code redeemed. LLM configuration step skipped automatically.", "服務兌換碼已啟用，LLM 配置步驟已自動跳過")}`;
                     }
                 } catch (redeemError) {
                     const localizedRedeemError = localizeHubServiceRedeemError(redeemError, lang);
@@ -605,7 +605,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         try {
             const res = await StartWeixinQRLogin();
             if (res.error) {
-                setWxMsg("❌ " + res.error);
+                setWxMsg(res.error);
                 setWxStatus("error");
                 setWxLoading(false);
                 return;
@@ -613,7 +613,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             const qrUrl = res.qrcode_url || "";
             const token = res.qrcode_token || "";
             if (!qrUrl || !token) {
-                setWxMsg(t("❌ 获取二维码失败，请重试", "❌ Failed to get QR code, please retry"));
+                setWxMsg(t("获取二维码失败，请重试", "Failed to get QR code, please retry"));
                 setWxStatus("error");
                 setWxLoading(false);
                 return;
@@ -644,10 +644,10 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         if (!wxPollingRef.current) return;
                         if (poll.error) {
                             setWxStatus("error");
-                            setWxMsg("❌ " + poll.error);
+                            setWxMsg(poll.error);
                         } else {
                             setWxStatus("confirmed");
-                            setWxMsg(poll.message || t("✅ 微信绑定成功", "✅ WeChat connected"));
+                            setWxMsg(poll.message || t("微信绑定成功", "WeChat connected"));
                             setWxDone(true);
                         }
                         wxPollingRef.current = false;
@@ -665,12 +665,12 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     } else if (poll.error) {
                         if (poll.retryable === "true") {
                             setWxStatus("wait");
-                            setWxMsg("❌ " + poll.error);
+                            setWxMsg(poll.error);
                             setTimeout(doPoll, 2000);
                             return;
                         }
                         setWxStatus("error");
-                        setWxMsg("❌ " + poll.error);
+                        setWxMsg(poll.error);
                         wxPollingRef.current = false;
                         return;
                     }
@@ -687,7 +687,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             };
             doPoll();
         } catch (e) {
-            setWxMsg("❌ " + String(e));
+            setWxMsg(String(e));
             setWxStatus("error");
             setWxLoading(false);
         }
@@ -718,10 +718,10 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         }} data-ai-theme={portalTheme}>
             {showRegistrationToast && regResult && (
                 <div style={{ position: "absolute", top: 116, left: "50%", transform: "translateX(-50%)", zIndex: 20001, width: "min(420px, calc(100vw - 36px))", maxHeight: "calc(100vh - 148px)", overflowY: "auto", boxSizing: "border-box" }} role={regResult.ok ? "status" : "alert"} aria-live="polite">
-                    <div style={{ ...wizardBannerStyle(regResultWarning ? "warning" : regResult.ok ? "success" : "error"), marginTop: 0, background: "var(--theme-surface)", border: `1px solid ${regResultWarning ? colors.warning : regResult.ok ? colors.success : colors.danger}`, borderLeft: `3px solid ${regResultWarning ? colors.warning : regResult.ok ? colors.success : colors.danger}`, boxShadow: "0 14px 36px rgba(0,0,0,0.28)" }}>
+                    <div style={{ ...wizardBannerStyle(regResultWarning ? "warning" : regResult.ok ? "success" : "error"), marginTop: 0, background: "var(--theme-surface)", border: `1px solid ${regResultWarning ? colors.primary : regResult.ok ? colors.success : colors.danger}`, boxShadow: "0 14px 36px rgba(15,23,42,0.24)" }}>
                         <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                             <span aria-hidden="true" style={{ flexShrink: 0, fontSize: "1rem", lineHeight: 1.35 }}>
-                                {regResultWarning ? "⚠️" : regResult.ok ? "✅" : "❌"}
+                                {regResultWarning ? "WARN" : regResult.ok ? "OK" : "ERR"}
                             </span>
                             <div style={{ minWidth: 0 }}>
                                 <div style={{ color: colors.textPrimary, fontSize: "0.82rem", fontWeight: 800, lineHeight: 1.35 }}>
@@ -750,7 +750,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 border: "1px solid var(--theme-border)", display: "flex", flexDirection: "column",
             }}>
                 <div style={{
-                    background: "linear-gradient(135deg, var(--theme-info-bg, #f3f7fb) 0%, var(--theme-primary-soft, #e8f0f7) 100%)",
+                    background: "var(--theme-info-bg, #f3f7fb)",
                     padding: "20px 22px 18px", position: "relative", flexShrink: 0,
                     borderBottom: "1px solid var(--theme-border)",
                 }}>
@@ -758,7 +758,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         position: "absolute", top: 12, right: 14, border: "none",
                         background: "transparent", cursor: "pointer", fontSize: "1.25rem",
                         color: colors.textMuted, lineHeight: 1,
-                    }}>&times;</button>
+                    }}>X</button>
                     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                         <div style={{
                             width: 40, height: 40, borderRadius: "50%", flexShrink: 0,
@@ -800,7 +800,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                         boxShadow: active ? `0 0 0 4px var(--theme-primary-soft)` : "none",
                                         transition: "background 0.2s, box-shadow 0.2s",
                                     }}>
-                                        {skippedStep ? "—" : done ? "✓" : s}
+                                        {skippedStep ? "—" : done ? "OK" : s}
                                     </div>
                                     <span style={{
                                         fontSize: "0.66rem", marginTop: 6, textAlign: "center",
@@ -839,11 +839,11 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                 cursor: (ssoBusy || regBusy || (llmDone && regDone)) ? "default" : "pointer",
                             }}>
                                 {ssoBusy
-                                    ? t("⏳ 等待浏览器授权...", "⏳ Waiting for browser auth...")
+                                    ? t("RUN 等待浏览器授权...", "RUN Waiting for browser auth...")
                                     : regBusy
-                                        ? t("⏳ 注册中...", "⏳ Registering...")
+                                        ? t("RUN 注册中...", "RUN Registering...")
                                         : (llmDone && regDone)
-                                            ? t("✅ 认证并注册完成", "✅ Authenticated & Registered")
+                                            ? t("认证并注册完成", "Authenticated & Registered")
                                             : t("🏢 企业 SSO 登录", "🏢 Enterprise SSO Login")}
                             </button>
                             {embeddedSSOLoading && (
@@ -899,7 +899,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     }} style={{
                                         ...wizardGhostButtonBlockStyle, color: colors.primaryDark,
                                     }}>
-                                        {t("🌐 在浏览器中打开", "🌐 Open in Browser")}
+                                        {t("在浏览器中打开", "Open in Browser")}
                                     </button>
                                     <button onClick={handleEmbeddedSSOLogin} style={{
                                         ...wizardGhostButtonBlockStyle, color: colors.primaryDark,
@@ -910,7 +910,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             )}
                             {ssoResult && (
                                 <div style={wizardBannerStyle(ssoResult.ok ? "success" : "error")}>
-                                    {ssoResult.ok ? `✅ ${ssoResult.msg}` : `❌ ${ssoResult.msg}`}
+                                    {ssoResult.msg}
                                 </div>
                             )}
                             {!(llmDone && regDone) && !ssoBusy && !regBusy && !embeddedSSOLoading && !embeddedSSOError && (
@@ -923,7 +923,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             {llmDone && (
                                 <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 8, border: `1px solid ${colors.border}`, background: colors.surfaceMuted }}>
                                     <div style={{ fontSize: "0.76rem", fontWeight: 600, color: colors.text, marginBottom: 10 }}>
-                                        {t("🔧 选择使用的模型（可选）", "🔧 Select Models (optional)")}
+                                        {t("选择使用的模型（可选）", "Select Models (optional)")}
                                     </div>
 
                                     {codegenModelsFetching && (
@@ -969,7 +969,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                                 cursor: modelSaving || modelSaved ? "default" : "pointer",
                                             }}>
                                                 {modelSaved
-                                                    ? t("✅ 模型已保存", "✅ Models Saved")
+                                                    ? t("模型已保存", "Models Saved")
                                                     : modelSaving
                                                         ? t("保存中...", "Saving...")
                                                         : t("确认模型选择", "Confirm Model Selection")}
@@ -1180,7 +1180,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                                 <label style={labelStyle}>API Key <span style={{ color: colors.danger }}>*</span></label>
                                                 <input style={inputStyle} type="password" value={selectedProvider.key}
                                                     onChange={e => updateField("key", e.target.value)}
-                                                    placeholder={selectedProvider.is_custom ? "sk-..." : ((selectedProvider.name === "智谱龙虾" || selectedProvider.name === "智谱编程") ? "xxxxxxxx.yyyyyyyy" : "sk-...")}
+                                                    placeholder={selectedProvider.is_custom ? "sk-..." : ((selectedProvider.name === "智谱编程") ? "xxxxxxxx.yyyyyyyy" : "sk-...")}
                                                     autoComplete="off" />
                                             </div>
                                             <button onClick={handleLLMSave} disabled={llmSaving} style={{
@@ -1193,7 +1193,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     )}
                                     {llmResult && (
                                         <div style={wizardBannerStyle(llmResult.ok ? "success" : "error")}>
-                                            {llmResult.ok ? `✅ ${t("连接成功，已保存", "Connected & saved")}\n${llmResult.msg}` : `❌ ${llmResult.msg}`}
+                                            {llmResult.ok ? `${t("连接成功，已保存", "Connected & saved")}\n${llmResult.msg}` : llmResult.msg}
                                         </div>
                                     )}
                                 </div>
@@ -1216,7 +1216,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     padding: "16px", textAlign: "center", borderRadius: 8,
                                     background: colors.successBg, border: `1px solid color-mix(in srgb, ${colors.success} 30%, transparent)`,
                                 }}>
-                                    <div style={{ fontSize: "1.4rem", marginBottom: 4 }}>✅</div>
+                                    <div style={{ fontSize: "0.72rem", marginBottom: 4, fontWeight: 700 }}>OK</div>
                                     <div style={{ fontSize: "0.82rem", color: colors.success, fontWeight: 600 }}>
                                         {t("微信已绑定", "WeChat connected")}
                                     </div>
@@ -1273,7 +1273,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                         <div style={{
                                             marginTop: 8, padding: "6px 10px", borderRadius: 4, fontSize: "0.74rem",
                                             textAlign: "center",
-                                            color: wxStatus === "error" || wxStatus === "expired" ? colors.danger : wxStatus === "scaned" ? colors.warning : colors.textMuted,
+                                            color: wxStatus === "error" || wxStatus === "expired" ? colors.danger : wxStatus === "scaned" ? colors.primaryDark : colors.textMuted,
                                         }}>
                                             {wxMsg}
                                         </div>
@@ -1421,7 +1421,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             <button onClick={doRegister} style={{
                                 ...wizardPrimaryButtonStyle, width: "auto", padding: "8px 18px", fontSize: "0.8rem",
                             }}>
-                                ✓ {t("确认注册", "Confirm & Register")}
+                                OK {t("确认注册", "Confirm & Register")}
                             </button>
                         </div>
                     </div>

@@ -2,6 +2,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderContentWithCodeBlocks } from "./aiAssistantMarkdown";
+import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { lightTheme } from "./aiAssistantPanelTheme";
 
 const { openFileOrShowInFolderMock, showItemInFolderMock } = vi.hoisted(() => ({
@@ -48,6 +49,118 @@ describe("renderContentWithCodeBlocks", () => {
 
         const code = container.querySelector("code");
         expect(code?.textContent).toBe('const value = \\"a\\\\nb\\";');
+    });
+
+    it("renders empty fenced code blocks instead of dropping them", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("```ts\n```", lightTheme)}</div>);
+
+        const pre = container.querySelector("pre") as HTMLPreElement;
+        const code = container.querySelector("code");
+        expect(pre).toBeTruthy();
+        expect(pre.textContent).toContain("ts");
+        expect(code?.textContent).toBe("\u00A0");
+    });
+
+    it("keeps long code blocks constrained to the message width with local horizontal scrolling", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("```text\nThisIsAVeryLongUnbrokenCodeLineThatShouldScrollInsideTheCodeBlockInsteadOfStretchingTheAssistantPanel\n```", lightTheme)}</div>
+        );
+
+        const pre = container.querySelector("pre") as HTMLPreElement;
+        expect(pre.style.width).toBe("100%");
+        expect(pre.style.maxWidth).toBe("100%");
+        expect(pre.style.minWidth).toBe("0px");
+        expect(pre.style.boxSizing).toBe("border-box");
+        expect(pre.style.overflowX).toBe("auto");
+        expect(pre.style.overscrollBehaviorX).toBe("contain");
+    });
+
+    it("wraps long unbroken plain markdown lines within the message width", () => {
+        const longText = "ThisIsAVeryLongUnbrokenPlainMarkdownLineThatShouldWrapInsteadOfStretchingTheAssistantPanel";
+        render(<div>{renderContentWithCodeBlocks(longText, lightTheme)}</div>);
+
+        const line = screen.getByText(longText) as HTMLElement;
+        expect(line.style.minWidth).toBe("0px");
+        expect(line.style.overflowWrap).toBe("anywhere");
+        expect(line.style.wordBreak).toBe("break-word");
+    });
+
+    it("wraps long heading and numbered markdown content within the message width", () => {
+        const headingText = "ThisIsAVeryLongUnbrokenHeadingThatShouldWrapInsideTheAssistantPanel";
+        const numberedText = "ThisIsAVeryLongUnbrokenNumberedItemThatShouldWrapInsideTheAssistantPanel";
+        render(<div>{renderContentWithCodeBlocks(`#### ${headingText}\n1. ${numberedText}`, lightTheme)}</div>);
+
+        const heading = screen.getByText(headingText) as HTMLElement;
+        const numbered = screen.getByText(numberedText) as HTMLElement;
+        expect(heading.style.overflowWrap).toBe("anywhere");
+        expect(numbered.style.minWidth).toBe("0px");
+        expect(numbered.style.overflowWrap).toBe("anywhere");
+    });
+
+    it("wraps long inline code and link text within the message width", () => {
+        const codeText = "ThisIsAVeryLongInlineCodeTokenThatShouldWrapInsideTheAssistantPanel";
+        const linkText = "ThisIsAVeryLongMarkdownLinkTextThatShouldWrapInsideTheAssistantPanel";
+        const { container } = render(<div>{renderContentWithCodeBlocks(`Use \`${codeText}\` and [${linkText}](https://example.com)`, lightTheme)}</div>);
+
+        const code = container.querySelector("code") as HTMLElement;
+        const link = screen.getByText(linkText) as HTMLElement;
+        expect(code.style.overflowWrap).toBe("anywhere");
+        expect(code.style.wordBreak).toBe("break-word");
+        expect(link.style.overflowWrap).toBe("anywhere");
+        expect(link.style.wordBreak).toBe("break-word");
+    });
+
+    it("wraps long inline emphasis within the message width", () => {
+        const boldText = "ThisIsAVeryLongBoldTokenThatShouldWrapInsideTheAssistantPanel";
+        const italicText = "ThisIsAVeryLongItalicTokenThatShouldWrapInsideTheAssistantPanel";
+        const { container } = render(<div>{renderContentWithCodeBlocks(`**${boldText}** and *${italicText}*`, lightTheme)}</div>);
+
+        const strong = container.querySelector("strong") as HTMLElement;
+        const em = container.querySelector("em") as HTMLElement;
+        expect(strong.textContent).toBe(boldText);
+        expect(strong.style.overflowWrap).toBe("anywhere");
+        expect(em.textContent).toBe(italicText);
+        expect(em.style.overflowWrap).toBe("anywhere");
+    });
+
+    it("wraps long path links within the message width", () => {
+        render(<div>{renderContentWithCodeBlocks("Open C:\\Users\\demo\\verylongfoldernamewithoutbreaks\\verylongfilenamewithoutbreaks.pdf", lightTheme)}</div>);
+
+        const link = screen.getByTitle("C:\\Users\\demo\\verylongfoldernamewithoutbreaks\\verylongfilenamewithoutbreaks.pdf") as HTMLElement;
+        expect(link.style.overflowWrap).toBe("anywhere");
+        expect(link.style.wordBreak).toBe("break-word");
+    });
+
+    it("keeps KB image thumbnails inside the message width", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("[KB_IMAGE:asset-1|data:image/png;base64,abc|C:\\Users\\demo\\image.png]", lightTheme)}</div>
+        );
+
+        const wrapper = container.querySelector("img")?.parentElement as HTMLElement;
+        const image = container.querySelector("img") as HTMLImageElement;
+        expect(wrapper.style.maxWidth).toBe("100%");
+        expect(wrapper.style.minWidth).toBe("0px");
+        expect(wrapper.style.overflow).toBe("hidden");
+        expect(image.style.width).toBe("120px");
+        expect(image.style.maxWidth).toBe("100%");
+        expect(image.style.boxSizing).toBe("border-box");
+        expect(image.style.display).toBe("block");
+    });
+
+    it("keeps screenshot previews inside the message width", () => {
+        const { container } = render(<div>{renderScreenshotPreview("abc", "C:\\Users\\demo\\screen.png", vi.fn(), lightTheme)}</div>);
+
+        const wrapper = screen.getByTestId("screenshot-preview-block") as HTMLElement;
+        const link = container.querySelector("a") as HTMLAnchorElement;
+        const image = container.querySelector("img") as HTMLImageElement;
+        expect(wrapper.style.maxWidth).toBe("100%");
+        expect(wrapper.style.minWidth).toBe("0px");
+        expect(wrapper.style.overflow).toBe("hidden");
+        expect(link.style.maxWidth).toBe("100%");
+        expect(image.style.width).toBe("180px");
+        expect(image.style.maxWidth).toBe("100%");
+        expect(image.style.boxSizing).toBe("border-box");
+        expect(image.style.display).toBe("block");
     });
 
     it("splits dense digital employee capability lists into readable lines", () => {
@@ -114,6 +227,112 @@ describe("renderContentWithCodeBlocks", () => {
 
         const code = container.querySelector("code");
         expect(code?.textContent).toBe("####\nTitle");
+    });
+
+    it.each([
+        ["real newlines", "####\n####\nSlide 1: Cover\nBody"],
+        ["escaped newlines", "####\\n####\\nSlide 1: Cover\\nBody"],
+    ])("collapses repeated bare heading markers before the real title line with %s", (_label, input) => {
+        const { container } = render(<div>{renderContentWithCodeBlocks(input, lightTheme)}</div>);
+
+        expect(screen.getByText("Slide 1: Cover")).toBeTruthy();
+        expect(screen.getByText("Body")).toBeTruthy();
+        expect(container.textContent).not.toContain("####");
+    });
+
+    it("attaches bare heading markers when the title line is indented after a blank line", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("####\n\n   📄 幻灯片1：封面\nBody", lightTheme)}</div>);
+
+        expect(screen.getByText("📄 幻灯片1：封面")).toBeTruthy();
+        expect(screen.getByText("Body")).toBeTruthy();
+        expect(container.textContent).not.toContain("####");
+    });
+
+    it("keeps a trailing bare heading marker when there is no title line to attach", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("Before\n####", lightTheme)}</div>);
+
+        expect(screen.getByText("Before")).toBeTruthy();
+        expect(container.textContent).toContain("####");
+    });
+
+    it("keeps repeated trailing bare heading markers when there is no title line to attach", () => {
+        render(<div>{renderContentWithCodeBlocks("Before\n####\n\n#####", lightTheme)}</div>);
+
+        expect(screen.getByText("Before")).toBeTruthy();
+        expect(screen.getByText("####")).toBeTruthy();
+        expect(screen.getByText("#####")).toBeTruthy();
+    });
+
+    it("uses the nearest repeated bare heading marker level before the title line", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("####\n#####\nNested title", lightTheme)}</div>);
+
+        const heading = screen.getByText("Nested title");
+        expect(heading).toBeTruthy();
+        expect((heading as HTMLElement).style.fontSize).toBe("0.9em");
+        expect(container.textContent).not.toContain("####");
+    });
+
+    it("uses the nearest marker level when repeated bare heading markers share one line", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("#### #####\nNested title", lightTheme)}</div>);
+
+        const heading = screen.getByText("Nested title");
+        expect(heading).toBeTruthy();
+        expect((heading as HTMLElement).style.fontSize).toBe("0.9em");
+        expect(container.textContent).not.toContain("####");
+    });
+
+    it("does not attach a bare heading marker to a following fenced code block", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("####\n```ts\nconst ok = true;\n```", lightTheme)}</div>);
+
+        expect(screen.getByText("####")).toBeTruthy();
+        expect(container.querySelector("code")?.textContent).toBe("const ok = true;");
+    });
+
+    it("does not attach a bare heading marker to a following markdown table", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("####\n| Name | Status |\n| --- | --- |\n| Alpha | Ready |", lightTheme)}</div>);
+
+        expect(screen.getByText("####")).toBeTruthy();
+        expect(container.querySelector("table")).toBeTruthy();
+        expect(screen.getByText("Alpha")).toBeTruthy();
+    });
+
+    it("does not attach a bare heading marker to a following markdown table without outer pipes", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("####\nName | Status\n--- | ---\nAlpha | Ready", lightTheme)}</div>);
+
+        expect(screen.getByText("####")).toBeTruthy();
+        expect(container.querySelector("table")).toBeTruthy();
+        expect(screen.getByText("Name")).toBeTruthy();
+        expect(screen.getByText("Alpha")).toBeTruthy();
+    });
+
+    it("can attach a bare heading marker to ordinary pipe text that is not a table", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("####\nInput | Output semantics", lightTheme)}</div>);
+
+        expect(screen.getByText("Input | Output semantics")).toBeTruthy();
+        expect(container.querySelector("table")).toBeNull();
+        expect(container.textContent).not.toContain("####");
+    });
+
+    it("can attach a bare heading marker to escaped pipe text before a separator-looking line", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("####\nInput \\| Output semantics\n--- | ---", lightTheme)}</div>);
+
+        expect(screen.getByText("Input \\| Output semantics")).toBeTruthy();
+        expect(container.querySelector("table")).toBeNull();
+        expect(container.textContent).not.toContain("####");
+    });
+
+    it("does not attach a bare heading marker to a following markdown heading", () => {
+        render(<div>{renderContentWithCodeBlocks("####\n### Existing title", lightTheme)}</div>);
+
+        expect(screen.getByText("####")).toBeTruthy();
+        expect(screen.getByText("Existing title")).toBeTruthy();
+    });
+
+    it("does not attach a bare heading marker to a following markdown list", () => {
+        render(<div>{renderContentWithCodeBlocks("####\n- Existing list item", lightTheme)}</div>);
+
+        expect(screen.getByText("####")).toBeTruthy();
+        expect(screen.getByText(/Existing list item/)).toBeTruthy();
     });
 
     it("splits compact emoji headings even when the previous text has no punctuation", () => {
@@ -287,8 +506,14 @@ describe("renderContentWithCodeBlocks", () => {
         );
 
         const table = container.querySelector("table") as HTMLTableElement;
+        const wrapper = screen.getByTestId("markdown-table-block") as HTMLElement;
         const th = container.querySelector("th") as HTMLTableCellElement;
         const td = container.querySelector("td") as HTMLTableCellElement;
+        expect(wrapper.style.width).toBe("100%");
+        expect(wrapper.style.minWidth).toBe("0px");
+        expect(wrapper.style.boxSizing).toBe("border-box");
+        expect(wrapper.style.overflowX).toBe("auto");
+        expect(wrapper.style.overscrollBehaviorX).toBe("contain");
         expect(table.style.tableLayout).toBe("fixed");
         expect(table.style.minWidth).toBe("360px");
         expect(th.style.overflowWrap).toBe("anywhere");
@@ -377,8 +602,12 @@ describe("renderContentWithCodeBlocks", () => {
             <div>{renderContentWithCodeBlocks("| This introductory sentence should be outside the grid | Column A | Column B |\n| --- | --- | --- |\n| Alpha | Beta | trailing note |", lightTheme)}</div>
         );
 
-        expect(screen.getByTestId("markdown-table-prefix").textContent).toContain("introductory sentence");
-        expect(screen.getByTestId("markdown-table-note").textContent).toContain("trailing note");
+        const prefix = screen.getByTestId("markdown-table-prefix") as HTMLElement;
+        const note = screen.getByTestId("markdown-table-note") as HTMLElement;
+        expect(prefix.textContent).toContain("introductory sentence");
+        expect(prefix.style.overflowWrap).toBe("anywhere");
+        expect(note.textContent).toContain("trailing note");
+        expect(note.style.overflowWrap).toBe("anywhere");
         expect(screen.getByText("Column A")).toBeTruthy();
         expect(screen.getByTestId("markdown-table").querySelector("thead")?.textContent).not.toContain("introductory sentence");
     });

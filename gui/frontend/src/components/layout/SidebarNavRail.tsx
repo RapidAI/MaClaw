@@ -112,7 +112,7 @@ export const SidebarNavRail = ({
             <div
                 className={'sidebar-item left-nav-item left-nav-item--ai ' + (navTab === 'ai' ? 'active' : '')}
                 onClick={() => { switchTool('ai'); }}
-                style={{ flexDirection: 'column', padding: '8px 4px', width: '100%', gap: '3px', borderLeft: 'none', borderRight: navTab === 'ai' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                style={{ flexDirection: 'column', padding: '8px 4px', width: '100%', gap: '3px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'ai' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
                 title={aiAssistantLabel}
             >
                 <div style={{
@@ -165,7 +165,7 @@ export const SidebarNavRail = ({
             <div
                 className={'sidebar-item left-nav-item ' + (systemMenuOpen ? 'active' : '')}
                 onClick={() => setSystemMenuOpen(prev => !prev)}
-                style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: systemMenuOpen ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
+                style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: systemMenuOpen ? 'inset -1px 0 0 var(--theme-text-muted)' : 'none', justifyContent: 'center' }}
                 title={systemLabel}
             >
                 <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.08rem' }}>{icon.system}</span>
@@ -173,7 +173,7 @@ export const SidebarNavRail = ({
             </div>
 
             {/* About button */}
-            <div className={'sidebar-item left-nav-item ' + (navTab === 'about' ? 'active' : '')} onClick={() => switchTool('about')} style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }} title={t('about')}>
+            <div className={'sidebar-item left-nav-item ' + (navTab === 'about' ? 'active' : '')} onClick={() => switchTool('about')} style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'about' ? 'inset -1px 0 0 var(--theme-text-muted)' : 'none', justifyContent: 'center' }} title={t('about')}>
                 <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.08rem' }}>{icon.about}</span>
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{t('about')}</span>
             </div>

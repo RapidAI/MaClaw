@@ -1,5 +1,7 @@
 package corelib
 
+import "encoding/json"
+
 func SanitizeCodeGenOpenAIChatTools(tools []map[string]interface{}) []map[string]interface{} {
 	if len(tools) == 0 {
 		return tools
@@ -41,6 +43,12 @@ var codeGenOpenAIUnsupportedTopLevelKeys = []string{
 	"function_call",
 	"logprobs",
 	"top_logprobs",
+	"service_tier",
+	"reasoning_effort",
+	"modalities",
+	"prediction",
+	"audio",
+	"web_search_options",
 }
 
 func SanitizeCodeGenOpenAIChatToolsValue(tools interface{}) interface{} {
@@ -60,6 +68,20 @@ func SanitizeCodeGenOpenAIChatToolsValue(tools interface{}) interface{} {
 		}
 		return out
 	default:
+		items := codeGenOpenAISliceFromAny(tools)
+		if len(items) > 0 {
+			out := make([]interface{}, len(items))
+			for i, tool := range items {
+				if toolMap := codeGenOpenAIMapFromAny(tool); toolMap != nil {
+					if patched, ok := sanitizeCodeGenOpenAIChatTool(toolMap); ok {
+						out[i] = patched
+						continue
+					}
+				}
+				out[i] = tool
+			}
+			return out
+		}
 		return tools
 	}
 }
@@ -83,14 +105,26 @@ func SanitizeCodeGenOpenAIFunctionsValue(functions interface{}) interface{} {
 		}
 		return out
 	default:
+		items := codeGenOpenAISliceFromAny(functions)
+		if len(items) > 0 {
+			out := make([]interface{}, len(items))
+			for i, fn := range items {
+				if fnMap := codeGenOpenAIMapFromAny(fn); fnMap != nil {
+					out[i] = sanitizeCodeGenOpenAIFunction(fnMap)
+					continue
+				}
+				out[i] = fn
+			}
+			return out
+		}
 		return functions
 	}
 }
 
 func sanitizeCodeGenOpenAIChatTool(tool map[string]interface{}) (map[string]interface{}, bool) {
 	toolType, _ := tool["type"].(string)
-	function, ok := tool["function"].(map[string]interface{})
-	if !ok {
+	function := codeGenOpenAIMapFromAny(tool["function"])
+	if function == nil {
 		return nil, false
 	}
 
@@ -147,11 +181,20 @@ func SanitizeCodeGenOpenAIToolSchemaValue(v interface{}) interface{} {
 			if codeGenOpenAIToolSchemaUnsupportedKey(k) {
 				continue
 			}
-			out[k] = SanitizeCodeGenOpenAIToolSchemaValue(val)
+			if k == "properties" {
+				out[k] = sanitizeCodeGenOpenAIToolSchemaProperties(val)
+			} else {
+				out[k] = SanitizeCodeGenOpenAIToolSchemaValue(val)
+			}
 		}
 		if _, ok := out["properties"].(map[string]interface{}); ok {
 			if _, hasType := out["type"]; !hasType {
 				out["type"] = "object"
+			}
+		}
+		if typ, _ := out["type"].(string); typ == "object" {
+			if _, ok := out["properties"]; !ok {
+				out["properties"] = map[string]interface{}{}
 			}
 		}
 		if typ, _ := out["type"].(string); typ == "array" {
@@ -170,6 +213,11 @@ func SanitizeCodeGenOpenAIToolSchemaValue(v interface{}) interface{} {
 				continue
 			}
 			out[k] = val
+		}
+		if typ := out["type"]; typ == "object" {
+			if _, ok := out["properties"]; !ok {
+				out["properties"] = map[string]interface{}{}
+			}
 		}
 		if typ := out["type"]; typ == "array" {
 			if _, ok := out["items"]; !ok {
@@ -194,7 +242,81 @@ func SanitizeCodeGenOpenAIToolSchemaValue(v interface{}) interface{} {
 		}
 		return out
 	default:
+		if m := codeGenOpenAIMapFromAny(v); m != nil {
+			return SanitizeCodeGenOpenAIToolSchemaValue(m)
+		}
+		if items := codeGenOpenAISliceFromAny(v); len(items) > 0 {
+			out := make([]interface{}, len(items))
+			for i, val := range items {
+				out[i] = SanitizeCodeGenOpenAIToolSchemaValue(val)
+			}
+			return out
+		}
 		return v
+	}
+}
+
+func sanitizeCodeGenOpenAIToolSchemaProperties(v interface{}) interface{} {
+	props := codeGenOpenAIMapFromAny(v)
+	if props == nil {
+		return v
+	}
+	out := make(map[string]interface{}, len(props))
+	for name, schema := range props {
+		out[name] = SanitizeCodeGenOpenAIToolSchemaValue(schema)
+	}
+	return out
+}
+
+func codeGenOpenAIMapFromAny(v interface{}) map[string]interface{} {
+	switch m := v.(type) {
+	case map[string]interface{}:
+		return m
+	case map[string]string:
+		out := make(map[string]interface{}, len(m))
+		for k, val := range m {
+			out[k] = val
+		}
+		return out
+	default:
+		data, err := json.Marshal(v)
+		if err != nil || len(data) == 0 || string(data) == "null" {
+			return nil
+		}
+		var out map[string]interface{}
+		if err := json.Unmarshal(data, &out); err != nil || len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+}
+
+func codeGenOpenAISliceFromAny(v interface{}) []interface{} {
+	switch items := v.(type) {
+	case []interface{}:
+		return items
+	case []map[string]interface{}:
+		out := make([]interface{}, 0, len(items))
+		for _, item := range items {
+			out = append(out, item)
+		}
+		return out
+	case []map[string]string:
+		out := make([]interface{}, 0, len(items))
+		for _, item := range items {
+			out = append(out, item)
+		}
+		return out
+	default:
+		data, err := json.Marshal(v)
+		if err != nil || len(data) == 0 || string(data) == "null" {
+			return nil
+		}
+		var out []interface{}
+		if err := json.Unmarshal(data, &out); err != nil {
+			return nil
+		}
+		return out
 	}
 }
 

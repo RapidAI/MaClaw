@@ -850,6 +850,57 @@ func TestForwardOpenAI_NormalizesCodeGenAutoModelAndSanitizesTools(t *testing.T)
 	}
 }
 
+func TestForwardOpenAI_NormalizesGLMCodingPlanEndpointAndMessages(t *testing.T) {
+	var got map[string]interface{}
+	p := NewOpenAIProxy(OpenAIProxyConfig{
+		URL:       "https://open.bigmodel.cn/api/paas/v4",
+		Key:       "test-key",
+		Model:     "glm-5.1",
+		AgentType: "Kilo Code",
+	})
+	p.client = &http.Client{Transport: openAIProxyRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions" {
+			t.Fatalf("upstream URL = %s", r.URL.String())
+		}
+		if r.Header.Get("User-Agent") != "Kilo Code" {
+			t.Fatalf("User-Agent = %q, want Kilo Code", r.Header.Get("User-Agent"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl-test","choices":[]}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	_, statusCode, err := p.forwardOpenAI(map[string]interface{}{
+		"model": "glm-5.1",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": []interface{}{
+				map[string]interface{}{"type": "text", "text": "look"},
+				map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/png;base64,xx"}},
+			}},
+			map[string]interface{}{"role": "user", "content": ""},
+		},
+	})
+	if err != nil {
+		t.Fatalf("forwardOpenAI: %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want 200", statusCode)
+	}
+	messages := got["messages"].([]interface{})
+	if content := messages[0].(map[string]interface{})["content"]; content != "look" {
+		t.Fatalf("content = %#v, want look", content)
+	}
+	if content := messages[1].(map[string]interface{})["content"]; content != "[No user content provided]" {
+		t.Fatalf("empty content = %#v", content)
+	}
+}
+
 type openAIProxyRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f openAIProxyRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -1279,6 +1330,190 @@ func TestResponsesToOpenAI(t *testing.T) {
 	}
 }
 
+func TestResponsesToOpenAIConvertsTypedSDKOutput(t *testing.T) {
+	type responseContentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	}
+	type responseOutputItem struct {
+		Type      string                 `json:"type"`
+		ID        string                 `json:"id,omitempty"`
+		CallID    string                 `json:"call_id,omitempty"`
+		Name      string                 `json:"name,omitempty"`
+		Arguments string                 `json:"arguments,omitempty"`
+		Content   []responseContentBlock `json:"content,omitempty"`
+	}
+
+	result := responsesToOpenAI(map[string]interface{}{
+		"id": "resp_typed",
+		"output": []responseOutputItem{
+			{
+				Type: "message",
+				Content: []responseContentBlock{
+					{Type: "output_text", Text: "typed text"},
+				},
+			},
+			{
+				Type:      "function_call",
+				CallID:    "call_typed",
+				Name:      "run_command",
+				Arguments: `{"cmd":"pwd"}`,
+			},
+		},
+	}, "gpt-compat")
+
+	choices := result["choices"].([]interface{})
+	choice := choices[0].(map[string]interface{})
+	if choice["finish_reason"] != "tool_calls" {
+		t.Fatalf("finish_reason = %v, want tool_calls", choice["finish_reason"])
+	}
+	message := choice["message"].(map[string]interface{})
+	if message["content"] != "typed text" {
+		t.Fatalf("content = %q, want typed text", message["content"])
+	}
+	calls := message["tool_calls"].([]interface{})
+	call := calls[0].(map[string]interface{})
+	if call["id"] != "call_typed" {
+		t.Fatalf("tool call id = %v", call["id"])
+	}
+	fn := call["function"].(map[string]interface{})
+	if fn["name"] != "run_command" || fn["arguments"] != `{"cmd":"pwd"}` {
+		t.Fatalf("function = %#v", fn)
+	}
+}
+
+func TestResponsesToOpenAIConvertsTypedSDKUsage(t *testing.T) {
+	type responseUsage struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	}
+
+	result := responsesToOpenAI(map[string]interface{}{
+		"id": "resp_typed_usage",
+		"output": []interface{}{map[string]interface{}{
+			"type": "message",
+			"content": []interface{}{map[string]interface{}{
+				"type": "output_text",
+				"text": "ok",
+			}},
+		}},
+		"usage": responseUsage{InputTokens: 11, OutputTokens: 7},
+	}, "gpt-compat")
+
+	usage := result["usage"].(map[string]interface{})
+	if usage["prompt_tokens"] != float64(11) || usage["completion_tokens"] != float64(7) || usage["total_tokens"] != float64(18) {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestAnthropicToOpenAIConvertsTypedSDKContent(t *testing.T) {
+	type anthropicContentBlock struct {
+		Type  string         `json:"type"`
+		Text  string         `json:"text,omitempty"`
+		ID    string         `json:"id,omitempty"`
+		Name  string         `json:"name,omitempty"`
+		Input map[string]any `json:"input,omitempty"`
+	}
+
+	result := anthropicToOpenAI(map[string]interface{}{
+		"id":          "msg_typed",
+		"stop_reason": "tool_use",
+		"content": []anthropicContentBlock{
+			{Type: "text", Text: "need tool"},
+			{Type: "tool_use", ID: "toolu_typed", Name: "run_command", Input: map[string]any{"cmd": "pwd"}},
+		},
+	}, "claude-compat")
+
+	choices := result["choices"].([]interface{})
+	choice := choices[0].(map[string]interface{})
+	if choice["finish_reason"] != "tool_calls" {
+		t.Fatalf("finish_reason = %v, want tool_calls", choice["finish_reason"])
+	}
+	message := choice["message"].(map[string]interface{})
+	if message["content"] != "need tool" {
+		t.Fatalf("content = %q, want need tool", message["content"])
+	}
+	calls := message["tool_calls"].([]interface{})
+	call := calls[0].(map[string]interface{})
+	if call["id"] != "toolu_typed" {
+		t.Fatalf("tool call id = %v", call["id"])
+	}
+	fn := call["function"].(map[string]interface{})
+	if fn["name"] != "run_command" || fn["arguments"] != `{"cmd":"pwd"}` {
+		t.Fatalf("function = %#v", fn)
+	}
+}
+
+func TestAnthropicToOpenAIConvertsTypedSDKUsage(t *testing.T) {
+	type anthropicUsage struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	}
+
+	result := anthropicToOpenAI(map[string]interface{}{
+		"id":          "msg_usage",
+		"stop_reason": "end_turn",
+		"content": []interface{}{map[string]interface{}{
+			"type": "text",
+			"text": "ok",
+		}},
+		"usage": anthropicUsage{InputTokens: 13, OutputTokens: 5},
+	}, "claude-compat")
+
+	usage := result["usage"].(map[string]interface{})
+	if usage["prompt_tokens"] != float64(13) || usage["completion_tokens"] != float64(5) || usage["total_tokens"] != float64(18) {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestOpenAIToAnthropicNormalizesMissingToolCallLinkage(t *testing.T) {
+	req := openaiToAnthropic(map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+			map[string]interface{}{
+				"role":    "assistant",
+				"content": nil,
+				"tool_calls": []interface{}{map[string]interface{}{
+					"function": map[string]interface{}{
+						"name":      "run_command",
+						"arguments": map[string]interface{}{"cmd": "pwd"},
+					},
+				}},
+			},
+			map[string]interface{}{"role": "tool", "tool_call_id": "", "content": map[string]interface{}{"ok": true}},
+		},
+	}, "claude-compat")
+
+	messages := req["messages"].([]interface{})
+	if len(messages) != 3 {
+		t.Fatalf("messages len = %d, want 3: %#v", len(messages), messages)
+	}
+	assistant := messages[1].(map[string]interface{})
+	assistantBlocks := assistant["content"].([]interface{})
+	toolUse := assistantBlocks[0].(map[string]interface{})
+	callID, _ := toolUse["id"].(string)
+	if !strings.HasPrefix(callID, "call_") {
+		t.Fatalf("tool_use id = %#v, want generated call_ id", toolUse["id"])
+	}
+	if toolUse["name"] != "run_command" {
+		t.Fatalf("tool_use name = %#v", toolUse["name"])
+	}
+	input := toolUse["input"].(map[string]interface{})
+	if input["cmd"] != "pwd" {
+		t.Fatalf("tool_use input = %#v", input)
+	}
+
+	toolResultMsg := messages[2].(map[string]interface{})
+	toolResultBlocks := toolResultMsg["content"].([]interface{})
+	toolResult := toolResultBlocks[0].(map[string]interface{})
+	if toolResult["tool_use_id"] != callID {
+		t.Fatalf("tool_result tool_use_id = %#v, want %q", toolResult["tool_use_id"], callID)
+	}
+	if toolResult["content"] != `{"ok":true}` {
+		t.Fatalf("tool_result content = %#v", toolResult["content"])
+	}
+}
+
 func TestResponsesToOpenAIPreservesPromptCacheUsage(t *testing.T) {
 	result := responsesToOpenAI(map[string]interface{}{
 		"id": "resp_cache",
@@ -1516,6 +1751,72 @@ func TestForwardResponses_NormalizesCodeGenAutoModelAndSanitizesTools(t *testing
 	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
 	if gotType := values["items"].(map[string]interface{})["type"]; gotType != "string" {
 		t.Fatalf("array items type = %#v, want string", gotType)
+	}
+}
+
+func TestForwardResponses_SanitizesOpenAISDKFieldsAndKeepsToolOutput(t *testing.T) {
+	var got map[string]interface{}
+	p := NewOpenAIProxy(OpenAIProxyConfig{
+		URL:     "https://api.example.com/v1",
+		Key:     "test-key",
+		Model:   "gpt-test",
+		WireAPI: "responses",
+	})
+	p.client = &http.Client{Transport: openAIProxyRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp-test","output":[]}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	body := map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi", "timestamp": "drop-me"},
+			map[string]interface{}{"role": "tool", "tool_call_id": "call_1", "content": map[string]interface{}{"ok": true}, "extra": "drop-me"},
+		},
+		"stream_options": map[string]interface{}{"include_usage": true},
+		"response_format": map[string]interface{}{
+			"type": "json_schema",
+			"json_schema": map[string]interface{}{
+				"name":   "answer",
+				"schema": map[string]interface{}{"type": "object"},
+				"extra":  "drop-me",
+			},
+		},
+	}
+
+	_, statusCode, err := p.forwardResponses(body)
+	if err != nil {
+		t.Fatalf("forwardResponses: %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want 200", statusCode)
+	}
+	input := got["input"].([]interface{})
+	first := input[0].(map[string]interface{})
+	content := first["content"].([]interface{})[0].(map[string]interface{})
+	if gotText := content["text"]; gotText != "hi" {
+		t.Fatalf("user text = %#v, want hi", gotText)
+	}
+	output := input[1].(map[string]interface{})
+	if gotOutput := output["output"]; gotOutput != `{"ok":true}` {
+		t.Fatalf("tool output = %#v, want JSON string", gotOutput)
+	}
+	text := got["text"].(map[string]interface{})
+	format := text["format"].(map[string]interface{})
+	if gotType := format["type"]; gotType != "json_schema" {
+		t.Fatalf("responses text format type = %#v, want json_schema", gotType)
+	}
+	if _, ok := format["extra"]; ok {
+		t.Fatalf("response_format extra leaked to responses request: %#v", got)
+	}
+	if _, ok := got["stream_options"]; ok {
+		t.Fatalf("stream_options leaked to responses request: %#v", got)
 	}
 }
 

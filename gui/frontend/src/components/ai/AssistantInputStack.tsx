@@ -109,9 +109,9 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                 style={{
                     height: "8px",
                     cursor: "ns-resize",
-                    background: t.bg,
-                    borderTop: `1px solid ${t.divider}`,
-                    borderBottom: `1px solid ${t.inputBarBorder}`,
+                    background: "transparent",
+                    borderTop: inline ? `1px solid ${t.divider}` : "none",
+                    borderBottom: inline ? `1px solid ${t.inputBarBorder}` : "none",
                     flexShrink: 0,
                     display: "flex",
                     alignItems: "center",
@@ -132,8 +132,8 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     height: inputAreaHeight ? `${inputAreaHeight}px` : undefined,
                     minWidth: 0,
                     overflow: inputOverlay ? "visible" : "hidden",
-                    background: t.inputBarBg,
-                    borderTop: `1px solid ${t.inputBarBorder}`,
+                    background: inline ? t.inputBarBg : "transparent",
+                    borderTop: inline ? `1px solid ${t.inputBarBorder}` : "none",
                     ['--wails-draggable' as any]: 'no-drag',
                 }}
             >

@@ -4,7 +4,7 @@
  * 三态模型：
  * - online:  绿色实心圆点（确认在线）
  * - offline: 灰色空心圆圈（确认离线）
- * - unknown: 橙色脉冲圆点（状态不确定）
+ * - unknown: 灰蓝脉冲圆点（状态不确定）
  */
 
 import { CSSProperties, useEffect } from "react";
@@ -55,7 +55,7 @@ export function VEStatusDot({ status, size = 8, variant = "dot", style }: VEStat
         if (variant === "badge") {
             return isOffline
                 ? `1.5px solid ${color}`
-                : `1.5px solid var(--theme-page-bg, #1a1a2e)`;
+                : `1.5px solid var(--theme-page-bg, #0f1720)`;
         }
         return isOffline ? `1.5px solid ${color}` : "none";
     };

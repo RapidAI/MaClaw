@@ -26,7 +26,7 @@ const (
 )
 
 func classifyManageSkillAction(action string) manageSkillAction {
-	switch manageSkillAction(strings.ToLower(strings.TrimSpace(action))) {
+	switch manageSkillAction(cskill.NormalizeManageSkillAction(action)) {
 	case manageSkillActionList:
 		return manageSkillActionList
 	case manageSkillActionSearch:

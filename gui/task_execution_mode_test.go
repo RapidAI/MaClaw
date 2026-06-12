@@ -164,21 +164,14 @@ func TestDirectModeMainLoopBlocklist_ForcesCodingSubAgent(t *testing.T) {
 func TestPhaseGateAndDirectMode_BothBlockLocalCoding(t *testing.T) {
 	criticalTools := []string{"bash", "write_file", "edit_file"}
 	for _, name := range criticalTools {
-		inPhaseGate := codingToolBlocklist[name]
 		inDirectBlock := directModeMainLoopBlocklist[name]
-		if !inPhaseGate {
-			t.Errorf("%s should be in codingToolBlocklist", name)
-		}
 		if !inDirectBlock {
-			t.Errorf("%s should also be in directModeMainLoopBlocklist", name)
+			t.Errorf("%s should be in directModeMainLoopBlocklist", name)
 		}
 	}
 
 	sessionTools := []string{"create_session", "send_and_observe", "control_session"}
 	for _, name := range sessionTools {
-		if !codingToolBlocklist[name] {
-			t.Errorf("%s should be in codingToolBlocklist", name)
-		}
 		if !directModeMainLoopBlocklist[name] {
 			t.Errorf("%s should be in directModeMainLoopBlocklist", name)
 		}

@@ -5,7 +5,9 @@ const capabilityIconAfterPunctuationPattern = new RegExp(`([\\uff1a:;\\uff1b])\\
 const capabilityIconMidSentencePattern = new RegExp(`([^\\n\\s])\\s+(${digitalEmployeeCapabilityIconPattern}\\s*)`, "gu");
 const markdownSensitiveSpanPattern = /(!?\[[^\]\n]+\]\([^)\n]+\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^\s*\n][^*\n]*\*)|(https?:\/\/[^\s<>()]+)|([A-Za-z]:\\[^\n\r\s*?"<>|]+)/g;
 const compactPipeTableSeparatorPattern = /(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)/g;
-const bareHeadingMarkerBeforeTextPattern = /(^|\n)(#{1,6})[ \t\r]*\n\n?(?=[^\n\s])/g;
+const bareHeadingMarkerLinePattern = /^(#{1,6})(?:\s+#{1,6})*$/;
+const markdownBlockStructureLinePattern = /^(#{1,6}\s+|>\s+|[-*]\s+|\d+[.)]\s+|[-*_]{3,}\s*$|\[KB_IMAGE:)/;
+const markdownTableStructureLinePattern = /^\|.*\|$|^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/;
 const compactHeadingMarkerPattern = /([^#\n\s])\s*(#{2,6})(?=[^\s#\d.,;:!?，。；：！？、)\]）}])/gu;
 
 function hasMultipleCapabilityIcons(text: string): boolean {
@@ -47,6 +49,39 @@ function normalizeCompactPipeTables(text: string): string {
         });
 }
 
+function hasUnescapedPipe(value: string): boolean {
+    let escaped = false;
+    for (const char of value) {
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (char === "\\") {
+            escaped = true;
+            continue;
+        }
+        if (char === "|") return true;
+    }
+    return false;
+}
+
+function canAttachBareHeadingMarkerToLine(line: string, followingLine?: string): boolean {
+    const trimmed = line.trimStart();
+    const followingTrimmed = followingLine?.trimStart() || "";
+    return trimmed !== ""
+        && !trimmed.startsWith("```")
+        && !markdownBlockStructureLinePattern.test(trimmed)
+        && !markdownTableStructureLinePattern.test(trimmed)
+        && !(hasUnescapedPipe(trimmed) && markdownTableStructureLinePattern.test(followingTrimmed));
+}
+
+function getBareHeadingMarker(line: string): string | null {
+    const trimmed = line.trim();
+    if (!bareHeadingMarkerLinePattern.test(trimmed)) return null;
+    const markers = trimmed.split(/\s+/);
+    return markers[markers.length - 1] || null;
+}
+
 /**
  * Insert newline before list markers that appear mid-line, but only outside
  * fenced code blocks. Prevents corrupting code content (e.g., YAML lists).
@@ -67,7 +102,6 @@ export function normalizeInlineListMarkers(content: string): string {
         let normalized = withMarkdownSensitiveSpansProtected(parts[i], (segment) => segment
             .replace(escapedNewlinePattern, "\n")
             .replace(/\|\|(?=\s*[^|\s])/g, "\n|")
-            .replace(bareHeadingMarkerBeforeTextPattern, "$1$2 ")
             .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{1,6}\s+)/g, "$1\n$2")
             .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{2,6})(?=[^#\s])/g, "$1\n$2 ")
             .replace(compactHeadingMarkerPattern, "$1\n$2 ")
@@ -84,4 +118,57 @@ export function normalizeInlineListMarkers(content: string): string {
         parts[i] = normalized;
     }
     return parts.join("");
+}
+
+export function attachBareHeadingMarkers(lines: string[]): string[] {
+    const attached: string[] = [];
+    let inCodeBlock = false;
+    for (let index = 0; index < lines.length; index++) {
+        const line = lines[index];
+        if (/^```/.test(line.trimStart())) {
+            inCodeBlock = !inCodeBlock;
+            attached.push(line);
+            continue;
+        }
+        if (inCodeBlock) {
+            attached.push(line);
+            continue;
+        }
+
+        const marker = getBareHeadingMarker(line);
+        if (!marker) {
+            attached.push(line);
+            continue;
+        }
+
+        let headingMarker = marker;
+        let nextIndex = index + 1;
+        const pendingLines = [line];
+        while (nextIndex < lines.length) {
+            const nextTrimmed = lines[nextIndex].trim();
+            if (nextTrimmed === "") {
+                pendingLines.push(lines[nextIndex]);
+                nextIndex++;
+                continue;
+            }
+            const nextMarker = getBareHeadingMarker(nextTrimmed);
+            if (nextMarker) {
+                headingMarker = nextMarker;
+                pendingLines.push(lines[nextIndex]);
+                nextIndex++;
+                continue;
+            }
+            break;
+        }
+
+        if (nextIndex < lines.length && canAttachBareHeadingMarkerToLine(lines[nextIndex], lines[nextIndex + 1])) {
+            attached.push(`${headingMarker} ${lines[nextIndex].trimStart()}`);
+            index = nextIndex;
+            continue;
+        }
+
+        attached.push(...pendingLines);
+        index = nextIndex - 1;
+    }
+    return attached;
 }

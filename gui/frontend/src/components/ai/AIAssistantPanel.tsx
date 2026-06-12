@@ -23,6 +23,7 @@ import { AssistantConversationBody } from "./AssistantConversationBody";
 import { AssistantTitleBar } from "./AssistantTitleBar";
 import { KnowledgeDialog } from "./KnowledgeDialog";
 import { AssistantInputStack } from "./AssistantInputStack";
+import { AssistantWelcomeView } from "./AssistantWelcomeView";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { AssistantPreviewPane } from "./AssistantPreviewPane";
@@ -45,7 +46,7 @@ import { compactCodingAgentProgressMessages } from "./compactCodingAgentProgress
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { buildProjectTabRecentMessages, chatHistoriesEquivalent, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, projectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
-import { GroupDiscussionRenameConsultation } from "../../../wailsjs/go/main/App";
+import { GroupDiscussionRenameConsultation, LoadConfig, PatchConfigFields } from "../../../wailsjs/go/main/App";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_PROJECT_TASK_CLOSED } from "../../constants/events";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
@@ -66,12 +67,43 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
     const [queueEditDraftActive, setQueueEditDraftActive] = useState(false);
     const [knowledgeDialogOpen, setKnowledgeDialogOpen] = useState(false);
+    const [workflowEnabled, setWorkflowEnabled] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
     const { ttsEnabled, setTtsEnabled, ttsPlaying } = useTTSReadback(audioOutputDeviceId);
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
+    // Workflow toggle: load initial state from config, sync on config-changed event
+    useEffect(() => {
+        LoadConfig().then((cfg) => {
+            setWorkflowEnabled(cfg?.workflow_enabled === true);
+        }).catch(() => { /* ignore */ });
+        const off = EventsOn("config-changed", (cfg: any) => {
+            if (cfg && typeof cfg.workflow_enabled === "boolean") {
+                setWorkflowEnabled(cfg.workflow_enabled);
+            } else if (cfg && cfg.workflow_enabled === undefined) {
+                setWorkflowEnabled(false);
+            }
+        });
+        return () => { if (typeof off === "function") off(); };
+    }, []);
+    const handleToggleWorkflow = useCallback(() => {
+        setWorkflowEnabled(prev => {
+            const next = !prev;
+            PatchConfigFields({ workflow_enabled: next }).then((saved) => {
+                setWorkflowEnabled(saved?.workflow_enabled === true);
+            }).catch(() => {
+                // Revert to actual backend state on failure
+                LoadConfig().then(cfg => {
+                    setWorkflowEnabled(cfg?.workflow_enabled === true);
+                }).catch(() => {
+                    setWorkflowEnabled(!next); // last resort: toggle back
+                });
+            });
+            return next;
+        });
+    }, []);
     const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, closeTab, clearTabConversation, saveTabState, getTabState, getLastActiveAt, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
     const [renameGroupTargetTabId, setRenameGroupTargetTabId] = useState<string | null>(null);
     const [renameGroupValue, setRenameGroupValue] = useState("");
@@ -745,7 +777,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const timer = setTimeout(clearTabLimitError, 3000);
         return () => clearTimeout(timer);
     }, [tabLimitError, clearTabLimitError]);
-    const { state: workflowState, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(activeTab.projectPath || undefined);
+    const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(activeTab.projectPath || undefined);
     const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(activeTab.projectPath);
     const showAgentView = !!agentView && agentViewOwnerTabRef.current === activeTab.id;
     const showWorkflowPreview = !showAgentView && workflowState.splitMode;
@@ -921,6 +953,28 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setDraftInputValue?.(nextValue);
     }, [activeTab.id, activeTab.type, saveTabState, setDraftInputValue]);
     const canSend = ready && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
+    const handleWelcomePromptSelect = useCallback((text: string) => {
+        updateInputValue(text);
+        requestAnimationFrame(() => {
+            if (inputRef.current) {
+                inputRef.current.focus();
+                // Auto-grow textarea height to fit multi-line template
+                inputRef.current.style.height = "auto";
+                inputRef.current.style.height = inputRef.current.scrollHeight + "px";
+                // Select the first [placeholder] so user can immediately type the value
+                const firstBracket = text.indexOf('[');
+                const closeBracket = text.indexOf(']', firstBracket);
+                if (firstBracket >= 0 && closeBracket > firstBracket) {
+                    inputRef.current.selectionStart = firstBracket;
+                    inputRef.current.selectionEnd = closeBracket + 1;
+                } else {
+                    // No placeholder — move cursor to end
+                    inputRef.current.selectionStart = text.length;
+                    inputRef.current.selectionEnd = text.length;
+                }
+            }
+        });
+    }, [updateInputValue, inputRef]);
     const selectedFileName = selectedFilePath ? selectedFilePath.split(/[/\\]/).pop() || selectedFilePath : "";
     const { pinnedNews, otherMessages } = useMemo(() => {
         const pinned: ChatMessage[] = [];
@@ -934,6 +988,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
     }, [displayMessages]);
+    // Show welcome view when there are no real conversation messages (news-only is still "empty").
+    // Also hide welcome view if there are active progress messages (session is working).
+    const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0;
     const hasConversation = otherMessages.length + displayProgressMessages.length > 0;
     const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ hasConversation, messages: displayMessages, ready, scrollToTopSeq });
     const handleInputResizeEnd = useCallback(() => {
@@ -1238,7 +1295,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>
             {inline && <AssistantDragHandle />}
-            <AssistantTitleBar clearHistory={clearActiveHistory} codingAgentProgress={null} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
+            <AssistantTitleBar clearHistory={clearActiveHistory} codingAgentProgress={null} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} onOpenWorkflowPanel={openDocPreview} onToggleWorkflow={handleToggleWorkflow} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
             <div data-testid="ai-panel-content-row" style={{ display: "flex", flexDirection: "row", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
             <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }}>
             <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
@@ -1260,10 +1317,53 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             {showChatUI && <>
                 <AssistantWorkflowMaximizeSuggestion inline={!!inline} lang={lang} maximized={!!maximized} onDismiss={dismissMaximizeSuggestion} onToggleMaximize={onToggleMaximize} suggestMaximize={workflowState.suggestMaximize} theme={t} themeMode={themeMode} />
                 <ProjectSearchPanel search={projectSearch} lang={lang} theme={t} inline={!!inline} onProjectSwitch={handleProjectSearchSwitch} onCreateProjectTab={createProjectTabFromSearch} onCloseProjectTab={closeProjectTabByPath} onForkCurrentChat={handleForkCurrentChat} onTaskPrefsChanged={onTaskPrefsChanged} />
-                <div ref={outputContainerRef} data-testid="ai-output-container" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", textAlign: "left", color: t.text, background: t.bg, fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', monospace", whiteSpace: "pre-wrap", wordBreak: "break-all" }} onScroll={handleScroll}>
+                {showWelcomeView ? (
+                    <div data-testid="ai-welcome-container" style={{ flex: 1, minHeight: 0, overflow: "auto", background: t.bg }}>
+                        <AssistantWelcomeView
+                            lang={lang}
+                            theme={t}
+                            themeMode={themeMode}
+                            onPromptSelect={handleWelcomePromptSelect}
+                            pinnedNews={pinnedNews}
+                            composer={{
+                                browseFile,
+                                canSend,
+                                cancelPending,
+                                cancelSession,
+                                clearSelectedFile,
+                                exitHistoryBrowsing,
+                                finishVoicePointer,
+                                handleCancel,
+                                handlePaste,
+                                handleSend,
+                                handleVoiceClick,
+                                handleVoicePointerDown,
+                                handleVoicePointerLeave,
+                                inputLocked,
+                                inputRef,
+                                inputValue,
+                                isBusy,
+                                isSelectionCollapsedAtBoundary,
+                                pendingAttachments,
+                                ready,
+                                recallHistory,
+                                rememberHistoryEdit,
+                                removeSelectedFile,
+                                resizeInput,
+                                selectedFilePaths,
+                                setPendingAttachments,
+                                showBusySpinner,
+                                updateInputValue,
+                                voiceInput,
+                            }}
+                        />
+                    </div>
+                ) : (
+                <div ref={outputContainerRef} data-testid="ai-output-container" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", textAlign: "left", color: t.text, background: t.bg, fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', monospace", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "normal" }} onScroll={handleScroll}>
                     <AssistantConversationBody initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} processingText={activeProcessingText} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} showProcessingState={showProcessingState} showThinkingState={showThinkingState} theme={t} thinkingText={thinkingText} />
                     <div ref={outputEndRef} />
                 </div>
+                )}
                 {activeProjectPreparing && <div data-testid="project-tab-restore-progress" style={{ flexShrink: 0, padding: "7px 10px 8px", borderTop: `1px solid ${t.inputBarBorder}`, background: t.inputBarBg, color: t.textMuted, fontSize: 12 }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
                         <span>{activeProjectPrepareMode === "new-agent" ? (lang === "en" ? "Creating agent instance" : "正在创建 Agent 实例") : (lang === "en" ? "Restoring task context" : "正在恢复任务上下文")}</span>
@@ -1273,7 +1373,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         <div style={{ width: "38%", height: "100%", borderRadius: "inherit", background: t.headingColor, animation: "sidebar-task-restore-progress 0.9s ease-in-out infinite alternate" }} />
                     </div>
                 </div>}
-                <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={!!inline} isBusy={isBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />
+                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={isBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
             </>}
             <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />
             {renameGroupTargetTab && (

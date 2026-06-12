@@ -284,13 +284,13 @@ func TestNormalizeAgentTimeoutSec(t *testing.T) {
 }
 
 // TestIsWorkflowEnabled verifies the three-state behavior of the workflow toggle:
-// nil (default) → true, explicit true → true, explicit false → false.
+// nil (default) → false, explicit true → true, explicit false → false.
 // Also verifies JSON round-trip: *bool with omitempty serializes false correctly.
 func TestIsWorkflowEnabled(t *testing.T) {
-	// nil → default true
+	// nil → default false
 	var cfg AppConfig
-	if !cfg.IsWorkflowEnabled() {
-		t.Error("nil WorkflowEnabled should default to true")
+	if cfg.IsWorkflowEnabled() {
+		t.Error("nil WorkflowEnabled should default to false")
 	}
 
 	// explicit true
@@ -318,13 +318,13 @@ func TestIsWorkflowEnabled(t *testing.T) {
 		t.Error("workflow_enabled=false should survive JSON round-trip")
 	}
 
-	// JSON round-trip: absent field → nil → default true
+	// JSON round-trip: absent field → nil → default false
 	var cfg3 AppConfig
 	if err := json.Unmarshal([]byte(`{}`), &cfg3); err != nil {
 		t.Fatalf("unmarshal empty: %v", err)
 	}
-	if !cfg3.IsWorkflowEnabled() {
-		t.Error("absent workflow_enabled should default to true")
+	if cfg3.IsWorkflowEnabled() {
+		t.Error("absent workflow_enabled should default to false")
 	}
 }
 

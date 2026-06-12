@@ -93,6 +93,7 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 	}
 
 	activatedDeferred := make(map[string]bool)
+	activatedConditional := make(map[string]bool)
 	if h.toolDefGen != nil {
 		for _, item := range ranked {
 			if h.toolDefGen.ActivateDeferredTool(item.name) {
@@ -107,6 +108,35 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 		}
 	}
 
+	// Session-pin discovered conditional tools so they appear in subsequent
+	// Route() calls within the same agent loop. Without this, conditional
+	// tools (ssh, web_search, etc.) found by discover_tool remain invisible
+	// to the LLM because Route() only activates them via UIC/keyword
+	// matching on the original user message. Session-pinning makes them
+	// persist for the rest of the session regardless of message content.
+	if h.toolRouter != nil {
+		for _, item := range ranked {
+			if tool.CoreToolNames[item.name] || activatedDeferred[item.name] {
+				continue
+			}
+			if tool.ShouldPinConditionalTool(item.name) {
+				h.toolRouter.ActivateSessionTool(item.name)
+				activatedConditional[item.name] = true
+			}
+		}
+		if len(activatedConditional) > 0 {
+			// Invalidate the tool cache so the next getTools() + routeTools()
+			// call (at the start of the next iteration) will include these
+			// newly session-pinned tools in the LLM tool list.
+			h.toolsMu.Lock()
+			h.cachedTools = nil
+			h.toolsCacheTime = time.Time{}
+			h.toolsMu.Unlock()
+		}
+	}
+
+	anyActivated := len(activatedDeferred) > 0 || len(activatedConditional) > 0
+
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Found %d matching tools:\n", len(ranked)))
 	for i, item := range ranked {
@@ -115,10 +145,11 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 		if runes := []rune(desc); len(runes) > 120 {
 			desc = string(runes[:120]) + "..."
 		}
-		b.WriteString(discoverToolStatusLine(i+1, item.name, desc, tool.CoreToolNames[item.name], activatedDeferred[item.name]))
+		isActivated := activatedDeferred[item.name] || activatedConditional[item.name]
+		b.WriteString(discoverToolStatusLine(i+1, item.name, desc, tool.CoreToolNames[item.name], isActivated))
 	}
-	if len(activatedDeferred) > 0 {
-		b.WriteString("\nActivated deferred tools will be available on the next routed turn.")
+	if anyActivated {
+		b.WriteString("\nActivated tools are now available. Call them directly in your next step.")
 	} else {
 		b.WriteString("\nUse the matched tool name when the next step needs that capability.")
 	}

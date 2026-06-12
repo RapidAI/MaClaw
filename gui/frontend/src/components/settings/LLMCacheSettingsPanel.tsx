@@ -173,7 +173,7 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessag
                     {saving ? textForLang(lang, 'Saving...', '\u4fdd\u5b58\u4e2d...', '\u4fdd\u5b58\u4e2d...') : textForLang(lang, 'Save', '\u4fdd\u5b58', '\u4fdd\u5b58')}
                 </button>
             </div>
-            {saveError && <div style={{ color: 'var(--error-color, #b42318)', fontSize: 13 }}>{saveError}</div>}
+            {saveError && <div style={{ color: 'var(--error-color, #c43d34)', fontSize: 13 }}>{saveError}</div>}
         </div>
     );
 };

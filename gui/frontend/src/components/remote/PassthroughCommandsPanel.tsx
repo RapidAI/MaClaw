@@ -582,7 +582,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
                             {text(lang, "远程注册复杂形参可用 --params-json，例：/runctl save git-status --cmd 'git -C ${target} status --short' --params-json '[{\"name\":\"target\",\"type\":\"path\",\"required\":true,\"example\":\"D:\\\\workprj\\\\aicoder\"}]' --confirm", "Use --params-json for complex remote registration, for example: /runctl save git-status --cmd 'git -C ${target} status --short' --params-json '[{\"name\":\"target\",\"type\":\"path\",\"required\":true,\"example\":\"D:\\\\workprj\\\\aicoder\"}]' --confirm")}
                         </div>
                         {settings.allow_exec && (
-                            <div style={{ marginTop: 6, color: colors.warning, fontSize: "0.7rem", lineHeight: 1.45 }}>
+                            <div style={{ marginTop: 6, color: colors.primaryDark, fontSize: "0.7rem", lineHeight: 1.45 }}>
                                 {text(lang, "远程应急示例：/exec git status --short --confirm。/exec 会记录审计，只运行程序和 argv，不解释管道、重定向或 &&。", "Emergency example: /exec git status --short --confirm. /exec is audited and runs only a program plus argv; pipes, redirection, and && are not interpreted.")}
                             </div>
                         )}
@@ -617,7 +617,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
                                         <span style={{ color: cmd.enabled ? colors.success : colors.textMuted, fontWeight: 700 }}>
                                             {cmd.enabled ? text(lang, "启用", "Enabled") : text(lang, "禁用", "Disabled")}
                                         </span>
-                                        {cmd.confirm_required && <div style={{ fontSize: "0.68rem", color: colors.warning }}>{text(lang, "需确认", "Confirm")}</div>}
+                                        {cmd.confirm_required && <div style={{ fontSize: "0.68rem", color: colors.primaryDark }}>{text(lang, "需确认", "Confirm")}</div>}
                                         {cmd.last_status && <div style={{ fontSize: "0.68rem", color: colors.textMuted }}>{cmd.last_status} {cmd.last_exit_code}</div>}
                                     </td>
                                     <td style={remoteTableCellStyle}>

@@ -132,13 +132,14 @@ func runPrompt(promptText string) {
 	pipeBGTaskMgr.SetPersistDir(dataSubDir)
 	sshHandler := func(args map[string]interface{}) string {
 		deps := sshtool.SSHToolDeps{
-			Manager:   sshMgr,
-			BGTaskMgr: pipeBGTaskMgr,
+			Manager:       sshMgr,
+			BGTaskMgr:     pipeBGTaskMgr,
+			PolicyOwnerID: "tui:pipe",
 			HostLoader: func() []corelib.SSHHostEntry {
 				return app.appConfig.SSHHosts
 			},
 			OnConnected: func(session *remote.SSHManagedSession, cfg remote.SSHHostConfig) {
-				pipeBGTaskMgr.RediscoverOrphanTasks(session.ID)
+				pipeBGTaskMgr.RediscoverOrphanTasksForOwner(session.ID, "tui:pipe")
 			},
 		}
 		return sshtool.ToolSSH(deps, args)

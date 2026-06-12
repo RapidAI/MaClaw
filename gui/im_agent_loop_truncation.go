@@ -16,6 +16,7 @@ const maxEssentialTruncationHints = 1
 const (
 	maxAgentLoopInlineWriteFileContentRunes = 3000
 	maxAgentLoopInlineBashCommandRunes      = 4000
+	maxAgentLoopInlineSSHCommandRunes       = 4000
 )
 
 type agentLoopTruncationRecoveryResult struct {

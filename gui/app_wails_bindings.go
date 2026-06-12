@@ -2197,11 +2197,12 @@ func (a *App) ResolveCriticalConfirm(confirmID string, confirmed bool) error {
 // SSHBackgroundTaskView is the frontend-safe shape for SSH exec_background
 // tasks. It intentionally describes commands, not SSH session loops.
 type SSHBackgroundTaskView struct {
-	TaskID    string                         `json:"task_id"`
-	SessionID string                         `json:"session_id"`
-	TaskRole  string                         `json:"task_role,omitempty"`
-	Status    remote.SSHBackgroundTaskStatus `json:"status"`
-	StartedAt string                         `json:"started_at"`
+	TaskID     string                         `json:"task_id"`
+	SessionID  string                         `json:"session_id"`
+	TaskRole   string                         `json:"task_role,omitempty"`
+	Status     remote.SSHBackgroundTaskStatus `json:"status"`
+	StartedAt  string                         `json:"started_at"`
+	MirrorFile string                         `json:"mirror_file,omitempty"`
 }
 
 // ListBackgroundLoops returns all active background loops for the frontend.
@@ -2227,18 +2228,26 @@ func (a *App) ListSSHBackgroundTasks() []SSHBackgroundTaskView {
 	if handler == nil || handler.bgTaskMgr == nil {
 		return nil
 	}
+	ownerID := strings.TrimSpace(a.defaultManualPolicyOwnerID())
 	tasks := handler.bgTaskMgr.ListTasks()
 	views := make([]SSHBackgroundTaskView, 0, len(tasks))
 	for _, task := range tasks {
+		if ownerID == "" && strings.TrimSpace(task.OwnerID) != "" {
+			continue
+		}
+		if ownerID != "" && !remote.SSHBackgroundTaskOwnerMatches(task.OwnerID, ownerID) {
+			continue
+		}
 		if task.Status.IsActive() && (task.LastCheck.IsZero() || time.Since(task.LastCheck) > 15*time.Second) {
-			handler.bgTaskMgr.RefreshTaskStatusAsync(task.TaskID, 5)
+			handler.bgTaskMgr.RefreshTaskStatusAsyncForOwner(task.TaskID, 5, ownerID)
 		}
 		views = append(views, SSHBackgroundTaskView{
-			TaskID:    task.TaskID,
-			SessionID: task.SessionID,
-			TaskRole:  task.TaskRole,
-			Status:    task.Status,
-			StartedAt: task.StartedAt.Format(time.RFC3339),
+			TaskID:     task.TaskID,
+			SessionID:  task.SessionID,
+			TaskRole:   task.TaskRole,
+			Status:     task.Status,
+			StartedAt:  task.StartedAt.Format(time.RFC3339),
+			MirrorFile: task.MirrorFile,
 		})
 	}
 	return views

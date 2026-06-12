@@ -1,8 +1,11 @@
 package v2
 
 import (
+	"sort"
 	"strings"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 )
 
 // PhaseTemplate defines a phase in a workflow template.
@@ -32,7 +35,7 @@ type WorkflowTemplate struct {
 	Type        string
 	Name        string
 	Description string
-	Keywords    []string // used for quick matching
+	Keywords    []string // retained for metadata and UI display; not used for routing
 	Phases      []PhaseTemplate
 }
 
@@ -40,6 +43,9 @@ type WorkflowTemplate struct {
 type TemplateRegistry struct {
 	mu        sync.RWMutex
 	templates map[string]*WorkflowTemplate
+	bm25Index *bm25.Index
+	bm25Dirty bool
+	version   uint64
 }
 
 func NewTemplateRegistry() *TemplateRegistry {
@@ -47,48 +53,142 @@ func NewTemplateRegistry() *TemplateRegistry {
 }
 
 func (r *TemplateRegistry) Register(t *WorkflowTemplate) {
+	if r == nil || t == nil || strings.TrimSpace(t.Type) == "" {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.templates == nil {
+		r.templates = make(map[string]*WorkflowTemplate)
+	}
 	r.templates[t.Type] = t
+	r.bm25Dirty = true
+	r.version++
 }
 
 func (r *TemplateRegistry) Get(workflowType string) *WorkflowTemplate {
+	if r == nil {
+		return nil
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.templates[workflowType]
 }
 
-// MatchByKeywords returns the best-matching template based on keyword hits.
-// A keyword is "strong" if it has ≥2 runes (Chinese: 2 chars, English: 2+ chars).
-// Requires at least one strong keyword hit to match.
+// MatchByText returns the best advisory match using the template's structured
+// definition. It intentionally ignores Keywords so routing does not become a
+// keyword shortcut.
+func (r *TemplateRegistry) MatchByText(text string) *WorkflowTemplate {
+	ranked := r.RankedByText(text)
+	if !hasStableTopTemplateScore(ranked) {
+		return nil
+	}
+	return r.Get(ranked[0].Type)
+}
+
+// MatchByKeywords is kept for older call sites. Despite the historical name it
+// no longer performs keyword matching.
 func (r *TemplateRegistry) MatchByKeywords(text string) *WorkflowTemplate {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	lower := strings.ToLower(text)
+	return r.MatchByText(text)
+}
 
-	var bestTemplate *WorkflowTemplate
-	bestScore := 0
+type TemplateScore struct {
+	Type  string
+	Score float64
+}
 
-	for _, tmpl := range r.templates {
-		score := 0
-		hasStrong := false
-		for _, kw := range tmpl.Keywords {
-			if strings.Contains(lower, strings.ToLower(kw)) {
-				kwLen := len([]rune(kw))
-				if kwLen >= 2 {
-					score += 2
-					hasStrong = true
-				} else {
-					score += 1
-				}
-			}
-		}
-		if hasStrong && score > bestScore {
-			bestScore = score
-			bestTemplate = tmpl
+const stableTemplateScoreLeadRatio = 1.25
+
+func (r *TemplateRegistry) RankedByText(text string) []TemplateScore {
+	if r == nil {
+		return nil
+	}
+	idx := r.currentBM25Index()
+	if idx == nil {
+		return nil
+	}
+	scores := idx.Score(text)
+	ranked := make([]TemplateScore, 0, len(scores))
+	for id, score := range scores {
+		if score > 0 {
+			ranked = append(ranked, TemplateScore{Type: id, Score: score})
 		}
 	}
-	return bestTemplate
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Score == ranked[j].Score {
+			return ranked[i].Type < ranked[j].Type
+		}
+		return ranked[i].Score > ranked[j].Score
+	})
+	return ranked
+}
+
+func (r *TemplateRegistry) currentBM25Index() *bm25.Index {
+	for {
+		r.mu.Lock()
+		if r.bm25Index != nil && !r.bm25Dirty {
+			idx := r.bm25Index
+			r.mu.Unlock()
+			return idx
+		}
+
+		version := r.version
+		docs := make([]bm25.Doc, 0, len(r.templates))
+		for _, tmpl := range r.templates {
+			if tmpl == nil || strings.TrimSpace(tmpl.Type) == "" {
+				continue
+			}
+			docs = append(docs, bm25.Doc{ID: tmpl.Type, Text: templateSearchDocument(tmpl)})
+		}
+		r.mu.Unlock()
+
+		idx := bm25.New()
+		idx.Rebuild(docs)
+
+		r.mu.Lock()
+		if version == r.version {
+			r.bm25Index = idx
+			r.bm25Dirty = false
+			r.mu.Unlock()
+			return idx
+		}
+		r.mu.Unlock()
+	}
+}
+
+func templateSearchDocument(tmpl *WorkflowTemplate) string {
+	if tmpl == nil {
+		return ""
+	}
+	var b strings.Builder
+	appendPart := func(part string) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(part)
+	}
+	appendPart(tmpl.Type)
+	appendPart(tmpl.Name)
+	appendPart(tmpl.Description)
+	for _, phase := range tmpl.Phases {
+		appendPart(phase.ID)
+		appendPart(phase.Name)
+	}
+	return b.String()
+}
+
+func hasStableTopTemplateScore(ranked []TemplateScore) bool {
+	if len(ranked) == 0 || ranked[0].Score <= 0 {
+		return false
+	}
+	if len(ranked) == 1 || ranked[1].Score <= 0 {
+		return true
+	}
+	return ranked[0].Score >= ranked[1].Score*stableTemplateScoreLeadRatio
 }
 
 // --- Built-in Templates ---
@@ -97,7 +197,7 @@ func CodingTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:        "coding",
 		Name:        "编程项目",
-		Description: "需求 → 设计 → 任务分解 → 逐任务编码 → 验收",
+		Description: "需求 → 设计 → 任务分解 → 逐任务编码 → 验收。适用于开发应用、游戏、工具、系统、追踪系统。Software coding workflow for building applications, games, tools, systems, C++, backend, frontend, implementation, refactoring, and issue tracking systems.",
 		Keywords:    []string{"开发", "编写", "实现", "写代码", "游戏", "应用", "工具", "系统", "重构"},
 		Phases: []PhaseTemplate{
 			{ID: "requirements", Name: "需求文档", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -113,7 +213,7 @@ func PresentationTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:        "presentation_design",
 		Name:        "PPT 设计",
-		Description: "受众分析 → 内容大纲 → 逐页脚本 → 生成 PPT",
+		Description: "受众分析 → 内容大纲 → 逐页脚本 → 生成 PPT。适用于产品介绍、方案汇报、商业展示、演示文稿、幻灯片和 slide deck 设计。",
 		Keywords:    []string{"ppt", "幻灯片", "演示文稿", "slide", "PPT"},
 		Phases: []PhaseTemplate{
 			{ID: "audience_goal", Name: "受众与目标", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -397,6 +497,9 @@ func PaperWritingTemplate() *WorkflowTemplate {
 
 // RegisterBuiltinTemplates registers all built-in templates.
 func RegisterBuiltinTemplates(r *TemplateRegistry) {
+	if r == nil {
+		return
+	}
 	r.Register(CodingTemplate())
 	r.Register(PresentationTemplate())
 	r.Register(ProductDesignTemplate())

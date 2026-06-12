@@ -286,7 +286,7 @@ describe("VEConversationView", () => {
         it("classifies machine-offline send failures", () => {
             expect(classifySendError(new Error("send digital employee message: hub returned 502: deliver discussion message to machine-ve: machine is offline"))).toBe("ve_offline");
             expect(classifySendError(new Error("Digital employee is offline"))).toBe("ve_offline");
-            expect(classifySendError(new Error("network error"))).toBe("send_failed");
+            expect(classifySendError(new Error("network error"))).toBe("hub_disconnected");
         });
     });
 
@@ -658,6 +658,51 @@ describe("VEConversationView", () => {
 
             expect(send).toHaveBeenCalledTimes(1);
             expect(screen.getAllByText("Queue once")).toHaveLength(1);
+        });
+
+        it("moves recoverable send failures back to the visible queue and reconnects", async () => {
+            const initiate = vi
+                .fn()
+                .mockResolvedValue({ session_id: "test-session-1", ve_id: "ve-1", ve_name: "Test VE" });
+            const send = vi.fn().mockRejectedValue(new Error("network error"));
+            renderConversation({ existingSessionId: "test-session-1", initiateConversation: initiate, sendMessage: send, lang: "en" });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "Retry me" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId("ve-queued-message-panel").textContent).toContain("Retry me");
+            expect(screen.getByText(/Reconnecting \(1\/5\)/)).toBeTruthy();
+
+            await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+
+            expect(initiate).toHaveBeenCalledTimes(1);
+        });
+
+        it("keeps attachment chips when a recoverable attachment send failure is requeued", async () => {
+            (SelectAIAssistantFiles as any).mockResolvedValueOnce(["D:\\cases\\retry.pdf"]);
+            const sendWithAttachments = vi.fn().mockRejectedValue(new Error("hub returned 503: service unavailable"));
+            renderConversation({ existingSessionId: "test-session-1", sendMessageWithAttachments: sendWithAttachments, lang: "en" });
+
+            await act(async () => {
+                fireEvent.click(screen.getByTestId("ve-attach-button"));
+                await Promise.resolve();
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "Retry attachment" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await Promise.resolve(); });
+
+            expect(sendWithAttachments).toHaveBeenCalledWith("test-session-1", "Retry attachment", ["D:\\cases\\retry.pdf"]);
+            expect(screen.getByTestId("ve-queued-message-panel").textContent).toContain("Retry attachment");
+            const queuedEditButton = screen.getByTestId(/^edit-btn-/);
+            fireEvent.click(queuedEditButton);
+            expect(screen.getByText("retry.pdf")).toBeTruthy();
         });
 
         it("queues the next user input until the current assistant stream ends", async () => {

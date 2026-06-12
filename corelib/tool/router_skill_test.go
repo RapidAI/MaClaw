@@ -103,6 +103,115 @@ func TestRouter_SkillProvider_NoProvider_FallbackToThreeSignal(t *testing.T) {
 	}
 }
 
+func TestRouter_SkillUploadRequestKeepsManageSkillAndSuppressesInstallHint(t *testing.T) {
+	for _, msg := range []string{
+		"\u4e0a\u4f20\u5230skillmarket\u963f",
+		"\u628a Weather Query skill \u53d1\u5e03\u5230 hubcenter",
+		"publish this skill to hub",
+		"\u8fd9\u4e2a\u6280\u80fd\u4e0a\u67b6\u5230\u80fd\u529b\u5e02\u573a",
+	} {
+		t.Run(msg, func(t *testing.T) {
+			router := NewRouter(NewDefinitionGenerator(nil, nil))
+			tools := []map[string]interface{}{
+				makeToolDef("manage_skill", "Skill management action upload publish skillmarket hubcenter"),
+				makeToolDef("search_and_install_skill", "Search and install skill from SkillMarket"),
+			}
+			for name := range CoreToolNames {
+				if name != "manage_skill" {
+					tools = append(tools, makeToolDef(name, "core tool "+name))
+				}
+			}
+			for i := 0; i < 40; i++ {
+				tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+			}
+
+			result := router.Route(msg, tools)
+			names := routedToolNames(result)
+			if !names["manage_skill"] {
+				t.Fatalf("manage_skill should be routed for skill upload request, got %v", toolNamesForTest(result))
+			}
+			if names["search_and_install_skill"] {
+				t.Fatalf("search_and_install_skill should be suppressed for skill upload request, got %v", toolNamesForTest(result))
+			}
+		})
+	}
+}
+
+func TestIsSkillUploadRequest(t *testing.T) {
+	for _, msg := range []string{
+		"\u4e0a\u4f20\u5230skillmarket\u963f",
+		"\u6539\u8fdbskill\u5e76\u4e0a\u4f20",
+		"\u53d1\u5e03 skill \u5230 hubcenter",
+		"publish this skill to hub",
+		"\u80fd\u529b\u4e0a\u67b6\u5230\u80fd\u529b\u5e02\u573a",
+	} {
+		if !isSkillUploadRequest(msg) {
+			t.Fatalf("isSkillUploadRequest(%q)=false, want true", msg)
+		}
+	}
+	for _, msg := range []string{
+		"\u627e\u7bc7\u8bba\u6587\u53d1\u5e03\u5230\u77e5\u4e4e",
+		"\u4e0a\u4f20\u6587\u4ef6\u5230\u670d\u52a1\u5668",
+		"\u641c\u7d22\u5e76\u5b89\u88c5\u5929\u6c14 skill",
+		"\u67e5\u8be2\u5317\u4eac\u5929\u6c14",
+		"publish a skillful article to github",
+		"republish this skill note to hub",
+		"publish this skill to github",
+	} {
+		if isSkillUploadRequest(msg) {
+			t.Fatalf("isSkillUploadRequest(%q)=true, want false", msg)
+		}
+	}
+}
+
+func TestIsSkillUploadRequestUnicodeChinese(t *testing.T) {
+	for _, msg := range []string{
+		"\u4e0a\u4f20 skill \u5230 skillmarket",
+		"\u53d1\u5e03 skill \u5230 hubcenter",
+		"\u628a\u8fd9\u4e2a\u6280\u80fd\u4e0a\u67b6\u5230\u80fd\u529b\u5e02\u573a",
+	} {
+		if !isSkillUploadRequest(msg) {
+			t.Fatalf("isSkillUploadRequest(%q)=false, want true", msg)
+		}
+	}
+	for _, msg := range []string{
+		"\u4e0a\u4f20\u6587\u4ef6\u5230\u670d\u52a1\u5668",
+		"\u641c\u7d22\u5e76\u5b89\u88c5\u5929\u6c14 skill",
+	} {
+		if isSkillUploadRequest(msg) {
+			t.Fatalf("isSkillUploadRequest(%q)=true, want false", msg)
+		}
+	}
+}
+
+func TestIsLocalStoredInfoQueryUnicodeChinese(t *testing.T) {
+	for _, msg := range []string{
+		"\u77e5\u9053api2\u670d\u52a1\u5668\u4fe1\u606f\u5417\uff1f",
+		"\u77e5\u9053api2\u4fe1\u606f\u5417\uff1f",
+		"\u8bb0\u5f97\u6570\u636e\u5e93\u8d26\u53f7\u914d\u7f6e\u5417\uff1f",
+		"\u67e5\u4e00\u4e0b\u77e5\u8bc6\u5e93\u91cc\u6709\u6ca1\u6709\u90e8\u7f72\u6587\u6863",
+		"do you know api2 info",
+		"do you know server config",
+	} {
+		if !IsLocalStoredInfoQuery(msg) {
+			t.Fatalf("IsLocalStoredInfoQuery(%q)=false, want true", msg)
+		}
+	}
+	for _, msg := range []string{
+		"\u4eca\u5929api\u6700\u4f73\u5b9e\u8df5\u662f\u4ec0\u4e48\uff1f",
+		"\u67e5\u4e00\u4e0b\u6700\u65b0\u65b0\u95fb",
+		"\u8bb0\u4f4fapi2\u670d\u52a1\u5668\u4fe1\u606f",
+		"remember this api server config",
+		"do you know openai api pricing",
+		"do you know serverless pricing",
+		"do you know memoryless pricing",
+	} {
+		if IsLocalStoredInfoQuery(msg) {
+			t.Fatalf("IsLocalStoredInfoQuery(%q)=true, want false", msg)
+		}
+	}
+}
+
 func TestRouter_SkillProvider_NoMatch_NoEnrichment(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)

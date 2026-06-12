@@ -65,24 +65,152 @@ func TestNoToolRecoverDoesNotPromptForNonExecutionChat(t *testing.T) {
 	}
 }
 
+func TestNoToolRecoverDoesNotPromptForCompletedSummary(t *testing.T) {
+	h := &IMMessageHandler{}
+	phase := &agentLoopPhase{Stage: agentStageConverge, ConsecutiveNoTool: 1}
+	conversation := []interface{}{
+		map[string]string{"role": "user", "content": "\u751f\u6210 pdf \u53d1\u6211"},
+	}
+
+	result := h.handleAgentLoopNoToolRecover(agentLoopNoToolRecoverOptions{
+		UserText:              "\u751f\u6210 pdf \u53d1\u6211",
+		MessageContent:        "\u5df2\u5b8c\u6210\uff0c\u4ee5\u4e0b\u662f\u603b\u7ed3\uff1a2025 \u5e74 AI \u8d8b\u52bf\u96c6\u4e2d\u5728\u591a\u6a21\u6001\u3001Agent \u4e0e\u5c0f\u578b\u5316\u90e8\u7f72\u3002",
+		TrimmedVisibleContent: "\u5df2\u5b8c\u6210\uff0c\u4ee5\u4e0b\u662f\u603b\u7ed3\uff1a2025 \u5e74 AI \u8d8b\u52bf\u96c6\u4e2d\u5728\u591a\u6a21\u6001\u3001Agent \u4e0e\u5c0f\u578b\u5316\u90e8\u7f72\u3002",
+		Phase:                 phase,
+		Conversation:          conversation,
+		RequiresExecution:     true,
+	})
+
+	if result.ContinueLoop || result.Response != nil {
+		t.Fatalf("result = %+v, want ordinary finalization path", result)
+	}
+	if phase.NoToolActionPrompted {
+		t.Fatal("completed summary should not mark execution prompt injected")
+	}
+}
+
+func TestNoToolRecoverPromptsLocalStoredInfoRecall(t *testing.T) {
+	h := &IMMessageHandler{}
+	phase := &agentLoopPhase{Stage: agentStageConverge, ConsecutiveNoTool: 1}
+	conversation := []interface{}{
+		map[string]string{"role": "user", "content": "\u77e5\u9053api2\u670d\u52a1\u5668\u4fe1\u606f\u5417\uff1f"},
+	}
+
+	result := h.handleAgentLoopNoToolRecover(agentLoopNoToolRecoverOptions{
+		UserText:              "\u77e5\u9053api2\u670d\u52a1\u5668\u4fe1\u606f\u5417\uff1f",
+		MessageContent:        "\u6839\u636e\u8bb0\u5fc6\uff0c\u5f53\u524d\u6ca1\u6709\u5173\u4e8eapi2\u670d\u52a1\u5668\u7684\u5b58\u50a8\u4fe1\u606f\u3002",
+		TrimmedVisibleContent: "\u6839\u636e\u8bb0\u5fc6\uff0c\u5f53\u524d\u6ca1\u6709\u5173\u4e8eapi2\u670d\u52a1\u5668\u7684\u5b58\u50a8\u4fe1\u606f\u3002",
+		Phase:                 phase,
+		Conversation:          conversation,
+	})
+
+	if !result.ContinueLoop {
+		t.Fatal("expected local stored info no-tool answer to continue loop")
+	}
+	if !phase.LocalInfoRecallPrompted {
+		t.Fatal("expected phase to record local info recall prompt")
+	}
+	systemMsg, ok := result.Conversation[len(result.Conversation)-1].(map[string]string)
+	if !ok || systemMsg["role"] != "system" {
+		t.Fatalf("last message = %#v, want system prompt", result.Conversation[len(result.Conversation)-1])
+	}
+	for _, want := range []string{"memory(action=\"recall\")", "knowledge_search"} {
+		if !strings.Contains(systemMsg["content"], want) {
+			t.Fatalf("local info recall prompt missing %q:\n%s", want, systemMsg["content"])
+		}
+	}
+}
+
+func TestNoToolBranchDoesNotFinalizeCompletedLocalStoredInfoWithoutLookup(t *testing.T) {
+	h := &IMMessageHandler{}
+	phase := &agentLoopPhase{Stage: agentStageConverge}
+	conversation := []interface{}{
+		map[string]string{"role": "user", "content": "\u77e5\u9053api2\u670d\u52a1\u5668\u4fe1\u606f\u5417\uff1f"},
+	}
+
+	result := h.handleAgentLoopNoToolBranch(agentLoopNoToolBranchOptions{
+		UserText:                 "\u77e5\u9053api2\u670d\u52a1\u5668\u4fe1\u606f\u5417\uff1f",
+		MessageContent:           "\u5df2\u5b8c\u6210\uff0c\u4ee5\u4e0b\u662f\u603b\u7ed3\uff1a\u672a\u627e\u5230api2\u670d\u52a1\u5668\u4fe1\u606f\u3002",
+		Choice:                   llm.Choice{Message: llm.Message{Role: "assistant", Content: "\u5df2\u5b8c\u6210\uff0c\u4ee5\u4e0b\u662f\u603b\u7ed3\uff1a\u672a\u627e\u5230api2\u670d\u52a1\u5668\u4fe1\u606f\u3002"}},
+		Phase:                    phase,
+		Conversation:             conversation,
+		LengthContinuationBuffer: &strings.Builder{},
+	})
+
+	if result.ReadyToFinalize {
+		t.Fatal("local stored info answer must not finalize before recall/search")
+	}
+	if !result.ContinueLoop {
+		t.Fatal("expected local stored info answer to continue for recall/search")
+	}
+	if !phase.LocalInfoRecallPrompted {
+		t.Fatal("expected local info recall prompt")
+	}
+}
+
+func TestNoToolReplyHeuristicDoesNotTreatPromisedSummaryAsComplete(t *testing.T) {
+	intent, ok := classifyAgentNoToolReplyByHeuristic("I will send the summary shortly.")
+	if !ok || intent != agentNoToolReplyPromise {
+		t.Fatalf("intent=%q ok=%v, want promise", intent, ok)
+	}
+
+	intent, ok = classifyAgentNoToolReplyByHeuristic("\u5df2\u5b8c\u6210\uff0c\u4ee5\u4e0b\u662f\u603b\u7ed3\uff1a\u5df2\u5904\u7406\u3002")
+	if !ok || intent != agentNoToolReplyComplete {
+		t.Fatalf("intent=%q ok=%v, want complete", intent, ok)
+	}
+
+	intent, ok = classifyAgentNoToolReplyByHeuristic("done")
+	if ok || intent != agentNoToolReplyUnknown {
+		t.Fatalf("intent=%q ok=%v, want unknown for bare done", intent, ok)
+	}
+
+	intent, ok = classifyAgentNoToolReplyByHeuristic("\u6587\u4ef6\u5df2\u53d1\u7ed9\u4f60\u3002")
+	if ok || intent != agentNoToolReplyUnknown {
+		t.Fatalf("intent=%q ok=%v, want unknown for completed send statement", intent, ok)
+	}
+
+	intent, ok = classifyAgentNoToolReplyByHeuristic("\u5df2\u5b8c\u6210\uff0c\u7a0d\u540e\u53d1\u7ed9\u4f60\u3002")
+	if !ok || intent != agentNoToolReplyPromise {
+		t.Fatalf("intent=%q ok=%v, want promise for delayed send", intent, ok)
+	}
+
+	intent, ok = classifyAgentNoToolReplyByHeuristic("\u5df2\u5b8c\u6210\uff0c\u4ee5\u4e0b\u662f\u603b\u7ed3\uff1a\u7a0d\u540e\u53ef\u4ee5\u7ee7\u7eed\u4f18\u5316\u3002")
+	if !ok || intent != agentNoToolReplyComplete {
+		t.Fatalf("intent=%q ok=%v, want complete when summary marker is present", intent, ok)
+	}
+}
+
 func TestNoToolBranchRequiresExecutionFromStructuredContext(t *testing.T) {
-	if !noToolBranchRequiresExecution(nil, codingToolGateConfig{intent: intentCoding}, nil) {
-		t.Fatal("coding maintenance/bugfix intent should require execution")
+	// With no context and no phase, should return false
+	if noToolBranchRequiresExecution(nil, nil) {
+		t.Fatal("nil context and nil phase should not require execution")
 	}
-	if noToolBranchRequiresExecution(nil, codingToolGateConfig{intent: intentCoding, active: true}, nil) {
-		t.Fatal("active new-project needs-confirm gate should not force tool execution before doc review")
-	}
-	if !noToolBranchRequiresExecution(nil, codingToolGateConfig{intent: intentSSH}, nil) {
-		t.Fatal("ssh intent should require execution")
-	}
-	if !noToolBranchRequiresExecution(&LoopContext{WorkflowAgentLoop: true}, codingToolGateConfig{}, nil) {
+	// Workflow agent loop (non-doc phase) should require execution
+	if !noToolBranchRequiresExecution(&LoopContext{WorkflowAgentLoop: true}, nil) {
 		t.Fatal("workflow agent loop should require execution")
 	}
-	if !noToolBranchRequiresExecution(nil, codingToolGateConfig{}, &agentLoopPhase{ForceSkillPreference: true}) {
+	// Workflow doc phase should NOT require execution
+	if noToolBranchRequiresExecution(&LoopContext{WorkflowAgentLoop: true, WorkflowDocPhase: true}, nil) {
+		t.Fatal("workflow doc phase should not require execution")
+	}
+	// Skill preference should require execution
+	if !noToolBranchRequiresExecution(nil, &agentLoopPhase{ForceSkillPreference: true}) {
 		t.Fatal("skill preference should require execution")
 	}
-	if noToolBranchRequiresExecution(nil, codingToolGateConfig{intent: intentNonCoding}, nil) {
-		t.Fatal("non-coding chat should not require execution")
+}
+
+func TestUserRequestRequiresToolExecutionMatchesEnglishWordsOnly(t *testing.T) {
+	if !userRequestRequiresToolExecution("run failing tests") {
+		t.Fatal("run as a standalone word should require tool execution")
+	}
+	for _, text := range []string{
+		"explain runtime behavior",
+		"what is a brunch menu",
+		"describe preinstall options",
+	} {
+		if userRequestRequiresToolExecution(text) {
+			t.Fatalf("userRequestRequiresToolExecution(%q)=true, want false", text)
+		}
 	}
 }
 

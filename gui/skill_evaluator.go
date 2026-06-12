@@ -2,10 +2,11 @@ package main
 
 // SkillExecutionResult 表示 Skill 执行结果。
 type SkillExecutionResult struct {
-	Success       bool   `json:"success"`
-	HasError      bool   `json:"has_error"`
-	HasSecAlert   bool   `json:"has_security_alert"`
-	OutputQuality string `json:"output_quality"` // "none", "basic", "good", "excellent"
+	Success        bool   `json:"success"`
+	HasError       bool   `json:"has_error"`
+	HasSecAlert    bool   `json:"has_security_alert"`
+	OutputQuality  string `json:"output_quality"` // "none", "basic", "good", "excellent"
+	TokensConsumed int    `json:"tokens_consumed,omitempty"` // LLM tokens used during execution
 }
 
 // EvaluateSkillExecution 根据 Skill 执行结果生成评分。

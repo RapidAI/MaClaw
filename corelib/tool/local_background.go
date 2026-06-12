@@ -32,6 +32,7 @@ import (
 type LocalBackgroundTask struct {
 	mu        sync.Mutex
 	TaskID    string                    `json:"task_id"`
+	OwnerID   string                    `json:"owner_id,omitempty"`
 	Command   string                    `json:"command"`
 	TaskRole  string                    `json:"task_role,omitempty"`
 	WorkDir   string                    `json:"work_dir,omitempty"`
@@ -82,6 +83,10 @@ func (m *LocalBackgroundTaskManager) Submit(command, workDir string) (*LocalBack
 }
 
 func (m *LocalBackgroundTaskManager) SubmitWithRole(command, workDir, role string) (*LocalBackgroundTask, error) {
+	return m.SubmitWithOwner(command, workDir, role, "")
+}
+
+func (m *LocalBackgroundTaskManager) SubmitWithOwner(command, workDir, role, ownerID string) (*LocalBackgroundTask, error) {
 	if command == "" {
 		return nil, fmt.Errorf("command is empty")
 	}
@@ -99,6 +104,7 @@ func (m *LocalBackgroundTaskManager) SubmitWithRole(command, workDir, role strin
 		return nil, fmt.Errorf("%s", rejection)
 	}
 	role = NormalizeBackgroundTaskRole(role, command)
+	ownerID = strings.TrimSpace(ownerID)
 
 	seq := m.counter.Add(1)
 	taskID := fmt.Sprintf("local_%d_%d", time.Now().Unix(), seq)
@@ -140,6 +146,7 @@ func (m *LocalBackgroundTaskManager) SubmitWithRole(command, workDir, role strin
 
 	task := &LocalBackgroundTask{
 		TaskID:    taskID,
+		OwnerID:   ownerID,
 		Command:   command,
 		TaskRole:  role,
 		WorkDir:   workDir,
@@ -187,6 +194,7 @@ func (m *LocalBackgroundTaskManager) SubmitWithRole(command, workDir, role strin
 // LocalTaskStatus is the result of Check or Wait.
 type LocalTaskStatus struct {
 	TaskID   string                    `json:"task_id"`
+	OwnerID  string                    `json:"owner_id,omitempty"`
 	Command  string                    `json:"command"`
 	TaskRole string                    `json:"task_role,omitempty"`
 	Status   LocalBackgroundTaskStatus `json:"status"`
@@ -216,6 +224,7 @@ func (m *LocalBackgroundTaskManager) Check(taskID string, tailLines int) (*Local
 	startedAt := task.StartedAt
 	pid := task.PID
 	command := task.Command
+	ownerID := task.OwnerID
 	taskRole := task.TaskRole
 	task.mu.Unlock()
 
@@ -225,6 +234,7 @@ func (m *LocalBackgroundTaskManager) Check(taskID string, tailLines int) (*Local
 
 	return &LocalTaskStatus{
 		TaskID:   taskID,
+		OwnerID:  ownerID,
 		Command:  command,
 		TaskRole: taskRole,
 		Status:   status,
@@ -234,6 +244,45 @@ func (m *LocalBackgroundTaskManager) Check(taskID string, tailLines int) (*Local
 		LogTail:  logTail,
 		LogSize:  logSize,
 	}, nil
+}
+
+func localBackgroundTaskOwnerMatches(taskOwnerID, filterOwnerID string) bool {
+	taskOwnerID = strings.TrimSpace(taskOwnerID)
+	filterOwnerID = strings.TrimSpace(filterOwnerID)
+	if filterOwnerID == "" || taskOwnerID == "" {
+		return true
+	}
+	return taskOwnerID == filterOwnerID
+}
+
+func (m *LocalBackgroundTaskManager) AuthorizeTaskOwner(taskID, ownerID string) error {
+	if m == nil {
+		return fmt.Errorf("background task manager is not initialized")
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return fmt.Errorf("task_id is required")
+	}
+	m.mu.RLock()
+	task, ok := m.tasks[taskID]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+	task.mu.Lock()
+	taskOwnerID := task.OwnerID
+	task.mu.Unlock()
+	if !localBackgroundTaskOwnerMatches(taskOwnerID, ownerID) {
+		return fmt.Errorf("task %s belongs to another runtime owner", taskID)
+	}
+	return nil
+}
+
+func (m *LocalBackgroundTaskManager) CheckForOwner(taskID string, tailLines int, ownerID string) (*LocalTaskStatus, error) {
+	if err := m.AuthorizeTaskOwner(taskID, ownerID); err != nil {
+		return nil, err
+	}
+	return m.Check(taskID, tailLines)
 }
 
 // Wait blocks until the task completes, the timeout expires, or the context
@@ -265,6 +314,13 @@ func (m *LocalBackgroundTaskManager) Wait(ctx context.Context, taskID string, ti
 	return m.Check(taskID, tailLines)
 }
 
+func (m *LocalBackgroundTaskManager) WaitForOwner(ctx context.Context, taskID string, timeout time.Duration, tailLines int, ownerID string) (*LocalTaskStatus, error) {
+	if err := m.AuthorizeTaskOwner(taskID, ownerID); err != nil {
+		return nil, err
+	}
+	return m.Wait(ctx, taskID, timeout, tailLines)
+}
+
 // Kill terminates a running task.
 func (m *LocalBackgroundTaskManager) Kill(taskID string) error {
 	m.mu.RLock()
@@ -294,6 +350,13 @@ func (m *LocalBackgroundTaskManager) Kill(taskID string) error {
 	return nil
 }
 
+func (m *LocalBackgroundTaskManager) KillForOwner(taskID, ownerID string) error {
+	if err := m.AuthorizeTaskOwner(taskID, ownerID); err != nil {
+		return err
+	}
+	return m.Kill(taskID)
+}
+
 // List returns all tasks.
 func (m *LocalBackgroundTaskManager) List() []*LocalBackgroundTask {
 	m.mu.RLock()
@@ -303,6 +366,7 @@ func (m *LocalBackgroundTaskManager) List() []*LocalBackgroundTask {
 		t.mu.Lock()
 		snapshot := &LocalBackgroundTask{
 			TaskID:    t.TaskID,
+			OwnerID:   t.OwnerID,
 			Command:   t.Command,
 			TaskRole:  t.TaskRole,
 			WorkDir:   t.WorkDir,
@@ -317,6 +381,23 @@ func (m *LocalBackgroundTaskManager) List() []*LocalBackgroundTask {
 		result = append(result, snapshot)
 	}
 	return result
+}
+
+func (m *LocalBackgroundTaskManager) ListForOwner(ownerID string) []*LocalBackgroundTask {
+	if m == nil {
+		return nil
+	}
+	tasks := m.List()
+	if strings.TrimSpace(ownerID) == "" {
+		return tasks
+	}
+	filtered := make([]*LocalBackgroundTask, 0, len(tasks))
+	for _, task := range tasks {
+		if localBackgroundTaskOwnerMatches(task.OwnerID, ownerID) {
+			filtered = append(filtered, task)
+		}
+	}
+	return filtered
 }
 
 func NormalizeBackgroundTaskRole(role, command string) string {

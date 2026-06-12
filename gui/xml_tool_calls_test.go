@@ -55,3 +55,46 @@ func TestParseXMLContentToolCalls_IgnoresInvalidJSON(t *testing.T) {
 		t.Fatalf("expected no tool calls, got %#v", calls)
 	}
 }
+
+func TestParseXMLContentToolCalls_CodexInvoke(t *testing.T) {
+	content := `<turn: tool_call>
+<invoke name="bash">
+<parameter name="description" string="true">Check existing project directory</parameter>
+<parameter name="command" string="true">if exist D:\gametest\15\ (dir /B D:\gametest\15\) else (echo DIRECTORY_NOT_EXIST)</parameter>
+<parameter name="timeout" string="false">5000</parameter>
+</invoke>
+</turn>`
+	calls, malformed := parseXMLContentToolCallsDetailed(content)
+	if malformed {
+		t.Fatalf("expected codex tool call to parse cleanly")
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	}
+	if calls[0].Function.Name != "bash" {
+		t.Fatalf("expected tool name bash, got %q", calls[0].Function.Name)
+	}
+	if calls[0].Function.Arguments != `{"command":"if exist D:\\gametest\\15\\ (dir /B D:\\gametest\\15\\) else (echo DIRECTORY_NOT_EXIST)","description":"Check existing project directory","timeout":5000}` {
+		t.Fatalf("unexpected arguments JSON: %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseXMLContentToolCalls_CodexInvokeMalformed(t *testing.T) {
+	calls, malformed := parseXMLContentToolCallsDetailed(`<turn: tool_call><invoke><parameter name="x">y</parameter></invoke></turn>`)
+	if !malformed {
+		t.Fatalf("expected malformed codex tool call")
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no parsed tool calls, got %#v", calls)
+	}
+}
+
+func TestParseXMLContentToolCalls_CodexInvokeTruncated(t *testing.T) {
+	calls, malformed := parseXMLContentToolCallsDetailed(`<turn: tool_call><invoke name="bash">`)
+	if !malformed {
+		t.Fatalf("expected truncated codex tool call to be reported malformed")
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no parsed tool calls, got %#v", calls)
+	}
+}

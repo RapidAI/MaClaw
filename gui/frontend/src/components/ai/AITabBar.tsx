@@ -161,7 +161,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                     }}
                     title={lang === "en" ? `${overflowTabs.length} more tabs` : `还有 ${overflowTabs.length} 个标签`}
                 >
-                    {"▼ "}{overflowTabs.length}
+                    MORE {overflowTabs.length}
                 </button>
             )}
             {dropdownOpen && overflowTabs.length > 0 && (

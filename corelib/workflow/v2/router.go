@@ -1,7 +1,6 @@
 package v2
 
 import (
-	"log"
 	"regexp"
 	"strings"
 )
@@ -45,7 +44,7 @@ const (
 // ComplexityFunc assesses whether a coding task is simple (direct coding) or complex (needs SDD).
 // Returns ComplexitySimple for quick tasks (bug fix, hello world, add a button).
 // Returns ComplexityComplex for projects needing design/planning.
-// When nil, falls back to heuristic (message length + project path).
+// When nil, assessComplexity conservatively returns ComplexityComplex.
 type ComplexityFunc func(text string) TaskComplexity
 
 // WorkflowRouter is the single decision point for message routing.
@@ -53,8 +52,8 @@ type ComplexityFunc func(text string) TaskComplexity
 type WorkflowRouter struct {
 	machine        *StateMachine
 	templates      *TemplateRegistry
-	llmFunc        LLMConfirmFunc // optional; nil = keyword-only
-	complexityFunc ComplexityFunc // optional; nil = heuristic fallback
+	llmFunc        LLMConfirmFunc // optional confirmation after structured template match
+	complexityFunc ComplexityFunc // optional; nil = conservative complex fallback
 }
 
 func NewWorkflowRouter(machine *StateMachine, templates *TemplateRegistry, llmFunc LLMConfirmFunc) *WorkflowRouter {
@@ -77,29 +76,47 @@ func (r *WorkflowRouter) GetComplexityFunc() ComplexityFunc {
 
 // Route decides whether a message should go to a workflow or the normal agent loop.
 func (r *WorkflowRouter) Route(userID, text string, attachments []Attachment) *RouteResult {
+	return r.RouteWithHint(userID, text, attachments, "")
+}
+
+// RouteWithHint routes a message to the appropriate handler, with an optional
+// semantic intent hint (e.g. "coding", "non_coding") from an external classifier.
+// When BM25 template matching fails but the hint matches a registered template type,
+// the hint is used as a fallback match signal.
+func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attachment, semanticHint string) *RouteResult {
+	if r == nil || r.templates == nil {
+		return &RouteResult{Target: RouteToAgentLoop}
+	}
 	// Step 1: Active workflow takes priority
-	if state := r.machine.GetActive(userID); state != nil {
-		result, err := r.machine.HandleInput(userID, text)
-		if err != nil {
-			return &RouteResult{Target: RouteToAgentLoop}
-		}
-		if result.Action == ActionPassThrough {
-			// PassThrough means the message is unrelated to the active workflow
-			// (e.g. workflow is in PhaseExecuting, or confirm classifier said "unrelated").
-			// Fall through to keyword matching below — the user may be starting a NEW workflow.
-			// If no keyword match, the message goes to the normal agent loop.
-		} else if result.Action == ActionRunPhase {
-			// Phase is pending/running. Check if the user's message looks like a
-			// completely new workflow task (not a continuation of the current one).
-			// If so, fall through to keyword matching which will start a new workflow.
-			// startNewWorkflowV2 handles cancelling the old workflow before creating the new one.
-			if r.looksLikeNewWorkflowTask(text) {
-				// Fall through to keyword matching → startNewWorkflowV2 will cancel old + create new
+	if r.machine != nil {
+		if state := r.machine.GetActive(userID); state != nil {
+			result, err := r.machine.HandleInput(userID, text)
+			if err != nil {
+				return &RouteResult{Target: RouteToAgentLoop}
+			}
+			if result == nil {
+				return &RouteResult{Target: RouteToAgentLoop}
+			}
+			if result.Action == ActionPassThrough {
+				// PassThrough means the message is unrelated to the active workflow
+				// (e.g. workflow is in PhaseExecuting, or confirm classifier said "unrelated").
+				// Fall through to structured template matching below; the user may
+				// be starting a new workflow. If no template matches, the message
+				// goes to the normal agent loop.
+			} else if result.Action == ActionRunPhase {
+				// Phase is pending/running. Check if the user's message looks like a
+				// completely new workflow task (not a continuation of the current one).
+				// If so, fall through to structured template matching which will
+				// start a new workflow.
+				// startNewWorkflowV2 handles cancelling the old workflow before creating the new one.
+				if r.looksLikeNewWorkflowTask(text) {
+					// Fall through to template matching; startNewWorkflowV2 will cancel old + create new.
+				} else {
+					return &RouteResult{Target: RouteToWorkflow, HandleResult: result}
+				}
 			} else {
 				return &RouteResult{Target: RouteToWorkflow, HandleResult: result}
 			}
-		} else {
-			return &RouteResult{Target: RouteToWorkflow, HandleResult: result}
 		}
 	}
 
@@ -117,13 +134,21 @@ func (r *WorkflowRouter) Route(userID, text string, attachments []Attachment) *R
 	// e.g. "BUG修复验证报告" (document task) was misclassified as a code bug fix.
 	// All classification now goes through LLM complexity assessment in Step 7.
 
-	// Step 5: Keyword match against templates
-	matched := r.templates.MatchByKeywords(text)
+	// Step 5: Structured template match.
+	matched := r.templates.MatchByText(text)
+	if matched == nil && semanticHint != "" {
+		// BM25 text matching failed, but an external classifier (e.g. UIC)
+		// identified the intent. If a template with that type is registered,
+		// use it as a fallback. This handles cases where the user's message
+		// has domain-specific terms (paths, framework names) that dilute BM25
+		// relevance against template descriptions.
+		matched = r.templates.Get(semanticHint)
+	}
 	if matched == nil {
 		return &RouteResult{Target: RouteToAgentLoop}
 	}
 
-	// Step 6: Optional LLM confirmation (failure → use keyword result)
+	// Step 6: Optional LLM confirmation over the structured template candidate.
 	if r.llmFunc != nil {
 		if !r.llmFunc(text, matched.Type) {
 			return &RouteResult{Target: RouteToAgentLoop}
@@ -165,13 +190,11 @@ func (r *WorkflowRouter) Route(userID, text string, attachments []Attachment) *R
 // Without LLM, defaults to complex (full SDD) — the safe choice that preserves
 // the three-phase design process. Direct coding only triggers with LLM confirmation.
 func (r *WorkflowRouter) assessComplexity(text string) TaskComplexity {
-	log.Printf("[workflow-v2] assessComplexity called: text_len=%d hasFunc=%v", len([]rune(text)), r.complexityFunc != nil)
 	// Use LLM-based complexity assessment when available
 	if r.complexityFunc != nil {
 		return r.complexityFunc(text)
 	}
 	// Without LLM: always default to complex (full SDD) — the safe choice.
-	log.Printf("[workflow-v2] assessComplexity: no complexityFunc, defaulting to complex")
 	return ComplexityComplex
 }
 
@@ -193,56 +216,10 @@ func hasSkipSignal(text string) bool {
 	return false
 }
 
-// --- Bug-fix detection ---
-
-var bugFixKeywords = []string{
-	"修bug", "修复", "调试", "排查", "报错", "崩溃",
-	"白屏", "闪退", "卡住", "不显示", "不生效", "fix bug",
-	"debug", "修改bug", "解决bug",
-}
-
-var creationKeywords = []string{
-	"开发", "游戏", "应用", "工具", "系统", "前端", "后端",
-	"写代码", "编写", "实现", "创建",
-}
-
-// documentTaskKeywords indicate the message is about document/report generation,
-// not actual bug-fix coding — even if it mentions "BUG修复" in the topic.
-var documentTaskKeywords = []string{
-	"报告", "文档", "生成报告", "测试报告", "用例", "xlsx", "docx", "pdf",
-	"report", "document", "总结", "梳理", "整理",
-}
-
-func isBugFixOnly(text string) bool {
-	lower := strings.ToLower(text)
-	hasBugFix := false
-	for _, kw := range bugFixKeywords {
-		if strings.Contains(lower, kw) {
-			hasBugFix = true
-			break
-		}
-	}
-	if !hasBugFix {
-		return false
-	}
-	// Exclude document/report tasks that mention "bug fix" as a topic, not as a coding action
-	for _, kw := range documentTaskKeywords {
-		if strings.Contains(lower, kw) {
-			return false
-		}
-	}
-	for _, kw := range creationKeywords {
-		if strings.Contains(lower, kw) {
-			return false // has creation intent too — not bug-fix-only
-		}
-	}
-	return true
-}
-
 // looksLikeNewWorkflowTask checks whether a user message is a completely new
 // workflow request unrelated to the current running phase. Uses the optional
 // LLM confirmation function for semantic judgment when available, falling back
-// to a conservative heuristic (template keyword match + minimum length) only
+// to a conservative heuristic (structured template match + minimum length) only
 // when no LLM is configured.
 //
 // The LLM path asks: "The user already has an active coding workflow in progress.
@@ -255,7 +232,7 @@ func (r *WorkflowRouter) looksLikeNewWorkflowTask(text string) bool {
 		return false
 	}
 	// Must match at least one template to even be a candidate
-	matched := r.templates.MatchByKeywords(text)
+	matched := r.templates.MatchByText(text)
 	if matched == nil {
 		return false
 	}

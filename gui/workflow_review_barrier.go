@@ -11,10 +11,3 @@ func shouldApplyWorkflowFilter(skipNeedsConfirmGate, awaitingReview, workflowAge
 func shouldSkipWorkflowToolExecutionGate(skipNeedsConfirmGate, awaitingReview, workflowAgentLoop, phaseBlocked, activeWorkflow bool) bool {
 	return skipNeedsConfirmGate && !activeWorkflow && !awaitingReview && !workflowAgentLoop && !phaseBlocked
 }
-
-// shouldBypassNeedsConfirmGate decides whether a per-message continuation may
-// bypass NeedsConfirm capture. The engine review barrier always wins; a saved
-// NeedsConfirm output must be explicitly confirmed, modified, or cancelled.
-func shouldBypassNeedsConfirmGate(skipNeedsConfirmGate, codingGateActive, awaitingReview, workflowAgentLoop, phaseBlocked, activeWorkflow bool) bool {
-	return skipNeedsConfirmGate && !activeWorkflow && !codingGateActive && !awaitingReview && !workflowAgentLoop && !phaseBlocked
-}

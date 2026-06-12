@@ -237,7 +237,7 @@ export function WorkflowInitiationForm({
     if (submitted) {
         return (
             <div style={successContainerStyle} role="status" aria-live="polite">
-                <span style={successIconStyle}>✅</span>
+                <span style={successIconStyle}>OK</span>
                 <h3 style={successHeadingStyle}>提交成功</h3>
                 <p style={successTextStyle}>工作流已发起，正在跳转到实例详情页...</p>
             </div>
@@ -482,13 +482,13 @@ const headingStyle: CSSProperties = {
     margin: 0,
     fontSize: "1.2rem",
     fontWeight: 600,
-    color: "#212121",
+    color: "var(--theme-text-primary, #1a202c)",
 };
 
 const subheadingStyle: CSSProperties = {
     margin: "4px 0 0",
     fontSize: "0.82rem",
-    color: "#888",
+    color: "var(--theme-text-muted, #8b95a5)",
 };
 
 const formStyle: CSSProperties = {
@@ -506,26 +506,28 @@ const fieldContainerStyle: CSSProperties = {
 const labelStyle: CSSProperties = {
     fontSize: "0.82rem",
     fontWeight: 500,
-    color: "#333",
+    color: "var(--theme-text-primary, #1a202c)",
 };
 
 const requiredMarkStyle: CSSProperties = {
-    color: "var(--theme-danger, #b42318)",
+    color: "var(--theme-danger, #c43d34)",
 };
 
 const inputStyle: CSSProperties = {
     padding: "10px 12px",
     fontSize: "0.85rem",
-    border: "1px solid #ddd",
+    border: "1px solid var(--theme-border, #e1e4e8)",
     borderRadius: "6px",
     outline: "none",
     transition: "border-color 0.15s",
     boxSizing: "border-box",
+    background: "var(--theme-surface, #ffffff)",
+    color: "var(--theme-text-primary, #1a202c)",
 };
 
 const inputErrorStyle: CSSProperties = {
     ...inputStyle,
-    borderColor: "var(--theme-danger, #b42318)",
+    borderColor: "var(--theme-danger, #c43d34)",
 };
 
 const textareaStyle: CSSProperties = {
@@ -537,18 +539,18 @@ const textareaStyle: CSSProperties = {
 
 const textareaErrorStyle: CSSProperties = {
     ...textareaStyle,
-    borderColor: "var(--theme-danger, #b42318)",
+    borderColor: "var(--theme-danger, #c43d34)",
 };
 
 const selectStyle: CSSProperties = {
     ...inputStyle,
-    background: "#fff",
+    background: "var(--theme-surface, #ffffff)",
     cursor: "pointer",
 };
 
 const selectErrorStyle: CSSProperties = {
     ...selectStyle,
-    borderColor: "var(--theme-danger, #b42318)",
+    borderColor: "var(--theme-danger, #c43d34)",
 };
 
 const fileInputStyle: CSSProperties = {
@@ -572,32 +574,32 @@ const checkboxStyle: CSSProperties = {
 
 const checkboxTextStyle: CSSProperties = {
     fontSize: "0.85rem",
-    color: "#333",
+    color: "var(--theme-text-primary, #1a202c)",
 };
 
 const fieldErrorStyle: CSSProperties = {
     fontSize: "0.75rem",
-    color: "var(--theme-danger, #b42318)",
+    color: "var(--theme-danger, #c43d34)",
     marginTop: "2px",
 };
 
 const hintStyle: CSSProperties = {
     fontSize: "0.7rem",
-    color: "#999",
+    color: "var(--theme-text-muted, #8b95a5)",
 };
 
 const submitContainerStyle: CSSProperties = {
     display: "flex",
     justifyContent: "flex-end",
     paddingTop: "12px",
-    borderTop: "1px solid #eee",
+    borderTop: "1px solid var(--theme-border-subtle, #edf2f7)",
 };
 
 const submitButtonStyle: CSSProperties = {
     padding: "10px 32px",
     fontSize: "0.88rem",
     fontWeight: 600,
-    background: "#1565c0",
+    background: "var(--theme-primary, #2f5f98)",
     color: "#fff",
     border: "none",
     borderRadius: "6px",
@@ -614,10 +616,10 @@ const submitButtonDisabledStyle: CSSProperties = {
 const submitErrorStyle: CSSProperties = {
     padding: "10px 14px",
     background: "var(--theme-danger-bg, #fbf1f0)",
-    border: "1px solid color-mix(in srgb, var(--theme-danger, #b42318) 34%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--theme-danger, #c43d34) 34%, transparent)",
     borderRadius: "6px",
     fontSize: "0.8rem",
-    color: "var(--theme-danger, #b42318)",
+    color: "var(--theme-danger, #c43d34)",
 };
 
 const successContainerStyle: CSSProperties = {
@@ -630,7 +632,15 @@ const successContainerStyle: CSSProperties = {
 };
 
 const successIconStyle: CSSProperties = {
-    fontSize: "2.5rem",
+    fontSize: "0.72rem",
+    fontWeight: 700,
+    letterSpacing: 0,
+    lineHeight: 1,
+    color: "var(--theme-success, #4f7f6f)",
+    background: "var(--theme-success-bg, #f3f7f5)",
+    border: "1px solid color-mix(in srgb, var(--theme-success, #4f7f6f) 34%, transparent)",
+    borderRadius: "999px",
+    padding: "5px 10px",
     marginBottom: "12px",
 };
 
@@ -638,11 +648,11 @@ const successHeadingStyle: CSSProperties = {
     margin: 0,
     fontSize: "1.1rem",
     fontWeight: 600,
-    color: "#2e7d32",
+    color: "var(--theme-success, #4f7f6f)",
 };
 
 const successTextStyle: CSSProperties = {
     margin: "8px 0 0",
     fontSize: "0.85rem",
-    color: "#666",
+    color: "var(--theme-text-secondary, #5a6577)",
 };

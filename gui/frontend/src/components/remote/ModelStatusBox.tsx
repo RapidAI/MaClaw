@@ -15,7 +15,7 @@ export function ModelStatusBox({ exists, downloading, size, progress, downloaded
         <div className="model-status-box" style={{ ['--model-accent' as any]: accentColor }}>
             {exists && !downloading && (
                 <div className="model-status-box__ready">
-                    <span className="model-status-box__icon">✓</span>
+                    <span className="model-status-box__icon">OK</span>
                     <span className="model-status-box__label">{t('Model Ready', '模型已就绪')}</span>
                     <span className="model-status-box__size">{formatBytes(size)}</span>
                 </div>

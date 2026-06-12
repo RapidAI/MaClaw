@@ -29,7 +29,7 @@ func DoOpenAIRequestStream(
 	client *http.Client,
 	onToken TokenCallback,
 ) (*Response, error) {
-	req, reqBody, endpoint, err := NewOpenAIChatRequest(ctx, cfg, messages, OpenAIChatRequestOptions{
+	endpoint, reqBody, err := BuildOpenAIChatRequestData(cfg, messages, OpenAIChatRequestOptions{
 		Stream: true,
 		Tools:  tools,
 	})
@@ -41,71 +41,77 @@ func DoOpenAIRequestStream(
 	log.Printf("[LLM-stream] POST %s model=%s configured_model=%s %s", endpoint, upstreamModel, cfg.Model, traceFields)
 
 	startedAt := time.Now()
-	resp, err := client.Do(req)
+	result, statusCode, body, err := openAISDKChatStream(ctx, cfg, reqBody, client, onToken)
 	if err != nil {
-		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
-		return nil, fmt.Errorf("[%s] %w", endpoint, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
-		if ShouldRetryOpenAIWithoutTools(cfg, resp.StatusCode, messages, tools) {
+		if statusCode == 0 {
+			log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
+			return nil, fmt.Errorf("[%s] %w", endpoint, err)
+		}
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
+		compactRetryAttempted := false
+		if ShouldRetryOpenAIWithoutTools(cfg, statusCode, messages, tools) {
 			log.Printf("[LLM-stream] retry_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400 tools=%d %s", endpoint, upstreamModel, cfg.Model, len(tools), traceFields)
-			req, reqBody, endpoint, err = NewOpenAIChatRequest(ctx, cfg, messages, OpenAIChatRequestOptions{Stream: true})
+			endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, messages, OpenAIChatRequestOptions{Stream: true})
 			if err != nil {
 				return nil, err
 			}
 			retryStartedAt := time.Now()
-			resp, err = client.Do(req)
+			result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken)
 			if err != nil {
-				log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(retryStartedAt).Round(time.Millisecond), err, traceFields)
-				return nil, fmt.Errorf("[%s] %w", endpoint, err)
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(retryStartedAt).Round(time.Millisecond), traceFields)
+				if statusCode == 0 {
+					log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(retryStartedAt).Round(time.Millisecond), err, traceFields)
+					return nil, fmt.Errorf("[%s] %w", endpoint, err)
+				}
+				log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(retryStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
+				compactMessages := CompactOpenAICompatMessagesForToollessRetry(cfg, messages)
+				if len(compactMessages) == 0 {
+					return nil, fmt.Errorf("HTTP %d: body_len=%d", statusCode, len(body))
+				}
+				compactRetryAttempted = true
+				log.Printf("[LLM-stream] retry_compact_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400 %s", endpoint, upstreamModel, cfg.Model, traceFields)
+				endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, compactMessages, OpenAIChatRequestOptions{Stream: true})
+				if err != nil {
+					return nil, err
+				}
+				compactStartedAt := time.Now()
+				result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken)
+				if err != nil {
+					if statusCode == 0 {
+						log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)
+						return nil, fmt.Errorf("[%s] %w", endpoint, err)
+					}
+					log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
+					return nil, fmt.Errorf("HTTP %d: body_len=%d", statusCode, len(body))
+				}
+				log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), traceFields)
 			} else {
-				body, _ = io.ReadAll(io.LimitReader(resp.Body, 4096))
-				log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(retryStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
-				return nil, fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(body))
+				log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(retryStartedAt).Round(time.Millisecond), traceFields)
 			}
-		} else {
-			return nil, fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(body))
+		}
+		if statusCode != http.StatusOK && !compactRetryAttempted && ShouldRetryOpenAIWithCompact(cfg, statusCode, messages) {
+			compactMessages := CompactOpenAICompatMessagesForToollessRetry(cfg, messages)
+			log.Printf("[LLM-stream] retry_compact_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400_direct %s", endpoint, upstreamModel, cfg.Model, traceFields)
+			endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, compactMessages, OpenAIChatRequestOptions{Stream: true})
+			if err != nil {
+				return nil, err
+			}
+			compactStartedAt := time.Now()
+			result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken)
+			if err != nil {
+				if statusCode == 0 {
+					log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)
+					return nil, fmt.Errorf("[%s] %w", endpoint, err)
+				}
+				log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
+				return nil, fmt.Errorf("HTTP %d: body_len=%d", statusCode, len(body))
+			}
+			log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), traceFields)
+		}
+		if statusCode != http.StatusOK {
+			return nil, fmt.Errorf("HTTP %d: body_len=%d", statusCode, len(body))
 		}
 	}
-
-	// Peek at the first bytes to detect SSE vs JSON without buffering the
-	// entire response. SSE starts with "data:" (possibly after whitespace);
-	// JSON starts with "{" or "[".
-	peekReader := bufio.NewReaderSize(resp.Body, 4096)
-	peeked, _ := peekReader.Peek(64)
-	trimmed := strings.TrimLeft(string(peeked), " \t\r\n")
-
-	if strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, "event:") {
-		// True SSE stream  - parse incrementally, calling onToken per chunk.
-		result, parseErr := parseSSEStream(peekReader, onToken)
-		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s parse_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
-		return result, parseErr
-	}
-
-	// Fallback: server returned plain JSON despite stream=true.
-	// Read the full body and parse as non-stream response.
-	body, err := io.ReadAll(io.LimitReader(peekReader, 512*1024))
-	if err != nil {
-		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s read_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-	result, err := ParseNonStreamOpenAIResponseBody(body)
-	if err != nil {
-		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d parse_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
-		return nil, err
-	}
-	if onToken != nil && len(result.Choices) > 0 && result.Choices[0].Message.Content != "" {
-		onToken(result.Choices[0].Message.Content)
-	}
-	log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d fallback=json %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+	log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), traceFields)
 	return result, nil
 }
 
@@ -123,61 +129,20 @@ func DoAnthropicRequestStream(
 	if err != nil {
 		return nil, err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(data)))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	req.Header.Set("anthropic-version", "2023-06-01")
-	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
-	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
-
 	traceFields := RequestTraceLogFields(ctx)
 	upstreamModel := cfg.UpstreamModel()
-	log.Printf("[LLM-stream] POST %s model=%s configured_model=%s protocol=anthropic %s", endpoint, upstreamModel, cfg.Model, traceFields)
+	log.Printf("[LLM-stream] POST %s model=%s configured_model=%s protocol=anthropic sdk=anthropic-sdk-go %s", endpoint, upstreamModel, cfg.Model, traceFields)
 	startedAt := time.Now()
-	resp, err := client.Do(req)
+	result, statusCode, body, err := anthropicSDKMessageStream(ctx, cfg, data, client, onToken)
 	if err != nil {
-		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
-		return nil, err
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d err=%v %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
+		return nil, fmt.Errorf("HTTP %d: body_len=%d: %w", statusCode, len(body), err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
-		return nil, fmt.Errorf("HTTP %d: body_len=%d", resp.StatusCode, len(body))
+	if statusCode != http.StatusOK {
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+		return nil, fmt.Errorf("HTTP %d: body_len=%d", statusCode, len(body))
 	}
-
-	// Peek at the first bytes to detect SSE vs JSON.
-	peekReader := bufio.NewReaderSize(resp.Body, 4096)
-	peeked, _ := peekReader.Peek(64)
-	trimmed := strings.TrimLeft(string(peeked), " \t\r\n")
-
-	if strings.HasPrefix(trimmed, "event:") || strings.HasPrefix(trimmed, "data:") {
-		// True SSE stream  - parse incrementally.
-		result, parseErr := parseAnthropicSSEStream(peekReader, onToken)
-		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s parse_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
-		return result, parseErr
-	}
-
-	// Fallback: server returned plain JSON despite stream=true.
-	body, err := io.ReadAll(io.LimitReader(peekReader, 512*1024))
-	if err != nil {
-		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s read_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-	result, err := parseAnthropicResponseBody(body)
-	if err != nil {
-		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d parse_err=%v %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
-		return nil, err
-	}
-	if onToken != nil && len(result.Choices) > 0 && result.Choices[0].Message.Content != "" {
-		onToken(result.Choices[0].Message.Content)
-	}
-	log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d fallback=json %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+	log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), traceFields)
 	return result, nil
 }
 
@@ -187,6 +152,7 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 	var contentBuf, reasoningBuf strings.Builder
 	var finishReason string
 	var usage *Usage
+	contentFilter := newContentToolCallDeltaFilter(onToken)
 
 	type toolCallAcc struct {
 		ID      string
@@ -195,6 +161,8 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 		ArgsBuf strings.Builder
 	}
 	toolCalls := make(map[int]*toolCallAcc)
+	legacyFunctionCall := &toolCallAcc{Type: "function"}
+	legacyFunctionCallSeen := false
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
@@ -225,9 +193,7 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 		// Stream text deltas to the callback.
 		if delta.Content != "" {
 			contentBuf.WriteString(delta.Content)
-			if onToken != nil {
-				onToken(delta.Content)
-			}
+			contentFilter.Write(delta.Content)
 		}
 		if delta.ReasoningContent != "" {
 			reasoningBuf.WriteString(delta.ReasoningContent)
@@ -235,6 +201,26 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 
 		if chunk.Choices[0].FinishReason != "" {
 			finishReason = chunk.Choices[0].FinishReason
+			if finishReason == "function_call" {
+				finishReason = "tool_calls"
+			}
+		}
+
+		if delta.FunctionCall != nil {
+			legacyFunctionCallSeen = true
+			if delta.FunctionCall.Name != "" {
+				if legacyFunctionCall.Name == "" {
+					legacyFunctionCall.Name = delta.FunctionCall.Name
+				} else {
+					legacyFunctionCall.Name += delta.FunctionCall.Name
+				}
+			}
+			if delta.FunctionCall.Arguments != "" {
+				legacyFunctionCall.ArgsBuf.WriteString(delta.FunctionCall.Arguments)
+				if legacyFunctionCall.ArgsBuf.Len() > maxToolArgumentsBytes {
+					return nil, fmt.Errorf("tool arguments too large for %s: %d bytes", legacyFunctionCall.Name, legacyFunctionCall.ArgsBuf.Len())
+				}
+			}
 		}
 
 		// Accumulate tool calls by index.
@@ -264,6 +250,7 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("SSE stream read: %w", err)
 	}
+	contentFilter.Flush()
 
 	msg := Message{
 		Role:             "assistant",
@@ -286,7 +273,7 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 			}
 			msg.ToolCalls = append(msg.ToolCalls, ToolCall{
 				ID:   acc.ID,
-				Type: acc.Type,
+				Type: normalizeToolCallType(acc.Type),
 				Function: struct {
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
@@ -295,6 +282,24 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 					Arguments: acc.ArgsBuf.String(),
 				},
 			})
+		}
+	}
+	if len(toolCalls) == 0 && legacyFunctionCallSeen {
+		if call, ok := normalizePlainContentToolCallWithID("", legacyFunctionCall.Type, legacyFunctionCall.Name, json.RawMessage(legacyFunctionCall.ArgsBuf.String())); ok {
+			msg.ToolCalls = append(msg.ToolCalls, call)
+			msg.Content = ""
+			finishReason = "tool_calls"
+		}
+	}
+	if len(msg.ToolCalls) == 0 {
+		rawContent := contentBuf.String()
+		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
+			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
+			msg.Content = ""
+			finishReason = "tool_calls"
+		} else if malformed {
+			msg.Content = MalformedContentToolCallErrorMsg
+			finishReason = "stop"
 		}
 	}
 
@@ -310,6 +315,7 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 	var contentBuf strings.Builder
 	var finishReason string
 	var usage *Usage
+	contentFilter := newContentToolCallDeltaFilter(onToken)
 
 	type toolCallAcc struct {
 		ID      string
@@ -374,9 +380,7 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 		case "content_block_delta":
 			if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
 				contentBuf.WriteString(event.Delta.Text)
-				if onToken != nil {
-					onToken(event.Delta.Text)
-				}
+				contentFilter.Write(event.Delta.Text)
 			}
 			if event.Delta.Type == "input_json_delta" && event.Delta.PartialJSON != "" {
 				if currentToolIdx >= 0 && currentToolIdx < len(toolCalls) {
@@ -415,6 +419,7 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("Anthropic SSE stream read: %w", err)
 	}
+	contentFilter.Flush()
 
 	msg := Message{
 		Role:    "assistant",
@@ -437,6 +442,17 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 
 	if finishReason == "" {
 		finishReason = "stop"
+	}
+	if len(msg.ToolCalls) == 0 {
+		rawContent := contentBuf.String()
+		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
+			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
+			msg.Content = ""
+			finishReason = "tool_calls"
+		} else if malformed {
+			msg.Content = MalformedContentToolCallErrorMsg
+			finishReason = "stop"
+		}
 	}
 
 	return &Response{

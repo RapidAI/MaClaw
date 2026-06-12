@@ -166,6 +166,46 @@ func TestDoSimpleOpenAIRequest_ParseErrorPassthrough(t *testing.T) {
 	}
 }
 
+func TestDoSimpleLLMRequestUsesResponsesWireAPI(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_test",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]
+		}`))
+	}))
+	defer server.Close()
+
+	resp, err := doSimpleLLMRequest(context.Background(), corelib.MaclawLLMConfig{
+		URL:      server.URL,
+		Key:      "test-key",
+		Model:    "glm-5.1",
+		Protocol: "openai",
+		WireAPI:  "responses",
+	}, []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, server.Client(), 5*time.Second)
+	if err != nil {
+		t.Fatalf("doSimpleLLMRequest: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q, want ok", resp.Content)
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if _, ok := gotBody["messages"]; ok {
+		t.Fatalf("chat messages leaked into Responses request: %#v", gotBody)
+	}
+	if _, ok := gotBody["input"]; !ok {
+		t.Fatalf("responses input missing: %#v", gotBody)
+	}
+}
+
 func TestDumpLLMContextDoesNotPersistRequestBody(t *testing.T) {
 	tempDir := t.TempDir()
 	requestBody := []byte(`{"messages":[{"content":"Browser: SECRET_REQUEST_BODY"}]}`)

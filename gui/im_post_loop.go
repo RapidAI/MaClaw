@@ -41,7 +41,8 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 	// If captured asynchronously in the goroutine, the next user message ("确认") may
 	// arrive before the goroutine runs, causing the state machine to advance without
 	// the phase output being recorded — SubAgent then sees empty tasks output.
-	if workflowAgentLoop && h.isWorkflowV2Active(msg.UserID) {
+	ownerID := h.workflowPolicyOwnerID(msg.UserID, loopCtx)
+	if workflowAgentLoop && h.isWorkflowV2Active(ownerID) {
 		h.captureWorkflowDocAfterAgentLoop(msg, loopCtx, &respSnapshot, workflowAgentLoop)
 	}
 
@@ -55,7 +56,7 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 		}()
 		h.runEvidenceCollection(msg.UserID, msg.Text)
 		// V2 capture already done synchronously above; skip in goroutine to avoid double-recording.
-		if !(workflowAgentLoop && h.isWorkflowV2Active(msg.UserID)) {
+		if !(workflowAgentLoop && h.isWorkflowV2Active(ownerID)) {
 			h.captureWorkflowDocAfterAgentLoop(msg, loopCtx, &respSnapshot, workflowAgentLoop)
 		}
 		h.recordAgentLoopTerminalExperience(loopCtx, &respSnapshot)
@@ -66,13 +67,17 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 	if !workflowAgentLoop || resp == nil || resp.HardExit {
 		return
 	}
-	if h.isWorkflowV2Active(msg.UserID) && h.getWorkflowV2() != nil {
+	ownerID := h.workflowPolicyOwnerID(msg.UserID, loopCtx)
+	if h.isWorkflowV2Active(ownerID) && h.getWorkflowV2() != nil {
 		// Skip if the phase output was already recorded (e.g. by SubAgent execution path)
 		wf := h.getWorkflowV2()
-		if state := wf.machine.GetActive(msg.UserID); state != nil {
+		completedPhaseID := ""
+		if state := wf.machine.GetActive(ownerID); state != nil {
 			if p := state.ActivePhase(); p != nil && p.Output != "" {
 				log.Printf("[workflow-v2] post-loop doc capture skipped: phase already has output (len=%d)", len([]rune(p.Output)))
 				return
+			} else if p != nil {
+				completedPhaseID = p.ID
 			}
 		}
 		// Prefer the accumulated WorkflowDocBuffer (captures all iterations' text)
@@ -93,20 +98,58 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 			source = "error"
 		}
 		if docText != "" {
-			h.recordWorkflowV2Output(msg.UserID, docText)
-			log.Printf("[workflow-v2] post-loop doc capture: user=%s len=%d source=%s", msg.UserID, len([]rune(docText)), source)
+			h.recordWorkflowV2Output(ownerID, docText)
+			if completedPhaseID != "" {
+				h.recordWorkflowPhaseCompletedExperience(msg, loopCtx, completedPhaseID)
+			}
+			log.Printf("[workflow-v2] post-loop doc capture: user=%s len=%d source=%s", ownerID, len([]rune(docText)), source)
 			// After recording, check if the next phase is ExecModeAutoFromPrev
 			// and auto-complete it (same logic as SubAgent path).
 			if wf := h.getWorkflowV2(); wf != nil {
-				if updatedState := wf.machine.GetActive(msg.UserID); updatedState != nil {
+				if updatedState := wf.machine.GetActive(ownerID); updatedState != nil {
 					if nextPhase := updatedState.ActivePhase(); nextPhase != nil && nextPhase.ExecMode == v2.ExecModeAutoFromPrev {
 						log.Printf("[workflow-v2] post-loop auto-completing phase=%s (ExecMode=auto_from_prev)", nextPhase.ID)
-						wf.machine.RecordOutput(msg.UserID, docText)
+						wf.machine.RecordOutput(ownerID, docText)
 					}
 				}
 			}
 		}
+		return
 	}
+	if h.app == nil || h.app.workflowEngine == nil || !h.app.workflowEngine.HasActiveWorkflow(ownerID) {
+		return
+	}
+	docText := ""
+	source := "resp.Text"
+	if loopCtx != nil && loopCtx.WorkflowDocBuffer.Len() > 0 {
+		if t := strings.TrimSpace(loopCtx.WorkflowDocBuffer.String()); t != "" {
+			docText = t
+			source = "buffer"
+		}
+	}
+	if docText == "" {
+		docText = strings.TrimSpace(resp.Text)
+	}
+	if docText == "" && resp.Error != "" {
+		docText = "Workflow phase failed: " + resp.Error
+		source = "error"
+	}
+	if docText == "" {
+		return
+	}
+	phaseID, advResp, err := h.app.workflowEngine.SavePhaseOutputAndMaybeAdvance(ownerID, docText)
+	if err != nil {
+		log.Printf("[workflow] post-loop doc capture failed: user=%s err=%v", ownerID, err)
+		return
+	}
+	if phaseID != "" {
+		h.recordWorkflowPhaseCompletedExperience(msg, loopCtx, phaseID)
+	}
+	if advResp != nil && advResp.PhasePrompt != "" {
+		h.stashedPhasePrompt.Store(ownerID, advResp.PhasePrompt)
+		h.workflowAgentLoopMarker.Store(ownerID, true)
+	}
+	log.Printf("[workflow] post-loop doc capture: user=%s phase=%s len=%d source=%s", ownerID, phaseID, len([]rune(docText)), source)
 }
 
 func (h *IMMessageHandler) recordAgentLoopTerminalExperience(loopCtx *LoopContext, resp *IMAgentResponse) {

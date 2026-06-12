@@ -168,35 +168,7 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 		},
 	})
 
-	// --- DateTime tool ---
-	registry.Register(RegisteredTool{
-		Name:        "current_datetime",
-		Description: "获取当前日期和时间，包括年月日、星期几、今年第几周、时分秒。Get current date and time with year, month, day, weekday, ISO week number, hour, minute, second.",
-		Category:    ToolCategoryNonCode,
-		Tags:        []string{"time", "date", "datetime", "clock", "week"},
-		Status:      RegToolAvailable,
-		InputSchema: map[string]interface{}{},
-		Source:      "non_code",
-		ExecutionContract: map[string]interface{}{
-			"capabilities":            []interface{}{"time"},
-			"deterministic":           true,
-			"supports_direct":         true,
-			"requires_agent_planning": false,
-			"avg_latency_ms":          5,
-		},
-		Handler: func(args map[string]interface{}) string {
-			now := time.Now()
-			weekdayCN := [...]string{"日", "一", "二", "三", "四", "五", "六"}
-			isoYear, isoWeek := now.ISOWeek()
-			return fmt.Sprintf(
-				"%d年%02d月%02d日 星期%s %d年第%d周 %02d:%02d:%02d (时区: %s)",
-				now.Year(), int(now.Month()), now.Day(),
-				weekdayCN[now.Weekday()], isoYear, isoWeek,
-				now.Hour(), now.Minute(), now.Second(),
-				now.Location().String(),
-			)
-		},
-	})
+	registerCurrentDateTimeTool(registry, ToolCategoryNonCode, "non_code")
 
 	// --- Environment tools ---
 	registry.Register(RegisteredTool{
@@ -215,6 +187,39 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 				path = app.getCurrentProjectPath()
 			}
 			return checkProjectHealth(path)
+		},
+	})
+}
+
+func registerCurrentDateTimeTool(registry *ToolRegistry, category ToolCategory, source string) {
+	if registry == nil {
+		return
+	}
+	registry.Register(RegisteredTool{
+		Name:        "current_datetime",
+		Description: "Get current date and time with year, month, day, weekday, ISO week number, hour, minute, second, and timezone.",
+		Category:    category,
+		Tags:        []string{"time", "date", "datetime", "clock", "week"},
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{},
+		Source:      source,
+		ExecutionContract: map[string]interface{}{
+			"capabilities":            []interface{}{"time"},
+			"deterministic":           true,
+			"supports_direct":         true,
+			"requires_agent_planning": false,
+			"avg_latency_ms":          5,
+		},
+		Handler: func(args map[string]interface{}) string {
+			now := time.Now()
+			isoYear, isoWeek := now.ISOWeek()
+			return fmt.Sprintf(
+				"%04d-%02d-%02d %s ISO week %04d-W%02d %02d:%02d:%02d (timezone: %s)",
+				now.Year(), int(now.Month()), now.Day(),
+				now.Weekday().String(), isoYear, isoWeek,
+				now.Hour(), now.Minute(), now.Second(),
+				now.Location().String(),
+			)
 		},
 	})
 }

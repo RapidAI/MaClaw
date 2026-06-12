@@ -105,7 +105,7 @@ func (c *AuxiliaryCaller) ChatCall(messages []map[string]string) (string, error)
 
 func auxiliaryOpenAIBaseURL(raw string) string {
 	url := strings.TrimRight(raw, "/")
-	if !strings.HasSuffix(strings.ToLower(url), "/v1") {
+	if !llmEndpointHasVersionSuffix(url) {
 		url += "/v1"
 	}
 	return url

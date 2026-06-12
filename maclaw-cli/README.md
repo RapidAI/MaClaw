@@ -23,11 +23,15 @@ Validate an invoke request without contacting MaClaw:
 echo '{"action":"continue","clientId":"planner","sessionId":"task-123","text":"Continue"}' | maclaw-cli invoke --dry-run
 ```
 
+Dry-run redacts `token` values in stdout.
+
 `invoke` also accepts rich send payloads and idempotency fields:
 
 ```bash
 echo '{"action":"send","clientId":"planner","sessionId":"task-123","eventId":"evt-001","messageId":"msg-001","message":{"type":"text","text":"Continue"}}' | maclaw-cli invoke
 ```
+
+Rich `message` payloads are strict: unknown fields or unsupported message types fail early.
 
 Static schema: [invoke.schema.json](invoke.schema.json)
 
@@ -82,6 +86,8 @@ maclaw-cli watch --count 10
 
 All normal commands emit JSON. `watch` emits JSONL, one outgoing message per line.
 
+`ack --status` accepts `delivered`, `read`, or `failed`.
+
 ## Sessions
 
 The CLI is stateful. It stores session state in `~/.maclaw/maclaw-cli/state.json`.
@@ -93,7 +99,10 @@ maclaw-cli session reset-cursor --client planner --id customer-audit
 maclaw-cli session delete --client planner customer-audit
 maclaw-cli session current
 maclaw-cli session list
+maclaw-cli session list --client planner
 ```
+
+`session current` is read-only. Use `session new` or `session use <id>` to create/select a human interactive session.
 
 `ask`, `send`, `poll`, `watch`, and `tool-result` use `--session` as the protocol `conversationId` when `--conversation` is not provided. Poll cursors are saved per session, so repeated calls keep advancing the same conversation:
 
@@ -110,12 +119,16 @@ maclaw-cli continue "keep going"
 echo "continue from latest state" | maclaw-cli continue --stdin
 ```
 
+Known flags may appear before or after positional text, so `maclaw-cli continue "keep going" --session task-123` works.
+
 For human interactive shell use, `session use` sets a global current session:
 
 ```bash
 maclaw-cli session use project-42
 maclaw-cli continue "Continue project 42"
 ```
+
+`session use` preserves an existing session cursor. Use `session reset-cursor` only when you intentionally want to reread from the beginning.
 
 Do not use `session use` in multi-agent automation. It mutates shared `currentSession`; another process can change it between calls.
 
@@ -146,6 +159,8 @@ State is keyed by `clientId + sessionId`. Use a stable `--client` per calling ag
 
 `session rename`, `session reset-cursor`, and `session delete` operate on the selected `--client` plus session id, with fallback for older state entries that do not have a client id.
 
+`session list --client <id>` filters sessions to that client plus legacy entries; plain `session list` shows all sessions.
+
 Use `--json-errors` or `MACLAW_JSON_ERRORS=1` when a supervising agent needs machine-readable stderr on failures.
 
 The CLI also serializes stateful commands for the same `clientId + sessionId` with a run lock under `~/.maclaw/maclaw-cli/runs/`. Different keys can run concurrently. A second command for the same key waits, then exits with `run lock busy` if the first command does not finish before the lock timeout.
@@ -166,8 +181,37 @@ Report execution result:
 maclaw-cli tool-result \
   --tool-call-id tc_001 \
   --status success \
-  --result-json '{"ok":true}'
+  --result-json '{"ok":true}' \
+  --metadata-json '{"source":"agent"}'
 ```
+
+Validate industrial/client tool definitions before registration:
+
+```bash
+maclaw-cli srv tools validate --file tools.json
+```
+
+## MaClawSrv Remote Access
+
+Use `srv thirdparty` to enable the authenticated MaClawSrv user's remote third-party gateway access. The user API token configures that user; the gateway bearer token identifies that user for third-party protocol calls.
+
+```bash
+maclaw-cli srv setup https://maclawsrv.example.com "$MACLAWSRV_AUTH_TOKEN"
+```
+
+Useful commands:
+
+```bash
+maclaw-cli srv show --srv https://maclawsrv.example.com --auth-token "$MACLAWSRV_AUTH_TOKEN"
+maclaw-cli srv info https://maclawsrv.example.com "$MACLAWSRV_AUTH_TOKEN"
+maclaw-cli srv token https://maclawsrv.example.com "$MACLAWSRV_AUTH_TOKEN"
+maclaw-cli srv disable --srv https://maclawsrv.example.com --auth-token "$MACLAWSRV_AUTH_TOKEN"
+maclaw-cli srv test https://maclawsrv.example.com "$MACLAWSRV_GATEWAY_TOKEN"
+```
+
+`srv setup` is short for `srv thirdparty setup`. It uses `<srv>/api/im-gateway/v1` as the gateway endpoint unless `--endpoint` overrides it. `--srv` and `--endpoint` must be absolute `http://` or `https://` URLs without query strings or fragments. It generates a gateway token when none exists and prints that new token once. Existing tokens are preserved and not printed by default; pass `--include-token` or use `srv info` when you intentionally need to print existing integration credentials. Use `srv token` when a fresh token is required. The JSON output includes `next` plus structured `clientUse.testArgv` and `clientUse.env` for agents. Admin fallback is still available with `--admin-token --tenant --user` when an owner needs to configure another user.
+
+For environment-only automation, set `MACLAWSRV_URL` and `MACLAWSRV_GATEWAY_TOKEN`, then run `maclaw-cli srv test`.
 
 ## Overrides
 
@@ -191,9 +235,19 @@ Environment variables:
 - `MACLAW_REQUIRE_SESSION`
 - `MACLAW_JSON_ERRORS`
 - `MACLAW_CLIENT_ID`
+- `MACLAW_CLIENT_NAME`
 - `MACLAW_CONVERSATION_ID`
 - `MACLAW_USER_ID`
 - `MACLAW_USER_NAME`
+- `MACLAWSRV_URL`
+- `MACLAWSRV_AUTH_TOKEN`
+- `MACLAWSRV_GATEWAY_TOKEN`
+- `MACLAWSRV_ADMIN_TOKEN`
+- `MACLAWSRV_TENANT_ID`
+- `MACLAWSRV_USER_ID`
+- `MACLAWSRV_GATEWAY_URL`
+
+`srv --timeout` must be `0` or greater. `0` keeps the command default timeout.
 
 ## GUI Requirement
 
@@ -206,6 +260,8 @@ maclaw-cli bootstrap
 ```
 
 This writes `thirdparty_gateway_enabled=true`, a generated local token, `127.0.0.1`, and port `18777` into `~/.maclaw/config.json`. If MaClaw GUI is already running and the gateway is still stopped, restart the gateway from GUI or restart MaClaw GUI once.
+
+If you bind the GUI gateway to `0.0.0.0` or `::`, `maclaw-cli` still connects through `127.0.0.1` for same-machine zero-config calls.
 
 Check readiness:
 

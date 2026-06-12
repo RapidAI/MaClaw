@@ -76,7 +76,7 @@ export function MemoryUsageRing({ theme: t, themeMode, lang, size = 22 }: Memory
 
     // Color based on usage level
     const ringColor = percent >= 90
-        ? (themeMode === "dark" ? "#e08b84" : "#b42318")  // muted red — critical
+        ? (themeMode === "dark" ? "#e07a72" : "#c43d34")  // muted red — critical
         : percent >= 70
             ? (themeMode === "dark" ? "#c7d7e8" : "#64748b")  // neutral attention
             : (themeMode === "dark" ? "#7aa89a" : "#4f7f6f"); // muted green — healthy

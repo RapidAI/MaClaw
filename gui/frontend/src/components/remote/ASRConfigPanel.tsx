@@ -317,7 +317,7 @@ export function ASRConfigPanel({ lang }: Props) {
                     {calibPhase === 'speech' && (
                         <div className="model-config-phase-card">
                             <div className="model-config-phase-title model-config-phase-title--success">
-                                🎤 {t('Phase 2/2 — Please read aloud:', '第 2 步（共 2 步）— 请用正常音量朗读：', '第 2 步（共 2 步）— 請用正常音量朗讀：')}
+                                {t('Phase 2/2 — Please read aloud:', '第 2 步（共 2 步）— 请用正常音量朗读：', '第 2 步（共 2 步）— 請用正常音量朗讀：')}
                             </div>
                             <div className="model-config-reading-list">
                                 {(READING_SENTENCES[lang] || READING_SENTENCES['zh-Hans']).map((s, i) => (

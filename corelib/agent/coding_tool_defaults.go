@@ -39,7 +39,7 @@ func DefaultClaudeProviders() []corelib.ModelConfig {
 func DefaultCodexProviders() []corelib.ModelConfig {
 	return []corelib.ModelConfig{
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", WireApi: "responses"},
-		{ModelName: "GLM", ModelId: "glm-5-turbo", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", WireApi: "responses"},
+		{ModelName: "GLM", ModelId: "glm-5.1", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", WireApi: "responses"},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", WireApi: "responses"},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", WireApi: "responses"},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", WireApi: "responses", IsCustom: true},

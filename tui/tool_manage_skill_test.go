@@ -32,6 +32,21 @@ func TestManageSkillHandler_AllCanonicalActionsHandled(t *testing.T) {
 	}
 }
 
+func TestManageSkillHandler_UploadAliases(t *testing.T) {
+	app := &TUIApp{appConfig: corelib.AppConfig{}}
+	handler := newManageSkillHandler(app)
+
+	for _, action := range []string{"publish", "pub", "submit", "发布", "上架"} {
+		got := handler(map[string]interface{}{"action": action})
+		if strings.Contains(got, "未知 manage_skill action") || strings.Contains(got, "鏈煡 manage_skill action") {
+			t.Fatalf("alias %q should route to upload, got %q", action, got)
+		}
+		if !strings.Contains(got, "name") {
+			t.Fatalf("alias %q should reach upload handler and ask for name, got %q", action, got)
+		}
+	}
+}
+
 func TestManageSkillHandlerMaintenancePlanReturnsReadOnlyPlan(t *testing.T) {
 	app := &TUIApp{appConfig: corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
 		Name:         "fragile-skill",

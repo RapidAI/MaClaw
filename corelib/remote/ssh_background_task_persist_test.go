@@ -15,6 +15,7 @@ func TestSetPersistDir_SavesAndLoadsActiveTasks(t *testing.T) {
 	// Add a running task manually (simulate Submit without actual SSH)
 	mgr.tasks["bg_111_1"] = &SSHBackgroundTask{
 		TaskID:    "bg_111_1",
+		OwnerID:   "owner-a",
 		SessionID: "ssh_root@api.example.com:22_1",
 		Command:   "pip install torch",
 		LogFile:   "/tmp/maclaw_bg_bg_111_1.log",
@@ -47,6 +48,7 @@ func TestSetPersistDir_SavesAndLoadsActiveTasks(t *testing.T) {
 
 	// Create a new manager and load from disk
 	mgr2 := NewSSHBackgroundTaskManager(NewSSHSessionManager(nil))
+	mgr2.SetMirrorDir(filepath.Join(dir, "mirrors"))
 	mgr2.SetPersistDir(dir)
 
 	// Only the running task should be restored
@@ -65,6 +67,12 @@ func TestSetPersistDir_SavesAndLoadsActiveTasks(t *testing.T) {
 	}
 	if restored.Status != SSHBackgroundTaskStatusRunning {
 		t.Fatalf("restored status = %q, want 'running'", restored.Status)
+	}
+	if restored.OwnerID != "owner-a" {
+		t.Fatalf("restored owner = %q, want owner-a", restored.OwnerID)
+	}
+	if restored.MirrorFile != filepath.Join(dir, "mirrors", "bg_111_1.log") {
+		t.Fatalf("restored mirror = %q", restored.MirrorFile)
 	}
 }
 

@@ -77,11 +77,11 @@ const CATEGORIES = [
 ] as const;
 
 const CATEGORY_COLORS: Record<string, string> = {
-    self_identity: "var(--theme-danger)",
+    self_identity: "var(--theme-primary-strong, #183b63)",
     user_fact: "var(--theme-primary)",
     preference: "var(--theme-info, var(--theme-primary))",
     project_knowledge: "var(--theme-success)",
-    instruction: "var(--theme-warning)",
+    instruction: "var(--theme-primary)",
     conversation_summary: "var(--theme-primary-strong, #183b63)",
     session_checkpoint: "var(--theme-text-muted)",
     task_artifact: "var(--theme-text-muted)",
@@ -336,7 +336,7 @@ function MemoryStatusTab({ t, lang, traceFocus }: { t: (en: string, zhHans: stri
                         className="memory-capacity-fill"
                         style={{
                             width: `${boundedCapPct}%`,
-                            background: capPct >= 90 ? "var(--theme-danger)" : capPct >= 70 ? "var(--theme-warning)" : "var(--theme-success)",
+                            background: capPct >= 90 ? "var(--theme-danger)" : capPct >= 70 ? "var(--theme-primary)" : "var(--theme-success)",
                         }}
                     />
                 </div>
@@ -817,7 +817,7 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
 
             {/* Backup list */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <div style={{ fontSize: "0.8rem", color: colors.text, fontWeight: 600 }}>📦 {t("Backup History", "历史备份")}</div>
+                <div style={{ fontSize: "0.8rem", color: colors.text, fontWeight: 600 }}>PACK {t("Backup History", "历史备份")}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.7rem", color: colors.textMuted }}>
                     {t("Keep", "保留")}
                     <input

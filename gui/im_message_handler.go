@@ -45,6 +45,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if resp, handled := h.handleImmediateIMCommand(msg, trimmed, onProgress, onToken); handled {
 		return resp
 	}
+	if resp, handled := h.tryImmediateCurrentTimeDirect(msg, providedLoopCtx); handled {
+		return resp
+	}
 
 	// Emit immediate progress feedback before any heavy processing (preflight/entry_context).
 	// This ensures the frontend shows "正在思考..." within <100ms of message receipt.

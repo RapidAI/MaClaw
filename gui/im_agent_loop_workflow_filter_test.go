@@ -443,7 +443,7 @@ func TestSkillRecoverReappliesCodingImplementationWorkflowFilter(t *testing.T) {
 		toolDef("write_file", "write file", nil, nil),
 	}
 
-	restored, _, directFiltered := handler.restoreToolsAfterSkillRecover(userID, baseTools, agentLoopPhase{}, codingToolGateConfig{}, false, func() bool { return false })
+	restored, _, directFiltered := handler.restoreToolsAfterSkillRecover(userID, baseTools, agentLoopPhase{})
 	names := toolNameSetForWorkflowFilterTest(restored)
 	if directFiltered {
 		t.Fatal("workflow filter should not report direct-mode filtering when orchestrator is inactive")
@@ -797,6 +797,10 @@ func TestApplyWorkflowToolFilterNoneDoesNotForceCatalogBuild(t *testing.T) {
 }
 
 func TestWorkflowAgentLoopStillHonorsNeedsConfirmGateAfterSkip(t *testing.T) {
+	// V2 workflow: NeedsConfirm tool-branch gate is no longer used.
+	// V2 runs each phase as a complete independent agent loop; output capture
+	// happens AFTER the loop returns (via recordWorkflowV2Output).
+	// shouldNeedsConfirmToolBranch always returns false with V2.
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "workflow-agent-loop-needs-confirm-user"
 	_, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
@@ -810,18 +814,21 @@ func TestWorkflowAgentLoopStillHonorsNeedsConfirmGateAfterSkip(t *testing.T) {
 		t.Fatalf("SkipPhaseForm failed: %v", err)
 	}
 
-	gateConfig := codingToolGateConfig{}
-	plainSkip := handler.shouldNeedsConfirmToolBranch(&LoopContext{SkipNeedsConfirmGate: true}, userID, 1, gateConfig)
-	if !plainSkip {
-		t.Fatal("active workflow must keep NeedsConfirm gate active despite plain SkipNeedsConfirmGate")
+	plainSkip := handler.shouldNeedsConfirmToolBranch(&LoopContext{SkipNeedsConfirmGate: true}, userID, 1)
+	if plainSkip {
+		t.Fatal("V2: shouldNeedsConfirmToolBranch must return false (V1 NeedsConfirm gate removed)")
 	}
-	workflowLoop := handler.shouldNeedsConfirmToolBranch(&LoopContext{SkipNeedsConfirmGate: true, WorkflowAgentLoop: true}, userID, 1, gateConfig)
-	if !workflowLoop {
-		t.Fatal("workflow agent loop must keep NeedsConfirm gate active despite SkipNeedsConfirmGate")
+	workflowLoop := handler.shouldNeedsConfirmToolBranch(&LoopContext{SkipNeedsConfirmGate: true, WorkflowAgentLoop: true}, userID, 1)
+	if workflowLoop {
+		t.Fatal("V2: shouldNeedsConfirmToolBranch must return false for workflow agent loops")
 	}
 }
 
 func TestNeedsConfirmToolBranchUsesRuntimePolicyOwner(t *testing.T) {
+	// V2 workflow: shouldNeedsConfirmToolBranch always returns false because V2
+	// handles phase gates externally (via recordWorkflowV2Output after loop).
+	// This test verifies the function doesn't panic and always returns false
+	// regardless of workflow state.
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	desktopID := "desktop-needs-confirm-doc-only-owner"
 	remoteOwnerID := "remote:mobile-needs-confirm-owner"
@@ -834,8 +841,8 @@ func TestNeedsConfirmToolBranchUsesRuntimePolicyOwner(t *testing.T) {
 	handler.lastUserID = desktopID
 	ctx := &LoopContext{SkipNeedsConfirmGate: true, Runtime: RuntimeContext{RequestID: "req-needs-confirm", PolicyOwnerID: remoteOwnerID}}
 
-	if got := handler.shouldNeedsConfirmToolBranch(ctx, desktopID, 1, codingToolGateConfig{}); got {
-		t.Fatal("tool-branch NeedsConfirm must not inherit desktop workflow when runtime owner has no workflow")
+	if got := handler.shouldNeedsConfirmToolBranch(ctx, desktopID, 1); got {
+		t.Fatal("V2: shouldNeedsConfirmToolBranch must return false regardless of workflow state")
 	}
 
 	if _, err := handler.app.workflowEngine.StartWorkflow(remoteOwnerID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "remote build"}); err != nil {
@@ -844,8 +851,8 @@ func TestNeedsConfirmToolBranchUsesRuntimePolicyOwner(t *testing.T) {
 	if err := handler.app.workflowEngine.SkipPhaseForm(remoteOwnerID); err != nil {
 		t.Fatalf("SkipPhaseForm remote failed: %v", err)
 	}
-	if got := handler.shouldNeedsConfirmToolBranch(ctx, desktopID, 1, codingToolGateConfig{}); !got {
-		t.Fatal("tool-branch NeedsConfirm should follow active runtime-owner workflow")
+	if got := handler.shouldNeedsConfirmToolBranch(ctx, desktopID, 1); got {
+		t.Fatal("V2: shouldNeedsConfirmToolBranch must return false even with active runtime-owner workflow")
 	}
 }
 
@@ -971,11 +978,8 @@ func TestWorkflowGateHelpersTolerateNilLoopContext(t *testing.T) {
 	if names["browser"] || !names["read_file"] {
 		t.Fatalf("nil context should keep workflow filter active, got %#v", names)
 	}
-	if shouldSkipCodingGate(nil, codingToolGateConfig{intent: intentCoding}) {
-		t.Fatal("nil context must not skip coding gate")
-	}
-	if handler.shouldNeedsConfirmToolBranch(nil, userID, 1, codingToolGateConfig{}) != handler.app.workflowEngine.IsPhaseNeedsConfirm(userID) {
-		t.Fatal("nil context should not alter NeedsConfirm decision")
+	if handler.shouldNeedsConfirmToolBranch(nil, userID, 1) {
+		t.Fatal("V2: nil context should return false (V1 NeedsConfirm gate removed)")
 	}
 }
 

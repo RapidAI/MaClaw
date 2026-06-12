@@ -782,6 +782,23 @@ func TestKnowledgeToolsAreRoutedForAgentKnowledgeRequests(t *testing.T) {
 	}
 }
 
+func TestKnowledgeSearchRoutedForLocalServerMemoryQuestion(t *testing.T) {
+	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
+
+	routed := handler.routeTools("\u77e5\u9053api2\u670d\u52a1\u5668\u4fe1\u606f\u5417\uff1f", tools)
+	names := knowledgeToolNames(routed)
+	if !names["knowledge_search"] {
+		t.Fatalf("expected knowledge_search for local server info question, got %v", sortedKnowledgeToolNames(names))
+	}
+	allNames := allToolNames(routed)
+	if !allNames["memory"] {
+		t.Fatalf("memory should remain available for local server info questions")
+	}
+	if names["knowledge_save_text"] || names["knowledge_import_files"] || names["knowledge_import_directory"] || names["knowledge_save_url"] {
+		t.Fatalf("read-only local info question must not expose knowledge write tools, got %v", sortedKnowledgeToolNames(names))
+	}
+}
+
 func TestKnowledgeSaveTextIsRoutedForExplicitKnowledgeWrite(t *testing.T) {
 	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
 	setTestKnowledgeWriteIntent(handler, coreintent.LabelKnowledgeWrite)

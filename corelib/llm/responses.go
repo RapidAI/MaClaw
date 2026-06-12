@@ -23,11 +23,26 @@ type ResponsesAPIRequestOptions struct {
 
 // responsesReservedKeys are top-level keys that ExtraBody must not override.
 var responsesReservedKeys = map[string]bool{
-	"model":        true,
-	"input":        true,
-	"instructions": true,
-	"stream":       true,
-	"tools":        true,
+	"model":                 true,
+	"input":                 true,
+	"instructions":          true,
+	"stream":                true,
+	"tools":                 true,
+	"function_call":         true,
+	"max_completion_tokens": true,
+	"max_tokens":            true,
+	"parallel_tool_calls":   true,
+	"response_format":       true,
+	"tool_choice":           true,
+	"stream_options":        true,
+	"logprobs":              true,
+	"top_logprobs":          true,
+	"service_tier":          true,
+	"reasoning_effort":      true,
+	"modalities":            true,
+	"prediction":            true,
+	"audio":                 true,
+	"web_search_options":    true,
 }
 
 // BuildResponsesAPIRequestData constructs the endpoint URL and JSON body
@@ -38,11 +53,12 @@ func BuildResponsesAPIRequestData(
 	opts ResponsesAPIRequestOptions,
 ) (endpoint string, body []byte, err error) {
 	endpoint = BuildResponsesEndpoint(cfg.URL)
+	messages = normalizeOpenAIChatToolCallLinkage(messages)
 
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		messages = SanitizeConservativeOpenAICompatMessages(messages)
 	} else {
-		messages = sanitizeEmptyToolCalls(messages)
+		messages = SanitizeOpenAICompatRequestMessages(messages, true)
 	}
 	converted := ConvertToResponsesInput(messages)
 
@@ -55,11 +71,26 @@ func BuildResponsesAPIRequestData(
 		reqBody["instructions"] = converted.Instructions
 	}
 	toolsInput := opts.Tools
+	toolsInput = sanitizeOpenAIChatToolsForSDK(toolsInput)
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
-		toolsInput = corelib.SanitizeCodeGenOpenAIChatTools(opts.Tools)
+		toolsInput = corelib.SanitizeCodeGenOpenAIChatTools(toolsInput)
 	}
 	if tools := ConvertToResponsesTools(toolsInput); len(tools) > 0 {
 		reqBody["tools"] = tools
+	}
+	if opts.ExtraBody != nil {
+		if _, ok := opts.ExtraBody["max_output_tokens"]; !ok {
+			if v, ok := opts.ExtraBody["max_completion_tokens"]; ok {
+				reqBody["max_output_tokens"] = v
+			} else if v, ok := opts.ExtraBody["max_tokens"]; ok {
+				reqBody["max_output_tokens"] = v
+			}
+		}
+		if _, ok := opts.ExtraBody["text"]; !ok {
+			if format := responsesTextFormatFromChatResponseFormat(opts.ExtraBody["response_format"]); format != nil {
+				reqBody["text"] = map[string]interface{}{"format": format}
+			}
+		}
 	}
 	for k, v := range opts.ExtraBody {
 		if responsesReservedKeys[k] {
@@ -73,6 +104,21 @@ func BuildResponsesAPIRequestData(
 
 	body, err = json.Marshal(reqBody)
 	return endpoint, body, err
+}
+
+func responsesTextFormatFromChatResponseFormat(raw interface{}) map[string]interface{} {
+	format := sanitizeOpenAIResponseFormatForSDK(raw)
+	if format == nil {
+		return nil
+	}
+	if schema := toStringInterfaceMap(format["json_schema"]); schema != nil && format["type"] == "json_schema" {
+		out := map[string]interface{}{"type": "json_schema"}
+		for k, v := range schema {
+			out[k] = v
+		}
+		return out
+	}
+	return format
 }
 
 // NewResponsesAPIRequest creates an *http.Request for the Responses API.

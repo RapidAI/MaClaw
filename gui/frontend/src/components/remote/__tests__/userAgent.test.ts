@@ -36,8 +36,21 @@ describe('userAgent helpers', () => {
     describe('isKnownUserAgent', () => {
         it('recognises all known agents', () => {
             expect(isKnownUserAgent('openclaw')).toBe(true);
+            expect(isKnownUserAgent('Claude Code')).toBe(true);
+            expect(isKnownUserAgent('Cline')).toBe(true);
+            expect(isKnownUserAgent('OpenCode')).toBe(true);
+            expect(isKnownUserAgent('Roo Code')).toBe(true);
+            expect(isKnownUserAgent('Kilo Code')).toBe(true);
+            expect(isKnownUserAgent('Cursor')).toBe(true);
+            expect(isKnownUserAgent('Crush')).toBe(true);
+            expect(isKnownUserAgent('Goose')).toBe(true);
+            expect(isKnownUserAgent('claude code 2.0')).toBe(true);
             expect(isKnownUserAgent('tigerclaw')).toBe(true);
             expect(isKnownUserAgent('claude-code/2.0.0')).toBe(true);
+        });
+
+        it('recognises legacy agent aliases', () => {
+            expect(isKnownUserAgent('opencode')).toBe(true);
         });
 
         it('rejects unknown values', () => {
@@ -58,12 +71,16 @@ describe('userAgent helpers', () => {
 
         it('seeds when agent_type is a known value (user just clicked Custom button)', () => {
             expect(editableCustomAgentValue(provider({ agent_type: 'openclaw' }))).toBe('custom-client');
+            expect(editableCustomAgentValue(provider({ agent_type: 'OpenCode' }))).toBe('custom-client');
+            expect(editableCustomAgentValue(provider({ agent_type: 'opencode' }))).toBe('custom-client');
+            expect(editableCustomAgentValue(provider({ agent_type: 'Kilo Code' }))).toBe('custom-client');
+            expect(editableCustomAgentValue(provider({ agent_type: 'Cursor' }))).toBe('custom-client');
             expect(editableCustomAgentValue(provider({ agent_type: 'tigerclaw' }))).toBe('custom-client');
         });
 
-        it('seeds to default when agent_type is absent', () => {
-            expect(editableCustomAgentValue(provider({}))).toBe('openclaw');
-            expect(editableCustomAgentValue(undefined)).toBe('openclaw');
+        it('seeds to custom value when agent_type is absent', () => {
+            expect(editableCustomAgentValue(provider({}))).toBe('custom-client');
+            expect(editableCustomAgentValue(undefined)).toBe('custom-client');
         });
 
         it('seeds to tigerclaw-derived seed for CodeGen SSO provider', () => {
@@ -86,8 +103,8 @@ describe('userAgent helpers', () => {
             expect(commitCustomAgentValue(custom, '   ')).toBe('my-agent');
         });
 
-        it('seeds to default when provider has no custom agent and value is blank', () => {
-            expect(commitCustomAgentValue(provider({}), '')).toBe('openclaw');
+        it('seeds to custom value when provider has no custom agent and value is blank', () => {
+            expect(commitCustomAgentValue(provider({}), '')).toBe('custom-client');
         });
     });
 
@@ -98,6 +115,10 @@ describe('userAgent helpers', () => {
 
         it('returns "custom-client" when current effective agent is a known value', () => {
             expect(customAgentSeedForProvider(provider({ agent_type: 'openclaw' }))).toBe('custom-client');
+            expect(customAgentSeedForProvider(provider({ agent_type: 'OpenCode' }))).toBe('custom-client');
+            expect(customAgentSeedForProvider(provider({ agent_type: 'opencode' }))).toBe('custom-client');
+            expect(customAgentSeedForProvider(provider({ agent_type: 'Kilo Code' }))).toBe('custom-client');
+            expect(customAgentSeedForProvider(provider({ agent_type: 'Cursor' }))).toBe('custom-client');
             expect(customAgentSeedForProvider(provider({}))).toBe('custom-client');
         });
     });

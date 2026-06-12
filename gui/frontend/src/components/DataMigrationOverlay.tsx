@@ -37,7 +37,7 @@ export const DataMigrationOverlay = () => {
         switch (progress.phase) {
             case 'scanning': return '正在扫描文件...';
             case 'copying': return `正在迁移数据 (${progress.copiedFiles}/${progress.totalFiles})`;
-            case 'done': return '迁移完成 ✓';
+            case 'done': return '迁移完成 OK';
             case 'error': return `迁移出错: ${progress.error}`;
             default: return '';
         }
@@ -52,15 +52,15 @@ export const DataMigrationOverlay = () => {
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            background: 'rgba(0, 0, 0, 0.85)',
-            color: '#fff',
+            background: 'rgba(15, 23, 42, 0.88)',
+            color: 'var(--theme-on-primary, #ffffff)',
             fontFamily: 'system-ui, -apple-system, sans-serif',
         }}>
             <div style={{ textAlign: 'center', maxWidth: '480px', padding: '32px' }}>
                 <h2 style={{ fontSize: '1.2rem', marginBottom: '16px', fontWeight: 500 }}>
                     数据目录迁移
                 </h2>
-                <p style={{ fontSize: '0.85rem', color: '#aaa', marginBottom: '24px' }}>
+                <p style={{ fontSize: '0.85rem', color: 'rgba(226, 232, 240, 0.78)', marginBottom: '24px' }}>
                     {phaseText()}
                 </p>
 
@@ -68,7 +68,7 @@ export const DataMigrationOverlay = () => {
                 <div style={{
                     width: '100%',
                     height: '8px',
-                    background: '#333',
+                    background: 'rgba(148, 163, 184, 0.24)',
                     borderRadius: '4px',
                     overflow: 'hidden',
                     marginBottom: '12px',
@@ -76,7 +76,7 @@ export const DataMigrationOverlay = () => {
                     <div style={{
                         width: `${Math.min(100, progress.percent)}%`,
                         height: '100%',
-                        background: progress.phase === 'error' ? 'var(--theme-danger, #b42318)' : progress.phase === 'done' ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-primary, #2f5f98)',
+                        background: progress.phase === 'error' ? 'var(--theme-danger, #c43d34)' : progress.phase === 'done' ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-primary, #2f5f98)',
                         borderRadius: '4px',
                         transition: 'width 0.3s ease',
                     }} />
@@ -84,13 +84,13 @@ export const DataMigrationOverlay = () => {
 
                 {/* Current file */}
                 {progress.phase === 'copying' && progress.currentFile && (
-                    <p style={{ fontSize: '0.7rem', color: '#666', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <p style={{ fontSize: '0.7rem', color: 'rgba(203, 213, 225, 0.72)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {progress.currentFile}
                     </p>
                 )}
 
                 {/* Percentage */}
-                <p style={{ fontSize: '0.8rem', color: '#888', marginTop: '8px' }}>
+                <p style={{ fontSize: '0.8rem', color: 'rgba(203, 213, 225, 0.82)', marginTop: '8px' }}>
                     {Math.round(progress.percent)}%
                 </p>
             </div>

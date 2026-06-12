@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 
 REM ==============================================================================
-REM == Batch Script to Build and Package MaClaw (GUI + TUI/CLI + DataSrv) for Windows ==
+REM == Batch Script to Build and Package MaClaw (GUI + TUI/CLI + maclaw-cli + DataSrv) for Windows ==
 REM ==============================================================================
 
 echo [INFO] Starting the build process...
@@ -19,7 +19,7 @@ set "PATH=%GOPATH%\bin;%PATH%"
 set "GOMAXPROCS=1"
 
 REM -- Clean previous build artifacts --
-echo [Step 1/13] Cleaning previous build...
+echo [Step 1/14] Cleaning previous build...
 if exist "%OUTPUT_DIR%" (
     rmdir /s /q "%OUTPUT_DIR%" 2>nul
     if exist "%OUTPUT_DIR%" (
@@ -32,7 +32,7 @@ if exist "%OUTPUT_DIR%" (
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
 REM -- Increment build number and set version (single PowerShell call) --
-echo [Step 2/13] Updating version number...
+echo [Step 2/14] Updating version number...
 %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command ^
   "$root = '%~dp0'; if (Test-Path ($root + 'build_number')) { $n = [int](Get-Content ($root + 'build_number')) + 1 } else { $n = 1 }; Set-Content -Path ($root + 'build_number') -Value $n -NoNewline; $cfg = Get-Content ($root + 'wails.json') -Raw | ConvertFrom-Json; $parts = $cfg.info.productVersion.Split('.'); $parts[3] = [string]$n; $ver = $parts -join '.'; Set-Content -Path ($root + 'temp_VERSION.txt') -Value $ver -NoNewline; Set-Content -Path ($root + 'temp_BUILD_NUM.txt') -Value ([string]$n) -NoNewline; Set-Content -Path ($root + 'temp_PRODUCT_NAME.txt') -Value '%APP_NAME%' -NoNewline; Set-Content -Path ($root + 'temp_COMPANY_NAME.txt') -Value $cfg.info.companyName -NoNewline; Set-Content -Path ($root + 'temp_COPYRIGHT.txt') -Value $cfg.info.copyright -NoNewline"
 if !errorlevel! neq 0 (
@@ -46,16 +46,16 @@ set /p COMPANY_NAME=<"%~dp0temp_COMPANY_NAME.txt"
 set /p COPYRIGHT_TEXT=<"%~dp0temp_COPYRIGHT.txt"
 del /q "%~dp0temp_BUILD_NUM.txt" "%~dp0temp_VERSION.txt" "%~dp0temp_PRODUCT_NAME.txt" "%~dp0temp_COMPANY_NAME.txt" "%~dp0temp_COPYRIGHT.txt" 2>nul
 setlocal DisableDelayedExpansion
-powershell -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PROJECTNAME ''%APP_NAME%''','!define PRODUCT_EXECUTABLE ''%APP_NAME%.exe''','!define INFO_PRODUCTNAME ''%PRODUCT_NAME%''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define ARG_WAILS_AMD64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_amd64.exe''','!define ARG_WAILS_ARM64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_arm64.exe''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\build_params.nsh.tmp', $content, $utf8NoBom)"
+powershell -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PROJECTNAME ''%APP_NAME%''','!define PRODUCT_EXECUTABLE ''%APP_NAME%.exe''','!define INFO_PRODUCTNAME ''%PRODUCT_NAME%''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define ARG_WAILS_AMD64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_amd64.exe''','!define ARG_WAILS_ARM64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_arm64.exe''','!define ARG_MACLAWCLI_AMD64_BINARY ''%OUTPUT_DIR%\maclaw-cli_amd64.exe''','!define ARG_MACLAWCLI_ARM64_BINARY ''%OUTPUT_DIR%\maclaw-cli_arm64.exe''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\build_params.nsh.tmp', $content, $utf8NoBom)"
 endlocal
 echo [INFO] Building Version: %VERSION%
 
 REM -- Sync version with frontend --
-echo [Step 3/13] Syncing version with frontend...
+echo [Step 3/14] Syncing version with frontend...
 powershell -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';','export const appVersion = ''%VERSION%'';') | Set-Content -Path '%~dp0gui\frontend\src\version.ts' -Encoding Utf8"
 
 REM -- Build Frontend --
-echo [Step 4/13] Building frontend...
+echo [Step 4/14] Building frontend...
 cd "%~dp0gui\frontend"
 if not exist "node_modules" (
     call npm.cmd install --cache ./.npm_cache
@@ -73,7 +73,7 @@ if !errorlevel! neq 0 (
 cd "%~dp0"
 
 REM -- Generate Windows Resources (icon + version info) --
-echo [Step 5/13] Generating Windows resources...
+echo [Step 5/14] Generating Windows resources...
 del /q "%~dp0gui\resource_windows_*.syso" 2>nul
 del /q "%~dp0resource_windows_*.syso" 2>nul
 del /q "%~dp0tmp*.syso" 2>nul
@@ -96,10 +96,11 @@ if !errorlevel! neq 0 (
 )
 
 REM -- Build Go Binaries --
-echo [Step 6/13] Compiling GUI binaries...
+echo [Step 6/14] Compiling GUI binaries...
 REM -- Kill stale processes and clean locked Go temp dirs to prevent "Access is denied" errors --
 taskkill /F /IM %APP_NAME%.exe 2>nul
 taskkill /F /IM maclaw-tui.exe 2>nul
+taskkill /F /IM maclaw-cli.exe 2>nul
 taskkill /F /IM maclaw-tool.exe 2>nul
 taskkill /F /IM maclawsrv.exe 2>nul
 taskkill /F /IM maclaw-data-srv.exe 2>nul
@@ -137,7 +138,7 @@ del "%~dp0build\windows\wails.exe.manifest.tmp"
 del "%~dp0build\windows\versioninfo.json.tmp"
 
 REM -- Build TUI/CLI Binaries --
-echo [Step 7/13] Compiling TUI/CLI binaries...
+echo [Step 7/14] Compiling TUI/CLI binaries...
 set "CGO_ENABLED=0"
 set "GOARCH=amd64"
 call :go_build -p 1 -ldflags "-s -w -X main.version=%VERSION%" -o "%OUTPUT_DIR%\maclaw-tui_amd64.exe" ./tui/
@@ -153,7 +154,7 @@ if !errorlevel! neq 0 (
 )
 
 REM -- Build maclaw-tool Binary --
-echo [Step 8/13] Compiling maclaw-tool binaries...
+echo [Step 8/14] Compiling maclaw-tool binaries...
 set "GOARCH=amd64"
 call :go_build -p 1 -ldflags "-s -w -X main.version=%VERSION%" -o "%OUTPUT_DIR%\maclaw-tool_amd64.exe" ./cmd/maclaw-tool/
 if !errorlevel! neq 0 (
@@ -168,7 +169,7 @@ if !errorlevel! neq 0 (
 )
 
 REM -- Build MaClaw Service Binary --
-echo [Step 9/13] Compiling maclawsrv binaries...
+echo [Step 9/14] Compiling maclawsrv binaries...
 set "GOARCH=amd64"
 call :go_build -p 1 -ldflags "-s -w -X main.serviceVersion=%VERSION%" -o "%OUTPUT_DIR%\maclawsrv_amd64.exe" ./MaClawSrv/
 if !errorlevel! neq 0 (
@@ -183,7 +184,7 @@ if !errorlevel! neq 0 (
 )
 
 REM -- Build MaClaw Data Service Binary --
-echo [Step 10/13] Compiling maclaw-data-srv binaries...
+echo [Step 10/14] Compiling maclaw-data-srv binaries...
 set "GOARCH=amd64"
 call :go_build_datasrv -p 1 -ldflags "-s -w -X main.serviceVersion=%VERSION%" -o "%OUTPUT_DIR%\maclaw-data-srv_amd64.exe" ./cmd/maclaw-data-srv/
 if !errorlevel! neq 0 (
@@ -197,6 +198,21 @@ if !errorlevel! neq 0 (
     goto :error
 )
 
+REM -- Build maclaw-cli Binary --
+echo [Step 11/14] Compiling maclaw-cli binaries...
+set "GOARCH=amd64"
+call :go_build -p 1 -ldflags "-s -w -X main.cliVersion=%VERSION%" -o "%OUTPUT_DIR%\maclaw-cli_amd64.exe" ./maclaw-cli/
+if !errorlevel! neq 0 (
+    echo [ERROR] Go build for maclaw-cli amd64 failed.
+    goto :error
+)
+set "GOARCH=arm64"
+call :go_build -p 1 -ldflags "-s -w -X main.cliVersion=%VERSION%" -o "%OUTPUT_DIR%\maclaw-cli_arm64.exe" ./maclaw-cli/
+if !errorlevel! neq 0 (
+    echo [ERROR] Go build for maclaw-cli arm64 failed.
+    goto :error
+)
+
 REM Reset Env for NSIS
 set "GOOS="
 set "GOARCH="
@@ -205,7 +221,7 @@ set "CC="
 set "CXX="
 
 REM -- Create NSIS Installer --
-echo [Step 11/13] Creating NSIS installer...
+echo [Step 12/14] Creating NSIS installer...
 if not exist "%NSIS_PATH%" goto nsis_missing
 
 "%NSIS_PATH%" "%~dp0build\windows\installer\multiarch.nsi"
@@ -220,7 +236,7 @@ if exist "%OUTPUT_DIR%\%APP_NAME%-Setup.exe" (
 )
 
 REM -- Create standalone DataSrv NSIS installer --
-echo [Step 12/13] Creating standalone maclawsrv NSIS installer...
+echo [Step 13/14] Creating standalone maclawsrv NSIS installer...
 setlocal DisableDelayedExpansion
 powershell -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PRODUCTNAME ''MaClaw Service''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define PRODUCT_EXECUTABLE ''maclawsrv.exe''','!define ARG_MACLAWSRV_AMD64_BINARY ''%OUTPUT_DIR%\maclawsrv_amd64.exe''','!define ARG_MACLAWSRV_ARM64_BINARY ''%OUTPUT_DIR%\maclawsrv_arm64.exe''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\maclawsrv_build_params.nsh.tmp', $content, $utf8NoBom)"
 endlocal
@@ -239,7 +255,7 @@ if exist "%OUTPUT_DIR%\maclawsrv-Setup.exe" (
 )
 
 REM -- Create standalone DataSrv NSIS installer --
-echo [Step 13/13] Creating standalone maclaw-data-srv NSIS installer...
+echo [Step 14/14] Creating standalone maclaw-data-srv NSIS installer...
 setlocal DisableDelayedExpansion
 powershell -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PRODUCTNAME ''MaClaw Data Service''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define PRODUCT_EXECUTABLE ''maclaw-data-srv.exe''','!define ARG_DATASRV_AMD64_BINARY ''%OUTPUT_DIR%\maclaw-data-srv_amd64.exe''','!define ARG_DATASRV_ARM64_BINARY ''%OUTPUT_DIR%\maclaw-data-srv_arm64.exe''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\datasrv_build_params.nsh.tmp', $content, $utf8NoBom)"
 endlocal
@@ -261,6 +277,7 @@ REM -- Copy/Rename Main Binaries for convenience --
 echo   - Creating main executable copies (amd64)...
 copy /Y "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" "%OUTPUT_DIR%\%APP_NAME%.exe" >nul
 copy /Y "%OUTPUT_DIR%\maclaw-tui_amd64.exe" "%OUTPUT_DIR%\maclaw-tui.exe" >nul
+copy /Y "%OUTPUT_DIR%\maclaw-cli_amd64.exe" "%OUTPUT_DIR%\maclaw-cli.exe" >nul
 copy /Y "%OUTPUT_DIR%\maclaw-tool_amd64.exe" "%OUTPUT_DIR%\maclaw-tool.exe" >nul
 copy /Y "%OUTPUT_DIR%\maclawsrv_amd64.exe" "%OUTPUT_DIR%\maclawsrv.exe" >nul
 copy /Y "%OUTPUT_DIR%\maclaw-data-srv_amd64.exe" "%OUTPUT_DIR%\maclaw-data-srv.exe" >nul
@@ -270,6 +287,9 @@ if exist "%OUTPUT_DIR%\%APP_NAME%.exe" (
 )
 if exist "%OUTPUT_DIR%\maclaw-tui.exe" (
     echo [SUCCESS] TUI/CLI binary: %OUTPUT_DIR%\maclaw-tui.exe
+)
+if exist "%OUTPUT_DIR%\maclaw-cli.exe" (
+    echo [SUCCESS] maclaw-cli binary: %OUTPUT_DIR%\maclaw-cli.exe
 )
 if exist "%OUTPUT_DIR%\maclaw-tool.exe" (
     echo [SUCCESS] maclaw-tool binary: %OUTPUT_DIR%\maclaw-tool.exe
@@ -282,7 +302,7 @@ if exist "%OUTPUT_DIR%\maclaw-data-srv.exe" (
 )
 
 echo   - Creating Windows portable zip...
-powershell -Command "Compress-Archive -Path '%OUTPUT_DIR%\%APP_NAME%.exe','%OUTPUT_DIR%\maclaw-tui.exe','%OUTPUT_DIR%\maclaw-tool.exe','%OUTPUT_DIR%\maclawsrv.exe','%OUTPUT_DIR%\maclaw-data-srv.exe' -DestinationPath '%OUTPUT_DIR%\%APP_NAME%-Windows-Portable.zip' -Force"
+powershell -Command "Compress-Archive -Path '%OUTPUT_DIR%\%APP_NAME%.exe','%OUTPUT_DIR%\maclaw-tui.exe','%OUTPUT_DIR%\maclaw-cli.exe','%OUTPUT_DIR%\maclaw-tool.exe','%OUTPUT_DIR%\maclawsrv.exe','%OUTPUT_DIR%\maclaw-data-srv.exe' -DestinationPath '%OUTPUT_DIR%\%APP_NAME%-Windows-Portable.zip' -Force"
 
 goto :success
 

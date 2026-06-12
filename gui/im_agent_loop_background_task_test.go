@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -174,6 +176,134 @@ func TestFormatSSHBackgroundTaskStatusPreservesRunningState(t *testing.T) {
 	formatted := formatSSHBackgroundTaskStatus(status)
 	if !strings.Contains(formatted, "[running]") || !strings.Contains(formatted, "status: running") {
 		t.Fatalf("formatted running status missing active markers: %q", formatted)
+	}
+}
+
+func TestSSHBackgroundTaskSnapshotIncludesLocalMirror(t *testing.T) {
+	mirrorFile := filepath.Join(t.TempDir(), "bg_1.log")
+	if err := os.WriteFile(mirrorFile, []byte("status: completed\n--- latest log ---\ndone\nEXIT: 0\n"), 0o600); err != nil {
+		t.Fatalf("write mirror: %v", err)
+	}
+
+	snapshot := sshBackgroundTaskMirrorSnapshot(mirrorFile)
+	if !strings.Contains(snapshot, "local_mirror: "+mirrorFile) || !strings.Contains(snapshot, "EXIT: 0") {
+		t.Fatalf("snapshot missing mirror content: %q", snapshot)
+	}
+}
+
+func TestSSHBackgroundTaskSnapshotForOwnerRejectsDifferentOwner(t *testing.T) {
+	dir := t.TempDir()
+	mirrorFile := filepath.Join(dir, "mirror.log")
+	if err := os.WriteFile(mirrorFile, []byte("secret build output"), 0o600); err != nil {
+		t.Fatalf("write mirror: %v", err)
+	}
+	registry := map[string]interface{}{
+		"updated_at": time.Now(),
+		"tasks": []map[string]interface{}{
+			{
+				"task_id":     "bg_secret",
+				"owner_id":    "owner-a",
+				"session_id":  "ssh_1",
+				"command":     "cat secret.txt",
+				"log_file":    "/tmp/bg_secret.log",
+				"pid_file":    "/tmp/bg_secret.pid",
+				"mirror_file": mirrorFile,
+				"status":      "running",
+				"pid":         "123",
+				"started_at":  time.Now(),
+			},
+		},
+	}
+	data, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ssh_bg_tasks.json"), data, 0o600); err != nil {
+		t.Fatalf("write registry: %v", err)
+	}
+	mgr := remote.NewSSHBackgroundTaskManager(nil)
+	mgr.SetPersistDir(dir)
+
+	got := sshBackgroundTaskSnapshotForOwner(mgr, "bg_secret", "owner-b")
+	if got != "" {
+		t.Fatalf("cross-owner snapshot should be empty, got %q", got)
+	}
+	got = sshBackgroundTaskSnapshotForOwner(mgr, "bg_secret", "owner-a")
+	if !strings.Contains(got, "cat secret.txt") || !strings.Contains(got, "secret build output") {
+		t.Fatalf("same-owner snapshot should include evidence, got %q", got)
+	}
+}
+
+func TestStartSSHBackgroundTaskMirrorWatcherDeduplicatesTaskID(t *testing.T) {
+	h := &IMMessageHandler{bgTaskMgr: remote.NewSSHBackgroundTaskManager(nil)}
+
+	if !h.registerSSHBackgroundTaskMirrorWatcher("bg_1") {
+		t.Fatal("first watcher registration should succeed")
+	}
+	if h.registerSSHBackgroundTaskMirrorWatcher("bg_1") {
+		t.Fatal("second watcher registration should be deduplicated")
+	}
+
+	h.sshMirrorWatchMu.Lock()
+	defer h.sshMirrorWatchMu.Unlock()
+	if len(h.sshMirrorWatch) != 1 {
+		t.Fatalf("watcher map size = %d, want 1", len(h.sshMirrorWatch))
+	}
+	if _, ok := h.sshMirrorWatch["bg_1"]; !ok {
+		t.Fatalf("watcher map missing bg_1: %#v", h.sshMirrorWatch)
+	}
+}
+
+func TestAuthorizeLocalBackgroundTaskOwnerRejectsDifferentOwner(t *testing.T) {
+	mgr := coretool.NewLocalBackgroundTaskManager(t.TempDir())
+	command := "echo done"
+	if runtime.GOOS == "windows" {
+		command = "Write-Output done"
+	}
+	task, err := mgr.SubmitWithOwner(command, "", "command", "owner-a")
+	if err != nil {
+		t.Fatalf("SubmitWithOwner: %v", err)
+	}
+
+	if err := authorizeLocalBackgroundTaskOwner(mgr, task.TaskID, "owner-a"); err != nil {
+		t.Fatalf("same owner should be allowed: %v", err)
+	}
+	if err := authorizeLocalBackgroundTaskOwner(mgr, task.TaskID, "owner-b"); err == nil || !strings.Contains(err.Error(), "another runtime owner") {
+		t.Fatalf("different owner should be rejected, got %v", err)
+	}
+	if err := authorizeLocalBackgroundTaskOwner(mgr, task.TaskID, ""); err != nil {
+		t.Fatalf("blank owner should preserve legacy access: %v", err)
+	}
+}
+
+func TestAsyncWaitListCountsFilteredOwnerTasks(t *testing.T) {
+	mgr := coretool.NewLocalBackgroundTaskManager(t.TempDir())
+	command := "echo done"
+	if runtime.GOOS == "windows" {
+		command = "Write-Output done"
+	}
+	taskA, err := mgr.SubmitWithOwner(command, "", "command", "owner-a")
+	if err != nil {
+		t.Fatalf("SubmitWithOwner owner-a: %v", err)
+	}
+	taskB, err := mgr.SubmitWithOwner(command, "", "command", "owner-b")
+	if err != nil {
+		t.Fatalf("SubmitWithOwner owner-b: %v", err)
+	}
+
+	got := (&IMMessageHandler{}).asyncWaitList(mgr, "owner-a")
+	if !strings.Contains(got, taskA.TaskID) {
+		t.Fatalf("filtered list should include owner-a task, got %q", got)
+	}
+	if strings.Contains(got, taskB.TaskID) {
+		t.Fatalf("filtered list leaked owner-b task: %q", got)
+	}
+	rowCount := strings.Count(got, "\n- ")
+	if strings.HasPrefix(got, "- ") {
+		rowCount++
+	}
+	if rowCount != 1 {
+		t.Fatalf("filtered list should render one task row, rows=%d got %q", rowCount, got)
 	}
 }
 

@@ -547,7 +547,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                             onRemove(contextMenu.slot.veId);
                             setContextMenu(null);
                         }}
-                        style={{ ...menuItemStyle, color: 'var(--theme-danger, #b42318)', opacity: contextMenu.slot.resident ? 0.4 : 1, cursor: contextMenu.slot.resident ? 'default' : 'pointer' }}
+                        style={{ ...menuItemStyle, color: 'var(--theme-danger, #c43d34)', opacity: contextMenu.slot.resident ? 0.4 : 1, cursor: contextMenu.slot.resident ? 'default' : 'pointer' }}
                         onMouseEnter={contextMenu.slot.resident ? undefined : menuItemHover}
                         onMouseLeave={menuItemUnhover}
                     >
@@ -609,7 +609,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                                 }}
                             />
                             {renameError && (
-                                <span id="favorite-employee-rename-error" role="alert" style={{ color: 'var(--theme-danger, #b42318)', fontSize: 12, lineHeight: 1.4 }}>
+                                <span id="favorite-employee-rename-error" role="alert" style={{ color: 'var(--theme-danger, #c43d34)', fontSize: 12, lineHeight: 1.4 }}>
                                     {renameError}
                                 </span>
                             )}

@@ -86,3 +86,29 @@ func TestPersistentConversationMemoryStripsRolePrefixLeakBeforeDisk(t *testing.T
 		}
 	}
 }
+
+func TestPersistentConversationMemoryStripsPlainToolCallLeakBeforeDisk(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "conversation.json")
+	cm := NewPersistentConversationMemory(storePath)
+	cm.Save("desktop-user", []ConversationEntry{
+		{
+			Role:    "assistant",
+			Content: "先执行远程检查\nTOOL_CALL\n{\"function\":\"ssh_execute_command\",\"args\":{\"password\":\"<redacted>\",\"command\":\"df -h\"}}",
+		},
+	})
+	cm.Stop()
+
+	data, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read persisted memory: %v", err)
+	}
+	serialized := string(data)
+	for _, secret := range []string{"TOOL_CALL", "<redacted>", "ssh_execute_command"} {
+		if strings.Contains(serialized, secret) {
+			t.Fatalf("persisted conversation leaked plain tool call %q: %s", secret, serialized)
+		}
+	}
+	if !strings.Contains(serialized, "先执行远程检查") {
+		t.Fatalf("expected visible prefix to be preserved: %s", serialized)
+	}
+}

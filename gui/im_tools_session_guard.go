@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -20,15 +19,18 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 	}
 
 	if result.Intent == intentAmbiguous || result.Intent == intentUnknown {
-		if gic := h.getGateIntentClassifier(); gic != nil {
-			gResult := gic.Classify(userText, ownerID)
-			switch gResult.Intent {
-			case GateIntentNewProject, GateIntentBugFix, GateIntentMaintenance:
+		if uic := h.getUnifiedClassifier(); uic != nil {
+			uicResult := uic.Classify(intent.MessageContext{Text: userText, UserID: ownerID})
+			if uicResult.IsCodingLike() {
 				return ""
-			case GateIntentContinuation:
+			}
+			// Continuation phrases ("开工"/"继续"/"let's go") should allow session
+			// creation — they indicate the user wants to continue a prior coding task.
+			if uicResult.Primary == intent.LabelContinuation {
 				return ""
-			case GateIntentNonCoding:
-				return nonCodingSessionHint(gResult)
+			}
+			if uicResult.IsNonCodingLike() {
+				return "Task intent: semantic classification indicates a non-coding task. Do not create a coding session; use direct tools instead."
 			}
 		}
 
@@ -83,75 +85,4 @@ When semantic intent is unavailable or ambiguous, do not open coding tools autom
 	}
 }
 
-// conversationHasCodingContext checks whether the recent conversation history
-// contains evidence of a coding task.
-func (h *IMMessageHandler) conversationHasCodingContext() bool {
-	if uic := h.getUnifiedClassifier(); uic != nil {
-		return h.conversationHasCodingContextForOwnerUIC(uic, h.currentRuntimePolicyOwnerID())
-	}
-	return false
-}
 
-func (h *IMMessageHandler) conversationHasCodingContextUIC(uic *intent.UnifiedIntentClassifier) bool {
-	return h.conversationHasCodingContextForOwnerUIC(uic, h.currentRuntimePolicyOwnerID())
-}
-
-func (h *IMMessageHandler) conversationHasCodingContextForOwner(ownerID string) bool {
-	if uic := h.getUnifiedClassifier(); uic != nil {
-		return h.conversationHasCodingContextForOwnerUIC(uic, ownerID)
-	}
-	return false
-}
-
-func (h *IMMessageHandler) conversationHasCodingContextForOwnerUIC(uic *intent.UnifiedIntentClassifier, ownerID string) bool {
-	if h.memory == nil {
-		return false
-	}
-	userID := strings.TrimSpace(ownerID)
-	if userID == "" {
-		return false
-	}
-	currentTaskText := h.runtimeTaskTextForOwner(userID)
-	entries := h.memory.Load(userID)
-	if len(entries) == 0 {
-		return false
-	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		text, ok := entries[i].Content.(string)
-		if !ok || strings.TrimSpace(text) == "" {
-			continue
-		}
-		if entries[i].Role != "user" {
-			continue
-		}
-		if strings.TrimSpace(text) == strings.TrimSpace(currentTaskText) {
-			continue
-		}
-		// Use embedding-only classification for history entries to avoid
-		// triggering a full tree-channel LLM call per entry.
-		// The full fusion pipeline is expensive for this check — we only
-		// need a rough "is this coding-like?" signal, not precise workflow
-		// type determination. Embedding alone is <100ms and sufficient.
-		result := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: text})
-		return result.IsCodingLike()
-	}
-	return false
-}
-
-// nonCodingSessionHint returns a user-facing hint message when the
-// GateIntentClassifier determines the user's request is a non-coding task.
-func nonCodingSessionHint(result GateIntentResult) string {
-	reason := strings.TrimSpace(result.Reason)
-	if reason == "" {
-		reason = "non-coding task detected"
-	}
-	return fmt.Sprintf(`⚠️ 任务类型检测：当前请求看起来不是编程任务（%s），不需要创建编程会话。
-请直接使用以下工具完成任务：
-- bash：执行命令行操作（如 curl 下载、脚本执行）
-- craft_tool：自动生成并执行脚本（适合数据处理、API 调用、文件转换）
-- read_file / write_file / edit_file：读写和局部编辑本地文件
-- send_file：将文件发送给用户
-- open：打开文件或网址
-- memory：保存/检索信息
-如果确实需要编程任务，请改走内部 CodingSubAgent，不要创建外部编程会话。`, reason)
-}

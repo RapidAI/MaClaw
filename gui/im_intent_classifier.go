@@ -193,10 +193,58 @@ func summarizeAttachmentNames(attachments []MessageAttachment) []string {
 }
 
 func (h *IMMessageHandler) requestIntentClassification(cfg corelib.MaclawLLMConfig, userID string, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
+	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
+		return h.requestIntentClassificationResponses(cfg, userID, messages, httpClient)
+	}
 	if strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
 		return h.requestIntentClassificationAnthropic(cfg, userID, messages, httpClient)
 	}
 	return h.requestIntentClassificationOpenAI(cfg, userID, messages, httpClient)
+}
+
+func (h *IMMessageHandler) requestIntentClassificationResponses(cfg corelib.MaclawLLMConfig, userID string, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "task-intent-classifier", OwnerID: userID})
+	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
+	if acquireErr != nil {
+		return llmIntentClassification{}, acquireErr
+	}
+	defer lease.Release()
+	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	lease.SetCancel(scheduledCancel)
+	defer scheduledCancel()
+
+	responseFormat := map[string]interface{}{
+		"type": "json_schema",
+		"json_schema": map[string]interface{}{
+			"name":   "task_intent_classification",
+			"schema": intentClassifierJSONSchema,
+		},
+	}
+	req, body, endpoint, err := llm.NewResponsesAPIRequest(scheduledCtx, cfg, messages, llm.ResponsesAPIRequestOptions{
+		Stream:    false,
+		ExtraBody: map[string]interface{}{"response_format": responseFormat},
+	})
+	if err != nil {
+		return llmIntentClassification{}, err
+	}
+	resp, err := httpClient.Do(req)
+	globalLLMScheduler.ObserveResult(trace, err)
+	if err != nil {
+		return llmIntentClassification{}, fmt.Errorf("[%s] %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		err := dumpLLMContext(resp.StatusCode, "intent classify responses request failed", body, h.getTempDir())
+		globalLLMScheduler.ObserveResult(trace, err)
+		return llmIntentClassification{}, err
+	}
+	parsedResp, err := llm.ParseNonStreamResponsesAPIResponse(resp)
+	if err != nil {
+		return llmIntentClassification{}, err
+	}
+	return decodeIntentClassificationContent(firstLLMResponseText(parsedResp))
 }
 
 func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg corelib.MaclawLLMConfig, userID string, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {

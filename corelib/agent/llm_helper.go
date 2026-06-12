@@ -1,9 +1,7 @@
 package agent
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -108,7 +106,9 @@ func DoSimpleLLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, cli
 			resp *LLMSimpleResponse
 			err  error
 		)
-		if cfg.Protocol == "anthropic" {
+		if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
+			resp, err = doSimpleResponsesRequest(ctx, cfg, messages, client)
+		} else if cfg.Protocol == "anthropic" {
 			resp, err = doSimpleAnthropicRequest(ctx, cfg, messages, client)
 		} else {
 			resp, err = doSimpleOpenAIRequest(ctx, cfg, messages, client)
@@ -181,46 +181,14 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	return &LLMSimpleResponse{Content: StripThinkingTags(text)}, nil
 }
 
-func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (*LLMSimpleResponse, error) {
-	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
-
-	var systemText string
-	var anthropicMsgs []interface{}
-	for _, m := range messages {
-		if mm, ok := m.(map[string]string); ok && mm["role"] == "system" {
-			systemText = mm["content"]
-			continue
-		}
-		if mm, ok := m.(map[string]interface{}); ok {
-			if role, _ := mm["role"].(string); role == "system" {
-				if content, _ := mm["content"].(string); content != "" {
-					systemText = content
-				}
-				continue
-			}
-		}
-		anthropicMsgs = append(anthropicMsgs, m)
-	}
-
-	reqBody := map[string]interface{}{
-		"model":      cfg.UpstreamModel(),
-		"messages":   anthropicMsgs,
-		"max_tokens": 4096,
-	}
-	if systemText != "" {
-		reqBody["system"] = systemText
-	}
-	data, _ := json.Marshal(reqBody)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (*LLMSimpleResponse, error) {
+	req, data, endpoint, err := llm.NewResponsesAPIRequest(ctx, cfg, messages, llm.ResponsesAPIRequestOptions{
+		Stream: false,
+	})
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	req.Header.Set("anthropic-version", "2023-06-01")
-	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
-	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	log.Printf("[LLM Simple] POST %s model=%s configured_model=%s protocol=%s wire_api=%s (stream=false)", endpoint, cfg.UpstreamModel(), cfg.Model, cfg.Protocol, cfg.WireAPI)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -233,23 +201,41 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 		return nil, readErr
 	}
 	if resp.StatusCode != http.StatusOK {
-		msg := fmt.Sprintf("llm request failed body_len=%d", len(body))
+		msg := fmt.Sprintf("llm responses request failed body_len=%d", len(body))
 		return nil, dumpLLMContext(resp.StatusCode, msg, data)
 	}
 
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
+	parsed, err := llm.ParseNonStreamResponsesAPIBody(body)
+	if err != nil {
+		return nil, fmt.Errorf("parse responses response: %w (body_len=%d)", err, len(body))
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
+	if parsed == nil || len(parsed.Choices) == 0 {
+		return nil, fmt.Errorf("no response from model")
 	}
-	for _, block := range result.Content {
-		if block.Type == "text" && block.Text != "" {
-			return &LLMSimpleResponse{Content: StripThinkingTags(block.Text)}, nil
-		}
+	text := parsed.Choices[0].Message.Content
+	if text == "" {
+		text = parsed.Choices[0].Message.ReasoningContent
 	}
-	return nil, fmt.Errorf("no text response from model")
+	if text == "" {
+		return nil, fmt.Errorf("no response from model")
+	}
+	return &LLMSimpleResponse{Content: StripThinkingTags(text)}, nil
+}
+
+func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (*LLMSimpleResponse, error) {
+	resp, err := llm.DoAnthropicRequest(ctx, cfg, messages, nil, client)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("no response from model")
+	}
+	text := resp.Choices[0].Message.Content
+	if text == "" {
+		text = resp.Choices[0].Message.ReasoningContent
+	}
+	if text == "" {
+		return nil, fmt.Errorf("no text response from model")
+	}
+	return &LLMSimpleResponse{Content: StripThinkingTags(text)}, nil
 }

@@ -34,6 +34,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	llmcompat "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
@@ -92,16 +93,17 @@ type App struct {
 	gossipClient                    *GossipClient
 	autoUploadTrigger               *AutoUploadTrigger
 	gossipAutoPublish               *AutoPublishTrigger
+	evolutionPipeline               *skill.EvolutionPipeline
 	// Maclaw capability evolution components
-	riskAssessor            *RiskAssessor
-	policyEngine            *PolicyEngine
-	auditLog                *AuditLog
-	llmSecurityReview       *LLMSecurityReview
-	mdnsScanner             *MDNSScanner
-	projectScanner          *ProjectScanner
-	toolDefGenerator        *ToolDefinitionGenerator
-	toolRouter              *ToolRouter
-	gateIntentClassifier    *GateIntentClassifier           // semantic gate classifier (wired in Task 12.1)
+	riskAssessor      *RiskAssessor
+	policyEngine      *PolicyEngine
+	auditLog          *AuditLog
+	llmSecurityReview *LLMSecurityReview
+	mdnsScanner       *MDNSScanner
+	projectScanner    *ProjectScanner
+	toolDefGenerator  *ToolDefinitionGenerator
+	toolRouter        *ToolRouter
+
 	unifiedClassifier       *intent.UnifiedIntentClassifier // UIC: shared three-layer intent classifier
 	classifierOnce          sync.Once                       // guards single creation of unifiedClassifier + gateIntentClassifier
 	embeddingActivated      atomic.Bool                     // ensures activateEmbedderAsync runs at most once
@@ -240,12 +242,14 @@ type App struct {
 
 	// Sticky VE session caches: (veID -> sessionID) and (sorted participant key -> sessionID).
 	// Ensures conversations with the same VE/group always reuse the same session unless archived.
-	veSessionCache       sync.Map // string -> string
-	groupSessionCache    sync.Map // string -> string
-	veDefaultResponder   sync.Map // sessionID -> participantID
-	veSessionActiveCache sync.Map // string -> time.Time
-	veDetailRefreshCache sync.Map // sessionID -> *veDetailRefreshState
-	veDiscoverableCache  sync.Map // hubURL/token/localID -> veDiscoverableCacheEntry
+	veSessionCache           sync.Map // string -> string
+	groupSessionCache        sync.Map // string -> string
+	groupSessionReturnVEIDs  sync.Map // sessionID -> []string
+	veDefaultResponder       sync.Map // sessionID -> participantID
+	veSessionActiveCache     sync.Map // string -> time.Time
+	veDetailRefreshCache     sync.Map // sessionID -> *veDetailRefreshState
+	veDiscoverableCache      sync.Map // hubURL/token/localID -> veDiscoverableCacheEntry
+	veDiscoverableCacheEpoch atomic.Uint64
 }
 
 func (a *App) ensureExperienceLifecycleSink() lifecycle.EventSink {
@@ -925,6 +929,115 @@ func (a *App) ensureSkillRunner() {
 	a.skillRunner = NewSkillRunner(a.skillExecutor)
 	a.skillRunner.uploadTrigger = a.autoUploadTrigger
 	a.skillRunner.packageFn = a.packageSkillForMarket
+
+	// Wire evolution pipeline (async background self-evolution).
+	a.ensureEvolutionPipeline()
+	a.skillRunner.evolutionPipeline = a.evolutionPipeline
+}
+
+func (a *App) ensureEvolutionPipeline() {
+	if a.evolutionPipeline != nil {
+		return
+	}
+	pipeline := skill.NewEvolutionPipeline()
+	pipeline.UsageTracker = a.usageTracker
+	pipeline.Versioner = &skill.Versioner{}
+	// RepairGate: created without a SandboxExecutor for now (graceful degradation
+	// — gate passes by default when no executor is configured). A real executor
+	// requires wiring into SkillRunner's step execution, which is future work.
+	pipeline.Gate = skill.NewRepairGate(skill.RepairGateConfig{}, nil)
+	pipeline.SkillLoader = func() []corelib.NLSkillEntry {
+		if a.skillExecutor == nil {
+			return nil
+		}
+		a.skillExecutor.mu.RLock()
+		defer a.skillExecutor.mu.RUnlock()
+		return a.skillExecutor.loadSkills()
+	}
+	pipeline.SkillSaver = func(skills []corelib.NLSkillEntry) error {
+		if a.skillExecutor == nil {
+			return nil
+		}
+		a.skillExecutor.mu.Lock()
+		defer a.skillExecutor.mu.Unlock()
+		return a.skillExecutor.saveSkills(skills)
+	}
+	// Wire LLM for optimization and promotion (lazy config — picks up provider changes).
+	pipeline.LLM = NewSkillEvolutionLLMAdapter(a.GetMaclawLLMConfig)
+	pipeline.Optimizer = skill.NewSkillOptimizer(pipeline.LLM, pipeline.Gate, pipeline.Versioner)
+
+	// Wire NudgePromoter: converts high-confidence tool-sequence patterns into real skills.
+	if skillsDir, err := skill.PrimarySkillsDir(); err == nil {
+		pipeline.Promoter = skill.NewNudgePromoter(
+			pipeline.LLM,
+			nil, // StagingValidator — TODO: wire when security scan adapter is available
+			&skillExecutorRegistrar{app: a},
+			skillsDir,
+		)
+	}
+
+	// Wire EventEmitter: notifies frontend when skills are optimized/discovered.
+	pipeline.EventEmitter = func(event string, data map[string]string) {
+		a.emitEvent(event, data)
+	}
+
+	// Wire UploadTrigger: after successful optimization/promotion, enqueue
+	// upload through SkillLifecycleManager (which applies portability gate,
+	// runtime proof, package completeness, and quality checks before submission).
+	//
+	// NOTE: We pre-ensure the lifecycle manager here (on the main goroutine)
+	// rather than inside the closure, because ensureSkillLifecycleManager is
+	// not goroutine-safe (no internal mutex).
+	a.ensureSkillLifecycleManager()
+	pipeline.UploadTrigger = func(skillName string, _ *skill.SkillExecutionResultCompat) {
+		if a.skillLifecycle == nil {
+			return
+		}
+		// Find skill dir for the enqueue call.
+		var skillDir string
+		if a.skillExecutor != nil {
+			a.skillExecutor.mu.RLock()
+			for _, s := range a.skillExecutor.loadSkills() {
+				if s.Name == skillName {
+					skillDir = s.SkillDir
+					break
+				}
+			}
+			a.skillExecutor.mu.RUnlock()
+		}
+		if _, err := a.skillLifecycle.EnqueueUpload(
+			context.Background(),
+			skillName,
+			skillDir,
+			"skill_evolution_auto",
+			true, // requireRuntimeProof — must have at least one successful run
+			true, // processNow — try to upload immediately
+		); err != nil {
+			log.Printf("[evolution-pipeline] upload enqueue failed for %s: %v", skillName, err)
+		}
+	}
+
+	a.evolutionPipeline = pipeline
+
+	// Wire MaintenanceScheduler: runs BuildSkillMaintenancePlan every 24h,
+	// persists results to long-term memory for proactive recall.
+	pipeline.Scheduler = skill.NewMaintenanceScheduler(
+		pipeline.SkillLoader,
+		func(content string, tags []string) error {
+			if a.memoryStore == nil {
+				return nil
+			}
+			entry := memory.Entry{
+				Content:  content,
+				Category: memory.CategoryTaskArtifact,
+				Tags:     tags,
+				Scope:    memory.ScopeProject,
+			}
+			return a.memoryStore.Save(entry)
+		},
+	)
+
+	pipeline.Start()
 }
 
 func (a *App) ensureLLMSecurityReview() {
@@ -1977,6 +2090,9 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.skillLifecycle != nil {
 		a.skillLifecycle.StopBackgroundProcessing()
 	}
+	if a.evolutionPipeline != nil {
+		a.evolutionPipeline.Stop()
+	}
 	if a.stopHubTicker != nil {
 		close(a.stopHubTicker)
 	}
@@ -2203,16 +2319,17 @@ func (a *App) buildCodexLaunchEnv(
 	env := map[string]string{}
 
 	if !selectedModel.IsBuiltin {
+		baseURL := normalizedOpenAICompatibleToolBaseURL(remoteToolNameCodex.String(), *selectedModel)
 		if selectedModel.ApiKey != "" {
 			env["OPENAI_API_KEY"] = selectedModel.ApiKey
 		}
-		if selectedModel.ModelUrl != "" {
-			env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
+		if baseURL != "" {
+			env["OPENAI_BASE_URL"] = baseURL
 		}
 		// Surgical update: persist provider config to ~/.codex/auth.json and
 		// ~/.codex/config.toml so Codex subprocesses pick up the settings.
 		// Preserves user's MCP servers, profiles, and other config.
-		if err := configfile.WriteCodexConfigWithClientName(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel), codeGenClientNameForModelConfig(config, *selectedModel)); err != nil {
+		if err := configfile.WriteCodexConfigWithClientName(selectedModel.ApiKey, baseURL, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel), codeGenClientNameForModelConfig(config, *selectedModel)); err != nil {
 			return nil, fmt.Errorf("prepare codex provider switch: %w", err)
 		}
 	} else {
@@ -2249,11 +2366,12 @@ func (a *App) buildOpencodeLaunchEnv(
 
 	env := map[string]string{}
 	if !selectedModel.IsBuiltin {
+		baseURL := normalizedOpenAICompatibleToolBaseURL(remoteToolNameOpencode.String(), *selectedModel)
 		if selectedModel.ApiKey != "" {
 			env["OPENCODE_API_KEY"] = selectedModel.ApiKey
 		}
-		if selectedModel.ModelUrl != "" {
-			env["OPENCODE_BASE_URL"] = selectedModel.ModelUrl
+		if baseURL != "" {
+			env["OPENCODE_BASE_URL"] = baseURL
 		}
 		if selectedModel.ModelId != "" {
 			env["OPENCODE_MODEL"] = selectedModel.ModelId
@@ -2261,7 +2379,7 @@ func (a *App) buildOpencodeLaunchEnv(
 		a.backupToolNativeConfig("opencode")
 		// Write ~/.config/opencode/opencode.json for persistence across subprocess restarts.
 		// Env vars alone don't populate the model selector in OpenCode's UI.
-		if err := configfile.WriteOpencodeConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName); err != nil {
+		if err := configfile.WriteOpencodeConfig(selectedModel.ApiKey, baseURL, selectedModel.ModelId, selectedModel.ModelName); err != nil {
 			log.Printf("[opencode-config] failed to write config: %v", err)
 		}
 	} else {
@@ -2289,13 +2407,14 @@ func (a *App) buildIFlowLaunchEnv(
 
 	env := map[string]string{}
 	if !selectedModel.IsBuiltin {
+		baseURL := normalizedOpenAICompatibleToolBaseURL(remoteToolNameIFlow.String(), *selectedModel)
 		if selectedModel.ApiKey != "" {
 			env["OPENAI_API_KEY"] = selectedModel.ApiKey
 			env["IFLOW_API_KEY"] = selectedModel.ApiKey
 		}
-		if selectedModel.ModelUrl != "" {
-			env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
-			env["IFLOW_BASE_URL"] = selectedModel.ModelUrl
+		if baseURL != "" {
+			env["OPENAI_BASE_URL"] = baseURL
+			env["IFLOW_BASE_URL"] = baseURL
 		}
 		if selectedModel.ModelId != "" {
 			env["IFLOW_MODEL"] = selectedModel.ModelId
@@ -2303,7 +2422,7 @@ func (a *App) buildIFlowLaunchEnv(
 		a.backupToolNativeConfig("iflow")
 		// Write ~/.iflow/settings.json for persistence across subprocess restarts.
 		// Without this config file, iFlow CLI prompts the user to configure provider URL.
-		if err := configfile.WriteIFlowConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
+		if err := configfile.WriteIFlowConfig(selectedModel.ApiKey, baseURL, selectedModel.ModelId); err != nil {
 			log.Printf("[iflow-config] failed to write config: %v", err)
 		}
 	} else {
@@ -2331,13 +2450,14 @@ func (a *App) buildKiloLaunchEnv(
 
 	env := map[string]string{}
 	if !selectedModel.IsBuiltin {
+		baseURL := normalizedOpenAICompatibleToolBaseURL(remoteToolNameKilo.String(), *selectedModel)
 		if selectedModel.ApiKey != "" {
 			env["OPENAI_API_KEY"] = selectedModel.ApiKey
 			env["KILO_API_KEY"] = selectedModel.ApiKey
 		}
-		if selectedModel.ModelUrl != "" {
-			env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
-			env["KILO_BASE_URL"] = selectedModel.ModelUrl
+		if baseURL != "" {
+			env["OPENAI_BASE_URL"] = baseURL
+			env["KILO_BASE_URL"] = baseURL
 		}
 		if selectedModel.ModelId != "" {
 			env["KILO_MODEL"] = selectedModel.ModelId
@@ -2345,7 +2465,7 @@ func (a *App) buildKiloLaunchEnv(
 		a.backupToolNativeConfig("kilo")
 		// Write ~/.kilocode/cli/config.json for persistence across subprocess restarts.
 		// Env vars alone don't populate the model selector in Kilo Code's UI.
-		if err := configfile.WriteKiloConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
+		if err := configfile.WriteKiloConfig(selectedModel.ApiKey, baseURL, selectedModel.ModelId); err != nil {
 			log.Printf("[kilo-config] failed to write config: %v", err)
 		}
 	} else {
@@ -3282,7 +3402,7 @@ func (a *App) syncToCodexSettings(config corelib.AppConfig, projectDir string, i
 	return configfile.WriteCodexConfigAtWithClientName(
 		dir,
 		selectedModel.ApiKey,
-		selectedModel.ModelUrl,
+		normalizedOpenAICompatibleToolBaseURL(remoteToolNameCodex.String(), *selectedModel),
 		selectedModel.ModelId,
 		selectedModel.ModelName,
 		effectiveToolWireAPI("codex", *selectedModel),
@@ -3311,6 +3431,25 @@ func codeGenClientNameForModelConfig(config corelib.AppConfig, selectedModel cor
 	}
 	return corelib.CodeGenClientName
 }
+
+func openAICompatibleToolUserAgent(toolName string, model corelib.ModelConfig) string {
+	if agent := strings.TrimSpace(model.AgentType); agent != "" {
+		return agent
+	}
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case remoteToolNameKilo.String():
+		return "Kilo Code"
+	case remoteToolNameOpencode.String(), remoteToolNameCodex.String(), remoteToolNameIFlow.String(), remoteToolNameCodeBuddy.String():
+		return "OpenCode"
+	default:
+		return "OpenCode"
+	}
+}
+
+func normalizedOpenAICompatibleToolBaseURL(toolName string, model corelib.ModelConfig) string {
+	return strings.TrimRight(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(strings.TrimSpace(model.ModelUrl), openAICompatibleToolUserAgent(toolName, model)), "/")
+}
+
 func (a *App) syncToOpencodeSettings(config corelib.AppConfig, projectDir string, instanceID string) error {
 	var selectedModel *corelib.ModelConfig
 	for _, m := range config.Opencode.Models {
@@ -3330,7 +3469,7 @@ func (a *App) syncToOpencodeSettings(config corelib.AppConfig, projectDir string
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	baseUrl := selectedModel.ModelUrl
+	baseUrl := normalizedOpenAICompatibleToolBaseURL(remoteToolNameOpencode.String(), *selectedModel)
 	modelId := selectedModel.ModelId
 	providerKind := normalizeModelProviderKind(selectedModel.ModelName)
 	providerName := strings.TrimSpace(selectedModel.ModelName)
@@ -3346,7 +3485,7 @@ func (a *App) syncToOpencodeSettings(config corelib.AppConfig, projectDir string
 				baseUrl = "https://api.deepseek.com/v1"
 			}
 		case modelProviderGLM:
-			modelId = "glm-4.7"
+			modelId = "glm-5.1"
 			if baseUrl == "" {
 				baseUrl = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
@@ -3437,7 +3576,7 @@ func (a *App) syncToIFlowSettings(config corelib.AppConfig, projectDir string, i
 		return err
 	}
 	// Prepare defaults
-	baseUrl := selectedModel.ModelUrl
+	baseUrl := normalizedOpenAICompatibleToolBaseURL(remoteToolNameIFlow.String(), *selectedModel)
 	modelId := selectedModel.ModelId
 	providerKind := normalizeModelProviderKind(selectedModel.ModelName)
 	// Fallback logic for iFlow (align with Codex providers)
@@ -3449,7 +3588,7 @@ func (a *App) syncToIFlowSettings(config corelib.AppConfig, projectDir string, i
 				baseUrl = "https://api.deepseek.com/v1"
 			}
 		case modelProviderGLM:
-			modelId = "glm-4.7"
+			modelId = "glm-5.1"
 			if baseUrl == "" {
 				baseUrl = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
@@ -3528,7 +3667,7 @@ func (a *App) syncToKiloSettings(config corelib.AppConfig, projectDir string, in
 		kiloConfig = make(map[string]interface{})
 	}
 	// Prepare provider configuration
-	baseUrl := selectedModel.ModelUrl
+	baseUrl := normalizedOpenAICompatibleToolBaseURL(remoteToolNameKilo.String(), *selectedModel)
 	modelId := selectedModel.ModelId
 	providerKind := normalizeModelProviderKind(selectedModel.ModelName)
 	// Fallback logic for common providers
@@ -3540,7 +3679,7 @@ func (a *App) syncToKiloSettings(config corelib.AppConfig, projectDir string, in
 				baseUrl = "https://api.deepseek.com/v1"
 			}
 		case modelProviderGLM:
-			modelId = "glm-4.7"
+			modelId = "glm-5.1"
 			if baseUrl == "" {
 				baseUrl = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
@@ -3621,7 +3760,7 @@ func (a *App) syncToCodeBuddySettings(config corelib.AppConfig, projectPath stri
 			case modelProviderDeepSeek:
 				idStr = "deepseek-chat"
 			case modelProviderGLM:
-				idStr = "glm-4.7"
+				idStr = "glm-5.1"
 			case modelProviderDoubao:
 				idStr = "doubao-seed-code-preview-latest"
 			case modelProviderKimi:
@@ -3633,13 +3772,9 @@ func (a *App) syncToCodeBuddySettings(config corelib.AppConfig, projectPath stri
 			}
 		}
 		modelIds := strings.Split(idStr, ",")
-		modelUrl := m.ModelUrl
-		if modelUrl != "" && !strings.HasSuffix(modelUrl, "/chat/completions") {
-			if strings.HasSuffix(modelUrl, "/") {
-				modelUrl += "chat/completions"
-			} else {
-				modelUrl += "/chat/completions"
-			}
+		modelUrl := strings.TrimSpace(m.ModelUrl)
+		if modelUrl != "" {
+			modelUrl = llmcompat.BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(modelUrl, openAICompatibleToolUserAgent(remoteToolNameCodeBuddy.String(), m)))
 		}
 		for _, id := range modelIds {
 			id = strings.TrimSpace(id)
@@ -3850,9 +3985,13 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 	if !selectedModel.IsBuiltin {
 		// --- OTHER PROVIDER MODE: WRITE CONFIG & SET ENV ---
 		// Only add to env map, do NOT set in main process (to avoid cross-contamination)
+		toolBaseURL := strings.TrimSpace(selectedModel.ModelUrl)
+		if !launchToolKind.IsClaude() {
+			toolBaseURL = normalizedOpenAICompatibleToolBaseURL(launchToolKind.String(), *selectedModel)
+		}
 		env[envKey] = selectedModel.ApiKey
-		if selectedModel.ModelUrl != "" && envBaseUrl != "" {
-			env[envBaseUrl] = selectedModel.ModelUrl
+		if toolBaseURL != "" && envBaseUrl != "" {
+			env[envBaseUrl] = toolBaseURL
 		}
 		// Add CODEBUDDY_CODE_MAX_OUTPUT_TOKENS for DeepSeek
 		selectedModelProvider := normalizeModelProviderKind(selectedModel.ModelName)
@@ -3912,12 +4051,12 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			env["WIRE_API"] = "responses"
 			// Ensure OpenAI standard vars for Codex
 			env["OPENAI_API_KEY"] = selectedModel.ApiKey
-			if selectedModel.ModelUrl != "" {
-				env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
+			if toolBaseURL != "" {
+				env["OPENAI_BASE_URL"] = toolBaseURL
 			}
 			// Surgically update ~/.codex/auth.json and ~/.codex/config.toml with provider config,
 			// preserving user's MCP servers, profiles, and other settings.
-			if err := configfile.WriteCodexConfigWithClientName(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel), codeGenClientNameForModelConfig(config, *selectedModel)); err != nil {
+			if err := configfile.WriteCodexConfigWithClientName(selectedModel.ApiKey, toolBaseURL, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel), codeGenClientNameForModelConfig(config, *selectedModel)); err != nil {
 				a.log("Codex provider switch failed: " + err.Error())
 				return err
 			}
@@ -3927,7 +4066,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			a.backupToolNativeConfig("opencode")
 			a.syncToOpencodeSettings(config, projectDir, instanceID)
 			// Also write to ~/.config/opencode/opencode.json so the tool can find the provider
-			if err := configfile.WriteOpencodeConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName); err != nil {
+			if err := configfile.WriteOpencodeConfig(selectedModel.ApiKey, toolBaseURL, selectedModel.ModelId, selectedModel.ModelName); err != nil {
 				log.Printf("Opencode: failed to write home config: %v", err)
 			}
 		case remoteToolNameCodeBuddy:
@@ -3937,13 +4076,13 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			// iFlow needs config file - use instanceID for isolation
 			// Ensure OpenAI standard vars for iFlow (compatibility)
 			env["OPENAI_API_KEY"] = selectedModel.ApiKey
-			if selectedModel.ModelUrl != "" {
-				env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
+			if toolBaseURL != "" {
+				env["OPENAI_BASE_URL"] = toolBaseURL
 			}
 			a.backupToolNativeConfig("iflow")
 			a.syncToIFlowSettings(config, projectDir, instanceID)
 			// Also write to ~/.iflow/settings.json so the tool can find the provider
-			if err := configfile.WriteIFlowConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
+			if err := configfile.WriteIFlowConfig(selectedModel.ApiKey, toolBaseURL, selectedModel.ModelId); err != nil {
 				log.Printf("iFlow: failed to write home config: %v", err)
 			}
 		case remoteToolNameKilo:
@@ -3951,7 +4090,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			a.backupToolNativeConfig("kilo")
 			a.syncToKiloSettings(config, projectDir, instanceID)
 			// Also write to ~/.kilocode/cli/config.json so the tool can find the provider
-			if err := configfile.WriteKiloConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
+			if err := configfile.WriteKiloConfig(selectedModel.ApiKey, toolBaseURL, selectedModel.ModelId); err != nil {
 				log.Printf("Kilo: failed to write home config: %v", err)
 			}
 		default:
@@ -4219,7 +4358,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	defaultCodexModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: "", WireApi: "responses"},
-		{ModelName: "GLM", ModelId: "glm-5-turbo", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: "", WireApi: "responses"},
+		{ModelName: "GLM", ModelId: "glm-5.1", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: "", WireApi: "responses"},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: "", WireApi: "responses"},
 		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", WireApi: "responses", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: "", WireApi: "responses"},
@@ -4237,7 +4376,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	defaultOpencodeModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
-		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
+		{ModelName: "GLM", ModelId: "glm-5.1", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
 		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
@@ -4255,7 +4394,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	defaultIFlowModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
-		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
+		{ModelName: "GLM", ModelId: "glm-5.1", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
 		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
@@ -4270,7 +4409,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	defaultKiloModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
-		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
+		{ModelName: "GLM", ModelId: "glm-5.1", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
 		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
@@ -4591,7 +4730,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	ensureModel(&config.Claude.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", "kat-coder-pro-v1", "anthropic", true)
 	ensureModel(&config.Claude.Models, "Aliyun", "https://coding.dashscope.aliyuncs.com/apps/anthropic", "glm-5", "anthropic", true)
 	ensureModel(&config.Codex.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "responses")
-	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5-turbo", "responses")
+	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.1", "responses")
 	ensureModel(&config.Codex.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "responses")
 	ensureModel(&config.Codex.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "responses", true)
 	ensureModel(&config.Codex.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "responses")
@@ -4606,7 +4745,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		}
 	}
 	ensureModel(&config.Opencode.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.Opencode.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
+	ensureModel(&config.Opencode.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.1", "")
 	ensureModel(&config.Opencode.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
 	ensureModel(&config.Opencode.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.Opencode.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
@@ -4616,7 +4755,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	ensureModel(&config.Opencode.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.Opencode.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.CodeBuddy.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.CodeBuddy.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
+	ensureModel(&config.CodeBuddy.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.1", "")
 	ensureModel(&config.CodeBuddy.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
 	ensureModel(&config.CodeBuddy.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.CodeBuddy.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
@@ -4626,7 +4765,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	ensureModel(&config.CodeBuddy.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.CodeBuddy.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.IFlow.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.IFlow.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
+	ensureModel(&config.IFlow.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.1", "")
 	ensureModel(&config.IFlow.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
 	ensureModel(&config.IFlow.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.IFlow.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
@@ -4636,7 +4775,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	ensureModel(&config.IFlow.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.IFlow.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.Kilo.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.Kilo.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
+	ensureModel(&config.Kilo.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.1", "")
 	ensureModel(&config.Kilo.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
 	ensureModel(&config.Kilo.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.Kilo.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
@@ -5927,6 +6066,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.LastEnvCheckTime = strings.TrimSpace(v)
+		case "workflow_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SetWorkflowEnabled(v)
 		case "vector_search_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -6148,9 +6294,17 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	a.configCache = cfg
 	a.configCacheValid = true
 	a.workflowDisabled.Store(!cfg.IsWorkflowEnabled())
+	workflowTurnedOff := !cfg.IsWorkflowEnabled() && current.IsWorkflowEnabled()
 	floatingChanged := petChanged && floatingAppearanceChanged(current, cfg)
 	soundChanged := petChanged && floatingSoundChanged(current, cfg)
 	a.configMu.Unlock()
+
+	// When workflow is toggled off, dismiss the frontend workflow panel immediately.
+	// Without this, the progress board stays visible until the next user message.
+	if workflowTurnedOff {
+		emitWorkflowV2Event(a, "workflow:phase_update", nil)
+		emitWorkflowV2Event(a, "workflow:suggest_maximize_dismiss", nil)
+	}
 
 	corelib.SetLogDetailEnabled(cfg.LogDetailEnabled)
 	corelib.SetWorkspaceDir(cfg.WorkingDirectory)
@@ -6158,6 +6312,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	a.refreshWorkstationMode(cfg)
 	if policyModeChanged && a.policyEngine != nil {
 		a.policyEngine.SetMode(cfg.SecurityPolicyMode)
+	}
+	// Notify all frontend listeners of the config change unconditionally.
+	// OnConfigChanged (tray callback) also emits this event on platforms with
+	// tray support, but may be nil. Emitting directly ensures all UI components
+	// stay in sync (e.g. workflow toggle in the AI assistant title bar).
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "config-changed", cfg)
 	}
 	if OnConfigChanged != nil {
 		go OnConfigChanged(cfg)

@@ -19,6 +19,11 @@ type SSHToolDeps struct {
 	Manager   *remote.SSHSessionManager
 	BGTaskMgr *remote.SSHBackgroundTaskManager
 
+	// PolicyOwnerID scopes background task submit/check/list/kill operations.
+	// Background task actions fail closed when this is empty; GUI legacy paths
+	// that intentionally allow ownerless access use their own handlers.
+	PolicyOwnerID string
+
 	// HostLoader returns the list of pre-configured SSH hosts from config.
 	HostLoader func() []corelib.SSHHostEntry
 

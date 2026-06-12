@@ -371,7 +371,7 @@ func (c *coreAgentCallbacks) executeManageSkill(args map[string]interface{}) age
 		return agent.ToolExecutionResult{Result: "Error: skill system is not configured", Outcome: agent.ToolExecutionOutcomeError}
 	}
 	action := stringArg(args, "action")
-	switch strings.ToLower(strings.TrimSpace(action)) {
+	switch skill.NormalizeManageSkillAction(action) {
 	case "list":
 		return c.skillList()
 	case "search":
@@ -382,6 +382,8 @@ func (c *coreAgentCallbacks) executeManageSkill(args map[string]interface{}) age
 		return c.skillRun(args)
 	case "maintenance_plan":
 		return c.skillMaintenancePlan(args)
+	case "upload":
+		return agent.ToolExecutionResult{Result: "Error: manage_skill(action=\"upload\") is not supported by this provider", Outcome: agent.ToolExecutionOutcomeError}
 	case "execute_maintenance_plan":
 		return agent.ToolExecutionResult{Result: "Error: execute_maintenance_plan is not supported by this provider", Outcome: agent.ToolExecutionOutcomeError}
 	default:

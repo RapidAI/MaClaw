@@ -160,7 +160,7 @@ export type WizardBannerTone = "success" | "error" | "warning";
 const wizardBannerPalette: Record<WizardBannerTone, { bg: string; border: string; color: string }> = {
     success: { bg: "var(--theme-success-bg)", border: "color-mix(in srgb, var(--theme-success) 34%, transparent)", color: colors.success },
     error: { bg: "var(--theme-danger-bg)", border: "color-mix(in srgb, var(--theme-danger) 34%, transparent)", color: colors.danger },
-    warning: { bg: "var(--theme-warning-bg)", border: "color-mix(in srgb, var(--theme-warning) 34%, transparent)", color: colors.warning },
+    warning: { bg: "var(--theme-info-bg)", border: "color-mix(in srgb, var(--theme-primary) 28%, transparent)", color: colors.primaryDark },
 };
 
 export const wizardBannerStyle = (tone: WizardBannerTone): CSSProperties => {

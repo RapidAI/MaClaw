@@ -318,6 +318,53 @@ func TestSimpleLLMExecutorNormalizesCodeGenAutoModel(t *testing.T) {
 	}
 }
 
+func TestSimpleLLMExecutorUsesResponsesWireAPI(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]interface{}
+	executor := SimpleLLMExecutor{HTTPClient: &http.Client{Transport: agentServiceRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("Decode: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`)),
+			Request:    r,
+		}, nil
+	})}}
+
+	result, err := executor.Execute(context.Background(), ExecuteRequest{
+		Config: corelib.AppConfig{
+			MaclawLLMCurrentProvider: "glm",
+			MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+				Name:    "glm",
+				URL:     "https://open.bigmodel.cn/api/paas/v4",
+				Key:     "test-key",
+				Model:   "glm-5.1",
+				WireAPI: "responses",
+			}},
+		},
+		Session: Session{AgentID: "agent-a"},
+		Message: Message{Content: "hello"},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Content != "ok" {
+		t.Fatalf("content = %q, want ok", result.Content)
+	}
+	if gotPath != "/api/paas/v4/responses" {
+		t.Fatalf("path = %q, want /api/paas/v4/responses", gotPath)
+	}
+	if _, ok := gotBody["input"]; !ok {
+		t.Fatalf("request body missing input: %#v", gotBody)
+	}
+	if _, ok := gotBody["messages"]; ok {
+		t.Fatalf("request body leaked messages: %#v", gotBody)
+	}
+}
+
 type agentServiceRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f agentServiceRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {

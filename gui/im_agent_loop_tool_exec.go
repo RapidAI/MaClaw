@@ -13,14 +13,12 @@ import (
 )
 
 type agentLoopToolBranchStartOptions struct {
-	Context          *LoopContext
-	Iteration        int
-	Choice           llm.Choice
-	Phase            *agentLoopPhase
-	TrialState       *trialReflectState
-	UserID           string
-	SteeringDetector *SteeringWorkflowDetector
-	GateConfig       codingToolGateConfig
+	Context    *LoopContext
+	Iteration  int
+	Choice     llm.Choice
+	Phase      *agentLoopPhase
+	TrialState *trialReflectState
+	UserID     string
 }
 
 func (h *IMMessageHandler) startAgentLoopToolBranch(opts agentLoopToolBranchStartOptions) int {
@@ -30,7 +28,6 @@ func (h *IMMessageHandler) startAgentLoopToolBranch(opts agentLoopToolBranchStar
 		resetAgentLoopTruncationRecoveryAfterToolCalls(opts.Phase, opts.Choice)
 	}
 	logAgentLoopPartialTruncation(opts.Choice)
-	h.emitAgentLoopSteeringSuggestMaximize(opts.UserID, opts.SteeringDetector, opts.GateConfig)
 	if opts.TrialState != nil && opts.TrialState.enabled && h.traceService != nil && opts.Context != nil && opts.Context.RunID != "" {
 		h.appendTraceEvent(opts.Context, "trial.started", "info", "Trial iteration started", fmt.Sprintf("iteration=%d tool_calls=%d", opts.Iteration+1, len(opts.Choice.Message.ToolCalls)), "", "")
 	}
@@ -43,7 +40,6 @@ type agentLoopToolPathOptions struct {
 	UserText                   string
 	Iteration                  int
 	Platform                   string
-	GateConfig                 codingToolGateConfig
 	MessageContent             string
 	LengthContinuationText     string
 	Choice                     llm.Choice
@@ -51,7 +47,6 @@ type agentLoopToolPathOptions struct {
 	Conversation               []interface{}
 	History                    []agent.ConversationEntry
 	VisibleArtifacts           *pendingVisibleArtifacts
-	SteeringDetector           *SteeringWorkflowDetector
 	DriftDetector              *DriftDetector
 	TrialState                 *trialReflectState
 	CodingIterCount            int
@@ -101,14 +96,12 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 	}
 	stageStartedAt := time.Now()
 	totalToolCalls := opts.TotalToolCallsInLoop + h.startAgentLoopToolBranch(agentLoopToolBranchStartOptions{
-		Context:          opts.Context,
-		Iteration:        opts.Iteration,
-		Choice:           opts.Choice,
-		Phase:            opts.Phase,
-		TrialState:       opts.TrialState,
-		UserID:           opts.UserID,
-		SteeringDetector: opts.SteeringDetector,
-		GateConfig:       opts.GateConfig,
+		Context:    opts.Context,
+		Iteration:  opts.Iteration,
+		Choice:     opts.Choice,
+		Phase:      opts.Phase,
+		TrialState: opts.TrialState,
+		UserID:     opts.UserID,
 	})
 	result := agentLoopToolPathResult{
 		Conversation:         opts.Conversation,
@@ -124,14 +117,13 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 		UserText:                   opts.UserText,
 		Iteration:                  opts.Iteration,
 		Platform:                   opts.Platform,
-		GateActive:                 opts.GateConfig.active,
+		GateActive:                 false,
 		MessageContent:             opts.MessageContent,
 		ToolCalls:                  opts.Choice.Message.ToolCalls,
 		Phase:                      opts.Phase,
 		Conversation:               opts.Conversation,
 		History:                    opts.History,
 		VisibleArtifacts:           opts.VisibleArtifacts,
-		SteeringDetector:           opts.SteeringDetector,
 		DriftDetector:              opts.DriftDetector,
 		ConsecutiveWriteFileErrors: opts.ConsecutiveWriteFileErrors,
 		InFlightLifecycle:          opts.InFlightLifecycle,
@@ -165,7 +157,6 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 		UserText:                   opts.UserText,
 		Iteration:                  opts.Iteration,
 		Platform:                   opts.Platform,
-		GateConfig:                 opts.GateConfig,
 		MessageContent:             opts.MessageContent,
 		AssistantHadVisibleContent: assistantMessageHasVisibleContent(opts.Choice.Message.Content),
 		LengthContinuationText:     opts.LengthContinuationText,
@@ -181,7 +172,6 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 		TotalToolCallsInLoop:       totalToolCalls,
 		PendingArtifacts:           toolCallResult.PendingArtifacts,
 		VisibleArtifacts:           opts.VisibleArtifacts,
-		SteeringDetector:           opts.SteeringDetector,
 		StreamDone:                 opts.StreamDone,
 		LastCompressionSummary:     opts.LastCompressionSummary,
 		RecordSystemMessages:       opts.RecordSystemMessages,
@@ -211,7 +201,6 @@ type agentLoopToolCallsOptions struct {
 	Conversation               []interface{}
 	History                    []agent.ConversationEntry
 	VisibleArtifacts           *pendingVisibleArtifacts
-	SteeringDetector           *SteeringWorkflowDetector
 	DriftDetector              *DriftDetector
 	ConsecutiveWriteFileErrors *int
 	InFlightLifecycle          *imInFlightLifecycle
@@ -323,7 +312,6 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 
 		stageStartedAt = time.Now()
 		h.recordAgentLoopToolTrace(opts.Context, tc, traceResult, rawResult, execResult)
-		h.emitAgentLoopSteeringDocUpdate(opts.UserID, opts.SteeringDetector, tc.Function.Name, tc.Function.Arguments)
 		logSlow("trace_and_steering", stageStartedAt, tc)
 
 		stageStartedAt = time.Now()

@@ -376,7 +376,7 @@ export function AssistantPreviewPane({
                         title={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
                         aria-label={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
                     >
-                        ×
+                        X
                     </button>
                 </div>
             )}

@@ -167,11 +167,11 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                 <div style={{
                     padding: "8px 12px",
                     marginBottom: "12px",
-                    background: colors.warningBg,
+                    background: colors.infoBg,
                     borderRadius: "8px",
-                    border: `1px solid ${colors.warning}`,
+                    border: `1px solid ${colors.primary}`,
                     fontSize: "0.78rem",
-                    color: colors.warning,
+                    color: colors.primaryDark,
                 }}>
                     {t("Managed by Hub centralized security. Local edits are disabled until Hub centralized policy is turned off.", "当前由 Hub 集中安全策略管控，本地不可修改；关闭 Hub 集中策略后才可编辑", "當前由 Hub 集中安全策略管控，本地不可修改；關閉 Hub 集中策略後才可編輯")}
                 </div>
@@ -192,9 +192,9 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                                 padding: "6px 10px",
                                 height: "32px",
                                 ...(mode.value === "developer" ? {
-                                    borderColor: securityMode === "developer" ? colors.warning : colors.border,
-                                    background: securityMode === "developer" ? colors.warningBg : undefined,
-                                    color: securityMode === "developer" ? colors.warning : colors.textMuted,
+                                    borderColor: securityMode === "developer" ? colors.primary : colors.border,
+                                    background: securityMode === "developer" ? colors.infoBg : undefined,
+                                    color: securityMode === "developer" ? colors.primaryDark : colors.textMuted,
                                 } : {}),
                             }}
                             disabled={readOnly}
@@ -218,7 +218,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Relaxed", "宽松", "寬鬆")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Standard", "标准", "標準")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("Strict", "严格", "嚴格")}</th>
-                            <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600, color: colors.warning }}>{t("Dev", "开发者", "開發者")}</th>
+                            <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600, color: colors.primaryDark }}>{t("Dev", "开发者", "開發者")}</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -229,7 +229,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{renderSecurityTableCell(row.relaxed)}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{renderSecurityTableCell(row.standard)}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{renderSecurityTableCell(row.strict)}</td>
-                                <td style={{ textAlign: "center", padding: "3px 6px", color: colors.warning }}>{renderSecurityTableCell(row.developer)}</td>
+                                <td style={{ textAlign: "center", padding: "3px 6px", color: colors.primaryDark }}>{renderSecurityTableCell(row.developer)}</td>
                             </tr>
                         ))}
                     </tbody>

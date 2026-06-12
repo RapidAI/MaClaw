@@ -15,6 +15,7 @@ import (
 	"time"
 
 	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
@@ -229,6 +230,75 @@ func TestGroupDiscussionMessageDeliveryDedupesParticipantAliases(t *testing.T) {
 	sent := sender.snapshotMessages()
 	if len(sent) != 1 || !groupDiscussionParticipantIdentityMatches(sent[0].machineID, "maclaw-b") {
 		t.Fatalf("sent messages = %+v, want one alias-deduped delivery to maclaw-b", sent)
+	}
+}
+
+func TestVEDiscussionDeliveryMetricsTrackWebsocketDelivery(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	sender := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(svc, sender)
+	session := &corea2a.Session{
+		ID:       "disc-metrics-delivery",
+		TenantID: "tenant-a",
+		Status:   corea2a.SessionOpen,
+		Participants: []corea2a.Participant{
+			{ID: "maclaw-a", RoleCode: "initiator"},
+			{ID: "maclaw-b", RoleCode: "speak"},
+			{ID: "ve-maclaw-b", RoleCode: "speak"},
+		},
+	}
+	msg := corea2a.GroupDiscussionMessage{ID: "msg-metrics-1", SessionID: session.ID, FromID: "maclaw-a", Kind: corea2a.MessageStatement, Content: "Please answer.", CreatedAt: time.Now().UTC()}
+	before := globalVEMetrics.snapshot().DiscussionDelivery
+
+	if err := handler.notifyDiscussionMessage(session, msg); err != nil {
+		t.Fatalf("notifyDiscussionMessage: %v", err)
+	}
+
+	after := globalVEMetrics.snapshot().DiscussionDelivery
+	if got := veMetricUint(after, "messages_total") - veMetricUint(before, "messages_total"); got != 1 {
+		t.Fatalf("messages delta=%d, want 1; metrics=%#v", got, after)
+	}
+	if got := veMetricUint(after, "targets_total") - veMetricUint(before, "targets_total"); got != 1 {
+		t.Fatalf("targets delta=%d, want 1; metrics=%#v", got, after)
+	}
+	if got := veMetricUint(after, "websocket_sent_total") - veMetricUint(before, "websocket_sent_total"); got != 1 {
+		t.Fatalf("websocket sent delta=%d, want 1; metrics=%#v", got, after)
+	}
+	if veMetricUint(after, "last_duration_ms") == 0 {
+		t.Fatalf("last_duration_ms should be recorded; metrics=%#v", after)
+	}
+}
+
+func TestVEDiscussionDeliveryMetricsClassifyWebsocketBufferFull(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	sender := &captureGroupDiscussionSender{err: fmt.Errorf("%w: %w", device.ErrMachineOffline, device.ErrMachineSendBufferFull)}
+	handler := NewGroupDiscussionHandler(svc, sender)
+	session := &corea2a.Session{
+		ID:       "disc-metrics-buffer-full",
+		TenantID: "tenant-a",
+		Status:   corea2a.SessionOpen,
+		Participants: []corea2a.Participant{
+			{ID: "maclaw-a", RoleCode: "initiator"},
+			{ID: "maclaw-b", RoleCode: "speak"},
+		},
+	}
+	msg := corea2a.GroupDiscussionMessage{ID: "msg-metrics-buffer-full", SessionID: session.ID, FromID: "maclaw-a", Kind: corea2a.MessageStatement, Content: "Please answer.", CreatedAt: time.Now().UTC()}
+	before := globalVEMetrics.snapshot().DiscussionDelivery
+
+	err := handler.notifyDiscussionMessage(session, msg)
+	if err == nil || !errors.Is(err, device.ErrMachineOffline) {
+		t.Fatalf("notify err=%v, want wrapped ErrMachineOffline", err)
+	}
+
+	after := globalVEMetrics.snapshot().DiscussionDelivery
+	if got := veMetricUint(after, "websocket_failed_total") - veMetricUint(before, "websocket_failed_total"); got != 1 {
+		t.Fatalf("websocket failed delta=%d, want 1; metrics=%#v", got, after)
+	}
+	if got := veMetricUint(after, "websocket_buffer_full_total") - veMetricUint(before, "websocket_buffer_full_total"); got != 1 {
+		t.Fatalf("websocket buffer full delta=%d, want 1; metrics=%#v", got, after)
+	}
+	if got := veMetricUint(after, "websocket_offline_total") - veMetricUint(before, "websocket_offline_total"); got != 0 {
+		t.Fatalf("websocket offline delta=%d, want 0 because buffer full is more specific; metrics=%#v", got, after)
 	}
 }
 

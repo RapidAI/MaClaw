@@ -15,7 +15,6 @@ type agentLoopPostToolBranchOptions struct {
 	UserText                   string
 	Iteration                  int
 	Platform                   string
-	GateConfig                 codingToolGateConfig
 	MessageContent             string
 	AssistantHadVisibleContent bool
 	LengthContinuationText     string
@@ -31,7 +30,6 @@ type agentLoopPostToolBranchOptions struct {
 	TotalToolCallsInLoop       int
 	PendingArtifacts           agentLoopPendingToolArtifacts
 	VisibleArtifacts           *pendingVisibleArtifacts
-	SteeringDetector           *SteeringWorkflowDetector
 	StreamDone                 bool
 	LastCompressionSummary     *string
 	RecordSystemMessages       func(int, []interface{})
@@ -106,7 +104,7 @@ func (h *IMMessageHandler) handleAgentLoopPostToolBranch(opts agentLoopPostToolB
 	}
 
 	stageStartedAt = time.Now()
-	toolBranchGate := h.applyAgentLoopToolBranchNeedsConfirmGate(opts.Context, opts.UserID, opts.Iteration, opts.Platform, opts.GateConfig, result.MessageContent, opts.LengthContinuationText, opts.Phase, opts.SteeringDetector, result.History, opts.PendingArtifacts.VoiceData, opts.PendingArtifacts.VoiceFileName, opts.PendingArtifacts.VoiceMimeType, opts.AttachLLMTelemetry, opts.AttachVisibleArtifacts)
+	toolBranchGate := h.applyAgentLoopToolBranchNeedsConfirmGate(opts.Context, opts.UserID, opts.Iteration, opts.Platform, result.MessageContent, opts.LengthContinuationText, opts.Phase, result.History, opts.PendingArtifacts.VoiceData, opts.PendingArtifacts.VoiceFileName, opts.PendingArtifacts.VoiceMimeType, opts.AttachLLMTelemetry, opts.AttachVisibleArtifacts)
 	logSlow("needs_confirm_gate", stageStartedAt)
 	result.MessageContent = toolBranchGate.MsgContent
 	if toolBranchGate.Response != nil {

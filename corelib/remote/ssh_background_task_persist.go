@@ -13,17 +13,19 @@ import (
 // persistedTask 是 SSHBackgroundTask 的持久化格式。
 // 只保留恢复所需的字段，不保留 sync.Mutex。
 type persistedTask struct {
-	TaskID    string                  `json:"task_id"`
-	SessionID string                  `json:"session_id"`
-	HostID    string                  `json:"host_id"` // user@host:port，用于跨会话匹配
-	Command   string                  `json:"command"`
-	TaskRole  string                  `json:"task_role,omitempty"`
-	LogFile   string                  `json:"log_file"`
-	PIDFile   string                  `json:"pid_file"`
-	Status    SSHBackgroundTaskStatus `json:"status"`
-	PID       string                  `json:"pid,omitempty"`
-	StartedAt time.Time               `json:"started_at"`
-	LastCheck time.Time               `json:"last_check,omitempty"`
+	TaskID     string                  `json:"task_id"`
+	OwnerID    string                  `json:"owner_id,omitempty"`
+	SessionID  string                  `json:"session_id"`
+	HostID     string                  `json:"host_id"` // user@host:port，用于跨会话匹配
+	Command    string                  `json:"command"`
+	TaskRole   string                  `json:"task_role,omitempty"`
+	LogFile    string                  `json:"log_file"`
+	PIDFile    string                  `json:"pid_file"`
+	MirrorFile string                  `json:"mirror_file,omitempty"`
+	Status     SSHBackgroundTaskStatus `json:"status"`
+	PID        string                  `json:"pid,omitempty"`
+	StartedAt  time.Time               `json:"started_at"`
+	LastCheck  time.Time               `json:"last_check,omitempty"`
 }
 
 // persistedRegistry 是持久化到磁盘的任务注册表。
@@ -74,17 +76,19 @@ func (m *SSHBackgroundTaskManager) saveToDisk() {
 		// 只持久化 active 任务或 24 小时内的任务
 		if t.Status.IsActive() || t.StartedAt.After(cutoff) || t.LastCheck.After(cutoff) {
 			pt := persistedTask{
-				TaskID:    t.TaskID,
-				SessionID: t.SessionID,
-				HostID:    m.resolveHostIDForTask(t),
-				Command:   t.Command,
-				TaskRole:  t.TaskRole,
-				LogFile:   t.LogFile,
-				PIDFile:   t.PIDFile,
-				Status:    t.Status,
-				PID:       t.PID,
-				StartedAt: t.StartedAt,
-				LastCheck: t.LastCheck,
+				TaskID:     t.TaskID,
+				OwnerID:    t.OwnerID,
+				SessionID:  t.SessionID,
+				HostID:     m.resolveHostIDForTask(t),
+				Command:    t.Command,
+				TaskRole:   t.TaskRole,
+				LogFile:    t.LogFile,
+				PIDFile:    t.PIDFile,
+				MirrorFile: t.MirrorFile,
+				Status:     t.Status,
+				PID:        t.PID,
+				StartedAt:  t.StartedAt,
+				LastCheck:  t.LastCheck,
 			}
 			reg.Tasks = append(reg.Tasks, pt)
 		}
@@ -151,17 +155,25 @@ func (m *SSHBackgroundTaskManager) loadPersistedTasks() {
 		if _, exists := m.tasks[pt.TaskID]; exists {
 			continue
 		}
+		mirrorFile := pt.MirrorFile
+		if strings.TrimSpace(mirrorFile) == "" {
+			if strings.TrimSpace(m.mirrorDir) != "" && strings.TrimSpace(pt.TaskID) != "" {
+				mirrorFile = filepath.Join(m.mirrorDir, pt.TaskID+".log")
+			}
+		}
 		task := &SSHBackgroundTask{
-			TaskID:    pt.TaskID,
-			SessionID: pt.SessionID,
-			Command:   pt.Command,
-			TaskRole:  pt.TaskRole,
-			LogFile:   pt.LogFile,
-			PIDFile:   pt.PIDFile,
-			Status:    pt.Status,
-			PID:       pt.PID,
-			StartedAt: pt.StartedAt,
-			LastCheck: pt.LastCheck,
+			TaskID:     pt.TaskID,
+			OwnerID:    pt.OwnerID,
+			SessionID:  pt.SessionID,
+			Command:    pt.Command,
+			TaskRole:   pt.TaskRole,
+			LogFile:    pt.LogFile,
+			PIDFile:    pt.PIDFile,
+			MirrorFile: mirrorFile,
+			Status:     pt.Status,
+			PID:        pt.PID,
+			StartedAt:  pt.StartedAt,
+			LastCheck:  pt.LastCheck,
 		}
 		m.tasks[pt.TaskID] = task
 		loaded++
@@ -365,9 +377,14 @@ func (m *SSHBackgroundTaskManager) findAlternateSession(task *SSHBackgroundTask)
 // 3. 检查 PID 是否存活（kill -0）
 // 4. 存活且注册表中没有 → 重新注册
 func (m *SSHBackgroundTaskManager) RediscoverOrphanTasks(sessionID string) (discovered int) {
-	if m.sshMgr == nil {
+	return m.RediscoverOrphanTasksForOwner(sessionID, "")
+}
+
+func (m *SSHBackgroundTaskManager) RediscoverOrphanTasksForOwner(sessionID, ownerID string) (discovered int) {
+	if m == nil || m.sshMgr == nil {
 		return 0
 	}
+	ownerID = strings.TrimSpace(ownerID)
 	session, ok := m.sshMgr.Get(sessionID)
 	if !ok {
 		return 0
@@ -421,17 +438,23 @@ func (m *SSHBackgroundTaskManager) RediscoverOrphanTasks(sessionID string) (disc
 		// 重新注册 orphan 任务
 		logFile := fmt.Sprintf("/tmp/maclaw_bg_%s.log", taskID)
 		pidFile := fmt.Sprintf("/tmp/maclaw_bg_%s.pid", taskID)
+		mirrorFile := ""
+		if strings.TrimSpace(m.mirrorDir) != "" {
+			mirrorFile = filepath.Join(m.mirrorDir, taskID+".log")
+		}
 
 		task := &SSHBackgroundTask{
-			TaskID:    taskID,
-			SessionID: sessionID, // 用当前会话关联
-			Command:   command,
-			LogFile:   logFile,
-			PIDFile:   pidFile,
-			Status:    SSHBackgroundTaskStatusRunning,
-			PID:       pid,
-			StartedAt: time.Now(), // 无法确定原始启动时间
-			LastCheck: time.Now(),
+			TaskID:     taskID,
+			OwnerID:    ownerID,
+			Command:    command,
+			SessionID:  sessionID, // 用当前会话关联
+			LogFile:    logFile,
+			PIDFile:    pidFile,
+			MirrorFile: mirrorFile,
+			Status:     SSHBackgroundTaskStatusRunning,
+			PID:        pid,
+			StartedAt:  time.Now(), // 无法确定原始启动时间
+			LastCheck:  time.Now(),
 		}
 		m.tasks[taskID] = task
 		discovered++

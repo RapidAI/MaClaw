@@ -58,6 +58,29 @@ describe("useGroupSessionActions", () => {
         expect(availability?.available.map((ve) => ve.id)).toEqual(["profile-new"]);
     });
 
+    it("treats malformed employee list responses as empty availability", async () => {
+        const listVirtualEmployees = vi.fn().mockResolvedValue({ employees: [] });
+        const { result } = renderHook(() => useGroupSessionActions({
+            lang: "en",
+            listVirtualEmployees,
+            initiateConversation: vi.fn().mockResolvedValue({ session_id: "session-1" }),
+        }));
+
+        let availability: Awaited<ReturnType<typeof result.current.checkInviteAvailability>> | undefined;
+        await act(async () => {
+            availability = await result.current.checkInviteAvailability({
+                sessionId: "session-1",
+                veId: "ve-a",
+                participants: ["machine-ve"],
+                maxParticipants: 5,
+            });
+        });
+
+        expect(availability?.success).toBe(false);
+        expect(availability?.available).toEqual([]);
+        expect(result.current.feedback?.message).toBe("No digital employees available to invite");
+    });
+
     it("filters already-added participants across ve aliases", async () => {
         const listVirtualEmployees = vi.fn().mockResolvedValue([
             { id: "profile-ve", machine_id: "machine-ve", name: "Already added", online_status: "online" },

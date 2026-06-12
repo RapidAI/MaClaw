@@ -187,6 +187,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/ve/{id}/initiate", VEInitiateHandler(system, groupDiscussionSvc, identity, deviceSvc))
 	mux.HandleFunc("POST /api/ve/auth/respond", VEAuthRespondHandler(system, identity, deviceSvc))
 	mux.HandleFunc("GET /api/ve/list", requireTenantAdmin(VEAdminListHandler(system, deviceSvc, userLookup)))
+	mux.HandleFunc("GET /api/admin/ve/metrics", requireTenantAdmin(VEMetricsHandler()))
 	mux.HandleFunc("GET /api/ve/{id}/history", requireTenantAdmin(VEHistoryHandler(system, groupDiscussionSvc, userLookup, identity.MachinesRepo())))
 	mux.HandleFunc("GET /api/ve/history/search", requireTenantAdmin(VEHistorySearchHandler(system, groupDiscussionSvc, userLookup, identity.MachinesRepo())))
 	mux.HandleFunc("GET /api/ve/history/{id}/detail", requireTenantAdmin(VEHistoryDetailHandler(system, groupDiscussionSvc, userLookup, identity.MachinesRepo())))

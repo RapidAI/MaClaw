@@ -303,12 +303,21 @@ func (d *TopicSwitchDetector) ConfirmWithLLM(contextText, newMessage string) Top
 	ctx, cancel := context.WithTimeout(context.Background(), d.LLMTimeout)
 	defer cancel()
 
-	req, _, _, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
-		Stream: false,
-		ExtraBody: map[string]interface{}{
-			"max_tokens": 10,
-		},
-	})
+	var req *http.Request
+	var err error
+	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
+		req, _, _, err = llm.NewResponsesAPIRequest(ctx, cfg, messages, llm.ResponsesAPIRequestOptions{
+			Stream:    false,
+			ExtraBody: map[string]interface{}{"max_tokens": 10},
+		})
+	} else {
+		req, _, _, err = llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
+			Stream: false,
+			ExtraBody: map[string]interface{}{
+				"max_tokens": 10,
+			},
+		})
+	}
 	if err != nil {
 		return TopicSame
 	}
@@ -319,7 +328,12 @@ func (d *TopicSwitchDetector) ConfirmWithLLM(contextText, newMessage string) Top
 	}
 	defer resp.Body.Close()
 
-	parsed, err := llm.ParseNonStreamOpenAIResponse(resp)
+	var parsed *llm.Response
+	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
+		parsed, err = llm.ParseNonStreamResponsesAPIResponse(resp)
+	} else {
+		parsed, err = llm.ParseNonStreamOpenAIResponse(resp)
+	}
 	if err != nil || len(parsed.Choices) == 0 {
 		return TopicSame
 	}

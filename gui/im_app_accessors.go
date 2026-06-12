@@ -112,15 +112,6 @@ func (h *IMMessageHandler) getAppToolRouter() *ToolRouter {
 	return h.app.toolRouter
 }
 
-// --- Gate Intent Classifier ---
-
-func (h *IMMessageHandler) getGateIntentClassifier() *GateIntentClassifier {
-	if h.app == nil {
-		return nil
-	}
-	return h.app.GetGateIntentClassifier()
-}
-
 // --- LLM Config ---
 
 func (h *IMMessageHandler) getMaclawLLMConfig() corelib.MaclawLLMConfig {

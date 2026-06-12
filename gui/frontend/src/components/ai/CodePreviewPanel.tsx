@@ -1,8 +1,8 @@
 /**
- * CodePreviewPanel — main component for the code preview panel.
+ * CodePreviewPanel - main component for the code preview panel.
  *
  * Renders a panel with:
- *   1. A header bar with a close button (×)
+ *   1. A header bar with a close button (X)
  *   2. FileTabBar at the top for file selection
  *   3. Code content area with line numbers, monospace font, vertical scrolling
  *   4. Syntax highlighting via tokenizeLine
@@ -39,8 +39,8 @@ export const darkCodePreviewTheme: CodePreviewTheme = {
     tabHoverBg: '#1a293b',
     diffAddBg: 'rgba(122, 168, 154, 0.16)',
     diffAddText: '#b8d7cf',
-    diffDeleteBg: 'rgba(180, 35, 24, 0.12)',
-    diffDeleteText: '#e2aaa5',
+    diffDeleteBg: 'rgba(196, 61, 52, 0.12)',
+    diffDeleteText: '#e07a72',
     syntaxKeyword: '#9bc2ea',
     syntaxString: '#b8d7cf',
     syntaxComment: '#7d8c9e',
@@ -64,8 +64,8 @@ export const lightCodePreviewTheme: CodePreviewTheme = {
     tabHoverBg: '#eef2f7',
     diffAddBg: 'rgba(79, 127, 111, 0.12)',
     diffAddText: '#4f7f6f',
-    diffDeleteBg: 'rgba(180, 35, 24, 0.10)',
-    diffDeleteText: '#b42318',
+    diffDeleteBg: 'rgba(196, 61, 52, 0.10)',
+    diffDeleteText: '#c43d34',
     syntaxKeyword: '#2f5f98',
     syntaxString: '#4f7f6f',
     syntaxComment: '#64748b',
@@ -237,7 +237,7 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
     while (i < lines.length) {
         const line = lines[i];
 
-        // Code blocks — detect ``` or ~~~ fences (with optional leading whitespace)
+        // Code blocks - detect ``` or ~~~ fences (with optional leading whitespace)
         const fenceMatch = line.match(/^(\s*)(```|~~~)/);
         if (fenceMatch) {
             flushTable();
@@ -271,7 +271,7 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
             continue;
         }
 
-        // Non-table line — flush any pending table
+        // Non-table line - flush any pending table
         flushTable();
 
         // Headings (# through ######)
@@ -289,7 +289,7 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
             continue;
         }
 
-        // Multi-line blockquote — collect consecutive > lines
+        // Multi-line blockquote - collect consecutive > lines
         if (line.startsWith('>') || line.startsWith('> ')) {
             const quoteLines: string[] = [];
             while (i < lines.length && (lines[i].startsWith('> ') || lines[i] === '>' || lines[i].startsWith('>'))) {
@@ -306,7 +306,7 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
             continue;
         }
 
-        // Task list: - [ ] or - [x] or * [ ] or * [x] — collect consecutive items
+        // Task list: - [ ] or - [x] or * [ ] or * [x] - collect consecutive items
         const taskMatch = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.*)/);
         if (taskMatch) {
             const taskItems: { checked: boolean; text: string }[] = [];
@@ -320,7 +320,7 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
                 <div key={elements.length} style={{ margin: '4px 0', paddingLeft: 4 }}>
                     {taskItems.map((item, ti) => (
                         <div key={ti} style={{ paddingLeft: 12, margin: '2px 0', display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                            <span style={{ flexShrink: 0, fontSize: 14 }}>{item.checked ? '☑' : '☐'}</span>
+                            <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 700, color: theme.textMuted }}>{item.checked ? "DONE" : "TODO"}</span>
                             <span style={{ textDecoration: item.checked ? 'line-through' : undefined, opacity: item.checked ? 0.7 : 1 }}>{renderMdInline(item.text, theme)}</span>
                         </div>
                     ))}
@@ -329,7 +329,7 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
             continue;
         }
 
-        // Unordered list — collect consecutive items (supports indentation for nesting)
+        // Unordered list - collect consecutive items (supports indentation for nesting)
         if (/^\s*[-*+]\s/.test(line)) {
             const listItems: { indent: number; text: string }[] = [];
             while (i < lines.length && /^\s*[-*+]\s/.test(lines[i])) {
@@ -352,7 +352,7 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
             continue;
         }
 
-        // Ordered list — collect consecutive numbered items
+        // Ordered list - collect consecutive numbered items
         if (/^\s*\d+[.)]\s/.test(line)) {
             const olItems: { indent: number; num: string; text: string }[] = [];
             while (i < lines.length && /^\s*\d+[.)]\s/.test(lines[i])) {
@@ -655,7 +655,7 @@ export function CodePreviewPanel({
         const el = scrollRef.current;
         if (!el) return;
         if (currentContent !== prevContentRef.current) {
-            // Content changed — restore the saved position
+            // Content changed - restore the saved position
             el.scrollTop = savedScrollTop.current;
             prevContentRef.current = currentContent;
         }
@@ -774,7 +774,7 @@ export function CodePreviewPanel({
                 background: theme.bg,
                 color: theme.text,
             }}>
-            {/* Header with close button — double-click to toggle maximize */}
+            {/* Header with close button - double-click to toggle maximize */}
             <div
                 data-testid="code-preview-header"
                 style={{

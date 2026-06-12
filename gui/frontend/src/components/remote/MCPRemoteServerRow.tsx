@@ -109,7 +109,7 @@ export function MCPRemoteServerRow({
                         </button>
                         <button className={secretStatus === "needs_config" ? "btn-primary" : "btn-secondary"} style={smallBtnStyle} onClick={onEdit} disabled={busy}>{secretStatus === "needs_config" ? translate("mcpConfigureSecret") : translate("mcpEdit")}</button>
                         {server.managed ? (
-                            <span style={managedBadgeStyle} title={translate("mcpCannotDeleteManaged")}>🔒 {translate("mcpManagedLabel")}</span>
+                            <span style={managedBadgeStyle} title={translate("mcpCannotDeleteManaged")}>{translate("mcpManagedLabel")}</span>
                         ) : (
                             <button className="btn-secondary btn-danger" style={smallBtnStyle} onClick={onDelete} disabled={busy}>{translate("mcpDelete")}</button>
                         )}
@@ -177,9 +177,9 @@ const statusBadgeStyle: CSSProperties = {
 };
 const secretNeedsConfigStyle: CSSProperties = {
     ...statusBadgeStyle,
-    color: "var(--theme-warning)",
-    border: "1px solid var(--theme-warning)",
-    background: "var(--theme-warning-bg)",
+    color: "var(--theme-primary)",
+    border: "1px solid var(--theme-primary)",
+    background: "var(--theme-info-bg)",
 };
 const secretConfiguredStyle: CSSProperties = {
     ...statusBadgeStyle,

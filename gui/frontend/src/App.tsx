@@ -145,6 +145,10 @@ type SidebarProviderStateWire = {
 } | null;
 
 const VE_EVENT_PROFILE_OVERRIDE_TTL_MS = 60_000;
+const VE_SIDEBAR_LIST_POLL_BASE_MS = 45_000;
+const VE_SIDEBAR_LIST_POLL_MAX_MS = 180_000;
+const VE_SIDEBAR_LIST_POLL_JITTER_MS = 10_000;
+const VE_SIDEBAR_LIST_EVENT_THROTTLE_MS = 1_500;
 
 function virtualEmployeeIdForMachine(machineId: string): string {
     const cleaned = String(machineId || '').trim().replace(/[\\/ ]/g, '_');
@@ -203,6 +207,13 @@ function readStringField(source: Record<string, any>, ...keys: string[]): string
     return undefined;
 }
 
+function normalizeVEEventOnlineStatus(value: string | undefined): "online" | "offline" | undefined {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'offline') return 'offline';
+    if (normalized === 'online') return 'online';
+    return undefined;
+}
+
 function readArrayField(source: Record<string, any>, ...keys: string[]): string[] | undefined {
     for (const key of keys) {
         if (Object.prototype.hasOwnProperty.call(source, key)) return Array.isArray(source[key]) ? source[key] : [];
@@ -213,7 +224,20 @@ function readArrayField(source: Record<string, any>, ...keys: string[]): string[
 function virtualEmployeeFromEventPayload(eventData: any): VirtualEmployeeEventPatch | null {
     const payload = eventData?.payload && typeof eventData.payload === 'object' ? eventData.payload : eventData;
     const employee = payload?.employee || payload?.Employee || payload?.virtual_employee || payload?.ve;
-    if (!employee || typeof employee !== 'object') return null;
+    if (!employee || typeof employee !== 'object') {
+        const root = eventData && typeof eventData === 'object' ? eventData : {};
+        const source = payload && typeof payload === 'object' ? payload : {};
+        const id = readStringField(source, 've_id', 'veId', 'id', 'ID') || readStringField(root, 've_id', 'veId', 'id', 'ID') || '';
+        const machineId = readStringField(source, 'machine_id', 'machineId', 'MachineID') || readStringField(root, 'machine_id', 'machineId', 'MachineID') || '';
+        if (!id && !machineId) return null;
+        const patch: VirtualEmployeeEventPatch = { id, machine_id: machineId };
+        const onlineStatus = normalizeVEEventOnlineStatus(
+            readStringField(source, 'online_status', 'onlineStatus', 'OnlineStatus', 'status', 'Status') ||
+            readStringField(root, 'online_status', 'onlineStatus', 'OnlineStatus', 'status', 'Status')
+        );
+        if (onlineStatus) patch.online_status = onlineStatus;
+        return patch;
+    }
     const id = readStringField(employee, 'id', 'ID') || '';
     const machineId = readStringField(employee, 'machine_id', 'MachineID') || '';
     if (!id && !machineId) return null;
@@ -407,6 +431,9 @@ function App() {
     const [veList, setVeList] = useState<VirtualEmployeeEntry[]>([]);
     const veEventProfileOverridesRef = useRef<Map<string, { employee: VirtualEmployeeEventPatch; expiresAt: number }>>(new Map());
     const [digitalEmployeeFeatureStatus, setDigitalEmployeeFeatureStatus] = useState<any>({ visible: false, actual_count: 0 });
+    const digitalEmployeeStatusInFlightRef = useRef<Promise<void> | null>(null);
+    const digitalEmployeeStatusRefreshAgainRef = useRef(false);
+    const digitalEmployeeStatusGenerationRef = useRef(0);
     const [showFavReplacePicker, setShowFavReplacePicker] = useState<{ ve: VirtualEmployeeEntry } | null>(null);
 
     // Load favorite employees from config
@@ -422,62 +449,137 @@ function App() {
 
     // Fetch VE list for sidebar favorites resolution
     useEffect(() => {
-        if (!config?.remote_hub_url || !config?.remote_machine_id) return;
+        if (!config?.remote_hub_url || !config?.remote_machine_id) {
+            veEventProfileOverridesRef.current.clear();
+            setVeList([]);
+            return;
+        }
+        veEventProfileOverridesRef.current.clear();
         let cancelled = false;
-        let retryTimer: ReturnType<typeof setTimeout> | undefined;
+        let pollTimer: ReturnType<typeof setTimeout> | undefined;
+        let eventThrottleTimer: ReturnType<typeof setTimeout> | undefined;
+        let pendingEventRefresh = false;
+        let consecutiveFailures = 0;
+        let skipNextPoll = false;
+        let fetchInFlight: Promise<void> | undefined;
+        let fetchAfterInFlight = false;
         let requestSeq = 0;
+        const scheduleNextPoll = () => {
+            if (cancelled) return;
+            if (pollTimer) clearTimeout(pollTimer);
+            const failureMultiplier = Math.max(1, 2 ** Math.min(consecutiveFailures, 3));
+            const delay = Math.min(VE_SIDEBAR_LIST_POLL_MAX_MS, VE_SIDEBAR_LIST_POLL_BASE_MS * failureMultiplier);
+            const jitter = Math.floor(Math.random() * VE_SIDEBAR_LIST_POLL_JITTER_MS);
+            pollTimer = setTimeout(() => {
+                pollTimer = undefined;
+                if (skipNextPoll) {
+                    skipNextPoll = false;
+                    scheduleNextPoll();
+                    return;
+                }
+                fetchVeList().finally(scheduleNextPoll);
+            }, delay + jitter);
+        };
+        const fetchVeList = () => {
+            if (fetchInFlight) {
+                fetchAfterInFlight = true;
+                return fetchInFlight;
+            }
+            const seq = requestSeq + 1;
+            requestSeq = seq;
+            fetchInFlight = (async () => {
+                const mod = await getWailsAppModule();
+                if (cancelled || seq !== requestSeq) return;
+                if ((mod as any).ListVirtualEmployees) {
+                    const list: VirtualEmployeeEntry[] = await (mod as any).ListVirtualEmployees();
+                    if (!cancelled && seq === requestSeq) {
+                        if (!Array.isArray(list)) {
+                            throw new Error("ListVirtualEmployees returned a non-array response");
+                        }
+                        consecutiveFailures = 0;
+                        setVeList(applyVirtualEmployeeOverrides(filterOnlineVirtualEmployees(list), veEventProfileOverridesRef.current));
+                    }
+                }
+            })().catch(() => {
+                if (!cancelled && seq === requestSeq) consecutiveFailures += 1;
+            }).finally(() => {
+                fetchInFlight = undefined;
+                if (!cancelled && fetchAfterInFlight) {
+                    fetchAfterInFlight = false;
+                    void fetchVeList();
+                }
+            });
+            return fetchInFlight;
+        };
+        const requestEventRefresh = () => {
+            if (cancelled) return;
+            if (eventThrottleTimer) {
+                pendingEventRefresh = true;
+                return;
+            }
+            skipNextPoll = true;
+            void fetchVeList();
+            eventThrottleTimer = setTimeout(() => {
+                eventThrottleTimer = undefined;
+                if (pendingEventRefresh) {
+                    pendingEventRefresh = false;
+                    skipNextPoll = true;
+                    void fetchVeList();
+                }
+            }, VE_SIDEBAR_LIST_EVENT_THROTTLE_MS);
+        };
         const applyVEEvent = (eventData: any) => {
+            if (cancelled) return;
             const employee = virtualEmployeeFromEventPayload(eventData);
             if (employee) {
                 const key = virtualEmployeeOverrideKey(employee);
                 if (key) veEventProfileOverridesRef.current.set(key, { employee, expiresAt: Date.now() + VE_EVENT_PROFILE_OVERRIDE_TTL_MS });
                 setVeList(prev => mergeVirtualEmployeeList(prev, employee));
             }
-            fetchVeList();
+            requestEventRefresh();
         };
-        const fetchVeList = () => {
-            const seq = requestSeq + 1;
-            requestSeq = seq;
-            getWailsAppModule().then((mod) => {
-                if (cancelled || seq !== requestSeq) return;
-                if ((mod as any).ListVirtualEmployees) {
-                    (mod as any).ListVirtualEmployees().then((list: VirtualEmployeeEntry[]) => {
-                        if (!cancelled && seq === requestSeq && Array.isArray(list)) {
-                            setVeList(applyVirtualEmployeeOverrides(filterOnlineVirtualEmployees(list), veEventProfileOverridesRef.current));
-                        }
-                    }).catch(() => {
-                        // Retry once after 5s on failure to handle transient Hub unavailability
-                        if (!cancelled && seq === requestSeq && !retryTimer) {
-                            retryTimer = setTimeout(() => { retryTimer = undefined; fetchVeList(); }, 5000);
-                        }
-                    });
-                }
-            }).catch(() => {});
-        };
-        fetchVeList();
-        const refreshTimer = window.setInterval(fetchVeList, 30000);
+        fetchVeList().finally(scheduleNextPoll);
         // Refresh on VE status changes
         const unsub1 = safeEventsOn("ve:list_update", applyVEEvent);
         const unsub2 = safeEventsOn("ve:status_change", applyVEEvent);
         return () => {
             cancelled = true;
-            window.clearInterval(refreshTimer);
-            if (retryTimer) clearTimeout(retryTimer);
+            if (pollTimer) clearTimeout(pollTimer);
+            if (eventThrottleTimer) clearTimeout(eventThrottleTimer);
             if (typeof unsub1 === "function") unsub1(); else safeEventsOff("ve:list_update");
             if (typeof unsub2 === "function") unsub2(); else safeEventsOff("ve:status_change");
         };
     }, [config?.remote_hub_url, config?.remote_machine_id]);
 
     const refreshDigitalEmployeeFeatureStatus = useCallback(() => {
-        return fetchDigitalEmployeeFeatureStatus()
-            .then(setDigitalEmployeeFeatureStatus);
+        if (digitalEmployeeStatusInFlightRef.current) {
+            digitalEmployeeStatusRefreshAgainRef.current = true;
+            return digitalEmployeeStatusInFlightRef.current;
+        }
+        const generation = digitalEmployeeStatusGenerationRef.current;
+        const request = fetchDigitalEmployeeFeatureStatus()
+            .then((status) => {
+                if (digitalEmployeeStatusGenerationRef.current === generation) {
+                    setDigitalEmployeeFeatureStatus(status);
+                }
+            })
+            .finally(() => {
+                digitalEmployeeStatusInFlightRef.current = null;
+                if (digitalEmployeeStatusRefreshAgainRef.current) {
+                    digitalEmployeeStatusRefreshAgainRef.current = false;
+                    void refreshDigitalEmployeeFeatureStatus();
+                }
+            });
+        digitalEmployeeStatusInFlightRef.current = request;
+        return request;
     }, []);
 
     useEffect(() => {
-        let cancelled = false;
+        digitalEmployeeStatusGenerationRef.current += 1;
         const refresh = () => {
-            fetchDigitalEmployeeFeatureStatus()
-                .then((status: any) => { if (!cancelled) setDigitalEmployeeFeatureStatus(status); });
+            refreshDigitalEmployeeFeatureStatus()
+                .then(() => undefined)
+                .catch(() => undefined);
         };
         refresh();
         const subscriptions = [
@@ -489,13 +591,12 @@ function App() {
             ["ve:disabled", safeEventsOn("ve:disabled", refresh)] as const,
         ];
         return () => {
-            cancelled = true;
             subscriptions.forEach(([name, unsubscribe]) => {
                 if (typeof unsubscribe === "function") unsubscribe();
                 else safeEventsOff(name);
             });
         };
-    }, [config?.remote_hub_url, config?.remote_machine_id, veList.length]);
+    }, [config?.remote_hub_url, config?.remote_machine_id, refreshDigitalEmployeeFeatureStatus]);
 
     useEffect(() => {
         let cancelled = false;
@@ -2457,13 +2558,13 @@ function App() {
         } else if (tool === "codex") {
             if (p.includes("aigocode") || p.includes("aicodemirror") || p.includes("coderelay")) return "gpt-5.2-codex";
             if (p.includes("deepseek")) return "deepseek-chat";
-            if (p.includes("glm")) return "glm-4.7";
+            if (p.includes("glm")) return "glm-5.1";
             if (p.includes("doubao")) return "doubao-seed-code-preview-latest";
             if (p.includes("kimi")) return "kimi-for-coding";
             if (p.includes("minimax")) return "MiniMax-M2.1";
         } else if (tool === "opencode" || tool === "codebuddy" || tool === "iflow" || tool === "kilo") {
             if (p.includes("deepseek")) return "deepseek-chat";
-            if (p.includes("glm")) return "glm-4.7";
+            if (p.includes("glm")) return "glm-5.1";
             if (p.includes("doubao")) return "doubao-seed-code-preview-latest";
             if (p.includes("kimi")) return "kimi-for-coding";
             if (p.includes("minimax")) return "MiniMax-M2.1";

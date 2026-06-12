@@ -102,7 +102,7 @@ const CODING_AGENT_PHASE_TONES: Record<CodingAgentStatusPhase, CodingAgentStatus
     starting: { accent: "#2f5f98", bg: "rgba(47, 95, 152, 0.08)", border: "rgba(47, 95, 152, 0.22)" },
     running: { accent: "#2f5f98", bg: "rgba(47, 95, 152, 0.08)", border: "rgba(47, 95, 152, 0.22)" },
     completed: { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" },
-    failed: { accent: "#b42318", bg: "rgba(180, 35, 24, 0.08)", border: "rgba(180, 35, 24, 0.22)" },
+    failed: { accent: "#c43d34", bg: "rgba(196, 61, 52, 0.08)", border: "rgba(196, 61, 52, 0.22)" },
     retrying: neutralAttentionTone,
     skipped: { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" },
     result: { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" },
@@ -573,7 +573,7 @@ export function codingAgentToolOutcomeTone(outcome: string | undefined): CodingA
         case "success":
             return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
         case "failed":
-            return { accent: "#b42318", bg: "rgba(180, 35, 24, 0.08)", border: "rgba(180, 35, 24, 0.22)" };
+            return { accent: "#c43d34", bg: "rgba(196, 61, 52, 0.08)", border: "rgba(196, 61, 52, 0.22)" };
         case "blocked":
             return neutralAttentionTone;
         default:
@@ -637,7 +637,7 @@ export function codingAgentCommandStatusTone(status: string | undefined): Coding
         case "passed":
             return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
         case "failed":
-            return { accent: "#b42318", bg: "rgba(180, 35, 24, 0.08)", border: "rgba(180, 35, 24, 0.22)" };
+            return { accent: "#c43d34", bg: "rgba(196, 61, 52, 0.08)", border: "rgba(196, 61, 52, 0.22)" };
         case "none":
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
         default:
@@ -711,7 +711,7 @@ export function codingAgentQualityStatusTone(status: string | undefined): Coding
         case "warning":
             return neutralAttentionTone;
         case "failed":
-            return { accent: "#b42318", bg: "rgba(180, 35, 24, 0.08)", border: "rgba(180, 35, 24, 0.22)" };
+            return { accent: "#c43d34", bg: "rgba(196, 61, 52, 0.08)", border: "rgba(196, 61, 52, 0.22)" };
         default:
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
     }
@@ -786,7 +786,7 @@ export function codingAgentVerificationStatusTone(status: string | undefined): C
         case "not_needed":
             return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
         case "failed":
-            return { accent: "#b42318", bg: "rgba(180, 35, 24, 0.08)", border: "rgba(180, 35, 24, 0.22)" };
+            return { accent: "#c43d34", bg: "rgba(196, 61, 52, 0.08)", border: "rgba(196, 61, 52, 0.22)" };
         case "missing":
             return neutralAttentionTone;
         default:
@@ -822,7 +822,7 @@ export function codingAgentDiffCheckStatusTone(status: string | undefined): Codi
         case "checked":
             return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
         case "failed":
-            return { accent: "#b42318", bg: "rgba(180, 35, 24, 0.08)", border: "rgba(180, 35, 24, 0.22)" };
+            return { accent: "#c43d34", bg: "rgba(196, 61, 52, 0.08)", border: "rgba(196, 61, 52, 0.22)" };
         case "skipped":
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
         default:

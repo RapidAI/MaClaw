@@ -969,9 +969,9 @@ func sanitizeConversationEntriesForPersistence(entries []ConversationEntry) []Co
 func sanitizeConversationEntryForPersistence(entry ConversationEntry) ConversationEntry {
 	entry.Content = sanitizeConversationPersistenceValue("content", entry.Content)
 	if content, ok := entry.Content.(string); ok {
-		entry.Content = StripRolePrefixHallucination(content)
+		entry.Content = stripPlainToolCallPersistenceLeak(StripRolePrefixHallucination(content))
 	}
-	entry.ReasoningContent = StripRolePrefixHallucination(security.RedactSensitiveString(entry.ReasoningContent))
+	entry.ReasoningContent = stripPlainToolCallPersistenceLeak(StripRolePrefixHallucination(security.RedactSensitiveString(entry.ReasoningContent)))
 	if entry.ToolCalls != nil {
 		entry.ToolCalls = sanitizeConversationPersistenceValue("tool_calls", entry.ToolCalls)
 	}
@@ -979,6 +979,15 @@ func sanitizeConversationEntryForPersistence(entry ConversationEntry) Conversati
 	entry.ToolName = security.RedactSensitiveString(entry.ToolName)
 	entry.ToolOutcome = security.RedactSensitiveString(entry.ToolOutcome)
 	return entry
+}
+
+func stripPlainToolCallPersistenceLeak(content string) string {
+	lower := strings.ToLower(content)
+	idx := strings.Index(lower, "tool_call")
+	if idx < 0 {
+		return content
+	}
+	return strings.TrimSpace(content[:idx])
 }
 
 func sanitizeConversationPersistenceValue(key string, value interface{}) interface{} {

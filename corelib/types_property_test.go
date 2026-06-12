@@ -112,6 +112,7 @@ func TestQwenOpenAICompatNeedsConservativeSanitization(t *testing.T) {
 		{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "custom-model"},
 		{URL: "https://llm.example.test/v1", Model: "qwen-27b"},
 		{URL: "https://llm.example.test/v1", Model: "Qwen3-27B-A3B"},
+		{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto", ProviderName: "MaClaw官方"},
 		{URL: "https://llm.example.test/v1", Model: "custom-model", ProviderName: "通义千问"},
 	} {
 		if !cfg.NeedsConservativeOpenAICompatSanitization() {
@@ -144,6 +145,9 @@ func TestSanitizeCodeGenOpenAIChatToolsValue(t *testing.T) {
 							"type": "string",
 						},
 					},
+					"args": map[string]interface{}{
+						"type": "object",
+					},
 				},
 			},
 		},
@@ -161,15 +165,25 @@ func TestSanitizeCodeGenOpenAIChatToolsValue(t *testing.T) {
 	if _, ok := params["additionalProperties"]; ok {
 		t.Fatalf("additionalProperties=false leaked: %#v", params)
 	}
-	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
+	properties := params["properties"].(map[string]interface{})
+	for _, bad := range []string{"type", "properties"} {
+		if _, ok := properties[bad]; ok {
+			t.Fatalf("properties container was treated as schema and leaked %q: %#v", bad, properties)
+		}
+	}
+	values := properties["values"].(map[string]interface{})
 	for _, bad := range []string{"oneOf", "default"} {
 		if _, ok := values[bad]; ok {
 			t.Fatalf("%s leaked: %#v", bad, values)
 		}
 	}
-	metadata := params["properties"].(map[string]interface{})["metadata"].(map[string]interface{})
+	metadata := properties["metadata"].(map[string]interface{})
 	if _, ok := metadata["additionalProperties"]; ok {
 		t.Fatalf("additionalProperties schema leaked: %#v", metadata)
+	}
+	args := properties["args"].(map[string]interface{})
+	if got := args["properties"]; got == nil {
+		t.Fatalf("object schema without properties should be completed: %#v", args)
 	}
 	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
 		t.Fatalf("array items type = %#v, want string", got)
@@ -193,9 +207,76 @@ func TestSanitizeCodeGenOpenAIChatToolsValue(t *testing.T) {
 	if _, ok := params["additionalProperties"]; ok {
 		t.Fatalf("legacy additionalProperties=false leaked: %#v", params)
 	}
-	ids := params["properties"].(map[string]interface{})["ids"].(map[string]interface{})
+	properties = params["properties"].(map[string]interface{})
+	for _, bad := range []string{"type", "properties"} {
+		if _, ok := properties[bad]; ok {
+			t.Fatalf("legacy properties container was treated as schema and leaked %q: %#v", bad, properties)
+		}
+	}
+	ids := properties["ids"].(map[string]interface{})
 	if got := ids["items"].(map[string]interface{})["type"]; got != "string" {
 		t.Fatalf("legacy array items type = %#v, want string", got)
+	}
+}
+
+func TestSanitizeCodeGenOpenAIChatToolsValueTypedFunction(t *testing.T) {
+	type parameterSchema struct {
+		Type                 string                 `json:"type"`
+		AdditionalProperties bool                   `json:"additionalProperties"`
+		Properties           map[string]interface{} `json:"properties"`
+	}
+	type functionDef struct {
+		Name       string          `json:"name"`
+		Strict     bool            `json:"strict"`
+		Parameters parameterSchema `json:"parameters"`
+	}
+	tools := SanitizeCodeGenOpenAIChatToolsValue([]map[string]interface{}{{
+		"type": "function",
+		"function": functionDef{
+			Name:   "typed_tool",
+			Strict: true,
+			Parameters: parameterSchema{
+				Type:                 "object",
+				AdditionalProperties: false,
+				Properties: map[string]interface{}{
+					"ids": map[string]interface{}{"type": "array", "nullable": true},
+				},
+			},
+		},
+	}}).([]map[string]interface{})
+
+	fn := tools[0]["function"].(map[string]interface{})
+	if _, ok := fn["strict"]; ok {
+		t.Fatalf("typed strict leaked: %#v", fn)
+	}
+	params := fn["parameters"].(map[string]interface{})
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("typed additionalProperties leaked: %#v", params)
+	}
+	ids := params["properties"].(map[string]interface{})["ids"].(map[string]interface{})
+	if _, ok := ids["nullable"]; ok {
+		t.Fatalf("typed nullable leaked: %#v", ids)
+	}
+	if got := ids["items"].(map[string]interface{})["type"]; got != "string" {
+		t.Fatalf("typed array items type = %#v, want string", got)
+	}
+}
+
+func TestSanitizeCodeGenOpenAIFunctionsValueStringMapSlice(t *testing.T) {
+	functions := SanitizeCodeGenOpenAIFunctionsValue([]map[string]string{
+		{"name": "legacy_tool"},
+	}).([]interface{})
+
+	fn := functions[0].(map[string]interface{})
+	if got := fn["name"]; got != "legacy_tool" {
+		t.Fatalf("legacy function name = %#v, want legacy_tool", got)
+	}
+	params := fn["parameters"].(map[string]interface{})
+	if got := params["type"]; got != "object" {
+		t.Fatalf("legacy default parameters.type = %#v, want object", got)
+	}
+	if _, ok := params["properties"]; !ok {
+		t.Fatalf("legacy default parameters.properties missing: %#v", params)
 	}
 }
 
@@ -208,6 +289,28 @@ func TestMaclawLLMUserAgentTrimsCustomValue(t *testing.T) {
 	config := MaclawLLMConfig{AgentType: "  tigerclaw  "}
 	if got := config.UserAgent(); got != "tigerclaw" {
 		t.Fatalf("config UserAgent() = %q, want %q", got, "tigerclaw")
+	}
+
+	opencode := MaclawLLMConfig{AgentType: " opencode "}
+	if got := opencode.UserAgent(); got != "opencode" {
+		t.Fatalf("opencode UserAgent() = %q, want %q", got, "opencode")
+	}
+
+	openCode := MaclawLLMConfig{AgentType: " OpenCode "}
+	if got := openCode.UserAgent(); got != "OpenCode" {
+		t.Fatalf("OpenCode UserAgent() = %q, want %q", got, "OpenCode")
+	}
+
+	kilo := MaclawLLMConfig{AgentType: " Kilo Code "}
+	if got := kilo.UserAgent(); got != "Kilo Code" {
+		t.Fatalf("Kilo Code UserAgent() = %q, want %q", got, "Kilo Code")
+	}
+
+	for _, agent := range []string{"Claude Code", "Cline", "Roo Code", "Cursor", "Crush", "Goose"} {
+		config := MaclawLLMConfig{AgentType: " " + agent + " "}
+		if got := config.UserAgent(); got != agent {
+			t.Fatalf("%s UserAgent() = %q, want %q", agent, got, agent)
+		}
 	}
 
 	blank := MaclawLLMConfig{AgentType: "   "}
@@ -304,5 +407,34 @@ func TestNormalizeLLMTokenPricePerMTokensRMBAllowsZero(t *testing.T) {
 	_, _, total := CalculateLLMCostRMB(1_000_000, 1_000_000, 0, 0)
 	if total != 0 {
 		t.Fatalf("zero token prices produced total cost %v, want 0", total)
+	}
+}
+
+func TestNormalizeGLMCodingPlanOpenAIBaseURL(t *testing.T) {
+	got := NormalizeGLMCodingPlanOpenAIBaseURL("https://open.bigmodel.cn/api/paas/v4", "Kilo Code")
+	if want := "https://open.bigmodel.cn/api/coding/paas/v4"; got != want {
+		t.Fatalf("GLM coding URL = %q, want %q", got, want)
+	}
+
+	got = NormalizeGLMCodingPlanOpenAIBaseURL("https://open.bigmodel.cn/api/paas/v4/chat/completions", "OpenCode")
+	if want := "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"; got != want {
+		t.Fatalf("GLM coding full URL = %q, want %q", got, want)
+	}
+
+	got = NormalizeGLMCodingPlanOpenAIBaseURL("https://open.bigmodel.cn/api/coding/paas/v4", "Kilo Code")
+	if want := "https://open.bigmodel.cn/api/coding/paas/v4"; got != want {
+		t.Fatalf("GLM coding URL changed = %q, want %q", got, want)
+	}
+
+	got = NormalizeGLMCodingPlanOpenAIBaseURL("https://open.bigmodel.cn/api/paas/v4", "openclaw")
+	if want := "https://open.bigmodel.cn/api/paas/v4"; got != want {
+		t.Fatalf("non-coding GLM URL = %q, want %q", got, want)
+	}
+
+	if !IsGLMCodingPlanOpenAICompat(MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/paas/v4", AgentType: "Kilo Code"}) {
+		t.Fatalf("Kilo Code GLM config should use GLM coding plan compat")
+	}
+	if IsGLMCodingPlanOpenAICompat(MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/paas/v4", AgentType: "openclaw"}) {
+		t.Fatalf("openclaw GLM config should not use GLM coding plan compat")
 	}
 }

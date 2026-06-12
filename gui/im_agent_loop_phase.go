@@ -20,6 +20,7 @@ type agentLoopPhase struct {
 	RecoverReason             agentRecoverReason
 	RecoverPrompt             string
 	NoToolActionPrompted      bool
+	LocalInfoRecallPrompted   bool
 
 	FailedSkillName  string
 	FailedSkillError string

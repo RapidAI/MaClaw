@@ -51,6 +51,34 @@ func TestDoFetchModelsRequestDefaultsCodeGenUserAgentToTigerclaw(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
+func TestFetchProviderModelsAnthropicUsesOfficialSDK(t *testing.T) {
+	var gotPath, gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotUA = r.Header.Get("User-Agent")
+		if r.Header.Get("x-api-key") != "token" {
+			t.Fatalf("x-api-key = %q, want token", r.Header.Get("x-api-key"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"glm-5.1","display_name":"GLM 5.1"}]}`))
+	}))
+	defer srv.Close()
+
+	items, err := (&App{}).fetchProviderModels(srv.URL, "token", "anthropic", "claude code 2.0", false)
+	if err != nil {
+		t.Fatalf("fetchProviderModels() error = %v", err)
+	}
+	if gotPath != "/v1/models" {
+		t.Fatalf("path = %q, want /v1/models", gotPath)
+	}
+	if gotUA != "claude code 2.0" {
+		t.Fatalf("User-Agent = %q, want claude code 2.0", gotUA)
+	}
+	if len(items) != 1 || items[0].ID != "glm-5.1" || items[0].Name != "GLM 5.1" {
+		t.Fatalf("items = %+v, want glm-5.1/GLM 5.1", items)
+	}
+}
+
 func TestOpenAIModelsEndpointCandidates(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -94,6 +122,20 @@ func TestOpenAIModelsEndpointCandidates(t *testing.T) {
 				t.Fatalf("openAIModelsEndpointCandidates() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeOpenAIProbeBaseURLUsesGLMCodingPlanEndpoint(t *testing.T) {
+	got := normalizeOpenAIProbeBaseURL("https://open.bigmodel.cn/api/paas/v4", "Kilo Code")
+	want := "https://open.bigmodel.cn/api/coding/paas/v4"
+	if got != want {
+		t.Fatalf("normalizeOpenAIProbeBaseURL() = %q, want %q", got, want)
+	}
+
+	got = normalizeOpenAIProbeBaseURL("https://open.bigmodel.cn/api/paas/v4", "openclaw")
+	want = "https://open.bigmodel.cn/api/paas/v4"
+	if got != want {
+		t.Fatalf("normalizeOpenAIProbeBaseURL() with openclaw = %q, want %q", got, want)
 	}
 }
 
@@ -1202,15 +1244,15 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("OpenAI TimeoutSec = %d, want %d", first.TimeoutSec, corelib.DefaultLLMTimeoutSec)
 	}
 
-	zhipuLobster := providers[1]
-	if zhipuLobster.Name != "智谱龙虾" {
-		t.Errorf("providers[1].Name = %q, want %q", zhipuLobster.Name, "智谱龙虾")
+	deepseek := providers[1]
+	if deepseek.Name != "DeepSeek" {
+		t.Errorf("providers[1].Name = %q, want %q", deepseek.Name, "DeepSeek")
 	}
-	if zhipuLobster.URL != "https://open.bigmodel.cn/api/coding/paas/v4" {
-		t.Errorf("智谱龙虾 URL = %q, want %q", zhipuLobster.URL, "https://open.bigmodel.cn/api/coding/paas/v4")
+	if deepseek.URL != "https://api.deepseek.com/v1" {
+		t.Errorf("DeepSeek URL = %q, want %q", deepseek.URL, "https://api.deepseek.com/v1")
 	}
-	if zhipuLobster.Model != "glm-5-turbo" {
-		t.Errorf("智谱龙虾 Model = %q, want %q", zhipuLobster.Model, "glm-5-turbo")
+	if deepseek.Model != "deepseek-v4-flash" {
+		t.Errorf("DeepSeek Model = %q, want %q", deepseek.Model, "deepseek-v4-flash")
 	}
 
 	zhipuCoding := providers[2]
@@ -1226,11 +1268,11 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if zhipuCoding.Protocol != "anthropic" {
 		t.Errorf("智谱编程 Protocol = %q, want %q", zhipuCoding.Protocol, "anthropic")
 	}
-	if zhipuCoding.AgentType != "claude-code/2.0.0" {
-		t.Errorf("智谱编程 AgentType = %q, want %q", zhipuCoding.AgentType, "claude-code/2.0.0")
+	if zhipuCoding.AgentType != "claude code 2.0" {
+		t.Errorf("智谱编程 AgentType = %q, want %q", zhipuCoding.AgentType, "claude code 2.0")
 	}
 
-	expectedNames := []string{"OpenAI", "智谱龙虾", "智谱编程", "MiniMax", "Kimi", "讯飞星辰", "Custom1", "Custom2"}
+	expectedNames := []string{"OpenAI", "DeepSeek", "智谱编程", "MiniMax", "Kimi", "讯飞星辰", "Custom1", "Custom2"}
 	for i, want := range expectedNames {
 		if providers[i].Name != want {
 			t.Errorf("providers[%d].Name = %q, want %q", i, providers[i].Name, want)

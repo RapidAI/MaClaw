@@ -262,7 +262,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
 
     // Handler: fetch models from any provider's /models endpoint
     const handleFetchProviderModels = useCallback(async () => {
-        if (!dlgProvider || !dlgProvider.url || !dlgProvider.key) return;
+        if (!dlgProvider || !dlgProvider.url) return;
+        if (!dlgProvider.key) {
+            setProviderModelsError(t("Please fill in API Key first", "请先填写 API Key"));
+            return;
+        }
         setProviderModelsFetching(true);
         setProviderModelsError(null);
         setProviderModels([]);
@@ -471,14 +475,13 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     position: "fixed", top: 42, left: "50%", transform: "translateX(-50%)",
                     zIndex: 10000, width: "min(92vw, 380px)", padding: "8px 12px",
                     borderRadius: 6, fontSize: "0.74rem", lineHeight: 1.45,
-                    boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
                     background: colors.surface,
-                    border: `1px solid ${colors.border}`,
-                    borderLeft: `3px solid ${dlgToast.ok ? colors.success : colors.danger}`,
+                    border: `1px solid ${dlgToast.ok ? colors.success : colors.danger}`,
+                    boxShadow: `0 10px 24px rgba(15,23,42,0.20), inset 0 0 0 1px ${colors.border}`,
                     color: colors.text,
                 }}>
                     <div style={{ fontWeight: 700, color: dlgToast.ok ? colors.success : colors.danger }}>
-                        {dlgToast.ok ? "✓" : "!"} {dlgToast.title}
+                        {dlgToast.ok ? "OK" : "ERR"} {dlgToast.title}
                     </div>
                     {dlgToast.detail && (
                         <div style={{ marginTop: 3, color: colors.textSecondary, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
@@ -511,7 +514,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 <span className="llm-config-summary__label" style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
                     {t("Provider", "当前服务商")}
                 </span>
-                <span className="llm-config-summary__value" style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? (hasHubEntitlement ? colors.warning : colors.danger) : colors.text }}>
+                <span className="llm-config-summary__value" style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? (hasHubEntitlement ? colors.primaryDark : colors.danger) : colors.text }}>
                     {isNone
                         ? (hasHubEntitlement ? t("MaClaw Official", "MaClaw 官方") : t("None", "未配置"))
                         : currentName}
@@ -587,8 +590,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                             </span>
                             <button className="llm-config-dialog__close" onClick={closeDialog} aria-label={t("Close", "关闭")} style={{
                                 border: "none", background: "transparent", cursor: "pointer",
-                                fontSize: "1.1rem", color: colors.textSecondary, padding: "0 4px",
-                            }}>✕</button>
+                                fontSize: "0.68rem", fontWeight: 700, color: colors.textSecondary, padding: "2px 6px",
+                            }}>CLOSE</button>
                         </div>
 
                         {/* Provider selection */}
@@ -606,7 +609,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                     }}>
                                         {t("MaClaw Official", "MaClaw \u5b98\u65b9")}
                                         {hubOfficial.kind !== "active" && (
-                                            <span style={{ fontSize: "0.6rem", lineHeight: 1, padding: "2px 5px", borderRadius: 6, background: colors.warningBg, color: colors.warning, border: `1px solid ${colors.warning}` }}>
+                                            <span style={{ fontSize: "0.6rem", lineHeight: 1, padding: "2px 5px", borderRadius: 6, background: colors.infoBg, color: colors.primaryDark, border: `1px solid ${colors.primary}` }}>
                                                 {hubOfficial.label}
                                             </span>
                                         )}
@@ -633,8 +636,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                     position: "absolute", top: -8, right: -10,
                                                     fontSize: "0.56rem", lineHeight: 1, padding: "2px 5px",
                                                     borderRadius: 6, whiteSpace: "nowrap",
-                                                    background: isHubProvider ? colors.warningBg : active ? colors.warningBg : colors.primaryLight,
-                                                    color: isHubProvider ? colors.warning : active ? colors.warning : colors.primaryDark, border: `1px solid ${isHubProvider || active ? colors.warning : colors.primary}`, fontWeight: 600, pointerEvents: "none",
+                                                    background: isHubProvider ? colors.infoBg : active ? colors.infoBg : colors.primaryLight,
+                                                    color: colors.primaryDark, border: `1px solid ${colors.primary}`, fontWeight: 600, pointerEvents: "none",
                                                 }}>{tag}</span>
                                             )}
                                         </button>
@@ -669,23 +672,18 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                             <div style={{
                                 marginBottom: 16,
                                 padding: "18px 20px",
-                                borderRadius: 12,
-                                border: "1px solid color-mix(in srgb, var(--theme-success) 52%, transparent)",
-                                background: "linear-gradient(135deg, color-mix(in srgb, var(--theme-surface) 86%, white), color-mix(in srgb, var(--theme-success-bg) 78%, var(--theme-surface)))",
-                                boxShadow: "0 18px 42px rgba(15, 23, 42, 0.18)",
+                                borderRadius: 8,
+                                border: "1px solid color-mix(in srgb, var(--theme-success) 28%, var(--theme-border))",
+                                background: "var(--theme-surface-muted)",
+                                boxShadow: "none",
                                 position: "relative",
                                 overflow: "hidden",
                             }}>
-                                <div style={{
-                                    position: "absolute",
-                                    inset: 0,
-                                    pointerEvents: "none",
-                                    background: "radial-gradient(circle at 16% 0%, rgba(255,255,255,0.34), transparent 34%), linear-gradient(135deg, rgba(255,255,255,0.16), transparent 48%)",
-                                }} />
+                                <div style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "transparent" }} />
                                 <div style={{ position: "relative", display: "grid", gap: 14 }}>
                                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                                         <div>
-                                            <div style={{ fontSize: "0.92rem", fontWeight: 800, color: "color-mix(in srgb, var(--theme-success) 74%, var(--theme-text-primary))", marginBottom: 6 }}>
+                                            <div style={{ fontSize: "0.92rem", fontWeight: 800, color: "var(--theme-text-primary)", marginBottom: 6 }}>
                                                 {t("MaClaw Official", "MaClaw \u5b98\u65b9")}
                                             </div>
                                             <div style={{ fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.7, maxWidth: 620 }}>
@@ -696,9 +694,9 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                             flex: "0 0 auto",
                                             padding: "4px 10px",
                                             borderRadius: 999,
-                                            border: "1px solid color-mix(in srgb, var(--theme-success) 60%, transparent)",
-                                            background: "rgba(255,255,255,0.16)",
-                                            color: "color-mix(in srgb, var(--theme-success) 78%, var(--theme-text-primary))",
+                                            border: "1px solid color-mix(in srgb, var(--theme-success) 34%, var(--theme-border))",
+                                            background: "var(--theme-success-bg)",
+                                            color: "var(--theme-success)",
                                             fontSize: "0.68rem",
                                             fontWeight: 800,
                                         }}>
@@ -707,15 +705,15 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                     </div>
 
                                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
-                                        <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.12)", border: "1px solid var(--theme-border-subtle)" }}>
+                                        <div style={{ padding: "10px 12px", borderRadius: 8, background: "var(--theme-surface)", border: "1px solid var(--theme-border-subtle)" }}>
                                             <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Service Status", "\u670d\u52a1\u72b6\u6001")}</div>
                                             <div style={{ fontSize: "0.82rem", color: colors.text, fontWeight: 800 }}>{hubOfficial.label}</div>
                                         </div>
-                                        <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.12)", border: "1px solid var(--theme-border-subtle)" }}>
+                                        <div style={{ padding: "10px 12px", borderRadius: 8, background: "var(--theme-surface)", border: "1px solid var(--theme-border-subtle)" }}>
                                             <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Model", "\u6a21\u578b")}</div>
                                             <div style={{ fontSize: "0.82rem", color: colors.text, fontWeight: 800, wordBreak: "break-word" }}>{hubModelLabel}</div>
                                         </div>
-                                        <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.12)", border: "1px solid var(--theme-border-subtle)" }}>
+                                        <div style={{ padding: "10px 12px", borderRadius: 8, background: "var(--theme-surface)", border: "1px solid var(--theme-border-subtle)" }}>
                                             <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Configuration", "\u914d\u7f6e\u65b9\u5f0f")}</div>
                                             <div style={{ fontSize: "0.82rem", color: colors.text, fontWeight: 800 }}>{t("No setup needed", "\u65e0\u9700\u914d\u7f6e")}</div>
                                         </div>
@@ -827,6 +825,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                             <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                                 {currentAgent === "claude-code/2.0.0"
                                                     ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi)", "\u9002\u7528\u4e8e\u9700\u8981 Claude Coding Plan \u8eab\u4efd\u7684\u670d\u52a1\u5546\uff08\u5982 Kimi\uff09")
+                                                    : currentAgent === "Kilo Code"
+                                                        ? t("For providers requiring Kilo Code client identity.", "\u9002\u7528\u4e8e\u9700\u8981 Kilo Code \u5ba2\u6237\u7aef\u8eab\u4efd\u7684\u670d\u52a1\u5546\u3002", "\u9069\u7528\u65bc\u9700\u8981 Kilo Code \u5ba2\u6236\u7aef\u8eab\u5206\u7684\u670d\u52d9\u5546\u3002")
                                                     : isCustom
                                                         ? t("Uses the custom client identity you enter.", "\u4f7f\u7528\u4f60\u8f93\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u4efd\u3002", "\u4f7f\u7528\u4f60\u8f38\u5165\u7684\u81ea\u8a02\u5ba2\u6236\u7aef\u8eab\u5206\u3002")
                                                         : t("Most providers use OpenClaw identity (e.g. Zhipu Lobster)", "\u5927\u591a\u6570\u670d\u52a1\u5546\u4f7f\u7528 OpenClaw \u8eab\u4efd\uff08\u5982\u667a\u8c31\u9f99\u867e\uff09")}
@@ -940,23 +940,21 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                         </option>
                                                     ))}
                                                 </datalist>
-                                                {/* Fetch button — visible when URL and Key are available */}
-                                                {dlgProvider.url && dlgProvider.key && (
-                                                    <button
-                                                        onClick={handleFetchProviderModels}
-                                                        disabled={providerModelsFetching}
-                                                        style={{
-                                                            fontSize: "0.72rem", padding: "6px 10px", cursor: providerModelsFetching ? "wait" : "pointer",
-                                                            background: colors.surface, color: colors.text,
-                                                            border: `1px solid ${colors.border}`, borderRadius: 4,
-                                                            whiteSpace: "nowrap", flexShrink: 0,
-                                                            opacity: providerModelsFetching ? 0.6 : 1,
-                                                        }}
-                                                        title={t("Fetch available models from provider", "从服务商获取可用模型列表")}
-                                                    >
-                                                        {providerModelsFetching ? t("Loading...", "加载中...") : t("Fetch", "获取", "獲取")}
-                                                    </button>
-                                                )}
+                                                {/* Fetch button — always visible so user knows the feature exists */}
+                                                <button
+                                                    onClick={handleFetchProviderModels}
+                                                    disabled={providerModelsFetching || !dlgProvider.url}
+                                                    style={{
+                                                        fontSize: "0.72rem", padding: "6px 10px", cursor: (providerModelsFetching || !dlgProvider.url) ? "not-allowed" : "pointer",
+                                                        background: colors.surface, color: colors.text,
+                                                        border: `1px solid ${colors.border}`, borderRadius: 4,
+                                                        whiteSpace: "nowrap", flexShrink: 0,
+                                                        opacity: (providerModelsFetching || !dlgProvider.url) ? 0.5 : 1,
+                                                    }}
+                                                    title={t("Fetch available models from provider", "从服务商获取可用模型列表")}
+                                                >
+                                                    {providerModelsFetching ? t("Loading...", "加载中...") : t("Fetch", "获取", "獲取")}
+                                                </button>
                                             </div>
                                             {providerModelsError && (
                                                 <div style={{ fontSize: "0.68rem", color: colors.danger, marginTop: 4 }}>
@@ -999,7 +997,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                 opacity: oauthBusy ? 0.6 : 1,
                                             }}>
                                                 {oauthBusy
-                                                    ? `⏳ ${t("Waiting for browser authorization...", "等待浏览器授权...")}`
+                                                    ? `RUN ${t("Waiting for browser authorization...", "等待浏览器授权...")}`
                                                     : t("Sign in with OpenAI", "使用 OpenAI 账号登录")}
                                             </button>
                                             {oauthBusy && (
@@ -1047,7 +1045,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                         <label style={labelStyle}>{t("API Key", "API Key")} <span style={{ color: colors.danger }}>*</span></label>
                                         <input style={inputStyle} type="password" value={dlgProvider.key}
                                             onChange={e => dlgUpdateField("key", e.target.value)}
-                                            placeholder={((dlgProvider.name === "智谱龙虾" || dlgProvider.name === "智谱编程") || (dlgProvider.protocol || "openai") === "anthropic") ? "xxxxxxxx.yyyyyyyy" : "sk-..."}
+                                            placeholder={((dlgProvider.name === "智谱编程") || (dlgProvider.protocol || "openai") === "anthropic") ? "xxxxxxxx.yyyyyyyy" : "sk-..."}
                                             autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
                                     </div>
                                 )}
@@ -1110,7 +1108,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
 
                         {/* Footer */}
                         <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "flex-end", marginTop: 20 }}>
-                            {dlgDirty && !dlgHubSelected && <span style={{ fontSize: "0.68rem", color: colors.warning, marginRight: "auto" }}>{t("unsaved", "未保存")}</span>}
+                            {dlgDirty && !dlgHubSelected && <span style={{ fontSize: "0.68rem", color: colors.primaryDark, marginRight: "auto" }}>{t("unsaved", "未保存")}</span>}
                             <button onClick={closeDialog} style={{
                                 fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
                                 background: colors.bg, color: colors.text,

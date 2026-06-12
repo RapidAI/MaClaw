@@ -253,6 +253,11 @@ func TestBuildToolDefinitionsCapInlinePayloads(t *testing.T) {
 	if got := toolSchemaMaxLength(t, writeProps, "content"); got != float64(maxAgentLoopInlineWriteFileContentRunes) {
 		t.Fatalf("write_file content maxLength = %v, want %d", got, maxAgentLoopInlineWriteFileContentRunes)
 	}
+
+	sshProps := toolDefinitionProperties(t, defs, "ssh")
+	if got := toolSchemaMaxLength(t, sshProps, "command"); got != float64(maxAgentLoopInlineSSHCommandRunes) {
+		t.Fatalf("ssh command maxLength = %v, want %d", got, maxAgentLoopInlineSSHCommandRunes)
+	}
 }
 
 func TestBuiltinRegistryCapsInlinePayloads(t *testing.T) {
@@ -273,6 +278,14 @@ func TestBuiltinRegistryCapsInlinePayloads(t *testing.T) {
 	}
 	if got := registeredToolSchemaMaxLength(t, registeredToolSchemaProperties(write.InputSchema), "content"); got != float64(maxAgentLoopInlineWriteFileContentRunes) {
 		t.Fatalf("registry write_file content maxLength = %v, want %d", got, maxAgentLoopInlineWriteFileContentRunes)
+	}
+
+	ssh, ok := registry.Get("ssh")
+	if !ok || ssh == nil {
+		t.Fatal("ssh registry tool missing")
+	}
+	if got := registeredToolSchemaMaxLength(t, registeredToolSchemaProperties(ssh.InputSchema), "command"); got != float64(maxAgentLoopInlineSSHCommandRunes) {
+		t.Fatalf("registry ssh command maxLength = %v, want %d", got, maxAgentLoopInlineSSHCommandRunes)
 	}
 }
 
@@ -563,7 +576,7 @@ func TestPinConditionalToolAfterSuccessRequiresSucceededOutcome(t *testing.T) {
 	}
 }
 
-func TestDiscoverToolDoesNotSessionPinConditionalTool(t *testing.T) {
+func TestDiscoverToolSessionPinsConditionalTool(t *testing.T) {
 	registry := NewToolRegistry()
 	if err := registry.Register(RegisteredTool{Name: "ssh", Description: "SSH remote server access", Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
 		t.Fatalf("Register ssh: %v", err)
@@ -574,8 +587,11 @@ func TestDiscoverToolDoesNotSessionPinConditionalTool(t *testing.T) {
 	if !strings.Contains(out, "ssh") {
 		t.Fatalf("discover output should mention ssh, got %q", out)
 	}
-	if h.toolRouter.IsSessionPinned("ssh") {
-		t.Fatal("discover_tool should not session-pin ssh before actual successful use")
+	if !h.toolRouter.IsSessionPinned("ssh") {
+		t.Fatal("discover_tool should session-pin conditional tools so they appear in subsequent iterations")
+	}
+	if !strings.Contains(out, "activated") {
+		t.Fatal("discover output should show ssh as activated")
 	}
 }
 
@@ -832,9 +848,19 @@ func TestPreCheckAgentLoopInlinePayloadLimitGuidesChunking(t *testing.T) {
 	if bashResult == nil {
 		t.Fatal("expected oversized bash command to be rejected before execution")
 	}
-	for _, want := range []string{"too large", "Do not embed generated file bodies", "craft_tool"} {
+	for _, want := range []string{"too large", "write/upload a script file first"} {
 		if !strings.Contains(bashResult.Text, want) {
 			t.Fatalf("bash result %q missing %q", bashResult.Text, want)
+		}
+	}
+
+	sshResult := preCheckAgentLoopInlinePayloadLimit("ssh", fmt.Sprintf(`{"action":"exec","command":%q}`, strings.Repeat("x", maxAgentLoopInlineSSHCommandRunes+1)), 5)
+	if sshResult == nil {
+		t.Fatal("expected oversized ssh command to be rejected before execution")
+	}
+	for _, want := range []string{"too large", "write/upload a script file first"} {
+		if !strings.Contains(sshResult.Text, want) {
+			t.Fatalf("ssh result %q missing %q", sshResult.Text, want)
 		}
 	}
 }

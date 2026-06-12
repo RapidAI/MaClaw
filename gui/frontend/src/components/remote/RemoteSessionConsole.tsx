@@ -42,7 +42,7 @@ const titleBarStyle: React.CSSProperties = {
     padding: "0 10px",
     height: "36px",
     background: "#1e1e1e",
-    borderBottom: "1px solid #333",
+    borderBottom: "1px solid #263447",
     flexShrink: 0,
     gap: "6px",
     // @ts-ignore — Wails custom CSS property for native window dragging
@@ -132,12 +132,12 @@ const inputBarStyle: React.CSSProperties = {
     padding: "6px 10px",
     paddingBottom: "max(6px, env(safe-area-inset-bottom))",
     background: "#1a1a1a",
-    borderTop: "1px solid #333",
+    borderTop: "1px solid #263447",
     flexShrink: 0,
 };
 
 const promptStyle: React.CSSProperties = {
-    color: "#4ec9b0",
+    color: "var(--theme-success, #4f7f6f)",
     fontFamily: "Consolas, monospace",
     fontSize: "13px",
     flexShrink: 0,
@@ -159,7 +159,7 @@ const inputStyle: React.CSSProperties = {
 const actionBtnStyle: React.CSSProperties = {
     background: "transparent",
     border: "none",
-    color: "#888",
+    color: "#94a3b8",
     fontSize: "11px",
     fontFamily: "Consolas, monospace",
     cursor: "pointer",
@@ -213,7 +213,7 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
         const level = headingMatch[1].length;
         const sizes: Record<number, string> = { 1: "1.2em", 2: "1.1em", 3: "1.0em", 4: "0.95em" };
         return (
-            <div key={key} style={{ fontSize: sizes[level] || "1em", fontWeight: 700, color: "#569cd6", margin: "0.4em 0 0.2em" }}>
+            <div key={key} style={{ fontSize: sizes[level] || "1em", fontWeight: 700, color: "var(--theme-primary, #2f5f98)", margin: "0.4em 0 0.2em" }}>
                 {renderInlineMarkdown(headingMatch[2])}
             </div>
         );
@@ -222,7 +222,7 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
     // Blockquote: > text
     if (/^>\s/.test(trimmed)) {
         return (
-            <div key={key} style={{ borderLeft: "2px solid #555", paddingLeft: "8px", color: "#9a9a9a", fontStyle: "italic", minHeight: "1.4em" }}>
+            <div key={key} style={{ borderLeft: "1px solid #475569", paddingLeft: "8px", color: "#94a3b8", fontStyle: "italic", minHeight: "1.4em" }}>
                 {renderInlineMarkdown(trimmed.slice(2))}
             </div>
         );
@@ -231,14 +231,14 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
     // Tool action: ⏺ Write, ⏳ Write running...
     if (/^⏺/.test(trimmed)) {
         return (
-            <div key={key} style={{ color: "#569cd6", fontWeight: 700, marginTop: "0.3em", minHeight: "1.4em" }}>
+            <div key={key} style={{ color: "var(--theme-primary, #2f5f98)", fontWeight: 700, marginTop: "0.3em", minHeight: "1.4em" }}>
                 {renderInlineMarkdown(trimmed)}
             </div>
         );
     }
     if (/^⏳/.test(trimmed)) {
         return (
-            <div key={key} style={{ color: "#808080", minHeight: "1.4em" }}>
+            <div key={key} style={{ color: "#94a3b8", minHeight: "1.4em" }}>
                 {renderInlineMarkdown(trimmed)}
             </div>
         );
@@ -247,7 +247,7 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
     // Lightning bolt: ⚡ text
     if (/^⚡/.test(trimmed)) {
         return (
-            <div key={key} style={{ color: "#4ec9b0", fontWeight: 700, marginTop: "0.4em", minHeight: "1.4em" }}>
+            <div key={key} style={{ color: "var(--theme-success, #4f7f6f)", fontWeight: 700, marginTop: "0.4em", minHeight: "1.4em" }}>
                 {">"} {renderInlineMarkdown(trimmed)}
             </div>
         );
@@ -256,7 +256,7 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
     // Success: ✓ or ✅
     if (/^✓|^✅/.test(trimmed)) {
         return (
-            <div key={key} style={{ color: "#89d185", minHeight: "1.4em" }}>
+            <div key={key} style={{ color: "var(--theme-success, #4f7f6f)", minHeight: "1.4em" }}>
                 {">"} {renderInlineMarkdown(trimmed)}
             </div>
         );
@@ -265,7 +265,7 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
     // Error/warning: ✗ ⚠ ❌
     if (/^✗|^⚠|^❌/.test(trimmed)) {
         return (
-            <div key={key} style={{ color: "#f48771", minHeight: "1.4em" }}>
+            <div key={key} style={{ color: "var(--theme-danger, #e07a72)", minHeight: "1.4em" }}>
                 {">"} {renderInlineMarkdown(trimmed)}
             </div>
         );
@@ -274,7 +274,7 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
     // Path line: C:\... or ~/... or /usr/...
     if (/^[A-Z]:\\/.test(trimmed) || /^~\//.test(trimmed) || /^\/[a-z][\w.\-]*\//.test(trimmed)) {
         return (
-            <div key={key} style={{ color: "#6a9955", minHeight: "1.4em" }}>
+            <div key={key} style={{ color: "var(--theme-primary, #2f5f98)", minHeight: "1.4em" }}>
                 {">"} {trimmed}
             </div>
         );
@@ -284,7 +284,7 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
     if (/^[-*]\s/.test(trimmed)) {
         return (
             <div key={key} style={{ paddingLeft: "1em", textIndent: "-0.7em", minHeight: "1.4em" }}>
-                <span style={{ color: "#808080" }}>•</span>{" "}
+                <span style={{ color: "#94a3b8" }}>-</span>{" "}
                 {renderInlineMarkdown(trimmed.slice(2))}
             </div>
         );
@@ -295,7 +295,7 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
     if (numMatch) {
         return (
             <div key={key} style={{ paddingLeft: "1.2em", textIndent: "-1.2em", minHeight: "1.4em" }}>
-                <span style={{ color: "#808080" }}>{numMatch[1]}.</span>{" "}
+                <span style={{ color: "#94a3b8" }}>{numMatch[1]}.</span>{" "}
                 {renderInlineMarkdown(numMatch[2])}
             </div>
         );
@@ -325,13 +325,13 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
         const m = match[0];
         if (match[1]) {
             // `code`
-            parts.push(<code key={idx++} style={{ background: "#2a2a2a", color: "#ce9178", padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{m.slice(1, -1)}</code>);
+            parts.push(<code key={idx++} style={{ background: "#1f2937", color: "#9fb7d6", padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{m.slice(1, -1)}</code>);
         } else if (match[2]) {
             // **bold**
-            parts.push(<strong key={idx++} style={{ color: "#e0e0e0", fontWeight: 700 }}>{m.slice(2, -2)}</strong>);
+            parts.push(<strong key={idx++} style={{ color: "#e5edf6", fontWeight: 700 }}>{m.slice(2, -2)}</strong>);
         } else if (match[3]) {
             // *italic*
-            parts.push(<em key={idx++} style={{ color: "#c5c5c5" }}>{m.slice(1, -1)}</em>);
+            parts.push(<em key={idx++} style={{ color: "#c7d2df" }}>{m.slice(1, -1)}</em>);
         } else if (match[4]) {
             // [text](url)
             const lm = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
@@ -339,9 +339,9 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
                 const href = lm[2];
                 // Only allow http/https links to prevent javascript: XSS
                 if (/^https?:\/\//i.test(href)) {
-                    parts.push(<a key={idx++} href={href} target="_blank" rel="noopener noreferrer" style={{ color: "#569cd6", textDecoration: "underline" }}>{lm[1]}</a>);
+                    parts.push(<a key={idx++} href={href} target="_blank" rel="noopener noreferrer" style={{ color: "var(--theme-primary, #2f5f98)", textDecoration: "underline" }}>{lm[1]}</a>);
                 } else {
-                    parts.push(<span key={idx++} style={{ color: "#569cd6" }}>{lm[1]}</span>);
+                    parts.push(<span key={idx++} style={{ color: "var(--theme-primary, #2f5f98)" }}>{lm[1]}</span>);
                 }
             } else {
                 parts.push(m);
@@ -357,16 +357,16 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
 
 // ── Static Q&A styles ──
 const userDividerStyle: React.CSSProperties = {
-    borderTop: "1px solid #333",
+    borderTop: "1px solid #263447",
     margin: "8px 0 4px 0",
 };
 const promptStyleQA: React.CSSProperties = {
-    color: "#4ec9b0", fontWeight: 600, padding: "3px 0",
+    color: "var(--theme-success, #4f7f6f)", fontWeight: 600, padding: "3px 0",
     overflowWrap: "break-word",
 };
 const responseBlockStyle: React.CSSProperties = {
     padding: "4px 0 4px 8px",
-    borderLeft: "2px solid #333",
+    borderLeft: "1px solid #263447",
     margin: "2px 0",
     color: "#d4d4d4",
 };
@@ -498,7 +498,7 @@ export function RemoteSessionConsole(props: Props) {
         setLastSendInfo("");
         try {
             await SendRemoteSessionInput(session.id, text + "\n");
-            showSendInfo(`✓ "${text}"`);
+            showSendInfo(`OK "${text}"`);
             inputValueRef.current = "";
             setRemoteInputDrafts((prev) => ({ ...prev, [session.id]: "" }));
             setTimeout(() => refreshSessionsOnly(), 200);
@@ -506,7 +506,7 @@ export function RemoteSessionConsole(props: Props) {
             setTimeout(() => refreshSessionsOnly(), 2000);
             setTimeout(() => refreshSessionsOnly(), 5000);
         } catch (e) {
-            showSendInfo(`✗ ${String(e)}`);
+            showSendInfo(`ERR ${String(e)}`);
         }
         setSending(false);
     }, [session.id, sending, setRemoteInputDrafts, refreshSessionsOnly, showSendInfo]);
@@ -527,14 +527,14 @@ export function RemoteSessionConsole(props: Props) {
                 if (i < text.length - 1) await new Promise((r) => setTimeout(r, 30));
             }
             await SendRemoteSessionRawInput(session.id, "\r");
-            showSendInfo(`✓ raw: "${text}"`);
+            showSendInfo(`OK raw: "${text}"`);
             inputValueRef.current = "";
             setRemoteInputDrafts((prev) => ({ ...prev, [session.id]: "" }));
             setTimeout(() => refreshSessionsOnly(), 200);
             setTimeout(() => refreshSessionsOnly(), 800);
             setTimeout(() => refreshSessionsOnly(), 2000);
         } catch (e) {
-            showSendInfo(`✗ raw: ${String(e)}`);
+            showSendInfo(`ERR raw: ${String(e)}`);
         }
         setSending(false);
     }, [session.id, sending, isStructured, handleSend, setRemoteInputDrafts, refreshSessionsOnly, showSendInfo]);
@@ -553,24 +553,24 @@ export function RemoteSessionConsole(props: Props) {
         try {
             if (isStructured) {
                 await InterruptRemoteSession(session.id);
-                showSendInfo("✓ Interrupt");
+                showSendInfo("OK Interrupt");
             } else {
                 await SendRemoteSessionRawInput(session.id, "\x03");
-                showSendInfo("✓ Ctrl+C");
+                showSendInfo("OK Ctrl+C");
             }
             setTimeout(() => refreshSessionsOnly(), 300);
         } catch (e) {
-            showSendInfo(`✗ Ctrl+C: ${String(e)}`);
+            showSendInfo(`ERR Ctrl+C: ${String(e)}`);
         }
     }, [session.id, isStructured, refreshSessionsOnly, showSendInfo]);
 
     const handleEsc = useCallback(async () => {
         try {
             await SendRemoteSessionRawInput(session.id, "\x1b");
-            showSendInfo("✓ Esc");
+            showSendInfo("OK Esc");
             setTimeout(() => refreshSessionsOnly(), 300);
         } catch (e) {
-            showSendInfo(`✗ Esc: ${String(e)}`);
+            showSendInfo(`ERR Esc: ${String(e)}`);
         }
     }, [session.id, refreshSessionsOnly, showSendInfo]);
 
@@ -608,11 +608,11 @@ export function RemoteSessionConsole(props: Props) {
 
     const handleImageFile = useCallback(async (file: File) => {
         if (!SUPPORTED_IMAGE_TYPES.includes(file.type)) {
-            showSendInfo(localizeText(currentLang, "✗ Unsupported image format. Only PNG/JPEG/GIF/WebP are allowed", "✗ 不支持的图片格式，仅支持 PNG/JPEG/GIF/WebP", "✗ 不支援的圖片格式，僅支援 PNG/JPEG/GIF/WebP"));
+            showSendInfo(localizeText(currentLang, "ERR Unsupported image format. Only PNG/JPEG/GIF/WebP are allowed", "ERR 不支持的图片格式，仅支持 PNG/JPEG/GIF/WebP", "ERR 不支援的圖片格式，僅支援 PNG/JPEG/GIF/WebP"));
             return;
         }
         if (file.size > MAX_IMAGE_SIZE) {
-            showSendInfo(localizeText(currentLang, "✗ Image exceeds the 5MB limit", "✗ 图片超过 5MB 限制", "✗ 圖片超過 5MB 限制"));
+            showSendInfo(localizeText(currentLang, "ERR Image exceeds the 5MB limit", "ERR 图片超过 5MB 限制", "ERR 圖片超過 5MB 限制"));
             return;
         }
         setImageUploading(true);
@@ -629,12 +629,12 @@ export function RemoteSessionConsole(props: Props) {
                 reader.readAsDataURL(file);
             });
             await SendRemoteSessionImage(session.id, file.type, base64);
-            showSendInfo(`${localizeText(currentLang, "✓ 📷 Image sent", "✓ 📷 图片已发送", "✓ 📷 圖片已發送")} (${(file.size / 1024).toFixed(0)}KB)`);
+            showSendInfo(`${localizeText(currentLang, "OK Image sent", "OK 图片已发送", "OK 圖片已發送")} (${(file.size / 1024).toFixed(0)}KB)`);
             setTimeout(() => refreshSessionsOnly(), 200);
             setTimeout(() => refreshSessionsOnly(), 800);
             setTimeout(() => refreshSessionsOnly(), 2000);
         } catch (e) {
-            showSendInfo(`${localizeText(currentLang, "✗ Failed to send image", "✗ 图片发送失败", "✗ 圖片發送失敗")}: ${String(e)}`);
+            showSendInfo(`${localizeText(currentLang, "ERR Failed to send image", "ERR 图片发送失败", "ERR 圖片發送失敗")}: ${String(e)}`);
         }
         setImageUploading(false);
     }, [session.id, refreshSessionsOnly, showSendInfo]);
@@ -674,20 +674,20 @@ export function RemoteSessionConsole(props: Props) {
         try {
             if (title.trim()) {
                 await CaptureRemoteWindowScreenshot(session.id, title.trim());
-                showSendInfo(`${localizeText(currentLang, "✓ 📸 Window screenshot sent", "✓ 📸 窗口截图已发送", "✓ 📸 視窗截圖已發送")}: ${title.trim()}`);
+                showSendInfo(`${localizeText(currentLang, "OK Window screenshot sent", "OK 窗口截图已发送", "OK 視窗截圖已發送")}: ${title.trim()}`);
             } else {
                 await CaptureRemoteScreenshot(session.id);
-                showSendInfo(localizeText(currentLang, "✓ 📸 Fullscreen screenshot sent", "✓ 📸 全屏截图已发送", "✓ 📸 全螢幕截圖已發送"));
+                showSendInfo(localizeText(currentLang, "OK Fullscreen screenshot sent", "OK 全屏截图已发送", "OK 全螢幕截圖已發送"));
             }
             setTimeout(() => refreshSessionsOnly(), 500);
         } catch (e) {
-            showSendInfo(`${localizeText(currentLang, "✗ Screenshot failed", "✗ 截图失败", "✗ 截圖失敗")}: ${String(e)}`);
+            showSendInfo(`${localizeText(currentLang, "ERR Screenshot failed", "ERR 截图失败", "ERR 截圖失敗")}: ${String(e)}`);
         }
         setImageUploading(false);
     }, [session.id, refreshSessionsOnly, showSendInfo]);
 
-    const statusColor = status === "running" || status === "busy" ? "#4ec9b0"
-        : status === "waiting_input" ? "#dcdcaa" : "#808080";
+    const statusColor = status === "running" || status === "busy" ? "var(--theme-success, #4f7f6f)"
+        : status === "waiting_input" ? "var(--theme-primary, #2f5f98)" : "#94a3b8";
 
     // ── Build output elements ──
     const outputElements = useMemo((): React.ReactNode[] => {
@@ -751,7 +751,7 @@ export function RemoteSessionConsole(props: Props) {
             for (const img of imgs) {
                 responseLines.push(
                     <div key={`img-${img.image_id}`} style={{ margin: "8px 0", textAlign: "left" }}>
-                        <div style={{ color: "#666", fontSize: "10px", marginBottom: "4px" }}>
+                        <div style={{ color: "#94a3b8", fontSize: "10px", marginBottom: "4px" }}>
                             🖼 {img.media_type}
                         </div>
                         <img
@@ -761,7 +761,7 @@ export function RemoteSessionConsole(props: Props) {
                                 maxWidth: "100%",
                                 maxHeight: "400px",
                                 borderRadius: "4px",
-                                border: "1px solid #333",
+                                border: "1px solid #263447",
                                 display: "block",
                             }}
                         />
@@ -791,17 +791,17 @@ export function RemoteSessionConsole(props: Props) {
                 responseLines.push(
                     <pre key={`code-${responseLines.length}`} style={{
                         background: "#1a1a1a",
-                        border: "1px solid #333",
+                        border: "1px solid #263447",
                         borderRadius: "4px",
                         padding: "8px 10px",
                         margin: "4px 0",
                         fontSize: "0.9em",
                         overflowX: "auto",
-                        color: "#ce9178",
+                        color: "#9fb7d6",
                         lineHeight: 1.5,
                         wordBreak: "normal",
                     }}>
-                        {codeBlockLang && <div style={{ color: "#555", fontSize: "0.85em", marginBottom: "4px" }}>{codeBlockLang}</div>}
+                        {codeBlockLang && <div style={{ color: "#94a3b8", fontSize: "0.85em", marginBottom: "4px" }}>{codeBlockLang}</div>}
                         <code>{codeBlockLines.join("\n")}</code>
                     </pre>
                 );
@@ -931,7 +931,7 @@ export function RemoteSessionConsole(props: Props) {
                         <span style={{ ...dotBase, background: "var(--theme-border)" }} />
                         <span style={{ ...dotBase, background: "var(--theme-primary)" }} />
                     </div>
-                    <span style={{ color: statusColor, fontSize: "9px", flexShrink: 0 }}>●</span>
+                    <span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
                     <span style={titleTextStyle}>
                         {session.tool || "session"}{session.execution_mode && session.execution_mode !== "pty" ? ` (${session.execution_mode})` : ""} · {status}
                     </span>
@@ -939,14 +939,14 @@ export function RemoteSessionConsole(props: Props) {
 
                 <div style={titleRightStyle}>
                     <button onClick={handleClear}
-                        style={{ ...actionBtnStyle, color: "#569cd6" }}
+                        style={{ ...actionBtnStyle, color: "var(--theme-primary, #2f5f98)" }}
                         title={localizeText(currentLang, "Clear screen", "清屏", "清屏")}>
-                        ⌧
+                        CLEAR
                     </button>
                     <button onClick={handleToggleFullscreen}
-                        style={{ ...actionBtnStyle, color: isFullscreen ? "var(--theme-success)" : "#888" }}
+                        style={{ ...actionBtnStyle, color: isFullscreen ? "var(--theme-success)" : "#94a3b8" }}
                         title={localizeText(currentLang, "Toggle fullscreen", "切换全屏", "切換全螢幕")}>
-                        {isFullscreen ? "⛷" : "⛶"}
+                        {isFullscreen ? "WIN" : "FULL"}
                     </button>
                     {!readOnly && !isStructured && (
                         <button onClick={handleEsc} disabled={sessionClosed}
@@ -956,24 +956,24 @@ export function RemoteSessionConsole(props: Props) {
                     )}
                     {!readOnly && (
                         <button onClick={handleCtrlC} disabled={sessionClosed}
-                            style={{ ...actionBtnStyle, color: "#e8a838" }}
+                            style={{ ...actionBtnStyle, color: "var(--theme-info, #3f6f8f)" }}
                             title={isStructured ? localizeText(currentLang, "Interrupt", "中断", "中斷") : "Ctrl+C"}>
-                            {isStructured ? "⏸" : "⌃C"}
+                            {isStructured ? "INT" : "CTRL-C"}
                         </button>
                     )}
                     {!readOnly && (
                         <button onClick={handleKill} disabled={sessionClosed}
-                            style={{ ...actionBtnStyle, color: "#f44747" }}
+                            style={{ ...actionBtnStyle, color: "var(--theme-danger, #e07a72)" }}
                             title={localizeText(currentLang, "Terminate", "终止", "終止")}>
                             Kill
                         </button>
                     )}
                     <button onClick={handleCloseOrRestore}
-                        style={{ ...actionBtnStyle, color: "#ccc", fontSize: "14px", padding: "0 8px" }}
+                        style={{ ...actionBtnStyle, color: "#cbd5e1", padding: "0 8px" }}
                         title={isFullscreen
                             ? localizeText(currentLang, "Restore window", "还原窗口", "還原視窗")
                             : localizeText(currentLang, "Close", "关闭", "關閉")}>
-                        {isFullscreen ? "❐" : "✕"}
+                        {isFullscreen ? "RESTORE" : "CLOSE"}
                     </button>
                 </div>
             </div>
@@ -985,7 +985,7 @@ export function RemoteSessionConsole(props: Props) {
                 style={isStructured ? outputAreaStyle : rawTerminalStyle}
             >
                 {rawLines.length === 0 ? (
-                    <span style={{ color: "#555" }}>$ _</span>
+                    <span style={{ color: "#94a3b8" }}>$ _</span>
                 ) : isStructured ? (
                     outputElements
                 ) : (
@@ -999,10 +999,10 @@ export function RemoteSessionConsole(props: Props) {
                 <div style={{
                     flexShrink: 0,
                     padding: "8px 10px",
-                    background: "#18150c",
-                    borderTop: "1px solid #3a3218",
-                    borderBottom: "1px solid #3a3218",
-                    color: "#dcdcaa",
+                    background: "rgba(47, 95, 152, 0.10)",
+                    borderTop: "1px solid rgba(91, 120, 152, 0.26)",
+                    borderBottom: "1px solid rgba(91, 120, 152, 0.26)",
+                    color: "#9fb7d6",
                     fontFamily: "Consolas, monospace",
                     fontSize: "12px",
                     display: "grid",
@@ -1010,7 +1010,7 @@ export function RemoteSessionConsole(props: Props) {
                 }}>
                     {pendingQuestion.header && <div style={{ fontWeight: 700 }}>{pendingQuestion.header}</div>}
                     {pendingQuestion.question && <div>{pendingQuestion.question}</div>}
-                    {pendingQuestion.hint && <div style={{ color: "#a9a06a" }}>Hint: {pendingQuestion.hint}</div>}
+                    {pendingQuestion.hint && <div style={{ color: "#94a3b8" }}>Hint: {pendingQuestion.hint}</div>}
                     {pendingQuestion.options && pendingQuestion.options.length > 0 && (
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                             {pendingQuestion.options.map((option) => {
@@ -1020,7 +1020,7 @@ export function RemoteSessionConsole(props: Props) {
                                         key={label}
                                         type="button"
                                         onClick={() => handleQuestionOption(label)}
-                                        style={{ ...inputBtnStyle, color: "#dcdcaa", borderColor: "#7a6f35", minHeight: 28, padding: "4px 10px" }}
+                                        style={{ ...inputBtnStyle, color: "#9fb7d6", borderColor: "#475569", minHeight: 28, padding: "4px 10px" }}
                                         title={option.description || label}
                                     >
                                         {label}
@@ -1035,8 +1035,8 @@ export function RemoteSessionConsole(props: Props) {
             {lastSendInfo && (
                 <div style={{
                     padding: "2px 10px",
-                    background: lastSendInfo.startsWith("✓") ? "#0d1f0d" : "#2a0f0f",
-                    color: lastSendInfo.startsWith("✓") ? "#89d185" : "#f48771",
+                    background: lastSendInfo.startsWith("OK") ? "rgba(79, 127, 111, 0.12)" : "rgba(196, 61, 52, 0.12)",
+                    color: lastSendInfo.startsWith("OK") ? "var(--theme-success, #4f7f6f)" : "var(--theme-danger, #e07a72)",
                     fontSize: "11px",
                     fontFamily: "Consolas, monospace",
                     flexShrink: 0,
@@ -1071,7 +1071,7 @@ export function RemoteSessionConsole(props: Props) {
                 />
                 {!isStructured && (
                     <button onClick={handleSendRaw} disabled={disabled}
-                        style={{ ...inputBtnStyle, color: "#6a9955", borderColor: "#6a9955" }}
+                        style={{ ...inputBtnStyle, color: "var(--theme-primary, #2f5f98)", borderColor: "var(--theme-primary, #2f5f98)" }}
                         title={localizeText(currentLang, "Send character by character (TUI)", "逐字符发送 (TUI)", "逐字元發送 (TUI)")}>
                         Raw
                     </button>
@@ -1088,32 +1088,32 @@ export function RemoteSessionConsole(props: Props) {
                         <button
                             onClick={() => fileInputRef.current?.click()}
                             disabled={disabled || imageUploading}
-                            style={{ ...inputBtnStyle, color: "#c586c0", borderColor: "#c586c0" }}
+                            style={{ ...inputBtnStyle, color: "var(--theme-info, #3f6f8f)", borderColor: "var(--theme-info, #3f6f8f)" }}
                             title={localizeText(currentLang, "Upload image (or paste)", "上传图片 (也可粘贴)", "上傳圖片 (也可貼上)")}
                         >
-                            {imageUploading ? "…" : "📷"}
+                            {imageUploading ? "..." : "IMG"}
                         </button>
                         <button
                             onClick={handleScreenshot}
                             disabled={disabled || imageUploading}
-                            style={{ ...inputBtnStyle, color: "#4ec9b0", borderColor: "#4ec9b0" }}
+                            style={{ ...inputBtnStyle, color: "var(--theme-success, #4f7f6f)", borderColor: "var(--theme-success, #4f7f6f)" }}
                             title={localizeText(currentLang, "Capture screenshot (fullscreen or window)", "截图 (全屏或指定窗口)", "截圖 (全螢幕或指定視窗)")}
                         >
-                            🖥
+                            SHOT
                         </button>
                     </>
                 )}
                 <button onClick={handleSend} disabled={disabled}
-                    style={{ ...inputBtnStyle, color: "#569cd6", borderColor: "#569cd6" }}
+                    style={{ ...inputBtnStyle, color: "var(--theme-primary, #2f5f98)", borderColor: "var(--theme-primary, #2f5f98)" }}
                     title={localizeText(currentLang, "Send", "发送", "發送")}>
-                    {sending ? "…" : "⏎"}
+                    {sending ? "..." : "SEND"}
                 </button>
             </div>
             )}
             {readOnly && (
                 <div style={{ ...inputBarStyle, justifyContent: "center" }}>
-                    <span style={{ color: "#6a6a6a", fontSize: "11px", fontFamily: "Consolas, monospace" }}>
-                        🔒 {localizeText(currentLang, "AI process monitor mode — view only", "AI 进程监控模式 — 仅查看", "AI 進程監控模式 — 僅查看")}
+                    <span style={{ color: "#94a3b8", fontSize: "11px", fontFamily: "Consolas, monospace" }}>
+                        {localizeText(currentLang, "AI process monitor mode - view only", "AI 进程监控模式 - 仅查看", "AI 進程監控模式 - 僅查看")}
                     </span>
                 </div>
             )}

@@ -32,9 +32,6 @@ type agentLoopIterationDispatchOptions struct {
 	MinIterations                 int
 	ConfigMax                     int
 	ChatFinalizeGrace             int
-	GateConfig                    codingToolGateConfig
-	SkipCodingGate                bool
-	OrchestratorActive            func() bool
 	Phase                         *agentLoopPhase
 	GoalAnchor                    *GoalAnchor
 	ProgressTracker               *HarnessProgressTracker
@@ -49,7 +46,6 @@ type agentLoopIterationDispatchOptions struct {
 	InFlightLifecycle             *imInFlightLifecycle
 	Recorder                      *TrajectoryRecorder
 	VisibleArtifacts              *pendingVisibleArtifacts
-	SteeringDetector              *SteeringWorkflowDetector
 	OnToken                       llm.TokenCallback
 	OnProgress                    tool.ProgressCallback
 	OnNewRound                    NewRoundCallback
@@ -85,9 +81,6 @@ type agentLoopMainIterationsOptions struct {
 	MinIterations                 int
 	ConfigMax                     int
 	ChatFinalizeGrace             int
-	GateConfig                    codingToolGateConfig
-	SkipCodingGate                bool
-	OrchestratorActive            func() bool
 	Phase                         *agentLoopPhase
 	GoalAnchor                    *GoalAnchor
 	ProgressTracker               *HarnessProgressTracker
@@ -102,7 +95,6 @@ type agentLoopMainIterationsOptions struct {
 	InFlightLifecycle             *imInFlightLifecycle
 	Recorder                      *TrajectoryRecorder
 	VisibleArtifacts              *pendingVisibleArtifacts
-	SteeringDetector              *SteeringWorkflowDetector
 	OnToken                       llm.TokenCallback
 	OnProgress                    tool.ProgressCallback
 	OnNewRound                    NewRoundCallback
@@ -152,9 +144,6 @@ func (h *IMMessageHandler) runAgentLoopMainIterations(opts agentLoopMainIteratio
 			MinIterations:                 opts.MinIterations,
 			ConfigMax:                     opts.ConfigMax,
 			ChatFinalizeGrace:             opts.ChatFinalizeGrace,
-			GateConfig:                    opts.GateConfig,
-			SkipCodingGate:                opts.SkipCodingGate,
-			OrchestratorActive:            opts.OrchestratorActive,
 			Phase:                         opts.Phase,
 			GoalAnchor:                    opts.GoalAnchor,
 			ProgressTracker:               opts.ProgressTracker,
@@ -169,7 +158,6 @@ func (h *IMMessageHandler) runAgentLoopMainIterations(opts agentLoopMainIteratio
 			InFlightLifecycle:             opts.InFlightLifecycle,
 			Recorder:                      opts.Recorder,
 			VisibleArtifacts:              opts.VisibleArtifacts,
-			SteeringDetector:              opts.SteeringDetector,
 			OnToken:                       opts.OnToken,
 			OnProgress:                    opts.OnProgress,
 			OnNewRound:                    opts.OnNewRound,
@@ -222,9 +210,6 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		Tools:                   *opts.Tools,
 		ToolsTokenBudget:        *opts.ToolsTokenBudget,
 		BaseTools:               opts.BaseTools,
-		GateConfig:              opts.GateConfig,
-		SkipCodingGate:          opts.SkipCodingGate,
-		OrchestratorActive:      opts.OrchestratorActive,
 		DirectModeToolsFiltered: opts.RunState.DirectModeToolsFiltered,
 		EffectiveTokenLimit:     opts.RunState.EffectiveTokenLimit,
 		Phase:                   opts.Phase,
@@ -299,14 +284,10 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		Iteration:                     opts.Iteration,
 		Platform:                      opts.Platform,
 		EffectiveMax:                  *opts.EffectiveMax,
-		GateConfig:                    opts.GateConfig,
-		SkipCodingGate:                opts.SkipCodingGate,
-		OrchestratorActive:            opts.OrchestratorActive,
 		Conversation:                  *opts.Conversation,
 		History:                       *opts.History,
 		Recorder:                      opts.Recorder,
 		Phase:                         opts.Phase,
-		SteeringDetector:              opts.SteeringDetector,
 		StreamDone:                    opts.Telemetry.StreamDone(),
 		ReportActivity:                opts.ReportActivity,
 		RecordSystemMessages:          opts.RecordSystemMessages,
@@ -372,7 +353,6 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 			UserText:                 opts.UserText,
 			Iteration:                opts.Iteration,
 			Platform:                 opts.Platform,
-			GateConfig:               opts.GateConfig,
 			MessageContent:           msgContent,
 			Choice:                   choice,
 			Phase:                    opts.Phase,
@@ -382,7 +362,6 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 			History:                  *opts.History,
 			LengthContinuationBuffer: &opts.RunState.LengthContinuationBuffer,
 			TotalToolCallsInLoop:     opts.RunState.TotalToolCallsInLoop,
-			SteeringDetector:         opts.SteeringDetector,
 			StreamDone:               opts.Telemetry.StreamDone(),
 			VoiceData:                opts.RunState.VoiceData,
 			VoiceFileName:            opts.RunState.VoiceFileName,
@@ -410,7 +389,6 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		UserText:                   opts.UserText,
 		Iteration:                  opts.Iteration,
 		Platform:                   opts.Platform,
-		GateConfig:                 opts.GateConfig,
 		MessageContent:             msgContent,
 		LengthContinuationText:     opts.RunState.LengthContinuationBuffer.String(),
 		Choice:                     choice,
@@ -418,7 +396,6 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		Conversation:               *opts.Conversation,
 		History:                    *opts.History,
 		VisibleArtifacts:           opts.VisibleArtifacts,
-		SteeringDetector:           opts.SteeringDetector,
 		DriftDetector:              opts.DriftDetector,
 		TrialState:                 opts.TrialState,
 		CodingIterCount:            opts.RunState.CodingIterCount,

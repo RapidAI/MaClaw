@@ -43,7 +43,7 @@ export const knownProviderEndpoints: ProviderEndpoint[] = [
     // OpenAI Protocol (Codex)
     { name: "OpenAI Official", url: "https://api.openai.com/v1", protocol: "openai", region: "global", description: "Official OpenAI API" },
     { name: "xAI (Grok)", url: "https://api.x.ai/v1", protocol: "openai", region: "global", description: "xAI Grok API" },
-    { name: "GLM", url: "https://open.bigmodel.cn/api/paas/v4", protocol: "openai", region: "china" },
+    { name: "GLM", url: "https://open.bigmodel.cn/api/coding/paas/v4", protocol: "openai", region: "china" },
     { name: "Kimi", url: "https://api.kimi.com/coding/v1", protocol: "openai", region: "china" },
     { name: "Doubao", url: "https://ark.cn-beijing.volces.com/api/coding", protocol: "openai", region: "china" },
     { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/v3", protocol: "openai", region: "china", description: "Tencent Cloud OpenAI-compatible endpoint" },
@@ -59,7 +59,7 @@ export const knownProviderEndpoints: ProviderEndpoint[] = [
 
 // Recommended model IDs per provider (used for model name suggestions)
 export const recommendedModels: { [provider: string]: { id: string; note?: string }[] } = {
-    "GLM": [{ id: "glm-4.7" }],
+    "GLM": [{ id: "glm-5.1" }],
     "Kimi": [{ id: "kimi-k2-thinking" }, { id: "kimi-for-coding" }],
     "Doubao": [{ id: "doubao-seed-code-preview-latest" }],
     "MiniMax": [{ id: "MiniMax-M2.1" }],

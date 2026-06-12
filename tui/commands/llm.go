@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	llmclient "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
 
@@ -114,7 +116,7 @@ func presetProviders() []presetProvider {
 		},
 		{
 			Name: "智谱 GLM (Coding)", URL: "https://open.bigmodel.cn/api/anthropic",
-			Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude-code/2.0.0",
+			Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude code 2.0",
 			ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "open.bigmodel.cn 获取 API Key（Anthropic 协议）",
 		},
@@ -692,18 +694,30 @@ func llmPing(args []string) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 	endpoint := strings.TrimRight(llm.URL, "/") + "/models"
 	if llm.Protocol == "anthropic" {
-		endpoint = corelib.AnthropicMessagesEndpoint(llm.URL)
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, err := llmclient.DoAnthropicRequestWithOptions(ctx, llm, []interface{}{
+			map[string]interface{}{"role": "user", "content": "ping"},
+		}, nil, client, llmclient.AnthropicMessagesRequestOptions{MaxTokens: 8})
+		elapsed := time.Since(start)
+		if err != nil {
+			if *jsonOut {
+				return PrintJSON(map[string]interface{}{"reachable": false, "error": err.Error(), "elapsed_ms": elapsed.Milliseconds()})
+			}
+			return fmt.Errorf("LLM 绔偣涓嶅彲杈?(%v): %w", elapsed.Round(time.Millisecond), err)
+		}
+		if *jsonOut {
+			return PrintJSON(map[string]interface{}{"reachable": true, "status": http.StatusOK, "elapsed_ms": elapsed.Milliseconds()})
+		}
+		fmt.Printf("鉁?绔偣鍙揪 (HTTP %d, %v)\n", http.StatusOK, elapsed.Round(time.Millisecond))
+		return nil
 	}
 
 	start := time.Now()
 	req, _ := http.NewRequest(http.MethodGet, endpoint, nil)
 	if llm.Key != "" {
-		if llm.Protocol == "anthropic" {
-			corelib.SetAnthropicAuthHeaders(req, llm.Key)
-			req.Header.Set("anthropic-version", "2023-06-01")
-		} else {
-			req.Header.Set("Authorization", "Bearer "+llm.Key)
-		}
+		req.Header.Set("Authorization", "Bearer "+llm.Key)
 	}
 	resp, err := client.Do(req)
 	elapsed := time.Since(start)

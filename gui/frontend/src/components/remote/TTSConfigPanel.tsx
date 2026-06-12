@@ -99,7 +99,7 @@ export function TTSConfigPanel({ lang }: Props) {
 
     if (loading) return <div className="model-config-loading">{t('Loading...', '加载中...', '載入中...')}</div>;
 
-    const accentColor = 'var(--theme-info, #409eff)';
+    const accentColor = 'var(--theme-info, #2f5f98)';
 
     return (
         <div className="model-config-panel model-config-panel--spaced">

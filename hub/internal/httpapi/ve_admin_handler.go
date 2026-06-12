@@ -310,6 +310,7 @@ func VEAdminConfigHandler(system store.SystemSettingsRepository, senders ...veMa
 				writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
 				return
 			}
+			clearVEDiscoverableCache()
 			if cfg.AutoApprove {
 				approved, err := autoApprovePendingVERegistrations(r.Context(), system, baseSystem, tenantID)
 				if err != nil {
@@ -463,53 +464,134 @@ func VEStatusHandler(system store.SystemSettingsRepository, authenticator veMach
 
 func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator veMachineAuthenticator, options ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		principal, ok := authenticateVEMachine(w, r, authenticator)
 		if !ok {
+			observeVEDiscoverable(start, "auth_failed", 0)
 			return
 		}
 		baseSystem := globalSystemSettings(system)
 		system := veSystemSettingsForMachine(system, principal)
 		cfg := loadVEGroupConfig(r.Context(), system)
 		if !veAuthorizationActive(loadVEDigitalEmployeeAuthorization(r.Context(), system)) {
-			writeJSON(w, http.StatusOK, map[string]any{
+			notModified, _, _, err := writeVEConditionalJSON(w, r, map[string]any{
 				"employees":              []digitalEmployeeEntry{},
 				"max_group_participants": cfg.MaxGroupParticipants,
 			})
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "ENCODE_FAILED", err.Error())
+				return
+			}
+			if notModified {
+				observeVEDiscoverable(start, "not_modified", 0)
+			} else {
+				observeVEDiscoverable(start, "authorization_inactive", 0)
+			}
 			return
 		}
-		registry := loadVERegistry(r.Context(), system)
-		employees := make([]digitalEmployeeEntry, 0, len(registry.Employees))
-		accessID := veRequesterAccessID(principal)
-		presenceGetter, visibilityResolver := veDiscoverableOptions(options...)
-		requesterGroupPath, requesterGroupPathResolved := []string(nil), false
-		if veRegistryHasVisibleGroupRestrictions(registry) {
-			requesterGroupPath, requesterGroupPathResolved = requesterVEGroupPath(r.Context(), visibilityResolver, principal)
+		cacheKey := strings.ToLower(fmt.Sprintf("%s|%s|%s", strings.TrimSpace(principal.TenantID), strings.TrimSpace(principal.UserID), strings.TrimSpace(principal.MachineID)))
+		if entry, ok := getVEDiscoverableCache(cacheKey, time.Now()); ok {
+			observeVEDiscoverableCache(true)
+			w.Header().Set("X-VE-Cache", "hit")
+			notModified, err := writeVEConditionalJSONBytes(w, r, entry.Data, entry.ETag)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "ENCODE_FAILED", err.Error())
+				return
+			}
+			if notModified {
+				observeVEDiscoverable(start, "not_modified", entry.Employees)
+			} else {
+				observeVEDiscoverable(start, "success", entry.Employees)
+			}
+			return
 		}
-		runtimePresence := emptyMacLawSrvRuntimePresence()
-		if veRegistryHasMacLawSrvRuntimeEmployees(registry, true) {
-			runtimePresence = loadMacLawSrvRuntimePresence(r.Context(), baseSystem, principal.TenantID)
-		}
-		for _, entry := range registry.Employees {
-			if entry.Status != veStatusActive || groupDiscussionParticipantIdentityMatches(entry.MachineID, principal.MachineID) {
-				continue
+		observeVEDiscoverableCache(false)
+		value, err, shared := veDiscoverableSingleflight.Do(cacheKey, func() (any, error) {
+			if entry, ok := getVEDiscoverableCache(cacheKey, time.Now()); ok {
+				return veDiscoverableBuildResult{Entry: entry}, nil
 			}
-			if !veVisibleToRequester(entry, requesterGroupPath, requesterGroupPathResolved) {
-				continue
+			release, acquired := acquireVEDiscoverableBuildSlot()
+			if !acquired {
+				if entry, ok := getVEDiscoverableStaleCache(cacheKey, time.Now()); ok {
+					return veDiscoverableBuildResult{Entry: entry, Overloaded: true, Stale: true}, nil
+				}
+				return veDiscoverableBuildResult{Overloaded: true}, nil
 			}
-			if !veAccessAllowed(entry, accessID) {
-				continue
+			defer release()
+			registry := loadVERegistry(r.Context(), system)
+			employees := make([]digitalEmployeeEntry, 0, len(registry.Employees))
+			accessID := veRequesterAccessID(principal)
+			presenceGetter, visibilityResolver := veDiscoverableOptions(options...)
+			requesterGroupPath, requesterGroupPathResolved := []string(nil), false
+			if veRegistryHasVisibleGroupRestrictions(registry) {
+				requesterGroupPath, requesterGroupPathResolved = requesterVEGroupPath(r.Context(), visibilityResolver, principal)
 			}
-			entry = applyVEDiscoverablePresence(r.Context(), entry, presenceGetter, runtimePresence)
-			if !strings.EqualFold(strings.TrimSpace(entry.OnlineStatus), veOnlineStatusOnline) {
-				continue
+			runtimePresence := emptyMacLawSrvRuntimePresence()
+			if veRegistryHasMacLawSrvRuntimeEmployees(registry, true) {
+				runtimePresence = loadMacLawSrvRuntimePresence(r.Context(), baseSystem, principal.TenantID)
 			}
-			employees = append(employees, entry)
-		}
-		sort.SliceStable(employees, func(i, j int) bool { return employees[i].Name < employees[j].Name })
-		writeJSON(w, http.StatusOK, map[string]any{
-			"employees":              employees,
-			"max_group_participants": cfg.MaxGroupParticipants,
+			for _, entry := range registry.Employees {
+				if entry.Status != veStatusActive || groupDiscussionParticipantIdentityMatches(entry.MachineID, principal.MachineID) {
+					continue
+				}
+				if !veVisibleToRequester(entry, requesterGroupPath, requesterGroupPathResolved) {
+					continue
+				}
+				if !veAccessAllowed(entry, accessID) {
+					continue
+				}
+				entry = applyVEDiscoverablePresence(r.Context(), entry, presenceGetter, runtimePresence)
+				if !strings.EqualFold(strings.TrimSpace(entry.OnlineStatus), veOnlineStatusOnline) {
+					continue
+				}
+				employees = append(employees, entry)
+			}
+			sort.SliceStable(employees, func(i, j int) bool { return employees[i].Name < employees[j].Name })
+			data, err := json.Marshal(map[string]any{
+				"employees":              employees,
+				"max_group_participants": cfg.MaxGroupParticipants,
+			})
+			if err != nil {
+				return veDiscoverableCacheEntry{}, err
+			}
+			etag := veResponseETag(data)
+			entry := veDiscoverableCacheEntry{Data: data, ETag: etag, Employees: len(employees), ExpiresAt: time.Now().Add(veDiscoverableCacheTTL)}
+			setVEDiscoverableCache(cacheKey, data, etag, len(employees), time.Now())
+			return veDiscoverableBuildResult{Entry: entry}, nil
 		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ENCODE_FAILED", err.Error())
+			return
+		}
+		if shared {
+			observeVEDiscoverableCoalesced()
+		}
+		result, _ := value.(veDiscoverableBuildResult)
+		if result.Overloaded && len(result.Entry.Data) == 0 {
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusTooManyRequests, "VE_DISCOVERABLE_BUSY", "digital employee discovery is busy; retry shortly")
+			observeVEDiscoverable(start, "overloaded", 0)
+			return
+		}
+		if result.Stale {
+			observeVEDiscoverableStaleServed()
+			w.Header().Set("X-VE-Cache", "stale")
+		} else if shared {
+			w.Header().Set("X-VE-Cache", "coalesced")
+		} else {
+			w.Header().Set("X-VE-Cache", "miss")
+		}
+		entry := result.Entry
+		notModified, err := writeVEConditionalJSONBytes(w, r, entry.Data, entry.ETag)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ENCODE_FAILED", err.Error())
+			return
+		}
+		if notModified {
+			observeVEDiscoverable(start, "not_modified", entry.Employees)
+		} else {
+			observeVEDiscoverable(start, "success", entry.Employees)
+		}
 	}
 }
 
@@ -874,31 +956,40 @@ func veRegistryHasMacLawSrvRuntimeEmployees(registry digitalEmployeeRegistry, ac
 // VEInitiateHandler handles POST /api/ve/{id}/initiate for a machine-owned direct discussion.
 func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, authenticator veMachineAuthenticator, senders ...veMachineEventSender) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		outcome := "unknown"
+		defer func() { observeVEInitiate(start, outcome) }()
 		if r.Method != http.MethodPost {
+			outcome = "method_not_allowed"
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 			return
 		}
 		principal, ok := authenticateVEMachine(w, r, authenticator)
 		if !ok {
+			outcome = "auth_failed"
 			return
 		}
 		if groupSvc == nil {
+			outcome = "unavailable"
 			writeError(w, http.StatusInternalServerError, "GROUP_DISCUSSION_UNAVAILABLE", "group discussion service is unavailable")
 			return
 		}
 		baseSystem := globalSystemSettings(system)
 		system := veSystemSettingsForMachine(system, principal)
 		if !requireVEDigitalEmployeeAuthorization(w, r, system) {
+			outcome = "authorization_failed"
 			return
 		}
 		veID := strings.TrimSpace(r.PathValue("id"))
 		if veID == "" {
+			outcome = "invalid_input"
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
 			return
 		}
 		registry := loadVERegistry(r.Context(), system)
 		idx := registry.findByIDOrMachineIDOrPlatformEmployeeID(veID)
 		if idx < 0 {
+			outcome = "not_found"
 			writeError(w, http.StatusNotFound, "VE_NOT_FOUND", "digital employee not found")
 			return
 		}
@@ -909,19 +1000,23 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 			target = applyVEDiscoverablePresence(r.Context(), target, nil, runtimePresence)
 		}
 		if target.Status != veStatusActive {
+			outcome = "not_active"
 			writeError(w, http.StatusConflict, "VE_NOT_ACTIVE", "digital employee is not active")
 			return
 		}
 		if runtimePresence.Loaded && isMacLawSrvRuntimeEmployee(target) && target.OnlineStatus != veOnlineStatusOnline {
+			outcome = "runtime_offline"
 			writeError(w, http.StatusConflict, "VE_NOT_ONLINE", "digital employee runtime is not online")
 			return
 		}
 		if groupDiscussionParticipantIdentityMatches(target.MachineID, principal.MachineID) {
+			outcome = "invalid_input"
 			writeError(w, http.StatusBadRequest, "VE_SELF_CHAT_REJECTED", "cannot start a digital employee conversation with the same machine")
 			return
 		}
 		accessID := veRequesterAccessID(principal)
 		if !veAccessAllowed(target, accessID) {
+			outcome = "access_denied"
 			writeError(w, http.StatusForbidden, "VE_ACCESS_DENIED", "digital employee access is denied")
 			return
 		}
@@ -936,6 +1031,7 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 				allowOnceRequestIndex = idx
 				if expiredRequests {
 					if err := saveVEAccessRequests(r.Context(), system, requests); err != nil {
+						outcome = "save_failed"
 						writeError(w, http.StatusInternalServerError, "VE_AUTH_REQUEST_SAVE_FAILED", err.Error())
 						return
 					}
@@ -956,11 +1052,12 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 				}
 				req = upsertVEAccessRequest(&requests, req)
 				if err := saveVEAccessRequests(r.Context(), system, requests); err != nil {
+					outcome = "save_failed"
 					writeError(w, http.StatusInternalServerError, "VE_AUTH_REQUEST_SAVE_FAILED", err.Error())
 					return
 				}
 				if sender := firstVEMachineEventSender(senders...); sender != nil {
-					_ = sender.SendToMachine(target.MachineID, map[string]any{"type": "ve:auth_request", "ts": time.Now().Unix(), "payload": map[string]any{
+					sendVEControlEvent(sender, target.MachineID, map[string]any{"type": "ve:auth_request", "ts": time.Now().Unix(), "payload": map[string]any{
 						"request_id":           req.ID,
 						"requester_name":       req.RequesterName,
 						"requester_machine_id": req.RequesterMachineID,
@@ -971,6 +1068,7 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 						"expires_at":           req.ExpiresAt,
 					}})
 				}
+				outcome = "pending_confirmation"
 				writeJSON(w, http.StatusAccepted, map[string]any{"status": "pending_confirmation", "request_id": req.ID, "expires_at": req.ExpiresAt, "message": "waiting for digital employee owner confirmation"})
 				return
 			}
@@ -983,12 +1081,14 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 			if allowOnceRequestIndex >= 0 {
 				markVEAccessRequestUsed(accessRequests, allowOnceRequestIndex, time.Now().UTC())
 				if err := saveVEAccessRequests(r.Context(), system, *accessRequests); err != nil {
+					outcome = "save_failed"
 					writeError(w, http.StatusInternalServerError, "VE_AUTH_REQUEST_SAVE_FAILED", err.Error())
 					return
 				}
 			}
 			summary := discussionSummaryFromSession(session)
 			decorateSummaryForParticipant(&summary, session, principal.MachineID)
+			outcome = "reused"
 			writeJSON(w, http.StatusOK, map[string]any{
 				"session_id": session.ID,
 				"ve_id":      target.ID,
@@ -1007,18 +1107,21 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 			DecisionPolicy: coreliba2a.PolicyMajority,
 		})
 		if err != nil {
+			outcome = "invalid_input"
 			writeError(w, http.StatusBadRequest, "SESSION_CREATE_FAILED", err.Error())
 			return
 		}
 		if allowOnceRequestIndex >= 0 {
 			markVEAccessRequestUsed(accessRequests, allowOnceRequestIndex, time.Now().UTC())
 			if err := saveVEAccessRequests(r.Context(), system, *accessRequests); err != nil {
+				outcome = "save_failed"
 				writeError(w, http.StatusInternalServerError, "VE_AUTH_REQUEST_SAVE_FAILED", err.Error())
 				return
 			}
 		}
 		summary := discussionSummaryFromSession(session)
 		decorateSummaryForParticipant(&summary, session, principal.MachineID)
+		outcome = "created"
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"session_id": session.ID,
 			"ve_id":      target.ID,
@@ -1051,12 +1154,17 @@ func findReusableVEDirectSession(groupSvc *GroupDiscussionService, tenantID, ini
 
 func VEAuthRespondHandler(system store.SystemSettingsRepository, authenticator veMachineAuthenticator, senders ...veMachineEventSender) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		outcome := "unknown"
+		defer func() { observeVEAuthResponse(start, outcome) }()
 		if r.Method != http.MethodPost {
+			outcome = "method_not_allowed"
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 			return
 		}
 		principal, ok := authenticateVEMachine(w, r, authenticator)
 		if !ok {
+			outcome = "auth_failed"
 			return
 		}
 		system := veSystemSettingsForMachine(system, principal)
@@ -1065,18 +1173,21 @@ func VEAuthRespondHandler(system store.SystemSettingsRepository, authenticator v
 			Decision  string `json:"decision"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			outcome = "invalid_input"
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
 			return
 		}
 		body.RequestID = strings.TrimSpace(body.RequestID)
 		body.Decision = strings.TrimSpace(body.Decision)
 		if body.RequestID == "" {
+			outcome = "invalid_input"
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "request_id is required")
 			return
 		}
 		switch body.Decision {
 		case "allow", "allow_once", "allow_long", "deny", "block":
 		default:
+			outcome = "invalid_input"
 			writeError(w, http.StatusBadRequest, "INVALID_DECISION", "decision must be allow_once, allow_long, deny, or block")
 			return
 		}
@@ -1091,11 +1202,13 @@ func VEAuthRespondHandler(system store.SystemSettingsRepository, authenticator v
 			}
 		}
 		if idx < 0 {
+			outcome = "not_found"
 			writeError(w, http.StatusNotFound, "VE_AUTH_REQUEST_NOT_FOUND", "authorization request not found")
 			return
 		}
 		req := requests.Requests[idx]
 		if !groupDiscussionParticipantIdentityMatches(req.TargetMachineID, principal.MachineID) {
+			outcome = "access_denied"
 			writeError(w, http.StatusForbidden, "VE_AUTH_REQUEST_FORBIDDEN", "only the target digital employee owner can respond")
 			return
 		}
@@ -1106,6 +1219,7 @@ func VEAuthRespondHandler(system store.SystemSettingsRepository, authenticator v
 			if req.Status == "expired" {
 				emitVEAuthResult(firstVEMachineEventSender(senders...), req, "timeout", "expired")
 			}
+			outcome = "already_handled"
 			writeError(w, http.StatusConflict, "VE_AUTH_REQUEST_ALREADY_HANDLED", "authorization request was already handled")
 			return
 		}
@@ -1142,16 +1256,26 @@ func VEAuthRespondHandler(system store.SystemSettingsRepository, authenticator v
 				}
 			}
 			if err := saveVERegistry(r.Context(), system, registry); err != nil {
+				outcome = "save_failed"
 				writeError(w, http.StatusInternalServerError, "VE_REGISTRY_SAVE_FAILED", err.Error())
 				return
 			}
 		}
 		if err := saveVEAccessRequests(r.Context(), system, requests); err != nil {
+			outcome = "save_failed"
 			writeError(w, http.StatusInternalServerError, "VE_AUTH_REQUEST_SAVE_FAILED", err.Error())
 			return
 		}
 
 		emitVEAuthResult(firstVEMachineEventSender(senders...), req, decision, req.Status)
+		switch req.Status {
+		case "allowed":
+			outcome = "allowed"
+		case "blocked":
+			outcome = "blocked"
+		default:
+			outcome = "denied"
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": req.Status, "decision": decision})
 	}
 }
@@ -1161,8 +1285,8 @@ func emitVEAuthResult(sender veMachineEventSender, req digitalEmployeeAccessRequ
 		return
 	}
 	payload := map[string]any{"request_id": req.ID, "decision": decision, "status": status, "target_ve_id": req.TargetVEID, "target_machine_id": req.TargetMachineID, "target_ve_name": req.TargetVEName}
-	_ = sender.SendToMachine(req.RequesterMachineID, map[string]any{"type": "ve:auth_result", "ts": time.Now().Unix(), "payload": payload})
-	_ = sender.SendToMachine(req.TargetMachineID, map[string]any{"type": "ve:list_update", "ts": time.Now().Unix(), "payload": payload})
+	sendVEControlEvent(sender, req.RequesterMachineID, map[string]any{"type": "ve:auth_result", "ts": time.Now().Unix(), "payload": payload})
+	sendVEControlEvent(sender, req.TargetMachineID, map[string]any{"type": "ve:list_update", "ts": time.Now().Unix(), "payload": payload})
 }
 
 func isReusableVEDirectSession(session *coreliba2a.Session, initiatorID, targetID string) bool {
@@ -1962,12 +2086,19 @@ func emitVEAdminActionEvent(sender veMachineEventSender, action string, entry di
 	eventType := veAdminActionEventType(action)
 	payload := map[string]any{"employee": entry, "action": action}
 	for _, msgType := range []string{eventType, "ve:status_change", "ve:list_update"} {
-		_ = sender.SendToMachine(entry.MachineID, map[string]any{
+		sendVEControlEvent(sender, entry.MachineID, map[string]any{
 			"type":    msgType,
 			"ts":      time.Now().Unix(),
 			"payload": payload,
 		})
 	}
+}
+
+func sendVEControlEvent(sender veMachineEventSender, machineID string, msg any) {
+	if sender == nil || strings.TrimSpace(machineID) == "" {
+		return
+	}
+	observeVEControlDelivery(sender.SendToMachine(machineID, msg))
 }
 
 func veEmployeeMatchesQuery(employee digitalEmployeeEntry, query string) bool {
@@ -2109,7 +2240,11 @@ func saveVERegistry(ctx context.Context, system store.SystemSettingsRepository, 
 	if err != nil {
 		return err
 	}
-	return system.Set(ctx, veRegistryKey, string(data))
+	if err := system.Set(ctx, veRegistryKey, string(data)); err != nil {
+		return err
+	}
+	clearVEDiscoverableCache()
+	return nil
 }
 
 func normalizeVERegistryResidentFlags(registry *digitalEmployeeRegistry) bool {

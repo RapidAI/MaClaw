@@ -551,12 +551,16 @@ type TaskRunResult struct {
     Summary      string
     FilesCreated []string
     FilesModified []string
-    Error        string
+    Error        string编程智能体 | 执行中 | T5 | git_diff
+    
+    
 }
 
 func (r *TaskRunner) RunAll(
     ctx context.Context,
-    tasks []*TaskItem,
+    tasks []*TaskItem,编程智能体 | 执行中 | T5 | git_diff
+    
+    
     projectPath string,
     requirementsCtx string,
     designCtx string,

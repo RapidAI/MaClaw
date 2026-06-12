@@ -198,15 +198,16 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	bgTaskMgr.SetPersistDir(filepath.Join(dataDir, "data"))
 	sshHandler := func(args map[string]interface{}) string {
 		deps := sshtool.SSHToolDeps{
-			Manager:   sshMgr,
-			BGTaskMgr: bgTaskMgr,
+			Manager:       sshMgr,
+			BGTaskMgr:     bgTaskMgr,
+			PolicyOwnerID: "tui:default",
 			HostLoader: func() []corelib.SSHHostEntry {
 				return app.appConfig.SSHHosts
 			},
 			OnConnected: func(session *remote.SSHManagedSession, cfg remote.SSHHostConfig) {
 				// Rediscover orphan tasks after SSH connect (sync to avoid PTY race
 				// with the next exec command LLM sends).
-				bgTaskMgr.RediscoverOrphanTasks(session.ID)
+				bgTaskMgr.RediscoverOrphanTasksForOwner(session.ID, "tui:default")
 			},
 		}
 		return sshtool.ToolSSH(deps, args)

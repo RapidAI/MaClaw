@@ -145,7 +145,7 @@ func TestConfigCommonEnumsAreLocalized(t *testing.T) {
 		{"maclaw_llm_provider_preset", "Custom", "zh", "自定义"},
 		{"maclaw_llm_provider_preset", "Ollama Local", "zh", "Ollama 本地"},
 		{"maclaw_llm_provider_preset", "LM Studio Local", "zh", "LM Studio 本地"},
-		{"maclaw_llm_provider_preset", "Zhipu GLM Lobster", "zh", "智谱 GLM 龙虾"},
+		{"maclaw_llm_provider_preset", "DeepSeek", "zh", "DeepSeek"},
 		{"maclaw_llm_model_choice", "auto", "zh", "自动"},
 		{"setup_status", "needs_llm_key", "en", "LLM key needed"},
 		{"setup_status", "needs_llm_key", "zh", "需要 LLM 密钥"},

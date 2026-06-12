@@ -845,7 +845,7 @@ func TestConfigFields_LLMTabHidesAdvancedFieldsForPreset(t *testing.T) {
 
 func TestConfigFields_LLMTabShowsKeyForAPIKeyPreset(t *testing.T) {
 	cfg := corelib.AppConfig{}
-	ApplyConfigValue(&cfg, "maclaw_llm_provider_preset", "Zhipu GLM Lobster")
+	ApplyConfigValue(&cfg, "maclaw_llm_provider_preset", "DeepSeek")
 	m := NewConfigModel("zh")
 	m.activeTab = CfgTabLLM
 	m.LoadFromAppConfig(cfg)

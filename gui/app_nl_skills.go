@@ -1133,6 +1133,19 @@ func skillRunOwnerIDFromArgs(runArgs map[string]interface{}) string {
 	return ""
 }
 
+func skillSSHRuntimeOwner(args map[string]interface{}) (string, error) {
+	if len(args) == 0 {
+		return "", nil
+	}
+	if value, ok := args[registeredToolPolicyOwnerIDField]; ok {
+		ownerID, _ := value.(string)
+		if strings.TrimSpace(ownerID) == "" {
+			return "", fmt.Errorf("runtime owner is missing; isolated runtime will not fall back to desktop loop")
+		}
+	}
+	return skillRunOwnerIDFromArgs(args), nil
+}
+
 // Execute runs a Skill by name. Steps are executed sequentially; if a step
 // fails and OnError is "stop" (default), execution halts.
 // Usage statistics (count, success rate, last error) are updated after execution.
@@ -1441,7 +1454,7 @@ func (e *SkillExecutor) executeSSHStep(args map[string]interface{}) (string, err
 	case sshToolActionWaitTask:
 		return e.sshWaitTask(args), nil
 	case sshToolActionListTasks:
-		return e.sshListTasks(), nil
+		return e.sshListTasks(args), nil
 	case sshToolActionKillTask:
 		return e.sshKillTask(args), nil
 	case sshToolActionUpload:
@@ -1543,6 +1556,10 @@ func (e *SkillExecutor) sshExec(args map[string]interface{}) string {
 
 func (e *SkillExecutor) sshExecBackground(args map[string]interface{}) string {
 	mgr := e.ensureSSHManager()
+	ownerID, err := skillSSHRuntimeOwner(args)
+	if err != nil {
+		return fmt.Sprintf("ssh exec_background failed: %v", err)
+	}
 	sessionID, _ := args["session_id"].(string)
 	command, _ := args["command"].(string)
 	taskRole, _ := args["task_role"].(string)
@@ -1556,7 +1573,7 @@ func (e *SkillExecutor) sshExecBackground(args map[string]interface{}) string {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	task, err := e.bgTaskMgr.SubmitWithRole(sessionID, command, taskRole)
+	task, err := e.bgTaskMgr.SubmitWithOwner(sessionID, command, taskRole, ownerID)
 	if err != nil {
 		return fmt.Sprintf("background task submit failed: %v", err)
 	}
@@ -1570,15 +1587,22 @@ func (e *SkillExecutor) sshCheckTask(args map[string]interface{}) string {
 	if e.bgTaskMgr == nil {
 		return "background task manager is not initialized"
 	}
+	ownerID, ownerErr := skillSSHRuntimeOwner(args)
+	if ownerErr != nil {
+		return fmt.Sprintf("check task failed: %v", ownerErr)
+	}
 	taskID, _ := args["task_id"].(string)
 	if taskID == "" {
 		return "ssh check_task requires task_id"
+	}
+	if err := authorizeSSHBackgroundTaskOwner(e.bgTaskMgr, taskID, ownerID); err != nil {
+		return fmt.Sprintf("check task failed: %v", err)
 	}
 	tailLines := 50
 	if t, ok := args["tail_lines"].(float64); ok && t > 0 {
 		tailLines = int(t)
 	}
-	result, err := e.bgTaskMgr.CheckTask(taskID, tailLines)
+	result, err := e.bgTaskMgr.CheckTaskForOwner(taskID, tailLines, ownerID)
 	if err != nil {
 		return fmt.Sprintf("check task failed: %v", err)
 	}
@@ -1589,30 +1613,45 @@ func (e *SkillExecutor) sshCheckTask(args map[string]interface{}) string {
 }
 
 func (e *SkillExecutor) sshWaitTask(args map[string]interface{}) string {
-	return waitSSHBackgroundTask(e.bgTaskMgr, args, "background task manager is not initialized", "ssh wait_task requires task_id", func() {
+	ownerID, err := skillSSHRuntimeOwner(args)
+	if err != nil {
+		return fmt.Sprintf("wait_task failed: %v", err)
+	}
+	return waitSSHBackgroundTaskForOwner(e.bgTaskMgr, args, ownerID, "background task manager is not initialized", "ssh wait_task requires task_id", func() {
 		if e.app != nil {
 			e.app.emitEvent("background-loops-changed")
 		}
 	})
 }
 
-func (e *SkillExecutor) sshListTasks() string {
+func (e *SkillExecutor) sshListTasks(args map[string]interface{}) string {
 	if e.bgTaskMgr == nil {
 		return "当前无后台任务"
 	}
-	tasks := e.bgTaskMgr.ListTasks()
+	ownerID, err := skillSSHRuntimeOwner(args)
+	if err != nil {
+		return fmt.Sprintf("list tasks failed: %v", err)
+	}
+	tasks := e.bgTaskMgr.ListTasksForOwner(ownerID)
 	if len(tasks) == 0 {
 		return "当前无后台任务"
 	}
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("background tasks: %d\n", len(tasks)))
+	rows := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		elapsed := time.Since(t.StartedAt).Round(time.Second)
 		role := strings.TrimSpace(t.TaskRole)
 		if role == "" {
 			role = "command"
 		}
-		sb.WriteString(fmt.Sprintf("  - %s | PID: %s | role: %s | status: %s | elapsed: %s\n    command: %s\n", t.TaskID, t.PID, role, t.Status, elapsed, t.Command))
+		rows = append(rows, fmt.Sprintf("  - %s | PID: %s | role: %s | status: %s | elapsed: %s\n    command: %s\n", t.TaskID, t.PID, role, t.Status, elapsed, t.Command))
+	}
+	if len(rows) == 0 {
+		return "当前无后台任务"
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "background tasks: %d\n", len(rows))
+	for _, row := range rows {
+		sb.WriteString(row)
 	}
 	return sb.String()
 }
@@ -1621,11 +1660,18 @@ func (e *SkillExecutor) sshKillTask(args map[string]interface{}) string {
 	if e.bgTaskMgr == nil {
 		return "background task manager is not initialized"
 	}
+	ownerID, ownerErr := skillSSHRuntimeOwner(args)
+	if ownerErr != nil {
+		return fmt.Sprintf("kill task failed: %v", ownerErr)
+	}
 	taskID, _ := args["task_id"].(string)
 	if taskID == "" {
 		return "ssh kill_task requires task_id"
 	}
-	if err := e.bgTaskMgr.KillTask(taskID); err != nil {
+	if err := authorizeSSHBackgroundTaskOwner(e.bgTaskMgr, taskID, ownerID); err != nil {
+		return fmt.Sprintf("kill task failed: %v", err)
+	}
+	if err := e.bgTaskMgr.KillTaskForOwner(taskID, ownerID); err != nil {
 		return fmt.Sprintf("kill task failed: %v", err)
 	}
 	if e.app != nil {

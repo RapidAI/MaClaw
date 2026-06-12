@@ -177,7 +177,3 @@ func (a *App) GetOrchestrator() *Orchestrator {
 func (a *App) GetSharedContext() *SharedContextStore {
 	return a.sharedContext
 }
-
-func (a *App) GetGateIntentClassifier() *GateIntentClassifier {
-	return a.gateIntentClassifier
-}

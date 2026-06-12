@@ -45,6 +45,57 @@ func TestIsVEEvent(t *testing.T) {
 	}
 }
 
+func TestHandleVEEventClearsDiscoverableCacheForRosterEvents(t *testing.T) {
+	app := &App{}
+	app.veDiscoverableCache.Store("online\x00hub\x00token\x00machine", veDiscoverableCacheEntry{expiresAt: time.Now().Add(time.Minute), employees: []VirtualEmployeeEntry{{ID: "ve-old"}}})
+	client := &RemoteHubClient{app: app}
+
+	client.handleVEEvent(inboundHubEnvelope{Type: veEventStatusChange, Payload: json.RawMessage(`{"ve_id":"ve-a","online_status":"offline"}`)})
+
+	if _, ok := app.veDiscoverableCache.Load("online\x00hub\x00token\x00machine"); ok {
+		t.Fatal("discoverable VE cache should be cleared after status event")
+	}
+}
+
+func TestHandleVEEventKeepsDiscoverableCacheForDiscussionMessage(t *testing.T) {
+	app := &App{}
+	app.veDiscoverableCache.Store("online\x00hub\x00token\x00machine", veDiscoverableCacheEntry{expiresAt: time.Now().Add(time.Minute), employees: []VirtualEmployeeEntry{{ID: "ve-old"}}})
+	client := &RemoteHubClient{app: app}
+
+	client.handleVEEvent(inboundHubEnvelope{Type: veEventDiscussionMessage, Payload: json.RawMessage(`{}`)})
+
+	if _, ok := app.veDiscoverableCache.Load("online\x00hub\x00token\x00machine"); !ok {
+		t.Fatal("discussion message should not clear discoverable VE cache")
+	}
+}
+
+func TestShouldClearDiscoverableVECacheForEvent(t *testing.T) {
+	tests := []struct {
+		eventType string
+		want      bool
+	}{
+		{veEventListUpdate, true},
+		{veEventStatusChange, true},
+		{veEventApproved, true},
+		{veEventRejected, true},
+		{veEventDisabled, true},
+		{veEventAuthRequest, false},
+		{veEventGroupConfig, false},
+		{veEventDiscussionInvite, false},
+		{veEventDiscussionMessage, false},
+		{veEventDiscussionRename, false},
+		{" " + veEventStatusChange + " ", true},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.eventType, func(t *testing.T) {
+			if got := shouldClearDiscoverableVECacheForEvent(tt.eventType); got != tt.want {
+				t.Fatalf("shouldClearDiscoverableVECacheForEvent(%q) = %v, want %v", tt.eventType, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeHubInboundMessageType_VEEvents(t *testing.T) {
 	tests := []struct {
 		msgType string

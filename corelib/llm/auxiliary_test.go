@@ -85,3 +85,28 @@ func TestAuxiliaryCallerNormalizesCodeGenAutoModel(t *testing.T) {
 		t.Fatalf("model = %q, want %q", gotModel, corelib.CodeGenDefaultModelID)
 	}
 }
+
+func TestAuxiliaryCallerPreservesVersionedV4BaseURL(t *testing.T) {
+	var gotPath string
+	caller := NewAuxiliaryCaller(AuxiliaryConfig{
+		URL:   "https://open.bigmodel.cn/api/paas/v4",
+		Key:   "aux-key",
+		Model: "glm-5.1",
+	})
+	caller.HTTPClient = &http.Client{Transport: auxiliaryRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotPath = r.URL.Path
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	if _, err := caller.ChatCall([]map[string]string{{"role": "user", "content": "hi"}}); err != nil {
+		t.Fatalf("ChatCall returned error: %v", err)
+	}
+	if gotPath != "/api/paas/v4/chat/completions" {
+		t.Fatalf("path = %q, want /api/paas/v4/chat/completions", gotPath)
+	}
+}

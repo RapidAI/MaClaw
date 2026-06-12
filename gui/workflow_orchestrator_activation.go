@@ -154,15 +154,6 @@ func (h *IMMessageHandler) shouldRegenerateInvalidCodingTaskBreakdown(engine *wo
 	return !isExecutableCodingTaskBreakdown(output, ParseTaskListFromText(output))
 }
 
-func (h *IMMessageHandler) shouldRejectInvalidCodingTaskBreakdownOutput(engine *workflow.WorkflowEngine, userID, output string) bool {
-	trimmed := strings.TrimSpace(output)
-	if trimmed == "" {
-		return false
-	}
-	tasks := ParseTaskListFromText(trimmed)
-	return !isExecutableCodingTaskBreakdown(trimmed, tasks) && currentCodingTaskBreakdownFeedsExecution(engine, userID)
-}
-
 func (h *IMMessageHandler) reopenInvalidCodingTaskBreakdownForRepair(engine *workflow.WorkflowEngine, userID string) bool {
 	if h == nil || engine == nil {
 		return false

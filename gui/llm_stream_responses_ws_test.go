@@ -1,8 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -44,6 +50,7 @@ func TestResponsesWSEndpointNormalizesBaseURL(t *testing.T) {
 		{"v1 https", "https://api.example.com/v1", "wss://api.example.com/v1/responses"},
 		{"full wss", "wss://api.example.com/v1/responses", "wss://api.example.com/v1/responses"},
 		{"qwen compatible", "https://dashscope.aliyuncs.com/compatible-mode/v1", "wss://dashscope.aliyuncs.com/compatible-mode/v1/responses"},
+		{"glm v4", "https://open.bigmodel.cn/api/paas/v4", "wss://open.bigmodel.cn/api/paas/v4/responses"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -51,6 +58,78 @@ func TestResponsesWSEndpointNormalizesBaseURL(t *testing.T) {
 				t.Fatalf("endpoint = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResponsesWSStreamConvertsBareJSONToolCallsAndSuppressesTokens(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("path = %q, want /v1/responses", r.URL.Path)
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		frames := []string{
+			`{"type":"response.output_text.delta","delta":"{\"tool_calls\":[{\"function\":{\"name\":\"bash\","}`,
+			`{"type":"response.output_text.delta","delta":"\"arguments\":\"{\\\"command\\\":\\\"dir\\\"}\"}}]}"}`,
+			`{"type":"response.completed","response":{"status":"completed"}}`,
+		}
+		for _, frame := range frames {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				t.Fatalf("write frame: %v", err)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{
+		URL:      srv.URL,
+		Key:      "test-key",
+		Model:    "test-model",
+		Protocol: "openai",
+		WireAPI:  "responses_ws",
+	}
+	var streamed strings.Builder
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		cfg,
+		[]interface{}{map[string]interface{}{"role": "user", "content": "run dir"}},
+		nil,
+		srv.Client(),
+		func(delta string) { streamed.WriteString(delta) },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("doResponsesWSLLMRequestStream returned error: %v", err)
+	}
+	if got := streamed.String(); got != "" {
+		t.Fatalf("stream leaked bare JSON tool call: %q", got)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("choices len = %d, want 1", len(resp.Choices))
+	}
+	choice := resp.Choices[0]
+	if choice.FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", choice.FinishReason)
+	}
+	if choice.Message.Content != "" {
+		t.Fatalf("content = %q, want empty after tool conversion", choice.Message.Content)
+	}
+	if len(choice.Message.ToolCalls) != 1 {
+		t.Fatalf("tool_calls len = %d, want 1", len(choice.Message.ToolCalls))
+	}
+	call := choice.Message.ToolCalls[0]
+	if call.Function.Name != "bash" {
+		t.Fatalf("tool name = %q, want bash", call.Function.Name)
+	}
+	if call.Function.Arguments != `{"command":"dir"}` {
+		t.Fatalf("tool arguments = %s, want command dir", call.Function.Arguments)
 	}
 }
 
@@ -90,7 +169,13 @@ func TestBuildResponsesWSFrameNormalizesCodeGenAutoModelAndSanitizesTools(t *tes
 	if _, ok := params["additionalProperties"]; ok {
 		t.Fatalf("additionalProperties=false leaked: %#v", params)
 	}
-	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
+	properties := params["properties"].(map[string]interface{})
+	for _, bad := range []string{"type", "properties"} {
+		if _, ok := properties[bad]; ok {
+			t.Fatalf("Responses WS properties container was treated as schema and leaked %q: %#v", bad, properties)
+		}
+	}
+	values := properties["values"].(map[string]interface{})
 	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
 		t.Fatalf("array items type = %#v, want string", got)
 	}
@@ -132,6 +217,53 @@ func TestBuildResponsesWSFrameSanitizesQwenOpenAICompatProvider(t *testing.T) {
 	if _, ok := params["additionalProperties"]; ok {
 		t.Fatalf("additionalProperties=false leaked: %#v", params)
 	}
+	properties := params["properties"].(map[string]interface{})
+	for _, bad := range []string{"type", "properties"} {
+		if _, ok := properties[bad]; ok {
+			t.Fatalf("Qwen Responses WS properties container was treated as schema and leaked %q: %#v", bad, properties)
+		}
+	}
+	values := properties["values"].(map[string]interface{})
+	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
+		t.Fatalf("array items type = %#v, want string", got)
+	}
+}
+
+func TestBuildResponsesWSFrameUsesOpenAIChatToolSanitizer(t *testing.T) {
+	data, err := buildResponsesWSFrame(
+		corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-test"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		[]map[string]interface{}{{
+			"type":  "function",
+			"extra": "drop-me",
+			"function": map[string]interface{}{
+				"name":  "strict_tool",
+				"extra": "drop-me",
+				"parameters": map[string]interface{}{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]interface{}{
+						"values": map[string]interface{}{"type": "array"},
+					},
+				},
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("buildResponsesWSFrame: %v", err)
+	}
+	var frame map[string]interface{}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	tool := frame["tools"].([]interface{})[0].(map[string]interface{})
+	if _, ok := tool["extra"]; ok {
+		t.Fatalf("tool extra leaked into Responses WS frame: %#v", tool)
+	}
+	if got := tool["name"]; got != "strict_tool" {
+		t.Fatalf("tool name = %#v, want strict_tool", got)
+	}
+	params := tool["parameters"].(map[string]interface{})
 	values := params["properties"].(map[string]interface{})["values"].(map[string]interface{})
 	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
 		t.Fatalf("array items type = %#v, want string", got)
@@ -168,5 +300,77 @@ func TestBuildResponsesWSFrameDropsQwenOrphanedToolHistory(t *testing.T) {
 		if typ, _ := m["type"].(string); typ == "function_call" || typ == "function_call_output" {
 			t.Fatalf("input item %d leaked orphaned tool history: %#v", i, m)
 		}
+	}
+}
+
+func TestBuildResponsesWSFrameDropsOrphanedToolHistory(t *testing.T) {
+	data, err := buildResponsesWSFrame(
+		corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-test"},
+		[]interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+			map[string]interface{}{
+				"role":    "assistant",
+				"content": "",
+				"tool_calls": []interface{}{
+					map[string]interface{}{"id": "call_1", "type": "function", "function": map[string]interface{}{"name": "a", "arguments": `{}`}},
+					map[string]interface{}{"id": "call_2", "type": "function", "function": map[string]interface{}{"name": "b", "arguments": `{}`}},
+				},
+			},
+			map[string]interface{}{"role": "tool", "tool_call_id": "call_1", "content": "partial"},
+			map[string]interface{}{"role": "user", "content": "next"},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildResponsesWSFrame: %v", err)
+	}
+	var frame map[string]interface{}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	for i, item := range frame["input"].([]interface{}) {
+		m, _ := item.(map[string]interface{})
+		if typ, _ := m["type"].(string); typ == "function_call" || typ == "function_call_output" {
+			t.Fatalf("input item %d leaked orphaned tool history: %#v", i, m)
+		}
+	}
+}
+
+func TestBuildResponsesWSFrameStringifiesToolArgumentObjects(t *testing.T) {
+	data, err := buildResponsesWSFrame(
+		corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-test"},
+		[]interface{}{
+			map[string]interface{}{
+				"role":    "assistant",
+				"content": "",
+				"tool_calls": []interface{}{
+					map[string]interface{}{
+						"id":   "call_1",
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      "search",
+							"arguments": map[string]interface{}{"q": "golang", "limit": float64(3)},
+						},
+					},
+				},
+			},
+			map[string]interface{}{"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildResponsesWSFrame: %v", err)
+	}
+	var frame map[string]interface{}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	input := frame["input"].([]interface{})
+	call := input[0].(map[string]interface{})
+	if call["type"] != "function_call" {
+		t.Fatalf("first input type = %#v, want function_call", call["type"])
+	}
+	if got := call["arguments"]; got != `{"limit":3,"q":"golang"}` {
+		t.Fatalf("function_call arguments = %#v, want object encoded as JSON string", got)
 	}
 }

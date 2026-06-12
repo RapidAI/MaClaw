@@ -1,9 +1,7 @@
 package agentservice
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -157,7 +155,7 @@ func serviceSystemPrompt(req ExecuteRequest) string {
 }
 
 func simpleLLMRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (string, error) {
-	if strings.EqualFold(cfg.Protocol, "anthropic") {
+	if !cfg.IsResponsesAPI() && strings.EqualFold(cfg.Protocol, "anthropic") {
 		return doSimpleAnthropicRequest(ctx, cfg, messages, client)
 	}
 	return doSimpleOpenAIRequest(ctx, cfg, messages, client)
@@ -211,64 +209,19 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 }
 
 func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (string, error) {
-	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
-	var systemText string
-	anthropicMsgs := make([]interface{}, 0, len(messages))
-	for _, m := range messages {
-		switch mm := m.(type) {
-		case map[string]string:
-			if mm["role"] == "system" {
-				systemText = mm["content"]
-				continue
-			}
-			anthropicMsgs = append(anthropicMsgs, mm)
-		case map[string]interface{}:
-			if role, _ := mm["role"].(string); role == "system" {
-				if content, _ := mm["content"].(string); content != "" {
-					systemText = content
-				}
-				continue
-			}
-			anthropicMsgs = append(anthropicMsgs, mm)
-		}
-	}
-	bodyMap := map[string]interface{}{"model": cfg.UpstreamModel(), "messages": anthropicMsgs, "max_tokens": 4096}
-	if systemText != "" {
-		bodyMap["system"] = systemText
-	}
-	data, _ := json.Marshal(bodyMap)
-	body := bytes.NewReader(data)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, body)
+	resp, err := llm.DoAnthropicRequest(ctx, cfg, messages, nil, client)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	req.Header.Set("anthropic-version", "2023-06-01")
-	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
-	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
+	if resp == nil || len(resp.Choices) == 0 {
+		return "", fmt.Errorf("anthropic returned no choices")
 	}
-	defer resp.Body.Close()
-	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("anthropic http %d: body_len=%d req_len=%d", resp.StatusCode, len(payload), len(data))
+	text := resp.Choices[0].Message.Content
+	if text == "" {
+		text = resp.Choices[0].Message.ReasoningContent
 	}
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(payload, &result); err != nil {
-		return "", err
-	}
-	for _, block := range result.Content {
-		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
-			return stripThinkingTags(block.Text), nil
-		}
+	if strings.TrimSpace(text) != "" {
+		return stripThinkingTags(text), nil
 	}
 	return "", fmt.Errorf("anthropic returned empty content")
 }

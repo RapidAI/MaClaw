@@ -16,17 +16,19 @@ import (
 
 // UsageRecord records a single tool invocation outcome.
 type UsageRecord struct {
-	ToolName     string    `json:"tool_name"`
-	QueryTokens  []string  `json:"query_tokens"`
-	Success      bool      `json:"success"`
-	FollowUp     string    `json:"follow_up,omitempty"` // "continue", "retry", "abandon"
-	Timestamp    time.Time `json:"timestamp"`
-	TaskType     string    `json:"task_type,omitempty"`
-	ToolSequence []string  `json:"tool_sequence,omitempty"`
-	ErrorClass   string    `json:"error_class,omitempty"`
-	RetryCount   int       `json:"retry_count,omitempty"`
-	RecoveryTool string    `json:"recovery_tool,omitempty"`
-	FinalOutcome string    `json:"final_outcome,omitempty"`
+	ToolName     string            `json:"tool_name"`
+	QueryTokens  []string          `json:"query_tokens"`
+	Success      bool              `json:"success"`
+	FollowUp     string            `json:"follow_up,omitempty"` // "continue", "retry", "abandon"
+	Timestamp    time.Time         `json:"timestamp"`
+	TaskType     string            `json:"task_type,omitempty"`
+	ToolSequence []string          `json:"tool_sequence,omitempty"`
+	ErrorClass   string            `json:"error_class,omitempty"`
+	RetryCount   int               `json:"retry_count,omitempty"`
+	RecoveryTool string            `json:"recovery_tool,omitempty"`
+	FinalOutcome string            `json:"final_outcome,omitempty"`
+	TokensUsed   int               `json:"tokens_used,omitempty"`
+	RunArgs      map[string]string `json:"run_args,omitempty"` // skill run arguments for RepairGate replay
 }
 
 // ToolExperience is the richer input form used by the experience learning
@@ -45,6 +47,8 @@ type ToolExperience struct {
 	RecoveryTool string
 	FinalOutcome string
 	EventContext lifecycle.EventContext
+	TokensUsed   int // LLM tokens consumed during this tool invocation
+	RunArgs      map[string]string // skill run arguments (for replay in RepairGate)
 }
 
 // UsageTracker maintains a rolling window of tool usage history.
@@ -128,6 +132,8 @@ func (t *UsageTracker) RecordExperience(exp ToolExperience) {
 		RetryCount:   exp.RetryCount,
 		RecoveryTool: normalizeUsageToolName(exp.RecoveryTool),
 		FinalOutcome: strings.TrimSpace(exp.FinalOutcome),
+		TokensUsed:   exp.TokensUsed,
+		RunArgs:      exp.RunArgs,
 	}
 	t.mu.Lock()
 	t.records = append(t.records, r)
@@ -1352,4 +1358,81 @@ func (t *UsageTracker) ExtractPatterns(windowDays int) []UsagePattern {
 	}
 
 	return patterns
+}
+
+
+// RecentRunArgs extracts the most recent N run argument sets for a given tool
+// (typically a skill name like "manage_skill" or the actual skill name).
+// Only records with non-nil RunArgs are returned. Results are ordered from
+// oldest to newest (chronological order suitable for replay).
+//
+// Used by RepairGate to get historical execution parameters for sandbox replay.
+func (t *UsageTracker) RecentRunArgs(toolName string, limit int) []map[string]string {
+	if t == nil || limit <= 0 {
+		return nil
+	}
+	toolName = normalizeUsageToolName(toolName)
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	// Scan from newest to oldest, collect up to limit records with RunArgs.
+	var results []map[string]string
+	for i := len(t.records) - 1; i >= 0 && len(results) < limit; i-- {
+		r := t.records[i]
+		if r.ToolName != toolName || len(r.RunArgs) == 0 {
+			continue
+		}
+		// Copy the map to prevent mutation.
+		argsCopy := make(map[string]string, len(r.RunArgs))
+		for k, v := range r.RunArgs {
+			argsCopy[k] = v
+		}
+		results = append(results, argsCopy)
+	}
+
+	// Reverse to chronological order (oldest first).
+	for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
+		results[i], results[j] = results[j], results[i]
+	}
+	return results
+}
+
+// RecentSkillUsageRecords returns simplified usage records for a skill,
+// suitable for the SkillOptimizer. Only returns records from the last N days.
+func (t *UsageTracker) RecentSkillUsageRecords(skillName string, windowDays int) []SkillUsageRecordExport {
+	if t == nil || windowDays <= 0 {
+		return nil
+	}
+	skillName = normalizeUsageToolName(skillName)
+	cutoff := time.Now().AddDate(0, 0, -windowDays)
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	var results []SkillUsageRecordExport
+	for _, r := range t.records {
+		if r.ToolName != skillName || r.Timestamp.Before(cutoff) {
+			continue
+		}
+		if !usageRecordDecisive(r) {
+			continue
+		}
+		results = append(results, SkillUsageRecordExport{
+			Success:    usageRecordSucceeded(r),
+			FollowUp:   r.FollowUp,
+			ErrorClass: r.ErrorClass,
+			Timestamp:  r.Timestamp,
+		})
+	}
+	return results
+}
+
+// SkillUsageRecordExport is a simplified usage record for external consumers
+// (like SkillOptimizer) that don't import the full UsageRecord type.
+type SkillUsageRecordExport struct {
+	Success    bool      `json:"success"`
+	FollowUp   string    `json:"follow_up"`
+	ErrorClass string    `json:"error_class"`
+	Timestamp  time.Time `json:"timestamp"`
 }

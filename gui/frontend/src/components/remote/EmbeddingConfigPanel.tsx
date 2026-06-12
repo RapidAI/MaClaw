@@ -176,7 +176,7 @@ export function EmbeddingConfigPanel({ lang }: Props) {
                     exists={spModelExists} downloading={spDownloading} size={spModelSize}
                     progress={spProgress} downloaded={spDownloaded} total={spTotal}
                     error={spError} onDownload={startSpDownload} onRetry={startSpDownload}
-                    accentColor="var(--theme-warning, #e6a23c)" t={t}
+                    accentColor="var(--theme-primary, #2f5f98)" t={t}
                 />
             )}
 

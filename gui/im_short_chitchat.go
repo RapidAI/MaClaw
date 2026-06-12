@@ -46,8 +46,6 @@ func normalizeShortChitChatToken(text string) string {
 		"娌′簨":       {},
 		"nothing":   {},
 		"none":      {},
-		"ok":        {},
-		"okay":      {},
 		"thanks":    {},
 		"thank you": {},
 		"璋㈣阿":       {},
@@ -66,7 +64,7 @@ func buildShortChitChatResponse(text, lang string) string {
 	lang = strings.ToLower(strings.TrimSpace(lang))
 	if lang == "" {
 		switch normalized {
-		case "hi", "hello", "hey", "nothing", "none", "ok", "okay", "thanks", "thank you":
+		case "hi", "hello", "hey", "nothing", "none", "thanks", "thank you":
 			lang = "en"
 		default:
 			lang = "zh"
@@ -78,8 +76,6 @@ func buildShortChitChatResponse(text, lang string) string {
 			return "You're welcome. I'm here if you want to continue."
 		case "nothing", "none":
 			return "No problem. I'm here if you need anything."
-		case "ok", "okay":
-			return "Okay. I'm here if you need anything."
 		default:
 			return "Hi! I'm here if you need anything."
 		}
@@ -89,8 +85,6 @@ func buildShortChitChatResponse(text, lang string) string {
 		return "You're welcome. I'm here if you need anything."
 	case "娌′簨", "nothing", "none":
 		return "No problem. I'm here if you need anything."
-	case "ok", "okay":
-		return "Okay. I'm here if you need anything."
 	default:
 		return "Hi! I'm here if you need anything."
 	}

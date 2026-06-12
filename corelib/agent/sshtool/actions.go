@@ -266,7 +266,11 @@ func SSHExecBackground(deps SSHToolDeps, args map[string]interface{}) string {
 		time.Sleep(2 * time.Second)
 	}
 
-	task, err := bgMgr.SubmitWithRole(sessionID, command, strArg(args, "task_role"))
+	if err := requireBackgroundTaskPolicyOwner(deps); err != nil {
+		return fmt.Sprintf("ssh exec_background failed: %v", err)
+	}
+
+	task, err := bgMgr.SubmitWithOwner(sessionID, command, strArg(args, "task_role"), deps.PolicyOwnerID)
 	if err != nil {
 		return fmt.Sprintf("提交后台任务失败: %v", err)
 	}
@@ -298,10 +302,21 @@ func SSHExecBackground(deps SSHToolDeps, args map[string]interface{}) string {
 		task.TaskID, task.Command, task.LogFile, task.PID, task.TaskID, task.TaskID)
 }
 
+func requireBackgroundTaskPolicyOwner(deps SSHToolDeps) error {
+	if strings.TrimSpace(deps.PolicyOwnerID) == "" {
+		return fmt.Errorf("runtime owner is missing; background task access is isolated")
+	}
+	return nil
+}
+
 // SSHCheckTask checks the status and latest log output of a background task.
 func SSHCheckTask(deps SSHToolDeps, args map[string]interface{}) string {
 	if deps.BGTaskMgr == nil {
 		return "错误: 无后台任务"
+	}
+
+	if err := requireBackgroundTaskPolicyOwner(deps); err != nil {
+		return fmt.Sprintf("check_task failed: %v", err)
 	}
 
 	taskID := strArg(args, "task_id")
@@ -311,7 +326,7 @@ func SSHCheckTask(deps SSHToolDeps, args map[string]interface{}) string {
 
 	tailLines := intArg(args, "tail_lines", 50)
 
-	result, err := deps.BGTaskMgr.CheckTask(taskID, tailLines)
+	result, err := deps.BGTaskMgr.CheckTaskForOwner(taskID, tailLines, deps.PolicyOwnerID)
 	if err != nil {
 		return fmt.Sprintf("检查任务失败: %v", err)
 	}
@@ -337,7 +352,11 @@ func SSHListTasks(deps SSHToolDeps) string {
 		return "当前无后台任务"
 	}
 
-	tasks := deps.BGTaskMgr.ListTasks()
+	if err := requireBackgroundTaskPolicyOwner(deps); err != nil {
+		return fmt.Sprintf("list_tasks failed: %v", err)
+	}
+
+	tasks := deps.BGTaskMgr.ListTasksForOwner(deps.PolicyOwnerID)
 	if len(tasks) == 0 {
 		return "当前无后台任务"
 	}
@@ -363,12 +382,16 @@ func SSHKillTask(deps SSHToolDeps, args map[string]interface{}) string {
 		return "错误: 无后台任务"
 	}
 
+	if err := requireBackgroundTaskPolicyOwner(deps); err != nil {
+		return fmt.Sprintf("kill_task failed: %v", err)
+	}
+
 	taskID := strArg(args, "task_id")
 	if taskID == "" {
 		return "错误: kill_task 需要 task_id 参数"
 	}
 
-	if err := deps.BGTaskMgr.KillTask(taskID); err != nil {
+	if err := deps.BGTaskMgr.KillTaskForOwner(taskID, deps.PolicyOwnerID); err != nil {
 		return fmt.Sprintf("终止任务失败: %v", err)
 	}
 	return fmt.Sprintf("✅ 后台任务 %s 已终止", taskID)

@@ -16,6 +16,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"reflect"
 	"sort"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	llmcompat "github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 const codeGenQwenFlashMaxTokens = 8192
@@ -41,12 +43,45 @@ func setCodeGenUpstreamHeaders(req *http.Request, clientName string) {
 	}
 }
 
+func codeGenProxyOpenAIBaseURL(upURL, clientName string) string {
+	return corelib.NormalizeGLMCodingPlanOpenAIBaseURL(strings.TrimRight(strings.TrimSpace(upURL), "/"), clientName)
+}
+
+func codeGenProxyChatCompletionsEndpoint(upURL, clientName string) string {
+	baseURL := codeGenProxyOpenAIBaseURL(upURL, clientName)
+	if codeGenProxyHasEmptyURLPath(baseURL) {
+		return strings.TrimRight(baseURL, "/") + "/chat/completions"
+	}
+	return llmcompat.BuildOpenAIChatCompletionsEndpoint(baseURL)
+}
+
+func codeGenProxyModelsEndpoint(upURL, clientName, protocol string) string {
+	baseURL := codeGenProxyOpenAIBaseURL(upURL, clientName)
+	if codeGenProxyHasEmptyURLPath(baseURL) {
+		return strings.TrimRight(baseURL, "/") + "/models"
+	}
+	candidates := llmcompat.BuildOpenAIModelsEndpointCandidates(baseURL, protocol)
+	if len(candidates) == 0 {
+		return strings.TrimRight(strings.TrimSpace(upURL), "/") + "/models"
+	}
+	return candidates[0]
+}
+
+func codeGenProxyHasEmptyURLPath(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed == nil {
+		return false
+	}
+	return parsed.Scheme != "" && parsed.Host != "" && (parsed.Path == "" || parsed.Path == "/")
+}
+
 // Server is the local Anthropic→OpenAI protocol conversion proxy.
 type Server struct {
 	addr     string
 	listener net.Listener
 	srv      *http.Server
 	client   *http.Client // reused for upstream requests
+	upstream OpenAIUpstreamClient
 
 	mu             sync.RWMutex
 	upstreamURL    string // CodeGen OpenAI-compatible base URL
@@ -58,17 +93,30 @@ type Server struct {
 
 // NewServer creates a new codegen proxy server.
 func NewServer(addr string) *Server {
-	return &Server{
-		addr: addr,
-		client: &http.Client{
-			Timeout: 10 * time.Minute,
-			Transport: &http.Transport{
-				MaxIdleConns:       10,
-				IdleConnTimeout:    90 * time.Second,
-				DisableCompression: true, // SSE must not be compressed
-			},
+	client := &http.Client{
+		Timeout: 10 * time.Minute,
+		Transport: &http.Transport{
+			MaxIdleConns:       10,
+			IdleConnTimeout:    90 * time.Second,
+			DisableCompression: true, // SSE must not be compressed
 		},
 	}
+	return &Server{
+		addr:     addr,
+		client:   client,
+		upstream: NewOpenAISDKUpstreamClient(client),
+	}
+}
+
+// SetOpenAIUpstreamClient replaces the upstream OpenAI-compatible client.
+// Passing nil restores the default openai-go backed implementation.
+func (s *Server) SetOpenAIUpstreamClient(client OpenAIUpstreamClient) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if client == nil {
+		client = NewOpenAISDKUpstreamClient(s.client)
+	}
+	s.upstream = client
 }
 
 // SetUpstream configures the upstream CodeGen endpoint and API key.
@@ -104,6 +152,15 @@ func (s *Server) getConfig() (string, string, string, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.upstreamURL, s.apiKey, s.clientName, s.clientKey
+}
+
+func (s *Server) getUpstreamClient() OpenAIUpstreamClient {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.upstream != nil {
+		return s.upstream
+	}
+	return NewOpenAISDKUpstreamClient(s.client)
 }
 
 func (s *Server) getModelAlias(model string) string {
@@ -176,26 +233,32 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	defer close(shutdownDone)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", s.handleOpenAIChatCompletions)
+	mux.HandleFunc("/v1/responses", s.handleOpenAIResponses)
 	mux.HandleFunc("/v1/models", s.handleOpenAIModels)
+	mux.HandleFunc("/v1/models/", s.handleOpenAIModel)
 	mux.HandleFunc("/models", s.handleOpenAIModels)
 	mux.HandleFunc("/anthropic/v1/messages", s.handleMessages)
+	mux.HandleFunc("/anthropic/v1/messages/count_tokens", s.handleAnthropicCountTokens)
 	mux.HandleFunc("/anthropic/v1/models", s.handleModels)
+	mux.HandleFunc("/anthropic/v1/models/", s.handleAnthropicModel)
 	mux.HandleFunc("/health", s.handleHealth)
 
+	server := &http.Server{Handler: mux}
+	s.mu.Lock()
 	s.listener = listener
-
-	s.srv = &http.Server{Handler: mux}
-	log.Printf("[codegenproxy] listening on %s (Anthropic→OpenAI adapter)", s.listener.Addr())
+	s.srv = server
+	s.mu.Unlock()
+	log.Printf("[codegenproxy] listening on %s (Anthropic→OpenAI adapter)", listener.Addr())
 
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = s.srv.Shutdown(context.Background())
+			_ = server.Shutdown(context.Background())
 		case <-shutdownDone:
 		}
 	}()
 
-	if err := s.srv.Serve(s.listener); err != http.ErrServerClosed {
+	if err := server.Serve(listener); err != http.ErrServerClosed {
 		return err
 	}
 	return nil
@@ -203,15 +266,21 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 
 // Stop gracefully shuts down the server.
 func (s *Server) Stop() {
-	if s.srv != nil {
-		s.srv.Shutdown(context.Background())
+	s.mu.RLock()
+	server := s.srv
+	s.mu.RUnlock()
+	if server != nil {
+		_ = server.Shutdown(context.Background())
 	}
 }
 
 // Addr returns the listener address. Only valid after Start has bound.
 func (s *Server) Addr() net.Addr {
-	if s.listener != nil {
-		return s.listener.Addr()
+	s.mu.RLock()
+	listener := s.listener
+	s.mu.RUnlock()
+	if listener != nil {
+		return listener.Addr()
 	}
 	return nil
 }
@@ -230,8 +299,47 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	s.handleModelsForProtocol(w, r, "anthropic")
 }
 
+func (s *Server) handleAnthropicModel(w http.ResponseWriter, r *http.Request) {
+	s.handleModelForProtocol(w, r, "anthropic", strings.TrimPrefix(r.URL.Path, "/anthropic/v1/models/"))
+}
+
 func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 	s.handleModelsForProtocol(w, r, "openai")
+}
+
+func (s *Server) handleOpenAIModel(w http.ResponseWriter, r *http.Request) {
+	s.handleModelForProtocol(w, r, "openai", strings.TrimPrefix(r.URL.Path, "/v1/models/"))
+}
+
+func (s *Server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Request) {
+	reqID := newLogRequestID()
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	_, _, _, clientKey := s.getConfig()
+	if !s.authorizeClient(r, clientKey) {
+		log.Printf("[codegenproxy] anthropic count_tokens request id=%s rejected: invalid proxy api key", reqID)
+		writeError(w, http.StatusUnauthorized, "invalid proxy api key")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
+	if err != nil {
+		log.Printf("[codegenproxy] anthropic count_tokens read body error id=%s err=%v", reqID, err)
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		log.Printf("[codegenproxy] anthropic count_tokens parse error id=%s err=%v body=%s", reqID, err, truncateForLog(body, 4096))
+		writeError(w, http.StatusBadRequest, "parse body: "+err.Error())
+		return
+	}
+	inputTokens := estimateAnthropicCountTokens(payload)
+	log.Printf("[codegenproxy] anthropic count_tokens response id=%s model=%q input_tokens=%d messages=%d tools=%d",
+		reqID, logScalar(payload["model"]), inputTokens, logArrayLen(payload["messages"]), logArrayLen(payload["tools"]))
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]int{"input_tokens": inputTokens})
 }
 
 func (s *Server) handleModelsForProtocol(w http.ResponseWriter, r *http.Request, protocol string) {
@@ -251,13 +359,11 @@ func (s *Server) handleModelsForProtocol(w http.ResponseWriter, r *http.Request,
 	if clientKey == "" {
 		apiKey = resolveAPIKey(r, fallbackKey)
 	}
-	upEndpoint := upURL + "/models"
-	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, upEndpoint, nil)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	setCodeGenUpstreamHeaders(req, clientName)
+	upEndpoint := codeGenProxyModelsEndpoint(upURL, clientName, protocol)
+	normalizedClient := corelib.NormalizeCodeGenClientName(clientName)
 	log.Printf("[codegenproxy] models upstream request id=%s protocol=%s endpoint=%q client=%q user_agent=%q codegen_client=%q accept=%q",
-		reqID, protocol, upEndpoint, clientName, req.Header.Get("User-Agent"), req.Header.Get(corelib.CodeGenClientNameHeader), r.Header.Get("Accept"))
-	resp, err := s.client.Do(req)
+		reqID, protocol, upEndpoint, clientName, normalizedClient, normalizedClient, r.Header.Get("Accept"))
+	resp, err := s.getUpstreamClient().DoModels(r.Context(), upEndpoint, apiKey, clientName)
 	if err != nil {
 		log.Printf("[codegenproxy] models upstream failed id=%s protocol=%s endpoint=%q err=%v", reqID, protocol, upEndpoint, err)
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -291,6 +397,67 @@ func (s *Server) handleModelsForProtocol(w http.ResponseWriter, r *http.Request,
 		reqID, protocol, strings.Join(extractModelIDsFromModelsBody(normalized), ","))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(normalized)
+}
+
+func (s *Server) handleModelForProtocol(w http.ResponseWriter, r *http.Request, protocol, modelID string) {
+	reqID := newLogRequestID()
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	modelID, err := url.PathUnescape(strings.TrimSpace(modelID))
+	if err != nil || modelID == "" {
+		writeError(w, http.StatusBadRequest, "model id required")
+		return
+	}
+	upURL, fallbackKey, clientName, clientKey := s.getConfig()
+	if upURL == "" {
+		log.Printf("[codegenproxy] model request id=%s protocol=%s model=%q rejected: upstream not configured", reqID, protocol, modelID)
+		writeError(w, http.StatusServiceUnavailable, "upstream not configured")
+		return
+	}
+	if !s.authorizeClient(r, clientKey) {
+		log.Printf("[codegenproxy] model request id=%s protocol=%s model=%q rejected: invalid proxy api key", reqID, protocol, modelID)
+		writeError(w, http.StatusUnauthorized, "invalid proxy api key")
+		return
+	}
+	apiKey := fallbackKey
+	if clientKey == "" {
+		apiKey = resolveAPIKey(r, fallbackKey)
+	}
+	upEndpoint := codeGenProxyModelsEndpoint(upURL, clientName, protocol)
+	resp, err := s.getUpstreamClient().DoModels(r.Context(), upEndpoint, apiKey, clientName)
+	if err != nil {
+		log.Printf("[codegenproxy] model upstream failed id=%s protocol=%s model=%q endpoint=%q err=%v", reqID, protocol, modelID, upEndpoint, err)
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	if err != nil {
+		log.Printf("[codegenproxy] model upstream read failed id=%s protocol=%s model=%q endpoint=%q status=%d err=%v", reqID, protocol, modelID, upEndpoint, resp.StatusCode, err)
+		writeError(w, http.StatusBadGateway, "read upstream models: "+err.Error())
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(body)
+		return
+	}
+	normalized, err := normalizeSingleModelResponse(body, protocol, modelID)
+	if err != nil {
+		log.Printf("[codegenproxy] model normalize failed id=%s protocol=%s model=%q err=%v body=%s", reqID, protocol, modelID, err, truncateForLog(body, 4096))
+		writeError(w, http.StatusBadGateway, "parse upstream models: "+err.Error())
+		return
+	}
+	if len(normalized) == 0 {
+		log.Printf("[codegenproxy] model not found id=%s protocol=%s model=%q upstream_models=%s", reqID, protocol, modelID, strings.Join(extractModelIDsFromModelsBody(body), ","))
+		writeError(w, http.StatusNotFound, "model not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(normalized)
 }
 
@@ -337,16 +504,12 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	body, compatibilityNotes := applyCodeGenOpenAICompatibility(body)
 	requestSummary := summarizeOpenAIRequest(body)
 
-	upEndpoint := upURL + "/chat/completions"
-	upReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, upEndpoint, bytes.NewReader(body))
-	upReq.Header.Set("Content-Type", "application/json")
-	upReq.Header.Set("Accept", r.Header.Get("Accept"))
-	upReq.Header.Set("Authorization", "Bearer "+apiKey)
-	setCodeGenUpstreamHeaders(upReq, clientName)
+	upEndpoint := codeGenProxyChatCompletionsEndpoint(upURL, clientName)
+	normalizedClient := corelib.NormalizeCodeGenClientName(clientName)
 	log.Printf("[codegenproxy] openai chat upstream request id=%s endpoint=%q client=%q user_agent=%q codegen_client=%q accept=%q original_model=%q normalized_model=%q summary=%s compatibility=%s",
-		reqID, upEndpoint, clientName, upReq.Header.Get("User-Agent"), upReq.Header.Get(corelib.CodeGenClientNameHeader), r.Header.Get("Accept"), originalModel, normalizedModel, requestSummary, strings.Join(compatibilityNotes, ","))
+		reqID, upEndpoint, clientName, normalizedClient, normalizedClient, r.Header.Get("Accept"), originalModel, normalizedModel, requestSummary, strings.Join(compatibilityNotes, ","))
 
-	upResp, err := s.client.Do(upReq)
+	upResp, err := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, body, r.Header.Get("Accept"), logBoolFromBody(body, "stream"))
 	if err != nil {
 		log.Printf("[codegenproxy] openai chat upstream failed id=%s endpoint=%q model=%q err=%v", reqID, upEndpoint, normalizedModel, err)
 		writeError(w, http.StatusBadGateway, "upstream: "+err.Error())
@@ -359,12 +522,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		if retryBody, ok := prepareQwenFlashChatOnlyRetryBody(normalizedModel, body, upResp.StatusCode); ok {
 			log.Printf("[codegenproxy] openai chat retry without tools id=%s model=%q original_status=%d original_response=%s retry_summary=%s",
 				reqID, normalizedModel, upResp.StatusCode, truncateForLog(respBody, 2048), summarizeOpenAIRequest(retryBody))
-			retryReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, upEndpoint, bytes.NewReader(retryBody))
-			retryReq.Header.Set("Content-Type", "application/json")
-			retryReq.Header.Set("Accept", r.Header.Get("Accept"))
-			retryReq.Header.Set("Authorization", "Bearer "+apiKey)
-			setCodeGenUpstreamHeaders(retryReq, clientName)
-			retryResp, retryErr := s.client.Do(retryReq)
+			retryResp, retryErr := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, retryBody, r.Header.Get("Accept"), logBoolFromBody(retryBody, "stream"))
 			if retryErr != nil {
 				log.Printf("[codegenproxy] openai chat retry without tools failed id=%s model=%q err=%v", reqID, normalizedModel, retryErr)
 			} else {
@@ -378,6 +536,27 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 				} else {
 					respBody, _ = io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
 					log.Printf("[codegenproxy] openai chat retry without tools error id=%s model=%q status=%d content_type=%q response=%s",
+						reqID, normalizedModel, upResp.StatusCode, upResp.Header.Get("Content-Type"), truncateForLog(respBody, 2048))
+				}
+			}
+		}
+		if compactBody, ok := prepareCodeGenCompactChatRetryBody(upURL, normalizedModel, body, upResp.StatusCode); ok {
+			log.Printf("[codegenproxy] openai chat compact retry id=%s model=%q original_status=%d original_response=%s retry_summary=%s",
+				reqID, normalizedModel, upResp.StatusCode, truncateForLog(respBody, 2048), summarizeOpenAIRequest(compactBody))
+			compactResp, compactErr := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, compactBody, r.Header.Get("Accept"), logBoolFromBody(compactBody, "stream"))
+			if compactErr != nil {
+				log.Printf("[codegenproxy] openai chat compact retry failed id=%s model=%q err=%v", reqID, normalizedModel, compactErr)
+			} else {
+				upResp = compactResp
+				defer upResp.Body.Close()
+				body = compactBody
+				if upResp.StatusCode == http.StatusOK {
+					log.Printf("[codegenproxy] openai chat compact retry succeeded id=%s model=%q status=%d content_type=%q",
+						reqID, normalizedModel, upResp.StatusCode, upResp.Header.Get("Content-Type"))
+					respBody = nil
+				} else {
+					respBody, _ = io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
+					log.Printf("[codegenproxy] openai chat compact retry error id=%s model=%q status=%d content_type=%q response=%s",
 						reqID, normalizedModel, upResp.StatusCode, upResp.Header.Get("Content-Type"), truncateForLog(respBody, 2048))
 				}
 			}
@@ -399,6 +578,448 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	}
 	w.WriteHeader(upResp.StatusCode)
 	_, _ = io.Copy(w, upResp.Body)
+}
+
+// handleOpenAIResponses accepts the OpenAI Responses API shape used by newer
+// OpenAI/Codex clients and bridges non-streaming calls to CodeGen chat
+// completions.
+func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
+	reqID := newLogRequestID()
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+
+	upURL, fallbackKey, clientName, clientKey := s.getConfig()
+	if upURL == "" {
+		log.Printf("[codegenproxy] openai responses request id=%s rejected: upstream not configured", reqID)
+		writeError(w, http.StatusServiceUnavailable, "upstream not configured")
+		return
+	}
+	if !s.authorizeClient(r, clientKey) {
+		log.Printf("[codegenproxy] openai responses request id=%s rejected: invalid proxy api key", reqID)
+		writeError(w, http.StatusUnauthorized, "invalid proxy api key")
+		return
+	}
+	apiKey := fallbackKey
+	if clientKey == "" {
+		apiKey = resolveAPIKey(r, fallbackKey)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
+	if err != nil {
+		log.Printf("[codegenproxy] openai responses read body error id=%s err=%v", reqID, err)
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	chatBody, originalModel, err := convertOpenAIResponsesRequestToChat(body)
+	if err != nil {
+		log.Printf("[codegenproxy] openai responses convert request failed id=%s err=%v body=%s", reqID, err, truncateForLog(body, 4096))
+		writeError(w, http.StatusBadRequest, "convert responses request: "+err.Error())
+		return
+	}
+	chatBody = normalizeOpenAIModelInBody(chatBody)
+	normalizedModel := extractJSONFieldString(chatBody, "model")
+	if resolvedModel := s.resolveCodeGenModelAlias(r.Context(), upURL, apiKey, clientName, normalizedModel); resolvedModel != "" && resolvedModel != normalizedModel {
+		chatBody = setOpenAIModelInBody(chatBody, resolvedModel)
+		normalizedModel = resolvedModel
+	}
+	chatBody, compatibilityNotes := applyCodeGenOpenAICompatibility(chatBody)
+	stream := logBoolFromBody(chatBody, "stream")
+
+	upEndpoint := codeGenProxyChatCompletionsEndpoint(upURL, clientName)
+	log.Printf("[codegenproxy] openai responses upstream request id=%s endpoint=%q original_model=%q normalized_model=%q stream=%v summary=%s compatibility=%s",
+		reqID, upEndpoint, originalModel, normalizedModel, stream, summarizeOpenAIRequest(chatBody), strings.Join(compatibilityNotes, ","))
+
+	accept := "application/json"
+	if stream {
+		accept = "text/event-stream"
+	}
+	upResp, err := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, chatBody, accept, stream)
+	if err != nil {
+		log.Printf("[codegenproxy] openai responses upstream failed id=%s endpoint=%q model=%q err=%v", reqID, upEndpoint, normalizedModel, err)
+		writeError(w, http.StatusBadGateway, "upstream: "+err.Error())
+		return
+	}
+	defer upResp.Body.Close()
+	if stream {
+		s.handleOpenAIResponsesStream(w, upResp, normalizedModel, reqID)
+		return
+	}
+	respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 10*1024*1024))
+	if upResp.StatusCode != http.StatusOK {
+		log.Printf("[codegenproxy] openai responses upstream error id=%s endpoint=%q status=%d model=%q response=%s",
+			reqID, upEndpoint, upResp.StatusCode, normalizedModel, truncateForLog(respBody, 4096))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(upResp.StatusCode)
+		_, _ = w.Write(respBody)
+		return
+	}
+
+	responsesBody, err := convertOpenAIChatResponseToResponses(respBody, normalizedModel)
+	if err != nil {
+		log.Printf("[codegenproxy] openai responses convert response failed id=%s model=%q err=%v body=%s", reqID, normalizedModel, err, truncateForLog(respBody, 4096))
+		writeError(w, http.StatusBadGateway, "convert upstream response: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(responsesBody)
+}
+
+func (s *Server) handleOpenAIResponsesStream(w http.ResponseWriter, upResp *http.Response, model, reqID string) {
+	if upResp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(upResp.StatusCode)
+		_, _ = w.Write(respBody)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	respID := "resp_" + shortSHA256(reqID+":"+model)
+	msgID := "msg_" + shortSHA256(respID+":message")
+	seq := 1
+	nextOutputIndex := 0
+	textOutputIndex := -1
+	var text strings.Builder
+	textStarted := false
+	toolCalls := map[int]*responsesStreamToolCallAccum{}
+	var toolOrder []int
+	var payloadErr error
+	writeResponsesSSE(w, "response.created", map[string]interface{}{
+		"type":            "response.created",
+		"sequence_number": seq,
+		"response":        responsesStreamResponseObject(respID, model, "", false, -1, nil, nil),
+	})
+	seq++
+	flusher.Flush()
+
+	handlePayload := func(payload string) bool {
+		if strings.TrimSpace(payload) == "[DONE]" {
+			return false
+		}
+		var chunk openaiStreamChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			log.Printf("[codegenproxy] responses stream parse chunk failed id=%s model=%q err=%v payload=%s", reqID, model, err, truncateForLog([]byte(payload), 2048))
+			payloadErr = err
+			return false
+		}
+		for _, choice := range chunk.Choices {
+			if choice.Delta.Content != "" {
+				if !textStarted {
+					textOutputIndex = nextOutputIndex
+					nextOutputIndex++
+					writeResponsesSSE(w, "response.output_item.added", map[string]interface{}{
+						"type":            "response.output_item.added",
+						"sequence_number": seq,
+						"output_index":    textOutputIndex,
+						"item": map[string]interface{}{
+							"id":      msgID,
+							"type":    "message",
+							"status":  "in_progress",
+							"role":    "assistant",
+							"content": []interface{}{},
+						},
+					})
+					seq++
+					writeResponsesSSE(w, "response.content_part.added", map[string]interface{}{
+						"type":            "response.content_part.added",
+						"sequence_number": seq,
+						"item_id":         msgID,
+						"output_index":    textOutputIndex,
+						"content_index":   0,
+						"part": map[string]interface{}{
+							"type":        "output_text",
+							"text":        "",
+							"annotations": []interface{}{},
+						},
+					})
+					seq++
+					textStarted = true
+				}
+				text.WriteString(choice.Delta.Content)
+				writeResponsesSSE(w, "response.output_text.delta", map[string]interface{}{
+					"type":            "response.output_text.delta",
+					"sequence_number": seq,
+					"item_id":         msgID,
+					"output_index":    textOutputIndex,
+					"content_index":   0,
+					"delta":           choice.Delta.Content,
+					"logprobs":        []interface{}{},
+				})
+				seq++
+				flusher.Flush()
+			}
+			for _, tc := range choice.Delta.ToolCalls {
+				acc := toolCalls[tc.Index]
+				if acc == nil {
+					acc = &responsesStreamToolCallAccum{
+						Index:       tc.Index,
+						OutputIndex: -1,
+					}
+					toolCalls[tc.Index] = acc
+					toolOrder = append(toolOrder, tc.Index)
+				}
+				if tc.ID != "" {
+					acc.ID = tc.ID
+				}
+				if tc.Function.Name != "" {
+					acc.Name = tc.Function.Name
+				}
+				if tc.Function.Arguments != "" {
+					acc.Arguments += tc.Function.Arguments
+					acc.PendingArguments += tc.Function.Arguments
+				}
+				if acc.Name != "" && acc.ID != "" && !acc.Added {
+					if acc.OutputIndex < 0 {
+						acc.OutputIndex = nextOutputIndex
+						nextOutputIndex++
+					}
+					acc.ItemID = "fc_" + shortSHA256(acc.ID)
+					writeResponsesSSE(w, "response.output_item.added", map[string]interface{}{
+						"type":            "response.output_item.added",
+						"sequence_number": seq,
+						"output_index":    acc.OutputIndex,
+						"item": map[string]interface{}{
+							"id":        acc.ItemID,
+							"type":      "function_call",
+							"status":    "in_progress",
+							"call_id":   acc.ID,
+							"name":      acc.Name,
+							"arguments": "",
+						},
+					})
+					seq++
+					acc.Added = true
+				}
+				if acc.Added && acc.PendingArguments != "" {
+					writeResponsesSSE(w, "response.function_call_arguments.delta", map[string]interface{}{
+						"type":            "response.function_call_arguments.delta",
+						"sequence_number": seq,
+						"item_id":         acc.ItemID,
+						"output_index":    acc.OutputIndex,
+						"delta":           acc.PendingArguments,
+					})
+					seq++
+					acc.PendingArguments = ""
+					flusher.Flush()
+				}
+			}
+		}
+		return true
+	}
+	streamErr := readOpenAIStreamEvents(upResp.Body, handlePayload)
+	if streamErr == nil && payloadErr != nil {
+		streamErr = payloadErr
+	}
+	if streamErr != nil {
+		log.Printf("[codegenproxy] responses stream read failed id=%s model=%q err=%v", reqID, model, streamErr)
+		writeResponsesSSE(w, "error", map[string]interface{}{
+			"type":    "error",
+			"message": "upstream stream read failed",
+		})
+		flusher.Flush()
+		return
+	}
+
+	outputText := text.String()
+	if textStarted {
+		writeResponsesSSE(w, "response.output_text.done", map[string]interface{}{
+			"type":            "response.output_text.done",
+			"sequence_number": seq,
+			"item_id":         msgID,
+			"output_index":    textOutputIndex,
+			"content_index":   0,
+			"text":            outputText,
+			"logprobs":        []interface{}{},
+		})
+		seq++
+		writeResponsesSSE(w, "response.content_part.done", map[string]interface{}{
+			"type":            "response.content_part.done",
+			"sequence_number": seq,
+			"item_id":         msgID,
+			"output_index":    textOutputIndex,
+			"content_index":   0,
+			"part": map[string]interface{}{
+				"type":        "output_text",
+				"text":        outputText,
+				"annotations": []interface{}{},
+			},
+		})
+		seq++
+		writeResponsesSSE(w, "response.output_item.done", map[string]interface{}{
+			"type":            "response.output_item.done",
+			"sequence_number": seq,
+			"output_index":    textOutputIndex,
+			"item": map[string]interface{}{
+				"id":     msgID,
+				"type":   "message",
+				"status": "completed",
+				"role":   "assistant",
+				"content": []interface{}{map[string]interface{}{
+					"type":        "output_text",
+					"text":        outputText,
+					"annotations": []interface{}{},
+				}},
+			},
+		})
+		seq++
+	}
+	for _, idx := range toolOrder {
+		acc := toolCalls[idx]
+		if acc == nil || acc.Name == "" {
+			continue
+		}
+		if acc.ID == "" {
+			acc.ID = fmt.Sprintf("call_%s_%d", shortSHA256(respID), idx)
+		}
+		if acc.ItemID == "" {
+			acc.ItemID = "fc_" + shortSHA256(acc.ID)
+		}
+		if acc.OutputIndex < 0 {
+			acc.OutputIndex = nextOutputIndex
+			nextOutputIndex++
+		}
+		if !acc.Added {
+			writeResponsesSSE(w, "response.output_item.added", map[string]interface{}{
+				"type":            "response.output_item.added",
+				"sequence_number": seq,
+				"output_index":    acc.OutputIndex,
+				"item": map[string]interface{}{
+					"id":        acc.ItemID,
+					"type":      "function_call",
+					"status":    "in_progress",
+					"call_id":   acc.ID,
+					"name":      acc.Name,
+					"arguments": "",
+				},
+			})
+			seq++
+		}
+		if acc.PendingArguments != "" {
+			writeResponsesSSE(w, "response.function_call_arguments.delta", map[string]interface{}{
+				"type":            "response.function_call_arguments.delta",
+				"sequence_number": seq,
+				"item_id":         acc.ItemID,
+				"output_index":    acc.OutputIndex,
+				"delta":           acc.PendingArguments,
+			})
+			seq++
+			acc.PendingArguments = ""
+		}
+		writeResponsesSSE(w, "response.function_call_arguments.done", map[string]interface{}{
+			"type":            "response.function_call_arguments.done",
+			"sequence_number": seq,
+			"item_id":         acc.ItemID,
+			"output_index":    acc.OutputIndex,
+			"arguments":       acc.Arguments,
+		})
+		seq++
+		writeResponsesSSE(w, "response.output_item.done", map[string]interface{}{
+			"type":            "response.output_item.done",
+			"sequence_number": seq,
+			"output_index":    acc.OutputIndex,
+			"item": map[string]interface{}{
+				"id":        acc.ItemID,
+				"type":      "function_call",
+				"status":    "completed",
+				"call_id":   acc.ID,
+				"name":      acc.Name,
+				"arguments": acc.Arguments,
+			},
+		})
+		seq++
+	}
+	writeResponsesSSE(w, "response.completed", map[string]interface{}{
+		"type":            "response.completed",
+		"sequence_number": seq,
+		"response":        responsesStreamResponseObject(respID, model, outputText, true, textOutputIndex, toolOrder, toolCalls),
+	})
+	flusher.Flush()
+}
+
+type responsesStreamToolCallAccum struct {
+	Index            int
+	OutputIndex      int
+	ID               string
+	ItemID           string
+	Name             string
+	Arguments        string
+	PendingArguments string
+	Added            bool
+}
+
+func responsesStreamResponseObject(id, model, text string, completed bool, textOutputIndex int, toolOrder []int, toolCalls map[int]*responsesStreamToolCallAccum) map[string]interface{} {
+	status := "in_progress"
+	output := []interface{}{}
+	if completed {
+		status = "completed"
+		type outputItem struct {
+			index int
+			item  interface{}
+		}
+		var items []outputItem
+		hasTools := len(toolOrder) > 0
+		if text != "" || !hasTools {
+			if textOutputIndex < 0 {
+				textOutputIndex = 0
+			}
+			items = append(items, outputItem{index: textOutputIndex, item: map[string]interface{}{
+				"id":     "msg_" + shortSHA256(id+":message"),
+				"type":   "message",
+				"status": "completed",
+				"role":   "assistant",
+				"content": []interface{}{map[string]interface{}{
+					"type":        "output_text",
+					"text":        text,
+					"annotations": []interface{}{},
+				}},
+			}})
+		}
+		for _, idx := range toolOrder {
+			acc := toolCalls[idx]
+			if acc == nil || acc.Name == "" {
+				continue
+			}
+			items = append(items, outputItem{index: acc.OutputIndex, item: map[string]interface{}{
+				"id":        firstNonEmptyCodegenProxy(acc.ItemID, "fc_"+shortSHA256(acc.ID)),
+				"type":      "function_call",
+				"status":    "completed",
+				"call_id":   acc.ID,
+				"name":      acc.Name,
+				"arguments": acc.Arguments,
+			}})
+		}
+		sort.SliceStable(items, func(i, j int) bool { return items[i].index < items[j].index })
+		for _, item := range items {
+			output = append(output, item.item)
+		}
+	}
+	return map[string]interface{}{
+		"id":                  id,
+		"object":              "response",
+		"created_at":          float64(time.Now().Unix()),
+		"status":              status,
+		"model":               model,
+		"output":              output,
+		"parallel_tool_calls": false,
+		"tools":               []interface{}{},
+		"tool_choice":         "auto",
+		"temperature":         0,
+		"top_p":               0,
+		"metadata":            map[string]interface{}{},
+		"instructions":        nil,
+		"incomplete_details":  nil,
+		"error":               nil,
+		"usage":               map[string]interface{}{},
+	}
 }
 
 // handleMessages receives Anthropic Messages API requests, converts to
@@ -461,15 +1082,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	requestSummary := summarizeOpenAIRequest(reqData)
 
 	// Forward to upstream CodeGen using standard OpenAI Bearer auth.
-	upEndpoint := upURL + "/chat/completions"
-	upReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, upEndpoint, bytes.NewReader(reqData))
-	upReq.Header.Set("Content-Type", "application/json")
-	upReq.Header.Set("Authorization", "Bearer "+apiKey)
-	setCodeGenUpstreamHeaders(upReq, clientName)
+	upEndpoint := codeGenProxyChatCompletionsEndpoint(upURL, clientName)
+	normalizedClient := corelib.NormalizeCodeGenClientName(clientName)
 	log.Printf("[codegenproxy] anthropic upstream request id=%s endpoint=%q client=%q user_agent=%q codegen_client=%q model=%q summary=%s compatibility=%s",
-		reqID, upEndpoint, clientName, upReq.Header.Get("User-Agent"), upReq.Header.Get(corelib.CodeGenClientNameHeader), anthReq.Model, requestSummary, strings.Join(compatibilityNotes, ","))
+		reqID, upEndpoint, clientName, normalizedClient, normalizedClient, anthReq.Model, requestSummary, strings.Join(compatibilityNotes, ","))
 
-	upResp, err := s.client.Do(upReq)
+	upResp, err := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, reqData, r.Header.Get("Accept"), anthReq.Stream)
 	if err != nil {
 		log.Printf("[codegenproxy] upstream request failed id=%s model=%q stream=%v client=%q endpoint=%q request=%s err=%v",
 			reqID, anthReq.Model, anthReq.Stream, clientName, upEndpoint, truncateForLog(reqData, 4096), err)
@@ -483,11 +1101,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		if retryBody, ok := prepareQwenFlashChatOnlyRetryBody(anthReq.Model, reqData, upResp.StatusCode); ok {
 			log.Printf("[codegenproxy] anthropic retry without tools id=%s model=%q stream=%v original_status=%d original_response=%s retry_summary=%s",
 				reqID, anthReq.Model, anthReq.Stream, upResp.StatusCode, truncateForLog(respBody, 2048), summarizeOpenAIRequest(retryBody))
-			retryReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, upEndpoint, bytes.NewReader(retryBody))
-			retryReq.Header.Set("Content-Type", "application/json")
-			retryReq.Header.Set("Authorization", "Bearer "+apiKey)
-			setCodeGenUpstreamHeaders(retryReq, clientName)
-			retryResp, retryErr := s.client.Do(retryReq)
+			retryResp, retryErr := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, retryBody, r.Header.Get("Accept"), anthReq.Stream)
 			if retryErr != nil {
 				log.Printf("[codegenproxy] anthropic retry without tools failed id=%s model=%q stream=%v err=%v", reqID, anthReq.Model, anthReq.Stream, retryErr)
 			} else {
@@ -501,6 +1115,27 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 				} else {
 					respBody, _ = io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
 					log.Printf("[codegenproxy] anthropic retry without tools error id=%s model=%q stream=%v status=%d content_type=%q response=%s",
+						reqID, anthReq.Model, anthReq.Stream, upResp.StatusCode, upResp.Header.Get("Content-Type"), truncateForLog(respBody, 2048))
+				}
+			}
+		}
+		if compactBody, ok := prepareCodeGenCompactChatRetryBody(upURL, anthReq.Model, reqData, upResp.StatusCode); ok {
+			log.Printf("[codegenproxy] anthropic compact retry id=%s model=%q stream=%v original_status=%d original_response=%s retry_summary=%s",
+				reqID, anthReq.Model, anthReq.Stream, upResp.StatusCode, truncateForLog(respBody, 2048), summarizeOpenAIRequest(compactBody))
+			compactResp, compactErr := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, compactBody, r.Header.Get("Accept"), anthReq.Stream)
+			if compactErr != nil {
+				log.Printf("[codegenproxy] anthropic compact retry failed id=%s model=%q stream=%v err=%v", reqID, anthReq.Model, anthReq.Stream, compactErr)
+			} else {
+				upResp = compactResp
+				defer upResp.Body.Close()
+				reqData = compactBody
+				if upResp.StatusCode == http.StatusOK {
+					log.Printf("[codegenproxy] anthropic compact retry succeeded id=%s model=%q stream=%v status=%d content_type=%q",
+						reqID, anthReq.Model, anthReq.Stream, upResp.StatusCode, upResp.Header.Get("Content-Type"))
+					respBody = nil
+				} else {
+					respBody, _ = io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
+					log.Printf("[codegenproxy] anthropic compact retry error id=%s model=%q stream=%v status=%d content_type=%q response=%s",
 						reqID, anthReq.Model, anthReq.Stream, upResp.StatusCode, upResp.Header.Get("Content-Type"), truncateForLog(respBody, 2048))
 				}
 			}
@@ -1056,6 +1691,10 @@ func writeSSE(w http.ResponseWriter, event string, data interface{}) {
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(b))
 }
 
+func writeResponsesSSE(w http.ResponseWriter, event string, data interface{}) {
+	writeSSE(w, event, data)
+}
+
 func writeStreamError(w http.ResponseWriter, message string) {
 	writeSSE(w, "error", map[string]interface{}{
 		"type": "error",
@@ -1151,6 +1790,13 @@ func applyCodeGenOpenAIMapCompatibility(payload map[string]interface{}, model st
 		return nil
 	}
 	var notes []string
+	if messages := codeGenProxySliceFromAny(payload["messages"]); len(messages) > 0 {
+		sanitized := llmcompat.SanitizeOpenAICompatRequestMessages(messages, true)
+		if !reflect.DeepEqual(sanitized, messages) {
+			payload["messages"] = sanitized
+			notes = append(notes, fmt.Sprintf("codegen_sanitize_messages:%d", len(sanitized)))
+		}
+	}
 	for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
 		if _, ok := payload[key]; ok {
 			delete(payload, key)
@@ -1185,14 +1831,14 @@ func applyCodeGenOpenAIMapCompatibility(payload map[string]interface{}, model st
 		payload["max_tokens"] = codeGenQwenFlashMaxTokens
 		notes = append(notes, fmt.Sprintf("qwen_flash_max_tokens:%d->%d", maxTokens, codeGenQwenFlashMaxTokens))
 	}
-	if tools, ok := payload["tools"].([]interface{}); ok && len(tools) > 0 {
+	if tools := codeGenProxySliceFromAny(payload["tools"]); len(tools) > 0 {
 		sanitized := 0
 		for _, tool := range tools {
-			toolMap, ok := tool.(map[string]interface{})
-			if !ok {
+			toolMap := codeGenProxyMapFromAny(tool)
+			if toolMap == nil {
 				continue
 			}
-			if fn, ok := toolMap["function"].(map[string]interface{}); ok {
+			if fn := codeGenProxyMapFromAny(toolMap["function"]); fn != nil {
 				if sanitizeQwenFlashToolFunctionMap(fn) {
 					sanitized++
 				}
@@ -1352,20 +1998,20 @@ func mergeQwenFlashOpenAIAdjacentMessages(messages *[]openaiMessage) (int, int, 
 }
 
 func mergeQwenFlashAdjacentMessages(payload map[string]interface{}) (int, int, bool) {
-	messages, ok := payload["messages"].([]interface{})
-	if !ok || len(messages) < 2 {
+	messages := codeGenProxySliceFromAny(payload["messages"])
+	if len(messages) < 2 {
 		return len(messages), len(messages), false
 	}
 	merged := make([]interface{}, 0, len(messages))
 	for _, item := range messages {
-		msg, ok := item.(map[string]interface{})
-		if !ok {
+		msg := codeGenProxyMapFromAny(item)
+		if msg == nil {
 			merged = append(merged, item)
 			continue
 		}
 		if len(merged) > 0 {
-			prev, ok := merged[len(merged)-1].(map[string]interface{})
-			if ok {
+			prev := codeGenProxyMapFromAny(merged[len(merged)-1])
+			if prev != nil {
 				prevRole, _ := prev["role"].(string)
 				role, _ := msg["role"].(string)
 				if canMergeQwenFlashMessages(prevRole, role) {
@@ -1502,16 +2148,16 @@ func sanitizeQwenFlashOpenAISystemMessages(messages []openaiMessage) (int, int, 
 }
 
 func sanitizeQwenFlashSystemMessages(payload map[string]interface{}) (int, int, bool) {
-	messages, ok := payload["messages"].([]interface{})
-	if !ok {
+	messages := codeGenProxySliceFromAny(payload["messages"])
+	if len(messages) == 0 {
 		return 0, 0, false
 	}
 	totalBefore := 0
 	totalAfter := 0
 	changed := false
 	for _, item := range messages {
-		msg, ok := item.(map[string]interface{})
-		if !ok {
+		msg := codeGenProxyMapFromAny(item)
+		if msg == nil {
 			continue
 		}
 		role, _ := msg["role"].(string)
@@ -1530,6 +2176,9 @@ func sanitizeQwenFlashSystemMessages(payload map[string]interface{}) (int, int, 
 			continue
 		}
 		totalAfter += len(text)
+	}
+	if changed {
+		payload["messages"] = messages
 	}
 	return totalBefore, totalAfter, changed
 }
@@ -1781,14 +2430,14 @@ func countSchemaMap(value interface{}, stats *toolSchemaStats, depth int) {
 }
 
 func summarizeMessageRoles(value interface{}) string {
-	messages, ok := value.([]interface{})
-	if !ok {
+	messages := codeGenProxySliceFromAny(value)
+	if len(messages) == 0 {
 		return "-"
 	}
 	roles := make([]string, 0, len(messages))
 	for _, item := range messages {
-		msg, ok := item.(map[string]interface{})
-		if !ok {
+		msg := codeGenProxyMapFromAny(item)
+		if msg == nil {
 			roles = append(roles, "?")
 			continue
 		}
@@ -1802,15 +2451,15 @@ func summarizeMessageRoles(value interface{}) string {
 }
 
 func summarizeSystemMessages(value interface{}) (int, int) {
-	messages, ok := value.([]interface{})
-	if !ok {
+	messages := codeGenProxySliceFromAny(value)
+	if len(messages) == 0 {
 		return 0, 0
 	}
 	totalBytes := 0
 	claudeMarkers := 0
 	for _, item := range messages {
-		msg, ok := item.(map[string]interface{})
-		if !ok {
+		msg := codeGenProxyMapFromAny(item)
+		if msg == nil {
 			continue
 		}
 		role, _ := msg["role"].(string)
@@ -1842,8 +2491,8 @@ func isRiskyQwenFlashSchemaKey(key string) bool {
 	}
 }
 
-func prepareQwenFlashChatOnlyRetryBody(model string, body []byte, status int) ([]byte, bool) {
-	if status != http.StatusBadRequest || !isQwenFlashModel(model) {
+func prepareQwenFlashChatOnlyRetryBody(_ string, body []byte, status int) ([]byte, bool) {
+	if status != http.StatusBadRequest {
 		return nil, false
 	}
 	var payload map[string]interface{}
@@ -1866,34 +2515,142 @@ func prepareQwenFlashChatOnlyRetryBody(model string, body []byte, status int) ([
 	return out, true
 }
 
+func prepareCodeGenCompactChatRetryBody(upURL, model string, body []byte, status int) ([]byte, bool) {
+	if status != http.StatusBadRequest {
+		return nil, false
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, false
+	}
+	messages := codeGenProxySliceFromAny(payload["messages"])
+	if len(messages) == 0 {
+		return nil, false
+	}
+	cfg := corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: model, ProviderName: "CodeGen"}
+	compactMessages := llmcompat.CompactOpenAICompatMessagesForToollessRetry(cfg, messages)
+	if len(compactMessages) == 0 {
+		return nil, false
+	}
+	if reflect.DeepEqual(messages, compactMessages) && logArrayLen(payload["tools"]) == 0 && logArrayLen(payload["functions"]) == 0 {
+		return nil, false
+	}
+	outPayload := map[string]interface{}{
+		"model":    model,
+		"messages": compactMessages,
+	}
+	for _, key := range []string{"stream", "max_tokens", "temperature", "top_p"} {
+		if value, ok := payload[key]; ok {
+			outPayload[key] = value
+		}
+	}
+	notes := applyCodeGenOpenAIMapCompatibility(outPayload, model)
+	if len(notes) > 0 {
+		log.Printf("[codegenproxy] compact retry compatibility model=%q compatibility=%s", model, strings.Join(notes, ","))
+	}
+	out, err := json.Marshal(outPayload)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
 func sanitizeChatOnlyMessages(payload map[string]interface{}) {
-	messages, ok := payload["messages"].([]interface{})
-	if !ok {
+	messages := codeGenProxySliceFromAny(payload["messages"])
+	if len(messages) == 0 {
 		return
 	}
+	changed := false
 	for _, item := range messages {
-		msg, ok := item.(map[string]interface{})
-		if !ok {
+		msg := codeGenProxyMapFromAny(item)
+		if msg == nil {
 			continue
 		}
 		role, _ := msg["role"].(string)
 		if role == "tool" {
 			msg["role"] = "user"
+			changed = true
 			if id, _ := msg["tool_call_id"].(string); id != "" {
 				msg["content"] = fmt.Sprintf("Tool result (%s): %s", id, logScalar(msg["content"]))
 			}
 		}
-		delete(msg, "tool_calls")
-		delete(msg, "tool_call_id")
-		delete(msg, "function_call")
+		for _, key := range []string{"tool_calls", "tool_call_id", "function_call"} {
+			if _, ok := msg[key]; ok {
+				delete(msg, key)
+				changed = true
+			}
+		}
+	}
+	if changed {
+		payload["messages"] = messages
 	}
 }
 
 func logArrayLen(value interface{}) int {
-	if items, ok := value.([]interface{}); ok {
-		return len(items)
+	return len(codeGenProxySliceFromAny(value))
+}
+
+func firstNonEmptyCodegenProxy(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
 	}
-	return 0
+	return ""
+}
+
+func codeGenProxyMapFromAny(value interface{}) map[string]interface{} {
+	switch m := value.(type) {
+	case map[string]interface{}:
+		return m
+	case map[string]string:
+		out := make(map[string]interface{}, len(m))
+		for k, v := range m {
+			out[k] = v
+		}
+		return out
+	default:
+		data, err := json.Marshal(value)
+		if err != nil || len(data) == 0 || string(data) == "null" {
+			return nil
+		}
+		var out map[string]interface{}
+		if err := json.Unmarshal(data, &out); err != nil || len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+}
+
+func codeGenProxySliceFromAny(value interface{}) []interface{} {
+	switch items := value.(type) {
+	case nil:
+		return nil
+	case []interface{}:
+		return items
+	case []map[string]interface{}:
+		out := make([]interface{}, 0, len(items))
+		for _, item := range items {
+			out = append(out, item)
+		}
+		return out
+	case []map[string]string:
+		out := make([]interface{}, 0, len(items))
+		for _, item := range items {
+			out = append(out, item)
+		}
+		return out
+	default:
+		data, err := json.Marshal(value)
+		if err != nil || len(data) == 0 || string(data) == "null" {
+			return nil
+		}
+		var out []interface{}
+		if err := json.Unmarshal(data, &out); err != nil {
+			return nil
+		}
+		return out
+	}
 }
 
 func logBool(value interface{}) bool {
@@ -1901,6 +2658,14 @@ func logBool(value interface{}) bool {
 		return b
 	}
 	return false
+}
+
+func logBoolFromBody(body []byte, key string) bool {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	return logBool(payload[key])
 }
 
 func logScalar(value interface{}) string {
@@ -1943,6 +2708,56 @@ func normalizeModelNameForMatch(model string) string {
 	return model
 }
 
+func estimateAnthropicCountTokens(payload map[string]interface{}) int {
+	total := 0
+	for _, key := range []string{"system", "messages", "tools"} {
+		total += estimateAnthropicTokenValue(payload[key])
+	}
+	if total <= 0 {
+		total = 1
+	}
+	return total
+}
+
+func estimateAnthropicTokenValue(value interface{}) int {
+	switch v := value.(type) {
+	case nil:
+		return 0
+	case string:
+		return corelib.EstimateTextTokens(v)
+	case []interface{}:
+		total := 0
+		for _, item := range v {
+			total += estimateAnthropicTokenValue(item)
+		}
+		return total
+	case map[string]interface{}:
+		total := 0
+		for key, child := range v {
+			if key == "cache_control" {
+				continue
+			}
+			if s, ok := child.(string); ok {
+				total += corelib.EstimateTextTokens(s)
+				continue
+			}
+			total += estimateAnthropicTokenValue(child)
+		}
+		if total == 0 && len(v) > 0 {
+			if data, err := json.Marshal(v); err == nil {
+				total = corelib.EstimateTextTokens(string(data))
+			}
+		}
+		return total
+	default:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return 0
+		}
+		return corelib.EstimateTextTokens(string(data))
+	}
+}
+
 func (s *Server) resolveCodeGenModelAlias(ctx context.Context, upURL, apiKey, clientName, model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" || strings.Contains(model, "/") {
@@ -1954,14 +2769,8 @@ func (s *Server) resolveCodeGenModelAlias(ctx context.Context, upURL, apiKey, cl
 	if !shouldRefreshCodeGenModelAlias(model) {
 		return model
 	}
-	upEndpoint := strings.TrimRight(upURL, "/") + "/models"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upEndpoint, nil)
-	if err != nil {
-		return model
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	setCodeGenUpstreamHeaders(req, clientName)
-	resp, err := s.client.Do(req)
+	upEndpoint := codeGenProxyModelsEndpoint(upURL, clientName, "openai")
+	resp, err := s.getUpstreamClient().DoModels(ctx, upEndpoint, apiKey, clientName)
 	if err != nil {
 		log.Printf("[codegenproxy] model alias refresh failed model=%q endpoint=%q err=%v", model, upEndpoint, err)
 		return model
@@ -2119,6 +2928,56 @@ func normalizeModelsResponse(body []byte, protocol string) ([]byte, error) {
 	return json.Marshal(out)
 }
 
+func normalizeSingleModelResponse(body []byte, protocol, modelID string) ([]byte, error) {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	entries, ok := modelEntries(raw)
+	if !ok {
+		id := normalizeModelIdentifier(modelField(raw, "id", "name"))
+		if sameModelID(id, modelID) {
+			return normalizeSingleModelMap(raw, protocol), nil
+		}
+		return nil, nil
+	}
+	for _, entry := range entries {
+		m, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id := normalizeModelIdentifier(modelField(m, "id", "name"))
+		name := normalizeModelIdentifier(modelField(m, "name", "display_name"))
+		if sameModelID(id, modelID) || sameModelID(name, modelID) {
+			return normalizeSingleModelMap(m, protocol), nil
+		}
+	}
+	return nil, nil
+}
+
+func normalizeSingleModelMap(m map[string]interface{}, protocol string) []byte {
+	if protocol == "anthropic" {
+		out := normalizeAnthropicModelMap(m)
+		data, _ := json.Marshal(out)
+		return data
+	}
+	id := normalizeModelIdentifier(modelField(m, "id", "name"))
+	out := map[string]interface{}{
+		"id":       id,
+		"object":   "model",
+		"created":  0,
+		"owned_by": modelField(m, "provider"),
+	}
+	data, _ := json.Marshal(out)
+	return data
+}
+
+func sameModelID(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	return a != "" && strings.EqualFold(a, b)
+}
+
 func modelEntries(raw map[string]interface{}) ([]interface{}, bool) {
 	if data, ok := raw["data"].([]interface{}); ok {
 		return data, true
@@ -2161,17 +3020,36 @@ func normalizeAnthropicModels(entries []interface{}) []map[string]interface{} {
 		if id == "" {
 			continue
 		}
-		display := modelField(m, "display_name", "name")
-		if display == "" {
-			display = id
-		}
-		models = append(models, map[string]interface{}{
-			"id":           id,
-			"display_name": display,
-			"type":         "model",
-		})
+		models = append(models, normalizeAnthropicModelMap(m))
 	}
 	return models
+}
+
+func normalizeAnthropicModelMap(m map[string]interface{}) map[string]interface{} {
+	id := normalizeModelIdentifier(modelField(m, "id", "name"))
+	display := modelField(m, "display_name", "name")
+	if display == "" {
+		display = id
+	}
+	return map[string]interface{}{
+		"id":               id,
+		"display_name":     display,
+		"type":             "model",
+		"created_at":       "1970-01-01T00:00:00Z",
+		"max_input_tokens": 200000,
+		"max_tokens":       codeGenQwenFlashMaxTokens,
+		"capabilities": map[string]interface{}{
+			"input_modalities":  []string{"text"},
+			"output_modalities": []string{"text"},
+			"thinking": map[string]interface{}{
+				"supported": false,
+				"types": map[string]interface{}{
+					"enabled":  map[string]interface{}{"supported": false},
+					"adaptive": map[string]interface{}{"supported": false},
+				},
+			},
+		},
+	}
 }
 
 func modelField(m map[string]interface{}, keys ...string) string {

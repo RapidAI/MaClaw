@@ -28,12 +28,14 @@ var guiFuncCallBlock = regexp.MustCompile(`(?s)<\|FunctionCallBegin\|>.*?<\|Func
 var openAICompatibleHTTPStatusRe = regexp.MustCompile(`HTTP\s+(\d+)`)
 
 const (
-	guiThinkOpen     = "<think>"
-	guiThinkClose    = "</think>"
-	guiFuncCallOpen  = "<|FunctionCallBegin|>"
-	guiFuncCallClose = "<|FunctionCallEnd|>"
-	guiToolCallOpen  = "<tool_call>"
-	guiToolCallClose = "</tool_call>"
+	guiThinkOpen          = "<think>"
+	guiThinkClose         = "</think>"
+	guiFuncCallOpen       = "<|FunctionCallBegin|>"
+	guiFuncCallClose      = "<|FunctionCallEnd|>"
+	guiToolCallOpen       = "<tool_call>"
+	guiToolCallClose      = "</tool_call>"
+	guiCodexToolCallOpen  = "<turn: tool_call>"
+	guiCodexToolCallClose = "</turn>"
 	// Keep the stream watchdog conservative: remote LLM gateways can stay
 	// silent for minutes during long reasoning/tool-planning phases while the
 	// upstream request is still healthy. A short 90s idle window caused false
@@ -204,7 +206,7 @@ func classifyOpenAIHTTPError(statusCode int, body []byte, providerName string) s
 	_ = json.Unmarshal(body, &errBody)
 	code := errBody.Error.Code
 	typ := errBody.Error.Type
-	msg := errBody.Error.Message
+	msg := extractOpenAIHTTPErrorMessage(body, errBody.Error.Message)
 
 	if friendly := classifyHubErrorBody(body); friendly != "" {
 		return friendly
@@ -221,6 +223,8 @@ func classifyOpenAIHTTPError(statusCode int, body []byte, providerName string) s
 	switch {
 	case code == "insufficient_quota" || typ == "insufficient_quota":
 		return fmt.Sprintf("%s 账号额度不足，请检查账单和付费计划 (insufficient_quota)", providerDisplay)
+	case statusCode == http.StatusBadRequest && strings.TrimSpace(msg) != "":
+		return fmt.Sprintf("%s API invalid request (HTTP 400): %s", providerDisplay, summarizeProviderHTTPErrorMessage(msg))
 	case statusCode == http.StatusTooManyRequests:
 		if strings.Contains(string(body), "rate_limit") {
 			return fmt.Sprintf("%s API 请求频率超限，请稍后再试 (rate_limit)", providerDisplay)
@@ -247,6 +251,33 @@ func classifyOpenAIHTTPError(statusCode int, body []byte, providerName string) s
 	default:
 		return fmt.Sprintf("%s API 错误 (HTTP %d)", providerDisplay, statusCode)
 	}
+}
+
+func extractOpenAIHTTPErrorMessage(body []byte, fallback string) string {
+	if strings.TrimSpace(fallback) != "" {
+		return fallback
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	for _, key := range []string{"message", "msg", "detail"} {
+		msg, _ := payload[key].(string)
+		if strings.TrimSpace(msg) != "" {
+			return msg
+		}
+	}
+	return ""
+}
+
+func summarizeProviderHTTPErrorMessage(msg string) string {
+	msg = strings.Join(strings.Fields(msg), " ")
+	const limit = 300
+	runes := []rune(msg)
+	if len(runes) <= limit {
+		return msg
+	}
+	return string(runes[:limit]) + "..."
 }
 
 func classifyHubLLMServiceError(code, message string, retryAfterSeconds int64, retryAfterAt string) string {
@@ -595,8 +626,122 @@ func newFuncCallFilter(downstream llm.TokenCallback) tokenStreamFilter {
 }
 
 func newToolCallFilter(downstream llm.TokenCallback) tokenStreamFilter {
-	f := newFlushableTagFilter(downstream, guiToolCallOpen, guiToolCallClose)
-	return tokenStreamFilter{writeFn: f.Write, flushFn: f.Flush}
+	plainFilter := newPlainToolCallStreamFilter(downstream)
+	xmlFilter := newFlushableTagFilter(plainFilter.Write, guiToolCallOpen, guiToolCallClose)
+	codexFilter := newFlushableTagFilter(xmlFilter.Write, guiCodexToolCallOpen, guiCodexToolCallClose)
+	return tokenStreamFilter{
+		writeFn: codexFilter.Write,
+		flushFn: func() {
+			codexFilter.Flush()
+			xmlFilter.Flush()
+			plainFilter.Flush()
+		},
+	}
+}
+
+type plainToolCallStreamFilter struct {
+	downstream llm.TokenCallback
+	pending    strings.Builder
+	suppressed bool
+}
+
+func newPlainToolCallStreamFilter(downstream llm.TokenCallback) *plainToolCallStreamFilter {
+	return &plainToolCallStreamFilter{downstream: downstream}
+}
+
+func (f *plainToolCallStreamFilter) Write(delta string) {
+	if f.suppressed {
+		return
+	}
+	f.pending.WriteString(delta)
+	f.drain(false)
+}
+
+func (f *plainToolCallStreamFilter) Flush() {
+	f.drain(true)
+}
+
+func (f *plainToolCallStreamFilter) drain(force bool) {
+	if f.suppressed {
+		f.pending.Reset()
+		return
+	}
+	s := f.pending.String()
+	if s == "" {
+		return
+	}
+	if looksLikeBareJSONToolCallStreamPrefix(s) {
+		if !force {
+			return
+		}
+		if calls, malformed := llm.ParseContentToolCallsDetailed(s); len(calls) > 0 || malformed || bareJSONToolCallTextLooksLikely(s) {
+			f.suppressed = true
+			f.pending.Reset()
+			return
+		}
+	}
+	idx := strings.Index(strings.ToLower(s), "tool_call")
+	if idx >= 0 {
+		if idx > 0 {
+			f.downstream(s[:idx])
+		}
+		f.suppressed = true
+		f.pending.Reset()
+		return
+	}
+	const marker = "tool_call"
+	partial := 0
+	lower := strings.ToLower(s)
+	max := len(marker) - 1
+	if len(lower) < max {
+		max = len(lower)
+	}
+	for i := max; i > 0; i-- {
+		if strings.HasSuffix(lower, marker[:i]) {
+			partial = i
+			break
+		}
+	}
+	if partial > 0 && !force {
+		if len(s) > partial {
+			f.downstream(s[:len(s)-partial])
+			f.pending.Reset()
+			f.pending.WriteString(s[len(s)-partial:])
+		}
+		return
+	}
+	f.downstream(s)
+	f.pending.Reset()
+}
+
+func bareJSONToolCallTextLooksLikely(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) >= 2 {
+			trimmed = strings.TrimSpace(strings.Join(lines[1:], "\n"))
+		}
+	}
+	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return strings.Contains(lower, `"tool_calls"`) ||
+		strings.Contains(lower, `"function_call"`) ||
+		(strings.Contains(lower, `"function"`) && strings.Contains(lower, `"arguments"`)) ||
+		(strings.Contains(lower, `"name"`) && strings.Contains(lower, `"arguments"`))
+}
+
+func looksLikeBareJSONToolCallStreamPrefix(content string) bool {
+	trimmed := strings.TrimLeft(content, " \t\r\n")
+	if trimmed == "" {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix("```json", lower) || strings.HasPrefix(lower, "```json") {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
 }
 
 type llmStreamMetrics struct {
@@ -822,6 +967,8 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	onToken llm.TokenCallback,
 	metrics *llmStreamMetrics,
 ) (*llm.Response, error) {
+	return h.doOpenAILLMRequestStreamSDK(reqCtx, cfg, messages, tools, httpClient, onToken, metrics)
+
 	requestBuildStartedAt := time.Now()
 	req, reqBody, endpoint, err := llm.NewOpenAIChatRequest(reqCtx, cfg, messages, llm.OpenAIChatRequestOptions{
 		Stream: true,
@@ -861,6 +1008,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		log.Printf("[LLM Stream] HTTP %d: endpoint=%s content_type=%q body_len=%d request=%s", resp.StatusCode, endpoint, resp.Header.Get("Content-Type"), len(body), llm.SummarizeOpenAIChatRequestBody(reqBody))
+		compactRetryAttempted := false
 		if llm.ShouldRetryOpenAIWithoutTools(cfg, resp.StatusCode, messages, tools) {
 			log.Printf("[LLM Stream] retry_without_tools endpoint=%s model=%s configured_model=%s reason=conservative_openai_compat_400 tools=%d %s", endpoint, upstreamModel, cfg.Model, len(tools), llm.RequestTraceLogFields(reqCtx))
 			req, reqBody, endpoint, err = llm.NewOpenAIChatRequest(reqCtx, cfg, messages, llm.OpenAIChatRequestOptions{Stream: true})
@@ -879,11 +1027,59 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 			if resp.StatusCode >= 400 {
 				body, _ = io.ReadAll(io.LimitReader(resp.Body, 4096))
 				log.Printf("[LLM Stream] retry_without_tools HTTP %d: endpoint=%s content_type=%q body_len=%d request=%s", resp.StatusCode, endpoint, resp.Header.Get("Content-Type"), len(body), llm.SummarizeOpenAIChatRequestBody(reqBody))
-				friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
-				return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, upstreamModel)
+				compactMessages := llm.CompactOpenAICompatMessagesForToollessRetry(cfg, messages)
+				if len(compactMessages) > 0 {
+					compactRetryAttempted = true
+					log.Printf("[LLM Stream] retry_compact_without_tools endpoint=%s model=%s configured_model=%s reason=conservative_openai_compat_400 %s", endpoint, upstreamModel, cfg.Model, llm.RequestTraceLogFields(reqCtx))
+					req, reqBody, endpoint, err = llm.NewOpenAIChatRequest(reqCtx, cfg, compactMessages, llm.OpenAIChatRequestOptions{Stream: true})
+					if err != nil {
+						return nil, err
+					}
+					httpDoStartedAt = time.Now()
+					resp, err = httpClient.Do(req)
+					if metrics != nil {
+						metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
+					}
+					if err != nil {
+						return nil, fmt.Errorf("[%s] %w", endpoint, err)
+					}
+					defer resp.Body.Close()
+					if resp.StatusCode >= 400 {
+						body, _ = io.ReadAll(io.LimitReader(resp.Body, 4096))
+						log.Printf("[LLM Stream] retry_compact_without_tools HTTP %d: endpoint=%s content_type=%q body_len=%d request=%s", resp.StatusCode, endpoint, resp.Header.Get("Content-Type"), len(body), llm.SummarizeOpenAIChatRequestBody(reqBody))
+					}
+				}
+				if resp.StatusCode < 400 {
+					// Continue below with the successful compact retry response.
+				} else {
+					friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
+					return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, upstreamModel)
+				}
 			}
 			// Continue below with the successful retry response.
-		} else {
+		}
+		if resp.StatusCode >= 400 && !compactRetryAttempted && llm.ShouldRetryOpenAIWithCompact(cfg, resp.StatusCode, messages) {
+			compactMessages := llm.CompactOpenAICompatMessagesForToollessRetry(cfg, messages)
+			log.Printf("[LLM Stream] retry_compact_without_tools endpoint=%s model=%s configured_model=%s reason=conservative_openai_compat_400_direct %s", endpoint, upstreamModel, cfg.Model, llm.RequestTraceLogFields(reqCtx))
+			req, reqBody, endpoint, err = llm.NewOpenAIChatRequest(reqCtx, cfg, compactMessages, llm.OpenAIChatRequestOptions{Stream: true})
+			if err != nil {
+				return nil, err
+			}
+			httpDoStartedAt = time.Now()
+			resp, err = httpClient.Do(req)
+			if metrics != nil {
+				metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
+			}
+			if err != nil {
+				return nil, fmt.Errorf("[%s] %w", endpoint, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 400 {
+				body, _ = io.ReadAll(io.LimitReader(resp.Body, 4096))
+				log.Printf("[LLM Stream] retry_compact_without_tools HTTP %d: endpoint=%s content_type=%q body_len=%d request=%s", resp.StatusCode, endpoint, resp.Header.Get("Content-Type"), len(body), llm.SummarizeOpenAIChatRequestBody(reqBody))
+			}
+		}
+		if resp.StatusCode >= 400 {
 			friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
 			return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, upstreamModel)
 		}
@@ -1139,9 +1335,13 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		}
 	}
 	if len(msg.ToolCalls) == 0 {
-		if xmlCalls := parseXMLContentToolCalls(contentBuf.String()); len(xmlCalls) > 0 {
+		if xmlCalls, malformed := parseXMLContentToolCallsDetailed(contentBuf.String()); len(xmlCalls) > 0 {
 			msg.ToolCalls = append(msg.ToolCalls, xmlCalls...)
 			finishReason = llmFinishReasonToolCalls.String()
+			msg.Content = ""
+		} else if malformed {
+			msg.Content = llm.MalformedContentToolCallErrorMsg
+			finishReason = llmFinishReasonStop.String()
 		}
 	}
 
@@ -1155,6 +1355,117 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	return &llm.Response{
 		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools}},
 		Usage:   usage,
+	}, nil
+}
+
+func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
+	reqCtx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	httpClient *http.Client,
+	onToken llm.TokenCallback,
+	metrics *llmStreamMetrics,
+) (*llm.Response, error) {
+	requestBuildStartedAt := time.Now()
+	endpoint, reqBody, err := llm.BuildOpenAIChatRequestData(cfg, messages, llm.OpenAIChatRequestOptions{
+		Stream: true,
+		Tools:  tools,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if metrics != nil {
+		metrics.RequestBuildNanos += time.Since(requestBuildStartedAt).Nanoseconds()
+	}
+	upstreamModel := cfg.UpstreamModel()
+	log.Printf("[LLM Stream] POST %s model=%s configured_model=%s protocol=%s sdk=openai-go %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, llm.RequestTraceLogFields(reqCtx))
+
+	var filteredBuf strings.Builder
+	filteredOnToken := func(delta string) {
+		filteredBuf.WriteString(delta)
+		if onToken != nil {
+			onToken(delta)
+		}
+	}
+	rpf := newRolePrefixStreamFilter(filteredOnToken)
+	repf := newRepetitionFilter(rpf.Write)
+	tcf := newToolCallFilter(repf.Write)
+	fcf := newFuncCallFilter(tcf.Callback())
+	tf := newThinkFilter(fcf.Callback())
+
+	httpDoStartedAt := time.Now()
+	resp, err := llm.DoOpenAIRequestStream(reqCtx, cfg, messages, tools, httpClient, func(delta string) {
+		tf.Write(delta)
+	})
+	if metrics != nil {
+		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
+	}
+	if err != nil {
+		if friendly, ok := classifyOpenAICompatibleHTTPError(err, cfg.ProviderName); ok {
+			log.Printf("[LLM Stream] SDK error endpoint=%s request=%s err=%v", endpoint, llm.SummarizeOpenAIChatRequestBody(reqBody), err)
+			return nil, fmt.Errorf("%s [url=%s model=%s]", friendly, endpoint, upstreamModel)
+		}
+		return nil, fmt.Errorf("[%s] %w", endpoint, err)
+	}
+
+	tf.Flush()
+	fcf.Flush()
+	tcf.Flush()
+	repf.Flush()
+	rpf.Flush()
+	if repf.Halted() {
+		log.Printf("[LLM Stream] repetition filter halted: suppressed %d runes", repf.SuppressedRunes())
+	}
+	if rpf.Halted() {
+		log.Printf("[LLM Stream] role prefix filter halted: suppressed %d runes", rpf.SuppressedRunes())
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		return resp, nil
+	}
+
+	choice := resp.Choices[0]
+	msg := choice.Message
+	rawContent := msg.Content
+	if rawContent == "" {
+		rawContent = msg.ReasoningContent
+	}
+	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(rawContent)))
+	filteredStr := filteredBuf.String()
+	if filteredStr != "" {
+		content = stripXMLToolCalls(filteredStr)
+	}
+	BrowserDiagCP5_StreamFilter(
+		rpf.Halted(), rpf.SuppressedRunes(),
+		repf.Halted(), repf.SuppressedRunes(),
+		rpf.Halted(),
+		browserDiagHasBrowserRolePrefix(filteredStr),
+		filteredStr,
+	)
+	reasoning := stripRolePrefixReasoningForDisplay(msg.ReasoningContent)
+	if content == "" && reasoning != "" {
+		content = stripXMLToolCalls(stripFunctionCalls(stripThinkTags(reasoning)))
+	}
+	msg.Content = content
+	msg.ReasoningContent = reasoning
+	finishReason := choice.FinishReason
+	if len(msg.ToolCalls) == 0 {
+		if xmlCalls, malformed := parseXMLContentToolCallsDetailed(rawContent); len(xmlCalls) > 0 {
+			msg.ToolCalls = append(msg.ToolCalls, xmlCalls...)
+			finishReason = llmFinishReasonToolCalls.String()
+			msg.Content = ""
+		} else if malformed {
+			msg.Content = llm.MalformedContentToolCallErrorMsg
+			finishReason = llmFinishReasonStop.String()
+		}
+	}
+	if finishReason == "" {
+		finishReason = llmFinishReasonStop.String()
+	}
+	finishReason, truncatedTools := filterTruncatedToolCalls(&msg, finishReason)
+	return &llm.Response{
+		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools}},
+		Usage:   resp.Usage,
 	}, nil
 }
 
@@ -1176,287 +1487,21 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	metrics *llmStreamMetrics,
 ) (*llm.Response, error) {
 	requestBuildStartedAt := time.Now()
-	endpoint, data, err := llm.BuildAnthropicMessagesRequestData(cfg, messages, llm.AnthropicMessagesRequestOptions{Stream: true, Tools: tools})
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
+	if _, _, err := llm.BuildAnthropicMessagesRequestData(cfg, messages, llm.AnthropicMessagesRequestOptions{Stream: true, Tools: tools}); err != nil {
 		return nil, err
 	}
 	if metrics != nil {
 		metrics.RequestBuildNanos += time.Since(requestBuildStartedAt).Nanoseconds()
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	req.Header.Set("anthropic-version", "2023-06-01")
-	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
-	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
-
 	httpDoStartedAt := time.Now()
-	resp, err := httpClient.Do(req)
+	resp, err := llm.DoAnthropicRequestStream(reqCtx, cfg, messages, tools, httpClient, onToken)
 	if metrics != nil {
 		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	// Provide friendly HTTP errors instead of raw HTML pages.
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
-		return nil, fmt.Errorf("%s [url=%s model=%s protocol=anthropic]", friendlyMsg, endpoint, cfg.UpstreamModel())
-	}
-
-	// Fallback: if provider doesn't return SSE
-	contentType := resp.Header.Get("Content-Type")
-	if !strings.Contains(contentType, "text/event-stream") {
-		return parseNonStreamAnthropicResponse(resp, data)
-	}
-
-	// SSE parsing for Anthropic
-	type blockAccum struct {
-		blockType string // "text" or "tool_use"
-		text      strings.Builder
-		toolID    string
-		toolName  string
-		toolArgs  strings.Builder
-	}
-	blocks := make(map[int]*blockAccum)
-	var stopReason string
-	var usage *llm.Usage
-
-	var filteredBufAnth strings.Builder
-	filteredOnTokenAnth := func(delta string) {
-		filteredBufAnth.WriteString(delta)
-		onToken(delta)
-	}
-	rpfAnth := newRolePrefixStreamFilter(filteredOnTokenAnth)
-	repfAnth := newRepetitionFilter(rpfAnth.Write)
-	fcf := newFuncCallFilter(repfAnth.Write)
-	tf := newThinkFilter(func(s string) { fcf.Write(s) })
-
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
-
-	// SSE idle watchdog (same as OpenAI path).
-	anthIdleTimer := time.NewTimer(guiSSEIdleTimeout)
-	defer anthIdleTimer.Stop()
-	anthTimedOut := false
-	anthWatchdogDone := make(chan struct{})
-	go func() {
-		select {
-		case <-anthIdleTimer.C:
-			anthTimedOut = true
-			if metrics != nil {
-				metrics.IdleTimeoutAfterToken = !metrics.FirstTokenAt.IsZero()
-			}
-			log.Printf("[LLM Stream] Anthropic SSE idle timeout (%v)  - aborting stalled request", guiSSEIdleTimeout)
-			resp.Body.Close()
-		case <-anthWatchdogDone:
-		case <-reqCtx.Done():
-		}
-	}()
-	defer close(anthWatchdogDone)
-
-	firstSSEWaitStartedAt := time.Now()
-	for scanner.Scan() {
-		anthIdleTimer.Reset(guiSSEIdleTimeout)
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		if metrics != nil && metrics.FirstSSEWaitNanos == 0 {
-			metrics.FirstSSEWaitNanos = time.Since(firstSSEWaitStartedAt).Nanoseconds()
-		}
-		payload := strings.TrimPrefix(line, "data:")
-		payload = strings.TrimPrefix(payload, " ")
-
-		var evt struct {
-			Type         string `json:"type"`
-			Index        int    `json:"index"`
-			ContentBlock struct {
-				Type  string                 `json:"type"`
-				ID    string                 `json:"id,omitempty"`
-				Name  string                 `json:"name,omitempty"`
-				Text  string                 `json:"text,omitempty"`
-				Input map[string]interface{} `json:"input,omitempty"`
-			} `json:"content_block,omitempty"`
-			Delta struct {
-				Type        string `json:"type"`
-				Text        string `json:"text,omitempty"`
-				PartialJSON string `json:"partial_json,omitempty"`
-				StopReason  string `json:"stop_reason,omitempty"`
-			} `json:"delta,omitempty"`
-			Message struct {
-				StopReason string     `json:"stop_reason,omitempty"`
-				Usage      *llm.Usage `json:"usage,omitempty"`
-			} `json:"message,omitempty"`
-			Usage *llm.Usage `json:"usage,omitempty"`
-		}
-		if err := json.Unmarshal([]byte(payload), &evt); err != nil {
-			continue
-		}
-
-		switch normalizeAnthropicStreamEventType(evt.Type) {
-		case anthropicStreamEventContentBlockStart:
-			acc := &blockAccum{blockType: evt.ContentBlock.Type}
-			blockKind := normalizeAnthropicContentBlockKind(evt.ContentBlock.Type)
-			if blockKind == anthropicContentBlockText && evt.ContentBlock.Text != "" {
-				acc.text.WriteString(evt.ContentBlock.Text)
-				tf.Write(evt.ContentBlock.Text)
-			}
-			if blockKind == anthropicContentBlockToolUse {
-				acc.toolID = evt.ContentBlock.ID
-				acc.toolName = evt.ContentBlock.Name
-			}
-			blocks[evt.Index] = acc
-
-		case anthropicStreamEventContentBlockDelta:
-			acc, ok := blocks[evt.Index]
-			if !ok {
-				continue
-			}
-			deltaKind := normalizeAnthropicDeltaKind(evt.Delta.Type)
-			if deltaKind == anthropicDeltaText && evt.Delta.Text != "" {
-				acc.text.WriteString(evt.Delta.Text)
-				tf.Write(evt.Delta.Text)
-				// Early-terminate if the repetition filter detected degeneration.
-				if repfAnth.Halted() {
-					log.Printf("[LLM Stream Anthropic] repetition filter halted output (suppressed %d runes)", repfAnth.SuppressedRunes())
-					stopReason = "end_turn"
-					goto anthDone
-				}
-				// Early-terminate if a role prefix hallucination was detected.
-				if rpfAnth.Halted() {
-					log.Printf("[LLM Stream Anthropic] role prefix filter halted output (suppressed %d runes)", rpfAnth.SuppressedRunes())
-					stopReason = "end_turn"
-					goto anthDone
-				}
-			}
-			if deltaKind == anthropicDeltaInputJSON && evt.Delta.PartialJSON != "" {
-				acc.toolArgs.WriteString(evt.Delta.PartialJSON)
-				if acc.toolArgs.Len() > guiMaxToolArgumentsBytes {
-					toolName := acc.toolName
-					if toolName == "" {
-						toolName = fmt.Sprintf("tool_use_%d", evt.Index)
-					}
-					return nil, fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, acc.toolArgs.Len(), guiMaxToolArgumentsBytes)
-				}
-			}
-
-		case anthropicStreamEventMessageDelta:
-			if evt.Delta.StopReason != "" {
-				stopReason = evt.Delta.StopReason
-			}
-			// Anthropic sends output_tokens in message_delta.usage
-			if evt.Usage != nil && usage != nil {
-				usage.OutputTokens = evt.Usage.OutputTokens
-				usage.CompletionTokens = evt.Usage.OutputTokens
-				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-			}
-
-		case anthropicStreamEventMessageStop:
-			// End of stream
-
-		case "message_start":
-			if evt.Message.StopReason != "" {
-				stopReason = evt.Message.StopReason
-			}
-			// Anthropic sends input_tokens in message_start.message.usage
-			if evt.Message.Usage != nil {
-				usage = evt.Message.Usage
-			}
+		if metrics.FirstSSEWaitNanos == 0 {
+			metrics.FirstSSEWaitNanos = metrics.HTTPDoNanos
 		}
 	}
-anthDone:
-	// Check for scanner errors (network interruption, etc.)
-	if err := scanner.Err(); err != nil {
-		if len(blocks) == 0 {
-			return nil, fmt.Errorf("SSE stream read error: %w", err)
-		}
-	}
-	// If the watchdog fired and we got no content, return a retryable error.
-	if anthTimedOut && len(blocks) == 0 {
-		if metrics != nil {
-			metrics.IdleTimeoutCount++
-		}
-		return nil, fmt.Errorf("SSE stream idle timeout (%v): no data received from %s", guiSSEIdleTimeout, endpoint)
-	}
-	tf.Flush()
-	fcf.Flush()
-	repfAnth.Flush()
-	rpfAnth.Flush()
-	if repfAnth.Halted() {
-		log.Printf("[LLM Stream Anthropic] repetition filter halted: suppressed %d runes", repfAnth.SuppressedRunes())
-	}
-	if rpfAnth.Halted() {
-		log.Printf("[LLM Stream Anthropic] role prefix filter halted: suppressed %d runes", rpfAnth.SuppressedRunes())
-	}
-
-	// --- Browser diagnostic CP5 (Anthropic path) ---
-	filteredStrAnth := filteredBufAnth.String()
-	BrowserDiagCP5_StreamFilter(
-		rpfAnth.Halted(), rpfAnth.SuppressedRunes(),
-		repfAnth.Halted(), repfAnth.SuppressedRunes(),
-		rpfAnth.Halted(),
-		browserDiagHasBrowserRolePrefix(filteredStrAnth),
-		filteredStrAnth,
-	)
-
-	// Assemble llm.Response
-	msg := llm.Message{Role: "assistant"}
-	var textParts []string
-	// Iterate blocks in index order
-	maxIdx := 0
-	for idx := range blocks {
-		if idx > maxIdx {
-			maxIdx = idx
-		}
-	}
-	for i := 0; i <= maxIdx; i++ {
-		acc, ok := blocks[i]
-		if !ok {
-			continue
-		}
-		switch normalizeAnthropicContentBlockKind(acc.blockType) {
-		case anthropicContentBlockText:
-			textParts = append(textParts, acc.text.String())
-		case anthropicContentBlockToolUse:
-			msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
-				ID:   acc.toolID,
-				Type: "function",
-				Function: struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				}{
-					Name:      acc.toolName,
-					Arguments: acc.toolArgs.String(),
-				},
-			})
-		}
-	}
-	msg.Content = stripFunctionCalls(stripThinkTags(strings.Join(textParts, "\n")))
-	if filteredStrAnth != "" {
-		msg.Content = stripXMLToolCalls(filteredStrAnth)
-	}
-
-	finishReason := llmFinishReasonStop.String()
-	if normalizeAnthropicContentBlockKind(stopReason) == anthropicContentBlockToolUse {
-		finishReason = llmFinishReasonToolCalls.String()
-	} else if stopReason == "max_tokens" {
-		finishReason = llmFinishReasonLength.String()
-	}
-
-	// Detect and filter truncated tool calls caused by output token limit.
-	finishReason, truncatedTools := filterTruncatedToolCalls(&msg, finishReason)
-
-	return &llm.Response{
-		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools}},
-		Usage:   usage,
-	}, nil
+	return resp, err
 }
 
 // parseNonStreamAnthropicResponse handles the fallback case where the provider

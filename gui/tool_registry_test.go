@@ -199,7 +199,7 @@ func TestRegisterBuiltinToolsManageSkillMaintenancePlanSchema(t *testing.T) {
 func TestRegisterBuiltinToolsAttachLightExecutionContracts(t *testing.T) {
 	r := NewToolRegistry()
 	registerBuiltinTools(r, &IMMessageHandler{})
-	for _, name := range []string{"manage_skill", "web_search", "web_fetch", "async_wait", "call_mcp_tool"} {
+	for _, name := range []string{"manage_skill", "web_search", "web_fetch", "async_wait", "call_mcp_tool", "current_datetime"} {
 		tool, ok := r.Get(name)
 		if !ok {
 			t.Fatalf("%s tool is not registered", name)
@@ -210,6 +210,9 @@ func TestRegisterBuiltinToolsAttachLightExecutionContracts(t *testing.T) {
 		contract := executionContractFromMetadata(name, tool.ExecutionContract)
 		if !contract.Explicit || contract.RequiresAgentPlanning {
 			t.Fatalf("%s contract = %+v, want explicit non-planning", name, contract)
+		}
+		if name == "current_datetime" && (!contract.SupportsDirect || !contract.Deterministic) {
+			t.Fatalf("%s contract = %+v, want direct deterministic", name, contract)
 		}
 	}
 }

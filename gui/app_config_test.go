@@ -83,6 +83,141 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	}
 }
 
+func TestSyncToCodeBuddySettingsNormalizesOpenAIChatEndpoint(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectDir := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	cfg := corelib.AppConfig{
+		CodeBuddy: corelib.ToolConfig{
+			CurrentModel: "GLM",
+			Models: []corelib.ModelConfig{{
+				ModelName: "GLM",
+				ModelId:   "glm-5.1",
+				ModelUrl:  "https://open.bigmodel.cn/api/paas/v4",
+				ApiKey:    "test-key",
+				AgentType: "Kilo Code",
+			}},
+		},
+	}
+
+	if err := app.syncToCodeBuddySettings(cfg, projectDir); err != nil {
+		t.Fatalf("syncToCodeBuddySettings() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, ".codebuddy", "models.json"))
+	if err != nil {
+		t.Fatalf("read CodeBuddy models.json: %v", err)
+	}
+	var out corelib.CodeBuddyFileConfig
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal CodeBuddy models.json: %v", err)
+	}
+	if len(out.Models) != 1 {
+		t.Fatalf("models len = %d, want 1: %#v", len(out.Models), out.Models)
+	}
+	if got, want := out.Models[0].Url, "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"; got != want {
+		t.Fatalf("CodeBuddy model URL = %q, want %q", got, want)
+	}
+}
+
+func TestOpenAICompatibleToolConfigNormalizesGLMCodingPlanBaseURL(t *testing.T) {
+	tmpHome := t.TempDir()
+	projectDir := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+
+	opencodeCfg := corelib.AppConfig{
+		Opencode: corelib.ToolConfig{
+			CurrentModel: "GLM",
+			Models: []corelib.ModelConfig{{
+				ModelName: "GLM",
+				ModelId:   "glm-5.1",
+				ModelUrl:  "https://open.bigmodel.cn/api/paas/v4",
+				ApiKey:    "test-key",
+			}},
+		},
+	}
+	if err := app.syncToOpencodeSettings(opencodeCfg, projectDir, "session-1"); err != nil {
+		t.Fatalf("syncToOpencodeSettings() error = %v", err)
+	}
+	opencodeData, err := os.ReadFile(filepath.Join(projectDir, ".aicoder", "opencode", "session-1", "opencode.json"))
+	if err != nil {
+		t.Fatalf("read opencode config: %v", err)
+	}
+	var opencodeOut map[string]interface{}
+	if err := json.Unmarshal(opencodeData, &opencodeOut); err != nil {
+		t.Fatalf("unmarshal opencode config: %v", err)
+	}
+	provider := opencodeOut["provider"].(map[string]interface{})["myprovider"].(map[string]interface{})
+	options := provider["options"].(map[string]interface{})
+	if got, want := options["baseURL"], "https://open.bigmodel.cn/api/coding/paas/v4"; got != want {
+		t.Fatalf("OpenCode baseURL = %#v, want %q", got, want)
+	}
+
+	kiloCfg := corelib.AppConfig{
+		Kilo: corelib.ToolConfig{
+			CurrentModel: "GLM",
+			Models: []corelib.ModelConfig{{
+				ModelName: "GLM",
+				ModelId:   "glm-5.1",
+				ModelUrl:  "https://open.bigmodel.cn/api/paas/v4",
+				ApiKey:    "test-key",
+			}},
+		},
+	}
+	if err := app.syncToKiloSettings(kiloCfg, projectDir, "session-2"); err != nil {
+		t.Fatalf("syncToKiloSettings() error = %v", err)
+	}
+	kiloData, err := os.ReadFile(filepath.Join(projectDir, ".aicoder", "kilocode", "cli", "session-2", "config.json"))
+	if err != nil {
+		t.Fatalf("read kilo config: %v", err)
+	}
+	var kiloOut map[string]interface{}
+	if err := json.Unmarshal(kiloData, &kiloOut); err != nil {
+		t.Fatalf("unmarshal kilo config: %v", err)
+	}
+	providers := kiloOut["providers"].([]interface{})
+	kiloProvider := providers[0].(map[string]interface{})
+	if got, want := kiloProvider["openAiBaseUrl"], "https://open.bigmodel.cn/api/coding/paas/v4"; got != want {
+		t.Fatalf("Kilo openAiBaseUrl = %#v, want %q", got, want)
+	}
+}
+
+func TestLoadConfigDefaultsUseGLM51ForOpenAICompatibleTools(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	for name, toolCfg := range map[string]corelib.ToolConfig{
+		"codex":     cfg.Codex,
+		"opencode":  cfg.Opencode,
+		"codebuddy": cfg.CodeBuddy,
+		"iflow":     cfg.IFlow,
+		"kilo":      cfg.Kilo,
+	} {
+		found := false
+		for _, model := range toolCfg.Models {
+			if model.ModelName != "GLM" {
+				continue
+			}
+			found = true
+			if model.ModelUrl != "https://open.bigmodel.cn/api/coding/paas/v4" {
+				t.Fatalf("%s GLM URL = %q", name, model.ModelUrl)
+			}
+			if model.ModelId != "glm-5.1" {
+				t.Fatalf("%s GLM model = %q, want glm-5.1", name, model.ModelId)
+			}
+		}
+		if !found {
+			t.Fatalf("%s GLM provider not found", name)
+		}
+	}
+}
+
 func TestLoadConfigNormalizesRemoteHeartbeatSec(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -485,6 +620,56 @@ func TestPatchConfigFieldsAppliesRuntimeSideEffects(t *testing.T) {
 	}
 	if got := corelib.EffectiveWorkspaceDir(); got != filepath.Join(tmpHome, "work") {
 		t.Fatalf("WorkspaceDir = %q, want patched working directory", got)
+	}
+}
+
+func TestPatchConfigFieldsWorkflowEnabledToggle(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+
+	// Default: workflowDisabled atomic zero-value is false (no config loaded yet)
+	if app.workflowDisabled.Load() {
+		t.Fatal("workflowDisabled should be false by default (atomic zero-value)")
+	}
+
+	// Turn off workflow
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"workflow_enabled": false,
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields(workflow_enabled=false) error = %v", err)
+	}
+	if patched.IsWorkflowEnabled() {
+		t.Fatal("patched config should have workflow_enabled=false")
+	}
+	if !app.workflowDisabled.Load() {
+		t.Fatal("workflowDisabled atomic should be true after disabling workflow")
+	}
+
+	// Turn on workflow
+	patched, err = app.PatchConfigFields(map[string]interface{}{
+		"workflow_enabled": true,
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields(workflow_enabled=true) error = %v", err)
+	}
+	if !patched.IsWorkflowEnabled() {
+		t.Fatal("patched config should have workflow_enabled=true")
+	}
+	if app.workflowDisabled.Load() {
+		t.Fatal("workflowDisabled atomic should be false after re-enabling workflow")
+	}
+
+	// Verify persistence: reload from disk
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if !reloaded.IsWorkflowEnabled() {
+		t.Fatal("workflow_enabled=true should survive reload from disk")
 	}
 }
 

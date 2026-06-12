@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -47,7 +45,9 @@ func doSimpleLLMRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messag
 	defer scheduledCancel()
 	var resp *llmSimpleResponse
 	var err error
-	if cfg.Protocol == "anthropic" {
+	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
+		resp, err = doSimpleResponsesRequest(scheduledCtx, cfg, messages, client, timeout)
+	} else if cfg.Protocol == "anthropic" {
 		resp, err = doSimpleAnthropicRequest(scheduledCtx, cfg, messages, client, timeout)
 	} else {
 		resp, err = doSimpleOpenAIRequest(scheduledCtx, cfg, messages, client, timeout)
@@ -85,83 +85,82 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	return &llmSimpleResponse{Content: stripThinkingTags(text)}, nil
 }
 
-func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
-	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
-
-	// Separate system message from user/assistant messages
-	var systemText string
-	var anthropicMsgs []interface{}
-	for _, m := range messages {
-		if mm, ok := m.(map[string]string); ok && mm["role"] == "system" {
-			systemText = mm["content"]
-			continue
-		}
-		if mm, ok := m.(map[string]interface{}); ok {
-			if role, _ := mm["role"].(string); role == "system" {
-				if content, _ := mm["content"].(string); content != "" {
-					systemText = content
-				}
-				continue
-			}
-		}
-		anthropicMsgs = append(anthropicMsgs, m)
-	}
-
-	reqBody := map[string]interface{}{
-		"model":      cfg.UpstreamModel(),
-		"messages":   anthropicMsgs,
-		"max_tokens": 4096,
-	}
-	if systemText != "" {
-		reqBody["system"] = systemText
-	}
-
-	data, _ := json.Marshal(reqBody)
-
+func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if client == nil {
+		client = http.DefaultClient
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	req, data, endpoint, err := llm.NewResponsesAPIRequest(ctx, cfg, messages, llm.ResponsesAPIRequestOptions{
+		Stream: false,
+	})
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	req.Header.Set("anthropic-version", "2023-06-01")
-	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
-	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	traceFields := llm.RequestTraceLogFields(req.Context())
+	upstreamModel := cfg.UpstreamModel()
+	log.Printf("[LLM] POST %s model=%s configured_model=%s wire_api=responses simple=true %s", endpoint, upstreamModel, cfg.Model, traceFields)
+
+	startedAt := time.Now()
+	httpResp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses simple=true status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
+		return nil, fmt.Errorf("[%s] %w", endpoint, err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(httpResp.Body, 4096))
+		log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses simple=true status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, httpResp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
+		if httpResp.StatusCode == http.StatusInternalServerError {
+			return nil, dumpLLMContext(httpResp.StatusCode, classifyResponsesAPIHTTPError(httpResp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName), data, "")
+		}
+		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(httpResp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName))
+	}
+
+	parsed, parseErr := llm.ParseNonStreamResponsesAPIResponse(httpResp)
+	log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses simple=true status=%d elapsed=%s parse_err=%v %s", endpoint, upstreamModel, cfg.Model, httpResp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	if parsed == nil || len(parsed.Choices) == 0 {
+		return nil, fmt.Errorf("no response from model")
+	}
+	text := parsed.Choices[0].Message.Content
+	if text == "" {
+		text = parsed.Choices[0].Message.ReasoningContent
+	}
+	if text == "" {
+		return nil, fmt.Errorf("no text response from model")
+	}
+	return &llmSimpleResponse{Content: stripThinkingTags(text)}, nil
+}
+
+func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	traceFields := llm.RequestTraceLogFields(ctx)
 	upstreamModel := cfg.UpstreamModel()
-	log.Printf("[LLM] POST %s model=%s configured_model=%s protocol=anthropic simple=true %s", endpoint, upstreamModel, cfg.Model, traceFields)
+	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
+	log.Printf("[LLM] POST %s model=%s configured_model=%s protocol=anthropic simple=true sdk=anthropic-sdk-go %s", endpoint, upstreamModel, cfg.Model, traceFields)
 	startedAt := time.Now()
-	resp, err := client.Do(req)
+	resp, err := llm.DoAnthropicRequest(ctx, cfg, messages, nil, client)
 	if err != nil {
 		log.Printf("[LLM] done %s model=%s configured_model=%s protocol=anthropic simple=true status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	log.Printf("[LLM] done %s model=%s configured_model=%s protocol=anthropic simple=true status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, resp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
-	if resp.StatusCode != http.StatusOK {
-		msg := fmt.Sprintf("llm request failed body_len=%d", len(body))
-		return nil, dumpLLMContext(resp.StatusCode, msg, data, "")
+	log.Printf("[LLM] done %s model=%s configured_model=%s protocol=anthropic simple=true status=200 elapsed=%s %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), traceFields)
+	if resp == nil || len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("no response from model")
 	}
-
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
+	text := resp.Choices[0].Message.Content
+	if text == "" {
+		text = resp.Choices[0].Message.ReasoningContent
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
+	if text == "" {
+		return nil, fmt.Errorf("no text response from model")
 	}
-	for _, block := range result.Content {
-		if block.Type == "text" && block.Text != "" {
-			return &llmSimpleResponse{Content: stripThinkingTags(block.Text)}, nil
-		}
-	}
-	return nil, fmt.Errorf("no text response from model")
+	return &llmSimpleResponse{Content: stripThinkingTags(text)}, nil
 }

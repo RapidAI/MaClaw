@@ -44,8 +44,8 @@ func (r *ClassificationResult) ToTaskIntent() (intent, matched string, evidence 
 	return
 }
 
-// ToGateIntent maps a ClassificationResult to the legacy GateIntentResult
-// fields used by gui/gate_intent_classifier.go.
+// ToGateIntent maps a ClassificationResult to gate intent category strings
+// used by the workflow routing system.
 // Returns (intent string, confidence float64, gap float64, layer int, reason string).
 //
 // Mapping:

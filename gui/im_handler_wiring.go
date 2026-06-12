@@ -129,6 +129,9 @@ type IMMessageHandler struct {
 	sshMgr     *remote.SSHSessionManager
 	bgTaskMgr  *remote.SSHBackgroundTaskManager
 
+	sshMirrorWatchMu sync.Mutex
+	sshMirrorWatch   map[string]struct{}
+
 	// Local background task manager for long-running local processes.
 	// Mirrors the SSH BackgroundTaskManager pattern: Submit/Check/Wait/Kill.
 	localBgTaskMgr *tool.LocalBackgroundTaskManager
@@ -238,6 +241,12 @@ type IMMessageHandler struct {
 	// LLM output (e.g. weather query result) would be captured as a phase
 	// document and emitted to the doc preview panel.
 	workflowPendingConfirmOther sync.Map
+
+	// pendingCancelExecuteRequest stores the original task request when user
+	// cancels a workflow but wants direct execution (e.g. "取消，直接处理").
+	// Consumed (LoadAndDelete) by the agent loop to replace the cancel message
+	// with the original task text.
+	pendingCancelExecuteRequest sync.Map
 
 	// pendingCriticalConfirm stores response channels for critical-risk
 	// skill installation confirmations. Keyed by a unique confirmation ID

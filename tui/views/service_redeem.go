@@ -431,8 +431,6 @@ func serviceRedeemProviderDisplayName(lang, provider string) string {
 	}
 	if i18n.NormalizeLang(lang) != "en" {
 		switch provider {
-		case "Zhipu GLM Lobster":
-			return "智谱 GLM 龙虾"
 		case "Zhipu GLM Coding":
 			return "智谱 GLM Coding"
 		case "Xfyun Astron":

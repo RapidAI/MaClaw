@@ -67,8 +67,6 @@ export function formatDate(dateStr: string): string {
 }
 
 export function renderStars(avg: number): string {
-    const full = Math.floor(avg);
-    const half = avg - full >= 0.5 ? 1 : 0;
-    const empty = 5 - full - half;
-    return "★".repeat(full) + (half ? "½" : "") + "☆".repeat(empty);
+    if (!Number.isFinite(avg) || avg <= 0) return "Rating -";
+    return `Rating ${avg.toFixed(1)}`;
 }

@@ -41,14 +41,10 @@ type agentLoopPostLLMTurnOptions struct {
 	Iteration                     int
 	Platform                      string
 	EffectiveMax                  int
-	GateConfig                    codingToolGateConfig
-	SkipCodingGate                bool
-	OrchestratorActive            func() bool
 	Conversation                  []interface{}
 	History                       []agent.ConversationEntry
 	Recorder                      *TrajectoryRecorder
 	Phase                         *agentLoopPhase
-	SteeringDetector              *SteeringWorkflowDetector
 	StreamDone                    bool
 	ReportActivity                func(int, int, string)
 	RecordSystemMessages          func(int, []interface{})
@@ -73,6 +69,7 @@ type agentLoopPostLLMTurnResult struct {
 func (h *IMMessageHandler) handleAgentLoopPostLLMTurn(opts agentLoopPostLLMTurnOptions) agentLoopPostLLMTurnResult {
 	choiceStartedAt := time.Now()
 	choice := opts.Response.Choices[0]
+	choice.Message.ToolCalls = llm.NormalizeToolCallsForConversation(choice.Message.ToolCalls)
 	result := agentLoopPostLLMTurnResult{
 		Choice:       choice,
 		Conversation: opts.Conversation,
@@ -102,31 +99,8 @@ func (h *IMMessageHandler) handleAgentLoopPostLLMTurn(opts agentLoopPostLLMTurnO
 	result.AssistantMessageElapsed = assistantCommit.AssistantMsgElapsed
 	result.HistoryAppendElapsed = assistantCommit.HistoryAppendElapsed
 
-	codingGateResult := h.applyAgentLoopCodingGateAfterAssistantTurn(
-		opts.Context,
-		opts.UserID,
-		opts.Iteration,
-		opts.Platform,
-		opts.GateConfig,
-		opts.SkipCodingGate,
-		opts.OrchestratorActive,
-		&choice,
-		result.AssistantMessage,
-		result.Conversation,
-		result.History,
-		result.MessageContent,
-		result.MessageReasoning,
-		opts.Phase,
-		opts.SteeringDetector,
-		opts.RecordSystemMessages,
-		opts.AttachLLMTelemetry,
-		opts.AttachPendingVisibleArtifacts,
-	)
+	// V1 coding gate removed — no post-assistant-turn gate processing.
 	result.Choice = choice
-	result.Conversation = codingGateResult.Conversation
-	result.History = codingGateResult.History
-	result.Response = codingGateResult.Response
-	result.ContinueLoop = codingGateResult.ContinueLoop
 	return result
 }
 
