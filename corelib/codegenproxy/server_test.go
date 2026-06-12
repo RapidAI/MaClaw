@@ -248,6 +248,41 @@ func TestConvertOpenAIToAnthropic_LegacyFunctionCall(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIToAnthropic_ContentToolCall(t *testing.T) {
+	resp := openaiChatResponse{
+		ID: "chatcmpl-content-tool",
+		Choices: []openaiChoice{{
+			Message: openaiMessage{
+				Role: "assistant",
+				Content: `<turn: tool_call>
+<invoke name="read_file">
+<parameter name="path" string="true">README.md</parameter>
+</invoke>
+</turn>`,
+			},
+			FinishReason: "stop",
+		}},
+	}
+
+	result := convertOpenAIToAnthropic(resp, "Qwen-Flash")
+
+	if result.StopReason != "tool_use" {
+		t.Fatalf("stop_reason = %q, want tool_use", result.StopReason)
+	}
+	if len(result.Content) != 1 || result.Content[0].Type != "tool_use" {
+		t.Fatalf("content = %+v, want one tool_use", result.Content)
+	}
+	if result.Content[0].Name != "read_file" {
+		t.Fatalf("tool name = %q, want read_file", result.Content[0].Name)
+	}
+	if result.Content[0].Text != "" {
+		t.Fatalf("raw content leaked as text: %q", result.Content[0].Text)
+	}
+	if result.Content[0].Input["path"] != "README.md" {
+		t.Fatalf("tool input = %+v, want README path", result.Content[0].Input)
+	}
+}
+
 func TestConvertOpenAIToAnthropic_SkipsInvalidToolArguments(t *testing.T) {
 	resp := openaiChatResponse{
 		Choices: []openaiChoice{{
@@ -553,24 +588,20 @@ func TestAnthropicSDKClientCanStreamFromCodeGenProxy(t *testing.T) {
 		},
 	})
 
-	var gotTypes []string
+	var msg anthropic.Message
 	for stream.Next() {
-		gotTypes = append(gotTypes, string(stream.Current().Type))
+		if err := msg.Accumulate(stream.Current()); err != nil {
+			t.Fatalf("accumulate stream event: %v", err)
+		}
 	}
 	if err := stream.Err(); err != nil {
 		t.Fatalf("anthropic SDK stream failed: %v", err)
 	}
-	wantTypes := []string{
-		"message_start",
-		"content_block_start",
-		"content_block_delta",
-		"content_block_delta",
-		"content_block_stop",
-		"message_delta",
-		"message_stop",
+	if msg.StopReason != "end_turn" {
+		t.Fatalf("stop_reason = %q, want end_turn", msg.StopReason)
 	}
-	if strings.Join(gotTypes, ",") != strings.Join(wantTypes, ",") {
-		t.Fatalf("stream event types = %v, want %v", gotTypes, wantTypes)
+	if len(msg.Content) != 1 || msg.Content[0].Text != "hello sdk" {
+		t.Fatalf("content = %+v, want hello sdk", msg.Content)
 	}
 }
 
@@ -639,6 +670,78 @@ func TestAnthropicSDKClientCanStreamToolUseFromCodeGenProxy(t *testing.T) {
 	toolUse := msg.Content[0].AsToolUse()
 	if toolUse.ID != "call_read" || toolUse.Name != "read_file" {
 		t.Fatalf("tool_use id/name = %q/%q, want call_read/read_file", toolUse.ID, toolUse.Name)
+	}
+	if string(toolUse.Input) != `{"path":"README.md"}` {
+		t.Fatalf("tool input = %s, want README path", toolUse.Input)
+	}
+}
+
+func TestAnthropicSDKClientCanStreamContentToolUseFromCodeGenProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req openaiChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("upstream received invalid JSON: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if !req.Stream {
+			t.Errorf("stream = false, want true")
+		}
+		if len(req.Tools) != 1 || req.Tools[0].Function.Name != "read_file" {
+			t.Fatalf("upstream tools = %+v, want read_file", req.Tools)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"<turn: tool_call>\\n<invoke name=\\\"read_file\\\">\\n\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"<parameter name=\\\"path\\\" string=\\\"true\\\">README.md</parameter>\\n\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"</invoke>\\n</turn>\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	client := anthropic.NewClient(
+		anthropicoption.WithBaseURL("http://"+srv.Addr().String()+"/anthropic"),
+		anthropicoption.WithAPIKey("local-key"),
+	)
+	stream := client.Messages.NewStreaming(context.Background(), anthropic.MessageNewParams{
+		Model:     "qax-codegen/Auto",
+		MaxTokens: 128,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("read README")),
+		},
+		Tools: []anthropic.ToolUnionParam{
+			anthropic.ToolUnionParamOfTool(anthropic.ToolInputSchemaParam{
+				Properties: map[string]interface{}{
+					"path": map[string]interface{}{"type": "string"},
+				},
+			}, "read_file"),
+		},
+	})
+
+	var msg anthropic.Message
+	for stream.Next() {
+		if err := msg.Accumulate(stream.Current()); err != nil {
+			t.Fatalf("accumulate stream event: %v", err)
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("anthropic SDK stream failed: %v", err)
+	}
+	if msg.StopReason != "tool_use" {
+		t.Fatalf("stop_reason = %q, want tool_use; message=%s", msg.StopReason, msg.RawJSON())
+	}
+	if len(msg.Content) != 1 || msg.Content[0].Type != "tool_use" {
+		t.Fatalf("content = %+v, want one tool_use", msg.Content)
+	}
+	toolUse := msg.Content[0].AsToolUse()
+	if toolUse.Name != "read_file" {
+		t.Fatalf("tool name = %q, want read_file", toolUse.Name)
 	}
 	if string(toolUse.Input) != `{"path":"README.md"}` {
 		t.Fatalf("tool input = %s, want README path", toolUse.Input)

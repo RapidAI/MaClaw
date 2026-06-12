@@ -1238,9 +1238,9 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 	flusher.Flush()
 
 	blockIdx := 0
-	textStarted := false
 	var stopReason string
 	textBytes := 0
+	var textBuf strings.Builder
 	toolCalls := make(map[int]*streamToolCallAccum)
 	var toolOrder []int
 	var legacyFunction *streamToolCallAccum
@@ -1268,19 +1268,7 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 		// ── text content ──
 		if delta.Content != "" {
 			textBytes += len(delta.Content)
-			if !textStarted {
-				writeSSE(w, "content_block_start", map[string]interface{}{
-					"type": "content_block_start", "index": blockIdx,
-					"content_block": map[string]interface{}{"type": "text", "text": ""},
-				})
-				flusher.Flush()
-				textStarted = true
-			}
-			writeSSE(w, "content_block_delta", map[string]interface{}{
-				"type": "content_block_delta", "index": blockIdx,
-				"delta": map[string]interface{}{"type": "text_delta", "text": delta.Content},
-			})
-			flusher.Flush()
+			textBuf.WriteString(delta.Content)
 		}
 
 		// Buffer tool calls until finish_reason. Some OpenAI-compatible
@@ -1332,14 +1320,6 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 			reqID, model, codeGenStreamMaxEventBytes, streamErr)
 	}
 
-	if textStarted {
-		writeSSE(w, "content_block_stop", map[string]interface{}{
-			"type": "content_block_stop", "index": blockIdx,
-		})
-		blockIdx++
-		flusher.Flush()
-	}
-
 	if streamErr != nil {
 		log.Printf("[codegenproxy] stream abort id=%s model=%q text_bytes=%d tool_calls=%d legacy_function=%t tool_summary=%s",
 			reqID, model, textBytes, len(toolOrder), legacyFunction != nil, summarizeStreamTools(toolOrder, toolCalls, legacyFunction, toolSchemas))
@@ -1354,6 +1334,15 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 		writeStreamError(w, "upstream stream produced invalid tool call")
 		flusher.Flush()
 		return
+	}
+
+	contentToolCalls := contentToolCallsToStreamAccums(textBuf.String())
+	if len(contentToolCalls) > 0 {
+		for _, acc := range contentToolCalls {
+			blockIdx = writeBufferedToolUse(w, flusher, blockIdx, acc)
+		}
+	} else if textBuf.Len() > 0 {
+		blockIdx = writeBufferedText(w, flusher, blockIdx, textBuf.String())
 	}
 
 	if len(toolOrder) > 0 {
@@ -1376,6 +1365,9 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 	case "length":
 		anthStop = "max_tokens"
 	}
+	if len(contentToolCalls) > 0 {
+		anthStop = "tool_use"
+	}
 	log.Printf("[codegenproxy] stream complete id=%s model=%q openai_finish=%q anthropic_stop=%q text_bytes=%d tool_calls=%d legacy_function=%t tool_summary=%s",
 		reqID, model, stopReason, anthStop, textBytes, len(toolOrder), legacyFunction != nil, summarizeStreamTools(toolOrder, toolCalls, legacyFunction, toolSchemas))
 
@@ -1395,6 +1387,35 @@ type streamToolCallAccum struct {
 	ID        string
 	Name      string
 	Arguments string
+}
+
+func contentToolCallsToStreamAccums(content string) []*streamToolCallAccum {
+	calls, _ := llmcompat.ParseContentToolCallsDetailed(content)
+	if len(calls) == 0 {
+		return nil
+	}
+	accs := make([]*streamToolCallAccum, 0, len(calls))
+	for i, call := range calls {
+		name := strings.TrimSpace(call.Function.Name)
+		if name == "" {
+			continue
+		}
+		args, ok := normalizeOpenAIToolArguments(call.Function.Arguments)
+		if !ok {
+			continue
+		}
+		id := strings.TrimSpace(call.ID)
+		if id == "" {
+			id = fmt.Sprintf("call_content_%d_%d", time.Now().UnixNano(), i)
+		}
+		accs = append(accs, &streamToolCallAccum{
+			Index:     i,
+			ID:        id,
+			Name:      name,
+			Arguments: args,
+		})
+	}
+	return accs
 }
 
 func readOpenAIStreamEvents(r io.Reader, handle func(string) bool) error {
@@ -1676,6 +1697,24 @@ func writeBufferedToolUse(w http.ResponseWriter, flusher http.Flusher, blockIdx 
 		"delta": map[string]interface{}{
 			"type": "input_json_delta", "partial_json": args,
 		},
+	})
+	flusher.Flush()
+	writeSSE(w, "content_block_stop", map[string]interface{}{
+		"type": "content_block_stop", "index": blockIdx,
+	})
+	flusher.Flush()
+	return blockIdx + 1
+}
+
+func writeBufferedText(w http.ResponseWriter, flusher http.Flusher, blockIdx int, text string) int {
+	writeSSE(w, "content_block_start", map[string]interface{}{
+		"type": "content_block_start", "index": blockIdx,
+		"content_block": map[string]interface{}{"type": "text", "text": ""},
+	})
+	flusher.Flush()
+	writeSSE(w, "content_block_delta", map[string]interface{}{
+		"type": "content_block_delta", "index": blockIdx,
+		"delta": map[string]interface{}{"type": "text_delta", "text": text},
 	})
 	flusher.Flush()
 	writeSSE(w, "content_block_stop", map[string]interface{}{
