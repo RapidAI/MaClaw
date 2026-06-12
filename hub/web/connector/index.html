@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MaClaw 第三方软件接入协�?/title>
+  <title>MaClaw 第三方软件接入协议</title>
   <link rel="stylesheet" href="/connector/professional.css">
 </head>
 <body>
@@ -14,43 +14,43 @@
   </div>
 
   <section class="lang-panel" data-lang-panel="zh">
-    <h1>MaClaw 第三方软件接入协�?v1</h1>
-    <p class="lead">第三方软件主动连�?MaClaw HTTP 网关，通过 JSON 协议发送用户消息，并用 cursor 长轮询获�?Agent 回复。接入方不需要提供公网回调或文件下载服务；文件上传、下�?URL �?MaClaw 服务端提供�?/p>
+    <h1>MaClaw 第三方软件接入协议 v1</h1>
+    <p class="lead">第三方软件连接 MaClaw HTTP 网关，通过 JSON 发送用户消息，并使用 cursor 长轮询获取 Agent 回复。接入方不需要暴露公网回调或文件下载 URL；文件上传和下载 URL 由 MaClaw 提供。</p>
     <p>
       <span class="pill">默认地址 http://127.0.0.1:18777/api/im-gateway/v1</span>
       <span class="pill">Bearer Token</span>
-      <span class="pill">小文件直�?/span>
-      <span class="pill">大文件服务端 URL</span>
+      <span class="pill">小文件内联</span>
+      <span class="pill">大文件走服务端 URL</span>
     </p>
 
     <h2>1. 接入流程</h2>
     <ol>
-      <li>�?MaClaw 桌面端打开“设�?/ 消息接入 / 第三方接入”�?/li>
-      <li>配置 Host、Port �?Token，默认监听本�?<code>127.0.0.1:18777</code>�?/li>
-      <li>调用 <code>POST /handshake</code> 获取能力、限制和轮询参数�?/li>
-      <li>小文件可�?<code>POST /incoming</code> 直接�?base64 <code>data</code> 发送�?/li>
-      <li>大文件先调用 <code>POST /media/upload-url</code> 获取服务端上�?URL，再由客户端 <code>PUT</code> 上传，随后在消息中引用返回的 <code>media.id</code> �?<code>media.url</code>�?/li>
-      <li>调用 <code>GET /outgoing</code> 使用 cursor 长轮询拉取回复，并用 <code>POST /ack</code> 确认已处理�?/li>
+      <li>在 MaClaw 中打开 <code>设置 / 消息接入 / 第三方接入</code>。</li>
+      <li>配置 <code>Host</code>、<code>Port</code> 和 <code>Token</code>，默认监听 <code>127.0.0.1:18777</code>。</li>
+      <li>调用 <code>POST /handshake</code> 获取能力、限制和轮询参数。</li>
+      <li>小文件可在 <code>POST /incoming</code> 中直接发送 base64 <code>data</code>。</li>
+      <li>大文件先调用 <code>POST /media/upload-url</code> 获取服务端上传 URL，再由客户端用返回的 <code>PUT</code> URL 上传字节，随后在消息里引用返回的 <code>media.id</code> 或 <code>media.url</code>。</li>
+      <li>调用 <code>GET /outgoing</code> 并携带 <code>cursor</code> 长轮询拉取回复，然后调用 <code>POST /ack</code>。</li>
     </ol>
 
     <h2>2. 认证</h2>
-    <p>�?<code>/health</code> 和带 <code>mediaToken</code> 的媒体上�?下载 URL 外，请求应携带：</p>
+    <p>除 <code>/health</code> 和带 <code>mediaToken</code> 保护的媒体 URL 外，请求应携带：</p>
     <pre>Authorization: Bearer &lt;token&gt;</pre>
-    <p>请在 MaClaw 里生成强随机 Token。如�?Token 可能泄露，请重新生成并更新第三方配置。媒�?URL 内的 <code>mediaToken</code> 是服务端生成的临时访问令牌，客户端只使用它上传或下载，不应自行构造�?/p>
+    <p>请在 MaClaw 中使用“生成 Token”创建强随机密钥。如果 Token 可能泄露，请重新生成并更新第三方配置。上传和下载 URL 中的 <code>mediaToken</code> 由 MaClaw 生成，客户端只应使用这些 URL，不应自行构造。</p>
 
-    <h2>3. 能力与限�?/h2>
-    <p><code>/handshake</code> 返回�?<code>capabilities</code> 包含�?/p>
+    <h2>3. 能力与限制</h2>
+    <p>协议结构、校验器、默认限制、功能开关、严格 JSON 解码和握手响应构造集中在 <code>corelib/im</code>。MaClawSrv 和 MaClaw GUI 使用相同核心实现，因此 ThirdAPIDemo 客户端从任一端点看到的协议行为一致。两种服务端实现的握手 <code>mode</code> 均为 <code>maclaw</code>。</p>
+    <p><code>/handshake</code> 返回的 <code>capabilities</code> 包含：</p>
     <pre>["text","image","file","voice","audio","attachments","server_media_upload","server_media_download","long_poll","ack","idempotency","client_tools","tool_call","tool_plan","tool_result","tool_cancel"]</pre>
     <table>
       <thead><tr><th>限制</th><th>含义</th></tr></thead>
       <tbody>
-        <tr><td><code>maxTextChars</code></td><td>文本消息最大字符数�?/td></tr>
-        <tr><td><code>maxMediaCaption</code></td><td>图片、文件、语音消息说明文字最大字符数�?/td></tr>
-        <tr><td><code>maxAttachments</code></td><td>单条消息最大附件数，当前为 10�?/td></tr>
-        <tr><td><code>maxDirectBytes</code></td><td>可直接放�?<code>data</code> 的最大文件大小，当前�?256 KiB。更大的文件必须走服务端媒体 URL�?/td></tr>
-        <tr><td><code>maxBodyBytes</code></td><td>Maximum JSON request body size, currently 16 MiB.</td></tr>
-        <tr><td><code>maxMediaBytes</code></td><td>Maximum server-media upload size, currently 50 MiB for both MaClawSrv and MaClaw GUI.</td></tr>
-        <tr><td><code>maxAckIds</code></td><td>Maximum message IDs in one <code>POST /ack</code> request, currently 100.</td></tr>
+        <tr><td><code>maxTextChars</code></td><td>文本消息最大字符数。</td></tr>
+        <tr><td><code>maxMediaCaption</code></td><td>图片、文件和语音消息说明文字最大字符数。</td></tr>
+        <tr><td><code>maxAttachments</code></td><td>单条消息最大附件数，当前为 10。</td></tr>
+        <tr><td><code>maxDirectBytes</code></td><td>允许直接放入 base64 <code>data</code> 的最大字节数，当前为 256 KiB。更大的文件必须使用服务端媒体 URL。</td></tr>
+        <tr><td><code>maxBodyBytes</code></td><td>JSON 请求体最大大小，当前为 16 MiB。</td></tr>
+        <tr><td><code>maxMediaBytes</code></td><td>服务端媒体最大上传大小，MaClawSrv 和 MaClaw GUI 当前均为 50 MiB。</td></tr>
       </tbody>
     </table>
 
@@ -71,12 +71,12 @@
   "clientId": "demo-client",
   "conversationId": "customer-42",
   "user": { "id": "u42", "name": "张三" },
-  "message": { "type": "text", "text": "帮我查一下订单状�? },
+  "message": { "type": "text", "text": "帮我查一下订单状态" },
   "createdAt": 1781028000000
 }</pre>
-    <p><code>eventId</code> 用于幂等，重复提交不会重复触发处理。支持的 <code>message.type</code> �?<code>text</code>�?code>image</code>�?code>file</code>�?code>voice</code>�?code>audio</code> 会按 <code>voice</code> 处理�?/p>
+    <p><code>eventId</code> 用于幂等。重复提交同一事件不会重复触发处理。支持的 <code>message.type</code> 为 <code>text</code>、<code>image</code>、<code>file</code> 和 <code>voice</code>；<code>audio</code> 会按 <code>voice</code> 处理。</p>
 
-    <h3>小文件直�?/h3>
+    <h3>小文件内联</h3>
     <pre>{
   "eventId": "evt-image-1",
   "clientId": "demo-client",
@@ -91,8 +91,9 @@
     "sizeBytes": 12345
   }
 }</pre>
+    <p>对于直接传入的 <code>data</code>，<code>sizeBytes</code> 可选。若其大于零，必须等于 base64 解码后的字节数，否则网关返回 <code>400</code>。</p>
 
-    <h3>大文件上�?URL</h3>
+    <h3>大文件上传 URL</h3>
     <pre>POST /media/upload-url
 {
   "clientId": "demo-client",
@@ -120,7 +121,7 @@
     "url": "http://127.0.0.1:18777/api/im-gateway/v1/media/server-media-id?mediaToken=..."
   }
 }</pre>
-    <p>客户端随后对 <code>upload.url</code> 执行二进�?<code>PUT</code>，再发送消息引用服务端返回的媒体对象。客户端不能把自己提供的下载 URL 交给服务端使用�?/p>
+    <p>客户端随后对 <code>upload.url</code> 执行二进制 <code>PUT</code>，再发送消息引用服务端返回的媒体对象。客户端不能把自己提供的下载 URL 交给服务端抓取。<code>upload.maxBytes</code> 由网关强制执行；当 <code>sizeBytes</code> 大于零时，上传字节数必须精确匹配，否则网关返回 <code>400</code>。</p>
     <pre>{
   "eventId": "evt-file-1",
   "clientId": "demo-client",
@@ -128,7 +129,7 @@
   "user": { "id": "u42", "name": "张三" },
   "message": {
     "type": "file",
-    "text": "请阅读这份报�?,
+    "text": "请阅读这份报告",
     "attachments": [{
       "id": "server-media-id",
       "type": "file",
@@ -139,11 +140,10 @@
     }]
   }
 }</pre>
-    <p>同一服务端媒体也可以只传 <code>id</code>。小文件会被 Agent 以内联附件读取或用于图片视觉理解；大文件会以服务端媒�?ID/URL 的形式出现在 Agent 上下文中�?/p>
+    <p>同一服务端媒体也可以只传 <code>id</code>。小文件会作为内联附件交给 Agent 阅读或用于图片视觉理解；大文件会以服务端媒体 ID/URL 的形式出现在 Agent 上下文中。</p>
 
     <h3>GET /outgoing</h3>
     <pre>GET /outgoing?clientId=demo-client&amp;cursor=0&amp;timeout=25&amp;limit=20</pre>
-    <p><code>cursor</code>, <code>limit</code>, and <code>timeout</code> must be non-negative integers. <code>limit</code> is clamped to <code>poll.maxLimit</code>; <code>timeout=0</code> performs an immediate non-blocking poll.</p>
     <pre>{
   "ok": true,
   "messages": [{
@@ -152,7 +152,7 @@
     "conversationId": "customer-42",
     "replyToMessageId": "third_api_demo_1781028000000",
     "type": "text",
-    "text": "订单正在配送中�?,
+    "text": "订单正在配送中。",
     "createdAt": 1781028005123
   }],
   "nextCursor": "12",
@@ -161,25 +161,60 @@
 
     <h3>POST /ack</h3>
     <pre>{ "clientId": "demo-client", "messageIds": ["reply-12"], "status": "delivered" }</pre>
-    <p>A single ACK request may include up to <code>limits.maxAckIds</code> message IDs. Unknown IDs are ignored; acknowledged known messages are not returned again by subsequent <code>/outgoing</code> polls.</p>
 
-    <h2>5. 字段约定</h2>
+    <h2>5. 客户端工具执行扩展</h2>
+    <p>这是面向工业控制、桌面自动化等接入场景的可选扩展，适用于连接中的客户端可以执行一小组白名单工具的情况。除非客户端在 <code>/handshake</code> 中声明 <code>client_tools</code>，否则不会启用。</p>
+    <pre>{
+  "capabilities": { "client_tools": true },
+  "tools": [{
+    "name": "plc.write_register",
+    "risk": "write",
+    "requiresApproval": true,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "address": { "type": "integer" },
+        "value": { "type": "integer" }
+      },
+      "required": ["address", "value"]
+    }
+  }]
+}</pre>
+    <p>MaClaw 可能返回一次操作的 <code>type: "tool_call"</code>，也可能返回多步骤的 <code>type: "tool_plan"</code>。工具计划可使用 <code>sequential</code>、<code>parallel</code>、<code>dag</code> 或 <code>interactive</code> 模式。工业控制场景优先使用 <code>sequential</code> 或 <code>dag</code>；危险写操作应按步骤要求审批。</p>
+    <pre>{
+  "type": "tool_plan",
+  "toolPlan": {
+    "id": "tp_001",
+    "mode": "sequential",
+    "steps": [
+      { "id": "step_1", "tool": "plc.read_register", "arguments": { "address": 40001 } },
+      { "id": "step_2", "tool": "plc.write_register", "arguments": { "address": 40002, "valueFrom": "step_1.value" }, "dependsOn": ["step_1"], "requiresApproval": true }
+    ]
+  }
+}</pre>
+    <p>执行完成后必须调用 <code>POST /tool-result</code> 上报，并提供稳定的 <code>resultId</code> 或 <code>idempotencyKey</code>；<code>status</code> 可为 <code>success</code>、<code>error</code>、<code>rejected</code>、<code>cancelled</code> 或 <code>timeout</code>。<code>/ack</code> 只表示客户端收到了出站消息，不表示工具已完成。每个写类调用都应有 <code>idempotencyKey</code>、超时、审计记录和本地客户端策略检查。大型工具输出应复用服务端媒体流程，避免塞入过大的 JSON 载荷。</p>
+
+    <h2>6. 字段约定</h2>
     <table>
       <thead><tr><th>字段</th><th>说明</th></tr></thead>
       <tbody>
-        <tr><td><code>clientId</code></td><td>第三方软件实例标识，建议稳定且唯一�?/td></tr>
-        <tr><td><code>conversationId</code></td><td>第三方侧会话、客户、工单或群聊 ID�?/td></tr>
-        <tr><td><code>eventId</code></td><td>入站消息唯一 ID，用于重试幂等�?/td></tr>
-        <tr><td><code>message.id</code> / <code>attachments[].id</code></td><td>服务端媒�?ID，可单独作为媒体引用�?/td></tr>
-        <tr><td><code>message.data</code> / <code>attachments[].data</code></td><td>base64 小文件内容，必须小于 <code>maxDirectBytes</code>�?/td></tr>
-        <tr><td><code>message.url</code> / <code>attachments[].url</code></td><td>服务端提供的媒体下载 URL，客户端只访问它�?/td></tr>
-        <tr><td><code>message.fileName</code> / <code>attachments[].fileName</code></td><td>仅作为媒体元数据，不能替�?<code>id</code>�?code>data</code> 或服务端 <code>url</code>�?/td></tr>
-        <tr><td><code>cursor</code></td><td>出站消息游标，客户端保存上次返回值�?/td></tr>
+        <tr><td><code>clientId</code></td><td>第三方软件实例的稳定唯一 ID。</td></tr>
+        <tr><td><code>conversationId</code></td><td>第三方系统中的会话、客户、工单或群聊 ID。</td></tr>
+        <tr><td><code>eventId</code></td><td>入站消息唯一 ID，用于重试幂等。</td></tr>
+        <tr><td><code>message.id</code> / <code>attachments[].id</code></td><td>服务端媒体 ID，可作为唯一媒体引用。</td></tr>
+        <tr><td><code>message.data</code> / <code>attachments[].data</code></td><td>小文件 base64 内容，必须小于 <code>maxDirectBytes</code>。</td></tr>
+        <tr><td><code>message.url</code> / <code>attachments[].url</code></td><td>服务端提供的媒体下载 URL，客户端只访问它。</td></tr>
+        <tr><td><code>message.fileName</code> / <code>attachments[].fileName</code></td><td>仅作为媒体元数据，不能替代 <code>id</code>、<code>data</code> 或服务端 <code>url</code>。</td></tr>
+        <tr><td><code>toolCall.id</code></td><td>MaClaw 生成的唯一工具调用 ID。</td></tr>
+        <tr><td><code>toolCall.idempotencyKey</code></td><td>客户端用于防止重复执行的稳定键。</td></tr>
+        <tr><td><code>tool-result.resultId</code> / <code>tool-result.idempotencyKey</code></td><td>稳定的结果标识，重试时复用可避免重复注入 Agent 上下文。</td></tr>
+        <tr><td><code>toolPlan.steps[].dependsOn</code></td><td><code>dag</code> 或受保护顺序执行中的步骤依赖列表。</td></tr>
+        <tr><td><code>cursor</code></td><td>出站消息游标，客户端保存上一次返回值。</td></tr>
       </tbody>
     </table>
 
-    <h2>6. 请求追踪、错误和 ACK 语义</h2>
-    <p>响应通常包含 <code>requestId</code>。排查问题时请一并提供�?code>/outgoing</code> 使用 cursor 保证至少一次投递，第三方需要按 <code>message.id</code> 去重�?code>/ack</code> 表示第三方已将回复投递到自己的用户或业务系统，不替代 cursor 存储�?/p>
+    <h2>7. 请求追踪、错误和 ACK 语义</h2>
+    <p>响应通常包含 <code>requestId</code>，排查问题时请一并提供。<code>/outgoing</code> 通过 cursor 提供至少一次投递，因此客户端需要按 <code>message.id</code> 去重。<code>/ack</code> 是第三方系统已把回复投递给自己的用户或业务系统后的送达回执，不替代客户端 cursor 持久化。</p>
     <pre>{
   "ok": false,
   "requestId": "gw_1760000000000000000",
@@ -188,21 +223,22 @@
     "message": "clientId is required"
   }
 }</pre>
+    <p>MaClawSrv 和 MaClaw GUI 返回相同错误信封。请读取 <code>error.code</code> 和 <code>error.message</code>，不要依赖顶层 <code>code</code> 或 <code>message</code> 字段。</p>
 
-    <h2>7. 测试客户�?/h2>
+    <h2>8. 测试客户端</h2>
     <pre>$env:MACLAW_GATEWAY_TOKEN = "你的 Token"
 go run ./cmd/connnectMaClaw -text "你好，确认第三方通道是否可用"</pre>
 
-    <h2>8. 错误处理</h2>
+    <h2>9. 错误处理</h2>
     <table>
       <thead><tr><th>HTTP</th><th>含义</th><th>建议</th></tr></thead>
       <tbody>
-        <tr><td>400</td><td>请求格式、字段或媒体引用无效</td><td>检�?JSON、base64、附件大小和媒体 ID�?/td></tr>
-        <tr><td>401</td><td>Token 缺失或错�?/td><td>检�?Authorization 头�?/td></tr>
-        <tr><td>404</td><td>媒体不存在或 mediaToken 错误</td><td>重新请求上传 URL 或检查媒体是否过期�?/td></tr>
-        <tr><td>409</td><td>重复事件或状态冲�?/td><td>按幂等成功处理或重新获取 cursor�?/td></tr>
-        <tr><td>429</td><td>请求过快</td><td>指数退避后重试�?/td></tr>
-        <tr><td>5xx</td><td>MaClaw 处理失败</td><td>保留 eventId，延迟重试�?/td></tr>
+        <tr><td>400</td><td>请求结构、字段或媒体引用无效</td><td>检查 JSON、base64、附件大小和媒体 ID。</td></tr>
+        <tr><td>401</td><td>缺少 Token 或 Token 无效</td><td>检查 Authorization 请求头。</td></tr>
+        <tr><td>404</td><td>媒体不存在或 mediaToken 无效</td><td>重新请求上传 URL 或检查是否过期。</td></tr>
+        <tr><td>409</td><td>重复事件或状态冲突</td><td>将幂等重复视为成功，或刷新 cursor。</td></tr>
+        <tr><td>429</td><td>请求过快</td><td>指数退避后重试。</td></tr>
+        <tr><td>5xx</td><td>MaClaw 处理失败</td><td>保留同一个 eventId，稍后重试。</td></tr>
       </tbody>
     </table>
   </section>
