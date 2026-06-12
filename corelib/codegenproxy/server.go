@@ -1238,9 +1238,11 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 	flusher.Flush()
 
 	blockIdx := 0
+	textStarted := false
 	var stopReason string
 	textBytes := 0
 	var textBuf strings.Builder
+	bufferTextForToolCalls := len(toolSchemas) > 0
 	toolCalls := make(map[int]*streamToolCallAccum)
 	var toolOrder []int
 	var legacyFunction *streamToolCallAccum
@@ -1268,7 +1270,23 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 		// ── text content ──
 		if delta.Content != "" {
 			textBytes += len(delta.Content)
-			textBuf.WriteString(delta.Content)
+			if bufferTextForToolCalls {
+				textBuf.WriteString(delta.Content)
+			} else {
+				if !textStarted {
+					writeSSE(w, "content_block_start", map[string]interface{}{
+						"type": "content_block_start", "index": blockIdx,
+						"content_block": map[string]interface{}{"type": "text", "text": ""},
+					})
+					flusher.Flush()
+					textStarted = true
+				}
+				writeSSE(w, "content_block_delta", map[string]interface{}{
+					"type": "content_block_delta", "index": blockIdx,
+					"delta": map[string]interface{}{"type": "text_delta", "text": delta.Content},
+				})
+				flusher.Flush()
+			}
 		}
 
 		// Buffer tool calls until finish_reason. Some OpenAI-compatible
@@ -1318,6 +1336,14 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 	if streamErr != nil {
 		log.Printf("[codegenproxy] stream read failed id=%s model=%q max_event_bytes=%d err=%v",
 			reqID, model, codeGenStreamMaxEventBytes, streamErr)
+	}
+
+	if textStarted {
+		writeSSE(w, "content_block_stop", map[string]interface{}{
+			"type": "content_block_stop", "index": blockIdx,
+		})
+		blockIdx++
+		flusher.Flush()
 	}
 
 	if streamErr != nil {
