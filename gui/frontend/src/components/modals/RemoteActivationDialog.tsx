@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import type { RemoteCenterHubOption } from '../../types/appShell';
 
 type RemoteActivationDraft = {
+    hub_id: string;
     hub_url: string;
     hubcenter_url: string;
     email: string;
@@ -76,14 +77,21 @@ export const RemoteActivationDialog = ({
                         </div>
                         <select
                             className="form-select"
-                            value={remoteCenterHubs.some((hub) => hub.base_url === draft.hub_url.trim()) ? draft.hub_url.trim() : ""}
-                            onChange={(e) => setDraft((prev) => ({ ...prev, hub_url: e.target.value }))}
+                            value={remoteCenterHubs.some((hub) => hub.hub_id === draft.hub_id || hub.base_url === draft.hub_url.trim()) ? (draft.hub_id || draft.hub_url.trim()) : ""}
+                            onChange={(e) => {
+                                const selected = remoteCenterHubs.find((hub) => hub.hub_id === e.target.value || hub.base_url === e.target.value);
+                                setDraft((prev) => ({
+                                    ...prev,
+                                    hub_id: selected?.hub_id || "",
+                                    hub_url: selected?.base_url || e.target.value,
+                                }));
+                            }}
                         >
                             <option value="">
                                 {remoteCenterHubs.length > 0 ? t("remoteSelectRegisteredHub") : t("remoteNoRegisteredHubs")}
                             </option>
                             {remoteCenterHubs.map((hub) => (
-                                <option key={hub.hub_id + '-' + hub.base_url} value={hub.base_url}>
+                                <option key={hub.hub_id + '-' + hub.base_url} value={hub.hub_id || hub.base_url}>
                                     {hub.name ? hub.name + ' (' + hub.base_url + ')' : hub.base_url}
                                 </option>
                             ))}
@@ -94,7 +102,7 @@ export const RemoteActivationDialog = ({
                         <input
                             className="form-input"
                             value={draft.hub_url}
-                            onChange={(e) => setDraft((prev) => ({ ...prev, hub_url: e.target.value }))}
+                            onChange={(e) => setDraft((prev) => ({ ...prev, hub_id: "", hub_url: e.target.value }))}
                             placeholder="https://hub.example.com"
                             spellCheck={false}
                         />

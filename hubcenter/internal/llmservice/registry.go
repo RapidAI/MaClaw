@@ -20,6 +20,9 @@ const registryKey = "llm_service_registry"
 const DefaultComputeAgentID = "maclaw_official"
 const DefaultComputeAgentName = "MaClaw官方"
 
+const AccessPolicyFree = "free"
+const AccessPolicyGrantRequired = "grant_required"
+
 // ComputeAgent represents an upstream compute reseller/agent used for settlement.
 type ComputeAgent struct {
 	ID          string    `json:"id"`
@@ -140,6 +143,7 @@ func normalizeServiceGroupAgent(reg *Registry, group *llmpool.ServiceGroup) {
 	if group == nil {
 		return
 	}
+	group.AccessPolicy = normalizeServiceGroupAccessPolicy(group.AccessPolicy)
 	if group.AgentID == "" {
 		group.AgentID = DefaultComputeAgentID
 	}
@@ -150,6 +154,15 @@ func normalizeServiceGroupAgent(reg *Registry, group *llmpool.ServiceGroup) {
 		}
 	}
 	group.AgentName = group.AgentID
+}
+
+func normalizeServiceGroupAccessPolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case AccessPolicyGrantRequired:
+		return AccessPolicyGrantRequired
+	default:
+		return AccessPolicyFree
+	}
 }
 
 func findComputeAgent(reg *Registry, id string) *ComputeAgent {

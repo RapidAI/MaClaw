@@ -200,18 +200,18 @@ type App struct {
 	interactionInfraDone              atomic.Bool
 	aiAssistantReadyAt                atomic.Int64
 	aiAssistantFirstChatLogged        atomic.Bool
-	docGenerator                      *swarm.SwarmDocGenerator // cached PDF doc generator
-	workflowEngine                    *workflow.WorkflowEngine // V1 engine REMOVED from production; field retained for test compatibility only
-	workflowV2                        *workflowV2State         // V2 workflow engine (clean state machine)
-	workflowArtifactSaver             *deferredArtifactSaver   // shared artifact saver for OwnerID injection
-	workflowDisabled                  atomic.Bool              // true when user disables workflow in settings; checked by getWorkflowEngine()
-	steeringStore                     *steering.Store          // declarative rule injection (corelib/steering)
-	codeEventEmitter                  *CodeEventEmitter        // emits code file events to frontend for code preview panel
+	docGenerator                      *swarm.SwarmDocGenerator        // cached PDF doc generator
+	workflowEngine                    *workflow.WorkflowEngine        // V1 engine REMOVED from production; field retained for test compatibility only
+	workflowV2                        *workflowV2State                // V2 workflow engine (clean state machine)
+	workflowArtifactSaver             *deferredArtifactSaver          // shared artifact saver for OwnerID injection
+	workflowDisabled                  atomic.Bool                     // true when user disables workflow in settings; checked by getWorkflowEngine()
+	steeringStore                     *steering.Store                 // declarative rule injection (corelib/steering)
+	codeEventEmitter                  *CodeEventEmitter               // emits code file events to frontend for code preview panel
 	codingKnowledgeStore              *knowledge.CodingKnowledgeStore // independent coding experience store (coding_knowledge.db)
-	deepCrawlMu                       sync.Mutex               // guards deepCrawlCancel
-	deepCrawlCancel                   context.CancelFunc       // cancels active deep crawl session
-	deepCrawlCtx                      context.Context          // active deep crawl context (used to identify ownership)
-	deepCrawlMode                     string                   // active deep crawl owner: crawl or preview
+	deepCrawlMu                       sync.Mutex                      // guards deepCrawlCancel
+	deepCrawlCancel                   context.CancelFunc              // cancels active deep crawl session
+	deepCrawlCtx                      context.Context                 // active deep crawl context (used to identify ownership)
+	deepCrawlMode                     string                          // active deep crawl owner: crawl or preview
 	floatingAssistant                 *FloatingAssistantManager
 	floatingAssistantMu               sync.Mutex
 	agentViewEmissionSeq              atomic.Int64
@@ -5154,6 +5154,7 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 	incoming.RemoteSN = ondisk.RemoteSN
 	incoming.RemoteUserID = ondisk.RemoteUserID
 	incoming.RemoteClientID = ondisk.RemoteClientID
+	incoming.RemoteHubID = ondisk.RemoteHubID
 	incoming.RemoteTenantID = ondisk.RemoteTenantID
 	incoming.RemoteTenantName = ondisk.RemoteTenantName
 	incoming.RemoteNickname = ondisk.RemoteNickname
@@ -5567,6 +5568,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.RemoteEnabled = v
+		case "remote_hub_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.RemoteHubID = strings.TrimSpace(v)
 		case "remote_hub_url":
 			v, err := stringField(key, value)
 			if err != nil {

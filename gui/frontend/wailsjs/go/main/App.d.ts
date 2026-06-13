@@ -348,6 +348,8 @@ export function UpdateNLSkill(arg1:any):Promise<void>;
 
 export function DeleteNLSkill(arg1:string):Promise<void>;
 
+export function RenameNLSkill(arg1:string,arg2:string):Promise<void>;
+
 export function ImportNLSkillZip():Promise<string>;
 
 export function ExportLearnedSkillsZip(arg1:Array<string>):Promise<void>;

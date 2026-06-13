@@ -25,6 +25,9 @@ type LoopContext struct {
 	maxIterations                       int // current max iterations for this loop
 	iteration                           int // current iteration count
 	status                              LoopState
+	replanRevision                      int64 // increments when live user guidance should interrupt/re-plan
+	currentOperationCancel              context.CancelFunc
+	currentOperation                    *loopReplannableOperation
 	backgroundTaskBoundaryExtensionKeys map[string]struct{}
 
 	Conversation []interface{}             // this loop's conversation messages
@@ -85,6 +88,10 @@ type LoopContext struct {
 	// task (e.g. Skill preference evaluation), because the task context is
 	// already established from the previous turn.
 	IsAskUserResponse bool
+}
+
+type loopReplannableOperation struct {
+	cancel context.CancelFunc
 }
 
 // NewLoopContext creates a LoopContext for a chat loop.
@@ -216,6 +223,80 @@ func (c *LoopContext) IncrementIteration() int {
 	defer c.mu.Unlock()
 	c.iteration++
 	return c.iteration
+}
+
+func (c *LoopContext) RequestReplan() int64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	c.replanRevision++
+	cancel := c.currentOperationCancel
+	revision := c.replanRevision
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return revision
+}
+
+func (c *LoopContext) ReplanRevision() int64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.replanRevision
+}
+
+func (c *LoopContext) BeginReplannableOperation(parent context.Context) (context.Context, context.CancelFunc, int64) {
+	if c == nil {
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithCancel(parent)
+		return ctx, cancel, 0
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	op := &loopReplannableOperation{cancel: cancel}
+	c.mu.Lock()
+	c.currentOperationCancel = cancel
+	c.currentOperation = op
+	revision := c.replanRevision
+	c.mu.Unlock()
+	go func() {
+		select {
+		case <-c.CancelC:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, func() { c.endReplannableOperation(op) }, revision
+}
+
+func (c *LoopContext) endReplannableOperation(op *loopReplannableOperation) {
+	if c == nil || op == nil {
+		return
+	}
+	op.cancel()
+	c.mu.Lock()
+	if c.currentOperation == op {
+		c.currentOperationCancel = nil
+		c.currentOperation = nil
+	}
+	c.mu.Unlock()
+}
+
+func (c *LoopContext) ReplanRequestedSince(revision int64) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.replanRevision > revision
 }
 
 // State returns the current status string (thread-safe).

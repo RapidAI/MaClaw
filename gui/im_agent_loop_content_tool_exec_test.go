@@ -153,6 +153,55 @@ func TestAgentLoopNormalizesMissingToolCallIDAndType(t *testing.T) {
 	}
 }
 
+func TestAgentLoopSkipsStaleToolCallsAfterSupplementaryInput(t *testing.T) {
+	handler := &IMMessageHandler{registry: NewToolRegistry()}
+	called := false
+	if err := handler.registry.Register(RegisteredTool{
+		Name:     "bash",
+		Category: ToolCategoryBuiltin,
+		Status:   RegToolAvailable,
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "should not run"
+		},
+	}); err != nil {
+		t.Fatalf("register bash: %v", err)
+	}
+
+	ctx := NewLoopContext("chat", 10, nil)
+	planningEpoch := ctx.SupplementaryEpoch()
+	ctx.MarkSupplementaryInput()
+	call := llm.ToolCall{
+		ID:   "call_stale",
+		Type: "function",
+		Function: llm.ToolCallFunction{
+			Name:      "bash",
+			Arguments: `{"command":"ssh root@example.com"}`,
+		},
+	}
+
+	result := handler.executeAgentLoopToolCalls(agentLoopToolCallsOptions{
+		Context:                    ctx,
+		UserID:                     "desktop-user",
+		ToolCalls:                  []llm.ToolCall{call},
+		PlanningSupplementaryEpoch: planningEpoch,
+	})
+
+	if called {
+		t.Fatal("stale tool handler should not be executed after supplementary input")
+	}
+	if len(result.History) != 1 || result.History[0].ToolCallID != call.ID {
+		t.Fatalf("history = %#v, want one synthetic tool result", result.History)
+	}
+	content, _ := result.History[0].Content.(string)
+	if !strings.Contains(content, "User supplementary guidance arrived") {
+		t.Fatalf("synthetic tool result missing re-plan hint: %q", content)
+	}
+	if result.History[0].ToolOutcome != toolOutcomeFailed.String() {
+		t.Fatalf("tool outcome = %q, want failed", result.History[0].ToolOutcome)
+	}
+}
+
 func TestWorkflowDocPhaseExtractsStructuredWriteFileToolCallAsContent(t *testing.T) {
 	handler := &IMMessageHandler{}
 	postTurn := handler.handleAgentLoopPostLLMTurn(agentLoopPostLLMTurnOptions{

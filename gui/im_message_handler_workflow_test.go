@@ -751,11 +751,10 @@ func TestWorkflowConfirmation_DirectExecutionSkipsWorkflowOnce(t *testing.T) {
 	if handler.app.workflowEngine.HasActiveWorkflow(userID) {
 		t.Fatal("direct execution should not start workflow")
 	}
-	if shouldRunWorkflowInterception(false, result.SkipWorkflowOnce, handler.app.workflowEngine, *msg, false) {
-		t.Fatal("direct execution must skip workflow interception for the replayed task")
-	}
-	if !shouldRunWorkflowInterception(false, false, handler.app.workflowEngine, IMUserMessage{UserID: userID, Platform: "desktop", Text: "build a project"}, false) {
-		t.Fatal("normal foreground messages with a workflow engine should still run workflow interception")
+	// SkipWorkflowOnce=true means the V2 preflight layer will set
+	// SkipWorkflowRouting=true, preventing workflow-v2 re-routing.
+	if !result.SkipWorkflowOnce {
+		t.Fatal("direct execution must set SkipWorkflowOnce to prevent re-routing")
 	}
 }
 

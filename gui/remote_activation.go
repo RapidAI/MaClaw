@@ -16,6 +16,7 @@ import (
 
 type RemoteActivationResult struct {
 	Status       string `json:"status"`
+	HubID        string `json:"hub_id,omitempty"`
 	TenantID     string `json:"tenant_id,omitempty"`
 	TenantName   string `json:"tenant_name,omitempty"`
 	Message      string `json:"message,omitempty"`
@@ -40,6 +41,7 @@ type RemoteProbeResult struct {
 
 type RemoteActivationStatus struct {
 	Activated  bool   `json:"activated"`
+	HubID      string `json:"hub_id,omitempty"`
 	Email      string `json:"email"`
 	SN         string `json:"sn"`
 	TenantID   string `json:"tenant_id,omitempty"`
@@ -183,6 +185,9 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		cfg.RemoteMachineName = profile.Name
 		cfg.RemoteMachineToken = enrollResult.MachineToken
 		cfg.RemoteNickname = ""
+		if strings.TrimSpace(enrollResult.HubID) != "" {
+			cfg.RemoteHubID = enrollResult.HubID
+		}
 		cfg.RemoteHubURL = enrollResult.HubURL
 		cfg.RemoteEnabled = true
 		if enrollResult.ViewerToken != "" {
@@ -237,6 +242,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	// Convert to GUI result type.
 	result := RemoteActivationResult{
 		Status:       enrollResult.Status,
+		HubID:        enrollResult.HubID,
 		TenantID:     enrollResult.TenantID,
 		TenantName:   enrollResult.TenantName,
 		Message:      enrollResult.Message,
@@ -318,6 +324,7 @@ func (a *App) GetRemoteActivationStatus() RemoteActivationStatus {
 	}
 	return RemoteActivationStatus{
 		Activated:  cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != "",
+		HubID:      cfg.RemoteHubID,
 		Email:      cfg.RemoteEmail,
 		SN:         cfg.RemoteSN,
 		TenantID:   cfg.RemoteTenantID,
@@ -383,6 +390,7 @@ func (a *App) clearMachineCredentials() {
 		cfg.RemoteMachineToken = ""
 		cfg.RemoteViewerToken = ""
 		cfg.RemoteNickname = ""
+		cfg.RemoteHubID = ""
 	})
 
 	a.emitRemoteStateChanged()
@@ -404,6 +412,7 @@ func (a *App) ClearRemoteActivation() error {
 		cfg.RemoteMachineToken = ""
 		cfg.RemoteViewerToken = ""
 		cfg.RemoteNickname = ""
+		cfg.RemoteHubID = ""
 		cfg.RemoteHubURL = ""
 	}); err != nil {
 		return err

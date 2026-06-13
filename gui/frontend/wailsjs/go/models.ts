@@ -376,6 +376,7 @@ export namespace main {
 	    default_proxy_scope_agent: boolean;
 	    use_windows_terminal: boolean;
 	    remote_enabled: boolean;
+	    remote_hub_id: string;
 	    remote_hub_url: string;
 	    remote_hubcenter_url: string;
 	    remote_email: string;
@@ -542,6 +543,7 @@ export namespace main {
 	        this.default_proxy_scope_agent = source["default_proxy_scope_agent"];
 	        this.use_windows_terminal = source["use_windows_terminal"];
 	        this.remote_enabled = source["remote_enabled"];
+	        this.remote_hub_id = source["remote_hub_id"];
 	        this.remote_hub_url = source["remote_hub_url"];
 	        this.remote_hubcenter_url = source["remote_hubcenter_url"];
 	        this.remote_email = source["remote_email"];

@@ -373,6 +373,23 @@ func TestPickBestHub_DefaultHub(t *testing.T) {
 	}
 }
 
+func TestPickBestHubWithTenantAndID_ReturnsHubContext(t *testing.T) {
+	result := HubCenterResolveResult{
+		DefaultHubID: "hub-2",
+		Hubs: []HubCenterResolveHub{
+			{HubID: "hub-1", TenantID: "tenant-a", BaseURL: "https://hub1.example.com", Status: "online"},
+			{HubID: "hub-2", TenantID: "tenant-b", BaseURL: "https://hub2.example.com", Status: "online"},
+		},
+	}
+	url, hubID, tenantID, err := PickBestHubWithTenantAndID(result)
+	if err != nil {
+		t.Fatalf("PickBestHubWithTenantAndID failed: %v", err)
+	}
+	if url != "https://hub2.example.com" || hubID != "hub-2" || tenantID != "tenant-b" {
+		t.Fatalf("context = (%q, %q, %q), want default hub context", url, hubID, tenantID)
+	}
+}
+
 func TestPickBestHub_FallbackToFirst(t *testing.T) {
 	result := HubCenterResolveResult{
 		Hubs: []HubCenterResolveHub{

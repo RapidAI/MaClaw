@@ -100,6 +100,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		FreshTask:                  freshTask,
 		ConfirmedResume:            confirmedResume,
 		ConfirmedWorkflowAgentLoop: confirmedWorkflowAgentLoop,
+		SkipWorkflowRouting:        preflight.SkipWorkflowRouting,
 	})
 	if entryContext.Handled {
 		return entryContext.Response

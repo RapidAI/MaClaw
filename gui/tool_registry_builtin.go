@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/RapidAI/CodeClaw/corelib/config"
@@ -56,6 +57,25 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			Source:            "builtin",
 			ExecutionContract: defaultExplicitExecutionContractMetadata(name),
 			HandlerProg:       handler,
+		})
+	}
+
+	regCtxP := func(name, desc string, cat ToolCategory, tags []string, schema map[string]interface{}, required []string, handler ToolHandlerWithContext) {
+		if isDisabledExternalCodingSessionTool(name) {
+			return
+		}
+		registry.Register(RegisteredTool{
+			Name:              name,
+			Description:       desc,
+			Category:          cat,
+			Tags:              tags,
+			Priority:          0,
+			Status:            RegToolAvailable,
+			InputSchema:       props(schema),
+			Required:          required,
+			Source:            "builtin",
+			ExecutionContract: defaultExplicitExecutionContractMetadata(name),
+			HandlerCtx:        handler,
 		})
 	}
 

@@ -14,6 +14,10 @@ describe('hubCredits URL builders', () => {
         expect(buildHubCardStoreURL('https://hub.example.com/', 'tenant acme', '', 'viewer token')).toBe('https://hub.example.com/card_store?tenant_id=tenant%20acme#token=viewer%20token');
     });
 
+    it('builds HubCenter compute store URL when hub context is available', () => {
+        expect(buildHubCardStoreURL('https://hub.example.com/', 'tenant acme', 'dev@example.com', 'viewer token', 'https://hubs.example.com/', 'hub_1')).toBe('https://hubs.example.com/compute-store?hub_id=hub_1&tenant_id=tenant%20acme&email=dev%40example.com');
+    });
+
     it('returns empty card store URL when Hub URL is missing', () => {
         expect(buildHubCardStoreURL('   ')).toBe('');
     });

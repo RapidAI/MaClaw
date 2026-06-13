@@ -1561,7 +1561,26 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	}
 	hubClient := a.hubClient()
 	if hubClient == nil {
-		return nil, fmt.Errorf("AI assistant not initialized")
+		// Hub client not ready yet — move the wait into the async goroutine
+		// so we don't block the Wails IPC thread. Return Deferred immediately.
+		log.Printf("[AI assistant] hubClient nil at dispatch, will await in goroutine request_id=%s", requestID)
+		go func() {
+			waited := a.awaitHubClient(10 * time.Second)
+			if waited == nil {
+				log.Printf("[AI assistant] hubClient await timed out request_id=%s", requestID)
+				a.emitAIAssistantResponse(requestID, &IMAgentResponse{
+					RequestID:  requestID,
+					SessionKey: userID,
+					Error:      "AI 助手正在初始化，请稍后再试",
+				})
+				return
+			}
+			a.runAIAssistantMessageAsyncForUser(req, waited, requestID, text, userID)
+		}()
+		return &IMAgentResponse{
+			RequestID: requestID,
+			Deferred:  true,
+		}, nil
 	}
 	log.Printf("[AI assistant] enqueue request request_id=%s session_key=%q project_path=%q text_len=%d", requestID, userID, projectPath, len(text))
 
@@ -1993,7 +2012,8 @@ func (a *App) ClearAIAssistantHistory() error {
 	a.ensureInteractionInfra()
 	hubClient := a.hubClient()
 	if hubClient == nil {
-		return fmt.Errorf("AI assistant not initialized")
+		// Not initialized yet — nothing to clear. Return success (no-op).
+		return nil
 	}
 	handler := hubClient.ensureIMHandler()
 	// Cancel any active agent loop first, so it does not write back into

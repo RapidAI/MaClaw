@@ -32,12 +32,13 @@ type ProviderConfig struct {
 // Hub uses this for user-facing model groups; HubCenter uses it for
 // internal dispatch policy among backend providers.
 type ServiceGroup struct {
-	ID          string        `json:"id"`
-	Name        string        `json:"name"`
-	Description string        `json:"description,omitempty"`
-	AgentID     string        `json:"agent_id,omitempty"`
-	AgentName   string        `json:"agent_name,omitempty"`
-	Models      []ModelConfig `json:"models"`
+	ID           string        `json:"id"`
+	Name         string        `json:"name"`
+	Description  string        `json:"description,omitempty"`
+	AgentID      string        `json:"agent_id,omitempty"`
+	AgentName    string        `json:"agent_name,omitempty"`
+	AccessPolicy string        `json:"access_policy,omitempty"` // "free" / "grant_required"
+	Models       []ModelConfig `json:"models"`
 }
 
 // ModelConfig maps a logical model name to one or more provider backends.

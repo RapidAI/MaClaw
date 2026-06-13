@@ -31,6 +31,7 @@ import {
     CreateNLSkill,
     UpdateNLSkill,
     DeleteNLSkill,
+    RenameNLSkill,
     ImportNLSkillZip,
     SearchMixedSkills,
     InstallMixedSkill,
@@ -996,6 +997,29 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         }
     };
 
+    const handleLearnedRename = async (oldName: string) => {
+        const newName = window.prompt(
+            localizeText(
+                `Enter a new name for "${oldName}":`,
+                `为「${oldName}」输入新名称：`,
+                `為「${oldName}」輸入新名稱：`,
+            ),
+            oldName,
+        );
+        if (!newName || newName.trim() === "" || newName.trim() === oldName) return;
+        setBusy(true);
+        try {
+            await RenameNLSkill(oldName, newName.trim());
+            setDetailSkill((prev) => (prev?.name === oldName ? { ...prev, name: newName.trim() } : prev));
+            await loadData();
+            showToast(localizeText("Skill renamed successfully", "技能已改名", "技能已改名"), "success");
+        } catch (err) {
+            showToast(`${localizeText("Rename failed", "改名失败", "改名失敗")}: ${err}`, "error");
+        } finally {
+            setBusy(false);
+        }
+    };
+
     const handleImportZip = async () => {
         setImporting(true);
         setError("");
@@ -1719,7 +1743,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     {!loading && learnedSkills.length > 0 && (
                         <div style={remoteTableContainerStyle}>
                             <table style={learnedSkillsTableStyle}>
-                                <colgroup><col style={{ width: "36px" }} /><col style={{ width: "18%" }} /><col style={{ width: "22%" }} /><col style={{ width: "40px" }} /><col style={{ width: "56px" }} /><col style={{ width: "58px" }} /><col style={{ width: "170px" }} /></colgroup>
+                                <colgroup><col style={{ width: "36px" }} /><col style={{ width: "18%" }} /><col style={{ width: "22%" }} /><col style={{ width: "40px" }} /><col style={{ width: "56px" }} /><col style={{ width: "58px" }} /><col style={{ width: "200px" }} /></colgroup>
                                 <thead>
                                     <tr style={{ background: colors.surfaceMuted }}>
                                         <th style={{ ...thStyle, width: "36px", textAlign: "center" }}>
@@ -1730,7 +1754,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                         <th style={{ ...thStyle, width: "40px", textAlign: "center", paddingLeft: 4, paddingRight: 4 }}>{localizeText("Source", "\u6765\u6e90", "\u4f86\u6e90")}</th>
                                         <th style={{ ...thStyle, width: "56px", textAlign: "center", paddingLeft: 4, paddingRight: 4 }}>{localizeText("Usage", "\u4f7f\u7528\u7edf\u8ba1", "\u4f7f\u7528\u7d71\u8a08")}</th>
                                         <th style={{ ...thStyle, width: "58px", textAlign: "center", paddingLeft: 4, paddingRight: 4 }}>{localizeText("Status", "\u72b6\u6001", "\u72c0\u614b")}</th>
-                                        <th style={{ ...thStyle, width: "170px", textAlign: "left" }}>{localizeText("Actions", "\u64cd\u4f5c", "\u64cd\u4f5c")}</th>
+                                        <th style={{ ...thStyle, width: "200px", textAlign: "left" }}>{localizeText("Actions", "\u64cd\u4f5c", "\u64cd\u4f5c")}</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1775,6 +1799,14 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                         disabled={busy}
                                                     >
                                                         {localizeText("View", "查看", "查看")}
+                                                    </button>
+                                                    <button
+                                                        className="btn-secondary"
+                                                        style={smallBtnStyle}
+                                                        onClick={() => handleLearnedRename(s.name)}
+                                                        disabled={busy}
+                                                    >
+                                                        {localizeText("Rename", "改名", "改名")}
                                                     </button>
                                                     <button
                                                         className="btn-secondary btn-danger"

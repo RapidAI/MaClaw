@@ -383,6 +383,21 @@ describe('AIAssistantPanel property tests', () => {
         expect(openURL).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
     });
 
+    it('opens current tenant HubCenter compute store URL when hub id is configured', async () => {
+        const openURL = vi.fn();
+
+        await openCurrentTenantCardStore(async () => ({
+            remote_hub_id: 'hub_1',
+            remote_hub_url: 'https://hub.example.com/',
+            remote_hubcenter_url: 'https://hubs.example.com/',
+            remote_tenant_id: 'tenant acme',
+            remote_email: 'dev@example.com',
+            remote_viewer_token: 'viewer token',
+        }), openURL);
+
+        expect(openURL).toHaveBeenCalledWith('https://hubs.example.com/compute-store?hub_id=hub_1&tenant_id=tenant%20acme&email=dev%40example.com');
+    });
+
     it('shows trial-reflect badge when mode is enabled', () => {
         const { getByText } = renderPanel({
             state: { messages: [], sending: false, streaming: false, ready: true, trialReflectEnabled: true },

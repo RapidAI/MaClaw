@@ -56,9 +56,14 @@ export function buildHubCreditsURL(hubURL?: string, viewerToken?: string, tenant
     return token ? `${creditsURL}#token=${encodeURIComponent(token)}` : creditsURL;
 }
 
-export function buildHubCardStoreURL(hubURL?: string, tenantID?: string, email?: string, viewerToken?: string) {
+export function buildHubCardStoreURL(hubURL?: string, tenantID?: string, email?: string, viewerToken?: string, hubCenterURL?: string, hubID?: string) {
     const base = String(hubURL || '').trim().replace(/\/+$/, '');
+    const hubCenterBase = String(hubCenterURL || '').trim().replace(/\/+$/, '');
+    const resolvedHubID = String(hubID || '').trim();
     const token = String(viewerToken || '').trim();
+    if (hubCenterBase && resolvedHubID) {
+        return appendQuery(`${hubCenterBase}/compute-store`, { hub_id: resolvedHubID, tenant_id: tenantID, email });
+    }
     if (!base) return '';
     const storeURL = appendQuery(`${base}/card_store`, { tenant_id: tenantID, email });
     return token ? `${storeURL}#token=${encodeURIComponent(token)}` : storeURL;

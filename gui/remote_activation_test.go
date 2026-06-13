@@ -411,6 +411,9 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	if saved.RemoteHubURL != hub.URL {
 		t.Fatalf("RemoteHubURL = %q, want %q", saved.RemoteHubURL, hub.URL)
 	}
+	if saved.RemoteHubID != "hub_1" {
+		t.Fatalf("RemoteHubID = %q, want %q", saved.RemoteHubID, "hub_1")
+	}
 	if saved.RemoteEmail != "user@example.com" || saved.RemoteSN != "SN-2026-000001" {
 		t.Fatalf("saved identity mismatch: %+v", saved)
 	}

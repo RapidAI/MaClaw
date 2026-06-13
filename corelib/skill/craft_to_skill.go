@@ -211,6 +211,30 @@ func sanitizeDirName(name string) string {
 	return name
 }
 
+// SanitizeSkillName makes a user-provided name safe for use as both a skill
+// identifier and a directory name. It strips path separators, filesystem-unsafe
+// characters, leading/trailing dots and spaces, and truncates to 80 runes.
+func SanitizeSkillName(name string) string {
+	name = strings.TrimSpace(name)
+	// Strip path separators to prevent path traversal.
+	name = strings.ReplaceAll(name, "/", "_")
+	name = strings.ReplaceAll(name, "\\", "_")
+	// Strip filesystem-unsafe characters.
+	name = unsafeDirCharRe.ReplaceAllString(name, "_")
+	// Collapse consecutive underscores.
+	for strings.Contains(name, "__") {
+		name = strings.ReplaceAll(name, "__", "_")
+	}
+	// Strip leading/trailing dots and underscores (avoid hidden dirs / trailing dots on Windows).
+	name = strings.Trim(name, "._")
+	// Truncate to 80 runes (not bytes) to avoid splitting multibyte characters.
+	runes := []rune(name)
+	if len(runes) > 80 {
+		name = string(runes[:80])
+	}
+	return name
+}
+
 // craftedScriptExtension returns the file extension for a script language.
 // Distinct from gui/tool_craft.go's scriptExtension which handles additional
 // languages (powershell) and uses normalizeCraftLanguage.

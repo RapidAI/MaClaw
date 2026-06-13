@@ -696,6 +696,10 @@ export function DeleteNLSkill(arg1) {
   return window['go']['main']['App']['DeleteNLSkill'](arg1);
 }
 
+export function RenameNLSkill(arg1, arg2) {
+  return window['go']['main']['App']['RenameNLSkill'](arg1, arg2);
+}
+
 export function ImportNLSkillZip() {
   return window['go']['main']['App']['ImportNLSkillZip']();
 }

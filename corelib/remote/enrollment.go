@@ -55,6 +55,7 @@ type EnrollResult struct {
 	VEQuota      int    `json:"ve_quota,omitempty"` // Digital employee quota approved by HubCenter (0-10000)
 
 	// Resolved metadata — not from the enroll response, filled by the client.
+	HubID          string   // the hub_id selected by HubCenter resolve, when known
 	HubURL         string   // the hub URL actually used for enrollment
 	HubCenterURL   string   // the hub center URL that resolved the hub
 	DiscoveredURLs []string // all discovered hub center URLs (for persistence)
@@ -195,6 +196,7 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	hubURL := strings.TrimRight(strings.TrimSpace(cfg.HubURL), "/")
 	var discoveredURLs []string
 	var usedCenterURL string
+	var resolvedHubID string
 	var resolvedTenantID string // tenant_id from invitation code routing
 
 	if hubURL == "" {
@@ -204,6 +206,7 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 			return nil, fmt.Errorf("hub resolution failed: %w", err)
 		}
 		hubURL = resolved.hubURL
+		resolvedHubID = resolved.hubID
 		resolvedTenantID = resolved.tenantID
 		discoveredURLs = resolved.discoveredURLs
 		usedCenterURL = resolved.usedCenterURL
@@ -309,6 +312,7 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	}
 
 	// Fill resolved metadata.
+	enrollResp.HubID = resolvedHubID
 	enrollResp.HubURL = hubURL
 	enrollResp.HubCenterURL = usedCenterURL
 	enrollResp.DiscoveredURLs = discoveredURLs
@@ -327,6 +331,7 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 // resolveResult holds the output of hub center discovery + resolve.
 type resolveResult struct {
 	hubURL         string
+	hubID          string
 	tenantID       string // tenant_id from invitation code routing (empty if not code-routed)
 	usedCenterURL  string
 	discoveredURLs []string
@@ -339,13 +344,14 @@ func (c *EnrollmentClient) resolveHubURL(ctx context.Context, httpClient *http.C
 		return nil, err
 	}
 
-	hubURL, tenantID, err := PickBestHubWithTenant(*result)
+	hubURL, hubID, tenantID, err := PickBestHubWithTenantAndID(*result)
 	if err != nil {
 		return nil, err
 	}
 
 	return &resolveResult{
 		hubURL:         hubURL,
+		hubID:          hubID,
 		tenantID:       tenantID,
 		usedCenterURL:  usedCenter,
 		discoveredURLs: ordered,
@@ -364,19 +370,25 @@ func PickBestHub(result HubCenterResolveResult) (string, error) {
 // PickBestHubWithTenant selects the best hub URL and its associated tenant_id.
 // The tenant_id is non-empty when the hub was resolved via invitation code routing.
 func PickBestHubWithTenant(result HubCenterResolveResult) (string, string, error) {
+	url, _, tenantID, err := PickBestHubWithTenantAndID(result)
+	return url, tenantID, err
+}
+
+// PickBestHubWithTenantAndID selects the best hub URL, hub_id, and tenant_id.
+func PickBestHubWithTenantAndID(result HubCenterResolveResult) (string, string, string, error) {
 	if len(result.Hubs) == 0 {
 		msg := result.Message
 		if msg == "" {
 			msg = "no available hubs found"
 		}
-		return "", "", fmt.Errorf("%s", msg)
+		return "", "", "", fmt.Errorf("%s", msg)
 	}
 
 	// Prefer the default hub (if online).
 	if result.DefaultHubID != "" {
 		for _, hub := range result.Hubs {
 			if hub.HubID == result.DefaultHubID && strings.TrimSpace(hub.BaseURL) != "" && isHubOnline(hub.Status) {
-				return strings.TrimRight(hub.BaseURL, "/"), hub.TenantID, nil
+				return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, hub.TenantID, nil
 			}
 		}
 	}
@@ -384,7 +396,7 @@ func PickBestHubWithTenant(result HubCenterResolveResult) (string, string, error
 	// Fallback: first online hub with a non-empty BaseURL.
 	for _, hub := range result.Hubs {
 		if strings.TrimSpace(hub.BaseURL) != "" && isHubOnline(hub.Status) {
-			return strings.TrimRight(hub.BaseURL, "/"), hub.TenantID, nil
+			return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, hub.TenantID, nil
 		}
 	}
 
@@ -392,11 +404,11 @@ func PickBestHubWithTenant(result HubCenterResolveResult) (string, string, error
 	// This handles the case where HubCenter doesn't populate the Status field.
 	for _, hub := range result.Hubs {
 		if strings.TrimSpace(hub.BaseURL) != "" {
-			return strings.TrimRight(hub.BaseURL, "/"), hub.TenantID, nil
+			return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, hub.TenantID, nil
 		}
 	}
 
-	return "", "", fmt.Errorf("hub center did not return a usable hub url")
+	return "", "", "", fmt.Errorf("hub center did not return a usable hub url")
 }
 
 // isHubOnline returns true if the hub status indicates it's operational.

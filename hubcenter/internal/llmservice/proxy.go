@@ -98,10 +98,15 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		return nil, fmt.Errorf("model %q not available on this HubCenter", model)
 	}
 
-	// 3. Check tenant authorization for this service group
-	auth, err := cfg.AuthChecker.CheckAccess(ctx, req.HubID, req.TenantID, matchedGroup.ID)
-	if err != nil {
-		return nil, fmt.Errorf("authorization denied: %w", err)
+	// 3. Check tenant authorization only when this service group requires a card/grant.
+	var auth *TenantAuthorization
+	requiresGrant := matchedGroup.AccessPolicy == AccessPolicyGrantRequired
+	if requiresGrant {
+		var err error
+		auth, err = cfg.AuthChecker.CheckAccess(ctx, req.HubID, req.TenantID, matchedGroup.ID)
+		if err != nil {
+			return nil, fmt.Errorf("authorization denied: %w", err)
+		}
 	}
 
 	// 3.5 Check node binding (HA anti-double-spend)
@@ -202,10 +207,12 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		credits := float64(inputTokens+outputTokens) * multiplier / 10000 // default: 10000 tokens per credit
 
 		// Deduct credits
-		if err := cfg.AuthChecker.DeductCredits(ctx, auth.ID, credits); err != nil {
-			// Log but don't fail — tokens already consumed upstream.
-			// Reconciliation can fix this from usage records.
-			log.Printf("[llm-proxy] WARN: credits deduction failed auth=%s credits=%.2f: %v", auth.ID, credits, err)
+		if requiresGrant && auth != nil {
+			if err := cfg.AuthChecker.DeductCredits(ctx, auth.ID, credits); err != nil {
+				// Log but don't fail — tokens already consumed upstream.
+				// Reconciliation can fix this from usage records.
+				log.Printf("[llm-proxy] WARN: credits deduction failed auth=%s credits=%.2f: %v", auth.ID, credits, err)
+			}
 		}
 
 		// Record usage

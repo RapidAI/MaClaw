@@ -15,6 +15,7 @@ type imMessagePreflightResult struct {
 	FreshTask                  bool
 	ConfirmedResume            bool
 	ConfirmedWorkflowAgentLoop bool
+	SkipWorkflowRouting        bool // User already made a decision at the confirmation gate; do not re-route through workflow-v2.
 	ClearUIAfterContextSwitch  bool
 	Response                   *IMAgentResponse
 	Handled                    bool
@@ -50,7 +51,13 @@ func (h *IMMessageHandler) prepareIMMessagePreflight(msg *IMUserMessage, trimmed
 		return result
 	} else if pendingResult.ConfirmedResume {
 		result.ConfirmedResume = true
+		result.SkipWorkflowRouting = true
 		result.ConfirmedWorkflowAgentLoop = pendingResult.WorkflowAgentLoop
+	} else if pendingResult.SkipWorkflowOnce || pendingResult.ReprocessAsFreshTask {
+		// User cancelled or revised a workflow confirmation — the modified msg.Text
+		// should not be re-routed through workflow matching (it would re-trigger the
+		// same workflow confirmation panel in an infinite loop).
+		result.SkipWorkflowRouting = true
 	}
 
 	if h.app != nil && h.getSessionStarter() == nil {

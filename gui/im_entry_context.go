@@ -17,6 +17,7 @@ type imEntryContextOptions struct {
 	FreshTask                  bool
 	ConfirmedResume            bool
 	ConfirmedWorkflowAgentLoop bool
+	SkipWorkflowRouting        bool
 }
 
 type imEntryContextResult struct {
@@ -103,8 +104,12 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	var workflowRoute workflowIMRouteResult
 	v2State := h.getWorkflowV2()
 	v2Disabled := h.app != nil && h.app.workflowDisabled.Load()
-	log.Printf("[workflow-v2-debug] entry_context: v2=%v disabled=%v user=%s", v2State != nil, v2Disabled, msg.UserID)
-	if v2State != nil && !v2Disabled {
+	log.Printf("[workflow-v2-debug] entry_context: v2=%v disabled=%v user=%s skip=%v", v2State != nil, v2Disabled, msg.UserID, opts.SkipWorkflowRouting)
+	// Skip workflow routing when the user already confirmed execution at the
+	// confirmation gate. The modified msg.Text now contains the execution plan /
+	// enhanced instruction — running it through BM25 template matching causes
+	// false-positive workflow triggers (e.g. plan text matching unrelated templates).
+	if v2State != nil && !v2Disabled && !opts.SkipWorkflowRouting {
 		workflowRoute = h.routeWithWorkflowV2(*msg, trimmed)
 	}
 	// V1 fallback removed — V2 is the only workflow engine.

@@ -640,6 +640,25 @@ describe('HubServiceRedeemPanel', () => {
         });
     });
 
+    it('opens HubCenter compute store with hub id when configured', async () => {
+        LoadConfigMock.mockResolvedValue({
+            remote_hub_id: 'hub_1',
+            remote_hub_url: 'https://hub.example.com/',
+            remote_hubcenter_url: 'https://hubs.example.com/',
+            remote_viewer_token: 'viewer token',
+            remote_tenant_id: 'tenant acme',
+            remote_email: 'dev@example.com',
+        });
+        render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        const buyCredits = await screen.findByRole('button', { name: 'Buy Credits' });
+        fireEvent.click(buyCredits);
+
+        await waitFor(() => {
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hubs.example.com/compute-store?hub_id=hub_1&tenant_id=tenant%20acme&email=dev%40example.com');
+        });
+    });
+
     it('opens the credits center even when viewer token is unavailable', async () => {
         LoadConfigMock.mockResolvedValue({ remote_hub_url: 'https://hub.example.com/', remote_tenant_id: 'tenant acme' });
         render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);

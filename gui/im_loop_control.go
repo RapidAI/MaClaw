@@ -141,6 +141,9 @@ func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 	if text == "" || h.hasCancelledTaskBoundary(userID) || !h.hasActiveLoopForUser(userID) {
 		return false
 	}
+	if ctx := h.getSessionLoopCtx(userID); ctx != nil {
+		ctx.RequestReplan()
+	}
 	h.accumulateInjection(userID, "[用户补充] "+text)
 	log.Printf("[inject-supplementary] user=%s text_len=%d", userID, len([]rune(text)))
 	return true
@@ -154,6 +157,9 @@ func (h *IMMessageHandler) InjectGuideReference(userID, text string) bool {
 	injection := buildGuideLaunchInjection(text)
 	if injection == "" || !h.canAcceptGuideReferenceForUser(userID) {
 		return false
+	}
+	if ctx := h.getSessionLoopCtx(userID); ctx != nil {
+		ctx.RequestReplan()
 	}
 	h.accumulateInjection(userID, injection)
 	log.Printf("[inject-guide-reference] user=%s text_len=%d", userID, len([]rune(text)))

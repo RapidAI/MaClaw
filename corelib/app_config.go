@@ -51,6 +51,7 @@ type AppConfig struct {
 	// Terminal settings (Windows only)
 	UseWindowsTerminal      bool     `json:"use_windows_terminal"`
 	RemoteEnabled           bool     `json:"remote_enabled"`
+	RemoteHubID             string   `json:"remote_hub_id,omitempty"`
 	RemoteHubURL            string   `json:"remote_hub_url"`
 	RemoteHubCenterURL      string   `json:"remote_hubcenter_url"`
 	RemoteHubCenterURLs     []string `json:"remote_hubcenter_urls,omitempty"`
@@ -286,10 +287,10 @@ type AppConfig struct {
 	WorkflowEnabled *bool `json:"workflow_enabled,omitempty"`
 
 	// Coding knowledge base settings (experience accumulation by CodingSubAgent)
-	CodingKnowledgeAutoSaveMode string `json:"coding_knowledge_auto_save_mode,omitempty"` // observe/auto/off
-	CodingKnowledgeSaveStrategy string `json:"coding_knowledge_save_strategy,omitempty"`  // always/on_success/on_retry_success/off
-	CodingKnowledgeMaxPerProject int   `json:"coding_knowledge_max_per_project,omitempty"` // single project limit, default 200
-	CodingKnowledgeMaxTotal      int   `json:"coding_knowledge_max_total,omitempty"`       // global limit, default 1000
+	CodingKnowledgeAutoSaveMode  string `json:"coding_knowledge_auto_save_mode,omitempty"`  // observe/auto/off
+	CodingKnowledgeSaveStrategy  string `json:"coding_knowledge_save_strategy,omitempty"`   // always/on_success/on_retry_success/off
+	CodingKnowledgeMaxPerProject int    `json:"coding_knowledge_max_per_project,omitempty"` // single project limit, default 200
+	CodingKnowledgeMaxTotal      int    `json:"coding_knowledge_max_total,omitempty"`       // global limit, default 1000
 
 	// FavoriteEmployees stores the IDs of up to 9 user-configured pinned digital
 	// employees shown as quick-access buttons in the sidebar nav rail. Order matters.

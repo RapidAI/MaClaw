@@ -240,6 +240,10 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	if !opts.Telemetry.FirstLLMRequestMarked {
 		opts.Telemetry.PreLLMIterationPrepElapsed += roundPrep.PrepElapsed
 	}
+	planningSupplementaryEpoch := int64(0)
+	if opts.Context != nil {
+		planningSupplementaryEpoch = opts.Context.SupplementaryEpoch()
+	}
 
 	phaseStartedAt = time.Now()
 	llmDispatch := h.dispatchAgentLoopLLMRound(agentLoopLLMDispatchOptions{
@@ -397,6 +401,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		MessageContent:             msgContent,
 		LengthContinuationText:     opts.RunState.LengthContinuationBuffer.String(),
 		Choice:                     choice,
+		PlanningSupplementaryEpoch: planningSupplementaryEpoch,
 		Phase:                      opts.Phase,
 		Conversation:               *opts.Conversation,
 		History:                    *opts.History,

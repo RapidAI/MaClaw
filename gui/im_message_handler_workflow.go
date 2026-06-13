@@ -437,10 +437,6 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 	}
 }
 
-func shouldRunWorkflowInterception(confirmedResume bool, skipWorkflowOnce bool, engine *workflow.WorkflowEngine, msg IMUserMessage, hasPendingUserReply bool) bool {
-	return !confirmedResume && !skipWorkflowOnce && engine != nil && !msg.IsBackground && !hasPendingUserReply
-}
-
 // handlePostStartWorkflow is the single post-StartWorkflow handler for all
 // GUI-side workflow start paths (UIC and IUM). It:
 //  1. Emits suggest_maximize for the desktop panel

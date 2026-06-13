@@ -698,6 +698,109 @@ func (e *SkillExecutor) removeSkillDirs(name string) {
 	}
 }
 
+// Rename changes the name of a skill. It updates the in-memory list,
+// the on-disk skill.yaml/skill.yml name field, renames the directory,
+// and persists the changes to config.json.
+func (e *SkillExecutor) Rename(oldName, newName string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Sanitize newName for filesystem safety (strip path separators, illegal chars).
+	newName = skill.SanitizeSkillName(newName)
+	if newName == "" {
+		return fmt.Errorf("new name is invalid after sanitization")
+	}
+	if newName == oldName {
+		return nil
+	}
+
+	skills := e.loadSkills()
+
+	// Check target name doesn't conflict with an existing skill.
+	for _, s := range skills {
+		if strings.EqualFold(s.Name, newName) {
+			return fmt.Errorf("skill %q already exists", s.Name)
+		}
+	}
+
+	// Find the skill to rename.
+	idx := -1
+	for i, s := range skills {
+		if s.Name == oldName {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return fmt.Errorf("skill %q not found", oldName)
+	}
+
+	target := &skills[idx]
+
+	// Update name field in the on-disk definition file (skill.yaml/skill.yml).
+	if target.SkillDir != "" {
+		defPath, defFormat := findSkillDefinitionFile(target.SkillDir)
+		if defPath != "" && defFormat == "yaml" {
+			if data, err := os.ReadFile(defPath); err == nil {
+				if updated := replaceYAMLNameField(string(data), oldName, newName); updated != "" {
+					_ = os.WriteFile(defPath, []byte(updated), 0644)
+				}
+			}
+		}
+
+		// Rename the directory to match the new name.
+		parentDir := filepath.Dir(target.SkillDir)
+		newDir := filepath.Join(parentDir, newName)
+		if _, err := os.Stat(newDir); os.IsNotExist(err) {
+			if err := os.Rename(target.SkillDir, newDir); err == nil {
+				target.SkillDir = newDir
+			}
+			// If rename fails (permission, cross-device, etc.), keep the old
+			// directory path — loadSkills will still find the skill by name
+			// field in skill.yaml which has already been updated.
+		}
+	}
+
+	// Update the in-memory entry.
+	target.Name = newName
+	// Preserve old name as DirName alias so MatchesName can still find this
+	// skill by the old name (important if directory rename failed).
+	if target.DirName == "" || target.DirName == oldName {
+		target.DirName = oldName
+	}
+
+	return e.saveSkills(skills)
+}
+
+// replaceYAMLNameField replaces only the top-level "name:" field value in a
+// YAML skill definition. It matches "name:" at the start of a line (no
+// leading whitespace) to avoid replacing nested occurrences in descriptions
+// or step parameters.
+func replaceYAMLNameField(content, oldName, newName string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimRight(line, "\r")
+		// Match only top-level name field (no leading whitespace).
+		if !strings.HasPrefix(trimmed, "name:") {
+			continue
+		}
+		valuePart := strings.TrimSpace(trimmed[len("name:"):])
+		// Strip quotes from the value for comparison.
+		unquoted := strings.Trim(valuePart, "\"'")
+		if unquoted == oldName {
+			// Preserve original line ending style.
+			hasCR := strings.HasSuffix(line, "\r")
+			newLine := "name: " + newName
+			if hasCR {
+				newLine += "\r"
+			}
+			lines[i] = newLine
+			return strings.Join(lines, "\n")
+		}
+	}
+	return "" // no match found, don't modify
+}
+
 // uploadStatusFile is a small JSON file stored alongside file-based skills
 // to persist upload metadata that can't be saved in config.json.
 type uploadStatusFile struct {
@@ -2066,6 +2169,28 @@ func (a *App) DeleteNLSkill(name string) error {
 		a.hubUpdCache.invalidate()
 	}
 	return err
+}
+
+// RenameNLSkill renames a learned/crafted skill to a user-friendly name (Wails binding).
+// It updates the name field in skill.yaml, renames the on-disk directory,
+// and updates the config.json entry.
+func (a *App) RenameNLSkill(oldName, newName string) error {
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return fmt.Errorf("new name cannot be empty")
+	}
+	if newName == oldName {
+		return nil // no-op
+	}
+	// Reject names containing path separators at the API boundary (user input).
+	if strings.ContainsAny(newName, "/\\") {
+		return fmt.Errorf("skill name cannot contain path separators")
+	}
+	a.ensureRemoteInfra()
+	if a.skillExecutor == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	return a.skillExecutor.Rename(oldName, newName)
 }
 
 // ImportNLSkillZip opens a file dialog to select a zip file, validates it as a

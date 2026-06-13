@@ -922,7 +922,7 @@ function App() {
     const [gossipAllowed, setGossipAllowed] = useState(true);
     const [showRemoteActivationModal, setShowRemoteActivationModal] = useState(false);
     const [pendingRemoteLaunchTool, setPendingRemoteLaunchTool] = useState<string>("");
-    const [remoteActivationDraft, setRemoteActivationDraft] = useState({ hub_url: "", hubcenter_url: "", email: "" });
+    const [remoteActivationDraft, setRemoteActivationDraft] = useState({ hub_id: "", hub_url: "", hubcenter_url: "", email: "" });
     const [remoteCenterHubs, setRemoteCenterHubs] = useState<RemoteCenterHubOption[]>([]);
     const [loadingRemoteCenterHubs, setLoadingRemoteCenterHubs] = useState(false);
     const [newSkillName, setNewSkillName] = useState("");
@@ -2182,7 +2182,7 @@ function App() {
         try {
             const freshConfig = await callBackend(() => LoadConfig());
             const sourceConfig = freshConfig || config;
-            const url = buildHubCardStoreURL((sourceConfig as any)?.remote_hub_url, (sourceConfig as any)?.remote_tenant_id, (sourceConfig as any)?.remote_email, (sourceConfig as any)?.remote_viewer_token);
+            const url = buildHubCardStoreURL((sourceConfig as any)?.remote_hub_url, (sourceConfig as any)?.remote_tenant_id, (sourceConfig as any)?.remote_email, (sourceConfig as any)?.remote_viewer_token, (sourceConfig as any)?.remote_hubcenter_url, (sourceConfig as any)?.remote_hub_id);
             if (url) {
                 safeBrowserOpenURL(url);
                 return;
@@ -2696,6 +2696,7 @@ function App() {
         const nextEmail = config?.remote_email || "";
         setPendingRemoteLaunchTool(toolName);
         setRemoteActivationDraft({
+            hub_id: (config as any)?.remote_hub_id || "",
             hub_url: config?.remote_hub_url || "",
             hubcenter_url: nextHubCenterURL,
             email: nextEmail,
@@ -2720,10 +2721,17 @@ function App() {
             setRemoteCenterHubs(Array.isArray(hubs) ? hubs : []);
             if (Array.isArray(hubs) && hubs.length > 0) {
                 setRemoteActivationDraft((prev) => {
+                    const currentHubURL = prev.hub_url.trim().replace(/\/+$/, "");
+                    if (!prev.hub_id.trim() && currentHubURL) {
+                        const matched = hubs.find((hub) => String(hub.base_url || "").trim().replace(/\/+$/, "") === currentHubURL);
+                        if (matched?.hub_id) {
+                            return { ...prev, hub_id: matched.hub_id, hub_url: matched.base_url || prev.hub_url };
+                        }
+                    }
                     if (prev.hub_url.trim()) {
                         return prev;
                     }
-                    return { ...prev, hub_url: hubs[0].base_url || "" };
+                    return { ...prev, hub_id: hubs[0].hub_id || "", hub_url: hubs[0].base_url || "" };
                 });
             } else if (notifyOnEmpty) {
                 showToastMessage(t("remoteNoRegisteredHubs"), 3000);
@@ -2740,10 +2748,12 @@ function App() {
     const activateRemoteFromDialog = async () => {
         if (!config) return;
         const hubURL = remoteActivationDraft.hub_url.trim();
+        const hubID = remoteActivationDraft.hub_id.trim();
         const hubCenterURL = remoteActivationDraft.hubcenter_url.trim();
         const email = remoteActivationDraft.email.trim();
         const newConfig = new main.AppConfig({
             ...config,
+            remote_hub_id: hubID,
             remote_hub_url: hubURL,
             remote_hubcenter_url: hubCenterURL,
             remote_email: email,
@@ -2751,6 +2761,7 @@ function App() {
         });
         setConfig(newConfig);
         const saved = await callBackend(() => PatchConfigFields({
+            remote_hub_id: hubID,
             remote_hub_url: hubURL,
             remote_hubcenter_url: hubCenterURL,
             remote_email: email,

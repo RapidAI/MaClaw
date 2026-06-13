@@ -2,6 +2,8 @@ package llmservice
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -117,7 +119,7 @@ func TestHandleProxyRequest_AuthDenied(t *testing.T) {
 	svc := NewService(system)
 	_ = svc.SaveRegistry(context.Background(), &Registry{
 		Providers:     []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: "http://localhost"}},
-		ServiceGroups: []llmpool.ServiceGroup{{ID: "g1", Name: "G1", Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}}}},
+		ServiceGroups: []llmpool.ServiceGroup{{ID: "g1", Name: "G1", AccessPolicy: AccessPolicyGrantRequired, Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}}}},
 	})
 
 	// No authorizations → access denied
@@ -132,6 +134,46 @@ func TestHandleProxyRequest_AuthDenied(t *testing.T) {
 	}
 	if !contains(err.Error(), "authorization denied") {
 		t.Fatalf("expected auth denied error, got: %v", err)
+	}
+}
+
+func TestHandleProxyRequest_FreeAccessPolicySkipsAuthorization(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":100,"completion_tokens":50}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	authRepo := &mockAuthRepo{}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(authRepo),
+		HTTPClient:  upstream.Client(),
+	}
+	req := &ProxyRequest{HubID: "hub1", TenantID: "t1", Body: map[string]any{"model": "gpt-4"}}
+	resp, err := HandleProxyRequest(context.Background(), cfg, req)
+	if err != nil {
+		t.Fatalf("free group should not require authorization: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if len(authRepo.auths) != 0 {
+		t.Fatalf("free group should not create or deduct authorizations: %#v", authRepo.auths)
 	}
 }
 

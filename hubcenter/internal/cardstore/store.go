@@ -5,6 +5,7 @@ package cardstore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corecardstore "github.com/RapidAI/CodeClaw/corelib/cardstore"
@@ -201,6 +202,40 @@ func (s *Service) SetPaymentConfig(personal corecardstore.PersonalPaymentConfig,
 
 // CreateCardType creates a new card type (admin operation).
 func (s *Service) CreateCardType(ctx context.Context, ct *CardType) error {
+	if err := normalizeAndValidateCardType(ct, true); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	ct.CreatedAt = now
+	ct.UpdatedAt = now
+	return s.cardTypes.Create(ctx, ct)
+}
+
+// UpdateCardType updates an existing card type.
+func (s *Service) UpdateCardType(ctx context.Context, ct *CardType) error {
+	if err := normalizeAndValidateCardType(ct, false); err != nil {
+		return err
+	}
+	ct.UpdatedAt = time.Now().UTC()
+	return s.cardTypes.Update(ctx, ct)
+}
+
+func normalizeAndValidateCardType(ct *CardType, creating bool) error {
+	if ct == nil {
+		return fmt.Errorf("card type is required")
+	}
+	ct.ID = strings.TrimSpace(ct.ID)
+	ct.ServiceGroupID = strings.TrimSpace(ct.ServiceGroupID)
+	ct.Label = strings.TrimSpace(ct.Label)
+	ct.Description = strings.TrimSpace(ct.Description)
+	ct.Period = strings.TrimSpace(ct.Period)
+	ct.Template = strings.TrimSpace(ct.Template)
+	if ct.Template == "" {
+		ct.Template = "enterprise_monthly_blue"
+	}
+	if !creating && ct.ID == "" {
+		return fmt.Errorf("id is required")
+	}
 	if ct.ServiceGroupID == "" {
 		return fmt.Errorf("service_group_id is required")
 	}
@@ -221,19 +256,7 @@ func (s *Service) CreateCardType(ctx context.Context, ct *CardType) error {
 	default:
 		return fmt.Errorf("period must be month, quarter, or year")
 	}
-	now := time.Now().UTC()
-	ct.CreatedAt = now
-	ct.UpdatedAt = now
-	return s.cardTypes.Create(ctx, ct)
-}
-
-// UpdateCardType updates an existing card type.
-func (s *Service) UpdateCardType(ctx context.Context, ct *CardType) error {
-	if ct.Template != "" && !IsValidTemplate(ct.Template) {
-		return fmt.Errorf("invalid card template: %s", ct.Template)
-	}
-	ct.UpdatedAt = time.Now().UTC()
-	return s.cardTypes.Update(ctx, ct)
+	return nil
 }
 
 // ListEnabledCardTypes returns all enabled (on-shelf) card types.
