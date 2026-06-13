@@ -1390,14 +1390,35 @@ func (h *IMMessageHandler) askWorkflowConfirmChoice(msg IMUserMessage, result *v
 				templateName = tmpl.Name
 			}
 		}
-		text = fmt.Sprintf("🔍 识别到这可能适合使用**%s**工作流，请选择处理方式：\n\n"+
-			"**1. 进入%s工作流（推荐）**\n"+
-			"系统按阶段引导完成，每个阶段产出结构化文档，完成后再进入下一阶段\n\n"+
-			"**2. 直接处理**\n"+
-			"不走工作流，当作普通任务由 AI 自由发挥完成", templateName, templateName)
-		actions = []IMResponseAction{
-			{Label: fmt.Sprintf("📋 进入%s工作流", templateName), Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
-			{Label: "🔄 直接处理", Command: buildWorkflowChoiceCommand(workflowChoiceDirect, choiceID), Style: "secondary"},
+
+		// When a close runner-up exists, show disambiguation panel with both options.
+		if result.RunnerUp != "" {
+			runnerUpName := result.RunnerUp
+			if wf := h.getWorkflowV2(); wf != nil {
+				if tmpl := wf.registry.Get(result.RunnerUp); tmpl != nil && tmpl.Name != "" {
+					runnerUpName = tmpl.Name
+				}
+			}
+			text = fmt.Sprintf("🔍 识别到多个可能匹配的工作流，请选择：\n\n"+
+				"**1. %s**\n"+
+				"**2. %s**\n"+
+				"**3. 直接处理**（不走工作流）", templateName, runnerUpName)
+			// Store runner-up in pending choice for retrieval when user clicks option 2
+			actions = []IMResponseAction{
+				{Label: fmt.Sprintf("📋 %s", templateName), Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
+				{Label: fmt.Sprintf("📋 %s", runnerUpName), Command: buildWorkflowChoiceCommand("alt_"+result.RunnerUp, choiceID), Style: "secondary"},
+				{Label: "🔄 直接处理", Command: buildWorkflowChoiceCommand(workflowChoiceDirect, choiceID), Style: "secondary"},
+			}
+		} else {
+			text = fmt.Sprintf("🔍 识别到这可能适合使用**%s**工作流，请选择处理方式：\n\n"+
+				"**1. 进入%s工作流（推荐）**\n"+
+				"系统按阶段引导完成，每个阶段产出结构化文档，完成后再进入下一阶段\n\n"+
+				"**2. 直接处理**\n"+
+				"不走工作流，当作普通任务由 AI 自由发挥完成", templateName, templateName)
+			actions = []IMResponseAction{
+				{Label: fmt.Sprintf("📋 进入%s工作流", templateName), Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
+				{Label: "🔄 直接处理", Command: buildWorkflowChoiceCommand(workflowChoiceDirect, choiceID), Style: "secondary"},
+			}
 		}
 	}
 
@@ -1480,6 +1501,15 @@ func (h *IMMessageHandler) handleCodingComplexityCommand(msg IMUserMessage, trim
 		return &result
 
 	default:
+		// Handle alt_<type> choices from disambiguation panel
+		if strings.HasPrefix(choice, "alt_") {
+			altType := strings.TrimPrefix(choice, "alt_")
+			log.Printf("[workflow-v2] user chose: ALT template %s (was %s)", altType, pending.RouteResult.WorkflowType)
+			// Override the route result with the user's chosen template
+			pending.RouteResult.WorkflowType = altType
+			result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
+			return &result
+		}
 		result := workflowIMRouteResult{
 			Response: &IMAgentResponse{Text: "⚠️ 无效选择，请重新发送任务。"},
 		}

@@ -20,6 +20,10 @@ type RouteResult struct {
 	WorkflowType string        // set when creating a new workflow
 	ProjectPath  string        // extracted from user text
 	HandleResult *HandleResult // set when an active workflow handled the message
+	// RunnerUp is set when a second template scored close to the winner
+	// (ratio >= ambiguousTemplateRatio). GUI layer can show a disambiguation
+	// panel letting the user pick the correct template.
+	RunnerUp string
 }
 
 // Attachment represents a message attachment (image, file, etc.)
@@ -190,10 +194,32 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 	// Step 8: Extract project path from text
 	projectPath := ExtractProjectPathFromText(text)
 
+	// Step 8.5: Detect ambiguous runner-up — if a second template scored close
+	// to the winner (ratio >= 0.85), include it so the GUI layer can offer the
+	// user a disambiguation choice instead of guessing.
+	var runnerUp string
+	if matched != nil {
+		ranked := r.templates.RankedByText(text)
+		if len(ranked) >= 2 && ranked[0].Score > 0 && ranked[1].Score > 0 {
+			ratio := ranked[1].Score / ranked[0].Score
+			if ratio >= ambiguousTemplateRatio {
+				// Find the highest-scoring template that is NOT the matched one.
+				// That's the runner-up candidate for disambiguation.
+				for _, ts := range ranked {
+					if ts.Type != matched.Type && ts.Score/ranked[0].Score >= ambiguousTemplateRatio {
+						runnerUp = ts.Type
+						break
+					}
+				}
+			}
+		}
+	}
+
 	return &RouteResult{
 		Target:       RouteToWorkflow,
 		WorkflowType: matched.Type,
 		ProjectPath:  projectPath,
+		RunnerUp:     runnerUp,
 	}
 }
 
@@ -209,6 +235,13 @@ func (r *WorkflowRouter) assessComplexity(text string) TaskComplexity {
 	// Without LLM: always default to complex (full SDD) — the safe choice.
 	return ComplexityComplex
 }
+
+// --- Ambiguous Template Detection ---
+
+// ambiguousTemplateRatio: when runner-up score / top score >= this ratio,
+// the match is considered ambiguous and the GUI shows a disambiguation panel.
+// 0.85 means the runner-up must be at least 85% of the top score.
+const ambiguousTemplateRatio = 0.85
 
 // --- Skip Signals ---
 

@@ -602,9 +602,9 @@ func PaperReproductionTemplate() *WorkflowTemplate {
 func ChangjiangScholarTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:        "changjiang_scholar",
-		Name:        "长江学者申报书",
-		Description: "个人资质梳理 → 学术成就总结 → 聘期研究计划 → 人才培养与团队建设 → 推荐意见与申报书整合。适用于长江学者特聘教授、讲座教授、青年学者等各层次申报，系统性整理学术履历、凝练研究方向、撰写高质量申报材料。Changjiang Scholar application: eligibility assessment, academic achievements, research plan, talent cultivation, recommendation and final assembly.",
-		Keywords:    []string{"长江学者", "长江学者申报", "长江特聘", "长江讲座", "长江青年", "Changjiang Scholar", "changjiang"},
+		Name:        "长江学者申请书",
+		Description: "个人资质梳理 → 学术成就总结 → 聘期研究计划 → 人才培养与团队建设 → 推荐意见与申报书整合。适用于长江学者特聘教授、讲座教授、青年学者等各层次申报，系统性整理学术履历、凝练研究方向、撰写高质量申报材料。撰写长江学者申请书申报书。Changjiang Scholar application writing: eligibility assessment, academic achievements, research plan, talent cultivation, recommendation and final assembly.",
+		Keywords:    []string{"长江学者", "长江学者申报", "长江学者申请书", "长江特聘", "长江讲座", "长江青年", "Changjiang Scholar", "changjiang"},
 		Phases: []PhaseTemplate{
 			{ID: "cj_personal_profile", Name: "个人资质与申报条件梳理", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
 				InputSchema: &PhaseInputSchema{
@@ -646,10 +646,20 @@ func ChangjiangScholarReviewTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:        "changjiang_scholar_review",
 		Name:        "长江学者申报书评审",
-		Description: "完整性检测 → 学术成果评估 → 研究计划评估 → 撰写质量评估 → 综合评估报告。适用于长江学者申报材料的自审或他审，从多维度评估申报书质量并给出改进建议。Changjiang Scholar application review: completeness check, achievement evaluation, plan feasibility, narrative quality, improvement report.",
+		Description: "完整性检测 → 学术成果评估 → 研究计划评估 → 撰写质量评估 → 综合评估报告。适用于长江学者申报材料的自审或他审，从多维度评估已有材料质量并给出改进建议。Changjiang Scholar application review: completeness check, achievement evaluation, plan feasibility, narrative quality, improvement report.",
 		Keywords:    []string{"长江学者评审", "申报书评审", "长江评审", "申报书审查"},
 		Phases: []PhaseTemplate{
-			{ID: "cj_completeness_check", Name: "基本信息完整性检测", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "cj_completeness_check", Name: "基本信息完整性检测", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "提供申报材料",
+					Description: "请提供待评审的长江学者申报材料。支持上传文件（PDF/Word）、粘贴文本内容、或指定本机文件路径。",
+					Fields: []PhaseInputField{
+						{Name: "material_path", Label: "申报材料文件路径", Type: "text", Placeholder: "如：D:\\申报材料\\长江学者申报书.pdf（如果文件在本机）"},
+						{Name: "material_text", Label: "或粘贴申报材料文本", Type: "textarea", Placeholder: "将申报书的主要内容粘贴到这里"},
+						{Name: "focus_areas", Label: "重点关注方面（可选）", Type: "textarea", Placeholder: "如：学术成果是否突出、研究计划是否可行"},
+					},
+				},
+			},
 			{ID: "cj_achievement_evaluation", Name: "学术成果质量评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "cj_plan_feasibility", Name: "研究计划可行性评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "cj_narrative_quality", Name: "材料撰写质量评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
