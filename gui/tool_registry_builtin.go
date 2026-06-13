@@ -317,7 +317,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolDelegateTask(args) })
 
 	// --- Craft tool (needs progress callback) ---
-	regP("craft_tool", "当现有工具、Skill 或会话式编程都不合适时，生成并执行单脚本来完成一次性自动化任务。更适合本机数据处理、API 调用、文件转换和小型系统自动化；不适合复杂代码库改造或长链路编程任务。",
+	regCtxP("craft_tool", "当现有工具、Skill 或会话式编程都不合适时，生成并执行单脚本来完成一次性自动化任务。更适合本机数据处理、API 调用、文件转换和小型系统自动化；不适合复杂代码库改造或长链路编程任务。",
 		ToolCategoryBuiltin, []string{"craft", "script", "generate", "code"},
 		map[string]interface{}{
 			"task":               map[string]string{"type": "string", "description": "需要完成的任务描述（越详细越好）"},
@@ -331,8 +331,8 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"skill_name":         map[string]string{"type": "string", "description": "Skill 名称（可选，自动生成）"},
 			"timeout":            map[string]string{"type": "integer", "description": "执行超时秒数（默认 60，最大 300）"},
 		}, []string{"task"},
-		func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-			return h.toolCraftTool(args, onProgress)
+		func(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
+			return h.toolCraftToolWithContext(ctx, args, onProgress)
 		})
 
 	// --- Local machine tools ---

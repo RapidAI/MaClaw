@@ -11,11 +11,10 @@ export const KNOWN_USER_AGENTS = [
     "Crush",
     "Goose",
     "claude code 2.0",
-    "claude-code/2.0.0",
     "tigerclaw",
 ] as const;
 
-const LEGACY_KNOWN_USER_AGENTS = ["opencode"] as const;
+const LEGACY_KNOWN_USER_AGENTS = ["opencode", "claude-code/2.0.0"] as const;
 
 export const defaultAgentTypeForProvider = (provider?: LLMProvider | null) => {
     if (provider?.name === "CodeGen" && provider?.auth_type === "sso") return "tigerclaw";

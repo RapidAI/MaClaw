@@ -43,7 +43,6 @@ type agentLoopToolPathOptions struct {
 	MessageContent             string
 	LengthContinuationText     string
 	Choice                     llm.Choice
-	PlanningSupplementaryEpoch int64
 	Phase                      *agentLoopPhase
 	Conversation               []interface{}
 	History                    []agent.ConversationEntry
@@ -81,6 +80,7 @@ type agentLoopToolPathResult struct {
 	ToolExecElapsed          time.Duration
 	PostStreamReturnPrepTime bool
 	Response                 *IMAgentResponse
+	Continue                 bool
 }
 
 func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions) agentLoopToolPathResult {
@@ -111,6 +111,10 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 		CodingIterCount:      opts.CodingIterCount,
 		TotalToolCallsInLoop: totalToolCalls,
 	}
+	replanRevision := int64(0)
+	if opts.Context != nil {
+		replanRevision = opts.Context.ReplanRevision()
+	}
 
 	toolCallResult := h.executeAgentLoopToolCalls(agentLoopToolCallsOptions{
 		Context:                    opts.Context,
@@ -121,7 +125,6 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 		GateActive:                 false,
 		MessageContent:             opts.MessageContent,
 		ToolCalls:                  opts.Choice.Message.ToolCalls,
-		PlanningSupplementaryEpoch: opts.PlanningSupplementaryEpoch,
 		Phase:                      opts.Phase,
 		Conversation:               opts.Conversation,
 		History:                    opts.History,
@@ -149,6 +152,18 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 	result.VoiceMimeType = toolCallResult.PendingArtifacts.VoiceMimeType
 	if toolCallResult.Response != nil {
 		result.Response = toolCallResult.Response
+		return result
+	}
+	if toolCallResult.Replanned {
+		result.Conversation = toolCallResult.Conversation
+		result.History = toolCallResult.History
+		result.Continue = true
+		return result
+	}
+	if opts.Context != nil && opts.Context.ReplanRequestedSince(replanRevision) {
+		result.Conversation = stripTrailingBrokenConversationToolGroup(result.Conversation)
+		result.History = stripTrailingBrokenToolGroup(result.History)
+		result.Continue = true
 		return result
 	}
 
@@ -199,7 +214,6 @@ type agentLoopToolCallsOptions struct {
 	GateActive                 bool
 	MessageContent             string
 	ToolCalls                  []llm.ToolCall
-	PlanningSupplementaryEpoch int64
 	Phase                      *agentLoopPhase
 	Conversation               []interface{}
 	History                    []agent.ConversationEntry
@@ -229,6 +243,7 @@ type agentLoopToolCallsResult struct {
 	ToolExecElapsed  time.Duration
 	Response         *IMAgentResponse
 	Cancelled        bool
+	Replanned        bool
 }
 
 func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOptions) agentLoopToolCallsResult {
@@ -259,31 +274,32 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		}
 
 		toolExecStartedAt := time.Now()
-		execResult := staleSupplementaryToolResult(opts.Context, opts.PlanningSupplementaryEpoch, tc)
-		if execResult.Text == "" {
-			execResult = h.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
-				Context:          opts.Context,
-				UserID:           opts.UserID,
-				UserText:         opts.UserText,
-				SkipWorkflowGate: h.shouldSkipWorkflowToolExecutionGate(opts.UserID, opts.Context),
-				ToolCall:         tc,
-				Iteration:        opts.Iteration,
-				Phase:            derefAgentLoopPhase(opts.Phase),
-				Debug:            opts.Debug,
-				OnProgress:       opts.OnProgress,
-				OnToken:          opts.OnToken,
-				SendToolProgress: opts.SendToolProgress,
-				MilestoneTracker: opts.MilestoneTracker,
-				RecordToolCall:   opts.RecordToolCall,
-				AdaptiveRetry:    opts.AdaptiveRetry,
-			})
-			if stale := staleSupplementaryToolResult(opts.Context, opts.PlanningSupplementaryEpoch, tc); stale.Text != "" {
-				execResult = stale
-			}
-			logSlow("tool_exec", toolExecStartedAt, tc)
-		} else {
-			log.Printf("[agent-loop-tool-path] skipped stale tool after supplementary input owner=%q request_id=%q loop=%q iteration=%d tool=%q",
-				opts.UserID, requestID, loopID, opts.Iteration, strings.TrimSpace(tc.Function.Name))
+		replanRevision := int64(0)
+		if opts.Context != nil {
+			replanRevision = opts.Context.ReplanRevision()
+		}
+		execResult := h.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+			Context:          opts.Context,
+			UserID:           opts.UserID,
+			UserText:         opts.UserText,
+			SkipWorkflowGate: h.shouldSkipWorkflowToolExecutionGate(opts.UserID, opts.Context),
+			ToolCall:         tc,
+			Iteration:        opts.Iteration,
+			Phase:            derefAgentLoopPhase(opts.Phase),
+			Debug:            opts.Debug,
+			OnProgress:       opts.OnProgress,
+			OnToken:          opts.OnToken,
+			SendToolProgress: opts.SendToolProgress,
+			MilestoneTracker: opts.MilestoneTracker,
+			RecordToolCall:   opts.RecordToolCall,
+			AdaptiveRetry:    opts.AdaptiveRetry,
+		})
+		logSlow("tool_exec", toolExecStartedAt, tc)
+		if opts.Context != nil && opts.Context.ReplanRequestedSince(replanRevision) {
+			result.Conversation = stripTrailingBrokenConversationToolGroup(result.Conversation)
+			result.History = stripTrailingBrokenToolGroup(result.History)
+			result.Replanned = true
+			return result
 		}
 		rawResult := execResult.Text
 
@@ -364,23 +380,6 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		}
 	}
 	return result
-}
-
-func staleSupplementaryToolResult(ctx *LoopContext, planningEpoch int64, tc llm.ToolCall) toolExecutionResult {
-	if ctx == nil || ctx.SupplementaryEpoch() <= planningEpoch {
-		return toolExecutionResult{}
-	}
-	toolName := strings.TrimSpace(tc.Function.Name)
-	if toolName == "" {
-		toolName = "tool"
-	}
-	return toolExecutionResult{
-		Text:        "[system interrupted] User supplementary guidance arrived after this tool call was planned. Ignore this stale tool result and re-plan from the latest injected guidance before choosing the next action.",
-		ToolName:    toolName,
-		ToolKind:    classifyAgentToolKind(toolName),
-		Outcome:     toolOutcomeFailed,
-		FailureKind: toolFailurePolicyRejected,
-	}
 }
 
 func agentLoopToolUsageFollowUp(index int, toolCalls []llm.ToolCall, outcome toolOutcome) toolUsageFollowUp {

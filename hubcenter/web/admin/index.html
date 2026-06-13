@@ -229,31 +229,31 @@
         </div>
         <div id="llmSubViewProviders">
           <div class="head meta-spaced"><div><div class="item-title" data-i18n="llmServiceProvidersTitle"></div><div class="item-meta" data-i18n="llmServiceProvidersDesc"></div></div><button class="btn-primary" onclick="showProviderDialog('create')" data-i18n="llmServiceAddProvider"></button></div>
-          <div id="llmProvidersList" class="list"><div class="hint" data-i18n="llmServiceNoProviders"></div></div>
+          <div id="llmProvidersList" class="list llm-card-grid"><div class="hint" data-i18n="llmServiceNoProviders"></div></div>
         </div>
         <div id="llmSubViewAgents" class="hidden-view">
           <div class="head meta-spaced"><div><div class="item-title" data-i18n="llmServiceAgentsTitle"></div><div class="item-meta" data-i18n="llmServiceAgentsDesc"></div></div><button class="btn-primary" onclick="showLLMAgentDialog('create')" data-i18n="llmServiceAddAgent"></button></div>
-          <div id="llmAgentsList" class="list"><div class="hint" data-i18n="llmServiceNoAgents"></div></div>
+          <div id="llmAgentsList" class="list llm-card-grid"><div class="hint" data-i18n="llmServiceNoAgents"></div></div>
         </div>
         <div id="llmSubViewGroups" class="hidden-view">
           <div class="head meta-spaced"><div><div class="item-title" data-i18n="llmServiceGroupsTitle"></div><div class="item-meta" data-i18n="llmServiceGroupsDesc"></div></div><button class="btn-primary" onclick="showLLMGroupEditor()" data-i18n="llmServiceAddGroup"></button></div>
-          <div id="llmServiceGroupsList" class="list"><div class="hint" data-i18n="llmServiceNoGroups"></div></div>
+          <div id="llmServiceGroupsList" class="list llm-card-grid"><div class="hint" data-i18n="llmServiceNoGroups"></div></div>
         </div>
         <div id="llmSubViewAuth" class="hidden-view">
           <div class="head meta-spaced"><div><div class="item-title" data-i18n="llmServiceAuthTitle"></div><div class="item-meta" data-i18n="llmServiceAuthDesc"></div></div><button class="btn-primary" onclick="showAuthDialog()" data-i18n="llmServiceAddAuth"></button></div>
-          <div id="llmAuthList" class="list"><div class="hint" data-i18n="llmServiceNoAuths"></div></div>
+          <div id="llmAuthList" class="list llm-card-grid"><div class="hint" data-i18n="llmServiceNoAuths"></div></div>
         </div>
       </section>
       <section id="tab-news" class="panel card"><div class="head"><div><h3 data-i18n="newsTitle"></h3><div class="desc" data-i18n="newsDesc"></div></div><div class="actions"><button class="btn-primary" onclick="showNewsEditor()" data-i18n="newsAdd"></button><button class="btn-ghost" onclick="loadNewsList()" data-i18n="reload"></button></div></div><div id="newsEditor" class="item news-editor"><input id="newsEditId" type="hidden"><div class="grid2"><div><label data-i18n="newsFieldTitle"></label><input id="newsEditTitle" placeholder=""></div><div><label data-i18n="newsFieldCategory"></label><select id="newsEditCategory"><option value="notice"></option><option value="update"></option><option value="tip"></option><option value="alert"></option></select></div></div><div class="stack-gap-sm"><label data-i18n="newsFieldContent"></label><textarea id="newsEditContent" class="news-textarea" rows="8" placeholder=""></textarea></div><div class="inline-check stack-gap-xs"><label class="inline-label" data-i18n="newsFieldPinned"></label><input type="checkbox" id="newsEditPinned" class="auto-check"></div><div class="actions section-gap"><button class="btn-primary" onclick="saveNews()" data-i18n="newsSave"></button><button class="btn-ghost" onclick="hideNewsEditor()" data-i18n="newsCancel"></button></div></div><div id="newsList" class="list"><div class="hint" data-i18n="newsEmpty"></div></div><div id="newsPager" class="actions"><button class="btn-ghost" id="newsPrevBtn" type="button" onclick="changeNewsPage(-1)" aria-label="Previous news page">&larr;</button><span id="newsPageInfo" aria-live="polite"></span><button class="btn-ghost" id="newsNextBtn" type="button" onclick="changeNewsPage(1)" aria-label="Next news page">&rarr;</button></div></section>
     </main>
   </div>
-  <script src="/admin/assets/js/admin-core.js?v=hub-compute-auth-20260613" defer></script>
+  <script src="/admin/assets/js/admin-core.js?v=tab-autoload-20260614-2" defer></script>
   <script src="/admin/assets/js/user-management.js" defer></script>
   <script src="/admin/assets/js/profile-settings.js" defer></script>
-  <script src="/admin/assets/js/gossip-admin.js" defer></script>
-  <script src="/admin/assets/js/skillmarket-admin.js" defer></script>
-  <script src="/admin/assets/js/ha-news-admin.js" defer></script>
-  <script src="/admin/assets/js/llm-service-tab.js?v=admin-auth-unified-20260613" defer></script>
-  <script src="/admin/assets/js/compute-market-tab.js?v=admin-auth-unified-20260613" defer></script>
+  <script src="/admin/assets/js/gossip-admin.js?v=tab-autoload-20260614-2" defer></script>
+  <script src="/admin/assets/js/skillmarket-admin.js?v=tab-autoload-20260614-2" defer></script>
+  <script src="/admin/assets/js/ha-news-admin.js?v=tab-autoload-20260614-2" defer></script>
+  <script src="/admin/assets/js/llm-service-tab.js?v=tab-autoload-20260614-2" defer></script>
+  <script src="/admin/assets/js/compute-market-tab.js?v=tab-autoload-20260614-2" defer></script>
 </body>
 </html>

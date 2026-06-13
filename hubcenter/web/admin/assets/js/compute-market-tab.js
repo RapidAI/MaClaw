@@ -13,6 +13,7 @@ if (typeof I18N_EN !== 'undefined') {
   let cmCurrentSubTab = 'cards';
   let cmCardTypes = [];
   let cmEditingCardID = '';
+  let cmInitInFlight = null;
 
   function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
@@ -357,6 +358,8 @@ if (typeof I18N_EN !== 'undefined') {
   // ---------------------------------------------------------------------------
 
   async function initComputeMarketTab() {
+    if (cmInitInFlight) return cmInitInFlight;
+    cmInitInFlight = (async function () {
     // Re-apply i18n for dynamically registered keys
     if (typeof applyI18n === 'function') applyI18n();
     loadComputeCardTypes();
@@ -372,6 +375,9 @@ if (typeof I18N_EN !== 'undefined') {
       var el2 = document.getElementById('cmGroupCount'); if (el2) el2.textContent = String((gd.service_groups || []).length);
       var el3 = document.getElementById('cmAuthCount'); if (el3) el3.textContent = String((ad.authorizations || []).length);
     } catch (e) { /* best-effort */ }
+    })();
+    try { return await cmInitInFlight; }
+    finally { cmInitInFlight = null; }
   }
 
   function tr(key) {
@@ -395,6 +401,10 @@ if (typeof I18N_EN !== 'undefined') {
   window.loadStatsFilters = loadStatsFilters;
   window.CARD_TEMPLATES = CARD_TEMPLATES;
   window.buildCardTemplateSVG = buildCardTemplateSVG;
+
+  if (document.getElementById('tab-computemarket')?.classList.contains('active')) {
+    setTimeout(initComputeMarketTab, 0);
+  }
 
   // --- Payment Settings (Hub-style per-field visibility) ---
   var cmManualFields = ['cmPF_adminEmails','cmPF_instruction','cmPF_alipayQR','cmPF_wechatQR','cmPF_bankName','cmPF_bankAccount','cmPF_bankHolder','cmPF_contact'];

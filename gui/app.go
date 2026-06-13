@@ -1846,6 +1846,15 @@ func (a *App) startup(ctx context.Context) {
 		if config.Language != "" {
 			a.SetLanguage(config.Language)
 		}
+
+		// Synchronous embedding engine initialization: ensure the intent classifier
+		// has Layer 2 (embedding) ready BEFORE the UI becomes interactive.
+		// This prevents the cold-start window where BM25 noise can trigger wrong
+		// workflows because the semantic veto layer isn't available yet.
+		// Only blocks when the model file exists on disk (~1.5s load time).
+		// If the file is missing (needs download), skip and let async path handle it.
+		a.ensureEmbeddingEngineSync(config.VectorSearchEnabled)
+
 		if config.RemoteMachineID != "" && config.RemoteMachineToken != "" && config.RemoteHubURL != "" {
 			// Synchronous: prepare Hub client infrastructure (fast, no network I/O).
 			hubPrepStart := time.Now()

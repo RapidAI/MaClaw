@@ -141,34 +141,34 @@ func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 	if text == "" || h.hasCancelledTaskBoundary(userID) || !h.hasActiveLoopForUser(userID) {
 		return false
 	}
+	h.accumulateInjection(userID, "[用户补充] "+text)
 	if ctx := h.getSessionLoopCtx(userID); ctx != nil {
 		ctx.RequestReplan()
 	}
-	h.accumulateInjection(userID, "[用户补充] "+text)
 	log.Printf("[inject-supplementary] user=%s text_len=%d", userID, len([]rune(text)))
 	return true
 }
 
-// InjectGuideReference stores input-buffer guide-launch text as background
-// reference for the next agent loop iteration. Unlike a normal supplementary
-// message, this must influence reasoning without becoming a new user turn or
-// causing the current session to finalize by itself.
+// InjectGuideReference stores input-buffer guide-launch text as a live user
+// steering directive for the next agent loop iteration. Unlike a normal
+// supplementary message, this guides replanning without becoming an independent
+// chat turn or causing the current session to finalize by itself.
 func (h *IMMessageHandler) InjectGuideReference(userID, text string) bool {
 	injection := buildGuideLaunchInjection(text)
 	if injection == "" || !h.canAcceptGuideReferenceForUser(userID) {
 		return false
 	}
+	h.accumulateInjection(userID, injection)
 	if ctx := h.getSessionLoopCtx(userID); ctx != nil {
 		ctx.RequestReplan()
 	}
-	h.accumulateInjection(userID, injection)
 	log.Printf("[inject-guide-reference] user=%s text_len=%d", userID, len([]rune(text)))
 	return true
 }
 
 const guideLaunchReferenceMarker = "[\u5f15\u5bfc\u53d1\u5c04\u53c2\u8003]"
 
-const guideLaunchReferenceInstruction = "\u4ee5\u4e0b\u6587\u672c\u7531\u7528\u6237\u4ece\u9884\u8f93\u5165\u7f13\u51b2\u533a\u901a\u8fc7\u56de\u8f66\u56fe\u6807/\u6309\u94ae\u53d1\u5c04\u3002\u8bf7\u628a\u5b83\u4f5c\u4e3a\u4e0b\u4e00\u8f6e agent loop \u7684\u80cc\u666f\u53c2\u8003\uff0c\u7528\u6765\u5f71\u54cd\u63a8\u7406\u548c\u51b3\u7b56\u3002\u4e0d\u8981\u628a\u5b83\u5f53\u4f5c\u65b0\u7684\u7528\u6237\u56de\u5408\uff0c\u4e5f\u4e0d\u8981\u4ec5\u56e0\u4e3a\u8fd9\u6bb5\u53c2\u8003\u5c31\u7ed3\u675f\u5f53\u524d\u4f1a\u8bdd\u6216\u8f93\u51fa\u6700\u7ec8\u7b54\u6848\u3002"
+const guideLaunchReferenceInstruction = "The following text was fired by the user from the pre-input buffer via the guide-launch button. Treat it as live user steering for the next agent loop: re-evaluate the current plan, tool choice, and answer direction under this guidance before continuing. If it conflicts with stale reasoning or an in-flight tool decision, the fired guidance wins for the next step. Do not treat it as an independent new chat turn, and do not finalize solely because this directive arrived. \u4e0d\u8981\u628a\u5b83\u5f53\u4f5c\u65b0\u7684\u7528\u6237\u56de\u5408\u3002"
 
 func buildGuideLaunchInjection(text string) string {
 	text = strings.TrimSpace(text)

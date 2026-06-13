@@ -1279,8 +1279,8 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		}
 	}
 
-	if got := providers[4].AgentType; got != "claude-code/2.0.0" {
-		t.Errorf("Kimi AgentType = %q, want %q", got, "claude-code/2.0.0")
+	if got := providers[4].AgentType; got != "claude code 2.0" {
+		t.Errorf("Kimi AgentType = %q, want %q", got, "claude code 2.0")
 	}
 
 	n := len(providers)

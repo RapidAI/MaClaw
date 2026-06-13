@@ -1538,14 +1538,24 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalogV2Compat(userID str
 			}
 		}
 	}
+	if policy == workflow.ToolFilterNone && h != nil && h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.GetActiveWorkflow(userID) != nil {
+		policy = h.app.workflowEngine.GetActivePhaseToolFilter(userID)
+	}
 	if len(allTools) == 0 && h != nil {
 		allTools = h.getTools()
+	}
+	if h != nil && h.isV1WorkflowArtifactPhase(userID) {
+		tools = ensureWorkflowRequiredToolsForNames(workflowArtifactPhaseRequiredTools(), tools, allTools)
+		return filterWorkflowArtifactPhaseTools(tools)
 	}
 	if policy == workflow.ToolFilterNone || policy == workflow.ToolFilterFull {
 		if h != nil && h.shouldConstrainCodingWorkflowImplementationMainLoop(userID) {
 			tools = ensureWorkflowRequiredToolsForNames(codingWorkflowImplementationMainLoopRequiredTools(), tools, allTools)
 			tools = filterCodingWorkflowImplementationMainLoopTools(tools)
 			return specializeCodingWorkflowImplementationMainLoopTools(tools)
+		}
+		if policy == workflow.ToolFilterFull {
+			return ensureWorkflowRequiredTools(policy, tools, allTools)
 		}
 		return tools
 	}

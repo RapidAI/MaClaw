@@ -65,6 +65,59 @@ func (a *App) initEarlyClassifier() {
 	})
 }
 
+// ensureEmbeddingEngineSync synchronously loads the embedding model and wires
+// it to the UIC during startup, BEFORE the UI becomes interactive. This
+// guarantees that the semantic veto layer (Step 4.5) is operational when the
+// user sends their first message, preventing BM25 noise from triggering wrong
+// workflow templates (e.g. "你是谁？" → nsfc_youth).
+//
+// Only blocks when:
+// 1. VectorSearchEnabled is true in config
+// 2. The model file exists on disk (no download needed)
+//
+// Typical latency: ~1.5s on SSD. If the model file is missing (fresh install,
+// needs download), this function returns immediately and the async path
+// (ensureConfiguredAIModels → backgroundPreloadEmbeddingModel) handles it.
+func (a *App) ensureEmbeddingEngineSync(vectorSearchEnabled bool) {
+	if !vectorSearchEnabled {
+		log.Println("[startup] embedding sync: skipped (vector search disabled)")
+		return
+	}
+
+	modelPath := embedding.DefaultModelPath()
+	if modelPath == "" {
+		log.Println("[startup] embedding sync: skipped (cannot determine home directory)")
+		return
+	}
+	if _, err := os.Stat(modelPath); err != nil {
+		log.Printf("[startup] embedding sync: skipped (model file check: %v)", err)
+		return
+	}
+
+	t0 := time.Now()
+	log.Printf("[startup] embedding sync: loading model %s", modelPath)
+
+	emb, err := a.sharedEmbeddingEmbedder(modelPath, func(path string) (embedding.Embedder, error) {
+		return embedding.NewGemmaEmbedder(path, 256)
+	})
+	if err != nil {
+		log.Printf("[startup] embedding sync: load failed: %v (falling back to async)", err)
+		return
+	}
+	if embedding.IsNoop(emb) {
+		return
+	}
+
+	// Wire to UIC immediately (creates UIC if not yet created via classifierOnce).
+	a.initEarlyClassifier()
+	a.unifiedClassifier.SetEmbedder(emb)
+
+	// Mark intent embedding as active so activateEmbedderAsync doesn't double-load.
+	a.intentEmbeddingActive.Store(true)
+
+	log.Printf("[startup] embedding sync: done in %v — UIC L2 now available", time.Since(t0))
+}
+
 // embeddingModelsDir returns ~/.maclaw/models, creating it if needed.
 func embeddingModelsDir() (string, error) {
 	home, err := os.UserHomeDir()

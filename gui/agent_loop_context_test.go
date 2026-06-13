@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"math/rand"
 	"sync"
 	"testing"
@@ -175,6 +176,47 @@ func TestLoopContext_Cancel(t *testing.T) {
 	}
 	// Double cancel should not panic
 	ctx.Cancel()
+}
+
+func TestLoopContextRequestReplanCancelsOperationWithoutCancellingLoop(t *testing.T) {
+	ctx := NewLoopContext("replan-test", 10, nil)
+	opCtx, end, revision := ctx.BeginReplannableOperation(context.Background())
+	defer end()
+
+	if ctx.ReplanRequestedSince(revision) {
+		t.Fatal("replan should not be requested before RequestReplan")
+	}
+	ctx.RequestReplan()
+	if ctx.IsCancelled() {
+		t.Fatal("RequestReplan should not cancel the whole loop")
+	}
+	if !ctx.ReplanRequestedSince(revision) {
+		t.Fatal("RequestReplan should advance replan revision")
+	}
+	select {
+	case <-opCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("RequestReplan did not cancel active operation")
+	}
+}
+
+func TestLoopContextCancelCancelsOperationWithoutAdvancingReplan(t *testing.T) {
+	ctx := NewLoopContext("cancel-op-test", 10, nil)
+	opCtx, end, revision := ctx.BeginReplannableOperation(context.Background())
+	defer end()
+
+	ctx.Cancel()
+	if !ctx.IsCancelled() {
+		t.Fatal("Cancel should cancel the loop")
+	}
+	if ctx.ReplanRequestedSince(revision) {
+		t.Fatal("Cancel should not advance replan revision")
+	}
+	select {
+	case <-opCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Cancel did not cancel active operation")
+	}
 }
 
 func TestNewBackgroundLoopContext_Defaults(t *testing.T) {

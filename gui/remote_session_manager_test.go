@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,6 +50,16 @@ func TestBuildGuideLaunchInjectionMarksReferenceOnly(t *testing.T) {
 	}
 	if buildGuideLaunchInjection("   ") != "" {
 		t.Fatalf("empty guide launch text should not create an injection")
+	}
+}
+
+func TestBuildGuideLaunchInjectionIncludesSteeringContract(t *testing.T) {
+	got := buildGuideLaunchInjection("pivot to Beijing weather")
+	if !strings.Contains(got, "live user steering") || !strings.Contains(got, "fired guidance wins") {
+		t.Fatalf("guide launch injection should force replanning under user steering: %q", got)
+	}
+	if !strings.Contains(got, "re-evaluate the current plan, tool choice, and answer direction") {
+		t.Fatalf("guide launch injection should require plan and tool re-evaluation: %q", got)
 	}
 }
 
@@ -169,6 +180,29 @@ func TestInjectGuideReferenceTargetsOnlyExplicitActiveSession(t *testing.T) {
 	projectRaw, ok := h.pendingInjection.Load(projectUserID)
 	if !ok || !strings.Contains(projectRaw.(string), "project guide") || strings.Contains(projectRaw.(string), "local guide") {
 		t.Fatalf("project pending injection not isolated: %#v", projectRaw)
+	}
+}
+
+func TestInjectGuideReferenceRequestsReplanForActiveSession(t *testing.T) {
+	h := &IMMessageHandler{}
+	ctx := NewLoopContext("guide-replan", 10, nil)
+	h.setSessionLoopCtx(desktopUserID, ctx)
+	opCtx, end, revision := ctx.BeginReplannableOperation(context.Background())
+	defer end()
+
+	if !h.InjectGuideReference(desktopUserID, "pivot to Beijing weather") {
+		t.Fatal("active session should accept guide reference")
+	}
+	if ctx.IsCancelled() {
+		t.Fatal("guide reference should not cancel whole loop")
+	}
+	if !ctx.ReplanRequestedSince(revision) {
+		t.Fatal("guide reference should request replanning")
+	}
+	select {
+	case <-opCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("guide reference did not cancel active operation")
 	}
 }
 

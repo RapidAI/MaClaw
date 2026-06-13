@@ -241,7 +241,14 @@ function applySmI18n() {
   if(el('smSearchBtn')) el('smSearchBtn').textContent = smtr('search');
 }
 const _baseApplyI18nSM = applyI18n;
-applyI18n = function() { _baseApplyI18nSM(); applySmI18n(); if(token()&&document.getElementById('tab-skillmarket').classList.contains('active')){loadSkillmarketReview(); loadSmPurchases(smPurchasePage); loadSmTrialConfig();} };
+applyI18n = function() { _baseApplyI18nSM(); applySmI18n(); };
 applySmI18n();
 
-if (token()) restoreTab();
+if (token() && document.getElementById('tab-skillmarket')?.classList.contains('active')) {
+  setTimeout(function() {
+    loadSkillmarketReview();
+    loadSmPurchases(smPurchasePage);
+    loadSmTrialConfig();
+    loadSmUploadAuthConfig();
+  }, 0);
+}

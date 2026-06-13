@@ -240,15 +240,22 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	if !opts.Telemetry.FirstLLMRequestMarked {
 		opts.Telemetry.PreLLMIterationPrepElapsed += roundPrep.PrepElapsed
 	}
-	planningSupplementaryEpoch := int64(0)
+	llmRequestContext := opts.RequestContext
+	llmReplanRevision := int64(0)
+	var endLLMOperation context.CancelFunc
 	if opts.Context != nil {
-		planningSupplementaryEpoch = opts.Context.SupplementaryEpoch()
+		llmRequestContext, endLLMOperation, llmReplanRevision = opts.Context.BeginReplannableOperation(opts.RequestContext)
+		defer func() {
+			if endLLMOperation != nil {
+				endLLMOperation()
+			}
+		}()
 	}
 
 	phaseStartedAt = time.Now()
 	llmDispatch := h.dispatchAgentLoopLLMRound(agentLoopLLMDispatchOptions{
 		Context:             opts.Context,
-		RequestContext:      opts.RequestContext,
+		RequestContext:      llmRequestContext,
 		Config:              opts.Config,
 		Conversation:        *opts.Conversation,
 		Tools:               *opts.Tools,
@@ -269,11 +276,18 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		OnNewRound:          opts.OnNewRound,
 		InFlightLifecycle:   opts.InFlightLifecycle,
 	})
+	if endLLMOperation != nil {
+		endLLMOperation()
+		endLLMOperation = nil
+	}
 	llmElapsed := time.Since(phaseStartedAt)
 	logSlowPhase("llm_round", phaseStartedAt)
 	resp := llmDispatch.Response
 	*opts.Conversation = llmDispatch.Conversation
 	opts.Telemetry.ApplyLLMDispatch(llmDispatch)
+	if opts.Context != nil && opts.Context.ReplanRequestedSince(llmReplanRevision) {
+		return agentLoopIterationDispatchResult{Continue: true}
+	}
 	if llmDispatch.Cancelled {
 		return agentLoopIterationDispatchResult{Break: true}
 	}
@@ -355,6 +369,11 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	if postTurn.ContinueLoop {
 		return agentLoopIterationDispatchResult{Continue: true}
 	}
+	if opts.Context != nil && opts.Context.ReplanRequestedSince(llmReplanRevision) {
+		*opts.Conversation = stripTrailingBrokenConversationToolGroup(*opts.Conversation)
+		*opts.History = stripTrailingBrokenToolGroup(*opts.History)
+		return agentLoopIterationDispatchResult{Continue: true}
+	}
 	if len(choice.Message.ToolCalls) == 0 {
 		noToolPath := h.handleAgentLoopNoToolPath(agentLoopNoToolPathOptions{
 			Context:                  opts.Context,
@@ -401,7 +420,6 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		MessageContent:             msgContent,
 		LengthContinuationText:     opts.RunState.LengthContinuationBuffer.String(),
 		Choice:                     choice,
-		PlanningSupplementaryEpoch: planningSupplementaryEpoch,
 		Phase:                      opts.Phase,
 		Conversation:               *opts.Conversation,
 		History:                    *opts.History,
@@ -433,6 +451,9 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	opts.Telemetry.ApplyToolPath(toolPath)
 	if toolPath.Response != nil {
 		return agentLoopIterationDispatchResult{Response: toolPath.Response}
+	}
+	if toolPath.Continue {
+		return agentLoopIterationDispatchResult{Continue: true}
 	}
 	if elapsed := time.Since(iterationStartedAt); elapsed >= time.Second {
 		log.Printf("[agent-loop-iter] done owner=%q request_id=%q loop=%q iteration=%d elapsed=%s llm=%s tool=%s", opts.UserID, requestID, loopID, opts.Iteration, elapsed.Round(time.Millisecond), llmElapsed.Round(time.Millisecond), toolPath.ToolExecElapsed.Round(time.Millisecond))

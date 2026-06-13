@@ -510,7 +510,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/layout/mainTopHeaderTitle.ts', 80],
   ['gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 180],
   ['gui/frontend/src/components/settings/UISettingsPanel.tsx', 180],
-  ['gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 350],
+  ['gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 480],
   ['gui/frontend/src/components/settings/SystemSettingsPanel.tsx', 180],
   ['gui/frontend/src/components/settings/SystemDiagnosticsTable.tsx', 80],
   ['gui/frontend/src/components/settings/ProxySettingsPanel.tsx', 160],

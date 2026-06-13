@@ -111,7 +111,7 @@ var (
 	setupStatusOpts      = []string{"needs_setup", "needs_llm_key", "needs_redeem", "mcp_optional", "official_ready", "llm_ready"}
 	workDirProfileOpts   = []string{"default_workspace", "current_directory", "home_directory", "custom"}
 	maxIterationOpts     = []string{"30", "60", "100", "150", "300"}
-	contextLengthOpts    = []string{"32000", "64000", "110000", "200000"}
+	contextLengthOpts    = []string{"32000", "64000", "110000", "200000", "400000"}
 	llmModelChoiceOpts   = []string{"auto", "glm-5-turbo", "GLM-5.2", "deepseek-v4-flash", "kimi-for-coding", "MiniMax-M2.7", "astron-code-latest", "qwen2.5-coder:32b", "deepseek-coder-v2", "llama3.1"}
 	auxLLMProfileOpts    = []string{"off", "same_as_primary", "custom"}
 	imChannelProfileOpts = []string{"off", "weixin", "telegram", "qq", "lansenger"}
@@ -133,13 +133,13 @@ type llmProviderPreset struct {
 }
 
 var llmProviderPresets = []llmProviderPreset{
-	{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
-	{Name: "Zhipu GLM Coding", URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", Protocol: "anthropic", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0", AuthType: "apikey"},
+	{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", Protocol: "openai", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
+	{Name: "Zhipu GLM Coding", URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", Protocol: "anthropic", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0", AuthType: "apikey"},
 	{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
-	{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude-code/2.0.0", AuthType: "apikey"},
+	{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0", AuthType: "apikey"},
 	{Name: "Xfyun Astron", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", Model: "astron-code-latest", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
 	{Name: "OpenAI API Key", URL: "https://api.openai.com/v1", Model: "gpt-4o", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
-	{Name: "Anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-20250514", Protocol: "anthropic", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude-code/2.0.0", AuthType: "apikey"},
+	{Name: "Anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-20250514", Protocol: "anthropic", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0", AuthType: "apikey"},
 	{Name: "Ollama Local", URL: "http://localhost:11434/v1", Model: "qwen2.5-coder:32b", Protocol: "openai", ContextLength: 32000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "none"},
 	{Name: "LM Studio Local", URL: "http://localhost:1234/v1", Model: "auto", Protocol: "openai", ContextLength: 32000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "none"},
 	{Name: "Custom", Protocol: "openai", AuthType: "apikey", TimeoutSec: corelib.DefaultLLMTimeoutSec, IsCustom: true},

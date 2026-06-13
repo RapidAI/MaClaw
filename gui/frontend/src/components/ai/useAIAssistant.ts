@@ -4106,13 +4106,14 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 displayText: dismissSessionText,
             });
         }
-        const workflowChoiceMatch = command.match(/^__workflow_choice__\s+(complex|simple|skip)\s+(\S+)$/);
+        const workflowChoiceMatch = command.match(/^__workflow_choice__\s+(complex|simple|skip|direct)\s+(\S+)$/);
         if (workflowChoiceMatch) {
             const choice = workflowChoiceMatch[1];
             const choiceLabels: Record<string, string> = {
                 complex: localizeText(uiLang, "Full development workflow", "\u5b8c\u6574\u5f00\u53d1\u6d41\u7a0b", "\u5b8c\u6574\u958b\u767c\u6d41\u7a0b"),
                 simple: localizeText(uiLang, "Simple coding", "\u7b80\u5355\u7f16\u7a0b", "\u7c21\u55ae\u7de8\u7a0b"),
-                skip: localizeText(uiLang, "Not a coding task", "\u4e0d\u662f\u7f16\u7a0b\u4efb\u52a1", "\u4e0d\u662f\u7de8\u7a0b\u4efb\u52d9"),
+                skip: localizeText(uiLang, "Direct processing", "\u76f4\u63a5\u5904\u7406", "\u76f4\u63a5\u8655\u7406"),
+                direct: localizeText(uiLang, "Direct processing", "\u76f4\u63a5\u5904\u7406", "\u76f4\u63a5\u8655\u7406"),
             };
             return sendMessage(command, { uiAction: true, displayText: choiceLabels[choice] || command });
         }

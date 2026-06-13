@@ -77,7 +77,17 @@ func craftedToolsDir() string {
 // It uses the LLM to generate a script that solves the described task,
 // executes it, and optionally registers it as a reusable Skill.
 func (h *IMMessageHandler) toolCraftTool(args map[string]interface{}, onProgress coretool.ProgressCallback) string {
-	output, _ := executeCraftToolCore(h.app, h.client, args, onProgress)
+	return h.toolCraftToolWithContext(context.Background(), args, onProgress)
+}
+
+func (h *IMMessageHandler) toolCraftToolWithContext(ctx context.Context, args map[string]interface{}, onProgress coretool.ProgressCallback) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	output, err := executeCraftToolCoreWithContext(ctx, h.app, h.client, args, onProgress)
+	if err != nil && strings.TrimSpace(output) == "" {
+		return err.Error()
+	}
 	return output
 }
 

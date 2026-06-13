@@ -135,14 +135,20 @@ if (typeof I18N_EN !== 'undefined') {
   var providers = [], agents = [], serviceGroups = [], authorizations = [];
   var providerDialogID = '';
   var providerCapabilityOptions = ['chat','streaming','json','tools','reasoning','vision','document','code','search','audio','embedding','rerank'];
+  var llmInitInFlight = null;
 
   // ---------------------------------------------------------------------------
   // Tab Init
   // ---------------------------------------------------------------------------
   window.initLLMServiceTab = async function() {
+    if (llmInitInFlight) return llmInitInFlight;
+    llmInitInFlight = (async function() {
     // Re-apply i18n for dynamically registered keys
     if (typeof applyI18n === 'function') applyI18n();
     await Promise.all([loadProviders(), loadAgents(), loadServiceGroups(), loadAuthorizations()]);
+    })();
+    try { return await llmInitInFlight; }
+    finally { llmInitInFlight = null; }
   };
 
   // ---------------------------------------------------------------------------
@@ -637,5 +643,9 @@ if (typeof I18N_EN !== 'undefined') {
   function num(id) { return Number(val(id)) || 0; }
   function csv(id) { return val(id).split(/[,\uff0c]+/).map(function(s){return s.trim();}).filter(Boolean); }
   function toast(msg, type) { if (window.showToast) window.showToast(msg, type); else alert(msg); }
+
+  if (document.getElementById('tab-llmservice')?.classList.contains('active')) {
+    setTimeout(window.initLLMServiceTab, 0);
+  }
 
 })();

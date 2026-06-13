@@ -142,7 +142,19 @@ type TemplateScore struct {
 	Score float64
 }
 
-const stableTemplateScoreLeadRatio = 1.25
+// minAbsoluteTemplateScore is the minimum BM25 score required for a template
+// match to be considered valid. Without this, short/unrelated messages (e.g.
+// "你是谁？") can produce low but non-zero scores (e.g. 2.0) due to CJK
+// bigram/trigram overlap with long template search documents, causing spurious
+// workflow triggers.
+//
+// Design principle: prefer triggering the choice panel (user can dismiss) over
+// missing a valid workflow request (user doesn't know the workflow exists).
+// Calibrated via grid search over 88 test cases (42 workflow + 46 skip) using
+// F2 score (recall-weighted). Optimal: 2.25 with lead ratio 1.0.
+// At 2.25: all noise (max observed: "你是谁？"=2.05) is rejected, all legitimate
+// requests (min observed: "写论文"=3.1) pass through to the choice panel.
+const minAbsoluteTemplateScore = 2.25
 
 func (r *TemplateRegistry) RankedByText(text string) []TemplateScore {
 	if r == nil {
@@ -233,10 +245,11 @@ func hasStableTopTemplateScore(ranked []TemplateScore) bool {
 	if len(ranked) == 0 || ranked[0].Score <= 0 {
 		return false
 	}
-	if len(ranked) == 1 || ranked[1].Score <= 0 {
-		return true
-	}
-	return ranked[0].Score >= ranked[1].Score*stableTemplateScoreLeadRatio
+	// Reject low-confidence matches: BM25 scores below the absolute minimum
+	// are noise from CJK ngram overlap, not meaningful template matches.
+	// Calibrated via grid search over 88 test cases: optimal threshold = 2.25
+	// with no lead ratio requirement (embedding veto handles ambiguity).
+	return ranked[0].Score >= minAbsoluteTemplateScore
 }
 
 // --- Built-in Templates ---

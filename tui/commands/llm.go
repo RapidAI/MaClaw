@@ -111,13 +111,13 @@ func presetProviders() []presetProvider {
 	return []presetProvider{
 		{
 			Name: "智谱 GLM (龙虾)", URL: "https://open.bigmodel.cn/api/coding/paas/v4",
-			Model: "glm-5-turbo", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			Model: "glm-5-turbo", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "open.bigmodel.cn 获取 API Key",
 		},
 		{
 			Name: "智谱 GLM (Coding)", URL: "https://open.bigmodel.cn/api/anthropic",
 			Model: "GLM-5.2", Protocol: "anthropic", AgentType: "claude code 2.0",
-			ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "open.bigmodel.cn 获取 API Key（Anthropic 协议）",
 		},
 		{
@@ -128,7 +128,7 @@ func presetProviders() []presetProvider {
 		{
 			Name: "Kimi", URL: "https://api.kimi.com/coding/v1",
 			Model: "kimi-for-coding", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
-			AuthType: "apikey", AgentType: "claude-code/2.0.0", Hint: "platform.moonshot.cn 获取 API Key",
+			AuthType: "apikey", AgentType: "claude code 2.0", Hint: "platform.moonshot.cn 获取 API Key",
 		},
 		{
 			Name: "讯飞星辰", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
@@ -142,7 +142,7 @@ func presetProviders() []presetProvider {
 		},
 		{
 			Name: "Anthropic", URL: "https://api.anthropic.com",
-			Model: "claude-sonnet-4-20250514", Protocol: "anthropic", AgentType: "claude-code/2.0.0",
+			Model: "claude-sonnet-4-20250514", Protocol: "anthropic", AgentType: "claude code 2.0",
 			ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "console.anthropic.com 获取 API Key",
 		},

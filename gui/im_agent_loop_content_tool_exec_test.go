@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func TestAgentLoopExecutesParsedPlainContentToolCall(t *testing.T) {
@@ -153,24 +156,30 @@ func TestAgentLoopNormalizesMissingToolCallIDAndType(t *testing.T) {
 	}
 }
 
-func TestAgentLoopSkipsStaleToolCallsAfterSupplementaryInput(t *testing.T) {
+func TestAgentLoopReplansByCancellingContextAwareToolAfterSupplementaryInput(t *testing.T) {
 	handler := &IMMessageHandler{registry: NewToolRegistry()}
-	called := false
+	userID := "desktop-user"
 	if err := handler.registry.Register(RegisteredTool{
 		Name:     "bash",
 		Category: ToolCategoryBuiltin,
 		Status:   RegToolAvailable,
-		Handler: func(args map[string]interface{}) string {
-			called = true
-			return "should not run"
+		HandlerCtx: func(ctx context.Context, args map[string]interface{}, onProgress coretool.ProgressCallback) string {
+			if !handler.InjectSupplementary(userID, "use builtin ssh tool") {
+				return "inject failed"
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err().Error()
+			case <-time.After(time.Second):
+				return "context was not cancelled"
+			}
 		},
 	}); err != nil {
 		t.Fatalf("register bash: %v", err)
 	}
 
 	ctx := NewLoopContext("chat", 10, nil)
-	planningEpoch := ctx.SupplementaryEpoch()
-	ctx.MarkSupplementaryInput()
+	handler.setSessionLoopCtx(userID, ctx)
 	call := llm.ToolCall{
 		ID:   "call_stale",
 		Type: "function",
@@ -181,24 +190,30 @@ func TestAgentLoopSkipsStaleToolCallsAfterSupplementaryInput(t *testing.T) {
 	}
 
 	result := handler.executeAgentLoopToolCalls(agentLoopToolCallsOptions{
-		Context:                    ctx,
-		UserID:                     "desktop-user",
-		ToolCalls:                  []llm.ToolCall{call},
-		PlanningSupplementaryEpoch: planningEpoch,
+		Context:   ctx,
+		UserID:    userID,
+		ToolCalls: []llm.ToolCall{call},
+		Conversation: []interface{}{map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{call},
+		}},
+		History: []agent.ConversationEntry{{
+			Role:      "assistant",
+			ToolCalls: []llm.ToolCall{call},
+		}},
 	})
 
-	if called {
-		t.Fatal("stale tool handler should not be executed after supplementary input")
+	if !result.Replanned {
+		t.Fatal("tool execution should request replan after supplementary input")
 	}
-	if len(result.History) != 1 || result.History[0].ToolCallID != call.ID {
-		t.Fatalf("history = %#v, want one synthetic tool result", result.History)
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("tool results = %#v, want none committed during replan", result.ToolResults)
 	}
-	content, _ := result.History[0].Content.(string)
-	if !strings.Contains(content, "User supplementary guidance arrived") {
-		t.Fatalf("synthetic tool result missing re-plan hint: %q", content)
+	if len(result.History) != 1 || result.History[0].ToolCalls != nil {
+		t.Fatalf("history = %#v, want assistant tool calls stripped", result.History)
 	}
-	if result.History[0].ToolOutcome != toolOutcomeFailed.String() {
-		t.Fatalf("tool outcome = %q, want failed", result.History[0].ToolOutcome)
+	if len(result.Conversation) != 1 || msgHasToolCalls(result.Conversation[0]) {
+		t.Fatalf("conversation = %#v, want assistant tool calls stripped", result.Conversation)
 	}
 }
 

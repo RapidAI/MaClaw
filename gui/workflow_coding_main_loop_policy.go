@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -36,7 +37,34 @@ func (h *IMMessageHandler) shouldConstrainCodingWorkflowImplementationMainLoop(p
 			return state.Status == v2.StatusActive && state.IsExecutionPhase()
 		}
 	}
+	if state, _ := h.v1ActiveWorkflowPhase(policyUserID); state != nil {
+		return state.Type == workflow.WorkflowCoding && state.CurrentPhase == workflow.PhaseCodingImplementation
+	}
 	return false
+}
+
+func (h *IMMessageHandler) v1ActiveWorkflowPhase(policyUserID string) (*workflow.WorkflowState, *workflow.PhaseTemplate) {
+	policyUserID = strings.TrimSpace(policyUserID)
+	if policyUserID == "" || h == nil || h.app == nil || h.app.workflowEngine == nil {
+		return nil, nil
+	}
+	state := h.app.workflowEngine.GetActiveWorkflow(policyUserID)
+	if state == nil || h.app.workflowEngine.GetRegistry() == nil {
+		return state, nil
+	}
+	tmpl := h.app.workflowEngine.GetRegistry().Match(state.Type)
+	if tmpl == nil {
+		return state, nil
+	}
+	for i := range tmpl.Phases {
+		if tmpl.Phases[i].ID == state.CurrentPhase {
+			return state, &tmpl.Phases[i]
+		}
+	}
+	if state.PhaseIndex >= 0 && state.PhaseIndex < len(tmpl.Phases) {
+		return state, &tmpl.Phases[state.PhaseIndex]
+	}
+	return state, nil
 }
 
 func isCodingWorkflowImplementationMainLoopToolAllowed(name string) bool {
@@ -69,6 +97,87 @@ func filterCodingWorkflowImplementationMainLoopTools(tools []map[string]interfac
 		}
 	}
 	return filtered
+}
+
+var workflowArtifactPhaseAllowedTools = map[string]bool{
+	"generate_pdf": true,
+	"office":       true,
+	"read_file":    true,
+	"send_file":    true,
+	"web_fetch":    true,
+	"web_search":   true,
+	"write_file":   true,
+}
+
+func isWorkflowArtifactPhaseToolAllowed(name string) bool {
+	return workflowArtifactPhaseAllowedTools[strings.TrimSpace(name)]
+}
+
+func filterWorkflowArtifactPhaseTools(tools []map[string]interface{}) []map[string]interface{} {
+	if len(tools) == 0 {
+		return tools
+	}
+	filtered := make([]map[string]interface{}, 0, len(tools))
+	for _, def := range tools {
+		if isWorkflowArtifactPhaseToolAllowed(tool.ExtractToolName(def)) {
+			filtered = append(filtered, def)
+		}
+	}
+	return filtered
+}
+
+func workflowArtifactPhaseRequiredTools() []string {
+	return []string{"write_file", "office", "generate_pdf", "send_file"}
+}
+
+func (h *IMMessageHandler) isV1WorkflowArtifactPhase(policyUserID string) bool {
+	_, phase := h.v1ActiveWorkflowPhase(policyUserID)
+	return phase != nil && (phase.Kind == workflow.PhaseKindArtifactGeneration || phase.MutationScope == workflow.MutationScopeArtifact)
+}
+
+func validateWorkflowArtifactPhaseToolCall(name string, args map[string]interface{}) string {
+	name = strings.TrimSpace(name)
+	if !isWorkflowArtifactPhaseToolAllowed(name) {
+		return "artifact workflow phase cannot run project mutation tools"
+	}
+	path := ""
+	switch name {
+	case "write_file":
+		path = stringVal(args, "path")
+	case "office":
+		path = firstNonEmptyStringValue(args, "file_path", "path", "output")
+	case "web_fetch":
+		path = firstNonEmptyStringValue(args, "save_path", "output")
+	}
+	if path != "" && isWorkflowProjectMutationPath(path) {
+		return "artifact workflow phase cannot write into source/project paths"
+	}
+	return ""
+}
+
+func firstNonEmptyStringValue(args map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(stringVal(args, key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func isWorkflowProjectMutationPath(path string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(path), "\\", "/"))
+	normalized = strings.TrimPrefix(normalized, "./")
+	for _, prefix := range []string{"src/", "app/", "cmd/", "internal/", "pkg/", "web/", "frontend/", "backend/"} {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	for _, suffix := range []string{".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".java", ".rs", ".cpp", ".c", ".h", ".cs"} {
+		if strings.HasSuffix(normalized, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func specializeCodingWorkflowImplementationMainLoopTools(tools []map[string]interface{}) []map[string]interface{} {

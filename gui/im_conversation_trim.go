@@ -112,15 +112,35 @@ func msgRole(m interface{}) string {
 	case map[string]string:
 		return v["role"]
 	}
-	return ""
+	data, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	var obj map[string]interface{}
+	if json.Unmarshal(data, &obj) != nil {
+		return ""
+	}
+	r, _ := obj["role"].(string)
+	return r
 }
 
 // msgHasToolCalls checks if a conversation message has a non-nil tool_calls field.
 func msgHasToolCalls(m interface{}) bool {
-	if v, ok := m.(map[string]interface{}); ok {
+	switch v := m.(type) {
+	case map[string]interface{}:
 		return v["tool_calls"] != nil
+	case map[string]string:
+		return false
 	}
-	return false
+	data, err := json.Marshal(m)
+	if err != nil {
+		return false
+	}
+	var obj map[string]interface{}
+	if json.Unmarshal(data, &obj) != nil {
+		return false
+	}
+	return obj["tool_calls"] != nil
 }
 
 // trimConversation keeps the first message (system prompt) and trims older

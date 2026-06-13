@@ -337,7 +337,8 @@ func stripTrailingBrokenToolGroup(history []agent.ConversationEntry) []agent.Con
 		return history // group is complete, nothing to fix
 	}
 	// Incomplete group 鈥?strip ToolCalls and remove partial tool results.
-	// Copy the entry before mutating to avoid corrupting the caller's slice.
+	// Copy before mutating to avoid corrupting the caller's slice.
+	history = append([]agent.ConversationEntry(nil), history...)
 	patched := history[assistantIdx]
 	patched.ToolCalls = nil
 	history[assistantIdx] = patched
@@ -350,6 +351,102 @@ func stripTrailingBrokenToolGroup(history []agent.ConversationEntry) []agent.Con
 		history = append(history[:assistantIdx+1], history[cutEnd:]...)
 	}
 	return history
+}
+
+func stripTrailingBrokenConversationToolGroup(conversation []interface{}) []interface{} {
+	if len(conversation) == 0 {
+		return conversation
+	}
+	assistantIdx := -1
+	for i := len(conversation) - 1; i >= 0; i-- {
+		if msgRole(conversation[i]) == "assistant" && msgHasToolCalls(conversation[i]) {
+			assistantIdx = i
+			break
+		}
+		if msgRole(conversation[i]) == "user" {
+			break
+		}
+	}
+	if assistantIdx < 0 {
+		return conversation
+	}
+	toolCount := 0
+	for j := assistantIdx + 1; j < len(conversation); j++ {
+		if msgRole(conversation[j]) != "tool" {
+			break
+		}
+		toolCount++
+	}
+	expectedCount := conversationToolCallCount(conversation[assistantIdx])
+	if expectedCount > 0 && toolCount >= expectedCount {
+		return conversation
+	}
+	conversation = append([]interface{}(nil), conversation...)
+	conversation[assistantIdx] = withoutMessageToolCalls(conversation[assistantIdx])
+	cutEnd := assistantIdx + 1
+	for cutEnd < len(conversation) && msgRole(conversation[cutEnd]) == "tool" {
+		cutEnd++
+	}
+	if cutEnd > assistantIdx+1 {
+		conversation = append(conversation[:assistantIdx+1], conversation[cutEnd:]...)
+	}
+	return conversation
+}
+
+func conversationToolCallCount(message interface{}) int {
+	var raw interface{}
+	switch m := message.(type) {
+	case map[string]interface{}:
+		raw = m["tool_calls"]
+	case map[string]string:
+		return 0
+	default:
+		data, err := json.Marshal(message)
+		if err != nil {
+			return 0
+		}
+		var obj map[string]interface{}
+		if json.Unmarshal(data, &obj) != nil {
+			return 0
+		}
+		raw = obj["tool_calls"]
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return 0
+	}
+	var arr []interface{}
+	if json.Unmarshal(data, &arr) != nil {
+		return 0
+	}
+	return len(arr)
+}
+
+func withoutMessageToolCalls(message interface{}) interface{} {
+	switch m := message.(type) {
+	case map[string]interface{}:
+		cp := make(map[string]interface{}, len(m))
+		for k, v := range m {
+			if k != "tool_calls" {
+				cp[k] = v
+			}
+		}
+		return cp
+	default:
+		data, err := json.Marshal(message)
+		if err != nil {
+			return message
+		}
+		var obj map[string]interface{}
+		if json.Unmarshal(data, &obj) != nil {
+			return message
+		}
+		if _, ok := obj["tool_calls"]; !ok {
+			return message
+		}
+		delete(obj, "tool_calls")
+		return obj
+	}
 }
 
 // findLastAssistantContent scans conversation history backwards and returns

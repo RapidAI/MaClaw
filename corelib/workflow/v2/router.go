@@ -138,6 +138,10 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 		return &RouteResult{Target: RouteToAgentLoop}
 	}
 
+	if shouldSuppressWorkflowColdStart(text) {
+		return &RouteResult{Target: RouteToAgentLoop}
+	}
+
 	// Step 4: (Removed) Bug-fix detection was keyword-based and caused false positives.
 	// e.g. "BUG修复验证报告" (document task) was misclassified as a code bug fix.
 	// Complexity/task-type classification is now done via user choice in the GUI layer.
@@ -149,6 +153,9 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 	// "查询api2服务器信息" matching paper_reproduction's description) causes a
 	// spurious workflow recommendation.
 	if semanticHint != "" && r.templates.Get(semanticHint) == nil {
+		return &RouteResult{Target: RouteToAgentLoop}
+	}
+	if semanticHint == "" && !hasWorkflowStartSignal(text) {
 		return &RouteResult{Target: RouteToAgentLoop}
 	}
 
@@ -219,6 +226,100 @@ func hasSkipSignal(text string) bool {
 		}
 	}
 	return false
+}
+
+func shouldSuppressWorkflowColdStart(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	if isCasualChatMessage(lower) {
+		return true
+	}
+	if len([]rune(trimmed)) <= 6 && !hasWorkflowStartSignal(lower) {
+		return true
+	}
+	return false
+}
+
+func isCasualChatMessage(lower string) bool {
+	normalized := strings.Trim(lower, " \t\r\n,.!?！？。~～")
+	if normalized == "" {
+		return true
+	}
+	casualExact := map[string]bool{
+		"你好": true, "您好": true, "嗨": true, "hi": true, "hello": true,
+		"你是谁": true, "你是谁呀": true, "你是谁啊": true, "你是誰": true,
+		"你叫什么": true, "你叫什么名字": true, "你能做什么": true,
+		"谢谢": true, "谢了": true, "thanks": true, "thank you": true,
+		"who are you": true, "what can you do": true,
+	}
+	if casualExact[normalized] {
+		return true
+	}
+	casualPrefixes := []string{
+		"你是谁", "你是誰", "who are you", "what are you",
+		"介绍一下你自己", "自我介绍", "你能干什么", "你能做什么",
+	}
+	for _, prefix := range casualPrefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasWorkflowStartSignal(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	for _, phrase := range explicitWorkflowObjectSignals {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	hasAction := false
+	for _, action := range workflowActionSignals {
+		if strings.Contains(lower, action) {
+			hasAction = true
+			break
+		}
+	}
+	if !hasAction {
+		return false
+	}
+	for _, object := range workflowObjectSignals {
+		if strings.Contains(lower, object) {
+			return true
+		}
+	}
+	return false
+}
+
+var explicitWorkflowObjectSignals = []string{
+	"工作流", "申请书", "申报书", "项目申请", "基金申请", "国自然", "国家自然科学基金",
+	"青年基金", "青年科学基金", "青基", "优青", "杰青", "长江学者",
+	"business plan", "slide deck", "grant proposal", "research proposal",
+}
+
+var workflowActionSignals = []string{
+	"写", "做", "生成", "制作", "设计", "开发", "实现", "创建", "起草", "撰写",
+	"打磨", "预审", "审查", "分析", "策划", "规划", "准备", "申请", "申报",
+	"复现", "跑实验", "输出", "build", "create", "generate", "make", "design",
+	"develop", "implement", "write", "draft", "review", "analyze", "plan",
+	"prepare", "apply", "reproduce",
+}
+
+var workflowObjectSignals = []string{
+	"项目", "应用", "系统", "工具", "游戏", "代码", "软件", "ppt", "幻灯片",
+	"演示文稿", "产品", "prd", "方案", "商业计划", "bp", "测试", "文献综述",
+	"研究报告", "调研报告", "竞品", "立项", "活动", "投标", "标书", "合同",
+	"尽调", "审计", "专利", "实验", "基金", "论文", "申请", "申报", "复现",
+	"application", "app", "service", "tool", "game", "code", "software",
+	"presentation", "slides", "deck", "proposal", "report", "review",
+	"analysis", "experiment", "paper", "contract", "patent", "tender",
 }
 
 // looksLikeNewWorkflowTask checks whether a user message is a completely new

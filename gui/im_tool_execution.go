@@ -3,6 +3,7 @@ package main
 // Tool execution: dispatcher that routes tool calls to registered handlers.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -142,7 +143,13 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		}
 	}
 	if result.Text == "" {
-		result = h.executeToolDetailedWithRuntimeState(policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug))
+		execCtx := context.Background()
+		if opts.Context != nil {
+			var cancel context.CancelFunc
+			execCtx, cancel, _ = opts.Context.BeginReplannableOperation(context.Background())
+			defer cancel()
+		}
+		result = h.executeToolDetailedWithRuntimeContext(execCtx, policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug))
 	}
 	h.recordAdaptiveRetryToolFailure(opts.AdaptiveRetry, tc.Function.Name, result, opts.Iteration)
 
@@ -451,6 +458,11 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 			return false, reason
 		}
 	}
+	if h.isV1WorkflowArtifactPhase(policyUserID) {
+		if reason := validateWorkflowArtifactPhaseToolCall(name, args); reason != "" {
+			return false, reason
+		}
+	}
 	approved := []workflow.OpsApprovedCommand(nil)
 	if policy == workflow.ToolFilterOpsControlled {
 		if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
@@ -557,6 +569,13 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntime(policyUserID, runtimeP
 }
 
 func (h *IMMessageHandler) executeToolDetailedWithRuntimeState(policyUserID string, hasRuntimeOwner bool, runtimePlatform, name, argsJSON, userText string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
+	return h.executeToolDetailedWithRuntimeContext(context.Background(), policyUserID, hasRuntimeOwner, runtimePlatform, name, argsJSON, userText, onProgress)
+}
+
+func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context.Context, policyUserID string, hasRuntimeOwner bool, runtimePlatform, name, argsJSON, userText string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
+	if execCtx == nil {
+		execCtx = context.Background()
+	}
 	name = strings.TrimSpace(name)
 	argsJSON = strings.TrimSpace(argsJSON)
 	kind := classifyAgentToolKind(name)
@@ -678,6 +697,13 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeState(policyUserID stri
 				if !allowed {
 					return toolExecutionResult{Text: reason, Outcome: toolOutcomeFailed, FailureKind: toolFailureFirewallRejected}
 				}
+			}
+			if execCtx.Err() != nil {
+				return registeredToolExecutionResultForContext("", execCtx)
+			}
+			if tool.HandlerCtx != nil {
+				text := tool.HandlerCtx(execCtx, args, onProgress)
+				return registeredToolExecutionResultForContext(text, execCtx)
 			}
 			if tool.HandlerProg != nil {
 				text := tool.HandlerProg(args, onProgress)
@@ -856,6 +882,16 @@ func (h *IMMessageHandler) workflowPolicyUserID(userID string) string {
 func registeredToolExecutionResult(text string) toolExecutionResult {
 	outcome := inferRegisteredToolOutcome(text)
 	return toolExecutionResult{Text: text, Outcome: outcome, FailureKind: failureKindForOutcome(outcome)}
+}
+
+func registeredToolExecutionResultForContext(text string, ctx context.Context) toolExecutionResult {
+	if ctx != nil && ctx.Err() != nil {
+		if strings.TrimSpace(text) == "" {
+			text = ctx.Err().Error()
+		}
+		return toolExecutionResult{Text: text, Outcome: toolOutcomeFailed, FailureKind: toolFailureHandlerReported}
+	}
+	return registeredToolExecutionResult(text)
 }
 
 func inferRegisteredToolOutcome(text string) toolOutcome {

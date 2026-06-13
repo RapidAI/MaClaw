@@ -103,7 +103,7 @@
     async function testModeration(){const content=document.getElementById('moderationTestContent').value.trim();if(!content){showToast(mtr('emptyTestContent'),'error');return}const el=document.getElementById('moderationTestResult');el.textContent='...';el.className='data-row-meta';try{const data=await api('/api/admin/moderation/test',{method:'POST',body:JSON.stringify({content})});el.textContent=mtr('testResult').replace('{result}',data.result);el.className='data-row-meta '+(data.flagged?'error':'ok')}catch(err){el.textContent=mtr('testFailed').replace('{error}',err.message);el.className='data-row-meta error'}}
     function applyModerationI18n(){document.getElementById('moderationCardTitle').textContent=mtr('title');document.getElementById('moderationCardDesc').textContent=mtr('desc');document.getElementById('moderationEnabledLabel').textContent=mtr('enabled');document.getElementById('moderationUrlLabel').textContent=mtr('url');document.getElementById('moderationModelLabel').textContent=mtr('model');document.getElementById('moderationApiKeyLabel').textContent=mtr('apiKey');document.getElementById('moderationTestLabel').textContent=mtr('testLabel');document.getElementById('saveModerationButton').textContent=mtr('save');document.getElementById('testModerationButton').textContent=mtr('test');document.getElementById('gossipFilterAll').textContent=mtr('filterAll');document.getElementById('gossipFilterFlagged').textContent=mtr('filterFlagged');document.getElementById('deleteFlaggedGossipBtn').textContent=mtr('deleteFlagged');document.getElementById('moderationUrl').placeholder=mtr('urlPlaceholder');document.getElementById('moderationModel').placeholder=mtr('modelPlaceholder');document.getElementById('moderationApiKey').placeholder=mtr('apiKeyPlaceholder');document.getElementById('moderationTestContent').placeholder=mtr('testPlaceholder')}
     // Hook into applyI18n and refreshAll
-    const _baseApplyI18n2=applyI18n;applyI18n=function(){_baseApplyI18n2();applyModerationI18n();if(token()&&document.getElementById('tab-gossip').classList.contains('active'))loadGossipList(gossipPage);};
+    const _baseApplyI18n2=applyI18n;applyI18n=function(){_baseApplyI18n2();applyModerationI18n();};
     const _baseRefreshAll2=refreshAll;refreshAll=async function(){await Promise.all([_baseRefreshAll2(),loadModerationConfig()])};
     applyModerationI18n();
     if(token())loadModerationConfig();
@@ -128,7 +128,7 @@
       if(alert) alert.textContent='[!] '+ntr('category.alert');
     }
     const _baseApplyI18nNews=applyI18n;
-    applyI18n=function(){_baseApplyI18nNews();applyNewsEditorI18n();applySkillHubI18n();if(token()&&document.getElementById('tab-news').classList.contains('active'))loadNewsList(newsPage);};
+    applyI18n=function(){_baseApplyI18nNews();applyNewsEditorI18n();applySkillHubI18n();};
     applyNewsEditorI18n();
     applySkillHubI18n();
     let newsPage=1;const newsPageSize=20;let _newsArticles=[];
@@ -151,4 +151,8 @@ function showNewsEditor(){document.getElementById('newsEditor').classList.add('i
       try{if(id){await api('/api/admin/news?id='+encodeURIComponent(id),{method:'PUT',body:JSON.stringify(body)})}else{await api('/api/admin/news',{method:'POST',body:JSON.stringify(body)})}hideNewsEditor();showToast(ntr('saved'),'success');loadNewsList(newsPage)}catch(err){showToast(err.message,'error')}}
     async function deleteNews(id){if(!confirm(ntr('deleteConfirm')))return;try{await api('/api/admin/news?id='+encodeURIComponent(id),{method:'DELETE'});showToast(ntr('deleted'),'success');loadNewsList(newsPage)}catch(err){showToast(err.message,'error')}}
 
-
+    if(token()){
+      if(document.getElementById('tab-gossip')?.classList.contains('active')) setTimeout(function(){loadGossipList(gossipPage);loadModerationConfig();},0);
+      if(document.getElementById('tab-skillhub')?.classList.contains('active')){window._skillhubAdminLoaded=true;setTimeout(function(){if(typeof reloadCurrentCatalogSubTab==='function')reloadCurrentCatalogSubTab();else loadSkillHubList(skillhubPage);},0);}
+      if(document.getElementById('tab-news')?.classList.contains('active')) setTimeout(function(){loadNewsList(newsPage);},0);
+    }

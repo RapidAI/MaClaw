@@ -46,11 +46,11 @@ describe('userAgent helpers', () => {
             expect(isKnownUserAgent('Goose')).toBe(true);
             expect(isKnownUserAgent('claude code 2.0')).toBe(true);
             expect(isKnownUserAgent('tigerclaw')).toBe(true);
-            expect(isKnownUserAgent('claude-code/2.0.0')).toBe(true);
         });
 
         it('recognises legacy agent aliases', () => {
             expect(isKnownUserAgent('opencode')).toBe(true);
+            expect(isKnownUserAgent('claude-code/2.0.0')).toBe(true);
         });
 
         it('rejects unknown values', () => {

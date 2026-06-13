@@ -1056,7 +1056,10 @@ Object.assign(I18N_EN, {
       }
       return payload;
     }
+    let haConfigInFlight = null;
     async function loadHAConfig(){
+      if (haConfigInFlight) return haConfigInFlight;
+      haConfigInFlight = (async function(){
       try {
         const data = await api('/api/admin/ha/config');
         renderHAConfig(data || {});
@@ -1065,6 +1068,9 @@ Object.assign(I18N_EN, {
         setOutput(msg);
         showToast(msg, 'error');
       }
+      })();
+      try { return await haConfigInFlight; }
+      finally { haConfigInFlight = null; }
     }
     function refreshHAConfigSummaryFromForm(){
       try {
@@ -1115,7 +1121,10 @@ Object.assign(I18N_EN, {
         if(btn){ btn.disabled = false; btn.textContent = previous || tr('haSaveConfig'); }
       }
     }
+    let haStatusInFlight = null;
     async function loadHAStatus(){
+      if (haStatusInFlight) return haStatusInFlight;
+      haStatusInFlight = (async function(){
       const overview = document.getElementById('haOverviewGrid');
       const summary = document.getElementById('haSummaryList');
       const peers = document.getElementById('haPeerList');
@@ -1140,9 +1149,10 @@ Object.assign(I18N_EN, {
         if(syncDetails) syncDetails.innerHTML = '<div class="hint">' + escapeHtml(msg) + '</div>';
         setOutput(msg);
       }
+      })();
+      try { return await haStatusInFlight; }
+      finally { haStatusInFlight = null; }
     }
-    const _baseOpenTabHA = openTab;
-    openTab = function(name){ _baseOpenTabHA(name); if(name === 'ha'){ loadHAStatus(); loadHAConfig(); } };
     const _baseApplyI18nHA = applyI18n;
     applyI18n = function(){
       _baseApplyI18nHA();
@@ -1470,4 +1480,7 @@ Object.assign(I18N_EN, {
       else if (action === 'delete') deleteMCP(item.id || item.capability_id);
     });
 
-    // Auto-load MCP catalog when tab is opened; openTab() handles this directly.
+    // Auto-load the restored catalog tab after this deferred module finishes loading.
+    if (token() && document.getElementById('tab-skillhub')?.classList.contains('active') && !window._skillhubAdminLoaded) {
+      setTimeout(reloadCurrentCatalogSubTab, 0);
+    }

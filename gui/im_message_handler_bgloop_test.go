@@ -88,9 +88,9 @@ func TestBgLoopProperty6_ChatLoopContextCreation(t *testing.T) {
 	}
 }
 
-// TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx verifies that when
-// toolSetMaxIterations writes to loopMaxOverride, it also updates the
-// active LoopContext.
+// TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx verifies that runtime-scoped
+// set_max_iterations updates the active LoopContext without touching persisted
+// settings.
 func TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx(t *testing.T) {
 	tmpHome := t.TempDir()
 	app := &App{testHomeDir: tmpHome}
@@ -113,12 +113,14 @@ func TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx(t *testing.T) {
 		}
 
 		// Simulate an active loop context.
+		userID := "property-loop-owner"
 		ctx := NewLoopContext("chat", cfg.MaxIter, nil)
-		h.currentLoopCtx = ctx
+		h.setSessionLoopCtx(userID, ctx)
 
 		// Call toolSetMaxIterations.
 		result := h.toolSetMaxIterations(map[string]interface{}{
-			"max_iterations": float64(cfg.LoopOverride),
+			"max_iterations":                 float64(cfg.LoopOverride),
+			registeredToolPolicyOwnerIDField: userID,
 		})
 
 		if !strings.Contains(result, "✅") {
@@ -126,11 +128,10 @@ func TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx(t *testing.T) {
 			return false
 		}
 
-		// Verify both loopMaxOverride and ctx are in sync.
-		// Use the single source of truth for expected value calculation.
+		// Verify the active loop reflects the normalized override.
 		expected := config.EffectiveMaxIterations(cfg.LoopOverride)
-		if h.loopMaxOverride != expected {
-			t.Logf("loopMaxOverride=%d, expected=%d", h.loopMaxOverride, expected)
+		if h.loopMaxOverride != 0 {
+			t.Logf("loopMaxOverride=%d, expected unchanged", h.loopMaxOverride)
 			return false
 		}
 		if ctx.MaxIterations() != expected {
@@ -143,7 +144,7 @@ func TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx(t *testing.T) {
 		}
 
 		// Clean up.
-		h.currentLoopCtx = nil
+		h.setSessionLoopCtx(userID, nil)
 		return true
 	}
 	if err := quick.Check(f, &quick.Config{MaxCount: 100}); err != nil {

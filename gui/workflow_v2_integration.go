@@ -121,6 +121,22 @@ func buildWorkflowV2State(store v2.WorkflowStore) *workflowV2State {
 	}
 }
 
+// intentLabelToTemplateType maps UIC intent labels that don't directly
+// correspond to template registry type names. This bridges the vocabulary gap
+// between the intent classifier (which uses domain labels like "office") and
+// the template registry (which uses specific type names like "presentation_design").
+//
+// Only workflow-candidate labels need mapping here. Non-workflow labels (ssh,
+// search, etc.) are passed through for veto purposes and don't need mapping.
+func intentLabelToTemplateType(label string) string {
+	switch label {
+	case "office":
+		return "presentation_design"
+	default:
+		return ""
+	}
+}
+
 // routeWithWorkflowV2 is the V2 replacement for routeWorkflowIMMessage.
 // Returns a workflowIMRouteResult compatible with the existing entry context.
 func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string) workflowIMRouteResult {
@@ -159,9 +175,8 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 	//    activate that template (handles path/framework name dilution).
 	//
 	// For non-workflow intents (ssh, search, etc.): always pass as hint → veto works.
-	// For workflow-candidate intents: only pass if label == a registered template type
-	// (e.g. "coding", "maintenance"). Labels like "office"/"workflow_task" don't match
-	// any template type and would incorrectly trigger veto, so leave hint empty for those.
+	// For workflow-candidate intents: pass the label (or its mapped template type)
+	// so the router can use it as a fallback when BM25 fails.
 	var semanticHint string
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		embResult := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: trimmed, UserID: msg.UserID})
@@ -173,8 +188,12 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 			} else if wf.router != nil && wf.router.HasTemplate(label) {
 				// Workflow-candidate whose label is also a template type → pass for fallback.
 				semanticHint = label
+			} else if mapped := intentLabelToTemplateType(label); mapped != "" && wf.router != nil && wf.router.HasTemplate(mapped) {
+				// Workflow-candidate whose label maps to a known template type.
+				// e.g. "office" → "presentation_design", enables fallback activation.
+				semanticHint = mapped
 			}
-			// else: workflow-candidate but label ≠ template type (office/workflow_task) → leave empty.
+			// else: workflow-candidate with no mapping → leave empty (safe, won't veto).
 		}
 	}
 
@@ -1273,6 +1292,7 @@ const (
 	workflowChoiceComplex       = "complex" // Full SDD workflow
 	workflowChoiceSimple        = "simple"  // Direct SubAgent (coding only)
 	workflowChoiceSkip          = "skip"    // Not a workflow task, use normal agent loop
+	workflowChoiceDirect        = "direct"  // Non-coding direct handling, use normal agent loop
 )
 
 // pendingWorkflowChoice stores the original route result while waiting for user choice.
@@ -1377,7 +1397,7 @@ func (h *IMMessageHandler) askWorkflowConfirmChoice(msg IMUserMessage, result *v
 			"不走工作流，当作普通任务由 AI 自由发挥完成", templateName, templateName)
 		actions = []IMResponseAction{
 			{Label: fmt.Sprintf("📋 进入%s工作流", templateName), Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
-			{Label: "🔄 直接处理", Command: buildWorkflowChoiceCommand(workflowChoiceSkip, choiceID), Style: "secondary"},
+			{Label: "🔄 直接处理", Command: buildWorkflowChoiceCommand(workflowChoiceDirect, choiceID), Style: "secondary"},
 		}
 	}
 
@@ -1447,6 +1467,13 @@ func (h *IMMessageHandler) handleCodingComplexityCommand(msg IMUserMessage, trim
 		// ReplayText tells the entry layer to substitute the button command with
 		// the user's original task text for agent loop processing.
 		log.Printf("[workflow-v2] user chose: SKIP (normal agent loop)")
+		result := workflowIMRouteResult{
+			ReplayText: pending.Msg.Text,
+		}
+		return &result
+
+	case workflowChoiceDirect:
+		log.Printf("[workflow-v2] user chose: DIRECT (normal agent loop) type=%s", pending.RouteResult.WorkflowType)
 		result := workflowIMRouteResult{
 			ReplayText: pending.Msg.Text,
 		}

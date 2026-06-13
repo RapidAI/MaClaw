@@ -862,8 +862,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                 )}
                                             </div>
                                             <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
-                                                {currentAgent === "claude-code/2.0.0"
-                                                    ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi)", "\u9002\u7528\u4e8e\u9700\u8981 Claude Coding Plan \u8eab\u4efd\u7684\u670d\u52a1\u5546\uff08\u5982 Kimi\uff09")
+                                                {currentAgent === "claude code 2.0"
+                                                    ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi, Zhipu Coding)", "\u9002\u7528\u4e8e\u9700\u8981 Claude Coding Plan \u8eab\u4efd\u7684\u670d\u52a1\u5546\uff08\u5982 Kimi\u3001\u667a\u8c31\u7f16\u7a0b\uff09")
                                                     : currentAgent === "Kilo Code"
                                                         ? t("For providers requiring Kilo Code client identity.", "\u9002\u7528\u4e8e\u9700\u8981 Kilo Code \u5ba2\u6237\u7aef\u8eab\u4efd\u7684\u670d\u52a1\u5546\u3002", "\u9069\u7528\u65bc\u9700\u8981 Kilo Code \u5ba2\u6236\u7aef\u8eab\u5206\u7684\u670d\u52d9\u5546\u3002")
                                                     : isCustom
