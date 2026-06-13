@@ -12,6 +12,8 @@ if (typeof I18N_EN !== 'undefined') {
   Object.assign(I18N_ZH, {llmServiceTitle:'LLM \u63a5\u5165',llmServiceDesc:'\u7ba1\u7406 LLM \u670d\u52a1\u5546\u3001\u6a21\u578b\u670d\u52a1\u7ec4\u548c\u79df\u6237\u7b97\u529b\u6388\u6743\u3002',llmServiceProviders:'\u670d\u52a1\u5546',llmServiceGroups:'\u670d\u52a1\u7ec4',llmServiceAuth:'\u6388\u6743\u7ba1\u7406',llmServiceProvidersTitle:'LLM \u670d\u52a1\u5546\u7ba1\u7406',llmServiceProvidersDesc:'\u540e\u7aef LLM API \u7aef\u70b9\u914d\u7f6e\u3002',llmServiceGroupsTitle:'\u6a21\u578b\u670d\u52a1\u7ec4',llmServiceGroupsDesc:'\u5c06\u6a21\u578b\u8def\u7531\u5230\u670d\u52a1\u5546\uff0c\u914d\u7f6e\u8c03\u5ea6\u7b56\u7565\u3002',llmServiceAddProvider:'\u6dfb\u52a0\u670d\u52a1\u5546',llmServiceNoProviders:'\u672a\u914d\u7f6e\u670d\u52a1\u5546\u3002',llmServiceProviderName:'\u540d\u79f0',llmServiceProviderURL:'API \u5730\u5740',llmServiceProviderKey:'API \u5bc6\u94a5',llmServiceProviderProtocol:'\u534f\u8bae',llmServiceProviderModels:'\u6a21\u578b',llmServiceProviderPriority:'\u4f18\u5148\u7ea7',llmServiceProviderConcurrency:'\u6700\u5927\u5e76\u53d1',llmServiceProviderCapabilities:'\u80fd\u529b\u6807\u7b7e',llmServiceAddGroup:'\u6dfb\u52a0\u670d\u52a1\u7ec4',llmServiceNoGroups:'\u672a\u914d\u7f6e\u670d\u52a1\u7ec4\u3002',llmServiceGroupName:'\u7ec4\u540d\u79f0',llmServiceGroupDesc:'\u63cf\u8ff0',llmServiceGroupModels:'\u6a21\u578b\u914d\u7f6e',llmServiceAuthTitle:'\u79df\u6237\u7b97\u529b\u6388\u6743',llmServiceAuthDesc:'\u4e3a Hub \u79df\u6237\u6388\u4e88\u7b97\u529b\u989d\u5ea6\u3002',llmServiceAddAuth:'\u6388\u4e88\u6388\u6743',llmServiceNoAuths:'\u6682\u65e0\u6d3b\u8dc3\u6388\u6743\u3002',llmServiceSave:'\u4fdd\u5b58',llmServiceCancel:'\u53d6\u6d88',sgRouteHint:'\u66b4\u9732\u6a21\u578b\u522b\u540d\uff0c\u6309\u670d\u52a1\u5546\u4f18\u5148\u7ea7\u5b9e\u73b0\u6545\u969c\u8f6c\u79fb',sgRemoveRoute:'\u5220\u9664',sgExposedModel:'\u66b4\u9732\u6a21\u578b\u540d',sgNoProviders:'\u672a\u5206\u914d\u670d\u52a1\u5546\u3002\u8bf7\u5728\u4e0a\u65b9\u6dfb\u52a0\u3002',sgAccessPolicy:'\u8bbf\u95ee\u7b56\u7565',sgPolicyFreeHint:'\u65e0\u9700\u6388\u6743',sgPolicyGrantHint:'\u9700\u8981\u5361/\u6388\u6743',sgRoutes:'\u670d\u52a1\u5546\u8def\u7531',sgAddRoute:'+ \u6dfb\u52a0\u8def\u7531',sgProviderAlreadyAdded:'\u8be5\u670d\u52a1\u5546\u5df2\u6dfb\u52a0\u3002',sgProviderConfigTitle:'\u670d\u52a1\u5546\u914d\u7f6e',sgCapabilityTags:'\u80fd\u529b\u6807\u7b7e',sgExtraTags:'\u989d\u5916\u6807\u7b7e\uff08\u81ea\u5b9a\u4e49\uff09',sgPriority:'\u4f18\u5148\u7ea7',sgResolutionTier:'\u89e3\u6790\u5c42\u7ea7',sgCreditMultiplier:'\u989d\u5ea6\u500d\u7387',sgIDNameRequired:'ID \u548c\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002',sgRouteNeedsProvider:'\u6bcf\u4e2a\u8def\u7531\u81f3\u5c11\u9700\u8981\u4e00\u4e2a\u670d\u52a1\u5546\u3002',sgAvailableProviders:'\u53ef\u7528\u670d\u52a1\u5546',chooseProvider:'\u9009\u62e9\u670d\u52a1\u5546'});
   Object.assign(I18N_EN, {providerProbeModels:'Probe',providerProbing:'Probing models...',providerProbeEmpty:'No models returned.',providerProbeFailed:'Probe failed',providerCapabilityPreset:'Preset capabilities'});
   Object.assign(I18N_ZH, {providerProbeModels:'\u63a2\u6d4b',providerProbing:'\u6b63\u5728\u63a2\u6d4b\u6a21\u578b...',providerProbeEmpty:'\u672a\u8fd4\u56de\u6a21\u578b\u5217\u8868\u3002',providerProbeFailed:'\u63a2\u6d4b\u5931\u8d25',providerCapabilityPreset:'\u9884\u7f6e\u80fd\u529b'});
+  Object.assign(I18N_EN, {llmServiceAgents:'Agents',llmServiceAgentsTitle:'Compute Agents',llmServiceAgentsDesc:'Manage upstream compute resellers for settlement.',llmServiceAddAgent:'Add Agent',llmServiceNoAgents:'No agents configured.'});
+  Object.assign(I18N_ZH, {llmServiceAgents:'\u4ee3\u7406\u5546',llmServiceAgentsTitle:'\u7b97\u529b\u4ee3\u7406\u5546',llmServiceAgentsDesc:'\u7ba1\u7406\u4e0a\u6e38\u7b97\u529b\u4ee3\u7406\u4e0e\u7ed3\u7b97\u5f52\u5c5e\u3002',llmServiceAddAgent:'\u6dfb\u52a0\u4ee3\u7406\u5546',llmServiceNoAgents:'\u672a\u914d\u7f6e\u4ee3\u7406\u5546\u3002'});
 }
 
 (function() {
@@ -30,6 +32,11 @@ if (typeof I18N_EN !== 'undefined') {
       fieldID: 'Provider ID', fieldName: 'Name', fieldURL: 'API URL', fieldKey: 'API Key',
       fieldProtocol: 'Protocol', fieldModels: 'Models (comma-separated)', fieldCapabilities: 'Capabilities',
       fieldPriority: 'Priority', fieldConcurrency: 'Max Concurrency', fieldTimeout: 'Timeout (sec)',
+      agentsTitle: 'Compute Agents', agentsDesc: 'Upstream compute resellers for settlement and customer-facing attribution.',
+      addAgent: 'Add Agent', editAgent: 'Edit', deleteAgent: 'Delete', noAgents: 'No agents configured.',
+      agentDialogTitleNew: 'New Compute Agent', agentDialogTitleEdit: 'Edit Compute Agent',
+      fieldAgentID: 'Agent ID', fieldAgentName: 'Agent Name', fieldAgentContact: 'Contact', fieldAgentSettlement: 'Settlement',
+      fieldAgentDesc: 'Description', fieldGroupAgent: 'Compute Agent', sgAgentRequired: 'Please select a compute agent.',
       // Service Groups
       groupsTitle: 'Model Service Groups', groupsDesc: 'Route models to providers with dispatch policies.',
       addGroup: 'Add Service Group', editGroup: 'Edit', deleteGroup: 'Delete', noGroups: 'No service groups.',
@@ -67,6 +74,11 @@ if (typeof I18N_EN !== 'undefined') {
       fieldID: '\u670d\u52a1\u5546 ID', fieldName: '\u540d\u79f0', fieldURL: 'API \u5730\u5740', fieldKey: 'API \u5bc6\u94a5',
       fieldProtocol: '\u534f\u8bae', fieldModels: '\u6a21\u578b\uff08\u9017\u53f7\u5206\u9694\uff09', fieldCapabilities: '\u80fd\u529b\u6807\u7b7e',
       fieldPriority: '\u4f18\u5148\u7ea7', fieldConcurrency: '\u6700\u5927\u5e76\u53d1', fieldTimeout: '\u8d85\u65f6\uff08\u79d2\uff09',
+      agentsTitle: '\u7b97\u529b\u4ee3\u7406\u5546', agentsDesc: '\u7528\u4e8e\u7ed3\u7b97\u548c\u5ba2\u6237\u4fa7\u5c55\u793a\u7684\u4e0a\u6e38\u7b97\u529b\u4ee3\u7406\u3002',
+      addAgent: '\u6dfb\u52a0\u4ee3\u7406\u5546', editAgent: '\u7f16\u8f91', deleteAgent: '\u5220\u9664', noAgents: '\u672a\u914d\u7f6e\u4ee3\u7406\u5546\u3002',
+      agentDialogTitleNew: '\u65b0\u5efa\u7b97\u529b\u4ee3\u7406\u5546', agentDialogTitleEdit: '\u7f16\u8f91\u7b97\u529b\u4ee3\u7406\u5546',
+      fieldAgentID: '\u4ee3\u7406\u5546 ID', fieldAgentName: '\u4ee3\u7406\u5546\u540d\u79f0', fieldAgentContact: '\u8054\u7cfb\u65b9\u5f0f', fieldAgentSettlement: '\u7ed3\u7b97\u5907\u6ce8',
+      fieldAgentDesc: '\u63cf\u8ff0', fieldGroupAgent: '\u7b97\u529b\u4ee3\u7406\u5546', sgAgentRequired: '\u8bf7\u9009\u62e9\u7b97\u529b\u4ee3\u7406\u5546\u3002',
       groupsTitle: '\u6a21\u578b\u670d\u52a1\u7ec4', groupsDesc: '\u5c06\u6a21\u578b\u8def\u7531\u5230\u670d\u52a1\u5546\u3002',
       addGroup: '\u6dfb\u52a0\u670d\u52a1\u7ec4', editGroup: '\u7f16\u8f91', deleteGroup: '\u5220\u9664', noGroups: '\u672a\u914d\u7f6e\u670d\u52a1\u7ec4\u3002',
       groupDialogTitleNew: '\u65b0\u5efa\u670d\u52a1\u7ec4', groupDialogTitleEdit: '\u7f16\u8f91\u670d\u52a1\u7ec4',
@@ -100,7 +112,7 @@ if (typeof I18N_EN !== 'undefined') {
   // ---------------------------------------------------------------------------
   // API
   // ---------------------------------------------------------------------------
-  function adminToken() { return (typeof window.token === 'function' ? window.token() : '') || sessionStorage.getItem('maclawHubCenterAdminToken') || localStorage.getItem('maclawHubCenterAdminToken') || ''; }
+  function adminToken() { return (typeof window.token === 'function' ? window.token() : '') || localStorage.getItem('maclawHubCenterAdminToken') || sessionStorage.getItem('maclawHubCenterAdminToken') || ''; }
   function apiErrorMessage(e, fallback) {
     if (e && typeof e.error === 'object' && e.error && e.error.message) return e.error.message;
     if (e && typeof e.error === 'string') return e.error;
@@ -119,7 +131,7 @@ if (typeof I18N_EN !== 'undefined') {
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
-  var providers = [], serviceGroups = [], authorizations = [];
+  var providers = [], agents = [], serviceGroups = [], authorizations = [];
   var providerDialogID = '';
   var providerCapabilityOptions = ['chat','streaming','json','tools','reasoning','vision','document','code','search','audio','embedding','rerank'];
 
@@ -129,7 +141,7 @@ if (typeof I18N_EN !== 'undefined') {
   window.initLLMServiceTab = async function() {
     // Re-apply i18n for dynamically registered keys
     if (typeof applyI18n === 'function') applyI18n();
-    await Promise.all([loadProviders(), loadServiceGroups(), loadAuthorizations()]);
+    await Promise.all([loadProviders(), loadAgents(), loadServiceGroups(), loadAuthorizations()]);
   };
 
   // ---------------------------------------------------------------------------
@@ -282,6 +294,60 @@ if (typeof I18N_EN !== 'undefined') {
   };
 
   // ---------------------------------------------------------------------------
+  // COMPUTE AGENTS
+  // ---------------------------------------------------------------------------
+  async function loadAgents() {
+    try { var data = await api('/api/admin/llm/agents'); agents = data.agents || []; } catch(e) { agents = []; }
+    renderAgents();
+  }
+
+  function renderAgents() {
+    var el = document.getElementById('llmAgentsList');
+    if (!el) return;
+    if (!agents.length) { el.innerHTML = '<div class="hint">' + esc(t('noAgents')) + '</div>'; return; }
+    el.innerHTML = agents.map(function(a) {
+      var locked = a.id === 'maclaw_official';
+      var status = a.enabled === false ? '<span class="badge warn">Disabled</span>' : '<span class="badge ok">Enabled</span>';
+      return '<div class="data-row llm-agent-row"><div class="data-row-main"><strong>' + esc(a.name || a.id) + '</strong> ' + status
+        + '<span class="data-row-meta">' + esc(a.id) + (a.contact ? ' · ' + esc(a.contact) : '') + (a.description ? ' · ' + esc(a.description) : '') + '</span></div>'
+        + '<div class="data-row-actions">'
+        + '<button class="btn-ghost" onclick="showLLMAgentDialog(\'edit\',\'' + esc(a.id) + '\')">' + esc(t('editAgent')) + '</button>'
+        + (locked ? '' : '<button class="btn-danger-ghost" onclick="deleteLLMAgent(\'' + esc(a.id) + '\')">' + esc(t('deleteAgent')) + '</button>')
+        + '</div></div>';
+    }).join('');
+  }
+
+  window.showLLMAgentDialog = function(mode, id) {
+    var a = mode === 'edit' ? agents.find(function(x){return x.id===id;}) : null;
+    var html = '<h3>' + esc(mode === 'edit' ? t('agentDialogTitleEdit') : t('agentDialogTitleNew')) + '</h3>'
+      + '<div class="grid2">'
+      + field('llmAgentID', t('fieldAgentID'), a ? a.id : '', mode === 'edit')
+      + field('llmAgentName', t('fieldAgentName'), a ? a.name : '')
+      + '</div><div class="grid2">'
+      + field('llmAgentContact', t('fieldAgentContact'), a ? a.contact : '')
+      + field('llmAgentSettlement', t('fieldAgentSettlement'), a ? a.settlement : '')
+      + '</div>'
+      + '<div class="sg-block-xs"><label for="llmAgentDesc">' + esc(t('fieldAgentDesc')) + '</label><textarea id="llmAgentDesc" rows="3">' + esc(a ? a.description : '') + '</textarea></div>'
+      + '<div class="actions section-gap"><button class="btn-primary" onclick="saveLLMAgent(\'' + (mode === 'edit' ? esc(id) : '') + '\')">' + esc(t('save')) + '</button><button class="btn-ghost" onclick="closeDialog()">' + esc(t('cancel')) + '</button></div>';
+    openDialog(html);
+  };
+
+  window.saveLLMAgent = async function(editID) {
+    var payload = { id: val('llmAgentID'), name: val('llmAgentName'), contact: val('llmAgentContact'), settlement: val('llmAgentSettlement'), description: val('llmAgentDesc'), enabled: true };
+    try {
+      if (editID) await api('/api/admin/llm/agents/' + editID, { method: 'PUT', body: JSON.stringify(payload) });
+      else await api('/api/admin/llm/agents', { method: 'POST', body: JSON.stringify(payload) });
+      closeDialog(); toast(t('saved'), 'success'); await loadAgents(); await loadServiceGroups();
+    } catch(e) { toast(e.message, 'error'); }
+  };
+
+  window.deleteLLMAgent = async function(id) {
+    if (!confirm(t('deleteAgent') + ': ' + id + '?')) return;
+    try { await api('/api/admin/llm/agents/' + id, { method: 'DELETE' }); toast(t('deleted'), 'success'); await loadAgents(); await loadServiceGroups(); }
+    catch(e) { toast(e.message, 'error'); }
+  };
+
+  // ---------------------------------------------------------------------------
   // SERVICE GROUPS
   // ---------------------------------------------------------------------------
   async function loadServiceGroups() {
@@ -296,8 +362,9 @@ if (typeof I18N_EN !== 'undefined') {
     el.innerHTML = serviceGroups.map(function(g) {
       var modelNames = (g.models||[]).map(function(m){return m.name;}).join(', ');
       var policyBadge = g.access_policy === 'grant_required' ? '<span class="badge warn">Grant</span>' : '<span class="badge ok">Free</span>';
+      var agentName = g.agent_name || agentNameByID(g.agent_id) || '-';
       return '<div class="data-row"><div class="data-row-main"><strong>' + esc(g.name||g.id) + '</strong> ' + policyBadge
-        + '<span class="data-row-meta">' + esc(g.description||'') + ' \u00b7 ' + esc(modelNames||'no models')
+        + '<span class="data-row-meta">' + esc(agentName) + ' \u00b7 ' + esc(g.description||'') + ' \u00b7 ' + esc(modelNames||'no models')
         + ' \u00b7 ' + (g.models||[]).length + ' route(s)</span></div>'
         + '<div class="data-row-actions">'
         + '<button class="btn-ghost" onclick="editLLMServiceGroup(\'' + esc(g.id) + '\')">' + esc(t('editGroup')) + '</button>'
@@ -312,13 +379,15 @@ if (typeof I18N_EN !== 'undefined') {
   var sgPriorityOptions = [0,10,20,30,40,50,60,70,80,90,100];
   var sgResolutionOptions = [0,1,2,3,4,5];
   var sgMultiplierOptions = [0.25,0.5,0.75,1,1.5,2,3,5,10];
+  function agentNameByID(id){var a=agents.find(function(x){return x.id===id;});return a&&(a.name||a.id);}
 
   function sgCloneGroup(g) {
     return {id:(g&&g.id||'').trim(),name:(g&&g.name||'').trim(),description:(g&&g.description||'').trim(),
+      agent_id:(g&&g.agent_id)||'maclaw_official',agent_name:(g&&g.agent_name)||agentNameByID(g&&g.agent_id)||'',
       access_policy:g&&g.access_policy||'free',
       models:(g&&g.models||[]).map(function(m){return{name:m.name||'auto',provider_ids:(m.provider_ids||[]).slice(),provider_configs:(m.provider_configs||[]).map(function(c){return{provider_id:c.provider_id,capability_tags:(c.capability_tags||[]).slice(),priority:c.priority||0,resolution_tier:c.resolution_tier||0,credit_multiplier:c.credit_multiplier||1};}),capability_tags:(m.capability_tags||[]).slice(),priority:m.priority||50,resolution_tier:m.resolution_tier||0,credit_multiplier:m.credit_multiplier||1};})};
   }
-  function sgEmptyGroup(){return{id:'',name:'',description:'',access_policy:'free',models:[{name:'auto',provider_ids:[],provider_configs:[],capability_tags:[],priority:50,resolution_tier:0,credit_multiplier:1}]};}
+  function sgEmptyGroup(){return{id:'',name:'',description:'',agent_id:'maclaw_official',agent_name:agentNameByID('maclaw_official')||'MaClaw官方',access_policy:'free',models:[{name:'auto',provider_ids:[],provider_configs:[],capability_tags:[],priority:50,resolution_tier:0,credit_multiplier:1}]};}
   function sgProviderName(id){var p=providers.find(function(x){return x.id===id;});return p?(p.name||p.id):id;}
   function sgGetProviderConfig(model,providerID){if(!model)return null;model.provider_configs=model.provider_configs||[];var existing=model.provider_configs.find(function(c){return c.provider_id===providerID;});if(existing)return existing;var cfg={provider_id:providerID,capability_tags:[],priority:0,resolution_tier:0,credit_multiplier:1};model.provider_configs.push(cfg);return cfg;}
 
@@ -360,11 +429,13 @@ if (typeof I18N_EN !== 'undefined') {
     var d=sgDraft||sgEmptyGroup();
     var rows=(d.models||[]).map(function(m,i){return sgRenderRouteRow(m,i);}).join('');
     var title=sgMode==='edit'?t('groupDialogTitleEdit'):t('groupDialogTitleNew');
+    var agentOptions = agents.map(function(a){return '<option value="'+esc(a.id)+'"'+(d.agent_id===a.id?' selected':'')+'>'+esc(a.name||a.id)+'</option>';}).join('');
     var html='<h3>'+esc(title)+'</h3>'
       +'<div class="grid2 sg-block-sm">'
       +'<div><label>'+esc(t('fieldGroupID'))+'</label><input id="sgFieldID" value="'+esc(d.id)+'" placeholder="e.g. coding-pro"'+(sgMode==='edit'?' readonly class="sg-readonly"':'')+' oninput="sgSetField(\'id\',this.value)"></div>'
       +'<div><label>'+esc(t('fieldGroupName'))+'</label><input value="'+esc(d.name)+'" placeholder="e.g. Coding Pro" oninput="sgSetField(\'name\',this.value)"></div>'
       +'</div>'
+      +'<div class="sg-block-xs"><label>'+esc(t('fieldGroupAgent'))+'</label><select class="sg-field-full" onchange="sgSetField(\'agent_id\',this.value)"><option value="">--</option>'+agentOptions+'</select></div>'
       +'<div class="sg-block-xs"><label>'+esc(t('fieldGroupDesc'))+'</label><input class="sg-field-full" value="'+esc(d.description)+'" oninput="sgSetField(\'description\',this.value)"></div>'
       +'<div class="sg-block-xs"><label>'+esc(t('sgAccessPolicy'))+'</label><select onchange="sgSetField(\'access_policy\',this.value)"><option value="free"'+(d.access_policy!=='grant_required'?' selected':'')+'>Free ('+esc(t('sgPolicyFreeHint'))+')</option><option value="grant_required"'+(d.access_policy==='grant_required'?' selected':'')+'>Grant Required ('+esc(t('sgPolicyGrantHint'))+')</option></select></div>'
       +'<div class="sg-block-md"><div class="sg-flex-between"><strong>'+esc(t('sgRoutes'))+'</strong><button class="btn-ghost" onclick="sgAddRoute()">'+esc(t('sgAddRoute'))+'</button></div>'
@@ -411,6 +482,7 @@ if (typeof I18N_EN !== 'undefined') {
 
   window.sgSaveGroup=async function(){
     if(!sgDraft||!sgDraft.id||!sgDraft.name){toast(t('sgIDNameRequired'),'error');return;}
+    if(!sgDraft.agent_id){toast(t('sgAgentRequired'),'error');return;}
     for(var i=0;i<(sgDraft.models||[]).length;i++){if(!(sgDraft.models[i].provider_ids||[]).length){toast(t('sgRouteNeedsProvider'),'error');return;}}
     var payload=sgCloneGroup(sgDraft);
     try{
@@ -519,7 +591,7 @@ if (typeof I18N_EN !== 'undefined') {
   // ---------------------------------------------------------------------------
 
   window.switchLLMSubTab = function(tab) {
-    ['providers', 'groups', 'auth'].forEach(function(t) {
+    ['providers', 'agents', 'groups', 'auth'].forEach(function(t) {
       var view = document.getElementById('llmSubView' + t.charAt(0).toUpperCase() + t.slice(1));
       var btn = document.getElementById('llmSubTab' + t.charAt(0).toUpperCase() + t.slice(1));
       var active = (t === tab);

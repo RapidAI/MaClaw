@@ -162,11 +162,22 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
             const inner = m.slice(2, -2);
             if (looksLikeFilePath(inner)) {
                 parts.push(renderPathLink(inner, idx++, t));
+            } else if (inner.startsWith("`") && inner.endsWith("`") && inner.length > 2) {
+                // Bold-wrapped inline code: **`code`** → render as bold code (strip backticks)
+                const codeContent = inner.slice(1, -1);
+                parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em", fontWeight: 700, ...inlineWrapStyle }}>{codeContent}</code>);
             } else {
                 parts.push(<strong key={idx++} style={{ color: t.boldColor, fontWeight: 700, ...inlineWrapStyle }}>{inner}</strong>);
             }
         } else if (match[5]) {
-            parts.push(<em key={idx++} style={{ color: t.italicColor, ...inlineWrapStyle }}>{m.slice(1, -1)}</em>);
+            const inner = m.slice(1, -1);
+            if (inner.startsWith("`") && inner.endsWith("`") && inner.length > 2) {
+                // Italic-wrapped inline code: *`code`* → render as italic code (strip backticks)
+                const codeContent = inner.slice(1, -1);
+                parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em", fontStyle: "italic", ...inlineWrapStyle }}>{codeContent}</code>);
+            } else {
+                parts.push(<em key={idx++} style={{ color: t.italicColor, ...inlineWrapStyle }}>{inner}</em>);
+            }
         } else if (match[6]) {
             const lm = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
             if (lm) {

@@ -223,12 +223,17 @@
         <div class="head"><div><h3 data-i18n="llmServiceTitle"></h3><div class="desc" data-i18n="llmServiceDesc"></div></div><button class="btn-ghost" onclick="initLLMServiceTab()" data-i18n="reload"></button></div>
         <div class="filter-group llm-subtabs">
           <button class="btn-secondary" id="llmSubTabProviders" aria-pressed="true" onclick="switchLLMSubTab('providers')" data-i18n="llmServiceProviders"></button>
+          <button class="btn-ghost" id="llmSubTabAgents" aria-pressed="false" onclick="switchLLMSubTab('agents')" data-i18n="llmServiceAgents"></button>
           <button class="btn-ghost" id="llmSubTabGroups" aria-pressed="false" onclick="switchLLMSubTab('groups')" data-i18n="llmServiceGroups"></button>
           <button class="btn-ghost" id="llmSubTabAuth" aria-pressed="false" onclick="switchLLMSubTab('auth')" data-i18n="llmServiceAuth"></button>
         </div>
         <div id="llmSubViewProviders">
           <div class="head meta-spaced"><div><div class="item-title" data-i18n="llmServiceProvidersTitle"></div><div class="item-meta" data-i18n="llmServiceProvidersDesc"></div></div><button class="btn-primary" onclick="showProviderDialog('create')" data-i18n="llmServiceAddProvider"></button></div>
           <div id="llmProvidersList" class="list"><div class="hint" data-i18n="llmServiceNoProviders"></div></div>
+        </div>
+        <div id="llmSubViewAgents" class="hidden-view">
+          <div class="head meta-spaced"><div><div class="item-title" data-i18n="llmServiceAgentsTitle"></div><div class="item-meta" data-i18n="llmServiceAgentsDesc"></div></div><button class="btn-primary" onclick="showLLMAgentDialog('create')" data-i18n="llmServiceAddAgent"></button></div>
+          <div id="llmAgentsList" class="list"><div class="hint" data-i18n="llmServiceNoAgents"></div></div>
         </div>
         <div id="llmSubViewGroups" class="hidden-view">
           <div class="head meta-spaced"><div><div class="item-title" data-i18n="llmServiceGroupsTitle"></div><div class="item-meta" data-i18n="llmServiceGroupsDesc"></div></div><button class="btn-primary" onclick="showLLMGroupEditor()" data-i18n="llmServiceAddGroup"></button></div>

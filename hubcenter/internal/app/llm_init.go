@@ -84,6 +84,18 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	// 5. Create card store service
 	orderRepo := sqlite.NewLLMOrderRepo(provider)
 	cardStoreSvc := cardstore.NewService(cardTypeRepo, orderRepo, authRepo)
+	cardStoreSvc.SetServiceGroupResolver(func(ctx context.Context, serviceGroupID string) (string, string, string) {
+		reg, err := llmSvc.LoadRegistry(ctx)
+		if err != nil {
+			return serviceGroupID, "", ""
+		}
+		for _, group := range reg.ServiceGroups {
+			if group.ID == serviceGroupID {
+				return group.Name, group.AgentID, group.AgentName
+			}
+		}
+		return serviceGroupID, "", ""
+	})
 	if entrySvc != nil {
 		cardStoreSvc.SetTenantVerifier(func(ctx context.Context, hubID, tenantID, email string) error {
 			resolved, err := entrySvc.ResolveByEmail(ctx, email)

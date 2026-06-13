@@ -40,11 +40,17 @@ func RegisterLLMRoutes(
 	mux.HandleFunc("PUT /api/admin/llm/providers/{id}", RequireAdmin(adminService, adminUpdateLLMProvider(llmSvc)))
 	mux.HandleFunc("DELETE /api/admin/llm/providers/{id}", RequireAdmin(adminService, adminDeleteLLMProvider(llmSvc)))
 
+	// --- Admin: Compute Agents ---
+	mux.HandleFunc("GET /api/admin/llm/agents", RequireAdmin(adminService, adminListLLMAgents(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/agents", RequireAdmin(adminService, adminAddLLMAgent(llmSvc)))
+	mux.HandleFunc("PUT /api/admin/llm/agents/{id}", RequireAdmin(adminService, adminUpdateLLMAgent(llmSvc)))
+	mux.HandleFunc("DELETE /api/admin/llm/agents/{id}", RequireAdmin(adminService, adminDeleteLLMAgent(llmSvc)))
+
 	// --- Admin: LLM Service Groups ---
 	mux.HandleFunc("GET /api/admin/llm/service-groups", RequireAdmin(adminService, adminListLLMServiceGroups(llmSvc)))
 	mux.HandleFunc("POST /api/admin/llm/service-groups", RequireAdmin(adminService, adminAddLLMServiceGroup(llmSvc)))
 	mux.HandleFunc("PUT /api/admin/llm/service-groups/{id}", RequireAdmin(adminService, adminUpdateLLMServiceGroup(llmSvc)))
-	mux.HandleFunc("DELETE /api/admin/llm/service-groups/{id}", RequireAdmin(adminService, adminDeleteLLMServiceGroup(llmSvc)))
+	mux.HandleFunc("DELETE /api/admin/llm/service-groups/{id}", RequireAdmin(adminService, adminDeleteLLMServiceGroup(llmSvc, authChecker, cardStoreSvc)))
 
 	// --- Admin: Tenant Authorizations ---
 	if authChecker != nil {

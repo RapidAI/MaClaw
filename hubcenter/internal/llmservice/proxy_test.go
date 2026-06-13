@@ -36,8 +36,19 @@ func (r *mockAuthRepo) ListByHubTenant(_ context.Context, hubID, tenantID string
 	}
 	return result, nil
 }
-func (r *mockAuthRepo) ListAll(_ context.Context) ([]*TenantAuthorization, error) { return r.auths, nil }
-func (r *mockAuthRepo) Update(_ context.Context, auth *TenantAuthorization) error  { return nil }
+func (r *mockAuthRepo) ListAll(_ context.Context) ([]*TenantAuthorization, error) {
+	return r.auths, nil
+}
+func (r *mockAuthRepo) ListByServiceGroup(_ context.Context, serviceGroupID string) ([]*TenantAuthorization, error) {
+	var result []*TenantAuthorization
+	for _, a := range r.auths {
+		if a.ServiceGroupID == serviceGroupID {
+			result = append(result, a)
+		}
+	}
+	return result, nil
+}
+func (r *mockAuthRepo) Update(_ context.Context, auth *TenantAuthorization) error { return nil }
 func (r *mockAuthRepo) DeductCredits(_ context.Context, id string, credits float64, _ time.Time) error {
 	for _, a := range r.auths {
 		if a.ID == id {

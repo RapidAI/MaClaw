@@ -239,6 +239,72 @@ func adminDeleteLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 }
 
 // ---------------------------------------------------------------------------
+// LLM Compute Agent admin handlers
+// ---------------------------------------------------------------------------
+
+func adminListLLMAgents(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		agents, err := svc.ListAgents(r.Context())
+		if err != nil {
+			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSONResp(w, http.StatusOK, map[string]any{"agents": agents})
+	}
+}
+
+func adminAddLLMAgent(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var agent llmservice.ComputeAgent
+		if err := json.NewDecoder(r.Body).Decode(&agent); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		if err := svc.AddAgent(r.Context(), agent); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func adminUpdateLLMAgent(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "agent id required"})
+			return
+		}
+		var agent llmservice.ComputeAgent
+		if err := json.NewDecoder(r.Body).Decode(&agent); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		agent.ID = id
+		if err := svc.UpdateAgent(r.Context(), agent); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func adminDeleteLLMAgent(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "agent id required"})
+			return
+		}
+		if err := svc.DeleteAgent(r.Context(), id); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // LLM Service Group admin handlers
 // ---------------------------------------------------------------------------
 
@@ -293,12 +359,49 @@ func adminUpdateLLMServiceGroup(svc *llmservice.Service) http.HandlerFunc {
 	}
 }
 
-func adminDeleteLLMServiceGroup(svc *llmservice.Service) http.HandlerFunc {
+func adminDeleteLLMServiceGroup(svc *llmservice.Service, checker *llmservice.AuthorizationChecker, cardStoreSvc *cardstore.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if id == "" {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "service group id required"})
 			return
+		}
+		if checker != nil {
+			auths, err := checker.ListByServiceGroup(r.Context(), id)
+			if err != nil {
+				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			for _, auth := range auths {
+				if auth != nil && auth.ServiceGroupID == id {
+					writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("service group %s is used by tenant %s/%s and cannot be deleted", id, auth.HubID, auth.TenantID)})
+					return
+				}
+			}
+		}
+		if cardStoreSvc != nil {
+			_, total, err := cardStoreSvc.ListOrders(r.Context(), cardstore.OrderFilter{ServiceGroupID: id, Limit: 1})
+			if err != nil {
+				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			if total > 0 {
+				writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("service group %s has purchase orders and cannot be deleted", id)})
+				return
+			}
+		}
+		if cardStoreSvc != nil {
+			cardTypes, err := cardStoreSvc.ListAllCardTypes(r.Context())
+			if err != nil {
+				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			for _, ct := range cardTypes {
+				if ct != nil && ct.ServiceGroupID == id {
+					writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("service group %s is used by card type %s and cannot be deleted", id, ct.ID)})
+					return
+				}
+			}
 		}
 		if err := svc.DeleteServiceGroup(r.Context(), id); err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

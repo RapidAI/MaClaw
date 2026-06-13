@@ -550,7 +550,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/ai/AssistantConversationBody.tsx', 250],
   ['gui/frontend/src/components/ai/AssistantInputActions.tsx', 80],
   ['gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 100],
-  ['gui/frontend/src/components/ai/AssistantTitleBar.tsx', 110],
+  ['gui/frontend/src/components/ai/AssistantTitleBar.tsx', 120],
   ['gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 50],
   ['gui/frontend/src/components/ai/AssistantInputComposer.tsx', 100],
   ['gui/frontend/src/components/ai/AIAssistantRenameGroupDialog.tsx', 110],

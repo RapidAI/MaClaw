@@ -54,6 +54,7 @@ type TenantAuthorizationRepository interface {
 	Create(ctx context.Context, auth *TenantAuthorization) error
 	GetByID(ctx context.Context, id string) (*TenantAuthorization, error)
 	ListByHubTenant(ctx context.Context, hubID, tenantID string) ([]*TenantAuthorization, error)
+	ListByServiceGroup(ctx context.Context, serviceGroupID string) ([]*TenantAuthorization, error)
 	ListAll(ctx context.Context) ([]*TenantAuthorization, error)
 	Update(ctx context.Context, auth *TenantAuthorization) error
 	DeductCredits(ctx context.Context, id string, credits float64, now time.Time) error
@@ -112,6 +113,11 @@ func (c *AuthorizationChecker) DeductCredits(ctx context.Context, authID string,
 // ListAll returns all tenant authorizations (admin use).
 func (c *AuthorizationChecker) ListAll(ctx context.Context) ([]*TenantAuthorization, error) {
 	return c.repo.ListAll(ctx)
+}
+
+// ListByServiceGroup returns tenant authorizations bound to a service group.
+func (c *AuthorizationChecker) ListByServiceGroup(ctx context.Context, serviceGroupID string) ([]*TenantAuthorization, error) {
+	return c.repo.ListByServiceGroup(ctx, serviceGroupID)
 }
 
 // CreateAuthorization creates a new tenant authorization (admin grant).

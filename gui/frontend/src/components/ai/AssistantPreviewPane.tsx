@@ -26,15 +26,19 @@ interface AssistantPreviewPaneProps {
     workflowState: WorkflowUIState;
 }
 
-type PreviewPaneMode = "workflow" | "code";
+type PreviewPaneMode = "workflow" | "code" | "agent";
 
 function previewTabIcon(mode: PreviewPaneMode): string {
+    if (mode === "agent") return "AG";
     return mode === "workflow" ? "WF" : "SRC";
 }
 
 function previewTabTooltip(mode: PreviewPaneMode, lang: string): string {
     if (mode === "workflow") {
         return lang === "en" ? "Progress" : "\u6d41\u7a0b/\u8fdb\u5ea6";
+    }
+    if (mode === "agent") {
+        return lang === "en" ? "Agent Task" : "\u667a\u80fd\u4f53\u4efb\u52a1";
     }
     return lang === "en" ? "Source" : "\u6e90\u7801\u67e5\u770b";
 }
@@ -196,19 +200,26 @@ export function AssistantPreviewPane({
     const [activeMode, setActiveMode] = useState<PreviewPaneMode>("workflow");
     const previousShowCodeRef = useRef(showCodePreview);
     const previousShowWorkflowRef = useRef(showWorkflowPreview);
+    const previousShowAgentRef = useRef(showAgentView);
 
     useEffect(() => {
         const codeOpened = showCodePreview && !previousShowCodeRef.current;
         const workflowOpened = showWorkflowPreview && !previousShowWorkflowRef.current;
+        const agentOpened = showAgentView && !previousShowAgentRef.current;
         previousShowCodeRef.current = showCodePreview;
         previousShowWorkflowRef.current = showWorkflowPreview;
+        previousShowAgentRef.current = showAgentView;
 
-        if (!showWorkflowPreview && showCodePreview) {
+        if (!showWorkflowPreview && !showAgentView && showCodePreview) {
             setActiveMode("code");
             return;
         }
-        if (showWorkflowPreview && !showCodePreview) {
+        if (showWorkflowPreview && !showCodePreview && !showAgentView) {
             setActiveMode("workflow");
+            return;
+        }
+        if (showAgentView && !showWorkflowPreview && !showCodePreview) {
+            setActiveMode("agent");
             return;
         }
         // Both opened simultaneously (e.g. user clicked workflow button which
@@ -218,14 +229,18 @@ export function AssistantPreviewPane({
             setActiveMode("workflow");
             return;
         }
+        if (workflowOpened) {
+            setActiveMode("workflow");
+            return;
+        }
         if (codeOpened) {
             setActiveMode("code");
             return;
         }
-        if (workflowOpened && activeMode !== "code") {
-            setActiveMode("workflow");
+        if (agentOpened && activeMode !== "workflow" && activeMode !== "code") {
+            setActiveMode("agent");
         }
-    }, [activeMode, showCodePreview, showWorkflowPreview]);
+    }, [activeMode, showAgentView, showCodePreview, showWorkflowPreview]);
 
     const docPreviewTheme = useMemo(() => ({
         bg: themeMode === "dark" ? theme.bg : "#ffffff",
@@ -260,12 +275,35 @@ export function AssistantPreviewPane({
         position: "relative",
     };
 
-    // AgentTaskPanel has its own layout (no tab rail needed)
-    if (showAgentView && agentView) {
+    // AgentTaskPanel is now integrated into the tab system (no longer exclusive)
+    // Determine which modes are available
+    const availableModes: PreviewPaneMode[] = [];
+    if (showAgentView && agentView) availableModes.push("agent");
+    if (showWorkflowPreview) availableModes.push("workflow");
+    if (showCodePreview) availableModes.push("code");
+    if (availableModes.length === 0) return null;
+
+    // Ensure activeMode is valid
+    const effectiveMode = availableModes.includes(activeMode) ? activeMode : availableModes[0];
+
+    const handleClose = () => {
+        // Close all non-agent preview modes. Agent is closed via its own
+        // dismiss mechanism; closing the preview pane should hide workflow
+        // and code previews so the pane collapses when agent also goes away.
+        if (showWorkflowPreview) closeDocPreview();
+        if (showCodePreview) closeCodePreview();
+        // If agent is the only remaining mode after closing workflow/code,
+        // it will continue to render standalone (agent-only fallback above
+        // catches that case on next render). If user wants to close agent,
+        // they use the agent panel's own close/dismiss button.
+    };
+
+    // Agent-only: no tab rail needed, render standalone
+    if (availableModes.length === 1 && availableModes[0] === "agent") {
         return (
             <div style={paneStyle}>
                 <AgentTaskPanel
-                    view={agentView}
+                    view={agentView!}
                     onDismiss={dismissAgentView}
                     onResizeStart={startPreviewResize}
                     onSubmit={submitAgentView}
@@ -275,21 +313,6 @@ export function AssistantPreviewPane({
             </div>
         );
     }
-
-    // Determine which modes are available
-    const availableModes: PreviewPaneMode[] = [];
-    if (showWorkflowPreview) availableModes.push("workflow");
-    if (showCodePreview) availableModes.push("code");
-    if (availableModes.length === 0) return null;
-
-    // Ensure activeMode is valid
-    const effectiveMode = availableModes.includes(activeMode) ? activeMode : availableModes[0];
-
-    const handleClose = () => {
-        // Close the entire preview pane (both modes)
-        if (showWorkflowPreview) closeDocPreview();
-        if (showCodePreview) closeCodePreview();
-    };
 
     return (
         <div style={paneStyle}>
@@ -317,7 +340,15 @@ export function AssistantPreviewPane({
                 aria-labelledby={`assistant-preview-tab-${effectiveMode}`}
                 style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", marginLeft: "6px" }}
             >
-                {effectiveMode === "workflow" ? (
+                {effectiveMode === "agent" && agentView ? (
+                    <AgentTaskPanel
+                        view={agentView}
+                        onDismiss={dismissAgentView}
+                        onSubmit={submitAgentView}
+                        theme={theme}
+                        lang={lang}
+                    />
+                ) : effectiveMode === "workflow" ? (
                     <WorkflowDocPreview
                         phaseDocuments={workflowState.phaseDocuments}
                         currentPhaseID={workflowState.currentPhaseID}

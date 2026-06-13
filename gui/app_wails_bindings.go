@@ -1987,7 +1987,8 @@ func (a *App) SendBtwQuery(query string, requestID string) (*IMAgentResponse, er
 	return resp, nil
 }
 
-// ClearAIAssistantHistory clears the desktop AI assistant conversation memory (Wails binding).
+// ClearAIAssistantHistory clears the desktop AI assistant conversation memory
+// and resets all per-user session state — fully equivalent to the /clear command (Wails binding).
 func (a *App) ClearAIAssistantHistory() error {
 	a.ensureInteractionInfra()
 	hubClient := a.hubClient()
@@ -1995,7 +1996,13 @@ func (a *App) ClearAIAssistantHistory() error {
 		return fmt.Errorf("AI assistant not initialized")
 	}
 	handler := hubClient.ensureIMHandler()
+	// Cancel any active agent loop first, so it does not write back into
+	// memory after we clear it. This mirrors IM-channel behavior where /clear
+	// is serialized behind chatLoopMu and only runs after the loop exits.
+	_, _ = handler.CancelSessionForUser(desktopUserID)
 	handler.memory.Clear(desktopUserID)
+	handler.clearPerUserSessionState(desktopUserID)
+	handler.flushEvidenceOnSessionEnd(desktopUserID)
 	// Clear pending gossip auto-publish buffer as well.
 	if a.gossipAutoPublish != nil {
 		a.gossipAutoPublish.ClearBuffer()

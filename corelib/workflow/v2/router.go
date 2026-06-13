@@ -74,6 +74,14 @@ func (r *WorkflowRouter) GetComplexityFunc() ComplexityFunc {
 	return r.complexityFunc
 }
 
+// HasTemplate returns true if a template with the given type string is registered.
+func (r *WorkflowRouter) HasTemplate(workflowType string) bool {
+	if r == nil || r.templates == nil {
+		return false
+	}
+	return r.templates.Get(workflowType) != nil
+}
+
 // Route decides whether a message should go to a workflow or the normal agent loop.
 func (r *WorkflowRouter) Route(userID, text string, attachments []Attachment) *RouteResult {
 	return r.RouteWithHint(userID, text, attachments, "")
@@ -134,6 +142,16 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 	// e.g. "BUG修复验证报告" (document task) was misclassified as a code bug fix.
 	// Complexity/task-type classification is now done via user choice in the GUI layer.
 
+	// Step 4.5: Semantic hint veto — if UIC confidently identified a non-workflow
+	// intent (e.g. "ssh", "search", "document_delivery") that doesn't correspond
+	// to any registered workflow template, skip BM25 template matching entirely.
+	// This prevents false positives where a single shared word (e.g. "服务器" in
+	// "查询api2服务器信息" matching paper_reproduction's description) causes a
+	// spurious workflow recommendation.
+	if semanticHint != "" && r.templates.Get(semanticHint) == nil {
+		return &RouteResult{Target: RouteToAgentLoop}
+	}
+
 	// Step 5: Structured template match.
 	matched := r.templates.MatchByText(text)
 	if matched == nil && semanticHint != "" {
@@ -142,6 +160,8 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 		// use it as a fallback. This handles cases where the user's message
 		// has domain-specific terms (paths, framework names) that dilute BM25
 		// relevance against template descriptions.
+		// NOTE: Step 4.5 already vetoed hints that don't match any template,
+		// so Get(semanticHint) here is guaranteed non-nil.
 		matched = r.templates.Get(semanticHint)
 	}
 	if matched == nil {

@@ -107,7 +107,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			if projectPathRaw, isDirectCoding := h.pendingDirectCodingProjectPath.LoadAndDelete(msg.UserID); isDirectCoding {
 				projectPath := projectPathRaw.(string)
 				log.Printf("[workflow-v2] Direct coding SubAgent: user=%s project=%s request_id=%s", msg.UserID, projectPath, requestID)
-				execResp := h.runDirectCodingSubAgent(msg.UserID, msg.Text, projectPath, opts.OnProgress, opts.OnToken)
+				execResp := h.runDirectCodingSubAgent(msg.UserID, agentLoopUserText, projectPath, opts.OnProgress, opts.OnToken)
 				if execResp != nil {
 					return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 				}

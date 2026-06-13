@@ -38,6 +38,7 @@ func EnsureLLMTables(db *sql.DB) error {
 			updated_at TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_auth_hub_tenant ON llm_tenant_authorizations(hub_id, tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_auth_service_group ON llm_tenant_authorizations(service_group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_auth_status ON llm_tenant_authorizations(status, expires_at)`,
 
 		`CREATE TABLE IF NOT EXISTS llm_usage_records (
@@ -59,6 +60,7 @@ func EnsureLLMTables(db *sql.DB) error {
 			id TEXT PRIMARY KEY,
 			service_group_id TEXT NOT NULL,
 			label TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
 			credits REAL NOT NULL,
 			period TEXT NOT NULL,
 			price_rmb REAL NOT NULL,
@@ -76,6 +78,8 @@ func EnsureLLMTables(db *sql.DB) error {
 			hub_id TEXT NOT NULL,
 			tenant_id TEXT NOT NULL,
 			service_group_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL DEFAULT '',
+			agent_name TEXT NOT NULL DEFAULT '',
 			credits REAL NOT NULL,
 			period TEXT NOT NULL,
 			amount REAL NOT NULL,
@@ -108,7 +112,83 @@ func EnsureLLMTables(db *sql.DB) error {
 			return fmt.Errorf("ensure llm table: %w", err)
 		}
 	}
+	if err := ensureLLMCardTypeDescriptionColumn(db); err != nil {
+		return err
+	}
+	if err := ensureLLMCardOrderAgentColumns(db); err != nil {
+		return err
+	}
 	return nil
+}
+
+func ensureLLMCardTypeDescriptionColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(llm_card_types)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == "description" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE llm_card_types ADD COLUMN description TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("ensure llm_card_types.description: %w", err)
+	}
+	return nil
+}
+
+func ensureLLMCardOrderAgentColumns(db *sql.DB) error {
+	columns, err := tableColumns(db, "llm_card_orders")
+	if err != nil {
+		return err
+	}
+	if !columns["agent_id"] {
+		if _, err := db.Exec(`ALTER TABLE llm_card_orders ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_card_orders.agent_id: %w", err)
+		}
+	}
+	if !columns["agent_name"] {
+		if _, err := db.Exec(`ALTER TABLE llm_card_orders ADD COLUMN agent_name TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_card_orders.agent_name: %w", err)
+		}
+	}
+	return nil
+}
+
+func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return columns, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +225,15 @@ func (r *llmAuthRepo) GetByID(ctx context.Context, id string) (*llmservice.Tenan
 
 func (r *llmAuthRepo) ListByHubTenant(ctx context.Context, hubID, tenantID string) ([]*llmservice.TenantAuthorization, error) {
 	rows, err := r.read.QueryContext(ctx, `SELECT id, hub_id, tenant_id, admin_email, service_group_id, credits_total, credits_used, starts_at, expires_at, allow_external_providers, source, card_order_id, bound_node_id, bound_at, status, created_at, updated_at FROM llm_tenant_authorizations WHERE hub_id = ? AND tenant_id = ?`, hubID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAuthRows(rows)
+}
+
+func (r *llmAuthRepo) ListByServiceGroup(ctx context.Context, serviceGroupID string) ([]*llmservice.TenantAuthorization, error) {
+	rows, err := r.read.QueryContext(ctx, `SELECT id, hub_id, tenant_id, admin_email, service_group_id, credits_total, credits_used, starts_at, expires_at, allow_external_providers, source, card_order_id, bound_node_id, bound_at, status, created_at, updated_at FROM llm_tenant_authorizations WHERE service_group_id = ? ORDER BY created_at DESC`, serviceGroupID)
 	if err != nil {
 		return nil, err
 	}
@@ -315,26 +404,26 @@ func NewLLMCardTypeRepo(p *Provider) *llmCardTypeRepo {
 
 func (r *llmCardTypeRepo) Create(ctx context.Context, ct *cardstore.CardType) error {
 	_, err := r.write.ExecContext(ctx,
-		`INSERT INTO llm_card_types (id, service_group_id, label, credits, period, price_rmb, template, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ct.ID, ct.ServiceGroupID, ct.Label, ct.Credits, ct.Period, ct.PriceRMB, ct.Template, boolToInt(ct.Enabled), ct.CreatedAt.Format(time.RFC3339), ct.UpdatedAt.Format(time.RFC3339),
+		`INSERT INTO llm_card_types (id, service_group_id, label, description, credits, period, price_rmb, template, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ct.ID, ct.ServiceGroupID, ct.Label, ct.Description, ct.Credits, ct.Period, ct.PriceRMB, ct.Template, boolToInt(ct.Enabled), ct.CreatedAt.Format(time.RFC3339), ct.UpdatedAt.Format(time.RFC3339),
 	)
 	return err
 }
 
 func (r *llmCardTypeRepo) Update(ctx context.Context, ct *cardstore.CardType) error {
 	_, err := r.write.ExecContext(ctx,
-		`UPDATE llm_card_types SET service_group_id=?, label=?, credits=?, period=?, price_rmb=?, template=?, enabled=?, updated_at=? WHERE id=?`,
-		ct.ServiceGroupID, ct.Label, ct.Credits, ct.Period, ct.PriceRMB, ct.Template, boolToInt(ct.Enabled), ct.UpdatedAt.Format(time.RFC3339), ct.ID,
+		`UPDATE llm_card_types SET service_group_id=?, label=?, description=?, credits=?, period=?, price_rmb=?, template=?, enabled=?, updated_at=? WHERE id=?`,
+		ct.ServiceGroupID, ct.Label, ct.Description, ct.Credits, ct.Period, ct.PriceRMB, ct.Template, boolToInt(ct.Enabled), ct.UpdatedAt.Format(time.RFC3339), ct.ID,
 	)
 	return err
 }
 
 func (r *llmCardTypeRepo) GetByID(ctx context.Context, id string) (*cardstore.CardType, error) {
-	row := r.read.QueryRowContext(ctx, `SELECT id, service_group_id, label, credits, period, price_rmb, template, enabled, created_at, updated_at FROM llm_card_types WHERE id=?`, id)
+	row := r.read.QueryRowContext(ctx, `SELECT id, service_group_id, label, description, credits, period, price_rmb, template, enabled, created_at, updated_at FROM llm_card_types WHERE id=?`, id)
 	ct := &cardstore.CardType{}
 	var enabled int
 	var createdAt, updatedAt string
-	if err := row.Scan(&ct.ID, &ct.ServiceGroupID, &ct.Label, &ct.Credits, &ct.Period, &ct.PriceRMB, &ct.Template, &enabled, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&ct.ID, &ct.ServiceGroupID, &ct.Label, &ct.Description, &ct.Credits, &ct.Period, &ct.PriceRMB, &ct.Template, &enabled, &createdAt, &updatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -360,7 +449,7 @@ func (r *llmCardTypeRepo) Delete(ctx context.Context, id string) error {
 }
 
 func (r *llmCardTypeRepo) listWhere(ctx context.Context, where string) ([]*cardstore.CardType, error) {
-	rows, err := r.read.QueryContext(ctx, `SELECT id, service_group_id, label, credits, period, price_rmb, template, enabled, created_at, updated_at FROM llm_card_types `+where+` ORDER BY created_at DESC`)
+	rows, err := r.read.QueryContext(ctx, `SELECT id, service_group_id, label, description, credits, period, price_rmb, template, enabled, created_at, updated_at FROM llm_card_types `+where+` ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +459,7 @@ func (r *llmCardTypeRepo) listWhere(ctx context.Context, where string) ([]*cards
 		ct := &cardstore.CardType{}
 		var enabled int
 		var createdAt, updatedAt string
-		if err := rows.Scan(&ct.ID, &ct.ServiceGroupID, &ct.Label, &ct.Credits, &ct.Period, &ct.PriceRMB, &ct.Template, &enabled, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&ct.ID, &ct.ServiceGroupID, &ct.Label, &ct.Description, &ct.Credits, &ct.Period, &ct.PriceRMB, &ct.Template, &enabled, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		ct.Enabled = enabled == 1

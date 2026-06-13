@@ -90,6 +90,7 @@
       <p data-i18n="productsDesc">按周期和额度选择适合的 LLM 服务预算。</p>
     </section>
 
+    <div class="purchase-layout">
     <section id="products" class="products" aria-live="polite">
       <div class="empty skeleton" data-i18n="loading">加载中...</div>
     </section>
@@ -128,7 +129,10 @@
         </button>
         <p id="checkoutHint" data-i18n="checkoutHint">订单提交前不会扣减额度。支付确认由管理员或网关完成。</p>
       </div>
+      <div id="checkoutNotice" class="checkout-notice" hidden role="alert"></div>
     </section>
+
+    </div>
 
     <section id="orderResult" class="order-result" hidden aria-live="polite">
       <div>
@@ -229,6 +233,7 @@
         credits: '额度',
         selectCard: '选择此卡',
         selected: '已选择',
+        computeAgent: '算力代理商',
         serviceGroup: '服务组',
         period: '周期',
         pending: '待支付',
@@ -301,6 +306,7 @@
         credits: 'credits',
         selectCard: 'Select plan',
         selected: 'Selected',
+        computeAgent: 'Compute agent',
         serviceGroup: 'Service group',
         period: 'Period',
         pending: 'Pending',
@@ -334,6 +340,38 @@
     function getParam(k) { return new URLSearchParams(location.search).get(k) || ''; }
     function findTemplate(id) { return TEMPLATES.find(function(t){ return t.id === id; }) || TEMPLATES[0]; }
     function idSafe(s) { return String(s || 'card').replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 42) || 'card'; }
+
+    function tenantRequiredMessage() {
+      return state.lang === 'en'
+        ? 'This page is not bound to a Hub tenant. Open it from the compute store entry in Hub admin before purchasing.'
+        : '当前页面未绑定 Hub 租户，请从 Hub 管理后台的算力商店入口进入后再购买。';
+    }
+
+    function showStoreNotice(message, type) {
+      var notice = document.getElementById('checkoutNotice');
+      if (notice) {
+        notice.hidden = false;
+        notice.className = 'checkout-notice ' + (type || 'error');
+        notice.textContent = message;
+      }
+      var toast = document.getElementById('storeToast');
+      if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'storeToast';
+        toast.className = 'store-toast';
+        toast.setAttribute('role', 'status');
+        document.body.appendChild(toast);
+      }
+      toast.textContent = message;
+      toast.className = 'store-toast show ' + (type || 'error');
+      clearTimeout(showStoreNotice.timer);
+      showStoreNotice.timer = setTimeout(function(){ toast.classList.remove('show'); }, 4200);
+    }
+
+    function clearStoreNotice() {
+      var notice = document.getElementById('checkoutNotice');
+      if (notice) notice.hidden = true;
+    }
 
     function applyI18n() {
       document.documentElement.lang = state.lang === 'zh' ? 'zh-CN' : 'en';
@@ -411,15 +449,17 @@
       document.getElementById('checkoutSection').hidden = false;
       root.innerHTML = state.cardTypes.map(function(ct) {
         var selected = ct.id === state.selectedCardTypeID;
-        var group = ct.service_group_id || ct.group_id || '';
+        var group = ct.service_group || ct.service_group_id || ct.group_id || '';
+        var agent = ct.agent_name || ct.agent || '';
         return '<article class="product' + (selected ? ' is-selected' : '') + '" data-card-id="' + esc(ct.id) + '">'
           + cardArt(ct)
           + '<div class="product-body">'
           + '<div class="product-top"><span class="pill">' + esc(periodLabel(ct.period)) + '</span><span class="product-price">' + esc(money(ct.price_rmb)) + '</span></div>'
           + '<h3>' + esc(ct.label) + '</h3>'
+          + (ct.description ? '<p class="product-description">' + esc(ct.description) + '</p>' : '')
           + '<div class="product-facts">'
           + '<span><b>' + Number(ct.credits || 0).toLocaleString() + '</b> ' + esc(tr('credits')) + '</span>'
-          + (group ? '<span>' + esc(tr('serviceGroup')) + ': <b>' + esc(group) + '</b></span>' : '<span>' + esc(tr('period')) + ': <b>' + esc(periodLabel(ct.period)) + '</b></span>')
+          + (agent ? '<span>' + esc(tr('computeAgent')) + ': <b>' + esc(agent) + '</b></span>' : (group ? '<span>' + esc(tr('serviceGroup')) + ': <b>' + esc(group) + '</b></span>' : '<span>' + esc(tr('period')) + ': <b>' + esc(periodLabel(ct.period)) + '</b></span>'))
           + '</div>'
           + '<button type="button" class="select-card-btn" data-card-id="' + esc(ct.id) + '">' + esc(selected ? tr('selected') : tr('selectCard')) + '</button>'
           + '</div></article>';
@@ -466,6 +506,7 @@
 
     function selectCard(id) {
       state.selectedCardTypeID = id;
+      clearStoreNotice();
       updateSelectedSummary();
       renderProducts();
     }
@@ -481,11 +522,15 @@
 
     async function submitPurchase() {
       var email = document.getElementById('adminEmail').value.trim();
-      if (!email) { alert(tr('emailRequired')); return; }
-      if (!state.selectedCardTypeID) { alert(tr('cardRequired')); return; }
+      var hubID = getParam('hub_id');
+      var tenantID = getParam('tenant_id');
+      if (!email) { showStoreNotice(tr('emailRequired'), 'error'); return; }
+      if (!state.selectedCardTypeID) { showStoreNotice(tr('cardRequired'), 'error'); return; }
+      if (!hubID || !tenantID) { showStoreNotice(tenantRequiredMessage(), 'error'); return; }
       var btn = document.getElementById('purchaseBtn');
       btn.disabled = true;
       btn.textContent = tr('submitting');
+      clearStoreNotice();
       try {
         var resp = await fetch('/api/cardstore/purchase', {
           method: 'POST',
@@ -493,17 +538,17 @@
           body: JSON.stringify({
             card_type_id: state.selectedCardTypeID,
             admin_email: email,
-            hub_id: getParam('hub_id'),
-            tenant_id: getParam('tenant_id'),
+            hub_id: hubID,
+            tenant_id: tenantID,
             pay_channel: state.selectedPayChannel || ''
           })
         });
-        var order = await resp.json();
+        var order = await resp.json().catch(function(){ return {}; });
         if (!resp.ok) throw new Error(order.error || order.message || resp.statusText);
         showOrderResult(order);
         loadOrders();
       } catch (e) {
-        alert(tr('purchaseFailed') + e.message);
+        showStoreNotice(tr('purchaseFailed') + e.message, 'error');
       } finally {
         updateSelectedSummary();
       }
@@ -573,6 +618,7 @@
       document.getElementById('purchaseBtn').addEventListener('click', submitPurchase);
       document.getElementById('refreshOrdersBtn').addEventListener('click', loadOrders);
       document.getElementById('adminEmail').addEventListener('input', function() {
+        clearStoreNotice();
         clearTimeout(window.__orderTimer);
         window.__orderTimer = setTimeout(loadOrders, 350);
       });

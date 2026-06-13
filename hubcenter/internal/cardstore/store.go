@@ -48,7 +48,11 @@ var DefaultCreditOptions = []float64{10000, 100000, 1000000}
 type CardType struct {
 	ID             string    `json:"id"`
 	ServiceGroupID string    `json:"service_group_id"`
+	ServiceGroup   string    `json:"service_group,omitempty"`
+	AgentID        string    `json:"agent_id,omitempty"`
+	AgentName      string    `json:"agent_name,omitempty"`
 	Label          string    `json:"label"`
+	Description    string    `json:"description"`
 	Credits        float64   `json:"credits"`
 	Period         string    `json:"period"` // "month" / "quarter" / "year"
 	PriceRMB       float64   `json:"price_rmb"`
@@ -115,6 +119,8 @@ type PurchaseOrder struct {
 	TenantID       string  `json:"tenant_id"`
 	CardTypeID     string  `json:"card_type_id"`
 	ServiceGroupID string  `json:"service_group_id"`
+	AgentID        string  `json:"agent_id,omitempty"`
+	AgentName      string  `json:"agent_name,omitempty"`
 	Credits        float64 `json:"credits"`
 	Period         string  `json:"period"`
 }
@@ -130,12 +136,13 @@ type PurchaseOrderRepository interface {
 
 // OrderFilter for querying orders.
 type OrderFilter struct {
-	HubID    string
-	TenantID string
-	Email    string
-	Status   string
-	Offset   int
-	Limit    int
+	HubID          string
+	TenantID       string
+	Email          string
+	ServiceGroupID string
+	Status         string
+	Offset         int
+	Limit          int
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +158,7 @@ type Service struct {
 	alipay       corecardstore.AlipayDirectConfig
 	verifyTenant func(ctx context.Context, hubID, tenantID, email string) error // security check
 	auditLog     func(ctx context.Context, action, detail string)               // audit trail
+	resolveGroup func(ctx context.Context, serviceGroupID string) (serviceGroupName, agentID, agentName string)
 }
 
 // NewService creates a card store service.
@@ -169,6 +177,11 @@ func NewService(
 // SetTenantVerifier sets the function that validates hub+tenant+email identity.
 func (s *Service) SetTenantVerifier(fn func(ctx context.Context, hubID, tenantID, email string) error) {
 	s.verifyTenant = fn
+}
+
+// SetServiceGroupResolver enriches card type views with service group and agent metadata.
+func (s *Service) SetServiceGroupResolver(fn func(ctx context.Context, serviceGroupID string) (serviceGroupName, agentID, agentName string)) {
+	s.resolveGroup = fn
 }
 
 // SetAuditLogger sets the audit log function for tracking admin operations.
@@ -225,12 +238,34 @@ func (s *Service) UpdateCardType(ctx context.Context, ct *CardType) error {
 
 // ListEnabledCardTypes returns all enabled (on-shelf) card types.
 func (s *Service) ListEnabledCardTypes(ctx context.Context) ([]*CardType, error) {
-	return s.cardTypes.ListEnabled(ctx)
+	types, err := s.cardTypes.ListEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.enrichCardTypes(ctx, types)
+	return types, nil
 }
 
 // ListAllCardTypes returns all card types (admin view).
 func (s *Service) ListAllCardTypes(ctx context.Context) ([]*CardType, error) {
-	return s.cardTypes.ListAll(ctx)
+	types, err := s.cardTypes.ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.enrichCardTypes(ctx, types)
+	return types, nil
+}
+
+func (s *Service) enrichCardTypes(ctx context.Context, types []*CardType) {
+	if s.resolveGroup == nil {
+		return
+	}
+	for _, ct := range types {
+		if ct == nil || ct.ServiceGroupID == "" {
+			continue
+		}
+		ct.ServiceGroup, ct.AgentID, ct.AgentName = s.resolveGroup(ctx, ct.ServiceGroupID)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +295,9 @@ func (s *Service) CreateOrder(ctx context.Context, cardTypeID, adminEmail, hubID
 	if !ct.Enabled {
 		return nil, fmt.Errorf("card type %s is not available", cardTypeID)
 	}
+	if s.resolveGroup != nil && ct.ServiceGroupID != "" {
+		ct.ServiceGroup, ct.AgentID, ct.AgentName = s.resolveGroup(ctx, ct.ServiceGroupID)
+	}
 
 	order := &PurchaseOrder{
 		Order: corecardstore.Order{
@@ -275,6 +313,8 @@ func (s *Service) CreateOrder(ctx context.Context, cardTypeID, adminEmail, hubID
 		TenantID:       tenantID,
 		CardTypeID:     ct.ID,
 		ServiceGroupID: ct.ServiceGroupID,
+		AgentID:        ct.AgentID,
+		AgentName:      ct.AgentName,
 		Credits:        ct.Credits,
 		Period:         ct.Period,
 	}

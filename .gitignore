@@ -179,3 +179,5 @@ race*.log*
 race_out*.txt
 *.test.exe
 gui_test.exe
+
+build/maclaw-gui-compat-test.exe

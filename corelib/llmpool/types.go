@@ -11,17 +11,17 @@ type ProviderConfig struct {
 	Name                     string   `json:"name"`
 	APIURL                   string   `json:"api_url"`
 	APIKey                   string   `json:"api_key,omitempty"`
-	Protocol                 string   `json:"protocol"`                          // "openai" / "anthropic"
-	WireAPI                  string   `json:"wire_api,omitempty"`                // "" / "responses"
-	Models                   []string `json:"models,omitempty"`                  // supported models
-	CapabilityTags           []string `json:"capability_tags,omitempty"`         // e.g. "tools", "vision", "document"
-	Priority                 int      `json:"priority,omitempty"`                // higher = preferred
-	ResolutionTier           int      `json:"resolution_tier,omitempty"`         // lower = cheaper
-	CreditMultiplier         float64  `json:"credit_multiplier,omitempty"`       // default 1.0
-	MaxConcurrency           int      `json:"max_concurrency,omitempty"`         // per-provider concurrency limit
-	MaxQueueWaiters          int      `json:"max_queue_waiters,omitempty"`       // max requests waiting in queue
-	QueueTimeoutMS           int      `json:"queue_timeout_ms,omitempty"`        // max wait time in queue
-	UpstreamTimeoutSec       int      `json:"upstream_timeout_sec,omitempty"`    // HTTP timeout to upstream
+	Protocol                 string   `json:"protocol"`                       // "openai" / "anthropic"
+	WireAPI                  string   `json:"wire_api,omitempty"`             // "" / "responses"
+	Models                   []string `json:"models,omitempty"`               // supported models
+	CapabilityTags           []string `json:"capability_tags,omitempty"`      // e.g. "tools", "vision", "document"
+	Priority                 int      `json:"priority,omitempty"`             // higher = preferred
+	ResolutionTier           int      `json:"resolution_tier,omitempty"`      // lower = cheaper
+	CreditMultiplier         float64  `json:"credit_multiplier,omitempty"`    // default 1.0
+	MaxConcurrency           int      `json:"max_concurrency,omitempty"`      // per-provider concurrency limit
+	MaxQueueWaiters          int      `json:"max_queue_waiters,omitempty"`    // max requests waiting in queue
+	QueueTimeoutMS           int      `json:"queue_timeout_ms,omitempty"`     // max wait time in queue
+	UpstreamTimeoutSec       int      `json:"upstream_timeout_sec,omitempty"` // HTTP timeout to upstream
 	CircuitBreakerThreshold  int      `json:"circuit_breaker_threshold,omitempty"`
 	CircuitBreakerCooldownMS int      `json:"circuit_breaker_cooldown_ms,omitempty"`
 	FailureBackoffBaseMS     int      `json:"failure_backoff_base_ms,omitempty"`
@@ -35,6 +35,8 @@ type ServiceGroup struct {
 	ID          string        `json:"id"`
 	Name        string        `json:"name"`
 	Description string        `json:"description,omitempty"`
+	AgentID     string        `json:"agent_id,omitempty"`
+	AgentName   string        `json:"agent_name,omitempty"`
 	Models      []ModelConfig `json:"models"`
 }
 
@@ -64,7 +66,7 @@ type CacheEntry struct {
 	CacheKey          string     `json:"cache_key"`
 	ProviderID        string     `json:"provider_id"`
 	Model             string     `json:"model"`
-	Kind              string     `json:"kind"`              // "metadata" / "full"
+	Kind              string     `json:"kind"` // "metadata" / "full"
 	InputHash         string     `json:"input_hash"`
 	Payload           []byte     `json:"payload"`
 	PayloadBytes      int64      `json:"payload_bytes"`

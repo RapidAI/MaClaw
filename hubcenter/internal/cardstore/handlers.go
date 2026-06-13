@@ -96,12 +96,13 @@ func ListOrdersHandler(svc *Service) http.HandlerFunc {
 		offset, _ := strconv.Atoi(q.Get("offset"))
 
 		filter := OrderFilter{
-			HubID:    q.Get("hub_id"),
-			TenantID: q.Get("tenant_id"),
-			Email:    q.Get("email"),
-			Status:   q.Get("status"),
-			Limit:    limit,
-			Offset:   offset,
+			HubID:          q.Get("hub_id"),
+			TenantID:       q.Get("tenant_id"),
+			Email:          q.Get("email"),
+			ServiceGroupID: q.Get("service_group_id"),
+			Status:         q.Get("status"),
+			Limit:          limit,
+			Offset:         offset,
 		}
 		orders, total, err := svc.ListOrders(r.Context(), filter)
 		if err != nil {

@@ -150,14 +150,31 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 		attachments = append(attachments, v2.Attachment{Type: a.Type, Name: a.FileName})
 	}
 
-	// Use UIC embedding-only classification (<100ms) as a semantic hint for the router.
-	// This handles cases where BM25 text matching fails (user's message has paths,
-	// framework names, etc. that dilute BM25 relevance) but the intent is clearly coding.
+	// Use UIC embedding-only classification (<100ms) as a semantic signal for the router.
+	//
+	// The hint serves two purposes in the router:
+	// 1. Veto (Step 4.5): when hint doesn't match any template type → skip BM25,
+	//    preventing false positives (e.g. "服务器" matching paper_reproduction).
+	// 2. Fallback (Step 5): when BM25 fails but hint matches a template type →
+	//    activate that template (handles path/framework name dilution).
+	//
+	// For non-workflow intents (ssh, search, etc.): always pass as hint → veto works.
+	// For workflow-candidate intents: only pass if label == a registered template type
+	// (e.g. "coding", "maintenance"). Labels like "office"/"workflow_task" don't match
+	// any template type and would incorrectly trigger veto, so leave hint empty for those.
 	var semanticHint string
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		embResult := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: trimmed, UserID: msg.UserID})
 		if embResult.Confidence >= 0.70 {
-			semanticHint = string(embResult.Primary)
+			label := string(embResult.Primary)
+			if !uic.IsWorkflowCandidate(embResult.Primary) {
+				// Non-workflow intent → pass for veto.
+				semanticHint = label
+			} else if wf.router != nil && wf.router.HasTemplate(label) {
+				// Workflow-candidate whose label is also a template type → pass for fallback.
+				semanticHint = label
+			}
+			// else: workflow-candidate but label ≠ template type (office/workflow_task) → leave empty.
 		}
 	}
 

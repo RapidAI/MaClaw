@@ -699,23 +699,6 @@ function isExplicitHistoryResetCommand(text: string): boolean {
     return trimmed === "/new" || trimmed === "/reset" || trimmed === "/clear";
 }
 
-function buildResetConfirmationMessages(response: any): ChatMessage[] {
-    const rawResetText = typeof response?.text === 'string'
-        ? response.text
-        : (typeof response?.error === 'string' ? response.error : '');
-    const resetText = stripRolePrefixFrontend(rawResetText);
-    logRolePrefixDiagnostic('reset-confirmation', rawResetText, resetText, {
-        requestId: response?.request_id,
-        responseSource: response?.response_source,
-    });
-    if (!resetText) return [];
-    return [{
-        id: nextId(),
-        role: 'assistant' as const,
-        content: resetText,
-        timestamp: Date.now(),
-    }];
-}
 
 function serializePersistedMessages(msgs: ChatMessage[]): string | null {
     // Only persist meaningful messages; skip progress/system and blank shells.
@@ -3566,22 +3549,21 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const canMutateLocalHistory = activeMatch && isLocalRoundSession(round);
             const explicitReset = canMutateLocalHistory && normalized.clear_ui && isExplicitHistoryResetCommand(userText);
             if (explicitReset) {
-                const resetMessages = buildResetConfirmationMessages(normalized);
-                const nextBoundary = resetMessages[0]
-                    ? `${AI_ASSISTANT_CONTEXT_BOUNDARY_AFTER_PREFIX}${resetMessages[0].id}`
-                    : AI_ASSISTANT_CONTEXT_BOUNDARY_END;
+                // Clear messages completely (same as the clear button) so the
+                // welcome/guide page reappears after /clear, /new, /reset.
+                const nextBoundary = AI_ASSISTANT_CONTEXT_BOUNDARY_END;
                 if (persistTimerRef.current) {
                     clearTimeout(persistTimerRef.current);
                     persistTimerRef.current = null;
                 }
-                latestMessagesRef.current = resetMessages;
+                latestMessagesRef.current = [];
                 lastPersistedPayloadRef.current = null;
                 contextBoundaryMessageIDRef.current = nextBoundary;
                 persistContextBoundaryMessageID(nextBoundary);
-                persistUIState(resetMessages, latestPromptsRef.current, nextBoundary);
+                persistUIState([], latestPromptsRef.current, nextBoundary);
                 legacyClearAIAssistantUIState();
                 clearTransientProgress();
-                setMessages(resetMessages);
+                setMessages([]);
             } else {
                 setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, normalized, preferences));
                 if (canMutateLocalHistory && normalized.clear_ui) {
@@ -3752,22 +3734,21 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 const canMutateLocalHistory = isLocalRoundSession({ sessionKey });
                 const explicitReset = canMutateLocalHistory && response.clear_ui && isExplicitHistoryResetCommand(outgoingText);
                 if (explicitReset) {
-                    const resetMessages = buildResetConfirmationMessages(response);
-                    const nextBoundary = resetMessages[0]
-                        ? `${AI_ASSISTANT_CONTEXT_BOUNDARY_AFTER_PREFIX}${resetMessages[0].id}`
-                        : AI_ASSISTANT_CONTEXT_BOUNDARY_END;
+                    // Clear messages completely (same as the clear button) so the
+                    // welcome/guide page reappears after /clear, /new, /reset.
+                    const nextBoundary = AI_ASSISTANT_CONTEXT_BOUNDARY_END;
                     if (persistTimerRef.current) {
                         clearTimeout(persistTimerRef.current);
                         persistTimerRef.current = null;
                     }
-                    latestMessagesRef.current = resetMessages;
+                    latestMessagesRef.current = [];
                     lastPersistedPayloadRef.current = null;
                     contextBoundaryMessageIDRef.current = nextBoundary;
                     persistContextBoundaryMessageID(nextBoundary);
-                    persistUIState(resetMessages, latestPromptsRef.current, nextBoundary);
+                    persistUIState([], latestPromptsRef.current, nextBoundary);
                     legacyClearAIAssistantUIState();
                     clearTransientProgress();
-                    setMessages(resetMessages);
+                    setMessages([]);
                 } else {
                     setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
                     if (canMutateLocalHistory && response.clear_ui) {
@@ -4124,6 +4105,16 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 uiAction: true,
                 displayText: dismissSessionText,
             });
+        }
+        const workflowChoiceMatch = command.match(/^__workflow_choice__\s+(complex|simple|skip)\s+(\S+)$/);
+        if (workflowChoiceMatch) {
+            const choice = workflowChoiceMatch[1];
+            const choiceLabels: Record<string, string> = {
+                complex: localizeText(uiLang, "Full development workflow", "\u5b8c\u6574\u5f00\u53d1\u6d41\u7a0b", "\u5b8c\u6574\u958b\u767c\u6d41\u7a0b"),
+                simple: localizeText(uiLang, "Simple coding", "\u7b80\u5355\u7f16\u7a0b", "\u7c21\u55ae\u7de8\u7a0b"),
+                skip: localizeText(uiLang, "Not a coding task", "\u4e0d\u662f\u7f16\u7a0b\u4efb\u52a1", "\u4e0d\u662f\u7de8\u7a0b\u4efb\u52d9"),
+            };
+            return sendMessage(command, { uiAction: true, displayText: choiceLabels[choice] || command });
         }
         return sendMessage(command, { uiAction: true });
     }, [activeSessionKeyForEvents, sendMessage, uiLang]);

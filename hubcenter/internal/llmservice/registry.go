@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,10 +17,26 @@ import (
 
 const registryKey = "llm_service_registry"
 
+const DefaultComputeAgentID = "maclaw_official"
+const DefaultComputeAgentName = "MaClaw官方"
+
+// ComputeAgent represents an upstream compute reseller/agent used for settlement.
+type ComputeAgent struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Contact     string    `json:"contact,omitempty"`
+	Settlement  string    `json:"settlement,omitempty"`
+	Description string    `json:"description,omitempty"`
+	Enabled     bool      `json:"enabled"`
+	CreatedAt   time.Time `json:"created_at,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at,omitempty"`
+}
+
 // Registry holds all LLM providers and service groups configured on HubCenter.
 type Registry struct {
 	Providers     []llmpool.ProviderConfig `json:"providers"`
 	ServiceGroups []llmpool.ServiceGroup   `json:"service_groups"`
+	Agents        []ComputeAgent           `json:"agents,omitempty"`
 	UpdatedAt     time.Time                `json:"updated_at,omitempty"`
 }
 
@@ -64,6 +81,7 @@ func (s *Service) LoadRegistry(ctx context.Context) (*Registry, error) {
 			return nil, fmt.Errorf("parse llm registry: %w", err)
 		}
 	}
+	normalizeRegistry(reg)
 	s.cached = reg
 	s.cachedAt = time.Now()
 	return reg, nil
@@ -71,6 +89,7 @@ func (s *Service) LoadRegistry(ctx context.Context) (*Registry, error) {
 
 // SaveRegistry persists the registry to the system settings store.
 func (s *Service) SaveRegistry(ctx context.Context, reg *Registry) error {
+	normalizeRegistry(reg)
 	reg.UpdatedAt = time.Now().UTC()
 	data, err := json.Marshal(reg)
 	if err != nil {
@@ -84,6 +103,168 @@ func (s *Service) SaveRegistry(ctx context.Context, reg *Registry) error {
 	s.cachedAt = time.Now()
 	s.mu.Unlock()
 	return nil
+}
+
+func normalizeRegistry(reg *Registry) {
+	if reg == nil {
+		return
+	}
+	ensureDefaultComputeAgent(reg)
+	for i := range reg.ServiceGroups {
+		normalizeServiceGroupAgent(reg, &reg.ServiceGroups[i])
+	}
+}
+
+func ensureDefaultComputeAgent(reg *Registry) {
+	for i := range reg.Agents {
+		if reg.Agents[i].ID == DefaultComputeAgentID {
+			if reg.Agents[i].Name == "" {
+				reg.Agents[i].Name = DefaultComputeAgentName
+			}
+			reg.Agents[i].Enabled = true
+			return
+		}
+	}
+	now := time.Now().UTC()
+	reg.Agents = append([]ComputeAgent{{
+		ID:          DefaultComputeAgentID,
+		Name:        DefaultComputeAgentName,
+		Description: "MaClaw official compute settlement account",
+		Enabled:     true,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}}, reg.Agents...)
+}
+
+func normalizeServiceGroupAgent(reg *Registry, group *llmpool.ServiceGroup) {
+	if group == nil {
+		return
+	}
+	if group.AgentID == "" {
+		group.AgentID = DefaultComputeAgentID
+	}
+	for _, agent := range reg.Agents {
+		if agent.ID == group.AgentID {
+			group.AgentName = agent.Name
+			return
+		}
+	}
+	group.AgentName = group.AgentID
+}
+
+func findComputeAgent(reg *Registry, id string) *ComputeAgent {
+	if id == "" {
+		id = DefaultComputeAgentID
+	}
+	for i := range reg.Agents {
+		if reg.Agents[i].ID == id {
+			return &reg.Agents[i]
+		}
+	}
+	return nil
+}
+
+func normalizeComputeAgentInput(agent *ComputeAgent) error {
+	if agent == nil {
+		return fmt.Errorf("agent is required")
+	}
+	agent.ID = strings.TrimSpace(agent.ID)
+	agent.Name = strings.TrimSpace(agent.Name)
+	agent.Contact = strings.TrimSpace(agent.Contact)
+	agent.Settlement = strings.TrimSpace(agent.Settlement)
+	agent.Description = strings.TrimSpace(agent.Description)
+	if agent.ID == "" || agent.Name == "" {
+		return fmt.Errorf("agent id and name are required")
+	}
+	for _, r := range agent.ID {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return fmt.Errorf("agent id can only contain letters, numbers, underscore, and hyphen")
+	}
+	return nil
+}
+
+// ListAgents returns configured upstream compute agents.
+func (s *Service) ListAgents(ctx context.Context) ([]ComputeAgent, error) {
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append([]ComputeAgent(nil), reg.Agents...), nil
+}
+
+// AddAgent adds a compute agent.
+func (s *Service) AddAgent(ctx context.Context, agent ComputeAgent) error {
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	if err := normalizeComputeAgentInput(&agent); err != nil {
+		return err
+	}
+	for _, existing := range reg.Agents {
+		if existing.ID == agent.ID {
+			return fmt.Errorf("agent %s already exists", agent.ID)
+		}
+	}
+	now := time.Now().UTC()
+	agent.Enabled = true
+	agent.CreatedAt = now
+	agent.UpdatedAt = now
+	reg.Agents = append(reg.Agents, agent)
+	return s.SaveRegistry(ctx, reg)
+}
+
+// UpdateAgent updates a compute agent.
+func (s *Service) UpdateAgent(ctx context.Context, agent ComputeAgent) error {
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	if err := normalizeComputeAgentInput(&agent); err != nil {
+		return err
+	}
+	for i, existing := range reg.Agents {
+		if existing.ID == agent.ID {
+			agent.CreatedAt = existing.CreatedAt
+			agent.UpdatedAt = time.Now().UTC()
+			if agent.ID == DefaultComputeAgentID {
+				agent.Enabled = true
+			}
+			reg.Agents[i] = agent
+			return s.SaveRegistry(ctx, reg)
+		}
+	}
+	return fmt.Errorf("agent %s not found", agent.ID)
+}
+
+// DeleteAgent removes a compute agent if no service group depends on it.
+func (s *Service) DeleteAgent(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == DefaultComputeAgentID {
+		return fmt.Errorf("default agent cannot be deleted")
+	}
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	for _, group := range reg.ServiceGroups {
+		if group.AgentID == id {
+			return fmt.Errorf("agent %s is used by service group %s", id, group.ID)
+		}
+	}
+	filtered := reg.Agents[:0]
+	for _, agent := range reg.Agents {
+		if agent.ID != id {
+			filtered = append(filtered, agent)
+		}
+	}
+	if len(filtered) == len(reg.Agents) {
+		return fmt.Errorf("agent %s not found", id)
+	}
+	reg.Agents = filtered
+	return s.SaveRegistry(ctx, reg)
 }
 
 // InvalidateCache forces the next LoadRegistry to re-read from storage.
@@ -185,6 +366,13 @@ func (s *Service) AddServiceGroup(ctx context.Context, group llmpool.ServiceGrou
 	if err != nil {
 		return err
 	}
+	if group.AgentID == "" {
+		group.AgentID = DefaultComputeAgentID
+	}
+	if findComputeAgent(reg, group.AgentID) == nil {
+		return fmt.Errorf("agent %s not found", group.AgentID)
+	}
+	normalizeServiceGroupAgent(reg, &group)
 	for _, g := range reg.ServiceGroups {
 		if g.ID == group.ID {
 			return fmt.Errorf("service group %s already exists", group.ID)
@@ -200,6 +388,13 @@ func (s *Service) UpdateServiceGroup(ctx context.Context, group llmpool.ServiceG
 	if err != nil {
 		return err
 	}
+	if group.AgentID == "" {
+		group.AgentID = DefaultComputeAgentID
+	}
+	if findComputeAgent(reg, group.AgentID) == nil {
+		return fmt.Errorf("agent %s not found", group.AgentID)
+	}
+	normalizeServiceGroupAgent(reg, &group)
 	found := false
 	for i, g := range reg.ServiceGroups {
 		if g.ID == group.ID {
