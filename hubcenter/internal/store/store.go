@@ -418,3 +418,28 @@ type Store struct {
 	Gossip               GossipRepository
 	News                 NewsRepository
 }
+
+
+// ---------------------------------------------------------------------------
+// LLM Node Binding (HA anti-double-spend)
+// ---------------------------------------------------------------------------
+
+// LLMNodeBinding represents a tenant's exclusive binding to a HubCenter node.
+type LLMNodeBinding struct {
+	HubID      string    `json:"hub_id"`
+	TenantID   string    `json:"tenant_id"`
+	NodeID     string    `json:"node_id"`
+	BoundAt    time.Time `json:"bound_at"`
+	LastActive time.Time `json:"last_active"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+// LLMNodeBindingRepository persists binding state.
+type LLMNodeBindingRepository interface {
+	Upsert(ctx context.Context, binding *LLMNodeBinding) error
+	Get(ctx context.Context, hubID, tenantID string) (*LLMNodeBinding, error)
+	Delete(ctx context.Context, hubID, tenantID string) error
+	ListByNode(ctx context.Context, nodeID string) ([]*LLMNodeBinding, error)
+	ListAll(ctx context.Context) ([]*LLMNodeBinding, error)
+	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
+}

@@ -163,6 +163,19 @@ export function applyReopenPanel(state: CodePreviewUIState): CodePreviewUIState 
 }
 
 /**
+ * Activate the panel without clearing userClosed.
+ * Used when another UI action (e.g. opening the workflow panel) wants to
+ * make the code preview visible as a side-effect, but should not alter
+ * the user's prior close decision for auto-open purposes.
+ */
+export function applyActivatePassive(state: CodePreviewUIState): CodePreviewUIState {
+    return {
+        ...state,
+        active: true,
+    };
+}
+
+/**
  * Select a file by path. Sets activeFilePath.
  */
 export function applySelectFile(
@@ -286,6 +299,10 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
         setState(prev => applyReopenPanel(prev));
     }, []);
 
+    const activatePassive = useCallback(() => {
+        setState(prev => applyActivatePassive(prev));
+    }, []);
+
     const selectFile = useCallback((filePath: string) => {
         setState(prev => applySelectFile(prev, filePath));
     }, []);
@@ -303,6 +320,7 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
         state,
         closePanel,
         reopenPanel,
+        activatePassive,
         selectFile,
         resetSession,
         restoreState,

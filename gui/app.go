@@ -34,6 +34,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	llmcompat "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -206,6 +207,7 @@ type App struct {
 	workflowDisabled                  atomic.Bool              // true when user disables workflow in settings; checked by getWorkflowEngine()
 	steeringStore                     *steering.Store          // declarative rule injection (corelib/steering)
 	codeEventEmitter                  *CodeEventEmitter        // emits code file events to frontend for code preview panel
+	codingKnowledgeStore              *knowledge.CodingKnowledgeStore // independent coding experience store (coding_knowledge.db)
 	deepCrawlMu                       sync.Mutex               // guards deepCrawlCancel
 	deepCrawlCancel                   context.CancelFunc       // cancels active deep crawl session
 	deepCrawlCtx                      context.Context          // active deep crawl context (used to identify ownership)
@@ -285,7 +287,7 @@ func (a *App) resolveExperienceProviderForAttribution() lifecycle.Provider {
 			providers = append(providers, skill.NewGovernanceDraftProvider(skills, skill.SkillMaintenancePlanOptions{MaxActions: 12}))
 		}
 	}
-	// V1 workflowEngine experience provider removed — V2 doesn't provide experience context.
+	// V1 workflowEngine experience provider removed �?V2 doesn't provide experience context.
 	return lifecycle.NewCompositeProvider(providers...)
 }
 
@@ -943,7 +945,7 @@ func (a *App) ensureEvolutionPipeline() {
 	pipeline.UsageTracker = a.usageTracker
 	pipeline.Versioner = &skill.Versioner{}
 	// RepairGate: created without a SandboxExecutor for now (graceful degradation
-	// — gate passes by default when no executor is configured). A real executor
+	// �?gate passes by default when no executor is configured). A real executor
 	// requires wiring into SkillRunner's step execution, which is future work.
 	pipeline.Gate = skill.NewRepairGate(skill.RepairGateConfig{}, nil)
 	pipeline.SkillLoader = func() []corelib.NLSkillEntry {
@@ -962,7 +964,7 @@ func (a *App) ensureEvolutionPipeline() {
 		defer a.skillExecutor.mu.Unlock()
 		return a.skillExecutor.saveSkills(skills)
 	}
-	// Wire LLM for optimization and promotion (lazy config — picks up provider changes).
+	// Wire LLM for optimization and promotion (lazy config �?picks up provider changes).
 	pipeline.LLM = NewSkillEvolutionLLMAdapter(a.GetMaclawLLMConfig)
 	pipeline.Optimizer = skill.NewSkillOptimizer(pipeline.LLM, pipeline.Gate, pipeline.Versioner)
 
@@ -970,7 +972,7 @@ func (a *App) ensureEvolutionPipeline() {
 	if skillsDir, err := skill.PrimarySkillsDir(); err == nil {
 		pipeline.Promoter = skill.NewNudgePromoter(
 			pipeline.LLM,
-			nil, // StagingValidator — TODO: wire when security scan adapter is available
+			nil, // StagingValidator �?TODO: wire when security scan adapter is available
 			&skillExecutorRegistrar{app: a},
 			skillsDir,
 		)
@@ -1010,8 +1012,8 @@ func (a *App) ensureEvolutionPipeline() {
 			skillName,
 			skillDir,
 			"skill_evolution_auto",
-			true, // requireRuntimeProof — must have at least one successful run
-			true, // processNow — try to upload immediately
+			true, // requireRuntimeProof �?must have at least one successful run
+			true, // processNow �?try to upload immediately
 		); err != nil {
 			log.Printf("[evolution-pipeline] upload enqueue failed for %s: %v", skillName, err)
 		}
@@ -1851,15 +1853,19 @@ func (a *App) startup(ctx context.Context) {
 			log.Printf("[startup] prepareHubClientSync done in %v (since startup begin: %v)", time.Since(hubPrepStart), time.Since(startupBegin))
 			// Mark AI assistant ready BEFORE Hub connection -user can interact immediately.
 			a.markAIAssistantReady()
+			a.emitEvent("ai-assistant-init-progress", "ready")
 			// Background: Hub WebSocket connect + auth + sendHello (network I/O).
 			go a.asyncHubConnect()
 		} else if config.RemoteEmail != "" && config.RemoteHubURL != "" {
 			// No full credentials yet -mark ready immediately, auto-register in background.
 			a.markAIAssistantReady()
+			a.emitEvent("ai-assistant-init-progress", "degraded")
 			go a.autoRegisterOnStartup(config)
 		} else {
 			// No Hub credentials at all -mark ready immediately without attempting connection.
+			// Frontend shows "degraded" (Hub offline) state, user can register from settings.
 			a.markAIAssistantReady()
+			a.emitEvent("ai-assistant-init-progress", "degraded")
 		}
 		a.refreshPowerOptimizationStateFromConfig(config)
 		a.refreshWorkstationMode(config)
@@ -1912,7 +1918,7 @@ func (a *App) startup(ctx context.Context) {
 			}(config)
 		}
 
-		// V1 workflow engine disabled — V2 is the sole workflow engine.
+		// V1 workflow engine disabled �?V2 is the sole workflow engine.
 		// go a.initWorkflowEngine()
 		// Initialize V2 workflow engine (clean state machine).
 		a.workflowV2 = a.initWorkflowV2()
@@ -2067,6 +2073,11 @@ func (a *App) shutdown(ctx context.Context) {
 		if closer, ok := a.workflowV2.store.(interface{ Close() error }); ok {
 			closer.Close()
 		}
+	}
+	// Close coding knowledge store.
+	if a.codingKnowledgeStore != nil {
+		_ = a.codingKnowledgeStore.Close()
+		a.codingKnowledgeStore = nil
 	}
 	// OpenHuman modules shutdown
 	if a.ohModules.toolMemory != nil {
@@ -2667,7 +2678,7 @@ func (a *App) startConfigWatcher() {
 						continue
 					}
 					a.log(a.tr("Config file modified: ") + event.Name)
-					// External edit detected — reload and notify frontend.
+					// External edit detected �?reload and notify frontend.
 					config, err := a.LoadConfig()
 					if err == nil {
 						a.refreshPowerOptimizationStateFromConfig(config)
@@ -2758,7 +2769,7 @@ func (a *App) SelectWorkingDir() string {
 }
 
 // SetWorkflowWorkingDir sets the working directory for the current coding
-// SetWorkflowWorkingDir is a frontend binding — V1 engine removed, now no-op.
+// SetWorkflowWorkingDir is a frontend binding �?V1 engine removed, now no-op.
 // V2 workflow project path is set at workflow creation time and is immutable.
 func (a *App) SetWorkflowWorkingDir(dir string) {
 	// V2 project path is set at creation and stored in WorkflowState.ProjectPath.
@@ -3485,7 +3496,7 @@ func (a *App) syncToOpencodeSettings(config corelib.AppConfig, projectDir string
 				baseUrl = "https://api.deepseek.com/v1"
 			}
 		case modelProviderGLM:
-			modelId = "glm-5.1"
+			modelId = "GLM-5.2"
 			if baseUrl == "" {
 				baseUrl = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
@@ -3588,7 +3599,7 @@ func (a *App) syncToIFlowSettings(config corelib.AppConfig, projectDir string, i
 				baseUrl = "https://api.deepseek.com/v1"
 			}
 		case modelProviderGLM:
-			modelId = "glm-5.1"
+			modelId = "GLM-5.2"
 			if baseUrl == "" {
 				baseUrl = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
@@ -3679,7 +3690,7 @@ func (a *App) syncToKiloSettings(config corelib.AppConfig, projectDir string, in
 				baseUrl = "https://api.deepseek.com/v1"
 			}
 		case modelProviderGLM:
-			modelId = "glm-5.1"
+			modelId = "GLM-5.2"
 			if baseUrl == "" {
 				baseUrl = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
@@ -3760,7 +3771,7 @@ func (a *App) syncToCodeBuddySettings(config corelib.AppConfig, projectPath stri
 			case modelProviderDeepSeek:
 				idStr = "deepseek-chat"
 			case modelProviderGLM:
-				idStr = "glm-5.1"
+				idStr = "GLM-5.2"
 			case modelProviderDoubao:
 				idStr = "doubao-seed-code-preview-latest"
 			case modelProviderKimi:
@@ -4358,7 +4369,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	defaultCodexModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: "", WireApi: "responses"},
-		{ModelName: "GLM", ModelId: "glm-5.1", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: "", WireApi: "responses"},
+		{ModelName: "GLM", ModelId: "GLM-5.2", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: "", WireApi: "responses"},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: "", WireApi: "responses"},
 		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", WireApi: "responses", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: "", WireApi: "responses"},
@@ -4376,7 +4387,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	defaultOpencodeModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
-		{ModelName: "GLM", ModelId: "glm-5.1", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
+		{ModelName: "GLM", ModelId: "GLM-5.2", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
 		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
@@ -4394,7 +4405,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	defaultIFlowModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
-		{ModelName: "GLM", ModelId: "glm-5.1", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
+		{ModelName: "GLM", ModelId: "GLM-5.2", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
 		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
@@ -4409,7 +4420,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	defaultKiloModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
-		{ModelName: "GLM", ModelId: "glm-5.1", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
+		{ModelName: "GLM", ModelId: "GLM-5.2", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
 		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
@@ -4440,52 +4451,40 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 					CurrentProj  string                  `json:"current_project"`
 				}
 				if err := json.Unmarshal(data, &oldConfig); err == nil {
-					config := corelib.AppConfig{
-						Claude: corelib.ToolConfig{
-							CurrentModel: oldConfig.CurrentModel,
-							Models:       oldConfig.Models,
-						},
-						Codex: corelib.ToolConfig{
-							CurrentModel: "Codex",
-							Models:       defaultCodexModels,
-						},
-						Opencode: corelib.ToolConfig{
-							CurrentModel: "Original",
-							Models:       defaultOpencodeModels,
-						},
-						CodeBuddy: corelib.ToolConfig{
-							CurrentModel: "Original",
-							Models:       defaultOpencodeModels,
-						},
-						IFlow: corelib.ToolConfig{
-							CurrentModel: "Original",
-							Models:       defaultIFlowModels,
-						},
-						Kilo: corelib.ToolConfig{
-							CurrentModel: "Original",
-							Models:       defaultKiloModels,
-						},
-						Projects:               oldConfig.Projects,
-						CurrentProject:         oldConfig.CurrentProj,
-						ActiveTool:             "claude",
-						ShowCodex:              true,
-						ShowOpenCode:           true,
-						ShowCodeBuddy:          true,
-						ShowIFlow:              true,
-						ShowKilo:               true,
-						PowerOptimization:      true,
-						RemoteEnabled:          false,
-						RemoteHubURL:           "",
-						RemoteHubCenterURL:     defaultRemoteHubCenterURL,
-						RemoteEmail:            "",
-						RemoteSN:               "",
-						RemoteUserID:           "",
-						RemoteMachineID:        "",
-						RemoteMachineToken:     "",
-						RemoteHeartbeatSec:     corelib.DefaultRemoteHeartbeatSec,
-						SubAgentConcurrency:    corelib.DefaultSubAgentConcurrency,
-						IMProgressNudgeEnabled: boolPtr(true),
+					// Start from AppConfigDefaults so any new default-true fields
+					// are automatically inherited — no manual sync required.
+					config := corelib.AppConfigDefaults()
+					config.Claude = corelib.ToolConfig{
+						CurrentModel: oldConfig.CurrentModel,
+						Models:       oldConfig.Models,
 					}
+					config.Codex = corelib.ToolConfig{
+						CurrentModel: "Codex",
+						Models:       defaultCodexModels,
+					}
+					config.Opencode = corelib.ToolConfig{
+						CurrentModel: "Original",
+						Models:       defaultOpencodeModels,
+					}
+					config.CodeBuddy = corelib.ToolConfig{
+						CurrentModel: "Original",
+						Models:       defaultOpencodeModels,
+					}
+					config.IFlow = corelib.ToolConfig{
+						CurrentModel: "Original",
+						Models:       defaultIFlowModels,
+					}
+					config.Kilo = corelib.ToolConfig{
+						CurrentModel: "Original",
+						Models:       defaultKiloModels,
+					}
+					config.Projects = oldConfig.Projects
+					config.CurrentProject = oldConfig.CurrentProj
+					config.ActiveTool = "claude"
+					config.RemoteHubCenterURL = defaultRemoteHubCenterURL
+					config.RemoteHeartbeatSec = corelib.DefaultRemoteHeartbeatSec
+					config.SubAgentConcurrency = corelib.DefaultSubAgentConcurrency
+
 					if err := a.saveToPath(path, config); err != nil {
 						return corelib.AppConfig{}, err
 					}
@@ -4496,75 +4495,41 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 				}
 			}
 		}
-		// Create default config
-		defaultConfig := corelib.AppConfig{
-			Claude: corelib.ToolConfig{
-				CurrentModel: "GLM",
-				Models:       defaultClaudeModels,
-			},
-			Codex: corelib.ToolConfig{
-				CurrentModel: "Codex",
-				Models:       defaultCodexModels,
-			},
-			Opencode: corelib.ToolConfig{
-				CurrentModel: "AiCodeMirror",
-				Models:       defaultOpencodeModels,
-			},
-			CodeBuddy: corelib.ToolConfig{
-				CurrentModel: "AiCodeMirror",
-				Models:       defaultOpencodeModels,
-			},
-			IFlow: corelib.ToolConfig{
-				CurrentModel: "Original",
-				Models:       defaultIFlowModels,
-			},
-			Kilo: corelib.ToolConfig{
-				CurrentModel: "Original",
-				Models:       defaultKiloModels,
-			},
-			Projects: []corelib.ProjectConfig{
-				{
-					Id:       "default",
-					Name:     "Project 1",
-					Path:     home,
-					YoloMode: false,
-				},
-			},
-			CurrentProject:         "default",
-			ActiveTool:             "claude",
-			ShowCodex:              true,
-			ShowOpenCode:           true,
-			ShowCodeBuddy:          true,
-			ShowIFlow:              true,
-			ShowKilo:               true,
-			PowerOptimization:      true,
-			CheckUpdateOnStartup:   true,
-			EnvCheckInterval:       7,    // Default to 7 days
-			UseWindowsTerminal:     true, // Default to true, will only work if Windows Terminal is installed
-			RemoteEnabled:          false,
-			RemoteHubURL:           "",
-			RemoteHubCenterURL:     defaultRemoteHubCenterURL,
-			RemoteEmail:            "",
-			RemoteSN:               "",
-			RemoteUserID:           "",
-			RemoteMachineID:        "",
-			RemoteMachineToken:     "",
-			RemoteHeartbeatSec:     corelib.DefaultRemoteHeartbeatSec,
-			ScreenDimTimeoutMin:    3, // Default: dim display after 3 minutes of inactivity
-			GossipAutoPublish:      true,
-			YoloModeAllowed:        true,
-			GossipEnabled:          true,
-			FileOutboundEnabled:    true,
-			ImageOutboundEnabled:   true,
-			SubAgentConcurrency:    corelib.DefaultSubAgentConcurrency,
-			VectorSearchEnabled:    true,
-			ASREnabled:             true,
-			TTSEnabled:             true,
-			ScreenParsingEnabled:   boolPtr(true),
-			IMProgressNudgeEnabled: boolPtr(true),
-			NetworkLevel:           "full",
-			SandboxMode:            "none",
+		// Create default config — start from AppConfigDefaults() so that any
+		// new default-true field is automatically picked up.
+		defaultConfig := corelib.AppConfigDefaults()
+		defaultConfig.Claude = corelib.ToolConfig{
+			CurrentModel: "GLM",
+			Models:       defaultClaudeModels,
 		}
+		defaultConfig.Codex = corelib.ToolConfig{
+			CurrentModel: "Codex",
+			Models:       defaultCodexModels,
+		}
+		defaultConfig.Opencode = corelib.ToolConfig{
+			CurrentModel: "AiCodeMirror",
+			Models:       defaultOpencodeModels,
+		}
+		defaultConfig.CodeBuddy = corelib.ToolConfig{
+			CurrentModel: "AiCodeMirror",
+			Models:       defaultOpencodeModels,
+		}
+		defaultConfig.IFlow = corelib.ToolConfig{
+			CurrentModel: "Original",
+			Models:       defaultIFlowModels,
+		}
+		defaultConfig.Kilo = corelib.ToolConfig{
+			CurrentModel: "Original",
+			Models:       defaultKiloModels,
+		}
+		defaultConfig.ActiveTool = "claude"
+		defaultConfig.EnvCheckInterval = 7
+		defaultConfig.RemoteHubCenterURL = defaultRemoteHubCenterURL
+		defaultConfig.RemoteHeartbeatSec = corelib.DefaultRemoteHeartbeatSec
+		defaultConfig.ScreenDimTimeoutMin = 3
+		defaultConfig.SubAgentConcurrency = corelib.DefaultSubAgentConcurrency
+		defaultConfig.NetworkLevel = "full"
+		defaultConfig.SandboxMode = "none"
 		err = a.saveToPath(path, defaultConfig)
 		if err == nil {
 			a.configCache = defaultConfig
@@ -4730,7 +4695,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	ensureModel(&config.Claude.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", "kat-coder-pro-v1", "anthropic", true)
 	ensureModel(&config.Claude.Models, "Aliyun", "https://coding.dashscope.aliyuncs.com/apps/anthropic", "glm-5", "anthropic", true)
 	ensureModel(&config.Codex.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "responses")
-	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.1", "responses")
+	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "GLM-5.2", "responses")
 	ensureModel(&config.Codex.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "responses")
 	ensureModel(&config.Codex.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "responses", true)
 	ensureModel(&config.Codex.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "responses")
@@ -4745,7 +4710,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		}
 	}
 	ensureModel(&config.Opencode.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.Opencode.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.1", "")
+	ensureModel(&config.Opencode.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "GLM-5.2", "")
 	ensureModel(&config.Opencode.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
 	ensureModel(&config.Opencode.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.Opencode.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
@@ -4755,7 +4720,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	ensureModel(&config.Opencode.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.Opencode.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.CodeBuddy.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.CodeBuddy.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.1", "")
+	ensureModel(&config.CodeBuddy.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "GLM-5.2", "")
 	ensureModel(&config.CodeBuddy.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
 	ensureModel(&config.CodeBuddy.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.CodeBuddy.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
@@ -4765,7 +4730,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	ensureModel(&config.CodeBuddy.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.CodeBuddy.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.IFlow.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.IFlow.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.1", "")
+	ensureModel(&config.IFlow.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "GLM-5.2", "")
 	ensureModel(&config.IFlow.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
 	ensureModel(&config.IFlow.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.IFlow.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
@@ -4775,7 +4740,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	ensureModel(&config.IFlow.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.IFlow.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.Kilo.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.Kilo.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.1", "")
+	ensureModel(&config.Kilo.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "GLM-5.2", "")
 	ensureModel(&config.Kilo.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
 	ensureModel(&config.Kilo.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.Kilo.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
@@ -5160,6 +5125,68 @@ func (a *App) shouldPreserveHubManagedSecurity(current corelib.AppConfig) bool {
 	return !a.hubSecurityExplicitlyCentralizedFalse()
 }
 
+// preserveBackendOwnedFields prevents a stale frontend snapshot (from SaveConfig)
+// from overwriting fields that backend goroutines manage concurrently.
+//
+// SaveConfig is called from the Model Settings panel save button. The frontend
+// snapshot was loaded when the panel opened �?any backend changes since then
+// (credentials, LLM provider, onboarding, hub state) would be silently reverted
+// without this protection.
+//
+// Strategy: for a small, explicit set of "backend-owned" fields, always use the
+// authoritative on-disk value regardless of what the frontend sent. The frontend
+// must use PatchConfigFields to modify these fields (which runs atomically under
+// configMu). All other fields pass through from the frontend snapshot unchanged.
+//
+// This is the inverse of a whitelist: we enumerate the fields the frontend must
+// NOT overwrite (small, stable set managed by backend goroutines), rather than
+// the fields it CAN overwrite (large, grows with every new setting).
+func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.AppConfig) {
+	var restored []string
+
+	// ── Remote credentials (ActivateRemote, clearMachineCredentials, persistViewerToken) ──
+	if incoming.RemoteMachineID != ondisk.RemoteMachineID {
+		restored = append(restored, "remote_machine_id")
+	}
+	incoming.RemoteMachineID = ondisk.RemoteMachineID
+	incoming.RemoteMachineToken = ondisk.RemoteMachineToken
+	incoming.RemoteViewerToken = ondisk.RemoteViewerToken
+	incoming.RemoteSN = ondisk.RemoteSN
+	incoming.RemoteUserID = ondisk.RemoteUserID
+	incoming.RemoteClientID = ondisk.RemoteClientID
+	incoming.RemoteTenantID = ondisk.RemoteTenantID
+	incoming.RemoteTenantName = ondisk.RemoteTenantName
+	incoming.RemoteNickname = ondisk.RemoteNickname
+	incoming.RemoteMachineName = ondisk.RemoteMachineName
+	incoming.SkillMarketSessionToken = ondisk.SkillMarketSessionToken
+
+	// ── MaClaw LLM provider state (SaveMaclawLLMProviders, syncHubLLMServiceStatusToConfig) ──
+	if incoming.MaclawLLMCurrentProvider != ondisk.MaclawLLMCurrentProvider {
+		restored = append(restored, "maclaw_llm_current_provider("+incoming.MaclawLLMCurrentProvider+"->"+ondisk.MaclawLLMCurrentProvider+")")
+	}
+	incoming.MaclawLLMCurrentProvider = ondisk.MaclawLLMCurrentProvider
+	incoming.MaclawLLMUrl = ondisk.MaclawLLMUrl
+	incoming.MaclawLLMKey = ondisk.MaclawLLMKey
+	incoming.MaclawLLMModel = ondisk.MaclawLLMModel
+	incoming.MaclawLLMProtocol = ondisk.MaclawLLMProtocol
+	incoming.MaclawLLMTimeoutSec = ondisk.MaclawLLMTimeoutSec
+	incoming.MaclawLLMContextLength = ondisk.MaclawLLMContextLength
+	incoming.MaclawLLMProviders = ondisk.MaclawLLMProviders
+
+	// ── Onboarding (PatchConfigFields from useRemotePanel) ──
+	if incoming.OnboardingDone != ondisk.OnboardingDone {
+		restored = append(restored, fmt.Sprintf("onboarding_done(%v->%v)", incoming.OnboardingDone, ondisk.OnboardingDone))
+	}
+	incoming.OnboardingDone = ondisk.OnboardingDone
+
+	// ── HubCenter URLs (failover persistence) ──
+	incoming.RemoteHubCenterURLs = ondisk.RemoteHubCenterURLs
+
+	if len(restored) > 0 {
+		log.Printf("[config] SaveConfig:preserved_backend_fields=%v", restored)
+	}
+}
+
 func (a *App) SaveConfig(config corelib.AppConfig) error {
 	lockStart := time.Now()
 	a.configMu.Lock()
@@ -5203,10 +5230,17 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	config.RemoteHeartbeatSec = corelib.NormalizeRemoteHeartbeatIntervalSec(config.RemoteHeartbeatSec)
 	normalizeConfigTimeouts(&config)
 	sanitizePetConfig(&config)
-	// Load old config to compare for sync logic
+	// Load old config to compare for sync logic.
+	// Use the in-memory configCache (authoritative under configMu) rather than
+	// re-reading from disk �?avoids Windows SHARING_VIOLATION if an antivirus
+	// or sync tool has the file open, and avoids the edge case where the file
+	// doesn't exist yet (first run).
 	var oldConfig corelib.AppConfig
 	oldConfigLoaded := false
-	if data, err := os.ReadFile(path); err == nil {
+	if a.configCacheValid {
+		oldConfig = a.configCache
+		oldConfigLoaded = true
+	} else if data, err := os.ReadFile(path); err == nil {
 		if json.Unmarshal(data, &oldConfig) == nil {
 			oldConfigLoaded = true
 		}
@@ -5224,6 +5258,20 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	}
 	if strings.TrimSpace(oldConfig.DefaultLaunchMode) != "" {
 		config.DefaultLaunchMode = oldConfig.DefaultLaunchMode
+	}
+	// ── Backend-owned field preservation ──────────────────────────────────
+	// The frontend SaveConfig receives a full config snapshot that may be
+	// stale by the time it arrives (user opened model settings, edited API
+	// keys, then clicked Save �?meanwhile backend goroutines updated
+	// credentials, LLM provider state, onboarding flags via PatchConfig).
+	// Without this, the stale snapshot would overwrite concurrent updates.
+	//
+	// Strategy: unconditionally restore a small set of backend-owned fields
+	// from the authoritative on-disk config. These fields are only modified
+	// by backend goroutines through PatchConfig (which is atomic under
+	// configMu). The frontend must use PatchConfigFields to modify them.
+	if oldConfigLoaded {
+		preserveBackendOwnedFields(&config, &oldConfig)
 	}
 	if a.shouldPreserveHubManagedSecurity(oldConfig) {
 		clientsecurity.PreserveHubManagedSecurityConfig(oldConfig, &config)
@@ -6257,6 +6305,37 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.PetQuietMode = v
 			petChanged = true
+		case "claude", "codex", "opencode", "codebuddy", "iflow", "kilo":
+			data, err := json.Marshal(value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, fmt.Errorf("config field %q must be object: %w", key, err)
+			}
+			var tc corelib.ToolConfig
+			if err := json.Unmarshal(data, &tc); err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, fmt.Errorf("config field %q must be ToolConfig object: %w", key, err)
+			}
+			// Sanitize custom model names
+			for i := range tc.Models {
+				if tc.Models[i].IsCustom && strings.TrimSpace(tc.Models[i].ModelName) == "" {
+					tc.Models[i].ModelName = "Custom"
+				}
+			}
+			switch key {
+			case "claude":
+				cfg.Claude = tc
+			case "codex":
+				cfg.Codex = tc
+			case "opencode":
+				cfg.Opencode = tc
+			case "codebuddy":
+				cfg.CodeBuddy = tc
+			case "iflow":
+				cfg.IFlow = tc
+			case "kilo":
+				cfg.Kilo = tc
+			}
 		default:
 			a.configMu.Unlock()
 			return corelib.AppConfig{}, fmt.Errorf("unsupported config patch field: %s", key)
@@ -6349,8 +6428,17 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	if proxyChanged {
 		a.applyAgentProxy()
 	}
-	log.Printf("[config] PatchConfigFields:done fields=%d", len(patch))
+	log.Printf("[config] PatchConfigFields:done fields=%d keys=%v", len(patch), configPatchKeys(patch))
 	return cfg, nil
+}
+
+// configPatchKeys extracts sorted keys from a patch map for diagnostic logging.
+func configPatchKeys(patch map[string]interface{}) []string {
+	keys := make([]string, 0, len(patch))
+	for k := range patch {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // PatchConfig performs an atomic read-modify-write on the config file.
@@ -6679,7 +6767,7 @@ func (a *App) buildUpdateResult(currentVersion string, release latestReleaseInfo
 }
 
 // CheckUpdateBeta checks for beta/pre-release versions from the beta channel manifests.
-// Called when user opts in to "灏濋矞娴嬭瘯鐗? (beta test version).
+// Called when user opts in to "灏濋矞娴嬭瘯�? (beta test version).
 func (a *App) CheckUpdateBeta(currentVersion string) (UpdateResult, error) {
 	release, source, err := a.fetchBetaReleaseFast()
 	if err != nil {

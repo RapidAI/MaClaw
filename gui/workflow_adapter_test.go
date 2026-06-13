@@ -51,7 +51,7 @@ func TestNormalizeWorkflowStateForFrontendCanonicalizesAllPhaseFields(t *testing
 }
 
 func TestNormalizeWorkflowStateForFrontendIncludesCanonicalTemplatePhases(t *testing.T) {
-	registry := workflow.NewWorkflowRegistry()
+	registry := newPopulatedWorkflowRegistry()
 	state := &workflow.WorkflowState{
 		Type:         workflow.WorkflowCoding,
 		CurrentPhase: "tech_design",
@@ -83,7 +83,7 @@ func TestNormalizeWorkflowStateForFrontendIncludesCanonicalTemplatePhases(t *tes
 }
 
 func TestNormalizeWorkflowStateForFrontendIncludesOpsMaintenancePhases(t *testing.T) {
-	registry := workflow.NewWorkflowRegistry()
+	registry := newPopulatedWorkflowRegistry()
 	state := &workflow.WorkflowState{
 		Type:         workflow.WorkflowOpsMaintenance,
 		CurrentPhase: "risk_policy",

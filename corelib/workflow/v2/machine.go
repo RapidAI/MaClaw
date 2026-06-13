@@ -1,12 +1,15 @@
 package v2
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // HandleAction indicates what the caller should do after HandleInput.
@@ -14,6 +17,7 @@ type HandleAction string
 
 const (
 	ActionRunPhase         HandleAction = "run_phase"          // execute the current phase
+	ActionShowForm         HandleAction = "show_form"          // emit AG UI form for data collection
 	ActionConfirmed        HandleAction = "confirmed"          // user confirmed, advanced to next (or completed)
 	ActionModify           HandleAction = "modify"             // user wants to modify, re-run current phase
 	ActionPassThrough      HandleAction = "pass_through"       // not relevant to workflow, use normal agent loop
@@ -24,7 +28,7 @@ const (
 // HandleResult is returned by StateMachine.HandleInput.
 type HandleResult struct {
 	Action     HandleAction
-	Phase      *Phase // current phase to execute (RunPhase/Modify)
+	Phase      *Phase // current phase to execute (RunPhase/Modify/ShowForm)
 	ModifyHint string // user's modification request (Modify)
 	State      *WorkflowState
 }
@@ -85,6 +89,7 @@ func (m *StateMachine) Create(userID, workflowType, projectPath, summary string)
 			ToolPolicy:   pt.ToolPolicy,
 			ExecMode:     pt.ExecMode,
 			Status:       status,
+			InputSchema:  pt.InputSchema,
 		}
 	}
 
@@ -128,6 +133,14 @@ func (m *StateMachine) HandleInput(userID, text string) (*HandleResult, error) {
 
 	switch phase.Status {
 	case PhasePending, PhaseRunning:
+		// If this phase has an InputSchema and form data hasn't been submitted yet,
+		// signal the caller to show the AG UI form instead of running the agent loop.
+		if phase.InputSchema != nil && phase.FormData == nil {
+			phase.Status = PhaseRunning
+			m.store.Save(state)
+			m.mu.Unlock()
+			return &HandleResult{Action: ActionShowForm, Phase: phase, State: state}, nil
+		}
 		// Phase is being executed — tell caller to run agent loop for it
 		phase.Status = PhaseRunning
 		m.store.Save(state)
@@ -203,6 +216,32 @@ func (m *StateMachine) HandleInput(userID, text string) (*HandleResult, error) {
 	return &HandleResult{Action: ActionPassThrough}, nil
 }
 
+// SubmitForm stores the user's AG UI form submission for the current phase.
+// After submission, the next HandleInput call will return ActionRunPhase
+// (since FormData is now populated, the InputSchema check passes through).
+func (m *StateMachine) SubmitForm(userID string, formData map[string]interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, err := m.store.Load(userID)
+	if err != nil || state == nil {
+		return fmt.Errorf("no active workflow for user %s", userID)
+	}
+	if state.Status != StatusActive {
+		return fmt.Errorf("workflow for user %s is not active (status=%s)", userID, state.Status)
+	}
+	phase := state.ActivePhase()
+	if phase == nil {
+		return fmt.Errorf("no active phase")
+	}
+	if phase.InputSchema == nil {
+		return fmt.Errorf("phase %s does not have an input schema", phase.ID)
+	}
+	phase.FormData = formData
+	state.UpdatedAt = time.Now()
+	return m.store.Save(state)
+}
+
 // RecordOutput saves the phase output and transitions to waiting_confirm.
 func (m *StateMachine) RecordOutput(userID, output string) error {
 	m.mu.Lock()
@@ -221,7 +260,7 @@ func (m *StateMachine) RecordOutput(userID, output string) error {
 	if phase == nil {
 		return fmt.Errorf("no active phase")
 	}
-	phase.Output = output
+	phase.Output = SanitizePhaseOutput(phase.ID, output)
 	if phase.NeedsConfirm {
 		phase.Status = PhaseWaitingConfirm
 	} else {
@@ -236,6 +275,48 @@ func (m *StateMachine) RecordOutput(userID, output string) error {
 	}
 	state.UpdatedAt = time.Now()
 	return m.store.Save(state)
+}
+
+func SanitizePhaseOutput(phaseID, output string) string {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return ""
+	}
+	if calls, malformed := llm.ParseContentToolCallsDetailed(output); len(calls) > 0 {
+		if extracted := SanitizePhaseOutputFromToolCalls(phaseID, calls); extracted != "" {
+			return llm.StripAllExtra(extracted)
+		}
+		if malformed {
+			return llm.StripAllExtra(output)
+		}
+		return llm.StripAllExtra(output)
+	}
+	return llm.StripAllExtra(output)
+}
+
+func SanitizePhaseOutputFromToolCalls(phaseID string, calls []llm.ToolCall) string {
+	switch strings.ToLower(strings.TrimSpace(phaseID)) {
+	case "implementation", "verification", "ppt_generation", "test_execution", "defect_report":
+		return ""
+	}
+	best := ""
+	for _, call := range calls {
+		switch strings.ToLower(strings.TrimSpace(call.Function.Name)) {
+		case "write_file", "write":
+		default:
+			continue
+		}
+		var args map[string]interface{}
+		if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+			continue
+		}
+		content, _ := args["content"].(string)
+		content = strings.TrimSpace(content)
+		if len([]rune(content)) > len([]rune(best)) {
+			best = content
+		}
+	}
+	return llm.StripAllExtra(best)
 }
 
 // Cancel terminates the workflow.
@@ -261,10 +342,105 @@ func (m *StateMachine) GetActive(userID string) *WorkflowState {
 	return state
 }
 
+// GetRegistry returns the template registry.
+func (m *StateMachine) GetRegistry() *TemplateRegistry {
+	return m.templates
+}
+
+// GetStore returns the underlying WorkflowStore.
+func (m *StateMachine) GetStore() WorkflowStore {
+	return m.store
+}
+
+// SkipPhaseForm marks the current phase's form gate as skipped.
+// In V2, this sets FormData to an empty map (non-nil) so the InputSchema
+// check in HandleInput passes through, allowing the phase to proceed to
+// execution without actual form data.
+// Idempotent: no-op if FormData is already populated.
+func (m *StateMachine) SkipPhaseForm(userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, err := m.store.Load(userID)
+	if err != nil || state == nil || state.Status != StatusActive {
+		return fmt.Errorf("no active workflow for user %s", userID)
+	}
+	phase := state.ActivePhase()
+	if phase == nil {
+		return fmt.Errorf("no active phase")
+	}
+	// Set FormData to non-nil empty map so HandleInput's InputSchema check
+	// (InputSchema != nil && FormData == nil) passes through to ActionRunPhase.
+	if phase.FormData == nil {
+		phase.FormData = make(map[string]interface{})
+	}
+	if phase.Status == PhasePending {
+		phase.Status = PhaseRunning
+	}
+	state.UpdatedAt = time.Now()
+	return m.store.Save(state)
+}
+
+// ApplyReviewIntent handles a user's response to a phase review gate.
+// intent can be: "confirm" (advance), "skip" (skip phase), "supplement"/"other" (reopen with feedback)
+// Returns a HandleResult indicating the action taken.
+func (m *StateMachine) ApplyReviewIntent(userID string, intent string, feedback string) (*HandleResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, err := m.store.Load(userID)
+	if err != nil || state == nil || state.Status != StatusActive {
+		return nil, fmt.Errorf("no active workflow for user %s", userID)
+	}
+	phase := state.ActivePhase()
+	if phase == nil {
+		return nil, fmt.Errorf("no active phase")
+	}
+
+	switch strings.ToLower(strings.TrimSpace(intent)) {
+	case "confirm":
+		// User approves — advance to next phase.
+		result, err := m.advanceLocked(state)
+		return result, err
+
+	case "skip":
+		// User wants to skip this phase.
+		phase.Status = PhaseSkipped
+		result, err := m.advanceLocked(state)
+		return result, err
+
+	case "cancel":
+		// User cancels the workflow.
+		state.Status = StatusCancelled
+		state.UpdatedAt = time.Now()
+		m.store.Save(state)
+		return &HandleResult{Action: ActionCancelled, State: state}, nil
+
+	case "switch_task":
+		// Cancel workflow so caller can re-route the message.
+		state.Status = StatusCancelled
+		state.UpdatedAt = time.Now()
+		m.store.Save(state)
+		return &HandleResult{Action: ActionCancelAndExecute, State: state}, nil
+
+	default:
+		// "supplement", "other", or anything else — reopen phase for revision.
+		phase.Status = PhaseRunning
+		phase.Output = "" // clear previous output for re-generation
+		state.UpdatedAt = time.Now()
+		m.store.Save(state)
+		return &HandleResult{Action: ActionModify, Phase: phase, ModifyHint: feedback, State: state}, nil
+	}
+}
+
 // advanceLocked moves to the next phase. Caller must hold m.mu.
+// Preserves PhaseSkipped status (set by ApplyReviewIntent "skip") rather than
+// unconditionally overwriting to PhaseCompleted.
+// Rolls back in-memory mutations if store.Save fails, so the returned
+// HandleResult always references persisted state.
 func (m *StateMachine) advanceLocked(state *WorkflowState) (*HandleResult, error) {
 	phase := state.ActivePhase()
-	if phase != nil {
+	if phase != nil && phase.Status != PhaseSkipped {
 		phase.Status = PhaseCompleted
 	}
 
@@ -273,7 +449,14 @@ func (m *StateMachine) advanceLocked(state *WorkflowState) (*HandleResult, error
 		// All phases done
 		state.Status = StatusCompleted
 		state.UpdatedAt = time.Now()
-		m.store.Save(state)
+		if err := m.store.Save(state); err != nil {
+			state.CurrentPhase--
+			state.Status = StatusActive
+			if phase != nil && phase.Status != PhaseSkipped {
+				phase.Status = PhaseWaitingConfirm
+			}
+			return nil, fmt.Errorf("save workflow state: %w", err)
+		}
 		return &HandleResult{Action: ActionConfirmed, State: state}, nil
 	}
 
@@ -281,7 +464,14 @@ func (m *StateMachine) advanceLocked(state *WorkflowState) (*HandleResult, error
 	next := state.ActivePhase()
 	next.Status = PhaseRunning
 	state.UpdatedAt = time.Now()
-	m.store.Save(state)
+	if err := m.store.Save(state); err != nil {
+		state.CurrentPhase--
+		next.Status = PhasePending
+		if phase != nil && phase.Status != PhaseSkipped {
+			phase.Status = PhaseWaitingConfirm
+		}
+		return nil, fmt.Errorf("save workflow state: %w", err)
+	}
 	return &HandleResult{Action: ActionRunPhase, Phase: next, State: state}, nil
 }
 

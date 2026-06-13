@@ -982,6 +982,15 @@ func TestSkillRunnerStartRun_AllowsGUIOpenAIProxyEnv(t *testing.T) {
 			Params: map[string]interface{}{"command": "echo ok"},
 		}},
 	}}
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
+		Name:     "TestOpenAI",
+		URL:      "https://api.example.test/v1",
+		Key:      "sk-test",
+		Model:    "test-model",
+		AuthType: "api_key",
+		IsCustom: true,
+	}}
+	cfg.MaclawLLMCurrentProvider = "TestOpenAI"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}

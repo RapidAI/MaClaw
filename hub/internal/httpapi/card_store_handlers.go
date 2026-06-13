@@ -37,7 +37,7 @@ const (
 	defaultPaymentFMAPIBaseURL      = "https://api-4z7jye7ftfr4.zhifu.fm.it88168.com/api"
 	defaultPaymentFMMerchantNo      = "655219576405377024"
 	defaultPaymentFMAccessKey       = "a752f5fe60b3bffa94264e0318f33dbc"
-	cardStorePaymentModeFM          = "payment_fm"
+	cardStorePaymentModeFM          = "payment_fm" // DEPRECATED — kept for backward compat with existing orders
 	cardStorePaymentModeManual      = "personal_semimanual"
 	cardStorePaymentModeAlipay      = "alipay_direct"
 	cardStoreRecoverDailyIPLimit    = 10
@@ -330,16 +330,16 @@ func normalizeCardStorePaymentMode(mode string) string {
 	case cardStorePaymentModeAlipay:
 		return cardStorePaymentModeAlipay
 	case cardStorePaymentModeFM:
-		return cardStorePaymentModeFM
+		return cardStorePaymentModeManual // DEPRECATED: payment_fm → fallback to manual
 	default:
-		return cardStorePaymentModeFM
+		return cardStorePaymentModeManual
 	}
 }
 
 func parseCardStorePaymentMode(mode string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case cardStorePaymentModeFM:
-		return cardStorePaymentModeFM, true
+		return cardStorePaymentModeFM, true // DEPRECATED but still parseable for existing configs
 	case cardStorePaymentModeManual:
 		return cardStorePaymentModeManual, true
 	case cardStorePaymentModeAlipay:
@@ -379,7 +379,7 @@ func normalizeCardStorePaymentMethods(methods []string, fallback string) []strin
 		if mode, ok := parseCardStorePaymentMode(fallback); ok {
 			out = append(out, mode)
 		} else {
-			out = append(out, cardStorePaymentModeFM)
+			out = append(out, cardStorePaymentModeManual)
 		}
 	}
 	return out
@@ -1210,7 +1210,7 @@ func loadCardStoreConfig(ctx context.Context, system store.SystemSettingsReposit
 func normalizeCardStoreConfig(cfg cardStoreConfig) cardStoreConfig {
 	cfg.PaymentMode = normalizeCardStorePaymentMode(cfg.PaymentMode)
 	if cfg.PaymentMode == "" {
-		cfg.PaymentMode = cardStorePaymentModeFM
+		cfg.PaymentMode = cardStorePaymentModeManual
 	}
 	cfg.PaymentMethods = normalizeCardStorePaymentMethods(cfg.PaymentMethods, cfg.PaymentMode)
 	cfg.PaymentMode = cfg.PaymentMethods[0]

@@ -28,6 +28,43 @@ func TestCollectLLMServiceProviderReferenceIssues(t *testing.T) {
 	}
 }
 
+func TestCollectLLMServiceProviderReferenceIssues_SkipsBuiltinProvider(t *testing.T) {
+	// maclaw_official is a built-in virtual provider that routes through HubCenter.
+	// It should NOT trigger "references unknown providers" even when it's absent
+	// from the user-configured provider registry.
+	serviceReg := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:   llmservice.MaClawOfficialServiceGroupID,
+			Name: llmservice.MaClawOfficialServiceGroupName,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{llmservice.MaClawOfficialProviderID},
+			}},
+		}},
+	}
+	// Provider registry does NOT contain maclaw_official — that's normal.
+	providerReg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "deepseek"}}}
+	issues := collectLLMServiceProviderReferenceIssues(serviceReg, providerReg)
+	if len(issues) != 0 {
+		t.Fatalf("expected 0 issues for built-in provider, got %#v", issues)
+	}
+
+	// Case-insensitive: provider ID stored with different casing should still be recognized.
+	serviceReg2 := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID: "test-group",
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"MaClaw_Official"},
+			}},
+		}},
+	}
+	issues2 := collectLLMServiceProviderReferenceIssues(serviceReg2, providerReg)
+	if len(issues2) != 0 {
+		t.Fatalf("expected 0 issues for case-insensitive built-in provider, got %#v", issues2)
+	}
+}
+
 func TestFilterAuthorizedModelsByProviderRegistry(t *testing.T) {
 	status := &llmservice.ServiceStatus{
 		Active:          true,
@@ -85,6 +122,40 @@ func TestFilterAuthorizedModelsByProviderRegistry(t *testing.T) {
 	}
 	if len(filteredStatus.AvailableModels) != 1 || filteredStatus.AvailableModels[0] != "auto" {
 		t.Fatalf("available models = %#v", filteredStatus.AvailableModels)
+	}
+}
+
+func TestFilterAuthorizedModels_BuiltinProviderNotDropped(t *testing.T) {
+	// maclaw_official should be retained even when it's not in the provider registry.
+	status := &llmservice.ServiceStatus{
+		Active:          true,
+		SkipLLMConfig:   true,
+		AvailableModels: []string{"auto"},
+		DefaultModel:    "auto",
+	}
+	models := []llmservice.AuthorizedModel{{
+		Name:            "auto",
+		ProviderIDs:     []string{llmservice.MaClawOfficialProviderID},
+		ServiceGroupIDs: []string{llmservice.MaClawOfficialServiceGroupID},
+		ProviderServiceGroups: map[string][]string{
+			llmservice.MaClawOfficialProviderID: {llmservice.MaClawOfficialServiceGroupID},
+		},
+		ProviderCreditMultipliers: map[string]float64{
+			llmservice.MaClawOfficialProviderID: 1,
+		},
+		CreditMultiplier: 1,
+	}}
+	// Provider registry has NO maclaw_official entry (normal scenario).
+	providerReg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "deepseek"}}}
+	filteredStatus, filteredModels := filterAuthorizedModelsByProviderRegistry(status, models, providerReg)
+	if len(filteredModels) != 1 {
+		t.Fatalf("expected built-in provider model to be retained, got %d models: %#v", len(filteredModels), filteredModels)
+	}
+	if filteredModels[0].Name != "auto" {
+		t.Fatalf("expected auto, got %q", filteredModels[0].Name)
+	}
+	if !filteredStatus.Active {
+		t.Fatalf("status should remain active with built-in provider")
 	}
 }
 

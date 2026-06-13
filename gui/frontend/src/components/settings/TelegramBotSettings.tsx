@@ -73,7 +73,7 @@ export const TelegramBotSettings = ({
                                 LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                             }).catch((err: any) => {
                                 setTelegramLocalModeState(prev);
-                                alert(err?.message || err || switchFailedLabel);
+                                alert(err?.message || err || switchFailedLabel(lang));
                             });
                         }}
                     >

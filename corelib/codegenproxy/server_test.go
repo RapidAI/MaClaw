@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	llmcompat "github.com/RapidAI/CodeClaw/corelib/llm"
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
 	openai "github.com/openai/openai-go"
@@ -277,6 +278,177 @@ func TestConvertOpenAIToAnthropic_ContentToolCall(t *testing.T) {
 	}
 	if result.Content[0].Text != "" {
 		t.Fatalf("raw content leaked as text: %q", result.Content[0].Text)
+	}
+	if result.Content[0].Input["path"] != "README.md" {
+		t.Fatalf("tool input = %+v, want README path", result.Content[0].Input)
+	}
+}
+
+func TestConvertOpenAIToAnthropic_BareJSONFunctionStringContentToolCall(t *testing.T) {
+	resp := openaiChatResponse{
+		ID: "chatcmpl-content-tool-json-function",
+		Choices: []openaiChoice{{
+			Message: openaiMessage{
+				Role:    "assistant",
+				Content: `{"function":"read_file","args":{"path":"README.md"}}`,
+			},
+			FinishReason: "stop",
+		}},
+	}
+
+	result := convertOpenAIToAnthropic(resp, "Qwen-Flash")
+
+	if result.StopReason != "tool_use" {
+		t.Fatalf("stop_reason = %q, want tool_use", result.StopReason)
+	}
+	if len(result.Content) != 1 || result.Content[0].Type != "tool_use" {
+		t.Fatalf("content = %+v, want one tool_use", result.Content)
+	}
+	if result.Content[0].Name != "read_file" || result.Content[0].Input["path"] != "README.md" {
+		t.Fatalf("tool_use = %+v, want read_file README", result.Content[0])
+	}
+}
+
+func TestMayContainContentToolCall(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "plain text", content: "Here is the summary, no tools needed.", want: false},
+		{name: "xml", content: `<tool_call>{"function":{"name":"read_file","arguments":{"path":"README.md"}}}</tool_call>`, want: true},
+		{name: "codex invoke", content: `<turn: tool_call><invoke name="read_file"></invoke></turn>`, want: true},
+		{name: "plain marker", content: `TOOL_CALL {"name":"read_file","arguments":{"path":"README.md"}}`, want: true},
+		{name: "bare json", content: `{"name":"read_file","arguments":{"path":"README.md"}}`, want: true},
+		{name: "bare function string", content: `{"function":"read_file","args":{"path":"README.md"}}`, want: true},
+		{name: "bare tool alias", content: `{"tool_name":"read_file","input":{"path":"README.md"}}`, want: true},
+		{name: "legacy function call", content: `{"function_call":{"name":"read_file","arguments":{"path":"README.md"}}}`, want: true},
+		{name: "fenced json", content: "```json\n{\"name\":\"read_file\",\"arguments\":{\"path\":\"README.md\"}}\n```", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mayContainContentToolCall(tc.content); got != tc.want {
+				t.Fatalf("mayContainContentToolCall() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIToAnthropic_MalformedContentToolCallDoesNotLeakRawText(t *testing.T) {
+	resp := openaiChatResponse{
+		ID: "chatcmpl-malformed-content-tool",
+		Choices: []openaiChoice{{
+			Message: openaiMessage{
+				Role:    "assistant",
+				Content: `<tool_call>{"function":{"name":"read_file","arguments":{bad-json}}</tool_call>`,
+			},
+			FinishReason: "stop",
+		}},
+	}
+
+	result := convertOpenAIToAnthropic(resp, "Qwen-Flash")
+
+	if result.StopReason != "end_turn" {
+		t.Fatalf("stop_reason = %q, want end_turn", result.StopReason)
+	}
+	if len(result.Content) != 1 || result.Content[0].Type != "text" {
+		t.Fatalf("content = %+v, want one text block", result.Content)
+	}
+	if result.Content[0].Text != llmcompat.MalformedContentToolCallErrorMsg {
+		t.Fatalf("text = %q, want malformed tool-call message", result.Content[0].Text)
+	}
+	if strings.Contains(result.Content[0].Text, "<tool_call>") || strings.Contains(result.Content[0].Text, "bad-json") {
+		t.Fatalf("raw malformed tool call leaked: %q", result.Content[0].Text)
+	}
+}
+
+func TestConvertOpenAIToAnthropic_InvalidContentToolArgumentsDoNotLeakRawText(t *testing.T) {
+	resp := openaiChatResponse{
+		ID: "chatcmpl-invalid-content-tool-args",
+		Choices: []openaiChoice{{
+			Message: openaiMessage{
+				Role:    "assistant",
+				Content: `<tool_call>{"function":{"name":"read_file","arguments":[]}}</tool_call>`,
+			},
+			FinishReason: "stop",
+		}},
+	}
+
+	result := convertOpenAIToAnthropic(resp, "Qwen-Flash")
+
+	if result.StopReason != "end_turn" {
+		t.Fatalf("stop_reason = %q, want end_turn", result.StopReason)
+	}
+	if len(result.Content) != 1 || result.Content[0].Type != "text" {
+		t.Fatalf("content = %+v, want one text block", result.Content)
+	}
+	if result.Content[0].Text != llmcompat.MalformedContentToolCallErrorMsg {
+		t.Fatalf("text = %q, want malformed tool-call message", result.Content[0].Text)
+	}
+	if strings.Contains(result.Content[0].Text, "<tool_call>") || strings.Contains(result.Content[0].Text, "arguments") {
+		t.Fatalf("raw invalid tool call leaked: %q", result.Content[0].Text)
+	}
+}
+
+func TestConvertOpenAIToAnthropic_MixedMalformedContentToolCallDoesNotExecutePartial(t *testing.T) {
+	resp := openaiChatResponse{
+		ID: "chatcmpl-mixed-content-tool",
+		Choices: []openaiChoice{{
+			Message: openaiMessage{
+				Role: "assistant",
+				Content: `<tool_call>{"function":{"name":"read_file","arguments":{"path":"README.md"}}}</tool_call>
+<tool_call>{"function":{"name":"write_file","arguments":{bad-json}}</tool_call>`,
+			},
+			FinishReason: "stop",
+		}},
+	}
+
+	result := convertOpenAIToAnthropic(resp, "Qwen-Flash")
+
+	if result.StopReason != "end_turn" {
+		t.Fatalf("stop_reason = %q, want end_turn", result.StopReason)
+	}
+	if len(result.Content) != 1 || result.Content[0].Type != "text" {
+		t.Fatalf("content = %+v, want one text block", result.Content)
+	}
+	if result.Content[0].Text != llmcompat.MalformedContentToolCallErrorMsg {
+		t.Fatalf("text = %q, want malformed tool-call message", result.Content[0].Text)
+	}
+}
+
+func TestConvertOpenAIToAnthropic_StandardToolCallWinsOverMalformedContentToolCall(t *testing.T) {
+	resp := openaiChatResponse{
+		ID: "chatcmpl-standard-tool-wins",
+		Choices: []openaiChoice{{
+			Message: openaiMessage{
+				Role:    "assistant",
+				Content: `<tool_call>{"function":{"name":"write_file","arguments":{bad-json}}</tool_call>`,
+				ToolCalls: []openaiToolCall{{
+					ID:   "call_read",
+					Type: "function",
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{
+						Name:      "read_file",
+						Arguments: `{"path":"README.md"}`,
+					},
+				}},
+			},
+			FinishReason: "tool_calls",
+		}},
+	}
+
+	result := convertOpenAIToAnthropic(resp, "Qwen-Flash")
+
+	if result.StopReason != "tool_use" {
+		t.Fatalf("stop_reason = %q, want tool_use", result.StopReason)
+	}
+	if len(result.Content) != 1 || result.Content[0].Type != "tool_use" {
+		t.Fatalf("content = %+v, want one tool_use", result.Content)
+	}
+	if result.Content[0].ID != "call_read" || result.Content[0].Name != "read_file" {
+		t.Fatalf("tool_use = %+v, want call_read/read_file", result.Content[0])
 	}
 	if result.Content[0].Input["path"] != "README.md" {
 		t.Fatalf("tool input = %+v, want README path", result.Content[0].Input)
@@ -745,6 +917,127 @@ func TestAnthropicSDKClientCanStreamContentToolUseFromCodeGenProxy(t *testing.T)
 	}
 	if string(toolUse.Input) != `{"path":"README.md"}` {
 		t.Fatalf("tool input = %s, want README path", toolUse.Input)
+	}
+}
+
+func TestAnthropicProxyMalformedStreamContentToolCallEmitsError(t *testing.T) {
+	srv := NewServer(":0")
+	body := io.NopCloser(strings.NewReader(
+		"data: {\"choices\":[{\"delta\":{\"content\":\"<tool_call>{\\\"function\\\":{\\\"name\\\":\\\"read_file\\\",\\\"arguments\\\":{bad-json}}</tool_call>\"}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+			"data: [DONE]\n\n",
+	))
+	upResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       body,
+	}
+	rec := httptest.NewRecorder()
+	toolSchemas := map[string]toolSchemaSummary{
+		"read_file": {},
+	}
+
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-malformed-content-tool", toolSchemas)
+
+	text := rec.Body.String()
+	if !strings.Contains(text, "event: error") {
+		t.Fatalf("stream missing error event: %s", text)
+	}
+	if strings.Contains(text, "bad-json") || strings.Contains(text, "<tool_call>") {
+		t.Fatalf("stream leaked malformed tool call: %s", text)
+	}
+	if strings.Contains(text, "event: message_stop") {
+		t.Fatalf("stream emitted message_stop after malformed content tool call: %s", text)
+	}
+}
+
+func TestAnthropicProxyInvalidStreamContentToolArgumentsEmitError(t *testing.T) {
+	srv := NewServer(":0")
+	body := io.NopCloser(strings.NewReader(
+		"data: {\"choices\":[{\"delta\":{\"content\":\"<tool_call>{\\\"function\\\":{\\\"name\\\":\\\"read_file\\\",\\\"arguments\\\":[]}}</tool_call>\"}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+			"data: [DONE]\n\n",
+	))
+	upResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       body,
+	}
+	rec := httptest.NewRecorder()
+	toolSchemas := map[string]toolSchemaSummary{
+		"read_file": {},
+	}
+
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-invalid-content-tool-args", toolSchemas)
+
+	text := rec.Body.String()
+	if !strings.Contains(text, "event: error") {
+		t.Fatalf("stream missing error event: %s", text)
+	}
+	if strings.Contains(text, `"type":"tool_use"`) || strings.Contains(text, "<tool_call>") {
+		t.Fatalf("stream emitted or leaked invalid content tool call: %s", text)
+	}
+}
+
+func TestAnthropicProxyMixedMalformedStreamContentToolCallDoesNotExecutePartial(t *testing.T) {
+	srv := NewServer(":0")
+	body := io.NopCloser(strings.NewReader(
+		"data: {\"choices\":[{\"delta\":{\"content\":\"<tool_call>{\\\"function\\\":{\\\"name\\\":\\\"read_file\\\",\\\"arguments\\\":{\\\"path\\\":\\\"README.md\\\"}}}</tool_call>\\n\"}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{\"content\":\"<tool_call>{\\\"function\\\":{\\\"name\\\":\\\"write_file\\\",\\\"arguments\\\":{bad-json}}</tool_call>\"}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+			"data: [DONE]\n\n",
+	))
+	upResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       body,
+	}
+	rec := httptest.NewRecorder()
+	toolSchemas := map[string]toolSchemaSummary{
+		"read_file":  {},
+		"write_file": {},
+	}
+
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-mixed-malformed-content-tool", toolSchemas)
+
+	text := rec.Body.String()
+	if !strings.Contains(text, "event: error") {
+		t.Fatalf("stream missing error event: %s", text)
+	}
+	if strings.Contains(text, `"type":"tool_use"`) || strings.Contains(text, "README.md") {
+		t.Fatalf("stream executed or leaked partial valid tool call: %s", text)
+	}
+}
+
+func TestAnthropicProxyStandardStreamToolCallWinsOverMalformedContentToolCall(t *testing.T) {
+	srv := NewServer(":0")
+	body := io.NopCloser(strings.NewReader(
+		"data: {\"choices\":[{\"delta\":{\"content\":\"<tool_call>{\\\"function\\\":{\\\"name\\\":\\\"read_file\\\",\\\"arguments\\\":{bad-json}}</tool_call>\"}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_read\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}]}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+			"data: [DONE]\n\n",
+	))
+	upResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       body,
+	}
+	rec := httptest.NewRecorder()
+	toolSchemas := map[string]toolSchemaSummary{
+		"read_file": {},
+	}
+
+	srv.handleStreamResponse(rec, upResp, "Qwen-Flash", "test-standard-tool-wins", toolSchemas)
+
+	text := rec.Body.String()
+	if strings.Contains(text, "event: error") {
+		t.Fatalf("stream emitted error despite valid standard tool call: %s", text)
+	}
+	if !strings.Contains(text, `"type":"tool_use"`) || !strings.Contains(text, `"id":"call_read"`) {
+		t.Fatalf("stream missing standard tool_use: %s", text)
+	}
+	if strings.Contains(text, "bad-json") || strings.Contains(text, "<tool_call>") {
+		t.Fatalf("stream leaked malformed content tool call: %s", text)
 	}
 }
 
@@ -1301,6 +1594,16 @@ func TestQwenFlashDoesNotFlagDistinctToolProgressAsLoop(t *testing.T) {
 	}
 	if loop {
 		t.Fatalf("loop = true, want false for distinct tool progress")
+	}
+}
+
+func TestValidateBufferedToolUseNormalizesEmptyArguments(t *testing.T) {
+	acc := &streamToolCallAccum{Index: 1, Name: "Noop"}
+	if err := validateBufferedToolUse(acc); err != nil {
+		t.Fatalf("validateBufferedToolUse: %v", err)
+	}
+	if acc.Arguments != "{}" {
+		t.Fatalf("Arguments = %q, want {}", acc.Arguments)
 	}
 }
 
@@ -1892,6 +2195,91 @@ func TestSummarizeStreamToolIncludesKeysAndSchemaMissing(t *testing.T) {
 	}
 	if !strings.Contains(got, "schema_missing=content") {
 		t.Fatalf("summary missing schema gap: %s", got)
+	}
+}
+
+func TestSummarizeStreamToolListIncludesContentToolCalls(t *testing.T) {
+	schemas := map[string]toolSchemaSummary{
+		"read_file": {
+			Required: map[string]struct{}{"path": {}},
+			Props:    map[string]struct{}{"path": {}},
+		},
+	}
+	calls := []*streamToolCallAccum{{
+		Index:     0,
+		Name:      "read_file",
+		Arguments: `{"path":"README.md"}`,
+	}}
+
+	got := summarizeStreamToolList(calls, schemas)
+
+	if !strings.Contains(got, "read_file(") || !strings.Contains(got, "args_keys=path") || !strings.Contains(got, "schema=ok") {
+		t.Fatalf("summary missing content tool details: %s", got)
+	}
+}
+
+func TestContentToolCallsToStreamAccumsSkipsPlainText(t *testing.T) {
+	calls, malformed := contentToolCallsToStreamAccums("Here is the summary, no tools needed.")
+
+	if malformed {
+		t.Fatalf("malformed = true, want false")
+	}
+	if len(calls) != 0 {
+		t.Fatalf("calls = %+v, want none", calls)
+	}
+}
+
+func TestContentToolCallsToStreamAccumsParsesContentToolCall(t *testing.T) {
+	calls, malformed := contentToolCallsToStreamAccums(`<tool_call>{"function":{"name":"read_file","arguments":{"path":"README.md"}}}</tool_call>`)
+
+	if malformed {
+		t.Fatalf("malformed = true, want false")
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls = %+v, want one", calls)
+	}
+	if calls[0].Name != "read_file" || calls[0].Arguments != `{"path":"README.md"}` {
+		t.Fatalf("call = %+v, want read_file README", calls[0])
+	}
+}
+
+func TestMaybeFlushStreamTextBufferFlushesSafeLongText(t *testing.T) {
+	rec := httptest.NewRecorder()
+	buf := strings.Builder{}
+	buf.WriteString(strings.Repeat("a", codeGenContentToolScanFlushBytes+256))
+	textStarted := false
+
+	maybeFlushStreamTextBuffer(rec, rec, 0, &textStarted, &buf)
+
+	body := rec.Body.String()
+	if !textStarted {
+		t.Fatalf("text block was not started")
+	}
+	if !strings.Contains(body, "content_block_delta") {
+		t.Fatalf("missing text delta: %s", body)
+	}
+	if buf.Len() != codeGenContentToolScanRetainBytes {
+		t.Fatalf("buffer len = %d, want retained %d", buf.Len(), codeGenContentToolScanRetainBytes)
+	}
+}
+
+func TestMaybeFlushStreamTextBufferKeepsPotentialToolCall(t *testing.T) {
+	rec := httptest.NewRecorder()
+	buf := strings.Builder{}
+	buf.WriteString(strings.Repeat("a", codeGenContentToolScanFlushBytes))
+	buf.WriteString(`<tool_call>{"function":{"name":"read_file","arguments":{"path":"README.md"}}}</tool_call>`)
+	textStarted := false
+
+	maybeFlushStreamTextBuffer(rec, rec, 0, &textStarted, &buf)
+
+	if textStarted {
+		t.Fatalf("text block started despite possible tool call")
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("unexpected flushed body: %s", rec.Body.String())
+	}
+	if buf.Len() <= codeGenContentToolScanFlushBytes {
+		t.Fatalf("buffer unexpectedly truncated")
 	}
 }
 

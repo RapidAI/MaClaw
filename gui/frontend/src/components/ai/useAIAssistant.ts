@@ -600,7 +600,7 @@ function stripRolePrefixReasoning(text: string): string {
 
 function sanitizeChatMessageForDisplay(message: ChatMessage): ChatMessage {
     if (message.role !== 'assistant') return message;
-    const nextContent = stripRolePrefixFrontend(message.content || '');
+    const nextContent = stripRolePrefixFrontend(stripAssistantProtocolArtifactsFrontend(message.content || ''));
     const nextReasoning = message.reasoning ? stripRolePrefixReasoning(message.reasoning) : message.reasoning;
     if (nextContent === message.content && nextReasoning === message.reasoning) return message;
     return {
@@ -608,6 +608,44 @@ function sanitizeChatMessageForDisplay(message: ChatMessage): ChatMessage {
         content: nextContent,
         reasoning: nextReasoning || undefined,
     };
+}
+
+function stripAssistantProtocolArtifactsFrontend(text: string): string {
+    if (!text) return text;
+    let out = text
+        .replace(/<details\b[\s\S]*?<\/details>/gi, '')
+        .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
+        .replace(/<\|FunctionCallBegin\|>[\s\S]*?(?:<\|FunctionCallEnd\|>|$)/g, '')
+        .replace(/<turn:\s*tool_call\b[\s\S]*?(?:<\/turn>|$)/gi, '');
+
+    const lower = out.toLowerCase();
+    const markers = ['<tool_call', '<functioncall', '<|functioncallbegin|>'];
+    let cut = -1;
+    for (const marker of markers) {
+        const idx = lower.indexOf(marker);
+        if (idx >= 0 && (cut < 0 || idx < cut)) cut = idx;
+    }
+    if (cut >= 0) {
+        out = out.slice(0, cut);
+    }
+
+    const trimmed = out.trim();
+    if (looksLikeStandaloneToolCallJSON(trimmed)) {
+        return '';
+    }
+    return trimmed;
+}
+
+function looksLikeStandaloneToolCallJSON(text: string): boolean {
+    if (!text || text[0] !== '{') return false;
+    if (!/"(?:name|tool_name|function)"\s*:/.test(text)) return false;
+    if (!/"(?:arguments|args|input)"\s*:/.test(text)) return false;
+    try {
+        const parsed = JSON.parse(text);
+        return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+    } catch {
+        return false;
+    }
 }
 
 function loadPersistedPrompts(): string[] {
@@ -2686,7 +2724,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         };
 
         const scheduleCheck = () => {
-            if (cancelled || initStatusRef.current === 'ready' || pollTimer) return;
+            if (cancelled || initStatusRef.current === 'ready' || initStatusRef.current === 'degraded' || pollTimer) return;
             pollTimer = setTimeout(() => {
                 pollTimer = null;
                 void check();

@@ -58,6 +58,45 @@ func TestLocalLLMCacheCachesOpenAICompatibleRequest(t *testing.T) {
 	}
 }
 
+func TestLocalLLMCacheDoesNotStoreNonStreamToolCallResponse(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_%d","type":"function","function":{"name":"run_command","arguments":"{\"cmd\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}`, calls.Load())
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	cfg := localLLMCacheTestConfig(t)
+	cfg.Enabled = true
+	if err := app.SaveConfig(corelib.AppConfig{LLMPromptCache: cfg}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	llmCfg := corelib.MaclawLLMConfig{URL: server.URL, Key: "test", Model: "test-model", Protocol: "openai", ProviderName: "local"}
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "run pwd"}}
+	tools := []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "run_command", "parameters": map[string]interface{}{"type": "object"}}}}
+
+	first, err := app.cachedOpenAIRequest(context.Background(), llmCfg, messages, tools, server.Client())
+	if err != nil {
+		t.Fatalf("first cachedOpenAIRequest: %v", err)
+	}
+	second, err := app.cachedOpenAIRequest(context.Background(), llmCfg, messages, tools, server.Client())
+	if err != nil {
+		t.Fatalf("second cachedOpenAIRequest: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("server calls = %d, want 2", calls.Load())
+	}
+	if first.Choices[0].Message.ToolCalls[0].ID == second.Choices[0].Message.ToolCalls[0].ID {
+		t.Fatalf("tool call ids match, response was cached: %q", first.Choices[0].Message.ToolCalls[0].ID)
+	}
+	usage := app.GetLLMTokenUsage("local")
+	if usage.LocalCacheRequests != 2 || usage.LocalCacheHits != 0 {
+		t.Fatalf("local cache usage requests=%d hits=%d, want 2/0", usage.LocalCacheRequests, usage.LocalCacheHits)
+	}
+}
+
 func TestLocalLLMCacheBypassesUnsupportedProtocolsAndHub(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	cfg := localLLMCacheTestConfig(t)
@@ -145,6 +184,81 @@ func TestLocalLLMCacheSynthesizesStreamHit(t *testing.T) {
 	usage := app.GetLLMTokenUsage("local")
 	if usage.LocalCacheRequests != 2 || usage.LocalCacheHits != 1 {
 		t.Fatalf("local cache usage requests=%d hits=%d, want 2/1", usage.LocalCacheRequests, usage.LocalCacheHits)
+	}
+}
+
+func TestLocalLLMCacheStreamHitStripsHiddenDetails(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	cfg := localLLMCacheTestConfig(t)
+	cfg.Enabled = true
+	if err := app.SaveConfig(corelib.AppConfig{LLMPromptCache: cfg}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	llmCfg := corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Key: "test", Model: "test-model", Protocol: "anthropic", ProviderName: "local"}
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
+	app.storeStreamResponse(llmCfg, messages, nil, &llm.Response{Choices: []llm.Choice{{Message: llm.Message{Role: "assistant", Content: "visible\n<details><summary>思考过程</summary>hidden</details>\ndone"}, FinishReason: "stop"}}})
+
+	var streamed string
+	resp, ok := app.cachedStreamHit(context.Background(), llmCfg, messages, nil, func(delta string) { streamed += delta })
+	if !ok {
+		t.Fatal("cachedStreamHit ok = false, want true")
+	}
+	if streamed != "visible\ndone" || resp.Choices[0].Message.Content != "visible\ndone" {
+		t.Fatalf("streamed/resp = %q/%q, want visible/done without details", streamed, resp.Choices[0].Message.Content)
+	}
+}
+
+func TestLocalLLMCacheStreamHitInvalidatesContentToolCallText(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	cfg := localLLMCacheTestConfig(t)
+	cfg.Enabled = true
+	if err := app.SaveConfig(corelib.AppConfig{LLMPromptCache: cfg}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	llmCfg := corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Key: "test", Model: "test-model", Protocol: "anthropic", ProviderName: "local"}
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
+	_, key, err := localLLMCacheAnthropicKey(llmCfg, messages, nil, cfg, false)
+	if err != nil {
+		t.Fatalf("localLLMCacheAnthropicKey: %v", err)
+	}
+	raw := `{"choices":[{"message":{"role":"assistant","content":"I will write.\n<tool_call[]>\n{\"name\":\"write_file\",\"arguments\":{\"path\":\"a.txt\",\"content\":\"x\"}}"}}]}`
+	app.ensureLocalLLMCache(cfg).Set(key, []byte(raw), cfg)
+
+	var streamed string
+	resp, ok := app.cachedStreamHit(context.Background(), llmCfg, messages, nil, func(delta string) { streamed += delta })
+	if ok || resp != nil {
+		t.Fatalf("cachedStreamHit = %+v/%v, want nil/false for content tool call text", resp, ok)
+	}
+	if streamed != "" {
+		t.Fatalf("streamed = %q, want empty", streamed)
+	}
+	if _, hit := app.ensureLocalLLMCache(cfg).Get(key, cfg); hit {
+		t.Fatal("invalid content tool call cache entry still exists")
+	}
+}
+
+func TestLocalLLMCacheStreamHitInvalidatesStructuredToolCalls(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	cfg := localLLMCacheTestConfig(t)
+	cfg.Enabled = true
+	if err := app.SaveConfig(corelib.AppConfig{LLMPromptCache: cfg}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	llmCfg := corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Key: "test", Model: "test-model", Protocol: "openai", ProviderName: "local"}
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
+	_, key, err := localLLMCacheOpenAIKey(llmCfg, messages, nil, cfg)
+	if err != nil {
+		t.Fatalf("localLLMCacheOpenAIKey: %v", err)
+	}
+	raw := `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"run_command","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`
+	app.ensureLocalLLMCache(cfg).Set(key, []byte(raw), cfg)
+
+	resp, ok := app.cachedStreamHit(context.Background(), llmCfg, messages, nil, nil)
+	if ok || resp != nil {
+		t.Fatalf("cachedStreamHit = %+v/%v, want nil/false for structured tool calls", resp, ok)
+	}
+	if _, hit := app.ensureLocalLLMCache(cfg).Get(key, cfg); hit {
+		t.Fatal("invalid structured tool call cache entry still exists")
 	}
 }
 

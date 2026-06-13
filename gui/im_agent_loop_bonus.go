@@ -123,6 +123,7 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 
 	var toolExecElapsed time.Duration
 	for _, tc := range choice.Message.ToolCalls {
+		tc.Function.Arguments = normalizeAgentLoopToolArgumentsJSON(tc.Function.Arguments)
 		workflowAllowed, workflowReject := h.workflowAllowsBonusRoundToolCall(opts.UserID, opts.Context, tc)
 		toolOnProgress := filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug)
 		toolExecStartedAt := time.Now()

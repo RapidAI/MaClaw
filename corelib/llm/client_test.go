@@ -85,7 +85,7 @@ func TestBuildAnthropicMessagesRequestDataUsesSharedEndpointAndOptions(t *testin
 	if err := json.Unmarshal(body, &req); err != nil {
 		t.Fatalf("unmarshal body: %v", err)
 	}
-	if req.Model != "claude-test" || req.System != "be brief" || !req.Stream || req.MaxTokens != 4096 {
+	if req.Model != "claude-test" || req.System != "be brief" || !req.Stream || req.MaxTokens != 8192 {
 		t.Fatalf("request body scalar fields = %+v", req)
 	}
 	if len(req.Messages) != 1 || req.Messages[0]["role"] != "user" {
@@ -101,6 +101,126 @@ func TestBuildAnthropicMessagesRequestDataUsesSharedEndpointAndOptions(t *testin
 // this test FAILS — confirming the bug exists.
 //
 // **Validates: Requirements 1.1, 1.3**
+func TestBuildAnthropicMessagesRequestDataDefaultsToolUseMaxTokens(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://anthropic.test", Model: "claude-test"}
+	tools := []map[string]interface{}{{
+		"name":        "write_file",
+		"description": "write file",
+		"parameters":  map[string]interface{}{"type": "object"},
+	}}
+	_, body, err := BuildAnthropicMessagesRequestData(cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "write a file"},
+	}, AnthropicMessagesRequestOptions{Tools: tools})
+	if err != nil {
+		t.Fatalf("BuildAnthropicMessagesRequestData: %v", err)
+	}
+	var req struct {
+		MaxTokens int `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if req.MaxTokens != 8192 {
+		t.Fatalf("max_tokens = %d, want 8192", req.MaxTokens)
+	}
+}
+
+func TestBuildOpenAIChatRequestDataDefaultsToolUseMaxTokens(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/coding/paas/v4", Model: "glm-5.1", AgentType: "opencode"}
+	tools := []map[string]interface{}{{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "write_file",
+			"description": "write file",
+			"parameters":  map[string]interface{}{"type": "object"},
+		},
+	}}
+	_, body, err := BuildOpenAIChatRequestData(cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "write a file"},
+	}, OpenAIChatRequestOptions{Tools: tools})
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData: %v", err)
+	}
+	var req struct {
+		MaxTokens int `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if req.MaxTokens != defaultOpenAIToolUseMaxTokens {
+		t.Fatalf("max_tokens = %d, want %d", req.MaxTokens, defaultOpenAIToolUseMaxTokens)
+	}
+}
+
+func TestBuildOpenAIChatRequestDataHonorsExplicitToolUseMaxTokens(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-chat"}
+	tools := []map[string]interface{}{{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":       "lookup",
+			"parameters": map[string]interface{}{"type": "object"},
+		},
+	}}
+	_, body, err := BuildOpenAIChatRequestData(cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "lookup"},
+	}, OpenAIChatRequestOptions{
+		Tools:       tools,
+		PassThrough: map[string]interface{}{"max_tokens": 512},
+	})
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData: %v", err)
+	}
+	var req struct {
+		MaxTokens int `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if req.MaxTokens != 512 {
+		t.Fatalf("max_tokens = %d, want 512", req.MaxTokens)
+	}
+}
+
+func TestParseNonStreamOpenAIResponseBodyDetectsTruncatedToolCall(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bad","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"a.txt\",\"content\":\"unterminated"}}]},"finish_reason":"length"}]}`)
+	resp, err := ParseNonStreamOpenAIResponseBody(body)
+	if err != nil {
+		t.Fatalf("ParseNonStreamOpenAIResponseBody: %v", err)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1", len(resp.Choices))
+	}
+	choice := resp.Choices[0]
+	if len(choice.TruncatedToolNames) != 1 || choice.TruncatedToolNames[0] != "write_file" {
+		t.Fatalf("TruncatedToolNames = %#v, want write_file", choice.TruncatedToolNames)
+	}
+	if len(choice.Message.ToolCalls) != 0 {
+		t.Fatalf("truncated tool calls should be removed: %#v", choice.Message.ToolCalls)
+	}
+	if choice.FinishReason != "stop" {
+		t.Fatalf("finish_reason = %q, want stop", choice.FinishReason)
+	}
+}
+
+func TestBuildAnthropicMessagesRequestDataDefaultsTextMaxTokens(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://anthropic.test", Model: "claude-test"}
+	_, body, err := BuildAnthropicMessagesRequestData(cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "ping"},
+	}, AnthropicMessagesRequestOptions{})
+	if err != nil {
+		t.Fatalf("BuildAnthropicMessagesRequestData: %v", err)
+	}
+	var req struct {
+		MaxTokens int `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if req.MaxTokens != 4096 {
+		t.Fatalf("max_tokens = %d, want 4096", req.MaxTokens)
+	}
+}
+
 func TestBuildAnthropicMessagesRequestDataHonorsMaxTokensOption(t *testing.T) {
 	cfg := corelib.MaclawLLMConfig{URL: "https://anthropic.test", Model: "claude-test"}
 	_, body, err := BuildAnthropicMessagesRequestData(cfg, []interface{}{

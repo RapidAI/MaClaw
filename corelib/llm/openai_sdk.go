@@ -220,13 +220,17 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 			finishReason = "stop"
 		}
 	}
+	var truncatedTools []string
 	if capture.isEventStream() {
 		if parsed, err := ParseSSEToResponse(capture.body()); err == nil && parsed != nil && len(parsed.Choices) > 0 {
 			parsedChoice := parsed.Choices[0]
 			if msg.ReasoningContent == "" {
 				msg.ReasoningContent = parsedChoice.Message.ReasoningContent
 			}
-			if len(msg.ToolCalls) == 0 && len(parsedChoice.Message.ToolCalls) > 0 {
+			truncatedTools = parsedChoice.TruncatedToolNames
+			if len(truncatedTools) > 0 {
+				msg.ToolCalls = parsedChoice.Message.ToolCalls
+			} else if len(msg.ToolCalls) == 0 && len(parsedChoice.Message.ToolCalls) > 0 {
 				msg.ToolCalls = parsedChoice.Message.ToolCalls
 			}
 			if finishReason == "" {
@@ -237,7 +241,10 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 			}
 		}
 	}
-	return &Response{Choices: []Choice{{Message: msg, FinishReason: finishReason}}, Usage: usage}, http.StatusOK, nil, nil
+	if len(truncatedTools) == 0 {
+		finishReason, truncatedTools = filterStreamTruncatedToolCalls(&msg, finishReason)
+	}
+	return &Response{Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools}}, Usage: usage}, http.StatusOK, nil, nil
 }
 
 func openAISDKChunkLegacyFunctionCall(raw string) *sseFunctionCallDelta {

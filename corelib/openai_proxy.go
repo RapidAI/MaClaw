@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,7 @@ type OpenAIProxyConfig struct {
 	Protocol  string // "" or "openai" or "anthropic"
 	WireAPI   string // "" or "chat" or "responses" or "responses-ws"
 	AgentType string // optional User-Agent/client identity
+	AuthType  string // optional auth kind from provider config
 }
 
 // OpenAIProxy is a local HTTP proxy that provides an OpenAI-compatible
@@ -44,6 +46,40 @@ func NewOpenAIProxy(cfg OpenAIProxyConfig) *OpenAIProxy {
 			Timeout: time.Duration(DefaultLLMTimeoutSec) * time.Second,
 		},
 	}
+}
+
+// ValidateOpenAIProxyUpstreamConfig reports whether a skill-local proxy can
+// safely start with the resolved upstream provider. Remote authenticated
+// providers need a usable key/token; explicit no-auth or loopback providers are
+// allowed for local model servers.
+func ValidateOpenAIProxyUpstreamConfig(cfg OpenAIProxyConfig) error {
+	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+		return fmt.Errorf("no LLM provider URL/model is configured")
+	}
+	if strings.TrimSpace(cfg.Key) != "" {
+		return nil
+	}
+	authType := strings.ToLower(strings.TrimSpace(cfg.AuthType))
+	if authType == "none" {
+		return nil
+	}
+	if isLoopbackOpenAIProxyURL(cfg.URL) {
+		return nil
+	}
+	switch authType {
+	case "oauth", "sso", "api_key", "bearer":
+		return fmt.Errorf("selected LLM provider requires authentication but no API key/token is available")
+	}
+	return fmt.Errorf("selected remote LLM provider has no API key/token; set auth_type=none only for no-auth local providers")
+}
+
+func isLoopbackOpenAIProxyURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 // Start binds to a random port on 127.0.0.1 and begins serving.
@@ -425,8 +461,17 @@ func (p *OpenAIProxy) routeProtocol() string {
 func (p *OpenAIProxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// 1. Validate path
-	if r.URL.Path != "/v1/chat/completions" {
+	if isOpenAIProxyResponsesPath(r.URL.Path) {
+		p.handleResponses(w, r)
+		return
+	}
+
+	// 1. Validate path. Accept both OpenAI's canonical /v1 path and the
+	// suffix used by simple scripts that append to OPENAI_BASE_URL themselves.
+	if !isOpenAIProxyChatCompletionsPath(r.URL.Path) {
+		if p.handleModels(w, r) {
+			return
+		}
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": map[string]interface{}{
@@ -510,6 +555,134 @@ func (p *OpenAIProxy) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	log.Printf("[openai-proxy] protocol=%s url=%s model=%s status=%d", protocol, p.config.URL, originalModel, statusCode)
 }
 
+func isOpenAIProxyChatCompletionsPath(path string) bool {
+	path = strings.TrimRight(path, "/")
+	return path == "/v1/chat/completions" || path == "/chat/completions"
+}
+
+func isOpenAIProxyResponsesPath(path string) bool {
+	path = strings.TrimRight(path, "/")
+	return path == "/v1/responses" || path == "/responses"
+}
+
+func (p *OpenAIProxy) handleResponses(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": "Method Not Allowed",
+				"type":    "invalid_request_error",
+			},
+		})
+		return
+	}
+	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": fmt.Sprintf("invalid JSON: %s", err.Error()),
+				"type":    "invalid_request_error",
+			},
+		})
+		return
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": fmt.Sprintf("invalid JSON: %s", err.Error()),
+				"type":    "invalid_request_error",
+			},
+		})
+		return
+	}
+
+	var respBody []byte
+	var statusCode int
+	var forwardErr error
+	if p.routeProtocol() == "responses" {
+		respBody, statusCode, forwardErr = p.forwardResponsesRaw(body)
+	} else {
+		chatBody, model, err := openAIProxyResponsesRequestToChat(body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": "convert responses request: " + err.Error(),
+					"type":    "invalid_request_error",
+				},
+			})
+			return
+		}
+		switch p.routeProtocol() {
+		case "anthropic":
+			respBody, statusCode, forwardErr = p.forwardAnthropic(chatBody)
+		default:
+			respBody, statusCode, forwardErr = p.forwardOpenAI(chatBody)
+		}
+		if forwardErr == nil && statusCode < 400 {
+			respBody, forwardErr = openAIProxyChatResponseToResponses(respBody, model)
+		}
+	}
+	if forwardErr != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": fmt.Sprintf("upstream provider unreachable: %s", forwardErr.Error()),
+				"type":    "server_error",
+			},
+		})
+		return
+	}
+	w.WriteHeader(statusCode)
+	w.Write(respBody)
+}
+
+func (p *OpenAIProxy) handleModels(w http.ResponseWriter, r *http.Request) bool {
+	path := strings.TrimRight(r.URL.Path, "/")
+	if path != "/v1/models" && path != "/models" && !strings.HasPrefix(path, "/v1/models/") && !strings.HasPrefix(path, "/models/") {
+		return false
+	}
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": "Method Not Allowed",
+				"type":    "invalid_request_error",
+			},
+		})
+		return true
+	}
+	model := strings.TrimSpace(p.config.Model)
+	if model == "" {
+		model = "maclaw-local-proxy"
+	}
+	if strings.HasPrefix(path, "/v1/models/") || strings.HasPrefix(path, "/models/") {
+		requested := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(path, "/v1/models/"), "/models/"))
+		if requested != "" {
+			model = requested
+		}
+		json.NewEncoder(w).Encode(openAIProxyModelObject(model))
+		return true
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"object": "list",
+		"data":   []interface{}{openAIProxyModelObject(model)},
+	})
+	return true
+}
+
+func openAIProxyModelObject(model string) map[string]interface{} {
+	return map[string]interface{}{
+		"id":       model,
+		"object":   "model",
+		"created":  int64(0),
+		"owned_by": "maclaw-local-proxy",
+	}
+}
+
 // forwardOpenAI forwards the request directly to an OpenAI-compatible upstream.
 // It replaces the model field, forces stream: false, and forwards the response as-is.
 func (p *OpenAIProxy) forwardOpenAI(body map[string]interface{}) ([]byte, int, error) {
@@ -567,9 +740,11 @@ func openaiToAnthropic(body map[string]interface{}, model string) map[string]int
 		"stream": false,
 	}
 
-	// Extract max_tokens from body, default to 4096
+	// Extract max_tokens from body, default to a larger budget for tool loops.
 	if mt, ok := body["max_tokens"]; ok && mt != nil {
 		anthropicReq["max_tokens"] = mt
+	} else if len(openAICompatForwardSlice(body["tools"])) > 0 {
+		anthropicReq["max_tokens"] = 8192
 	} else {
 		anthropicReq["max_tokens"] = 4096
 	}
@@ -668,6 +843,9 @@ func convertAnthropicTools(tools []map[string]interface{}) []map[string]interfac
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
 		fn := mapFromAny(t["function"])
+		if fn == nil && strings.TrimSpace(fmt.Sprint(t["type"])) == "function" {
+			fn = t
+		}
 		if fn == nil {
 			continue
 		}
@@ -708,10 +886,33 @@ func extractOpenAIToolCalls(mm map[string]interface{}) []openAIToolCallParts {
 		out = append(out, openAIToolCallParts{
 			ID:        stringFromMap(call, "id"),
 			Name:      stringFromMap(fn, "name"),
-			Arguments: stringFromMap(fn, "arguments"),
+			Arguments: openAIToolCallArgumentsString(fn["arguments"]),
 		})
 	}
 	return out
+}
+
+func openAIToolCallArgumentsString(raw interface{}) string {
+	switch v := raw.(type) {
+	case nil:
+		return "{}"
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return "{}"
+		}
+		return v
+	case json.RawMessage:
+		if len(v) == 0 || strings.TrimSpace(string(v)) == "" || strings.TrimSpace(string(v)) == "null" {
+			return "{}"
+		}
+		return string(v)
+	default:
+		data, err := json.Marshal(v)
+		if err != nil || len(data) == 0 || strings.TrimSpace(string(data)) == "" || strings.TrimSpace(string(data)) == "null" {
+			return "{}"
+		}
+		return string(data)
+	}
 }
 
 func mapFromAny(v interface{}) map[string]interface{} {
@@ -939,6 +1140,514 @@ func (p *OpenAIProxy) forwardResponses(body map[string]interface{}) ([]byte, int
 	}
 
 	return data, http.StatusOK, nil
+}
+
+func (p *OpenAIProxy) forwardResponsesRaw(body map[string]interface{}) ([]byte, int, error) {
+	fwd := cloneOpenAICompatBody(body)
+	cfg := p.maclawLLMConfig()
+	return ForwardOpenAIResponsesRawRequest(context.Background(), cfg, fwd, p.client)
+}
+
+func ForwardOpenAIResponsesRawRequest(ctx context.Context, cfg MaclawLLMConfig, body map[string]interface{}, client *http.Client) ([]byte, int, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	fwd := cloneOpenAICompatBody(body)
+	if model := strings.TrimSpace(cfg.UpstreamModel()); model != "" {
+		fwd["model"] = model
+	}
+	jsonBody, err := json.Marshal(fwd)
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal responses request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openAIResponsesEndpoint(cfg.URL), bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, 0, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if cfg.Key != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Key)
+	}
+	req.Header.Set("User-Agent", cfg.UserAgent())
+	SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read response body: %w", err)
+	}
+	return respBody, resp.StatusCode, nil
+}
+
+func openAIProxyResponsesRequestToChat(payload map[string]interface{}) (map[string]interface{}, string, error) {
+	model := strings.TrimSpace(fmt.Sprint(payload["model"]))
+	if model == "" || model == "<nil>" {
+		return nil, "", fmt.Errorf("model is required")
+	}
+	messages := openAIProxyResponsesInputToChatMessages(payload["input"])
+	if instructions := strings.TrimSpace(fmt.Sprint(payload["instructions"])); instructions != "" && instructions != "<nil>" {
+		messages = append([]interface{}{map[string]interface{}{"role": "system", "content": instructions}}, messages...)
+	}
+	if len(messages) == 0 {
+		return nil, model, fmt.Errorf("input is required")
+	}
+	chat := map[string]interface{}{
+		"model":    model,
+		"messages": messages,
+	}
+	if tools := openAIProxyResponsesToolsToChatTools(payload["tools"]); len(tools) > 0 {
+		chat["tools"] = tools
+	}
+	if choice := openAIProxyResponsesToolChoiceToChat(payload["tool_choice"]); choice != nil {
+		chat["tool_choice"] = choice
+	}
+	if v, ok := payload["max_output_tokens"]; ok {
+		chat["max_tokens"] = v
+	} else if v, ok := payload["max_tokens"]; ok {
+		chat["max_tokens"] = v
+	}
+	for _, key := range []string{"temperature", "top_p", "user"} {
+		if v, ok := payload[key]; ok {
+			chat[key] = v
+		}
+	}
+	if responseFormat := openAIProxyResponsesTextToChatResponseFormat(payload["text"]); responseFormat != nil {
+		chat["response_format"] = responseFormat
+	}
+	return chat, model, nil
+}
+
+// OpenAICompatResponsesRequestToChat converts an OpenAI Responses API request
+// into the Chat Completions shape used by the shared compatibility forwarder.
+func OpenAICompatResponsesRequestToChat(payload map[string]interface{}) (map[string]interface{}, string, error) {
+	return openAIProxyResponsesRequestToChat(payload)
+}
+
+func openAIProxyResponsesInputToChatMessages(input interface{}) []interface{} {
+	switch v := input.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		return []interface{}{map[string]interface{}{"role": "user", "content": v}}
+	default:
+		items := openAICompatForwardSlice(v)
+		if len(items) == 0 {
+			if text := strings.TrimSpace(fmt.Sprint(input)); text != "" && text != "<nil>" {
+				return []interface{}{map[string]interface{}{"role": "user", "content": text}}
+			}
+			return nil
+		}
+		out := make([]interface{}, 0, len(items))
+		for _, item := range items {
+			if msg := openAIProxyResponsesInputItemToChatMessage(item); msg != nil {
+				out = append(out, msg)
+			}
+		}
+		return out
+	}
+}
+
+func openAIProxyResponsesInputItemToChatMessage(item interface{}) map[string]interface{} {
+	m := mapFromAny(item)
+	if m == nil {
+		text := strings.TrimSpace(fmt.Sprint(item))
+		if text == "" || text == "<nil>" {
+			return nil
+		}
+		return map[string]interface{}{"role": "user", "content": text}
+	}
+	typ := strings.TrimSpace(fmt.Sprint(m["type"]))
+	switch typ {
+	case "message", "":
+		role := strings.TrimSpace(fmt.Sprint(m["role"]))
+		if role == "" || role == "<nil>" {
+			role = "user"
+		}
+		contentRaw := firstOpenAICompatNonNil(m["content"], m["text"], m["input"])
+		content := openAIProxyResponsesContentToChatContent(contentRaw, role)
+		return map[string]interface{}{"role": role, "content": content}
+	case "function_call_output":
+		callID := strings.TrimSpace(fmt.Sprint(firstOpenAICompatNonNil(m["call_id"], m["id"])))
+		if callID == "" || callID == "<nil>" {
+			return nil
+		}
+		return map[string]interface{}{"role": "tool", "tool_call_id": callID, "content": openAIProxyResponsesContentToText(firstOpenAICompatNonNil(m["output"], m["content"]))}
+	case "function_call":
+		name := strings.TrimSpace(fmt.Sprint(m["name"]))
+		if name == "" || name == "<nil>" {
+			return nil
+		}
+		callID := strings.TrimSpace(fmt.Sprint(firstOpenAICompatNonNil(m["call_id"], m["id"])))
+		if callID == "" || callID == "<nil>" {
+			callID = randomOpenAICompatForwardToolCallID()
+		}
+		return map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []interface{}{map[string]interface{}{
+				"id":   callID,
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":      name,
+					"arguments": openAIToolCallArgumentsString(m["arguments"]),
+				},
+			}},
+		}
+	default:
+		return map[string]interface{}{"role": "user", "content": openAIProxyResponsesContentToText(m)}
+	}
+}
+
+func openAIProxyResponsesContentToText(value interface{}) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	}
+	items := openAICompatForwardSlice(value)
+	if len(items) == 0 {
+		if m := mapFromAny(value); m != nil {
+			if text := openAIProxyResponsesSingleContentBlockToText(m); text != "" {
+				return text
+			}
+		}
+		data, err := json.Marshal(value)
+		if err == nil && string(data) != "null" {
+			return string(data)
+		}
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
+	var parts []string
+	for _, item := range items {
+		m := mapFromAny(item)
+		if m == nil {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" && text != "<nil>" {
+				parts = append(parts, text)
+			}
+			continue
+		}
+		if text := strings.TrimSpace(fmt.Sprint(firstOpenAICompatNonNil(m["text"], m["content"], m["input_text"], m["output_text"]))); text != "" && text != "<nil>" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func openAIProxyResponsesContentToChatContent(value interface{}, role string) interface{} {
+	if role != "user" {
+		return openAIProxyResponsesContentToText(value)
+	}
+	items := openAICompatForwardSlice(value)
+	if len(items) == 0 {
+		if m := mapFromAny(value); m != nil {
+			if block := openAIProxyResponsesSingleContentBlockToChat(m); block != nil {
+				return []interface{}{block}
+			}
+		}
+		return openAIProxyResponsesContentToText(value)
+	}
+	out := make([]interface{}, 0, len(items))
+	for _, item := range items {
+		m := mapFromAny(item)
+		if m == nil {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" && text != "<nil>" {
+				out = append(out, map[string]interface{}{"type": "text", "text": text})
+			}
+			continue
+		}
+		switch strings.TrimSpace(fmt.Sprint(m["type"])) {
+		case "text", "input_text", "output_text":
+			if text := strings.TrimSpace(fmt.Sprint(firstOpenAICompatNonNil(m["text"], m["content"], m["input_text"], m["output_text"]))); text != "" && text != "<nil>" {
+				out = append(out, map[string]interface{}{"type": "text", "text": text})
+			}
+		case "input_image", "image_url":
+			if image := openAIProxyResponsesImageBlockToChat(m); image != nil {
+				out = append(out, image)
+			}
+		case "input_file", "file":
+			if file := openAIProxyResponsesFileBlockToChat(m); file != nil {
+				out = append(out, file)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return openAIProxyResponsesContentToText(value)
+	}
+	return out
+}
+
+func openAIProxyResponsesSingleContentBlockToText(m map[string]interface{}) string {
+	if m == nil {
+		return ""
+	}
+	if text := strings.TrimSpace(fmt.Sprint(firstOpenAICompatNonNil(m["text"], m["content"], m["input_text"], m["output_text"]))); text != "" && text != "<nil>" {
+		return text
+	}
+	return ""
+}
+
+func openAIProxyResponsesSingleContentBlockToChat(m map[string]interface{}) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	switch strings.TrimSpace(fmt.Sprint(m["type"])) {
+	case "text", "input_text", "output_text":
+		if text := openAIProxyResponsesSingleContentBlockToText(m); text != "" {
+			return map[string]interface{}{"type": "text", "text": text}
+		}
+	case "input_image", "image_url":
+		return openAIProxyResponsesImageBlockToChat(m)
+	case "input_file", "file":
+		return openAIProxyResponsesFileBlockToChat(m)
+	}
+	return nil
+}
+
+func openAIProxyResponsesImageBlockToChat(m map[string]interface{}) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	url := strings.TrimSpace(fmt.Sprint(firstOpenAICompatNonNil(m["image_url"], m["url"])))
+	if nested := mapFromAny(m["image_url"]); nested != nil {
+		url = strings.TrimSpace(fmt.Sprint(firstOpenAICompatNonNil(nested["url"], nested["image_url"])))
+	}
+	if url == "" || url == "<nil>" {
+		return nil
+	}
+	image := map[string]interface{}{"url": url}
+	if detail := strings.TrimSpace(fmt.Sprint(m["detail"])); detail != "" && detail != "<nil>" {
+		image["detail"] = detail
+	}
+	return map[string]interface{}{"type": "image_url", "image_url": image}
+}
+
+func openAIProxyResponsesFileBlockToChat(m map[string]interface{}) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	file := map[string]interface{}{}
+	for _, key := range []string{"file_id", "filename", "file_data"} {
+		if value := strings.TrimSpace(fmt.Sprint(m[key])); value != "" && value != "<nil>" {
+			file[key] = value
+		}
+	}
+	if nested := mapFromAny(m["file"]); nested != nil {
+		for _, key := range []string{"file_id", "filename", "file_data"} {
+			if value := strings.TrimSpace(fmt.Sprint(nested[key])); value != "" && value != "<nil>" {
+				file[key] = value
+			}
+		}
+	}
+	if len(file) == 0 {
+		return nil
+	}
+	return map[string]interface{}{"type": "file", "file": file}
+}
+
+func openAIProxyResponsesToolsToChatTools(value interface{}) []interface{} {
+	items := openAICompatForwardSlice(value)
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]interface{}, 0, len(items))
+	for _, item := range items {
+		m := mapFromAny(item)
+		if m == nil {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(m["type"])) != "" && strings.TrimSpace(fmt.Sprint(m["type"])) != "function" {
+			continue
+		}
+		name := strings.TrimSpace(fmt.Sprint(m["name"]))
+		if name == "" || name == "<nil>" {
+			if fn := mapFromAny(m["function"]); fn != nil {
+				name = strings.TrimSpace(fmt.Sprint(fn["name"]))
+				m = fn
+			}
+		}
+		if name == "" || name == "<nil>" {
+			continue
+		}
+		fn := map[string]interface{}{"name": name}
+		if desc := strings.TrimSpace(fmt.Sprint(m["description"])); desc != "" && desc != "<nil>" {
+			fn["description"] = desc
+		}
+		if params, ok := m["parameters"]; ok {
+			fn["parameters"] = params
+		}
+		if strict, ok := m["strict"].(bool); ok {
+			fn["strict"] = strict
+		}
+		out = append(out, map[string]interface{}{"type": "function", "function": fn})
+	}
+	return out
+}
+
+func openAIProxyResponsesToolChoiceToChat(value interface{}) interface{} {
+	if s, ok := value.(string); ok {
+		switch strings.TrimSpace(s) {
+		case "auto", "none", "required":
+			return strings.TrimSpace(s)
+		}
+		return nil
+	}
+	m := mapFromAny(value)
+	if m == nil {
+		return nil
+	}
+	if strings.TrimSpace(fmt.Sprint(m["type"])) != "function" {
+		return nil
+	}
+	name := strings.TrimSpace(fmt.Sprint(m["name"]))
+	if name == "" || name == "<nil>" {
+		if fn := mapFromAny(m["function"]); fn != nil {
+			name = strings.TrimSpace(fmt.Sprint(fn["name"]))
+		}
+	}
+	if name == "" || name == "<nil>" {
+		return nil
+	}
+	return map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": name}}
+}
+
+func openAIProxyResponsesTextToChatResponseFormat(value interface{}) interface{} {
+	text := mapFromAny(value)
+	if text == nil {
+		return nil
+	}
+	format := mapFromAny(text["format"])
+	if format == nil {
+		return nil
+	}
+	typ := strings.TrimSpace(fmt.Sprint(format["type"]))
+	switch typ {
+	case "text", "json_object":
+		return map[string]interface{}{"type": typ}
+	case "json_schema":
+		name := strings.TrimSpace(fmt.Sprint(format["name"]))
+		schema, ok := format["schema"]
+		if name == "" || name == "<nil>" || !ok || schema == nil {
+			return nil
+		}
+		js := map[string]interface{}{"name": name, "schema": schema}
+		if desc := strings.TrimSpace(fmt.Sprint(format["description"])); desc != "" && desc != "<nil>" {
+			js["description"] = desc
+		}
+		if strict, ok := format["strict"].(bool); ok {
+			js["strict"] = strict
+		}
+		return map[string]interface{}{"type": "json_schema", "json_schema": js}
+	default:
+		return nil
+	}
+}
+
+func openAIProxyChatResponseToResponses(body []byte, model string) ([]byte, error) {
+	var chat map[string]interface{}
+	if err := json.Unmarshal(body, &chat); err != nil {
+		return nil, fmt.Errorf("parse chat response: %w", err)
+	}
+	if m := strings.TrimSpace(fmt.Sprint(chat["model"])); m != "" && m != "<nil>" {
+		model = m
+	}
+	output := []interface{}{}
+	choices := openAICompatForwardSlice(chat["choices"])
+	if len(choices) > 0 {
+		choice := mapFromAny(choices[0])
+		msg := mapFromAny(choice["message"])
+		if msg != nil {
+			if text := openAIProxyResponsesContentToText(msg["content"]); strings.TrimSpace(text) != "" {
+				output = append(output, map[string]interface{}{
+					"type":    "message",
+					"id":      "msg_0",
+					"role":    "assistant",
+					"status":  "completed",
+					"content": []interface{}{map[string]interface{}{"type": "output_text", "text": text}},
+				})
+			}
+			for i, raw := range openAICompatForwardSlice(msg["tool_calls"]) {
+				call := mapFromAny(raw)
+				fn := mapFromAny(call["function"])
+				name := strings.TrimSpace(fmt.Sprint(fn["name"]))
+				if name == "" || name == "<nil>" {
+					continue
+				}
+				callID := strings.TrimSpace(fmt.Sprint(call["id"]))
+				if callID == "" || callID == "<nil>" {
+					callID = fmt.Sprintf("call_%d", i)
+				}
+				output = append(output, map[string]interface{}{
+					"type":      "function_call",
+					"id":        callID,
+					"call_id":   callID,
+					"name":      name,
+					"arguments": openAIToolCallArgumentsString(fn["arguments"]),
+					"status":    "completed",
+				})
+			}
+			if legacy := mapFromAny(msg["function_call"]); legacy != nil {
+				name := strings.TrimSpace(fmt.Sprint(legacy["name"]))
+				if name != "" && name != "<nil>" {
+					callID := "call_legacy_function"
+					output = append(output, map[string]interface{}{
+						"type":      "function_call",
+						"id":        "fc_legacy_function",
+						"call_id":   callID,
+						"name":      name,
+						"arguments": openAIToolCallArgumentsString(legacy["arguments"]),
+						"status":    "completed",
+					})
+				}
+			}
+		}
+	}
+	createdAt := time.Now().Unix()
+	resp := map[string]interface{}{
+		"id":         fmt.Sprint(firstOpenAICompatNonNil(chat["id"], "resp_maclaw_proxy")),
+		"object":     "response",
+		"model":      model,
+		"status":     "completed",
+		"output":     output,
+		"usage":      openAIProxyChatUsageToResponsesUsage(chat["usage"]),
+		"created":    createdAt,
+		"created_at": float64(createdAt),
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return nil, fmt.Errorf("marshal responses response: %w", err)
+	}
+	return data, nil
+}
+
+func openAIProxyChatUsageToResponsesUsage(raw interface{}) interface{} {
+	usage := mapFromAny(raw)
+	if usage == nil {
+		return raw
+	}
+	inputTokens := numberToInt64(firstOpenAICompatNonNil(usage["input_tokens"], usage["prompt_tokens"]))
+	outputTokens := numberToInt64(firstOpenAICompatNonNil(usage["output_tokens"], usage["completion_tokens"]))
+	totalTokens := numberToInt64(usage["total_tokens"])
+	out := make(map[string]interface{}, len(usage)+2)
+	for k, v := range usage {
+		out[k] = v
+	}
+	out["input_tokens"] = inputTokens
+	out["output_tokens"] = outputTokens
+	out["total_tokens"] = totalTokens
+	if details := mapFromAny(firstOpenAICompatNonNil(usage["input_tokens_details"], usage["prompt_tokens_details"])); details != nil {
+		out["input_tokens_details"] = details
+	}
+	return out
+}
+
+// OpenAICompatChatResponseToResponses converts an OpenAI-compatible Chat
+// Completions response into an OpenAI Responses API envelope.
+func OpenAICompatChatResponseToResponses(body []byte, model string) ([]byte, error) {
+	return openAIProxyChatResponseToResponses(body, model)
 }
 
 func (p *OpenAIProxy) maclawLLMConfig() MaclawLLMConfig {

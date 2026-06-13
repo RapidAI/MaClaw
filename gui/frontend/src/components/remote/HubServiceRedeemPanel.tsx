@@ -26,6 +26,18 @@ interface HubLLMActiveGrant {
     retry_after_seconds?: number;
     retry_after_at?: string;
     credits_remaining?: number;
+    period_limits?: {
+        five_hour?: number;
+        daily?: number;
+        weekly?: number;
+        monthly?: number;
+    };
+    period_usage?: {
+        five_hour?: { window_start?: string; window_end?: string; credits_used?: number };
+        daily?: { window_start?: string; window_end?: string; credits_used?: number };
+        weekly?: { window_start?: string; window_end?: string; credits_used?: number };
+        monthly?: { window_start?: string; window_end?: string; credits_used?: number };
+    };
 }
 
 interface HubLLMServiceStatus {
@@ -408,6 +420,55 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     }, [isActiveUnmeteredService, lang, status, t]);
     const statusSummary = useMemo(() => serviceStatusSummary(status, lang, t), [status, lang, t]);
 
+    // Aggregate period limits and usage from grants that have period constraints.
+    const periodInfo = useMemo(() => {
+        const grants = creditGrants(status);
+        const withPeriod = grants.filter((g) => {
+            const pl = g.period_limits;
+            return pl && (Number(pl.five_hour || 0) > 0 || Number(pl.daily || 0) > 0 || Number(pl.weekly || 0) > 0 || Number(pl.monthly || 0) > 0);
+        });
+        if (withPeriod.length === 0) return null;
+        // Aggregate across all grants (typically one, but handle multi-grant).
+        // Use the latest window_end among grants for each period.
+        const agg = {
+            five_hour: { limit: 0, used: 0, windowEnd: "" },
+            daily: { limit: 0, used: 0, windowEnd: "" },
+            weekly: { limit: 0, used: 0, windowEnd: "" },
+            monthly: { limit: 0, used: 0, windowEnd: "" },
+        };
+        for (const g of withPeriod) {
+            const pl = g.period_limits!;
+            const pu = g.period_usage;
+            agg.five_hour.limit += Number(pl.five_hour || 0);
+            agg.five_hour.used += Number(pu?.five_hour?.credits_used || 0);
+            if (pu?.five_hour?.window_end && (!agg.five_hour.windowEnd || pu.five_hour.window_end > agg.five_hour.windowEnd)) agg.five_hour.windowEnd = pu.five_hour.window_end;
+            agg.daily.limit += Number(pl.daily || 0);
+            agg.daily.used += Number(pu?.daily?.credits_used || 0);
+            if (pu?.daily?.window_end && (!agg.daily.windowEnd || pu.daily.window_end > agg.daily.windowEnd)) agg.daily.windowEnd = pu.daily.window_end;
+            agg.weekly.limit += Number(pl.weekly || 0);
+            agg.weekly.used += Number(pu?.weekly?.credits_used || 0);
+            if (pu?.weekly?.window_end && (!agg.weekly.windowEnd || pu.weekly.window_end > agg.weekly.windowEnd)) agg.weekly.windowEnd = pu.weekly.window_end;
+            agg.monthly.limit += Number(pl.monthly || 0);
+            agg.monthly.used += Number(pu?.monthly?.credits_used || 0);
+            if (pu?.monthly?.window_end && (!agg.monthly.windowEnd || pu.monthly.window_end > agg.monthly.windowEnd)) agg.monthly.windowEnd = pu.monthly.window_end;
+        }
+        const computeResetIn = (windowEnd: string): string => {
+            if (!windowEnd) return "";
+            const end = new Date(windowEnd).getTime();
+            if (!Number.isFinite(end)) return "";
+            const remaining = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+            if (remaining <= 0) return "";
+            return formatRetryDuration(remaining, lang);
+        };
+        type PeriodEntry = { key: string; label: string; limit: number; used: number; resetIn: string };
+        const entries: PeriodEntry[] = [];
+        if (agg.five_hour.limit > 0) entries.push({ key: "five_hour", label: t("5-Hour Limit", "5小时限额", "5小時限額"), limit: agg.five_hour.limit, used: agg.five_hour.used, resetIn: computeResetIn(agg.five_hour.windowEnd) });
+        if (agg.daily.limit > 0) entries.push({ key: "daily", label: t("Daily Limit", "日限额", "日限額"), limit: agg.daily.limit, used: agg.daily.used, resetIn: computeResetIn(agg.daily.windowEnd) });
+        if (agg.weekly.limit > 0) entries.push({ key: "weekly", label: t("Weekly Limit", "周限额", "週限額"), limit: agg.weekly.limit, used: agg.weekly.used, resetIn: computeResetIn(agg.weekly.windowEnd) });
+        if (agg.monthly.limit > 0) entries.push({ key: "monthly", label: t("Monthly Limit", "月限额", "月限額"), limit: agg.monthly.limit, used: agg.monthly.used, resetIn: computeResetIn(agg.monthly.windowEnd) });
+        return entries.length > 0 ? entries : null;
+    }, [lang, status, t]);
+
     const openHubCardStorePage = useCallback(async () => {
         try {
             const cfg = await callBackend(() => LoadConfig()) as { remote_hub_url?: string; remote_tenant_id?: string; remote_email?: string; remote_viewer_token?: string } | null;
@@ -561,6 +622,39 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                         <div className="hub-service-redeem__value hub-service-redeem__value--success">{isActiveUnmeteredService ? formatUnlimitedCredits(lang) : formatCredits(totals.remaining)}</div>
                     </div>
                 </div>
+
+                {periodInfo && (
+                    <div className="hub-service-redeem__period-section">
+                        <div className="hub-service-redeem__label hub-service-redeem__label--section">{t("Period Limits (current window)", "周期限额（当前窗口）", "週期限額（當前窗口）")}</div>
+                        <div className="hub-service-redeem__period-grid">
+                            {periodInfo.map((entry) => {
+                                const pct = entry.limit > 0 ? Math.min(100, Math.round((entry.used / entry.limit) * 100)) : 0;
+                                const barKind = pct >= 100 ? "exhausted" : pct >= 80 ? "warning" : "normal";
+                                return (
+                                    <div key={entry.key} className="hub-service-redeem__period-card">
+                                        <div className="hub-service-redeem__period-label">{entry.label}</div>
+                                        <div className="hub-service-redeem__period-values">
+                                            <span className="hub-service-redeem__period-used">{formatCredits(entry.used)}</span>
+                                            <span className="hub-service-redeem__period-sep">/</span>
+                                            <span className="hub-service-redeem__period-limit">{formatCredits(entry.limit)}</span>
+                                        </div>
+                                        <div className="hub-service-redeem__period-bar" data-kind={barKind}>
+                                            <div className="hub-service-redeem__period-bar-fill" style={{ width: `${pct}%` }} />
+                                        </div>
+                                        <div className="hub-service-redeem__period-footer">
+                                            <span className="hub-service-redeem__period-pct">{pct}%</span>
+                                            {entry.resetIn && (
+                                                <span className="hub-service-redeem__period-reset">
+                                                    {t(`Resets in ${entry.resetIn}`, `${entry.resetIn}后重置`, `${entry.resetIn}後重置`)}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
 
                 {statusSummary.kind !== "active" && statusSummary.detail ? (
                     <div className="hub-service-redeem__message hub-service-redeem__message--top" data-kind="warning">

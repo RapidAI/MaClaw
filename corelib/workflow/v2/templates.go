@@ -17,10 +17,40 @@ const (
 	ExecModeDefault PhaseExecMode = ""
 	// ExecModeSubAgent: run via CodingSubAgent (task-by-task TDD execution).
 	ExecModeSubAgent PhaseExecMode = "subagent"
+	// ExecModeRemoteSubAgent: run via RemoteCodingSubAgent (iterative experiment loop on remote server).
+	ExecModeRemoteSubAgent PhaseExecMode = "remote_subagent"
 	// ExecModeAutoFromPrev: auto-complete using the previous phase's output
 	// (no separate execution needed — the prior phase already produced the result).
 	ExecModeAutoFromPrev PhaseExecMode = "auto_from_prev"
 )
+
+// PhaseInputSchema declares a structured AG UI form for a phase's information
+// collection. When non-nil on a PhaseTemplate, the state machine signals
+// ActionShowForm on first entry into the phase. The form data submitted by the
+// user is stored in Phase.FormData and injected into the phase prompt.
+type PhaseInputSchema struct {
+	Title       string            `json:"title"`
+	Description string            `json:"description,omitempty"`
+	Fields      []PhaseInputField `json:"fields"`
+}
+
+// PhaseInputField defines a single form field.
+type PhaseInputField struct {
+	Name        string             `json:"name"`
+	Label       string             `json:"label"`
+	Type        string             `json:"type"` // text|textarea|number|date|select|multiselect|boolean|file|hidden
+	Required    bool               `json:"required,omitempty"`
+	Description string             `json:"description,omitempty"`
+	Placeholder string             `json:"placeholder,omitempty"`
+	Options     []PhaseInputOption `json:"options,omitempty"`
+	Default     interface{}        `json:"default,omitempty"`
+}
+
+// PhaseInputOption defines a selectable option for select/multiselect fields.
+type PhaseInputOption struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
 
 type PhaseTemplate struct {
 	ID           string
@@ -28,6 +58,14 @@ type PhaseTemplate struct {
 	NeedsConfirm bool
 	ToolPolicy   ToolPolicy
 	ExecMode     PhaseExecMode // how this phase is executed (default = agent loop)
+
+	// InputSchema declares a structured AG UI form for this phase's information
+	// collection. When non-nil, the state machine returns ActionShowForm on first
+	// entry (before FormData is populated). The GUI emits an AG UI form; the user
+	// fills it and submits via SubmitForm. The form data is then injected into the
+	// phase prompt as structured context before the LLM generates the deliverable.
+	// Nil means the phase uses natural language interaction (default behavior).
+	InputSchema *PhaseInputSchema
 }
 
 // WorkflowTemplate defines a type of workflow.
@@ -37,6 +75,12 @@ type WorkflowTemplate struct {
 	Description string
 	Keywords    []string // retained for metadata and UI display; not used for routing
 	Phases      []PhaseTemplate
+
+	// SemanticOnly when true excludes this template from BM25 text matching.
+	// The template can only be activated through semantic intent classification
+	// (IUM LLM) which returns this type as the category. This prevents
+	// accidental BM25 token overlaps from triggering the workflow.
+	SemanticOnly bool
 }
 
 // TemplateRegistry holds all registered workflow templates.
@@ -77,7 +121,8 @@ func (r *TemplateRegistry) Get(workflowType string) *WorkflowTemplate {
 
 // MatchByText returns the best advisory match using the template's structured
 // definition. It intentionally ignores Keywords so routing does not become a
-// keyword shortcut.
+// keyword shortcut. Templates with SemanticOnly=true are excluded from the
+// BM25 index and can only be activated via IUM LLM classification.
 func (r *TemplateRegistry) MatchByText(text string) *WorkflowTemplate {
 	ranked := r.RankedByText(text)
 	if !hasStableTopTemplateScore(ranked) {
@@ -136,6 +181,9 @@ func (r *TemplateRegistry) currentBM25Index() *bm25.Index {
 		docs := make([]bm25.Doc, 0, len(r.templates))
 		for _, tmpl := range r.templates {
 			if tmpl == nil || strings.TrimSpace(tmpl.Type) == "" {
+				continue
+			}
+			if tmpl.SemanticOnly {
 				continue
 			}
 			docs = append(docs, bm25.Doc{ID: tmpl.Type, Text: templateSearchDocument(tmpl)})
@@ -205,6 +253,25 @@ func CodingTemplate() *WorkflowTemplate {
 			{ID: "tasks", Name: "任务分解", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "implementation", Name: "编码执行", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, ExecMode: ExecModeSubAgent},
 			{ID: "verification", Name: "验收确认", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, ExecMode: ExecModeAutoFromPrev},
+		},
+	}
+}
+
+// MaintenanceTemplate is a lightweight coding workflow for maintenance,
+// refactoring, and incremental feature changes on existing projects.
+// It has only 3 phases (vs coding's 5): a combined analysis+plan phase,
+// execution via SubAgent, and auto-verification.
+func MaintenanceTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:         "maintenance",
+		Name:         "维护/重构",
+		Description:  "影响分析 → 实施方案 → 执行验证。适用于现有项目的架构重构、技术栈迁移、模式改造。Lightweight coding workflow for refactoring architecture, migrating technology stacks, and transforming existing codebases.",
+		Keywords:     []string{"维护", "重构", "改造", "迁移", "改为", "改成", "换成", "升级", "refactor", "migrate", "maintenance"},
+		SemanticOnly: true, // Only activated via IUM LLM classification, not BM25 text matching
+		Phases: []PhaseTemplate{
+			{ID: "maint_analysis", Name: "影响分析与方案", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "maint_execution", Name: "重构执行", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, ExecMode: ExecModeSubAgent},
+			{ID: "maint_verification", Name: "验证", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, ExecMode: ExecModeAutoFromPrev},
 		},
 	}
 }
@@ -468,7 +535,7 @@ func GrantProposalTemplate() *WorkflowTemplate {
 		Type:        "grant_proposal",
 		Name:        "基金申请",
 		Description: "选题论证 → 研究基础 → 方案设计 → 预算编制 → 申请书",
-		Keywords:    []string{"基金申请", "课题申请", "grant", "国自然", "科研项目"},
+		Keywords:    []string{"基金申请", "课题申请", "grant", "科研项目", "项目申请书"},
 		Phases: []PhaseTemplate{
 			{ID: "topic", Name: "选题论证", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "foundation", Name: "研究基础", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -495,12 +562,300 @@ func PaperWritingTemplate() *WorkflowTemplate {
 	}
 }
 
+func PaperReproductionTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:        "paper_reproduction",
+		Name:        "论文复现",
+		Description: "论文解读 → 复现规划（源码/数据集搜索） → 环境与数据 → 基线复现 → 迭代改进 → 实验报告。适用于阅读学术论文后搜索源码和数据集，在远程服务器上搭建环境、下载数据、复现基线实验，然后迭代改进直到结果显著超越论文，最终生成包含对比实验、消融实验、超参数分析的完整实验报告。Paper reproduction: read paper, search for source code and datasets, set up remote environment, reproduce baseline, iteratively improve, generate comprehensive reports with ablation studies.",
+		Keywords:    []string{"论文复现", "复现", "reproduce", "replication", "实验复现", "跑实验", "复现实验"},
+		Phases: []PhaseTemplate{
+			{ID: "paper_analysis", Name: "论文深度解读", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+			{ID: "reproduction_plan", Name: "复现规划", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+			{ID: "env_and_data", Name: "环境搭建与数据准备", NeedsConfirm: false, ToolPolicy: ToolPolicyFull},
+			{ID: "baseline_reproduction", Name: "基线实验复现", NeedsConfirm: false, ToolPolicy: ToolPolicyFull},
+			{ID: "iterative_improvement", Name: "迭代改进", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, ExecMode: ExecModeRemoteSubAgent},
+			{ID: "experiment_report", Name: "实验报告", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+		},
+	}
+}
+
+// ChangjiangScholarTemplate defines the Changjiang Scholar (长江学者) application workflow.
+// This is a comprehensive academic talent program application that requires:
+// - Personal qualifications and eligibility assessment
+// - Systematic summary of academic achievements and representative works
+// - Research plan for the appointment period (聘期)
+// - Talent cultivation and team building plans
+// - Final integration of recommendation letters and complete application document
+func ChangjiangScholarTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:        "changjiang_scholar",
+		Name:        "长江学者申报书",
+		Description: "个人资质梳理 → 学术成就总结 → 聘期研究计划 → 人才培养与团队建设 → 推荐意见与申报书整合。适用于长江学者特聘教授、讲座教授、青年学者等各层次申报，系统性整理学术履历、凝练研究方向、撰写高质量申报材料。Changjiang Scholar application: eligibility assessment, academic achievements, research plan, talent cultivation, recommendation and final assembly.",
+		Keywords:    []string{"长江学者", "长江学者申报", "长江特聘", "长江讲座", "长江青年", "Changjiang Scholar", "changjiang"},
+		Phases: []PhaseTemplate{
+			{ID: "cj_personal_profile", Name: "个人资质与申报条件梳理", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "长江学者申请人基本信息",
+					Description: "请填写申请人的基本信息，系统将基于这些信息评估申报条件并生成资质梳理文档。",
+					Fields: []PhaseInputField{
+						{Name: "name", Label: "姓名", Type: "text", Required: true},
+						{Name: "gender", Label: "性别", Type: "select", Required: true, Options: []PhaseInputOption{
+							{Label: "男", Value: "男"}, {Label: "女", Value: "女"},
+						}},
+						{Name: "birth_date", Label: "出生日期", Type: "text", Required: true, Placeholder: "如：1980年5月"},
+						{Name: "category", Label: "申报类别", Type: "select", Required: true, Options: []PhaseInputOption{
+							{Label: "特聘教授", Value: "特聘教授"},
+							{Label: "讲座教授", Value: "讲座教授"},
+							{Label: "青年学者", Value: "青年学者"},
+						}},
+						{Name: "discipline", Label: "学科领域", Type: "text", Required: true, Placeholder: "如：计算机科学与技术"},
+						{Name: "institution", Label: "现工作单位", Type: "text", Required: true, Placeholder: "如：XX大学 XX学院"},
+						{Name: "title", Label: "现任职称", Type: "text", Required: true, Placeholder: "如：教授/研究员"},
+						{Name: "education", Label: "教育背景", Type: "textarea", Required: true, Placeholder: "按时间顺序列出：\n本科：XX大学，专业，年份\n硕士：XX大学，专业，年份\n博士：XX大学，专业，年份"},
+						{Name: "research_direction", Label: "主要研究方向", Type: "textarea", Required: true, Placeholder: "2-3个核心研究方向"},
+						{Name: "h_index", Label: "H指数", Type: "text", Placeholder: "如：35"},
+						{Name: "total_papers", Label: "SCI/SSCI论文总数", Type: "text", Placeholder: "如：120"},
+						{Name: "key_achievements", Label: "主要学术亮点（3-5项）", Type: "textarea", Placeholder: "列出最突出的成果，如高影响力论文、国家项目、重要奖项"},
+					},
+				},
+			},
+			{ID: "cj_academic_achievements", Name: "学术成就与代表性成果", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "cj_research_plan", Name: "聘期研究计划", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "cj_talent_cultivation", Name: "人才培养与团队建设", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "cj_recommendation_summary", Name: "推荐意见与申报书整合", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
+// ChangjiangScholarReviewTemplate defines the Changjiang Scholar review/evaluation workflow.
+// Used by reviewers or applicants for self-assessment before submission.
+func ChangjiangScholarReviewTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:        "changjiang_scholar_review",
+		Name:        "长江学者申报书评审",
+		Description: "完整性检测 → 学术成果评估 → 研究计划评估 → 撰写质量评估 → 综合评估报告。适用于长江学者申报材料的自审或他审，从多维度评估申报书质量并给出改进建议。Changjiang Scholar application review: completeness check, achievement evaluation, plan feasibility, narrative quality, improvement report.",
+		Keywords:    []string{"长江学者评审", "申报书评审", "长江评审", "申报书审查"},
+		Phases: []PhaseTemplate{
+			{ID: "cj_completeness_check", Name: "基本信息完整性检测", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "cj_achievement_evaluation", Name: "学术成果质量评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "cj_plan_feasibility", Name: "研究计划可行性评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "cj_narrative_quality", Name: "材料撰写质量评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "cj_improvement_report", Name: "综合评估与修改建议报告", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
+// NSFCDistinguishedYouthTemplate defines the NSFC Distinguished Youth Fund (国家杰出青年科学基金/杰青) application workflow.
+// The 杰青 is one of China's most prestigious academic funding programs for scientists under 45.
+// It requires demonstrating outstanding research achievements and clear future research directions.
+func NSFCDistinguishedYouthTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:        "nsfc_distinguished_youth",
+		Name:        "杰青申请书",
+		Description: "申请人资质评估 → 研究工作基础与学术贡献 → 研究方案与创新点 → 预期成果与经费预算 → 申请书整合与润色。适用于国家杰出青年科学基金（杰青）申请，需要展示突出的原创性研究成果、明确的未来研究方向和国际学术影响力。NSFC Distinguished Young Scholars Fund application: eligibility, research foundation, proposed research plan, expected outcomes and budget, final assembly.",
+		Keywords:    []string{"杰青", "杰青申请", "杰出青年", "国家杰青", "杰青基金", "NSFC杰青", "distinguished youth", "杰出青年基金"},
+		Phases: []PhaseTemplate{
+			{ID: "dy_eligibility", Name: "申请人资质与条件评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "杰青申请人基本信息",
+					Description: "请填写申请人的基本信息，系统将评估是否满足杰青申报条件并分析学科竞争态势。",
+					Fields: []PhaseInputField{
+						{Name: "name", Label: "姓名", Type: "text", Required: true},
+						{Name: "gender", Label: "性别", Type: "select", Required: true, Options: []PhaseInputOption{
+							{Label: "男", Value: "男"}, {Label: "女", Value: "女"},
+						}},
+						{Name: "birth_date", Label: "出生日期", Type: "text", Required: true, Placeholder: "如：1982年3月（杰青要求男性<45岁，女性<48岁）"},
+						{Name: "nationality", Label: "国籍", Type: "text", Required: true, Default: "中国"},
+						{Name: "institution", Label: "现工作单位", Type: "text", Required: true, Placeholder: "如：XX大学 XX学院"},
+						{Name: "title", Label: "职称", Type: "text", Required: true, Placeholder: "如：教授/研究员"},
+						{Name: "degree", Label: "最高学位", Type: "select", Required: true, Options: []PhaseInputOption{
+							{Label: "博士", Value: "博士"}, {Label: "硕士", Value: "硕士"},
+						}},
+						{Name: "discipline_code", Label: "申报学科代码", Type: "text", Placeholder: "如：F06 人工智能"},
+						{Name: "research_field", Label: "研究领域", Type: "text", Required: true, Placeholder: "如：自然语言处理、大规模语言模型"},
+						{Name: "prior_nsfc", Label: "已获NSFC资助情况", Type: "textarea", Placeholder: "如：\n面上项目 2020-2023\n优青 2021-2024"},
+						{Name: "h_index", Label: "H指数", Type: "text", Placeholder: "如：42"},
+						{Name: "total_citations", Label: "总引用数", Type: "text", Placeholder: "如：8500"},
+						{Name: "representative_papers", Label: "代表性论文数（Nature/Science子刊等顶刊）", Type: "text", Placeholder: "如：5篇Nature子刊"},
+						{Name: "awards", Label: "主要获奖", Type: "textarea", Placeholder: "如：\n国家自然科学二等奖 2022\n省部级一等奖 2020"},
+					},
+				},
+			},
+			{ID: "dy_research_foundation", Name: "研究工作基础与学术贡献", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "dy_research_proposal", Name: "研究方案与创新点", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "dy_outcomes_budget", Name: "预期成果与经费预算", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "dy_final_assembly", Name: "申请书整合与润色", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
+// NSFCExcellentYouthTemplate defines the NSFC Excellent Young Scientists Fund (优青) application workflow.
+// 优青 targets researchers under 38 (male) or 40 (female), emphasizing development potential
+// and future research trajectory rather than accumulated achievements (which is 杰青's focus).
+// Funding: 200万/3年.
+func NSFCExcellentYouthTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:        "nsfc_excellent_youth",
+		Name:        "优青申请书",
+		Description: "申请人资质评估 → 研究积累与发展潜力 → 研究方案与关键科学问题 → 预期成果与经费预算 → 申请书整合与润色。适用于国家优秀青年科学基金（优青）申请，侧重展示申请人的发展潜力、研究活力和未来突破方向，经费 200 万/3 年。NSFC Excellent Young Scientists Fund application: eligibility, research accumulation and potential, proposed research plan, expected outcomes and budget, final assembly.",
+		Keywords:    []string{"优青", "优青申请", "优秀青年", "国家优青", "优青基金", "NSFC优青", "excellent young"},
+		Phases: []PhaseTemplate{
+			{ID: "ey_eligibility", Name: "申请人资质与条件评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "优青申请人基本信息",
+					Description: "请填写申请人的基本信息，系统将评估是否满足优青申报条件。优青要求男性未满38周岁、女性未满40周岁。",
+					Fields: []PhaseInputField{
+						{Name: "name", Label: "姓名", Type: "text", Required: true},
+						{Name: "gender", Label: "性别", Type: "select", Required: true, Options: []PhaseInputOption{
+							{Label: "男", Value: "男"}, {Label: "女", Value: "女"},
+						}},
+						{Name: "birth_date", Label: "出生日期", Type: "text", Required: true, Placeholder: "如：1988年6月（优青要求男性<38岁，女性<40岁）"},
+						{Name: "nationality", Label: "国籍", Type: "text", Required: true, Default: "中国"},
+						{Name: "institution", Label: "现工作单位", Type: "text", Required: true, Placeholder: "如：XX大学 XX学院"},
+						{Name: "title", Label: "职称", Type: "text", Required: true, Placeholder: "如：副教授/教授/研究员"},
+						{Name: "degree", Label: "最高学位", Type: "select", Required: true, Options: []PhaseInputOption{
+							{Label: "博士", Value: "博士"}, {Label: "硕士", Value: "硕士"},
+						}},
+						{Name: "phd_year", Label: "博士毕业年份", Type: "text", Placeholder: "如：2015"},
+						{Name: "discipline_code", Label: "申报学科代码", Type: "text", Placeholder: "如：F06 人工智能"},
+						{Name: "research_field", Label: "研究领域", Type: "text", Required: true, Placeholder: "如：计算机视觉、三维重建"},
+						{Name: "prior_nsfc", Label: "已获NSFC资助情况", Type: "textarea", Placeholder: "如：\n青年基金 2018-2020\n面上项目 2021-2024"},
+						{Name: "h_index", Label: "H指数", Type: "text", Placeholder: "如：25"},
+						{Name: "representative_work", Label: "最有代表性的工作（1-2项）", Type: "textarea", Placeholder: "简述你最引以为傲的研究成果及其影响"},
+					},
+				},
+			},
+			{ID: "ey_research_accumulation", Name: "研究积累与发展潜力", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "ey_research_proposal", Name: "研究方案与关键科学问题", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "ey_outcomes_budget", Name: "预期成果与经费预算", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "ey_final_assembly", Name: "申请书整合与润色", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
+// NSFCYouthTemplate defines the NSFC Youth Science Fund (青年科学基金/青基) application workflow.
+// 青基 is the entry-level NSFC talent program for early-career researchers.
+// Age limit: male <35, female <38. Funding: 30万/3年.
+// Focus: cultivating young talent — reviewers value research ideas and potential
+// over accumulated achievements.
+func NSFCYouthTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:        "nsfc_youth",
+		Name:        "国自然青年基金申请书",
+		Description: "立项依据与研究内容 → 研究基础与可行性 → 研究方案与技术路线 → 经费预算 → 申请书整合。适用于国家自然科学基金青年科学基金项目（青基）申请，是青年科研人员的第一个国自然项目，侧重研究思路和发展潜力。NSFC Youth Science Fund application: rationale, feasibility, methodology, budget, final assembly.",
+		Keywords:    []string{"青基", "青年基金", "青年科学基金", "国自然青年", "NSFC青年", "youth fund", "青年项目"},
+		Phases: []PhaseTemplate{
+			{ID: "yf_rationale", Name: "立项依据与研究内容", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "青基项目基本信息",
+					Description: "请填写申请人和项目基本信息。青基要求男性未满35周岁、女性未满38周岁，具有博士学位。",
+					Fields: []PhaseInputField{
+						{Name: "name", Label: "申请人姓名", Type: "text", Required: true},
+						{Name: "gender", Label: "性别", Type: "select", Required: true, Options: []PhaseInputOption{
+							{Label: "男", Value: "男"}, {Label: "女", Value: "女"},
+						}},
+						{Name: "birth_date", Label: "出生日期", Type: "text", Required: true, Placeholder: "如：1992年8月（青基要求男性<35岁，女性<38岁）"},
+						{Name: "institution", Label: "依托单位", Type: "text", Required: true, Placeholder: "如：XX大学"},
+						{Name: "title", Label: "职称", Type: "text", Required: true, Placeholder: "如：讲师/副教授/助理研究员"},
+						{Name: "phd_year", Label: "博士毕业年份", Type: "text", Required: true, Placeholder: "如：2020"},
+						{Name: "discipline_code", Label: "申报学科代码", Type: "text", Required: true, Placeholder: "如：F0601 机器学习"},
+						{Name: "project_title", Label: "项目名称", Type: "text", Required: true, Placeholder: "拟申报项目的题目"},
+						{Name: "research_field", Label: "研究领域", Type: "text", Required: true, Placeholder: "如：联邦学习、隐私计算"},
+						{Name: "core_question", Label: "拟解决的科学问题", Type: "textarea", Required: true, Placeholder: "用1-2句话描述"},
+						{Name: "prior_work", Label: "前期研究基础", Type: "textarea", Placeholder: "博士期间和博后期间与本项目相关的工作"},
+					},
+				},
+			},
+			{ID: "yf_foundation", Name: "研究基础与可行性", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "yf_methodology", Name: "研究方案与技术路线", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "yf_budget", Name: "经费预算", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "yf_final_assembly", Name: "申请书整合与润色", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
+// NSFCGeneralTemplate defines the NSFC General Program (面上项目) application workflow.
+// 面上项目 is the most common NSFC project type, open to researchers with senior titles
+// or PhDs. Funding: typically 50-80万/4年. Focus: complete, innovative research on a
+// well-defined scientific question.
+func NSFCGeneralTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:        "nsfc_general",
+		Name:        "国自然面上项目申请书",
+		Description: "立项依据与研究内容 → 研究基础与工作条件 → 研究方案与技术路线 → 经费预算与年度计划 → 申请书整合。适用于国家自然科学基金面上项目申请，需要针对一个明确的科学问题提出系统的研究方案。NSFC General Program application: literature review and rationale, research foundation, methodology and technical route, budget, final assembly.",
+		Keywords:    []string{"面上项目", "国自然面上", "面上", "NSFC面上", "国自然申请", "自然基金", "general program"},
+		Phases: []PhaseTemplate{
+			{ID: "gp_rationale", Name: "立项依据与研究内容", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "面上项目基本信息",
+					Description: "请填写申请人和项目基本信息，系统将辅助撰写立项依据。",
+					Fields: []PhaseInputField{
+						{Name: "name", Label: "申请人姓名", Type: "text", Required: true},
+						{Name: "institution", Label: "依托单位", Type: "text", Required: true, Placeholder: "如：XX大学"},
+						{Name: "title", Label: "职称", Type: "text", Required: true, Placeholder: "如：副教授/教授"},
+						{Name: "discipline_code", Label: "申报学科代码", Type: "text", Required: true, Placeholder: "如：F0601 机器学习"},
+						{Name: "project_title", Label: "项目名称", Type: "text", Required: true, Placeholder: "拟申报项目的题目"},
+						{Name: "research_field", Label: "研究领域", Type: "text", Required: true, Placeholder: "如：图神经网络、知识图谱推理"},
+						{Name: "core_question", Label: "拟解决的核心科学问题", Type: "textarea", Required: true, Placeholder: "用1-2句话描述本项目要解决什么科学问题"},
+						{Name: "prior_work", Label: "前期研究基础", Type: "textarea", Placeholder: "简述与本项目相关的已有工作（论文、项目等）"},
+						{Name: "funding_amount", Label: "申请经费（万元）", Type: "text", Placeholder: "如：58"},
+						{Name: "duration", Label: "资助期限", Type: "text", Default: "4年", Placeholder: "如：4年（2027.01-2030.12）"},
+					},
+				},
+			},
+			{ID: "gp_foundation", Name: "研究基础与工作条件", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "gp_methodology", Name: "研究方案与技术路线", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "gp_budget", Name: "经费预算与年度计划", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "gp_final_assembly", Name: "申请书整合与润色", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
+// NSFCKeyTemplate defines the NSFC Key Program (重点项目) application workflow.
+// 重点项目 targets major scientific questions requiring sustained, deep research.
+// Funding: typically 250-350万/5年. Higher bar than 面上: requires clear national
+// strategic significance, strong team, and potential for major breakthroughs.
+func NSFCKeyTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:        "nsfc_key",
+		Name:        "国自然重点项目申请书",
+		Description: "战略需求与科学问题凝练 → 研究团队与工作基础 → 研究方案与课题设置 → 经费预算与管理计划 → 申请书整合。适用于国家自然科学基金重点项目申请，需要针对重大科学问题设置子课题、组建研究团队。NSFC Key Program application: strategic rationale, team and foundation, research plan with sub-projects, budget and management, final assembly.",
+		Keywords:    []string{"重点项目", "国自然重点", "NSFC重点", "重点基金", "key program"},
+		Phases: []PhaseTemplate{
+			{ID: "kp_strategic_rationale", Name: "战略需求与科学问题凝练", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "重点项目基本信息",
+					Description: "请填写申请人和项目基本信息。重点项目通常由资深学者主持，需要明确的课题组织结构。",
+					Fields: []PhaseInputField{
+						{Name: "name", Label: "项目负责人", Type: "text", Required: true},
+						{Name: "institution", Label: "依托单位", Type: "text", Required: true, Placeholder: "如：XX大学"},
+						{Name: "title", Label: "职称", Type: "text", Required: true, Placeholder: "如：教授/研究员"},
+						{Name: "discipline_code", Label: "申报学科代码", Type: "text", Required: true, Placeholder: "如：F06 人工智能"},
+						{Name: "project_title", Label: "项目名称", Type: "text", Required: true, Placeholder: "拟申报项目的题目"},
+						{Name: "core_question", Label: "拟解决的重大科学问题", Type: "textarea", Required: true, Placeholder: "描述本项目聚焦的核心科学问题及其国家战略意义"},
+						{Name: "sub_projects", Label: "拟设课题数", Type: "text", Placeholder: "如：3-4个子课题"},
+						{Name: "team_members", Label: "核心团队成员", Type: "textarea", Placeholder: "如：\n课题1负责人：张三（XX大学，教授）\n课题2负责人：李四（XX研究所，研究员）"},
+						{Name: "funding_amount", Label: "申请经费（万元）", Type: "text", Placeholder: "如：300"},
+						{Name: "duration", Label: "资助期限", Type: "text", Default: "5年", Placeholder: "如：5年（2027.01-2031.12）"},
+						{Name: "prior_key_projects", Label: "前期相关重大项目", Type: "textarea", Placeholder: "如：\n973计划 2018-2022\n重点研发计划 2020-2024"},
+					},
+				},
+			},
+			{ID: "kp_team_foundation", Name: "研究团队与工作基础", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "kp_research_plan", Name: "研究方案与课题设置", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "kp_budget_management", Name: "经费预算与管理计划", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "kp_final_assembly", Name: "申请书整合与润色", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
 // RegisterBuiltinTemplates registers all built-in templates.
 func RegisterBuiltinTemplates(r *TemplateRegistry) {
 	if r == nil {
 		return
 	}
 	r.Register(CodingTemplate())
+	r.Register(MaintenanceTemplate())
 	r.Register(PresentationTemplate())
 	r.Register(ProductDesignTemplate())
 	r.Register(InnovationTemplate())
@@ -519,4 +874,12 @@ func RegisterBuiltinTemplates(r *TemplateRegistry) {
 	r.Register(ExperimentDesignTemplate())
 	r.Register(GrantProposalTemplate())
 	r.Register(PaperWritingTemplate())
+	r.Register(PaperReproductionTemplate())
+	r.Register(ChangjiangScholarTemplate())
+	r.Register(ChangjiangScholarReviewTemplate())
+	r.Register(NSFCDistinguishedYouthTemplate())
+	r.Register(NSFCExcellentYouthTemplate())
+	r.Register(NSFCYouthTemplate())
+	r.Register(NSFCGeneralTemplate())
+	r.Register(NSFCKeyTemplate())
 }

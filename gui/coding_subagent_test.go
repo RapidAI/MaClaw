@@ -54,6 +54,9 @@ func TestBuildCodingSubAgentSystemPrompt_Minimal(t *testing.T) {
 	if !strings.Contains(prompt, "Single-task contract") || !strings.Contains(prompt, "Avoid broad refactors") {
 		t.Error("prompt should contain explicit single-task scope contract")
 	}
+	if !strings.Contains(prompt, "Tool-call JSON reliability") || !strings.Contains(prompt, "split it into chunks") || !strings.Contains(prompt, `mode="append"`) {
+		t.Error("prompt should instruct subagent to keep tool-call JSON valid and split large write_file content")
+	}
 	if !strings.Contains(prompt, "unrelated pre-existing errors") || !strings.Contains(prompt, "exact blocker") {
 		t.Error("prompt should instruct the agent to report unrelated verification blockers precisely")
 	}
@@ -194,6 +197,189 @@ func TestBuildCodingToolDefinitions_OnlyCodingTools(t *testing.T) {
 
 	if len(expectedNames) > 0 {
 		t.Errorf("missing tools: %v", expectedNames)
+	}
+}
+
+func TestBuildCodingToolDefinitions_WriteFileKeepsChunkingHints(t *testing.T) {
+	tools := buildCodingToolDefinitionsFallback()
+	assertCodingWriteFileKeepsChunkingHints(t, tools)
+	assertCodingEditToolsKeepChunkingHints(t, tools)
+}
+
+func TestBuildCodingToolDefinitionsFromRegistry_WriteFileKeepsChunkingHints(t *testing.T) {
+	tools := buildCodingToolDefinitionsFromRegistry(&IMMessageHandler{})
+	assertCodingWriteFileKeepsChunkingHints(t, tools)
+}
+
+func TestLoopCycleBuildTools_WriteFileKeepsChunkingHints(t *testing.T) {
+	cb := &loopCycleCallbacks{parent: &guiLoopCommandCallbacks{}}
+	tools := cb.BuildTools("fix")
+	assertCodingWriteFileKeepsChunkingHints(t, tools)
+	prompt := cb.BuildSystemPrompt("fix", true)
+	if !strings.Contains(prompt, "1800") || !strings.Contains(prompt, "overwrite + append") {
+		t.Fatalf("loop cycle prompt should include write_file chunking hint, got %q", prompt)
+	}
+}
+
+func assertCodingWriteFileKeepsChunkingHints(t *testing.T, tools []map[string]interface{}) {
+	t.Helper()
+	var writeFile map[string]interface{}
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		if name, _ := fn["name"].(string); name == "write_file" {
+			writeFile = fn
+			break
+		}
+	}
+	if writeFile == nil {
+		t.Fatal("missing write_file tool")
+	}
+	params, _ := writeFile["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	contentDesc := codingToolPropDescriptionForTest(props["content"])
+	modeDesc := codingToolPropDescriptionForTest(props["mode"])
+	if !strings.Contains(contentDesc, "1800") || !strings.Contains(contentDesc, "split") {
+		t.Fatalf("write_file content description should keep chunking hint, got %q", contentDesc)
+	}
+	if got := codingToolPropMaxLengthForTest(props["content"]); got != codingSubAgentInlineContentLimit {
+		t.Fatalf("write_file content maxLength = %d, want %d", got, codingSubAgentInlineContentLimit)
+	}
+	if !strings.Contains(modeDesc, "overwrite") || !strings.Contains(modeDesc, "append") {
+		t.Fatalf("write_file mode description should keep overwrite/append hint, got %q", modeDesc)
+	}
+}
+
+func assertCodingEditToolsKeepChunkingHints(t *testing.T, tools []map[string]interface{}) {
+	t.Helper()
+	byName := map[string]map[string]interface{}{}
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		if name, _ := fn["name"].(string); name != "" {
+			byName[name] = fn
+		}
+	}
+	editFile := byName["edit_file"]
+	if editFile == nil {
+		t.Fatal("missing edit_file tool")
+	}
+	editFileParams, _ := editFile["parameters"].(map[string]interface{})
+	editFileProps, _ := editFileParams["properties"].(map[string]interface{})
+	for _, propName := range []string{"old_string", "new_string"} {
+		desc := codingToolPropDescriptionForTest(editFileProps[propName])
+		if !strings.Contains(desc, "1800") {
+			t.Fatalf("edit_file %s description should keep chunking hint, got %q", propName, desc)
+		}
+		if got := codingToolPropMaxLengthForTest(editFileProps[propName]); got != codingSubAgentInlineContentLimit {
+			t.Fatalf("edit_file %s maxLength = %d, want %d", propName, got, codingSubAgentInlineContentLimit)
+		}
+	}
+	editLines := byName["edit_lines"]
+	if editLines == nil {
+		t.Fatal("missing edit_lines tool")
+	}
+	editLinesParams, _ := editLines["parameters"].(map[string]interface{})
+	editLinesProps, _ := editLinesParams["properties"].(map[string]interface{})
+	desc := codingToolPropDescriptionForTest(editLinesProps["content"])
+	if !strings.Contains(desc, "1800") || !strings.Contains(desc, "split") {
+		t.Fatalf("edit_lines content description should keep chunking hint, got %q", desc)
+	}
+	if got := codingToolPropMaxLengthForTest(editLinesProps["content"]); got != codingSubAgentInlineContentLimit {
+		t.Fatalf("edit_lines content maxLength = %d, want %d", got, codingSubAgentInlineContentLimit)
+	}
+}
+
+func codingToolPropDescriptionForTest(raw interface{}) string {
+	switch prop := raw.(type) {
+	case map[string]interface{}:
+		desc, _ := prop["description"].(string)
+		return desc
+	case map[string]string:
+		return prop["description"]
+	default:
+		return ""
+	}
+}
+
+func codingToolPropMaxLengthForTest(raw interface{}) int {
+	prop, ok := raw.(map[string]interface{})
+	if !ok {
+		return 0
+	}
+	switch v := prop["maxLength"].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+func TestRejectInvalidCodingSubAgentToolArgumentsGuidesChunkedRetry(t *testing.T) {
+	result, rejected := rejectInvalidCodingSubAgentToolArguments("write_file", `{"path":"a.go","content":"unterminated`)
+	if !rejected {
+		t.Fatal("expected invalid JSON arguments to be rejected")
+	}
+	if result.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("outcome = %s, want failed", result.Outcome)
+	}
+	if strings.Contains(result.Text, "argument parse failed") {
+		t.Fatalf("should not expose generic parse failure: %q", result.Text)
+	}
+	if !strings.Contains(result.Text, "invalid JSON object arguments") || !strings.Contains(result.Text, "unexpected end of JSON input") || !strings.Contains(result.Text, "split it into smaller chunks") {
+		t.Fatalf("result should guide valid JSON and chunked retry: %q", result.Text)
+	}
+}
+
+func TestRejectInvalidCodingSubAgentToolArgumentsDetectsTruncatedLargePayload(t *testing.T) {
+	result, rejected := rejectInvalidCodingSubAgentToolArguments("write_file", `{"path":"a.go","content":"`+strings.Repeat("x", 9000))
+	if !rejected {
+		t.Fatal("expected truncated large JSON arguments to be rejected")
+	}
+	if !strings.Contains(result.Text, "appears truncated") || !strings.Contains(result.Text, "smaller chunks") {
+		t.Fatalf("result should include truncated/chunk guidance: %q", result.Text)
+	}
+}
+
+func TestRejectInvalidCodingSubAgentToolArgumentsDetectsContentPayloadTruncation(t *testing.T) {
+	result, rejected := rejectInvalidCodingSubAgentToolArguments("edit_file", `{"new_string":"func TestX(t *testing.T) {`)
+	if !rejected {
+		t.Fatal("expected content-bearing truncated JSON arguments to be rejected")
+	}
+	if !strings.Contains(result.Text, "appears truncated") || !strings.Contains(result.Text, "edit_file/edit_lines") {
+		t.Fatalf("result should include truncated edit guidance: %q", result.Text)
+	}
+}
+
+func TestRejectInvalidCodingSubAgentToolArgumentsRejectsNonObjectJSON(t *testing.T) {
+	for _, args := range []string{`[]`, `null`, `"text"`} {
+		result, rejected := rejectInvalidCodingSubAgentToolArguments("read_file", args)
+		if !rejected {
+			t.Fatalf("expected non-object JSON arguments %s to be rejected", args)
+		}
+		if strings.Contains(result.Text, "argument parse failed") {
+			t.Fatalf("should not expose generic parse failure for %s: %q", args, result.Text)
+		}
+		if !strings.Contains(result.Text, "invalid JSON object arguments") {
+			t.Fatalf("result should explain JSON object arguments for %s: %q", args, result.Text)
+		}
+	}
+}
+
+func TestCodingSubAgentEmptyToolArgumentsNormalizeToObject(t *testing.T) {
+	if got := normalizeCodingSubAgentToolArguments(""); got != "{}" {
+		t.Fatalf("empty args normalize to %q, want {}", got)
+	}
+	if got := normalizeCodingSubAgentToolArguments(" \n\t "); got != "{}" {
+		t.Fatalf("blank args normalize to %q, want {}", got)
+	}
+
+	cb := &codingSubAgentCallbacks{}
+	result := cb.executeToolWithOutcome("read_file", "")
+	if strings.Contains(result.Text, "argument parse failed") || strings.Contains(result.Text, "unexpected end of JSON input") {
+		t.Fatalf("empty arguments should not surface JSON parse failure: %q", result.Text)
 	}
 }
 
@@ -461,6 +647,9 @@ func TestExecuteCodingBashReturnsStructuredOutcome(t *testing.T) {
 	failed := executeCodingBash(map[string]interface{}{"command": failCmd}, nil)
 	if failed.Kind != codingCommandResultExitError || failed.ExitCode == 0 {
 		t.Fatalf("failed result = %#v", failed)
+	}
+	if !strings.Contains(failed.Text, "no stdout/stderr") || !strings.Contains(failed.Text, "without output filters") {
+		t.Fatalf("empty failure should include diagnostic hint, got %q", failed.Text)
 	}
 	timedOut := executeCodingBash(map[string]interface{}{
 		"command": timeoutCmd,
@@ -805,18 +994,33 @@ func TestCodingSubAgentWriteFileRequiresReadOnlyForExistingFiles(t *testing.T) {
 	}
 
 	cb := &codingSubAgentCallbacks{}
-	if msg := cb.requireReadBeforeWriteExisting(existing); msg == "" {
+	if msg := cb.requireReadBeforeWriteExisting(existing, nil); msg == "" {
 		t.Fatal("expected write_file on existing file to require read_file first")
 	}
 
 	cb.trackReadFile(existing)
-	if msg := cb.requireReadBeforeWriteExisting(existing); msg != "" {
+	if msg := cb.requireReadBeforeWriteExisting(existing, nil); msg != "" {
 		t.Fatalf("expected write_file on existing file to be allowed after read_file, got %q", msg)
 	}
 
 	newFile := filepath.Join(dir, "new.txt")
-	if msg := cb.requireReadBeforeWriteExisting(newFile); msg != "" {
+	if msg := cb.requireReadBeforeWriteExisting(newFile, nil); msg != "" {
 		t.Fatalf("expected write_file on new file to be allowed, got %q", msg)
+	}
+}
+
+func TestCodingSubAgentWriteFileAllowsTestReportAppend(t *testing.T) {
+	dir := t.TempDir()
+	report := filepath.Join(dir, "TEST_REPORT.md")
+	if err := os.WriteFile(report, []byte("existing\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{}
+	if msg := cb.requireReadBeforeWriteExisting(report, map[string]interface{}{"mode": "append"}); msg != "" {
+		t.Fatalf("expected TEST_REPORT.md append to be allowed without read_file, got %q", msg)
+	}
+	if msg := cb.requireReadBeforeWriteExisting(report, map[string]interface{}{"mode": "overwrite"}); msg == "" {
+		t.Fatal("expected TEST_REPORT.md overwrite to still require read_file")
 	}
 }
 
@@ -2103,6 +2307,14 @@ func TestCodingSubAgentLogsFailedOperationWithRedactedArgs(t *testing.T) {
 	}
 	if !strings.Contains(freeform, `path=D:\workprj\aicoder\main.go`) {
 		t.Fatalf("freeform log text should preserve non-secret diagnostics, got: %s", freeform)
+	}
+
+	invalidArgsText := compactCodingSubAgentArgsLogText(`{"path":"out.go","content":"secret-token-value`+strings.Repeat("x", 1024), 500)
+	if strings.Contains(invalidArgsText, "secret-token-value") || strings.Contains(invalidArgsText, strings.Repeat("x", 128)) {
+		t.Fatalf("invalid JSON arg text should redact content, got: %s", invalidArgsText)
+	}
+	if !strings.Contains(invalidArgsText, "invalid JSON redacted") || !strings.Contains(invalidArgsText, "content_field=true") {
+		t.Fatalf("invalid JSON arg text should include redacted diagnostic summary, got: %s", invalidArgsText)
 	}
 }
 

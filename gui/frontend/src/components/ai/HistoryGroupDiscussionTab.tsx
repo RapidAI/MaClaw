@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { GroupDiscussionDownloadAttachment, GroupDiscussionGetConsultationDetail, GroupDiscussionSendHistoryMessage, GroupDiscussionSendInvitation, OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
+import { localizeText } from "../../i18n";
 import { GroupParticipantPanel } from "./GroupParticipantPanel";
 import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
 import { VEGroupChatView, type GroupMessage, type GroupParticipant } from "./VEGroupChat";
@@ -47,9 +48,7 @@ type HistoryGroupDiscussionTabProps = {
 
 const historyDetailReloadDebounceMs = 120;
 
-const textForLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans) => (
-    lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") || !lang ? zhHans : en
-);
+const textForLang = localizeText;
 
 const eventDiscussionPayload = (event: any) => {
     const payload = event?.payload || event || {};

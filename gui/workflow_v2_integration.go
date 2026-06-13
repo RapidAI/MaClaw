@@ -130,10 +130,11 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 		return workflowIMRouteResult{}
 	}
 
-	// Lazily set the complexity function using available LLM (only once)
-	if wf.router != nil && wf.router.GetComplexityFunc() == nil {
-		wf.router.SetComplexityFunc(h.buildComplexityFunc())
+	// --- Handle pending coding complexity choice ---
+	if choice := h.handleCodingComplexityCommand(msg, trimmed); choice != nil {
+		return *choice
 	}
+
 	log.Printf("[workflow-v2] routing: user=%s text_len=%d", msg.UserID, len([]rune(trimmed)))
 
 	// VE group executor messages should not trigger workflow creation.
@@ -167,43 +168,20 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 		return workflowIMRouteResult{}
 
 	case v2.RouteToDirectCoding:
-		// Simple/medium task: skip SDD, go directly to SubAgent with user request as the task.
-		log.Printf("[workflow-v2] RouteToDirectCoding: user=%s, direct SubAgent execution", msg.UserID)
-		projectPath := result.ProjectPath
-		if projectPath == "" {
-			if h.app != nil {
-				projectPath = strings.TrimSpace(h.app.GetCurrentProjectPath())
-			}
-		}
-		if projectPath != "" {
-			if cleaned := v2.TruncateToValidPathChars(projectPath); cleaned != "" {
-				projectPath = cleaned
-			}
-		}
-		if projectPath == "" {
-			projectPath = "."
-		}
-		// Cancel any existing workflow
-		if wf := h.getWorkflowV2(); wf != nil && wf.machine.GetActive(msg.UserID) != nil {
-			wf.machine.Cancel(msg.UserID)
-			emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
-		}
-		h.pendingV2SubAgentExecution.Store(msg.UserID, true)
-		h.pendingDirectCodingProjectPath.Store(msg.UserID, projectPath)
-		h.workflowAgentLoopMarker.Store(msg.UserID, true)
-		h.workflowOriginalRequest.Store(msg.UserID, msg.Text)
-		return workflowIMRouteResult{
-			WorkflowAgentLoop: true,
-			WorkflowDocPhase:  false,
-		}
+		// NOTE: The router no longer emits RouteToDirectCoding (complexity is
+		// now user-chosen via askWorkflowConfirmChoice). This case is retained
+		// as a safety net in case future code paths re-introduce direct coding
+		// routing.
+		log.Printf("[workflow-v2] RouteToDirectCoding (legacy path): user=%s", msg.UserID)
+		return h.setupDirectCodingExecution(msg.UserID, msg.Text, result.ProjectPath)
 
 	case v2.RouteToWorkflow:
 		if result.HandleResult != nil {
 			// Active workflow handled the message
 			return h.handleWorkflowV2Action(msg, result.HandleResult)
 		}
-		// New workflow needs to be created
-		return h.startNewWorkflowV2(msg, result)
+		// New workflow creation — ask user to confirm before proceeding.
+		return h.askWorkflowConfirmChoice(msg, result)
 	}
 
 	return workflowIMRouteResult{}
@@ -267,6 +245,18 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 
 func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.HandleResult) workflowIMRouteResult {
 	switch hr.Action {
+	case v2.ActionShowForm:
+		// Phase has an InputSchema — emit AG UI form and wait for submission.
+		if hr.Phase != nil && hr.Phase.InputSchema != nil {
+			h.emitWorkflowV2PhaseForm(msg.UserID, hr.State, hr.Phase)
+			h.emitWorkflowV2Progress(msg.UserID, hr.State)
+			return workflowIMRouteResult{Response: &IMAgentResponse{
+				Text: "📋 请在右侧任务面板填写信息后提交。",
+			}}
+		}
+		// Fallback: if no schema (shouldn't happen), treat as run_phase
+		return h.runWorkflowV2Phase(msg.UserID, hr.State, "")
+
 	case v2.ActionRunPhase:
 		// Route based on ExecMode declared in template — no hardcoded phase IDs.
 		if hr.Phase != nil {
@@ -358,6 +348,16 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "✅ 工作流已完成"}}
 	}
 
+	// If this phase has an InputSchema and form data hasn't been submitted yet,
+	// show the AG UI form instead of running the agent loop.
+	if phase.InputSchema != nil && phase.FormData == nil {
+		h.emitWorkflowV2PhaseForm(userID, state, phase)
+		h.emitWorkflowV2Progress(userID, state)
+		return workflowIMRouteResult{Response: &IMAgentResponse{
+			Text: "📋 请在右侧任务面板填写信息后提交。",
+		}}
+	}
+
 	// Emit progress update so the frontend board always reflects the current phase.
 	h.emitWorkflowV2Progress(userID, state)
 
@@ -396,6 +396,7 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 	return workflowIMRouteResult{
 		WorkflowAgentLoop: true,
 		WorkflowDocPhase:  isDocPhase,
+		WorkflowPhaseID:   phase.ID,
 	}
 }
 
@@ -460,7 +461,111 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 	}
 }
 
-// recordWorkflowV2Output is called from the agent loop when substantial
+// emitWorkflowV2PhaseForm builds and emits an AG UI form from the phase's InputSchema.
+// The form appears in the right-side task panel (AgentTaskPanel).
+func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.WorkflowState, phase *v2.Phase) {
+	if h == nil || h.app == nil || phase == nil || phase.InputSchema == nil {
+		return
+	}
+	schema := phase.InputSchema
+	workflowID := ""
+	if state != nil {
+		workflowID = state.ID
+	}
+
+	fields := make([]map[string]interface{}, 0, len(schema.Fields)+3)
+	for _, f := range schema.Fields {
+		field := map[string]interface{}{
+			"name":  f.Name,
+			"label": f.Label,
+			"type":  f.Type,
+		}
+		if f.Required {
+			field["required"] = true
+		}
+		if f.Description != "" {
+			field["description"] = f.Description
+		}
+		if f.Placeholder != "" {
+			field["placeholder"] = f.Placeholder
+		}
+		if len(f.Options) > 0 {
+			opts := make([]map[string]string, len(f.Options))
+			for i, o := range f.Options {
+				opts[i] = map[string]string{"label": o.Label, "value": o.Value}
+			}
+			field["options"] = opts
+		}
+		if f.Default != nil {
+			field["value"] = f.Default
+		}
+		fields = append(fields, field)
+	}
+
+	// Hidden routing fields
+	fields = append(fields, map[string]interface{}{"name": "_workflow_phase", "type": "hidden", "value": phase.ID})
+	fields = append(fields, map[string]interface{}{"name": "_workflow_user_id", "type": "hidden", "value": userID})
+	fields = append(fields, map[string]interface{}{"name": "_workflow_id", "type": "hidden", "value": workflowID})
+
+	viewID := "workflow:form:" + phase.ID
+	view := map[string]interface{}{
+		"type":        "form",
+		"id":          viewID,
+		"title":       schema.Title,
+		"description": schema.Description,
+		"fields":      fields,
+		"submitLabel": "提交",
+		"meta": map[string]interface{}{
+			"source":   "workflow_v2.phase_form",
+			"phase_id": phase.ID,
+		},
+	}
+	h.app.emitAgentView(view)
+	log.Printf("[workflow-v2] emitted AG UI form: phase=%s fields=%d", phase.ID, len(schema.Fields))
+}
+
+// handleWorkflowV2FormSubmit processes the user's AG UI form submission for a
+// workflow v2 phase. It stores the form data in the state machine and dismisses
+// the form panel. The next user message (e.g. "继续") will trigger HandleInput →
+// ActionRunPhase with FormData available, and the agent loop runs with form data
+// injected into the phase prompt.
+func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, data map[string]interface{}) *IMAgentResponse {
+	wf := h.getWorkflowV2()
+	if wf == nil {
+		return &IMAgentResponse{Text: "工作流未初始化", Error: "no workflow v2 state"}
+	}
+
+	// Strip hidden routing fields from form data before storing
+	cleanData := make(map[string]interface{}, len(data))
+	for k, v := range data {
+		if k != "" && k[0] != '_' {
+			cleanData[k] = v
+		}
+	}
+
+	if err := wf.machine.SubmitForm(userID, cleanData); err != nil {
+		log.Printf("[workflow-v2] SubmitForm failed: user=%s phase=%s err=%v", userID, phaseID, err)
+		return &IMAgentResponse{Text: "表单提交失败: " + err.Error(), Error: err.Error()}
+	}
+
+	log.Printf("[workflow-v2] form submitted: user=%s phase=%s fields=%d", userID, phaseID, len(cleanData))
+
+	// Emit progress so the frontend dashboard updates.
+	state := wf.machine.GetActive(userID)
+	if state != nil {
+		h.emitWorkflowV2Progress(userID, state)
+	}
+
+	// Dismiss the AG UI form panel after successful submission.
+	if h.app != nil {
+		h.app.emitAgentViewLifecycle("dismiss", map[string]interface{}{"view_id": "workflow:form:" + phaseID})
+	}
+
+	return &IMAgentResponse{
+		Text: "✅ 信息已收到！发送「继续」开始生成文档。",
+	}
+}
+
 // document output is produced during a workflow phase.
 func (h *IMMessageHandler) recordWorkflowV2Output(userID, output string) {
 	wf := h.getWorkflowV2()
@@ -481,7 +586,7 @@ func (h *IMMessageHandler) recordWorkflowV2Output(userID, output string) {
 	if state.IsWaitingConfirm() {
 		phase := state.ActivePhase()
 		if phase != nil {
-			h.emitDocUpdateV2(userID, phase.ID, output)
+			h.emitDocUpdateV2(userID, phase.ID, phase.Output)
 		}
 	}
 }
@@ -1006,8 +1111,16 @@ CRITICAL RULES:
 
 Respond with ONLY one word: simple, complex, or none.`
 
-		result := h.callLightweightLLM(cfg, systemPrompt, text, 5)
+		result := h.callLightweightLLM(cfg, systemPrompt, text, 20)
 		result = strings.TrimSpace(strings.ToLower(result))
+
+		if result == "" {
+			// LLM failed (timeout/503/network) — use local keyword fallback
+			// instead of blindly defaulting to complex.
+			fallback := assessComplexityByKeywords(text)
+			log.Printf("[workflow-v2] complexity assessment: LLM unavailable, keyword fallback=%s for %q (model=%s)", fallback, truncateRunesV2(text, 60), cfg.Model)
+			return fallback
+		}
 
 		switch {
 		case result == "none" || strings.Contains(result, "none"):
@@ -1029,6 +1142,8 @@ Respond with ONLY one word: simple, complex, or none.`
 
 // callLightweightLLM makes a quick non-streaming LLM call for classification.
 // Returns the response text or empty string on failure.
+// Retries once on transient errors (503, timeout, network) since the target
+// API (zhipu) is often slow or intermittently unavailable.
 func (h *IMMessageHandler) callLightweightLLM(cfg corelib.MaclawLLMConfig, systemPrompt, userText string, timeoutSec int) string {
 	if h == nil || h.client == nil {
 		return ""
@@ -1037,14 +1152,293 @@ func (h *IMMessageHandler) callLightweightLLM(cfg corelib.MaclawLLMConfig, syste
 		map[string]string{"role": "system", "content": systemPrompt},
 		map[string]string{"role": "user", "content": userText},
 	}
-	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "workflow-v2-lightweight"})
-	resp, err := doSimpleLLMRequest(ctx, cfg, messages, h.client, time.Duration(timeoutSec)*time.Second)
-	if err != nil {
-		log.Printf("[workflow-v2] callLightweightLLM: request failed: %v", err)
-		return ""
+
+	const maxAttempts = 2
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "workflow-v2-lightweight"})
+		resp, err := doSimpleLLMRequest(ctx, cfg, messages, h.client, time.Duration(timeoutSec)*time.Second)
+		if err != nil {
+			log.Printf("[workflow-v2] callLightweightLLM: attempt %d/%d failed: %v", attempt, maxAttempts, err)
+			if attempt < maxAttempts {
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			return ""
+		}
+		if resp == nil {
+			if attempt < maxAttempts {
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			return ""
+		}
+		content := strings.TrimSpace(resp.Content)
+		if content == "" && attempt < maxAttempts {
+			// Model returned empty content — retry
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		return content
 	}
-	if resp == nil {
-		return ""
+	return ""
+}
+
+// assessComplexityByKeywords is the local fallback when the LLM complexity
+// assessment fails (timeout, 503, network error). It uses keyword heuristics
+// to classify coding tasks without an LLM call.
+//
+// Design principle: this is the FALLBACK path, not the primary classifier.
+// It only runs when the API is unreachable. Be conservative on "simple" —
+// only return simple for clearly trivial tasks. When in doubt, return complex.
+func assessComplexityByKeywords(text string) v2.TaskComplexity {
+	lower := strings.ToLower(text)
+
+	// --- Simple indicators: single-purpose, trivial tasks ---
+	simplePatterns := []string{
+		"hello world", "helloworld", "hello_world",
+		"修bug", "修复bug", "fix bug", "fixbug",
+		"修复错误", "修复问题", "调试", "debug",
+		"改个", "加个", "删个", "加一个",
+		"添加一个按钮", "添加一个接口", "添加一个函数",
+		"写个脚本", "写一个脚本",
+		"配置文件", "修改配置",
 	}
-	return strings.TrimSpace(resp.Content)
+	for _, p := range simplePatterns {
+		if strings.Contains(lower, p) {
+			return v2.ComplexitySimple
+		}
+	}
+
+	// --- Complex indicators: multi-component systems ---
+	complexSignals := 0
+	complexPatterns := []string{
+		"系统", "管理系统", "平台",
+		"游戏", "应用", "app",
+		"数据库", "认证", "权限", "登录",
+		"前端", "后端", "全栈",
+		"架构", "微服务", "分布式",
+		"多模块", "多功能",
+	}
+	for _, p := range complexPatterns {
+		if strings.Contains(lower, p) {
+			complexSignals++
+		}
+	}
+	// 2+ complex signals → definitely complex
+	if complexSignals >= 2 {
+		return v2.ComplexityComplex
+	}
+
+	// --- Feature count heuristic: multiple requirements listed ---
+	// Chinese enumeration markers: 、，needs multiple features
+	featureMarkers := []string{"，需要", "，支持", "，包含", "，具备", "，实现"}
+	for _, m := range featureMarkers {
+		if strings.Contains(lower, m) {
+			return v2.ComplexityComplex
+		}
+	}
+
+	// Single complex keyword (like "游戏") without additional signals
+	// could be simple (hello-world game) or complex (full game with physics).
+	// Conservative: if ANY complex keyword matched, treat as complex.
+	if complexSignals >= 1 {
+		return v2.ComplexityComplex
+	}
+
+	// No strong signals either way — default to complex (safe)
+	return v2.ComplexityComplex
+}
+
+// --- Workflow Confirm Choice (user decides whether to enter workflow) ---
+
+const (
+	workflowChoiceCommandPrefix = "__workflow_choice__"
+	workflowChoiceComplex       = "complex" // Full SDD workflow
+	workflowChoiceSimple        = "simple"  // Direct SubAgent (coding only)
+	workflowChoiceSkip          = "skip"    // Not a workflow task, use normal agent loop
+)
+
+// pendingWorkflowChoice stores the original route result while waiting for user choice.
+type pendingWorkflowChoice struct {
+	Msg         IMUserMessage
+	RouteResult *v2.RouteResult
+	ChoiceID    string
+}
+
+func buildWorkflowChoiceCommand(choice, choiceID string) string {
+	return workflowChoiceCommandPrefix + " " + choice + " " + choiceID
+}
+
+func parseWorkflowChoiceCommand(text string) (choice, choiceID string, ok bool) {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) != 3 || fields[0] != workflowChoiceCommandPrefix {
+		return "", "", false
+	}
+	return fields[1], fields[2], true
+}
+
+// setupDirectCodingExecution configures the handler state for direct SubAgent
+// coding execution (skip SDD). Shared by the RouteToDirectCoding legacy path
+// and the user's "simple coding" choice.
+func (h *IMMessageHandler) setupDirectCodingExecution(userID, originalText, rawProjectPath string) workflowIMRouteResult {
+	projectPath := rawProjectPath
+	if projectPath == "" {
+		if h.app != nil {
+			projectPath = strings.TrimSpace(h.app.GetCurrentProjectPath())
+		}
+	}
+	if projectPath != "" {
+		if cleaned := v2.TruncateToValidPathChars(projectPath); cleaned != "" {
+			projectPath = cleaned
+		}
+	}
+	if projectPath == "" {
+		projectPath = "."
+	}
+	// Cancel any existing workflow
+	if wf := h.getWorkflowV2(); wf != nil && wf.machine.GetActive(userID) != nil {
+		wf.machine.Cancel(userID)
+		emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
+	}
+	h.pendingV2SubAgentExecution.Store(userID, true)
+	h.pendingDirectCodingProjectPath.Store(userID, projectPath)
+	h.workflowAgentLoopMarker.Store(userID, true)
+	h.workflowOriginalRequest.Store(userID, originalText)
+	return workflowIMRouteResult{
+		WorkflowAgentLoop: true,
+		WorkflowDocPhase:  false,
+	}
+}
+
+// askWorkflowConfirmChoice presents the user with a choice before entering a workflow.
+// For coding: 3 options (full SDD / simple coding / not coding).
+// For other templates: 2 options (enter workflow / handle directly).
+func (h *IMMessageHandler) askWorkflowConfirmChoice(msg IMUserMessage, result *v2.RouteResult) workflowIMRouteResult {
+	choiceID := fmt.Sprintf("wc_%d", time.Now().UnixMilli())
+
+	// Store pending state
+	h.pendingWorkflowChoice.Store(msg.UserID, &pendingWorkflowChoice{
+		Msg:         msg,
+		RouteResult: result,
+		ChoiceID:    choiceID,
+	})
+
+	var text string
+	var actions []IMResponseAction
+
+	if result.WorkflowType == "coding" {
+		text = "🛠️ 识别到这可能是一个**编程开发任务**，请选择处理方式：\n\n" +
+			"**1. 完整开发流程 SDD（推荐用于中大型项目）**\n" +
+			"系统引导完成：需求文档 → 技术设计 → 任务拆分 → 逐任务编码 → 验收\n" +
+			"耗时较长，但能显著提升代码质量和可维护性：\n" +
+			"• 需求先行，避免返工和需求遗漏\n" +
+			"• 架构设计确保模块解耦、接口清晰\n" +
+			"• 任务拆分让每个子任务可独立验证，降低集成风险\n" +
+			"适合：多模块系统、游戏、完整应用、需要多人协作或长期维护的项目\n\n" +
+			"**2. 简单编程（推荐用于小任务）**\n" +
+			"跳过设计文档，直接开始写代码，快速完成\n" +
+			"适合：修 bug、写脚本、加个函数、hello world、单文件小工具\n\n" +
+			"**3. 这不是编程任务**\n" +
+			"不走编程流程，当作普通任务由 AI 自由发挥\n" +
+			"适合：翻译、整理文档、搜索资料、格式转换、内容生成等"
+		actions = []IMResponseAction{
+			{Label: "📋 完整开发流程", Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
+			{Label: "⚡ 简单编程", Command: buildWorkflowChoiceCommand(workflowChoiceSimple, choiceID), Style: "secondary"},
+			{Label: "🔄 不是编程任务", Command: buildWorkflowChoiceCommand(workflowChoiceSkip, choiceID), Style: "secondary"},
+		}
+	} else {
+		templateName := result.WorkflowType
+		if wf := h.getWorkflowV2(); wf != nil {
+			if tmpl := wf.registry.Get(result.WorkflowType); tmpl != nil && tmpl.Name != "" {
+				templateName = tmpl.Name
+			}
+		}
+		text = fmt.Sprintf("🔍 识别到这可能适合使用**%s**工作流，请选择处理方式：\n\n"+
+			"**1. 进入%s工作流（推荐）**\n"+
+			"系统按阶段引导完成，每个阶段产出结构化文档，完成后再进入下一阶段\n\n"+
+			"**2. 直接处理**\n"+
+			"不走工作流，当作普通任务由 AI 自由发挥完成", templateName, templateName)
+		actions = []IMResponseAction{
+			{Label: fmt.Sprintf("📋 进入%s工作流", templateName), Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
+			{Label: "🔄 直接处理", Command: buildWorkflowChoiceCommand(workflowChoiceSkip, choiceID), Style: "secondary"},
+		}
+	}
+
+	log.Printf("[workflow-v2] askWorkflowConfirmChoice: user=%s type=%s choiceID=%s", msg.UserID, result.WorkflowType, choiceID)
+
+	return workflowIMRouteResult{
+		Response: &IMAgentResponse{
+			Text:    text,
+			Actions: actions,
+		},
+	}
+}
+
+// handleCodingComplexityCommand intercepts structured choice commands from button clicks.
+// Returns nil if the message is not a choice command.
+// Also clears stale pending state when user sends a non-command message.
+func (h *IMMessageHandler) handleCodingComplexityCommand(msg IMUserMessage, trimmed string) *workflowIMRouteResult {
+	choice, choiceID, ok := parseWorkflowChoiceCommand(trimmed)
+	if !ok {
+		// Not a choice command — clear any stale pending state so the new message
+		// flows through normal routing without interference.
+		h.pendingWorkflowChoice.Delete(msg.UserID)
+		return nil
+	}
+
+	// Consume pending choice
+	raw, loaded := h.pendingWorkflowChoice.LoadAndDelete(msg.UserID)
+	if !loaded {
+		// Stale/expired button click — ignore
+		result := workflowIMRouteResult{
+			Response: &IMAgentResponse{Text: "⚠️ 选择已过期，请重新发送任务。"},
+		}
+		return &result
+	}
+	pending := raw.(*pendingWorkflowChoice)
+
+	// Validate choiceID matches the stored pending — reject stale button clicks
+	// from a previous prompt that was superseded by a new one.
+	if pending.ChoiceID != choiceID {
+		result := workflowIMRouteResult{
+			Response: &IMAgentResponse{Text: "⚠️ 选择已过期，请重新发送任务。"},
+		}
+		return &result
+	}
+
+	switch choice {
+	case workflowChoiceComplex:
+		// Full SDD workflow (or full structured workflow for non-coding)
+		log.Printf("[workflow-v2] user chose: COMPLEX (full workflow) type=%s", pending.RouteResult.WorkflowType)
+		result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
+		return &result
+
+	case workflowChoiceSimple:
+		// Direct SubAgent coding — only valid for coding type
+		if pending.RouteResult.WorkflowType != "coding" {
+			// Non-coding workflow can't use simple coding path; treat as full workflow
+			log.Printf("[workflow-v2] user sent 'simple' for non-coding type=%s, treating as complex", pending.RouteResult.WorkflowType)
+			result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
+			return &result
+		}
+		log.Printf("[workflow-v2] user chose: SIMPLE (direct coding)")
+		result := h.setupDirectCodingExecution(pending.Msg.UserID, pending.Msg.Text, pending.RouteResult.ProjectPath)
+		return &result
+
+	case workflowChoiceSkip:
+		// Not a workflow task — route to normal agent loop with original message.
+		// ReplayText tells the entry layer to substitute the button command with
+		// the user's original task text for agent loop processing.
+		log.Printf("[workflow-v2] user chose: SKIP (normal agent loop)")
+		result := workflowIMRouteResult{
+			ReplayText: pending.Msg.Text,
+		}
+		return &result
+
+	default:
+		result := workflowIMRouteResult{
+			Response: &IMAgentResponse{Text: "⚠️ 无效选择，请重新发送任务。"},
+		}
+		return &result
+	}
 }

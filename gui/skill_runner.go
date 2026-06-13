@@ -1595,10 +1595,11 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 				Model:    llmCfg.Model,
 				Protocol: llmCfg.Protocol,
 				WireAPI:  llmCfg.WireAPI,
+				AuthType: llmCfg.AuthType,
 			}
 		}
-		if strings.TrimSpace(proxyCfg.URL) == "" || strings.TrimSpace(proxyCfg.Model) == "" {
-			errMsg := "skill requires OpenAI-compatible environment variables, but the GUI local proxy cannot start because no LLM provider URL/model is configured [action: configure_llm]"
+		if err := corelib.ValidateOpenAIProxyUpstreamConfig(proxyCfg); err != nil {
+			errMsg := fmt.Sprintf("skill requires OpenAI-compatible environment variables, but the GUI local proxy cannot start because %s [action: configure_llm]", err)
 			r.failRunPendingSkipped(run, skill, errMsg, fmt.Errorf("%s", errMsg), execStart)
 			return
 		}

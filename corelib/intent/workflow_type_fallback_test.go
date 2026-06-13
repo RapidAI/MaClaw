@@ -201,7 +201,7 @@ func TestBuildWorkflowTypeMap(t *testing.T) {
 	defs := DefaultDefinitions()
 	m := BuildWorkflowTypeMap(defs)
 
-	// coding has exactly one WorkflowType
+	// coding maps to "coding" (first WorkflowType, used as degraded-mode default)
 	if wf, ok := m[LabelCoding]; !ok || wf != "coding" {
 		t.Errorf("LabelCoding: got (%q, %v), want (\"coding\", true)", wf, ok)
 	}

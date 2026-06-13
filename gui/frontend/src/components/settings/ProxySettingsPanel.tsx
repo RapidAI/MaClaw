@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { main } from '../../../wailsjs/go/models';
+import { localizeText } from '../../i18n';
 import { ProxyScopeSettings } from './ProxyScopeSettings';
 
 type ProxySettingsPanelProps = {
@@ -10,9 +11,7 @@ type ProxySettingsPanelProps = {
     t: (key: string) => string;
 };
 
-const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' || lang === 'zh' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+const textForLang = localizeText;
 
 const buildConfig = (config: main.AppConfig | null, patch: Record<string, any>) => new main.AppConfig({ ...(config || {}), ...patch });
 

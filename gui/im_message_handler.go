@@ -114,6 +114,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	freshTask = entryContext.FreshTask
 	workflowAgentLoop := entryContext.WorkflowAgentLoop
 	workflowDocPhase := entryContext.WorkflowDocPhase
+	workflowPhaseID := entryContext.WorkflowPhaseID
 	skipNeedsConfirmGate := entryContext.SkipNeedsConfirmGate
 	askUserContext := entryContext.AskUserContext
 	pendingUserReplyContext := entryContext.PendingUserReplyContext
@@ -130,6 +131,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		UnfinishedSlot:            unfinishedSlot,
 		WorkflowAgentLoop:         workflowAgentLoop,
 		WorkflowDocPhase:          workflowDocPhase,
+		WorkflowPhaseID:           workflowPhaseID,
 		SkipNeedsConfirmGate:      skipNeedsConfirmGate,
 		AskUserContext:            askUserContext,
 		PendingUserReplyContext:   pendingUserReplyContext,

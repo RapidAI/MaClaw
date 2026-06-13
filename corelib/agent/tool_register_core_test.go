@@ -90,6 +90,52 @@ func TestCoreSearchToolsExposeLargeRepoSearchOptions(t *testing.T) {
 	)
 }
 
+func TestCoreWriteFileToolGuidesChunkedLargeContent(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{})
+
+	reg.mu.RLock()
+	entry := reg.tools["write_file"]
+	reg.mu.RUnlock()
+	if entry == nil {
+		t.Fatal("write_file is not registered")
+	}
+	if !containsAllSubstrings(entry.Description, []string{"1800", "split", "append", "truncated tool-call JSON"}) {
+		t.Fatalf("write_file description should guide chunked large writes: %q", entry.Description)
+	}
+	contentProp, _ := entry.Properties["content"].(map[string]interface{})
+	if !containsAllSubstrings(asString(contentProp["description"]), []string{"under 1800", "split large files"}) {
+		t.Fatalf("write_file content description should guide chunking: %#v", entry.Properties["content"])
+	}
+	if got := contentProp["maxLength"]; got != coreInlineToolPayloadMaxLength {
+		t.Fatalf("write_file content maxLength = %#v, want %d", got, coreInlineToolPayloadMaxLength)
+	}
+}
+
+func TestCoreEditFileToolGuidesSmallExactReplacements(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{})
+
+	reg.mu.RLock()
+	entry := reg.tools["edit_file"]
+	reg.mu.RUnlock()
+	if entry == nil {
+		t.Fatal("edit_file is not registered")
+	}
+	if !containsAllSubstrings(entry.Description, []string{"1800", "split large edits", "truncated tool-call JSON"}) {
+		t.Fatalf("edit_file description should guide small edits: %q", entry.Description)
+	}
+	for _, propName := range []string{"old_string", "new_string"} {
+		prop, _ := entry.Properties[propName].(map[string]interface{})
+		if !containsAllSubstrings(asString(prop["description"]), []string{"under 1800", "split large edits"}) {
+			t.Fatalf("edit_file %s description should guide small edits: %#v", propName, entry.Properties[propName])
+		}
+		if got := prop["maxLength"]; got != coreInlineToolPayloadMaxLength {
+			t.Fatalf("edit_file %s maxLength = %#v, want %d", propName, got, coreInlineToolPayloadMaxLength)
+		}
+	}
+}
+
 func TestRegisterCoreToolsSecurityGuardBlocksBeforeHandler(t *testing.T) {
 	reg := NewCoreToolRegistry()
 	RegisterCoreTools(reg, CoreToolDeps{
@@ -210,6 +256,13 @@ func containsAllSubstrings(value string, needles []string) bool {
 		}
 	}
 	return true
+}
+
+func asString(value interface{}) string {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return ""
 }
 
 func TestCoreWorkflowDocumentToolsExposeMetadata(t *testing.T) {

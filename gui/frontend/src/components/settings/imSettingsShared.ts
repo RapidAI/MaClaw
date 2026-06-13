@@ -1,13 +1,12 @@
 import type { CSSProperties } from 'react';
+import { localizeText } from '../../i18n';
 
-export const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' || lang === 'zh' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+export const textForLang = localizeText;
 
 export const channelModeLabel = (lang: string) => textForLang(lang, 'Mode:', '\u901a\u9053\uff1a', '\u901a\u9053\uff1a');
 export const restartLabel = (lang: string) => textForLang(lang, 'Restart', '\u91cd\u542f', '\u91cd\u555f');
 export const watchLabel = (lang: string) => textForLang(lang, 'Watch', '\u76d1\u770b', '\u76e3\u770b');
-export const switchFailedLabel = '\u5207\u6362\u5931\u8d25';
+export const switchFailedLabel = (lang: string) => textForLang(lang, 'Switch failed', '\u5207\u6362\u5931\u8d25', '\u5207\u63db\u5931\u6557');
 
 export const localModeOptions = (lang: string) => ([
     { value: true, label: textForLang(lang, 'Local', '\u5355\u673a', '\u55ae\u6a5f'), desc: textForLang(lang, 'Direct local LLM', '\u672c\u5730 LLM \u76f4\u8fde', '\u672c\u5730 LLM \u76f4\u9023') },

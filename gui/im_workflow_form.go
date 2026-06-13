@@ -5,7 +5,6 @@ import (
 	"log"
 	"strings"
 
-	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
@@ -120,8 +119,8 @@ func buildWorkflowPhaseFormAgentView(userID, workflowID, phaseID string, schema 
 }
 
 // handleWorkflowFormAgentViewSubmit processes the user's form submission from
-// the AG UI task panel. It delegates to the workflow engine's SubmitPhaseForm
-// and triggers the agent loop with the form data injected into the phase prompt.
+// the AG UI task panel. It stores the form data via the v2 workflow engine.
+// The next user message will trigger the agent loop with form data in the prompt.
 func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]interface{}, requestID string) *IMAgentResponse {
 	phaseID = strings.TrimSpace(phaseID)
 	hubClient := a.ensureHubClient()
@@ -133,13 +132,29 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 		}
 	}
 	handler := hubClient.ensureIMHandler()
-	lang := handler.getWorkflowLang()
-	_ = handler
-	_ = data
-	_ = requestID
+
+	// Resolve the user ID from form hidden fields
+	userID := workflowFormStringField(data, workflowFormUserIDField)
+	if userID == "" && handler != nil {
+		userID = handler.lastUserID
+	}
+
+	// Route to v2 workflow engine
+	if handler != nil && handler.isWorkflowV2Active(userID) {
+		resp := handler.handleWorkflowV2FormSubmit(userID, phaseID, data)
+		if resp != nil {
+			resp.ResponseSource = imResponseSourceAgentViewSubmit.String()
+			return resp
+		}
+		return &IMAgentResponse{
+			Text:           "✅ 表单已提交，正在生成文档...",
+			ResponseSource: imResponseSourceAgentViewSubmit.String(),
+		}
+	}
+
 	return &IMAgentResponse{
-		Text:           i18n.T(i18n.MsgWorkflowUnavailable, lang),
-		Error:          "no workflow engine",
+		Text:           "当前没有活跃的工作流。",
+		Error:          "no active workflow",
 		ResponseSource: imResponseSourceAgentViewSubmit.String(),
 	}
 }

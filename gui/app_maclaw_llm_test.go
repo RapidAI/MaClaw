@@ -1262,8 +1262,8 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if zhipuCoding.URL != "https://open.bigmodel.cn/api/anthropic" {
 		t.Errorf("智谱编程 URL = %q, want %q", zhipuCoding.URL, "https://open.bigmodel.cn/api/anthropic")
 	}
-	if zhipuCoding.Model != "glm-5.1" {
-		t.Errorf("智谱编程 Model = %q, want %q", zhipuCoding.Model, "glm-5.1")
+	if zhipuCoding.Model != "GLM-5.2" {
+		t.Errorf("智谱编程 Model = %q, want %q", zhipuCoding.Model, "GLM-5.2")
 	}
 	if zhipuCoding.Protocol != "anthropic" {
 		t.Errorf("智谱编程 Protocol = %q, want %q", zhipuCoding.Protocol, "anthropic")
@@ -2328,7 +2328,7 @@ func TestSubAgentConcurrencyNormalizesBounds(t *testing.T) {
 		{name: "zero defaults", in: 0, want: corelib.DefaultSubAgentConcurrency},
 		{name: "one stays", in: 1, want: 1},
 		{name: "middle stays", in: 3, want: 3},
-		{name: "above max clamps", in: 9, want: corelib.MaxSubAgentConcurrency},
+		{name: "above max clamps", in: 15, want: corelib.MaxSubAgentConcurrency},
 	}
 
 	for _, tc := range tests {

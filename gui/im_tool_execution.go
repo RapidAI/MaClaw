@@ -20,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 func (h *IMMessageHandler) shouldSkipWorkflowToolExecutionGate(userID string, ctx *LoopContext) bool {
@@ -66,6 +67,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		tc.Function.Name = rewrittenName
 		tc.Function.Arguments = rewrittenArgs
 	}
+	tc.Function.Arguments = normalizeAgentLoopToolArgumentsJSON(tc.Function.Arguments)
 	if reason := rejectUnstableBrowserToolCallJSON(tc.Function.Name, tc.Function.Arguments); reason != "" {
 		return toolExecutionResult{Text: "[system rejected] " + reason, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
@@ -126,6 +128,11 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		}
 	}
 	if result.Text == "" {
+		if errResult := preCheckAgentLoopInvalidToolArguments(tc.Function.Name, tc.Function.Arguments, opts.Iteration); errResult != nil {
+			result = *errResult
+		}
+	}
+	if result.Text == "" {
 		// In agent loop context, intercept missing/invalid parameter errors BEFORE
 		// executeToolDetailed. executeToolDetailed would emit an AgentView panel
 		// (designed for user-manual tool invocations), which is wrong inside an
@@ -143,6 +150,13 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
 	}
 	return result
+}
+
+func normalizeAgentLoopToolArgumentsJSON(argsJSON string) string {
+	if strings.TrimSpace(argsJSON) == "" {
+		return "{}"
+	}
+	return argsJSON
 }
 
 func (h *IMMessageHandler) appendToolPolicyTrace(ctx *LoopContext, userID, toolName, layer, reason string) {
@@ -384,8 +398,12 @@ func (h *IMMessageHandler) isWorkflowToolAllowedForOwner(policyUserID, name stri
 	if policyUserID == "" {
 		return true
 	}
-	if h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.IsPhaseExecutionBlocked(policyUserID) {
-		return false
+	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+		if state := wf.machine.GetActive(policyUserID); state != nil {
+			if p := state.ActivePhase(); p != nil && p.Status == v2.PhaseWaitingConfirm {
+				return false
+			}
+		}
 	}
 	_, policy, apply := h.workflowToolFilterOwnerPolicyAndDecision(policyUserID, nil)
 	if !apply {
@@ -405,8 +423,12 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 	if policyUserID == "" {
 		return true, ""
 	}
-	if h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.IsPhaseExecutionBlocked(policyUserID) {
-		return false, fmt.Sprintf("%s is not allowed while the current workflow phase is blocked", strings.TrimSpace(name))
+	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+		if state := wf.machine.GetActive(policyUserID); state != nil {
+			if p := state.ActivePhase(); p != nil && p.Status == v2.PhaseWaitingConfirm {
+				return false, fmt.Sprintf("%s is not allowed while the current workflow phase is blocked", strings.TrimSpace(name))
+			}
+		}
 	}
 	_, policy, apply := h.workflowToolFilterOwnerPolicyAndDecision(policyUserID, nil)
 	if !apply {
@@ -430,8 +452,18 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 		}
 	}
 	approved := []workflow.OpsApprovedCommand(nil)
-	if policy == workflow.ToolFilterOpsControlled && h.app != nil && h.app.workflowEngine != nil {
-		approved = h.app.workflowEngine.GetOpsApprovedCommands(policyUserID)
+	if policy == workflow.ToolFilterOpsControlled {
+		if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+			if state := wf.machine.GetActive(policyUserID); state != nil {
+				// Check previous phase outputs for risk_policy content
+				for i := 0; i < state.CurrentPhase && i < len(state.Phases); i++ {
+					p := state.Phases[i]
+					if p.ID == "risk_policy" && p.Output != "" {
+						approved = workflow.ExtractOpsApprovedCommands(p.Output)
+					}
+				}
+			}
+		}
 	}
 	if err := workflow.ValidateToolCallByPolicyWithApproval(policy, name, args, approved); err != nil {
 		return false, err.Error()
@@ -526,6 +558,7 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntime(policyUserID, runtimeP
 
 func (h *IMMessageHandler) executeToolDetailedWithRuntimeState(policyUserID string, hasRuntimeOwner bool, runtimePlatform, name, argsJSON, userText string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
 	name = strings.TrimSpace(name)
+	argsJSON = strings.TrimSpace(argsJSON)
 	kind := classifyAgentToolKind(name)
 	if reason := rejectUnstableBrowserToolCallJSON(name, argsJSON); reason != "" {
 		return toolExecutionResult{Text: "[system rejected] " + reason, ToolName: name, ToolKind: kind, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
@@ -555,12 +588,16 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeState(policyUserID stri
 	var args map[string]interface{}
 	if argsJSON != "" {
 		cleaned := coretool.CleanToolArguments(argsJSON)
-		if err := json.Unmarshal([]byte(cleaned), &args); err != nil {
-			errMsg := fmt.Sprintf("Argument parse failed: %s", err.Error())
-			if hint := classifyToolArgumentError(err, argsJSON).Hint(); hint != "" {
-				errMsg += "\n\n" + hint
+		if cleaned != "" {
+			parsed, err := parseAgentToolArgumentsObject(cleaned)
+			if err != nil {
+				errMsg := fmt.Sprintf("Tool %s arguments must be a complete valid JSON object. Parse error: %s. Please regenerate the same tool call with all required fields.", name, err.Error())
+				if hint := classifyToolArgumentError(err, argsJSON).Hint(); hint != "" {
+					errMsg += " " + hint
+				}
+				return toolExecutionResult{Text: errMsg, Outcome: toolOutcomeFailed, FailureKind: toolFailureArgumentParse}
 			}
-			return toolExecutionResult{Text: errMsg, Outcome: toolOutcomeFailed, FailureKind: toolFailureArgumentParse}
+			args = parsed
 		}
 	}
 	if args == nil {
@@ -843,7 +880,7 @@ func inferRegisteredToolOutcome(text string) toolOutcome {
 
 func preCheckAgentLoopInlinePayloadLimit(name, argsJSON string, iteration int) *toolExecutionResult {
 	name = strings.TrimSpace(name)
-	if name != "write_file" && name != "bash" && name != "ssh" {
+	if name != "write_file" && name != "edit_file" && name != "edit_lines" && name != "bash" && name != "ssh" {
 		return nil
 	}
 	var args map[string]interface{}
@@ -862,6 +899,13 @@ func preCheckAgentLoopInlinePayloadLimit(name, argsJSON string, iteration int) *
 		field = "content"
 		value, _ = args[field].(string)
 		limit = maxAgentLoopInlineWriteFileContentRunes
+	case "edit_file":
+		field, value = largestAgentLoopStringArg(args, "old_string", "new_string")
+		limit = maxAgentLoopInlineEditContentRunes
+	case "edit_lines":
+		field = "content"
+		value, _ = args[field].(string)
+		limit = maxAgentLoopInlineEditContentRunes
 	case "bash":
 		field = "command"
 		value, _ = args[field].(string)
@@ -878,6 +922,8 @@ func preCheckAgentLoopInlinePayloadLimit(name, argsJSON string, iteration int) *
 	text := fmt.Sprintf("Tool %s parameter %s is too large for one agent-loop call (%d runes, limit %d). %s", name, field, valueRunes, limit, agentLoopInlinePayloadLimitInstruction())
 	if name == "write_file" {
 		text += " Split the content into chunks: first call mode=overwrite, then mode=append for later chunks."
+	} else if name == "edit_file" || name == "edit_lines" {
+		text += " Split the edit into smaller targeted edits, or use line-scoped edit_lines after reading the file."
 	} else {
 		text += " Do not embed generated file bodies or long scripts in shell commands; write/upload a script file first, then execute that file."
 	}
@@ -889,6 +935,54 @@ func preCheckAgentLoopInlinePayloadLimit(name, argsJSON string, iteration int) *
 		Outcome:     toolOutcomeFailed,
 		FailureKind: toolFailureValidation,
 	}
+}
+
+func largestAgentLoopStringArg(args map[string]interface{}, names ...string) (string, string) {
+	var selectedName string
+	var selectedValue string
+	for _, name := range names {
+		value, _ := args[name].(string)
+		if len([]rune(value)) > len([]rune(selectedValue)) {
+			selectedName = name
+			selectedValue = value
+		}
+	}
+	return selectedName, selectedValue
+}
+
+func preCheckAgentLoopInvalidToolArguments(name, argsJSON string, iteration int) *toolExecutionResult {
+	name = strings.TrimSpace(name)
+	cleaned := coretool.CleanToolArguments(argsJSON)
+	if strings.TrimSpace(cleaned) == "" {
+		return nil
+	}
+	if _, err := parseAgentToolArgumentsObject(cleaned); err != nil {
+		hint := classifyToolArgumentError(err, cleaned).Hint()
+		msg := fmt.Sprintf("Tool %s arguments must be a complete valid JSON object. Parse error: %s. Please regenerate the same tool call with all required fields.", name, err.Error())
+		if hint != "" {
+			msg += " " + hint
+		}
+		log.Printf("[agent-loop] tool %s argument parse failed before execution (iter=%d args_len=%d): %v", name, iteration, len(cleaned), err)
+		return &toolExecutionResult{
+			Text:        msg,
+			ToolName:    name,
+			ToolKind:    classifyAgentToolKind(name),
+			Outcome:     toolOutcomeFailed,
+			FailureKind: toolFailureArgumentParse,
+		}
+	}
+	return nil
+}
+
+func parseAgentToolArgumentsObject(argsJSON string) (map[string]interface{}, error) {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return nil, err
+	}
+	if args == nil {
+		return nil, fmt.Errorf("arguments must be a JSON object")
+	}
+	return args, nil
 }
 
 // preCheckToolArgsForAgentLoop validates tool arguments in agent loop context.
@@ -906,8 +1000,12 @@ func (h *IMMessageHandler) preCheckToolArgsForAgentLoop(name, argsJSON string, i
 	}
 	var args map[string]interface{}
 	if cleaned := coretool.CleanToolArguments(argsJSON); cleaned != "" {
-		if err := json.Unmarshal([]byte(cleaned), &args); err != nil {
-			msg := fmt.Sprintf("Tool %s arguments JSON parse failed: %s. Please correct and retry.", name, err.Error())
+		parsed, err := parseAgentToolArgumentsObject(cleaned)
+		if err != nil {
+			msg := fmt.Sprintf("Tool %s arguments must be a complete valid JSON object. Parse error: %s. Please correct and retry.", name, err.Error())
+			if hint := classifyToolArgumentError(err, cleaned).Hint(); hint != "" {
+				msg += " " + hint
+			}
 			log.Printf("[agent-loop] tool %s argument parse failed (iter=%d): %v", name, iteration, err)
 			return &toolExecutionResult{
 				Text:        msg,
@@ -917,6 +1015,7 @@ func (h *IMMessageHandler) preCheckToolArgsForAgentLoop(name, argsJSON string, i
 				FailureKind: toolFailureArgumentParse,
 			}
 		}
+		args = parsed
 	}
 	if args == nil {
 		args = map[string]interface{}{}
@@ -925,7 +1024,7 @@ func (h *IMMessageHandler) preCheckToolArgsForAgentLoop(name, argsJSON string, i
 		var normalizeErr error
 		args, normalizeErr = normalizeMCPToolCallArgsForAgentLoop(args)
 		if normalizeErr != nil {
-			msg := fmt.Sprintf("Tool call_mcp_tool arguments JSON parse failed: %s. Please correct and retry.", normalizeErr.Error())
+			msg := "Tool call_mcp_tool arguments must be a complete valid JSON object. Please correct and retry."
 			log.Printf("[agent-loop] tool call_mcp_tool arguments normalization failed (iter=%d): %v", iteration, normalizeErr)
 			return &toolExecutionResult{
 				Text:        msg,
@@ -1014,7 +1113,7 @@ func (h *IMMessageHandler) preCheckMCPToolArgsForAgentLoop(args map[string]inter
 	toolArgs, parseErr := mcpToolArgumentsFromAny(args["arguments"])
 	if parseErr != nil {
 		return &toolExecutionResult{
-			Text:        fmt.Sprintf("Tool call_mcp_tool arguments JSON parse failed: %s. Please correct and retry.", parseErr.Error()),
+			Text:        "Tool call_mcp_tool.arguments must be a complete valid JSON object. Please correct and retry.",
 			ToolName:    "call_mcp_tool",
 			ToolKind:    classifyAgentToolKind("call_mcp_tool"),
 			Outcome:     toolOutcomeFailed,

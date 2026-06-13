@@ -152,3 +152,43 @@ func TestAgentLoopNormalizesMissingToolCallIDAndType(t *testing.T) {
 		t.Fatalf("history = %#v, want matching tool call id", result.History)
 	}
 }
+
+func TestWorkflowDocPhaseExtractsStructuredWriteFileToolCallAsContent(t *testing.T) {
+	handler := &IMMessageHandler{}
+	postTurn := handler.handleAgentLoopPostLLMTurn(agentLoopPostLLMTurnOptions{
+		Context: &LoopContext{
+			WorkflowAgentLoop: true,
+			WorkflowDocPhase:  true,
+			WorkflowPhaseID:   "task_breakdown",
+		},
+		Response: &llm.Response{Choices: []llm.Choice{{
+			Message: llm.Message{
+				Role: "assistant",
+				ToolCalls: []llm.ToolCall{{
+					ID:   "call_write",
+					Type: "function",
+					Function: llm.ToolCallFunction{
+						Name:      "write_file",
+						Arguments: `{"file_path":"d:\\project\\docs\\tasks.md","content":"# Tasks\n\n- T1"}`,
+					},
+				}},
+			},
+			FinishReason: "tool_calls",
+		}}},
+		Conversation: []interface{}{},
+		History:      []agent.ConversationEntry{},
+	})
+
+	if postTurn.MessageContent != "# Tasks\n\n- T1" {
+		t.Fatalf("MessageContent = %q", postTurn.MessageContent)
+	}
+	if len(postTurn.Choice.Message.ToolCalls) != 0 {
+		t.Fatalf("doc phase tool calls should be consumed as content, got %#v", postTurn.Choice.Message.ToolCalls)
+	}
+	if postTurn.Choice.FinishReason != "stop" {
+		t.Fatalf("FinishReason = %q, want stop", postTurn.Choice.FinishReason)
+	}
+	if len(postTurn.History) != 1 || postTurn.History[0].ToolCalls != nil {
+		t.Fatalf("history should not persist doc write_file tool calls: %#v", postTurn.History)
+	}
+}

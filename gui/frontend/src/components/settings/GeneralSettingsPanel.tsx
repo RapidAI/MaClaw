@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, type ChangeEvent, type Dispatch, type SetStateAction } from 'react';
 import { PatchConfigFields, SelectWorkingDir } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
+import { localizeText } from '../../i18n';
 
 type GeneralSettingsPanelProps = {
     config: main.AppConfig | null;
@@ -10,9 +11,7 @@ type GeneralSettingsPanelProps = {
     onLanguageChange: (event: ChangeEvent<HTMLSelectElement>) => void;
 };
 
-const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+const textForLang = localizeText;
 
 const persistConfigPatch = (patch: Record<string, any>, context: string) => {
     return Promise.resolve(PatchConfigFields(patch)).catch((err) => {

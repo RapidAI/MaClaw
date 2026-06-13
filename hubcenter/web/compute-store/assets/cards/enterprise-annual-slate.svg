@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">MaClaw 企业年度算力点卡</title>
+  <desc id="desc">深色银灰企业 LLM 算力点卡卡面，365 天有效。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#050816"/>
+      <stop offset=".46" stop-color="#172033"/>
+      <stop offset="1" stop-color="#334155"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="78%" cy="18%" r="76%">
+      <stop offset="0" stop-color="#e0f2fe" stop-opacity=".46"/>
+      <stop offset=".35" stop-color="#64748b" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#020617" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="mesh" width="88" height="88" patternUnits="userSpaceOnUse">
+      <path d="M0 44h88M44 0v88" fill="none" stroke="#ffffff" stroke-opacity=".07"/>
+      <path d="M0 0l88 88M88 0 0 88" fill="none" stroke="#ffffff" stroke-opacity=".035"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="760" rx="48" fill="url(#bg)"/>
+  <rect width="1280" height="760" rx="48" fill="url(#glow)"/>
+  <rect width="1280" height="760" rx="48" fill="url(#mesh)"/>
+  <rect x="76" y="76" width="1128" height="608" rx="34" fill="#ffffff" fill-opacity=".06" stroke="#e2e8f0" stroke-opacity=".24"/>
+  <path d="M108 158h274l60 54h224l78 84h376" fill="none" stroke="#e2e8f0" stroke-opacity=".24" stroke-width="3" stroke-linecap="round"/>
+  <path d="M124 604h340l84-84h172l68 68h356" fill="none" stroke="#e2e8f0" stroke-opacity=".2" stroke-width="3" stroke-linecap="round"/>
+  <g fill="#ffffff" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif">
+    <text x="128" y="148" font-size="28" font-weight="800" opacity=".82">MaClaw Compute</text>
+    <text x="128" y="260" font-size="64" font-weight="850">企业年度算力点卡</text>
+    <text x="128" y="324" font-size="30" font-weight="650" opacity=".72">ENTERPRISE PREPAID LLM CAPACITY</text>
+    <text x="128" y="520" font-size="102" font-weight="900">2,600,000</text>
+    <text x="128" y="570" font-size="27" font-weight="760" opacity=".76">CREDITS</text>
+  </g>
+  <g transform="translate(850 112)">
+    <rect width="278" height="76" rx="18" fill="#ffffff" fill-opacity=".12" stroke="#ffffff" stroke-opacity=".23"/>
+    <text x="139" y="49" text-anchor="middle" fill="#ffffff" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif" font-size="28" font-weight="820">365 天有效</text>
+  </g>
+  <g transform="translate(884 360)" fill="none" stroke="#ffffff" stroke-linecap="round">
+    <rect x="20" y="10" width="248" height="152" rx="26" stroke-opacity=".25" stroke-width="3"/>
+    <path d="M66 86h156M100 52h88M100 120h88" stroke-opacity=".48" stroke-width="8"/>
+    <circle cx="144" cy="86" r="106" stroke-opacity=".12" stroke-width="22"/>
+  </g>
+  <text x="128" y="638" fill="#dbeafe" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif" font-size="24" font-weight="650">企业年度采购 · 预算封顶 · 统一授权 · 全链路用量审计</text>
+</svg>

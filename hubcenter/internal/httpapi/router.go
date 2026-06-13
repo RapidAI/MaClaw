@@ -25,6 +25,15 @@ type EntryResolveRequest struct {
 	InvitationCode string `json:"invitation_code,omitempty"`
 }
 
+// LLMRouteHook is called during router setup to register LLM service routes.
+// Set by the application layer after constructing LLM dependencies.
+var llmRouteHook func(mux *http.ServeMux, adminService *auth.AdminService)
+
+// SetLLMRouteHook sets the hook for registering LLM routes.
+func SetLLMRouteHook(hook func(mux *http.ServeMux, adminService *auth.AdminService)) {
+	llmRouteHook = hook
+}
+
 type AdminRouteQueryRequest struct {
 	Query     string `json:"query"`
 	QueryType string `json:"query_type,omitempty"`
@@ -653,6 +662,15 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/admin/refund", RequireAdmin(adminService, smHandlers.AdminRefund))
 		mux.HandleFunc("GET /api/v1/admin/purchases", RequireAdmin(adminService, smHandlers.AdminListPurchases))
 	}
+
+	// LLM Service routes (providers, proxy, card store) — registered via external call.
+	// Caller (app init) should call RegisterLLMRoutes(mux, ...) before this point
+	// if the LLM service module is initialized. We expose the mux via a hook here
+	// so the application layer can register LLM routes after constructing dependencies.
+	if llmRouteHook != nil {
+		llmRouteHook(mux, adminService)
+	}
+
 	return adminOpaqueHubIDCompat(mux, adminService, hubService)
 }
 

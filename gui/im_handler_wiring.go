@@ -228,6 +228,11 @@ type IMMessageHandler struct {
 	// (RouteToDirectCoding) — simple tasks that skip SDD and go straight to SubAgent.
 	pendingDirectCodingProjectPath sync.Map
 
+	// pendingWorkflowChoice stores the original message and route result while
+	// waiting for the user to choose how to handle a detected workflow task
+	// (full workflow / simple coding / skip). Keyed by userID.
+	pendingWorkflowChoice sync.Map
+
 	// workflowReviewExperienceContext carries the trace/task context of the
 	// phase output currently awaiting review. Keyed by userID; consumed by
 	// review-intent events so user feedback can update the same injected

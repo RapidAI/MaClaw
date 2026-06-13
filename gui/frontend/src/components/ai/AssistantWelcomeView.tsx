@@ -9,11 +9,21 @@ import type { UseVoiceInputResult } from "./useVoiceInput";
 
 // --- Data ---
 
-interface IndustryTab {
+interface WelcomePrompt {
+    text: string;
+    textEn: string;
+    desc: string;
+    descEn: string;
+    icon: string;
+    template?: string;
+    templateEn?: string;
+}
+
+interface ScenarioTab {
     id: string;
     label: string;
     labelEn: string;
-    prompts: { text: string; textEn: string; desc: string; descEn: string; icon: string; template?: string; templateEn?: string }[];
+    prompts: WelcomePrompt[];
 }
 
 // SVG path data for prompt card icons (16x16 viewBox, stroke-only design)
@@ -34,23 +44,41 @@ const PROMPT_ICONS: Record<string, string> = {
     search: "M10.5 10.5L14 14M6.5 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z",
     translate: "M2 2h5M4.5 2v2M3 6c1 1.5 2.5 2.5 4 3M7.5 2C7 4 5.5 5.5 4 7M9.5 7l2 6M10 11h3M13 5V3h-2.5",
     chart: "M3 13V8M6.5 13V5M10 13V9M13.5 13V6M1.5 13h13",
+    award: "M8 1.5l1.7 3.4 3.8.6-2.7 2.7.6 3.8L8 10.2 4.6 12l.6-3.8L2.5 5.5l3.8-.6L8 1.5zM5.5 11.5v3L8 13l2.5 1.5v-3",
+    // More scenarios
+    write: "M3 13l2.8-.7L13 5.1 10.9 3 3.7 10.2 3 13zM9.8 4.1l2.1 2.1M5 12l-1-1",
+    mail: "M2 4h12v8H2zM2 4l6 5 6-5",
+    meeting: "M3 3h10v10H3zM5 6h6M5 8h6M5 10h3",
+    knowledge: "M3 2h7l3 3v9H3zM10 2v3h3M5 8h6M5 10h6M5 12h3",
+    qa: "M4 3h8v6H7l-3 3V3zM7 6h2M9 6a1.5 1.5 0 0 1-1 1.4V8",
+    checklist: "M3 4l1.2 1.2L6.5 3M8 4h5M3 8l1.2 1.2L6.5 7M8 8h5M3 12l1.2 1.2L6.5 11M8 12h5",
+    workflow: "M2 4h4v4H2zM10 8h4v4h-4zM6 6h2.5a2 2 0 0 1 2 2M8 10H6a2 2 0 0 1-2-2",
+    form: "M3 2h10v12H3zM5 5h6M5 8h6M5 11h3",
+    schedule: "M3 3h10v10H3zM5 1v3M11 1v3M3 6h10M5 9h2M9 9h2",
+    strategy: "M2 12h12M4 12V8l2-2 2 2 4-5M10 3h2v2",
+    review: "M3 2h10v12H3zM5 5h6M5 8h4M5 11h3M11.5 10.5l1 1 2-2",
+    monitor: "M2 10h3l1.5-5 2 8 1.5-3h4",
+    diagram: "M2 3h4v3H2zM10 3h4v3h-4zM6 4.5h4M4 6v4h8V6M10 10h4v3h-4zM2 10h4v3H2z",
 };
 
-const INDUSTRY_TABS: IndustryTab[] = [
+const SCENARIO_TABS: ScenarioTab[] = [
     {
         id: "business",
-        label: "商业办公",
-        labelEn: "Business",
+        label: "经营分析",
+        labelEn: "Business analysis",
         prompts: [
-            { text: "做一份竞品分析 PPT", textEn: "Create a competitive analysis PPT", desc: "自动走工作流生成专业文档", descEn: "Auto workflow generates professional docs", icon: "ppt",
-              template: "做一份竞品分析 PPT\n行业：[你的行业]\n我方产品：[产品名称]\n竞品：[竞品1, 竞品2]\n重点维度：功能/价格/市场份额",
-              templateEn: "Create a competitive analysis PPT\nIndustry: [your industry]\nOur product: [product name]\nCompetitors: [competitor 1, competitor 2]\nFocus: features/pricing/market share" },
-            { text: "起草一份商业计划书", textEn: "Draft a business plan", desc: "需求→框架→内容逐步生成", descEn: "Requirements → outline → content step by step", icon: "plan",
-              template: "起草一份商业计划书\n项目名称：[项目名]\n行业领域：[领域]\n核心产品/服务：[简述]\n目标市场：[目标客群]",
-              templateEn: "Draft a business plan\nProject: [project name]\nIndustry: [field]\nCore product/service: [brief description]\nTarget market: [target audience]" },
-            { text: "审查这份合同的风险条款", textEn: "Review contract risk clauses", desc: "上传文档自动分析标注风险", descEn: "Upload docs for auto risk analysis", icon: "contract",
-              template: "审查这份合同的风险条款\n合同文件：[拖入文件或粘贴路径]\n关注重点：违约责任/知识产权/竞业限制",
-              templateEn: "Review contract risk clauses\nContract file: [drag file or paste path]\nFocus areas: liability/IP rights/non-compete" },
+            { text: "做一份可汇报的竞品分析", textEn: "Prepare an executive competitor brief", desc: "明确结论、证据、差异和行动建议", descEn: "Turn evidence into decisions and next actions", icon: "ppt",
+              template: "帮我做一份可汇报的竞品分析\n行业/赛道：[行业]\n我方产品：[产品名称和一句话定位]\n竞品：[竞品 A、竞品 B、竞品 C]\n目标听众：[老板/销售团队/产品团队]\n请输出：1）一页结论摘要；2）功能、价格、渠道、客户口碑对比表；3）我方机会与风险；4）下一步行动建议；5）PPT 大纲。",
+              templateEn: "Prepare an executive competitor brief\nIndustry: [industry]\nOur product: [name and one-line positioning]\nCompetitors: [A, B, C]\nAudience: [leadership/sales/product team]\nOutput: 1) one-page executive summary; 2) comparison table for features, pricing, channels, customer sentiment; 3) opportunities and risks; 4) recommended next actions; 5) slide outline." },
+            { text: "把零散想法整理成项目方案", textEn: "Turn rough ideas into a project proposal", desc: "从目标、范围、里程碑到风险闭环", descEn: "Shape goals, scope, milestones, and risks", icon: "plan",
+              template: "把下面的零散想法整理成一份项目方案\n背景：[为什么要做]\n目标：[希望达成什么]\n已有想法：[粘贴要点]\n约束：[时间/预算/人员/技术限制]\n请先追问缺失信息；信息足够后输出：项目目标、范围边界、关键里程碑、资源需求、风险清单、验收标准。",
+              templateEn: "Turn the notes below into a project proposal\nBackground: [why this matters]\nGoals: [desired outcome]\nRaw notes: [paste bullets]\nConstraints: [time/budget/team/technical limits]\nFirst ask for missing information. Once enough context is available, output goals, scope boundaries, milestones, resource needs, risks, and acceptance criteria." },
+            { text: "审查合同并列出谈判要点", textEn: "Review a contract and draft negotiation points", desc: "按风险等级给出可执行修改建议", descEn: "Rank risks and propose concrete edits", icon: "contract",
+              template: "审查这份合同并列出谈判要点\n合同文件：[拖入文件或粘贴路径]\n我方角色：[甲方/乙方/采购方/服务商]\n重点关注：[付款、交付、违约、知识产权、保密、终止]\n请输出：高/中/低风险条款表、每条风险的原因、建议修改方向、可直接发给对方的谈判话术。",
+              templateEn: "Review this contract and draft negotiation points\nContract file: [drag file or paste path]\nOur role: [buyer/vendor/client/service provider]\nFocus: [payment, delivery, liability, IP, confidentiality, termination]\nOutput: high/medium/low risk table, reason for each risk, suggested edit direction, and negotiation wording I can send to the counterparty." },
+            { text: "制定一个季度经营复盘", textEn: "Create a quarterly business review", desc: "把指标、原因、风险和动作串成闭环", descEn: "Connect metrics, causes, risks, actions", icon: "strategy",
+              template: "帮我制定一个季度经营复盘\n业务范围：[产品线/区域/团队]\n周期：[季度或日期范围]\n关键指标：[收入、利润、订单、转化、留存、成本等]\n已知变化：[增长/下滑/异常]\n请输出：复盘结构、核心结论、指标拆解表、原因假设、风险与机会、下季度重点动作、需要补充的数据清单。",
+              templateEn: "Create a quarterly business review\nScope: [product line/region/team]\nPeriod: [quarter or date range]\nKey metrics: [revenue, profit, orders, conversion, retention, cost]\nKnown changes: [growth/decline/anomalies]\nOutput review structure, key conclusions, metric breakdown, cause hypotheses, risks and opportunities, next-quarter actions, and missing data list." },
         ],
     },
     {
@@ -58,52 +86,160 @@ const INDUSTRY_TABS: IndustryTab[] = [
         label: "软件开发",
         labelEn: "Development",
         prompts: [
-            { text: "开发一个 React 管理后台", textEn: "Build a React admin dashboard", desc: "自动走需求→设计→编码流程", descEn: "Auto requirements → design → coding flow", icon: "code",
-              template: "开发一个 React 管理后台\n项目路径：[d:\\your\\project\\path]\n功能模块：用户管理/数据看板/权限控制\n技术栈偏好：[React + Ant Design / 其他]",
-              templateEn: "Build a React admin dashboard\nProject path: [d:\\your\\project\\path]\nModules: user management/dashboard/access control\nTech preference: [React + Ant Design / other]" },
-            { text: "修复登录页面的白屏 bug", textEn: "Fix the login page white screen bug", desc: "直接定位问题并修复", descEn: "Directly locate and fix the issue", icon: "bug",
-              template: "修复登录页面的白屏 bug\n项目路径：[d:\\your\\project\\path]\n复现步骤：[打开登录页后...]\n报错信息：[控制台错误或截图]",
-              templateEn: "Fix the login page white screen bug\nProject path: [d:\\your\\project\\path]\nRepro steps: [after opening login page...]\nError: [console error or screenshot]" },
-            { text: "给项目加上 Docker 部署", textEn: "Add Docker deployment to project", desc: "生成 Dockerfile + compose 配置", descEn: "Generate Dockerfile + compose config", icon: "docker",
-              template: "给项目加上 Docker 部署\n项目路径：[d:\\your\\project\\path]\n项目类型：[Node.js / Python / Go / Java]\n需要的服务：[Redis/MySQL/Nginx 等]",
-              templateEn: "Add Docker deployment to project\nProject path: [d:\\your\\project\\path]\nProject type: [Node.js / Python / Go / Java]\nServices needed: [Redis/MySQL/Nginx etc.]" },
+            { text: "实现一个后台功能闭环", textEn: "Build an admin feature end to end", desc: "从现有代码风格到测试一起完成", descEn: "Follow local patterns and include verification", icon: "code",
+              template: "在这个项目里实现一个后台功能闭环\n项目路径：[d:\\your\\project\\path]\n功能目标：[例如用户审核、订单退款、任务调度]\n涉及页面/接口：[已知文件或路由]\n业务规则：[列出规则]\n验收标准：[用户能完成哪些操作]\n请先阅读项目结构和现有组件风格，再给出改动并运行相关检查。",
+              templateEn: "Build an admin feature end to end in this project\nProject path: [d:\\your\\project\\path]\nGoal: [e.g. user review, refund flow, task scheduling]\nPages/APIs involved: [known files or routes]\nBusiness rules: [list rules]\nAcceptance criteria: [what the user must be able to do]\nFirst inspect the project structure and existing component style, then make the change and run relevant checks." },
+            { text: "定位并修复一个线上问题", textEn: "Diagnose and fix a production issue", desc: "用复现、日志、影响面和回归测试收口", descEn: "Close with repro, logs, blast radius, tests", icon: "bug",
+              template: "帮我定位并修复这个线上问题\n项目路径：[d:\\your\\project\\path]\n现象：[用户看到什么]\n复现步骤：[步骤]\n期望结果：[应该发生什么]\n实际结果：[现在发生什么]\n错误日志/截图：[粘贴或拖入]\n请输出：根因判断、修复方案、改动文件、回归测试方式；如果信息不足，先列出需要我补充的最少信息。",
+              templateEn: "Diagnose and fix this production issue\nProject path: [d:\\your\\project\\path]\nSymptom: [what users see]\nRepro steps: [steps]\nExpected: [what should happen]\nActual: [what happens now]\nLogs/screenshots: [paste or attach]\nOutput root cause, fix plan, changed files, and regression test method. If context is missing, ask for the minimum needed information first." },
+            { text: "为项目补齐部署和环境说明", textEn: "Add deployment and environment docs", desc: "生成可落地的 Docker、配置和启动文档", descEn: "Create usable Docker, config, and run docs", icon: "docker",
+              template: "为这个项目补齐部署和环境说明\n项目路径：[d:\\your\\project\\path]\n目标环境：[本地开发/测试服务器/生产]\n运行依赖：[数据库、缓存、队列、对象存储等]\n暴露端口：[端口]\n请检查现有启动方式，补齐 Dockerfile、compose 或部署文档，并说明配置项、启动步骤、健康检查和常见故障排查。",
+              templateEn: "Add deployment and environment docs for this project\nProject path: [d:\\your\\project\\path]\nTarget environment: [local/test server/production]\nDependencies: [database, cache, queue, object storage]\nPorts: [ports]\nInspect the existing run flow, then add Dockerfile, compose, or deployment docs with config items, startup steps, health checks, and common troubleshooting." },
+            { text: "做一次代码审查和优化", textEn: "Review and optimize code", desc: "优先找缺陷、回归风险和可测改进", descEn: "Find defects, regression risks, testable fixes", icon: "review",
+              template: "帮我做一次代码审查和优化\n项目路径：[d:\\your\\project\\path]\n关注范围：[文件/模块/最近改动]\n目标：[稳定性/性能/可维护性/安全]\n约束：[不要大重构/保持 API 兼容/优先小步修改]\n请先列出按严重程度排序的问题，再修复高价值问题，最后说明改动、风险和验证方式。",
+              templateEn: "Review and optimize code\nProject path: [d:\\your\\project\\path]\nScope: [files/modules/recent changes]\nGoal: [stability/performance/maintainability/security]\nConstraints: [avoid large refactor/keep API compatibility/small changes first]\nFirst list findings by severity, then fix high-value issues, and finally report changes, risks, and verification." },
         ],
     },
     {
         id: "ops",
-        label: "运维",
-        labelEn: "DevOps",
+        label: "运维排障",
+        labelEn: "Ops troubleshooting",
         prompts: [
-            { text: "清理服务器垃圾数据", textEn: "Clean up server junk data", desc: "连接服务器自动清理日志/缓存/临时文件", descEn: "SSH to server, auto-clean logs/cache/tmp", icon: "server",
-              template: "清理服务器垃圾数据\n服务器：[IP或域名]\n用户名：[root]\n密码：[password]\n清理目标：日志/缓存/临时文件/Docker 镜像",
-              templateEn: "Clean up server junk data\nServer: [IP or domain]\nUsername: [root]\nPassword: [password]\nClean targets: logs/cache/tmp files/Docker images" },
-            { text: "在服务器上安装软件", textEn: "Install software on server", desc: "SSH 登录 + 自动安装配置", descEn: "SSH login + auto install & configure", icon: "install",
-              template: "在服务器上安装软件\n服务器：[IP或域名]\n用户名：[root]\n密码：[password]\n安装软件：[Docker / Nginx / Node.js / Python]",
-              templateEn: "Install software on server\nServer: [IP or domain]\nUsername: [root]\nPassword: [password]\nSoftware: [Docker / Nginx / Node.js / Python]" },
-            { text: "根据文档批量部署软件", textEn: "Batch deploy software from docs", desc: "读取部署文档，逐台连接执行", descEn: "Parse deploy docs, connect & execute", icon: "deploy",
-              template: "根据文档批量部署软件\n部署文档：[拖入文件或粘贴路径]\n（文档中应包含：服务器列表、登录凭据、部署步骤）",
-              templateEn: "Batch deploy software from docs\nDeploy document: [drag file or paste path]\n(Doc should contain: server list, credentials, deploy steps)" },
+            { text: "排查服务器磁盘占满", textEn: "Investigate a full disk incident", desc: "先评估风险，再给清理命令和回滚点", descEn: "Assess risk before cleanup commands", icon: "server",
+              template: "帮我排查服务器磁盘占满问题\n连接方式：[已有 SSH 配置/堡垒机/本机日志]\n系统类型：[Linux 发行版和版本]\n症状：[磁盘告警、服务异常、路径占用]\n限制：[不能停服务/只能读操作/可维护窗口]\n请先给只读诊断命令；确认后再给清理方案，并标注每一步风险、预计释放空间、可回滚方式。",
+              templateEn: "Investigate a full disk incident\nAccess: [existing SSH config/bastion/local logs]\nOS: [Linux distro and version]\nSymptoms: [disk alert, service failure, occupied path]\nConstraints: [no downtime/read-only first/maintenance window]\nStart with read-only diagnostic commands. After confirmation, provide cleanup steps with risk, expected space recovered, and rollback method." },
+            { text: "分析服务启动失败日志", textEn: "Analyze why a service fails to start", desc: "从日志归因到最小修复步骤", descEn: "Map logs to root cause and minimal fix", icon: "install",
+              template: "分析这个服务为什么启动失败\n服务名称：[服务名]\n部署方式：[systemd/Docker/Kubernetes/手动脚本]\n最近变更：[发布、配置、证书、依赖升级]\n日志：[粘贴关键日志]\n请输出：可能根因排序、验证命令、最小修复步骤、需要避免的高风险操作。",
+              templateEn: "Analyze why this service fails to start\nService: [name]\nDeployment: [systemd/Docker/Kubernetes/manual script]\nRecent changes: [release, config, cert, dependency upgrade]\nLogs: [paste key logs]\nOutput ranked root causes, validation commands, minimal fix steps, and risky operations to avoid." },
+            { text: "按文档批量部署并生成检查清单", textEn: "Deploy from docs and create a checklist", desc: "把部署步骤拆成可确认的执行单", descEn: "Turn docs into an auditable rollout checklist", icon: "deploy",
+              template: "根据部署文档生成批量部署执行单\n部署文档：[拖入文件或粘贴路径]\n目标环境：[测试/预生产/生产]\n发布窗口：[时间]\n回滚要求：[如何回滚]\n请先解析文档，输出部署前检查、逐台执行步骤、验证命令、失败处理、回滚步骤；涉及凭据时只提示使用安全凭据管理，不要在提示词中保存明文密码。",
+              templateEn: "Create a batch deployment runbook from the deployment docs\nDocs: [drag file or paste path]\nEnvironment: [test/staging/production]\nRelease window: [time]\nRollback requirement: [how to roll back]\nParse the docs and output preflight checks, per-host execution steps, validation commands, failure handling, and rollback. For credentials, instruct use of secure credential management instead of storing plaintext secrets in the prompt." },
+            { text: "设计服务监控和告警规则", textEn: "Design service monitoring and alerts", desc: "定义指标、阈值、通知和升级路径", descEn: "Define metrics, thresholds, alerts, escalation", icon: "monitor",
+              template: "帮我设计服务监控和告警规则\n服务名称：[服务名]\n部署方式：[systemd/Docker/Kubernetes/云服务]\n关键依赖：[数据库、缓存、队列、第三方接口]\n业务影响：[哪些用户或流程会受影响]\n请输出：监控指标、告警阈值、分级规则、通知文案、排查入口、升级路径、误报降噪建议。",
+              templateEn: "Design service monitoring and alerts\nService: [name]\nDeployment: [systemd/Docker/Kubernetes/cloud service]\nKey dependencies: [database, cache, queue, third-party API]\nBusiness impact: [affected users or workflows]\nOutput metrics, alert thresholds, severity levels, notification copy, troubleshooting entry points, escalation path, and noise-reduction suggestions." },
         ],
     },
     {
         id: "research",
-        label: "学术研究",
+        label: "科研资料",
         labelEn: "Research",
         prompts: [
-            { text: "搜集 AI Agent 最新论文做综述", textEn: "Collect latest AI Agent papers for review", desc: "自动搜索 + 抓取 + 整理成报告", descEn: "Auto search + crawl + compile report", icon: "search",
-              template: "搜集 AI Agent 最新论文做综述\n研究主题：AI Agent\n时间范围：[最近3个月]\n论文来源：HuggingFace / arXiv / Google Scholar\n输出格式：中文综述 PDF",
-              templateEn: "Collect latest AI Agent papers for review\nTopic: AI Agent\nTime range: [last 3 months]\nSources: HuggingFace / arXiv / Google Scholar\nOutput: review PDF" },
-            { text: "翻译这篇英文论文成中文", textEn: "Translate this English paper to Chinese", desc: "保持学术格式精准翻译", descEn: "Preserve academic formatting", icon: "translate",
-              template: "翻译这篇英文论文成中文\n论文文件：[拖入 PDF 或粘贴路径]\n输出要求：保持学术格式，专业术语准确",
-              templateEn: "Translate this English paper to Chinese\nPaper file: [drag PDF or paste path]\nRequirements: preserve academic formatting, accurate terminology" },
-            { text: "整理实验数据生成分析报告", textEn: "Organize experiment data into report", desc: "数据处理 + 可视化 + PDF 输出", descEn: "Data processing + visualization + PDF", icon: "chart",
-              template: "整理实验数据生成分析报告\n数据文件：[拖入文件或粘贴路径]\n分析维度：[对比实验/趋势分析/统计检验]\n输出格式：PDF 报告（含图表）",
-              templateEn: "Organize experiment data into report\nData file: [drag file or paste path]\nAnalysis: [comparison/trend/statistical tests]\nOutput: PDF report with charts" },
+            { text: "做一份带出处的资料综述", textEn: "Create a sourced research brief", desc: "区分事实、观点、推断和未验证信息", descEn: "Separate facts, opinions, inferences, unknowns", icon: "search",
+              template: "围绕这个主题做一份带出处的资料综述\n主题：[研究主题]\n范围：[学科/行业/国家/时间段/对象]\n用途：[选题判断/申报准备/汇报/PPT/文章]\n已有资料：[粘贴或拖入文件，可为空]\n请输出：核心结论、关键证据表、不同观点对比、未验证信息、可继续追问的问题；每条重要结论都标注来源，缺少来源时明确写“需补证据”。",
+              templateEn: "Create a sourced research brief\nTopic: [research topic]\nScope: [discipline/industry/country/time range/object]\nUse case: [topic selection/application preparation/report/slides/article]\nExisting materials: [paste or attach files, optional]\nOutput key conclusions, evidence table, competing viewpoints, unverified items, and follow-up questions. Cite sources for important conclusions; mark unsupported claims as evidence needed." },
+            { text: "翻译并润色专业文档", textEn: "Translate and polish a technical document", desc: "保留术语、结构、表格和语气", descEn: "Preserve terminology, structure, tables, tone", icon: "translate",
+              template: "翻译并润色这份专业文档\n文档文件：[拖入文件或粘贴路径]\n目标语言：[中文/英文]\n读者：[技术团队/客户/管理层]\n术语要求：[保留英文术语/给出中英对照]\n请先识别文档结构和关键术语，再输出翻译稿、术语表、需要人工确认的歧义点。",
+              templateEn: "Translate and polish this technical document\nDocument file: [drag file or paste path]\nTarget language: [Chinese/English]\nAudience: [engineering team/customer/leadership]\nTerminology: [keep English terms/provide bilingual glossary]\nFirst identify structure and key terms, then output translation, glossary, and ambiguities that need human confirmation." },
+            { text: "整理实验数据分析报告", textEn: "Create an experiment data analysis report", desc: "梳理分组、统计检验、图表和结论", descEn: "Organize groups, stats, charts, findings", icon: "chart",
+              template: "把这批实验数据整理成分析报告\n数据文件：[拖入 CSV/Excel/JSON 或粘贴路径]\n实验设计：[分组、样本量、干预或变量]\n关键指标：[主要指标和次要指标]\n统计方法：[如 t 检验/方差分析/回归/不确定]\n请输出：数据质量检查、指标口径、统计分析思路、主要发现、异常点、建议图表、结论表述；不确定的统计方法请先说明可选方案和适用条件。",
+              templateEn: "Create an experiment data analysis report\nData file: [drag CSV/Excel/JSON or paste path]\nExperiment design: [groups, sample size, intervention or variables]\nKey metrics: [primary and secondary metrics]\nStatistical method: [t-test/ANOVA/regression/unknown]\nOutput data quality checks, metric definitions, analysis approach, findings, anomalies, chart recommendations, and conclusion wording. If the statistical method is unclear, explain options and applicability first." },
+            { text: "梳理论文选题和创新点", textEn: "Shape a paper topic and novelty claims", desc: "把问题、方法、贡献和实验对齐", descEn: "Align problem, method, contribution, experiments", icon: "write",
+              template: "帮我梳理论文选题和创新点\n研究方向：[方向]\n已有想法：[粘贴要点]\n已有基础：[数据、方法、实验、论文]\n目标期刊/会议：[如有]\n请输出：候选题目、核心科学问题、创新点、方法路线、实验设计、潜在质疑、需要补充的文献和证据；不要夸大现有贡献。",
+              templateEn: "Shape a paper topic and novelty claims\nResearch direction: [direction]\nCurrent ideas: [paste bullets]\nExisting foundation: [data, method, experiment, papers]\nTarget venue: [optional]\nOutput candidate titles, core research question, novelty claims, method route, experiment design, likely objections, and literature/evidence gaps. Do not overstate contributions." },
+        ],
+    },
+    {
+        id: "academic-application",
+        label: "科研申报",
+        labelEn: "Academic applications",
+        prompts: [
+            { text: "国家优青申报材料打磨", textEn: "Polish an NSFC Excellent Young Scientists application", desc: "突出青年潜力、独立贡献和成长轨迹", descEn: "Highlight potential, independence, growth trajectory", icon: "award",
+              template: "帮我打磨国家优青申报材料\n申请学科/代码：[学科方向]\n拟定题目：[题目或关键词]\n现有申报材料：[粘贴正文或拖入文件]\n代表性成果：[论文、项目、方法、数据、平台、应用等]\n独立贡献：[本人主导或关键贡献]\n未来三到五年计划：[研究方向、关键突破、团队建设]\n请以评审专家视角审阅，不编造论文、基金、奖项、引用或数据。先判断“青年潜力-独立贡献-研究积累-未来突破”是否清晰，再输出：申报主线、个人成长轨迹凝练、代表成果排序建议、独立贡献表述、创新点改写、研究计划框架、证据缺口、评审可能质疑点和回应口径。",
+              templateEn: "Polish an NSFC Excellent Young Scientists application\nDiscipline/code: [field]\nDraft title: [title or keywords]\nCurrent application materials: [paste text or attach file]\nRepresentative achievements: [papers, projects, methods, data, platforms, applications]\nIndependent contribution: [work led by the applicant or key contribution]\nThree-to-five-year plan: [research direction, key breakthroughs, team building]\nReview from an evaluator's perspective. Do not invent papers, grants, awards, citations, or data. First judge whether potential, independent contribution, research foundation, and future breakthrough form a clear story. Then output application narrative, refined growth trajectory, achievement ranking, independent-contribution wording, rewritten novelty statements, research-plan outline, evidence gaps, likely reviewer concerns, and response wording." },
+            { text: "国家杰青申报书打磨", textEn: "Polish an NSFC Distinguished Young Scholars proposal", desc: "突出科学问题、原创积累和五年计划", descEn: "Focus scientific question, originality, five-year plan", icon: "award",
+              template: "帮我打磨国家杰青申报书\n申请学科/代码：[学科方向]\n拟定题目：[题目或关键词]\n现有申报书：[粘贴正文或拖入文件]\n前期基础：[代表论文、项目、方法、数据、平台]\n核心科学问题：[如果已有请粘贴]\n未来五年目标：[方向、关键突破、团队建设]\n请以评审专家视角审阅，不编造论文、基金、奖项、引用或数据。先判断“科学问题-前期积累-创新突破-五年计划”是否成一条主线，再输出：申报书主线、科学问题凝练、代表成果与主线对应表、创新点表述、五年研究计划、年度里程碑、风险与替代方案、证据缺口、评审可能关注的薄弱点。",
+              templateEn: "Polish an NSFC Distinguished Young Scholars proposal\nDiscipline/code: [field]\nDraft title: [title or keywords]\nCurrent proposal draft: [paste text or attach file]\nPrior foundation: [papers, projects, methods, data, platforms]\nCore scientific question: [paste if available]\nFive-year goals: [direction, key breakthroughs, team building]\nReview from an evaluator's perspective. Do not invent papers, grants, awards, citations, or data. First judge whether scientific question, prior foundation, originality, and five-year plan form one narrative. Then output proposal narrative, refined scientific question, achievement-to-narrative mapping, originality statements, five-year plan, yearly milestones, risks and alternatives, evidence gaps, and likely reviewer concerns." },
+            { text: "长江学者申报书打磨", textEn: "Polish a Changjiang Scholar application", desc: "凝练学术贡献、团队建设和学科影响", descEn: "Clarify contribution, team building, discipline impact", icon: "award",
+              template: "帮我打磨长江学者申报书\n申报类型：[特聘教授/讲座教授/青年学者等]\n学科方向：[一级学科/研究方向]\n现有申报书：[粘贴正文或拖入文件]\n代表性成果：[论文/项目/奖项/成果转化/平台建设]\n目标单位与岗位定位：[如有]\n请以评审专家视角审阅，不编造任何成果、头衔、数据或来源。先诊断：学术贡献是否聚焦、创新性是否说透、国内外影响是否有证据、团队与平台建设是否支撑岗位定位、未来计划是否可落地。再输出：申报书结构建议、个人简介改写、3-5 条主要贡献凝练、研究计划框架、证据缺口清单、可能被质疑的问题和回应口径。",
+              templateEn: "Polish a Changjiang Scholar application\nApplication type: [Distinguished Professor/Chair Professor/Young Scholar/etc.]\nDiscipline: [field/research direction]\nCurrent application draft: [paste text or attach file]\nRepresentative achievements: [papers/projects/awards/translation/platform building]\nTarget institution and role positioning: [if any]\nReview from an evaluator's perspective. Do not invent achievements, titles, data, or sources. First diagnose focus of academic contribution, originality, evidence for impact, fit between team/platform building and role positioning, and feasibility of future plan. Then output application structure, rewritten bio, 3-5 refined contributions, research-plan outline, evidence gaps, likely reviewer concerns, and response wording." },
+            { text: "基金申请书预审", textEn: "Pre-review a grant proposal", desc: "按评审要点找短板、重写摘要和创新点", descEn: "Find weaknesses, rewrite summary and novelty", icon: "award",
+              template: "帮我预审这份基金申请书\n项目类型：[面上/青年/重点/地区/其他]\n申请学科/代码：[学科方向]\n现有申请书：[粘贴正文或拖入文件]\n研究基础：[代表成果和已有条件]\n请按评审标准检查：立项依据、科学问题、创新性、研究内容、技术路线、可行性、年度计划、预期成果。输出：总体评价、主要扣分点、必须补证据的位置、摘要改写、创新点改写、技术路线优化建议、评审意见模拟。",
+              templateEn: "Pre-review a grant proposal\nGrant type: [General/Young/Key/Regional/other]\nDiscipline/code: [field]\nCurrent proposal: [paste text or attach file]\nResearch foundation: [representative achievements and existing conditions]\nEvaluate by reviewer criteria: rationale, scientific question, originality, research content, technical route, feasibility, yearly plan, expected outcomes. Output overall assessment, major weaknesses, evidence gaps, rewritten abstract, rewritten novelty statements, technical-route improvements, and simulated reviewer comments." },
+        ],
+    },
+    {
+        id: "writing",
+        label: "写作沟通",
+        labelEn: "Writing",
+        prompts: [
+            { text: "把要点写成正式汇报", textEn: "Turn bullets into an executive update", desc: "压缩信息、突出决策和待办", descEn: "Compress points into decisions and asks", icon: "write",
+              template: "把下面这些要点写成一份正式汇报\n原始要点：[粘贴内容]\n汇报对象：[老板/客户/项目组]\n语气：[专业简洁/坚定/委婉]\n长度：[一页以内/邮件正文/会议发言稿]\n请输出：标题、核心结论、进展、风险、需要对方决策或支持的事项；避免空话。",
+              templateEn: "Turn these bullets into an executive update\nRaw bullets: [paste content]\nAudience: [leadership/client/project team]\nTone: [concise/professional/firm/diplomatic]\nLength: [one page/email body/talking points]\nOutput title, key conclusion, progress, risks, and decisions or support needed. Avoid filler." },
+            { text: "起草一封客户沟通邮件", textEn: "Draft a client email", desc: "把背景、立场、下一步说清楚", descEn: "Clarify context, position, and next step", icon: "mail",
+              template: "帮我起草一封客户沟通邮件\n客户背景：[客户是谁/合作阶段]\n沟通目的：[通知/解释/催办/争取确认/道歉]\n关键事实：[事实要点]\n希望客户做什么：[下一步动作]\n语气要求：[礼貌但明确/稳妥/强硬]\n请输出邮件主题、正文、可选的更短版本，并标出可能引发误解的表述。",
+              templateEn: "Draft a client email\nClient context: [who they are/current stage]\nPurpose: [inform/explain/follow up/request confirmation/apologize]\nKey facts: [facts]\nDesired client action: [next step]\nTone: [polite but clear/careful/firm]\nOutput subject, body, shorter variant, and phrases that may cause misunderstanding." },
+            { text: "整理会议纪要和行动项", textEn: "Create meeting notes and action items", desc: "把讨论沉淀成责任人和截止时间", descEn: "Convert discussion into owners and deadlines", icon: "meeting",
+              template: "把这段会议记录整理成会议纪要\n会议记录：[粘贴录音转写或要点]\n会议主题：[主题]\n参会人：[名单]\n请输出：会议结论、关键讨论点、行动项表格（事项/责任人/截止时间/依赖）、待确认问题、适合发到群里的精简版。",
+              templateEn: "Create meeting notes from this transcript\nTranscript/notes: [paste content]\nTopic: [topic]\nParticipants: [names]\nOutput decisions, key discussion points, action-item table (task/owner/due date/dependencies), open questions, and a concise version suitable for group chat." },
+            { text: "改写一段内容提升说服力", textEn: "Rewrite copy to be more persuasive", desc: "保留事实，优化结构、语气和重点", descEn: "Keep facts, improve structure and emphasis", icon: "write",
+              template: "帮我改写这段内容，提升说服力\n原文：[粘贴内容]\n目标读者：[客户/老板/评审/同事]\n目的：[争取支持/解释风险/推动行动/澄清误解]\n语气：[专业/克制/有力度/友好]\n请输出：改写版、关键改动说明、可选的更短版本、可能引发误解的句子。",
+              templateEn: "Rewrite this copy to be more persuasive\nOriginal text: [paste content]\nAudience: [customer/leadership/reviewer/colleague]\nGoal: [gain support/explain risk/drive action/clarify misunderstanding]\nTone: [professional/measured/firm/friendly]\nOutput rewritten version, key edit rationale, shorter variant, and phrases that may be misunderstood." },
+        ],
+    },
+    {
+        id: "knowledge",
+        label: "知识文档",
+        labelEn: "Knowledge docs",
+        prompts: [
+            { text: "把项目资料整理成知识库", textEn: "Organize project materials into a knowledge base", desc: "形成目录、摘要、标签和缺口", descEn: "Create structure, summaries, tags, gaps", icon: "knowledge",
+              template: "把这些项目资料整理成知识库结构\n资料位置：[文件夹/文档路径/粘贴内容]\n目标读者：[新人/实施团队/客服/管理层]\n用途：[培训/检索/交接/对外说明]\n请输出：知识库目录、每篇文档摘要、推荐标签、重复或冲突内容、缺失资料清单、优先补齐顺序。",
+              templateEn: "Organize these project materials into a knowledge-base structure\nMaterial location: [folder/doc path/pasted content]\nAudience: [new hire/implementation/support/leadership]\nUse case: [training/search/handoff/external explanation]\nOutput knowledge-base outline, summary for each article, tags, duplicate/conflicting content, missing documents, and priority order." },
+            { text: "生成产品 FAQ 和标准回答", textEn: "Create product FAQ and standard answers", desc: "覆盖用户问题、边界和升级路径", descEn: "Cover user questions, limits, escalation", icon: "qa",
+              template: "基于这些资料生成产品 FAQ 和标准回答\n产品资料：[粘贴或拖入文档]\n目标用户：[客户/销售/客服/内部团队]\n重点场景：[购买前咨询/故障排查/使用指导]\n请输出：问题分类、FAQ 表格、标准回答、不能承诺的边界、需要转人工或升级处理的条件。",
+              templateEn: "Create product FAQ and standard answers from these materials\nProduct materials: [paste or attach docs]\nTarget users: [customers/sales/support/internal team]\nScenarios: [pre-sales/troubleshooting/how-to]\nOutput question categories, FAQ table, standard answers, promises to avoid, and conditions for human escalation." },
+            { text: "把操作流程写成 SOP", textEn: "Turn a process into an SOP", desc: "步骤、检查点、异常处理一次补齐", descEn: "Add steps, checks, and exception handling", icon: "checklist",
+              template: "把这个操作流程写成 SOP\n流程名称：[名称]\n适用对象：[谁来执行]\n原始步骤：[粘贴当前流程]\n风险点：[已知风险]\n请输出：适用范围、前置条件、逐步操作、检查点、异常处理、完成标准、版本记录；步骤要可执行，不要只写原则。",
+              templateEn: "Turn this process into an SOP\nProcess name: [name]\nOperator: [who performs it]\nRaw steps: [paste current process]\nKnown risks: [risks]\nOutput scope, prerequisites, step-by-step instructions, checkpoints, exception handling, completion criteria, and version notes. Steps must be executable, not just principles." },
+            { text: "整理新人上手指南", textEn: "Create an onboarding guide", desc: "把背景、环境、路径和常见坑讲清楚", descEn: "Clarify context, setup, path, pitfalls", icon: "knowledge",
+              template: "帮我整理一份新人上手指南\n资料来源：[文档/仓库/流程/粘贴内容]\n新人角色：[研发/实施/客服/运营/研究助理]\n目标：[几天内能独立完成什么]\n请输出：背景介绍、必读资料、环境准备、第一周任务路径、常见问题、术语表、需要导师确认的节点。",
+              templateEn: "Create an onboarding guide\nSources: [docs/repo/process/pasted content]\nNewcomer role: [engineer/implementation/support/ops/research assistant]\nGoal: [what they should handle independently and by when]\nOutput background, required reading, setup steps, first-week task path, FAQ, glossary, and mentor checkpoints." },
+        ],
+    },
+    {
+        id: "automation",
+        label: "自动化流程",
+        labelEn: "Automation",
+        prompts: [
+            { text: "设计一个重复任务自动化", textEn: "Design automation for a repetitive task", desc: "先拆流程，再判断可自动化边界", descEn: "Map workflow before automation boundaries", icon: "workflow",
+              template: "帮我设计一个重复任务自动化方案\n当前任务：[任务描述]\n触发条件：[什么时候开始]\n输入来源：[表格/邮件/系统/API/人工]\n输出结果：[文件/通知/系统变更]\n限制：[权限、安全、人工确认]\n请输出：流程图文字版、可自动化步骤、必须人工确认的步骤、需要的工具或接口、失败重试和审计记录方案。",
+              templateEn: "Design automation for a repetitive task\nCurrent task: [description]\nTrigger: [when it starts]\nInputs: [spreadsheet/email/system/API/human]\nOutputs: [file/notification/system change]\nConstraints: [permissions/security/human approval]\nOutput text workflow diagram, automatable steps, human-confirmation steps, required tools or APIs, retry handling, and audit log plan." },
+            { text: "把表单收集变成工作流", textEn: "Turn form intake into a workflow", desc: "字段、校验、分派和审批都列清楚", descEn: "Define fields, validation, routing, approval", icon: "form",
+              template: "把这个表单收集场景设计成工作流\n业务场景：[例如报销、需求申请、客户线索]\n提交人：[谁提交]\n字段：[已知字段]\n审批或处理人：[角色]\n规则：[校验、分派、超时、通知]\n请输出：字段清单、校验规则、流程阶段、状态流转、通知文案、异常分支。",
+              templateEn: "Turn this form intake scenario into a workflow\nScenario: [expense, request intake, lead capture]\nSubmitter: [who submits]\nFields: [known fields]\nApprover/processor: [role]\nRules: [validation, routing, timeout, notifications]\nOutput field list, validation rules, stages, status transitions, notification copy, and exception branches." },
+            { text: "制定定时巡检和提醒计划", textEn: "Create a scheduled check and reminder plan", desc: "把周期、阈值、通知和升级规则定好", descEn: "Set cadence, thresholds, alerts, escalation", icon: "schedule",
+              template: "制定一个定时巡检和提醒计划\n巡检对象：[系统/数据/合同/任务/客户状态]\n检查频率：[每天/每周/每月/自定义]\n异常条件：[阈值或判断规则]\n通知对象：[负责人/群组]\n升级规则：[多久未处理升级]\n请输出：巡检清单、提醒文案、异常分级、升级路径、记录字段。",
+              templateEn: "Create a scheduled check and reminder plan\nTarget: [system/data/contract/task/customer status]\nFrequency: [daily/weekly/monthly/custom]\nException rules: [thresholds or logic]\nNotify: [owner/group]\nEscalation: [when to escalate]\nOutput checklist, reminder copy, severity levels, escalation path, and record fields." },
+            { text: "把人工流程画成流程图", textEn: "Turn a manual process into a flow diagram", desc: "识别角色、分支、异常和交接点", descEn: "Identify roles, branches, exceptions, handoffs", icon: "diagram",
+              template: "把这个人工流程整理成流程图\n流程描述：[粘贴现有流程]\n参与角色：[角色列表]\n起点和终点：[开始条件/完成条件]\n异常情况：[已知异常]\n请输出：流程图文字版、角色泳道、状态节点、分支条件、异常处理、可自动化或可简化的环节。",
+              templateEn: "Turn this manual process into a flow diagram\nProcess description: [paste current flow]\nRoles: [role list]\nStart and end: [start condition/completion condition]\nExceptions: [known exceptions]\nOutput text flow diagram, swimlanes, states, branch conditions, exception handling, and steps that can be automated or simplified." },
+        ],
+    },
+    {
+        id: "data",
+        label: "数据表格",
+        labelEn: "Data tables",
+        prompts: [
+            { text: "清洗并规范一张表", textEn: "Clean and standardize a table", desc: "统一字段、格式、缺失值和异常值", descEn: "Normalize fields, formats, missing values", icon: "chart",
+              template: "帮我清洗并规范这张表\n数据文件：[拖入 Excel/CSV 或粘贴路径]\n用途：[导入系统/分析/对账/报表]\n关键字段：[字段名]\n已知问题：[重复、缺失、格式混乱、异常值]\n请输出：清洗规则、字段映射表、异常数据清单、可导入的目标格式建议。",
+              templateEn: "Clean and standardize this table\nData file: [drag Excel/CSV or paste path]\nUse case: [system import/analysis/reconciliation/reporting]\nKey fields: [field names]\nKnown issues: [duplicates, missing values, mixed formats, outliers]\nOutput cleaning rules, field mapping table, anomaly list, and recommended import-ready format." },
+            { text: "做一份经营数据周报", textEn: "Create a weekly business report", desc: "自动提炼趋势、异常和原因假设", descEn: "Extract trends, anomalies, likely causes", icon: "ppt",
+              template: "根据这些数据做一份经营数据周报\n数据文件：[拖入文件或粘贴路径]\n报告周期：[日期范围]\n核心指标：[收入/订单/活跃/转化/成本]\n对比口径：[上周/上月/去年同期/目标值]\n请输出：周报摘要、指标表、趋势变化、异常原因假设、下周建议动作。",
+              templateEn: "Create a weekly business report from this data\nData file: [drag file or paste path]\nPeriod: [date range]\nMetrics: [revenue/orders/active users/conversion/cost]\nComparison: [last week/last month/YoY/target]\nOutput weekly summary, metrics table, trend changes, anomaly hypotheses, and next-week actions." },
+            { text: "生成对账差异分析", textEn: "Generate reconciliation variance analysis", desc: "定位差异来源并给处理建议", descEn: "Find variance sources and next steps", icon: "search",
+              template: "帮我做对账差异分析\n数据 A：[文件或路径]\n数据 B：[文件或路径]\n匹配键：[订单号/客户 ID/日期/金额]\n允许误差：[金额或时间范围]\n请输出：匹配规则、完全匹配清单、差异清单、可能原因分类、需要人工确认的项目、处理建议。",
+              templateEn: "Generate reconciliation variance analysis\nData A: [file or path]\nData B: [file or path]\nMatch keys: [order ID/customer ID/date/amount]\nAllowed tolerance: [amount or time window]\nOutput match rules, exact matches, variance list, likely cause categories, items needing human confirmation, and handling recommendations." },
+            { text: "设计一套看板指标", textEn: "Design dashboard metrics", desc: "定义口径、维度、刷新频率和图表", descEn: "Define metrics, dimensions, refresh, charts", icon: "chart",
+              template: "帮我设计一套看板指标\n业务场景：[销售/运营/产品/财务/交付]\n使用者：[管理层/团队负责人/一线人员]\n决策问题：[看板要帮助判断什么]\n数据来源：[系统、表格、接口]\n请输出：指标体系、每个指标口径、维度拆分、刷新频率、推荐图表、异常阈值、看板布局建议。",
+              templateEn: "Design dashboard metrics\nScenario: [sales/operations/product/finance/delivery]\nUsers: [leadership/team lead/frontline]\nDecision questions: [what the dashboard should help decide]\nData sources: [systems, spreadsheets, APIs]\nOutput metric system, definition for each metric, dimensions, refresh cadence, chart recommendations, alert thresholds, and dashboard layout." },
         ],
     },
 ];
 
-const STORAGE_KEY = "maclaw:welcome-industry-tab";
+const STORAGE_KEY = "maclaw:welcome-scenario-tab";
+const LEGACY_STORAGE_KEY = "maclaw:welcome-industry-tab";
+const SCENARIO_TAB_IDS = new Set(SCENARIO_TABS.map(tab => tab.id));
+const SCENARIO_TAB_BY_ID = new Map(SCENARIO_TABS.map(tab => [tab.id, tab]));
+const isScenarioTabId = (value: string | null): value is string => !!value && SCENARIO_TAB_IDS.has(value);
 
 // --- Component ---
 
@@ -154,17 +290,37 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
 
     const [activeTab, setActiveTab] = useState<string>(() => {
         try {
-            const saved = localStorage.getItem(STORAGE_KEY);
-            if (saved && INDUSTRY_TABS.some(tab => tab.id === saved)) return saved;
+            const saved = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
+            if (isScenarioTabId(saved)) return saved;
         } catch { /* ignore */ }
-        return INDUSTRY_TABS[0].id;
+        return SCENARIO_TABS[0].id;
     });
 
     useEffect(() => {
-        try { localStorage.setItem(STORAGE_KEY, activeTab); } catch { /* ignore */ }
+        try {
+            localStorage.setItem(STORAGE_KEY, activeTab);
+            localStorage.removeItem(LEGACY_STORAGE_KEY);
+        } catch { /* ignore */ }
     }, [activeTab]);
 
-    const currentTab = INDUSTRY_TABS.find(tab => tab.id === activeTab) || INDUSTRY_TABS[0];
+    const currentTab = SCENARIO_TAB_BY_ID.get(activeTab) || SCENARIO_TABS[0];
+    const handleScenarioTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+        const key = event.key;
+        if (!["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End"].includes(key)) return;
+        event.preventDefault();
+
+        const lastIndex = SCENARIO_TABS.length - 1;
+        const nextIndex =
+            key === "Home" ? 0 :
+            key === "End" ? lastIndex :
+            key === "ArrowRight" || key === "ArrowDown" ? (index + 1) % SCENARIO_TABS.length :
+            (index - 1 + SCENARIO_TABS.length) % SCENARIO_TABS.length;
+        const nextTabId = SCENARIO_TABS[nextIndex].id;
+        setActiveTab(nextTabId);
+        requestAnimationFrame(() => {
+            document.getElementById(`welcome-tab-${nextTabId}`)?.focus();
+        });
+    };
 
     const hasNews = pinnedNews && pinnedNews.length > 0;
 
@@ -213,7 +369,7 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                 fontFamily: "system-ui, -apple-system, sans-serif",
                 letterSpacing: "-0.3px",
             }}>
-                {isZh ? "今天想做点什么？" : "What would you like to do?"}
+                {isZh ? "从一个具体任务开始" : "Start with a concrete task"}
             </h2>
 
             {/* Centered input composer with refined style */}
@@ -269,30 +425,35 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                 />
             </div>
 
-            {/* Industry tabs */}
+            {/* Scenario tabs */}
             <div
                 role="tablist"
-                aria-label={isZh ? "行业分类" : "Industry categories"}
+                aria-label={isZh ? "场景分类" : "Scenario categories"}
                 style={{
                     display: "flex",
                     gap: "4px",
                     flexWrap: "wrap",
                     justifyContent: "center",
+                    width: "100%",
                 }}
             >
-                {INDUSTRY_TABS.map(tab => {
+                {SCENARIO_TABS.map((tab, index) => {
                     const isActive = tab.id === activeTab;
                     return (
                         <button
                             key={tab.id}
+                            id={`welcome-tab-${tab.id}`}
                             role="tab"
                             aria-selected={isActive}
                             aria-controls={`welcome-tabpanel-${tab.id}`}
+                            tabIndex={isActive ? 0 : -1}
                             onClick={() => setActiveTab(tab.id)}
+                            onKeyDown={event => handleScenarioTabKeyDown(event, index)}
                             style={{
                                 padding: "5px 12px",
                                 fontSize: "12px",
                                 fontWeight: isActive ? 600 : 400,
+                                lineHeight: 1.3,
                                 color: isActive ? t.sendBtnBg : t.textMuted,
                                 background: isActive ? `color-mix(in srgb, ${t.sendBtnBg} 10%, transparent)` : "transparent",
                                 border: `1px solid ${isActive ? t.sendBtnBg : "transparent"}`,
@@ -325,7 +486,7 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
             <div
                 role="tabpanel"
                 id={`welcome-tabpanel-${currentTab.id}`}
-                aria-label={isZh ? currentTab.label : currentTab.labelEn}
+                aria-labelledby={`welcome-tab-${currentTab.id}`}
                 style={{
                     display: "flex",
                     flexDirection: "column",
@@ -334,9 +495,9 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                     maxWidth: "480px",
                 }}
             >
-                {currentTab.prompts.map((prompt, idx) => (
+                {currentTab.prompts.map(prompt => (
                     <button
-                        key={`${currentTab.id}-${idx}`}
+                        key={`${currentTab.id}-${prompt.textEn}`}
                         onClick={() => onPromptSelect(isZh ? (prompt.template || prompt.text) : (prompt.templateEn || prompt.textEn))}
                         style={{
                             display: "flex",

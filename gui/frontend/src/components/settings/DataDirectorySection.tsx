@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { SetDataDir, SelectDataDir } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
+import { localizeText } from '../../i18n';
 
 type DataDirectorySectionProps = {
     config: main.AppConfig | null;
@@ -9,9 +10,7 @@ type DataDirectorySectionProps = {
     showToastMessage: (message: string) => void;
 };
 
-const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' || lang === 'zh' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+const textForLang = localizeText;
 
 export const DataDirectorySection = ({ config, setConfig, lang, showToastMessage }: DataDirectorySectionProps) => {
     const [dataDirInput, setDataDirInput] = useState(config?.data_dir || '');

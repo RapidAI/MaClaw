@@ -299,9 +299,11 @@ func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
 				finishReason = "stop"
 			}
 		}
+		finishReason, truncatedTools := filterStreamTruncatedToolCalls(&msg, finishReason)
 		result.Choices = append(result.Choices, Choice{
-			Message:      msg,
-			FinishReason: finishReason,
+			Message:            msg,
+			FinishReason:       finishReason,
+			TruncatedToolNames: truncatedTools,
 		})
 	}
 	return result

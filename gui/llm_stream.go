@@ -517,6 +517,112 @@ func (f *flushableThinkFilter) drain(force bool) {
 	}
 }
 
+type flushableDetailsFilter struct {
+	downstream llm.TokenCallback
+	inside     bool
+	pending    strings.Builder
+}
+
+func newFlushableDetailsFilter(downstream llm.TokenCallback) *flushableDetailsFilter {
+	return &flushableDetailsFilter{downstream: downstream}
+}
+
+func (f *flushableDetailsFilter) Write(delta string) {
+	if f == nil || f.downstream == nil {
+		return
+	}
+	f.pending.WriteString(delta)
+	f.drain(false)
+}
+
+func (f *flushableDetailsFilter) Flush() {
+	if f == nil || f.downstream == nil {
+		return
+	}
+	f.drain(true)
+}
+
+func (f *flushableDetailsFilter) drain(force bool) {
+	for {
+		s := f.pending.String()
+		if s == "" {
+			return
+		}
+		lower := strings.ToLower(s)
+		if !f.inside {
+			if idx := strings.Index(lower, "<details"); idx >= 0 {
+				if idx > 0 {
+					f.downstream(s[:idx])
+				}
+				end := strings.IndexByte(s[idx:], '>')
+				if end < 0 {
+					f.pending.Reset()
+					f.pending.WriteString(s[idx:])
+					return
+				}
+				f.inside = true
+				f.pending.Reset()
+				f.pending.WriteString(s[idx+end+1:])
+				continue
+			}
+			if partial := detailsOpenSuffixLen(lower); partial > 0 && !force {
+				if len(s) > partial {
+					f.downstream(s[:len(s)-partial])
+					f.pending.Reset()
+					f.pending.WriteString(s[len(s)-partial:])
+				}
+				return
+			}
+			f.downstream(s)
+			f.pending.Reset()
+			return
+		}
+		if idx := strings.Index(lower, "</details>"); idx >= 0 {
+			f.inside = false
+			f.pending.Reset()
+			f.pending.WriteString(s[idx+len("</details>"):])
+			continue
+		}
+		if partial := detailsCloseSuffixLen(lower); partial > 0 && !force {
+			if len(s) > partial {
+				f.pending.Reset()
+				f.pending.WriteString(s[len(s)-partial:])
+			}
+			return
+		}
+		f.pending.Reset()
+		return
+	}
+}
+
+func detailsOpenSuffixLen(lower string) int {
+	marker := "<details"
+	max := len(marker) - 1
+	if len(lower) < max {
+		max = len(lower)
+	}
+	for i := max; i > 0; i-- {
+		if strings.HasSuffix(lower, marker[:i]) {
+			return i
+		}
+	}
+	return 0
+}
+
+func detailsCloseSuffixLen(lower string) int {
+	marker := "</details>"
+	max := len(marker) - 1
+	if len(lower) < max {
+		max = len(lower)
+	}
+	for i := max; i > 0; i-- {
+		if strings.HasSuffix(lower, marker[:i]) {
+			return i
+		}
+	}
+	return 0
+}
+
 type flushableTagFilter struct {
 	downstream llm.TokenCallback
 	openTag    string
@@ -600,7 +706,7 @@ type NewRoundCallback func()
 type StreamDoneCallback func()
 
 func stripThinkTags(s string) string {
-	return llm.StripThinkTags(s)
+	return llm.StripDetailsBlocks(llm.StripThinkTags(s))
 }
 
 func stripFunctionCalls(s string) string {
@@ -616,8 +722,15 @@ func stripXMLToolCalls(s string) string {
 // ---------------------------------------------------------------------------
 
 func newThinkFilter(downstream llm.TokenCallback) tokenStreamFilter {
-	f := newFlushableThinkFilter(downstream)
-	return tokenStreamFilter{writeFn: f.Write, flushFn: f.Flush}
+	detailsFilter := newFlushableDetailsFilter(downstream)
+	thinkFilter := newFlushableThinkFilter(detailsFilter.Write)
+	return tokenStreamFilter{
+		writeFn: thinkFilter.Write,
+		flushFn: func() {
+			thinkFilter.Flush()
+			detailsFilter.Flush()
+		},
+	}
 }
 
 func newFuncCallFilter(downstream llm.TokenCallback) tokenStreamFilter {
@@ -680,7 +793,7 @@ func (f *plainToolCallStreamFilter) drain(force bool) {
 			return
 		}
 	}
-	idx := strings.Index(strings.ToLower(s), "tool_call")
+	idx := firstGUIContentToolCallMarkerIndex(strings.ToLower(s))
 	if idx >= 0 {
 		if idx > 0 {
 			f.downstream(s[:idx])
@@ -689,19 +802,8 @@ func (f *plainToolCallStreamFilter) drain(force bool) {
 		f.pending.Reset()
 		return
 	}
-	const marker = "tool_call"
-	partial := 0
 	lower := strings.ToLower(s)
-	max := len(marker) - 1
-	if len(lower) < max {
-		max = len(lower)
-	}
-	for i := max; i > 0; i-- {
-		if strings.HasSuffix(lower, marker[:i]) {
-			partial = i
-			break
-		}
-	}
+	partial := guiContentToolCallMarkerSuffixLen(lower)
 	if partial > 0 && !force {
 		if len(s) > partial {
 			f.downstream(s[:len(s)-partial])
@@ -712,6 +814,33 @@ func (f *plainToolCallStreamFilter) drain(force bool) {
 	}
 	f.downstream(s)
 	f.pending.Reset()
+}
+
+func firstGUIContentToolCallMarkerIndex(lower string) int {
+	best := -1
+	for _, marker := range []string{"<tool_call", "<turn: tool_call", "tool_call\n", "tool_call\r\n", "tool_call {"} {
+		if idx := strings.Index(lower, marker); idx >= 0 && (best < 0 || idx < best) {
+			best = idx
+		}
+	}
+	return best
+}
+
+func guiContentToolCallMarkerSuffixLen(lower string) int {
+	best := 0
+	for _, marker := range []string{"<tool_call", "<turn: tool_call", "tool_call\n", "tool_call\r\n", "tool_call {"} {
+		max := len(marker) - 1
+		if len(lower) < max {
+			max = len(lower)
+		}
+		for i := max; i > best; i-- {
+			if strings.HasSuffix(lower, marker[:i]) {
+				best = i
+				break
+			}
+		}
+	}
+	return best
 }
 
 func bareJSONToolCallTextLooksLikely(content string) bool {
@@ -1122,7 +1251,9 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	var filteredBuf strings.Builder
 	filteredOnToken := func(delta string) {
 		filteredBuf.WriteString(delta)
-		onToken(delta)
+		if onToken != nil {
+			onToken(delta)
+		}
 	}
 	rpf := newRolePrefixStreamFilter(filteredOnToken)
 	repf := newRepetitionFilter(rpf.Write)

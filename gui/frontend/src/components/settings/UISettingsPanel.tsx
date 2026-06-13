@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { SetChatFontSize, SetUIZoomFactor } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
+import { localizeText } from '../../i18n';
 
 type UISettingsPanelProps = {
     config: main.AppConfig | null;
@@ -12,9 +13,7 @@ type UISettingsPanelProps = {
     setChatFontSize: Dispatch<SetStateAction<number>>;
 };
 
-const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+const textForLang = localizeText;
 
 export const UISettingsPanel = ({
     config,

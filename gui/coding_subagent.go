@@ -41,6 +41,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -61,6 +62,10 @@ type CodingSubAgent struct {
 	// CancelCurrentSession calls loopCtx.Cancel(), and the SubAgent's
 	// ShouldStop checks loopCtx.IsCancelled().
 	loopCtx *LoopContext
+
+	// Knowledge stores (both optional, nil = gracefully skipped)
+	codingKB  *knowledge.CodingKnowledgeStore // coding experiences (coding_knowledge.db)
+	generalKB *knowledge.SQLiteStore          // project docs (knowledge.db)
 }
 
 // CodingSubAgentResult is the outcome of a single task execution.
@@ -140,6 +145,8 @@ const (
 	codingToolOutcomeBlocked codingToolOutcome = "blocked"
 	codingToolOutcomeTimeout codingToolOutcome = "timeout"
 )
+
+const codingSubAgentInlineContentLimit = 1800
 
 type codingToolExecutionResult struct {
 	Text    string
@@ -300,6 +307,12 @@ type codingSubAgentCallbacks struct {
 	// cachedTools is built once on first call to BuildTools.
 	cachedTools []map[string]interface{}
 
+	// matchedSkills holds skills selected for this task via BM25 matching.
+	matchedSkills []codingSubAgentSkillMatch
+
+	// matchedMCPTools holds MCP tools selected for this task.
+	matchedMCPTools []codingSubAgentMCPToolMatch
+
 	// filesModified tracks files written/edited during execution.
 	mu             sync.Mutex
 	filesModified  map[string]bool
@@ -362,12 +375,81 @@ func (c *codingSubAgentCallbacks) GetMaxIterations() int {
 }
 
 func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
-	return buildCodingSubAgentSystemPrompt(c.task, c.subagent.projectPath, c.reqCtx, c.designCtx, c.prevOutputs)
+	prompt := buildCodingSubAgentSystemPrompt(c.task, c.subagent.projectPath, c.reqCtx, c.designCtx, c.prevOutputs)
+
+	// Inject knowledge from coding experience store + general knowledge store.
+	if knowledgeSections := c.buildKnowledgePromptSections(); knowledgeSections != "" {
+		prompt += knowledgeSections
+	}
+
+	// Eagerly select relevant skills so both BuildSystemPrompt and BuildTools
+	// have access to the same matchedSkills list.
+	if c.matchedSkills == nil {
+		taskDesc := ""
+		if c.task != nil {
+			taskDesc = c.task.Title + " " + c.task.Description
+		}
+		c.matchedSkills = c.selectRelevantSkillsForTask(taskDesc)
+	}
+
+	if section := buildCodingSubAgentSkillSection(c.matchedSkills); section != "" {
+		prompt += section
+	}
+
+	// Select relevant MCP tools for this task.
+	if c.matchedMCPTools == nil {
+		taskDesc := ""
+		if c.task != nil {
+			taskDesc = c.task.Title + " " + c.task.Description
+		}
+		c.matchedMCPTools = c.selectRelevantMCPToolsForTask(taskDesc)
+	}
+
+	if section := buildCodingSubAgentMCPSection(c.matchedMCPTools); section != "" {
+		prompt += section
+	}
+
+	return prompt
 }
 
 func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]interface{} {
 	if c.cachedTools == nil {
-		c.cachedTools = buildCodingToolDefinitionsFromRegistry(c.subagent.handler)
+		tools := buildCodingToolDefinitionsFromRegistry(c.subagent.handler)
+
+		// Append manage_skill if relevant skills were found for this task.
+		// matchedSkills may already be populated by BuildSystemPrompt.
+		if c.matchedSkills == nil {
+			taskDesc := ""
+			if c.task != nil {
+				taskDesc = c.task.Title + " " + c.task.Description
+			}
+			c.matchedSkills = c.selectRelevantSkillsForTask(taskDesc)
+		}
+		if len(c.matchedSkills) > 0 {
+			tools = append(tools, buildManageSkillToolDefinition())
+		}
+
+		// Append call_mcp_tool if relevant MCP tools were found for this task.
+		if c.matchedMCPTools == nil {
+			taskDesc := ""
+			if c.task != nil {
+				taskDesc = c.task.Title + " " + c.task.Description
+			}
+			c.matchedMCPTools = c.selectRelevantMCPToolsForTask(taskDesc)
+		}
+		if len(c.matchedMCPTools) > 0 {
+			tools = append(tools, buildCallMCPToolDefinition())
+		}
+
+		// Append knowledge search tools (read-only) when stores are available.
+		if c.subagent.codingKB != nil {
+			tools = append(tools, codingKnowledgeSearchToolDef())
+		}
+		if c.subagent.generalKB != nil {
+			tools = append(tools, knowledgeSearchToolDef())
+		}
+
+		c.cachedTools = tools
 	}
 	return c.cachedTools
 }
@@ -407,13 +489,18 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		}
 	}()
 
-	if !codingSubAgentToolNames[name] {
+	if !codingSubAgentToolNames[name] && !codingSubAgentDynamicToolNames[name] {
 		return codingToolExecutionResult{Text: fmt.Sprintf("unknown tool: %s (coding SubAgent supports %v)", name, codingSubAgentToolNameList()), Outcome: codingToolOutcomeFailed}
 	}
 
+	if result, rejected := rejectInvalidCodingSubAgentToolArguments(name, argsJSON); rejected {
+		return result
+	}
+	argsJSON = normalizeCodingSubAgentToolArguments(argsJSON)
+
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return codingToolExecutionResult{Text: fmt.Sprintf("argument parse failed: %v", err), Outcome: codingToolOutcomeFailed}
+		return invalidCodingSubAgentToolArgumentsResult(name, argsJSON, err)
 	}
 
 	if c == nil || c.subagent == nil {
@@ -469,7 +556,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				return codingToolExecutionResult{Text: c.rejectToolCall("write_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 			created := !codingFileExists(p)
-			if msg := c.requireReadBeforeWriteExisting(p); msg != "" {
+			if msg := c.requireReadBeforeWriteExisting(p, fileArgs); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("write_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 			result := executeCodingWriteFile(fileArgs)
@@ -581,9 +668,62 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			c.trackGitDiff(result.Text)
 		}
 		return result
+	case "manage_skill":
+		return c.executeManageSkill(args)
+	case "call_mcp_tool":
+		return c.executeCallMCPTool(args)
+	case "coding_knowledge_search":
+		return c.executeCodingKnowledgeSearch(argsJSON)
+	case "knowledge_search":
+		return c.executeKnowledgeSearch(argsJSON)
 	default:
 		return codingToolExecutionResult{Text: fmt.Sprintf("unknown tool: %s", name), Outcome: codingToolOutcomeFailed}
 	}
+}
+
+func rejectInvalidCodingSubAgentToolArguments(name, argsJSON string) (codingToolExecutionResult, bool) {
+	args := strings.TrimSpace(argsJSON)
+	if args == "" || codingSubAgentToolArgumentsAreObject(args) {
+		return codingToolExecutionResult{}, false
+	}
+	err := json.Unmarshal([]byte(args), &map[string]interface{}{})
+	result := invalidCodingSubAgentToolArgumentsResult(name, args, err)
+	log.Printf("[coding-subagent] rejected invalid tool arguments tool=%q args_len=%d hint=%q", strings.TrimSpace(name), len(args), codingSubAgentToolArgumentHint(err, args))
+	return result, true
+}
+
+func codingSubAgentToolArgumentsAreObject(args string) bool {
+	var parsed map[string]interface{}
+	return json.Unmarshal([]byte(args), &parsed) == nil && parsed != nil
+}
+
+func invalidCodingSubAgentToolArgumentsResult(name, argsJSON string, err error) codingToolExecutionResult {
+	args := strings.TrimSpace(argsJSON)
+	hint := codingSubAgentToolArgumentHint(err, args)
+	text := fmt.Sprintf("Error: tool call %q has invalid JSON object arguments. The tool was not executed. Regenerate the same tool call with complete valid JSON object arguments.", name)
+	if err != nil {
+		text += fmt.Sprintf(" Parse error: %s.", err.Error())
+	}
+	if hint != "" {
+		text += " " + hint
+	}
+	text += fmt.Sprintf(" If the content is large, split it into smaller chunks: write_file uses mode=\"overwrite\" for the first chunk and mode=\"append\" for later chunks; edit_file/edit_lines content fields must stay under %d characters per call.", codingSubAgentInlineContentLimit)
+	return codingToolExecutionResult{Text: text, Outcome: codingToolOutcomeFailed}
+}
+
+func codingSubAgentToolArgumentHint(err error, args string) string {
+	hint := ""
+	if err != nil {
+		hint = classifyToolArgumentError(err, args).Hint()
+	}
+	return hint
+}
+
+func normalizeCodingSubAgentToolArguments(argsJSON string) string {
+	if strings.TrimSpace(argsJSON) == "" {
+		return "{}"
+	}
+	return argsJSON
 }
 
 func codingOutcomeFromSuccess(success bool) codingToolOutcome {
@@ -621,6 +761,9 @@ func logCodingSubAgentOperationFailure(c *codingSubAgentCallbacks, name, argsJSO
 func compactCodingSubAgentArgsLogText(argsJSON string, maxRunes int) string {
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		if summary := redactInvalidCodingSubAgentArgsLogText(argsJSON); summary != "" {
+			return summary
+		}
 		return compactCodingSubAgentLogText(argsJSON, maxRunes)
 	}
 	redactCodingSubAgentLogArgs(args)
@@ -629,6 +772,47 @@ func compactCodingSubAgentArgsLogText(argsJSON string, maxRunes int) string {
 		return compactCodingSubAgentLogText(argsJSON, maxRunes)
 	}
 	return compactCodingSubAgentLogText(string(data), maxRunes)
+}
+
+func redactInvalidCodingSubAgentArgsLogText(argsJSON string) string {
+	trimmed := strings.TrimSpace(argsJSON)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	containsContent := false
+	for _, key := range []string{`"content"`, `"old_string"`, `"new_string"`, `"replacement"`, `"text"`} {
+		if strings.Contains(lower, key) {
+			containsContent = true
+			break
+		}
+	}
+	containsSecret := false
+	for _, key := range []string{`"password"`, `"token"`, `"api_key"`, `"apikey"`, `"secret"`, `"authorization"`} {
+		if strings.Contains(lower, key) {
+			containsSecret = true
+			break
+		}
+	}
+	if !containsContent && !containsSecret {
+		return ""
+	}
+	prefixSource := trimmed
+	if idx := firstCodingSubAgentSensitiveLogKeyIndex(lower); idx >= 0 {
+		prefixSource = strings.TrimSpace(trimmed[:idx]) + "..."
+	}
+	prefix := compactCodingSubAgentLogText(prefixSource, 160)
+	return fmt.Sprintf("[invalid JSON redacted bytes=%d content_field=%t secret_field=%t prefix=%q]", len(argsJSON), containsContent, containsSecret, prefix)
+}
+
+func firstCodingSubAgentSensitiveLogKeyIndex(lower string) int {
+	first := -1
+	for _, key := range []string{`"content"`, `"old_string"`, `"new_string"`, `"replacement"`, `"text"`, `"password"`, `"token"`, `"api_key"`, `"apikey"`, `"secret"`, `"authorization"`} {
+		if idx := strings.Index(lower, key); idx >= 0 && (first < 0 || idx < first) {
+			first = idx
+		}
+	}
+	return first
 }
 
 func redactCodingSubAgentLogArgs(args map[string]interface{}) {
@@ -1176,10 +1360,20 @@ func canonicalCodingSubAgentToolName(name string) string {
 	if codingSubAgentToolNames[trimmed] {
 		return trimmed
 	}
+	// Check dynamic tools (case-sensitive first).
+	if codingSubAgentDynamicToolNames[trimmed] {
+		return trimmed
+	}
 	lower := strings.ToLower(trimmed)
 	for _, candidate := range codingSubAgentToolOrder {
 		if strings.ToLower(candidate) == lower {
 			return candidate
+		}
+	}
+	// Case-insensitive check for dynamic tools.
+	for dyn := range codingSubAgentDynamicToolNames {
+		if strings.ToLower(dyn) == lower {
+			return dyn
 		}
 	}
 	return trimmed
@@ -1477,7 +1671,7 @@ func (c *codingSubAgentCallbacks) requireReadBeforeModify(path, toolName string)
 	return ""
 }
 
-func (c *codingSubAgentCallbacks) requireReadBeforeWriteExisting(path string) string {
+func (c *codingSubAgentCallbacks) requireReadBeforeWriteExisting(path string, args map[string]interface{}) string {
 	abs, err := resolveFileToolPath(path)
 	if err != nil {
 		return err.Error()
@@ -1492,6 +1686,9 @@ func (c *codingSubAgentCallbacks) requireReadBeforeWriteExisting(path string) st
 	if info.IsDir() {
 		return fmt.Sprintf("%s 是目录，不能用 write_file 写入", abs)
 	}
+	if isCodingSubAgentReportAppend(abs, args) {
+		return ""
+	}
 	if ok, msg := c.validateReadSnapshot(abs); !ok {
 		if msg != "" {
 			return msg
@@ -1499,6 +1696,14 @@ func (c *codingSubAgentCallbacks) requireReadBeforeWriteExisting(path string) st
 		return fmt.Sprintf("目标文件已存在，请先调用 read_file(path=%q) 查看当前内容；只有创建全新文件时才能直接 write_file。", path)
 	}
 	return ""
+}
+
+func isCodingSubAgentReportAppend(path string, args map[string]interface{}) bool {
+	mode := strings.TrimSpace(stringVal(args, "mode"))
+	if !strings.EqualFold(mode, "append") {
+		return false
+	}
+	return strings.EqualFold(filepath.Base(path), "TEST_REPORT.md")
 }
 
 func (c *codingSubAgentCallbacks) validateReadSnapshot(path string) (bool, string) {
@@ -2809,7 +3014,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 
 ### 创建新文件：write_file
 - 只有创建全新文件时才用 write_file(mode=overwrite)。
-- 大文件（>3000 字符）分块写入：先 overwrite 第一部分，再 append 后续部分。
+- 大文件（>1800 字符）分块写入：先 overwrite 第一部分，再 append 后续部分。
 
 ### Shell 执行：bash
 - 用于编译、运行测试、安装依赖、查看进程状态等。
@@ -2846,18 +3051,24 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - 遇到无法解决的问题，说明具体原因，不要反复重试相同的失败操作。
 `)
 
-	b.WriteString(`
+	b.WriteString(fmt.Sprintf(`
 ## Single-task contract
 - Work only on the assigned task. Avoid broad refactors, unrelated formatting, dependency churn, or speculative feature work.
 - Keep edits small and reviewable. Prefer targeted patches over whole-file rewrites.
 - If verification fails because of unrelated pre-existing errors, report the exact blocker with file/line when available and do not rewrite unrelated areas unless they block this task directly.
 - Before the final answer, inspect the diff, summarize created/modified files, list verification commands, and call out remaining risk.
 
+## Tool-call JSON reliability
+- Keep every tool_call arguments JSON complete and valid. Never truncate JSON strings.
+- Do not put a large file into one write_file call. If content is over %d characters, split it into chunks: first call write_file(mode="overwrite"), then call write_file(mode="append") for following chunks.
+- Prefer edit_file or edit_lines for existing files. Use write_file only for new files or TEST_REPORT.md append entries.
+- If a write_file call was rejected because arguments JSON was invalid or incomplete, retry with smaller chunks instead of repeating the same large call.
+
 ## Command guardrails
 - Do not run Git commands that rewrite or move worktree state: reset, checkout, restore, switch, merge, rebase, stash, or clean -f. Read-only Git commands such as status, diff, and log are allowed.
 - Do not run recursive or forceful delete commands such as rm -r/-rf, Remove-Item -Recurse/-r/-rf, ri -r, rd/rmdir /s, del /s, or erase /s. Use edit_file/edit_lines/write_file for scoped file changes.
 - Do not mutate files through bash redirection or shell helpers: >, >>, tee/Tee-Object, Set-Content/Add-Content/Out-File, touch/mkdir, Copy-Item/Move-Item/Rename-Item, sed -i, perl -pi, node fs.writeFileSync/promises.writeFile, Python open(..., "w")/Path.write_text, or dd of=. Use the file editing tools instead.
-`)
+`, codingSubAgentInlineContentLimit))
 
 	b.WriteString(fmt.Sprintf("\n## 项目路径\n%s\n", projectPath))
 
@@ -2983,6 +3194,16 @@ var codingSubAgentToolOrder = []string{
 
 var codingSubAgentToolNames = makeCodingSubAgentToolNameSet(codingSubAgentToolOrder)
 
+// codingSubAgentDynamicToolNames lists tools that are conditionally available
+// in the SubAgent (injected based on task context, not always present).
+// These bypass the static tool name check in executeToolWithOutcome.
+var codingSubAgentDynamicToolNames = map[string]bool{
+	"manage_skill":             true,
+	"call_mcp_tool":            true,
+	"coding_knowledge_search":  true,
+	"knowledge_search":         true,
+}
+
 func makeCodingSubAgentToolNameSet(names []string) map[string]bool {
 	set := make(map[string]bool, len(names))
 	for _, name := range names {
@@ -3013,7 +3234,7 @@ func buildCodingToolDefinitionsFromRegistry(handler *IMMessageHandler) []map[str
 		}
 		name, _ := fn["name"].(string)
 		if codingSubAgentToolNames[name] {
-			byName[name] = t
+			byName[name] = compactCodingSubAgentToolDefinition(t)
 		}
 	}
 
@@ -3035,7 +3256,7 @@ func buildCodingToolDefinitionsFromRegistry(handler *IMMessageHandler) []map[str
 	ordered := make([]map[string]interface{}, 0, len(codingSubAgentToolNames))
 	for _, name := range codingSubAgentToolOrder {
 		if t, ok := byName[name]; ok {
-			ordered = append(ordered, t)
+			ordered = append(ordered, compactCodingSubAgentToolDefinition(t))
 		}
 	}
 	if len(ordered) == 0 {
@@ -3086,6 +3307,7 @@ func compactCodingSubAgentToolDefinition(tool map[string]interface{}) map[string
 	if !ok {
 		return tool
 	}
+	toolName, _ := fn["name"].(string)
 	params, ok := fn["parameters"].(map[string]interface{})
 	if !ok {
 		return tool
@@ -3100,7 +3322,7 @@ func compactCodingSubAgentToolDefinition(tool map[string]interface{}) map[string
 		case map[string]interface{}:
 			copyProp := make(map[string]interface{}, len(prop))
 			for key, value := range prop {
-				if key == "description" {
+				if key == "description" && !keepCodingSubAgentToolPropertyDescription(toolName, name) {
 					continue
 				}
 				copyProp[key] = value
@@ -3109,7 +3331,7 @@ func compactCodingSubAgentToolDefinition(tool map[string]interface{}) map[string
 		case map[string]string:
 			copyProp := make(map[string]string, len(prop))
 			for key, value := range prop {
-				if key == "description" {
+				if key == "description" && !keepCodingSubAgentToolPropertyDescription(toolName, name) {
 					continue
 				}
 				copyProp[key] = value
@@ -3135,6 +3357,7 @@ func compactCodingSubAgentToolDefinition(tool map[string]interface{}) map[string
 		}
 		compactFn[key] = value
 	}
+	applyCodingSubAgentToolHints(compactFn)
 	compactTool := make(map[string]interface{}, len(tool))
 	for key, value := range tool {
 		if key == "function" {
@@ -3144,6 +3367,67 @@ func compactCodingSubAgentToolDefinition(tool map[string]interface{}) map[string
 		compactTool[key] = value
 	}
 	return compactTool
+}
+
+func applyCodingSubAgentToolHints(fn map[string]interface{}) {
+	name, _ := fn["name"].(string)
+	params, _ := fn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	switch name {
+	case "write_file":
+		setCodingSubAgentToolPropDescription(props, "content", fmt.Sprintf("File content. Keep each call under %d characters; split large files into overwrite + append chunks.", codingSubAgentInlineContentLimit))
+		setCodingSubAgentToolPropMaxLength(props, "content", codingSubAgentInlineContentLimit)
+		setCodingSubAgentToolPropDescription(props, "mode", "Write mode: overwrite for first chunk, append for later chunks.")
+	case "edit_file":
+		setCodingSubAgentToolPropDescription(props, "old_string", fmt.Sprintf("Exact text to replace. Keep under %d characters; use edit_lines for large edits.", codingSubAgentInlineContentLimit))
+		setCodingSubAgentToolPropMaxLength(props, "old_string", codingSubAgentInlineContentLimit)
+		setCodingSubAgentToolPropDescription(props, "new_string", fmt.Sprintf("Replacement text. Keep under %d characters; split large edits into multiple small calls.", codingSubAgentInlineContentLimit))
+		setCodingSubAgentToolPropMaxLength(props, "new_string", codingSubAgentInlineContentLimit)
+	case "edit_lines":
+		setCodingSubAgentToolPropDescription(props, "content", fmt.Sprintf("New content for replace/insert. Keep under %d characters; split large edits into multiple small calls.", codingSubAgentInlineContentLimit))
+		setCodingSubAgentToolPropMaxLength(props, "content", codingSubAgentInlineContentLimit)
+	}
+}
+
+func setCodingSubAgentToolPropDescription(props map[string]interface{}, propName, desc string) {
+	if props == nil {
+		return
+	}
+	switch prop := props[propName].(type) {
+	case map[string]interface{}:
+		prop["description"] = desc
+	case map[string]string:
+		prop["description"] = desc
+	}
+}
+
+func setCodingSubAgentToolPropMaxLength(props map[string]interface{}, propName string, maxLength int) {
+	if props == nil {
+		return
+	}
+	switch prop := props[propName].(type) {
+	case map[string]interface{}:
+		prop["maxLength"] = maxLength
+	case map[string]string:
+		next := make(map[string]interface{}, len(prop)+1)
+		for key, value := range prop {
+			next[key] = value
+		}
+		next["maxLength"] = maxLength
+		props[propName] = next
+	}
+}
+
+func keepCodingSubAgentToolPropertyDescription(toolName, propName string) bool {
+	switch toolName {
+	case "write_file":
+		return propName == "content" || propName == "mode"
+	case "edit_file":
+		return propName == "old_string" || propName == "new_string"
+	case "edit_lines":
+		return propName == "content"
+	}
+	return false
 }
 
 func codingSubAgentExtraToolDefinitions() []map[string]interface{} {
@@ -3194,5 +3478,13 @@ func RunTaskWithSubAgent(
 	}
 	sa := NewCodingSubAgent(handler, cfg, httpClient, projectPath, loopCtx)
 	sa.SetCallbacks(onToken, onProgress)
+
+	// Wire knowledge stores for experience recall and project doc lookup.
+	if handler != nil && handler.app != nil {
+		codingKB := handler.app.ensureCodingKnowledgeStore()
+		generalKB := getAutoRecallStoreForApp(handler.app, false)
+		sa.SetKnowledgeStores(codingKB, generalKB)
+	}
+
 	return sa.ExecuteTask(task, reqCtx, designCtx, prevOutputs)
 }

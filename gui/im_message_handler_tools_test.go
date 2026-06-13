@@ -254,6 +254,14 @@ func TestBuildToolDefinitionsCapInlinePayloads(t *testing.T) {
 		t.Fatalf("write_file content maxLength = %v, want %d", got, maxAgentLoopInlineWriteFileContentRunes)
 	}
 
+	editProps := toolDefinitionProperties(t, defs, "edit_file")
+	if got := toolSchemaMaxLength(t, editProps, "old_string"); got != float64(maxAgentLoopInlineEditContentRunes) {
+		t.Fatalf("edit_file old_string maxLength = %v, want %d", got, maxAgentLoopInlineEditContentRunes)
+	}
+	if got := toolSchemaMaxLength(t, editProps, "new_string"); got != float64(maxAgentLoopInlineEditContentRunes) {
+		t.Fatalf("edit_file new_string maxLength = %v, want %d", got, maxAgentLoopInlineEditContentRunes)
+	}
+
 	sshProps := toolDefinitionProperties(t, defs, "ssh")
 	if got := toolSchemaMaxLength(t, sshProps, "command"); got != float64(maxAgentLoopInlineSSHCommandRunes) {
 		t.Fatalf("ssh command maxLength = %v, want %d", got, maxAgentLoopInlineSSHCommandRunes)
@@ -278,6 +286,25 @@ func TestBuiltinRegistryCapsInlinePayloads(t *testing.T) {
 	}
 	if got := registeredToolSchemaMaxLength(t, registeredToolSchemaProperties(write.InputSchema), "content"); got != float64(maxAgentLoopInlineWriteFileContentRunes) {
 		t.Fatalf("registry write_file content maxLength = %v, want %d", got, maxAgentLoopInlineWriteFileContentRunes)
+	}
+
+	edit, ok := registry.Get("edit_file")
+	if !ok || edit == nil {
+		t.Fatal("edit_file registry tool missing")
+	}
+	if got := registeredToolSchemaMaxLength(t, registeredToolSchemaProperties(edit.InputSchema), "old_string"); got != float64(maxAgentLoopInlineEditContentRunes) {
+		t.Fatalf("registry edit_file old_string maxLength = %v, want %d", got, maxAgentLoopInlineEditContentRunes)
+	}
+	if got := registeredToolSchemaMaxLength(t, registeredToolSchemaProperties(edit.InputSchema), "new_string"); got != float64(maxAgentLoopInlineEditContentRunes) {
+		t.Fatalf("registry edit_file new_string maxLength = %v, want %d", got, maxAgentLoopInlineEditContentRunes)
+	}
+
+	editLines, ok := registry.Get("edit_lines")
+	if !ok || editLines == nil {
+		t.Fatal("edit_lines registry tool missing")
+	}
+	if got := registeredToolSchemaMaxLength(t, registeredToolSchemaProperties(editLines.InputSchema), "content"); got != float64(maxAgentLoopInlineEditContentRunes) {
+		t.Fatalf("registry edit_lines content maxLength = %v, want %d", got, maxAgentLoopInlineEditContentRunes)
 	}
 
 	ssh, ok := registry.Get("ssh")
@@ -825,7 +852,7 @@ func TestPreCheckToolArgsForAgentLoopArgumentParseFailureUsesMetadata(t *testing
 	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailureArgumentParse {
 		t.Fatalf("unexpected metadata: %+v", *result)
 	}
-	if !strings.Contains(result.Text, "arguments JSON parse failed") {
+	if !strings.Contains(result.Text, "complete valid JSON object") {
 		t.Fatalf("expected parse failure text, got: %q", result.Text)
 	}
 }
@@ -844,7 +871,27 @@ func TestPreCheckAgentLoopInlinePayloadLimitGuidesChunking(t *testing.T) {
 		}
 	}
 
-	bashResult := preCheckAgentLoopInlinePayloadLimit("bash", fmt.Sprintf(`{"command":%q}`, strings.Repeat("x", maxAgentLoopInlineBashCommandRunes+1)), 4)
+	editResult := preCheckAgentLoopInlinePayloadLimit("edit_file", fmt.Sprintf(`{"path":"out.txt","old_string":"small","new_string":%q}`, strings.Repeat("x", maxAgentLoopInlineEditContentRunes+1)), 4)
+	if editResult == nil {
+		t.Fatal("expected oversized edit_file text to be rejected before execution")
+	}
+	for _, want := range []string{"too large", "new_string", "smaller targeted edits"} {
+		if !strings.Contains(editResult.Text, want) {
+			t.Fatalf("edit_file result %q missing %q", editResult.Text, want)
+		}
+	}
+
+	editLinesResult := preCheckAgentLoopInlinePayloadLimit("edit_lines", fmt.Sprintf(`{"path":"out.txt","operation":"replace","start_line":1,"content":%q}`, strings.Repeat("x", maxAgentLoopInlineEditContentRunes+1)), 5)
+	if editLinesResult == nil {
+		t.Fatal("expected oversized edit_lines content to be rejected before execution")
+	}
+	for _, want := range []string{"too large", "content", "smaller targeted edits"} {
+		if !strings.Contains(editLinesResult.Text, want) {
+			t.Fatalf("edit_lines result %q missing %q", editLinesResult.Text, want)
+		}
+	}
+
+	bashResult := preCheckAgentLoopInlinePayloadLimit("bash", fmt.Sprintf(`{"command":%q}`, strings.Repeat("x", maxAgentLoopInlineBashCommandRunes+1)), 6)
 	if bashResult == nil {
 		t.Fatal("expected oversized bash command to be rejected before execution")
 	}
@@ -854,7 +901,7 @@ func TestPreCheckAgentLoopInlinePayloadLimitGuidesChunking(t *testing.T) {
 		}
 	}
 
-	sshResult := preCheckAgentLoopInlinePayloadLimit("ssh", fmt.Sprintf(`{"action":"exec","command":%q}`, strings.Repeat("x", maxAgentLoopInlineSSHCommandRunes+1)), 5)
+	sshResult := preCheckAgentLoopInlinePayloadLimit("ssh", fmt.Sprintf(`{"action":"exec","command":%q}`, strings.Repeat("x", maxAgentLoopInlineSSHCommandRunes+1)), 7)
 	if sshResult == nil {
 		t.Fatal("expected oversized ssh command to be rejected before execution")
 	}
@@ -1771,7 +1818,7 @@ func TestPreCheckToolArgsForAgentLoopRejectsInvalidMCPArgumentsShape(t *testing.
 	if result == nil || result.FailureKind != toolFailureArgumentParse {
 		t.Fatalf("expected argument parse failure, got: %+v", result)
 	}
-	if !strings.Contains(result.Text, "arguments must be an object") {
+	if !strings.Contains(result.Text, "call_mcp_tool.arguments must be a complete valid JSON object") {
 		t.Fatalf("expected actionable argument shape error, got: %q", result.Text)
 	}
 }

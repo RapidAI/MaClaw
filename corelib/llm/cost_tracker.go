@@ -42,6 +42,7 @@ type CostTracker struct {
 // Users can override via config.
 var DefaultPriceTable = map[string]Price{
 	// 智谱 GLM (converted from RMB at ~7.2 rate)
+	"GLM-5.2":       {InputPerMToken: 0.69, OutputPerMToken: 2.08},
 	"glm-5.1":       {InputPerMToken: 0.69, OutputPerMToken: 2.08},
 	"glm-4-plus":    {InputPerMToken: 6.94, OutputPerMToken: 6.94},
 	"glm-4-flash":   {InputPerMToken: 0.014, OutputPerMToken: 0.014},

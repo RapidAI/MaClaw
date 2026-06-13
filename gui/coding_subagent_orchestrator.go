@@ -144,6 +144,11 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		}
 		log.Printf("[subagent-runner] T%d passed (%d iterations, %d tool calls, %d files, %d created)", displayIndex, result.Iterations, result.ToolCalls, len(result.FilesModified), len(result.FilesCreated))
 		turnCtx.Emit(onProgress, turnCtx.TaskEvent("completed", task, taskTitle))
+
+		// Trigger experience extraction (best-effort, async)
+		wasRetry := task.RetryCount > 0
+		r.extractAndSaveExperience(task, result, wasRetry)
+
 		return fmt.Sprintf("T%d: %s - completed\n%s", displayIndex, taskTitle, resultSummary), true
 
 	case TaskExecFailed:
@@ -342,6 +347,15 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 			reports = append(reports, "LLM provider is temporarily unavailable; SubAgent execution paused to avoid retry storms. Retry after the provider recovers.")
 			break
 		}
+		// Error fallback: if any task in this batch failed, reduce concurrency
+		// to 1 for remaining tasks to avoid cascading failures.
+		if batchHasFailedTask(handles) {
+			concurrency = 1
+			log.Printf("[subagent-runner] batch had failed task(s), falling back to sequential execution (concurrency=1)")
+			if onProgress != nil {
+				onProgress("⚠️ 检测到任务失败，后续任务将改为顺序执行")
+			}
+		}
 	}
 
 	// Generate final report.
@@ -390,6 +404,23 @@ func (r *SubAgentTaskRunner) configuredConcurrency() int {
 func containsSubAgentTransientProviderReport(reports []string) bool {
 	for _, report := range reports {
 		if isSubAgentTransientProviderError(report) {
+			return true
+		}
+	}
+	return false
+}
+
+// batchHasFailedTask checks whether any task in the concurrent batch ended
+// with a terminal failure (failed or skipped). Retryable failures (status
+// still in-progress/testing) do NOT trigger fallback — the task will be
+// retried in the next loop iteration.
+func batchHasFailedTask(handles []TaskRunHandle) bool {
+	for _, h := range handles {
+		if h.Task == nil {
+			continue
+		}
+		switch h.Task.Status {
+		case TaskExecFailed, TaskExecSkipped:
 			return true
 		}
 	}

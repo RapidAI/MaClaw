@@ -20,6 +20,11 @@ func writeErrorWithFields(w http.ResponseWriter, status int, code string, messag
 		"ok":      false,
 		"code":    code,
 		"message": message,
+		"error": map[string]any{
+			"message": message,
+			"type":    "invalid_request_error",
+			"code":    code,
+		},
 	}
 	for key, value := range fields {
 		payload[key] = value

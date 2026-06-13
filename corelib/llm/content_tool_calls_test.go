@@ -125,6 +125,24 @@ func TestParseContentToolCallsDetailed_XMLToolCallNestedOpenAIFunction(t *testin
 	}
 }
 
+func TestParseContentToolCallsDetailed_AngleArrayToolCallWithoutClose(t *testing.T) {
+	content := `<tool_call[]>
+{"name":"write_file","arguments":{"file_path":"e:\\CRM\\docs\\technical-design.md","content":"hello"}}`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed {
+		t.Fatalf("expected angle array tool call to parse cleanly")
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	}
+	if calls[0].Function.Name != "write_file" {
+		t.Fatalf("tool name = %q, want write_file", calls[0].Function.Name)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"file_path"`) {
+		t.Fatalf("arguments missing file_path: %q", calls[0].Function.Arguments)
+	}
+}
+
 func TestParseContentToolCallsDetailed_PlainToolCallToolParametersAliases(t *testing.T) {
 	content := `TOOL_CALL {"tool":"bash","parameters":{"command":"dir"}}`
 	calls, malformed := ParseContentToolCallsDetailed(content)
@@ -416,6 +434,42 @@ func TestParseAnthropicSSEStream_ConvertsPlainToolCallAndSuppressesTokens(t *tes
 	}
 	if got := resp.Choices[0].Message.ToolCalls[0].Function.Name; got != "ssh" {
 		t.Fatalf("tool name = %q, want ssh", got)
+	}
+}
+
+func TestParseAnthropicSSEStream_SuppressesDetailsAndConvertsAngleArrayToolCall(t *testing.T) {
+	body := strings.NewReader(
+		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"visible\n<det"}}` + "\n\n" +
+			`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ails><summary>思考过程</summary>hidden</details>\n<tool"}}` + "\n\n" +
+			`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"_call[]>\n{\"name\":\"write_file\",\"arguments\":{\"file_path\":\"e:\\\\CRM\\\\docs\\\\technical-design.md\",\"content\":\"hello\"}}"}}` + "\n\n" +
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}` + "\n\n",
+	)
+	var streamed strings.Builder
+	resp, err := parseAnthropicSSEStream(body, func(delta string) {
+		streamed.WriteString(delta)
+	})
+	if err != nil {
+		t.Fatalf("parseAnthropicSSEStream: %v", err)
+	}
+	streamedText := streamed.String()
+	if strings.Contains(streamedText, "<details") || strings.Contains(streamedText, "hidden") || strings.Contains(streamedText, "<tool_call") || strings.Contains(streamedText, "write_file") {
+		t.Fatalf("streamed hidden/tool content leaked: %q", streamedText)
+	}
+	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("expected one converted tool call, got %#v", resp)
+	}
+	msg := resp.Choices[0].Message
+	if msg.Content != "" {
+		t.Fatalf("content = %q, want empty when content tool call is converted", msg.Content)
+	}
+	if got := resp.Choices[0].FinishReason; got != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", got)
+	}
+	if got := msg.ToolCalls[0].Function.Name; got != "write_file" {
+		t.Fatalf("tool name = %q, want write_file", got)
+	}
+	if !strings.Contains(msg.ToolCalls[0].Function.Arguments, `"file_path"`) {
+		t.Fatalf("arguments missing file_path: %q", msg.ToolCalls[0].Function.Arguments)
 	}
 }
 

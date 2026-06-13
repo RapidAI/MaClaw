@@ -149,6 +149,10 @@ func (h *IMMessageHandler) getLightweightLLMConfig() corelib.MaclawLLMConfig {
 	switch {
 	case strings.Contains(model, "deepseek-reasoner") || strings.Contains(model, "deepseek-r1"):
 		cfg.Model = "deepseek-chat"
+	case strings.Contains(model, "deepseek-v4"):
+		// DeepSeek V4 models have thinking enabled by default — use the
+		// non-thinking alias for lightweight classification tasks.
+		cfg.Model = "deepseek-chat"
 	case strings.HasPrefix(model, "o1-") || strings.HasPrefix(model, "o3-"):
 		cfg.Model = "gpt-4o-mini"
 	case strings.Contains(model, "qwen3"):

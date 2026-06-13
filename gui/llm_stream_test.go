@@ -436,6 +436,42 @@ func TestToolCallFilter_BareJSONLegacyFunctionCallSuppressesJSON(t *testing.T) {
 	}
 }
 
+func TestToolCallFilter_AngleArrayToolCallDoesNotLeakPrefix(t *testing.T) {
+	var out strings.Builder
+	f := newToolCallFilter(func(s string) { out.WriteString(s) })
+	f.Write("visible\n<tool")
+	f.Write(`_call[]>
+{"name":"write_file","arguments":{"file_path":"e:\\CRM\\docs\\technical-design.md","content":"hello"}}`)
+	f.Flush()
+	if got := out.String(); got != "visible\n" {
+		t.Errorf("expected visible prefix only, got %q", got)
+	}
+}
+
+func TestToolCallFilter_AngleArrayToolCallCharByCharDoesNotLeakBracket(t *testing.T) {
+	input := `<tool_call[]>
+{"name":"write_file","arguments":{"file_path":"e:\\CRM\\docs\\technical-design.md","content":"hello"}}`
+	var out strings.Builder
+	f := newToolCallFilter(func(s string) { out.WriteString(s) })
+	for _, c := range input {
+		f.Write(string(c))
+	}
+	f.Flush()
+	if got := out.String(); got != "" {
+		t.Errorf("expected no leaked tool text, got %q", got)
+	}
+}
+
+func TestToolCallFilter_AllowsOrdinaryToolCallsExplanation(t *testing.T) {
+	var out strings.Builder
+	f := newToolCallFilter(func(s string) { out.WriteString(s) })
+	f.Write("OpenAI tool_calls should stay structured.")
+	f.Flush()
+	if got := out.String(); got != "OpenAI tool_calls should stay structured." {
+		t.Errorf("expected ordinary tool_calls explanation to pass through, got %q", got)
+	}
+}
+
 func TestToolCallFilter_BareJSONAllowsOrdinaryJSON(t *testing.T) {
 	var out strings.Builder
 	f := newToolCallFilter(func(s string) { out.WriteString(s) })
@@ -446,6 +482,27 @@ func TestToolCallFilter_BareJSONAllowsOrdinaryJSON(t *testing.T) {
 	f.Flush()
 	if got := out.String(); got != `{"name":"Alice","city":"Beijing"}` {
 		t.Errorf("expected ordinary JSON to pass through, got %q", got)
+	}
+}
+
+func TestThinkFilter_DetailsBlockSplitAcrossChunks(t *testing.T) {
+	var out strings.Builder
+	tf := newThinkFilter(func(s string) { out.WriteString(s) })
+	tf.Write("before<det")
+	tf.Write("ails><summary>思考过程</summary>hidden</details>after")
+	tf.Flush()
+	if got := out.String(); got != "beforeafter" {
+		t.Errorf("expected details block suppressed, got %q", got)
+	}
+}
+
+func TestThinkFilter_DetailsPartialFlushesPlainText(t *testing.T) {
+	var out strings.Builder
+	tf := newThinkFilter(func(s string) { out.WriteString(s) })
+	tf.Write("hello <det")
+	tf.Flush()
+	if got := out.String(); got != "hello <det" {
+		t.Errorf("expected partial non-tag text to flush, got %q", got)
 	}
 }
 

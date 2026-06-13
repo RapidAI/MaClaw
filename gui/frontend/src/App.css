@@ -7638,6 +7638,109 @@ body {
     gap: 10px;
 }
 
+.hub-service-redeem__period-section {
+    margin-top: 14px;
+}
+
+.hub-service-redeem__label--section {
+    font-weight: 600;
+    margin-bottom: 8px;
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary);
+}
+
+.hub-service-redeem__period-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 10px;
+}
+
+.hub-service-redeem__period-card {
+    background: var(--theme-surface);
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.hub-service-redeem__period-label {
+    font-size: 0.72rem;
+    color: var(--theme-text-secondary);
+    font-weight: 500;
+}
+
+.hub-service-redeem__period-values {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--theme-text-primary);
+    display: flex;
+    align-items: baseline;
+    gap: 2px;
+}
+
+.hub-service-redeem__period-used {
+    color: var(--theme-primary);
+}
+
+.hub-service-redeem__period-sep {
+    color: var(--theme-text-muted);
+    font-weight: 400;
+    margin: 0 1px;
+}
+
+.hub-service-redeem__period-limit {
+    color: var(--theme-text-secondary);
+    font-weight: 500;
+}
+
+.hub-service-redeem__period-bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--theme-border);
+    overflow: hidden;
+    position: relative;
+}
+
+.hub-service-redeem__period-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
+.hub-service-redeem__period-bar[data-kind="normal"] .hub-service-redeem__period-bar-fill {
+    background: var(--theme-success);
+}
+
+.hub-service-redeem__period-bar[data-kind="warning"] .hub-service-redeem__period-bar-fill {
+    background: var(--theme-primary);
+}
+
+.hub-service-redeem__period-bar[data-kind="exhausted"] .hub-service-redeem__period-bar-fill {
+    background: var(--theme-danger);
+}
+
+.hub-service-redeem__period-pct {
+    font-size: 0.68rem;
+    color: var(--theme-text-muted);
+}
+
+.hub-service-redeem__period-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.hub-service-redeem__period-reset {
+    font-size: 0.66rem;
+    color: var(--theme-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .hub-service-redeem__chip,
 .hub-service-redeem__group-tag {
     display: inline-flex;
@@ -7809,6 +7912,10 @@ body {
 
     .hub-service-redeem__credit-grid {
         grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    }
+
+    .hub-service-redeem__period-grid {
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
     }
 
     .hub-service-redeem__actions {

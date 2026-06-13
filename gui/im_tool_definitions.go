@@ -163,8 +163,8 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		toolDef("edit_file", "编辑已有文件内容（按文本替换，支持替换首处或全部匹配）",
 			map[string]interface{}{
 				"path":        map[string]string{"type": "string", "description": "文件路径"},
-				"old_string":  map[string]string{"type": "string", "description": "要查找的原始文本"},
-				"new_string":  map[string]string{"type": "string", "description": "替换后的文本，可为空字符串"},
+				"old_string":  map[string]interface{}{"type": "string", "description": "要查找的原始文本", "maxLength": maxAgentLoopInlineEditContentRunes},
+				"new_string":  map[string]interface{}{"type": "string", "description": "替换后的文本，可为空字符串", "maxLength": maxAgentLoopInlineEditContentRunes},
 				"replace_all": map[string]string{"type": "boolean", "description": "是否替换全部匹配，默认 false"},
 			}, []string{"path", "old_string", "new_string"}),
 		toolDef("list_directory", "列出本机目录内容",

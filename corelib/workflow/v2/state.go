@@ -45,6 +45,14 @@ type Phase struct {
 	ExecMode     PhaseExecMode `json:"exec_mode,omitempty"`
 	Status       PhaseStatus   `json:"status"`
 	Output       string        `json:"output,omitempty"`
+
+	// InputSchema is copied from the template at workflow creation time.
+	// When non-nil, the phase requires form input before the agent loop runs.
+	InputSchema *PhaseInputSchema `json:"input_schema,omitempty"`
+
+	// FormData stores the user's form submission. Populated when the user
+	// submits the InputSchema form via SubmitForm. Nil until submission.
+	FormData map[string]interface{} `json:"form_data,omitempty"`
 }
 
 // WorkflowState is the complete, serializable state of a running workflow.

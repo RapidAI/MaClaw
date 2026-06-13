@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 // normalizeEOL strips carriage returns so the comparison is insensitive to the
@@ -41,6 +42,39 @@ func findRepoRoot(t *testing.T) string {
 	}
 }
 
+// buildPopulatedV1Registry creates a V1 WorkflowRegistry populated from V2
+// templates — the same logic used in main(). This ensures the contract test
+// validates against the same data source as the actual code generator.
+func buildPopulatedV1Registry() *workflow.WorkflowRegistry {
+	v2Reg := v2.NewTemplateRegistry()
+	v2.RegisterBuiltinTemplates(v2Reg)
+
+	v1Reg := workflow.NewWorkflowRegistry()
+	for _, typ := range knownV2Types {
+		v2Tmpl := v2Reg.Get(typ)
+		if v2Tmpl == nil {
+			continue
+		}
+		v1Phases := make([]workflow.PhaseTemplate, 0, len(v2Tmpl.Phases))
+		for _, p := range v2Tmpl.Phases {
+			v1Phases = append(v1Phases, workflow.PhaseTemplate{
+				ID:           p.ID,
+				Name:         p.Name,
+				NeedsConfirm: p.NeedsConfirm,
+				ToolPolicy:   mapV2ToolPolicyToV1(p.ToolPolicy),
+			})
+		}
+		v1Reg.MustRegister(&workflow.WorkflowTemplate{
+			Type:        workflow.WorkflowType(v2Tmpl.Type),
+			Name:        v2Tmpl.Name,
+			Description: v2Tmpl.Description,
+			Keywords:    v2Tmpl.Keywords,
+			Phases:      v1Phases,
+		})
+	}
+	return v1Reg
+}
+
 // TestGeneratedArtifactUpToDate is the Go contract test for Property 5:
 // "Generated artifact is up to date".
 //
@@ -56,7 +90,7 @@ func findRepoRoot(t *testing.T) string {
 //
 // Validates: Requirements 2.3
 func TestGeneratedArtifactUpToDate(t *testing.T) {
-	inMemory := renderGeneratedTS(workflow.NewWorkflowRegistry())
+	inMemory := renderGeneratedTS(buildPopulatedV1Registry())
 
 	committedPath := filepath.Join(findRepoRoot(t), filepath.FromSlash(generatedFilePath))
 	onDisk, err := os.ReadFile(committedPath)

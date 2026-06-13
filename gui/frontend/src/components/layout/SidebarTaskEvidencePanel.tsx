@@ -1,10 +1,9 @@
 import { OpenFileOrShowInFolder } from '../../../wailsjs/go/main/App';
+import { localizeText } from '../../i18n';
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 
-const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' || lang === 'zh' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+const textForLang = localizeText;
 
 export function SidebarTaskEvidencePanel({ detail, loading, lang, onContinueWorkflow }: {
     detail: ProjectSceneDetail | null;

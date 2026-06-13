@@ -968,10 +968,11 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 				Model:    llmCfg.Model,
 				Protocol: llmCfg.Protocol,
 				WireAPI:  llmCfg.WireAPI,
+				AuthType: llmCfg.AuthType,
 			}
 		}
-		if strings.TrimSpace(proxyCfg.URL) == "" || strings.TrimSpace(proxyCfg.Model) == "" {
-			return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: fmt.Errorf("skill requires OpenAI-compatible environment variables, but the GUI local proxy cannot start because no LLM provider URL/model is configured [action: configure_llm]")}
+		if err := corelib.ValidateOpenAIProxyUpstreamConfig(proxyCfg); err != nil {
+			return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: fmt.Errorf("skill requires OpenAI-compatible environment variables, but the GUI local proxy cannot start because %s [action: configure_llm]", err)}
 		}
 		proxy := corelib.NewOpenAIProxy(proxyCfg)
 		port, proxyErr := proxy.Start()

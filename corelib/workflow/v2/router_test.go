@@ -94,32 +94,36 @@ func TestRoute_LLMConfirmationCanRejectStructuredTemplateMatch(t *testing.T) {
 }
 
 func TestRoute_CodingComplexityNoneFallsBackToAgentLoop(t *testing.T) {
+	// After the user-choice refactor, ComplexityFunc is no longer consumed
+	// by the router. Coding tasks always route to RouteToWorkflow; the GUI
+	// layer asks the user to choose complexity. Setting ComplexityFunc has
+	// no effect on routing.
 	r := setupTestRouter()
 	r.SetComplexityFunc(func(text string) TaskComplexity {
 		return ComplexityNone
 	})
 
 	result := r.Route("user1", "build backend service with APIs and database migrations", nil)
-	if result.Target != RouteToAgentLoop {
-		t.Fatalf("target = %q, want agent_loop for ComplexityNone", result.Target)
+	if result.Target != RouteToWorkflow {
+		t.Fatalf("target = %q, want workflow (complexity is now user-chosen in GUI)", result.Target)
 	}
 }
 
 func TestRoute_CodingComplexitySimpleGoesDirectCoding(t *testing.T) {
+	// After the user-choice refactor, ComplexityFunc is no longer consumed
+	// by the router. All coding tasks go to RouteToWorkflow; the GUI layer
+	// presents a choice panel for the user to select simple/complex/skip.
 	r := setupTestRouter()
 	r.SetComplexityFunc(func(text string) TaskComplexity {
 		return ComplexitySimple
 	})
 
 	result := r.Route("user1", "d:\\service build backend service with APIs and database migrations", nil)
-	if result.Target != RouteToDirectCoding {
-		t.Fatalf("target = %q, want direct_coding", result.Target)
+	if result.Target != RouteToWorkflow {
+		t.Fatalf("target = %q, want workflow (complexity is now user-chosen in GUI)", result.Target)
 	}
 	if result.WorkflowType != "coding" {
 		t.Fatalf("workflowType = %q, want coding", result.WorkflowType)
-	}
-	if result.ProjectPath != "d:\\service" {
-		t.Fatalf("projectPath = %q, want d:\\service", result.ProjectPath)
 	}
 }
 

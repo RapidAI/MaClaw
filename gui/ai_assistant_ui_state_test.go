@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -103,5 +104,35 @@ func TestAIAssistantUIStateNormalizesAndBoundsPayload(t *testing.T) {
 	}
 	if loaded.ContextBoundaryMessageID != "boundary" {
 		t.Fatalf("ContextBoundaryMessageID = %q", loaded.ContextBoundaryMessageID)
+	}
+}
+
+func TestAIAssistantUIStateStripsAssistantHiddenAndToolCallContent(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	path := app.aiAssistantUIStatePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	raw := `{"messages":[{"id":"a1","role":"assistant","content":"visible\n<details><summary>思考过程</summary>hidden</details>\n<tool_call[]>\n{\"name\":\"write_file\",\"arguments\":{\"path\":\"a.txt\",\"content\":\"x\"}}"},{"id":"u1","role":"user","content":"<tool_call[]> keep user text"}]}`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	loaded, err := app.LoadAIAssistantUIState()
+	if err != nil {
+		t.Fatalf("LoadAIAssistantUIState() error = %v", err)
+	}
+	if got := loaded.Messages[0]["content"]; got != "visible" {
+		t.Fatalf("assistant content = %#v, want visible", got)
+	}
+	if got := loaded.Messages[1]["content"]; got != "<tool_call[]> keep user text" {
+		t.Fatalf("user content = %#v, want untouched user content", got)
+	}
+	sanitized, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if strings.Contains(string(sanitized), "<details") || strings.Contains(string(sanitized), "hidden") || strings.Contains(string(sanitized), "write_file") {
+		t.Fatalf("sanitized file still contains assistant hidden/tool content: %s", sanitized)
 	}
 }

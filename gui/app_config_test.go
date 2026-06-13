@@ -208,8 +208,8 @@ func TestLoadConfigDefaultsUseGLM51ForOpenAICompatibleTools(t *testing.T) {
 			if model.ModelUrl != "https://open.bigmodel.cn/api/coding/paas/v4" {
 				t.Fatalf("%s GLM URL = %q", name, model.ModelUrl)
 			}
-			if model.ModelId != "glm-5.1" {
-				t.Fatalf("%s GLM model = %q, want glm-5.1", name, model.ModelId)
+			if model.ModelId != "GLM-5.2" {
+				t.Fatalf("%s GLM model = %q, want GLM-5.2", name, model.ModelId)
 			}
 		}
 		if !found {

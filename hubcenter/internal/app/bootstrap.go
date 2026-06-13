@@ -219,6 +219,15 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		app.goBackground(ha.NewSyncer(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second, cfg.HA.PullBatchSize).Run)
 	}
 
+	// --- LLM Service Module ---
+	nodeID := ""
+	if cfg.HA.Enabled && cfg.HA.NodeID != "" {
+		nodeID = cfg.HA.NodeID
+	} else {
+		nodeID = "single"
+	}
+	_ = InitLLMModule(provider, systemSettings, nodeID, entryService)
+
 	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.FailureLogs, gossipRepo, gossipCache, smHandlers, systemSettings, st.News, haConfigSvc, haSvc)
 
 	app.Store = st

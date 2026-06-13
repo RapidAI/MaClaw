@@ -26,26 +26,80 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 // generatedFilePath is the canonical, repository-root-relative location of the
 // generated TypeScript artifact.
 const generatedFilePath = "gui/frontend/src/components/ai/workflowPhaseMeta.generated.ts"
 
+// knownV2Types lists all V2 template type strings. Must be kept in sync with
+// RegisterBuiltinTemplates in corelib/workflow/v2/templates.go.
+var knownV2Types = []string{
+	"coding", "maintenance", "presentation_design",
+	"product_design", "innovation", "business_plan",
+	"testing", "literature_review", "research_report",
+	"competitive_analysis", "project_proposal", "event_planning",
+	"bid_response", "contract_review", "due_diligence",
+	"compliance_audit", "patent_analysis", "experiment_design",
+	"grant_proposal", "paper_writing", "paper_reproduction",
+	"changjiang_scholar", "changjiang_scholar_review",
+	"nsfc_distinguished_youth", "nsfc_excellent_youth",
+	"nsfc_youth", "nsfc_general", "nsfc_key",
+}
+
 func main() {
 	outPath := flag.String("out", generatedFilePath, "output path for the generated TypeScript artifact")
 	flag.Parse()
 
-	content := renderGeneratedTS(workflow.NewWorkflowRegistry())
+	// Build a V1 WorkflowRegistry populated from V2 templates (the single source of truth).
+	v2Reg := v2.NewTemplateRegistry()
+	v2.RegisterBuiltinTemplates(v2Reg)
+
+	v1Reg := workflow.NewWorkflowRegistry()
+	for _, typ := range knownV2Types {
+		v2Tmpl := v2Reg.Get(typ)
+		if v2Tmpl == nil {
+			continue
+		}
+		v1Phases := make([]workflow.PhaseTemplate, 0, len(v2Tmpl.Phases))
+		for _, p := range v2Tmpl.Phases {
+			v1Phases = append(v1Phases, workflow.PhaseTemplate{
+				ID:           p.ID,
+				Name:         p.Name,
+				NeedsConfirm: p.NeedsConfirm,
+				ToolPolicy:   mapV2ToolPolicyToV1(p.ToolPolicy),
+			})
+		}
+		v1Reg.MustRegister(&workflow.WorkflowTemplate{
+			Type:        workflow.WorkflowType(v2Tmpl.Type),
+			Name:        v2Tmpl.Name,
+			Description: v2Tmpl.Description,
+			Keywords:    v2Tmpl.Keywords,
+			Phases:      v1Phases,
+		})
+	}
+
+	content := renderGeneratedTS(v1Reg)
 	if err := os.WriteFile(*outPath, []byte(content), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "genphasemeta: write %s: %v\n", *outPath, err)
 		os.Exit(1)
 	}
 	fmt.Printf("genphasemeta: wrote %s\n", *outPath)
+}
+
+func mapV2ToolPolicyToV1(policy v2.ToolPolicy) workflow.ToolFilterPolicy {
+	switch policy {
+	case v2.ToolPolicyFull:
+		return workflow.ToolFilterFull
+	default:
+		return workflow.ToolFilterDocOnly
+	}
 }
 
 // renderGeneratedTS builds the full TypeScript artifact content from the
@@ -84,7 +138,12 @@ func renderGeneratedTS(r *workflow.WorkflowRegistry) string {
 	b.WriteString("\n")
 	b.WriteString("export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {\n")
 
-	for _, tmpl := range r.All() {
+	templates := r.All()
+	sort.Slice(templates, func(i, j int) bool {
+		return string(templates[i].Type) < string(templates[j].Type)
+	})
+
+	for _, tmpl := range templates {
 		if tmpl == nil {
 			continue
 		}

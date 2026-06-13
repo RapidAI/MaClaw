@@ -1021,19 +1021,49 @@ func LLMV1ModelsHandler(identity *auth.IdentityService, system store.SystemSetti
 		}
 		items := make([]map[string]any, 0, len(models))
 		for _, m := range models {
-			items = append(items, map[string]any{
-				"id":                m.Name,
-				"object":            "model",
-				"owned_by":          "hub",
-				"service_mode":      "hub",
-				"provider_ids":      m.ProviderIDs,
-				"capability_tags":   m.CapabilityTags,
-				"priority":          m.Priority,
-				"resolution_tier":   m.ResolutionTier,
-				"credit_multiplier": m.CreditMultiplier,
-			})
+			items = append(items, llmV1ModelObject(m))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": items, "service_status": status})
+	}
+}
+
+func LLMV1ModelHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		system = scopedSystemSettingsForTenant(principal.TenantID, system)
+		ctx := security.WithTenant(r.Context(), principal.TenantID)
+		_, models, _, _, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.Email)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
+			return
+		}
+		requested := strings.TrimSpace(r.PathValue("model"))
+		for _, m := range models {
+			if strings.EqualFold(strings.TrimSpace(m.Name), requested) {
+				writeJSON(w, http.StatusOK, llmV1ModelObject(m))
+				return
+			}
+		}
+		writeError(w, http.StatusNotFound, "LLM_MODEL_NOT_FOUND", fmt.Sprintf("model %q is not authorized for this account", requested))
+	}
+}
+
+func llmV1ModelObject(m llmservice.AuthorizedModel) map[string]any {
+	return map[string]any{
+		"id":                m.Name,
+		"object":            "model",
+		"created":           int64(0),
+		"owned_by":          "hub",
+		"service_mode":      "hub",
+		"provider_ids":      m.ProviderIDs,
+		"capability_tags":   m.CapabilityTags,
+		"priority":          m.Priority,
+		"resolution_tier":   m.ResolutionTier,
+		"credit_multiplier": m.CreditMultiplier,
 	}
 }
 
@@ -1049,7 +1079,8 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			return
 		}
 		system = scopedSystemSettingsForTenant(principal.TenantID, system)
-		ctx := security.WithTenant(r.Context(), principal.TenantID)
+		ctx := withLLMPromptCacheTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID)
+		r = r.WithContext(ctx)
 		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
@@ -1204,6 +1235,14 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 					writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error())
 					return
 				}
+				if status, code, message, ok := llmEndpointUpstreamAuthOrRateError(statusCode, usedProviderID, err); ok {
+					writeLoggedError(status, code, message)
+					return
+				}
+				if statusCode >= 500 {
+					writeLoggedError(upstreamGatewayStatus(statusCode), "LLM_UPSTREAM_FAILED", llmEndpointUpstreamFailureMessage(usedProviderID, statusCode, err))
+					return
+				}
 				writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
 				return
 			}
@@ -1344,9 +1383,546 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 	}
 }
 
+func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService, promptCacheSources ...any) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed")
+			return
+		}
+		system = scopedSystemSettingsForTenant(principal.TenantID, system)
+		ctx := withLLMPromptCacheTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID)
+		r = r.WithContext(ctx)
+		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
+			return
+		}
+		downstreamSem, acquired := acquireLLMEndpointDownstreamSlot(r.Context(), principal.TenantID, providerReg)
+		if !acquired {
+			writeError(w, http.StatusServiceUnavailable, "LLM_ENDPOINT_CONCURRENCY_FULL", "llm endpoint is busy, please retry shortly")
+			return
+		}
+		defer downstreamSem.Release()
+		if !globalLLMEndpointUserLimiter.allowForRegistry(principal.TenantID+"\x00"+principal.Email, providerReg) {
+			writeError(w, http.StatusTooManyRequests, "LLM_ENDPOINT_USER_RATE_LIMITED", "user request rate exceeded, please retry shortly")
+			return
+		}
+		bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BODY", err.Error())
+			return
+		}
+		clientIP := llmEndpointClientIP(r)
+		requestBody := trimLLMEndpointAccessLogBodyBytes(bodyBytes)
+		logStatusCode := http.StatusOK
+		logErrorCode := ""
+		logRequestedModel := ""
+		logAuthorizedModel := ""
+		logProviderID := ""
+		logUsage := corelib.TokenUsageStat{}
+		defer func() {
+			metadata := map[string]any{"wire_api": "responses"}
+			if provider := providerReg.FindProvider(logProviderID); provider != nil {
+				metadata["upstream_api_url"] = strings.TrimSpace(provider.APIURL)
+				metadata["upstream_host"] = llmEndpointUpstreamHost(provider.APIURL)
+			}
+			enqueueLLMEndpointAccessLog(system, llmEndpointAccessLogEntry{
+				Email:             principal.Email,
+				ClientIP:          clientIP,
+				RequestedModel:    logRequestedModel,
+				AuthorizedModel:   logAuthorizedModel,
+				ProviderID:        logProviderID,
+				StatusCode:        logStatusCode,
+				ErrorCode:         logErrorCode,
+				InputTokens:       logUsage.InputTokens,
+				OutputTokens:      logUsage.OutputTokens,
+				TotalTokens:       logUsage.TotalTokens,
+				CachedInputTokens: logUsage.CachedInputTokens,
+				CacheWriteTokens:  logUsage.CacheWriteTokens,
+				InputCostRMB:      logUsage.InputCostRMB,
+				OutputCostRMB:     logUsage.OutputCostRMB,
+				TotalCostRMB:      logUsage.TotalCostRMB,
+				RequestBytes:      len(bodyBytes),
+				RequestBody:       requestBody,
+				CreatedAt:         time.Now().UTC(),
+				Metadata:          metadata,
+			})
+		}()
+		writeLoggedError := func(status int, code, message string) {
+			logStatusCode = status
+			logErrorCode = code
+			writeError(w, status, code, message)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(bodyBytes, &body); err != nil {
+			writeLoggedError(http.StatusBadRequest, "INVALID_JSON", err.Error())
+			return
+		}
+		logRequestedModel = llmEndpointRequestedModel(body)
+		chatBody, responseModel, err := corelib.OpenAICompatResponsesRequestToChat(body)
+		if err != nil {
+			writeLoggedError(http.StatusBadRequest, "INVALID_RESPONSES_REQUEST", err.Error())
+			return
+		}
+		var (
+			models     []llmservice.AuthorizedModel
+			serviceReg *llmservice.Registry
+		)
+		_, models, serviceReg, err = resolveAuthorizedModelsWithProviderRegistry(ctx, r, system, securitySvc, principal.Email, providerReg)
+		if err != nil {
+			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
+			return
+		}
+		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(serviceReg, principal.Email, chatBody, models)
+		authorizedModel, requestedModel, err := resolveAuthorizedModel(chatBody, billableModels)
+		selectedModelDebug := explainModelSelection(chatBody, billableModels, authorizedModel)
+		logRequestedModel = strings.TrimSpace(requestedModel)
+		if authorizedModel != nil {
+			logAuthorizedModel = strings.TrimSpace(authorizedModel.Name)
+		}
+		if err != nil {
+			if denial, ok := deniedByModel[strings.ToLower(strings.TrimSpace(requestedModel))]; ok && requestedModel != "" && !strings.EqualFold(requestedModel, "auto") && !strings.EqualFold(requestedModel, "default") {
+				logStatusCode = llmBillingDenialHTTPStatus(denial)
+				logErrorCode = denial.Code
+				writeLLMBillingDenied(w, denial)
+				return
+			}
+			if len(models) > 0 && len(billableModels) == 0 && firstDenial.Code != "" {
+				logStatusCode = llmBillingDenialHTTPStatus(firstDenial)
+				logErrorCode = firstDenial.Code
+				writeLLMBillingDenied(w, firstDenial)
+				return
+			}
+			writeLoggedError(http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
+			return
+		}
+		if llmEndpointStreamRequested(body) {
+			statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, wroteStream, err := streamAuthorizedResponsesRequest(w, r, providerReg, authorizedModel, body, chatBody, requestedModel, responseModel, selectedModelDebug)
+			logStatusCode = statusCode
+			logProviderID = strings.TrimSpace(usedProviderID)
+			logUsage = usageStat
+			chargeStreamUsage := func() {
+				if usedProviderID == "" {
+					return
+				}
+				tokensPerCredit := 0
+				if serviceReg != nil {
+					tokensPerCredit = serviceReg.TokensPerCredit
+				}
+				credits := llmservice.EstimateCreditsWithFloor(
+					usageStat.TotalTokens,
+					llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID),
+					tokensPerCredit,
+				)
+				userGroupIDs := []string(nil)
+				if securitySvc != nil {
+					if resolved, resolveErr := securitySvc.ResolveUserGroupChain(ctx, principal.Email); resolveErr == nil {
+						userGroupIDs = resolved
+					}
+				}
+				enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+			}
+			if err != nil {
+				if wroteStream {
+					logErrorCode = "LLM_STREAM_INTERRUPTED"
+					chargeStreamUsage()
+					return
+				}
+				if queueErr, ok := err.(*providerConcurrencyError); ok {
+					switch queueErr.Kind {
+					case providerConcurrencyQueueFull:
+						writeLoggedError(http.StatusTooManyRequests, "LLM_PROVIDER_QUEUE_FULL", queueErr.Error())
+					default:
+						writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_QUEUE_TIMEOUT", queueErr.Error())
+					}
+					return
+				}
+				if resilienceErr, ok := err.(*providerResilienceError); ok {
+					writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error())
+					return
+				}
+				if status, code, message, ok := llmEndpointUpstreamAuthOrRateError(statusCode, usedProviderID, err); ok {
+					writeLoggedError(status, code, message)
+					return
+				}
+				if statusCode >= 500 {
+					writeLoggedError(upstreamGatewayStatus(statusCode), "LLM_UPSTREAM_FAILED", llmEndpointUpstreamFailureMessage(usedProviderID, statusCode, err))
+					return
+				}
+				writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
+				return
+			}
+			if statusCode < 400 && usedProviderID != "" {
+				chargeStreamUsage()
+			}
+			return
+		}
+		cacheCfg := loadCachedHubLLMPromptCacheConfig(ctx, system)
+		applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), cacheCfg)
+		respBody, statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, localCacheHit, rawResponses, err := forwardAuthorizedResponsesRequestWithCache(r, providerReg, authorizedModel, body, chatBody, requestedModel, firstPromptCacheSource(promptCacheSources), cacheCfg)
+		logStatusCode = statusCode
+		logProviderID = strings.TrimSpace(usedProviderID)
+		logUsage = usageStat
+		if localCacheHit {
+			logUsage.InputCostRMB = 0
+			logUsage.OutputCostRMB = 0
+			logUsage.TotalCostRMB = 0
+		}
+		if err != nil {
+			if queueErr, ok := err.(*providerConcurrencyError); ok {
+				switch queueErr.Kind {
+				case providerConcurrencyQueueFull:
+					writeLoggedError(http.StatusTooManyRequests, "LLM_PROVIDER_QUEUE_FULL", queueErr.Error())
+				default:
+					writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_QUEUE_TIMEOUT", queueErr.Error())
+				}
+				return
+			}
+			if resilienceErr, ok := err.(*providerResilienceError); ok {
+				writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error())
+				return
+			}
+			writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
+			return
+		}
+		if statusCode < 400 && usedProviderID != "" && !localCacheHit {
+			tokensPerCredit := 0
+			if serviceReg != nil {
+				tokensPerCredit = serviceReg.TokensPerCredit
+			}
+			credits := llmservice.EstimateCreditsWithFloor(
+				usageStat.TotalTokens,
+				llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID),
+				tokensPerCredit,
+			)
+			userGroupIDs := []string(nil)
+			if securitySvc != nil {
+				if resolved, resolveErr := securitySvc.ResolveUserGroupChain(ctx, principal.Email); resolveErr == nil {
+					userGroupIDs = resolved
+				}
+			}
+			enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+		}
+		if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
+			providerName := usedProviderID
+			if providerName == "" {
+				providerName = "unknown"
+			}
+			upstreamMsg := extractUpstreamErrorMessage(respBody)
+			var detail string
+			switch statusCode {
+			case http.StatusUnauthorized:
+				detail = fmt.Sprintf("upstream LLM provider %q rejected the configured API key", providerName)
+			case http.StatusForbidden:
+				detail = fmt.Sprintf("upstream LLM provider %q denied access for the configured API key or model", providerName)
+			case http.StatusTooManyRequests:
+				detail = fmt.Sprintf("upstream LLM provider %q is rate limited", providerName)
+			}
+			if upstreamMsg != "" {
+				detail += " (" + upstreamMsg + ")"
+			}
+			if statusCode == http.StatusTooManyRequests {
+				writeLoggedError(http.StatusTooManyRequests, "LLM_UPSTREAM_RATE_LIMITED", detail)
+				return
+			}
+			writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_AUTH_FAILED", detail)
+			return
+		}
+		if statusCode >= 500 {
+			providerName := usedProviderID
+			if providerName == "" {
+				providerName = "unknown"
+			}
+			upstreamMsg := extractUpstreamErrorMessage(respBody)
+			detail := fmt.Sprintf("upstream LLM provider %q is temporarily unavailable", providerName)
+			if upstreamMsg != "" {
+				detail += " (" + upstreamMsg + ")"
+			}
+			writeLoggedError(upstreamGatewayStatus(statusCode), "LLM_UPSTREAM_FAILED", detail)
+			return
+		}
+		if statusCode < 400 && !rawResponses {
+			respBody, err = corelib.OpenAICompatChatResponseToResponses(respBody, responseModel)
+			if err != nil {
+				writeLoggedError(http.StatusBadGateway, "LLM_RESPONSES_CONVERT_FAILED", err.Error())
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if authorizedModel != nil {
+			w.Header().Set("X-MaClaw-Authorized-Model", authorizedModel.Name)
+		}
+		if selectedModelDebug != nil {
+			if selectedModelDebug.SelectionReason != "" {
+				w.Header().Set("X-MaClaw-Model-Selection", selectedModelDebug.SelectionReason)
+			}
+			if len(selectedModelDebug.CapabilityNeeds) > 0 {
+				w.Header().Set("X-MaClaw-Model-Needs", strings.Join(selectedModelDebug.CapabilityNeeds, ","))
+			}
+		}
+		if usedProviderID != "" {
+			w.Header().Set("X-MaClaw-Upstream-Provider", usedProviderID)
+		}
+		if localCacheHit {
+			w.Header().Set("X-MaClaw-Local-Cache", "hit")
+		}
+		w.WriteHeader(statusCode)
+		_, _ = w.Write(respBody)
+	}
+}
+
+func writeLLMBillingDenied(w http.ResponseWriter, denial llmBillingDenial) {
+	fields := map[string]any{}
+	if denial.RetryAfterSeconds > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(denial.RetryAfterSeconds, 10))
+		fields["retry_after_seconds"] = denial.RetryAfterSeconds
+	}
+	if denial.RetryAfterAt != "" {
+		fields["retry_after_at"] = denial.RetryAfterAt
+	}
+	writeErrorWithFields(w, llmBillingDenialHTTPStatus(denial), denial.Code, denial.Message, fields)
+}
+
 func forwardAuthorizedModelRequest(r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, body map[string]any, externalModel string) ([]byte, int, string, []string, error) {
 	respBody, statusCode, providerID, serviceGroupIDs, _, _, err := forwardAuthorizedModelRequestWithCache(r, reg, model, body, externalModel, nil, defaultHubLLMPromptCacheConfig())
 	return respBody, statusCode, providerID, serviceGroupIDs, err
+}
+
+func forwardAuthorizedResponsesRequestWithCache(r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, responsesBody map[string]any, chatBody map[string]any, externalModel string, promptCacheSource any, cacheCfg HubLLMPromptCacheConfig) ([]byte, int, string, []string, corelib.TokenUsageStat, bool, bool, error) {
+	if model == nil {
+		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, false, fmt.Errorf("authorized model is required")
+	}
+	if reg == nil {
+		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, false, fmt.Errorf("provider registry is required")
+	}
+	var lastErr error
+	var lastBody []byte
+	var lastStatus int
+	var lastProviderID string
+	request := r.Clone(r.Context())
+	for _, providerID := range llmservice.OrderProvidersForRequest(chatBody, model) {
+		provider := reg.FindProvider(providerID)
+		if provider == nil {
+			lastErr = fmt.Errorf("provider %q not configured", providerID)
+			continue
+		}
+		if normalizeProviderProtocol(provider.Protocol) != "openai" || normalizeProviderWireAPI(provider.WireAPI) != "responses" {
+			singleProviderModel := *model
+			singleProviderModel.ProviderIDs = []string{providerID}
+			respBody, statusCode, usedProviderID, serviceGroupIDs, usageStat, localCacheHit, err := forwardAuthorizedModelRequestWithCache(r, reg, &singleProviderModel, chatBody, externalModel, promptCacheSource, cacheCfg)
+			if err != nil {
+				lastErr = err
+				lastProviderID = providerID
+				continue
+			}
+			if statusCode >= 500 || statusCode == http.StatusNotFound || statusCode == http.StatusUnprocessableEntity ||
+				statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden ||
+				statusCode == http.StatusTooManyRequests {
+				lastBody = respBody
+				lastStatus = statusCode
+				lastProviderID = usedProviderID
+				lastErr = fmt.Errorf("provider %q returned http %d", usedProviderID, statusCode)
+				continue
+			}
+			return respBody, statusCode, usedProviderID, serviceGroupIDs, usageStat, localCacheHit, false, nil
+		}
+		if gateErr := globalProviderResilience.beforeAttempt(provider); gateErr != nil {
+			lastErr = gateErr
+			lastProviderID = provider.ID
+			continue
+		}
+		respBody, statusCode, err := forwardRawResponsesRequest(request, provider, responsesBody)
+		if shouldCountProviderFailure(statusCode, err) {
+			globalProviderResilience.recordFailure(provider)
+		} else {
+			globalProviderResilience.recordSuccess(provider.ID)
+		}
+		if err != nil {
+			lastErr = err
+			lastProviderID = provider.ID
+			continue
+		}
+		if statusCode >= 500 || statusCode == http.StatusNotFound || statusCode == http.StatusUnprocessableEntity ||
+			statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden ||
+			statusCode == http.StatusTooManyRequests {
+			lastBody = respBody
+			lastStatus = statusCode
+			lastProviderID = provider.ID
+			lastErr = fmt.Errorf("provider %q returned http %d", provider.ID, statusCode)
+			log.Printf("[LLM-V1] provider %q returned %d for responses, trying next provider", provider.ID, statusCode)
+			continue
+		}
+		usageStat := applyProviderUsageCost(parseUsageStats(respBody), provider)
+		serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, provider.ID)
+		return respBody, statusCode, provider.ID, serviceGroupIDs, usageStat, false, true, nil
+	}
+	if lastBody != nil && lastStatus > 0 {
+		return lastBody, lastStatus, lastProviderID, nil, corelib.TokenUsageStat{}, false, true, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
+	}
+	return nil, 0, lastProviderID, nil, corelib.TokenUsageStat{}, false, false, lastErr
+}
+
+func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, responsesBody map[string]any, chatBody map[string]any, externalModel string, responseModel string, selectedModelDebug *llmservice.ModelSelectionDebug) (int, string, []string, corelib.TokenUsageStat, bool, error) {
+	if model == nil {
+		return 0, "", nil, corelib.TokenUsageStat{}, false, fmt.Errorf("authorized model is required")
+	}
+	if reg == nil {
+		return 0, "", nil, corelib.TokenUsageStat{}, false, fmt.Errorf("provider registry is required")
+	}
+	request := r.Clone(r.Context())
+	var lastErr error
+	var lastProviderID string
+	var lastStatus int
+	for _, providerID := range llmservice.OrderProvidersForRequest(chatBody, model) {
+		provider := reg.FindProvider(providerID)
+		if provider == nil {
+			lastErr = fmt.Errorf("provider %q not configured", providerID)
+			continue
+		}
+		if gateErr := globalProviderResilience.beforeAttempt(provider); gateErr != nil {
+			lastErr = gateErr
+			lastProviderID = provider.ID
+			continue
+		}
+		var resp *http.Response
+		var release func()
+		var err error
+		rawResponses := normalizeProviderProtocol(provider.Protocol) == "openai" && normalizeProviderWireAPI(provider.WireAPI) == "responses"
+		switch {
+		case rawResponses:
+			resp, release, err = openLLMRawResponsesStreamRequest(request, provider, responsesBody)
+		case normalizeProviderWireAPI(provider.WireAPI) == "chat" && normalizeProviderProtocol(provider.Protocol) == "openai":
+			resp, release, err = openLLMStreamRequest(request, provider, chatBody)
+		default:
+			lastErr = fmt.Errorf("provider %q does not support responses streaming passthrough", provider.ID)
+			lastProviderID = provider.ID
+			continue
+		}
+		if err != nil {
+			globalProviderResilience.recordFailure(provider)
+			lastErr = err
+			lastProviderID = provider.ID
+			continue
+		}
+		statusCode := resp.StatusCode
+		lastStatus = statusCode
+		lastProviderID = provider.ID
+		if shouldCountProviderFailure(statusCode, nil) {
+			globalProviderResilience.recordFailure(provider)
+		} else {
+			globalProviderResilience.recordSuccess(provider.ID)
+		}
+		if statusCode >= 500 || statusCode == http.StatusNotFound || statusCode == http.StatusUnprocessableEntity ||
+			statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden ||
+			statusCode == http.StatusTooManyRequests {
+			bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			release()
+			lastErr = fmt.Errorf("provider %q returned http %d: %s", provider.ID, statusCode, strings.TrimSpace(string(bodyBytes)))
+			log.Printf("[LLM-V1] provider %q returned %d for responses stream, trying next provider", provider.ID, statusCode)
+			continue
+		}
+		var usageStat corelib.TokenUsageStat
+		var wroteStream bool
+		var copyErr error
+		if rawResponses {
+			usageStat, wroteStream, copyErr = writeRawResponsesStreamResponse(w, resp, provider, model, selectedModelDebug)
+		} else {
+			streamModel := strings.TrimSpace(responseModel)
+			if streamModel == "" {
+				streamModel = externalModel
+			}
+			usageStat, wroteStream, copyErr = writeOpenAIChatAsResponsesStreamResponse(w, resp, provider, model, streamModel, selectedModelDebug)
+		}
+		_ = resp.Body.Close()
+		release()
+		if copyErr != nil {
+			return statusCode, provider.ID, llmservice.ServiceGroupIDsForProvider(model, provider.ID), usageStat, wroteStream, copyErr
+		}
+		return statusCode, provider.ID, llmservice.ServiceGroupIDsForProvider(model, provider.ID), usageStat, wroteStream, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
+	}
+	return lastStatus, lastProviderID, nil, corelib.TokenUsageStat{}, false, lastErr
+}
+
+func openLLMRawResponsesStreamRequest(r *http.Request, p *im.LLMProvider, body map[string]any) (*http.Response, func(), error) {
+	if p == nil {
+		return nil, func() {}, fmt.Errorf("provider is required")
+	}
+	release, err := globalProviderConcurrency.acquire(r.Context(), p.ID, p.MaxConcurrency, p.MaxQueueWaiters, p.QueueTimeoutMS)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	cfg := toCoreLLMEndpointProvider(p).MaclawLLMConfig()
+	fwd := cloneLLMEndpointBody(body)
+	if model := strings.TrimSpace(cfg.UpstreamModel()); model != "" {
+		fwd["model"] = model
+	}
+	jsonBody, err := json.Marshal(fwd)
+	if err != nil {
+		release()
+		return nil, func() {}, fmt.Errorf("marshal responses request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, hubOpenAIResponsesEndpoint(cfg.URL), bytes.NewReader(jsonBody))
+	if err != nil {
+		release()
+		return nil, func() {}, fmt.Errorf("create responses request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if cfg.Key != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Key)
+	}
+	req.Header.Set("User-Agent", cfg.UserAgent())
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	resp, err := llmProviderUpstreamStreamHTTPClient(cfg).Do(req)
+	if err != nil {
+		release()
+		return nil, func() {}, err
+	}
+	return resp, release, nil
+}
+
+func cloneLLMEndpointBody(body map[string]any) map[string]any {
+	out := make(map[string]any, len(body))
+	for k, v := range body {
+		out[k] = v
+	}
+	return out
+}
+
+func hubOpenAIResponsesEndpoint(baseURL string) string {
+	trimmed := strings.TrimRight(baseURL, "/")
+	if hubOpenAIEndpointHasVersionSuffix(trimmed) {
+		return trimmed + "/responses"
+	}
+	return trimmed + "/v1/responses"
+}
+
+func hubOpenAIEndpointHasVersionSuffix(endpoint string) bool {
+	lastSlash := strings.LastIndex(endpoint, "/")
+	if lastSlash < 0 || lastSlash == len(endpoint)-1 {
+		return false
+	}
+	segment := strings.ToLower(endpoint[lastSlash+1:])
+	if len(segment) < 2 || segment[0] != 'v' {
+		return false
+	}
+	for _, r := range segment[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func llmEndpointStreamRequested(body map[string]any) bool {
@@ -1489,6 +2065,736 @@ func writeOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, provi
 		return applyProviderUsageCost(usage, provider), true, err
 	}
 	return applyProviderUsageCost(usage, provider), true, nil
+}
+
+func writeRawResponsesStreamResponse(w http.ResponseWriter, resp *http.Response, provider *im.LLMProvider, model *llmservice.AuthorizedModel, selectedModelDebug *llmservice.ModelSelectionDebug) (corelib.TokenUsageStat, bool, error) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return corelib.TokenUsageStat{}, false, fmt.Errorf("streaming not supported by response writer")
+	}
+	reader := bufio.NewReaderSize(resp.Body, 4096)
+	if !looksLikeOpenAIStream(resp, reader) {
+		body, err := io.ReadAll(io.LimitReader(reader, 32<<20))
+		if err != nil {
+			return corelib.TokenUsageStat{}, false, fmt.Errorf("read non-stream responses upstream response: %w", err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return corelib.TokenUsageStat{}, false, fmt.Errorf("upstream returned non-SSE, non-JSON responses body: %w", err)
+		}
+		usage := parseUsageStats(body)
+		setOpenAIStreamResponseHeaders(w, provider, model, selectedModelDebug)
+		w.WriteHeader(resp.StatusCode)
+		if err := writeHubResponsesPayloadSSE(w, payload); err != nil {
+			return applyProviderUsageCost(usage, provider), true, err
+		}
+		flusher.Flush()
+		return applyProviderUsageCost(usage, provider), true, nil
+	}
+	setOpenAIStreamResponseHeaders(w, provider, model, selectedModelDebug)
+	w.WriteHeader(resp.StatusCode)
+	flusher.Flush()
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	usage := corelib.TokenUsageStat{}
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if _, err := w.Write(append(append([]byte(nil), line...), '\n')); err != nil {
+			return applyProviderUsageCost(usage, provider), true, err
+		}
+		if strings.HasPrefix(strings.TrimSpace(string(line)), "data:") {
+			if chunkUsage := responsesStreamUsageFromLine(line); chunkUsage.TotalTokens > 0 || chunkUsage.InputTokens > 0 || chunkUsage.OutputTokens > 0 {
+				usage = chunkUsage
+			}
+		}
+		if len(strings.TrimSpace(string(line))) == 0 {
+			flusher.Flush()
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return applyProviderUsageCost(usage, provider), true, err
+	}
+	flusher.Flush()
+	return applyProviderUsageCost(usage, provider), true, nil
+}
+
+func writeOpenAIChatAsResponsesStreamResponse(w http.ResponseWriter, resp *http.Response, provider *im.LLMProvider, model *llmservice.AuthorizedModel, responseModel string, selectedModelDebug *llmservice.ModelSelectionDebug) (corelib.TokenUsageStat, bool, error) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return corelib.TokenUsageStat{}, false, fmt.Errorf("streaming not supported by response writer")
+	}
+	reader := bufio.NewReaderSize(resp.Body, 4096)
+	if !looksLikeOpenAIStream(resp, reader) {
+		return writeOpenAIChatNonStreamAsResponsesStreamResponse(w, flusher, reader, resp.StatusCode, provider, model, responseModel, selectedModelDebug)
+	}
+	setOpenAIStreamResponseHeaders(w, provider, model, selectedModelDebug)
+	w.WriteHeader(resp.StatusCode)
+	respID := fmt.Sprintf("resp_hub_%d", time.Now().UnixNano())
+	msgID := "msg_" + respID
+	seq := 1
+	nextOutputIndex := 0
+	textOutputIndex := -1
+	var text strings.Builder
+	textStarted := false
+	toolCalls := map[int]*hubResponsesStreamToolCallAccum{}
+	var toolOrder []int
+	usage := corelib.TokenUsageStat{}
+	if err := writeHubResponsesSSE(w, "response.created", map[string]any{
+		"type":            "response.created",
+		"sequence_number": seq,
+		"response":        hubResponsesStreamResponseObject(respID, responseModel, "", false, -1, nil, nil, usage),
+	}); err != nil {
+		return applyProviderUsageCost(usage, provider), true, err
+	}
+	seq++
+	flusher.Flush()
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var eventLines [][]byte
+	flushEvent := func() (bool, error) {
+		if len(eventLines) == 0 {
+			return true, nil
+		}
+		lines := eventLines
+		eventLines = nil
+		payload := openAIStreamEventPayload(lines)
+		if strings.TrimSpace(payload) == "" {
+			return true, nil
+		}
+		if strings.TrimSpace(payload) == "[DONE]" {
+			return false, nil
+		}
+		if chunkUsage := corelib.OpenAIStreamUsageFromData([]byte(payload)); chunkUsage.TotalTokens > 0 || chunkUsage.InputTokens > 0 || chunkUsage.OutputTokens > 0 {
+			usage = chunkUsage
+		}
+		var chunk map[string]any
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			return false, err
+		}
+		for _, choiceRaw := range anySlice(chunk["choices"]) {
+			choice := mapFromProviderHandlerAny(choiceRaw)
+			delta := mapFromProviderHandlerAny(choice["delta"])
+			if content, ok := delta["content"].(string); ok && content != "" {
+				if !textStarted {
+					textOutputIndex = nextOutputIndex
+					nextOutputIndex++
+					if err := writeHubResponsesSSE(w, "response.output_item.added", map[string]any{
+						"type":            "response.output_item.added",
+						"sequence_number": seq,
+						"output_index":    textOutputIndex,
+						"item": map[string]any{
+							"id":      msgID,
+							"type":    "message",
+							"status":  "in_progress",
+							"role":    "assistant",
+							"content": []any{},
+						},
+					}); err != nil {
+						return false, err
+					}
+					seq++
+					if err := writeHubResponsesSSE(w, "response.content_part.added", map[string]any{
+						"type":            "response.content_part.added",
+						"sequence_number": seq,
+						"item_id":         msgID,
+						"output_index":    textOutputIndex,
+						"content_index":   0,
+						"part":            map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
+					}); err != nil {
+						return false, err
+					}
+					seq++
+					textStarted = true
+				}
+				text.WriteString(content)
+				if err := writeHubResponsesSSE(w, "response.output_text.delta", map[string]any{
+					"type":            "response.output_text.delta",
+					"sequence_number": seq,
+					"item_id":         msgID,
+					"output_index":    textOutputIndex,
+					"content_index":   0,
+					"delta":           content,
+					"logprobs":        []any{},
+				}); err != nil {
+					return false, err
+				}
+				seq++
+				flusher.Flush()
+			}
+			for _, rawTool := range anySlice(delta["tool_calls"]) {
+				tool := mapFromProviderHandlerAny(rawTool)
+				idx := numberToInt(firstNonNil(tool["index"], 0))
+				acc := toolCalls[idx]
+				if acc == nil {
+					acc = &hubResponsesStreamToolCallAccum{Index: idx, OutputIndex: -1}
+					toolCalls[idx] = acc
+					toolOrder = append(toolOrder, idx)
+				}
+				if id := strings.TrimSpace(fmt.Sprint(tool["id"])); id != "" && id != "<nil>" {
+					acc.ID = id
+				}
+				fn := mapFromProviderHandlerAny(tool["function"])
+				if name := strings.TrimSpace(fmt.Sprint(fn["name"])); name != "" && name != "<nil>" {
+					acc.Name = name
+				}
+				if args, ok := fn["arguments"].(string); ok && args != "" {
+					acc.Arguments += args
+					acc.PendingArguments += args
+				}
+				if acc.Name != "" && acc.ID != "" && !acc.Added {
+					if acc.OutputIndex < 0 {
+						acc.OutputIndex = nextOutputIndex
+						nextOutputIndex++
+					}
+					acc.ItemID = "fc_" + acc.ID
+					if err := writeHubResponsesSSE(w, "response.output_item.added", map[string]any{
+						"type":            "response.output_item.added",
+						"sequence_number": seq,
+						"output_index":    acc.OutputIndex,
+						"item": map[string]any{
+							"id":        acc.ItemID,
+							"type":      "function_call",
+							"status":    "in_progress",
+							"call_id":   acc.ID,
+							"name":      acc.Name,
+							"arguments": "",
+						},
+					}); err != nil {
+						return false, err
+					}
+					seq++
+					acc.Added = true
+				}
+				if acc.Added && acc.PendingArguments != "" {
+					if err := writeHubResponsesSSE(w, "response.function_call_arguments.delta", map[string]any{
+						"type":            "response.function_call_arguments.delta",
+						"sequence_number": seq,
+						"item_id":         acc.ItemID,
+						"output_index":    acc.OutputIndex,
+						"delta":           acc.PendingArguments,
+					}); err != nil {
+						return false, err
+					}
+					seq++
+					acc.PendingArguments = ""
+					flusher.Flush()
+				}
+			}
+			if legacy := mapFromProviderHandlerAny(delta["function_call"]); legacy != nil {
+				const idx = 0
+				acc := toolCalls[idx]
+				if acc == nil {
+					acc = &hubResponsesStreamToolCallAccum{Index: idx, OutputIndex: -1, ID: "call_legacy_function"}
+					toolCalls[idx] = acc
+					toolOrder = append(toolOrder, idx)
+				}
+				if name := strings.TrimSpace(fmt.Sprint(legacy["name"])); name != "" && name != "<nil>" {
+					acc.Name = name
+				}
+				if args, ok := legacy["arguments"].(string); ok && args != "" {
+					acc.Arguments += args
+					acc.PendingArguments += args
+				}
+				if acc.Name != "" && !acc.Added {
+					if acc.OutputIndex < 0 {
+						acc.OutputIndex = nextOutputIndex
+						nextOutputIndex++
+					}
+					acc.ItemID = "fc_" + acc.ID
+					if err := writeHubResponsesSSE(w, "response.output_item.added", map[string]any{
+						"type":            "response.output_item.added",
+						"sequence_number": seq,
+						"output_index":    acc.OutputIndex,
+						"item": map[string]any{
+							"id":        acc.ItemID,
+							"type":      "function_call",
+							"status":    "in_progress",
+							"call_id":   acc.ID,
+							"name":      acc.Name,
+							"arguments": "",
+						},
+					}); err != nil {
+						return false, err
+					}
+					seq++
+					acc.Added = true
+				}
+				if acc.Added && acc.PendingArguments != "" {
+					if err := writeHubResponsesSSE(w, "response.function_call_arguments.delta", map[string]any{
+						"type":            "response.function_call_arguments.delta",
+						"sequence_number": seq,
+						"item_id":         acc.ItemID,
+						"output_index":    acc.OutputIndex,
+						"delta":           acc.PendingArguments,
+					}); err != nil {
+						return false, err
+					}
+					seq++
+					acc.PendingArguments = ""
+					flusher.Flush()
+				}
+			}
+		}
+		return true, nil
+	}
+	for scanner.Scan() {
+		line := append([]byte(nil), scanner.Bytes()...)
+		if len(strings.TrimSpace(string(line))) == 0 {
+			keepGoing, err := flushEvent()
+			if err != nil {
+				return applyProviderUsageCost(usage, provider), true, err
+			}
+			if !keepGoing {
+				break
+			}
+			continue
+		}
+		eventLines = append(eventLines, line)
+	}
+	if _, err := flushEvent(); err != nil {
+		return applyProviderUsageCost(usage, provider), true, err
+	}
+	if err := scanner.Err(); err != nil {
+		return applyProviderUsageCost(usage, provider), true, err
+	}
+	outputText := text.String()
+	if textStarted {
+		if err := writeHubResponsesSSE(w, "response.output_text.done", map[string]any{
+			"type":            "response.output_text.done",
+			"sequence_number": seq,
+			"item_id":         msgID,
+			"output_index":    textOutputIndex,
+			"content_index":   0,
+			"text":            outputText,
+			"logprobs":        []any{},
+		}); err != nil {
+			return applyProviderUsageCost(usage, provider), true, err
+		}
+		seq++
+		if err := writeHubResponsesSSE(w, "response.content_part.done", map[string]any{
+			"type":            "response.content_part.done",
+			"sequence_number": seq,
+			"item_id":         msgID,
+			"output_index":    textOutputIndex,
+			"content_index":   0,
+			"part":            map[string]any{"type": "output_text", "text": outputText, "annotations": []any{}},
+		}); err != nil {
+			return applyProviderUsageCost(usage, provider), true, err
+		}
+		seq++
+		if err := writeHubResponsesSSE(w, "response.output_item.done", map[string]any{
+			"type":            "response.output_item.done",
+			"sequence_number": seq,
+			"output_index":    textOutputIndex,
+			"item": map[string]any{
+				"id":      msgID,
+				"type":    "message",
+				"status":  "completed",
+				"role":    "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": outputText, "annotations": []any{}}},
+			},
+		}); err != nil {
+			return applyProviderUsageCost(usage, provider), true, err
+		}
+		seq++
+	}
+	for _, idx := range toolOrder {
+		acc := toolCalls[idx]
+		if acc == nil || acc.Name == "" {
+			continue
+		}
+		if acc.ID == "" {
+			acc.ID = fmt.Sprintf("call_%d", idx)
+		}
+		if acc.ItemID == "" {
+			acc.ItemID = "fc_" + acc.ID
+		}
+		if acc.OutputIndex < 0 {
+			acc.OutputIndex = nextOutputIndex
+			nextOutputIndex++
+		}
+		if !acc.Added {
+			if err := writeHubResponsesSSE(w, "response.output_item.added", map[string]any{
+				"type":            "response.output_item.added",
+				"sequence_number": seq,
+				"output_index":    acc.OutputIndex,
+				"item": map[string]any{
+					"id":        acc.ItemID,
+					"type":      "function_call",
+					"status":    "in_progress",
+					"call_id":   acc.ID,
+					"name":      acc.Name,
+					"arguments": "",
+				},
+			}); err != nil {
+				return applyProviderUsageCost(usage, provider), true, err
+			}
+			seq++
+		}
+		if acc.PendingArguments != "" {
+			if err := writeHubResponsesSSE(w, "response.function_call_arguments.delta", map[string]any{
+				"type":            "response.function_call_arguments.delta",
+				"sequence_number": seq,
+				"item_id":         acc.ItemID,
+				"output_index":    acc.OutputIndex,
+				"delta":           acc.PendingArguments,
+			}); err != nil {
+				return applyProviderUsageCost(usage, provider), true, err
+			}
+			seq++
+			acc.PendingArguments = ""
+		}
+		if err := writeHubResponsesSSE(w, "response.function_call_arguments.done", map[string]any{
+			"type":            "response.function_call_arguments.done",
+			"sequence_number": seq,
+			"item_id":         acc.ItemID,
+			"output_index":    acc.OutputIndex,
+			"arguments":       acc.Arguments,
+		}); err != nil {
+			return applyProviderUsageCost(usage, provider), true, err
+		}
+		seq++
+		if err := writeHubResponsesSSE(w, "response.output_item.done", map[string]any{
+			"type":            "response.output_item.done",
+			"sequence_number": seq,
+			"output_index":    acc.OutputIndex,
+			"item": map[string]any{
+				"id":        acc.ItemID,
+				"type":      "function_call",
+				"status":    "completed",
+				"call_id":   acc.ID,
+				"name":      acc.Name,
+				"arguments": acc.Arguments,
+			},
+		}); err != nil {
+			return applyProviderUsageCost(usage, provider), true, err
+		}
+		seq++
+	}
+	if err := writeHubResponsesSSE(w, "response.completed", map[string]any{
+		"type":            "response.completed",
+		"sequence_number": seq,
+		"response":        hubResponsesStreamResponseObject(respID, responseModel, outputText, true, textOutputIndex, toolOrder, toolCalls, usage),
+	}); err != nil {
+		return applyProviderUsageCost(usage, provider), true, err
+	}
+	flusher.Flush()
+	return applyProviderUsageCost(usage, provider), true, nil
+}
+
+func writeOpenAIChatNonStreamAsResponsesStreamResponse(w http.ResponseWriter, flusher http.Flusher, reader io.Reader, statusCode int, provider *im.LLMProvider, model *llmservice.AuthorizedModel, responseModel string, selectedModelDebug *llmservice.ModelSelectionDebug) (corelib.TokenUsageStat, bool, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, 32<<20))
+	if err != nil {
+		return corelib.TokenUsageStat{}, false, fmt.Errorf("read non-stream upstream response: %w", err)
+	}
+	respBody, err := corelib.OpenAICompatChatResponseToResponses(body, responseModel)
+	if err != nil {
+		return corelib.TokenUsageStat{}, false, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return corelib.TokenUsageStat{}, false, err
+	}
+	usage := parseUsageStats(respBody)
+	setOpenAIStreamResponseHeaders(w, provider, model, selectedModelDebug)
+	w.WriteHeader(statusCode)
+	if err := writeHubResponsesPayloadSSE(w, payload); err != nil {
+		return applyProviderUsageCost(usage, provider), true, err
+	}
+	flusher.Flush()
+	return applyProviderUsageCost(usage, provider), true, nil
+}
+
+func writeHubResponsesPayloadSSE(w io.Writer, payload map[string]any) error {
+	seq := 1
+	if err := writeHubResponsesSSE(w, "response.created", map[string]any{
+		"type":            "response.created",
+		"sequence_number": seq,
+		"response":        payload,
+	}); err != nil {
+		return err
+	}
+	seq++
+	for outputIndex, rawItem := range anySlice(payload["output"]) {
+		item := mapFromProviderHandlerAny(rawItem)
+		switch strings.TrimSpace(fmt.Sprint(item["type"])) {
+		case "message":
+			itemID := firstNonEmptyProviderHandler(strings.TrimSpace(fmt.Sprint(item["id"])), fmt.Sprintf("msg_%d", outputIndex))
+			if err := writeHubResponsesSSE(w, "response.output_item.added", map[string]any{
+				"type":            "response.output_item.added",
+				"sequence_number": seq,
+				"output_index":    outputIndex,
+				"item":            map[string]any{"id": itemID, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}},
+			}); err != nil {
+				return err
+			}
+			seq++
+			contentIndex := 0
+			for _, rawPart := range anySlice(item["content"]) {
+				part := mapFromProviderHandlerAny(rawPart)
+				if strings.TrimSpace(fmt.Sprint(part["type"])) != "output_text" {
+					continue
+				}
+				text := fmt.Sprint(part["text"])
+				if part["text"] == nil || text == "<nil>" {
+					text = ""
+				}
+				if err := writeHubResponsesSSE(w, "response.content_part.added", map[string]any{
+					"type":            "response.content_part.added",
+					"sequence_number": seq,
+					"item_id":         itemID,
+					"output_index":    outputIndex,
+					"content_index":   contentIndex,
+					"part":            map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
+				}); err != nil {
+					return err
+				}
+				seq++
+				if text != "" {
+					if err := writeHubResponsesSSE(w, "response.output_text.delta", map[string]any{
+						"type":            "response.output_text.delta",
+						"sequence_number": seq,
+						"item_id":         itemID,
+						"output_index":    outputIndex,
+						"content_index":   contentIndex,
+						"delta":           text,
+						"logprobs":        []any{},
+					}); err != nil {
+						return err
+					}
+					seq++
+				}
+				if err := writeHubResponsesSSE(w, "response.output_text.done", map[string]any{
+					"type":            "response.output_text.done",
+					"sequence_number": seq,
+					"item_id":         itemID,
+					"output_index":    outputIndex,
+					"content_index":   contentIndex,
+					"text":            text,
+					"logprobs":        []any{},
+				}); err != nil {
+					return err
+				}
+				seq++
+				if err := writeHubResponsesSSE(w, "response.content_part.done", map[string]any{
+					"type":            "response.content_part.done",
+					"sequence_number": seq,
+					"item_id":         itemID,
+					"output_index":    outputIndex,
+					"content_index":   contentIndex,
+					"part":            map[string]any{"type": "output_text", "text": text, "annotations": []any{}},
+				}); err != nil {
+					return err
+				}
+				seq++
+				contentIndex++
+			}
+			if err := writeHubResponsesSSE(w, "response.output_item.done", map[string]any{
+				"type":            "response.output_item.done",
+				"sequence_number": seq,
+				"output_index":    outputIndex,
+				"item":            item,
+			}); err != nil {
+				return err
+			}
+			seq++
+		case "function_call":
+			itemID := firstNonEmptyProviderHandler(strings.TrimSpace(fmt.Sprint(item["id"])), fmt.Sprintf("fc_%d", outputIndex))
+			callID := firstNonEmptyProviderHandler(strings.TrimSpace(fmt.Sprint(item["call_id"])), itemID)
+			name := strings.TrimSpace(fmt.Sprint(item["name"]))
+			args := strings.TrimSpace(fmt.Sprint(item["arguments"]))
+			if args == "" || args == "<nil>" {
+				args = "{}"
+			}
+			if err := writeHubResponsesSSE(w, "response.output_item.added", map[string]any{
+				"type":            "response.output_item.added",
+				"sequence_number": seq,
+				"output_index":    outputIndex,
+				"item":            map[string]any{"id": itemID, "type": "function_call", "status": "in_progress", "call_id": callID, "name": name, "arguments": ""},
+			}); err != nil {
+				return err
+			}
+			seq++
+			if err := writeHubResponsesSSE(w, "response.function_call_arguments.delta", map[string]any{
+				"type":            "response.function_call_arguments.delta",
+				"sequence_number": seq,
+				"item_id":         itemID,
+				"output_index":    outputIndex,
+				"delta":           args,
+			}); err != nil {
+				return err
+			}
+			seq++
+			if err := writeHubResponsesSSE(w, "response.function_call_arguments.done", map[string]any{
+				"type":            "response.function_call_arguments.done",
+				"sequence_number": seq,
+				"item_id":         itemID,
+				"output_index":    outputIndex,
+				"arguments":       args,
+			}); err != nil {
+				return err
+			}
+			seq++
+			if err := writeHubResponsesSSE(w, "response.output_item.done", map[string]any{
+				"type":            "response.output_item.done",
+				"sequence_number": seq,
+				"output_index":    outputIndex,
+				"item":            item,
+			}); err != nil {
+				return err
+			}
+			seq++
+		}
+	}
+	return writeHubResponsesSSE(w, "response.completed", map[string]any{
+		"type":            "response.completed",
+		"sequence_number": seq,
+		"response":        payload,
+	})
+}
+
+type hubResponsesStreamToolCallAccum struct {
+	Index            int
+	OutputIndex      int
+	ID               string
+	ItemID           string
+	Name             string
+	Arguments        string
+	PendingArguments string
+	Added            bool
+}
+
+func hubResponsesStreamResponseObject(id, model, text string, completed bool, textOutputIndex int, toolOrder []int, toolCalls map[int]*hubResponsesStreamToolCallAccum, usage corelib.TokenUsageStat) map[string]any {
+	status := "in_progress"
+	output := []any{}
+	if completed {
+		status = "completed"
+		type outputItem struct {
+			index int
+			item  any
+		}
+		items := []outputItem{}
+		hasTools := len(toolOrder) > 0
+		if text != "" || !hasTools {
+			if textOutputIndex < 0 {
+				textOutputIndex = 0
+			}
+			items = append(items, outputItem{index: textOutputIndex, item: map[string]any{
+				"id":      "msg_" + id,
+				"type":    "message",
+				"status":  "completed",
+				"role":    "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}},
+			}})
+		}
+		for _, idx := range toolOrder {
+			acc := toolCalls[idx]
+			if acc == nil || acc.Name == "" {
+				continue
+			}
+			items = append(items, outputItem{index: acc.OutputIndex, item: map[string]any{
+				"id":        firstNonEmptyProviderHandler(acc.ItemID, "fc_"+acc.ID),
+				"type":      "function_call",
+				"status":    "completed",
+				"call_id":   acc.ID,
+				"name":      acc.Name,
+				"arguments": acc.Arguments,
+			}})
+		}
+		sort.SliceStable(items, func(i, j int) bool { return items[i].index < items[j].index })
+		for _, item := range items {
+			output = append(output, item.item)
+		}
+	}
+	return map[string]any{
+		"id":                  id,
+		"object":              "response",
+		"created_at":          float64(time.Now().Unix()),
+		"status":              status,
+		"model":               model,
+		"output":              output,
+		"parallel_tool_calls": false,
+		"tools":               []any{},
+		"tool_choice":         "auto",
+		"metadata":            map[string]any{},
+		"instructions":        nil,
+		"incomplete_details":  nil,
+		"error":               nil,
+		"usage": map[string]any{
+			"input_tokens":  usage.InputTokens,
+			"output_tokens": usage.OutputTokens,
+			"total_tokens":  usage.TotalTokens,
+		},
+	}
+}
+
+func writeHubResponsesSSE(w io.Writer, event string, payload map[string]any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(data))
+	return err
+}
+
+func openAIStreamEventPayload(lines [][]byte) string {
+	parts := []string{}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(string(line))
+		if !strings.HasPrefix(trimmed, "data:") {
+			continue
+		}
+		parts = append(parts, strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func responsesStreamUsageFromLine(line []byte) corelib.TokenUsageStat {
+	trimmed := strings.TrimSpace(string(line))
+	if !strings.HasPrefix(trimmed, "data:") {
+		return corelib.TokenUsageStat{}
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+	if payload == "" || payload == "[DONE]" {
+		return corelib.TokenUsageStat{}
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
+		return corelib.TokenUsageStat{}
+	}
+	if response := mapFromProviderHandlerAny(obj["response"]); response != nil {
+		if usage := mapFromProviderHandlerAny(response["usage"]); usage != nil {
+			data, _ := json.Marshal(map[string]any{"usage": usage})
+			return parseUsageStats(data)
+		}
+	}
+	if usage := mapFromProviderHandlerAny(obj["usage"]); usage != nil {
+		data, _ := json.Marshal(map[string]any{"usage": usage})
+		return parseUsageStats(data)
+	}
+	return corelib.TokenUsageStat{}
+}
+
+func mapFromProviderHandlerAny(value any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	if m, ok := value.(map[string]any); ok {
+		return m
+	}
+	if m, ok := value.(map[string]interface{}); ok {
+		return m
+	}
+	return nil
+}
+
+func firstNonEmptyProviderHandler(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func looksLikeOpenAIStream(resp *http.Response, reader *bufio.Reader) bool {
@@ -1659,6 +2965,48 @@ func upstreamGatewayStatus(upstreamStatus int) int {
 		}
 		return upstreamStatus
 	}
+}
+
+func llmEndpointUpstreamFailureMessage(providerID string, statusCode int, err error) string {
+	providerName := strings.TrimSpace(providerID)
+	if providerName == "" {
+		providerName = "unknown"
+	}
+	msg := fmt.Sprintf("upstream LLM provider %q returned HTTP %d", providerName, statusCode)
+	if errText := strings.TrimSpace(fmt.Sprint(err)); errText != "" && errText != "<nil>" {
+		msg += ": " + errText
+	}
+	return msg
+}
+
+func llmEndpointUpstreamAuthOrRateError(upstreamStatus int, providerID string, err error) (int, string, string, bool) {
+	providerName := strings.TrimSpace(providerID)
+	if providerName == "" {
+		providerName = "unknown"
+	}
+	var status int
+	var code string
+	var detail string
+	switch upstreamStatus {
+	case http.StatusUnauthorized:
+		status = http.StatusBadGateway
+		code = "LLM_UPSTREAM_AUTH_FAILED"
+		detail = fmt.Sprintf("upstream LLM provider %q rejected the configured API key", providerName)
+	case http.StatusForbidden:
+		status = http.StatusBadGateway
+		code = "LLM_UPSTREAM_AUTH_FAILED"
+		detail = fmt.Sprintf("upstream LLM provider %q denied access for the configured API key or model", providerName)
+	case http.StatusTooManyRequests:
+		status = http.StatusTooManyRequests
+		code = "LLM_UPSTREAM_RATE_LIMITED"
+		detail = fmt.Sprintf("upstream LLM provider %q is rate limited", providerName)
+	default:
+		return 0, "", "", false
+	}
+	if errText := strings.TrimSpace(fmt.Sprint(err)); errText != "" && errText != "<nil>" {
+		detail += " (" + errText + ")"
+	}
+	return status, code, detail, true
 }
 
 type authorizedModelForwardResult struct {
@@ -2574,6 +3922,19 @@ func forwardLLMRequest(r *http.Request, p *im.LLMProvider, body map[string]any, 
 	defer release()
 	provider := toCoreLLMEndpointProvider(p)
 	return corelib.ForwardLLMEndpointProviderRequest(r.Context(), provider, body, llmProviderUpstreamHTTPClient(provider.MaclawLLMConfig()), externalModel)
+}
+
+func forwardRawResponsesRequest(r *http.Request, p *im.LLMProvider, body map[string]any) ([]byte, int, error) {
+	if p == nil {
+		return nil, 0, fmt.Errorf("provider is required")
+	}
+	release, err := globalProviderConcurrency.acquire(r.Context(), p.ID, p.MaxConcurrency, p.MaxQueueWaiters, p.QueueTimeoutMS)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer release()
+	provider := toCoreLLMEndpointProvider(p)
+	return corelib.ForwardOpenAIResponsesRawRequest(r.Context(), provider.MaclawLLMConfig(), body, llmProviderUpstreamHTTPClient(provider.MaclawLLMConfig()))
 }
 
 func llmProviderUpstreamHTTPClient(cfg corelib.MaclawLLMConfig) *http.Client {

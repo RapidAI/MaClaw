@@ -34,7 +34,7 @@ func (a *App) cachedOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConf
 	cache := a.ensureLocalLLMCache(cacheCfg)
 	if body, ok := cache.Get(key, cacheCfg); ok {
 		parsed, parseErr := localLLMCacheParseStoredResponse(body)
-		if parseErr == nil {
+		if parseErr == nil && localLLMCacheNormalizeStoredResponse(parsed) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -99,7 +99,7 @@ func (a *App) cachedAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMC
 	cache := a.ensureLocalLLMCache(cacheCfg)
 	if body, ok := cache.Get(key, cacheCfg); ok {
 		parsed, parseErr := localLLMCacheParseStoredResponse(body)
-		if parseErr == nil {
+		if parseErr == nil && localLLMCacheNormalizeStoredResponse(parsed) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -184,7 +184,7 @@ func (a *App) cachedStreamHit(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 		return nil, false
 	}
 	parsed, err := localLLMCacheParseStoredResponse(body)
-	if err != nil {
+	if err != nil || !localLLMCacheNormalizeStoredResponse(parsed) {
 		a.ensureLocalLLMCache(cacheCfg).Delete(key)
 		logLocalLLMCacheDecision(cfg, "stream", key, "invalid_hit_deleted")
 		return nil, false
@@ -248,6 +248,26 @@ func (a *App) storeStreamResponse(cfg corelib.MaclawLLMConfig, messages []interf
 	} else {
 		logLocalLLMCacheDecision(cfg, "stream", key, "store_failed")
 	}
+}
+
+func localLLMCacheNormalizeStoredResponse(resp *llm.Response) bool {
+	if resp == nil {
+		return false
+	}
+	for i := range resp.Choices {
+		msg := &resp.Choices[i].Message
+		if len(msg.ToolCalls) > 0 {
+			return false
+		}
+		if msg.Content == "" {
+			continue
+		}
+		if calls, malformed := llm.ParseContentToolCallsDetailed(msg.Content); len(calls) > 0 || malformed {
+			return false
+		}
+		msg.Content = llm.StripAllExtra(msg.Content)
+	}
+	return true
 }
 
 func logLocalLLMCacheDecision(cfg corelib.MaclawLLMConfig, protocol string, key string, event string) {
@@ -454,6 +474,9 @@ func localLLMCacheParseStoredResponse(body []byte) (*llm.Response, error) {
 
 func marshalLocalLLMCacheResponse(resp *llm.Response) ([]byte, error) {
 	if resp == nil || len(resp.Choices) == 0 {
+		return nil, corelib.ErrLLMPromptCacheInvalidResponse
+	}
+	if !localLLMCacheNormalizeStoredResponse(resp) {
 		return nil, corelib.ErrLLMPromptCacheInvalidResponse
 	}
 	return json.Marshal(resp)

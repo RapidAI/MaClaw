@@ -28,6 +28,113 @@ func NewThinkFilter(downstream TokenCallback) TokenCallback {
 	return f.Write
 }
 
+type detailsFilter struct {
+	downstream TokenCallback
+	inside     bool
+	pending    strings.Builder
+}
+
+func NewDetailsFilter(downstream TokenCallback) TokenCallback {
+	f := &detailsFilter{downstream: downstream}
+	return f.Write
+}
+
+func (f *detailsFilter) Write(delta string) {
+	if f == nil || f.downstream == nil {
+		return
+	}
+	f.pending.WriteString(delta)
+	f.drain(false)
+}
+
+func (f *detailsFilter) Flush() {
+	if f == nil || f.downstream == nil {
+		return
+	}
+	f.drain(true)
+}
+
+func (f *detailsFilter) drain(force bool) {
+	for {
+		s := f.pending.String()
+		if s == "" {
+			return
+		}
+		lower := strings.ToLower(s)
+		if !f.inside {
+			if idx := strings.Index(lower, "<details"); idx >= 0 {
+				if idx > 0 {
+					f.downstream(s[:idx])
+				}
+				end := strings.IndexByte(s[idx:], '>')
+				if end < 0 {
+					f.pending.Reset()
+					f.pending.WriteString(s[idx:])
+					return
+				}
+				f.inside = true
+				f.pending.Reset()
+				f.pending.WriteString(s[idx+end+1:])
+				continue
+			}
+			if partial := detailsOpenSuffixLen(lower); partial > 0 && !force {
+				if len(s) > partial {
+					f.downstream(s[:len(s)-partial])
+					f.pending.Reset()
+					f.pending.WriteString(s[len(s)-partial:])
+				}
+				return
+			}
+			f.downstream(s)
+			f.pending.Reset()
+			return
+		}
+		if idx := strings.Index(lower, "</details>"); idx >= 0 {
+			f.inside = false
+			f.pending.Reset()
+			f.pending.WriteString(s[idx+len("</details>"):])
+			continue
+		}
+		if partial := detailsCloseSuffixLen(lower); partial > 0 && !force {
+			if len(s) > partial {
+				f.pending.Reset()
+				f.pending.WriteString(s[len(s)-partial:])
+			}
+			return
+		}
+		f.pending.Reset()
+		return
+	}
+}
+
+func detailsOpenSuffixLen(lower string) int {
+	marker := "<details"
+	max := len(marker) - 1
+	if len(lower) < max {
+		max = len(lower)
+	}
+	for i := max; i > 0; i-- {
+		if strings.HasSuffix(lower, marker[:i]) {
+			return i
+		}
+	}
+	return 0
+}
+
+func detailsCloseSuffixLen(lower string) int {
+	marker := "</details>"
+	max := len(marker) - 1
+	if len(lower) < max {
+		max = len(lower)
+	}
+	for i := max; i > 0; i-- {
+		if strings.HasSuffix(lower, marker[:i]) {
+			return i
+		}
+	}
+	return 0
+}
+
 func (f *thinkFilter) Write(delta string) {
 	f.pending.WriteString(delta)
 	f.drain()
@@ -141,12 +248,16 @@ func (f *tagFilter) Write(delta string) {
 func (f *tagFilter) drain() {
 	for {
 		s := f.pending.String()
-		if s == "" { return }
+		if s == "" {
+			return
+		}
 
 		if !f.inside {
 			if strings.Contains(s, f.openTag) {
 				idx := strings.Index(s, f.openTag)
-				if idx > 0 { f.downstream(s[:idx]) }
+				if idx > 0 {
+					f.downstream(s[:idx])
+				}
 				f.inside = true
 				remaining := s[idx+len(f.openTag):]
 				f.pending.Reset()
@@ -186,7 +297,9 @@ func (f *tagFilter) drain() {
 					break
 				}
 			}
-			if !matchAny { f.pending.Reset() }
+			if !matchAny {
+				f.pending.Reset()
+			}
 			return
 		}
 	}

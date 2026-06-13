@@ -1561,6 +1561,18 @@ func TestCoreAgentDocOnlyToolPolicyBlocksImplementationTools(t *testing.T) {
 	}
 }
 
+func TestCoreAgentBlankToolArgumentsNormalizeToEmptyObject(t *testing.T) {
+	cb := &coreAgentCallbacks{toolPolicy: workflow.ToolFilterFull}
+	allowed, reason := cb.IsToolCallAllowed("read_file", " \n\t ")
+	if !allowed {
+		t.Fatalf("blank args should parse as empty object, reason=%q", reason)
+	}
+	result := cb.ExecuteToolStructured("unknown_tool_for_blank_args", " \n\t ")
+	if strings.Contains(result.Result, "invalid tool arguments") {
+		t.Fatalf("blank args should not produce invalid JSON error: %+v", result)
+	}
+}
+
 func TestCoreAgentPlanningToolPolicyAllowsInspectionOnly(t *testing.T) {
 	cb := &coreAgentCallbacks{
 		allowLocalBash:             true,

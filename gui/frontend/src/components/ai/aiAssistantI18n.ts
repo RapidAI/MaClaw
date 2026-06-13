@@ -1,6 +1,3 @@
-export function localizeText(lang: string, en: string, zhHans: string, zhHant?: string): string {
-    const normalized = (lang || "").trim().toLowerCase();
-    if (normalized === "en" || normalized.startsWith("en-")) return en;
-    if (normalized === "zh-hant" || normalized === "zh-tw" || normalized === "zh-hk" || normalized === "zh-mo") return zhHant || zhHans;
-    return zhHans;
-}
+// Re-export from unified i18n module for backward compatibility.
+// New code should import from '../../i18n' directly.
+export { localizeText } from '../../i18n';

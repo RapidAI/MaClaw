@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 const (
@@ -52,6 +53,13 @@ func (a *App) LoadAIAssistantUIState() (AIAssistantUIState, error) {
 		return AIAssistantUIState{Messages: []map[string]interface{}{}, Prompts: []string{}, StoragePath: path}, err
 	}
 	normalizeAIAssistantUIState(&state)
+	if aiAssistantUIStateNeedsSanitizedRewrite(data) {
+		state.StoragePath = ""
+		if err := configfile.AtomicWriteJSON(path, state); err != nil {
+			return AIAssistantUIState{Messages: []map[string]interface{}{}, Prompts: []string{}, StoragePath: path}, err
+		}
+		log.Printf("[paths] ai_assistant_ui_state sanitized path=%q messages=%d prompts=%d boundary=%q", path, len(state.Messages), len(state.Prompts), state.ContextBoundaryMessageID)
+	}
 	state.StoragePath = path
 	log.Printf("[paths] ai_assistant_ui_state load path=%q messages=%d prompts=%d boundary=%q", path, len(state.Messages), len(state.Prompts), state.ContextBoundaryMessageID)
 	return state, nil
@@ -92,6 +100,7 @@ func normalizeAIAssistantUIState(state *AIAssistantUIState) {
 	if len(state.Messages) > 0 {
 		messages := make([]map[string]interface{}, 0, len(state.Messages))
 		for _, message := range state.Messages {
+			normalizeAIAssistantUIMessage(message)
 			if isPersistableAIAssistantUIMessage(message) {
 				messages = append(messages, message)
 			}
@@ -120,6 +129,30 @@ func normalizeAIAssistantUIState(state *AIAssistantUIState) {
 	if state.Prompts == nil {
 		state.Prompts = []string{}
 	}
+}
+
+func normalizeAIAssistantUIMessage(message map[string]interface{}) {
+	if message == nil {
+		return
+	}
+	role, _ := message["role"].(string)
+	if strings.TrimSpace(role) != "assistant" {
+		return
+	}
+	content, ok := message["content"].(string)
+	if !ok || content == "" {
+		return
+	}
+	message["content"] = llm.StripAllExtra(content)
+}
+
+func aiAssistantUIStateNeedsSanitizedRewrite(data []byte) bool {
+	lower := strings.ToLower(string(data))
+	return strings.Contains(lower, "<details") ||
+		strings.Contains(lower, "<think>") ||
+		strings.Contains(lower, "<tool_call") ||
+		strings.Contains(lower, "<turn: tool_call") ||
+		strings.Contains(lower, "<|functioncallbegin|>")
 }
 
 func isPersistableAIAssistantUIMessage(message map[string]interface{}) bool {

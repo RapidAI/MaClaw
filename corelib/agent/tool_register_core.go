@@ -13,6 +13,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/task"
 )
 
+const coreInlineToolPayloadMaxLength = 1800
+
 // CoreToolDeps holds the dependencies needed by core tool handlers.
 // All fields are optional. Nil fields cause the corresponding tools
 // to return a friendly "not initialized" style message.
@@ -144,10 +146,10 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "write_file",
-		Description: "Write a UTF-8 text file. mode=overwrite replaces content, mode=append appends content.",
+		Description: "Write a UTF-8 text file. Use mode=overwrite only for the first chunk of a new file; use mode=append for later chunks. For content over 1800 characters, split into multiple write_file calls to avoid truncated tool-call JSON.",
 		Properties: map[string]interface{}{
 			"path":     map[string]string{"type": "string", "description": "File path"},
-			"content":  map[string]string{"type": "string", "description": "File content"},
+			"content":  map[string]interface{}{"type": "string", "description": "File content. Keep each call under 1800 characters; split large files into overwrite + append chunks.", "maxLength": coreInlineToolPayloadMaxLength},
 			"mode":     map[string]string{"type": "string", "description": "Write mode: overwrite or append"},
 			"phase_id": map[string]string{"type": "string", "description": workflowDocSchemaPhaseIDDescription()},
 			"doc_type": map[string]string{"type": "string", "description": workflowDocSchemaDocTypeDescription()},
@@ -158,11 +160,11 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "edit_file",
-		Description: "Edit a file by replacing old_string with new_string.",
+		Description: "Edit a file by replacing old_string with new_string. Keep old_string and new_string under 1800 characters; split large edits into smaller exact replacements to avoid truncated tool-call JSON.",
 		Properties: map[string]interface{}{
 			"path":        map[string]string{"type": "string", "description": "File path"},
-			"old_string":  map[string]string{"type": "string", "description": "Text to search for"},
-			"new_string":  map[string]string{"type": "string", "description": "Replacement text"},
+			"old_string":  map[string]interface{}{"type": "string", "description": "Text to search for. Keep under 1800 characters; split large edits into smaller exact replacements.", "maxLength": coreInlineToolPayloadMaxLength},
+			"new_string":  map[string]interface{}{"type": "string", "description": "Replacement text. Keep under 1800 characters; split large edits into smaller exact replacements.", "maxLength": coreInlineToolPayloadMaxLength},
 			"replace_all": map[string]string{"type": "boolean", "description": "Whether to replace all matches, default false"},
 		},
 		Required: []string{"path", "old_string", "new_string"},

@@ -116,7 +116,7 @@ func presetProviders() []presetProvider {
 		},
 		{
 			Name: "智谱 GLM (Coding)", URL: "https://open.bigmodel.cn/api/anthropic",
-			Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude code 2.0",
+			Model: "GLM-5.2", Protocol: "anthropic", AgentType: "claude code 2.0",
 			ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "open.bigmodel.cn 获取 API Key（Anthropic 协议）",
 		},

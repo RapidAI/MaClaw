@@ -1,11 +1,11 @@
 package main
 
-// workflow_integration.go adds workflow engine support to the TUI.
+// workflow_integration.go adds V2 workflow engine support to the TUI.
 //
-// This is the foundation for TUI workflow integration. It initializes the
-// workflow engine with the same registry and templates as the GUI, and adds
-// the interception point in handleChatSend. The intent understanding LLM
-// caller is wired to the same LLM config as the agent loop.
+// The V2 engine (StateMachine + Router + SQLiteStore) is the sole runtime
+// engine. V1 initWorkflowEngine() and getWorkflowEngine() have been removed.
+// The intent understanding LLM caller is wired to the same LLM config as
+// the agent loop.
 //
 // Current limitations vs GUI:
 // - No doc preview panel (TUI is text-only; documents are shown inline)
@@ -29,6 +29,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 var tuiQuotedPathPattern = regexp.MustCompile(`"([^"]+)"|'([^']+)'`)
@@ -150,41 +151,14 @@ func (s *tuiWorkflowStore) LoadUnderstandingSession(userID string) (*workflow.Un
 func (s *tuiWorkflowStore) DeleteUnderstandingSession(userID string) error { return nil }
 func (s *tuiWorkflowStore) CleanupExpired(olderThan time.Duration) error   { return nil }
 
-// initWorkflowEngine creates and wires the workflow engine for the TUI.
-// The engine uses the same registry (19 templates) as the GUI. New workflow
-// starts go through IntentUnderstandingManager, not template keyword matching.
-func (app *TUIApp) initWorkflowEngine() *workflow.WorkflowEngine {
-	registry := workflow.NewWorkflowRegistry()
-	store := &tuiWorkflowStore{}
-	callbacks := &TUIWorkflowCallbacks{app: app, registry: registry}
-	llmCaller := &tuiWorkflowLLMCaller{
-		app:    app,
-		client: &http.Client{},
-	}
-	understanding := workflow.NewIntentUnderstandingManager(store, llmCaller, registry)
-	understanding.SetLanguage(app.workflowLang())
-	engine := workflow.NewWorkflowEngine(registry, understanding, store, callbacks)
-
-	return engine
-}
-
-// getWorkflowEngine returns the workflow engine if available and enabled, or nil.
-// This is the TUI's single enforcement point for the "workflow enabled" config
-// toggle. All workflow consumers should go through this method.
-func (app *TUIApp) getWorkflowEngine() *workflow.WorkflowEngine {
-	if !app.appConfig.IsWorkflowEnabled() {
-		return nil
-	}
-	return app.workflowEngine
-}
-
 // handleWorkflowInterception checks if the message should be handled by the
 // workflow engine. Returns a non-empty string if the message was fully handled
 // (the string is the response to show the user). Returns empty string if the
 // message should proceed to the normal agent loop.
 func (app *TUIApp) handleWorkflowInterception(text string) string {
-	engine := app.getWorkflowEngine()
-	if engine == nil {
+	// V2 path: use V2 filter and understanding directly.
+	wf := app.getWorkflowV2TUI()
+	if wf == nil {
 		return ""
 	}
 
@@ -193,7 +167,13 @@ func (app *TUIApp) handleWorkflowInterception(text string) string {
 		return pendingResp
 	}
 
-	filter := engine.GetFilter()
+	// V2 Router: check if the message should be routed to an active V2 workflow.
+	// This provides V2 persistence and LLM confirm classification.
+	if result := app.routeWithV2Router(userID, text); result != "" {
+		return result
+	}
+
+	filter := wf.filter
 	if filter == nil {
 		return ""
 	}
@@ -224,58 +204,49 @@ func (app *TUIApp) handleWorkflowInterception(text string) string {
 func (app *TUIApp) handleActiveWorkflowTUI(text string) string {
 	userID := "tui-user"
 	text = app.expandWorkflowAttachmentInput(userID, text)
-	resp, err := app.workflowEngine.HandleInput(userID, text)
-	if err != nil {
-		log.Printf("[TUI-workflow] HandleInput error: %v", err)
-		return i18n.Tf(i18n.MsgWorkflowHandleError, app.workflowLang(), err)
-	}
-	if resp == nil {
+
+	// V2 path: use StateMachine.HandleInput directly.
+	wf := app.getWorkflowV2TUI()
+	if wf == nil {
+		log.Printf("[TUI-workflow] handleActiveWorkflowTUI: V2 state unavailable, passing through")
 		return ""
 	}
 
-	if resp.PendingReview || resp.PendingConfirm {
-		return app.handleWorkflowReviewTUI(userID, text)
+	state := wf.machine.GetActive(userID)
+	if state == nil {
+		return ""
 	}
 
-	if resp.ShowForm && resp.FormSchema != nil {
-		if err := app.workflowEngine.SkipPhaseForm(userID); err != nil {
-			log.Printf("[TUI-workflow] SkipPhaseForm error: %v", err)
-			return i18n.Tf(i18n.MsgWorkflowHandleError, app.workflowLang(), err)
-		}
-		return buildTUIPhaseInputGuidance(resp.FormSchema)
+	// V2 doesn't use form gates — TUI is text-only, no side panel forms.
+
+	hr, err := wf.machine.HandleInput(userID, text)
+	if err != nil {
+		log.Printf("[TUI-workflow] V2 HandleInput error: %v", err)
+		return i18n.Tf(i18n.MsgWorkflowHandleError, app.workflowLang(), err)
+	}
+	if hr == nil {
+		return ""
 	}
 
-	if !resp.RunAgentLoop {
-		if resp.Complete {
-			app.workflowMu.Lock()
-			app.workflowAgentLoop = false
-			app.pendingPhasePrompt = ""
-			app.workflowMu.Unlock()
-		}
-		return resp.Text
-	}
+	// Reload state after HandleInput (may have been mutated).
+	state = wf.machine.GetActive(userID)
 
-	// RunAgentLoop=true: stash the phase prompt for the agent loop.
-	if resp.PhasePrompt != "" {
-		app.workflowMu.Lock()
-		app.pendingPhasePrompt = resp.PhasePrompt
-		app.workflowAgentLoop = true
-		app.workflowMu.Unlock()
-	}
-	if resp.Advance && resp.Text != "" {
-		// Phase advanced: return the transition text. The next agent loop
-		// call will pick up the stashed phase prompt.
-		return resp.Text
-	}
-	return "" // fall through to agent loop with stashed phase prompt
+	return app.handleV2HandleResult(userID, hr, state)
 }
 
 func (app *TUIApp) handleWorkflowReviewTUI(userID, text string) string {
-	intent := workflow.ReviewIntentOther
+	// V2 path: use StateMachine.ApplyReviewIntent directly.
+	wf := app.getWorkflowV2TUI()
+	if wf == nil {
+		log.Printf("[TUI-workflow] handleWorkflowReviewTUI: V2 state unavailable")
+		return app.workflowReviewBarrierText(userID)
+	}
+
+	intent := "other"
 	rawIntent := ""
 	needlePrediction, needleReady := app.predictNeedleWorkflowReview(text)
 	if needleReady && needlePrediction != nil {
-		intent = workflow.ParseReviewIntent(needlePrediction.Name)
+		intent = needlePrediction.Name
 		rawIntent = needlePrediction.Name
 	} else if strings.TrimSpace(app.llmConfig.URL) != "" && strings.TrimSpace(app.llmConfig.Model) != "" {
 		raw, err := app.classifyWorkflowReviewIntentTUI(userID, text)
@@ -283,21 +254,35 @@ func (app *TUIApp) handleWorkflowReviewTUI(userID, text string) string {
 			log.Printf("[TUI-workflow] review intent classification failed: %v", err)
 		} else {
 			rawIntent = raw
-			intent = workflow.ParseReviewIntent(raw)
+			intent = raw
 		}
 	}
 
-	resp, err := app.workflowEngine.ApplyReviewIntent(userID, intent, text)
+	// V2 ApplyReviewIntent accepts string intents: "confirm", "skip", "cancel", "switch_task", "supplement", "other"
+	hr, err := wf.machine.ApplyReviewIntent(userID, intent, text)
 	if err != nil {
-		log.Printf("[TUI-workflow] ApplyReviewIntent error: intent=%s err=%v", intent, err)
-		app.logNeedleWorkflowReviewEvent(userID, text, rawIntent, needlePrediction, string(intent), false, err.Error())
+		log.Printf("[TUI-workflow] V2 ApplyReviewIntent error: intent=%s err=%v", intent, err)
+		app.logNeedleWorkflowReviewEvent(userID, text, rawIntent, needlePrediction, intent, false, err.Error())
 		return app.workflowReviewBarrierText(userID)
 	}
-	app.logNeedleWorkflowReviewEvent(userID, text, rawIntent, needlePrediction, string(intent), true, "")
-	if intent == workflow.ReviewIntentSwitchTask {
+	app.logNeedleWorkflowReviewEvent(userID, text, rawIntent, needlePrediction, intent, true, "")
+
+	if hr == nil {
+		return ""
+	}
+
+	// Handle switch_task: cancel workflow and re-route the message.
+	if strings.ToLower(strings.TrimSpace(intent)) == "switch_task" && hr.Action == v2.ActionCancelAndExecute {
+		app.workflowMu.Lock()
+		app.workflowAgentLoop = false
+		app.pendingPhasePrompt = ""
+		app.workflowMu.Unlock()
 		return app.handleWorkflowInterception(text)
 	}
-	return app.handleWorkflowResponseTUI(userID, resp)
+
+	// Reload state and delegate to handleV2HandleResult.
+	state := wf.machine.GetActive(userID)
+	return app.handleV2HandleResult(userID, hr, state)
 }
 
 func (app *TUIApp) classifyWorkflowReviewIntentTUI(userID, text string) (string, error) {
@@ -333,10 +318,14 @@ func (app *TUIApp) handleWorkflowResponseTUI(userID string, resp *workflow.Workf
 	if resp == nil {
 		return ""
 	}
+	// V2 path: skip form gates (TUI has no side panel).
 	if resp.ShowForm && resp.FormSchema != nil {
-		if err := app.workflowEngine.SkipPhaseForm(userID); err != nil {
-			log.Printf("[TUI-workflow] SkipPhaseForm error: %v", err)
-			return i18n.Tf(i18n.MsgWorkflowHandleError, app.workflowLang(), err)
+		wf := app.getWorkflowV2TUI()
+		if wf != nil {
+			if err := wf.machine.SkipPhaseForm(userID); err != nil {
+				log.Printf("[TUI-workflow] SkipPhaseForm error: %v", err)
+				return i18n.Tf(i18n.MsgWorkflowHandleError, app.workflowLang(), err)
+			}
 		}
 		return buildTUIPhaseInputGuidance(resp.FormSchema)
 	}
@@ -366,9 +355,12 @@ func (app *TUIApp) applyWorkflowAutoAdvanceTUI(userID string, resp *workflow.Wor
 		log.Printf("[TUI-workflow] auto-advance: %s", truncateTUI(resp.Text, 80))
 	}
 	if resp.ShowForm && resp.FormSchema != nil {
-		if err := app.workflowEngine.SkipPhaseForm(userID); err != nil {
-			log.Printf("[TUI-workflow] SkipPhaseForm error: %v", err)
-			return i18n.Tf(i18n.MsgWorkflowHandleError, app.workflowLang(), err)
+		wf := app.getWorkflowV2TUI()
+		if wf != nil {
+			if err := wf.machine.SkipPhaseForm(userID); err != nil {
+				log.Printf("[TUI-workflow] SkipPhaseForm error: %v", err)
+				return i18n.Tf(i18n.MsgWorkflowHandleError, app.workflowLang(), err)
+			}
 		}
 		guidance := buildTUIPhaseInputGuidance(resp.FormSchema)
 		if strings.TrimSpace(resp.Text) != "" {
@@ -393,23 +385,34 @@ func (app *TUIApp) applyWorkflowAutoAdvanceTUI(userID string, resp *workflow.Wor
 }
 
 func (app *TUIApp) workflowReviewBarrierText(userID string) string {
-	ws := app.workflowEngine.GetActiveWorkflow(userID)
-	if ws == nil {
+	// V2 path: read active workflow from V2 StateMachine.
+	wf := app.getWorkflowV2TUI()
+	if wf == nil {
 		return ""
 	}
-	phaseName := ws.CurrentPhase
-	if tmpl := app.workflowEngine.GetRegistry().Match(ws.Type); tmpl != nil && ws.PhaseIndex < len(tmpl.Phases) {
-		phaseName = tmpl.Phases[ws.PhaseIndex].Name
+	state := wf.machine.GetActive(userID)
+	if state == nil {
+		return ""
+	}
+	phaseName := ""
+	phase := state.ActivePhase()
+	if phase != nil {
+		phaseName = phase.Name
+	}
+	if phaseName == "" {
+		phaseName = fmt.Sprintf("phase-%d", state.CurrentPhase)
 	}
 	return i18n.Tf(i18n.MsgWorkflowAwaitingReview, app.workflowLang(), phaseName)
 }
 
 func (app *TUIApp) handleActiveUnderstandingTUI(text string) string {
 	userID := "tui-user"
-	understanding := app.workflowEngine.GetUnderstanding()
-	if understanding == nil {
+	// V2 path: understanding is on tuiWorkflowV2State.
+	wf := app.getWorkflowV2TUI()
+	if wf == nil || wf.understanding == nil {
 		return ""
 	}
+	understanding := wf.understanding
 	understanding.SetUserLanguage(userID, app.workflowLang())
 
 	reply, ready, cancelled, intent, err := understanding.HandleInput(userID, text)
@@ -427,12 +430,13 @@ func (app *TUIApp) handleActiveUnderstandingTUI(text string) string {
 		if intent.Category == workflow.WorkflowNone || intent.Category == "" {
 			return ""
 		}
-		state, err := app.workflowEngine.StartWorkflowWithOptions(userID, *intent, workflow.WorkflowStartOptions{ProjectPath: tuiWorkflowProjectPath()})
+		// V2 path: use machine.Create to start the workflow.
+		state, err := wf.machine.Create(userID, string(intent.Category), tuiWorkflowProjectPath(), intent.Summary)
 		if err != nil {
-			log.Printf("[TUI-workflow] StartWorkflow error: %v", err)
+			log.Printf("[TUI-workflow] V2 Create error: %v", err)
 			return i18n.Tf(i18n.MsgWorkflowStartError, app.workflowLang(), err)
 		}
-		return app.buildWorkflowStartOverview(userID, state, reply)
+		return app.buildWorkflowStartOverviewV2(userID, state, reply)
 	}
 	return reply
 }
@@ -442,10 +446,12 @@ func (app *TUIApp) handleNeedsUnderstandingTUI(text string) string {
 	if strings.TrimSpace(app.llmConfig.URL) == "" || strings.TrimSpace(app.llmConfig.Model) == "" {
 		return ""
 	}
-	understanding := app.workflowEngine.GetUnderstanding()
-	if understanding == nil {
+	// V2 path: understanding is on tuiWorkflowV2State.
+	wf := app.getWorkflowV2TUI()
+	if wf == nil || wf.understanding == nil {
 		return ""
 	}
+	understanding := wf.understanding
 	understanding.SetUserLanguage(userID, app.workflowLang())
 
 	result, err := understanding.Start(userID, text)
@@ -490,9 +496,14 @@ func (app *TUIApp) handlePendingWorkflowStartTUI(userID, text string) string {
 		app.workflowMu.Unlock()
 		return i18n.T(i18n.MsgWorkflowCancelled, app.workflowLang())
 	case isTUIWorkflowStartConfirmCommand(trimmed):
-		state, err := app.workflowEngine.StartWorkflowWithOptions(userID, pending.Intent, workflow.WorkflowStartOptions{ProjectPath: tuiWorkflowProjectPath()})
+		// V2 path: use machine.Create to start the workflow.
+		wf := app.getWorkflowV2TUI()
+		if wf == nil {
+			return i18n.Tf(i18n.MsgWorkflowStartError, app.workflowLang(), fmt.Errorf("V2 engine unavailable"))
+		}
+		state, err := wf.machine.Create(userID, string(pending.Intent.Category), tuiWorkflowProjectPath(), pending.Intent.Summary)
 		if err != nil {
-			log.Printf("[TUI-workflow] pending StartWorkflow error: %v", err)
+			log.Printf("[TUI-workflow] pending V2 Create error: %v", err)
 			return i18n.Tf(i18n.MsgWorkflowStartError, app.workflowLang(), err)
 		}
 		app.workflowMu.Lock()
@@ -500,7 +511,7 @@ func (app *TUIApp) handlePendingWorkflowStartTUI(userID, text string) string {
 			app.pendingWorkflowStart = nil
 		}
 		app.workflowMu.Unlock()
-		return app.buildWorkflowStartOverview(userID, state, pending.StartReply)
+		return app.buildWorkflowStartOverviewV2(userID, state, pending.StartReply)
 	default:
 		// Treat substantive text as a correction to the proposed workflow start.
 		// It must go back through intent understanding so the pending intent cannot
@@ -549,49 +560,26 @@ func (app *TUIApp) workflowLang() string {
 	return app.appConfig.Language
 }
 
-func (app *TUIApp) buildWorkflowStartOverview(userID string, state *workflow.WorkflowState, prefix string) string {
+// buildWorkflowStartOverviewV2 builds the start overview using V2 APIs.
+func (app *TUIApp) buildWorkflowStartOverviewV2(userID string, state *v2.WorkflowState, prefix string) string {
 	lang := app.workflowLang()
-	overview := i18n.Tf(i18n.MsgWorkflowStarted, lang, state.Type, state.CurrentPhase)
-	if req := app.workflowEngine.GetInputRequirement(userID); req != nil {
-		overview += i18n.Tf(i18n.MsgWorkflowInputRequired, lang, req.Description)
-		if len(req.FileTypes) > 0 {
-			overview += i18n.Tf(i18n.MsgWorkflowInputFormats, lang, strings.Join(req.FileTypes, ", "))
-		}
-		if req.AcceptText {
-			overview += i18n.T(i18n.MsgWorkflowInputPasteHint, lang)
-		}
-		if strings.TrimSpace(prefix) != "" {
-			overview = strings.TrimSpace(prefix) + "\n\n" + overview
-		}
-		return overview
+	phaseName := ""
+	phase := state.ActivePhase()
+	if phase != nil {
+		phaseName = phase.Name
 	}
+	overview := i18n.Tf(i18n.MsgWorkflowStarted, lang, state.Type, phaseName)
 	if strings.TrimSpace(prefix) != "" {
 		overview = strings.TrimSpace(prefix) + "\n\n" + overview
 	}
 
-	// TUI is text-only. If the first phase declares structured input, ask for it
-	// as numbered text and wait for the next user message before starting the
-	// agent loop. This preserves the form-first contract without a side panel.
-	tmpl := app.workflowEngine.GetRegistry().Match(state.Type)
-	if tmpl != nil && len(tmpl.Phases) > 0 && tmpl.Phases[0].InputSchema != nil {
-		if err := app.workflowEngine.SkipPhaseForm(userID); err != nil {
-			log.Printf("[TUI-workflow] SkipPhaseForm error: %v", err)
-			return i18n.Tf(i18n.MsgWorkflowHandleError, app.workflowLang(), err)
-		}
-		if guidance := buildTUIPhaseInputGuidance(tmpl.Phases[0].InputSchema); guidance != "" {
-			return strings.TrimSpace(overview + "\n\n" + guidance)
-		}
-	}
-
-	// The first phase needs the agent loop to generate content. Stash the phase prompt.
-	if tmpl != nil && len(tmpl.Phases) > 0 {
-		phasePrompt := workflow.BuildPhaseSystemPrompt(state, &tmpl.Phases[0], app.workflowEngine.GetRegistry())
-		if phasePrompt != "" {
-			app.workflowMu.Lock()
-			app.pendingPhasePrompt = phasePrompt
-			app.workflowAgentLoop = true
-			app.workflowMu.Unlock()
-		}
+	// Build and stash the phase prompt for the first phase.
+	phasePrompt := v2.BuildPhasePrompt(state)
+	if phasePrompt != "" {
+		app.workflowMu.Lock()
+		app.pendingPhasePrompt = phasePrompt
+		app.workflowAgentLoop = true
+		app.workflowMu.Unlock()
 	}
 
 	return overview
@@ -636,7 +624,13 @@ func buildTUIPhaseInputGuidance(schema *workflow.PhaseInputSchema) string {
 // workflow context. TUI has no file-picker, so the user's attachment gesture is
 // a text path in the chat input.
 func (app *TUIApp) expandWorkflowAttachmentInput(userID, text string) string {
-	if app == nil || app.workflowEngine == nil || app.workflowEngine.GetInputRequirement(userID) == nil {
+	// Check if V2 has an active workflow expecting input.
+	wf := app.getWorkflowV2TUI()
+	if wf == nil {
+		return text
+	}
+	state := wf.machine.GetActive(userID)
+	if state == nil {
 		return text
 	}
 	path := firstExistingWorkflowPath(text)

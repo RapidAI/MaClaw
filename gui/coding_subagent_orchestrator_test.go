@@ -1005,3 +1005,94 @@ func TestStaleSubAgentRunSummaryHandlesNilTask(t *testing.T) {
 		t.Fatalf("unexpected stale summary: %q", summary)
 	}
 }
+
+func TestRunAllTasksFallsBackToSequentialAfterTerminalFailure(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SetSubAgentConcurrency(3); err != nil {
+		t.Fatalf("SetSubAgentConcurrency: %v", err)
+	}
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 0 // no retries — first failure is terminal
+	orch.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A"},
+		{Index: 1, Title: "Task B"},
+		{Index: 2, Title: "Task C"},
+		{Index: 3, Title: "Task D"},
+	}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{handler: &IMMessageHandler{app: app}, orchestrator: orch}
+
+	var mu sync.Mutex
+	batchActive := 0
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		mu.Lock()
+		batchActive++
+		mu.Unlock()
+
+		time.Sleep(15 * time.Millisecond)
+
+		mu.Lock()
+		batchActive--
+		mu.Unlock()
+
+		// Task B fails terminally
+		if task.Title == "Task B" {
+			return &CodingSubAgentResult{Status: TaskExecFailed, Error: "compile error"}
+		}
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: task.Title + " done"}
+	}
+
+	var progressMsgs []string
+	report := runner.RunAllTasks(nil, func(text string) {
+		mu.Lock()
+		progressMsgs = append(progressMsgs, text)
+		mu.Unlock()
+	})
+
+	// Task B should be failed.
+	if orch.Tasks[1].Status != TaskExecFailed {
+		t.Fatalf("Task B should be failed, got %s", orch.Tasks[1].Status)
+	}
+
+	// After fallback, remaining tasks should execute sequentially (batch size 1).
+	// The report should mention the fallback.
+	if !strings.Contains(report, "Task B") {
+		t.Fatalf("report should mention failed task, got: %s", report)
+	}
+
+	// Check that user-visible progress includes the fallback notice.
+	joined := strings.Join(progressMsgs, "\n")
+	if !strings.Contains(joined, "顺序执行") {
+		t.Fatalf("expected fallback progress notification, got: %s", joined)
+	}
+}
+
+func TestBatchHasFailedTaskIgnoresRetryableFailures(t *testing.T) {
+	// A task that failed but will be retried has Status still in InProgress
+	// (IncrementTaskRetryForRun doesn't change status). This should NOT
+	// trigger the fallback.
+	handles := []TaskRunHandle{
+		{Task: &TaskItem{Index: 0, Status: TaskExecPassed}},
+		{Task: &TaskItem{Index: 1, Status: TaskExecInProgress}}, // retryable
+	}
+	if batchHasFailedTask(handles) {
+		t.Fatal("in-progress (retryable) task should not trigger fallback")
+	}
+
+	// Terminal failures DO trigger fallback.
+	handles[1].Task.Status = TaskExecFailed
+	if !batchHasFailedTask(handles) {
+		t.Fatal("failed task should trigger fallback")
+	}
+
+	handles[1].Task.Status = TaskExecSkipped
+	if !batchHasFailedTask(handles) {
+		t.Fatal("skipped task should trigger fallback")
+	}
+}

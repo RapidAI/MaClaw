@@ -75,7 +75,7 @@ export const LansengerSettings = ({
                                 LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                             }).catch((err: any) => {
                                 setLansengerLocalModeState(prev);
-                                alert(err?.message || err || switchFailedLabel);
+                                alert(err?.message || err || switchFailedLabel(lang));
                             });
                         }}
                     >

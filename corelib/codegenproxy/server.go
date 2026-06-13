@@ -34,6 +34,8 @@ const codeGenQwenFlashToolLoopAfterToolResults = 32
 const codeGenQwenFlashToolLoopRepeatedToolCalls = 8
 const codeGenQwenFlashSystemPrompt = "You are TigerClaw Code, a helpful coding assistant. Follow the user's instructions, use available tools when needed, and report outcomes clearly."
 const codeGenStreamMaxEventBytes = 32 * 1024 * 1024
+const codeGenContentToolScanFlushBytes = 4096
+const codeGenContentToolScanRetainBytes = 128
 
 func setCodeGenUpstreamHeaders(req *http.Request, clientName string) {
 	if req != nil {
@@ -1272,20 +1274,9 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 			textBytes += len(delta.Content)
 			if bufferTextForToolCalls {
 				textBuf.WriteString(delta.Content)
+				maybeFlushStreamTextBuffer(w, flusher, blockIdx, &textStarted, &textBuf)
 			} else {
-				if !textStarted {
-					writeSSE(w, "content_block_start", map[string]interface{}{
-						"type": "content_block_start", "index": blockIdx,
-						"content_block": map[string]interface{}{"type": "text", "text": ""},
-					})
-					flusher.Flush()
-					textStarted = true
-				}
-				writeSSE(w, "content_block_delta", map[string]interface{}{
-					"type": "content_block_delta", "index": blockIdx,
-					"delta": map[string]interface{}{"type": "text_delta", "text": delta.Content},
-				})
-				flusher.Flush()
+				writeStreamTextDelta(w, flusher, blockIdx, &textStarted, delta.Content)
 			}
 		}
 
@@ -1362,13 +1353,31 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 		return
 	}
 
-	contentToolCalls := contentToolCallsToStreamAccums(textBuf.String())
-	if len(contentToolCalls) > 0 {
-		for _, acc := range contentToolCalls {
-			blockIdx = writeBufferedToolUse(w, flusher, blockIdx, acc)
+	var contentToolCalls []*streamToolCallAccum
+	hasBufferedToolCalls := len(toolOrder) > 0 || legacyFunction != nil
+	if textBuf.Len() > 0 {
+		if hasBufferedToolCalls {
+			if blocks, malformed := contentToolCallsToStreamAccums(textBuf.String()); len(blocks) == 0 && !malformed {
+				blockIdx = writeBufferedText(w, flusher, blockIdx, textBuf.String())
+			}
+		} else {
+			var malformedContentToolCall bool
+			contentToolCalls, malformedContentToolCall = contentToolCallsToStreamAccums(textBuf.String())
+			if malformedContentToolCall {
+				log.Printf("[codegenproxy] stream content tool call malformed id=%s model=%q text_bytes=%d text_sha256=%s",
+					reqID, model, textBytes, shortSHA256(textBuf.String()))
+				writeStreamError(w, "upstream stream produced malformed content tool call")
+				flusher.Flush()
+				return
+			}
+			if len(contentToolCalls) > 0 {
+				for _, acc := range contentToolCalls {
+					blockIdx = writeBufferedToolUse(w, flusher, blockIdx, acc)
+				}
+			} else {
+				blockIdx = writeBufferedText(w, flusher, blockIdx, textBuf.String())
+			}
 		}
-	} else if textBuf.Len() > 0 {
-		blockIdx = writeBufferedText(w, flusher, blockIdx, textBuf.String())
 	}
 
 	if len(toolOrder) > 0 {
@@ -1394,8 +1403,10 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 	if len(contentToolCalls) > 0 {
 		anthStop = "tool_use"
 	}
-	log.Printf("[codegenproxy] stream complete id=%s model=%q openai_finish=%q anthropic_stop=%q text_bytes=%d tool_calls=%d legacy_function=%t tool_summary=%s",
-		reqID, model, stopReason, anthStop, textBytes, len(toolOrder), legacyFunction != nil, summarizeStreamTools(toolOrder, toolCalls, legacyFunction, toolSchemas))
+	log.Printf("[codegenproxy] stream complete id=%s model=%q openai_finish=%q anthropic_stop=%q text_bytes=%d tool_calls=%d legacy_function=%t content_tool_calls=%d tool_summary=%s content_tool_summary=%s",
+		reqID, model, stopReason, anthStop, textBytes, len(toolOrder), legacyFunction != nil, len(contentToolCalls),
+		summarizeStreamTools(toolOrder, toolCalls, legacyFunction, toolSchemas),
+		summarizeStreamToolList(contentToolCalls, toolSchemas))
 
 	writeSSE(w, "message_delta", map[string]interface{}{
 		"type":  "message_delta",
@@ -1415,19 +1426,25 @@ type streamToolCallAccum struct {
 	Arguments string
 }
 
-func contentToolCallsToStreamAccums(content string) []*streamToolCallAccum {
-	calls, _ := llmcompat.ParseContentToolCallsDetailed(content)
+func contentToolCallsToStreamAccums(content string) ([]*streamToolCallAccum, bool) {
+	if !mayContainContentToolCall(content) {
+		return nil, false
+	}
+	calls, malformed := llmcompat.ParseContentToolCallsDetailed(content)
 	if len(calls) == 0 {
-		return nil
+		return nil, malformed
 	}
 	accs := make([]*streamToolCallAccum, 0, len(calls))
+	skippedMalformed := false
 	for i, call := range calls {
 		name := strings.TrimSpace(call.Function.Name)
 		if name == "" {
+			skippedMalformed = true
 			continue
 		}
 		args, ok := normalizeOpenAIToolArguments(call.Function.Arguments)
 		if !ok {
+			skippedMalformed = true
 			continue
 		}
 		id := strings.TrimSpace(call.ID)
@@ -1441,7 +1458,47 @@ func contentToolCallsToStreamAccums(content string) []*streamToolCallAccum {
 			Arguments: args,
 		})
 	}
-	return accs
+	return accs, malformed || skippedMalformed
+}
+
+func maybeFlushStreamTextBuffer(w http.ResponseWriter, flusher http.Flusher, blockIdx int, textStarted *bool, buf *strings.Builder) {
+	if buf == nil || buf.Len() <= codeGenContentToolScanFlushBytes {
+		return
+	}
+	text := buf.String()
+	if mayContainContentToolCall(text) {
+		return
+	}
+	retain := codeGenContentToolScanRetainBytes
+	if retain > len(text) {
+		retain = len(text)
+	}
+	flushText := text[:len(text)-retain]
+	if flushText == "" {
+		return
+	}
+	writeStreamTextDelta(w, flusher, blockIdx, textStarted, flushText)
+	buf.Reset()
+	buf.WriteString(text[len(text)-retain:])
+}
+
+func writeStreamTextDelta(w http.ResponseWriter, flusher http.Flusher, blockIdx int, textStarted *bool, text string) {
+	if text == "" {
+		return
+	}
+	if textStarted != nil && !*textStarted {
+		writeSSE(w, "content_block_start", map[string]interface{}{
+			"type": "content_block_start", "index": blockIdx,
+			"content_block": map[string]interface{}{"type": "text", "text": ""},
+		})
+		flusher.Flush()
+		*textStarted = true
+	}
+	writeSSE(w, "content_block_delta", map[string]interface{}{
+		"type": "content_block_delta", "index": blockIdx,
+		"delta": map[string]interface{}{"type": "text_delta", "text": text},
+	})
+	flusher.Flush()
 }
 
 func readOpenAIStreamEvents(r io.Reader, handle func(string) bool) error {
@@ -1552,6 +1609,22 @@ func summarizeStreamTools(order []int, calls map[int]*streamToolCallAccum, legac
 	return strings.Join(parts, ",")
 }
 
+func summarizeStreamToolList(calls []*streamToolCallAccum, schemas map[string]toolSchemaSummary) string {
+	if len(calls) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(calls))
+	for _, acc := range calls {
+		if acc != nil {
+			parts = append(parts, summarizeStreamTool(acc, schemas))
+		}
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ",")
+}
+
 func summarizeStreamTool(acc *streamToolCallAccum, schemas map[string]toolSchemaSummary) string {
 	name := strings.TrimSpace(acc.Name)
 	if name == "" {
@@ -1628,6 +1701,7 @@ func validateBufferedToolUse(acc *streamToolCallAccum) error {
 	}
 	args := strings.TrimSpace(acc.Arguments)
 	if args == "" {
+		acc.Arguments = "{}"
 		return nil
 	}
 	normalized, ok := normalizeOpenAIToolArguments(args)

@@ -1978,6 +1978,12 @@ func FindSimilarSkill(description string, threshold float64) (*corelib.NLSkillEn
 	return &allSkills[bestIdx], bestScore
 }
 
+// TokenizeSimple splits text into lowercase tokens for simple BM25 matching.
+// Exported for use by coding SubAgent skill matching.
+func TokenizeSimple(text string) []string {
+	return tokenizeSimple(text)
+}
+
 // tokenizeSimple splits text into lowercase tokens for simple BM25 matching.
 func tokenizeSimple(text string) []string {
 	words := strings.Fields(strings.ToLower(text))
@@ -1991,6 +1997,12 @@ func tokenizeSimple(text string) []string {
 		}
 	}
 	return result
+}
+
+// BM25ScoreSimple computes a BM25-like score with IDF weighting.
+// Exported for use by coding SubAgent skill matching.
+func BM25ScoreSimple(queryTokens, docTokens []string) float64 {
+	return bm25ScoreSimple(queryTokens, docTokens)
 }
 
 // bm25ScoreSimple computes a BM25-like score with IDF weighting.

@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 var codingWorkflowImplementationMainLoopAllowedTools = map[string]bool{
@@ -31,9 +31,10 @@ func (h *IMMessageHandler) shouldConstrainCodingWorkflowImplementationMainLoop(p
 			}
 		}
 	}
-	if h != nil && h.app != nil && h.app.workflowEngine != nil {
-		state := h.app.workflowEngine.GetActiveWorkflow(policyUserID)
-		return state != nil && state.Status == workflow.WorkflowActive && state.CurrentPhase == workflow.PhaseCodingImplementation
+	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+		if state := wf.machine.GetActive(policyUserID); state != nil {
+			return state.Status == v2.StatusActive && state.IsExecutionPhase()
+		}
 	}
 	return false
 }

@@ -39,6 +39,12 @@ func (ih *imInterruptHandler) SetEmbedder(emb embedding.Embedder) {
 	ih.embedder = emb
 }
 
+// EmbedderForSubAgent returns the configured embedder for use by SubAgent
+// skill selection. Returns nil if no embedder is loaded.
+func (ih *imInterruptHandler) EmbedderForSubAgent() embedding.Embedder {
+	return ih.embedder
+}
+
 // EmbedText computes the embedding vector for the given text.
 // Returns nil if no embedder is available or embedding fails.
 // Used by runAgentLoop to pre-compute taskEmbed for relevance scoring.

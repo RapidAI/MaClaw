@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,6 +100,53 @@ func TestNeedsOpenAIProxy(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("NeedsOpenAIProxy(%v, %v) = %v, want %v",
 					tt.requiredEnv, tt.extraEnv, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateOpenAIProxyUpstreamConfigRequiresRemoteAuth(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     OpenAIProxyConfig
+		wantErr bool
+	}{
+		{
+			name:    "missing url model",
+			cfg:     OpenAIProxyConfig{URL: "", Model: ""},
+			wantErr: true,
+		},
+		{
+			name:    "oauth remote without key",
+			cfg:     OpenAIProxyConfig{URL: "https://chatgpt.com/backend-api", Model: "gpt-5.4", AuthType: "oauth"},
+			wantErr: true,
+		},
+		{
+			name:    "remote unknown auth without key",
+			cfg:     OpenAIProxyConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-chat"},
+			wantErr: true,
+		},
+		{
+			name:    "remote with key",
+			cfg:     OpenAIProxyConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-chat", Key: "sk-test"},
+			wantErr: false,
+		},
+		{
+			name:    "explicit no auth remote",
+			cfg:     OpenAIProxyConfig{URL: "https://gateway.example/v1", Model: "local", AuthType: "none"},
+			wantErr: false,
+		},
+		{
+			name:    "loopback without key",
+			cfg:     OpenAIProxyConfig{URL: "http://127.0.0.1:11434/v1", Model: "local"},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateOpenAIProxyUpstreamConfig(tt.cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateOpenAIProxyUpstreamConfig() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -522,7 +570,7 @@ func TestHandleChatCompletions_PathValidation(t *testing.T) {
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	// Test 404 for wrong path
-	resp, err := http.Post(baseURL+"/v1/models", "application/json", strings.NewReader(`{}`))
+	resp, err := http.Post(baseURL+"/v1/unknown", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -540,6 +588,348 @@ func TestHandleChatCompletions_PathValidation(t *testing.T) {
 	}
 	if errObj["type"] != "invalid_request_error" {
 		t.Errorf("wrong error type: %v", errObj["type"])
+	}
+}
+
+func TestHandleChatCompletions_ModelsCompatibility(t *testing.T) {
+	p := NewOpenAIProxy(OpenAIProxyConfig{Model: "glm-5.1"})
+	port, err := p.Start()
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer p.Stop()
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	resp, err := http.Get(baseURL + "/v1/models")
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("models status = %d, want 200", resp.StatusCode)
+	}
+	var list map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode models: %v", err)
+	}
+	if list["object"] != "list" {
+		t.Fatalf("models object = %#v, want list", list["object"])
+	}
+	data := list["data"].([]interface{})
+	model := data[0].(map[string]interface{})
+	if model["id"] != "glm-5.1" || model["object"] != "model" {
+		t.Fatalf("model object = %#v", model)
+	}
+
+	resp, err = http.Get(baseURL + "/v1/models/custom-model")
+	if err != nil {
+		t.Fatalf("request model error: %v", err)
+	}
+	defer resp.Body.Close()
+	var single map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&single); err != nil {
+		t.Fatalf("decode model: %v", err)
+	}
+	if single["id"] != "custom-model" || single["object"] != "model" {
+		t.Fatalf("single model = %#v", single)
+	}
+
+	resp, err = http.Get(baseURL + "/models")
+	if err != nil {
+		t.Fatalf("request non-v1 models error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("non-v1 models status = %d, want 200", resp.StatusCode)
+	}
+
+	resp, err = http.Get(baseURL + "/models/alias-model")
+	if err != nil {
+		t.Fatalf("request non-v1 model error: %v", err)
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&single); err != nil {
+		t.Fatalf("decode non-v1 model: %v", err)
+	}
+	if single["id"] != "alias-model" || single["object"] != "model" {
+		t.Fatalf("non-v1 single model = %#v", single)
+	}
+}
+
+func TestHandleChatCompletions_AcceptsNonV1ChatPath(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-test","object":"chat.completion","model":"test-model","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+
+	p := NewOpenAIProxy(OpenAIProxyConfig{URL: upstream.URL, Key: "sk-test", Model: "test-model"})
+	port, err := p.Start()
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer p.Stop()
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	body := `{"model":"ignored","messages":[{"role":"user","content":"hello"}]}`
+	resp, err := http.Post(baseURL+"/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("non-v1 chat status = %d body=%s", resp.StatusCode, data)
+	}
+}
+
+func TestHandleResponses_ConvertsToChatAndBack(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if _, ok := body["input"]; ok {
+			t.Fatalf("responses input leaked to chat upstream: %#v", body)
+		}
+		if _, ok := body["messages"]; !ok {
+			t.Fatalf("chat messages missing: %#v", body)
+		}
+		if body["max_tokens"] != float64(77) {
+			t.Fatalf("max_tokens = %#v, want 77", body["max_tokens"])
+		}
+		tools := body["tools"].([]interface{})
+		fn := tools[0].(map[string]interface{})["function"].(map[string]interface{})
+		if fn["name"] != "get_ticket" {
+			t.Fatalf("tool function = %#v", fn)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-test","object":"chat.completion","model":"test-model","choices":[{"message":{"role":"assistant","content":"checking","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_ticket","arguments":"{\"id\":\"T-1\"}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer upstream.Close()
+
+	p := NewOpenAIProxy(OpenAIProxyConfig{URL: upstream.URL, Key: "sk-test", Model: "test-model"})
+	port, err := p.Start()
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer p.Stop()
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	body := `{"model":"test-model","input":"call get_ticket","tools":[{"type":"function","name":"get_ticket","parameters":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}],"tool_choice":{"type":"function","name":"get_ticket"},"max_tokens":77}`
+	resp, err := http.Post(baseURL+"/responses", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("responses status = %d body=%s", resp.StatusCode, data)
+	}
+	var got map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode responses body: %v", err)
+	}
+	if got["object"] != "response" || got["status"] != "completed" {
+		t.Fatalf("responses envelope = %#v", got)
+	}
+	output := got["output"].([]interface{})
+	if len(output) != 2 {
+		t.Fatalf("output len = %d, want text + function_call: %#v", len(output), output)
+	}
+	call := output[1].(map[string]interface{})
+	if call["type"] != "function_call" || call["name"] != "get_ticket" || call["arguments"] != `{"id":"T-1"}` {
+		t.Fatalf("function_call output = %#v", call)
+	}
+}
+
+func TestOpenAICompatChatResponseToResponsesConvertsLegacyFunctionCall(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-legacy","object":"chat.completion","model":"test-model","choices":[{"message":{"role":"assistant","content":"","function_call":{"name":"get_ticket","arguments":"{\"id\":\"T-1\"}"}},"finish_reason":"function_call"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)
+	respBody, err := OpenAICompatChatResponseToResponses(body, "test-model")
+	if err != nil {
+		t.Fatalf("convert response: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(respBody, &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	output := got["output"].([]interface{})
+	if len(output) != 1 {
+		t.Fatalf("output = %#v, want one function_call", output)
+	}
+	call := output[0].(map[string]interface{})
+	if call["type"] != "function_call" || call["name"] != "get_ticket" || call["arguments"] != `{"id":"T-1"}` {
+		t.Fatalf("function_call output = %#v", call)
+	}
+	if got["created_at"] == nil {
+		t.Fatalf("created_at missing from responses body: %#v", got)
+	}
+	usage := got["usage"].(map[string]interface{})
+	if usage["input_tokens"] != float64(2) || usage["output_tokens"] != float64(3) || usage["total_tokens"] != float64(5) {
+		t.Fatalf("usage = %#v, want responses token fields", usage)
+	}
+}
+
+func TestOpenAICompatResponsesRequestToChatAcceptsNestedFunctionToolChoice(t *testing.T) {
+	body := map[string]interface{}{
+		"model": "test-model",
+		"input": "call tool",
+		"tools": []interface{}{map[string]interface{}{
+			"type":        "function",
+			"name":        "get_ticket",
+			"description": "get ticket",
+			"parameters":  map[string]interface{}{"type": "object"},
+		}},
+		"tool_choice": map[string]interface{}{
+			"type":     "function",
+			"function": map[string]interface{}{"name": "get_ticket"},
+		},
+	}
+	chat, _, err := OpenAICompatResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert request: %v", err)
+	}
+	toolChoice := chat["tool_choice"].(map[string]interface{})
+	fn := toolChoice["function"].(map[string]interface{})
+	if toolChoice["type"] != "function" || fn["name"] != "get_ticket" {
+		t.Fatalf("tool_choice = %#v, want nested function get_ticket", toolChoice)
+	}
+}
+
+func TestOpenAICompatResponsesRequestToChatDropsResponsesOnlyFields(t *testing.T) {
+	body := map[string]interface{}{
+		"model":                "test-model",
+		"input":                "hello",
+		"metadata":             map[string]interface{}{"trace": "x"},
+		"store":                true,
+		"parallel_tool_calls":  true,
+		"previous_response_id": "resp_prev",
+		"temperature":          0.2,
+	}
+	chat, _, err := OpenAICompatResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert request: %v", err)
+	}
+	for _, key := range []string{"metadata", "store", "parallel_tool_calls", "previous_response_id"} {
+		if _, ok := chat[key]; ok {
+			t.Fatalf("%s leaked to chat request: %#v", key, chat)
+		}
+	}
+	if chat["temperature"] != 0.2 {
+		t.Fatalf("temperature = %#v, want passthrough", chat["temperature"])
+	}
+}
+
+func TestOpenAICompatResponsesRequestToChatHandlesSingleContentBlockObject(t *testing.T) {
+	body := map[string]interface{}{
+		"model": "test-model",
+		"input": []interface{}{map[string]interface{}{
+			"type": "message",
+			"role": "user",
+			"content": map[string]interface{}{
+				"type": "input_text",
+				"text": "single block",
+			},
+		}},
+	}
+	chat, _, err := OpenAICompatResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert request: %v", err)
+	}
+	messages := chat["messages"].([]interface{})
+	user := messages[0].(map[string]interface{})
+	content := user["content"].([]interface{})
+	if len(content) != 1 {
+		t.Fatalf("content = %#v, want one text block", content)
+	}
+	block := content[0].(map[string]interface{})
+	if block["type"] != "text" || block["text"] != "single block" {
+		t.Fatalf("content block = %#v, want text single block", block)
+	}
+}
+
+func TestOpenAICompatResponsesRequestToChatHandlesSingleImageBlockObject(t *testing.T) {
+	body := map[string]interface{}{
+		"model": "test-model",
+		"input": []interface{}{map[string]interface{}{
+			"type": "message",
+			"role": "user",
+			"content": map[string]interface{}{
+				"type":      "input_image",
+				"image_url": "data:image/png;base64,xx",
+				"detail":    "low",
+			},
+		}},
+	}
+	chat, _, err := OpenAICompatResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert request: %v", err)
+	}
+	messages := chat["messages"].([]interface{})
+	user := messages[0].(map[string]interface{})
+	content := user["content"].([]interface{})
+	if len(content) != 1 {
+		t.Fatalf("content = %#v, want one image block", content)
+	}
+	block := content[0].(map[string]interface{})
+	image := block["image_url"].(map[string]interface{})
+	if block["type"] != "image_url" || image["url"] != "data:image/png;base64,xx" || image["detail"] != "low" {
+		t.Fatalf("image block = %#v", block)
+	}
+}
+
+func TestHandleResponses_PreservesUserContentBlocksForChatUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		messages := body["messages"].([]interface{})
+		user := messages[0].(map[string]interface{})
+		content := user["content"].([]interface{})
+		if len(content) != 2 {
+			t.Fatalf("content blocks = %#v, want text + image", content)
+		}
+		text := content[0].(map[string]interface{})
+		if text["type"] != "text" || text["text"] != "look" {
+			t.Fatalf("text block = %#v", text)
+		}
+		image := content[1].(map[string]interface{})
+		if image["type"] != "image_url" {
+			t.Fatalf("image block = %#v", image)
+		}
+		imageURL := image["image_url"].(map[string]interface{})
+		if imageURL["url"] != "data:image/png;base64,xx" || imageURL["detail"] != "low" {
+			t.Fatalf("image_url = %#v", imageURL)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-test","object":"chat.completion","model":"test-model","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+
+	p := NewOpenAIProxy(OpenAIProxyConfig{URL: upstream.URL, Key: "sk-test", Model: "test-model"})
+	port, err := p.Start()
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer p.Stop()
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	body := `{"model":"test-model","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"look"},{"type":"input_image","image_url":"data:image/png;base64,xx","detail":"low"}]}]}`
+	resp, err := http.Post(baseURL+"/v1/responses", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("responses status = %d body=%s", resp.StatusCode, data)
 	}
 }
 
@@ -1511,6 +1901,38 @@ func TestOpenAIToAnthropicNormalizesMissingToolCallLinkage(t *testing.T) {
 	}
 	if toolResult["content"] != `{"ok":true}` {
 		t.Fatalf("tool_result content = %#v", toolResult["content"])
+	}
+}
+
+func TestOpenAIToAnthropicUsesToolBudgetWhenMaxTokensMissing(t *testing.T) {
+	req := openaiToAnthropic(map[string]interface{}{
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		"tools": []interface{}{map[string]interface{}{
+			"type":        "function",
+			"name":        "run_command",
+			"description": "run command",
+			"parameters":  map[string]interface{}{"type": "object"},
+		}},
+	}, "claude-compat")
+
+	if req["max_tokens"] != 8192 {
+		t.Fatalf("max_tokens = %#v, want 8192 for tool request", req["max_tokens"])
+	}
+	tools := req["tools"].([]map[string]interface{})
+	if len(tools) != 1 || tools[0]["name"] != "run_command" || tools[0]["description"] != "run command" {
+		t.Fatalf("anthropic tools = %#v, want flat OpenAI tool converted", req["tools"])
+	}
+	if schema := tools[0]["input_schema"].(map[string]interface{}); schema["type"] != "object" {
+		t.Fatalf("anthropic input_schema = %#v", schema)
+	}
+
+	req = openaiToAnthropic(map[string]interface{}{
+		"messages":   []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		"tools":      []interface{}{map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": "run_command"}}},
+		"max_tokens": float64(123),
+	}, "claude-compat")
+	if req["max_tokens"] != float64(123) {
+		t.Fatalf("max_tokens override = %#v, want 123", req["max_tokens"])
 	}
 }
 

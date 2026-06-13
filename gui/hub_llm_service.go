@@ -136,6 +136,28 @@ type HubLLMActiveGrant struct {
 	RetryAfterSeconds int64   `json:"retry_after_seconds,omitempty"`
 	RetryAfterAt      string  `json:"retry_after_at,omitempty"`
 	CreditsRemaining  float64 `json:"credits_remaining,omitempty"`
+	PeriodLimits      *HubLLMPeriodLimits `json:"period_limits,omitempty"`
+	PeriodUsage       *HubLLMPeriodUsage  `json:"period_usage,omitempty"`
+}
+
+type HubLLMPeriodLimits struct {
+	FiveHour float64 `json:"five_hour,omitempty"`
+	Daily    float64 `json:"daily,omitempty"`
+	Weekly   float64 `json:"weekly,omitempty"`
+	Monthly  float64 `json:"monthly,omitempty"`
+}
+
+type HubLLMPeriodUsageWindow struct {
+	WindowStart string  `json:"window_start,omitempty"`
+	WindowEnd   string  `json:"window_end,omitempty"`
+	CreditsUsed float64 `json:"credits_used,omitempty"`
+}
+
+type HubLLMPeriodUsage struct {
+	FiveHour HubLLMPeriodUsageWindow `json:"five_hour,omitempty"`
+	Daily    HubLLMPeriodUsageWindow `json:"daily,omitempty"`
+	Weekly   HubLLMPeriodUsageWindow `json:"weekly,omitempty"`
+	Monthly  HubLLMPeriodUsageWindow `json:"monthly,omitempty"`
 }
 
 type HubLLMServiceStatus struct {
@@ -550,11 +572,15 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 		cfg.MaclawLLMCurrentProvider = canonicalCurrent
 		changed = true
 	}
-	if cfg.MaclawLLMCurrentProvider == "" || cfg.MaclawLLMCurrentProvider == hubServiceProviderName || !a.isMaclawLLMConfiguredWithConfig(*cfg) {
+	if cfg.MaclawLLMCurrentProvider == "" || cfg.MaclawLLMCurrentProvider == hubServiceProviderName {
 		if cfg.MaclawLLMCurrentProvider != hubServiceProviderName {
 			cfg.MaclawLLMCurrentProvider = hubServiceProviderName
 			changed = true
 		}
+	} else {
+		// User has selected a third-party provider — respect their choice.
+		// Only forceCurrentProvider (ActivateRemote) can override this.
+		log.Printf("[hub-llm-sync] respecting user provider choice: %q (not overriding to hub)", cfg.MaclawLLMCurrentProvider)
 	}
 	if cfg.MaclawLLMUrl != provider.URL || cfg.MaclawLLMKey != provider.Key || cfg.MaclawLLMModel != provider.Model || cfg.MaclawLLMProtocol != provider.Protocol || cfg.MaclawLLMTimeoutSec != provider.TimeoutSec || cfg.MaclawLLMContextLength != provider.ContextLength {
 		cfg.MaclawLLMUrl = provider.URL

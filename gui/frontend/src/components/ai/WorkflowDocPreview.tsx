@@ -197,6 +197,10 @@ export const phaseLabels: Record<string, string> = {
     task_breakdown: "任务拆分",
     implementation: "编码实现",
     review: "代码审查",
+    // Maintenance workflow (lightweight coding)
+    maint_analysis: "影响分析与方案",
+    maint_execution: "执行改造",
+    maint_verification: "验证确认",
     // Product design workflow
     problem_discovery: "问题发现",
     solution_design: "方案设计",
@@ -316,6 +320,43 @@ export const phaseLabels: Record<string, string> = {
     cj_plan_feasibility: "研究计划可行性评估",
     cj_narrative_quality: "材料撰写质量评估",
     cj_improvement_report: "综合评估与修改建议报告",
+    // NSFC Distinguished Youth Fund (杰青) application workflow
+    dy_eligibility: "申请人资质与条件评估",
+    dy_research_foundation: "研究工作基础与学术贡献",
+    dy_research_proposal: "研究方案与创新点",
+    dy_outcomes_budget: "预期成果与经费预算",
+    dy_final_assembly: "申请书整合与润色",
+    // NSFC Excellent Young Scientists Fund (优青) application workflow
+    ey_eligibility: "申请人资质与条件评估",
+    ey_research_accumulation: "研究积累与发展潜力",
+    ey_research_proposal: "研究方案与关键科学问题",
+    ey_outcomes_budget: "预期成果与经费预算",
+    ey_final_assembly: "申请书整合与润色",
+    // NSFC Youth Science Fund (青基) application workflow
+    yf_rationale: "立项依据与研究内容",
+    yf_foundation: "研究基础与可行性",
+    yf_methodology: "研究方案与技术路线",
+    yf_budget: "经费预算",
+    yf_final_assembly: "申请书整合与润色",
+    // NSFC General Program (面上项目) application workflow
+    gp_rationale: "立项依据与研究内容",
+    gp_foundation: "研究基础与工作条件",
+    gp_methodology: "研究方案与技术路线",
+    gp_budget: "经费预算与年度计划",
+    gp_final_assembly: "申请书整合与润色",
+    // NSFC Key Program (重点项目) application workflow
+    kp_strategic_rationale: "战略需求与科学问题凝练",
+    kp_team_foundation: "研究团队与工作基础",
+    kp_research_plan: "研究方案与课题设置",
+    kp_budget_management: "经费预算与管理计划",
+    kp_final_assembly: "申请书整合与润色",
+    // Paper reproduction workflow
+    paper_analysis: "论文深度解读",
+    reproduction_plan: "复现规划",
+    env_and_data: "环境搭建与数据准备",
+    baseline_reproduction: "基线实验复现",
+    iterative_improvement: "迭代改进",
+    experiment_report: "实验报告",
     // Legacy aliases (canonical ids -> generated names, kept consistent with the above)
     design: "技术设计",
     tasks: "任务拆分",
@@ -369,6 +410,7 @@ export const workflowPhaseOrders: Record<string, string[]> = {
     due_diligence: ["target_profiling", "business_dd", "financial_dd", "legal_dd", "dd_conclusion"],
     compliance_audit: ["audit_scope", "compliance_assessment", "risk_rating", "remediation_plan", "audit_report"],
     patent_analysis: ["tech_disclosure", "prior_art_search", "infringement_assessment", "strategy_recommendation", "patent_report"],
+    paper_reproduction: ["paper_analysis", "reproduction_plan", "env_and_data", "baseline_reproduction", "iterative_improvement", "experiment_report"],
 };
 
 // fallbackNonDocumentPhaseIDs is re-exported from workflowPhase.ts (the single
@@ -939,7 +981,7 @@ function renderDocTable(tableLines: string[], key: string, theme: DocPreviewThem
 }
 
 function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
-    const lines = md.split("\n");
+    const lines = md.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
     const nodes: React.ReactNode[] = [];
     let i = 0;
     let listItems: string[] = [];

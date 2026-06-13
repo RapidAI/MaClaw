@@ -45,7 +45,7 @@ func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, i
 	// Build a set of tool names currently available.
 	currentNames := make(map[string]bool, len(currentTools))
 	for _, t := range currentTools {
-		if name, ok := t["name"].(string); ok {
+		if name := extractToolName(t); name != "" {
 			currentNames[name] = true
 		}
 	}
@@ -53,8 +53,8 @@ func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, i
 	// Find tools in the injection routing result that are missing from current.
 	var added []string
 	for _, t := range injectionRouted {
-		name, ok := t["name"].(string)
-		if !ok || name == "" {
+		name := extractToolName(t)
+		if name == "" {
 			continue
 		}
 		if currentNames[name] {
@@ -88,9 +88,11 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 }
 
 // findToolDef finds a tool definition by name in a tool list.
+// Supports both flat format ({"name": "x"}) and OpenAI nested format
+// ({"type": "function", "function": {"name": "x"}}).
 func findToolDef(tools []map[string]interface{}, name string) map[string]interface{} {
 	for _, t := range tools {
-		if n, ok := t["name"].(string); ok && n == name {
+		if n := extractToolName(t); n == name {
 			return t
 		}
 	}
@@ -157,7 +159,7 @@ func (h *IMMessageHandler) augmentToolsFromSessionPins(ctx *LoopContext, userID 
 	// Build set of currently visible tool names.
 	currentNames := make(map[string]bool, len(currentTools))
 	for _, t := range currentTools {
-		if name, ok := t["name"].(string); ok {
+		if name := extractToolName(t); name != "" {
 			currentNames[name] = true
 		}
 	}
@@ -190,7 +192,26 @@ func (h *IMMessageHandler) augmentToolsFromSessionPins(ctx *LoopContext, userID 
 		}
 		currentTools = stripExecutionContractMetadataForLLM(currentTools)
 		currentBudget = estimateToolsTokens(currentTools)
-		log.Printf("[session-pin-augment] added %d session-pinned tools to LLM tool list: %v", len(added), added)
+
+		// Log which tools actually ended up in the final list (some may have
+		// been removed by the workflow filter).
+		var effective []string
+		finalNames := make(map[string]bool, len(currentTools))
+		for _, t := range currentTools {
+			if n := extractToolName(t); n != "" {
+				finalNames[n] = true
+			}
+		}
+		for _, name := range added {
+			if finalNames[name] {
+				effective = append(effective, name)
+			}
+		}
+		if len(effective) > 0 {
+			log.Printf("[session-pin-augment] added %d session-pinned tools to LLM tool list: %v", len(effective), effective)
+		} else {
+			log.Printf("[session-pin-augment] %d session-pinned tools discovered but filtered by workflow policy: %v", len(added), added)
+		}
 	}
 
 	return currentTools, currentBudget

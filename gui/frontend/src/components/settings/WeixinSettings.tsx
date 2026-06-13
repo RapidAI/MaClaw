@@ -81,7 +81,7 @@ export const WeixinSettings = ({
                                 LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                             }).catch((err: any) => {
                                 setWeixinLocalModeState(prev);
-                                alert(err?.message || err || switchFailedLabel);
+                                alert(err?.message || err || switchFailedLabel(lang));
                             });
                         }}
                     >

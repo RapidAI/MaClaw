@@ -7,6 +7,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 func TestResolveExperienceProviderForAttributionDoesNotUseLastIMUserID(t *testing.T) {
@@ -16,7 +17,10 @@ func TestResolveExperienceProviderForAttributionDoesNotUseLastIMUserID(t *testin
 	}
 	defer store.Stop()
 
+	v2Reg := v2.NewTemplateRegistry()
+	v2.RegisterBuiltinTemplates(v2Reg)
 	registry := workflow.NewWorkflowRegistry()
+	registerV2TemplatesIntoV1Registry(registry, v2Reg)
 	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, nil, registry)
 	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
 	remoteOwnerID := "project-tab:remote-workflow"

@@ -22,7 +22,7 @@ func DefaultDefinitions() []IntentDefinition {
 			Label:              LabelCoding,
 			Domain:             "编码开发 (Coding)",
 			MayTriggerWorkflow: true, // coding workflow (needs → design → tasks → implement → review)
-			WorkflowTypes:      []string{"coding"},
+			WorkflowTypes:      []string{"coding", "maintenance"},
 			TreeText: "用户要从零创建软件/应用/游戏/工具/脚本，需要完整开发流程。" +
 				"语义判据：用户目标是创建、实现或修改软件系统、代码、游戏、前端或后端能力。",
 			EmbedTexts: []string{

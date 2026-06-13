@@ -164,7 +164,9 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	var filteredBufResp strings.Builder
 	filteredOnTokenResp := func(delta string) {
 		filteredBufResp.WriteString(delta)
-		onToken(delta)
+		if onToken != nil {
+			onToken(delta)
+		}
 	}
 	rpfResp := newRolePrefixStreamFilter(filteredOnTokenResp)
 	repfResp := newRepetitionFilter(rpfResp.Write)

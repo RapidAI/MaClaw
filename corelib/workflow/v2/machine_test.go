@@ -1,7 +1,10 @@
 package v2
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func setupTestMachine() *StateMachine {
@@ -74,6 +77,80 @@ func TestRecordOutput_TransitionsToWaitingConfirm(t *testing.T) {
 	}
 	if state.ActivePhase().Output == "" {
 		t.Fatal("output not saved")
+	}
+}
+
+func TestRecordOutput_SanitizesGLMContentToolCallProtocol(t *testing.T) {
+	m := setupTestMachine()
+	m.Create("user1", "coding", "d:\\project", "build app")
+
+	raw := "我来生成文档。\n<details><summary>思考过程</summary>hidden</details>\n<tool_call[]>\n" +
+		`{"name":"write_file","arguments":{"file_path":"d:\\project\\docs\\requirements.md","content":"# 需求文档\n\n## 功能需求\n- 登录"}}`
+	if err := m.RecordOutput("user1", raw); err != nil {
+		t.Fatalf("RecordOutput failed: %v", err)
+	}
+
+	state := m.GetActive("user1")
+	got := state.ActivePhase().Output
+	if got != "# 需求文档\n\n## 功能需求\n- 登录" {
+		t.Fatalf("output = %q", got)
+	}
+	if strings.Contains(got, "<tool_call") || strings.Contains(got, "<details") || strings.Contains(got, "hidden") || strings.Contains(got, "write_file") {
+		t.Fatalf("protocol leaked into output: %q", got)
+	}
+}
+
+func TestRecordOutput_StripsGLMProtocolWhenToolContentNotUsable(t *testing.T) {
+	m := setupTestMachine()
+	m.Create("user1", "coding", "d:\\project", "build app")
+
+	raw := "可见内容\n<details><summary>思考过程</summary>hidden</details>\n<tool_call[]>\n" +
+		`{"name":"unknown","arguments":{"content":"ignored"}}`
+	if err := m.RecordOutput("user1", raw); err != nil {
+		t.Fatalf("RecordOutput failed: %v", err)
+	}
+
+	got := m.GetActive("user1").ActivePhase().Output
+	if got != "可见内容" {
+		t.Fatalf("output = %q, want visible content only", got)
+	}
+}
+
+func TestSanitizePhaseOutput_ExtractsDocContentForPhaseAliases(t *testing.T) {
+	raw := "writing\n<tool_call[]>\n" +
+		`{"name":"write_file","arguments":{"file_path":"d:\\project\\docs\\task-breakdown.md","content":"# Task Breakdown\n\n- T1"}}`
+
+	got := SanitizePhaseOutput("task_breakdown", raw)
+	if got != "# Task Breakdown\n\n- T1" {
+		t.Fatalf("SanitizePhaseOutput() = %q", got)
+	}
+}
+
+func TestSanitizePhaseOutputFromToolCalls_ExtractsWriteFileContent(t *testing.T) {
+	got := SanitizePhaseOutputFromToolCalls("Task_Breakdown", []llm.ToolCall{{
+		Function: llm.ToolCallFunction{
+			Name:      "Write",
+			Arguments: `{"file_path":"d:\\project\\docs\\tasks.md","content":"# Tasks\n\n- T1"}`,
+		},
+	}})
+	if got != "# Tasks\n\n- T1" {
+		t.Fatalf("SanitizePhaseOutputFromToolCalls() = %q", got)
+	}
+}
+
+func TestSanitizePhaseOutputFromToolCalls_ExtractsBroadDocPhasesButNotExecutionPhases(t *testing.T) {
+	calls := []llm.ToolCall{{
+		Function: llm.ToolCallFunction{
+			Name:      "write_file",
+			Arguments: `{"file_path":"d:\\project\\docs\\trend.md","content":"# Trend\n\n- item"}`,
+		},
+	}}
+
+	if got := SanitizePhaseOutputFromToolCalls("trend_analysis", calls); got != "# Trend\n\n- item" {
+		t.Fatalf("trend_analysis output = %q", got)
+	}
+	if got := SanitizePhaseOutputFromToolCalls("implementation", calls); got != "" {
+		t.Fatalf("implementation output = %q, want empty", got)
 	}
 }
 
@@ -202,7 +279,6 @@ func TestNoActiveWorkflow_PassesThrough(t *testing.T) {
 	}
 }
 
-
 func TestClassifyConfirmIntentKeyword_ShortConfirm(t *testing.T) {
 	tests := []struct {
 		input string
@@ -218,9 +294,9 @@ func TestClassifyConfirmIntentKeyword_ShortConfirm(t *testing.T) {
 		{"嗯", "unrelated"},
 		{".", "unrelated"},
 		{"加一个登录功能", "modify"},
-		{"继续完善，加一个登录功能", "modify"},  // >8 runes, not short enough for confirm
+		{"继续完善，加一个登录功能", "modify"}, // >8 runes, not short enough for confirm
 		{"把技术栈换成React", "modify"},
-		{"帮我查天气", "modify"},  // >4 runes but unrelated, keyword fallback is conservative
+		{"帮我查天气", "modify"}, // >4 runes but unrelated, keyword fallback is conservative
 	}
 	for _, tc := range tests {
 		got := ClassifyConfirmIntentKeyword(tc.input)
@@ -241,7 +317,7 @@ func TestParseConfirmClassifierResponse(t *testing.T) {
 		{`{"intent": "unrelated"}`, "unrelated"},
 		{"```json\n{\"intent\": \"modify\"}\n```", "modify"},
 		{"confirm", "confirm"},
-		{"I think this is a modification", ""},  // "modification" != "modify" substring
+		{"I think this is a modification", ""}, // "modification" != "modify" substring
 		{"random garbage", ""},
 	}
 	for _, tc := range tests {
@@ -251,7 +327,6 @@ func TestParseConfirmClassifierResponse(t *testing.T) {
 		}
 	}
 }
-
 
 func TestHandleInput_ClassifierUnavailable_PassesThrough(t *testing.T) {
 	store := NewMemoryStore()

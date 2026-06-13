@@ -134,7 +134,7 @@ func (c *loopCycleCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 
 	sb.WriteString("## Available Tools\n\n")
 	sb.WriteString("- `read_file`: Read file contents\n")
-	sb.WriteString("- `write_file`: Create or overwrite a file\n")
+	sb.WriteString("- `write_file`: Create or overwrite a file; split content over 1800 characters into overwrite + append chunks\n")
 	sb.WriteString("- `edit_file`: Make targeted edits to an existing file\n")
 	sb.WriteString("- `bash`: Run shell commands (for exploration, NOT for running the verify command)\n")
 	sb.WriteString("- `list_directory`: List directory contents\n")
@@ -161,12 +161,12 @@ func (c *loopCycleCallbacks) BuildTools(userText string) []map[string]interface{
 			},
 			"required": []string{"path"},
 		}),
-		tooldef.BuildToolDef("write_file", "Create or overwrite a file with the given content.", map[string]interface{}{
+		tooldef.BuildToolDef("write_file", "Create or overwrite a file with the given content. For content over 1800 characters, split into multiple calls: overwrite first, append later chunks.", map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"path":    map[string]interface{}{"type": "string", "description": "File path to write"},
-				"content": map[string]interface{}{"type": "string", "description": "File content"},
-				"mode":    map[string]interface{}{"type": "string", "description": "Write mode: overwrite (default) or append"},
+				"content": map[string]interface{}{"type": "string", "description": "File content. Keep each call under 1800 characters; split large files into overwrite + append chunks.", "maxLength": codingSubAgentInlineContentLimit},
+				"mode":    map[string]interface{}{"type": "string", "description": "Write mode: overwrite for first chunk, append for later chunks."},
 			},
 			"required": []string{"path", "content"},
 		}),
@@ -174,8 +174,8 @@ func (c *loopCycleCallbacks) BuildTools(userText string) []map[string]interface{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"path":        map[string]interface{}{"type": "string", "description": "File path to edit"},
-				"old_content": map[string]interface{}{"type": "string", "description": "Exact text to find"},
-				"new_content": map[string]interface{}{"type": "string", "description": "Replacement text"},
+				"old_content": map[string]interface{}{"type": "string", "description": "Exact text to find. Keep under 1800 characters; split large edits into smaller calls.", "maxLength": codingSubAgentInlineContentLimit},
+				"new_content": map[string]interface{}{"type": "string", "description": "Replacement text. Keep under 1800 characters; split large edits into smaller calls.", "maxLength": codingSubAgentInlineContentLimit},
 			},
 			"required": []string{"path", "old_content", "new_content"},
 		}),

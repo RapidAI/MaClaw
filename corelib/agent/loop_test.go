@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 )
 
@@ -30,6 +31,7 @@ type mockCallbacks struct {
 	callReason  string
 	tokens      []string
 	toolCalls   []string
+	toolArgs    []string
 	toolEvents  []string
 	stopped     bool
 }
@@ -40,6 +42,7 @@ func (m *mockCallbacks) BuildSystemPrompt(string, bool) string      { return m.s
 func (m *mockCallbacks) BuildTools(string) []map[string]interface{} { return m.tools }
 func (m *mockCallbacks) ExecuteTool(name, args string) string {
 	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
 	return m.toolResult
 }
 func (m *mockCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
@@ -47,6 +50,7 @@ func (m *mockCallbacks) ExecuteToolStructured(name, args string) ToolExecutionRe
 		return ToolExecutionResult{Result: m.ExecuteTool(name, args), Outcome: executionOutcomeFromToolOutcome(classifyToolResult(m.toolResult).kind)}
 	}
 	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
 	return ToolExecutionResult{Result: m.toolResult, Outcome: m.toolOutcome}
 }
 func (m *mockCallbacks) IsToolAllowed(name string) bool {
@@ -175,6 +179,215 @@ func TestRunLoop_NoToolCalls_ReturnsFinalText(t *testing.T) {
 	}
 	if cb.tokens[0] != "Hello! How can I help?" {
 		t.Fatalf("OnToken delta mismatch: %q", cb.tokens[0])
+	}
+}
+
+func TestRunLoop_InvalidToolArgumentsAreNotExecutedAndRecover(t *testing.T) {
+	var requestCount atomic.Int64
+	var sawRecoveryPrompt atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := requestCount.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if n == 1 {
+			resp := map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]interface{}{{
+							"id":   "call_bad",
+							"type": "function",
+							"function": map[string]interface{}{
+								"name":      "write_file",
+								"arguments": `{"path":"a.txt","content":"unterminated`,
+							},
+						}},
+					},
+					"finish_reason": "tool_calls",
+				}},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		for _, msg := range req.Messages {
+			if msg["role"] == "user" && strings.Contains(fmt.Sprint(msg["content"]), "Previous tool call arguments were incomplete") {
+				sawRecoveryPrompt.Store(true)
+			}
+			if _, ok := msg["tool_call_id"]; ok {
+				t.Fatalf("invalid JSON tool call should not create tool-result history: %#v", req.Messages)
+			}
+		}
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "recovered"},
+				"finish_reason": "stop",
+			}},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:    3,
+		sysPrompt:  "You are a coding agent.",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("write_file", "Write file", map[string]interface{}{"type": "object"})},
+		toolResult: "should not run",
+	}
+
+	result := RunLoop(cb, "write file", nil, nil)
+	if result.Error != "" || result.Text != "recovered" {
+		t.Fatalf("RunLoop result = %+v, want recovered without error", result)
+	}
+	if len(cb.toolCalls) != 0 {
+		t.Fatalf("tool was executed despite invalid JSON: %v", cb.toolCalls)
+	}
+	if !sawRecoveryPrompt.Load() {
+		t.Fatalf("second request did not receive invalid-JSON recovery prompt")
+	}
+}
+
+func TestInvalidLoopToolArgumentNamesCatchesUnmarkedBadJSON(t *testing.T) {
+	calls := []llm.ToolCall{
+		{
+			ID:   "call_bad",
+			Type: "function",
+			Function: struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}{Name: "edit_file", Arguments: `{"new_string":"unterminated`},
+		},
+		{
+			ID:   "call_array",
+			Type: "function",
+			Function: struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}{Name: "bash", Arguments: `[]`},
+		},
+		{
+			ID:   "call_null",
+			Type: "function",
+			Function: struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}{Name: "write_file", Arguments: `null`},
+		},
+		{
+			ID:   "call_ok",
+			Type: "function",
+			Function: struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}{Name: "read_file", Arguments: `{"path":"main.go"}`},
+		},
+	}
+	got := invalidLoopToolArgumentNames(calls)
+	if len(got) != 3 || got[0] != "edit_file" || got[1] != "bash" || got[2] != "write_file" {
+		t.Fatalf("invalidLoopToolArgumentNames = %#v, want edit_file, bash, write_file", got)
+	}
+}
+
+func TestRunLoop_TruncatedToolCallInjectsRecoveryWithoutExecuting(t *testing.T) {
+	var requestCount atomic.Int64
+	var sawRecoveryPrompt atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := requestCount.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if n == 1 {
+			fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"a.txt\",\"content\":\"unterminated"}}]},"finish_reason":null}]}`+"\n\n")
+			fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"length"}]}`+"\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		for _, msg := range req.Messages {
+			if msg["role"] == "user" && strings.Contains(fmt.Sprint(msg["content"]), "Previous tool call arguments were incomplete") && strings.Contains(fmt.Sprint(msg["content"]), "write_file.content <= 1800") {
+				sawRecoveryPrompt.Store(true)
+			}
+			if _, ok := msg["tool_call_id"]; ok {
+				t.Fatalf("truncated tool call should not create tool-result history: %#v", req.Messages)
+			}
+		}
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"recovered after truncation"},"finish_reason":null}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:    3,
+		sysPrompt:  "You are a coding agent.",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("write_file", "Write file", map[string]interface{}{"type": "object"})},
+		toolResult: "should not run",
+	}
+
+	result := RunLoop(cb, "write file", nil, server.Client())
+	if result.Error != "" || result.Text != "recovered after truncation" {
+		t.Fatalf("RunLoop result = %+v, want recovered without error", result)
+	}
+	if len(cb.toolCalls) != 0 {
+		t.Fatalf("tool was executed despite truncation: %v", cb.toolCalls)
+	}
+	if !sawRecoveryPrompt.Load() {
+		t.Fatalf("second request did not receive truncation recovery prompt")
+	}
+}
+
+func TestRunLoop_EmptyToolArgumentsNormalizeToObject(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": "",
+					"tool_calls": []map[string]interface{}{{
+						"id":   "call_empty",
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      "noop",
+							"arguments": "",
+						},
+					}},
+				},
+				"finish_reason": "tool_calls",
+			}},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:    1,
+		sysPrompt:  "sys",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("noop", "Noop", map[string]interface{}{"type": "object"})},
+		toolResult: "ok",
+	}
+
+	result := RunLoop(cb, "call noop", nil, nil)
+	if result.Error != "max iterations reached" {
+		t.Fatalf("RunLoop error = %q, want max iterations after tool execution", result.Error)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "noop" {
+		t.Fatalf("tool calls = %#v, want noop executed", cb.toolCalls)
+	}
+	if len(cb.toolArgs) != 1 || cb.toolArgs[0] != "{}" {
+		t.Fatalf("tool args = %#v, want normalized empty args to {}", cb.toolArgs)
 	}
 }
 

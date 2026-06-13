@@ -14,7 +14,8 @@ const maxTruncationRetries = 3
 const maxEssentialTruncationHints = 1
 
 const (
-	maxAgentLoopInlineWriteFileContentRunes = 3000
+	maxAgentLoopInlineWriteFileContentRunes = 1800
+	maxAgentLoopInlineEditContentRunes      = 1800
 	maxAgentLoopInlineBashCommandRunes      = 4000
 	maxAgentLoopInlineSSHCommandRunes       = 4000
 )
@@ -283,7 +284,7 @@ func buildTruncationRetryHint(truncatedList string, tools []map[string]interface
 }
 
 func agentLoopInlinePayloadLimitInstruction() string {
-	return fmt.Sprintf("Respect inline payload limits: write_file.content <= %d runes per call and bash.command <= %d runes per call.", maxAgentLoopInlineWriteFileContentRunes, maxAgentLoopInlineBashCommandRunes)
+	return fmt.Sprintf("Respect inline payload limits: write_file.content <= %d runes per call, edit_file/edit_lines text fields <= %d runes per call, and bash.command <= %d runes per call.", maxAgentLoopInlineWriteFileContentRunes, maxAgentLoopInlineEditContentRunes, maxAgentLoopInlineBashCommandRunes)
 }
 
 func buildTruncationBlockAlternativeInstructions(blocked []string, availableTools []map[string]interface{}) string {

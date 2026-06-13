@@ -1,5 +1,6 @@
 import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
+import { localizeText } from '../../i18n';
 import { CodingAgentSidebarStatus } from './CodingAgentSidebarStatus';
 
 type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
@@ -29,9 +30,7 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
 const STATUS_DOT = String.fromCharCode(0x25cf);
 const CREDIT_SEPARATOR = ` ${String.fromCharCode(0x00b7)} `;
 
-const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' || lang === 'zh' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+const textForLang = localizeText;
 
 const formatRetryAfter = (seconds: number, retryAfterAt: string, lang: string) => {
     let totalSeconds = Number(seconds || 0);

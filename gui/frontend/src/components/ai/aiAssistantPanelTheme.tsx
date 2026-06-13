@@ -206,7 +206,6 @@ export const maximizedInlineStyle: React.CSSProperties = {
     width: "100vw",
     height: "100vh",
     minHeight: 0,
-    background: lightTheme.bg,
     textAlign: "left",
     boxShadow: "0 0 40px rgba(0,0,0,0.12)",
     overflow: "hidden",

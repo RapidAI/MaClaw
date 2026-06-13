@@ -23,6 +23,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
@@ -431,6 +432,34 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		contentAuditConfigProvider,
 	)
 	imAdapter.SetContentAuditor(contentAuditor)
+
+	// --- MaClaw Official LLM Provider module ---
+	hubCenterURL := cfg.Center.BaseURL
+	hubID := ""
+	hubSecret := ""
+	if regState, err := centerService.Status(context.Background()); err == nil && regState != nil {
+		hubID = regState.HubID
+	}
+	// hub_secret is stored in center_registration system setting
+	if raw, err := st.System.Get(context.Background(), "center_registration"); err == nil && raw != "" {
+		var regRec struct {
+			HubSecret string `json:"hub_secret"`
+		}
+		_ = json.Unmarshal([]byte(raw), &regRec)
+		hubSecret = regRec.HubSecret
+	}
+	maclawMod := llmservice.InitMaClawModule(hubCenterURL, hubID, hubSecret, func() []string {
+		tenants, _ := st.Tenants.List(context.Background())
+		ids := make([]string, 0, len(tenants))
+		for _, t := range tenants {
+			ids = append(ids, t.ID)
+		}
+		return ids
+	})
+	if maclawMod != nil {
+		httpapi.SetMaClawModule(maclawMod)
+	}
+	llmservice.EnsureRegistryBuiltins(context.Background(), st.System)
 
 	router := httpapi.NewRouter(
 		adminService,

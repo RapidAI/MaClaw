@@ -480,7 +480,7 @@ func TestTruncationRetryHintStatesHardInlineLimits(t *testing.T) {
 		toolDef("write_file", "write", nil, nil),
 		toolDef("bash", "shell", nil, nil),
 	})
-	for _, want := range []string{"write_file.content <= 3000", "bash.command <= 4000", "mode=append", "do not embed generated file bodies"} {
+	for _, want := range []string{"write_file.content <= 1800", "bash.command <= 4000", "mode=append", "do not embed generated file bodies"} {
 		if !containsText(got, want) {
 			t.Fatalf("hint %q missing %q", got, want)
 		}

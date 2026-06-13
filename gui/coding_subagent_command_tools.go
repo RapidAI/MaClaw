@@ -140,7 +140,7 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		exitCode = exitErr.ExitCode()
 	}
-	output = appendCodingCommandStatus(output, fmt.Sprintf("command exited with code %d", exitCode))
+	output = appendCodingCommandExitStatus(output, exitCode)
 	return codingCommandExecutionResult{Text: output, Kind: codingCommandResultExitError, ExitCode: exitCode}
 }
 
@@ -199,6 +199,15 @@ func appendCodingCommandStatus(output, status string) string {
 	output = strings.TrimRight(output, "\r\n")
 	if output == "" {
 		return status
+	}
+	return output + "\n" + status
+}
+
+func appendCodingCommandExitStatus(output string, exitCode int) string {
+	status := fmt.Sprintf("command exited with code %d", exitCode)
+	output = strings.TrimRight(output, "\r\n")
+	if output == "" {
+		return fmt.Sprintf("%s (no stdout/stderr). Re-run the command without output filters or with broader diagnostics to capture the real error.", status)
 	}
 	return output + "\n" + status
 }

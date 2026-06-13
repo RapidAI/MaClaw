@@ -73,7 +73,7 @@ export const QQBotSettings = ({
                                 LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                             }).catch((err: any) => {
                                 setQQBotLocalModeState(prev);
-                                alert(err?.message || err || switchFailedLabel);
+                                alert(err?.message || err || switchFailedLabel(lang));
                             });
                         }}
                     >

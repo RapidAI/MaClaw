@@ -268,6 +268,38 @@ func TestPromptCacheLookupIsTenantScoped(t *testing.T) {
 	}
 }
 
+func TestPromptCacheDoesNotStoreToolCallResponses(t *testing.T) {
+	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1 << 20})
+	model := &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{"provider-a"}}
+	body := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "use tool"}}}
+	cfg := defaultHubLLMPromptCacheConfig()
+	ctx := withLLMPromptCacheTenant(context.Background(), "tenant_a")
+	resp := []byte(`{"id":"chatcmpl_tool","model":"auto","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_ticket","arguments":"{\"id\":\"T-1\"}"}}]},"finish_reason":"tool_calls"}]}`)
+
+	if err := putCachedAuthorizedModelResponse(ctx, cache, model, body, "auto", resp, http.StatusOK, "provider-a", []string{"group-a"}, corelib.TokenUsageStat{}, cfg); err != nil {
+		t.Fatalf("put tool-call response cache: %v", err)
+	}
+	if cached, _, _, _, _, ok, err := getCachedAuthorizedModelResponse(ctx, cache, model, body, "auto", cfg); err != nil || ok || len(cached) != 0 {
+		t.Fatalf("tool-call response unexpectedly cached, ok=%v err=%v body=%s", ok, err, string(cached))
+	}
+}
+
+func TestPromptCacheDoesNotStoreResponsesFunctionCalls(t *testing.T) {
+	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1 << 20})
+	model := &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{"provider-a"}}
+	body := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "use tool"}}}
+	cfg := defaultHubLLMPromptCacheConfig()
+	ctx := withLLMPromptCacheTenant(context.Background(), "tenant_a")
+	resp := []byte(`{"id":"resp_tool","object":"response","model":"auto","output":[{"type":"function_call","call_id":"call_1","name":"get_ticket","arguments":"{\"id\":\"T-1\"}"}]}`)
+
+	if err := putCachedAuthorizedModelResponse(ctx, cache, model, body, "auto", resp, http.StatusOK, "provider-a", []string{"group-a"}, corelib.TokenUsageStat{}, cfg); err != nil {
+		t.Fatalf("put responses function_call cache: %v", err)
+	}
+	if cached, _, _, _, _, ok, err := getCachedAuthorizedModelResponse(ctx, cache, model, body, "auto", cfg); err != nil || ok || len(cached) != 0 {
+		t.Fatalf("responses function_call unexpectedly cached, ok=%v err=%v body=%s", ok, err, string(cached))
+	}
+}
+
 func TestForwardAuthorizedModelRequestWithCacheCoalescesConcurrentMisses(t *testing.T) {
 	globalAuthorizedModelRequestFlights = authorizedModelRequestFlightGroup{}
 	var upstreamHits atomic.Int32

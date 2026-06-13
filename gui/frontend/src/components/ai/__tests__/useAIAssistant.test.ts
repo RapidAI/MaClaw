@@ -636,6 +636,30 @@ describe('useAIAssistant property tests', () => {
         expect(remounted.current.messages).toEqual([]);
     });
 
+    it('strips assistant protocol tool-call artifacts from legacy localStorage history', async () => {
+        localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify([
+            { id: 'u-tool', role: 'user', content: '<tool_call[]> keep as user text', timestamp: 1 },
+            {
+                id: 'a-tool',
+                role: 'assistant',
+                content: 'visible\n<details><summary>thinking</summary>hidden</details>\n<tool_call[]>\n{"name":"write_file","arguments":{"path":"a.txt","content":"x"}}',
+                timestamp: 2,
+            },
+            {
+                id: 'a-fn',
+                role: 'assistant',
+                content: '<|FunctionCallBegin|>{"name":"run_command","arguments":{"cmd":"pwd"}}<|FunctionCallEnd|>',
+                timestamp: 3,
+            },
+        ]));
+
+        const { result } = renderAssistantHook();
+
+        expect(result.current.messages.find(m => m.id === 'u-tool')?.content).toBe('<tool_call[]> keep as user text');
+        expect(result.current.messages.find(m => m.id === 'a-tool')?.content).toBe('visible');
+        expect(result.current.messages.find(m => m.id === 'a-fn')?.content).toBe('');
+    });
+
     it('keeps legacy localStorage history when backend UI-state migration fails', async () => {
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
         const persistedMessages = [

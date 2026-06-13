@@ -110,16 +110,17 @@ func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID strin
 			}
 		}
 	}
-	if h.app != nil && h.app.workflowEngine != nil {
-		policy := h.app.workflowEngine.GetActivePhaseToolFilter(policyOwnerID)
-		if policy == workflow.ToolFilterNone {
-			policy = h.app.workflowEngine.GetPhaseToolFilter(policyOwnerID)
-		}
-		if policy != workflow.ToolFilterNone {
-			return policyOwnerID, policy, true
-		}
-		if h.app.workflowEngine.IsPhaseExecutionBlocked(policyOwnerID) {
-			return policyOwnerID, workflow.ToolFilterNone, true
+	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+		if state := wf.machine.GetActive(policyOwnerID); state != nil {
+			if phase := state.ActivePhase(); phase != nil {
+				policy := mapV2ToolPolicyToV1(phase.ToolPolicy)
+				if policy != workflow.ToolFilterNone {
+					return policyOwnerID, policy, true
+				}
+				if phase.Status == v2.PhaseWaitingConfirm {
+					return policyOwnerID, workflow.ToolFilterNone, true
+				}
+			}
 		}
 	}
 	return policyOwnerID, workflow.ToolFilterNone, false

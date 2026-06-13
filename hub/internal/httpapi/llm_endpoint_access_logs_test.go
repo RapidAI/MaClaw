@@ -216,6 +216,90 @@ func TestLLMV1ChatCompletionsHandlerWritesAccessLog(t *testing.T) {
 	}
 }
 
+func TestLLMV1ResponsesHandlerWritesAccessLog(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken := issueViewerTokenForTenant(t, identity, "tenant_a", "responses-log@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	globalLLMEndpointAccessLogAccumulator.mu.Lock()
+	savedPending := globalLLMEndpointAccessLogAccumulator.pending
+	globalLLMEndpointAccessLogAccumulator.pending = map[store.SystemSettingsRepository]*llmEndpointAccessLogStore{}
+	globalLLMEndpointAccessLogAccumulator.mu.Unlock()
+	defer func() {
+		globalLLMEndpointAccessLogAccumulator.mu.Lock()
+		globalLLMEndpointAccessLogAccumulator.pending = savedPending
+		globalLLMEndpointAccessLogAccumulator.mu.Unlock()
+	}()
+	invalidateLLMRuntimeCaches(system)
+
+	tenantSystem := scopedSystemSettingsForTenant("tenant_a", system)
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}},
+		}},
+		UserBindings: []llmservice.UserBinding{{Email: "responses-log@example.com", ServiceGroupIDs: []string{"coding-basic"}}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":    "upstream",
+			"model": "test-model",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "ok"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 7, "completion_tokens": 4, "total_tokens": 11},
+		})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, tenantSystem, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "input": "hello responses access log"})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/responses", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	rec := httptest.NewRecorder()
+	LLMV1ResponsesHandler(identity, system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	logs, err := currentLLMEndpointAccessLogs(ctx, tenantSystem)
+	if err != nil {
+		t.Fatalf("currentLLMEndpointAccessLogs: %v", err)
+	}
+	if logs.TotalRequests != 1 || len(logs.Entries) != 1 {
+		t.Fatalf("logs = total:%d entries:%d", logs.TotalRequests, len(logs.Entries))
+	}
+	entry := logs.Entries[0]
+	if entry.ClientIP != "203.0.113.9" || entry.Email != "responses-log@example.com" {
+		t.Fatalf("unexpected actor log: %+v", entry)
+	}
+	if entry.RequestedModel != "auto" || entry.AuthorizedModel != "auto" || entry.ProviderID != "provider-a" {
+		t.Fatalf("unexpected model/provider log: %+v", entry)
+	}
+	if entry.TotalTokens != 11 || entry.InputTokens != 7 || entry.OutputTokens != 4 {
+		t.Fatalf("unexpected token usage: %+v", entry)
+	}
+	if entry.Metadata["wire_api"] != "responses" {
+		t.Fatalf("metadata wire_api = %#v, want responses", entry.Metadata["wire_api"])
+	}
+}
+
 func TestGetLLMEndpointAccessLogsHandlerSupportsFiltering(t *testing.T) {
 	system := newTestLLMServiceSystemSettings()
 	globalLLMEndpointAccessLogAccumulator.mu.Lock()

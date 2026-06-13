@@ -66,15 +66,136 @@ func (m *mockEngineCallbacksGUI) EmitGateResult(userID, phaseID string, result *
 
 func (m *mockEngineCallbacksGUI) GetLang() string { return "zh" }
 
-func setupWorkflowTestHandler(llm workflow.LLMCaller) (*IMMessageHandler, *mockEngineCallbacksGUI) {
-	registry := workflow.NewWorkflowRegistry()
-	cb := &mockEngineCallbacksGUI{}
-	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, llm, registry)
-	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, cb)
+func setupWorkflowTestHandler(llmCaller workflow.LLMCaller) (*IMMessageHandler, *mockEngineCallbacksGUI) {
+	// V2 infrastructure: MemoryStore (in-memory, no file I/O) + TemplateRegistry + StateMachine.
+	v2Store := v2.NewMemoryStore()
+	v2Registry := v2.NewTemplateRegistry()
+	v2.RegisterBuiltinTemplates(v2Registry)
+	v2Machine := v2.NewStateMachine(v2Store, v2Registry)
 
-	app := &App{workflowEngine: engine}
+	// V1 WorkflowRegistry populated from V2 templates so that existing test
+	// code (h.app.workflowEngine.StartWorkflow) continues to work. The V1
+	// RegisterBuiltinTemplates is intentionally empty (T12); we bridge V2
+	// template data into V1 format here.
+	v1Registry := workflow.NewWorkflowRegistry()
+	registerV2TemplatesIntoV1Registry(v1Registry, v2Registry)
+
+	cb := &mockEngineCallbacksGUI{}
+	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, llmCaller, v1Registry)
+	engine := workflow.NewWorkflowEngine(v1Registry, understanding, workflow.NullStore{}, cb)
+
+	app := &App{
+		workflowEngine: engine,
+		workflowV2: &workflowV2State{
+			machine:  v2Machine,
+			store:    v2Store,
+			registry: v2Registry,
+		},
+	}
 	handler := &IMMessageHandler{app: app, confirmationStore: newAIConfirmationStore("")}
 	return handler, cb
+}
+
+// newPopulatedWorkflowRegistry creates a V1 WorkflowRegistry populated from
+// V2 templates. Standalone tests that create their own V1 engine should use
+// this instead of the empty workflow.NewWorkflowRegistry().
+func newPopulatedWorkflowRegistry() *workflow.WorkflowRegistry {
+	v2Reg := v2.NewTemplateRegistry()
+	v2.RegisterBuiltinTemplates(v2Reg)
+	v1Reg := workflow.NewWorkflowRegistry()
+	registerV2TemplatesIntoV1Registry(v1Reg, v2Reg)
+	return v1Reg
+}
+
+// registerV2TemplatesIntoV1Registry iterates known V2 template types and
+// registers equivalent V1 WorkflowTemplate entries so that V1 engine's
+// StartWorkflow/Match calls succeed in tests.
+func registerV2TemplatesIntoV1Registry(v1Reg *workflow.WorkflowRegistry, v2Reg *v2.TemplateRegistry) {
+	// All known V2 template type strings.
+	knownTypes := []string{
+		"coding", "maintenance", "presentation_design",
+		"product_design", "innovation", "business_plan",
+		"testing", "literature_review", "research_report",
+		"competitive_analysis", "project_proposal", "event_planning",
+		"bid_response", "contract_review", "due_diligence",
+		"compliance_audit", "patent_analysis", "experiment_design",
+		"grant_proposal", "paper_writing", "paper_reproduction",
+	}
+	for _, typ := range knownTypes {
+		v2Tmpl := v2Reg.Get(typ)
+		if v2Tmpl == nil {
+			continue
+		}
+		v1Phases := make([]workflow.PhaseTemplate, 0, len(v2Tmpl.Phases))
+		for _, p := range v2Tmpl.Phases {
+			v1Phases = append(v1Phases, workflow.PhaseTemplate{
+				ID:           p.ID,
+				Name:         p.Name,
+				NeedsConfirm: p.NeedsConfirm,
+				ToolPolicy:   mapV2ToolPolicyToV1Filter(p.ToolPolicy),
+			})
+		}
+		v1Reg.MustRegister(&workflow.WorkflowTemplate{
+			Type:        workflow.WorkflowType(v2Tmpl.Type),
+			Name:        v2Tmpl.Name,
+			Description: v2Tmpl.Description,
+			Keywords:    v2Tmpl.Keywords,
+			Phases:      v1Phases,
+		})
+	}
+
+	// Register V1-only workflow types that exist in tests but not in V2.
+	// These provide minimal phase data for backward compat.
+	registerV1OnlyTestTemplates(v1Reg)
+}
+
+// registerV1OnlyTestTemplates registers workflow types that are used in test
+// code but not (yet) present in V2. These are minimal stubs.
+func registerV1OnlyTestTemplates(v1Reg *workflow.WorkflowRegistry) {
+	// ops_maintenance — used extensively in ops-guard and tool-execution tests.
+	v1Reg.MustRegister(&workflow.WorkflowTemplate{
+		Type: workflow.WorkflowOpsMaintenance,
+		Name: "运维操作",
+		Phases: []workflow.PhaseTemplate{
+			{ID: "ops_intake", Name: "运维需求确认", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+			{ID: "readonly_collection", Name: "信息采集", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+			{ID: "risk_policy", Name: "风险策略", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+			{ID: "controlled_execution", Name: "受控执行", NeedsConfirm: false, ToolPolicy: workflow.ToolFilterOpsControlled},
+			{ID: "verification", Name: "验证", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+		},
+	})
+
+	// changjiang_scholar — used in workflow interception tests.
+	v1Reg.MustRegister(&workflow.WorkflowTemplate{
+		Type: workflow.WorkflowChangjiangScholar,
+		Name: "长江学者申报",
+		Phases: []workflow.PhaseTemplate{
+			{ID: "applicant_info", Name: "申请人信息", Description: "长江学者申请人信息收集", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+			{ID: "research_profile", Name: "科研概况", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+			{ID: "application_doc", Name: "申报材料", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+		},
+	})
+
+	// changjiang_scholar_review — used in persistence test tables.
+	v1Reg.MustRegister(&workflow.WorkflowTemplate{
+		Type: workflow.WorkflowChangjiangScholarReview,
+		Name: "长江学者评审",
+		Phases: []workflow.PhaseTemplate{
+			{ID: "review_criteria", Name: "评审标准", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+		},
+	})
+}
+
+// mapV2ToolPolicyToV1Filter converts a V2 ToolPolicy to V1 ToolFilterPolicy.
+func mapV2ToolPolicyToV1Filter(p v2.ToolPolicy) workflow.ToolFilterPolicy {
+	switch p {
+	case v2.ToolPolicyDocOnly:
+		return workflow.ToolFilterDocOnly
+	case v2.ToolPolicyFull:
+		return workflow.ToolFilterFull
+	default:
+		return workflow.ToolFilterDocOnly
+	}
 }
 
 func TestActiveWorkflowIgnoresUICWorkflowTypeReplacement(t *testing.T) {
@@ -1353,7 +1474,7 @@ func TestBuildWorkflowPhaseFormAgentViewPreservesCodingDirectoryField(t *testing
 
 func TestWorkflowFormSubmitProjectPathUpdatesWorkflowWithoutCreatingDirectory(t *testing.T) {
 	userID := "desktop-user:C:/Users/ma139"
-	registry := workflow.NewWorkflowRegistry()
+	registry := newPopulatedWorkflowRegistry()
 	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
 	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
 	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
@@ -1402,7 +1523,7 @@ func TestWorkflowFormSubmitProjectPathUpdatesWorkflowWithoutCreatingDirectory(t 
 
 func TestWorkflowFormSubmitInvalidProjectPathRejectsBeforeFormMutation(t *testing.T) {
 	userID := "desktop-user:C:/Users/ma139"
-	registry := workflow.NewWorkflowRegistry()
+	registry := newPopulatedWorkflowRegistry()
 	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
 	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
 	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
@@ -1442,7 +1563,7 @@ func TestWorkflowFormSubmitInvalidProjectPathRejectsBeforeFormMutation(t *testin
 
 func TestWorkflowFormSubmitRejectsHiddenPhaseMismatch(t *testing.T) {
 	userID := "desktop-user:C:/Users/ma139"
-	registry := workflow.NewWorkflowRegistry()
+	registry := newPopulatedWorkflowRegistry()
 	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
 	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
 	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
@@ -1485,7 +1606,7 @@ func TestWorkflowFormLifecyclePayloadWithFallbackPreservesSubmittedIdentity(t *t
 
 func TestWorkflowFormDismissDoesNotClearWhenSkipPersistenceFails(t *testing.T) {
 	userID := "desktop-user:C:/Users/ma139"
-	registry := workflow.NewWorkflowRegistry()
+	registry := newPopulatedWorkflowRegistry()
 	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
 	store := &failingWorkflowStateStoreGUI{}
 	engine := workflow.NewWorkflowEngine(registry, understanding, store, &mockEngineCallbacksGUI{})
@@ -1950,7 +2071,8 @@ func TestSchedulePostLoopSideEffectsUsesRuntimeOwnerForV2SyncCapture(t *testing.
 		WorkflowAgentLoop: true,
 		Runtime:           RuntimeContext{RequestID: "req-v2-post-loop-sync", PolicyOwnerID: remoteOwnerID},
 	}
-	resp := &IMAgentResponse{Text: "requirements output"}
+	resp := &IMAgentResponse{Text: "writing\n<details><summary>思考</summary>hidden</details>\n<tool_call[]>\n" +
+		`{"name":"write_file","arguments":{"file_path":"d:\\project\\docs\\requirements.md","content":"requirements output"}}`}
 
 	handler.schedulePostLoopSideEffects(IMUserMessage{UserID: desktopID}, ctx, resp, true)
 

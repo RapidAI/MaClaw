@@ -6,6 +6,8 @@ import {
     TestMaclawLLM,
     GetMaclawAgentMaxIterations,
     SetMaclawAgentMaxIterations,
+    GetSubAgentConcurrency,
+    SetSubAgentConcurrency,
     StartOpenAIOAuth,
     CancelOpenAIOAuth,
     ImportCodexAuth,
@@ -36,6 +38,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [currentName, setCurrentName] = useState(NONE_PROVIDER);
     const [loading, setLoading] = useState(false);
     const [maxIter, setMaxIter] = useState(0);
+    const [subAgentConc, setSubAgentConc] = useState(2);
     const [hubServiceStatus, setHubServiceStatus] = useState<HubLLMServiceStatus | null>(null);
 
     // Dialog state — track selected provider by index (stable across renames)
@@ -104,9 +107,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setLoadError(null);
         console.info("[LLMConfigPanel] load start");
         try {
-            const [providersResult, iterResult] = await Promise.allSettled([
+            const [providersResult, iterResult, concResult] = await Promise.allSettled([
                 withTimeout(GetMaclawLLMProviders(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawLLMProviders"),
                 withTimeout(GetMaclawAgentMaxIterations(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawAgentMaxIterations"),
+                withTimeout(GetSubAgentConcurrency(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetSubAgentConcurrency"),
             ]);
             if (loadSeq !== loadSeqRef.current) return;
 
@@ -138,6 +142,15 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 failed = true;
                 setMaxIter(0);
                 console.warn("[LLMConfigPanel] max iterations load failed", iterResult.reason);
+            }
+
+            if (concResult.status === "fulfilled") {
+                const conc = concResult.value;
+                setSubAgentConc(typeof conc === "number" && conc >= 1 ? conc : 2);
+                console.info("[LLMConfigPanel] subagent concurrency loaded");
+            } else {
+                setSubAgentConc(2);
+                console.warn("[LLMConfigPanel] subagent concurrency load failed", concResult.reason);
             }
 
             if (failed) {
@@ -557,6 +570,32 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                         style={{ ...inputStyle, width: 60, textAlign: "center" as const }} />
                     <span style={{ fontSize: "0.72rem", color: colors.textSecondary, whiteSpace: "nowrap" }}>
                         {maxIter === 0 ? t("Unlimited", "不限制") : `${maxIter} ${t("rounds", "轮")}`}
+                    </span>
+                </div>
+            </div>
+
+            {/* SubAgent concurrency — controls parallel coding tasks */}
+            <div className="llm-config-card" style={{
+                marginBottom: 16, padding: "12px 16px", borderRadius: 6,
+                border: `1px solid ${colors.border}`, background: colors.surface,
+            }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                    <label style={{ ...labelStyle, marginBottom: 0 }}>
+                        {t("CodingSubAgent Concurrency", "CodingSubAgent 并发数")}
+                        <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 400, marginLeft: 6 }}>
+                            {t("Parallel tasks without dependencies, default 2", "无依赖任务并行数，默认 2")}
+                        </span>
+                    </label>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <input type="range" min={1} max={10} step={1} value={subAgentConc}
+                        onChange={e => { const v = Number(e.target.value); setSubAgentConc(v); SetSubAgentConcurrency(v).catch(() => {}); }}
+                        style={{ flex: 1, accentColor: "var(--theme-primary)" }} />
+                    <input type="number" min={1} max={10} value={subAgentConc}
+                        onChange={e => { const v = Math.max(1, Math.min(10, Number(e.target.value) || 1)); setSubAgentConc(v); SetSubAgentConcurrency(v).catch(() => {}); }}
+                        style={{ ...inputStyle, width: 60, textAlign: "center" as const }} />
+                    <span style={{ fontSize: "0.72rem", color: colors.textSecondary, whiteSpace: "nowrap" }}>
+                        {subAgentConc === 1 ? t("Sequential", "顺序执行") : `${subAgentConc} ${t("parallel", "路并行")}`}
                     </span>
                 </div>
             </div>

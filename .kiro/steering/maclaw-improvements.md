@@ -5931,3 +5931,249 @@ SubAgent 激活路径仅保留两条：
 - LLM 不再因 `list_tasks` 返回空而创建重复的后台任务
 - 所有 11 个 corelib/remote SSH 测试通过
 - GUI / TUI / corelib 编译通过、`go vet` 通过
+
+
+### 104. 配置文件并发读写竞态——从全量覆盖到原子增量 Patch + Hub 重连 Provider 保护 + LLM Ping 瞬态容错
+
+**来源**：用户报告"工作过程中突然弹出 onboarding，需要用户注册，然后服务模型切换为了 maclaw 官方，通用设置的日志相关设置也丢失"。
+
+#### 根因（三层叠加）
+
+##### 根因 1 (P0): 前端 `SaveConfig` 全量覆盖后端并发修改
+
+前端模型设置面板的"保存"按钮调用 `SaveConfig(全量config快照)`。该快照在用户打开面板时加载——从打开到点击保存的时间窗口内，后端 goroutine 通过 `PatchConfig` 更新了 credentials/provider/onboarding/log settings 等字段，这些更新被前端的 stale 快照覆盖。
+
+同样，`onClearRegistration` 路径使用 `LoadConfig → mutate → SaveConfig` 模式，存在相同的 TOCTOU 竞态。
+
+##### 根因 2 (P1): Hub 重连时 `applyHubLLMServiceStatusToConfig` 覆盖用户 Provider 选择
+
+`syncHubLLMServiceStatusToConfig` 在 hub WebSocket 重连后调用。旧逻辑中 `!isMaclawLLMConfiguredWithConfig(*cfg)` 条件在 provider 配置不完整时（如 hub 波动期间 viewer_token 暂时为空导致判断异常）无条件覆盖 `MaclawLLMCurrentProvider` 为"MaClaw官方"。
+
+##### 根因 3 (P1): LLM 首次 Ping 对瞬态故障零容忍
+
+启动时 `PingMaclawLLM` 如果因 hub 502（几秒后恢复的瞬态错误）返回 `online: false`，前端立即弹出 onboarding/LLM 配置面板。没有重试机制。
+
+#### 修复
+
+##### Fix 1: 前端从全量 `SaveConfig` 改为原子 `PatchConfigFields`
+
+- `gui/app.go`：`PatchConfigFields` 新增 `case "claude", "codex", "opencode", "codebuddy", "iflow", "kilo"` 支持完整 ToolConfig 对象 patch
+- `gui/frontend/src/App.tsx`：模型设置保存从 `SaveConfig(sanitizedConfig)` 改为 `PatchConfigFields({ active_tool, claude, codex, opencode, codebuddy, iflow, kilo })`
+- `gui/frontend/src/App.tsx`：`onClearRegistration` 从 `LoadConfig→mutate→SaveConfig` 改为 `PatchConfigFields({ onboarding_done: false })`
+- 前端不再有任何 `SaveConfig` 的实际调用（import 保留，无调用点）
+
+##### Fix 2: `SaveConfig` 纵深防御——`preserveBackendOwnedFields`
+
+- `gui/app.go`：新增 `preserveBackendOwnedFields(incoming, ondisk)` 函数
+- 在 `SaveConfig` 的 `configMu.Lock()` 内、写盘前调用
+- 无条件从磁盘最新值恢复后端独占字段：Remote 凭据（MachineID/Token/ViewerToken/SN/UserID/ClientID/TenantID/TenantName/Nickname/MachineName/SkillMarketSessionToken）、LLM Provider 状态（CurrentProvider/URL/Key/Model/Protocol/TimeoutSec/ContextLength/Providers[]）、OnboardingDone、HubCenterURLs
+- 只在前端传入值与磁盘值不同时打印诊断日志 `[config] SaveConfig:preserved_backend_fields=[...]`
+- `oldConfig` 优先从 `configCache`（内存权威值）读取，避免 Windows 文件锁导致磁盘读取失败
+
+##### Fix 3: Hub 重连不覆盖用户手动选择的 Provider
+
+- `gui/hub_llm_service.go`：`applyHubLLMServiceStatusToConfig` 中移除 `!a.isMaclawLLMConfiguredWithConfig(*cfg)` 条件
+- 新逻辑：只在 `MaclawLLMCurrentProvider == ""` 或 `== hubServiceProviderName` 时设置官方 provider
+- 用户手动选择的第三方 provider（如"智谱编程"）不被 hub sync 覆盖
+- `forceCurrentProvider=true`（仅 `ActivateRemote` 注册成功后）仍可强制切换
+- 新增日志 `[hub-llm-sync] respecting user provider choice: "xxx"`
+
+##### Fix 4: LLM Ping 瞬态容错——5 秒重试
+
+- `gui/frontend/src/App.tsx`：LLM 首次 ping 失败后不立即弹窗，延迟 5 秒重试一次
+- 重试仍失败才弹出 popup（真正的 LLM 不可用）
+- 瞬态故障（hub 502、网络波动）通常在秒级恢复，5 秒重试消除误触发
+
+##### Fix 5: 可观测性增强
+
+- `gui/app.go`：`PatchConfigFields:done` 日志输出具体字段名 `keys=[...]`
+- `gui/app.go`：`preserveBackendOwnedFields` 只在实际恢复时打印被保护的字段
+- `gui/hub_llm_service.go`：hub sync 尊重用户选择时打印日志
+
+**验收标准**：
+- 模型设置面板保存不再覆盖 remote credentials/LLM provider/onboarding/log settings
+- Hub 重连后用户选择的"智谱编程"不被切换为"MaClaw官方"
+- Hub 瞬态 502 不触发 onboarding 弹窗
+- 日志中可追踪所有 config 写入的字段名和保护触发情况
+- Go 编译通过（gui/corelib/tui）
+
+
+### 105. CodingSubAgent Skill 调用支持——任务感知的 Skill 选择 + 安全执行守卫
+
+**来源**：用户需求——SubAgent 执行编码任务时应能调用 UI 优化类 skill（如 ui-ux-pro-max）等编程辅助 skill。
+
+**根因**：SubAgent 的工具集是硬编码的 9 个精简工具（read_file/write_file/edit_file/bash/list_directory/Glob/ripgrep/edit_lines/git_diff），不包含 `manage_skill`。用户安装了 UI 优化、lint 修复等 skill，SubAgent 无法调用。
+
+**修复**：
+
+#### 1. 三信号融合 Skill 选择（`gui/coding_subagent_skills.go`，新文件）
+
+- `selectRelevantSkillsForTask(taskDescription)` → top-3 最相关 skill
+- 三信号融合：BM25（英文/混合）+ Bigram Jaccard（中文/CJK）+ Embedding cosine（语义）
+- 取 max(三信号) 作为最终分数，阈值 0.15
+- Embedding 分数减去 baseline 0.2（Gemma 300M 对无关短文本的 baseline cosine）后 clamp 到 [0,1]
+- Embedding 使用 `EmbedBatch` 批量推理（50 skill ~30-80ms），而非 50 次串行 Embed
+- Embedder 不可用时自动退化为 BM25 + bigram 双模式
+
+#### 2. 动态工具注入（`gui/coding_subagent.go`）
+
+- `BuildSystemPrompt`：检测 matched skills 后追加"可用 Skill"section（含 skill 名称、描述、必需参数）
+- `BuildTools`：matched skills 非空时追加 `manage_skill` 工具定义（仅暴露 run/status action）
+- `codingSubAgentDynamicToolNames`：新增动态工具白名单概念，与静态白名单并列检查
+- `canonicalCodingSubAgentToolName`：扩展支持动态工具名的大小写标准化
+
+#### 3. 安全执行守卫（`gui/coding_subagent_skills.go`）
+
+- `executeManageSkill`：action 限制（只允许 run/status）+ skill name 限制（只允许 BM25 匹配到的 skill）
+- 不允许 install/uninstall/upload/patch（SubAgent 不应改变系统状态）
+- 传递 SubAgent 的 progress 回调给 skill runner（长时间 skill 有 UI 进度反馈）
+- 结果分类使用 `toolManageSkill` 返回值的已知失败前缀，不使用脆弱的子串匹配
+
+#### 4. 导出 BM25 原语（`corelib/skill/scanner.go`）
+
+- `TokenizeSimple()` 和 `BM25ScoreSimple()` 导出为公开函数供 SubAgent 复用
+- 原有内部 `tokenizeSimple()` 和 `bm25ScoreSimple()` 保持不变
+
+#### 5. Embedder 接入（`gui/im_interrupt_handler.go`）
+
+- 新增 `EmbedderForSubAgent()` 方法：暴露本地 Gemma 300M 模型给 SubAgent
+
+**Token 预算**：
+- 0 个 matched skill → 0 增量（SubAgent 纯编码模式，与当前一致）
+- 3 个 matched skill → ~500 token（skill 列表 ~100 + manage_skill 定义 ~400）
+
+**修改文件**：
+- `gui/coding_subagent_skills.go`（新增）：Skill 选择 + 工具定义 + 执行守卫
+- `gui/coding_subagent_skills_test.go`（新增）：14 个测试
+- `gui/coding_subagent.go`：3 处改动（matchedSkills 字段、BuildSystemPrompt/BuildTools 增强、executeToolWithOutcome 新增 case）
+- `gui/im_interrupt_handler.go`：新增 EmbedderForSubAgent 方法
+- `corelib/skill/scanner.go`：导出 TokenizeSimple/BM25ScoreSimple
+
+**验收标准**：
+- task "优化登录页面 UI" + 已安装 ui-ux-pro-max → system prompt 包含 skill 列表，LLM 可调用
+- task "实现数据库连接" + 无相关 skill → manage_skill 不注入，零 token 开销
+- LLM 调用 manage_skill(action=install) → 被守卫拒绝
+- LLM 调用 manage_skill(name="tts-to-mp3") 但该 skill 未匹配 → 被守卫拒绝
+- Embedder 不可用时 → 退化为 BM25+bigram，功能不消失
+- 14 个测试 + 所有现有 SubAgent 测试通过
+- GUI / corelib 编译通过
+
+
+### 106. 论文复现工作流模板（paper_reproduction）
+
+**来源**：用户需求——添加一个完整的论文复现工作流，覆盖从阅读论文到远程服务器跑实验、迭代改进、生成实验报告的全流程。
+
+**核心特征**：
+- **输入驱动**：用户需先上传论文 PDF 或提供 URL
+- **需要远程服务器**：用户需提供 SSH 连接信息（IP/域名、用户名、密码、工作目录可选）
+- **迭代式实验**：复现基线后循环改进，直到超越论文或达到上限
+- **项目化产出**：有明确的远程项目目录结构，存放源码、数据、checkpoint、结果、报告
+- **完整实验报告**：对比实验、消融实验、超参数分析的原始数据和图表
+
+**6 个阶段**：
+
+| 阶段 | ID | ToolPolicy | NeedsConfirm | 说明 |
+|------|-----|-----------|-------------|------|
+| 论文深度解读 | paper_analysis | doc_only | ✅ | 精读论文提取方法、实验设置、关键数值 |
+| 复现规划 | reproduction_plan | full | ✅ | 搜索源码（GitHub）、搜索数据集、确定项目结构 |
+| 环境搭建与数据准备 | env_and_data | full | ❌ | SSH 连接服务器、安装依赖、下载数据 |
+| 基线实验复现 | baseline_reproduction | full | ❌ | 按论文参数跑实验，对比论文数值 |
+| 迭代改进 | iterative_improvement | full | ❌ | 循环修改程序直到结果超越论文或达到上限 |
+| 实验报告 | experiment_report | full | ✅ | 生成完整报告含对比/消融/超参分析 |
+
+**复现规划阶段**设为 `ToolPolicyFull`：需要 `web_search`/`web_fetch` 实际搜索 GitHub 源码和数据集下载链接。
+
+**修改文件**：
+- `corelib/workflow/types.go`：新增 `WorkflowPaperReproduction WorkflowType = "paper_reproduction"`
+- `corelib/workflow/v2/templates.go`：新增 `PaperReproductionTemplate()` + 注册到 `RegisterBuiltinTemplates`
+- `corelib/workflow/v2/phase_prompt.go`：新增 6 个阶段的专用 phase instructions
+- `gui/frontend/src/components/ai/WorkflowDocPreview.tsx`：新增 `phaseLabels` 和 `workflowPhaseOrders` 映射
+
+**验收标准**：
+- 用户说"复现这篇论文" + 给出 URL → 工作流启动，第一阶段解读论文
+- 复现规划阶段实际搜索 GitHub 和数据集链接
+- 环境搭建阶段询问 SSH 服务器信息后登录执行
+- 基线复现和迭代改进阶段在远程服务器通过 SSH 后台任务执行
+- 实验报告包含所有实验的原始数据表和对比分析
+- corelib/workflow/v2 编译通过 + TestTemplate 测试通过
+
+
+### 107. RemoteCodingSubAgent——远程服务器自动编码执行器（设计）
+
+**来源**：论文复现工作流的迭代改进阶段需要在远程 GPU 服务器上自动修改代码、跑实验、循环改进。现有 CodingSubAgent 只支持本地文件操作。
+
+**设计目标**：与本地 CodingSubAgent 对称的远程编码执行器，精简 context、自动长时间运行、可观测。
+
+#### 与本地 CodingSubAgent 的对比
+
+| 维度 | CodingSubAgent（本地） | RemoteCodingSubAgent（远程） |
+|------|----------------------|---------------------------|
+| 工具集 | read_file/write_file/edit_file/bash/list_dir/git_diff | ssh_read/ssh_write/ssh_edit/ssh_bash/ssh_list |
+| 安全边界 | 本地 projectPath 范围 | 远程 workDir 范围 |
+| 运行模式 | 同步，几分钟完成 | 异步后台，数小时/天 |
+| 可观测性 | 前端 SubAgent 面板（tool events） | 后台任务监控面板 + IM 通知 |
+| 生命周期 | 跟随 agent loop iteration | 独立后台 goroutine，支持暂停/恢复/停止 |
+| 进度汇报 | onToken/onProgress 回调 | emitEvent → 任务监控面板 + IM 推送 |
+
+#### 工具集设计（5 个 SSH 封装工具）
+
+```
+ssh_read_file(path)           → ssh exec "cat {path}"
+ssh_write_file(path, content) → ssh exec "cat > {path} << 'MACLAW_EOF'\n{content}\nMACLAW_EOF"
+ssh_edit_file(path, old, new) → ssh exec python -c "import pathlib; p=pathlib.Path('{path}'); p.write_text(p.read_text().replace(old, new))"
+ssh_bash(command, working_dir)→ ssh exec "cd {working_dir} && {command}"（短命令同步）/ ssh submit_task（长命令后台）
+ssh_list_directory(path)      → ssh exec "ls -la {path}"
+```
+
+SubAgent 内部自动判断 ssh_bash 的命令是否为长时间训练（含 train/fit/epoch 等关键词），长命令自动用 submit_task + check_task 轮询。
+
+#### 后台任务监控集成
+
+RemoteCodingSubAgent 启动后注册到 GUI 的任务监控系统：
+- **任务名**：`论文复现: {paper_title} - 迭代改进`
+- **状态列表**：
+  - `🔧 修改代码中 (exp_017)` — 当 LLM 在生成代码修改
+  - `🏃 训练中 (exp_017, epoch 15/100, loss=0.342)` — 训练后台任务运行中
+  - `📊 评估中 (exp_017)` — 训练完成，正在跑评估脚本
+  - `💤 等待中 (下一轮改进)` — 评估完成，等待开始下一轮
+  - `⏸️ 已暂停` — 用户暂停
+  - `🎉 达成目标` — 超越论文指标
+- **进度数据**：
+  - 当前轮次 / 最大轮数
+  - 累计运行时间 / 最大运行时间
+  - 当前最佳指标 / 论文指标 / 目标值
+  - 最近 3 轮的指标趋势
+
+#### 异步生命周期
+
+```
+用户确认迭代参数
+  → RemoteCodingSubAgent.Start(sessionID, params)
+  → 注册到 BackgroundTaskRegistry
+  → 后台 goroutine 开始循环
+       ┌─→ 分析历史 → 生成改进方案
+       │   ↓
+       │   SSH 修改远程代码
+       │   ↓
+       │   SSH submit_task 启动训练
+       │   ↓
+       │   轮询 check_task（每 30s）
+       │   ↓ 训练完成
+       │   SSH 执行评估脚本
+       │   ↓
+       │   记录结果 → 判断停止条件
+       │   ↓ 未达标
+       └───┘
+  → 达到停止条件
+  → IM 通知用户
+  → 等待用户响应（继续/停止/换方向）
+```
+
+#### 待实现（后续 task）
+
+1. `gui/remote_coding_subagent.go`：核心实现
+2. `gui/remote_coding_subagent_tools.go`：5 个 SSH 封装工具
+3. `gui/remote_coding_subagent_monitor.go`：后台任务监控集成
+4. 前端：任务监控面板中显示 RemoteCodingSubAgent 状态
+5. 迭代改进阶段 `ExecMode` 改为新的 `ExecModeRemoteSubAgent`
+6. IM 通知与用户交互联动

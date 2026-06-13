@@ -865,11 +865,9 @@ func (c *coreAgentCallbacks) IsToolAllowed(name string) bool {
 }
 
 func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
-	var args map[string]interface{}
-	if strings.TrimSpace(argsJSON) != "" {
-		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-			return false, fmt.Sprintf("invalid tool arguments: %v", err)
-		}
+	args, err := parseCoreAgentToolArguments(argsJSON)
+	if err != nil {
+		return false, fmt.Sprintf("invalid tool arguments: %v", err)
 	}
 	if err := workflow.ValidateToolCallByContractWithApproval(c.phaseContract(), strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
 		return false, err.Error()
@@ -889,13 +887,11 @@ func knowledgeToolResult(result string) agent.ToolExecutionResult {
 }
 
 func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.ToolExecutionResult {
-	var args map[string]interface{}
-	if strings.TrimSpace(argsJSON) != "" {
-		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-			return agent.ToolExecutionResult{
-				Result:  fmt.Sprintf("Error: invalid tool arguments: %v", err),
-				Outcome: agent.ToolExecutionOutcomeError,
-			}
+	args, err := parseCoreAgentToolArguments(argsJSON)
+	if err != nil {
+		return agent.ToolExecutionResult{
+			Result:  fmt.Sprintf("Error: invalid tool arguments: %v", err),
+			Outcome: agent.ToolExecutionOutcomeError,
 		}
 	}
 	if err := workflow.ValidateToolCallByContractWithApproval(c.phaseContract(), strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
@@ -970,6 +966,21 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		}
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: unknown tool %s", name), Outcome: agent.ToolExecutionOutcomeError}
 	}
+}
+
+func parseCoreAgentToolArguments(argsJSON string) (map[string]interface{}, error) {
+	argsJSON = strings.TrimSpace(argsJSON)
+	if argsJSON == "" {
+		return map[string]interface{}{}, nil
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return nil, err
+	}
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	return args, nil
 }
 
 func (c *coreAgentCallbacks) OnToken(delta string) {

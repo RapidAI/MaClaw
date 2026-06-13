@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { main } from '../../../wailsjs/go/models';
+import { localizeText } from '../../i18n';
 import { SystemDiagnosticsTable } from './SystemDiagnosticsTable';
 import { DataDirectorySection } from './DataDirectorySection';
 import { SystemTimeoutField } from './SystemTimeoutField';
@@ -25,9 +26,7 @@ type SystemSettingsPanelProps = {
     showToastMessage: (message: string) => void;
 };
 
-const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' || lang === 'zh' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+const textForLang = localizeText;
 
 const emptyValue = (lang: string, kind: 'inactive' | 'unset' | 'generated') => {
     if (kind === 'generated') return textForLang(lang, '(not generated)', '(\u672a\u751f\u6210)', '(\u672a\u751f\u6210)');

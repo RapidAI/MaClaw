@@ -74,6 +74,10 @@ type LoopContext struct {
 	// verification), the loop expects the LLM to call tools.
 	WorkflowDocPhase bool
 
+	// WorkflowPhaseID is the active V2 phase ID for protocol-aware cleanup of
+	// model output before it reaches workflow persistence or UI.
+	WorkflowPhaseID string
+
 	// IsAskUserResponse is true when the current message is a response to a
 	// previous ask_user tool question. In this case the user's text is a
 	// continuation of an existing task, not a new independent request. The

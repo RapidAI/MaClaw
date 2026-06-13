@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { GetProjectScene } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
 import { EVENT_PROJECT_TASK_CLOSED } from '../../constants/events';
+import { localizeText } from '../../i18n';
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { SidebarTaskEvidencePanel } from './SidebarTaskEvidencePanel';
@@ -62,9 +63,7 @@ type SidebarRecentTasksProps = {
     hideTask: (projectPath: string) => Promise<unknown>;
 };
 
-const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' || lang === 'zh' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+const textForLang = localizeText;
 
 const normalizeTaskNameInput = (value?: string | null) => {
     const normalized = (value || '').trim().replace(/\s+/g, ' ');

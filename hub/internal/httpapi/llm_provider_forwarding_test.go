@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,10 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	openai "github.com/openai/openai-go"
+	openaioption "github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/responses"
+	"github.com/openai/openai-go/shared"
 )
 
 func TestForwardAuthorizedModelRequestOrdersProvidersByProviderScopedParams(t *testing.T) {
@@ -1231,6 +1236,1507 @@ func TestLLMV1ChatCompletionsHandlerSynthesizesStreamWhenUpstreamReturnsJSON(t *
 	}
 }
 
+func TestLLMV1ChatCompletionsHandlerReturnsOpenAIErrorWhenStreamUpstream503Empty(t *testing.T) {
+	globalProviderResilience.reset()
+	defer globalProviderResilience.reset()
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "stream-503@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-stream-503"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "stream-503@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-stream-503", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	bodyBytes, err := json.Marshal(map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		"stream":   true,
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.Len() == 0 {
+		t.Fatal("expected OpenAI-compatible error body, got empty body")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode error body: %v body=%s", err, rr.Body.String())
+	}
+	errObj := payload["error"].(map[string]any)
+	if errObj["code"] != "LLM_UPSTREAM_FAILED" || !strings.Contains(fmt.Sprint(errObj["message"]), "HTTP 503") {
+		t.Fatalf("error object = %#v", errObj)
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerReturnsRateLimitWhenStreamUpstream429(t *testing.T) {
+	globalProviderResilience.reset()
+	defer globalProviderResilience.reset()
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "stream-429@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-stream-429"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "stream-429@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error": map[string]any{"message": "too many upstream requests", "type": "rate_limit_error"},
+		})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-stream-429", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	bodyBytes, err := json.Marshal(map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		"stream":   true,
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode error body: %v body=%s", err, rr.Body.String())
+	}
+	errObj := payload["error"].(map[string]any)
+	if errObj["code"] != "LLM_UPSTREAM_RATE_LIMITED" || !strings.Contains(fmt.Sprint(errObj["message"]), "rate limited") {
+		t.Fatalf("error object = %#v", errObj)
+	}
+}
+
+func TestOpenAISDKClientCanCallHubChatCompletionsEndpoint(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "chat-sdk@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-chat-sdk"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "chat-sdk@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if upstreamBody["model"] != "test-model" {
+			t.Fatalf("upstream model = %#v, want test-model", upstreamBody["model"])
+		}
+		if upstreamBody["stream"] != false {
+			t.Fatalf("upstream stream = %#v, want false", upstreamBody["stream"])
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":     "chatcmpl-hub-chat-sdk",
+			"object": "chat.completion",
+			"model":  "test-model",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "hub chat sdk ok"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+		})
+	}))
+	defer upstream.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-chat-sdk", APIURL: upstream.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	resp, err := client.Chat.Completions.New(context.Background(), openai.ChatCompletionNewParams{
+		Model: shared.ChatModel("auto"),
+		Messages: []openai.ChatCompletionMessageParamUnion{{
+			OfUser: &openai.ChatCompletionUserMessageParam{
+				Content: openai.ChatCompletionUserMessageParamContentUnion{
+					OfString: openai.String("hi"),
+				},
+			},
+		}},
+		MaxTokens: openai.Int(32),
+	})
+	if err != nil {
+		t.Fatalf("openai SDK Chat.Completions.New failed: %v", err)
+	}
+	if resp.ID != "chatcmpl-hub-chat-sdk" {
+		t.Fatalf("response id = %q, want chatcmpl-hub-chat-sdk", resp.ID)
+	}
+	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "hub chat sdk ok" {
+		t.Fatalf("choices = %#v", resp.Choices)
+	}
+	if resp.Usage.PromptTokens != 2 || resp.Usage.CompletionTokens != 3 || resp.Usage.TotalTokens != 5 {
+		t.Fatalf("usage = %+v, want 2/3/5", resp.Usage)
+	}
+}
+
+func TestOpenAISDKClientCanStreamHubChatCompletionsEndpoint(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "chat-sdk-stream@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-chat-sdk-stream"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "chat-sdk-stream@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if upstreamBody["stream"] != true {
+			t.Fatalf("upstream stream = %#v, want true", upstreamBody["stream"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hub \"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-2\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"stream\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-chat-sdk-stream", APIURL: upstream.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	stream := client.Chat.Completions.NewStreaming(context.Background(), openai.ChatCompletionNewParams{
+		Model: shared.ChatModel("auto"),
+		Messages: []openai.ChatCompletionMessageParamUnion{{
+			OfUser: &openai.ChatCompletionUserMessageParam{
+				Content: openai.ChatCompletionUserMessageParamContentUnion{
+					OfString: openai.String("hi"),
+				},
+			},
+		}},
+	})
+	var text strings.Builder
+	for stream.Next() {
+		chunk := stream.Current()
+		if len(chunk.Choices) > 0 {
+			text.WriteString(chunk.Choices[0].Delta.Content)
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("openai SDK Chat.Completions.NewStreaming failed: %v", err)
+	}
+	if text.String() != "hub stream" {
+		t.Fatalf("stream text = %q, want hub stream", text.String())
+	}
+}
+
+func TestLLMV1ResponsesHandlerForwardsThroughSharedOpenAICompatLayer(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "responses-binding@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "responses-binding@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if upstreamBody["model"] != "test-model" {
+			t.Fatalf("upstream model = %#v, want test-model", upstreamBody["model"])
+		}
+		if _, ok := upstreamBody["input"]; ok {
+			t.Fatalf("responses input leaked to chat upstream: %#v", upstreamBody)
+		}
+		tools, _ := upstreamBody["tools"].([]any)
+		if len(tools) != 1 {
+			t.Fatalf("upstream tools = %#v, want one tool", upstreamBody["tools"])
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":     "chat-upstream",
+			"object": "chat.completion",
+			"model":  "test-model",
+			"choices": []any{map[string]any{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "",
+					"tool_calls": []any{map[string]any{
+						"id":   "call_1",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "get_ticket",
+							"arguments": `{"id":"T-1"}`,
+						},
+					}},
+				},
+				"finish_reason": "tool_calls",
+			}},
+			"usage": map[string]any{"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},
+		})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	bodyBytes, err := json.Marshal(map[string]any{
+		"model": "auto",
+		"input": []any{map[string]any{
+			"type":    "message",
+			"role":    "user",
+			"content": []any{map[string]any{"type": "input_text", "text": "lookup ticket"}},
+		}},
+		"tools": []any{map[string]any{
+			"type":        "function",
+			"name":        "get_ticket",
+			"description": "get ticket",
+			"parameters":  map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}}, "required": []any{"id"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/responses", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ResponsesHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("expected upstream to be called once, hits = %d", upstreamHits.Load())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["object"] != "response" {
+		t.Fatalf("object = %#v, want response", got["object"])
+	}
+	output, _ := got["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("output = %#v, want one function_call", got["output"])
+	}
+	call, _ := output[0].(map[string]any)
+	if call["type"] != "function_call" || call["name"] != "get_ticket" || !strings.Contains(fmt.Sprint(call["arguments"]), "T-1") {
+		t.Fatalf("unexpected function_call output: %#v", call)
+	}
+}
+
+func TestOpenAISDKClientCanCallHubResponsesEndpoint(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "responses-sdk@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "responses-sdk@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if upstreamBody["model"] != "test-model" {
+			t.Fatalf("upstream model = %#v, want test-model", upstreamBody["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":     "chatcmpl-hub-responses-sdk",
+			"object": "chat.completion",
+			"model":  "test-model",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "hub sdk ok"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+		})
+	}))
+	defer upstream.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: upstream.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/llm/v1/responses", LLMV1ResponsesHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	resp, err := client.Responses.New(context.Background(), responses.ResponseNewParams{
+		Model: shared.ResponsesModel("auto"),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String("hi"),
+		},
+		MaxOutputTokens: openai.Int(32),
+	})
+	if err != nil {
+		t.Fatalf("openai SDK Responses.New failed: %v", err)
+	}
+	if resp.ID != "chatcmpl-hub-responses-sdk" {
+		t.Fatalf("response id = %q, want chatcmpl-hub-responses-sdk", resp.ID)
+	}
+	if resp.CreatedAt == 0 {
+		t.Fatalf("CreatedAt = 0, want created_at field populated")
+	}
+	if got := resp.OutputText(); got != "hub sdk ok" {
+		t.Fatalf("OutputText = %q, want hub sdk ok", got)
+	}
+	if resp.Usage.InputTokens != 2 || resp.Usage.OutputTokens != 3 || resp.Usage.TotalTokens != 5 {
+		t.Fatalf("usage = %+v, want 2/3/5", resp.Usage)
+	}
+}
+
+func TestOpenAISDKClientCanForceFunctionToolChoiceOnHubResponsesEndpoint(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "responses-sdk-tool-choice@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "responses-sdk-tool-choice@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		toolChoice, _ := upstreamBody["tool_choice"].(map[string]any)
+		fn, _ := toolChoice["function"].(map[string]any)
+		if toolChoice["type"] != "function" || fn["name"] != "get_ticket" {
+			t.Fatalf("upstream tool_choice = %#v, want forced get_ticket", upstreamBody["tool_choice"])
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":     "chatcmpl-hub-tool-choice",
+			"object": "chat.completion",
+			"model":  "test-model",
+			"choices": []any{map[string]any{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "",
+					"tool_calls": []any{map[string]any{
+						"id":   "call_1",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "get_ticket",
+							"arguments": `{"id":"T-1"}`,
+						},
+					}},
+				},
+				"finish_reason": "tool_calls",
+			}},
+			"usage": map[string]any{"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+		})
+	}))
+	defer upstream.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: upstream.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/llm/v1/responses", LLMV1ResponsesHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	resp, err := client.Responses.New(context.Background(), responses.ResponseNewParams{
+		Model: shared.ResponsesModel("auto"),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String("lookup"),
+		},
+		Tools: []responses.ToolUnionParam{{
+			OfFunction: &responses.FunctionToolParam{
+				Name:        "get_ticket",
+				Description: openai.String("get ticket"),
+				Parameters:  map[string]any{"type": "object"},
+			},
+		}},
+		ToolChoice: responses.ResponseNewParamsToolChoiceUnion{
+			OfFunctionTool: &responses.ToolChoiceFunctionParam{Name: "get_ticket"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("openai SDK Responses.New failed: %v", err)
+	}
+	if len(resp.Output) != 1 || resp.Output[0].Type != "function_call" {
+		t.Fatalf("response output = %+v, want function_call", resp.Output)
+	}
+}
+
+func TestOpenAISDKClientCanStreamHubResponsesEndpoint(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "responses-sdk-stream@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "responses-sdk-stream@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if upstreamBody["stream"] != true {
+			t.Fatalf("upstream stream = %#v, want true", upstreamBody["stream"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hub\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\" stream\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: upstream.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/llm/v1/responses", LLMV1ResponsesHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	stream := client.Responses.NewStreaming(context.Background(), responses.ResponseNewParams{
+		Model: shared.ResponsesModel("auto"),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String("hi"),
+		},
+	})
+	var got strings.Builder
+	var completed bool
+	for stream.Next() {
+		switch event := stream.Current().AsAny().(type) {
+		case responses.ResponseTextDeltaEvent:
+			got.WriteString(event.Delta)
+		case responses.ResponseCompletedEvent:
+			completed = true
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("openai SDK Responses.NewStreaming failed: %v", err)
+	}
+	if got.String() != "hub stream" {
+		t.Fatalf("stream content = %q, want hub stream", got.String())
+	}
+	if !completed {
+		t.Fatal("stream did not emit response.completed")
+	}
+}
+
+func TestOpenAISDKClientCanStreamHubResponsesEndpointWhenUpstreamReturnsJSON(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "responses-sdk-stream-json@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "responses-sdk-stream-json@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if upstreamBody["stream"] != true {
+			t.Fatalf("upstream stream = %#v, want true", upstreamBody["stream"])
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":     "chatcmpl-json-fallback",
+			"object": "chat.completion",
+			"model":  "test-model",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "json fallback stream"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+		})
+	}))
+	defer upstream.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: upstream.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/llm/v1/responses", LLMV1ResponsesHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	stream := client.Responses.NewStreaming(context.Background(), responses.ResponseNewParams{
+		Model: shared.ResponsesModel("auto"),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String("hi"),
+		},
+	})
+	var got strings.Builder
+	var completed bool
+	for stream.Next() {
+		switch event := stream.Current().AsAny().(type) {
+		case responses.ResponseTextDeltaEvent:
+			got.WriteString(event.Delta)
+		case responses.ResponseCompletedEvent:
+			completed = true
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("openai SDK Responses.NewStreaming failed: %v", err)
+	}
+	if got.String() != "json fallback stream" {
+		t.Fatalf("stream content = %q, want json fallback stream", got.String())
+	}
+	if !completed {
+		t.Fatal("stream did not emit response.completed")
+	}
+}
+
+func TestOpenAISDKClientCanStreamHubResponsesEndpointWithRawResponsesProvider(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "responses-sdk-stream-raw@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "responses-sdk-stream-raw@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("upstream path = %q, want /v1/responses", r.URL.Path)
+		}
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if upstreamBody["model"] != "test-model" || upstreamBody["stream"] != true {
+			t.Fatalf("unexpected upstream body: %#v", upstreamBody)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		events := []struct {
+			name string
+			body map[string]any
+		}{
+			{"response.created", map[string]any{"type": "response.created", "sequence_number": 1, "response": map[string]any{"id": "resp_raw_stream", "object": "response", "created_at": float64(time.Now().Unix()), "status": "in_progress", "model": "test-model", "output": []any{}, "usage": map[string]any{}}}},
+			{"response.output_item.added", map[string]any{"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": map[string]any{"id": "msg_raw", "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}}},
+			{"response.content_part.added", map[string]any{"type": "response.content_part.added", "sequence_number": 3, "item_id": "msg_raw", "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}}}},
+			{"response.output_text.delta", map[string]any{"type": "response.output_text.delta", "sequence_number": 4, "item_id": "msg_raw", "output_index": 0, "content_index": 0, "delta": "raw stream", "logprobs": []any{}}},
+			{"response.output_text.done", map[string]any{"type": "response.output_text.done", "sequence_number": 5, "item_id": "msg_raw", "output_index": 0, "content_index": 0, "text": "raw stream", "logprobs": []any{}}},
+			{"response.content_part.done", map[string]any{"type": "response.content_part.done", "sequence_number": 6, "item_id": "msg_raw", "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": "raw stream", "annotations": []any{}}}},
+			{"response.output_item.done", map[string]any{"type": "response.output_item.done", "sequence_number": 7, "output_index": 0, "item": map[string]any{"id": "msg_raw", "type": "message", "status": "completed", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "raw stream", "annotations": []any{}}}}}},
+			{"response.completed", map[string]any{"type": "response.completed", "sequence_number": 8, "response": map[string]any{"id": "resp_raw_stream", "object": "response", "created_at": float64(time.Now().Unix()), "status": "completed", "model": "test-model", "output": []any{map[string]any{"id": "msg_raw", "type": "message", "status": "completed", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "raw stream", "annotations": []any{}}}}}, "usage": map[string]any{"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}}}},
+		}
+		for _, event := range events {
+			data, _ := json.Marshal(event.body)
+			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.name, data)
+		}
+	}))
+	defer upstream.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: upstream.URL, Model: "test-model", WireAPI: "responses"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/llm/v1/responses", LLMV1ResponsesHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	stream := client.Responses.NewStreaming(context.Background(), responses.ResponseNewParams{
+		Model: shared.ResponsesModel("auto"),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String("hi"),
+		},
+	})
+	var got strings.Builder
+	var completed bool
+	for stream.Next() {
+		switch event := stream.Current().AsAny().(type) {
+		case responses.ResponseTextDeltaEvent:
+			got.WriteString(event.Delta)
+		case responses.ResponseCompletedEvent:
+			completed = true
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("openai SDK Responses.NewStreaming failed: %v", err)
+	}
+	if got.String() != "raw stream" {
+		t.Fatalf("stream content = %q, want raw stream", got.String())
+	}
+	if !completed {
+		t.Fatal("stream did not emit response.completed")
+	}
+}
+
+func TestOpenAISDKClientCanStreamHubResponsesEndpointWithRawResponsesJSONFallback(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "responses-sdk-stream-raw-json@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "responses-sdk-stream-raw-json@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("upstream path = %q, want /v1/responses", r.URL.Path)
+		}
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if upstreamBody["model"] != "test-model" || upstreamBody["stream"] != true {
+			t.Fatalf("unexpected upstream body: %#v", upstreamBody)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":     "resp_raw_json",
+			"object": "response",
+			"model":  "test-model",
+			"status": "completed",
+			"output": []any{map[string]any{
+				"id":      "msg_raw_json",
+				"type":    "message",
+				"status":  "completed",
+				"role":    "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "raw json stream", "annotations": []any{}}},
+			}},
+			"usage": map[string]any{"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+		})
+	}))
+	defer upstream.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: upstream.URL, Model: "test-model", WireAPI: "responses"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/llm/v1/responses", LLMV1ResponsesHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	stream := client.Responses.NewStreaming(context.Background(), responses.ResponseNewParams{
+		Model: shared.ResponsesModel("auto"),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String("hi"),
+		},
+	})
+	var got strings.Builder
+	var completed bool
+	for stream.Next() {
+		switch event := stream.Current().AsAny().(type) {
+		case responses.ResponseTextDeltaEvent:
+			got.WriteString(event.Delta)
+		case responses.ResponseCompletedEvent:
+			completed = true
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("openai SDK Responses.NewStreaming failed: %v", err)
+	}
+	if got.String() != "raw json stream" {
+		t.Fatalf("stream content = %q, want raw json stream", got.String())
+	}
+	if !completed {
+		t.Fatal("stream did not emit response.completed")
+	}
+}
+
+func TestOpenAISDKClientCanStreamHubResponsesToolCalls(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "responses-sdk-stream-tools@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "responses-sdk-stream-tools@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		tools, _ := upstreamBody["tools"].([]any)
+		if len(tools) != 1 || upstreamBody["stream"] != true {
+			t.Fatalf("unexpected upstream body: %#v", upstreamBody)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_read\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"main.go\\\"}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: upstream.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/llm/v1/responses", LLMV1ResponsesHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	stream := client.Responses.NewStreaming(context.Background(), responses.ResponseNewParams{
+		Model: shared.ResponsesModel("auto"),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String("read main"),
+		},
+		Tools: []responses.ToolUnionParam{{
+			OfFunction: &responses.FunctionToolParam{
+				Name:        "read_file",
+				Description: openai.String("read file"),
+				Parameters: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"path": map[string]any{"type": "string"}},
+					"required":   []string{"path"},
+				},
+			},
+		}},
+	})
+	var delta, doneArgs string
+	var completed bool
+	for stream.Next() {
+		switch event := stream.Current().AsAny().(type) {
+		case responses.ResponseFunctionCallArgumentsDeltaEvent:
+			delta += event.Delta
+		case responses.ResponseFunctionCallArgumentsDoneEvent:
+			doneArgs = event.Arguments
+		case responses.ResponseCompletedEvent:
+			completed = true
+			if len(event.Response.Output) != 1 || event.Response.Output[0].Type != "function_call" {
+				t.Fatalf("completed output = %+v, want one function_call", event.Response.Output)
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("openai SDK Responses.NewStreaming failed: %v", err)
+	}
+	if delta != `{"path":"main.go"}` || doneArgs != `{"path":"main.go"}` {
+		t.Fatalf("tool args delta=%q done=%q, want JSON args", delta, doneArgs)
+	}
+	if !completed {
+		t.Fatal("stream did not emit response.completed")
+	}
+}
+
+func TestOpenAISDKClientCanStreamHubResponsesLegacyFunctionCall(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "responses-sdk-stream-legacy-function@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "responses-sdk-stream-legacy-function@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"function_call\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\"}}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"function_call\":{\"arguments\":\"\\\"main.go\\\"}\"}}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"function_call\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: upstream.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/llm/v1/responses", LLMV1ResponsesHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	stream := client.Responses.NewStreaming(context.Background(), responses.ResponseNewParams{
+		Model: shared.ResponsesModel("auto"),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String("read main"),
+		},
+		Tools: []responses.ToolUnionParam{{
+			OfFunction: &responses.FunctionToolParam{
+				Name:        "read_file",
+				Description: openai.String("read file"),
+				Parameters: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"path": map[string]any{"type": "string"}},
+					"required":   []string{"path"},
+				},
+			},
+		}},
+	})
+	var delta, doneArgs string
+	var completed bool
+	for stream.Next() {
+		switch event := stream.Current().AsAny().(type) {
+		case responses.ResponseFunctionCallArgumentsDeltaEvent:
+			delta += event.Delta
+		case responses.ResponseFunctionCallArgumentsDoneEvent:
+			doneArgs = event.Arguments
+		case responses.ResponseCompletedEvent:
+			completed = true
+			if len(event.Response.Output) != 1 || event.Response.Output[0].Type != "function_call" {
+				t.Fatalf("completed output = %+v, want one function_call", event.Response.Output)
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("openai SDK Responses.NewStreaming failed: %v", err)
+	}
+	if delta != `{"path":"main.go"}` || doneArgs != `{"path":"main.go"}` {
+		t.Fatalf("tool args delta=%q done=%q, want JSON args", delta, doneArgs)
+	}
+	if !completed {
+		t.Fatal("stream did not emit response.completed")
+	}
+}
+
+func TestLLMV1ResponsesHandlerPassesThroughResponsesWireProvider(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "responses-raw-binding@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "responses-raw-binding@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("upstream path = %q, want /v1/responses", r.URL.Path)
+		}
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if upstreamBody["model"] != "test-model" {
+			t.Fatalf("upstream model = %#v, want test-model", upstreamBody["model"])
+		}
+		if upstreamBody["previous_response_id"] != "resp_prev" {
+			t.Fatalf("previous_response_id = %#v, want resp_prev; body=%#v", upstreamBody["previous_response_id"], upstreamBody)
+		}
+		if _, ok := upstreamBody["messages"]; ok {
+			t.Fatalf("chat messages leaked to responses upstream: %#v", upstreamBody)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":     "resp_raw",
+			"object": "response",
+			"model":  "test-model",
+			"status": "completed",
+			"output": []any{map[string]any{
+				"type":    "message",
+				"id":      "msg_1",
+				"role":    "assistant",
+				"status":  "completed",
+				"content": []any{map[string]any{"type": "output_text", "text": "raw ok"}},
+			}},
+			"usage": map[string]any{"input_tokens": 9, "output_tokens": 4, "total_tokens": 13},
+		})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model", WireAPI: "responses"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	bodyBytes, err := json.Marshal(map[string]any{
+		"model":                "auto",
+		"previous_response_id": "resp_prev",
+		"input":                "continue",
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/responses", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ResponsesHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("expected upstream to be called once, hits = %d", upstreamHits.Load())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["id"] != "resp_raw" || got["object"] != "response" {
+		t.Fatalf("unexpected raw responses envelope: %#v", got)
+	}
+}
+
+func TestLLMV1ModelHandlerReturnsAuthorizedModel(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "model-binding@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "model-binding@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: "https://example.test/v1", Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm/v1/models/auto", nil)
+	req.SetPathValue("model", "auto")
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rr := httptest.NewRecorder()
+
+	LLMV1ModelHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"id":"auto"`) || !strings.Contains(rr.Body.String(), `"object":"model"`) || !strings.Contains(rr.Body.String(), `"created":0`) {
+		t.Fatalf("unexpected model body: %s", rr.Body.String())
+	}
+}
+
+func TestLLMV1ModelsHandlerReturnsOpenAIModelObjects(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "models-list@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "models-list@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: "https://example.test/v1", Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rr := httptest.NewRecorder()
+
+	LLMV1ModelsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			Created int64  `json:"created"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode models response: %v", err)
+	}
+	if got.Object != "list" || len(got.Data) != 1 {
+		t.Fatalf("unexpected models response: %#v", got)
+	}
+	if got.Data[0].ID != "auto" || got.Data[0].Object != "model" || got.Data[0].Created != 0 || got.Data[0].OwnedBy != "hub" {
+		t.Fatalf("unexpected model object: %#v", got.Data[0])
+	}
+}
+
+func TestOpenAISDKClientCanListAndGetHubModels(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "models-sdk@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "models-sdk@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: "https://example.test/v1", Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, nil))
+	mux.HandleFunc("GET /api/llm/v1/models/{model}", LLMV1ModelHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	page, err := client.Models.List(context.Background())
+	if err != nil {
+		t.Fatalf("openai SDK Models.List failed: %v", err)
+	}
+	if page == nil || len(page.Data) != 1 || page.Data[0].ID != "auto" || page.Data[0].Object != "model" {
+		t.Fatalf("models page = %+v, want one auto model", page)
+	}
+	model, err := client.Models.Get(context.Background(), "auto")
+	if err != nil {
+		t.Fatalf("openai SDK Models.Get failed: %v", err)
+	}
+	if model.ID != "auto" || model.Object != "model" {
+		t.Fatalf("model = %+v, want auto model", model)
+	}
+}
+
+func TestOpenAISDKClientCanGetHubModelWithSlashID(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "models-sdk-slash@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "qax-codegen/Auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "models-sdk-slash@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: "https://example.test/v1", Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, nil))
+	mux.HandleFunc("GET /api/llm/v1/models/{model...}", LLMV1ModelHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	page, err := client.Models.List(context.Background())
+	if err != nil {
+		t.Fatalf("openai SDK Models.List failed: %v", err)
+	}
+	if page == nil || len(page.Data) != 1 || page.Data[0].ID != "qax-codegen/Auto" {
+		t.Fatalf("models page = %+v, want qax-codegen/Auto", page)
+	}
+	model, err := client.Models.Get(context.Background(), "qax-codegen/Auto")
+	if err != nil {
+		t.Fatalf("openai SDK Models.Get failed: %v", err)
+	}
+	if model.ID != "qax-codegen/Auto" || model.Object != "model" {
+		t.Fatalf("model = %+v, want qax-codegen/Auto model", model)
+	}
+}
+
+func TestOpenAISDKClientGetsOpenAIErrorShapeForMissingHubModel(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "models-sdk-missing@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}},
+		}},
+		UserBindings: []llmservice.UserBinding{{Email: "models-sdk-missing@example.com", ServiceGroupIDs: []string{"coding-basic"}}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: "https://example.test/v1", Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/llm/v1/models/{model...}", LLMV1ModelHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	_, err := client.Models.Get(context.Background(), "missing")
+	if err == nil {
+		t.Fatal("expected missing model error")
+	}
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %T %v, want openai.Error", err, err)
+	}
+	if apiErr.StatusCode != http.StatusNotFound || apiErr.Code != "LLM_MODEL_NOT_FOUND" {
+		t.Fatalf("openai error = status:%d code:%q message:%q", apiErr.StatusCode, apiErr.Code, apiErr.Message)
+	}
+}
+
 func TestLLMV1ChatCompletionsHandlerUsesLocalCacheWithoutEnqueueingUsage(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken, _ := issueViewerToken(t, identity, "cached-handler@example.com")
@@ -1334,6 +2840,99 @@ func TestLLMV1ChatCompletionsHandlerUsesLocalCacheWithoutEnqueueingUsage(t *test
 	}
 	if len(serviceReg.Grants) != 1 || serviceReg.Grants[0].CreditsUsed != 2 {
 		t.Fatalf("expected credits to remain unchanged, got %#v", serviceReg.Grants)
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerPromptCacheIsTenantScoped(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	tokenA := issueViewerTokenForTenant(t, identity, "tenant_a", "same@example.com")
+	tokenB := issueViewerTokenForTenant(t, identity, "tenant_b", "same@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+
+	saveTenantService := func(tenantID string) {
+		t.Helper()
+		if err := llmservice.SaveRegistry(ctx, scopedSystemSettingsForTenant(tenantID, system), &llmservice.Registry{
+			ModelServiceGroups: []llmservice.ModelServiceGroup{{
+				ID:           "coding-basic",
+				Name:         "Coding Basic",
+				AccessPolicy: llmservice.AccessPolicyFree,
+				Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}},
+			}},
+			UserBindings: []llmservice.UserBinding{{Email: "same@example.com", ServiceGroupIDs: []string{"coding-basic"}}},
+		}); err != nil {
+			t.Fatalf("save service registry %s: %v", tenantID, err)
+		}
+	}
+	saveTenantService("tenant_a")
+	saveTenantService("tenant_b")
+
+	var hitsA atomic.Int32
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsA.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":    "tenant-a-upstream",
+			"model": "test-model",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "tenant-a"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+		})
+	}))
+	defer serverA.Close()
+	var hitsB atomic.Int32
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsB.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":    "tenant-b-upstream",
+			"model": "test-model",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "tenant-b"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+		})
+	}))
+	defer serverB.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, scopedSystemSettingsForTenant("tenant_a", system), &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: serverA.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save tenant_a provider registry: %v", err)
+	}
+	if err := im.SaveLLMProviderRegistry(ctx, scopedSystemSettingsForTenant("tenant_b", system), &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: serverB.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save tenant_b provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1 << 20})
+	handler := LLMV1ChatCompletionsHandler(identity, system, nil, cache)
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "same prompt"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	call := func(token string) string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+		}
+		return rr.Body.String()
+	}
+
+	respA := call(tokenA)
+	respB := call(tokenB)
+
+	if hitsA.Load() != 1 || hitsB.Load() != 1 {
+		t.Fatalf("tenant upstream hits = a:%d b:%d, want both 1", hitsA.Load(), hitsB.Load())
+	}
+	if !strings.Contains(respA, "tenant-a") || !strings.Contains(respB, "tenant-b") {
+		t.Fatalf("tenant cache leaked response: a=%s b=%s", respA, respB)
 	}
 }
 

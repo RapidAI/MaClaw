@@ -282,8 +282,15 @@ type AppConfig struct {
 	// WorkflowEnabled controls whether the workflow engine (multi-phase
 	// guided workflows like coding, PPT design, etc.) is active. When false,
 	// all messages bypass workflow interception and go directly to the normal
-	// agent loop. Default: false (disabled).
+	// agent loop. Default: true (enabled).
 	WorkflowEnabled *bool `json:"workflow_enabled,omitempty"`
+
+	// Coding knowledge base settings (experience accumulation by CodingSubAgent)
+	CodingKnowledgeAutoSaveMode string `json:"coding_knowledge_auto_save_mode,omitempty"` // observe/auto/off
+	CodingKnowledgeSaveStrategy string `json:"coding_knowledge_save_strategy,omitempty"`  // always/on_success/on_retry_success/off
+	CodingKnowledgeMaxPerProject int   `json:"coding_knowledge_max_per_project,omitempty"` // single project limit, default 200
+	CodingKnowledgeMaxTotal      int   `json:"coding_knowledge_max_total,omitempty"`       // global limit, default 1000
+
 	// FavoriteEmployees stores the IDs of up to 9 user-configured pinned digital
 	// employees shown as quick-access buttons in the sidebar nav rail. Order matters.
 	// One additional slot is always reserved for the resident employee (total 10 slots).
@@ -305,7 +312,7 @@ type AppConfig struct {
 const (
 	DefaultSubAgentConcurrency = 2
 	MinSubAgentConcurrency     = 1
-	MaxSubAgentConcurrency     = 4
+	MaxSubAgentConcurrency     = 10
 )
 
 type LLMPromptCacheConfig struct {
@@ -755,6 +762,10 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 func AppConfigDefaults() AppConfig {
 	return AppConfig{
 		ShowAssistantEntry:     true,
+		ShowCodex:              true,
+		ShowOpenCode:           true,
+		ShowCodeBuddy:          true,
+		ShowIFlow:              true,
 		ShowKilo:               true,
 		PowerOptimization:      true,
 		YoloModeAllowed:        true,
@@ -763,6 +774,8 @@ func AppConfigDefaults() AppConfig {
 		GossipAutoPublish:      true,
 		FileOutboundEnabled:    true,
 		ImageOutboundEnabled:   true,
+		CheckUpdateOnStartup:   true,
+		UseWindowsTerminal:     true,
 		VectorSearchEnabled:    true,
 		ASREnabled:             true,
 		TTSEnabled:             true,
@@ -1034,10 +1047,10 @@ func (c *AppConfig) SetThirdPartyGatewayLocal(v bool) {
 }
 
 // IsWorkflowEnabled returns the effective workflow enabled setting.
-// Default is false (disabled) when the field has never been explicitly set (nil).
+// Default is true (enabled) when the field has never been explicitly set (nil).
 func (c *AppConfig) IsWorkflowEnabled() bool {
 	if c.WorkflowEnabled == nil {
-		return false
+		return true
 	}
 	return *c.WorkflowEnabled
 }

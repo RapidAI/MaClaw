@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { GroupDiscussionListLocalHidden, GroupDiscussionListMine, GroupDiscussionSetLocalHidden } from '../../../wailsjs/go/main/App';
 import { EventsOff, EventsOn } from '../../../wailsjs/runtime';
+import { localizeText } from '../../i18n';
 import { getHistoryDiscussionRelation, isHistoryDiscussionReadOnly } from '../ai/historyDiscussionUtils';
 
 export type HistoryDiscussionSummary = {
@@ -26,7 +27,7 @@ type ContextMenuState = {
     item: HistoryDiscussionSummary;
 };
 
-const textForLang = (lang: string, en: string, zh: string, zht: string) => lang === 'en' ? en : lang === 'zh-Hant' ? zht : zh;
+const textForLang = localizeText;
 const HISTORY_REFRESH_DELAY_MS = 150;
 
 function safeEventsOn(eventName: string, callback: (...args: any[]) => void) {

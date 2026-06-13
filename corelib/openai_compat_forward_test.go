@@ -524,8 +524,8 @@ func TestForwardOpenAICompatRequestNormalizesDeepSeekFlashOptions(t *testing.T) 
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			t.Fatalf("decode upstream request: %v", err)
 		}
-		if got := body["tool_choice"]; got != "auto" {
-			t.Fatalf("tool_choice = %#v, want auto", got)
+		if got := body["tool_choice"]; got != "required" {
+			t.Fatalf("tool_choice = %#v, want required", got)
 		}
 		if got := body["n"]; got != float64(1) {
 			t.Fatalf("n = %#v, want 1", got)
@@ -652,8 +652,10 @@ func TestForwardOpenAICompatRequestNormalizesTypedDeepSeekFlashToolChoice(t *tes
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			t.Fatalf("decode upstream request: %v", err)
 		}
-		if got := body["tool_choice"]; got != "auto" {
-			t.Fatalf("tool_choice = %#v, want auto", got)
+		toolChoice := body["tool_choice"].(map[string]any)
+		fn := toolChoice["function"].(map[string]any)
+		if toolChoice["type"] != "function" || fn["name"] != "noop" {
+			t.Fatalf("tool_choice = %#v, want nested function noop", toolChoice)
 		}
 		resp := `{"id":"chatcmpl-test","object":"chat.completion","model":"deepseek-v4-flash","choices":[]}`
 		return &http.Response{
@@ -674,6 +676,99 @@ func TestForwardOpenAICompatRequestNormalizesTypedDeepSeekFlashToolChoice(t *tes
 			},
 		}},
 		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}, client, "")
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", statusCode, http.StatusOK)
+	}
+}
+
+func TestForwardOpenAICompatRequestNormalizesFlatFunctionToolChoice(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		toolChoice := body["tool_choice"].(map[string]any)
+		fn := toolChoice["function"].(map[string]any)
+		if toolChoice["type"] != "function" || fn["name"] != "get_ticket" {
+			t.Fatalf("tool_choice = %#v, want nested function get_ticket", toolChoice)
+		}
+		if _, ok := toolChoice["name"]; ok {
+			t.Fatalf("flat tool_choice name leaked upstream: %#v", toolChoice)
+		}
+		resp := `{"id":"chatcmpl-test","object":"chat.completion","model":"gpt-test","choices":[]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(resp)),
+			Request:    req,
+		}, nil
+	})}
+
+	_, statusCode, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{URL: "https://api.example.com/v1", Model: "gpt-test"}, map[string]any{
+		"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+		"tool_choice": map[string]any{"type": "function", "name": "get_ticket"},
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":       "get_ticket",
+				"parameters": map[string]any{"type": "object"},
+			},
+		}},
+	}, client, "")
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", statusCode, http.StatusOK)
+	}
+}
+
+func TestForwardOpenAICompatRequestNormalizesFlatFunctionTools(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		tools := body["tools"].([]any)
+		tool := tools[0].(map[string]any)
+		fn := tool["function"].(map[string]any)
+		if tool["type"] != "function" || fn["name"] != "get_ticket" || fn["description"] != "get ticket" {
+			t.Fatalf("tool = %#v, want nested function get_ticket", tool)
+		}
+		if fn["strict"] != true {
+			t.Fatalf("strict = %#v, want true", fn["strict"])
+		}
+		params := fn["parameters"].(map[string]any)
+		if params["type"] != "object" {
+			t.Fatalf("parameters = %#v", params)
+		}
+		if _, ok := tool["name"]; ok {
+			t.Fatalf("flat tool name leaked upstream: %#v", tool)
+		}
+		resp := `{"id":"chatcmpl-test","object":"chat.completion","model":"gpt-test","choices":[]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(resp)),
+			Request:    req,
+		}, nil
+	})}
+
+	_, statusCode, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{URL: "https://api.example.com/v1", Model: "gpt-test"}, map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		"tools": []any{map[string]any{
+			"type":        "function",
+			"name":        "get_ticket",
+			"description": "get ticket",
+			"strict":      true,
+			"parameters":  map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}}},
+			"extra":       "drop-me",
+		}},
+		"tool_choice": map[string]any{"type": "function", "name": "get_ticket"},
 	}, client, "")
 	if err != nil {
 		t.Fatalf("ForwardOpenAICompatRequest() error = %v", err)
@@ -2010,6 +2105,14 @@ func TestForwardOpenAICompatRequestResponsesMapsChatFields(t *testing.T) {
 		if _, ok := body["metadata"]; !ok {
 			t.Fatalf("metadata missing: %#v", body)
 		}
+		tools := body["tools"].([]any)
+		tool := tools[0].(map[string]any)
+		if tool["type"] != "function" || tool["name"] != "answer_tool" {
+			t.Fatalf("tools = %#v, want Responses flat function tool", body["tools"])
+		}
+		if _, ok := tool["function"]; ok {
+			t.Fatalf("Responses tool leaked nested function: %#v", tool)
+		}
 		toolChoice := body["tool_choice"].(map[string]any)
 		if toolChoice["type"] != "function" || toolChoice["name"] != "answer_tool" {
 			t.Fatalf("tool_choice = %#v, want Responses function choice", toolChoice)
@@ -2040,10 +2143,11 @@ func TestForwardOpenAICompatRequestResponsesMapsChatFields(t *testing.T) {
 			},
 		},
 		"tools": []any{map[string]any{
-			"type":     "function",
-			"function": map[string]any{"name": "answer_tool", "parameters": map[string]any{"type": "object"}},
+			"type":       "function",
+			"name":       "answer_tool",
+			"parameters": map[string]any{"type": "object"},
 		}},
-		"tool_choice": map[string]any{"type": "function", "function": map[string]any{"name": "answer_tool"}},
+		"tool_choice": map[string]any{"type": "function", "name": "answer_tool"},
 		"metadata":    map[string]any{"trace": "keep"},
 	}, server.Client(), "auto")
 	if err != nil || status != http.StatusOK {

@@ -1377,6 +1377,13 @@ func (a *App) IsAIAssistantReady() bool {
 func (a *App) GetAIAssistantInitStatus() string {
 	hubClient := a.hubClient()
 	if hubClient == nil {
+		// No Hub client yet. If warmup is done (markAIAssistantReady was called)
+		// the system is waiting for Hub credentials/connection — show "degraded"
+		// so the frontend unlocks the input area (with Hub-offline indicator)
+		// instead of showing a forever-spinning "loading" state.
+		if a.warmupDone.Load() {
+			return "degraded"
+		}
 		if a.interactionInfraReady() {
 			return "loading"
 		}

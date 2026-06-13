@@ -1620,14 +1620,29 @@ function App() {
     // Show the MaClaw LLM popup once both the first ping result AND config are available.
     // Only checks LLM status here; registration check is done in a separate effect
     // after useRemotePanel provides remoteActivationStatus.
+    //
+    // Resilience: a single failed ping (hub 502, network blip during startup) must
+    // not trigger the popup. We retry once after 5s before deciding. If the second
+    // attempt also fails, show the popup. If it succeeds, skip it.
     useEffect(() => {
         if (!config || !maclawLLMFirstPingResult.current) return;
         const { online } = maclawLLMFirstPingResult.current;
-        if (!online) {
-            setShowMaclawLLMPopup(true);
-        }
-        // Clear so this only fires once.
-        maclawLLMFirstPingResult.current = null;
+        maclawLLMFirstPingResult.current = null; // consume — only fires once
+
+        if (online) return; // LLM is reachable — no popup needed
+
+        // First ping failed — retry once after a short delay before showing popup
+        const retryTimer = setTimeout(() => {
+            callBackend(() => PingMaclawLLM()).then((s: any) => {
+                if (!s?.online) {
+                    setShowMaclawLLMPopup(true);
+                }
+                // If online now (transient failure recovered), silently skip popup
+            }).catch(() => {
+                setShowMaclawLLMPopup(true);
+            });
+        }, 5000);
+        return () => clearTimeout(retryTimer);
     }, [config, maclawLLMOnline]);
 
     const checkTools = async () => {
@@ -2808,11 +2823,21 @@ function App() {
             }
         });
 
-        const sanitizedConfig = new main.AppConfig(configCopy);
-        setConfig(sanitizedConfig);
+        // Only patch the tool configs + active_tool that the Model Settings panel edits.
+        // Using PatchConfigFields (atomic load→merge→save under configMu) instead of
+        // Full-overwrite save eliminates the TOCTOU race where a stale frontend
+        // snapshot overwrites backend-owned fields (credentials, LLM provider, onboarding).
+        const patch: Record<string, any> = { active_tool: configCopy.active_tool };
+        TOOL_NAMES.forEach(tool => {
+            if (configCopy[tool]) {
+                patch[tool] = configCopy[tool];
+            }
+        });
 
+        setConfig(new main.AppConfig(configCopy));
         setStatus(t("saving"));
-        callBackend(() => SaveConfig(sanitizedConfig)).then(() => {
+        callBackend(() => PatchConfigFields(patch)).then((saved) => {
+            setConfig(new main.AppConfig(saved));
             setStatus(t("saved"));
             setTimeout(() => {
                 setStatus("");
@@ -3395,12 +3420,8 @@ ${instruction}`;
                                 // via refreshRemotePanel(). Additionally clear onboarding_done flag
                                 // so the wizard can be re-triggered on next "Register" click.
                                 try {
-                                    const c = await callBackend(() => LoadConfig());
-                                    if (c) {
-                                        (c as any).onboarding_done = false;
-                                        await SaveConfig(c);
-                                        setConfig(c);
-                                    }
+                                    const saved = await PatchConfigFields({ onboarding_done: false });
+                                    setConfig(new main.AppConfig(saved));
                                 } catch (e) {
                                     console.error("Failed to clear onboarding_done:", e);
                                 }

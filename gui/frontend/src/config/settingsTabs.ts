@@ -1,3 +1,5 @@
+import { localizeText } from '../i18n';
+
 export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'security' | 'im' | 'system';
 
 export interface SettingsTabOption {
@@ -6,9 +8,7 @@ export interface SettingsTabOption {
     desc: string;
 }
 
-const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+const textForLang = localizeText;
 
 export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmployee?: boolean } = {}): SettingsTabOption[] => {
     const tabs: SettingsTabOption[] = [

@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { localizeText } from "../../i18n";
 
 // --- Types ---
 
@@ -70,7 +71,7 @@ const textForLang = (
   en: string,
   zhHans: string,
   zhHant = zhHans,
-) => (lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans);
+) => localizeText(lang, en, zhHans, zhHant);
 
 function generateId(): string {
   return "rule_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);

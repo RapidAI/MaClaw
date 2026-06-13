@@ -375,6 +375,39 @@ func grantSummary(g Grant, now time.Time) ActiveGrant {
 		summary.RetryAfterSeconds = int64(math.Ceil(retryAt.Sub(now).Seconds()))
 		summary.RetryAfterAt = retryAt.Format(time.RFC3339)
 	}
+	// Include period limits and usage when the grant has any period constraints.
+	if g.PeriodLimits.FiveHour > 0 || g.PeriodLimits.Daily > 0 || g.PeriodLimits.Weekly > 0 || g.PeriodLimits.Monthly > 0 {
+		limits := g.PeriodLimits
+		summary.PeriodLimits = &limits
+		// Build API-facing usage summary with precise window_end computed from
+		// the same window functions used for billing eligibility checks.
+		fhStart := fiveHourWindowStart(now)
+		dStart := dayWindowStart(now)
+		wStart := weekWindowStart(now)
+		mStart := monthWindowStart(now)
+		summary.PeriodUsage = &ActiveGrantPeriodUsage{
+			FiveHour: ActiveGrantUsageWindow{
+				WindowStart: g.PeriodUsage.FiveHour.WindowStart,
+				WindowEnd:   fhStart.Add(5 * time.Hour),
+				CreditsUsed: roundCredits(g.PeriodUsage.FiveHour.CreditsUsed),
+			},
+			Daily: ActiveGrantUsageWindow{
+				WindowStart: g.PeriodUsage.Daily.WindowStart,
+				WindowEnd:   dStart.AddDate(0, 0, 1),
+				CreditsUsed: roundCredits(g.PeriodUsage.Daily.CreditsUsed),
+			},
+			Weekly: ActiveGrantUsageWindow{
+				WindowStart: g.PeriodUsage.Weekly.WindowStart,
+				WindowEnd:   wStart.AddDate(0, 0, 7),
+				CreditsUsed: roundCredits(g.PeriodUsage.Weekly.CreditsUsed),
+			},
+			Monthly: ActiveGrantUsageWindow{
+				WindowStart: g.PeriodUsage.Monthly.WindowStart,
+				WindowEnd:   mStart.AddDate(0, 1, 0),
+				CreditsUsed: roundCredits(g.PeriodUsage.Monthly.CreditsUsed),
+			},
+		}
+	}
 	return summary
 }
 

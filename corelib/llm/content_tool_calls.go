@@ -10,7 +10,8 @@ import (
 )
 
 var (
-	contentXMLToolCallBlockRe        = regexp.MustCompile(`(?s)<tool_call>\s*(.*?)\s*</tool_call>`)
+	contentXMLToolCallBlockRe        = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>\s*(.*?)\s*</tool_call>`)
+	contentAngleToolCallOpenRe       = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>`)
 	contentCodexToolCallBlockRe      = regexp.MustCompile(`(?s)<turn:\s*tool_call\s*>(.*?)</turn>`)
 	contentCodexToolCallMarkerRe     = regexp.MustCompile(`(?is)<turn:\s*tool_call\b`)
 	contentPlainToolCallMarkerRe     = regexp.MustCompile(`(?is)\bTOOL_CALL\b\s*`)
@@ -45,6 +46,13 @@ func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
 	if codexMalformed {
 		malformed = true
 	}
+	angleCalls, angleMalformed := parseUnclosedAngleContentToolCalls(content)
+	if len(angleCalls) > 0 {
+		calls = append(calls, angleCalls...)
+	}
+	if angleMalformed {
+		malformed = true
+	}
 	jsonCalls, jsonMalformed := parseBareJSONContentToolCalls(content)
 	if len(jsonCalls) > 0 {
 		calls = append(calls, jsonCalls...)
@@ -58,6 +66,33 @@ func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
 	}
 	if plainMalformed {
 		malformed = true
+	}
+	return calls, malformed
+}
+
+func parseUnclosedAngleContentToolCalls(content string) ([]ToolCall, bool) {
+	matches := contentAngleToolCallOpenRe.FindAllStringIndex(content, -1)
+	if len(matches) == 0 {
+		return nil, false
+	}
+	var calls []ToolCall
+	malformed := false
+	for _, match := range matches {
+		rest := content[match[1]:]
+		if strings.Contains(strings.ToLower(rest), "</tool_call>") {
+			continue
+		}
+		raw, ok := extractJSONObjectAfter(rest)
+		if !ok {
+			malformed = true
+			continue
+		}
+		call, ok := parseContentJSONToolCallPayload(raw)
+		if ok {
+			calls = append(calls, call)
+		} else {
+			malformed = true
+		}
 	}
 	return calls, malformed
 }
@@ -168,28 +203,19 @@ func bareJSONLooksLikeToolCall(obj map[string]json.RawMessage) bool {
 	return false
 }
 
-func looksLikeContentToolCallPrefix(content string) bool {
-	trimmed := strings.TrimLeft(content, " \t\r\n")
-	lower := strings.ToLower(trimmed)
-	for _, marker := range []string{"<tool_call>", "<turn: tool_call", "tool_call"} {
-		if strings.HasPrefix(lower, marker) || strings.HasPrefix(marker, lower) {
-			return true
-		}
-	}
-	return false
-}
-
-func contentHasPlainToolCallMarker(content string) bool {
-	return contentPlainToolCallMarkerRe.MatchString(content)
-}
-
 type contentToolCallDeltaFilter struct {
-	downstream TokenCallback
-	pending    strings.Builder
-	suppressed bool
+	downstream      TokenCallback
+	downstreamFlush func()
+	pending         strings.Builder
+	suppressed      bool
 }
 
 func newContentToolCallDeltaFilter(downstream TokenCallback) *contentToolCallDeltaFilter {
+	if downstream != nil {
+		details := &detailsFilter{downstream: downstream}
+		downstream = details.Write
+		return &contentToolCallDeltaFilter{downstream: downstream, downstreamFlush: details.Flush}
+	}
 	return &contentToolCallDeltaFilter{downstream: downstream}
 }
 
@@ -206,6 +232,9 @@ func (f *contentToolCallDeltaFilter) Flush() {
 		return
 	}
 	f.drain(true)
+	if f.downstreamFlush != nil {
+		f.downstreamFlush()
+	}
 }
 
 func (f *contentToolCallDeltaFilter) drain(force bool) {
@@ -265,7 +294,7 @@ func looksLikeBareJSONToolCallStreamPrefix(content string) bool {
 
 func firstContentToolCallMarkerIndex(lower string) int {
 	best := -1
-	for _, marker := range []string{"<tool_call>", "<turn: tool_call", "tool_call\n", "tool_call\r\n", "tool_call {"} {
+	for _, marker := range []string{"<tool_call", "<turn: tool_call", "tool_call\n", "tool_call\r\n", "tool_call {"} {
 		if idx := strings.Index(lower, marker); idx >= 0 && (best < 0 || idx < best) {
 			best = idx
 		}
@@ -275,7 +304,7 @@ func firstContentToolCallMarkerIndex(lower string) int {
 
 func contentToolCallMarkerSuffixLen(lower string) int {
 	best := 0
-	for _, marker := range []string{"<tool_call>", "<turn: tool_call", "tool_call\n", "tool_call\r\n", "tool_call {"} {
+	for _, marker := range []string{"<tool_call", "<turn: tool_call", "tool_call\n", "tool_call\r\n", "tool_call {"} {
 		max := len(marker) - 1
 		if len(lower) < max {
 			max = len(lower)

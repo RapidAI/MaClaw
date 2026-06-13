@@ -3,11 +3,13 @@ package main
 import (
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 type preparedIMEntryExecutionOptions struct {
@@ -20,6 +22,7 @@ type preparedIMEntryExecutionOptions struct {
 	UnfinishedSlot            *agent.UnfinishedTaskSlot
 	WorkflowAgentLoop         bool
 	WorkflowDocPhase          bool
+	WorkflowPhaseID           string
 	SkipNeedsConfirmGate      bool
 	AskUserContext            string
 	PendingUserReplyContext   string
@@ -66,6 +69,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	)
 	loopCtx.WorkflowAgentLoop = opts.WorkflowAgentLoop
 	loopCtx.WorkflowDocPhase = opts.WorkflowDocPhase
+	loopCtx.WorkflowPhaseID = opts.WorkflowPhaseID
 	executionProfile, semanticIntent := h.classifyIMExecutionProfileAndSemantic(msg, opts.WorkflowAgentLoop, opts.AskUserContext != "" || opts.PendingUserReplyContext != "")
 	loopCtx.Runtime.Execution = executionProfile
 	loopCtx.Runtime.SemanticIntent = semanticIntent
@@ -131,7 +135,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	// (to prevent self-confirmation loops). The hint is added by the system instead.
 	// Check both resp.Text (finalize path) and WorkflowDocBuffer (multi-iteration accumulation).
 	if opts.WorkflowDocPhase && resp != nil && resp.Error == "" {
-		hasContent := resp.Text != "" || (loopCtx != nil && loopCtx.WorkflowDocBuffer.Len() > 0)
+		hasContent := sanitizeWorkflowDocPhaseResponseText(resp, loopCtx, opts.WorkflowPhaseID)
 		if hasContent {
 			phaseName := ""
 			if wf := h.getWorkflowV2(); wf != nil {
@@ -154,4 +158,20 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	}
 
 	return h.finalizeIMAgentLoopResponse(msg, loopCtx, resp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
+}
+
+func sanitizeWorkflowDocPhaseResponseText(resp *IMAgentResponse, loopCtx *LoopContext, phaseID string) bool {
+	if resp == nil {
+		return false
+	}
+	if loopCtx != nil && loopCtx.WorkflowDocBuffer.Len() > 0 {
+		if t := strings.TrimSpace(loopCtx.WorkflowDocBuffer.String()); t != "" {
+			cleaned := v2.SanitizePhaseOutput(phaseID, t)
+			resp.Text = cleaned
+			return strings.TrimSpace(cleaned) != ""
+		}
+	}
+	cleaned := v2.SanitizePhaseOutput(phaseID, resp.Text)
+	resp.Text = cleaned
+	return strings.TrimSpace(cleaned) != ""
 }

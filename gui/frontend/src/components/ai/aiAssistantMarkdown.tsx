@@ -846,7 +846,33 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                             </details>
                         );
                     })()}
-                    {renderContentWithCodeBlocks(formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang), t)}
+                    {(() => {
+                        const formattedContent = formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang);
+                        // /btw side query results are collapsible to reduce space.
+                        // Detection: requestId starts with "btw-" (set by sendBtwMessage)
+                        // OR content starts with the backend prefix (fallback for history reload).
+                        const btwPrefix = "🔍 **/btw 查询结果**\n\n";
+                        const isBtwResult = msg.requestId?.startsWith("btw-") || (formattedContent && formattedContent.startsWith(btwPrefix));
+                        if (isBtwResult && formattedContent) {
+                            const btwBody = formattedContent.startsWith(btwPrefix) ? formattedContent.slice(btwPrefix.length) : formattedContent;
+                            // Extract first non-empty line as preview in the collapsed summary.
+                            const firstLine = btwBody.split('\n').find(l => l.trim()) || '';
+                            // Strip markdown formatting for plain-text summary display.
+                            const plainFirstLine = firstLine.replace(/\*\*/g, '').replace(/[*_`#]/g, '');
+                            const preview = plainFirstLine.length > 60 ? plainFirstLine.slice(0, 60) + '…' : plainFirstLine;
+                            return (
+                                <details open style={{ margin: "2px 0 4px 0" }}>
+                                    <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: "12px", userSelect: "none" }}>
+                                        {"🔍"} <strong>/btw</strong>{preview ? ` — ${preview}` : ""}
+                                    </summary>
+                                    <div style={{ padding: "4px 0 0 0" }}>
+                                        {renderContentWithCodeBlocks(btwBody, t)}
+                                    </div>
+                                </details>
+                            );
+                        }
+                        return renderContentWithCodeBlocks(formattedContent, t);
+                    })()}
                     {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t, lang)}
                     {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
                     {msg.recoverableSession && renderRecoverableSessionCard(msg.recoverableSession, executeAction, t, lang)}

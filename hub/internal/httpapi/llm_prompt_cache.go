@@ -297,6 +297,9 @@ func putCachedAuthorizedModelResponse(ctx context.Context, cache llmPromptCacheS
 	if cache == nil || !llmPromptCacheableForTenant(ctx, body, cfg) || statusCode < 200 || statusCode >= 400 || len(respBody) == 0 {
 		return nil
 	}
+	if cachedAuthorizedModelResponseHasToolCall(respBody) {
+		return nil
+	}
 	cacheKey, inputHash, err := llmPromptCacheKey(model, body, externalModel, cfg)
 	if err != nil {
 		return err
@@ -348,6 +351,67 @@ func putCachedAuthorizedModelResponse(ctx context.Context, cache llmPromptCacheS
 	}
 	scheduleHubLLMPromptCacheMaintenance(cache, cfg)
 	return nil
+}
+
+func cachedAuthorizedModelResponseHasToolCall(respBody []byte) bool {
+	var payload map[string]any
+	if len(respBody) == 0 || json.Unmarshal(respBody, &payload) != nil {
+		return false
+	}
+	for _, rawChoice := range anySlice(payload["choices"]) {
+		choice := mapFromPromptCacheAny(rawChoice)
+		if choice == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(choice["finish_reason"])), "tool_calls") ||
+			strings.EqualFold(strings.TrimSpace(fmt.Sprint(choice["finish_reason"])), "function_call") {
+			return true
+		}
+		message := mapFromPromptCacheAny(choice["message"])
+		if message == nil {
+			continue
+		}
+		if len(anySlice(message["tool_calls"])) > 0 {
+			return true
+		}
+		if functionCall := mapFromPromptCacheAny(message["function_call"]); len(functionCall) > 0 {
+			return true
+		}
+	}
+	for _, rawOutput := range anySlice(payload["output"]) {
+		output := mapFromPromptCacheAny(rawOutput)
+		if output == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(output["type"])), "function_call") {
+			return true
+		}
+	}
+	return false
+}
+
+func anySlice(value any) []any {
+	switch typed := value.(type) {
+	case []any:
+		return typed
+	case []map[string]any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, item)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func mapFromPromptCacheAny(value any) map[string]any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return typed
+	default:
+		return nil
+	}
 }
 
 func scheduleHubLLMPromptCacheMaintenance(cache llmPromptCacheStore, cfg HubLLMPromptCacheConfig) {

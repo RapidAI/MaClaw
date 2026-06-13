@@ -45,6 +45,8 @@ type OpenAIChatRequestOptions struct {
 	ResponseFormat interface{}
 }
 
+const defaultOpenAIToolUseMaxTokens = 8192
+
 var openAIChatPassThroughKeys = []string{
 	"temperature",
 	"top_p",
@@ -139,11 +141,12 @@ func buildOpenAIChatRequestBody(
 			reqBody[k] = v
 		}
 	}
+	ensureOpenAIToolUseMaxTokens(reqBody)
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)
 	}
 	sanitizeOpenAIChatRequestBodyForSDKCompatibility(reqBody)
-	if corelib.IsDeepSeekThinking(cfg) {
+	if corelib.IsDeepSeekThinkingModeModel(cfg) {
 		// DeepSeek V4+ thinking mode: explicitly enable thinking so the API
 		// returns reasoning_content in the response. Without this parameter,
 		// the API may not produce the thinking/reasoning output even though
@@ -157,6 +160,22 @@ func buildOpenAIChatRequestBody(
 		ensureDeepSeekFlashJSONResponseInstruction(reqBody)
 	}
 	return reqBody
+}
+
+func ensureOpenAIToolUseMaxTokens(reqBody map[string]interface{}) {
+	if reqBody == nil {
+		return
+	}
+	if _, hasTools := reqBody["tools"]; !hasTools {
+		return
+	}
+	if _, ok := reqBody["max_tokens"]; ok {
+		return
+	}
+	if _, ok := reqBody["max_completion_tokens"]; ok {
+		return
+	}
+	reqBody["max_tokens"] = defaultOpenAIToolUseMaxTokens
 }
 
 func ShouldOmitOpenAIToolsForInitialRequest(cfg corelib.MaclawLLMConfig, messages []interface{}) bool {

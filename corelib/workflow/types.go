@@ -29,8 +29,15 @@ const (
 	WorkflowComplianceAudit         WorkflowType = "compliance_audit"
 	WorkflowPatentAnalysis          WorkflowType = "patent_analysis"
 	WorkflowOpsMaintenance          WorkflowType = "ops_maintenance"
-	WorkflowChangjiangScholar       WorkflowType = "changjiang_scholar"
-	WorkflowChangjiangScholarReview WorkflowType = "changjiang_scholar_review"
+	WorkflowMaintenance             WorkflowType = "maintenance"
+	WorkflowChangjiangScholar         WorkflowType = "changjiang_scholar"
+	WorkflowChangjiangScholarReview   WorkflowType = "changjiang_scholar_review"
+	WorkflowNSFCDistinguishedYouth    WorkflowType = "nsfc_distinguished_youth"
+	WorkflowNSFCExcellentYouth        WorkflowType = "nsfc_excellent_youth"
+	WorkflowNSFCYouth                 WorkflowType = "nsfc_youth"
+	WorkflowNSFCGeneral               WorkflowType = "nsfc_general"
+	WorkflowNSFCKey                   WorkflowType = "nsfc_key"
+	WorkflowPaperReproduction         WorkflowType = "paper_reproduction"
 )
 
 // Phase IDs for the coding workflow. These are the canonical identifiers

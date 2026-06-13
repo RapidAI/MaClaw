@@ -111,7 +111,6 @@ func (h *IMMessageHandler) shouldNeedsConfirmToolBranch(ctx *LoopContext, userID
 	return false
 }
 
-
 // getTaskOrchestrator returns the per-user task execution orchestrator.
 // Creates one on demand if the registry exists but no orchestrator for
 // this user yet. Returns nil if the registry is not initialized.
@@ -214,15 +213,32 @@ type workflowIMRouteResult struct {
 	Response             *IMAgentResponse
 	WorkflowAgentLoop    bool
 	WorkflowDocPhase     bool // true for doc phases (requirements/design/tasks), false for execution phases
+	WorkflowPhaseID      string
 	SkipNeedsConfirmGate bool
+	ReplayText           string // When non-empty, replace the current msg.Text with this for agent loop processing
 }
 
 func (h *IMMessageHandler) routeWorkflowIMMessage(msg IMUserMessage, trimmed string, confirmedResume, hasPendingUserReply bool) workflowIMRouteResult {
-	// V1 workflow routing disabled; V2 engine handles all workflow routing
-	// via routeWithWorkflowV2 in im_entry_context.go.
-	// This stub is retained only for test compatibility.
 	result := workflowIMRouteResult{WorkflowAgentLoop: confirmedResume}
 	_, result.SkipNeedsConfirmGate = h.workflowPendingConfirmOther.LoadAndDelete(msg.UserID)
+	wf := h.getWorkflowV2()
+	if wf == nil || wf.machine == nil || msg.IsBackground || hasPendingUserReply {
+		return result
+	}
+	engine := h.app.workflowEngine
+	if wf.machine.GetActive(msg.UserID) != nil {
+		if resp, handled := h.submitWorkflowInputIfWaiting(engine, msg.UserID, trimmed, msg.Attachments, msg.Platform); handled {
+			result.Response = resp
+			result.WorkflowAgentLoop = resp == nil
+			if state := wf.machine.GetActive(msg.UserID); state != nil {
+				if phase := state.ActivePhase(); phase != nil {
+					result.WorkflowPhaseID = phase.ID
+					result.WorkflowDocPhase = phase.ToolPolicy != v2.ToolPolicyFull
+				}
+			}
+			return result
+		}
+	}
 	return result
 }
 
@@ -353,6 +369,15 @@ func workflowConfirmationTaskText(text string, goals []string, summary string) s
 	return strings.TrimSpace(text)
 }
 
+func firstNonEmptyWorkflowString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func buildWorkflowConfirmationResponse(item *pendingConfirmation, lang string) *IMAgentResponse {
 	if item == nil {
 		return &IMAgentResponse{Text: i18n.T(i18n.MsgWorkflowConfirmNilText, lang)}
@@ -369,8 +394,47 @@ func buildWorkflowConfirmationResponse(item *pendingConfirmation, lang string) *
 
 func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pending *pendingConfirmation, platform string) pendingExecutionConfirmationResult {
 	lang := h.getWorkflowLang()
-	// V1 engine removed; workflow confirmation is no longer supported via V1 path.
-	return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.T(i18n.MsgWorkflowUnavailable, lang)}}
+	wf := h.getWorkflowV2()
+	if wf == nil || wf.machine == nil || pending == nil {
+		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.T(i18n.MsgWorkflowUnavailable, lang)}}
+	}
+	intent := workflow.StructuredIntent{
+		Category:    workflow.WorkflowType(strings.TrimSpace(pending.WorkflowType)),
+		Summary:     firstNonEmptyWorkflowString(pending.WorkflowSummary, pending.Summary, pending.OriginalText),
+		Goals:       normalizeWorkflowConfirmationGoals(pending.WorkflowGoals),
+		Constraints: append([]string(nil), pending.WorkflowConstraints...),
+		Confidence:  pending.WorkflowConfidence,
+		Ready:       true,
+	}
+	if intent.Category == "" || intent.Category == workflow.WorkflowNone {
+		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.T(i18n.MsgWorkflowUnavailable, lang)}}
+	}
+	text := workflowConfirmationTaskText(pending.OriginalText, intent.Goals, intent.Summary)
+	projectPath := strings.TrimSpace(pending.LastProjectPath)
+	if projectPath == "" && len(pending.TargetPaths) > 0 {
+		projectPath = strings.TrimSpace(pending.TargetPaths[0])
+	}
+	if projectPath == "" {
+		projectPath = h.workflowStartProjectPathForIntent(userID, text, intent)
+	}
+	projectPath, prepErr := h.resolveWorkflowProjectPath(projectPath)
+	if prepErr != nil {
+		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, lang, prepErr)}}
+	}
+	// Create workflow via V2 StateMachine directly
+	summary := intent.Summary
+	if summary == "" && len(intent.Goals) > 0 {
+		summary = intent.Goals[0]
+	}
+	v2State, err := wf.machine.Create(userID, string(intent.Category), projectPath, summary)
+	if err != nil {
+		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowStartError, lang, err)}}
+	}
+	state := mapV2StateToV1(v2State)
+	return pendingExecutionConfirmationResult{
+		Handled:  true,
+		Response: h.handlePostStartWorkflow(h.app.workflowEngine, userID, text, state, pending.WorkflowStartReply, platform),
+	}
 }
 
 func shouldRunWorkflowInterception(confirmedResume bool, skipWorkflowOnce bool, engine *workflow.WorkflowEngine, msg IMUserMessage, hasPendingUserReply bool) bool {
@@ -474,8 +538,27 @@ func (h *IMMessageHandler) handlePostStartWorkflow(
 // Called from handleIMMessageWithLoop after slash commands and LLM config check,
 // before the main agent loop logic.
 func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform string, attachments ...[]MessageAttachment) *IMAgentResponse {
-	// V1 engine removed; workflow interception now handled entirely by V2.
-	return nil
+	if h == nil || h.app == nil || h.app.workflowEngine == nil {
+		return nil
+	}
+	engine := h.app.workflowEngine
+	wf := h.getWorkflowV2()
+	atts := workflowInterceptionAttachments(attachments)
+	if workflowAttachmentBypass(engine, userID, atts, text) {
+		return nil
+	}
+	if wf != nil && wf.machine != nil && wf.machine.GetActive(userID) != nil {
+		return h.handleActiveWorkflow(engine, userID, text, platform, atts)
+	} else if engine.HasActiveWorkflow(userID) {
+		return h.handleActiveWorkflow(engine, userID, text, platform, atts)
+	}
+	if understanding := engine.GetUnderstanding(); understanding != nil && understanding.HasActiveSession(userID) {
+		return h.handleActiveUnderstanding(engine, userID, text)
+	}
+	if h.shouldBypassWorkflowForIntent(userID, text, false) {
+		return nil
+	}
+	return h.handleNeedsUnderstanding(engine, userID, text, platform)
 }
 
 func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string, classifyShortMessages bool) bool {
@@ -1447,13 +1530,16 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalogV2Compat(userID str
 			}
 		}
 	}
-	if policy == workflow.ToolFilterNone && h != nil && h.app != nil && h.app.workflowEngine != nil {
-		policy = h.app.workflowEngine.GetActivePhaseToolFilter(userID)
-		if policy == workflow.ToolFilterNone {
-			policy = h.app.workflowEngine.GetPhaseToolFilter(userID)
-		}
-		if policy == workflow.ToolFilterNone && h.app.workflowEngine.IsPhaseExecutionBlocked(userID) {
-			return nil
+	if policy == workflow.ToolFilterNone && h != nil && h.app != nil {
+		if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+			if state := wf.machine.GetActive(userID); state != nil {
+				if phase := state.ActivePhase(); phase != nil {
+					policy = mapV2ToolPolicyToV1(phase.ToolPolicy)
+					if policy == workflow.ToolFilterNone && phase.Status == v2.PhaseWaitingConfirm {
+						return nil
+					}
+				}
+			}
 		}
 	}
 	if len(allTools) == 0 && h != nil {

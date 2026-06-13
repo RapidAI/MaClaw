@@ -132,7 +132,7 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 
 	// Step 4: (Removed) Bug-fix detection was keyword-based and caused false positives.
 	// e.g. "BUG修复验证报告" (document task) was misclassified as a code bug fix.
-	// All classification now goes through LLM complexity assessment in Step 7.
+	// Complexity/task-type classification is now done via user choice in the GUI layer.
 
 	// Step 5: Structured template match.
 	matched := r.templates.MatchByText(text)
@@ -155,25 +155,10 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 		}
 	}
 
-	// Step 7: For coding tasks only, assess complexity via LLM.
+	// Step 7: For coding tasks, let the user decide complexity.
+	// The router returns RouteToWorkflow; the GUI layer will ask the user
+	// whether to use simple (direct coding) or full SDD before proceeding.
 	// Non-coding templates (PPT, business plan, etc.) always go to full workflow.
-	if matched.Type == "coding" {
-		complexity := r.assessComplexity(text)
-		switch complexity {
-		case ComplexityNone:
-			// LLM says this isn't actually a coding task — agent loop handles it
-			return &RouteResult{Target: RouteToAgentLoop}
-		case ComplexitySimple:
-			// Simple coding task — direct SubAgent, skip SDD
-			projectPath := ExtractProjectPathFromText(text)
-			return &RouteResult{
-				Target:       RouteToDirectCoding,
-				WorkflowType: "coding",
-				ProjectPath:  projectPath,
-			}
-		}
-		// ComplexityComplex → fall through to full SDD workflow
-	}
 
 	// Step 8: Extract project path from text
 	projectPath := ExtractProjectPathFromText(text)

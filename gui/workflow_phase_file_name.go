@@ -140,6 +140,11 @@ var knownPhaseFileNames = map[string]string{
 	"risk_policy":          "04-risk-policy.md",
 	"controlled_execution": "05-controlled-execution.md",
 
+	// maintenance workflow (lightweight coding maintenance)
+	"maint_analysis":      "01-maint-analysis.md",
+	"maint_execution":     "02-maint-execution.md",
+	"maint_verification":  "03-maint-verification.md",
+
 	// bid_response workflow
 	"bid_parsing":       "01-bid-parsing.md",
 	"qualification":     "02-qualification.md",
@@ -198,6 +203,41 @@ var knownPhaseFileNames = map[string]string{
 	"cj_plan_feasibility":     "03-scoring.md",          // actual template phase ID
 	"cj_narrative_quality":    "04-comparison.md",       // actual template phase ID
 	"cj_improvement_report":   "05-conclusion.md",      // actual template phase ID
+
+	// nsfc_distinguished_youth workflow
+	"dy_eligibility":          "01-eligibility.md",
+	"dy_research_foundation":  "02-research-foundation.md",
+	"dy_research_proposal":    "03-research-proposal.md",
+	"dy_outcomes_budget":      "04-outcomes-budget.md",
+	"dy_final_assembly":       "05-final-assembly.md",
+
+	// nsfc_excellent_youth workflow
+	"ey_eligibility":            "01-eligibility.md",
+	"ey_research_accumulation":  "02-research-accumulation.md",
+	"ey_research_proposal":      "03-research-proposal.md",
+	"ey_outcomes_budget":        "04-outcomes-budget.md",
+	"ey_final_assembly":         "05-final-assembly.md",
+
+	// nsfc_youth workflow
+	"yf_rationale":       "01-rationale.md",
+	"yf_foundation":      "02-foundation.md",
+	"yf_methodology":     "03-methodology.md",
+	"yf_budget":          "04-budget.md",
+	"yf_final_assembly":  "05-final-assembly.md",
+
+	// nsfc_general workflow
+	"gp_rationale":       "01-rationale.md",
+	"gp_foundation":      "02-foundation.md",
+	"gp_methodology":     "03-methodology.md",
+	"gp_budget":          "04-budget.md",
+	"gp_final_assembly":  "05-final-assembly.md",
+
+	// nsfc_key workflow
+	"kp_strategic_rationale": "01-strategic-rationale.md",
+	"kp_team_foundation":     "02-team-foundation.md",
+	"kp_research_plan":       "03-research-plan.md",
+	"kp_budget_management":   "04-budget-management.md",
+	"kp_final_assembly":      "05-final-assembly.md",
 }
 
 func workflowPhaseFileName(phaseID string) string {

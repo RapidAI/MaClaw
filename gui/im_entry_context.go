@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -24,6 +25,7 @@ type imEntryContextResult struct {
 	FreshTask                 bool
 	WorkflowAgentLoop         bool
 	WorkflowDocPhase          bool
+	WorkflowPhaseID           string
 	SkipNeedsConfirmGate      bool
 	AskUserContext            string
 	PendingUserReplyContext   string
@@ -112,8 +114,16 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		result.Response = workflowRoute.Response
 		return result
 	}
+	// ReplayText: user chose "skip workflow" — replace the button command text
+	// with the original task text so the agent loop processes the actual task.
+	if workflowRoute.ReplayText != "" {
+		msg.Text = workflowRoute.ReplayText
+		trimmed = strings.TrimSpace(workflowRoute.ReplayText)
+		*opts.Trimmed = trimmed
+	}
 	result.WorkflowAgentLoop = workflowRoute.WorkflowAgentLoop
 	result.WorkflowDocPhase = workflowRoute.WorkflowDocPhase
+	result.WorkflowPhaseID = workflowRoute.WorkflowPhaseID
 	result.SkipNeedsConfirmGate = workflowRoute.SkipNeedsConfirmGate
 	workflowRouteElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()

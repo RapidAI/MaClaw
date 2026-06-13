@@ -216,7 +216,7 @@ function renderMdPreviewTable(tableLines: string[], key: number, theme: CodePrev
 }
 
 function MarkdownPreview({ content, theme }: { content: string; theme: CodePreviewTheme }) {
-    const lines = content.split('\n');
+    const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     const elements: React.ReactNode[] = [];
     let i = 0;
     let tableLines: string[] = [];
@@ -252,7 +252,7 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
                 codeLines.push(lines[i]);
                 i++;
             }
-            i++; // skip closing fence
+            if (i < lines.length) i++; // skip closing fence (only if found)
             elements.push(
                 <pre key={elements.length} style={{ background: theme.lineNumBg, border: `1px solid ${theme.border}`, borderRadius: 6, padding: '10px 14px', margin: '8px 0', overflow: 'auto', fontSize: 13, lineHeight: 1.5 }}>
                     <code style={{ color: theme.text, fontFamily: "'Cascadia Code', 'Consolas', monospace" }}>
@@ -275,7 +275,7 @@ function MarkdownPreview({ content, theme }: { content: string; theme: CodePrevi
         flushTable();
 
         // Headings (# through ######)
-        const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+        const headingMatch = line.match(/^(#{1,6})\s+(.+)/);
         if (headingMatch) {
             const level = headingMatch[1].length;
             const sizes: Record<number, number> = { 1: 22, 2: 18, 3: 15, 4: 14, 5: 13, 6: 12 };
@@ -442,7 +442,7 @@ function renderMdInline(text: string, theme: CodePreviewTheme): React.ReactNode 
     // NOTE: italic(*) requires non-space after opening * and before closing * to avoid
     //       matching multiplication like "2 * 3 * 4".
     //       Underscore italic (_) is NOT supported to avoid false positives in identifiers.
-    const re = /(`[^`]+`|\*\*\*(?!\s)[^*]+\*\*\*|\*\*[^*]+\*\*|~~[^~]+~~|==[^=]+==|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)|\*(?!\s)[^*\n]+(?<!\s)\*)/g;
+    const re = /(`[^`]+`|\*\*\*(?!\s)(?:[^*]|\*(?!\*\*))+\*\*\*|\*\*(?!\*)(?:[^*]|\*(?!\*))+\*\*|~~[^~]+~~|==[^=]+==|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)|\*(?!\s|\*)[^*]+(?<!\s)\*)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let key = 0;
@@ -453,17 +453,17 @@ function renderMdInline(text: string, theme: CodePreviewTheme): React.ReactNode 
             // Inline code
             parts.push(<code key={key++} style={{ background: theme.lineNumBg, padding: '1px 4px', borderRadius: 3, fontSize: '0.9em', color: theme.syntaxString }}>{m.slice(1, -1)}</code>);
         } else if (m.startsWith('***') && m.endsWith('***')) {
-            // Bold + italic
-            parts.push(<strong key={key++}><em>{m.slice(3, -3)}</em></strong>);
+            // Bold + italic — recurse into inner content for nested formatting
+            parts.push(<strong key={key++}><em>{renderMdInline(m.slice(3, -3), theme)}</em></strong>);
         } else if (m.startsWith('**')) {
-            // Bold
-            parts.push(<strong key={key++}>{m.slice(2, -2)}</strong>);
+            // Bold — recurse into inner content for nested formatting
+            parts.push(<strong key={key++}>{renderMdInline(m.slice(2, -2), theme)}</strong>);
         } else if (m.startsWith('~~')) {
-            // Strikethrough
-            parts.push(<del key={key++} style={{ opacity: 0.7 }}>{m.slice(2, -2)}</del>);
+            // Strikethrough — recurse into inner content
+            parts.push(<del key={key++} style={{ opacity: 0.7 }}>{renderMdInline(m.slice(2, -2), theme)}</del>);
         } else if (m.startsWith('==')) {
-            // Highlight
-            parts.push(<mark key={key++} style={{ background: theme.tabHoverBg, color: theme.tabActiveText, padding: '0 2px', borderRadius: 2 }}>{m.slice(2, -2)}</mark>);
+            // Highlight — recurse into inner content
+            parts.push(<mark key={key++} style={{ background: theme.tabHoverBg, color: theme.tabActiveText, padding: '0 2px', borderRadius: 2 }}>{renderMdInline(m.slice(2, -2), theme)}</mark>);
         } else if (m.startsWith('![')) {
             // Inline image
             const imgM = m.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);

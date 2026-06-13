@@ -264,6 +264,12 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		}
 		hubClient := a.ensureHubClient()
 		log.Printf("[onboarding] ActivateRemote ensure_remote_infra=%s hub_client_ready=%t", time.Since(infraStart), hubClient != nil)
+		if hubClient != nil {
+			// Hub client created — notify frontend to transition from "degraded" to "ready".
+			// Note: markAIAssistantReady() was already called at startup, no need to call again
+			// (calling it again would reset first-chat telemetry timestamp).
+			a.emitEvent("ai-assistant-init-progress", "ready")
+		}
 		if hubClient != nil && !hubClient.IsConnected() {
 			if err := hubClient.Connect(); err != nil {
 				log.Printf("[onboarding] ActivateRemote background_connect_failed total=%s err=%v", time.Since(launchedAt), err)

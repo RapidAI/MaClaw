@@ -167,6 +167,23 @@ type ActiveGrant struct {
 	RetryAfterSeconds int64     `json:"retry_after_seconds,omitempty"`
 	RetryAfterAt      string    `json:"retry_after_at,omitempty"`
 	CreditsRemaining  float64   `json:"credits_remaining,omitempty"`
+	PeriodLimits      *CreditPeriodLimits      `json:"period_limits,omitempty"`
+	PeriodUsage       *ActiveGrantPeriodUsage   `json:"period_usage,omitempty"`
+}
+
+// ActiveGrantPeriodUsage is the API-facing period usage summary (includes window_end).
+// Separate from the storage-layer CreditPeriodUsage to avoid changing the persisted format.
+type ActiveGrantPeriodUsage struct {
+	FiveHour ActiveGrantUsageWindow `json:"five_hour,omitempty"`
+	Daily    ActiveGrantUsageWindow `json:"daily,omitempty"`
+	Weekly   ActiveGrantUsageWindow `json:"weekly,omitempty"`
+	Monthly  ActiveGrantUsageWindow `json:"monthly,omitempty"`
+}
+
+type ActiveGrantUsageWindow struct {
+	WindowStart time.Time `json:"window_start,omitempty"`
+	WindowEnd   time.Time `json:"window_end,omitempty"`
+	CreditsUsed float64   `json:"credits_used,omitempty"`
 }
 
 type ServiceStatus struct {

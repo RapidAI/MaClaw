@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { PatchConfigFields, SetEnvCheckInterval } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
+import { localizeText } from '../../i18n';
 
 type GeneralAdvancedSettingsPanelProps = {
     config: main.AppConfig | null;
@@ -12,9 +13,7 @@ type GeneralAdvancedSettingsPanelProps = {
     setEnvCheckInterval: Dispatch<SetStateAction<number>>;
 };
 
-const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' || lang === 'zh' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+const textForLang = localizeText;
 
 const saveConfigPatch = (
     config: main.AppConfig | null,

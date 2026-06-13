@@ -229,7 +229,7 @@ jobs:
 
           Remove-Item build/windows/wails.exe.manifest.tmp, build/windows/versioninfo.json.tmp
 
-      - name: Build TUI & maclaw-tool
+      - name: Build TUI & maclaw-tool & maclaw-cli
         shell: pwsh
         run: |
           $ldflags = "-s -w -X main.version=$env:VERSION"
@@ -241,9 +241,11 @@ jobs:
             if ($tuiTags -ne "") {
               go build -tags $tuiTags -ldflags $ldflags -o "dist/${outPrefix}-tui_${arch}.exe" ./tui/
               go build -tags $tuiTags -ldflags $ldflags -o "dist/${outPrefix}-tool_${arch}.exe" ./cmd/maclaw-tool/
+              go build -tags $tuiTags -ldflags $ldflags -o "dist/${outPrefix}-cli_${arch}.exe" ./maclaw-cli/
             } else {
               go build -ldflags $ldflags -o "dist/maclaw-tui_${arch}.exe" ./tui/
               go build -ldflags $ldflags -o "dist/maclaw-tool_${arch}.exe" ./cmd/maclaw-tool/
+              go build -ldflags $ldflags -o "dist/maclaw-cli_${arch}.exe" ./maclaw-cli/
             }
           }
 
@@ -301,6 +303,7 @@ jobs:
           $nsis = $env:NSIS_PATH
           $root = (Get-Location).Path
           $outName = $env:BRAND_APP_NAME
+          $cliPrefix = $env:BRAND_APP_NAME.ToLower()
           & $nsis /DINFO_PROJECTNAME="${outName}" `
                   /DPRODUCT_EXECUTABLE="${outName}.exe" `
                   /DINFO_PRODUCTNAME="$($env:BRAND_DISPLAY_NAME)" `
@@ -309,6 +312,8 @@ jobs:
                   /DINFO_PRODUCTVERSION="$env:VERSION" `
                   /DARG_WAILS_AMD64_BINARY="$root\dist\${outName}_amd64.exe" `
                   /DARG_WAILS_ARM64_BINARY="$root\dist\${outName}_arm64.exe" `
+                  /DARG_MACLAWCLI_AMD64_BINARY="$root\dist\${cliPrefix}-cli_amd64.exe" `
+                  /DARG_MACLAWCLI_ARM64_BINARY="$root\dist\${cliPrefix}-cli_arm64.exe" `
                   /DMUI_ICON_PATH="$root\$($env:BRAND_ICON_ICO)" `
                   build/windows/installer/multiarch.nsi
 
@@ -353,12 +358,14 @@ jobs:
           if ($env:BRAND_TAG -ne "") {
             Copy-Item "dist/${outPrefix}-tui_amd64.exe" "dist/${outPrefix}-tui.exe"
             Copy-Item "dist/${outPrefix}-tool_amd64.exe" "dist/${outPrefix}-tool.exe"
-            Compress-Archive -Path "dist/${outName}.exe","dist/${outPrefix}-tui.exe","dist/${outPrefix}-tool.exe" `
+            Copy-Item "dist/${outPrefix}-cli_amd64.exe" "dist/${outPrefix}-cli.exe"
+            Compress-Archive -Path "dist/${outName}.exe","dist/${outPrefix}-tui.exe","dist/${outPrefix}-tool.exe","dist/${outPrefix}-cli.exe" `
               -DestinationPath "dist/${outName}-Windows-Portable.zip" -Force
           } else {
             Copy-Item "dist/maclaw-tui_amd64.exe" "dist/maclaw-tui.exe"
             Copy-Item "dist/maclaw-tool_amd64.exe" "dist/maclaw-tool.exe"
-            Compress-Archive -Path "dist/${outName}.exe","dist/maclaw-tui.exe","dist/maclaw-tool.exe" `
+            Copy-Item "dist/maclaw-cli_amd64.exe" "dist/maclaw-cli.exe"
+            Compress-Archive -Path "dist/${outName}.exe","dist/maclaw-tui.exe","dist/maclaw-tool.exe","dist/maclaw-cli.exe" `
               -DestinationPath "dist/${outName}-Windows-Portable.zip" -Force
           }
 
@@ -375,10 +382,14 @@ jobs:
             dist/*-tui_arm64.exe
             dist/*-tool_amd64.exe
             dist/*-tool_arm64.exe
+            dist/*-cli_amd64.exe
+            dist/*-cli_arm64.exe
             dist/maclaw-tui_amd64.exe
             dist/maclaw-tui_arm64.exe
             dist/maclaw-tool_amd64.exe
             dist/maclaw-tool_arm64.exe
+            dist/maclaw-cli_amd64.exe
+            dist/maclaw-cli_arm64.exe
             dist/maclawsrv-Setup.exe
             dist/maclawsrv_amd64.exe
             dist/maclawsrv_arm64.exe
@@ -510,7 +521,7 @@ jobs:
             GOOS=darwin GOARCH=arm64 \
             go build -tags "${GUI_TAGS}" -ldflags "-X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_arm64" ./gui/
 
-      - name: Build TUI & maclaw-tool (darwin)
+      - name: Build TUI & maclaw-tool & maclaw-cli (darwin)
         run: |
           LDFLAGS="-s -w -X main.version=${VERSION}"
           TUI_TAGS=""
@@ -522,11 +533,15 @@ jobs:
                 go build -tags "$TUI_TAGS" -ldflags "$LDFLAGS" -o "dist/${OUT_PREFIX}-tui_${ARCH}_darwin" ./tui/
               CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
                 go build -tags "$TUI_TAGS" -ldflags "$LDFLAGS" -o "dist/${OUT_PREFIX}-tool_${ARCH}_darwin" ./cmd/maclaw-tool/
+              CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
+                go build -tags "$TUI_TAGS" -ldflags "$LDFLAGS" -o "dist/${OUT_PREFIX}-cli_${ARCH}_darwin" ./maclaw-cli/
             else
               CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
                 go build -ldflags "$LDFLAGS" -o "dist/maclaw-tui_${ARCH}_darwin" ./tui/
               CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
                 go build -ldflags "$LDFLAGS" -o "dist/maclaw-tool_${ARCH}_darwin" ./cmd/maclaw-tool/
+              CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
+                go build -ldflags "$LDFLAGS" -o "dist/maclaw-cli_${ARCH}_darwin" ./maclaw-cli/
             fi
           done
 
@@ -786,10 +801,14 @@ jobs:
             dist/*-tui_arm64_darwin
             dist/*-tool_amd64_darwin
             dist/*-tool_arm64_darwin
+            dist/*-cli_amd64_darwin
+            dist/*-cli_arm64_darwin
             dist/maclaw-tui_amd64_darwin
             dist/maclaw-tui_arm64_darwin
             dist/maclaw-tool_amd64_darwin
             dist/maclaw-tool_arm64_darwin
+            dist/maclaw-cli_amd64_darwin
+            dist/maclaw-cli_arm64_darwin
             dist/maclawsrv-Universal.pkg
             dist/maclawsrv-amd64.pkg
             dist/maclawsrv-arm64.pkg
@@ -919,7 +938,7 @@ jobs:
           # Also copy to the generic name for AppImage packaging
           cp "build/bin/${OUT_NAME}_amd64_linux_${UBUNTU_LABEL}" "build/bin/${OUT_NAME}_amd64_linux"
 
-      - name: Build TUI & maclaw-tool (linux, pure Go — only on newest runner)
+      - name: Build TUI & maclaw-tool & maclaw-cli (linux, pure Go — only on newest runner)
         if: env.BUILD_PURE_GO == 'true'
         run: |
           LDFLAGS="-s -w -X main.version=${VERSION}"
@@ -932,11 +951,15 @@ jobs:
                 go build -tags "$TUI_TAGS" -ldflags "$LDFLAGS" -o "dist/${OUT_PREFIX}-tui_${ARCH}_linux" ./tui/
               CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
                 go build -tags "$TUI_TAGS" -ldflags "$LDFLAGS" -o "dist/${OUT_PREFIX}-tool_${ARCH}_linux" ./cmd/maclaw-tool/
+              CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
+                go build -tags "$TUI_TAGS" -ldflags "$LDFLAGS" -o "dist/${OUT_PREFIX}-cli_${ARCH}_linux" ./maclaw-cli/
             else
               CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
                 go build -ldflags "$LDFLAGS" -o "dist/maclaw-tui_${ARCH}_linux" ./tui/
               CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
                 go build -ldflags "$LDFLAGS" -o "dist/maclaw-tool_${ARCH}_linux" ./cmd/maclaw-tool/
+              CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
+                go build -ldflags "$LDFLAGS" -o "dist/maclaw-cli_${ARCH}_linux" ./maclaw-cli/
             fi
           done
 
@@ -1048,10 +1071,14 @@ jobs:
             dist/*-tui_arm64_linux
             dist/*-tool_amd64_linux
             dist/*-tool_arm64_linux
+            dist/*-cli_amd64_linux
+            dist/*-cli_arm64_linux
             dist/maclaw-tui_amd64_linux
             dist/maclaw-tui_arm64_linux
             dist/maclaw-tool_amd64_linux
             dist/maclaw-tool_arm64_linux
+            dist/maclaw-cli_amd64_linux
+            dist/maclaw-cli_arm64_linux
 
       - name: Upload Linux server artifacts (default brand, newest runner only)
         if: matrix.brand == '' && env.BUILD_PURE_GO == 'true'

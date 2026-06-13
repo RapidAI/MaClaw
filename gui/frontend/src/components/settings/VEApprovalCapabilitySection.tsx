@@ -3,6 +3,7 @@ import {
   GetVEApprovalConfig,
   SaveVEApprovalConfig,
 } from "../../../wailsjs/go/main/App";
+import { localizeText } from "../../i18n";
 import { VEApprovalRulesSection, ApprovalRules } from "./VEApprovalRulesSection";
 
 type ACLMode = "whitelist" | "blacklist";
@@ -35,7 +36,7 @@ const textForLang = (
   en: string,
   zhHans: string,
   zhHant = zhHans,
-) => (lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans);
+) => localizeText(lang, en, zhHans, zhHant);
 
 function defaultConfig(): VEApprovalConfig {
   return {

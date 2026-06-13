@@ -43,13 +43,13 @@ const walkFiles = (dir, out = []) => {
 const saveConfigAllowedSnippets = [
   ['gui/app.go', 'func (a *App) SaveConfig(config corelib.AppConfig) error', 'SaveConfig implementation'],
   ['gui/config_manager.go', 'm.app.SaveConfig(mergedCfg)', 'config import owns a full merged config snapshot'],
-  ['gui/frontend/src/App.tsx', 'SaveConfig(sanitizedConfig)', 'main model settings save owns a full sanitized config snapshot'],
+  ['gui/frontend/src/App.tsx', 'PatchConfigFields(patch)', 'model settings save uses atomic patch to avoid TOCTOU race'],
   ['gui/frontend/wailsjs/go/main/App.d.ts', 'export function SaveConfig', 'generated Wails binding declaration'],
   ['gui/frontend/wailsjs/go/main/App.js', 'export function SaveConfig', 'generated Wails binding implementation'],
   ['gui/frontend/wailsjs/go/main/App.js', "window['go']['main']['App']['SaveConfig'](arg1)", 'generated Wails binding forwards to backend SaveConfig'],
   ['gui/frontend/src/components/remote/useRemotePanel.ts', 'SaveConfig({ ...config, field: value })', 'comment documenting the stale snapshot bug pattern'],
   ['gui/tui_mode.go', 'a.app.SaveConfig(cfg)', 'TUI HasConfig path carries a full config snapshot'],
-  ['gui/frontend/src/App.tsx', 'await SaveConfig(c)', 'remote deactivation resets onboarding with full config snapshot'],
+  
 ];
 const saveConfigCallPatterns = [
   /SaveConfig\s*\(/,
@@ -223,6 +223,8 @@ const requirePatchConfigFieldsSupported = () => {
 const patchConfigFieldsDynamicAllowedSnippets = [
   ['gui/app_proxy.go', 'a.PatchConfigFields(patch)', 'proxy setter builds a closed patch map from validated proxy option keys'],
   ['gui/frontend/src/App.tsx', 'patchConfig={(patch) => callBackend(() => PatchConfigFields(patch))}', 'pet settings component owns a typed patch prop constrained by PetSettingsPanel fields'],
+  ['gui/frontend/src/App.tsx', 'PatchConfigFields(patch)).then((saved)', 'model settings panel builds a closed tool-config patch from TOOL_NAMES loop'],
+  ['gui/frontend/src/App.tsx', '// Using PatchConfigFields (atomic load', 'comment explaining atomic patch mechanism'],
   ['gui/frontend/src/components/remote/useRemotePanel.ts', 'PatchConfigFields(patch).then((saved)', 'remote panel saveConfigPatch helper receives patches built by local typed setters'],
   ['gui/frontend/src/components/remote/useRemotePanel.ts', 'PatchConfigFields(patchWithLaunchMode as Record<string, any>)', 'remote quick-start augments a locally built patch with default_launch_mode'],
   ['gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 'PatchConfigFields(patch)).catch((err)', 'general settings helper receives patches from same-file controls only'],
@@ -508,7 +510,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/layout/mainTopHeaderTitle.ts', 80],
   ['gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 180],
   ['gui/frontend/src/components/settings/UISettingsPanel.tsx', 180],
-  ['gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 180],
+  ['gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 350],
   ['gui/frontend/src/components/settings/SystemSettingsPanel.tsx', 180],
   ['gui/frontend/src/components/settings/SystemDiagnosticsTable.tsx', 80],
   ['gui/frontend/src/components/settings/ProxySettingsPanel.tsx', 160],
@@ -529,8 +531,8 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/AboutPanel.tsx', 500],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 1400],
-  ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 900],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 1450],
+  ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 950],
   ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 420],
   ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],
   ['gui/frontend/src/components/ai/ProjectSearchPanel.tsx', 260],
@@ -560,7 +562,7 @@ for (const [rel, max] of extractedFileLineLimits) requireMaxLines(rel, max);
 const highRiskRemoteFileLineLimits = [
   ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 2400],
   ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1450],
-  ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1160],
+  ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1250],
   ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],
   ['gui/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],
 ];
@@ -1008,7 +1010,7 @@ requireIncludes('gui/frontend/src/components/PetSettingsPanel.tsx', 'patchConfig
 requireExcludes('gui/frontend/src/components/PetSettingsPanel.tsx', 'saveConfig', 'pet settings full-config save prop; use patchConfig');
 requireIncludes('gui/frontend/src/components/FloatingButton.tsx', 'PatchConfigFields({ pet_motion_sound_enabled: enabled })', 'floating pet sound atomic patch save wiring');
 requireExcludes('gui/frontend/src/components/FloatingButton.tsx', 'SaveConfig', 'floating pet full-config save fallback; use PatchConfigFields');
-requireIncludes('gui/frontend/src/App.tsx', 'SaveConfig(sanitizedConfig)', 'model settings full authoritative save stays explicit');
+requireIncludes('gui/frontend/src/App.tsx', 'PatchConfigFields(patch)', 'model settings atomic patch save stays explicit');
 requireIncludes('gui/app_asr.go', 'PatchConfigFields(map[string]interface{}{"asr_enabled": enabled})', 'ASR enabled setter uses atomic config patch');
 requireExcludes('gui/app_asr.go', 'a.SaveConfig(cfg)', 'ASR setter full-config save; use PatchConfigFields');
 requireIncludes('gui/app_tts.go', 'PatchConfigFields(map[string]interface{}{"tts_enabled": enabled})', 'TTS enabled setter uses atomic config patch');

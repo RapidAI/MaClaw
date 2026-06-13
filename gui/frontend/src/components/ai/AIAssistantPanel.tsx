@@ -778,13 +778,24 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => clearTimeout(timer);
     }, [tabLimitError, clearTabLimitError]);
     const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(activeTab.projectPath || undefined);
-    const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(activeTab.projectPath);
+    const { state: codePreviewState, closePanel: closeCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(activeTab.projectPath);
     const showAgentView = !!agentView && agentViewOwnerTabRef.current === activeTab.id;
     const showWorkflowPreview = !showAgentView && workflowState.splitMode;
     const showCodePreview = !showAgentView && codePreviewState.active;
     const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
     const startPreviewResize = useAssistantPreviewResize(setWorkflowSplitRatio);
+    // Open workflow panel; also passively activate code preview if files exist
+    // (preserves userClosed so future code:file_update won't auto-pop the panel).
+    const codePreviewStateRef = useRef(codePreviewState);
+    codePreviewStateRef.current = codePreviewState;
+    const handleOpenWorkflowPanel = useCallback(() => {
+        openDocPreview();
+        const cp = codePreviewStateRef.current;
+        if (cp.files.size > 0 && !cp.active) {
+            activateCodePreviewPassive();
+        }
+    }, [openDocPreview, activateCodePreviewPassive]);
     const title = lang === "en" ? "AI Assistant" : "AI \u52a9\u624b";
     const thinkingText = lang === "en" ? "Thinking... (you can type ahead)" : "\u6b63\u5728\u601d\u8003...\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const processingText = lang === "en" ? "Running tools... (you can type ahead)" : "\u6b63\u5728\u6267\u884c\u5de5\u5177\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
@@ -1291,11 +1302,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     );
     const compactProgressMessages = useMemo(() => compactCodingAgentProgressMessages(chatProgressMessages), [chatProgressMessages]);
     const renderedProgressMessages = useMemo(() => compactProgressMessages.map((msg: ChatMessage) => renderMessage(msg, executeAction, t, false, savedFileLabel, lang)), [compactProgressMessages, executeAction, t, savedFileLabel, lang]);
-    const containerStyle: React.CSSProperties = inline ? (maximized ? maximizedInlineStyle : { display: "flex", flex: "1 1 0%", flexDirection: "column", minWidth: 0, minHeight: 0, boxSizing: "border-box", overflow: "hidden", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }) : overlayStyle;
+    const containerStyle: React.CSSProperties = inline ? (maximized ? { ...maximizedInlineStyle, background: t.bg } : { display: "flex", flex: "1 1 0%", flexDirection: "column", minWidth: 0, minHeight: 0, boxSizing: "border-box", overflow: "hidden", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }) : overlayStyle;
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>
             {inline && <AssistantDragHandle />}
-            <AssistantTitleBar clearHistory={clearActiveHistory} codingAgentProgress={null} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} onOpenWorkflowPanel={openDocPreview} onToggleWorkflow={handleToggleWorkflow} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
+            <AssistantTitleBar clearHistory={clearActiveHistory} codingAgentProgress={null} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} onOpenWorkflowPanel={handleOpenWorkflowPanel} onToggleWorkflow={handleToggleWorkflow} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
             <div data-testid="ai-panel-content-row" style={{ display: "flex", flexDirection: "row", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
             <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }}>
             <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />

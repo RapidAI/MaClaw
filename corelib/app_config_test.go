@@ -101,8 +101,8 @@ func TestAppConfigSubAgentConcurrencyDefaultsAndClamps(t *testing.T) {
 		{name: "zero", raw: `{"subagent_concurrency":0}`, want: DefaultSubAgentConcurrency},
 		{name: "negative", raw: `{"subagent_concurrency":-3}`, want: DefaultSubAgentConcurrency},
 		{name: "one", raw: `{"subagent_concurrency":1}`, want: 1},
-		{name: "max", raw: `{"subagent_concurrency":4}`, want: 4},
-		{name: "over max", raw: `{"subagent_concurrency":9}`, want: MaxSubAgentConcurrency},
+		{name: "max", raw: `{"subagent_concurrency":10}`, want: 10},
+		{name: "over max", raw: `{"subagent_concurrency":15}`, want: MaxSubAgentConcurrency},
 	}
 
 	for _, tt := range tests {
@@ -284,13 +284,13 @@ func TestNormalizeAgentTimeoutSec(t *testing.T) {
 }
 
 // TestIsWorkflowEnabled verifies the three-state behavior of the workflow toggle:
-// nil (default) → false, explicit true → true, explicit false → false.
+// nil (default) → true, explicit true → true, explicit false → false.
 // Also verifies JSON round-trip: *bool with omitempty serializes false correctly.
 func TestIsWorkflowEnabled(t *testing.T) {
-	// nil → default false
+	// nil → default true
 	var cfg AppConfig
-	if cfg.IsWorkflowEnabled() {
-		t.Error("nil WorkflowEnabled should default to false")
+	if !cfg.IsWorkflowEnabled() {
+		t.Error("nil WorkflowEnabled should default to true")
 	}
 
 	// explicit true
@@ -318,13 +318,13 @@ func TestIsWorkflowEnabled(t *testing.T) {
 		t.Error("workflow_enabled=false should survive JSON round-trip")
 	}
 
-	// JSON round-trip: absent field → nil → default false
+	// JSON round-trip: absent field → nil → default true
 	var cfg3 AppConfig
 	if err := json.Unmarshal([]byte(`{}`), &cfg3); err != nil {
 		t.Fatalf("unmarshal empty: %v", err)
 	}
-	if cfg3.IsWorkflowEnabled() {
-		t.Error("absent workflow_enabled should default to false")
+	if !cfg3.IsWorkflowEnabled() {
+		t.Error("absent workflow_enabled should default to true")
 	}
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { EventsOn, EventsOff, BrowserOpenURL } from "../../../wailsjs/runtime";
+import { localizeText } from "../../i18n";
 import {
   RegisterVirtualEmployee,
   UpdateVESettings,
@@ -105,7 +106,7 @@ const textForLang = (
   en: string,
   zhHans: string,
   zhHant = zhHans,
-) => (lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans);
+) => localizeText(lang, en, zhHans, zhHant);
 
 
 const statusLabel = (status: VEStatus, lang?: string) =>

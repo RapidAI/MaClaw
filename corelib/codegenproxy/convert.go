@@ -817,7 +817,12 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 	// tool_use blocks so Claude Code executes them instead of rendering XML/JSON.
 	if !hasToolUse {
 		if text, ok := choice.Message.Content.(string); ok && text != "" {
-			if blocks := contentToolCallsToAnthropicBlocks(text); len(blocks) > 0 {
+			if blocks, malformed := contentToolCallsToAnthropicBlocks(text); malformed {
+				result.Content = append(result.Content, anthropicContentBlock{
+					Type: "text",
+					Text: llmcompat.MalformedContentToolCallErrorMsg,
+				})
+			} else if len(blocks) > 0 {
 				hasToolUse = true
 				result.Content = append(result.Content, blocks...)
 			} else {
@@ -828,7 +833,7 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 			}
 		}
 	} else if text, ok := choice.Message.Content.(string); ok && text != "" {
-		if blocks := contentToolCallsToAnthropicBlocks(text); len(blocks) == 0 {
+		if blocks, malformed := contentToolCallsToAnthropicBlocks(text); len(blocks) == 0 && !malformed {
 			result.Content = append([]anthropicContentBlock{{
 				Type: "text",
 				Text: text,
@@ -846,19 +851,25 @@ func convertOpenAIToAnthropic(resp openaiChatResponse, model string) anthropicRe
 	return result
 }
 
-func contentToolCallsToAnthropicBlocks(content string) []anthropicContentBlock {
-	calls, _ := llmcompat.ParseContentToolCallsDetailed(content)
+func contentToolCallsToAnthropicBlocks(content string) ([]anthropicContentBlock, bool) {
+	if !mayContainContentToolCall(content) {
+		return nil, false
+	}
+	calls, malformed := llmcompat.ParseContentToolCallsDetailed(content)
 	if len(calls) == 0 {
-		return nil
+		return nil, malformed
 	}
 	blocks := make([]anthropicContentBlock, 0, len(calls))
+	skippedMalformed := false
 	for i, call := range calls {
 		name := strings.TrimSpace(call.Function.Name)
 		if name == "" {
+			skippedMalformed = true
 			continue
 		}
 		input, ok := parseOpenAIToolArguments(call.Function.Arguments)
 		if !ok {
+			skippedMalformed = true
 			continue
 		}
 		id := strings.TrimSpace(call.ID)
@@ -872,7 +883,27 @@ func contentToolCallsToAnthropicBlocks(content string) []anthropicContentBlock {
 			Input: input,
 		})
 	}
-	return blocks
+	return blocks, malformed || skippedMalformed
+}
+
+func mayContainContentToolCall(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "<tool_call") ||
+		strings.Contains(lower, "<turn: tool_call") ||
+		strings.Contains(lower, "tool_call") ||
+		strings.Contains(lower, "tool_calls") ||
+		strings.Contains(lower, "function_call") ||
+		strings.Contains(lower, `"function"`) ||
+		strings.Contains(lower, `"tool"`) ||
+		strings.Contains(lower, `"tool_name"`) ||
+		strings.Contains(lower, `"name"`) {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "```")
 }
 
 func parseOpenAIToolArguments(raw string) (map[string]interface{}, bool) {

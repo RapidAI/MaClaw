@@ -182,8 +182,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		log.Printf("[TUI] WARNING: scheduled task manager init failed: %v", err)
 	}
 
-	// Initialize workflow engine (19 templates, same as GUI).
-	app.workflowEngine = app.initWorkflowEngine()
+	// Initialize V2 workflow engine (StateMachine + Router + SQLiteStore).
+	// V2 is the sole engine for runtime workflow routing and state management.
+	app.workflowV2 = app.initWorkflowV2TUI()
 
 	// Initialize knowledge store (shared with GUI 鈥?same ~/.maclaw/knowledge.db).
 	startupIndicator.Stage(68, "加载知识库")
@@ -447,7 +448,14 @@ type TUIApp struct {
 	// WeChat gateway 鈥?runs in background, receives/sends WeChat messages.
 	weixinGateway *tuiWeixinGateway
 
-	// Workflow engine integration (Fix #6).
+	// V2 workflow engine — StateMachine + Router + SQLiteStore.
+	// This is the sole workflow engine for TUI runtime operations.
+	workflowV2 *tuiWorkflowV2State
+
+	// workflowEngine is DEPRECATED — retained only for test backward compat.
+	// Production code MUST NOT use this field. Tests that still reference it
+	// should migrate to V2 (machine.Create / machine.GetActive etc.).
+	// This field will be removed once all test files are migrated.
 	workflowEngine *workflow.WorkflowEngine
 
 	// workflowMu protects pendingPhasePrompt and workflowAgentLoop from
@@ -1078,12 +1086,11 @@ func (m *tuiModel) handleSlashCommand(text string) tea.Cmd {
 	switch {
 	case cmdName == "/new" || cmdName == "/clear":
 		m.app.history.Clear("tui-user")
-		// Cancel active workflow if any (even if workflow is disabled,
-		// to clean up stale state from before the toggle was turned off).
-		if m.app.workflowEngine != nil {
-			_ = m.app.workflowEngine.CancelWorkflow("tui-user")
-			if understanding := m.app.workflowEngine.GetUnderstanding(); understanding != nil && understanding.HasActiveSession("tui-user") {
-				understanding.CancelSession("tui-user")
+		// Cancel active V2 workflow + understanding session.
+		if wf := m.app.workflowV2; wf != nil {
+			_ = wf.machine.Cancel("tui-user")
+			if wf.understanding != nil && wf.understanding.HasActiveSession("tui-user") {
+				wf.understanding.CancelSession("tui-user")
 			}
 		}
 		m.app.workflowMu.Lock()
@@ -1457,14 +1464,12 @@ func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 			// When the agent loop ran on behalf of the workflow engine,
 			// save the output as the phase document.
 			if cb.phasePromptOverride != "" {
-				if engine := app.workflowEngine; engine != nil {
-					if phaseID, advResp, err := engine.SavePhaseOutputAndMaybeAdvance("tui-user", result.Text); err != nil {
-						log.Printf("[TUI-workflow] save phase output failed: %v", err)
-					} else if phaseID != "" {
-						log.Printf("[TUI-workflow] saved phase output: phase=%s len=%d", phaseID, len(result.Text))
-						if autoText := app.applyWorkflowAutoAdvanceTUI("tui-user", advResp); strings.TrimSpace(autoText) != "" {
-							result.Text = strings.TrimSpace(result.Text + "\n\n" + autoText)
-						}
+				// Record output in V2 state machine (SQLite persistence).
+				if wf := app.getWorkflowV2TUI(); wf != nil {
+					if err := wf.machine.RecordOutput("tui-user", result.Text); err != nil {
+						log.Printf("[TUI-workflow-v2] RecordOutput failed: %v", err)
+					} else {
+						log.Printf("[TUI-workflow-v2] recorded phase output len=%d", len(result.Text))
 					}
 				}
 			}
@@ -2570,14 +2575,19 @@ func (app *TUIApp) isWorkflowToolCallAllowedTUI(name, argsJSON string) (bool, st
 		}
 	}
 	var approved []workflow.OpsApprovedCommand
-	if engine := app.getWorkflowEngine(); engine != nil {
-		approved = engine.GetOpsApprovedCommands("tui-user")
-		if contract, ok := engine.GetActivePhaseContract("tui-user"); ok {
-			if err := workflow.ValidateToolCallByContractWithApproval(contract, strings.TrimSpace(name), args, approved); err != nil {
-				return false, err.Error()
-			}
-			return true, ""
+	// Read approved commands from V2 state machine's phase outputs.
+	if wf := app.getWorkflowV2TUI(); wf != nil {
+		if state := wf.machine.GetActive("tui-user"); state != nil {
+			outputs := state.PreviousOutputs(0)
+			approved = workflow.ExtractOpsApprovedCommands(outputs["risk_policy"])
 		}
+	}
+	// Build phase contract from V2 active phase ToolPolicy + MutationScope.
+	if contract, ok := app.currentWorkflowPhaseContractTUI(); ok {
+		if err := workflow.ValidateToolCallByContractWithApproval(contract, strings.TrimSpace(name), args, approved); err != nil {
+			return false, err.Error()
+		}
+		return true, ""
 	}
 	if err := workflow.ValidateToolCallByPolicyWithApproval(app.currentWorkflowToolFilterTUI(), strings.TrimSpace(name), args, approved); err != nil {
 		return false, err.Error()
@@ -2589,30 +2599,44 @@ func (app *TUIApp) isWorkflowPhaseExecutionBlockedTUI() bool {
 	if app == nil {
 		return false
 	}
-	engine := app.getWorkflowEngine()
-	return engine != nil && engine.IsPhaseExecutionBlocked("tui-user")
+	// Check V2: phase is waiting for confirmation → execution blocked.
+	if wf := app.getWorkflowV2TUI(); wf != nil {
+		if state := wf.machine.GetActive("tui-user"); state != nil {
+			if state.IsWaitingConfirm() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (app *TUIApp) currentWorkflowToolFilterTUI() workflow.ToolFilterPolicy {
 	if app == nil {
 		return workflow.ToolFilterNone
 	}
-	engine := app.getWorkflowEngine()
-	if engine == nil {
-		return workflow.ToolFilterNone
-	}
-	return engine.GetActivePhaseToolFilter("tui-user")
+	// V2 state machine is the sole source for tool filter policy.
+	return app.currentWorkflowToolFilterV2()
 }
 
 func (app *TUIApp) currentWorkflowPhaseContractTUI() (workflow.PhaseContract, bool) {
 	if app == nil {
 		return workflow.PhaseContract{}, false
 	}
-	engine := app.getWorkflowEngine()
-	if engine == nil {
+	// Build PhaseContract from V2 active phase's ToolPolicy + MutationScope.
+	wf := app.getWorkflowV2TUI()
+	if wf == nil {
 		return workflow.PhaseContract{}, false
 	}
-	return engine.GetActivePhaseContract("tui-user")
+	state := wf.machine.GetActive("tui-user")
+	if state == nil {
+		return workflow.PhaseContract{}, false
+	}
+	phase := state.ActivePhase()
+	if phase == nil {
+		return workflow.PhaseContract{}, false
+	}
+	policy := mapV2ToolPolicyToV1(phase.ToolPolicy)
+	return workflow.PhaseContractFromPolicy(policy, workflow.MutationScopeNone), true
 }
 
 func (c *tuiCallbacks) OnToken(delta string) {

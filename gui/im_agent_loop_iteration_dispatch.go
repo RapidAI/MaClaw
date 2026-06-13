@@ -12,6 +12,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 type agentLoopIterationDispatchOptions struct {
@@ -307,6 +308,9 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	// Strip thinking tags before accumulating — they are not part of the document.
 	if opts.Context != nil && opts.Context.WorkflowAgentLoop && msgContent != "" {
 		cleaned := stripThinkingTags(msgContent)
+		if opts.Context.WorkflowDocPhase {
+			cleaned = v2.SanitizePhaseOutput(opts.Context.WorkflowPhaseID, msgContent)
+		}
 		if cleaned != "" {
 			if opts.Context.WorkflowDocBuffer.Len() > 0 {
 				opts.Context.WorkflowDocBuffer.WriteString("\n\n")
@@ -320,14 +324,15 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	// ContinueLoop from downstream logic (coding gate, hallucination correction,
 	// no-tool stall recovery, etc.) is incorrect for text-only doc generation.
 	if opts.Context != nil && opts.Context.WorkflowDocPhase && opts.Iteration == 0 {
-		trimmed := strings.TrimSpace(stripThinkingTags(msgContent))
+		cleanedDoc := v2.SanitizePhaseOutput(opts.Context.WorkflowPhaseID, msgContent)
+		trimmed := strings.TrimSpace(cleanedDoc)
 		if len([]rune(trimmed)) >= 200 && len(choice.Message.ToolCalls) == 0 {
 			// Substantial doc output produced in iteration 0 with no tool calls.
 			// Force finalize — do not allow any continue path to trigger iteration 1.
 			if opts.Phase != nil {
 				opts.Phase.Stage = agentStageFinalize
 			}
-			finalText := stripThinkingTags(msgContent)
+			finalText := cleanedDoc
 			resp := &IMAgentResponse{Text: finalText}
 			if opts.AttachLLMTelemetry != nil {
 				opts.AttachLLMTelemetry(resp)

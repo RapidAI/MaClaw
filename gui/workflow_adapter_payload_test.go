@@ -119,7 +119,7 @@ type emittedState struct {
 // exposes the id/name/index/expects_document/can_skip/needs_confirm fields with
 // the values derived from the backend template (single source of truth).
 func TestAdapterEmittedJSONShapeWithRegistry(t *testing.T) {
-	registry := workflow.NewWorkflowRegistry()
+	registry := newPopulatedWorkflowRegistry()
 	state := &workflow.WorkflowState{
 		Type:         workflow.WorkflowCoding,
 		CurrentPhase: "tech_design",

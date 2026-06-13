@@ -10,6 +10,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -244,6 +245,52 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 		content = StripRolePrefixHallucination(content)
 
+		if len(choice.TruncatedToolNames) > 0 {
+			truncatedList := strings.Join(choice.TruncatedToolNames, ", ")
+			log.Printf("[agent-loop] truncated tool call recovery (iteration=%d tools=%s valid_tools=%d)", iteration, truncatedList, len(choice.Message.ToolCalls))
+			recoveryPrompt := buildToolCallTruncationRecovery(choice.TruncatedToolNames, tools, userText)
+			if strings.TrimSpace(content) != "" || reasoningContent != "" {
+				assistantMsg := map[string]interface{}{
+					"role":    "assistant",
+					"content": content,
+				}
+				if reasoningContent != "" {
+					assistantMsg["reasoning_content"] = reasoningContent
+				} else {
+					assistantMsg["reasoning_content"] = ""
+				}
+				conversation = append(conversation, assistantMsg)
+			}
+			conversation = append(conversation, map[string]interface{}{
+				"role":    "user",
+				"content": recoveryPrompt,
+			})
+			continue
+		}
+
+		if invalidToolNames := invalidLoopToolArgumentNames(choice.Message.ToolCalls); len(invalidToolNames) > 0 {
+			invalidList := strings.Join(invalidToolNames, ", ")
+			log.Printf("[agent-loop] invalid tool call argument recovery (iteration=%d tools=%s)", iteration, invalidList)
+			recoveryPrompt := buildToolCallTruncationRecovery(invalidToolNames, tools, userText)
+			if strings.TrimSpace(content) != "" || reasoningContent != "" {
+				assistantMsg := map[string]interface{}{
+					"role":    "assistant",
+					"content": content,
+				}
+				if reasoningContent != "" {
+					assistantMsg["reasoning_content"] = reasoningContent
+				} else {
+					assistantMsg["reasoning_content"] = ""
+				}
+				conversation = append(conversation, assistantMsg)
+			}
+			conversation = append(conversation, map[string]interface{}{
+				"role":    "user",
+				"content": recoveryPrompt,
+			})
+			continue
+		}
+
 		// Track consecutive empty responses for hard exit.
 		if strings.TrimSpace(content) == "" && len(choice.Message.ToolCalls) == 0 {
 			consecutiveEmpty++
@@ -318,11 +365,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// Execute tool calls.
 		totalToolCalls += len(choice.Message.ToolCalls)
 		for _, tc := range choice.Message.ToolCalls {
-			execResult, policyRejected := authorizeLoopTool(cb, tc.Function.Name, tc.Function.Arguments)
-			if !policyRejected {
-				cb.OnToolCall(tc.Function.Name)
-				execResult = executeAuthorizedLoopTool(cb, tc.Function.Name, tc.Function.Arguments)
-				cb.OnToolResult(tc.Function.Name)
+			argsJSON := normalizeLoopToolArguments(tc.Function.Arguments)
+			execResult, syntheticFailure := validateLoopToolArguments(tc.Function.Name, argsJSON)
+			if !syntheticFailure {
+				var policyRejected bool
+				execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
+				if !policyRejected {
+					cb.OnToolCall(tc.Function.Name)
+					execResult = executeAuthorizedLoopTool(cb, tc.Function.Name, argsJSON)
+					cb.OnToolResult(tc.Function.Name)
+				}
 			}
 			result := execResult.Result
 
@@ -341,10 +393,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 			// Determine success for outcome tracking.
 			toolSuccess := lastToolOutcome.kind == toolOutcomeOK
-			h.OnToolExecuted(tc.Function.Name, tc.Function.Arguments, result, toolSuccess)
+			h.OnToolExecuted(tc.Function.Name, argsJSON, result, toolSuccess)
 
 			// Drift detection: track this call and check for repetition.
-			record := toolCallRecord{name: tc.Function.Name, args: tc.Function.Arguments, result: result}
+			record := toolCallRecord{name: tc.Function.Name, args: argsJSON, result: result}
 			recentCalls = append(recentCalls, record)
 			if len(recentCalls) > driftWindow*2 {
 				recentCalls = recentCalls[len(recentCalls)-driftWindow*2:]
@@ -403,10 +455,50 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 }
 
 func executeLoopTool(cb LoopCallbacks, name, argsJSON string) ToolExecutionResult {
+	argsJSON = normalizeLoopToolArguments(argsJSON)
 	if result, rejected := authorizeLoopTool(cb, name, argsJSON); rejected {
 		return result
 	}
 	return executeAuthorizedLoopTool(cb, name, argsJSON)
+}
+
+func normalizeLoopToolArguments(argsJSON string) string {
+	if strings.TrimSpace(argsJSON) == "" {
+		return "{}"
+	}
+	return argsJSON
+}
+
+func validateLoopToolArguments(name, argsJSON string) (ToolExecutionResult, bool) {
+	args := strings.TrimSpace(argsJSON)
+	if args == "" {
+		return ToolExecutionResult{}, false
+	}
+	if loopToolArgumentsAreObject(args) {
+		return ToolExecutionResult{}, false
+	}
+	msg := fmt.Sprintf("Error: tool call %q has invalid JSON object arguments. The tool was not executed. Regenerate the same tool call with complete valid JSON object arguments, including all required fields, and do not summarize or truncate file content.", name)
+	log.Printf("[agent-loop] rejected invalid tool arguments tool=%q args_len=%d", strings.TrimSpace(name), len(args))
+	return ToolExecutionResult{Result: msg, Outcome: ToolExecutionOutcomeError}, true
+}
+
+func loopToolArgumentsAreObject(args string) bool {
+	var parsed map[string]interface{}
+	return json.Unmarshal([]byte(args), &parsed) == nil && parsed != nil
+}
+
+func invalidLoopToolArgumentNames(calls []llm.ToolCall) []string {
+	if len(calls) == 0 {
+		return nil
+	}
+	var invalid []string
+	for _, tc := range calls {
+		args := normalizeLoopToolArguments(tc.Function.Arguments)
+		if !loopToolArgumentsAreObject(args) {
+			invalid = append(invalid, tc.Function.Name)
+		}
+	}
+	return invalid
 }
 
 func authorizeLoopTool(cb LoopCallbacks, name, argsJSON string) (ToolExecutionResult, bool) {
@@ -568,6 +660,44 @@ func buildEmptyResponseRecovery(emptyCount int, lastToolName string, outcome too
 	}
 
 	return sb.String()
+}
+
+func buildToolCallTruncationRecovery(names []string, tools []map[string]interface{}, userGoal string) string {
+	available := map[string]bool{}
+	for _, item := range tools {
+		if name := tooldef.Name(item); name != "" {
+			available[name] = true
+		}
+	}
+	var sb strings.Builder
+	sb.WriteString("[system] Previous tool call arguments were incomplete or invalid JSON, likely because output was truncated. Do not repeat the same oversized call. Regenerate complete valid JSON.")
+	if len(names) > 0 {
+		sb.WriteString("\nTruncated tools: ")
+		sb.WriteString(strings.Join(names, ", "))
+	}
+	if containsString(names, "write_file") && available["write_file"] {
+		sb.WriteString("\nFor write_file: keep write_file.content <= 1800 characters per call; first call mode=\"overwrite\", later chunks mode=\"append\". Prefer edit_file or edit_lines for existing files.")
+	}
+	if containsString(names, "bash") && available["bash"] {
+		sb.WriteString("\nFor bash: keep command <= 4000 characters. Do not embed generated file bodies in shell heredocs; use write_file chunks or targeted edits.")
+	}
+	if (available["edit_file"] || available["edit_lines"]) && containsString(names, "write_file") {
+		sb.WriteString("\nFor existing files, use targeted edits instead of rewriting whole files.")
+	}
+	if strings.TrimSpace(userGoal) != "" {
+		sb.WriteString("\nOriginal user goal: ")
+		sb.WriteString(truncateRunesPrefix(userGoal, 240))
+	}
+	return sb.String()
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func llmRequestContextForLoop(cb LoopCallbacks, iteration int) (context.Context, func(error), error) {

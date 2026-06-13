@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">MaClaw 企业算力池点卡</title>
+  <desc id="desc">靛蓝色企业 LLM 算力池点卡卡面，180 天有效。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#090b2b"/>
+      <stop offset=".52" stop-color="#233d8f"/>
+      <stop offset="1" stop-color="#0f766e"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="75%" cy="18%" r="70%">
+      <stop offset="0" stop-color="#c7d2fe" stop-opacity=".48"/>
+      <stop offset=".38" stop-color="#6366f1" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#020617" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="lines" width="72" height="72" patternUnits="userSpaceOnUse">
+      <path d="M8 36h24l8-12h24M40 48h24" fill="none" stroke="#ffffff" stroke-opacity=".1" stroke-width="2"/>
+      <circle cx="40" cy="24" r="3" fill="#ffffff" fill-opacity=".18"/>
+      <circle cx="64" cy="36" r="3" fill="#ffffff" fill-opacity=".16"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="760" rx="48" fill="url(#bg)"/>
+  <rect width="1280" height="760" rx="48" fill="url(#glow)"/>
+  <rect width="1280" height="760" rx="48" fill="url(#lines)"/>
+  <rect x="76" y="76" width="1128" height="608" rx="34" fill="#ffffff" fill-opacity=".065" stroke="#ffffff" stroke-opacity=".24"/>
+  <path d="M112 566c102-120 222-120 360 0s308 120 504-36" fill="none" stroke="#ffffff" stroke-width="42" stroke-linecap="round" stroke-opacity=".055"/>
+  <g fill="#ffffff" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif">
+    <text x="128" y="148" font-size="28" font-weight="800" opacity=".82">MaClaw Compute</text>
+    <text x="128" y="260" font-size="64" font-weight="850">企业算力池点卡</text>
+    <text x="128" y="324" font-size="30" font-weight="650" opacity=".72">SHARED TENANT CREDIT POOL</text>
+    <text x="128" y="520" font-size="102" font-weight="900">1,200,000</text>
+    <text x="128" y="570" font-size="27" font-weight="760" opacity=".76">CREDITS</text>
+  </g>
+  <g transform="translate(856 112)">
+    <rect width="268" height="76" rx="18" fill="#ffffff" fill-opacity=".13" stroke="#ffffff" stroke-opacity=".24"/>
+    <text x="134" y="49" text-anchor="middle" fill="#ffffff" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif" font-size="28" font-weight="820">180 天有效</text>
+  </g>
+  <g transform="translate(858 342)">
+    <circle cx="80" cy="92" r="56" fill="none" stroke="#ffffff" stroke-opacity=".3" stroke-width="5"/>
+    <circle cx="200" cy="92" r="56" fill="none" stroke="#ffffff" stroke-opacity=".3" stroke-width="5"/>
+    <circle cx="140" cy="148" r="56" fill="none" stroke="#ffffff" stroke-opacity=".3" stroke-width="5"/>
+    <path d="M127 92h26M107 125l19 18M173 125l-19 18" stroke="#ffffff" stroke-opacity=".42" stroke-width="7" stroke-linecap="round"/>
+  </g>
+  <text x="128" y="638" fill="#e0e7ff" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif" font-size="24" font-weight="650">按租户共享额度池消费 · 支持多服务组路由 · 到期自动关闭新请求</text>
+</svg>

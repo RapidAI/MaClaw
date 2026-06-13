@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -275,6 +276,15 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 		return "错误: exec 需要 session_id 和 command 参数"
 	}
 
+	// If the command contains characters that are likely to cause shell escaping
+	// issues in PTY mode (nested quotes, backslash sequences, heredoc markers),
+	// automatically wrap it in a base64-decoded eval to bypass escaping entirely.
+	actualCommand := command
+	if needsBase64Wrapping(command) {
+		b64 := base64.StdEncoding.EncodeToString([]byte(command))
+		actualCommand = fmt.Sprintf("eval \"$(echo '%s' | base64 -d)\"", b64)
+	}
+
 	// 自动升级：长时间命令且 wait_seconds 未显式设置大值时，自动转为后台模式
 	waitSec := 15
 	if w, ok := args["wait_seconds"].(float64); ok && w > 0 {
@@ -307,11 +317,11 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 	linesBefore := session.LineCount()
 
 	if sessionDead {
-		if err := mgr.WriteInput(sessionID, command); err != nil {
+		if err := mgr.WriteInput(sessionID, actualCommand); err != nil {
 			return fmt.Sprintf("%s发送命令失败: %v", reconnectNote, err)
 		}
 	} else {
-		reconnected, err := mgr.WriteInputChecked(sessionID, command)
+		reconnected, err := mgr.WriteInputChecked(sessionID, actualCommand)
 		if err != nil {
 			return fmt.Sprintf("发送命令失败: %v", err)
 		}
@@ -1012,4 +1022,37 @@ func (h *IMMessageHandler) loadSSHHosts() []corelib.SSHHostEntry {
 func sshStrArg(args map[string]interface{}, key string) string {
 	s, _ := args[key].(string)
 	return s
+}
+
+// needsBase64Wrapping returns true if a command contains characters that are
+// likely to cause shell escaping issues when sent through a PTY. When true,
+// sshExec wraps the command in a base64-decoded eval to bypass escaping entirely.
+//
+// After JSON deserialization, the command is a plain Go string with actual
+// characters. The heuristic detects scenarios that break PTY passthrough:
+// - Both single AND double quotes (nesting makes quoting impossible)
+// - Multi-line command with quotes (PTY sends line-by-line, shell may partially execute)
+// - Backticks (command substitution, interacts with PTY echo)
+func needsBase64Wrapping(command string) bool {
+	hasSingle := strings.Contains(command, "'")
+	hasDouble := strings.Contains(command, "\"")
+
+	// Both quote types present — high risk of nesting issues in PTY.
+	if hasSingle && hasDouble {
+		return true
+	}
+
+	// Multi-line command (>2 lines) with any quotes — PTY sends each line
+	// followed by \n which the shell interprets as "execute". Multi-line
+	// commands with quotes often break when split across PTY line boundaries.
+	if strings.Count(command, "\n") > 2 && (hasSingle || hasDouble) {
+		return true
+	}
+
+	// Backticks — command substitution that interacts poorly with PTY echo mode.
+	if strings.Contains(command, "`") && (hasSingle || hasDouble) {
+		return true
+	}
+
+	return false
 }

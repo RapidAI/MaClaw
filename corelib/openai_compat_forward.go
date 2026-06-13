@@ -263,7 +263,7 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 	normalizeOpenAICompatForwardToolChoice(body)
 	isDeepSeekFlash := IsDeepSeekFlashOpenAICompat(cfg)
 	isGLMCodingPlan := IsGLMCodingPlanOpenAICompat(cfg)
-	if IsDeepSeekThinking(cfg) {
+	if IsDeepSeekThinkingModeModel(cfg) {
 		// DeepSeek V4+ thinking mode: explicitly enable thinking so the API
 		// returns reasoning_content. Required for deepseek-v4-flash and similar.
 		if _, hasThinking := body["thinking"]; !hasThinking {
@@ -636,6 +636,9 @@ func sanitizeOpenAICompatForwardToolsForSDK(raw interface{}) []interface{} {
 			continue
 		}
 		fn := mapFromAny(tool["function"])
+		if fn == nil && strings.TrimSpace(fmt.Sprint(tool["type"])) == "function" {
+			fn = tool
+		}
 		if fn == nil {
 			continue
 		}
@@ -680,10 +683,10 @@ func sanitizeOpenAICompatForwardToolChoiceForSDK(raw interface{}) interface{} {
 		return nil
 	}
 	fn := mapFromAny(m["function"])
-	if fn == nil {
-		return nil
+	name := strings.TrimSpace(fmt.Sprint(m["name"]))
+	if (name == "" || name == "<nil>") && fn != nil {
+		name = strings.TrimSpace(fmt.Sprint(fn["name"]))
 	}
-	name := strings.TrimSpace(fmt.Sprint(fn["name"]))
 	if name == "" || name == "<nil>" {
 		return nil
 	}
@@ -790,18 +793,6 @@ func openAICompatForwardArrayLen(value interface{}) int {
 func normalizeDeepSeekFlashForwardBody(body map[string]interface{}) {
 	if n, ok := openAICompatPositiveIntValue(body["n"]); ok && n > 1 {
 		body["n"] = 1
-	}
-	if tc, ok := body["tool_choice"]; ok {
-		switch v := tc.(type) {
-		case string:
-			if strings.TrimSpace(v) == "required" {
-				body["tool_choice"] = "auto"
-			}
-		default:
-			if mapFromAny(v) != nil {
-				body["tool_choice"] = "auto"
-			}
-		}
 	}
 	if rf := mapFromAny(body["response_format"]); rf != nil {
 		if strings.TrimSpace(fmt.Sprint(rf["type"])) == "json_schema" {
@@ -1342,10 +1333,10 @@ func openAICompatResponsesToolChoiceFromChatToolChoice(raw interface{}) interfac
 		return nil
 	}
 	fn := mapFromAny(choice["function"])
-	if fn == nil {
-		return nil
+	name := strings.TrimSpace(fmt.Sprint(choice["name"]))
+	if (name == "" || name == "<nil>") && fn != nil {
+		name = strings.TrimSpace(fmt.Sprint(fn["name"]))
 	}
-	name := strings.TrimSpace(fmt.Sprint(fn["name"]))
 	if name == "" || name == "<nil>" {
 		return nil
 	}
@@ -1474,6 +1465,9 @@ func convertResponsesTools(tools []map[string]interface{}) []map[string]interfac
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
 		fn := mapFromAny(t["function"])
+		if fn == nil && strings.TrimSpace(fmt.Sprint(t["type"])) == "function" {
+			fn = t
+		}
 		if fn == nil {
 			continue
 		}

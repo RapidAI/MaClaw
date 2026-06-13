@@ -36,6 +36,11 @@ func collectLLMServiceProviderReferenceIssues(serviceReg *llmservice.Registry, p
 					continue
 				}
 				key := strings.ToLower(providerID)
+				// Built-in providers (e.g. maclaw_official) are virtual and never
+				// appear in the user-configured provider registry — skip them.
+				if llmservice.IsBuiltinProvider(key) {
+					continue
+				}
 				if _, ok := configuredProviders[key]; ok {
 					continue
 				}
@@ -84,11 +89,15 @@ func filterAuthorizedModelsByProviderRegistry(status *llmservice.ServiceStatus, 
 			if providerID == "" {
 				continue
 			}
-			if _, ok := configuredProviders[strings.ToLower(providerID)]; !ok {
-				continue
+			key := strings.ToLower(providerID)
+			// Built-in providers are always considered "configured" — they
+			// route through HubCenter and don't need a local provider entry.
+			if !llmservice.IsBuiltinProvider(key) {
+				if _, ok := configuredProviders[key]; !ok {
+					continue
+				}
 			}
 			clone.ProviderIDs = append(clone.ProviderIDs, providerID)
-			key := strings.ToLower(providerID)
 			if groups := model.ProviderServiceGroups[key]; len(groups) > 0 {
 				clone.ProviderServiceGroups[key] = append([]string(nil), groups...)
 				for _, groupID := range groups {
@@ -155,7 +164,12 @@ func explainFilteredServiceStatusIssues(status *llmservice.ServiceStatus, filter
 		reasons = append(reasons, "active grants exist, but they currently expose no live model routes")
 	}
 	if providerReg == nil || len(providerReg.Providers) == 0 {
-		reasons = append(reasons, "no LLM providers are currently configured")
+		// Only report "no providers configured" if the filtered result is also
+		// empty. Built-in providers (maclaw_official) don't need user-configured
+		// entries, so having filtered models means the system is functional.
+		if len(filtered) == 0 {
+			reasons = append(reasons, "no LLM providers are currently configured")
+		}
 	}
 	return dedupeServiceStatusReasons(reasons)
 }

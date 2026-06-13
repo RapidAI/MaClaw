@@ -190,7 +190,9 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 	var filteredBufWS strings.Builder
 	filteredOnTokenWS := func(delta string) {
 		filteredBufWS.WriteString(delta)
-		onToken(delta)
+		if onToken != nil {
+			onToken(delta)
+		}
 	}
 	rpfWS := newRolePrefixStreamFilter(filteredOnTokenWS)
 	repfWS := newRepetitionFilter(rpfWS.Write)

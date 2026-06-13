@@ -1,6 +1,7 @@
 import { useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { PatchConfigFields } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
+import { localizeText } from '../../i18n';
 
 type LLMCacheSettingsPanelProps = {
     config: main.AppConfig | null;
@@ -9,9 +10,7 @@ type LLMCacheSettingsPanelProps = {
     showToastMessage?: (message: string, duration?: number) => void;
 };
 
-const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' || lang === 'zh' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+const textForLang = localizeText;
 
 const defaults = {
     enabled: false,

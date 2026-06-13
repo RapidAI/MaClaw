@@ -542,6 +542,7 @@ type MaclawLLMConfig struct {
 	AgentType                string `json:"agent_type,omitempty"`    // "openclaw" (default) or "claude" → controls User-Agent header
 	WireAPI                  string `json:"wire_api,omitempty"`      // "chat" or "responses"; empty defaults to "chat"
 	ProviderName             string `json:"provider_name,omitempty"` // human-readable provider name (e.g. "智谱编程")
+	AuthType                 string `json:"auth_type,omitempty"`
 	MaclawAgentMaxIterations int    `json:"maclaw_agent_max_iterations,omitempty"`
 }
 
@@ -691,6 +692,32 @@ func IsDeepSeekThinking(cfg MaclawLLMConfig) bool {
 	}
 	model := strings.ToLower(cfg.Model)
 	return strings.HasPrefix(model, "deepseek")
+}
+
+// IsDeepSeekThinkingModeModel reports whether this config targets a DeepSeek
+// model that should have thinking mode explicitly enabled. This is narrower
+// than IsDeepSeekThinking (which covers message serialization compatibility):
+// only V4+ models that support and default to thinking mode are included.
+//
+// Known thinking-capable models:
+//   - deepseek-v4-flash, deepseek-v4-pro, deepseek-v4 (V4 family)
+//   - deepseek-reasoner (V3 thinking alias, maps to V4-Flash thinking mode)
+//
+// Excluded (non-thinking or legacy):
+//   - deepseek-chat (V4-Flash non-thinking alias)
+//   - deepseek-coder, deepseek-coder-v2 (V2/V3 legacy, no thinking support)
+func IsDeepSeekThinkingModeModel(cfg MaclawLLMConfig) bool {
+	model := strings.ToLower(strings.TrimSpace(cfg.Model))
+	switch {
+	case strings.Contains(model, "deepseek-v4"):
+		// All V4 variants (deepseek-v4-flash, deepseek-v4-pro, etc.)
+		return true
+	case model == "deepseek-reasoner":
+		// V3 thinking alias, now maps to V4-Flash thinking mode
+		return true
+	default:
+		return false
+	}
 }
 
 func IsDeepSeekFlashOpenAICompat(cfg MaclawLLMConfig) bool {
