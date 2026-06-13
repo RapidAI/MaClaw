@@ -181,3 +181,6 @@ race_out*.txt
 gui_test.exe
 
 build/maclaw-gui-compat-test.exe
+
+# Temp working files
+.tmp/
