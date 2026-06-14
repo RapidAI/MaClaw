@@ -282,9 +282,12 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.HandleResult) workflowIMRouteResult {
 	switch hr.Action {
 	case v2.ActionShowForm:
-		// Phase has an InputSchema — emit AG UI form and wait for submission.
+		// Phase has an InputSchema — collect prefill data and emit AG UI form.
 		if hr.Phase != nil && hr.Phase.InputSchema != nil {
-			h.emitWorkflowV2PhaseForm(msg.UserID, hr.State, hr.Phase)
+			// Collect prefilled values from context + memory + knowledge base
+			prefilled := h.prefillWorkflowFormFields(msg.UserID, hr.Phase, msg.Text)
+			hr.PrefilledData = prefilled
+			h.emitWorkflowV2PhaseForm(msg.UserID, hr.State, hr.Phase, prefilled)
 			h.emitWorkflowV2Progress(msg.UserID, hr.State)
 			return workflowIMRouteResult{Response: &IMAgentResponse{
 				Text: "📋 请在右侧任务面板填写信息后提交。",
@@ -387,7 +390,10 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 	// If this phase has an InputSchema and form data hasn't been submitted yet,
 	// show the AG UI form instead of running the agent loop.
 	if phase.InputSchema != nil && phase.FormData == nil {
-		h.emitWorkflowV2PhaseForm(userID, state, phase)
+		// Prefill from memory/knowledge (no user message text available in this path,
+		// but memory recall still works based on field labels/semantics).
+		prefilled := h.prefillWorkflowFormFields(userID, phase, "")
+		h.emitWorkflowV2PhaseForm(userID, state, phase, prefilled)
 		h.emitWorkflowV2Progress(userID, state)
 		return workflowIMRouteResult{Response: &IMAgentResponse{
 			Text: "📋 请在右侧任务面板填写信息后提交。",
@@ -499,7 +505,8 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 
 // emitWorkflowV2PhaseForm builds and emits an AG UI form from the phase's InputSchema.
 // The form appears in the right-side task panel (AgentTaskPanel).
-func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.WorkflowState, phase *v2.Phase) {
+// prefilled contains auto-collected default values with provenance tracking.
+func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.WorkflowState, phase *v2.Phase, prefilled map[string]*v2.PrefilledValue) {
 	if h == nil || h.app == nil || phase == nil || phase.InputSchema == nil {
 		return
 	}
@@ -532,7 +539,17 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 			}
 			field["options"] = opts
 		}
-		if f.Default != nil {
+		// Apply prefilled value (from memory/knowledge/context) or static default
+		if pv, ok := prefilled[f.Name]; ok && pv != nil && pv.Value != nil {
+			field["value"] = pv.Value
+			field["prefill_source"] = pv.Source
+			if pv.SourceDetail != "" {
+				field["prefill_detail"] = pv.SourceDetail
+			}
+			if pv.NeedsConfirm {
+				field["prefill_needs_confirm"] = true
+			}
+		} else if f.Default != nil {
 			field["value"] = f.Default
 		}
 		fields = append(fields, field)
@@ -591,6 +608,11 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 	if state != nil {
 		h.emitWorkflowV2Progress(userID, state)
 	}
+
+	// Sediment confirmed form data to long-term memory for future prefill reuse.
+	// Only factual user information is persisted (name, institution, etc.) — not
+	// task-specific creative content. Runs async to not block the response.
+	go h.sedimentFormDataToMemory(userID, phaseID, cleanData, state)
 
 	// Dismiss the AG UI form panel after successful submission.
 	if h.app != nil {

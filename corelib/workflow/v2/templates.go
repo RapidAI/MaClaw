@@ -296,7 +296,19 @@ func PresentationTemplate() *WorkflowTemplate {
 		Description: "受众分析 → 内容大纲 → 逐页脚本 → 生成 PPT。适用于产品介绍、方案汇报、商业展示、演示文稿、幻灯片和 slide deck 设计。",
 		Keywords:    []string{"ppt", "幻灯片", "演示文稿", "slide", "PPT"},
 		Phases: []PhaseTemplate{
-			{ID: "audience_goal", Name: "受众与目标", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "audience_goal", Name: "受众与目标", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "PPT基本信息",
+					Fields: []PhaseInputField{
+						{Name: "topic", Label: "主题", Type: "text", Required: true, Placeholder: "PPT演示的主题"},
+						{Name: "audience", Label: "目标受众", Type: "text", Required: true, Placeholder: "如：公司高管、客户、学生"},
+						{Name: "purpose", Label: "演示目的", Type: "text", Placeholder: "如：产品介绍、方案汇报"},
+						{Name: "page_count", Label: "期望页数", Type: "text", Placeholder: "如：20页"},
+						{Name: "style", Label: "风格偏好", Type: "text", Placeholder: "如：商务简约、科技感"},
+						{Name: "key_points", Label: "要点", Type: "textarea", Placeholder: "列出希望涵盖的核心内容要点"},
+					},
+				},
+			},
 			{ID: "outline", Name: "内容大纲", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "slide_scripting", Name: "逐页脚本", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "ppt_generation", Name: "PPT 生成", NeedsConfirm: false, ToolPolicy: ToolPolicyFull},
@@ -311,7 +323,17 @@ func ProductDesignTemplate() *WorkflowTemplate {
 		Description: "问题发现 → 用户研究 → 方案设计 → 原型设计",
 		Keywords:    []string{"产品设计", "prd", "产品需求", "用户体验"},
 		Phases: []PhaseTemplate{
-			{ID: "problem_discovery", Name: "问题发现", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "problem_discovery", Name: "问题发现", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "产品基本信息",
+					Fields: []PhaseInputField{
+						{Name: "product_name", Label: "产品名称", Type: "text", Required: true, Placeholder: "产品或项目名称"},
+						{Name: "target_users", Label: "目标用户群", Type: "text", Required: true, Placeholder: "如：25-35岁职场白领"},
+						{Name: "problem_desc", Label: "核心问题", Type: "textarea", Required: true, Placeholder: "描述用户面临的核心痛点"},
+						{Name: "current_solutions", Label: "现有方案", Type: "textarea", Placeholder: "目前市场上的解决方案及不足"},
+					},
+				},
+			},
 			{ID: "user_research", Name: "用户研究", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "solution_design", Name: "方案设计", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "prototype", Name: "原型设计", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -326,7 +348,17 @@ func InnovationTemplate() *WorkflowTemplate {
 		Description: "趋势分析 → 机会识别 → 方案设计 → 可行性评估 → 路线图",
 		Keywords:    []string{"创新", "创意", "头脑风暴", "brainstorm"},
 		Phases: []PhaseTemplate{
-			{ID: "trend_analysis", Name: "趋势分析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "trend_analysis", Name: "趋势分析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "创新方向信息",
+					Fields: []PhaseInputField{
+						{Name: "domain", Label: "行业/领域", Type: "text", Required: true, Placeholder: "如：智能制造、医疗健康"},
+						{Name: "challenge", Label: "挑战/痛点", Type: "textarea", Required: true, Placeholder: "描述当前面临的挑战或痛点"},
+						{Name: "constraints", Label: "约束条件", Type: "textarea", Placeholder: "如：预算、时间、技术限制"},
+						{Name: "inspiration", Label: "灵感参考", Type: "textarea", Placeholder: "已有的创意方向或参考案例"},
+					},
+				},
+			},
 			{ID: "opportunity", Name: "机会识别", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "solution", Name: "方案设计", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "feasibility", Name: "可行性评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -342,7 +374,19 @@ func BusinessPlanTemplate() *WorkflowTemplate {
 		Description: "市场分析 → 商业模式 → 财务规划 → 运营计划 → 风险评估",
 		Keywords:    []string{"商业计划", "business plan", "创业", "融资", "BP"},
 		Phases: []PhaseTemplate{
-			{ID: "market_analysis", Name: "市场分析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "market_analysis", Name: "市场分析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "商业计划基本信息",
+					Fields: []PhaseInputField{
+						{Name: "company_name", Label: "公司名称", Type: "text", Required: true, Placeholder: "公司或项目名称"},
+						{Name: "industry", Label: "行业", Type: "text", Required: true, Placeholder: "如：SaaS、电商、医疗"},
+						{Name: "product_service", Label: "产品/服务描述", Type: "textarea", Required: true, Placeholder: "描述核心产品或服务"},
+						{Name: "target_market", Label: "目标市场", Type: "text", Placeholder: "如：中国中小企业"},
+						{Name: "funding_goal", Label: "融资目标", Type: "text", Placeholder: "如：500万天使轮"},
+						{Name: "stage", Label: "当前阶段", Type: "text", Placeholder: "如：种子期、A轮前"},
+					},
+				},
+			},
 			{ID: "business_model", Name: "商业模式", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "financial_plan", Name: "财务规划", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "operations", Name: "运营计划", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -358,7 +402,16 @@ func TestingTemplate() *WorkflowTemplate {
 		Description: "测试策略 → 用例设计 → 环境准备 → 执行测试 → 缺陷报告",
 		Keywords:    []string{"测试", "test plan", "QA", "质量保证"},
 		Phases: []PhaseTemplate{
-			{ID: "test_strategy", Name: "测试策略", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "test_strategy", Name: "测试策略", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "测试项目信息",
+					Fields: []PhaseInputField{
+						{Name: "test_target", Label: "测试对象", Type: "text", Required: true, Placeholder: "如：XX系统 v2.0"},
+						{Name: "test_scope", Label: "测试范围", Type: "text", Required: true, Placeholder: "如：功能测试、性能测试"},
+						{Name: "test_env", Label: "测试环境", Type: "text", Placeholder: "如：Chrome/Firefox、iOS/Android"},
+					},
+				},
+			},
 			{ID: "test_cases", Name: "用例设计", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "test_environment", Name: "环境准备", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "test_execution", Name: "执行测试", NeedsConfirm: false, ToolPolicy: ToolPolicyFull},
@@ -374,7 +427,17 @@ func LiteratureReviewTemplate() *WorkflowTemplate {
 		Description: "主题界定 → 文献检索 → 文献筛选 → 内容分析 → 综述撰写",
 		Keywords:    []string{"文献综述", "literature review", "论文综述", "学术综述"},
 		Phases: []PhaseTemplate{
-			{ID: "topic_definition", Name: "主题界定", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "topic_definition", Name: "主题界定", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "文献综述信息",
+					Fields: []PhaseInputField{
+						{Name: "research_topic", Label: "研究主题", Type: "text", Required: true, Placeholder: "如：深度学习在医学影像中的应用"},
+						{Name: "time_range", Label: "时间范围", Type: "text", Placeholder: "如：2020-2026"},
+						{Name: "databases", Label: "检索数据库", Type: "text", Placeholder: "如：PubMed、Web of Science、知网"},
+						{Name: "language", Label: "语种", Type: "text", Placeholder: "如：中文、英文"},
+					},
+				},
+			},
 			{ID: "search_strategy", Name: "检索策略", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "screening", Name: "文献筛选", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "analysis", Name: "内容分析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -390,7 +453,16 @@ func ResearchReportTemplate() *WorkflowTemplate {
 		Description: "问题定义 → 方法论 → 数据收集 → 分析论证 → 结论建议",
 		Keywords:    []string{"研究报告", "调研报告", "research report", "调研"},
 		Phases: []PhaseTemplate{
-			{ID: "problem_definition", Name: "问题定义", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "problem_definition", Name: "问题定义", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "研究报告信息",
+					Fields: []PhaseInputField{
+						{Name: "research_topic", Label: "研究主题", Type: "text", Required: true, Placeholder: "如：中国新能源汽车市场分析"},
+						{Name: "purpose", Label: "研究目的", Type: "textarea", Required: true, Placeholder: "描述研究的目的和预期产出"},
+						{Name: "scope", Label: "研究范围", Type: "text", Placeholder: "如：2023-2026年中国市场"},
+					},
+				},
+			},
 			{ID: "methodology", Name: "方法论", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "data_collection", Name: "数据收集", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "analysis", Name: "分析论证", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -406,7 +478,16 @@ func CompetitiveAnalysisTemplate() *WorkflowTemplate {
 		Description: "竞品识别 → 维度对比 → SWOT 分析 → 差异化策略 → 行动建议",
 		Keywords:    []string{"竞品分析", "competitive analysis", "竞争分析", "SWOT"},
 		Phases: []PhaseTemplate{
-			{ID: "competitor_id", Name: "竞品识别", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "competitor_id", Name: "竞品识别", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "竞品分析信息",
+					Fields: []PhaseInputField{
+						{Name: "our_product", Label: "我方产品", Type: "text", Required: true, Placeholder: "我方产品或服务名称"},
+						{Name: "competitors", Label: "已知竞品", Type: "textarea", Required: true, Placeholder: "列出主要竞争对手，每行一个"},
+						{Name: "dimensions", Label: "分析维度", Type: "text", Placeholder: "如：功能、价格、用户体验、市场份额"},
+					},
+				},
+			},
 			{ID: "comparison", Name: "维度对比", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "swot", Name: "SWOT 分析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "differentiation", Name: "差异化策略", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -422,7 +503,17 @@ func ProjectProposalTemplate() *WorkflowTemplate {
 		Description: "背景分析 → 目标定义 → 方案规划 → 资源预算 → 风险预案",
 		Keywords:    []string{"项目方案", "立项", "project proposal", "项目计划"},
 		Phases: []PhaseTemplate{
-			{ID: "background", Name: "背景分析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "background", Name: "背景分析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "项目方案信息",
+					Fields: []PhaseInputField{
+						{Name: "project_name", Label: "项目名称", Type: "text", Required: true, Placeholder: "项目名称"},
+						{Name: "organization", Label: "所属组织", Type: "text", Placeholder: "如：XX公司/XX部门"},
+						{Name: "objective", Label: "项目目标", Type: "textarea", Required: true, Placeholder: "描述项目要达成的目标"},
+						{Name: "timeline", Label: "时间线", Type: "text", Placeholder: "如：2026年Q3-Q4"},
+					},
+				},
+			},
 			{ID: "objectives", Name: "目标定义", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "plan", Name: "方案规划", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "budget", Name: "资源预算", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -438,7 +529,18 @@ func EventPlanningTemplate() *WorkflowTemplate {
 		Description: "目标定位 → 创意策划 → 执行方案 → 预算排期 → 应急预案",
 		Keywords:    []string{"活动策划", "event planning", "会议策划", "活动方案"},
 		Phases: []PhaseTemplate{
-			{ID: "positioning", Name: "目标定位", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "positioning", Name: "目标定位", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "活动策划信息",
+					Fields: []PhaseInputField{
+						{Name: "event_name", Label: "活动名称", Type: "text", Required: true, Placeholder: "活动名称"},
+						{Name: "event_type", Label: "活动类型", Type: "text", Required: true, Placeholder: "如：年会、产品发布会、团建"},
+						{Name: "expected_date", Label: "预计时间", Type: "text", Placeholder: "如：2026年8月"},
+						{Name: "expected_scale", Label: "预计规模", Type: "text", Placeholder: "如：200人"},
+						{Name: "budget", Label: "预算", Type: "text", Placeholder: "如：50万"},
+					},
+				},
+			},
 			{ID: "creative", Name: "创意策划", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "execution_plan", Name: "执行方案", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "budget_schedule", Name: "预算排期", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -454,7 +556,17 @@ func BidResponseTemplate() *WorkflowTemplate {
 		Description: "招标解析 → 资质响应 → 技术方案 → 商务报价 → 文件组装",
 		Keywords:    []string{"招投标", "投标", "标书", "bid", "tender"},
 		Phases: []PhaseTemplate{
-			{ID: "tender_analysis", Name: "招标解析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "tender_analysis", Name: "招标解析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "招投标信息",
+					Fields: []PhaseInputField{
+						{Name: "bid_doc_path", Label: "招标文件路径", Type: "text", Placeholder: "如：D:\\投标\\招标文件.pdf"},
+						{Name: "bid_doc_text", Label: "或粘贴招标文件内容", Type: "textarea", Placeholder: "将招标文件核心内容粘贴到这里"},
+						{Name: "our_company", Label: "投标公司", Type: "text", Required: true, Placeholder: "我方公司名称"},
+						{Name: "focus_areas", Label: "重点关注", Type: "textarea", Placeholder: "如：技术要求、资质门槛、评分标准"},
+					},
+				},
+			},
 			{ID: "qualification", Name: "资质响应", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "technical", Name: "技术方案", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "commercial", Name: "商务报价", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -470,7 +582,17 @@ func ContractReviewTemplate() *WorkflowTemplate {
 		Description: "合同解析 → 条款风险 → 合规审查 → 修改建议 → 审查意见",
 		Keywords:    []string{"合同审查", "合同", "contract review", "法律审查"},
 		Phases: []PhaseTemplate{
-			{ID: "parsing", Name: "合同解析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "parsing", Name: "合同解析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "合同审查信息",
+					Fields: []PhaseInputField{
+						{Name: "contract_path", Label: "合同文件路径", Type: "text", Placeholder: "如：D:\\合同\\采购合同.pdf"},
+						{Name: "contract_text", Label: "或粘贴合同文本", Type: "textarea", Placeholder: "将合同主要条款内容粘贴到这里"},
+						{Name: "review_purpose", Label: "审查目的", Type: "text", Required: true, Placeholder: "如：签约前风险评估"},
+						{Name: "focus_areas", Label: "重点关注", Type: "textarea", Placeholder: "如：付款条款、违约责任、知识产权"},
+					},
+				},
+			},
 			{ID: "risk_analysis", Name: "条款风险", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "compliance", Name: "合规审查", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "suggestions", Name: "修改建议", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -486,7 +608,17 @@ func DueDiligenceTemplate() *WorkflowTemplate {
 		Description: "公司画像 → 商业尽调 → 财务尽调 → 法律尽调 → 尽调结论",
 		Keywords:    []string{"尽职调查", "尽调", "due diligence", "DD"},
 		Phases: []PhaseTemplate{
-			{ID: "company_profile", Name: "公司画像", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "company_profile", Name: "公司画像", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "尽调信息",
+					Fields: []PhaseInputField{
+						{Name: "target_company", Label: "目标公司", Type: "text", Required: true, Placeholder: "被调查公司名称"},
+						{Name: "dd_type", Label: "尽调类型", Type: "text", Required: true, Placeholder: "如：投资尽调、并购尽调"},
+						{Name: "industry", Label: "行业", Type: "text", Placeholder: "如：互联网、新能源"},
+						{Name: "key_concerns", Label: "重点关注", Type: "textarea", Placeholder: "如：财务真实性、知识产权、竞业限制"},
+					},
+				},
+			},
 			{ID: "business_dd", Name: "商业尽调", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "financial_dd", Name: "财务尽调", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "legal_dd", Name: "法律尽调", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -502,7 +634,17 @@ func ComplianceAuditTemplate() *WorkflowTemplate {
 		Description: "审计范围 → 合规评估 → 风险评级 → 整改计划 → 审计报告",
 		Keywords:    []string{"合规审计", "合规", "审计", "compliance audit"},
 		Phases: []PhaseTemplate{
-			{ID: "scope", Name: "审计范围", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "scope", Name: "审计范围", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "合规审计信息",
+					Fields: []PhaseInputField{
+						{Name: "audit_target", Label: "审计对象", Type: "text", Required: true, Placeholder: "如：XX公司数据隐私合规"},
+						{Name: "audit_scope", Label: "审计范围", Type: "text", Required: true, Placeholder: "如：个人信息处理全流程"},
+						{Name: "regulations", Label: "适用法规", Type: "textarea", Placeholder: "如：GDPR、个人信息保护法、数据安全法"},
+						{Name: "period", Label: "审计期间", Type: "text", Placeholder: "如：2025年1月-2026年6月"},
+					},
+				},
+			},
 			{ID: "assessment", Name: "合规评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "risk_rating", Name: "风险评级", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "remediation", Name: "整改计划", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -518,7 +660,17 @@ func PatentAnalysisTemplate() *WorkflowTemplate {
 		Description: "技术解析 → 现有技术 → 侵权评估 → 策略建议 → 分析报告",
 		Keywords:    []string{"专利分析", "专利", "patent", "知识产权"},
 		Phases: []PhaseTemplate{
-			{ID: "tech_parsing", Name: "技术解析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "tech_parsing", Name: "技术解析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "专利分析信息",
+					Fields: []PhaseInputField{
+						{Name: "technology_field", Label: "技术领域", Type: "text", Required: true, Placeholder: "如：锂电池正极材料"},
+						{Name: "analysis_purpose", Label: "分析目的", Type: "text", Required: true, Placeholder: "如：侵权风险评估、专利布局规划"},
+						{Name: "patent_numbers", Label: "相关专利号", Type: "textarea", Placeholder: "如：CN1234567A，每行一个"},
+						{Name: "competitor_companies", Label: "竞争对手", Type: "textarea", Placeholder: "如：XX公司、YY公司"},
+					},
+				},
+			},
 			{ID: "prior_art", Name: "现有技术", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "infringement", Name: "侵权评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "strategy", Name: "策略建议", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -534,7 +686,17 @@ func ExperimentDesignTemplate() *WorkflowTemplate {
 		Description: "假设提出 → 实验方案 → 变量控制 → 数据采集 → 结果分析",
 		Keywords:    []string{"实验设计", "experiment", "实验方案", "A/B测试"},
 		Phases: []PhaseTemplate{
-			{ID: "hypothesis", Name: "假设提出", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "hypothesis", Name: "假设提出", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "实验设计信息",
+					Fields: []PhaseInputField{
+						{Name: "research_question", Label: "研究问题", Type: "text", Required: true, Placeholder: "如：新算法是否显著提升检测精度"},
+						{Name: "hypothesis", Label: "研究假设", Type: "textarea", Required: true, Placeholder: "描述你的假设"},
+						{Name: "field", Label: "学科领域", Type: "text", Placeholder: "如：计算机视觉、药理学"},
+						{Name: "resources", Label: "可用资源", Type: "textarea", Placeholder: "如：GPU服务器、实验室设备、数据集"},
+					},
+				},
+			},
 			{ID: "design", Name: "实验方案", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "variables", Name: "变量控制", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "data_plan", Name: "数据采集", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -550,7 +712,21 @@ func GrantProposalTemplate() *WorkflowTemplate {
 		Description: "选题论证 → 研究基础 → 方案设计 → 预算编制 → 申请书",
 		Keywords:    []string{"基金申请", "课题申请", "grant", "科研项目", "项目申请书"},
 		Phases: []PhaseTemplate{
-			{ID: "topic", Name: "选题论证", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "topic", Name: "选题论证", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "基金项目信息",
+					Fields: []PhaseInputField{
+						{Name: "name", Label: "申请人", Type: "text", Required: true},
+						{Name: "institution", Label: "单位", Type: "text", Required: true, Placeholder: "如：XX大学"},
+						{Name: "title", Label: "职称", Type: "text", Placeholder: "如：教授/副教授"},
+						{Name: "fund_type", Label: "基金类型", Type: "text", Required: true, Placeholder: "如：省自然科学基金、教育部人文社科"},
+						{Name: "research_field", Label: "研究领域", Type: "text", Required: true, Placeholder: "如：人工智能、材料科学"},
+						{Name: "project_title", Label: "项目名称", Type: "text", Required: true, Placeholder: "拟申报项目的题目"},
+						{Name: "core_question", Label: "核心问题", Type: "textarea", Required: true, Placeholder: "用1-2句话描述拟解决的科学问题"},
+						{Name: "prior_work", Label: "前期基础", Type: "textarea", Placeholder: "简述与本项目相关的已有研究基础"},
+					},
+				},
+			},
 			{ID: "foundation", Name: "研究基础", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "methodology", Name: "方案设计", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "budget", Name: "预算编制", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -566,7 +742,17 @@ func PaperWritingTemplate() *WorkflowTemplate {
 		Description: "大纲设计 → 文献梳理 → 正文撰写 → 图表制作 → 润色定稿",
 		Keywords:    []string{"论文写作", "写论文", "paper writing", "学术论文"},
 		Phases: []PhaseTemplate{
-			{ID: "outline", Name: "大纲设计", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "outline", Name: "大纲设计", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "论文写作信息",
+					Fields: []PhaseInputField{
+						{Name: "paper_topic", Label: "论文主题", Type: "text", Required: true, Placeholder: "如：基于Transformer的多模态情感分析"},
+						{Name: "target_journal", Label: "目标期刊", Type: "text", Placeholder: "如：IEEE TPAMI、计算机学报"},
+						{Name: "paper_type", Label: "论文类型", Type: "text", Placeholder: "如：研究论文、综述论文"},
+						{Name: "key_contribution", Label: "核心贡献", Type: "textarea", Required: true, Placeholder: "描述本文的主要创新点和贡献"},
+					},
+				},
+			},
 			{ID: "literature", Name: "文献梳理", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "drafting", Name: "正文撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "figures", Name: "图表制作", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
@@ -582,7 +768,18 @@ func PaperReproductionTemplate() *WorkflowTemplate {
 		Description: "论文解读 → 复现规划（源码/数据集搜索） → 环境与数据 → 基线复现 → 迭代改进 → 实验报告。适用于阅读学术论文后搜索源码和数据集，在远程服务器上搭建环境、下载数据、复现基线实验，然后迭代改进直到结果显著超越论文，最终生成包含对比实验、消融实验、超参数分析的完整实验报告。Paper reproduction: read paper, search for source code and datasets, set up remote environment, reproduce baseline, iteratively improve, generate comprehensive reports with ablation studies.",
 		Keywords:    []string{"论文复现", "复现", "reproduce", "replication", "实验复现", "跑实验", "复现实验"},
 		Phases: []PhaseTemplate{
-			{ID: "paper_analysis", Name: "论文深度解读", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+			{ID: "paper_analysis", Name: "论文深度解读", NeedsConfirm: true, ToolPolicy: ToolPolicyFull,
+				InputSchema: &PhaseInputSchema{
+					Title: "论文复现信息",
+					Fields: []PhaseInputField{
+						{Name: "paper_title", Label: "论文标题", Type: "text", Required: true, Placeholder: "论文的完整标题"},
+						{Name: "paper_url", Label: "论文链接", Type: "text", Placeholder: "如：https://arxiv.org/abs/xxxx.xxxxx"},
+						{Name: "ssh_host", Label: "GPU服务器", Type: "text", Placeholder: "如：user@192.168.1.100:22"},
+						{Name: "ssh_password", Label: "密码", Type: "text", Placeholder: "SSH登录密码", Description: "仅存储在本机，不会上传到任何服务器"},
+						{Name: "work_dir", Label: "工作目录", Type: "text", Placeholder: "如：/home/user/experiments"},
+					},
+				},
+			},
 			{ID: "reproduction_plan", Name: "复现规划", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
 			{ID: "env_and_data", Name: "环境搭建与数据准备", NeedsConfirm: false, ToolPolicy: ToolPolicyFull},
 			{ID: "baseline_reproduction", Name: "基线实验复现", NeedsConfirm: false, ToolPolicy: ToolPolicyFull},
@@ -644,10 +841,11 @@ func ChangjiangScholarTemplate() *WorkflowTemplate {
 // Used by reviewers or applicants for self-assessment before submission.
 func ChangjiangScholarReviewTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
-		Type:        "changjiang_scholar_review",
-		Name:        "长江学者申报书评审",
-		Description: "完整性检测 → 学术成果评估 → 研究计划评估 → 撰写质量评估 → 综合评估报告。适用于长江学者申报材料的自审或他审，从多维度评估已有材料质量并给出改进建议。Changjiang Scholar application review: completeness check, achievement evaluation, plan feasibility, narrative quality, improvement report.",
-		Keywords:    []string{"长江学者评审", "申报书评审", "长江评审", "申报书审查"},
+		Type:         "changjiang_scholar_review",
+		Name:         "长江学者申报书评审",
+		Description:  "完整性检测 → 学术成果评估 → 研究计划评估 → 撰写质量评估 → 综合评估报告。适用于长江学者申报材料的自审或他审，从多维度评估已有材料质量并给出改进建议。Changjiang Scholar application review: completeness check, achievement evaluation, plan feasibility, narrative quality, improvement report.",
+		Keywords:     []string{"长江学者评审", "申报书评审", "长江评审", "申报书审查"},
+		SemanticOnly: true,
 		Phases: []PhaseTemplate{
 			{ID: "cj_completeness_check", Name: "基本信息完整性检测", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
 				InputSchema: &PhaseInputSchema{
@@ -872,6 +1070,146 @@ func NSFCKeyTemplate() *WorkflowTemplate {
 	}
 }
 
+// NSFCDistinguishedYouthReviewTemplate defines the review workflow for NSFC Distinguished Youth Fund applications.
+func NSFCDistinguishedYouthReviewTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:         "nsfc_distinguished_youth_review",
+		Name:         "杰青申请书评审",
+		Description:  "完整性检测 → 学术成果评估 → 研究计划评估 → 撰写质量评估 → 综合评估报告。适用于杰青申请书材料的评审与改进建议。",
+		Keywords:     []string{"杰青评审", "杰青审查", "杰青材料评审"},
+		SemanticOnly: true,
+		Phases: []PhaseTemplate{
+			{ID: "dy_review_completeness", Name: "完整性检测", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "提供申报材料",
+					Description: "请提供待评审的杰青申请书材料。支持上传文件、粘贴文本、或指定本机文件路径。",
+					Fields: []PhaseInputField{
+						{Name: "material_path", Label: "申请书文件路径", Type: "text", Placeholder: "如：D:\\申报材料\\杰青申请书.pdf"},
+						{Name: "material_text", Label: "或粘贴申请书文本", Type: "textarea", Placeholder: "将申请书的主要内容粘贴到这里"},
+						{Name: "focus_areas", Label: "重点关注方面（可选）", Type: "textarea", Placeholder: "如：学术贡献是否突出、研究方案创新性"},
+					},
+				},
+			},
+			{ID: "dy_review_achievements", Name: "学术成果评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "dy_review_plan", Name: "研究计划评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "dy_review_quality", Name: "撰写质量评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "dy_review_report", Name: "综合评估报告", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
+// NSFCExcellentYouthReviewTemplate defines the review workflow for NSFC Excellent Young Scientists Fund applications.
+func NSFCExcellentYouthReviewTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:         "nsfc_excellent_youth_review",
+		Name:         "优青申请书评审",
+		Description:  "完整性检测 → 学术成果评估 → 研究计划评估 → 撰写质量评估 → 综合评估报告。适用于优青申请书材料的评审与改进建议。",
+		Keywords:     []string{"优青评审", "优青审查", "优青材料评审"},
+		SemanticOnly: true,
+		Phases: []PhaseTemplate{
+			{ID: "ey_review_completeness", Name: "完整性检测", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "提供申报材料",
+					Description: "请提供待评审的优青申请书材料。支持上传文件、粘贴文本、或指定本机文件路径。",
+					Fields: []PhaseInputField{
+						{Name: "material_path", Label: "申请书文件路径", Type: "text", Placeholder: "如：D:\\申报材料\\优青申请书.pdf"},
+						{Name: "material_text", Label: "或粘贴申请书文本", Type: "textarea", Placeholder: "将申请书的主要内容粘贴到这里"},
+						{Name: "focus_areas", Label: "重点关注方面（可选）", Type: "textarea", Placeholder: "如：发展潜力是否突出、研究方案可行性"},
+					},
+				},
+			},
+			{ID: "ey_review_achievements", Name: "学术成果评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "ey_review_plan", Name: "研究计划评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "ey_review_quality", Name: "撰写质量评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "ey_review_report", Name: "综合评估报告", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
+// NSFCYouthReviewTemplate defines the review workflow for NSFC Youth Science Fund applications.
+func NSFCYouthReviewTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:         "nsfc_youth_review",
+		Name:         "青基申请书评审",
+		Description:  "完整性检测 → 学术成果评估 → 研究计划评估 → 撰写质量评估 → 综合评估报告。适用于青年基金申请书材料的评审与改进建议。",
+		Keywords:     []string{"青基评审", "青基审查", "青年基金评审"},
+		SemanticOnly: true,
+		Phases: []PhaseTemplate{
+			{ID: "yf_review_completeness", Name: "完整性检测", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "提供申报材料",
+					Description: "请提供待评审的青基申请书材料。支持上传文件、粘贴文本、或指定本机文件路径。",
+					Fields: []PhaseInputField{
+						{Name: "material_path", Label: "申请书文件路径", Type: "text", Placeholder: "如：D:\\申报材料\\青基申请书.pdf"},
+						{Name: "material_text", Label: "或粘贴申请书文本", Type: "textarea", Placeholder: "将申请书的主要内容粘贴到这里"},
+						{Name: "focus_areas", Label: "重点关注方面（可选）", Type: "textarea", Placeholder: "如：立项依据是否充分、技术路线可行性"},
+					},
+				},
+			},
+			{ID: "yf_review_achievements", Name: "学术成果评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "yf_review_plan", Name: "研究计划评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "yf_review_quality", Name: "撰写质量评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "yf_review_report", Name: "综合评估报告", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
+// NSFCGeneralReviewTemplate defines the review workflow for NSFC General Program applications.
+func NSFCGeneralReviewTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:         "nsfc_general_review",
+		Name:         "面上项目申请书评审",
+		Description:  "完整性检测 → 学术成果评估 → 研究计划评估 → 撰写质量评估 → 综合评估报告。适用于面上项目申请书材料的评审与改进建议。",
+		Keywords:     []string{"面上评审", "面上审查", "面上项目评审"},
+		SemanticOnly: true,
+		Phases: []PhaseTemplate{
+			{ID: "gen_review_completeness", Name: "完整性检测", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "提供申报材料",
+					Description: "请提供待评审的面上项目申请书材料。支持上传文件、粘贴文本、或指定本机文件路径。",
+					Fields: []PhaseInputField{
+						{Name: "material_path", Label: "申请书文件路径", Type: "text", Placeholder: "如：D:\\申报材料\\面上项目申请书.pdf"},
+						{Name: "material_text", Label: "或粘贴申请书文本", Type: "textarea", Placeholder: "将申请书的主要内容粘贴到这里"},
+						{Name: "focus_areas", Label: "重点关注方面（可选）", Type: "textarea", Placeholder: "如：科学问题是否明确、创新点是否突出"},
+					},
+				},
+			},
+			{ID: "gen_review_achievements", Name: "学术成果评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "gen_review_plan", Name: "研究计划评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "gen_review_quality", Name: "撰写质量评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "gen_review_report", Name: "综合评估报告", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
+// NSFCKeyReviewTemplate defines the review workflow for NSFC Key Program applications.
+func NSFCKeyReviewTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:         "nsfc_key_review",
+		Name:         "重点项目申请书评审",
+		Description:  "完整性检测 → 学术成果评估 → 研究计划评估 → 撰写质量评估 → 综合评估报告。适用于重点项目申请书材料的评审与改进建议。",
+		Keywords:     []string{"重点项目评审", "重点审查", "重点项目材料评审"},
+		SemanticOnly: true,
+		Phases: []PhaseTemplate{
+			{ID: "key_review_completeness", Name: "完整性检测", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "提供申报材料",
+					Description: "请提供待评审的重点项目申请书材料。支持上传文件、粘贴文本、或指定本机文件路径。",
+					Fields: []PhaseInputField{
+						{Name: "material_path", Label: "申请书文件路径", Type: "text", Placeholder: "如：D:\\申报材料\\重点项目申请书.pdf"},
+						{Name: "material_text", Label: "或粘贴申请书文本", Type: "textarea", Placeholder: "将申请书的主要内容粘贴到这里"},
+						{Name: "focus_areas", Label: "重点关注方面（可选）", Type: "textarea", Placeholder: "如：战略意义是否明确、课题设置是否合理"},
+					},
+				},
+			},
+			{ID: "key_review_achievements", Name: "学术成果评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "key_review_plan", Name: "研究计划评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "key_review_quality", Name: "撰写质量评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "key_review_report", Name: "综合评估报告", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
 // RegisterBuiltinTemplates registers all built-in templates.
 func RegisterBuiltinTemplates(r *TemplateRegistry) {
 	if r == nil {
@@ -905,4 +1243,9 @@ func RegisterBuiltinTemplates(r *TemplateRegistry) {
 	r.Register(NSFCYouthTemplate())
 	r.Register(NSFCGeneralTemplate())
 	r.Register(NSFCKeyTemplate())
+	r.Register(NSFCDistinguishedYouthReviewTemplate())
+	r.Register(NSFCExcellentYouthReviewTemplate())
+	r.Register(NSFCYouthReviewTemplate())
+	r.Register(NSFCGeneralReviewTemplate())
+	r.Register(NSFCKeyReviewTemplate())
 }

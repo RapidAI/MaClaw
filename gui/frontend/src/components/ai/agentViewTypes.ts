@@ -69,6 +69,10 @@ export interface AgentViewField {
     pattern?: string;
     format?: string;
     dependentRequired?: AgentViewDependentRequired;
+    // Prefill provenance (set by workflow form prefill system)
+    prefill_source?: "context" | "memory" | "knowledge" | "web";
+    prefill_detail?: string;
+    prefill_needs_confirm?: boolean;
 }
 
 export interface AgentViewStep {

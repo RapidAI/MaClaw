@@ -849,6 +849,23 @@ function renderField(
             <label htmlFor={controlId} style={labelStyle}>
                 <span>{label}</span>
                 {field.required && <span style={{ color: theme.errorText }}>*</span>}
+                {field.prefill_source && (
+                    <span
+                        title={field.prefill_detail || ""}
+                        style={{
+                            fontSize: 10,
+                            padding: "1px 5px",
+                            borderRadius: 4,
+                            fontWeight: 500,
+                            marginLeft: 2,
+                            background: field.prefill_source === "web" ? "rgba(234,179,8,0.12)" : "rgba(59,130,246,0.10)",
+                            color: field.prefill_source === "web" ? theme.errorText : theme.headingColor,
+                            border: `1px solid ${field.prefill_source === "web" ? theme.errorBorder : theme.divider}`,
+                        }}
+                    >
+                        {field.prefill_source === "web" ? s.prefillWeb : field.prefill_source === "memory" ? s.prefillMemory : field.prefill_source === "knowledge" ? s.prefillKnowledge : s.prefillContext}
+                    </span>
+                )}
             </label>
             {control}
             {field.error && <div style={errorStyle}>{field.error}</div>}

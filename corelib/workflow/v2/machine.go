@@ -31,6 +31,13 @@ type HandleResult struct {
 	Phase      *Phase // current phase to execute (RunPhase/Modify/ShowForm)
 	ModifyHint string // user's modification request (Modify)
 	State      *WorkflowState
+
+	// PrefilledData contains auto-collected default values for form fields.
+	// Populated by the consumer layer (GUI) when Action == ActionShowForm.
+	// The state machine itself does not populate this — it is set externally
+	// after HandleInput returns, before the form event is sent to the frontend.
+	// Each entry has a verifiable source (memory/context/web); no LLM inference.
+	PrefilledData map[string]*PrefilledValue `json:"prefilled_data,omitempty"`
 }
 
 // ConfirmClassifier is a function that uses LLM to classify user intent

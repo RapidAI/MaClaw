@@ -4,6 +4,7 @@ import { LoadConfig, PatchConfigFields, SetDefaultLaunchMode, KnowledgeStats, Kn
 import { main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { getAllToolOptions } from '../../config/toolCatalog';
+import { useDialog } from '../CustomDialog';
 
 // Wails bindings stubs — these functions are not yet generated but the
 // component references them. Replace with actual imports when available.
@@ -232,6 +233,7 @@ const TAB_LABELS: Record<ScopeTab, [string, string, string]> = {
 };
 
 function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: ProgrammingToolsSettingsPanelProps & { versionRef: MutableRefObject<number> }) {
+    const { showConfirm } = useDialog();
     const [stats, setStats] = useState<any>(null);
     const [experiences, setExperiences] = useState<any[]>([]);
     const [activeTab, setActiveTab] = useState<ScopeTab>('all');
@@ -285,6 +287,11 @@ function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: Program
     useEffect(() => { void loadStats(); void loadExperiences(); }, [loadStats, loadExperiences]);
 
     const handleDelete = async (id: string) => {
+        const confirmed = await showConfirm(
+            textForLang(lang, 'Delete this experience? This cannot be undone.', '删除这条经验？此操作不可撤销。', '刪除這條經驗？此操作不可撤銷。'),
+            textForLang(lang, 'Confirm Delete', '确认删除', '確認刪除'),
+        );
+        if (!confirmed) return;
         try {
             await CodingKnowledgeDelete(id);
             void loadStats();
@@ -301,7 +308,11 @@ function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: Program
     };
 
     const handleReset = async () => {
-        if (!window.confirm(textForLang(lang, 'Reset all coding experiences? This cannot be undone.', '清空所有编程经验？此操作不可撤销。', '清空所有程式經驗？此操作不可撤銷。'))) return;
+        const confirmed = await showConfirm(
+            textForLang(lang, 'Reset all coding experiences? This cannot be undone.', '清空所有编程经验？此操作不可撤销。', '清空所有程式經驗？此操作不可撤銷。'),
+            textForLang(lang, 'Confirm Reset', '确认清空', '確認清空'),
+        );
+        if (!confirmed) return;
         try {
             await CodingKnowledgeResetFile();
             void loadStats();

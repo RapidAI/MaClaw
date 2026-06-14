@@ -1,4 +1,4 @@
-# Implementation Plan
+﻿# Implementation Plan
 
 ## Overview
 
@@ -115,11 +115,27 @@ Migrate the workflow engine from V1 (`corelib/workflow/engine.go` + 30+ GUI inte
     - 17d. (deferred) Migrate 50+ test files from V1 to V2 test helpers
     - 17e. (deferred) Delete engine_stub.go after test migration
 
+- [-] 18. Complete V1 package elimination — migrate types + tool policy to V2, delete V1 package
+  - Requirements: R3, R4
+  - Description: Eliminate the entire `corelib/workflow/` package (excluding `v2/`). The final step to remove all V1 dead code. 40+ files import V1 types; migration is primarily type relocation + import path update.
+  - Scope (2026-06-14 audit):
+    - `corelib/workflow/types.go` (~550 lines): shared types still referenced by production + test code
+    - `corelib/workflow/engine_compat.go` (~600 lines): dead stub, never executed at runtime
+    - 40+ files import `corelib/workflow` (15+ GUI production, 3 TUI production, 3 agentservice, 20+ tests)
+    - 4 production call sites use V1 tool policy functions
+  - Sub-tasks:
+    - 18a. Add missing tool policy types/functions to V2 (ToolFilterPlanning, ToolFilterOpsControlled, IsToolAllowedByPolicy, FilterToolDefinitions, ValidateToolCallByPolicy)
+    - 18b. Add V1 type aliases in V2 for smooth migration (WorkflowType, WorkflowState, StructuredIntent, etc.)
+    - 18c. Batch-migrate GUI production files (15+) from `corelib/workflow` to `corelib/workflow/v2`
+    - 18d. Batch-migrate TUI + agentservice files (6 files)
+    - 18e. Batch-migrate test files (20+ files)
+    - 18f. Delete V1 files: `corelib/workflow/types.go`, `corelib/workflow/engine_compat.go`, `gui/im_workflow_engine_stub.go`, `gui/workflow_v2_type_mappers.go`
+  - Files: `corelib/workflow/v2/types_compat.go` (new), 40+ consumer files, 4 V1 files (delete)
+
 ## Notes
 
 - T1-T14: Phase 1 complete (Phase B bridge state achieved)
-- T15-T17: Phase 2 (eliminate bridge layer, reach Phase A pure V2)
-- T15 is the most impactful single task — eliminates all V1↔V2 type mapping overhead
-- T16 is the riskiest — TUI has no test coverage for workflow, must verify manually
-- T17 is the largest — 50+ test files, but mechanically straightforward
-- After T17: `engine_stub.go` deleted, `WorkflowV2Facade` deleted, V2 is the sole engine for all platforms
+- T15-T17: Phase 2 complete (eliminate bridge layer, Phase A pure V2 runtime)
+- T18: Phase 3 - delete V1 package entirely (sole remaining migration task)
+- T18 estimated effort: 2-3 focused sessions, 40+ file import path migration + compile verification per batch
+- After T18: corelib/workflow/ package deleted (only v2/ remains), zero V1 code in codebase

@@ -353,6 +353,9 @@ const SCENARIO_TAB_IDS = new Set(SCENARIO_TABS.map(tab => tab.id));
 const SCENARIO_TAB_BY_ID = new Map(SCENARIO_TABS.map(tab => [tab.id, tab]));
 const isScenarioTabId = (value: string | null): value is string => !!value && SCENARIO_TAB_IDS.has(value);
 
+/** Max width for the main content column (input, tabs, cards). */
+const CONTENT_MAX_WIDTH = "720px";
+
 // --- Component ---
 
 /** Props subset needed by AssistantInputComposer inside the welcome view. */
@@ -430,7 +433,9 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
         const nextTabId = SCENARIO_TABS[nextIndex].id;
         setActiveTab(nextTabId);
         requestAnimationFrame(() => {
-            document.getElementById(`welcome-tab-${nextTabId}`)?.focus();
+            const el = document.getElementById(`welcome-tab-${nextTabId}`);
+            el?.focus();
+            el?.scrollIntoView({ block: "nearest", inline: "nearest" });
         });
     };
 
@@ -487,7 +492,7 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
             {/* Centered input composer with refined style */}
             <div style={{
                 width: "100%",
-                maxWidth: "600px",
+                maxWidth: CONTENT_MAX_WIDTH,
                 borderRadius: "14px",
                 border: `1px solid ${t.inputBarBorder}`,
                 boxShadow: themeMode === "dark"
@@ -537,19 +542,28 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                 />
             </div>
 
-            {/* Scenario tabs */}
+            {/* Scenario tabs — outer scroll container + inner centering wrapper.
+                Using a wrapper div with margin:auto to center tabs when they fit,
+                while allowing left-aligned overflow scroll when they don't.
+                justify-content:center on overflow would clip left-side tabs. */}
             <div
                 role="tablist"
                 aria-label={isZh ? "场景分类" : "Scenario categories"}
+                className="no-scrollbar"
                 style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: "6px",
-                    justifyContent: "center",
                     width: "100%",
-                    maxWidth: "600px",
+                    maxWidth: CONTENT_MAX_WIDTH,
+                    overflowX: "auto",
+                    scrollbarWidth: "none",
                 }}
             >
+                <div style={{
+                    display: "flex",
+                    flexWrap: "nowrap",
+                    gap: "6px",
+                    width: "fit-content",
+                    margin: "0 auto",
+                }}>
                 {SCENARIO_TABS.map((tab, index) => {
                     const isActive = tab.id === activeTab;
                         return (
@@ -595,6 +609,7 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                         </button>
                     );
                 })}
+                </div>
             </div>
 
             {/* Prompt cards */}
@@ -607,7 +622,7 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                     gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
                     gap: "10px",
                     width: "100%",
-                    maxWidth: "900px",
+                    maxWidth: CONTENT_MAX_WIDTH,
                 }}
             >
                 {currentTab.prompts.map(prompt => (
