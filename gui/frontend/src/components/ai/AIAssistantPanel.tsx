@@ -70,6 +70,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [workflowEnabled, setWorkflowEnabled] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
+    const closeAllPreviewPanelsRef = useRef<(() => void) | null>(null);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
     const { ttsEnabled, setTtsEnabled, ttsPlaying } = useTTSReadback(audioOutputDeviceId);
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
@@ -146,6 +147,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [closeRenameGroupDialog, lang, renameGroupSaving, renameGroupTab, renameGroupTargetTab, renameGroupValue]);
     const clearActiveHistory = useCallback(async () => {
+        // Close all right-side preview panels (workflow doc, code preview, agent view)
+        closeAllPreviewPanelsRef.current?.();
         if (activeTab.type === "project") {
             clearTabConversation(activeTab.id);
             setProjectTabMessages([]);
@@ -800,6 +803,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
         }
     }, [workflowState.splitMode, closeDocPreview, closeCodePreview, openDocPreview, activateCodePreviewPassive]);
+    // Keep ref updated so clearActiveHistory (defined earlier) can close all preview panels
+    closeAllPreviewPanelsRef.current = () => {
+        closeDocPreview();
+        closeCodePreview();
+        resetWorkflowState();
+        if (agentView) dismissAgentView(agentView.id);
+    };
     const title = lang === "en" ? "AI Assistant" : "AI \u52a9\u624b";
     const thinkingText = lang === "en" ? "Thinking... (you can type ahead)" : "\u6b63\u5728\u601d\u8003...\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const processingText = lang === "en" ? "Running tools... (you can type ahead)" : "\u6b63\u5728\u6267\u884c\u5de5\u5177\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";

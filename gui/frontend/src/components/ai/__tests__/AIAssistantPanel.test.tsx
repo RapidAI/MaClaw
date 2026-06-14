@@ -367,7 +367,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(buttons[3]?.getAttribute('title')).toBe('Switch to dark mode');
         expect(buttons[4]?.getAttribute('title')).toBe('Knowledge Base');
         expect(buttons[5]?.getAttribute('title')).toBe('Refresh news');
-        expect(buttons[6]?.getAttribute('title')).toBe('Clear history');
+        expect(buttons[6]?.getAttribute('title')).toBe('New conversation');
     });
 
     it('opens current tenant card store URL from config', async () => {
@@ -2756,7 +2756,7 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
-        fireEvent.click(getByTitle('Clear history'));
+        fireEvent.click(getByTitle('New conversation'));
 
         expect(clearHistory).not.toHaveBeenCalled();
     });

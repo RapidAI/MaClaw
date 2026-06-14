@@ -1,4 +1,4 @@
-type TitleBarToolIconName = "cart" | "search" | "volumeOn" | "volumeOff" | "sun" | "moon" | "book" | "guide" | "refresh" | "trash";
+type TitleBarToolIconName = "cart" | "search" | "volumeOn" | "volumeOff" | "sun" | "moon" | "book" | "guide" | "refresh" | "trash" | "eraser";
 
 export function TitleBarToolIcon({ name }: { name: TitleBarToolIconName }) {
     const common = {
@@ -70,6 +70,13 @@ export function TitleBarToolIcon({ name }: { name: TitleBarToolIconName }) {
                     <path {...common} d="M4 6h16" />
                     <path {...common} d="M9 6V4h6v2" />
                     <path {...common} d="m6 6 1 14h10l1-14" />
+                </>
+            )}
+            {name === "eraser" && (
+                <>
+                    <path {...common} d="M21 12a9 9 0 0 1-9 9H3V12a9 9 0 0 1 18 0Z" />
+                    <path {...common} d="M9 12h6" />
+                    <path {...common} d="M12 9v6" />
                 </>
             )}
         </svg>

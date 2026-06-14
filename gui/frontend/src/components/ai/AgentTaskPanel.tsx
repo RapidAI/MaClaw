@@ -1069,10 +1069,10 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                     </button>
                 )}
             </header>
-            <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16 }}>
+            <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "16px 24px" }}>
                 {view.type === "form" && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 16 }}
+                        style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%", maxWidth: 480, margin: "0 auto" }}
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (validationErrors.length > 0 || submitting) return;
@@ -1125,7 +1125,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                 )}
                 {view.type === "wizard" && activeWizardStep && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 14 }}
+                        style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 480, margin: "0 auto" }}
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (submitting) return;
@@ -1176,7 +1176,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                 )}
                 {view.type === "table_editor" && tableEditorField && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 14 }}
+                        style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 560, margin: "0 auto" }}
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (tableValidationErrors.length > 0 || submitting) return;
@@ -1199,7 +1199,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                 )}
                 {view.type === "resource_picker" && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 14 }}
+                        style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 480, margin: "0 auto" }}
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (resourceValidationErrors.length > 0 || submitting) return;
@@ -1256,7 +1256,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                 )}
                 {view.type === "field_mapper" && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 14 }}
+                        style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 520, margin: "0 auto" }}
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (fieldMappingErrors.length > 0 || submitting) return;
@@ -1303,7 +1303,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                     </form>
                 )}
                 {view.type === "approval" && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 480, margin: "0 auto" }}>
                         <div style={{ border: `1px solid ${theme.divider}`, borderRadius: 8, padding: 12, background: theme.fieldBg }}>
                             <div style={{ fontWeight: 700, marginBottom: 8 }}>{view.action.summary}</div>
                             {view.action.risk && <div style={{ color: theme.textMuted, fontSize: 12 }}>{s.risk}: {view.action.risk}</div>}
@@ -1328,7 +1328,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                     </div>
                 )}
                 {view.type === "progress" && (
-                    <div style={{ display: "grid", gap: 10 }}>
+                    <div style={{ display: "grid", gap: 10, width: "100%", maxWidth: 480, margin: "0 auto" }}>
                         {view.steps.map((step, index) => (
                             <div key={step.id || `${step.title}-${index}`} style={{ display: "grid", gridTemplateColumns: "72px 1fr", gap: 10, borderBottom: `1px solid ${theme.divider}`, paddingBottom: 10 }}>
                                 <span style={{ color: step.status === "error" ? theme.errorText : theme.textMuted, fontSize: 12 }}>{step.status || s.pending}</span>
@@ -1356,7 +1356,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                     </div>
                 )}
                 {view.type === "result_browser" && (
-                    <div style={{ display: "grid", gap: 10 }}>
+                    <div style={{ display: "grid", gap: 10, width: "100%", maxWidth: 520, margin: "0 auto" }}>
                         {view.results.map((result, index) => (
                             <article key={result.id || `${result.title}-${index}`} style={{ border: `1px solid ${theme.divider}`, borderRadius: 8, padding: 12, background: theme.fieldBg }}>
                                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
