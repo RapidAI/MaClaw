@@ -7,7 +7,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 func TestPrepareAgentLoopToolsWorkflowAgentLoopStillAppliesWorkflowFilter(t *testing.T) {
@@ -113,11 +113,11 @@ func TestFullWorkflowPhasePinsLocalCodingTools(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "workflow-full-phase-pins-local-tools-user"
 	workflowType := workflow.WorkflowType("full_policy_local_tools")
-	if err := handler.app.workflowEngine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	if err := handler.app.workflowEngine.GetRegistry().Register(&workflow.V1WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "full policy local tools",
 		Description: "test template",
-		Phases: []workflow.PhaseTemplate{{
+		Phases: []workflow.V1PhaseTemplate{{
 			ID:            "implementation",
 			Name:          "Implementation",
 			Prompt:        "implement the project",
@@ -160,11 +160,11 @@ func TestArtifactWorkflowPhaseDoesNotExposeProjectMutationTools(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "workflow-artifact-scope-tools-user"
 	workflowType := workflow.WorkflowType("artifact_scope_tools")
-	if err := handler.app.workflowEngine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	if err := handler.app.workflowEngine.GetRegistry().Register(&workflow.V1WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "artifact scope tools",
 		Description: "test template",
-		Phases: []workflow.PhaseTemplate{{
+		Phases: []workflow.V1PhaseTemplate{{
 			ID:            "generate",
 			Name:          "Generate",
 			Prompt:        "generate artifact",
@@ -236,11 +236,11 @@ func TestDocOnlyWorkflowPhaseBlocksImplementationTools(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "workflow-doc-only-blocks-implementation-tools-user"
 	workflowType := workflow.WorkflowType("doc_only_policy_boundary")
-	handler.app.workflowEngine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	handler.app.workflowEngine.GetRegistry().Register(&workflow.V1WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "doc only policy boundary",
 		Description: "test template",
-		Phases: []workflow.PhaseTemplate{{
+		Phases: []workflow.V1PhaseTemplate{{
 			ID:          "analysis",
 			Name:        "Analysis",
 			Prompt:      "write analysis",
@@ -924,16 +924,16 @@ func TestPrepareAgentLoopToolsBlockedPhaseWithNoPolicyExposesNoTools(t *testing.
 	userID := "workflow-blocked-none-filter-user"
 	engine := handler.app.workflowEngine
 	workflowType := workflow.WorkflowType("blocked_none_policy")
-	engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	engine.GetRegistry().Register(&workflow.V1WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "blocked none policy",
 		Description: "test template",
-		Phases: []workflow.PhaseTemplate{{
+		Phases: []workflow.V1PhaseTemplate{{
 			ID:          "collect",
 			Name:        "Collect",
 			Prompt:      "collect input",
 			Deliverable: "input",
-			InputSchema: &workflow.PhaseInputSchema{Fields: []workflow.PhaseInputField{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
+			InputSchema: &workflow.V1PhaseInputSchema{Fields: []workflow.V1PhaseInputField{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
 			ToolPolicy:  workflow.ToolFilterNone,
 		}},
 	})

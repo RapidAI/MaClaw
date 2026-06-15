@@ -20,7 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 func TestSkillDocHelpersAcceptMixedCaseSkillMarkdown(t *testing.T) {

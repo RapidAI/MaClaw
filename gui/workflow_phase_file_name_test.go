@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 // TestWorkflowPhaseFileNamesUniquePerTemplate is the anti-drift guard for the

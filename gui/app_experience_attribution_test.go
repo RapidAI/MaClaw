@@ -6,7 +6,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -19,12 +18,12 @@ func TestResolveExperienceProviderForAttributionDoesNotUseLastIMUserID(t *testin
 
 	v2Reg := v2.NewTemplateRegistry()
 	v2.RegisterBuiltinTemplates(v2Reg)
-	registry := workflow.NewWorkflowRegistry()
+	registry := v2.NewWorkflowRegistry()
 	registerV2TemplatesIntoV1Registry(registry, v2Reg)
-	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, nil, registry)
-	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
+	understanding := v2.NewIntentUnderstandingManager(v2.NullStore{}, nil, registry)
+	engine := v2.NewWorkflowEngine(registry, understanding, v2.NullStore{}, &mockEngineCallbacksGUI{})
 	remoteOwnerID := "project-tab:remote-workflow"
-	if _, err := engine.StartWorkflow(remoteOwnerID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "remote build"}); err != nil {
+	if _, err := engine.StartWorkflow(remoteOwnerID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "remote build"}); err != nil {
 		t.Fatalf("StartWorkflow remote failed: %v", err)
 	}
 

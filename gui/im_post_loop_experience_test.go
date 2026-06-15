@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 func TestAgentLoopTerminalExperienceEventSuccessWithTrace(t *testing.T) {

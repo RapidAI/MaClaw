@@ -48,8 +48,8 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 			}
 		}()
 
-		// V1 workflow engine code removed — engine is always nil since
-		// im_workflow_engine_stub.go was deleted.
+		// V1 workflow engine was removed in the V1→V2 migration.
+		// All workflow state management is now in corelib/workflow/v2.
 
 		// Preserve SubAgent execution context in conversation history so the LLM has
 		// context for follow-up messages about the implementation.

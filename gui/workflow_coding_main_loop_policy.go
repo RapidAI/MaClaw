@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -38,12 +37,12 @@ func (h *IMMessageHandler) shouldConstrainCodingWorkflowImplementationMainLoop(p
 		}
 	}
 	if state, _ := h.v1ActiveWorkflowPhase(policyUserID); state != nil {
-		return state.Type == workflow.WorkflowCoding && state.CurrentPhase == workflow.PhaseCodingImplementation
+		return state.Type == v2.WorkflowCoding && state.CurrentPhase == v2.PhaseCodingImplementation
 	}
 	return false
 }
 
-func (h *IMMessageHandler) v1ActiveWorkflowPhase(policyUserID string) (*workflow.WorkflowState, *workflow.PhaseTemplate) {
+func (h *IMMessageHandler) v1ActiveWorkflowPhase(policyUserID string) (*v2.V1WorkflowState, *v2.V1PhaseTemplate) {
 	policyUserID = strings.TrimSpace(policyUserID)
 	if policyUserID == "" || h == nil || h.app == nil || h.app.workflowEngine == nil {
 		return nil, nil
@@ -132,7 +131,7 @@ func workflowArtifactPhaseRequiredTools() []string {
 
 func (h *IMMessageHandler) isV1WorkflowArtifactPhase(policyUserID string) bool {
 	_, phase := h.v1ActiveWorkflowPhase(policyUserID)
-	return phase != nil && (phase.Kind == workflow.PhaseKindArtifactGeneration || phase.MutationScope == workflow.MutationScopeArtifact)
+	return phase != nil && (phase.Kind == v2.PhaseKindArtifactGeneration || phase.MutationScope == v2.MutationScopeArtifact)
 }
 
 func validateWorkflowArtifactPhaseToolCall(name string, args map[string]interface{}) string {

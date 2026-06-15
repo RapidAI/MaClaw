@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 // knownPhaseFileNames maps canonical phase IDs to predictable numbered file
@@ -278,7 +278,7 @@ func workflowPhaseFileStem(phaseID string) string {
 // in each, and a template phase missing from the flat map still gets a numbered
 // prefix instead of sorting unpredictably. When the template/registry is
 // unavailable, it falls back to the flat-map name.
-func workflowPhaseFileNameForTemplate(tmpl *workflow.WorkflowTemplate, phaseID string) string {
+func workflowPhaseFileNameForTemplate(tmpl *workflow.V1WorkflowTemplate, phaseID string) string {
 	if tmpl == nil {
 		return workflowPhaseFileName(phaseID)
 	}

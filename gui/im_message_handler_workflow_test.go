@@ -13,7 +13,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -36,11 +35,11 @@ type mockEngineCallbacksGUI struct {
 }
 
 type failingWorkflowStateStoreGUI struct {
-	workflow.NullStore
+	v2.NullStore
 	fail bool
 }
 
-func (s *failingWorkflowStateStoreGUI) SaveWorkflowState(_ *workflow.WorkflowState) error {
+func (s *failingWorkflowStateStoreGUI) SaveWorkflowState(_ *v2.V1WorkflowState) error {
 	if s != nil && s.fail {
 		return errors.New("save workflow state failed")
 	}
@@ -52,7 +51,7 @@ func (m *mockEngineCallbacksGUI) SendTextToUser(userID, text string) error {
 	return nil
 }
 
-func (m *mockEngineCallbacksGUI) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error {
+func (m *mockEngineCallbacksGUI) EmitPhaseUpdate(userID string, state *v2.V1WorkflowState) error {
 	return nil
 }
 
@@ -60,13 +59,13 @@ func (m *mockEngineCallbacksGUI) EmitDocUpdate(userID, phaseID, content string) 
 	return nil
 }
 
-func (m *mockEngineCallbacksGUI) EmitGateResult(userID, phaseID string, result *workflow.QualityGateResult) error {
+func (m *mockEngineCallbacksGUI) EmitGateResult(userID, phaseID string, result *v2.QualityGateResult) error {
 	return nil
 }
 
 func (m *mockEngineCallbacksGUI) GetLang() string { return "zh" }
 
-func setupWorkflowTestHandler(llmCaller workflow.LLMCaller) (*IMMessageHandler, *mockEngineCallbacksGUI) {
+func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockEngineCallbacksGUI) {
 	// V2 infrastructure: MemoryStore (in-memory, no file I/O) + TemplateRegistry + StateMachine.
 	v2Store := v2.NewMemoryStore()
 	v2Registry := v2.NewTemplateRegistry()
@@ -77,12 +76,12 @@ func setupWorkflowTestHandler(llmCaller workflow.LLMCaller) (*IMMessageHandler, 
 	// code (h.app.workflowEngine.StartWorkflow) continues to work. The V1
 	// RegisterBuiltinTemplates is intentionally empty (T12); we bridge V2
 	// template data into V1 format here.
-	v1Registry := workflow.NewWorkflowRegistry()
+	v1Registry := v2.NewWorkflowRegistry()
 	registerV2TemplatesIntoV1Registry(v1Registry, v2Registry)
 
 	cb := &mockEngineCallbacksGUI{}
-	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, llmCaller, v1Registry)
-	engine := workflow.NewWorkflowEngine(v1Registry, understanding, workflow.NullStore{}, cb)
+	understanding := v2.NewIntentUnderstandingManager(v2.NullStore{}, llmCaller, v1Registry)
+	engine := v2.NewWorkflowEngine(v1Registry, understanding, v2.NullStore{}, cb)
 
 	app := &App{
 		workflowEngine: engine,
@@ -98,11 +97,11 @@ func setupWorkflowTestHandler(llmCaller workflow.LLMCaller) (*IMMessageHandler, 
 
 // newPopulatedWorkflowRegistry creates a V1 WorkflowRegistry populated from
 // V2 templates. Standalone tests that create their own V1 engine should use
-// this instead of the empty workflow.NewWorkflowRegistry().
-func newPopulatedWorkflowRegistry() *workflow.WorkflowRegistry {
+// this instead of the empty v2.NewWorkflowRegistry().
+func newPopulatedWorkflowRegistry() *v2.WorkflowRegistry {
 	v2Reg := v2.NewTemplateRegistry()
 	v2.RegisterBuiltinTemplates(v2Reg)
-	v1Reg := workflow.NewWorkflowRegistry()
+	v1Reg := v2.NewWorkflowRegistry()
 	registerV2TemplatesIntoV1Registry(v1Reg, v2Reg)
 	return v1Reg
 }
@@ -110,7 +109,7 @@ func newPopulatedWorkflowRegistry() *workflow.WorkflowRegistry {
 // registerV2TemplatesIntoV1Registry iterates known V2 template types and
 // registers equivalent V1 WorkflowTemplate entries so that V1 engine's
 // StartWorkflow/Match calls succeed in tests.
-func registerV2TemplatesIntoV1Registry(v1Reg *workflow.WorkflowRegistry, v2Reg *v2.TemplateRegistry) {
+func registerV2TemplatesIntoV1Registry(v1Reg *v2.WorkflowRegistry, v2Reg *v2.TemplateRegistry) {
 	// All known V2 template type strings.
 	knownTypes := []string{
 		"coding", "maintenance", "presentation_design",
@@ -126,17 +125,17 @@ func registerV2TemplatesIntoV1Registry(v1Reg *workflow.WorkflowRegistry, v2Reg *
 		if v2Tmpl == nil {
 			continue
 		}
-		v1Phases := make([]workflow.PhaseTemplate, 0, len(v2Tmpl.Phases))
+		v1Phases := make([]v2.V1PhaseTemplate, 0, len(v2Tmpl.Phases))
 		for _, p := range v2Tmpl.Phases {
-			v1Phases = append(v1Phases, workflow.PhaseTemplate{
+			v1Phases = append(v1Phases, v2.V1PhaseTemplate{
 				ID:           p.ID,
 				Name:         p.Name,
 				NeedsConfirm: p.NeedsConfirm,
 				ToolPolicy:   mapV2ToolPolicyToV1Filter(p.ToolPolicy),
 			})
 		}
-		v1Reg.MustRegister(&workflow.WorkflowTemplate{
-			Type:        workflow.WorkflowType(v2Tmpl.Type),
+		v1Reg.MustRegister(&v2.V1WorkflowTemplate{
+			Type:        v2.WorkflowType(v2Tmpl.Type),
 			Name:        v2Tmpl.Name,
 			Description: v2Tmpl.Description,
 			Keywords:    v2Tmpl.Keywords,
@@ -151,50 +150,50 @@ func registerV2TemplatesIntoV1Registry(v1Reg *workflow.WorkflowRegistry, v2Reg *
 
 // registerV1OnlyTestTemplates registers workflow types that are used in test
 // code but not (yet) present in V2. These are minimal stubs.
-func registerV1OnlyTestTemplates(v1Reg *workflow.WorkflowRegistry) {
+func registerV1OnlyTestTemplates(v1Reg *v2.WorkflowRegistry) {
 	// ops_maintenance — used extensively in ops-guard and tool-execution tests.
-	v1Reg.MustRegister(&workflow.WorkflowTemplate{
-		Type: workflow.WorkflowOpsMaintenance,
+	v1Reg.MustRegister(&v2.V1WorkflowTemplate{
+		Type: v2.WorkflowOpsMaintenance,
 		Name: "运维操作",
-		Phases: []workflow.PhaseTemplate{
-			{ID: "ops_intake", Name: "运维需求确认", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
-			{ID: "readonly_collection", Name: "信息采集", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
-			{ID: "risk_policy", Name: "风险策略", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
-			{ID: "controlled_execution", Name: "受控执行", NeedsConfirm: false, ToolPolicy: workflow.ToolFilterOpsControlled},
-			{ID: "verification", Name: "验证", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+		Phases: []v2.V1PhaseTemplate{
+			{ID: "ops_intake", Name: "运维需求确认", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "readonly_collection", Name: "信息采集", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "risk_policy", Name: "风险策略", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "controlled_execution", Name: "受控执行", NeedsConfirm: false, ToolPolicy: v2.ToolFilterOpsControlled},
+			{ID: "verification", Name: "验证", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 		},
 	})
 
 	// changjiang_scholar — used in workflow interception tests.
-	v1Reg.MustRegister(&workflow.WorkflowTemplate{
-		Type: workflow.WorkflowChangjiangScholar,
+	v1Reg.MustRegister(&v2.V1WorkflowTemplate{
+		Type: v2.WorkflowChangjiangScholar,
 		Name: "长江学者申报",
-		Phases: []workflow.PhaseTemplate{
-			{ID: "applicant_info", Name: "申请人信息", Description: "长江学者申请人信息收集", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
-			{ID: "research_profile", Name: "科研概况", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
-			{ID: "application_doc", Name: "申报材料", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+		Phases: []v2.V1PhaseTemplate{
+			{ID: "applicant_info", Name: "申请人信息", Description: "长江学者申请人信息收集", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "research_profile", Name: "科研概况", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "application_doc", Name: "申报材料", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 		},
 	})
 
 	// changjiang_scholar_review — used in persistence test tables.
-	v1Reg.MustRegister(&workflow.WorkflowTemplate{
-		Type: workflow.WorkflowChangjiangScholarReview,
+	v1Reg.MustRegister(&v2.V1WorkflowTemplate{
+		Type: v2.WorkflowChangjiangScholarReview,
 		Name: "长江学者评审",
-		Phases: []workflow.PhaseTemplate{
-			{ID: "review_criteria", Name: "评审标准", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+		Phases: []v2.V1PhaseTemplate{
+			{ID: "review_criteria", Name: "评审标准", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 		},
 	})
 }
 
 // mapV2ToolPolicyToV1Filter converts a V2 ToolPolicy to V1 ToolFilterPolicy.
-func mapV2ToolPolicyToV1Filter(p v2.ToolPolicy) workflow.ToolFilterPolicy {
+func mapV2ToolPolicyToV1Filter(p v2.ToolPolicy) v2.ToolFilterPolicy {
 	switch p {
 	case v2.ToolPolicyDocOnly:
-		return workflow.ToolFilterDocOnly
+		return v2.ToolFilterDocOnly
 	case v2.ToolPolicyFull:
-		return workflow.ToolFilterFull
+		return v2.ToolFilterFull
 	default:
-		return workflow.ToolFilterDocOnly
+		return v2.ToolFilterDocOnly
 	}
 }
 
@@ -207,8 +206,8 @@ func TestActiveWorkflowIgnoresUICWorkflowTypeReplacement(t *testing.T) {
 	})
 	engine := handler.app.workflowEngine
 	userID := "test-active-workflow-ignores-uic-workflow-type"
-	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowChangjiangScholar,
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowChangjiangScholar,
 		Summary:  "draft application",
 	}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
@@ -216,7 +215,7 @@ func TestActiveWorkflowIgnoresUICWorkflowTypeReplacement(t *testing.T) {
 
 	handler.handleWorkflowInterception(userID, "我是青年学者，研究方向是人工智能。", "weixin")
 
-	if got := engine.GetActiveWorkflow(userID); got == nil || got.Type != workflow.WorkflowChangjiangScholar {
+	if got := engine.GetActiveWorkflow(userID); got == nil || got.Type != v2.WorkflowChangjiangScholar {
 		t.Fatalf("active workflow should not be replaced by UIC workflow_type, got %#v", got)
 	}
 }
@@ -226,8 +225,8 @@ func TestActiveWorkflowIgnoresUICNonWorkflowBypass(t *testing.T) {
 	handler.unifiedClassifier = testIntentClassifier(string(intent.LabelSSH))
 	engine := handler.app.workflowEngine
 	userID := "test-active-workflow-ignores-uic-nonworkflow-bypass"
-	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowChangjiangScholar,
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowChangjiangScholar,
 		Summary:  "draft application",
 	}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
@@ -237,7 +236,7 @@ func TestActiveWorkflowIgnoresUICNonWorkflowBypass(t *testing.T) {
 	if resp == nil || strings.TrimSpace(resp.Text) == "" {
 		t.Fatalf("active workflow input should be owned by workflow state machine, got %#v", resp)
 	}
-	if got := engine.GetActiveWorkflow(userID); got == nil || got.Type != workflow.WorkflowChangjiangScholar {
+	if got := engine.GetActiveWorkflow(userID); got == nil || got.Type != v2.WorkflowChangjiangScholar {
 		t.Fatalf("active workflow should remain active, got %#v", got)
 	}
 	if !strings.Contains(resp.Text, "长江学者申请人信息") {
@@ -254,7 +253,7 @@ func TestApprovePendingWorkflowConfirmationRecordsProjectPathWithoutCreatingDire
 		UserID:          userID,
 		OriginalText:    "build a desktop game",
 		Summary:         "build a desktop game",
-		WorkflowType:    string(workflow.WorkflowCoding),
+		WorkflowType:    string(v2.WorkflowCoding),
 		WorkflowSummary: "build a desktop game",
 		WorkflowGoals:   []string{"build a desktop game"},
 		LastProjectPath: projectPath,
@@ -287,7 +286,7 @@ func TestApprovePendingWorkflowConfirmationInfersExplicitCodingProjectPath(t *te
 		UserID:          userID,
 		OriginalText:    "build a desktop game in " + projectPath + " and create src files",
 		Summary:         "build a desktop game",
-		WorkflowType:    string(workflow.WorkflowCoding),
+		WorkflowType:    string(v2.WorkflowCoding),
 		WorkflowSummary: "build a desktop game",
 		WorkflowGoals:   []string{"build a desktop game in " + projectPath},
 	}, "desktop")
@@ -315,8 +314,8 @@ func TestSetWorkflowWorkingDirRecordsProjectPathWithoutCreatingDirectory(t *test
 	userID := desktopUserID
 	projectPath := filepath.Join(t.TempDir(), "selected-project")
 
-	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowCoding,
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
 		Summary:  "build a desktop game",
 	}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
@@ -351,14 +350,14 @@ func TestSetWorkflowWorkingDirUsesProjectScopedWorkflowOwner(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveConfig failed: %v", err)
 	}
-	if _, err := engine.StartWorkflowWithOptions(projectUserID, workflow.StructuredIntent{
-		Category: workflow.WorkflowCoding,
+	if _, err := engine.StartWorkflowWithOptions(projectUserID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
 		Summary:  "build a desktop game",
-	}, workflow.WorkflowStartOptions{ProjectPath: projectRoot}); err != nil {
+	}, v2.WorkflowStartOptions{ProjectPath: projectRoot}); err != nil {
 		t.Fatalf("StartWorkflowWithOptions project failed: %v", err)
 	}
-	if _, err := engine.StartWorkflow(desktopUserID, workflow.StructuredIntent{
-		Category: workflow.WorkflowCoding,
+	if _, err := engine.StartWorkflow(desktopUserID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
 		Summary:  "unrelated desktop workflow",
 	}); err != nil {
 		t.Fatalf("StartWorkflow desktop failed: %v", err)
@@ -408,10 +407,10 @@ func TestStartAIAssistantBackgroundTaskUsesProjectWorkflowPolicy(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveConfig failed: %v", err)
 	}
-	if _, err := app.workflowEngine.StartWorkflowWithOptions(ownerID, workflow.StructuredIntent{
-		Category: workflow.WorkflowCoding,
+	if _, err := app.workflowEngine.StartWorkflowWithOptions(ownerID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
 		Summary:  "build app",
-	}, workflow.WorkflowStartOptions{ProjectPath: projectPath}); err != nil {
+	}, v2.WorkflowStartOptions{ProjectPath: projectPath}); err != nil {
 		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
 	}
 	if err := app.workflowEngine.SkipPhaseForm(ownerID); err != nil {
@@ -431,10 +430,10 @@ func TestStartDesktopBackgroundTaskUsesProjectWorkflowPolicy(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	projectPath := filepath.Join(t.TempDir(), "policy-project")
 	ownerID := projectSessionOwnerID(projectPath)
-	if _, err := handler.app.workflowEngine.StartWorkflowWithOptions(ownerID, workflow.StructuredIntent{
-		Category: workflow.WorkflowCoding,
+	if _, err := handler.app.workflowEngine.StartWorkflowWithOptions(ownerID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
 		Summary:  "build app",
-	}, workflow.WorkflowStartOptions{ProjectPath: projectPath}); err != nil {
+	}, v2.WorkflowStartOptions{ProjectPath: projectPath}); err != nil {
 		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
 	}
 	if err := handler.app.workflowEngine.SkipPhaseForm(ownerID); err != nil {
@@ -691,7 +690,7 @@ func TestPreservation_ValidWorkflowCategory_AsksBeforeStartWorkflow(t *testing.T
 	if engine.HasActiveWorkflow(userID) {
 		t.Fatal("workflow should not start before user confirmation")
 	}
-	if got := handler.confirmationStore.get(userID); got == nil || got.WorkflowType != string(workflow.WorkflowCoding) {
+	if got := handler.confirmationStore.get(userID); got == nil || got.WorkflowType != string(v2.WorkflowCoding) {
 		t.Fatalf("expected pending workflow confirmation, got %#v", got)
 	}
 	if len(cb.SentTexts) != 0 {
@@ -703,8 +702,8 @@ func TestWorkflowConfirmation_ApproveStartsWorkflow(t *testing.T) {
 	handler, cb := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-confirm-start"
-	item := buildPendingWorkflowConfirmation(userID, "build a project", workflow.StructuredIntent{
-		Category:   workflow.WorkflowCoding,
+	item := buildPendingWorkflowConfirmation(userID, "build a project", v2.StructuredIntent{
+		Category:   v2.WorkflowCoding,
 		Summary:    "build a project",
 		Goals:      []string{"build a project"},
 		Confidence: 0.9,
@@ -731,8 +730,8 @@ func TestWorkflowConfirmation_ApproveStartsWorkflow(t *testing.T) {
 func TestWorkflowConfirmation_DirectExecutionSkipsWorkflowOnce(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "test-confirm-direct"
-	item := buildPendingWorkflowConfirmation(userID, "build a project", workflow.StructuredIntent{
-		Category:   workflow.WorkflowCoding,
+	item := buildPendingWorkflowConfirmation(userID, "build a project", v2.StructuredIntent{
+		Category:   v2.WorkflowCoding,
 		Summary:    "build a project",
 		Goals:      []string{"build a project"},
 		Confidence: 0.9,
@@ -761,8 +760,8 @@ func TestWorkflowConfirmation_DirectExecutionSkipsWorkflowOnce(t *testing.T) {
 func TestWorkflowConfirmation_DirectExecutionUsesSummaryWhenGoalsMissing(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "test-confirm-direct-summary"
-	item := buildPendingWorkflowConfirmation(userID, "start", workflow.StructuredIntent{
-		Category:   workflow.WorkflowCoding,
+	item := buildPendingWorkflowConfirmation(userID, "start", v2.StructuredIntent{
+		Category:   v2.WorkflowCoding,
 		Summary:    "Build the login flow and tests",
 		Confidence: 0.9,
 	}, "", "zh")
@@ -782,8 +781,8 @@ func TestWorkflowConfirmation_DirectExecutionUsesSummaryWhenGoalsMissing(t *test
 func TestWorkflowConfirmation_FreeformRevisionReentersRouting(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "test-confirm-revise"
-	item := buildPendingWorkflowConfirmation(userID, "build a project", workflow.StructuredIntent{
-		Category:   workflow.WorkflowCoding,
+	item := buildPendingWorkflowConfirmation(userID, "build a project", v2.StructuredIntent{
+		Category:   v2.WorkflowCoding,
 		Goals:      []string{"build a project"},
 		Confidence: 0.9,
 	}, "", "zh")
@@ -804,8 +803,8 @@ func TestWorkflowConfirmation_FreeformRevisionReentersRouting(t *testing.T) {
 }
 
 func TestWorkflowConfirmation_ExplicitGoalTakesPrecedenceOverSummary(t *testing.T) {
-	item := buildPendingWorkflowConfirmation("u1", "build a project", workflow.StructuredIntent{
-		Category:   workflow.WorkflowCoding,
+	item := buildPendingWorkflowConfirmation("u1", "build a project", v2.StructuredIntent{
+		Category:   v2.WorkflowCoding,
 		Summary:    "Internal routing metadata",
 		Goals:      []string{"build a project"},
 		Confidence: 0.92,
@@ -819,8 +818,8 @@ func TestWorkflowConfirmation_ExplicitGoalTakesPrecedenceOverSummary(t *testing.
 }
 
 func TestWorkflowConfirmation_NormalizesEmptyGoals(t *testing.T) {
-	item := buildPendingWorkflowConfirmation("u1", "fallback text", workflow.StructuredIntent{
-		Category:   workflow.WorkflowCoding,
+	item := buildPendingWorkflowConfirmation("u1", "fallback text", v2.StructuredIntent{
+		Category:   v2.WorkflowCoding,
 		Summary:    "summary text",
 		Goals:      []string{"", "  real task  "},
 		Confidence: 0.92,
@@ -843,7 +842,7 @@ func TestFilterToolsForOpsControlledAllowsOnlyOperationalTools(t *testing.T) {
 		toolDef("edit_file", "edit file", nil, nil),
 	}
 
-	filtered := workflow.FilterToolDefinitions(workflow.ToolFilterOpsControlled, tools)
+	filtered := v2.FilterToolDefinitions(v2.ToolFilterOpsControlled, tools)
 	names := make(map[string]bool, len(filtered))
 	for _, tool := range filtered {
 		names[extractToolName(tool)] = true
@@ -864,14 +863,14 @@ func TestFilterToolsForOpsControlledAllowsOnlyOperationalTools(t *testing.T) {
 func TestApplyWorkflowToolFilterUsesActiveOpsPhasePolicy(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "ops-filter-user"
-	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowOpsMaintenance,
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowOpsMaintenance,
 		Summary:  "server maintenance",
 	})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
-	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(v2.WorkflowOpsMaintenance)
 	for i, phase := range tmpl.Phases {
 		if phase.ID == "controlled_execution" {
 			state.PhaseIndex = i
@@ -897,14 +896,14 @@ func TestApplyWorkflowToolFilterUsesActiveOpsPhasePolicy(t *testing.T) {
 func TestWorkflowToolExecutionGuardBlocksDisallowedTool(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "ops-guard-user"
-	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowOpsMaintenance,
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowOpsMaintenance,
 		Summary:  "server maintenance",
 	})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
-	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(v2.WorkflowOpsMaintenance)
 	for i, phase := range tmpl.Phases {
 		if phase.ID == "controlled_execution" {
 			state.PhaseIndex = i
@@ -935,8 +934,8 @@ func TestWorkflowToolExecutionGuardBlocksDisallowedTool(t *testing.T) {
 func TestWorkflowToolExecutionGuardBlocksDocOnlyCodingDelegate(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "doc-only-delegate-guard-user"
-	if _, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowCoding,
+	if _, err := handler.app.workflowEngine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
 		Summary:  "build a project",
 	}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
@@ -975,14 +974,14 @@ func TestWorkflowToolExecutionGuardBlocksDocOnlyCodingDelegate(t *testing.T) {
 func TestWorkflowToolExecutionGuardBlocksHighRiskCommandArguments(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "ops-guard-command-user"
-	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowOpsMaintenance,
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowOpsMaintenance,
 		Summary:  "server maintenance",
 	})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
-	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(v2.WorkflowOpsMaintenance)
 	for i, phase := range tmpl.Phases {
 		if phase.ID == "controlled_execution" {
 			state.PhaseIndex = i
@@ -1013,8 +1012,8 @@ func TestWorkflowToolExecutionGuardBlocksHighRiskCommandArguments(t *testing.T) 
 func TestWorkflowToolExecutionGuardBlocksCommandOutsideApprovedManifest(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "ops-guard-manifest-user"
-	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowOpsMaintenance,
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowOpsMaintenance,
 		Summary:  "server maintenance",
 	})
 	if err != nil {
@@ -1028,7 +1027,7 @@ allowed_commands:
   - tool: bash
     command: "systemctl restart nginx"
 `
-	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(v2.WorkflowOpsMaintenance)
 	for i, phase := range tmpl.Phases {
 		if phase.ID == "controlled_execution" {
 			state.PhaseIndex = i
@@ -1059,14 +1058,14 @@ allowed_commands:
 func TestWorkflowToolExecutionGuardBlocksMutatingCommandWithoutManifest(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "ops-guard-no-manifest-user"
-	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowOpsMaintenance,
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowOpsMaintenance,
 		Summary:  "server maintenance",
 	})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
-	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(v2.WorkflowOpsMaintenance)
 	for i, phase := range tmpl.Phases {
 		if phase.ID == "controlled_execution" {
 			state.PhaseIndex = i
@@ -1097,14 +1096,14 @@ func TestWorkflowToolExecutionGuardBlocksMutatingCommandWithoutManifest(t *testi
 func TestWorkflowToolExecutionGuardBlocksSSHUploadWithoutManifest(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "ops-guard-ssh-upload-user"
-	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowOpsMaintenance,
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowOpsMaintenance,
 		Summary:  "server maintenance",
 	})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
-	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(v2.WorkflowOpsMaintenance)
 	for i, phase := range tmpl.Phases {
 		if phase.ID == "controlled_execution" {
 			state.PhaseIndex = i
@@ -1135,8 +1134,8 @@ func TestWorkflowToolExecutionGuardBlocksSSHUploadWithoutManifest(t *testing.T) 
 func TestWorkflowToolExecutionGuardAllowsApprovedSSHUpload(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "ops-guard-ssh-upload-approved-user"
-	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowOpsMaintenance,
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowOpsMaintenance,
 		Summary:  "server maintenance",
 	})
 	if err != nil {
@@ -1152,7 +1151,7 @@ allowed_commands:
     target: prod-session
     command: "apply.sh -> /tmp/apply.sh"
 `
-	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(v2.WorkflowOpsMaintenance)
 	for i, phase := range tmpl.Phases {
 		if phase.ID == "controlled_execution" {
 			state.PhaseIndex = i
@@ -1197,14 +1196,14 @@ allowed_commands:
 func TestWorkflowToolExecutionGuardRejectsSkipNeedsConfirmGateWhenWorkflowActive(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "ops-guard-skip-user"
-	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowOpsMaintenance,
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowOpsMaintenance,
 		Summary:  "server maintenance",
 	})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
-	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(v2.WorkflowOpsMaintenance)
 	for i, phase := range tmpl.Phases {
 		if phase.ID == "controlled_execution" {
 			state.PhaseIndex = i
@@ -1255,8 +1254,8 @@ func TestWorkflowAttachmentBypass_AllowsRequiredWorkflowInput(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-input-attachment"
-	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowContractReview,
+	_, err := engine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowContractReview,
 		Summary:  "review uploaded contract",
 	})
 	if err != nil {
@@ -1278,8 +1277,8 @@ func TestRouteWorkflowIMMessageSubmitsWaitingInputAfterInterception(t *testing.T
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-route-input-attachment"
-	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowContractReview,
+	_, err := engine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowContractReview,
 		Summary:  "review uploaded contract",
 	})
 	if err != nil {
@@ -1311,8 +1310,8 @@ func TestSubmitWorkflowInputIfWaitingPersistsPayloadAndStartsLoop(t *testing.T) 
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-submit-input"
-	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowContractReview,
+	_, err := engine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowContractReview,
 		Summary:  "review uploaded contract",
 	})
 	if err != nil {
@@ -1348,22 +1347,22 @@ func TestSubmitWorkflowInputIfWaitingStopsAtFirstPhaseFormGate(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-submit-input-form-gate"
-	workflowType := workflow.WorkflowType("gui_input_form_gate_test")
-	engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	workflowType := v2.WorkflowType("gui_input_form_gate_test")
+	engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
 		Type:          workflowType,
 		Name:          "gui input form gate test",
 		Description:   "test template",
-		RequiresInput: &workflow.InputRequirement{Description: "source document", AcceptText: true},
-		Phases: []workflow.PhaseTemplate{{
+		RequiresInput: &v2.InputRequirement{Description: "source document", AcceptText: true},
+		Phases: []v2.V1PhaseTemplate{{
 			ID:          "collect_context",
 			Name:        "Collect Context",
 			Prompt:      "collect context",
 			Deliverable: "context document",
-			InputSchema: &workflow.PhaseInputSchema{Title: "Context", Fields: []workflow.PhaseInputField{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
-			ToolPolicy:  workflow.ToolFilterDocOnly,
+			InputSchema: &v2.V1PhaseInputSchema{Title: "Context", Fields: []v2.V1PhaseInputField{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
+			ToolPolicy:  v2.ToolFilterDocOnly,
 		}},
 	})
-	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "review source"})
+	_, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: workflowType, Summary: "review source"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -1383,10 +1382,10 @@ func TestSubmitWorkflowInputIfWaitingStopsAtFirstPhaseFormGate(t *testing.T) {
 func TestWorkflowFormSubmitContinuesSameWorkflowUser(t *testing.T) {
 	t.Skip("V1 workflow engine disabled — this test exercises V1-only form submit path")
 	userID := "desktop-user:C:/Users/ma139"
-	registry := workflow.NewWorkflowRegistry()
-	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
-	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
-	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	registry := v2.NewWorkflowRegistry()
+	understanding := v2.NewIntentUnderstandingManager(v2.NullStore{}, &mockLLMCallerGUI{}, registry)
+	engine := v2.NewWorkflowEngine(registry, understanding, v2.NullStore{}, &mockEngineCallbacksGUI{})
+	_, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -1405,7 +1404,7 @@ func TestWorkflowFormSubmitContinuesSameWorkflowUser(t *testing.T) {
 	app.remoteSessions.SetHubClient(client)
 	handler.app = app
 
-	resp := app.handleWorkflowFormAgentViewSubmit(workflow.PhaseCodingRequirements, map[string]interface{}{
+	resp := app.handleWorkflowFormAgentViewSubmit(v2.PhaseCodingRequirements, map[string]interface{}{
 		workflowFormUserIDField:     userID,
 		workflowFormWorkflowIDField: engine.GetActiveWorkflow(userID).ID,
 		"project_name":              "snake",
@@ -1436,13 +1435,13 @@ func TestWorkflowFormSubmitContinuesSameWorkflowUser(t *testing.T) {
 }
 
 func TestBuildWorkflowPhaseFormAgentViewPreservesCodingDirectoryField(t *testing.T) {
-	tmpl := workflow.NewWorkflowRegistry().Match(workflow.WorkflowCoding)
+	tmpl := v2.NewWorkflowRegistry().Match(v2.WorkflowCoding)
 	if tmpl == nil {
 		t.Fatal("coding workflow template not found")
 	}
-	var schema *workflow.PhaseInputSchema
+	var schema *v2.V1PhaseInputSchema
 	for _, phase := range tmpl.Phases {
-		if phase.ID == workflow.PhaseCodingRequirements {
+		if phase.ID == v2.PhaseCodingRequirements {
 			schema = phase.InputSchema
 			break
 		}
@@ -1451,7 +1450,7 @@ func TestBuildWorkflowPhaseFormAgentViewPreservesCodingDirectoryField(t *testing
 		t.Fatal("coding requirements phase missing input schema")
 	}
 
-	view := buildWorkflowPhaseFormAgentView("desktop-user:C:/Users/ma139", "wf-1", workflow.PhaseCodingRequirements, schema)
+	view := buildWorkflowPhaseFormAgentView("desktop-user:C:/Users/ma139", "wf-1", v2.PhaseCodingRequirements, schema)
 	fields, ok := view["fields"].([]map[string]interface{})
 	if !ok {
 		t.Fatalf("workflow AG UI form fields have unexpected type: %#v", view["fields"])
@@ -1474,9 +1473,9 @@ func TestBuildWorkflowPhaseFormAgentViewPreservesCodingDirectoryField(t *testing
 func TestWorkflowFormSubmitProjectPathUpdatesWorkflowWithoutCreatingDirectory(t *testing.T) {
 	userID := "desktop-user:C:/Users/ma139"
 	registry := newPopulatedWorkflowRegistry()
-	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
-	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
-	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	understanding := v2.NewIntentUnderstandingManager(v2.NullStore{}, &mockLLMCallerGUI{}, registry)
+	engine := v2.NewWorkflowEngine(registry, understanding, v2.NullStore{}, &mockEngineCallbacksGUI{})
+	state, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -1496,7 +1495,7 @@ func TestWorkflowFormSubmitProjectPathUpdatesWorkflowWithoutCreatingDirectory(t 
 	handler.app = app
 	projectPath := filepath.Join(t.TempDir(), "missing-form-project")
 
-	resp := app.handleWorkflowFormAgentViewSubmit(workflow.PhaseCodingRequirements, map[string]interface{}{
+	resp := app.handleWorkflowFormAgentViewSubmit(v2.PhaseCodingRequirements, map[string]interface{}{
 		workflowFormUserIDField:     userID,
 		workflowFormWorkflowIDField: state.ID,
 		"project_name":              "snake",
@@ -1523,9 +1522,9 @@ func TestWorkflowFormSubmitProjectPathUpdatesWorkflowWithoutCreatingDirectory(t 
 func TestWorkflowFormSubmitInvalidProjectPathRejectsBeforeFormMutation(t *testing.T) {
 	userID := "desktop-user:C:/Users/ma139"
 	registry := newPopulatedWorkflowRegistry()
-	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
-	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
-	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	understanding := v2.NewIntentUnderstandingManager(v2.NullStore{}, &mockLLMCallerGUI{}, registry)
+	engine := v2.NewWorkflowEngine(registry, understanding, v2.NullStore{}, &mockEngineCallbacksGUI{})
+	state, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -1542,7 +1541,7 @@ func TestWorkflowFormSubmitInvalidProjectPathRejectsBeforeFormMutation(t *testin
 	app.remoteSessions.SetHubClient(client)
 	handler.app = app
 
-	resp := app.handleWorkflowFormAgentViewSubmit(workflow.PhaseCodingRequirements, map[string]interface{}{
+	resp := app.handleWorkflowFormAgentViewSubmit(v2.PhaseCodingRequirements, map[string]interface{}{
 		workflowFormUserIDField:     userID,
 		workflowFormWorkflowIDField: state.ID,
 		"project_name":              "snake",
@@ -1563,9 +1562,9 @@ func TestWorkflowFormSubmitInvalidProjectPathRejectsBeforeFormMutation(t *testin
 func TestWorkflowFormSubmitRejectsHiddenPhaseMismatch(t *testing.T) {
 	userID := "desktop-user:C:/Users/ma139"
 	registry := newPopulatedWorkflowRegistry()
-	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
-	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
-	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	understanding := v2.NewIntentUnderstandingManager(v2.NullStore{}, &mockLLMCallerGUI{}, registry)
+	engine := v2.NewWorkflowEngine(registry, understanding, v2.NullStore{}, &mockEngineCallbacksGUI{})
+	state, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -1578,7 +1577,7 @@ func TestWorkflowFormSubmitRejectsHiddenPhaseMismatch(t *testing.T) {
 	app.remoteSessions.SetHubClient(client)
 	handler.app = app
 
-	resp := app.handleWorkflowFormAgentViewSubmit(workflow.PhaseCodingRequirements, map[string]interface{}{
+	resp := app.handleWorkflowFormAgentViewSubmit(v2.PhaseCodingRequirements, map[string]interface{}{
 		workflowFormPhaseField:      "stale_phase",
 		workflowFormUserIDField:     userID,
 		workflowFormWorkflowIDField: state.ID,
@@ -1593,9 +1592,9 @@ func TestWorkflowFormSubmitRejectsHiddenPhaseMismatch(t *testing.T) {
 }
 
 func TestWorkflowFormLifecyclePayloadWithFallbackPreservesSubmittedIdentity(t *testing.T) {
-	payload := workflowFormLifecyclePayloadWithFallback("wf-new", workflow.PhaseCodingRequirements, "desktop-user:C:/new", map[string]interface{}{
+	payload := workflowFormLifecyclePayloadWithFallback("wf-new", v2.PhaseCodingRequirements, "desktop-user:C:/new", map[string]interface{}{
 		workflowFormWorkflowIDField: "wf-old",
-		workflowFormPhaseField:      workflow.PhaseCodingRequirements,
+		workflowFormPhaseField:      v2.PhaseCodingRequirements,
 		workflowFormUserIDField:     "desktop-user:C:/old",
 	})
 	if payload["workflow_id"] != "wf-old" || payload["workflow_user_id"] != "desktop-user:C:/old" {
@@ -1606,10 +1605,10 @@ func TestWorkflowFormLifecyclePayloadWithFallbackPreservesSubmittedIdentity(t *t
 func TestWorkflowFormDismissDoesNotClearWhenSkipPersistenceFails(t *testing.T) {
 	userID := "desktop-user:C:/Users/ma139"
 	registry := newPopulatedWorkflowRegistry()
-	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
+	understanding := v2.NewIntentUnderstandingManager(v2.NullStore{}, &mockLLMCallerGUI{}, registry)
 	store := &failingWorkflowStateStoreGUI{}
-	engine := workflow.NewWorkflowEngine(registry, understanding, store, &mockEngineCallbacksGUI{})
-	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	engine := v2.NewWorkflowEngine(registry, understanding, store, &mockEngineCallbacksGUI{})
+	state, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -1624,10 +1623,10 @@ func TestWorkflowFormDismissDoesNotClearWhenSkipPersistenceFails(t *testing.T) {
 	handler.app = app
 	beforeSeq := app.agentViewSeq()
 
-	resp, err := app.DismissAgentView(AgentViewDismissPayload{ViewID: "workflow:form:" + workflow.PhaseCodingRequirements, Data: map[string]interface{}{
+	resp, err := app.DismissAgentView(AgentViewDismissPayload{ViewID: "workflow:form:" + v2.PhaseCodingRequirements, Data: map[string]interface{}{
 		workflowFormUserIDField:     userID,
 		workflowFormWorkflowIDField: state.ID,
-		workflowFormPhaseField:      workflow.PhaseCodingRequirements,
+		workflowFormPhaseField:      v2.PhaseCodingRequirements,
 	}})
 	if err == nil {
 		t.Fatalf("dismiss should surface skip persistence failure, resp=%#v", resp)
@@ -1644,22 +1643,22 @@ func TestSubmitWorkflowInputIfWaitingIMUsesTextFormGate(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-submit-input-form-gate-im"
-	workflowType := workflow.WorkflowType("gui_input_form_gate_im_test")
-	engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	workflowType := v2.WorkflowType("gui_input_form_gate_im_test")
+	engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
 		Type:          workflowType,
 		Name:          "gui input form gate im test",
 		Description:   "test template",
-		RequiresInput: &workflow.InputRequirement{Description: "source document", AcceptText: true},
-		Phases: []workflow.PhaseTemplate{{
+		RequiresInput: &v2.InputRequirement{Description: "source document", AcceptText: true},
+		Phases: []v2.V1PhaseTemplate{{
 			ID:          "collect_context",
 			Name:        "Collect Context",
 			Prompt:      "collect context",
 			Deliverable: "context document",
-			InputSchema: &workflow.PhaseInputSchema{Title: "Context", Fields: []workflow.PhaseInputField{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
-			ToolPolicy:  workflow.ToolFilterDocOnly,
+			InputSchema: &v2.V1PhaseInputSchema{Title: "Context", Fields: []v2.V1PhaseInputField{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
+			ToolPolicy:  v2.ToolFilterDocOnly,
 		}},
 	})
-	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "review source"})
+	_, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: workflowType, Summary: "review source"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -1680,7 +1679,7 @@ func TestResolveWorkflowFormUserIDUsesHiddenUserAfterLoopClearsLastUserID(t *tes
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "desktop-user:C:/Users/ma139"
-	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	state, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -1698,7 +1697,7 @@ func TestResolveWorkflowFormUserIDFallsBackToSingleActivePhase(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "desktop-user:C:/Users/ma139"
-	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	state, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -1715,11 +1714,11 @@ func TestResolveWorkflowFormUserIDDoesNotInheritCurrentRuntimeWhenAmbiguous(t *t
 	engine := handler.app.workflowEngine
 	userA := "desktop-user:C:/project-a"
 	userB := "desktop-user:C:/project-b"
-	stateA, err := engine.StartWorkflow(userA, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app a"})
+	stateA, err := engine.StartWorkflow(userA, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app a"})
 	if err != nil {
 		t.Fatalf("StartWorkflow A failed: %v", err)
 	}
-	if _, err := engine.StartWorkflow(userB, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app b"}); err != nil {
+	if _, err := engine.StartWorkflow(userB, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app b"}); err != nil {
 		t.Fatalf("StartWorkflow B failed: %v", err)
 	}
 	handler.currentLoopCtx = &LoopContext{Runtime: RuntimeContext{RequestID: "req-a", PolicyOwnerID: userA}}
@@ -1734,7 +1733,7 @@ func TestWorkflowFormMatchesActiveWorkflowRejectsStaleDismiss(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "desktop-user:C:/Users/ma139"
-	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	state, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -1760,11 +1759,11 @@ func TestWorkflowFormMatchesActiveWorkflowRejectsStaleDismiss(t *testing.T) {
 
 func TestWorkflowFormLifecyclePayloadFallsBackToServerContext(t *testing.T) {
 	userID := "desktop-user:C:/work"
-	payload := workflowFormLifecyclePayloadFor("wf-current", workflow.PhaseCodingRequirements, userID, map[string]interface{}{})
+	payload := workflowFormLifecyclePayloadFor("wf-current", v2.PhaseCodingRequirements, userID, map[string]interface{}{})
 	if payload["workflow_id"] != "wf-current" {
 		t.Fatalf("workflow_id = %#v", payload["workflow_id"])
 	}
-	if payload["workflow_phase"] != workflow.PhaseCodingRequirements {
+	if payload["workflow_phase"] != v2.PhaseCodingRequirements {
 		t.Fatalf("workflow_phase = %#v", payload["workflow_phase"])
 	}
 	if payload["workflow_user_id"] != userID {
@@ -1776,13 +1775,13 @@ func TestWorkflowFormLifecyclePayloadPreservesSubmittedContext(t *testing.T) {
 	userID := "desktop-user:C:/work"
 	payload := workflowFormLifecyclePayloadFor("", "", "", map[string]interface{}{
 		workflowFormWorkflowIDField: "wf-submitted",
-		workflowFormPhaseField:      workflow.PhaseCodingRequirements,
+		workflowFormPhaseField:      v2.PhaseCodingRequirements,
 		workflowFormUserIDField:     userID,
 	})
 	if payload["workflow_id"] != "wf-submitted" {
 		t.Fatalf("workflow_id = %#v", payload["workflow_id"])
 	}
-	if payload["workflow_phase"] != workflow.PhaseCodingRequirements {
+	if payload["workflow_phase"] != v2.PhaseCodingRequirements {
 		t.Fatalf("workflow_phase = %#v", payload["workflow_phase"])
 	}
 	if payload["workflow_user_id"] != userID {
@@ -1808,12 +1807,12 @@ func TestBuildFormSubmissionSummaryLocalizesChinese(t *testing.T) {
 }
 
 func TestWorkflowFormSchemaLocalizesBusinessPlanForChineseUI(t *testing.T) {
-	schema := &workflow.PhaseInputSchema{
+	schema := &v2.V1PhaseInputSchema{
 		Title:     "Business plan brief",
 		TitleI18N: map[string]string{"zh": "商业计划简报"},
-		Fields: []workflow.PhaseInputField{
+		Fields: []v2.V1PhaseInputField{
 			{Name: "project_name", Label: "Project or company name", LabelI18N: map[string]string{"zh": "项目或公司名称"}, Type: "text", Required: true, Placeholder: "Example: AI customer support SaaS platform"},
-			{Name: "target_audience", Label: "Target reader", Type: "select", Required: true, Options: []workflow.PhaseInputOption{{Label: "Investors (angel/VC/PE)", Value: "investor", LabelI18N: map[string]string{"zh": "投资人（天使/VC/PE）"}}}},
+			{Name: "target_audience", Label: "Target reader", Type: "select", Required: true, Options: []v2.V1PhaseInputOption{{Label: "Investors (angel/VC/PE)", Value: "investor", LabelI18N: map[string]string{"zh": "投资人（天使/VC/PE）"}}}},
 			{Name: "core_description", Label: "Project summary", Type: "textarea", Required: true, Placeholder: "In 2-3 sentences, explain what it does, what problem it solves, and who it serves.", PlaceholderI18N: map[string]string{"zh": "用 2-3 句话说明它做什么、解决什么问题、服务谁。"}},
 		},
 	}
@@ -1821,7 +1820,7 @@ func TestWorkflowFormSchemaLocalizesBusinessPlanForChineseUI(t *testing.T) {
 	if localized.Title != "商业计划简报" {
 		t.Fatalf("expected localized title, got %q", localized.Title)
 	}
-	fields := map[string]workflow.PhaseInputField{}
+	fields := map[string]v2.V1PhaseInputField{}
 	for _, field := range localized.Fields {
 		fields[field.Name] = field
 	}
@@ -1840,10 +1839,10 @@ func TestWorkflowFormSchemaLocalizesBusinessPlanForChineseUI(t *testing.T) {
 }
 
 func TestWorkflowFormSchemaLocalizesWithExplicitMetadataBeforeFallback(t *testing.T) {
-	schema := &workflow.PhaseInputSchema{
+	schema := &v2.V1PhaseInputSchema{
 		Title:     "Unknown English title",
 		TitleI18N: map[string]string{"zh": "显式标题"},
-		Fields: []workflow.PhaseInputField{{
+		Fields: []v2.V1PhaseInputField{{
 			Name:            "custom",
 			Label:           "Unknown English label",
 			LabelI18N:       map[string]string{"zh": "显式字段"},
@@ -1852,7 +1851,7 @@ func TestWorkflowFormSchemaLocalizesWithExplicitMetadataBeforeFallback(t *testin
 			DescriptionI18N: map[string]string{"zh": "显式说明"},
 			Placeholder:     "Unknown English placeholder",
 			PlaceholderI18N: map[string]string{"zh": "显式占位"},
-			Options:         []workflow.PhaseInputOption{{Label: "Unknown English option", Value: "x", LabelI18N: map[string]string{"zh": "显式选项"}}},
+			Options:         []v2.V1PhaseInputOption{{Label: "Unknown English option", Value: "x", LabelI18N: map[string]string{"zh": "显式选项"}}},
 		}},
 	}
 
@@ -1866,10 +1865,10 @@ func TestWorkflowFormSchemaLocalizesWithExplicitMetadataBeforeFallback(t *testin
 }
 
 func TestWorkflowFormSchemaAppliesExplicitEnglishMetadata(t *testing.T) {
-	schema := &workflow.PhaseInputSchema{
+	schema := &v2.V1PhaseInputSchema{
 		Title:     "Default title",
 		TitleI18N: map[string]string{"en": "English title", "en-US": "US title"},
-		Fields: []workflow.PhaseInputField{{
+		Fields: []v2.V1PhaseInputField{{
 			Name:            "custom",
 			Label:           "Default label",
 			LabelI18N:       map[string]string{"en": "English label"},
@@ -1878,7 +1877,7 @@ func TestWorkflowFormSchemaAppliesExplicitEnglishMetadata(t *testing.T) {
 			DescriptionI18N: map[string]string{"en": "English description"},
 			Placeholder:     "Default placeholder",
 			PlaceholderI18N: map[string]string{"en": "English placeholder"},
-			Options:         []workflow.PhaseInputOption{{Label: "Default option", Value: "x", LabelI18N: map[string]string{"en": "English option"}}},
+			Options:         []v2.V1PhaseInputOption{{Label: "Default option", Value: "x", LabelI18N: map[string]string{"en": "English option"}}},
 		}},
 	}
 
@@ -1889,7 +1888,7 @@ func TestWorkflowFormSchemaAppliesExplicitEnglishMetadata(t *testing.T) {
 }
 
 func TestWorkflowFormSchemaEmptyLangDefaultsChineseFallback(t *testing.T) {
-	schema := &workflow.PhaseInputSchema{Title: "Business plan brief"}
+	schema := &v2.V1PhaseInputSchema{Title: "Business plan brief"}
 	localized := localizeWorkflowPhaseInputSchema(schema, "")
 	if localized.Title != "商业计划简报" {
 		t.Fatalf("empty lang should use Chinese fallback, got %q", localized.Title)
@@ -1900,7 +1899,7 @@ func TestWorkflowInterceptionKeepsPendingWorkflowAgentLoopAgainstUICBypass(t *te
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-form-submit-loop"
-	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
 	if err := engine.SkipPhaseForm(userID); err != nil {
@@ -1927,7 +1926,7 @@ func TestWorkflowFormGateShortNonWorkflowBypassesFormLoop(t *testing.T) {
 	engine := handler.app.workflowEngine
 	userID := "test-form-short-nonworkflow"
 	handler.workflowAgentLoopMarker.Store(userID, true)
-	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
 
@@ -1947,7 +1946,7 @@ func TestWorkflowFormGateDirectRunSkipsFormAndStartsLoop(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-form-direct-run"
-	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
 
@@ -1968,7 +1967,7 @@ func TestWorkflowFormGateCancelCancelsWorkflow(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-form-cancel"
-	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
 
@@ -1985,8 +1984,8 @@ func TestCaptureWorkflowDocAfterAgentLoopAutoAdvancesNonConfirmPhase(t *testing.
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-auto-advance-capture"
-	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowCoding,
+	_, err := engine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
 		Summary:  "build a desktop app",
 	})
 	if err != nil {
@@ -1998,14 +1997,14 @@ func TestCaptureWorkflowDocAfterAgentLoopAutoAdvancesNonConfirmPhase(t *testing.
 		}
 	}
 	engineState := engine.GetActiveWorkflow(userID)
-	if engineState == nil || engineState.CurrentPhase != workflow.PhaseCodingImplementation {
+	if engineState == nil || engineState.CurrentPhase != v2.PhaseCodingImplementation {
 		t.Fatalf("expected implementation phase before capture, got %#v", engineState)
 	}
 
 	handler.captureWorkflowDocAfterAgentLoop(IMUserMessage{UserID: userID}, nil, &IMAgentResponse{Text: reviewStateValidContentGUI()}, true)
 
 	ws := engine.GetActiveWorkflow(userID)
-	if ws == nil || ws.CurrentPhase != workflow.PhaseCodingReview {
+	if ws == nil || ws.CurrentPhase != v2.PhaseCodingReview {
 		t.Fatalf("non-confirm phase should auto-advance to review, got %#v", ws)
 	}
 	if _, ok := handler.workflowAgentLoopMarker.Load(userID); !ok {
@@ -2021,10 +2020,10 @@ func TestCaptureWorkflowDocAfterAgentLoopUsesRuntimePolicyOwner(t *testing.T) {
 	engine := handler.app.workflowEngine
 	desktopID := "desktop-post-loop-capture-owner"
 	remoteOwnerID := "remote:mobile-post-loop-capture-owner"
-	if _, err := engine.StartWorkflow(desktopID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "desktop build"}); err != nil {
+	if _, err := engine.StartWorkflow(desktopID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "desktop build"}); err != nil {
 		t.Fatalf("StartWorkflow desktop failed: %v", err)
 	}
-	if _, err := engine.StartWorkflow(remoteOwnerID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "remote build"}); err != nil {
+	if _, err := engine.StartWorkflow(remoteOwnerID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "remote build"}); err != nil {
 		t.Fatalf("StartWorkflow remote failed: %v", err)
 	}
 	for i := 0; i < 3; i++ {
@@ -2037,11 +2036,11 @@ func TestCaptureWorkflowDocAfterAgentLoopUsesRuntimePolicyOwner(t *testing.T) {
 	handler.captureWorkflowDocAfterAgentLoop(IMUserMessage{UserID: desktopID}, ctx, &IMAgentResponse{Text: reviewStateValidContentGUI()}, true)
 
 	remoteWS := engine.GetActiveWorkflow(remoteOwnerID)
-	if remoteWS == nil || remoteWS.CurrentPhase != workflow.PhaseCodingReview {
+	if remoteWS == nil || remoteWS.CurrentPhase != v2.PhaseCodingReview {
 		t.Fatalf("remote owner workflow should capture and advance, got %#v", remoteWS)
 	}
 	desktopWS := engine.GetActiveWorkflow(desktopID)
-	if desktopWS == nil || desktopWS.PhaseOutputs[workflow.PhaseCodingRequirements] != "" {
+	if desktopWS == nil || desktopWS.PhaseOutputs[v2.PhaseCodingRequirements] != "" {
 		t.Fatalf("desktop workflow must not receive runtime-owned capture, got %#v", desktopWS)
 	}
 	if _, ok := handler.workflowReviewExperienceContext.Load(remoteOwnerID); !ok {
@@ -2115,8 +2114,8 @@ func TestWorkflowReviewConfirmInvalidCodingTaskBreakdownRegenerates(t *testing.T
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-invalid-task-breakdown-confirm"
-	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowCoding,
+	_, err := engine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
 		Summary:  "build a desktop game",
 	})
 	if err != nil {
@@ -2131,16 +2130,16 @@ func TestWorkflowReviewConfirmInvalidCodingTaskBreakdownRegenerates(t *testing.T
 		"## Project structure\n\nThe project contains CMakeLists.txt, src/main.cpp, src/Game.cpp, and assets.\n\n" +
 		"## Features\n\n- Movement is implemented.\n- Collision is implemented.\n- Audio is implemented.\n\n" +
 		"## Build\n\nRun cmake and build the executable. This is intentionally a completion report, not a T-numbered task list."
-	if phaseID, err := engine.SavePhaseOutput(userID, invalidBreakdown); err != nil || phaseID != workflow.PhaseCodingTaskBreakdown {
+	if phaseID, err := engine.SavePhaseOutput(userID, invalidBreakdown); err != nil || phaseID != v2.PhaseCodingTaskBreakdown {
 		t.Fatalf("SavePhaseOutput phase=%q err=%v", phaseID, err)
 	}
 
-	resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "继续", "desktop")
+	resp := handler.applyWorkflowReviewIntent(engine, userID, v2.ReviewIntentConfirm, "继续", "desktop")
 	if resp != nil {
 		t.Fatalf("invalid task breakdown confirm should trigger regeneration loop, got immediate response %#v", resp)
 	}
 	ws := engine.GetActiveWorkflow(userID)
-	if ws == nil || ws.CurrentPhase != workflow.PhaseCodingTaskBreakdown || ws.PendingReviewPhaseID != workflow.PhaseCodingTaskBreakdown || !ws.PendingReviewRevisionRequested {
+	if ws == nil || ws.CurrentPhase != v2.PhaseCodingTaskBreakdown || ws.PendingReviewPhaseID != v2.PhaseCodingTaskBreakdown || !ws.PendingReviewRevisionRequested {
 		t.Fatalf("invalid task breakdown should stay pending regeneration, got %#v", ws)
 	}
 	if _, ok := handler.workflowAgentLoopMarker.Load(userID); !ok {
@@ -2159,19 +2158,19 @@ func TestWorkflowReviewFastConfirmBypassesPendingUserReply(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(llm)
 	engine := handler.app.workflowEngine
 	userID := "test-review-pending-reply-priority"
-	workflowType := workflow.WorkflowType("gui_review_pending_reply_priority")
-	if err := engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	workflowType := v2.WorkflowType("gui_review_pending_reply_priority")
+	if err := engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "review pending reply priority",
 		Description: "test template",
-		Phases: []workflow.PhaseTemplate{
-			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
-			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: workflow.ToolFilterFull, Kind: workflow.PhaseKindExecution, MutationScope: workflow.MutationScopeProject},
+		Phases: []v2.V1PhaseTemplate{
+			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: v2.ToolFilterFull, Kind: v2.PhaseKindExecution, MutationScope: v2.MutationScopeProject},
 		},
 	}); err != nil {
 		t.Fatalf("Register workflow template: %v", err)
 	}
-	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
+	_, err := engine.StartWorkflow(userID, v2.StructuredIntent{
 		Category: workflowType,
 		Summary:  "build a desktop game",
 	})
@@ -2215,19 +2214,19 @@ func TestWorkflowReviewOkBypassesShortChitChatAndAdvances(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(llm)
 	engine := handler.app.workflowEngine
 	userID := "test-review-ok-not-short-chitchat"
-	workflowType := workflow.WorkflowType("gui_review_ok_not_short_chitchat")
-	if err := engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	workflowType := v2.WorkflowType("gui_review_ok_not_short_chitchat")
+	if err := engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "review ok not short chitchat",
 		Description: "test template",
-		Phases: []workflow.PhaseTemplate{
-			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
-			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: workflow.ToolFilterFull, Kind: workflow.PhaseKindExecution, MutationScope: workflow.MutationScopeProject},
+		Phases: []v2.V1PhaseTemplate{
+			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: v2.ToolFilterFull, Kind: v2.PhaseKindExecution, MutationScope: v2.MutationScopeProject},
 		},
 	}); err != nil {
 		t.Fatalf("Register workflow template: %v", err)
 	}
-	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{
 		Category: workflowType,
 		Summary:  "build a desktop game",
 	}); err != nil {
@@ -2263,19 +2262,19 @@ func TestWorkflowReviewExecutionRequestDoesNotStartAgentLoop(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(llm)
 	engine := handler.app.workflowEngine
 	userID := "test-review-execution-request-blocked"
-	workflowType := workflow.WorkflowType("gui_review_execution_request_blocked")
-	if err := engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	workflowType := v2.WorkflowType("gui_review_execution_request_blocked")
+	if err := engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "review execution request blocked",
 		Description: "test template",
-		Phases: []workflow.PhaseTemplate{
-			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
-			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: workflow.ToolFilterFull, Kind: workflow.PhaseKindExecution, MutationScope: workflow.MutationScopeProject},
+		Phases: []v2.V1PhaseTemplate{
+			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: v2.ToolFilterFull, Kind: v2.PhaseKindExecution, MutationScope: v2.MutationScopeProject},
 		},
 	}); err != nil {
 		t.Fatalf("Register workflow template: %v", err)
 	}
-	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "build a desktop game"})
+	_, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: workflowType, Summary: "build a desktop game"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -2315,19 +2314,19 @@ func TestWorkflowReviewExecutionBlockedResponseUsesConfiguredLanguage(t *testing
 	handler.app.CurrentLanguage = "en"
 	engine := handler.app.workflowEngine
 	userID := "test-review-execution-blocked-lang"
-	workflowType := workflow.WorkflowType("gui_review_execution_blocked_lang")
-	if err := engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	workflowType := v2.WorkflowType("gui_review_execution_blocked_lang")
+	if err := engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "review execution blocked language",
 		Description: "test template",
-		Phases: []workflow.PhaseTemplate{
-			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
-			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: workflow.ToolFilterFull, Kind: workflow.PhaseKindExecution, MutationScope: workflow.MutationScopeProject},
+		Phases: []v2.V1PhaseTemplate{
+			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: v2.ToolFilterFull, Kind: v2.PhaseKindExecution, MutationScope: v2.MutationScopeProject},
 		},
 	}); err != nil {
 		t.Fatalf("Register workflow template: %v", err)
 	}
-	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "build"}); err != nil {
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: workflowType, Summary: "build"}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
 	if phaseID, _, err := engine.SavePhaseOutputAndMaybeAdvance(userID, reviewStateValidContentGUI()); err != nil || phaseID != "plan" {
@@ -2346,17 +2345,17 @@ func TestWorkflowReviewExecutionBlockedResponseUsesConfiguredLanguage(t *testing
 func TestDetectWorkflowReviewIntentFast(t *testing.T) {
 	for _, text := range []string{"\u786e\u8ba4", "\u786e\u5b9a", "\u786e\u5b9a\u7ee7\u7eed", "\u7ee7\u7eed", "\u5f00\u5de5", "\u597d\u7684", "\u5408\u7406\uff0c\u7ee7\u7eed", "\u5f00\u59cb\u7f16\u7801", "\u5f00\u59cb\u7f16\u7801\u5427", "\u786e\u8ba4\u5f00\u59cb\u5b9e\u73b0", "\u786e\u5b9a\u5f00\u59cb\u5b9e\u73b0"} {
 		got, ok := detectWorkflowReviewIntentFast(text)
-		if !ok || got != workflow.ReviewIntentConfirm {
+		if !ok || got != v2.ReviewIntentConfirm {
 			t.Fatalf("detectWorkflowReviewIntentFast(%q)=(%q,%v), want confirm,true", text, got, ok)
 		}
 	}
 	for _, text := range []string{"开工", "继续", "继续推进", "OK", "go ahead", "start"} {
 		got, ok := detectWorkflowReviewIntentFast(text)
-		if !ok || got != workflow.ReviewIntentConfirm {
+		if !ok || got != v2.ReviewIntentConfirm {
 			t.Fatalf("detectWorkflowReviewIntentFast(%q)=(%q,%v), want confirm,true", text, got, ok)
 		}
 	}
-	if got, ok := detectWorkflowReviewIntentFast("你直接创建一个"); ok || got != workflow.ReviewIntentOther {
+	if got, ok := detectWorkflowReviewIntentFast("你直接创建一个"); ok || got != v2.ReviewIntentOther {
 		t.Fatalf("specific file operation should not be fast-confirmed, got (%q,%v)", got, ok)
 	}
 	if !detectWorkflowReviewBlockedExecutionIntent("你直接创建一个") || !detectWorkflowReviewBlockedExecutionIntent("创建目录 d:\\workprj\\snake5") {
@@ -2371,32 +2370,32 @@ func TestCodingWorkflowTaskBreakdownConfirmStartsImplementationWithCodingSubAgen
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-coding-task-breakdown-confirm-starts-implementation"
-	_, err := engine.StartWorkflowWithOptions(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowCoding,
+	_, err := engine.StartWorkflowWithOptions(userID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
 		Summary:  "build a desktop game",
 		Goals:    []string{"build a desktop game"},
-	}, workflow.WorkflowStartOptions{ProjectPath: t.TempDir()})
+	}, v2.WorkflowStartOptions{ProjectPath: t.TempDir()})
 	if err != nil {
 		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
 	}
 	if err := engine.SkipPhaseForm(userID); err != nil {
 		t.Fatalf("SkipPhaseForm failed: %v", err)
 	}
-	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("requirements")); err != nil || phaseID != workflow.PhaseCodingRequirements {
+	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("requirements")); err != nil || phaseID != v2.PhaseCodingRequirements {
 		t.Fatalf("SavePhaseOutput requirements phase=%q err=%v", phaseID, err)
 	}
-	if resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
+	if resp := handler.applyWorkflowReviewIntent(engine, userID, v2.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
 		t.Fatalf("requirements confirm should schedule next phase loop without immediate response, got %#v", resp)
 	}
 	handler.workflowAgentLoopMarker.Delete(userID)
-	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("tech_design")); err != nil || phaseID != workflow.PhaseCodingTechDesign {
+	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("tech_design")); err != nil || phaseID != v2.PhaseCodingTechDesign {
 		t.Fatalf("SavePhaseOutput tech_design phase=%q err=%v", phaseID, err)
 	}
-	if resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
+	if resp := handler.applyWorkflowReviewIntent(engine, userID, v2.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
 		t.Fatalf("tech design confirm should schedule next phase loop without immediate response, got %#v", resp)
 	}
 	handler.workflowAgentLoopMarker.Delete(userID)
-	if phaseID, err := engine.SavePhaseOutput(userID, executableCodingBreakdown); err != nil || phaseID != workflow.PhaseCodingTaskBreakdown {
+	if phaseID, err := engine.SavePhaseOutput(userID, executableCodingBreakdown); err != nil || phaseID != v2.PhaseCodingTaskBreakdown {
 		t.Fatalf("SavePhaseOutput task_breakdown phase=%q err=%v", phaseID, err)
 	}
 	if !engine.IsAwaitingReview(userID) {
@@ -2422,7 +2421,7 @@ func TestCodingWorkflowTaskBreakdownConfirmStartsImplementationWithCodingSubAgen
 		t.Fatalf("task breakdown confirmation should start implementation agent loop, got %#v", result)
 	}
 	ws := engine.GetActiveWorkflow(userID)
-	if ws == nil || ws.CurrentPhase != workflow.PhaseCodingImplementation || engine.IsAwaitingReview(userID) {
+	if ws == nil || ws.CurrentPhase != v2.PhaseCodingImplementation || engine.IsAwaitingReview(userID) {
 		t.Fatalf("workflow should advance to implementation after task breakdown confirm, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))
 	}
 	stashedPromptValue, ok := handler.stashedPhasePrompt.Load(userID)
@@ -2448,8 +2447,8 @@ func TestCodingWorkflowTaskBreakdownConfirmStartsImplementationWithCodingSubAgen
 			t.Fatalf("implementation workflow loop must not expose local coding tool %s to main agent, got %#v", name, names)
 		}
 	}
-	if toolSet.WorkflowDecision != workflowToolFilterDecision(workflow.ToolFilterFull) {
-		t.Fatalf("workflow decision = %q, want %q", toolSet.WorkflowDecision, workflow.ToolFilterFull)
+	if toolSet.WorkflowDecision != workflowToolFilterDecision(v2.ToolFilterFull) {
+		t.Fatalf("workflow decision = %q, want %q", toolSet.WorkflowDecision, v2.ToolFilterFull)
 	}
 	if !handler.isWorkflowToolAllowedForOwner(userID, "delegate_task") {
 		t.Fatal("implementation workflow execution gate must allow delegate_task(coding_workflow)")
@@ -2500,32 +2499,32 @@ func TestCodingWorkflowTaskBreakdownContinuePushStartsImplementation(t *testing.
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-coding-task-breakdown-continue-push-starts-implementation"
-	_, err := engine.StartWorkflowWithOptions(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowCoding,
+	_, err := engine.StartWorkflowWithOptions(userID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
 		Summary:  "build a desktop game",
 		Goals:    []string{"build a desktop game"},
-	}, workflow.WorkflowStartOptions{ProjectPath: t.TempDir()})
+	}, v2.WorkflowStartOptions{ProjectPath: t.TempDir()})
 	if err != nil {
 		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
 	}
 	if err := engine.SkipPhaseForm(userID); err != nil {
 		t.Fatalf("SkipPhaseForm failed: %v", err)
 	}
-	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("requirements")); err != nil || phaseID != workflow.PhaseCodingRequirements {
+	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("requirements")); err != nil || phaseID != v2.PhaseCodingRequirements {
 		t.Fatalf("SavePhaseOutput requirements phase=%q err=%v", phaseID, err)
 	}
-	if resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
+	if resp := handler.applyWorkflowReviewIntent(engine, userID, v2.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
 		t.Fatalf("requirements confirm should schedule next phase loop without immediate response, got %#v", resp)
 	}
 	handler.workflowAgentLoopMarker.Delete(userID)
-	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("tech_design")); err != nil || phaseID != workflow.PhaseCodingTechDesign {
+	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("tech_design")); err != nil || phaseID != v2.PhaseCodingTechDesign {
 		t.Fatalf("SavePhaseOutput tech_design phase=%q err=%v", phaseID, err)
 	}
-	if resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
+	if resp := handler.applyWorkflowReviewIntent(engine, userID, v2.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
 		t.Fatalf("tech design confirm should schedule next phase loop without immediate response, got %#v", resp)
 	}
 	handler.workflowAgentLoopMarker.Delete(userID)
-	if phaseID, err := engine.SavePhaseOutput(userID, executableCodingBreakdown); err != nil || phaseID != workflow.PhaseCodingTaskBreakdown {
+	if phaseID, err := engine.SavePhaseOutput(userID, executableCodingBreakdown); err != nil || phaseID != v2.PhaseCodingTaskBreakdown {
 		t.Fatalf("SavePhaseOutput task_breakdown phase=%q err=%v", phaseID, err)
 	}
 
@@ -2538,7 +2537,7 @@ func TestCodingWorkflowTaskBreakdownContinuePushStartsImplementation(t *testing.
 		t.Fatalf("continue-push should confirm task breakdown and start implementation loop, got %#v", result)
 	}
 	ws := engine.GetActiveWorkflow(userID)
-	if ws == nil || ws.CurrentPhase != workflow.PhaseCodingImplementation || engine.IsAwaitingReview(userID) {
+	if ws == nil || ws.CurrentPhase != v2.PhaseCodingImplementation || engine.IsAwaitingReview(userID) {
 		t.Fatalf("workflow should advance to implementation after continue-push, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))
 	}
 }
@@ -2565,7 +2564,7 @@ func TestCodingWorkflowTaskBreakdownImplementationRequestStartsImplementation(t 
 				t.Fatalf("phase-aware implementation advance should bypass LLM classifier, calls=%d", llm.Calls)
 			}
 			ws := engine.GetActiveWorkflow("test-coding-task-breakdown-advance-" + sanitizeTestNameForWorkflow(text))
-			if ws == nil || ws.CurrentPhase != workflow.PhaseCodingImplementation || engine.IsAwaitingReview(ws.UserID) {
+			if ws == nil || ws.CurrentPhase != v2.PhaseCodingImplementation || engine.IsAwaitingReview(ws.UserID) {
 				t.Fatalf("workflow should advance to implementation, got %#v awaiting=%v", ws, engine.IsAwaitingReview(ws.UserID))
 			}
 			prompt, ok := handler.stashedPhasePrompt.Load(ws.UserID)
@@ -2581,40 +2580,40 @@ func TestCodingWorkflowTaskBreakdownDocumentFeedbackDoesNotFastAdvance(t *testin
 	userID := "test-coding-task-breakdown-cmake-feedback"
 	engine := prepareCodingTaskBreakdownReviewForGUI(t, handler, userID)
 
-	if intent, ok := detectCodingTaskBreakdownReviewAdvanceIntent(engine, userID, "CMakeLists.txt \u7684\u4efb\u52a1\u62c6\u5f97\u592a\u7c97"); ok || intent != workflow.ReviewIntentOther {
+	if intent, ok := detectCodingTaskBreakdownReviewAdvanceIntent(engine, userID, "CMakeLists.txt \u7684\u4efb\u52a1\u62c6\u5f97\u592a\u7c97"); ok || intent != v2.ReviewIntentOther {
 		t.Fatalf("document/task feedback should not fast-advance to implementation, got (%q,%v)", intent, ok)
 	}
 }
 
-func prepareCodingTaskBreakdownReviewForGUI(t *testing.T, handler *IMMessageHandler, userID string) *workflow.WorkflowEngine {
+func prepareCodingTaskBreakdownReviewForGUI(t *testing.T, handler *IMMessageHandler, userID string) *v2.WorkflowEngine {
 	t.Helper()
 	engine := handler.app.workflowEngine
-	_, err := engine.StartWorkflowWithOptions(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowCoding,
+	_, err := engine.StartWorkflowWithOptions(userID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
 		Summary:  "build a desktop game",
 		Goals:    []string{"build a desktop game"},
-	}, workflow.WorkflowStartOptions{ProjectPath: t.TempDir()})
+	}, v2.WorkflowStartOptions{ProjectPath: t.TempDir()})
 	if err != nil {
 		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
 	}
 	if err := engine.SkipPhaseForm(userID); err != nil {
 		t.Fatalf("SkipPhaseForm failed: %v", err)
 	}
-	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("requirements")); err != nil || phaseID != workflow.PhaseCodingRequirements {
+	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("requirements")); err != nil || phaseID != v2.PhaseCodingRequirements {
 		t.Fatalf("SavePhaseOutput requirements phase=%q err=%v", phaseID, err)
 	}
-	if resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
+	if resp := handler.applyWorkflowReviewIntent(engine, userID, v2.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
 		t.Fatalf("requirements confirm should schedule next phase loop without immediate response, got %#v", resp)
 	}
 	handler.workflowAgentLoopMarker.Delete(userID)
-	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("tech_design")); err != nil || phaseID != workflow.PhaseCodingTechDesign {
+	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("tech_design")); err != nil || phaseID != v2.PhaseCodingTechDesign {
 		t.Fatalf("SavePhaseOutput tech_design phase=%q err=%v", phaseID, err)
 	}
-	if resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
+	if resp := handler.applyWorkflowReviewIntent(engine, userID, v2.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
 		t.Fatalf("tech design confirm should schedule next phase loop without immediate response, got %#v", resp)
 	}
 	handler.workflowAgentLoopMarker.Delete(userID)
-	if phaseID, err := engine.SavePhaseOutput(userID, executableCodingBreakdown); err != nil || phaseID != workflow.PhaseCodingTaskBreakdown {
+	if phaseID, err := engine.SavePhaseOutput(userID, executableCodingBreakdown); err != nil || phaseID != v2.PhaseCodingTaskBreakdown {
 		t.Fatalf("SavePhaseOutput task_breakdown phase=%q err=%v", phaseID, err)
 	}
 	if !engine.IsAwaitingReview(userID) {
@@ -2636,8 +2635,8 @@ func TestCaptureWorkflowDocRejectsInvalidCodingTaskBreakdown(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-invalid-task-breakdown-capture"
-	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
-		Category: workflow.WorkflowCoding,
+	_, err := engine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
 		Summary:  "build a desktop game",
 	})
 	if err != nil {
@@ -2659,10 +2658,10 @@ func TestCaptureWorkflowDocRejectsInvalidCodingTaskBreakdown(t *testing.T) {
 	if ws == nil {
 		t.Fatal("workflow should remain active")
 	}
-	if ws.PhaseOutputs[workflow.PhaseCodingTaskBreakdown] != "" {
-		t.Fatalf("invalid task breakdown should not be saved, got output=%q", ws.PhaseOutputs[workflow.PhaseCodingTaskBreakdown])
+	if ws.PhaseOutputs[v2.PhaseCodingTaskBreakdown] != "" {
+		t.Fatalf("invalid task breakdown should not be saved, got output=%q", ws.PhaseOutputs[v2.PhaseCodingTaskBreakdown])
 	}
-	if ws.CurrentPhase != workflow.PhaseCodingTaskBreakdown || ws.PendingReviewPhaseID != workflow.PhaseCodingTaskBreakdown || !ws.PendingReviewRevisionRequested {
+	if ws.CurrentPhase != v2.PhaseCodingTaskBreakdown || ws.PendingReviewPhaseID != v2.PhaseCodingTaskBreakdown || !ws.PendingReviewRevisionRequested {
 		t.Fatalf("invalid task breakdown should reopen repair loop on same phase, got %#v", ws)
 	}
 	if _, ok := handler.workflowAgentLoopMarker.Load(userID); !ok {
@@ -2681,24 +2680,24 @@ func TestWorkflowReviewAdvanceIMUsesTextFormGate(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-review-advance-im-form"
-	workflowType := workflow.WorkflowType("gui_review_form_gate_im_test")
-	engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+	workflowType := v2.WorkflowType("gui_review_form_gate_im_test")
+	engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
 		Type:        workflowType,
 		Name:        "gui review form gate im test",
 		Description: "test template",
-		Phases: []workflow.PhaseTemplate{
-			{ID: "reviewed", Name: "Reviewed", Prompt: "make reviewed output", Deliverable: "reviewed output", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+		Phases: []v2.V1PhaseTemplate{
+			{ID: "reviewed", Name: "Reviewed", Prompt: "make reviewed output", Deliverable: "reviewed output", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{
 				ID:          "collect_more",
 				Name:        "Collect More",
 				Prompt:      "collect more",
 				Deliverable: "more context",
-				InputSchema: &workflow.PhaseInputSchema{Title: "More", Fields: []workflow.PhaseInputField{{Name: "scope", Label: "Scope", Type: "text", Required: true}}},
-				ToolPolicy:  workflow.ToolFilterDocOnly,
+				InputSchema: &v2.V1PhaseInputSchema{Title: "More", Fields: []v2.V1PhaseInputField{{Name: "scope", Label: "Scope", Type: "text", Required: true}}},
+				ToolPolicy:  v2.ToolFilterDocOnly,
 			},
 		},
 	})
-	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "test"})
+	_, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: workflowType, Summary: "test"})
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -2706,7 +2705,7 @@ func TestWorkflowReviewAdvanceIMUsesTextFormGate(t *testing.T) {
 		t.Fatalf("saved phase=%q err=%v", phaseID, err)
 	}
 
-	resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "确认", "weixin")
+	resp := handler.applyWorkflowReviewIntent(engine, userID, v2.ReviewIntentConfirm, "确认", "weixin")
 	if resp == nil || strings.Contains(resp.Text, "right-side panel") || !strings.Contains(resp.Text, "1.") {
 		t.Fatalf("IM review advance should return numbered text form guidance, got %#v", resp)
 	}
@@ -2719,8 +2718,8 @@ func TestWorkflowConfirmation_IMChannelUsesTextFormGuidance(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-confirm-start-im"
-	item := buildPendingWorkflowConfirmation(userID, "build a project", workflow.StructuredIntent{
-		Category:   workflow.WorkflowCoding,
+	item := buildPendingWorkflowConfirmation(userID, "build a project", v2.StructuredIntent{
+		Category:   v2.WorkflowCoding,
 		Summary:    "build a project",
 		Goals:      []string{"build a project"},
 		Confidence: 0.9,
@@ -2750,8 +2749,8 @@ func TestWorkflowConfirmation_IMChannelUsesTextFormGuidance(t *testing.T) {
 func TestWorkflowConfirmation_IMChannelGuidanceThenTextStartsPhaseLoop(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "test-confirm-start-im-next"
-	item := buildPendingWorkflowConfirmation(userID, "build a project", workflow.StructuredIntent{
-		Category:   workflow.WorkflowCoding,
+	item := buildPendingWorkflowConfirmation(userID, "build a project", v2.StructuredIntent{
+		Category:   v2.WorkflowCoding,
 		Summary:    "build a project",
 		Goals:      []string{"build a project"},
 		Confidence: 0.9,

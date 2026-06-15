@@ -1,6 +1,6 @@
 package main
 
-import "github.com/RapidAI/CodeClaw/corelib/workflow"
+import workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 
 // frontendWorkflowState is the workflow state shape emitted to the frontend on
 // the workflow:phase_update event. It embeds the canonicalized engine state and
@@ -11,7 +11,7 @@ import "github.com/RapidAI/CodeClaw/corelib/workflow"
 // is unavailable, the field is absent and the dashboard degrades to its fallback
 // maps.
 type frontendWorkflowState struct {
-	*workflow.WorkflowState
+	*workflow.V1WorkflowState
 	Phases []workflow.PhaseMeta `json:"phases,omitempty"`
 }
 
@@ -22,11 +22,11 @@ func canonicalWorkflowPhaseID(phaseID string) string {
 	return phaseID
 }
 
-func normalizeWorkflowStateForFrontend(state *workflow.WorkflowState) *frontendWorkflowState {
+func normalizeWorkflowStateForFrontend(state *workflow.V1WorkflowState) *frontendWorkflowState {
 	return normalizeWorkflowStateForFrontendWithRegistry(state, nil)
 }
 
-func normalizeWorkflowStateForFrontendWithRegistry(state *workflow.WorkflowState, registry *workflow.WorkflowRegistry) *frontendWorkflowState {
+func normalizeWorkflowStateForFrontendWithRegistry(state *workflow.V1WorkflowState, registry *workflow.WorkflowRegistry) *frontendWorkflowState {
 	if state == nil {
 		return nil
 	}
@@ -44,8 +44,8 @@ func normalizeWorkflowStateForFrontendWithRegistry(state *workflow.WorkflowState
 		phases = workflow.PhaseMetadata(registry.Match(state.Type))
 	}
 	return &frontendWorkflowState{
-		WorkflowState: &cp,
-		Phases:        phases,
+		V1WorkflowState: &cp,
+		Phases:          phases,
 	}
 }
 

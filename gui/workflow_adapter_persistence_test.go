@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 // newTestAdapter creates a minimal GUIWorkflowAdapter for testing with the

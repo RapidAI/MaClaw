@@ -2,11 +2,11 @@ package v2
 
 // types_compat.go — V1 → V2 type compatibility layer.
 //
-// This file re-exports V1 workflow types under V2 so that consumers can
-// migrate their import path from "corelib/workflow" to "corelib/workflow/v2"
-// without changing any type references. Once all consumers are migrated and
-// the V1 package (corelib/workflow/types.go + engine_compat.go) is deleted,
-// these become the canonical definitions.
+// This file provides type aliases and bridge functions that were originally
+// defined in the V1 package (corelib/workflow/types.go). They now live here
+// as canonical definitions, allowing consumers to use V1 type names (e.g.
+// V1WorkflowState, V1WorkflowTemplate) without import path changes.
+// The "V1" prefix distinguishes them from V2's native types where conflicts exist.
 
 import (
 	"fmt"
@@ -289,11 +289,13 @@ func toolDefinitionName(def map[string]interface{}) string {
 
 // OpsApprovedCommand is an entry in a risk-policy approved commands manifest.
 type OpsApprovedCommand struct {
-	Tool    string                 `json:"tool"`
-	Action  string                 `json:"action,omitempty"`
-	Target  string                 `json:"target,omitempty"`
-	Command string                 `json:"command,omitempty"`
-	Args    map[string]interface{} `json:"args,omitempty"`
+	Tool                string                 `json:"tool"`
+	Action              string                 `json:"action,omitempty"`
+	Target              string                 `json:"target,omitempty"`
+	Command             string                 `json:"command,omitempty"`
+	Args                map[string]interface{} `json:"args,omitempty"`
+	RiskLevel           OpsRiskLevel           `json:"risk_level,omitempty"`
+	ApprovalRequirement OpsApprovalRequirement `json:"approval_requirement,omitempty"`
 }
 
 func opsCommandDescriptor(name string, args map[string]interface{}) string {
@@ -574,21 +576,6 @@ func (V1NullStore) LoadWorkflowState(_ string) (*V1WorkflowState, error)        
 func (V1NullStore) DeleteWorkflowState(_ string) error                               { return nil }
 func (V1NullStore) ListActiveWorkflows() ([]*V1WorkflowState, error)                 { return nil, nil }
 func (V1NullStore) CleanupExpired(_ time.Duration) error                             { return nil }
-
-// V1SQLiteStore implements V1 PersistenceStore using SQLite (stubbed for V1 compat).
-type V1SQLiteStore struct{}
-
-func NewV1SQLiteStore(_ string) (*V1SQLiteStore, error) { return &V1SQLiteStore{}, nil }
-
-func (s *V1SQLiteStore) Close() error                                                    { return nil }
-func (s *V1SQLiteStore) SaveUnderstandingSession(_ *UnderstandingSession) error           { return nil }
-func (s *V1SQLiteStore) LoadUnderstandingSession(_ string) (*UnderstandingSession, error) { return nil, nil }
-func (s *V1SQLiteStore) DeleteUnderstandingSession(_ string) error                        { return nil }
-func (s *V1SQLiteStore) SaveWorkflowState(_ *V1WorkflowState) error                      { return nil }
-func (s *V1SQLiteStore) LoadWorkflowState(_ string) (*V1WorkflowState, error)             { return nil, nil }
-func (s *V1SQLiteStore) DeleteWorkflowState(_ string) error                               { return nil }
-func (s *V1SQLiteStore) ListActiveWorkflows() ([]*V1WorkflowState, error)                 { return nil, nil }
-func (s *V1SQLiteStore) CleanupExpired(_ time.Duration) error                             { return nil }
 
 // ---------------------------------------------------------------------------
 // V1WorkflowState — the V1 runtime state (distinct from v2.WorkflowState)

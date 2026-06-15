@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 	"pgregory.net/rapid"
 )
 
@@ -120,7 +120,7 @@ type emittedState struct {
 // the values derived from the backend template (single source of truth).
 func TestAdapterEmittedJSONShapeWithRegistry(t *testing.T) {
 	registry := newPopulatedWorkflowRegistry()
-	state := &workflow.WorkflowState{
+	state := &workflow.V1WorkflowState{
 		Type:         workflow.WorkflowCoding,
 		CurrentPhase: "tech_design",
 	}
@@ -195,7 +195,7 @@ func TestAdapterEmittedJSONShapeWithRegistry(t *testing.T) {
 // registry, the `phases` field is omitted from the emitted JSON entirely (via
 // omitempty) so the dashboard degrades to its hardcoded fallback maps.
 func TestAdapterEmittedJSONOmitsPhasesWithNilRegistry(t *testing.T) {
-	state := &workflow.WorkflowState{
+	state := &workflow.V1WorkflowState{
 		Type:         workflow.WorkflowCoding,
 		CurrentPhase: "requirements",
 	}
@@ -223,7 +223,7 @@ func TestAdapterEmittedJSONOmitsPhasesWithNilRegistry(t *testing.T) {
 // PhaseOutputs / GateResults to their canonical keys, so the dashboard never
 // sees a raw alias key on the wire.
 func TestAdapterEmittedJSONCanonicalizesPhaseFields(t *testing.T) {
-	state := &workflow.WorkflowState{
+	state := &workflow.V1WorkflowState{
 		Type:         workflow.WorkflowCoding,
 		CurrentPhase: "tech_design",
 		PhaseOutputs: map[string]string{

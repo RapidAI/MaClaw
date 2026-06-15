@@ -113,7 +113,7 @@ func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID strin
 	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
 		if state := wf.machine.GetActive(policyOwnerID); state != nil {
 			if phase := state.ActivePhase(); phase != nil {
-				policy := v2.ToolFilterPolicy(mapV2ToolPolicyToV1(phase.ToolPolicy))
+				policy := v2.ToolFilterPolicy(phase.ToolPolicy)
 				if policy != v2.ToolFilterNone {
 					return policyOwnerID, policy, true
 				}

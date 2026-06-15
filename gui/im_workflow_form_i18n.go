@@ -3,10 +3,10 @@ package main
 import (
 	"strings"
 
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
-func localizeWorkflowPhaseInputSchema(schema *workflow.PhaseInputSchema, lang string) *workflow.PhaseInputSchema {
+func localizeWorkflowPhaseInputSchema(schema *workflow.V1PhaseInputSchema, lang string) *workflow.V1PhaseInputSchema {
 	if schema == nil {
 		return schema
 	}

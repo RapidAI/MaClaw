@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/memory"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 func newProjectSearchTestApp(t *testing.T) *App {

@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 func (h *IMMessageHandler) backfillExecutionOrchestratorActivation(engine *workflow.WorkflowEngine, userID string, resp *workflow.WorkflowResponse) {
@@ -51,7 +51,7 @@ func (h *IMMessageHandler) backfillExecutionOrchestratorActivation(engine *workf
 	log.Printf("[WorkflowInterception] backfilled orchestrator activation for active execution phase: user=%s phase=%s", userID, ws.CurrentPhase)
 }
 
-func activeWorkflowExecutionPhase(engine *workflow.WorkflowEngine, userID string) (*workflow.WorkflowState, *workflow.WorkflowTemplate, bool) {
+func activeWorkflowExecutionPhase(engine *workflow.WorkflowEngine, userID string) (*workflow.V1WorkflowState, *workflow.V1WorkflowTemplate, bool) {
 	if engine == nil {
 		return nil, nil, false
 	}

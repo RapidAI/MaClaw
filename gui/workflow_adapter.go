@@ -6,9 +6,54 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+// mapV2StateToV1 converts a V2 native WorkflowState to the V1WorkflowState
+// type used by the GUI workflow engine compat layer.
+func mapV2StateToV1(s *workflow.WorkflowState) *workflow.V1WorkflowState {
+	if s == nil {
+		return nil
+	}
+	var status workflow.WorkflowStatus
+	switch s.Status {
+	case workflow.StatusActive:
+		status = workflow.WorkflowActive
+	case workflow.StatusCompleted:
+		status = workflow.WorkflowCompleted
+	case workflow.StatusCancelled:
+		status = workflow.WorkflowCancelled
+	default:
+		status = workflow.WorkflowActive
+	}
+	currentPhaseID := ""
+	if s.CurrentPhase >= 0 && s.CurrentPhase < len(s.Phases) {
+		currentPhaseID = s.Phases[s.CurrentPhase].ID
+	}
+	phaseOutputs := make(map[string]string)
+	for _, p := range s.Phases {
+		if p.Output != "" {
+			phaseOutputs[p.ID] = p.Output
+		}
+	}
+	return &workflow.V1WorkflowState{
+		ID:           s.ID,
+		UserID:       s.UserID,
+		Type:         workflow.WorkflowType(s.Type),
+		CurrentPhase: currentPhaseID,
+		PhaseIndex:   s.CurrentPhase,
+		PhaseOutputs: phaseOutputs,
+		Status:       status,
+		CreatedAt:    s.CreatedAt,
+		UpdatedAt:    s.UpdatedAt,
+		ProjectPath:  s.ProjectPath,
+		Intent: workflow.StructuredIntent{
+			Category: workflow.WorkflowType(s.Type),
+			Summary:  s.Summary,
+		},
+	}
+}
 
 // GUIWorkflowAdapter implements workflow.EngineCallbacks for the GUI layer.
 // It bridges the workflow engine to the Wails frontend via event emission.
@@ -74,7 +119,7 @@ func (a *GUIWorkflowAdapter) GetLang() string {
 }
 
 // EmitPhaseUpdate notifies the frontend of a phase change.
-func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error {
+func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.V1WorkflowState) error {
 	if state != nil {
 		stateProjectPath := ""
 		validStateProjectPath := ""

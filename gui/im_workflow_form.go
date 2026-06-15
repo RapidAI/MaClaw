@@ -5,7 +5,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 const (
@@ -18,13 +18,13 @@ const (
 // emitWorkflowPhaseForm builds an AgentView form from the phase's InputSchema
 // and emits it to the frontend via the standard AG UI lifecycle protocol.
 // The form appears in the right-side task panel (AgentTaskPanel).
-func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow.PhaseInputSchema, phaseID string) {
+func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow.V1PhaseInputSchema, phaseID string) {
 	if h == nil || h.app == nil || schema == nil || len(schema.Fields) == 0 {
 		return
 	}
 	schema = localizeWorkflowPhaseInputSchema(schema, h.getWorkflowLang())
 
-	var ws *workflow.WorkflowState
+	var ws *workflow.V1WorkflowState
 	workflowID := ""
 	if ws != nil {
 		workflowID = ws.ID
@@ -35,7 +35,7 @@ func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow
 	log.Printf("[workflow-form] emitted AG UI form: phase=%s fields=%d", phaseID, len(schema.Fields))
 }
 
-func buildWorkflowPhaseFormAgentView(userID, workflowID, phaseID string, schema *workflow.PhaseInputSchema) map[string]interface{} {
+func buildWorkflowPhaseFormAgentView(userID, workflowID, phaseID string, schema *workflow.V1PhaseInputSchema) map[string]interface{} {
 	if schema == nil {
 		return nil
 	}
@@ -257,7 +257,7 @@ func workflowFormMatchesActiveWorkflow(engine *workflow.WorkflowEngine, userID, 
 // buildIMFormGuidanceText generates a structured text prompt for IM channels
 // (WeChat/Feishu/QQ) that cannot render AG UI forms. The text guides the user
 // to provide information in a numbered format.
-func buildIMFormGuidanceText(schema *workflow.PhaseInputSchema) string {
+func buildIMFormGuidanceText(schema *workflow.V1PhaseInputSchema) string {
 	if schema == nil || len(schema.Fields) == 0 {
 		return ""
 	}

@@ -6,7 +6,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 func TestEnsureTruncationFallbackToolsAddsRealAlternates(t *testing.T) {

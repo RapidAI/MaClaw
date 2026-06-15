@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 // TestTUIWorkflowPhaseMetaParity asserts that the PhaseMeta slice the TUI
@@ -108,7 +108,7 @@ func TestTUIWorkflowEmitPhaseUpdateUsesSharedDeriver(t *testing.T) {
 		log.SetFlags(origFlags)
 	})
 
-	state := &workflow.WorkflowState{Type: workflow.WorkflowCoding}
+	state := &workflow.V1WorkflowState{Type: workflow.WorkflowCoding}
 	if err := callbacks.EmitPhaseUpdate("tui-user", state); err != nil {
 		t.Fatalf("EmitPhaseUpdate returned error: %v", err)
 	}

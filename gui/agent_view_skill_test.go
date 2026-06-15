@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 func TestSkillRunParameterContractSynthesizesAgentViewFields(t *testing.T) {

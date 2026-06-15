@@ -14,7 +14,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -139,7 +138,7 @@ func (h *IMMessageHandler) getTaskOrchestratorReadOnly(userID string) *TaskExecu
 //  1. Goals[0]: structured callers store the raw user task here
 //  2. Summary: only used when no explicit goal is available
 //  3. "": text is already the original request
-func extractOriginalRequest(state *workflow.WorkflowState, currentText string) string {
+func extractOriginalRequest(state *v2.V1WorkflowState, currentText string) string {
 	if state == nil {
 		return ""
 	}
@@ -175,8 +174,8 @@ func (h *IMMessageHandler) workflowStartProjectPathForOwner(ownerID string) stri
 	return strings.TrimSpace(corelib.EffectiveWorkspaceDir())
 }
 
-func (h *IMMessageHandler) workflowStartProjectPathForIntent(ownerID, text string, intent workflow.StructuredIntent) string {
-	if intent.Category == workflow.WorkflowCoding {
+func (h *IMMessageHandler) workflowStartProjectPathForIntent(ownerID, text string, intent v2.StructuredIntent) string {
+	if intent.Category == v2.WorkflowCoding {
 		candidates := []string{text, intent.Summary}
 		candidates = append(candidates, intent.Goals...)
 		candidates = append(candidates, intent.Constraints...)
@@ -199,7 +198,7 @@ func (h *IMMessageHandler) resolveWorkflowProjectPath(projectPath string) (strin
 	return normalized, err
 }
 
-func (h *IMMessageHandler) confirmWorkflowStart(userID, text string, intent workflow.StructuredIntent, startReply string) *IMAgentResponse {
+func (h *IMMessageHandler) confirmWorkflowStart(userID, text string, intent v2.StructuredIntent, startReply string) *IMAgentResponse {
 	if h == nil || h.confirmationStore == nil {
 		return nil
 	}
@@ -249,7 +248,7 @@ func workflowInterceptionAttachments(items [][]MessageAttachment) []MessageAttac
 	return items[0]
 }
 
-func workflowAttachmentBypass(engine *workflow.WorkflowEngine, userID string, attachments []MessageAttachment, trimmed string) bool {
+func workflowAttachmentBypass(engine *v2.WorkflowEngine, userID string, attachments []MessageAttachment, trimmed string) bool {
 	if engine != nil {
 		if ws := engine.GetActiveWorkflow(userID); ws != nil {
 			if tmpl := engine.GetRegistry().Match(ws.Type); ws.IsWaitingForInput(tmpl) {
@@ -268,7 +267,7 @@ func workflowAttachmentBypass(engine *workflow.WorkflowEngine, userID string, at
 	return hasImageAttachment && len([]rune(trimmed)) < 50
 }
 
-func workflowHasPendingPhaseForm(engine *workflow.WorkflowEngine, userID string) bool {
+func workflowHasPendingPhaseForm(engine *v2.WorkflowEngine, userID string) bool {
 	if engine == nil {
 		return false
 	}
@@ -307,7 +306,7 @@ func isWorkflowCancelText(text string) bool {
 	return false
 }
 
-func buildPendingWorkflowConfirmation(userID, text string, intent workflow.StructuredIntent, startReply string, lang string, projectPaths ...string) *pendingConfirmation {
+func buildPendingWorkflowConfirmation(userID, text string, intent v2.StructuredIntent, startReply string, lang string, projectPaths ...string) *pendingConfirmation {
 	now := time.Now()
 	goals := normalizeWorkflowConfirmationGoals(intent.Goals)
 	originalText := workflowConfirmationTaskText(text, goals, intent.Summary)
@@ -398,15 +397,15 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 	if wf == nil || wf.machine == nil || pending == nil {
 		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.T(i18n.MsgWorkflowUnavailable, lang)}}
 	}
-	intent := workflow.StructuredIntent{
-		Category:    workflow.WorkflowType(strings.TrimSpace(pending.WorkflowType)),
+	intent := v2.StructuredIntent{
+		Category:    v2.WorkflowType(strings.TrimSpace(pending.WorkflowType)),
 		Summary:     firstNonEmptyWorkflowString(pending.WorkflowSummary, pending.Summary, pending.OriginalText),
 		Goals:       normalizeWorkflowConfirmationGoals(pending.WorkflowGoals),
 		Constraints: append([]string(nil), pending.WorkflowConstraints...),
 		Confidence:  pending.WorkflowConfidence,
 		Ready:       true,
 	}
-	if intent.Category == "" || intent.Category == workflow.WorkflowNone {
+	if intent.Category == "" || intent.Category == v2.WorkflowNone {
 		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.T(i18n.MsgWorkflowUnavailable, lang)}}
 	}
 	text := workflowConfirmationTaskText(pending.OriginalText, intent.Goals, intent.Summary)
@@ -447,9 +446,9 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 //
 // extraText is appended to the overview (e.g. IUM's reply text). Pass "" if none.
 func (h *IMMessageHandler) handlePostStartWorkflow(
-	engine *workflow.WorkflowEngine,
+	engine *v2.WorkflowEngine,
 	userID, text string,
-	state *workflow.WorkflowState,
+	state *v2.V1WorkflowState,
 	extraText string,
 	platform string,
 ) *IMAgentResponse {
@@ -740,7 +739,7 @@ func conversationEntryText(content any) string {
 }
 
 // handleActiveWorkflow processes input for a user with an active workflow.
-func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine, userID, text, platform string, attachments []MessageAttachment) *IMAgentResponse {
+func (h *IMMessageHandler) handleActiveWorkflow(engine *v2.WorkflowEngine, userID, text, platform string, attachments []MessageAttachment) *IMAgentResponse {
 	if workflowHasPendingPhaseForm(engine, userID) && isWorkflowFormDirectRunCommand(text) {
 		if err := engine.SkipPhaseForm(userID); err != nil {
 			log.Printf("[WorkflowEngine] SkipPhaseForm direct-run failed: user=%s err=%v", userID, err)
@@ -833,7 +832,7 @@ func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine,
 	return nil
 }
 
-func (h *IMMessageHandler) workflowFormResponse(engine *workflow.WorkflowEngine, userID, platform string, resp *workflow.WorkflowResponse) *IMAgentResponse {
+func (h *IMMessageHandler) workflowFormResponse(engine *v2.WorkflowEngine, userID, platform string, resp *v2.WorkflowResponse) *IMAgentResponse {
 	if resp == nil || resp.FormSchema == nil {
 		return nil
 	}
@@ -865,7 +864,7 @@ func (h *IMMessageHandler) workflowFormResponse(engine *workflow.WorkflowEngine,
 	return &IMAgentResponse{Text: text}
 }
 
-func (h *IMMessageHandler) submitWorkflowInputIfWaiting(engine *workflow.WorkflowEngine, userID, text string, attachments []MessageAttachment, platform string) (*IMAgentResponse, bool) {
+func (h *IMMessageHandler) submitWorkflowInputIfWaiting(engine *v2.WorkflowEngine, userID, text string, attachments []MessageAttachment, platform string) (*IMAgentResponse, bool) {
 	if engine == nil {
 		return nil, false
 	}
@@ -886,6 +885,9 @@ func (h *IMMessageHandler) submitWorkflowInputIfWaiting(engine *workflow.Workflo
 		log.Printf("[WorkflowInterception] SubmitInputPayload error for user %s: %v", userID, err)
 		return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowInputHandleError, h.getWorkflowLang(), err)}, true
 	}
+	if resp == nil {
+		return nil, true
+	}
 	if resp.ShowForm && resp.FormSchema != nil {
 		return h.workflowFormResponse(engine, userID, platform, resp), true
 	}
@@ -896,14 +898,14 @@ func (h *IMMessageHandler) submitWorkflowInputIfWaiting(engine *workflow.Workflo
 	return nil, true
 }
 
-func workflowInputPayloadFromMessage(text string, attachments []MessageAttachment) *workflow.WorkflowInputPayload {
+func workflowInputPayloadFromMessage(text string, attachments []MessageAttachment) *v2.WorkflowInputPayload {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" && len(attachments) == 0 {
 		return nil
 	}
-	payload := &workflow.WorkflowInputPayload{Text: trimmed, ReceivedAt: time.Now()}
+	payload := &v2.WorkflowInputPayload{Text: trimmed, ReceivedAt: time.Now()}
 	for _, att := range attachments {
-		payload.Attachments = append(payload.Attachments, workflow.WorkflowInputAttachment{
+		payload.Attachments = append(payload.Attachments, v2.WorkflowInputAttachment{
 			Type:     att.Type,
 			FileName: att.FileName,
 			MimeType: att.MimeType,
@@ -919,7 +921,7 @@ func workflowInputPayloadFromMessage(text string, attachments []MessageAttachmen
 //
 // Token budget: ~300-500 input + ~10 output vs ~55000 input for full agent loop.
 // Latency: one lightweight classifier call vs the full agent loop.
-func (h *IMMessageHandler) handleWorkflowReview(engine *workflow.WorkflowEngine, userID, text, platform string) *IMAgentResponse {
+func (h *IMMessageHandler) handleWorkflowReview(engine *v2.WorkflowEngine, userID, text, platform string) *IMAgentResponse {
 	ctx := context.Background()
 
 	// Cross-type detection is handled by handleActiveWorkflow BEFORE
@@ -978,7 +980,7 @@ func (h *IMMessageHandler) handleWorkflowReview(engine *workflow.WorkflowEngine,
 	}
 
 	if detectWorkflowReviewBlockedExecutionIntent(text) {
-		log.Printf("[workflow-review] user=%s text_len=%d intent=%q source=execution-block", userID, len([]rune(text)), workflow.ReviewIntentOther)
+		log.Printf("[workflow-review] user=%s text_len=%d intent=%q source=execution-block", userID, len([]rune(text)), v2.ReviewIntentOther)
 		return h.workflowReviewExecutionBlockedResponse(engine, userID)
 	}
 
@@ -1016,7 +1018,7 @@ When in doubt between "confirm" and "other", prefer "confirm" - the conversation
 
 	if err != nil {
 		log.Printf("[workflow-review] LLM classify failed, keeping review barrier active: %v", err)
-		return h.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentOther, text, platform)
+		return h.applyWorkflowReviewIntent(engine, userID, v2.ReviewIntentOther, text, platform)
 	}
 
 	reviewIntent := normalizeWorkflowReviewIntent(classifyResult.Text)
@@ -1026,8 +1028,8 @@ When in doubt between "confirm" and "other", prefer "confirm" - the conversation
 	return h.applyWorkflowReviewIntent(engine, userID, reviewIntent, text, platform)
 }
 
-func normalizeWorkflowReviewIntent(raw string) workflow.ReviewIntent {
-	return workflow.ParseReviewIntent(raw)
+func normalizeWorkflowReviewIntent(raw string) v2.ReviewIntent {
+	return v2.ParseReviewIntent(raw)
 }
 
 func (h *IMMessageHandler) workflowReviewPending(userID string, background bool) bool {
@@ -1037,50 +1039,50 @@ func (h *IMMessageHandler) workflowReviewPending(userID string, background bool)
 	return false
 }
 
-func detectWorkflowReviewIntentFast(text string) (workflow.ReviewIntent, bool) {
+func detectWorkflowReviewIntentFast(text string) (v2.ReviewIntent, bool) {
 	trimmed := strings.ToLower(strings.TrimSpace(text))
 	trimmed = strings.Trim(trimmed, " \t\r\n.\u3002!\uff01\uff1f?")
 	if trimmed == "" {
-		return workflow.ReviewIntentOther, false
+		return v2.ReviewIntentOther, false
 	}
 	switch trimmed {
 	case "\u786e\u8ba4", "\u786e\u8ba4\u901a\u8fc7", "\u786e\u5b9a", "\u786e\u5b9a\u7ee7\u7eed", "\u786e\u5b9a\u901a\u8fc7", "\u901a\u8fc7", "\u540c\u610f", "\u53ef\u4ee5", "\u6ca1\u95ee\u9898", "\u6ca1\u610f\u89c1", "\u7ee7\u7eed", "\u7ee7\u7eed\u63a8\u8fdb", "\u5f00\u5de5", "\u5f00\u59cb", "\u5f00\u59cb\u5427", "\u6267\u884c", "\u8d70\u8d77", "\u597d", "\u597d\u7684", "\u5f00\u59cb\u7f16\u7801", "\u5f00\u59cb\u7f16\u7801\u5427", "\u5f00\u59cb\u5199\u4ee3\u7801", "\u5f00\u59cb\u5b9e\u73b0", "\u5f00\u59cb\u5f00\u53d1", "\u5f00\u59cb\u6267\u884c", "\u786e\u8ba4\u5f00\u59cb\u7f16\u7801", "\u786e\u8ba4\u5f00\u59cb\u5b9e\u73b0", "\u786e\u5b9a\u5f00\u59cb\u7f16\u7801", "\u786e\u5b9a\u5f00\u59cb\u5b9e\u73b0":
-		return workflow.ReviewIntentConfirm, true
+		return v2.ReviewIntentConfirm, true
 	case "\u8df3\u8fc7", "skip", "skip it":
-		return workflow.ReviewIntentSkip, true
+		return v2.ReviewIntentSkip, true
 	case "\u53d6\u6d88", "\u505c\u6b62", "\u7ec8\u6b62", "\u653e\u5f03", "cancel", "stop", "abort", "quit":
-		return workflow.ReviewIntentCancel, true
+		return v2.ReviewIntentCancel, true
 	}
 	if looksLikeWorkflowReviewApproval(trimmed) {
-		return workflow.ReviewIntentConfirm, true
+		return v2.ReviewIntentConfirm, true
 	}
 	switch trimmed {
 	case "ok", "okay", "yes", "y", "go", "go ahead", "start", "continue", "proceed", "approved", "approve", "confirmed", "confirm":
-		return workflow.ReviewIntentConfirm, true
+		return v2.ReviewIntentConfirm, true
 	}
-	return workflow.ReviewIntentOther, false
+	return v2.ReviewIntentOther, false
 }
 
-func detectCodingTaskBreakdownReviewAdvanceIntent(engine *workflow.WorkflowEngine, userID, text string) (workflow.ReviewIntent, bool) {
+func detectCodingTaskBreakdownReviewAdvanceIntent(engine *v2.WorkflowEngine, userID, text string) (v2.ReviewIntent, bool) {
 	trimmed := strings.ToLower(strings.TrimSpace(text))
 	trimmed = strings.Trim(trimmed, " \t\r\n.\u3002!\uff01\uff1f?")
 	if trimmed == "" || engine == nil {
-		return workflow.ReviewIntentOther, false
+		return v2.ReviewIntentOther, false
 	}
 	ws := engine.GetActiveWorkflow(userID)
 	if ws == nil ||
-		ws.Type != workflow.WorkflowCoding ||
-		ws.CurrentPhase != workflow.PhaseCodingTaskBreakdown ||
-		ws.PendingReviewPhaseID != workflow.PhaseCodingTaskBreakdown {
-		return workflow.ReviewIntentOther, false
+		ws.Type != v2.WorkflowCoding ||
+		ws.CurrentPhase != v2.PhaseCodingTaskBreakdown ||
+		ws.PendingReviewPhaseID != v2.PhaseCodingTaskBreakdown {
+		return v2.ReviewIntentOther, false
 	}
 	if looksLikeTaskBreakdownDocumentChange(trimmed) {
-		return workflow.ReviewIntentOther, false
+		return v2.ReviewIntentOther, false
 	}
 	if looksLikeCodingImplementationAdvance(trimmed) {
-		return workflow.ReviewIntentConfirm, true
+		return v2.ReviewIntentConfirm, true
 	}
-	return workflow.ReviewIntentOther, false
+	return v2.ReviewIntentOther, false
 }
 
 func looksLikeTaskBreakdownDocumentChange(text string) bool {
@@ -1152,10 +1154,10 @@ func containsAnyWorkflowReviewMarker(text string, markers []string) bool {
 	return false
 }
 
-func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *workflow.WorkflowEngine, userID string, intent workflow.ReviewIntent, feedback, platform string) *IMAgentResponse {
-	if intent == workflow.ReviewIntentConfirm && h.shouldRegenerateInvalidCodingTaskBreakdown(engine, userID) {
+func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *v2.WorkflowEngine, userID string, intent v2.ReviewIntent, feedback, platform string) *IMAgentResponse {
+	if intent == v2.ReviewIntentConfirm && h.shouldRegenerateInvalidCodingTaskBreakdown(engine, userID) {
 		log.Printf("[workflow-review] blocking confirm for invalid coding task breakdown: user=%s", userID)
-		intent = workflow.ReviewIntentSupplement
+		intent = v2.ReviewIntentSupplement
 		feedback = invalidCodingTaskBreakdownFeedbackText()
 	}
 	resp, err := engine.ApplyReviewIntent(userID, intent, feedback)
@@ -1164,13 +1166,13 @@ func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *workflow.WorkflowEn
 		return h.reviewBarrierResponse(engine, userID)
 	}
 	h.recordWorkflowReviewFeedbackExperience(userID, intent, feedback)
-	if intent == workflow.ReviewIntentSwitchTask {
+	if intent == v2.ReviewIntentSwitchTask {
 		return h.handleWorkflowInterception(userID, feedback, platform)
 	}
 	return h.handleWorkflowEngineResponse(engine, userID, resp, platform)
 }
 
-func (h *IMMessageHandler) recordWorkflowReviewFeedbackExperience(userID string, intent workflow.ReviewIntent, feedback string) {
+func (h *IMMessageHandler) recordWorkflowReviewFeedbackExperience(userID string, intent v2.ReviewIntent, feedback string) {
 	if h == nil {
 		return
 	}
@@ -1194,16 +1196,16 @@ func (h *IMMessageHandler) recordWorkflowReviewFeedbackExperience(userID string,
 	}))
 }
 
-func workflowReviewIntentEndsCurrentContext(intent workflow.ReviewIntent) bool {
+func workflowReviewIntentEndsCurrentContext(intent v2.ReviewIntent) bool {
 	switch intent {
-	case workflow.ReviewIntentConfirm, workflow.ReviewIntentSkip, workflow.ReviewIntentCancel, workflow.ReviewIntentSwitchTask:
+	case v2.ReviewIntentConfirm, v2.ReviewIntentSkip, v2.ReviewIntentCancel, v2.ReviewIntentSwitchTask:
 		return true
 	default:
 		return false
 	}
 }
 
-func (h *IMMessageHandler) handleWorkflowEngineResponse(engine *workflow.WorkflowEngine, userID string, resp *workflow.WorkflowResponse, platform string) *IMAgentResponse {
+func (h *IMMessageHandler) handleWorkflowEngineResponse(engine *v2.WorkflowEngine, userID string, resp *v2.WorkflowResponse, platform string) *IMAgentResponse {
 	if resp == nil {
 		return nil
 	}
@@ -1242,7 +1244,7 @@ func (h *IMMessageHandler) handleWorkflowEngineResponse(engine *workflow.Workflo
 	return nil
 }
 
-func (h *IMMessageHandler) reviewBarrierResponse(engine *workflow.WorkflowEngine, userID string) *IMAgentResponse {
+func (h *IMMessageHandler) reviewBarrierResponse(engine *v2.WorkflowEngine, userID string) *IMAgentResponse {
 	phaseName := h.workflowReviewPhaseName(engine, userID)
 	if phaseName == "" {
 		return nil
@@ -1251,7 +1253,7 @@ func (h *IMMessageHandler) reviewBarrierResponse(engine *workflow.WorkflowEngine
 	return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowAwaitingReview, lang, phaseName)}
 }
 
-func (h *IMMessageHandler) workflowReviewExecutionBlockedResponse(engine *workflow.WorkflowEngine, userID string) *IMAgentResponse {
+func (h *IMMessageHandler) workflowReviewExecutionBlockedResponse(engine *v2.WorkflowEngine, userID string) *IMAgentResponse {
 	phaseName := h.workflowReviewPhaseName(engine, userID)
 	if phaseName == "" {
 		return nil
@@ -1259,7 +1261,7 @@ func (h *IMMessageHandler) workflowReviewExecutionBlockedResponse(engine *workfl
 	return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowReviewExecutionBlock, h.getWorkflowLang(), phaseName)}
 }
 
-func (h *IMMessageHandler) workflowReviewPhaseName(engine *workflow.WorkflowEngine, userID string) string {
+func (h *IMMessageHandler) workflowReviewPhaseName(engine *v2.WorkflowEngine, userID string) string {
 	ws := engine.GetActiveWorkflow(userID)
 	if ws == nil {
 		return ""
@@ -1273,7 +1275,7 @@ func (h *IMMessageHandler) workflowReviewPhaseName(engine *workflow.WorkflowEngi
 
 // handleActiveUnderstanding processes input for a user with an active
 // intent understanding session.
-func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEngine, userID, text string) *IMAgentResponse {
+func (h *IMMessageHandler) handleActiveUnderstanding(engine *v2.WorkflowEngine, userID, text string) *IMAgentResponse {
 	understanding := engine.GetUnderstanding()
 	if understanding == nil {
 		return nil
@@ -1283,7 +1285,7 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 	reply, ready, cancelled, intent, err := understanding.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[WorkflowInterception] understanding HandleInput error for user %s: %v", userID, err)
-		if errors.Is(err, workflow.ErrIntentUnderstandingContractBreach) {
+		if errors.Is(err, v2.ErrIntentUnderstandingContractBreach) {
 			return nil
 		}
 		return &IMAgentResponse{Text: i18n.T(i18n.MsgWorkflowUnderstandError, h.getWorkflowLang())}
@@ -1298,7 +1300,7 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 		// Do NOT call StartWorkflow; fall through to the normal agent loop.
 		// The understanding session has already been cleaned up by HandleInput
 		// when isReady=true, so no additional cleanup is needed.
-		if intent.Category == workflow.WorkflowNone || intent.Category == "" {
+		if intent.Category == v2.WorkflowNone || intent.Category == "" {
 			log.Printf("[WorkflowInterception] understanding returned ready=true with category=%q for user %s, falling through to agent loop", intent.Category, userID)
 			return nil
 		}
@@ -1313,7 +1315,7 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 			log.Printf("[WorkflowInterception] invalid workflow project path for user %s: %v", userID, prepErr)
 			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, h.getWorkflowLang(), prepErr)}
 		}
-		state, err := engine.StartWorkflowWithOptions(userID, *intent, workflow.WorkflowStartOptions{ProjectPath: projectPath})
+		state, err := engine.StartWorkflowWithOptions(userID, *intent, v2.WorkflowStartOptions{ProjectPath: projectPath})
 		if err != nil {
 			log.Printf("[WorkflowInterception] StartWorkflow error for user %s: %v", userID, err)
 			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowStartError, h.getWorkflowLang(), err)}
@@ -1328,7 +1330,7 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 //   - Is this a workflow task? (if not, returns nil for the normal agent loop)
 //   - Which workflow template?
 //   - Structured intent extraction
-func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEngine, userID, text, platform string) *IMAgentResponse {
+func (h *IMMessageHandler) handleNeedsUnderstanding(engine *v2.WorkflowEngine, userID, text, platform string) *IMAgentResponse {
 	understanding := engine.GetUnderstanding()
 	if understanding == nil {
 		// No understanding manager; fall through to normal agent loop.
@@ -1425,7 +1427,7 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 	// semantic validation as the gatekeeper instead of UIC's single-round guess).
 	if result.Ready && result.Intent != nil {
 		// Guard: category="none" or empty with ready=true means not a workflow.
-		if result.Intent.Category == workflow.WorkflowNone || result.Intent.Category == "" {
+		if result.Intent.Category == v2.WorkflowNone || result.Intent.Category == "" {
 			log.Printf("[WorkflowInterception] understanding returned ready=true with category=%q for user %s, falling through to agent loop",
 				result.Intent.Category, userID)
 			return nil
@@ -1443,7 +1445,7 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 			log.Printf("[WorkflowInterception] invalid workflow project path for user %s: %v", userID, prepErr)
 			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowPrepareProjectError, h.getWorkflowLang(), prepErr)}
 		}
-		state, err := engine.StartWorkflowWithOptions(userID, *result.Intent, workflow.WorkflowStartOptions{ProjectPath: projectPath})
+		state, err := engine.StartWorkflowWithOptions(userID, *result.Intent, v2.WorkflowStartOptions{ProjectPath: projectPath})
 		if err != nil {
 			log.Printf("[WorkflowInterception] IUM-driven StartWorkflow error for user %s: %v", userID, err)
 			return &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowStartError, h.getWorkflowLang(), err)}
@@ -1513,32 +1515,32 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalog(userID string, too
 }
 
 func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalogV2Compat(userID string, tools, allTools []map[string]interface{}) []map[string]interface{} {
-	policy := workflow.ToolFilterNone
+	policy := v2.ToolFilterNone
 	if h != nil && h.isWorkflowV2Active(userID) {
 		if wf := h.getWorkflowV2(); wf != nil {
 			if state := wf.machine.GetActive(userID); state != nil {
 				if phase := state.ActivePhase(); phase != nil {
 					switch phase.ToolPolicy {
 					case v2.ToolPolicyDocOnly:
-						policy = workflow.ToolFilterDocOnly
+						policy = v2.ToolFilterDocOnly
 					}
 				}
 			}
 		}
 	}
-	if policy == workflow.ToolFilterNone && h != nil && h.app != nil {
+	if policy == v2.ToolFilterNone && h != nil && h.app != nil {
 		if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
 			if state := wf.machine.GetActive(userID); state != nil {
 				if phase := state.ActivePhase(); phase != nil {
-					policy = mapV2ToolPolicyToV1(phase.ToolPolicy)
-					if policy == workflow.ToolFilterNone && phase.Status == v2.PhaseWaitingConfirm {
+					policy = v2.ToolFilterPolicy(phase.ToolPolicy)
+					if policy == v2.ToolFilterNone && phase.Status == v2.PhaseWaitingConfirm {
 						return nil
 					}
 				}
 			}
 		}
 	}
-	if policy == workflow.ToolFilterNone && h != nil && h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.GetActiveWorkflow(userID) != nil {
+	if policy == v2.ToolFilterNone && h != nil && h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.GetActiveWorkflow(userID) != nil {
 		policy = h.app.workflowEngine.GetActivePhaseToolFilter(userID)
 	}
 	if len(allTools) == 0 && h != nil {
@@ -1548,19 +1550,19 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalogV2Compat(userID str
 		tools = ensureWorkflowRequiredToolsForNames(workflowArtifactPhaseRequiredTools(), tools, allTools)
 		return filterWorkflowArtifactPhaseTools(tools)
 	}
-	if policy == workflow.ToolFilterNone || policy == workflow.ToolFilterFull {
+	if policy == v2.ToolFilterNone || policy == v2.ToolFilterFull {
 		if h != nil && h.shouldConstrainCodingWorkflowImplementationMainLoop(userID) {
 			tools = ensureWorkflowRequiredToolsForNames(codingWorkflowImplementationMainLoopRequiredTools(), tools, allTools)
 			tools = filterCodingWorkflowImplementationMainLoopTools(tools)
 			return specializeCodingWorkflowImplementationMainLoopTools(tools)
 		}
-		if policy == workflow.ToolFilterFull {
+		if policy == v2.ToolFilterFull {
 			return ensureWorkflowRequiredTools(policy, tools, allTools)
 		}
 		return tools
 	}
 	tools = ensureWorkflowRequiredTools(policy, tools, allTools)
-	return workflow.FilterToolDefinitions(policy, tools)
+	return v2.FilterToolDefinitions(policy, tools)
 }
 
 // getLastAssistantSnippet returns the tail of the last assistant message from

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/security"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 func TestBuildRegisteredToolAgentViewIncludesHiddenArgs(t *testing.T) {
