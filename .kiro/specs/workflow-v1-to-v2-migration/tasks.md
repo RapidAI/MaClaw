@@ -115,7 +115,7 @@ Migrate the workflow engine from V1 (`corelib/workflow/engine.go` + 30+ GUI inte
     - 17d. (deferred) Migrate 50+ test files from V1 to V2 test helpers
     - 17e. (deferred) Delete engine_stub.go after test migration
 
-- [-] 18. Complete V1 package elimination — migrate types + tool policy to V2, delete V1 package
+- [x] 18. Complete V1 package elimination — migrate types + tool policy to V2, delete V1 package
   - Requirements: R3, R4
   - Description: Eliminate the entire `corelib/workflow/` package (excluding `v2/`). The final step to remove all V1 dead code. 40+ files import V1 types; migration is primarily type relocation + import path update.
   - Scope (2026-06-14 audit):
