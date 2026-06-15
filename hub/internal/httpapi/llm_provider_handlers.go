@@ -98,7 +98,7 @@ type llmProviderTestKeyRequest struct {
 	Email string `json:"email"`
 }
 
-func GetLLMProvidersHandler(system store.SystemSettingsRepository) http.HandlerFunc {
+func GetLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl *llmservice.TenantLLMAccessControl) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		system := scopedSystemSettingsForRequest(r, system)
 		reg, err := im.LoadLLMProviderRegistry(r.Context(), system)
@@ -111,11 +111,12 @@ func GetLLMProvidersHandler(system store.SystemSettingsRepository) http.HandlerF
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, registryResponse(r, reg, collectLLMServiceProviderReferenceIssues(serviceReg, reg)))
+		visibleReg := filterLLMProviderRegistryForRequest(r, currentMaClawAccessControl(accessCtrl), reg)
+		writeJSON(w, http.StatusOK, registryResponse(r, visibleReg, collectLLMServiceProviderReferenceIssues(serviceReg, visibleReg)))
 	}
 }
 
-func UpdateLLMProvidersHandler(system store.SystemSettingsRepository) http.HandlerFunc {
+func UpdateLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl *llmservice.TenantLLMAccessControl) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		system := scopedSystemSettingsForRequest(r, system)
 		var req im.LLMProviderRegistry
@@ -177,6 +178,21 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository) http.Handl
 				}
 			}
 		}
+		if llmProviderRegistryAddsProviders(oldReg, &req) {
+			tenantID := RequestTenantID(r)
+			if tenantID == "" {
+				tenantID = store.DefaultTenantID
+			}
+			currentAccessCtrl := currentMaClawAccessControl(accessCtrl)
+			if currentAccessCtrl == nil {
+				writeError(w, http.StatusForbidden, "LLM_EXTERNAL_PROVIDER_NOT_GRANTED", "需要获得 MaClaw 官方算力模块授权才能添加自定义 LLM 服务。请联系 MaClaw 官方获取授权。")
+				return
+			}
+			if ok, message := currentAccessCtrl.CanAddExternalProvider(r.Context(), store.NormalizeTenantID(tenantID)); !ok {
+				writeError(w, http.StatusForbidden, "LLM_EXTERNAL_PROVIDER_NOT_GRANTED", message)
+				return
+			}
+		}
 		if req.TokenUsage == nil && oldReg != nil {
 			req.TokenUsage = oldReg.TokenUsage
 		}
@@ -223,6 +239,41 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository) http.Handl
 		_ = syncLegacyHubLLMConfig(r.Context(), system, &req)
 		writeJSON(w, http.StatusOK, registryResponse(r, &req, collectLLMServiceProviderReferenceIssues(serviceReg, &req)))
 	}
+}
+
+func llmProviderRegistryAddsProviders(oldReg *im.LLMProviderRegistry, req *im.LLMProviderRegistry) bool {
+	if req == nil {
+		return false
+	}
+	for _, p := range req.Providers {
+		id := strings.TrimSpace(p.ID)
+		if id == "" {
+			continue
+		}
+		if oldReg == nil || oldReg.FindProvider(id) == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func filterLLMProviderRegistryForRequest(r *http.Request, accessCtrl *llmservice.TenantLLMAccessControl, reg *im.LLMProviderRegistry) *im.LLMProviderRegistry {
+	if reg == nil {
+		return reg
+	}
+	tenantID := RequestTenantID(r)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	if accessCtrl != nil {
+		if ok, _ := accessCtrl.CanAddExternalProvider(r.Context(), store.NormalizeTenantID(tenantID)); ok {
+			return reg
+		}
+	}
+	filtered := *reg
+	filtered.CurrentProviderID = ""
+	filtered.Providers = nil
+	return &filtered
 }
 
 func TestLLMProviderHandler(system store.SystemSettingsRepository) http.HandlerFunc {

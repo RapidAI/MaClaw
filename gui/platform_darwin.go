@@ -23,10 +23,14 @@ import (
 func (a *App) platformStartup() {
 }
 
-// IsNativeRoundedCorners returns false on macOS — macOS handles window
-// rounding through its own compositor; the CSS border-radius is harmless.
+// IsNativeRoundedCorners returns true on macOS — macOS natively rounds all
+// window corners through its compositor.  The CSS border-radius + border on
+// #App fights the native rounding: if CSS radius (8px) differs from native
+// radius (~10px), small "pointed" artifacts appear at corners in dark mode.
+// Returning true causes the frontend to set data-native-rounded="true",
+// which removes CSS border-radius/border/box-shadow (same as Windows 11).
 func (a *App) IsNativeRoundedCorners() bool {
-	return false
+	return true
 }
 
 // PlatformTransparencyFlags returns (WebviewIsTransparent, WindowIsTranslucent).

@@ -172,7 +172,12 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	repfResp := newRepetitionFilter(rpfResp.Write)
 	tcf := newToolCallFilter(repfResp.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
-	tf := newThinkFilter(fcf.Callback())
+	thinkReasoningCbResp := func(delta string) {
+		if onToken != nil && delta != "" {
+			onToken("\x01" + delta)
+		}
+	}
+	tf := newThinkFilterWithReasoning(fcf.Callback(), thinkReasoningCbResp)
 
 	// -----------------------------------------------------------------------
 	// Accumulators

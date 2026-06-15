@@ -2,9 +2,11 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 )
 
@@ -13,6 +15,7 @@ import (
 func RegisterLLMRoutes(
 	mux *http.ServeMux,
 	adminService *auth.AdminService,
+	hubService *hubs.Service,
 	llmSvc *llmservice.Service,
 	proxyCfg *llmservice.ProxyConfig,
 	authChecker *llmservice.AuthorizationChecker,
@@ -25,12 +28,13 @@ func RegisterLLMRoutes(
 
 	// --- LLM Proxy (called by Hubs) ---
 	if proxyCfg != nil {
-		mux.HandleFunc("POST /api/llm/v1/chat/completions", llmservice.ProxyHandler(proxyCfg))
+		mux.HandleFunc("POST /api/llm/v1/chat/completions", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.ProxyHandler(proxyCfg)))
 	}
 
 	// --- Authorization query (called by Hubs) ---
 	if authChecker != nil {
-		mux.HandleFunc("GET /api/llm/v1/authorization", llmservice.AuthorizationQueryHandler(authChecker))
+		mux.HandleFunc("GET /api/llm/v1/authorization", RequireHubMachine(hubService, hubIDFromAuthorizationQuery, llmservice.AuthorizationQueryHandler(authChecker)))
+		mux.HandleFunc("POST /api/llm/v1/authorization/batch", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.AuthorizationBatchQueryHandler(authChecker)))
 	}
 
 	// --- Admin: LLM Providers ---
@@ -68,6 +72,7 @@ func RegisterLLMRoutes(
 		mux.HandleFunc("GET /api/cardstore/types", cardstore.ListCardTypesHandler(cardStoreSvc))
 		mux.HandleFunc("POST /api/cardstore/purchase", cardstore.CreateOrderHandler(cardStoreSvc))
 		mux.HandleFunc("GET /api/cardstore/orders", cardstore.ListOrdersHandler(cardStoreSvc))
+		mux.HandleFunc("DELETE /api/cardstore/orders/{orderNo}", cardstore.DeleteOrderHandler(cardStoreSvc))
 		mux.HandleFunc("GET /api/cardstore/templates", cardstore.TemplatesHandler())
 		mux.HandleFunc("POST /api/cardstore/payment/notify", cardstore.AlipayNotifyHandler(cardStoreSvc))
 
@@ -79,6 +84,7 @@ func RegisterLLMRoutes(
 		// Admin: Order management
 		mux.HandleFunc("GET /api/admin/cardstore/orders", RequireAdmin(adminService, cardstore.AdminListOrdersHandler(cardStoreSvc)))
 		mux.HandleFunc("POST /api/admin/cardstore/orders/{orderNo}/confirm", RequireAdmin(adminService, cardstore.AdminConfirmOrderHandler(cardStoreSvc, adminEmailFromRequest)))
+		mux.HandleFunc("POST /api/admin/cardstore/orders/{orderNo}/archive", RequireAdmin(adminService, cardstore.AdminArchiveOrderHandler(cardStoreSvc)))
 
 		// Admin: Payment config
 		mux.HandleFunc("GET /api/admin/llm/payment-config", RequireAdmin(adminService, adminGetPaymentConfig(llmSvc)))
@@ -90,6 +96,47 @@ func RegisterLLMRoutes(
 	mux.HandleFunc("GET /compute-store/", serveComputeStore)
 	mux.HandleFunc("GET /compute-store/professional.css", serveComputeStoreCSS)
 	mux.Handle("GET /compute-store/assets/", http.StripPrefix("/compute-store/assets/", http.FileServer(http.Dir("web/compute-store/assets"))))
+}
+
+func RequireHubMachine(hubService *hubs.Service, hubIDFn func(*http.Request) string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if hubService == nil {
+			writeError(w, http.StatusUnauthorized, "HUB_UNAUTHORIZED", "Hub machine authorization required")
+			return
+		}
+		hubID := strings.TrimSpace(hubIDFn(r))
+		token := bearerToken(r)
+		if hubID == "" || token == "" {
+			writeError(w, http.StatusUnauthorized, "HUB_UNAUTHORIZED", "Hub machine authorization required")
+			return
+		}
+		if err := hubService.VerifyHubSecret(r.Context(), hubID, token); err != nil {
+			writeError(w, http.StatusUnauthorized, "HUB_UNAUTHORIZED", "Hub machine authorization failed")
+			return
+		}
+		if headerHubID := strings.TrimSpace(r.Header.Get("X-Hub-ID")); headerHubID != "" && headerHubID != hubID {
+			writeError(w, http.StatusUnauthorized, "HUB_UNAUTHORIZED", "Hub machine authorization mismatch")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
+}
+
+func hubIDFromProxyRequest(r *http.Request) string {
+	return r.Header.Get("X-Hub-ID")
+}
+
+func hubIDFromAuthorizationQuery(r *http.Request) string {
+	return r.URL.Query().Get("hub_id")
+}
+
+func bearerToken(r *http.Request) string {
+	authz := strings.TrimSpace(r.Header.Get("Authorization"))
+	const prefix = "Bearer "
+	if len(authz) <= len(prefix) || !strings.EqualFold(authz[:len(prefix)], prefix) {
+		return ""
+	}
+	return strings.TrimSpace(authz[len(prefix):])
 }
 
 func serveComputeStore(w http.ResponseWriter, r *http.Request) {

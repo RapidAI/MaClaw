@@ -373,6 +373,9 @@ func adminDeleteLLMServiceGroup(svc *llmservice.Service, checker *llmservice.Aut
 				return
 			}
 			for _, auth := range auths {
+				if auth != nil && auth.ServiceGroupID == llmservice.ExternalComputePermissionServiceGroupID {
+					continue
+				}
 				if auth != nil && auth.ServiceGroupID == id {
 					writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("service group %s is used by tenant %s/%s and cannot be deleted", id, auth.HubID, auth.TenantID)})
 					return
@@ -380,7 +383,7 @@ func adminDeleteLLMServiceGroup(svc *llmservice.Service, checker *llmservice.Aut
 			}
 		}
 		if cardStoreSvc != nil {
-			_, total, err := cardStoreSvc.ListOrders(r.Context(), cardstore.OrderFilter{ServiceGroupID: id, Limit: 1})
+			_, total, err := cardStoreSvc.ListOrders(r.Context(), cardstore.OrderFilter{ServiceGroupID: id, Limit: 1, IncludeArchived: true})
 			if err != nil {
 				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
@@ -433,15 +436,56 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
-		if auth.HubID == "" || auth.TenantID == "" || auth.ServiceGroupID == "" {
-			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "hub_id, tenant_id, and service_group_id are required"})
+		if auth.HubID == "" || auth.TenantID == "" {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "hub_id and tenant_id are required"})
 			return
+		}
+		isExternalComputeGrant := auth.AllowExternalProviders || auth.Source == "external_provider_permission" || auth.ServiceGroupID == llmservice.ExternalComputePermissionServiceGroupID
+		if auth.ServiceGroupID == "" && isExternalComputeGrant {
+			auth.ServiceGroupID = llmservice.ExternalComputePermissionServiceGroupID
+		}
+		if auth.ServiceGroupID == "" {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "service_group_id is required"})
+			return
+		}
+		if isExternalComputeGrant {
+			auth.Source = "external_provider_permission"
+			if auth.Status == "" {
+				auth.Status = "active"
+			}
+			if auth.CreditsTotal <= 0 {
+				auth.CreditsTotal = 1000000000000
+			}
+			now := time.Now().UTC()
+			if auth.StartsAt.IsZero() {
+				auth.StartsAt = now
+			}
+			if auth.ExpiresAt.IsZero() {
+				auth.ExpiresAt = time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC)
+			}
+		}
+		if auth.Source == "" {
+			auth.Source = "admin_grant"
 		}
 		if auth.ID == "" {
 			auth.ID = "auth_admin_" + auth.HubID + "_" + auth.TenantID + "_" + auth.ServiceGroupID
 		}
-		if auth.Source == "" {
-			auth.Source = "admin_grant"
+		var supersededExternal []*llmservice.TenantAuthorization
+		if isExternalComputeGrant {
+			existing, err := checker.ListByHubTenant(r.Context(), auth.HubID, auth.TenantID)
+			if err != nil {
+				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			for _, old := range existing {
+				if old == nil || old.ID == auth.ID {
+					continue
+				}
+				if !old.AllowExternalProviders && old.Source != "external_provider_permission" && old.ServiceGroupID != llmservice.ExternalComputePermissionServiceGroupID {
+					continue
+				}
+				supersededExternal = append(supersededExternal, old)
+			}
 		}
 		now := time.Now().UTC()
 		if auth.CreatedAt.IsZero() {
@@ -451,6 +495,14 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 		if err := checker.CreateAuthorization(r.Context(), &auth); err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
+		}
+		for _, old := range supersededExternal {
+			old.AllowExternalProviders = false
+			old.Status = "expired"
+			if err := checker.UpdateAuthorization(r.Context(), old); err != nil {
+				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
 		}
 		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok", "id": auth.ID})
 	}

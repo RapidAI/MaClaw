@@ -368,6 +368,11 @@ func (s *Service) verifyHubSecret(ctx context.Context, hubID, rawSecret string) 
 	return nil
 }
 
+// VerifyHubSecret validates a Hub machine secret for Hub-facing APIs.
+func (s *Service) VerifyHubSecret(ctx context.Context, hubID, rawSecret string) error {
+	return s.verifyHubSecret(ctx, hubID, rawSecret)
+}
+
 // SyncInvitationCodes registers invitation codes for routing to this hub.
 // Called by Hub when new codes are generated.
 func (s *Service) SyncInvitationCodes(ctx context.Context, hubID, hubSecret string, codes []string, tenantID string) error {

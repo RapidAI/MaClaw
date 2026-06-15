@@ -344,6 +344,113 @@ func TestThinkFilter_FalseAlarmPartialTag(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ThinkFilter reasoning callback tests
+// ---------------------------------------------------------------------------
+
+func TestThinkFilter_ReasoningCallback_BasicBlock(t *testing.T) {
+	var content, reasoning strings.Builder
+	tf := newThinkFilterWithReasoning(
+		func(s string) { content.WriteString(s) },
+		func(s string) { reasoning.WriteString(s) },
+	)
+	tf.Write("<think>I need to analyze this</think>The answer is 42")
+	tf.Flush()
+	if got := content.String(); got != "The answer is 42" {
+		t.Errorf("content: expected %q, got %q", "The answer is 42", got)
+	}
+	if got := reasoning.String(); got != "I need to analyze this" {
+		t.Errorf("reasoning: expected %q, got %q", "I need to analyze this", got)
+	}
+}
+
+func TestThinkFilter_ReasoningCallback_ChunkedDelivery(t *testing.T) {
+	var content, reasoning strings.Builder
+	tf := newThinkFilterWithReasoning(
+		func(s string) { content.WriteString(s) },
+		func(s string) { reasoning.WriteString(s) },
+	)
+	tf.Write("<think>step 1, ")
+	tf.Write("step 2, ")
+	tf.Write("step 3</think>")
+	tf.Write("result")
+	tf.Flush()
+	if got := content.String(); got != "result" {
+		t.Errorf("content: expected %q, got %q", "result", got)
+	}
+	if got := reasoning.String(); got != "step 1, step 2, step 3" {
+		t.Errorf("reasoning: expected %q, got %q", "step 1, step 2, step 3", got)
+	}
+}
+
+func TestThinkFilter_ReasoningCallback_SplitCloseTag(t *testing.T) {
+	var content, reasoning strings.Builder
+	tf := newThinkFilterWithReasoning(
+		func(s string) { content.WriteString(s) },
+		func(s string) { reasoning.WriteString(s) },
+	)
+	tf.Write("<think>thinking</thi")
+	tf.Write("nk>visible")
+	tf.Flush()
+	if got := content.String(); got != "visible" {
+		t.Errorf("content: expected %q, got %q", "visible", got)
+	}
+	if got := reasoning.String(); got != "thinking" {
+		t.Errorf("reasoning: expected %q, got %q", "thinking", got)
+	}
+}
+
+func TestThinkFilter_ReasoningCallback_MultipleBlocks(t *testing.T) {
+	var content, reasoning strings.Builder
+	tf := newThinkFilterWithReasoning(
+		func(s string) { content.WriteString(s) },
+		func(s string) { reasoning.WriteString(s) },
+	)
+	tf.Write("<think>first</think>A<think>second</think>B")
+	tf.Flush()
+	if got := content.String(); got != "AB" {
+		t.Errorf("content: expected %q, got %q", "AB", got)
+	}
+	if got := reasoning.String(); got != "firstsecond" {
+		t.Errorf("reasoning: expected %q, got %q", "firstsecond", got)
+	}
+}
+
+func TestThinkFilter_ReasoningCallback_UnclosedThinkAtStreamEnd(t *testing.T) {
+	var content, reasoning strings.Builder
+	tf := newThinkFilterWithReasoning(
+		func(s string) { content.WriteString(s) },
+		func(s string) { reasoning.WriteString(s) },
+	)
+	tf.Write("<think>partial thinking never closed")
+	tf.Flush()
+	if got := content.String(); got != "" {
+		t.Errorf("content: expected empty, got %q", got)
+	}
+	if got := reasoning.String(); got != "partial thinking never closed" {
+		t.Errorf("reasoning: expected %q, got %q", "partial thinking never closed", got)
+	}
+}
+
+func TestThinkFilter_ReasoningCallback_CharByChar(t *testing.T) {
+	input := "<think>hidden</think>visible"
+	var content, reasoning strings.Builder
+	tf := newThinkFilterWithReasoning(
+		func(s string) { content.WriteString(s) },
+		func(s string) { reasoning.WriteString(s) },
+	)
+	for _, c := range input {
+		tf.Write(string(c))
+	}
+	tf.Flush()
+	if got := content.String(); got != "visible" {
+		t.Errorf("content: expected %q, got %q", "visible", got)
+	}
+	if got := reasoning.String(); got != "hidden" {
+		t.Errorf("reasoning: expected %q, got %q", "hidden", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // funcCallFilter tests
 // ---------------------------------------------------------------------------
 

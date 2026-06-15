@@ -198,7 +198,12 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 	repfWS := newRepetitionFilter(rpfWS.Write)
 	tcf := newToolCallFilter(repfWS.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
-	tf := newThinkFilter(fcf.Callback())
+	thinkReasoningCbWS := func(delta string) {
+		if onToken != nil && delta != "" {
+			onToken("\x01" + delta)
+		}
+	}
+	tf := newThinkFilterWithReasoning(fcf.Callback(), thinkReasoningCbWS)
 
 	// -------------------------------------------------------------------
 	// 7. Accumulators

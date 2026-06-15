@@ -3,8 +3,8 @@
 
 // Register i18n keys (must happen before applyI18n runs on this tab's elements)
 if (typeof I18N_EN !== 'undefined') {
-  Object.assign(I18N_EN, {computeMarketStatsHub:'Hub Filter',computeMarketStatsTenant:'Tenant Filter',computeMarketStatsPeriod:'Period',computeMarketPeriodDaily:'Daily',computeMarketPeriodWeekly:'Weekly',computeMarketPeriodMonthly:'Monthly',computeMarketStartDate:'Start Date',computeMarketEndDate:'End Date',computeMarketQuery:'Query',computeMarketStatsHint:'Select filters and click Query.',computeMarketStatsEmpty:'No usage data.',computeMarketStatsError:'Query failed',computeMarketStatsTotalInput:'Input Tokens',computeMarketStatsTotalOutput:'Output Tokens',computeMarketStatsTotalCredits:'Credits Used',computeMarketStatsTotalRequests:'Requests',computeMarketStatsCacheHitRate:'Cache Hit Rate',computeMarketStatsPeriodStart:'Period',computeMarketStatsAllHubs:'All Hubs',computeMarketStatsAllTenants:'All Tenants',computeMarketStatusEnabled:'Enabled',computeMarketStatusDisabled:'Disabled',computeMarketEdit:'Edit',computeMarketCardNameRequired:'Card name is required',computeMarketCardGroupRequired:'Service group is required',computeMarketCardCreditsRequired:'Credits must be greater than 0',computeMarketCardPriceRequired:'Price must be greater than 0',computeMarketConfirmOrderPrompt:'Confirm this order is paid? Credits will be added immediately.',computeMarketOrderConfirmed:'Order confirmed.',computeMarketCardDescription:'Detailed Description',computeMarketCardDescriptionHint:'Visible in admin list and storefront. Include suitable tenant, duration, model capability, and usage boundary.',computeMarketCardDescriptionEmpty:'No description yet',computeMarketCardServiceGroup:'Service group',computeMarketCardAgent:'Compute agent',computeMarketCardCreditsUnit:'credits',computeMarketCardPriceUnit:'RMB'});
-  Object.assign(I18N_ZH, {computeMarketStatsHub:'Hub \u7b5b\u9009',computeMarketStatsTenant:'\u79df\u6237\u7b5b\u9009',computeMarketStatsPeriod:'\u7edf\u8ba1\u5468\u671f',computeMarketPeriodDaily:'\u6309\u65e5',computeMarketPeriodWeekly:'\u6309\u5468',computeMarketPeriodMonthly:'\u6309\u6708',computeMarketStartDate:'\u5f00\u59cb\u65e5\u671f',computeMarketEndDate:'\u7ed3\u675f\u65e5\u671f',computeMarketQuery:'\u67e5\u8be2',computeMarketStatsHint:'\u9009\u62e9\u7b5b\u9009\u6761\u4ef6\u540e\u70b9\u51fb\u67e5\u8be2\u3002',computeMarketStatsEmpty:'\u6240\u9009\u671f\u95f4\u6682\u65e0\u7528\u91cf\u6570\u636e\u3002',computeMarketStatsError:'\u67e5\u8be2\u5931\u8d25',computeMarketStatsTotalInput:'\u8f93\u5165 Token',computeMarketStatsTotalOutput:'\u8f93\u51fa Token',computeMarketStatsTotalCredits:'\u6d88\u8017\u989d\u5ea6',computeMarketStatsTotalRequests:'\u8bf7\u6c42\u6570',computeMarketStatsCacheHitRate:'\u7f13\u5b58\u547d\u4e2d\u7387',computeMarketStatsPeriodStart:'\u65f6\u6bb5',computeMarketStatsAllHubs:'\u5168\u90e8 Hub',computeMarketStatsAllTenants:'\u5168\u90e8\u79df\u6237',computeMarketStatusEnabled:'\u4e0a\u67b6',computeMarketStatusDisabled:'\u4e0b\u67b6',computeMarketEdit:'\u7f16\u8f91',computeMarketCardNameRequired:'\u8bf7\u586b\u5199\u5361\u540d\u79f0',computeMarketCardGroupRequired:'\u8bf7\u5148\u9009\u62e9\u670d\u52a1\u7ec4',computeMarketCardCreditsRequired:'\u7b97\u529b\u989d\u5ea6\u5fc5\u987b\u5927\u4e8e 0',computeMarketCardPriceRequired:'\u4ef7\u683c\u5fc5\u987b\u5927\u4e8e 0',computeMarketConfirmOrderPrompt:'\u786e\u8ba4\u8be5\u8ba2\u5355\u5df2\u5230\u8d26\uff1f\u5c06\u7acb\u5373\u4e3a\u79df\u6237\u5145\u503c\u3002',computeMarketOrderConfirmed:'\u5df2\u786e\u8ba4\u3002',computeMarketCardDescription:'\u8be6\u7ec6\u63cf\u8ff0',computeMarketCardDescriptionHint:'\u4f1a\u5728\u7ba1\u7406\u5217\u8868\u548c\u8d2d\u4e70\u9875\u663e\u793a\uff0c\u53ef\u5199\u9002\u7528\u79df\u6237\u3001\u5468\u671f\u3001\u6a21\u578b\u80fd\u529b\u548c\u4f7f\u7528\u8fb9\u754c\u3002',computeMarketCardDescriptionEmpty:'\u6682\u65e0\u8be6\u7ec6\u63cf\u8ff0',computeMarketCardServiceGroup:'\u670d\u52a1\u7ec4',computeMarketCardAgent:'\u7b97\u529b\u4ee3\u7406\u5546',computeMarketCardCreditsUnit:'\u70b9',computeMarketCardPriceUnit:'\u5143'});
+  Object.assign(I18N_EN, {computeMarketStatsHub:'Hub Filter',computeMarketStatsTenant:'Tenant Filter',computeMarketStatsPeriod:'Period',computeMarketPeriodDaily:'Daily',computeMarketPeriodWeekly:'Weekly',computeMarketPeriodMonthly:'Monthly',computeMarketStartDate:'Start Date',computeMarketEndDate:'End Date',computeMarketQuery:'Query',computeMarketStatsHint:'Select filters and click Query.',computeMarketStatsEmpty:'No usage data.',computeMarketStatsError:'Query failed',computeMarketStatsTotalInput:'Input Tokens',computeMarketStatsTotalOutput:'Output Tokens',computeMarketStatsTotalCredits:'Credits Used',computeMarketStatsTotalRequests:'Requests',computeMarketStatsCacheHitRate:'Cache Hit Rate',computeMarketStatsPeriodStart:'Period',computeMarketStatsAllHubs:'All Hubs',computeMarketStatsAllTenants:'All Tenants',computeMarketStatusEnabled:'Enabled',computeMarketStatusDisabled:'Disabled',computeMarketEdit:'Edit',computeMarketCardNameRequired:'Card name is required',computeMarketCardGroupRequired:'Service group is required',computeMarketCardCreditsRequired:'Credits must be greater than 0',computeMarketCardPriceRequired:'Price must be greater than 0',computeMarketConfirmOrderPrompt:'Confirm this order is paid? Credits will be added immediately.',computeMarketOrderConfirmed:'Order confirmed.',computeMarketArchiveOrder:'Archive',computeMarketArchiveOrderPrompt:'Archive this order? It will leave the active order list.',computeMarketOrderArchived:'Order archived.',computeMarketViewArchivedOrders:'View archived orders',computeMarketViewActiveOrders:'View active orders',computeMarketArchivedOrdersDesc:'Viewing archived old orders. These orders are hidden from the active queue.',computeMarketArchivedAt:'Archived at',computeMarketCardDescription:'Detailed Description',computeMarketCardDescriptionHint:'Visible in admin list and storefront. Include suitable tenant, duration, model capability, and usage boundary.',computeMarketCardDescriptionEmpty:'No description yet',computeMarketCardServiceGroup:'Service group',computeMarketCardAgent:'Compute agent',computeMarketCardCreditsUnit:'credits',computeMarketCardPriceUnit:'RMB'});
+  Object.assign(I18N_ZH, {computeMarketStatsHub:'Hub \u7b5b\u9009',computeMarketStatsTenant:'\u79df\u6237\u7b5b\u9009',computeMarketStatsPeriod:'\u7edf\u8ba1\u5468\u671f',computeMarketPeriodDaily:'\u6309\u65e5',computeMarketPeriodWeekly:'\u6309\u5468',computeMarketPeriodMonthly:'\u6309\u6708',computeMarketStartDate:'\u5f00\u59cb\u65e5\u671f',computeMarketEndDate:'\u7ed3\u675f\u65e5\u671f',computeMarketQuery:'\u67e5\u8be2',computeMarketStatsHint:'\u9009\u62e9\u7b5b\u9009\u6761\u4ef6\u540e\u70b9\u51fb\u67e5\u8be2\u3002',computeMarketStatsEmpty:'\u6240\u9009\u671f\u95f4\u6682\u65e0\u7528\u91cf\u6570\u636e\u3002',computeMarketStatsError:'\u67e5\u8be2\u5931\u8d25',computeMarketStatsTotalInput:'\u8f93\u5165 Token',computeMarketStatsTotalOutput:'\u8f93\u51fa Token',computeMarketStatsTotalCredits:'\u6d88\u8017\u989d\u5ea6',computeMarketStatsTotalRequests:'\u8bf7\u6c42\u6570',computeMarketStatsCacheHitRate:'\u7f13\u5b58\u547d\u4e2d\u7387',computeMarketStatsPeriodStart:'\u65f6\u6bb5',computeMarketStatsAllHubs:'\u5168\u90e8 Hub',computeMarketStatsAllTenants:'\u5168\u90e8\u79df\u6237',computeMarketStatusEnabled:'\u4e0a\u67b6',computeMarketStatusDisabled:'\u4e0b\u67b6',computeMarketEdit:'\u7f16\u8f91',computeMarketCardNameRequired:'\u8bf7\u586b\u5199\u5361\u540d\u79f0',computeMarketCardGroupRequired:'\u8bf7\u5148\u9009\u62e9\u670d\u52a1\u7ec4',computeMarketCardCreditsRequired:'\u7b97\u529b\u989d\u5ea6\u5fc5\u987b\u5927\u4e8e 0',computeMarketCardPriceRequired:'\u4ef7\u683c\u5fc5\u987b\u5927\u4e8e 0',computeMarketConfirmOrderPrompt:'\u786e\u8ba4\u8be5\u8ba2\u5355\u5df2\u5230\u8d26\uff1f\u5c06\u7acb\u5373\u4e3a\u79df\u6237\u5145\u503c\u3002',computeMarketOrderConfirmed:'\u5df2\u786e\u8ba4\u3002',computeMarketArchiveOrder:'\u5f52\u6863',computeMarketArchiveOrderPrompt:'\u5f52\u6863\u8be5\u8ba2\u5355\uff1f\u5b83\u5c06\u4e0d\u518d\u663e\u793a\u5728\u5f53\u524d\u8ba2\u5355\u5217\u8868\u3002',computeMarketOrderArchived:'\u5df2\u5f52\u6863\u3002',computeMarketViewArchivedOrders:'\u67e5\u770b\u5f52\u6863\u8ba2\u5355',computeMarketViewActiveOrders:'\u67e5\u770b\u5f53\u524d\u8ba2\u5355',computeMarketArchivedOrdersDesc:'\u6b63\u5728\u67e5\u770b\u5df2\u5f52\u6863\u7684\u65e7\u8ba2\u5355\uff0c\u8fd9\u4e9b\u8ba2\u5355\u4e0d\u4f1a\u51fa\u73b0\u5728\u5f53\u524d\u961f\u5217\u3002',computeMarketArchivedAt:'\u5f52\u6863\u65f6\u95f4',computeMarketCardDescription:'\u8be6\u7ec6\u63cf\u8ff0',computeMarketCardDescriptionHint:'\u4f1a\u5728\u7ba1\u7406\u5217\u8868\u548c\u8d2d\u4e70\u9875\u663e\u793a\uff0c\u53ef\u5199\u9002\u7528\u79df\u6237\u3001\u5468\u671f\u3001\u6a21\u578b\u80fd\u529b\u548c\u4f7f\u7528\u8fb9\u754c\u3002',computeMarketCardDescriptionEmpty:'\u6682\u65e0\u8be6\u7ec6\u63cf\u8ff0',computeMarketCardServiceGroup:'\u670d\u52a1\u7ec4',computeMarketCardAgent:'\u7b97\u529b\u4ee3\u7406\u5546',computeMarketCardCreditsUnit:'\u70b9',computeMarketCardPriceUnit:'\u5143'});
 }
 
 (function () {
@@ -14,6 +14,7 @@ if (typeof I18N_EN !== 'undefined') {
   let cmCardTypes = [];
   let cmEditingCardID = '';
   let cmInitInFlight = null;
+  let cmOrdersArchived = false;
 
   function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
@@ -255,21 +256,37 @@ if (typeof I18N_EN !== 'undefined') {
 
   async function loadComputeOrders() {
     try {
-      const data = await api('/api/admin/cardstore/orders?limit=50');
+      updateComputeOrdersArchiveUI();
+      const data = await api('/api/admin/cardstore/orders?limit=50' + (cmOrdersArchived ? '&archived=1' : ''));
       renderComputeOrders(data.orders || []);
     } catch (e) { renderComputeOrders([]); }
+  }
+
+  function updateComputeOrdersArchiveUI() {
+    var btn = document.getElementById('cmArchivedOrdersBtn');
+    if (btn) btn.textContent = cmOrdersArchived ? tr('computeMarketViewActiveOrders') : tr('computeMarketViewArchivedOrders');
+    var desc = document.getElementById('cmOrdersDesc');
+    if (desc) desc.textContent = cmOrdersArchived ? tr('computeMarketArchivedOrdersDesc') : tr('computeMarketOrdersDesc');
   }
 
   function renderComputeOrders(orders) {
     const container = document.getElementById('cmOrdersList');
     if (!container) return;
+    updateComputeOrdersArchiveUI();
     if (!orders.length) { container.innerHTML = '<div class="hint">' + tr('computeMarketNoOrders') + '</div>'; return; }
     container.innerHTML = orders.map(function (o) {
       var statusClass = o.status === 'activated' ? 'ok' : (o.status === 'pending' || o.status === 'personal_created' ? 'warn' : '');
-      var confirmBtn = (o.status === 'pending' || o.status === 'personal_created' || o.status === 'personal_opened') ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + esc(o.order_no) + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
+      var confirmBtn = (!cmOrdersArchived && (o.status === 'pending' || o.status === 'personal_created' || o.status === 'personal_opened')) ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + esc(o.order_no) + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
+      var archiveBtn = !cmOrdersArchived ? '<button class="btn-ghost compact-btn" onclick="archiveComputeOrder(\'' + esc(o.order_no) + '\')">' + tr('computeMarketArchiveOrder') + '</button>' : '';
       var agent = o.agent_name ? ' · ' + tr('computeMarketCardAgent') + ': ' + esc(o.agent_name) : '';
-      return '<div class="data-row"><div class="data-row-main"><strong>' + esc(o.order_no) + '</strong> <span class="badge ' + statusClass + '">' + esc(o.status) + '</span><span class="data-row-meta">' + esc(o.email || '') + ' · ¥' + (o.amount || 0) + ' · ' + esc(o.product_label || o.product_id || '') + agent + '</span></div><div class="data-row-actions">' + confirmBtn + '</div></div>';
+      var archivedMeta = cmOrdersArchived && o.archived_at ? ' · ' + tr('computeMarketArchivedAt') + ': ' + esc(new Date(o.archived_at).toLocaleString()) : '';
+      return '<div class="data-row"><div class="data-row-main"><strong>' + esc(o.order_no) + '</strong> <span class="badge ' + statusClass + '">' + esc(o.status) + '</span><span class="data-row-meta">' + esc(o.email || '') + ' · ¥' + (o.amount || 0) + ' · ' + esc(o.product_label || o.product_id || '') + agent + archivedMeta + '</span></div><div class="data-row-actions">' + confirmBtn + archiveBtn + '</div></div>';
     }).join('');
+  }
+
+  async function toggleComputeArchivedOrders() {
+    cmOrdersArchived = !cmOrdersArchived;
+    await loadComputeOrders();
   }
 
   async function confirmComputeOrder(orderNo) {
@@ -278,6 +295,15 @@ if (typeof I18N_EN !== 'undefined') {
       await api('/api/admin/cardstore/orders/' + orderNo + '/confirm', { method: 'POST' });
       loadComputeOrders();
       if (window.showToast) showToast(tr('computeMarketOrderConfirmed'), 'success');
+    } catch (e) { if (window.showToast) showToast(e.message, 'error'); }
+  }
+
+  async function archiveComputeOrder(orderNo) {
+    if (!confirm(tr('computeMarketArchiveOrderPrompt'))) return;
+    try {
+      await api('/api/admin/cardstore/orders/' + encodeURIComponent(orderNo) + '/archive', { method: 'POST' });
+      loadComputeOrders();
+      if (window.showToast) showToast(tr('computeMarketOrderArchived'), 'success');
     } catch (e) { if (window.showToast) showToast(e.message, 'error'); }
   }
 
@@ -413,6 +439,8 @@ if (typeof I18N_EN !== 'undefined') {
   window.saveComputeCard = saveComputeCard;
   window.loadComputeOrders = loadComputeOrders;
   window.confirmComputeOrder = confirmComputeOrder;
+  window.archiveComputeOrder = archiveComputeOrder;
+  window.toggleComputeArchivedOrders = toggleComputeArchivedOrders;
   window.queryComputeStats = queryComputeStats;
   window.loadStatsFilters = loadStatsFilters;
   window.CARD_TEMPLATES = CARD_TEMPLATES;

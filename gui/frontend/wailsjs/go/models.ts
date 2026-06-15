@@ -456,6 +456,7 @@ export namespace main {
 	    skill_purchase_mode: string;
 	    gossip_auto_publish: boolean;
 	    llm_trajectory_logging: boolean;
+	    memory_recall_log_enabled: boolean;
         show_assistant_entry: boolean;
 	    pet_enabled?: boolean;
 	    pet_skin?: string;
@@ -643,6 +644,7 @@ export namespace main {
 	        this.floating_btn_y = source["floating_btn_y"];
 	        this.floating_btn_position_set = source["floating_btn_position_set"];
 	        this.llm_trajectory_logging = source["llm_trajectory_logging"];
+	        this.memory_recall_log_enabled = source["memory_recall_log_enabled"];
 	        this.trial_reflect_enabled = source["trial_reflect_enabled"];
 	        this.llm_token_usage = source["llm_token_usage"];
 	        this.onboarding_done = source["onboarding_done"];

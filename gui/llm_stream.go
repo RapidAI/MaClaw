@@ -422,15 +422,24 @@ func (f tokenStreamFilter) Flush() {
 }
 
 type flushableThinkFilter struct {
-	downstream llm.TokenCallback
-	inside     bool
-	trimNext   bool
-	pending    strings.Builder
-	emitted    bool
+	downstream  llm.TokenCallback
+	reasoningCb llm.TokenCallback // optional: receives thinking content (forwarded to frontend as reasoning)
+	inside      bool
+	trimNext    bool
+	pending     strings.Builder
+	emitted     bool
 }
 
 func newFlushableThinkFilter(downstream llm.TokenCallback) *flushableThinkFilter {
 	return &flushableThinkFilter{downstream: downstream}
+}
+
+// SetReasoningCallback sets a callback that receives thinking content
+// (text inside <think>...</think> tags) instead of discarding it.
+// The callback is typically used to forward thinking tokens to the frontend
+// with a \x01 prefix so they display in the reasoning/thinking UI.
+func (f *flushableThinkFilter) SetReasoningCallback(cb llm.TokenCallback) {
+	f.reasoningCb = cb
 }
 
 func (f *flushableThinkFilter) Write(delta string) {
@@ -499,11 +508,41 @@ func (f *flushableThinkFilter) drain(force bool) {
 		}
 
 		if remainder, found := consumeTagClose(s, guiThinkClose); found {
+			// Forward thinking content before the close tag to reasoning callback.
+			if f.reasoningCb != nil {
+				closeIdx := len(s) - len(remainder) - len(guiThinkClose)
+				if closeIdx > 0 {
+					f.reasoningCb(s[:closeIdx])
+				}
+			}
 			f.inside = false
 			f.trimNext = true
 			f.pending.Reset()
 			f.pending.WriteString(remainder)
 			continue
+		}
+
+		// Inside <think> block: forward content to reasoning callback if set.
+		if f.reasoningCb != nil {
+			// Emit everything except possible partial close tag at the end.
+			partLen := partialSuffixLen(s, guiThinkClose)
+			if partLen > 0 {
+				if len(s) > partLen {
+					f.reasoningCb(s[:len(s)-partLen])
+					f.pending.Reset()
+					f.pending.WriteString(s[len(s)-partLen:])
+				}
+				if force {
+					// Partial tag at end of stream — emit as reasoning too.
+					f.reasoningCb(f.pending.String())
+					f.pending.Reset()
+				}
+				return
+			}
+			// No partial close tag — emit all accumulated content as reasoning.
+			f.reasoningCb(s)
+			f.pending.Reset()
+			return
 		}
 
 		if force {
@@ -722,8 +761,19 @@ func stripXMLToolCalls(s string) string {
 // ---------------------------------------------------------------------------
 
 func newThinkFilter(downstream llm.TokenCallback) tokenStreamFilter {
+	return newThinkFilterWithReasoning(downstream, nil)
+}
+
+// newThinkFilterWithReasoning creates a think filter that optionally forwards
+// thinking content (inside <think> tags) to the reasoningCb callback.
+// This allows the frontend to display the model's thinking process in a
+// collapsible UI section.
+func newThinkFilterWithReasoning(downstream llm.TokenCallback, reasoningCb llm.TokenCallback) tokenStreamFilter {
 	detailsFilter := newFlushableDetailsFilter(downstream)
 	thinkFilter := newFlushableThinkFilter(detailsFilter.Write)
+	if reasoningCb != nil {
+		thinkFilter.SetReasoningCallback(reasoningCb)
+	}
 	return tokenStreamFilter{
 		writeFn: thinkFilter.Write,
 		flushFn: func() {
@@ -1259,7 +1309,14 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	repf := newRepetitionFilter(rpf.Write)
 	tcf := newToolCallFilter(repf.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
-	tf := newThinkFilter(fcf.Callback())
+	// Forward <think> content as reasoning tokens (\x01 prefix) so the
+	// frontend can display the model's thinking process.
+	thinkReasoningCb := func(delta string) {
+		if onToken != nil && delta != "" {
+			onToken("\x01" + delta)
+		}
+	}
+	tf := newThinkFilterWithReasoning(fcf.Callback(), thinkReasoningCb)
 	var contentBuf strings.Builder
 	type toolAccum struct {
 		id   string
@@ -1523,7 +1580,12 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	repf := newRepetitionFilter(rpf.Write)
 	tcf := newToolCallFilter(repf.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
-	tf := newThinkFilter(fcf.Callback())
+	thinkReasoningCbSDK := func(delta string) {
+		if onToken != nil && delta != "" {
+			onToken("\x01" + delta)
+		}
+	}
+	tf := newThinkFilterWithReasoning(fcf.Callback(), thinkReasoningCbSDK)
 
 	httpDoStartedAt := time.Now()
 	resp, err := llm.DoOpenAIRequestStream(reqCtx, cfg, messages, tools, httpClient, func(delta string) {

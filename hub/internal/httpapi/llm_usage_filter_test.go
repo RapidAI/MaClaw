@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,7 +107,7 @@ func TestUpdateLLMProvidersHandlerDropsRemoteCodingToolUsagePollution(t *testing
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers", bytes.NewReader(payload))
 	rr := httptest.NewRecorder()
-	UpdateLLMProvidersHandler(system).ServeHTTP(rr, req)
+	UpdateLLMProvidersHandler(system, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -120,6 +121,170 @@ func TestUpdateLLMProvidersHandlerDropsRemoteCodingToolUsagePollution(t *testing
 	}
 	if stat := reg.TokenUsage["provider-a"]; stat == nil || stat.TotalTokens != 15 || stat.Requests != 1 {
 		t.Fatalf("normal provider usage should be preserved: %#v", stat)
+	}
+}
+
+func TestUpdateLLMProvidersHandlerRejectsNewProviderWithoutComputeGrant(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	payload, err := json.Marshal(im.LLMProviderRegistry{
+		Providers: []im.LLMProvider{{ID: "provider-a", Name: "Provider A", APIURL: "https://example.com/v1", Model: "test-model"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers", bytes.NewReader(payload))
+	rr := httptest.NewRecorder()
+	UpdateLLMProvidersHandler(system, llmservice.NewTenantLLMAccessControl(nil)).ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s, want 403", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "LLM_EXTERNAL_PROVIDER_NOT_GRANTED") {
+		t.Fatalf("body missing grant error: %s", rr.Body.String())
+	}
+}
+
+func TestUpdateLLMProvidersHandlerAllowsNewProviderWithComputeGrant(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	accessCtrl.UpdateFromHeartbeat(store.DefaultTenantID, &llmservice.TenantAuthorizationStatus{
+		TenantID:               store.DefaultTenantID,
+		AllowExternalProviders: true,
+	})
+	payload, err := json.Marshal(im.LLMProviderRegistry{
+		Providers: []im.LLMProvider{{ID: "provider-a", Name: "Provider A", APIURL: "https://example.com/v1", Model: "test-model"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers", bytes.NewReader(payload))
+	rr := httptest.NewRecorder()
+	UpdateLLMProvidersHandler(system, accessCtrl).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateLLMProvidersHandlerUsesCurrentComputeGrantWhenCapturedNil(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	system := newTestLLMServiceSystemSettings()
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	accessCtrl.UpdateFromHeartbeat(store.DefaultTenantID, &llmservice.TenantAuthorizationStatus{
+		TenantID:               store.DefaultTenantID,
+		AllowExternalProviders: true,
+	})
+	SetMaClawModule(&llmservice.MaClawModule{AccessCtrl: accessCtrl})
+
+	payload, err := json.Marshal(im.LLMProviderRegistry{
+		Providers: []im.LLMProvider{{ID: "provider-a", Name: "Provider A", APIURL: "https://example.com/v1", Model: "test-model"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers", bytes.NewReader(payload))
+	rr := httptest.NewRecorder()
+	UpdateLLMProvidersHandler(system, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestGetLLMProvidersHandlerHidesProvidersWithoutComputeGrant(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{
+		CurrentProviderID: "provider-a",
+		Providers:         []im.LLMProvider{{ID: "provider-a", Name: "Provider A", APIURL: "https://example.com/v1", Model: "test-model"}},
+	}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/providers", nil)
+	rr := httptest.NewRecorder()
+	GetLLMProvidersHandler(system, llmservice.NewTenantLLMAccessControl(nil)).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		CurrentProviderID string   `json:"current_provider_id"`
+		Providers         []any    `json:"providers"`
+		AvailableModels   []string `json:"available_models"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.CurrentProviderID != "" || len(payload.Providers) != 0 || len(payload.AvailableModels) != 0 {
+		t.Fatalf("providers should be hidden without compute grant: %#v", payload)
+	}
+}
+
+func TestGetLLMProvidersHandlerShowsProvidersWithComputeGrant(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{
+		CurrentProviderID: "provider-a",
+		Providers:         []im.LLMProvider{{ID: "provider-a", Name: "Provider A", APIURL: "https://example.com/v1", Model: "test-model"}},
+	}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	accessCtrl.UpdateFromHeartbeat(store.DefaultTenantID, &llmservice.TenantAuthorizationStatus{
+		TenantID:               store.DefaultTenantID,
+		AllowExternalProviders: true,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/providers", nil)
+	rr := httptest.NewRecorder()
+	GetLLMProvidersHandler(system, accessCtrl).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		CurrentProviderID string   `json:"current_provider_id"`
+		Providers         []any    `json:"providers"`
+		AvailableModels   []string `json:"available_models"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.CurrentProviderID != "provider-a" || len(payload.Providers) != 1 || len(payload.AvailableModels) != 1 {
+		t.Fatalf("providers should be visible with compute grant: %#v", payload)
+	}
+}
+
+func TestGetLLMProvidersHandlerUsesCurrentComputeGrantWhenCapturedNil(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{
+		CurrentProviderID: "provider-a",
+		Providers:         []im.LLMProvider{{ID: "provider-a", Name: "Provider A", APIURL: "https://example.com/v1", Model: "test-model"}},
+	}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	accessCtrl.UpdateFromHeartbeat(store.DefaultTenantID, &llmservice.TenantAuthorizationStatus{
+		TenantID:               store.DefaultTenantID,
+		AllowExternalProviders: true,
+	})
+	SetMaClawModule(&llmservice.MaClawModule{AccessCtrl: accessCtrl})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/providers", nil)
+	rr := httptest.NewRecorder()
+	GetLLMProvidersHandler(system, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		CurrentProviderID string `json:"current_provider_id"`
+		Providers         []any  `json:"providers"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.CurrentProviderID != "provider-a" || len(payload.Providers) != 1 {
+		t.Fatalf("providers should be visible with current compute grant: %#v", payload)
 	}
 }
 

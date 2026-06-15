@@ -3,21 +3,31 @@
 package main
 
 /*
-#cgo darwin CFLAGS: -DDARWIN
+#cgo darwin CFLAGS: -DDARWIN -Wno-deprecated-declarations -Wno-unguarded-availability-new
 #cgo darwin LDFLAGS: -framework CoreGraphics -framework ImageIO -framework CoreFoundation
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <ImageIO/ImageIO.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdlib.h>
+#include <dlfcn.h>
+
+// CGWindowListCreateImage is marked API_UNAVAILABLE in macOS 15+ SDK headers
+// but the symbol still exists at runtime. Use dlsym to bypass.
+typedef CGImageRef (*CGWindowListCreateImageFn)(CGRect, uint32_t, uint32_t, uint32_t);
 
 // captureFullScreenPNG captures the entire screen using CGWindowListCreateImage
-// and encodes it as PNG into a malloc'd buffer. The caller must free() the
-// returned pointer. Returns NULL on failure; *outLen is set to the data length.
+// (loaded dynamically) and encodes it as PNG into a malloc'd buffer.
+// The caller must free() the returned pointer. Returns NULL on failure.
 static const void* captureFullScreenPNG(size_t* outLen) {
     *outLen = 0;
 
-    CGImageRef image = CGWindowListCreateImage(
+    CGWindowListCreateImageFn fn = (CGWindowListCreateImageFn)dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
+    if (!fn) {
+        return NULL;
+    }
+
+    CGImageRef image = fn(
         CGRectInfinite,
         kCGWindowListOptionOnScreenOnly,
         kCGNullWindowID,
@@ -85,22 +95,39 @@ import "C"
 import (
 	"encoding/base64"
 	"fmt"
+	"log"
 	"unsafe"
 )
 
-// nativeCaptureScreenshot uses CoreGraphics CGWindowListCreateImage to capture
-// the full screen directly in-process. This avoids spawning screencapture as a
-// child process, which on macOS 26+ triggers its own TCC permission dialog.
+// nativeCaptureScreenshot uses ScreenCaptureKit (macOS 14+) or CoreGraphics
+// CGWindowListCreateImage (legacy) to capture the full screen directly in-process.
+// This avoids spawning screencapture as a child process, which on macOS 26+
+// triggers its own TCC permission dialog.
 // Returns base64-encoded PNG data on success.
 func nativeCaptureScreenshot() (string, error) {
+	// Try ScreenCaptureKit first (macOS 14+, recommended by Apple)
+	if b64, err := sckCaptureScreenshot(); err == nil && b64 != "" {
+		return b64, nil
+	} else if err != nil {
+		log.Printf("[screenshot-native] SCK failed, trying legacy CGWindowListCreateImage: %v", err)
+	}
+
+	// Legacy fallback: CGWindowListCreateImage (deprecated in macOS 15, but still functional)
 	var outLen C.size_t
 	ptr := C.captureFullScreenPNG(&outLen)
 	if ptr == nil {
-		return "", fmt.Errorf("CGWindowListCreateImage failed — screen recording permission may not be granted")
+		hasPermission := HasScreenRecordingPermission()
+		return "", fmt.Errorf("CGWindowListCreateImage(CGRectInfinite) returned NULL — hasPermission=%v, outLen=%d",
+			hasPermission, outLen)
 	}
 	defer C.free(unsafe.Pointer(ptr))
 
 	pngBytes := C.GoBytes(unsafe.Pointer(ptr), C.int(outLen))
+	if len(pngBytes) == 0 {
+		return "", fmt.Errorf("CGWindowListCreateImage returned non-nil but 0 bytes")
+	}
+
+	log.Printf("[screenshot-native] legacy CGWindowListCreateImage succeeded: pngBytes=%d", len(pngBytes))
 	b64 := base64.StdEncoding.EncodeToString(pngBytes)
 	return b64, nil
 }

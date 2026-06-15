@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const ExternalComputePermissionServiceGroupID = "__external_compute_permission__"
+
 // TenantAuthorization represents a tenant's LLM credits allocation
 // bound to a specific service group.
 type TenantAuthorization struct {
@@ -98,11 +100,21 @@ func (c *AuthorizationChecker) HasExternalProviderAccess(ctx context.Context, hu
 	}
 	now := time.Now().UTC()
 	for _, auth := range auths {
-		if auth.IsActive(now) && auth.AllowExternalProviders {
+		if auth.IsActive(now) && isExternalProviderGrant(auth) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func isExternalProviderGrant(auth *TenantAuthorization) bool {
+	if auth == nil {
+		return false
+	}
+	if auth.AllowExternalProviders {
+		return true
+	}
+	return auth.Source == "card" && auth.ServiceGroupID == ExternalComputePermissionServiceGroupID
 }
 
 // DeductCredits subtracts credits from an authorization after a successful LLM request.
@@ -115,6 +127,11 @@ func (c *AuthorizationChecker) ListAll(ctx context.Context) ([]*TenantAuthorizat
 	return c.repo.ListAll(ctx)
 }
 
+// ListByHubTenant returns tenant authorizations for a Hub tenant.
+func (c *AuthorizationChecker) ListByHubTenant(ctx context.Context, hubID, tenantID string) ([]*TenantAuthorization, error) {
+	return c.repo.ListByHubTenant(ctx, hubID, tenantID)
+}
+
 // ListByServiceGroup returns tenant authorizations bound to a service group.
 func (c *AuthorizationChecker) ListByServiceGroup(ctx context.Context, serviceGroupID string) ([]*TenantAuthorization, error) {
 	return c.repo.ListByServiceGroup(ctx, serviceGroupID)
@@ -123,4 +140,9 @@ func (c *AuthorizationChecker) ListByServiceGroup(ctx context.Context, serviceGr
 // CreateAuthorization creates a new tenant authorization (admin grant).
 func (c *AuthorizationChecker) CreateAuthorization(ctx context.Context, auth *TenantAuthorization) error {
 	return c.repo.Create(ctx, auth)
+}
+
+// UpdateAuthorization updates an existing tenant authorization (admin use).
+func (c *AuthorizationChecker) UpdateAuthorization(ctx context.Context, auth *TenantAuthorization) error {
+	return c.repo.Update(ctx, auth)
 }

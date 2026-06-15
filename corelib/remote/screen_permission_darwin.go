@@ -3,7 +3,7 @@
 package remote
 
 /*
-#cgo darwin CFLAGS: -DDARWIN
+#cgo darwin CFLAGS: -DDARWIN -Wno-deprecated-declarations -Wno-unguarded-availability-new
 #cgo darwin LDFLAGS: -framework CoreGraphics -framework CoreFoundation
 
 #include <CoreGraphics/CoreGraphics.h>
@@ -21,13 +21,17 @@ static bool preflightScreenCapture(void) {
     return true; // pre-Catalina: no TCC for screen recording
 }
 
+// CGWindowListCreateImage is marked API_UNAVAILABLE in macOS 15+ SDK headers
+// but the symbol still exists at runtime. Use dlsym to bypass compile-time check.
+typedef CGImageRef (*CGWindowListCreateImageFn)(CGRect, uint32_t, uint32_t, uint32_t);
+
 static int probeScreenCapture(void) {
+    CGWindowListCreateImageFn fn = (CGWindowListCreateImageFn)dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
+    if (!fn) {
+        return 0; // symbol truly removed in future OS
+    }
     CGRect rect = CGRectMake(0, 0, 1, 1);
-    CGImageRef img = CGWindowListCreateImage(
-        rect,
-        kCGWindowListOptionOnScreenOnly,
-        kCGNullWindowID,
-        kCGWindowImageDefault);
+    CGImageRef img = fn(rect, kCGWindowListOptionOnScreenOnly, kCGNullWindowID, kCGWindowImageDefault);
     if (img == NULL) {
         return 0;
     }

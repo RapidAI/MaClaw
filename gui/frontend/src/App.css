@@ -634,6 +634,14 @@ body {
     padding-top: 0;
 }
 
+/* Maximized window fills the entire screen — no rounded corners needed.
+   On Windows 10 (transparent webview), border-radius creates transparent
+   cutouts at the corners when maximized; removing it fixes that. */
+#App[data-maximized="true"] {
+    border-radius: 0;
+    box-shadow: none;
+}
+
 /* PWA / mobile: remove desktop window decorations so content fills edge-to-edge */
 @media (max-width: 768px), (display-mode: standalone) {
     #App {
@@ -1253,6 +1261,12 @@ body {
     --theme-text-secondary: #cbd5e1;
     --theme-text-muted: #94a3b8;
     --theme-border: #334155;
+}
+
+/* macOS / Windows 11: native rounded corners from the OS — remove CSS rounding */
+.app-loading-shell[data-native-rounded="true"] {
+    border-radius: 0;
+    border: none;
 }
 
 .app-loading-drag-zone {

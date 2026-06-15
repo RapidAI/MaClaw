@@ -3,8 +3,11 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 // MaClawComputeStatusHandler returns the MaClaw compute authorization status
@@ -12,43 +15,60 @@ import (
 // and to construct the compute-store URL (hub_id, center_base_url).
 //
 // GET /api/admin/llm/maclaw-compute-status
-func MaClawComputeStatusHandler(_ interface{}, accessCtrl *llmservice.TenantLLMAccessControl) http.HandlerFunc {
+func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservice.TenantLLMAccessControl) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID := tenantIDFromRequest(r)
 		if tenantID == "" {
-			tenantID = "default"
+			tenantID = store.DefaultTenantID
 		}
 
+		hubID := ""
+		centerBaseURL := ""
 		result := map[string]any{
 			"allow_external_providers": false,
-			"authorizations":           []any{},
 			"hub_id":                   "",
 			"center_base_url":          "",
 			"tenant_id":                tenantID,
 		}
 
-		if accessCtrl != nil {
-			status := accessCtrl.GetAuthorizationStatus(r.Context(), tenantID)
+		currentAccessCtrl := currentMaClawAccessControl(accessCtrl)
+		if currentAccessCtrl != nil {
+			status := currentAccessCtrl.GetAuthorizationStatus(r.Context(), tenantID)
 			if status != nil {
 				result["allow_external_providers"] = status.AllowExternalProviders
-				result["authorizations"] = status.Authorizations
 				if status.HubID != "" {
-					result["hub_id"] = status.HubID
+					hubID = status.HubID
+				}
+			}
+		}
+
+		if centerSvc != nil {
+			if status, err := centerSvc.Status(r.Context()); err == nil && status != nil {
+				if strings.TrimSpace(hubID) == "" {
+					hubID = strings.TrimSpace(status.HubID)
+				}
+				if strings.TrimSpace(centerBaseURL) == "" {
+					centerBaseURL = strings.TrimSpace(status.ActiveBaseURL)
+					if centerBaseURL == "" {
+						centerBaseURL = strings.TrimSpace(status.BaseURL)
+					}
 				}
 			}
 		}
 
 		// Populate hub_id and center_base_url from the MaClaw provider client config
 		// so the frontend can construct the compute-store URL without additional API calls.
-		if maclawModule != nil && maclawModule.Client != nil {
-			cfg := maclawModule.Client.Config
-			if result["hub_id"] == "" && cfg.HubID != "" {
-				result["hub_id"] = cfg.HubID
+		if module := GetMaClawModule(); module != nil && module.Client != nil {
+			cfg := module.Client.ConfigSnapshot()
+			if strings.TrimSpace(hubID) == "" && cfg.HubID != "" {
+				hubID = cfg.HubID
 			}
-			if cfg.HubCenterURL != "" {
-				result["center_base_url"] = cfg.HubCenterURL
+			if strings.TrimSpace(centerBaseURL) == "" && cfg.HubCenterURL != "" {
+				centerBaseURL = cfg.HubCenterURL
 			}
 		}
+		result["hub_id"] = strings.TrimSpace(hubID)
+		result["center_base_url"] = strings.TrimSpace(centerBaseURL)
 
 		// Include admin email from request context if available
 		if adminUser := AdminFromContext(r.Context()); adminUser != nil && adminUser.Email != "" {
@@ -63,11 +83,14 @@ func MaClawComputeStatusHandler(_ interface{}, accessCtrl *llmservice.TenantLLMA
 func tenantIDFromRequest(r *http.Request) string {
 	// Try query param first
 	if tid := r.URL.Query().Get("tenant_id"); tid != "" {
-		return tid
+		return store.NormalizeTenantID(tid)
 	}
 	// Try header (set by tenant-scoped middleware)
 	if tid := r.Header.Get("X-Tenant-ID"); tid != "" {
-		return tid
+		return store.NormalizeTenantID(tid)
+	}
+	if tid := RequestTenantID(r); tid != "" {
+		return store.NormalizeTenantID(tid)
 	}
 	return ""
 }

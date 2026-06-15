@@ -20,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	securitypkg "github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
@@ -812,6 +813,15 @@ func TestTenantAdminLLMProviderTestKeyUsesTenantScope(t *testing.T) {
 }
 
 func TestTenantAdminCanManageTenantScopedLLMProviders(t *testing.T) {
+	previousModule := GetMaClawModule()
+	defer SetMaClawModule(previousModule)
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	accessCtrl.UpdateFromHeartbeat("tenant_acme", &llmservice.TenantAuthorizationStatus{
+		TenantID:               "tenant_acme",
+		AllowExternalProviders: true,
+	})
+	SetMaClawModule(&llmservice.MaClawModule{AccessCtrl: accessCtrl})
+
 	ctx := newAdminRouterTestContext(t)
 	globalToken := issueHubAdminToken(t, ctx.handler)
 

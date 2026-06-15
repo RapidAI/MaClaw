@@ -147,6 +147,17 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
             <label className="general-settings-option">
                 <input
                     type="checkbox"
+                    aria-label={textForLang(lang, 'Memory recall log', '\u8bb0\u5fc6\u53ec\u56de\u65e5\u5fd7', '\u8a18\u61b6\u53ec\u56de\u65e5\u8a8c')}
+                    checked={effectiveConfig?.memory_recall_log_enabled || false}
+                    onChange={(e) => saveConfigPatch({ memory_recall_log_enabled: e.target.checked })}
+                />
+                <span>{textForLang(lang, 'Memory recall log', '\u8bb0\u5fc6\u53ec\u56de\u65e5\u5fd7', '\u8a18\u61b6\u53ec\u56de\u65e5\u8a8c')}</span>
+                <small>{textForLang(lang, 'Log every recall operation to a dedicated file (memory_recall.log) for debugging.', '\u5c06\u6bcf\u6b21\u8bb0\u5fc6\u53ec\u56de\u64cd\u4f5c\u8bb0\u5f55\u5230\u72ec\u7acb\u6587\u4ef6 memory_recall.log\uff0c\u7528\u4e8e\u8c03\u8bd5\u3002', '\u5c07\u6bcf\u6b21\u8a18\u61b6\u53ec\u56de\u64cd\u4f5c\u8a18\u9304\u5230\u7368\u7acb\u6a94\u6848 memory_recall.log\uff0c\u7528\u65bc\u9664\u932f\u3002')}</small>
+            </label>
+
+            <label className="general-settings-option">
+                <input
+                    type="checkbox"
                     aria-label={textForLang(lang, 'Auto-post Chat Gossip', '\u804a\u5929\u516b\u5366\u81ea\u52a8\u53d1\u5e03', '\u804a\u5929\u516b\u5366\u81ea\u52d5\u767c\u4f48')}
                     checked={effectiveConfig?.gossip_auto_publish !== false}
                     onChange={(e) => saveConfigPatch({ gossip_auto_publish: e.target.checked })}

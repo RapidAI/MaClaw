@@ -93,6 +93,7 @@ func EnsureLLMTables(db *sql.DB) error {
 			reviewed_by TEXT NOT NULL DEFAULT '',
 			reviewed_at TEXT NOT NULL DEFAULT '',
 			paid_at TEXT NOT NULL DEFAULT '',
+			archived_at TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -116,6 +117,9 @@ func EnsureLLMTables(db *sql.DB) error {
 		return err
 	}
 	if err := ensureLLMCardOrderAgentColumns(db); err != nil {
+		return err
+	}
+	if err := ensureLLMCardOrderArchivedColumn(db); err != nil {
 		return err
 	}
 	return nil
@@ -162,6 +166,19 @@ func ensureLLMCardOrderAgentColumns(db *sql.DB) error {
 	if !columns["agent_name"] {
 		if _, err := db.Exec(`ALTER TABLE llm_card_orders ADD COLUMN agent_name TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("ensure llm_card_orders.agent_name: %w", err)
+		}
+	}
+	return nil
+}
+
+func ensureLLMCardOrderArchivedColumn(db *sql.DB) error {
+	columns, err := tableColumns(db, "llm_card_orders")
+	if err != nil {
+		return err
+	}
+	if !columns["archived_at"] {
+		if _, err := db.Exec(`ALTER TABLE llm_card_orders ADD COLUMN archived_at TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_card_orders.archived_at: %w", err)
 		}
 	}
 	return nil

@@ -277,6 +277,52 @@ func TestAdminPageRoutePreviewStaticContract(t *testing.T) {
 	})
 }
 
+func TestAdminPageLLMComputeGrantUsesHubTenantSelectors(t *testing.T) {
+	html := readAdminPageBundle(t)
+
+	assertContainsAll(t, html, "admin LLM compute grant contract", []string{
+		`loadRegisteredHubs()`,
+		`api('/api/admin/hubs')`,
+		`<select id="llmAuthHub"`,
+		`onchange="updateAuthTenantOptions()"`,
+		`<select id="llmAuthTenant"`,
+		`authDialogTitle: '\u6388\u4e88\u7b97\u529b'`,
+		`addAuth: '\u6388\u4e88\u7b97\u529b'`,
+		`id: 'auth_external_' + hubID + '_' + tenantID + '_' + Date.now()`,
+		`a.service_group_id === '__external_compute_permission__'`,
+		`service_group_id:'__external_compute_permission__'`,
+		`source: 'external_provider_permission'`,
+	})
+	for _, forbidden := range []string{
+		`field('llmAuthHub'`,
+		`field('llmAuthTenant'`,
+		`llmAuthCredits`,
+		`llmAuthDays`,
+		`llmAuthEmail`,
+		`id="llmAuthGroup"`,
+		`hubComputeGroup-`,
+		`hubComputeCreditsUsage`,
+		`hubComputeActiveCount`,
+		`tr('hubComputeAccessRecord')`,
+		`fieldServiceGroup') + ' required'`,
+		`Grant Authorization`,
+		`\u6388\u4e88\u6388\u6743`,
+		`\u914d\u7f6e\u6388\u6743`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("admin LLM compute grant contract must not contain %s", forbidden)
+		}
+	}
+	fn := regexp.MustCompile(`async function loadHubComputeAuthData[\s\S]*?async function grantHubComputeAuth`)
+	match := fn.FindString(html)
+	if match == "" {
+		t.Fatalf("admin LLM compute grant contract missing loadHubComputeAuthData")
+	}
+	if strings.Contains(match, `/api/admin/llm/service-groups`) {
+		t.Fatalf("node compute grant must not load service groups")
+	}
+}
+
 func TestAdminPageRouteQueryRendererIsSingleSource(t *testing.T) {
 	html := readAdminPageBundle(t)
 	if count := strings.Count(html, `function renderRouteQueryResult(meta,data)`); count != 1 {

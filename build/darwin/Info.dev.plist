@@ -18,7 +18,7 @@
         <key>CFBundleIconFile</key>
         <string>AppIcon</string>
         <key>LSMinimumSystemVersion</key>
-        <string>10.15.0</string>
+        <string>11.0</string>
         <key>NSHighResolutionCapable</key>
         <string>true</string>
         <key>NSHumanReadableCopyright</key>

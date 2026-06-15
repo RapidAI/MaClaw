@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ForkRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ForkRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent } from "../wailsjs/go/main/App";
 
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
@@ -806,6 +806,33 @@ function App() {
     const [aiThemeMode, setAIThemeMode] = useState<'light' | 'dark'>(() => {
         return readStoredAssistantThemeMode();
     });
+    // macOS / Windows 11: OS provides native rounded corners for the window.
+    // When true, CSS border-radius/border/box-shadow on #App are removed.
+    const [nativeRounded, setNativeRounded] = useState(() => {
+        // Synchronous best-guess for SSR/initial render: macOS always has native
+        // rounding. navigator.platform is deprecated but available synchronously.
+        return /mac/i.test(navigator.platform);
+    });
+    // Windows 10: webview background is transparent so CSS border-radius on #App
+    // clips to true transparency (no corner artifacts against the desktop).
+    // When true, html/body/.app-viewport must also be transparent.
+    const [webviewTransparent, setWebviewTransparent] = useState(false);
+    // Confirm from backend (authoritative) on mount.
+    useEffect(() => {
+        Promise.all([
+            callBackend(() => IsNativeRoundedCorners()).catch(() => null),
+            callBackend(() => IsWebviewTransparent()).catch(() => null),
+        ]).then(([rounded, transparent]) => {
+            if (rounded !== null) setNativeRounded(rounded);
+            if (transparent) {
+                setWebviewTransparent(true);
+                // Make html/body transparent so CSS border-radius clips to
+                // true transparency on Windows 10.
+                document.documentElement.style.backgroundColor = 'transparent';
+                document.body.style.backgroundColor = 'transparent';
+            }
+        });
+    }, []);
     const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '\u7801\u5361\u9f99 MaClaw';
     const brandSidebarName = brandInfo?.displayName || 'MaClaw';
     const isTigerClawBrand = brandInfo?.id === 'qianxin';
@@ -2908,7 +2935,7 @@ ${instruction}`;
 
     if (isLoading) {
         return (
-            <div data-ai-theme={aiThemeMode} className="app-loading-shell">
+            <div data-ai-theme={aiThemeMode} data-native-rounded={nativeRounded ? "true" : undefined} className="app-loading-shell">
                 <div className="app-loading-drag-zone" />
                 <h2 className="app-loading-title">{t("envCheckTitle")}</h2>
                 <div className="app-loading-progress" aria-hidden="true">
@@ -2995,11 +3022,12 @@ ${instruction}`;
     return (
         <div
             className="app-viewport"
+            data-webview-transparent={webviewTransparent ? "true" : undefined}
             style={{ ['--ui-scale' as any]: String(uiZoom) } as React.CSSProperties}
         >
             <DataMigrationOverlay />
             <div className="app-scale-layer">
-                <div id="App" data-ai-theme={aiThemeMode}>
+                <div id="App" data-ai-theme={aiThemeMode} data-native-rounded={nativeRounded ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
             <AppSidebarShell
                 navTab={navTab}
                 recentTasksPaneWidth={recentTasksPaneWidth}

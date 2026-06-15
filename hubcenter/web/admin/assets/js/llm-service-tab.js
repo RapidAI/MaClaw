@@ -8,8 +8,8 @@
 
 // Register i18n keys for the main admin-core applyI18n system
 if (typeof I18N_EN !== 'undefined') {
-  Object.assign(I18N_EN, {llmServiceTitle:'LLM Service',llmServiceDesc:'Manage LLM providers, model service groups, and tenant compute authorizations.',llmServiceProviders:'Providers',llmServiceGroups:'Service Groups',llmServiceAuth:'Authorizations',llmServiceProvidersTitle:'LLM Providers',llmServiceProvidersDesc:'Backend LLM API endpoints for model routing.',llmServiceGroupsTitle:'Model Service Groups',llmServiceGroupsDesc:'Route models to providers with dispatch policies.',llmServiceAddProvider:'Add Provider',llmServiceNoProviders:'No providers configured.',llmServiceProviderName:'Name',llmServiceProviderURL:'API URL',llmServiceProviderKey:'API Key',llmServiceProviderProtocol:'Protocol',llmServiceProviderModels:'Models',llmServiceProviderPriority:'Priority',llmServiceProviderConcurrency:'Max Concurrency',llmServiceProviderCapabilities:'Capabilities',llmServiceAddGroup:'Add Service Group',llmServiceNoGroups:'No service groups.',llmServiceGroupName:'Group Name',llmServiceGroupDesc:'Description',llmServiceGroupModels:'Models',llmServiceAuthTitle:'Tenant Authorizations',llmServiceAuthDesc:'Grant compute credits to Hub tenants.',llmServiceAddAuth:'Grant Authorization',llmServiceNoAuths:'No active authorizations.',llmServiceSave:'Save',llmServiceCancel:'Cancel',sgRouteHint:'Exposed model alias with provider failover',sgRemoveRoute:'Remove',sgExposedModel:'Exposed Model',sgNoProviders:'No providers assigned. Add a provider above.',sgAccessPolicy:'Access Policy',sgPolicyFreeHint:'no grant needed',sgPolicyGrantHint:'needs card/grant',sgRoutes:'Provider Routes',sgAddRoute:'+ Add Route',sgProviderAlreadyAdded:'Provider already added to this route.',sgProviderConfigTitle:'Provider Config',sgCapabilityTags:'Capability Tags',sgExtraTags:'Extra Tags (custom)',sgPriority:'Priority',sgResolutionTier:'Resolution Tier',sgCreditMultiplier:'Credit Multiplier',sgIDNameRequired:'ID and Name are required.',sgRouteNeedsProvider:'Each route needs at least one provider.',sgAvailableProviders:'Available providers',chooseProvider:'Choose Provider'});
-  Object.assign(I18N_ZH, {llmServiceTitle:'LLM \u63a5\u5165',llmServiceDesc:'\u7ba1\u7406 LLM \u670d\u52a1\u5546\u3001\u6a21\u578b\u670d\u52a1\u7ec4\u548c\u79df\u6237\u7b97\u529b\u6388\u6743\u3002',llmServiceProviders:'\u670d\u52a1\u5546',llmServiceGroups:'\u670d\u52a1\u7ec4',llmServiceAuth:'\u6388\u6743\u7ba1\u7406',llmServiceProvidersTitle:'LLM \u670d\u52a1\u5546\u7ba1\u7406',llmServiceProvidersDesc:'\u540e\u7aef LLM API \u7aef\u70b9\u914d\u7f6e\u3002',llmServiceGroupsTitle:'\u6a21\u578b\u670d\u52a1\u7ec4',llmServiceGroupsDesc:'\u5c06\u6a21\u578b\u8def\u7531\u5230\u670d\u52a1\u5546\uff0c\u914d\u7f6e\u8c03\u5ea6\u7b56\u7565\u3002',llmServiceAddProvider:'\u6dfb\u52a0\u670d\u52a1\u5546',llmServiceNoProviders:'\u672a\u914d\u7f6e\u670d\u52a1\u5546\u3002',llmServiceProviderName:'\u540d\u79f0',llmServiceProviderURL:'API \u5730\u5740',llmServiceProviderKey:'API \u5bc6\u94a5',llmServiceProviderProtocol:'\u534f\u8bae',llmServiceProviderModels:'\u6a21\u578b',llmServiceProviderPriority:'\u4f18\u5148\u7ea7',llmServiceProviderConcurrency:'\u6700\u5927\u5e76\u53d1',llmServiceProviderCapabilities:'\u80fd\u529b\u6807\u7b7e',llmServiceAddGroup:'\u6dfb\u52a0\u670d\u52a1\u7ec4',llmServiceNoGroups:'\u672a\u914d\u7f6e\u670d\u52a1\u7ec4\u3002',llmServiceGroupName:'\u7ec4\u540d\u79f0',llmServiceGroupDesc:'\u63cf\u8ff0',llmServiceGroupModels:'\u6a21\u578b\u914d\u7f6e',llmServiceAuthTitle:'\u79df\u6237\u7b97\u529b\u6388\u6743',llmServiceAuthDesc:'\u4e3a Hub \u79df\u6237\u6388\u4e88\u7b97\u529b\u989d\u5ea6\u3002',llmServiceAddAuth:'\u6388\u4e88\u6388\u6743',llmServiceNoAuths:'\u6682\u65e0\u6d3b\u8dc3\u6388\u6743\u3002',llmServiceSave:'\u4fdd\u5b58',llmServiceCancel:'\u53d6\u6d88',sgRouteHint:'\u66b4\u9732\u6a21\u578b\u522b\u540d\uff0c\u6309\u670d\u52a1\u5546\u4f18\u5148\u7ea7\u5b9e\u73b0\u6545\u969c\u8f6c\u79fb',sgRemoveRoute:'\u5220\u9664',sgExposedModel:'\u66b4\u9732\u6a21\u578b\u540d',sgNoProviders:'\u672a\u5206\u914d\u670d\u52a1\u5546\u3002\u8bf7\u5728\u4e0a\u65b9\u6dfb\u52a0\u3002',sgAccessPolicy:'\u8bbf\u95ee\u7b56\u7565',sgPolicyFreeHint:'\u65e0\u9700\u6388\u6743',sgPolicyGrantHint:'\u9700\u8981\u5361/\u6388\u6743',sgRoutes:'\u670d\u52a1\u5546\u8def\u7531',sgAddRoute:'+ \u6dfb\u52a0\u8def\u7531',sgProviderAlreadyAdded:'\u8be5\u670d\u52a1\u5546\u5df2\u6dfb\u52a0\u3002',sgProviderConfigTitle:'\u670d\u52a1\u5546\u914d\u7f6e',sgCapabilityTags:'\u80fd\u529b\u6807\u7b7e',sgExtraTags:'\u989d\u5916\u6807\u7b7e\uff08\u81ea\u5b9a\u4e49\uff09',sgPriority:'\u4f18\u5148\u7ea7',sgResolutionTier:'\u89e3\u6790\u5c42\u7ea7',sgCreditMultiplier:'\u989d\u5ea6\u500d\u7387',sgIDNameRequired:'ID \u548c\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002',sgRouteNeedsProvider:'\u6bcf\u4e2a\u8def\u7531\u81f3\u5c11\u9700\u8981\u4e00\u4e2a\u670d\u52a1\u5546\u3002',sgAvailableProviders:'\u53ef\u7528\u670d\u52a1\u5546',chooseProvider:'\u9009\u62e9\u670d\u52a1\u5546'});
+  Object.assign(I18N_EN, {llmServiceTitle:'LLM Service',llmServiceDesc:'Manage LLM providers, model service groups, and tenant external compute access.',llmServiceProviders:'Providers',llmServiceGroups:'Service Groups',llmServiceAuth:'Authorizations',llmServiceProvidersTitle:'LLM Providers',llmServiceProvidersDesc:'Backend LLM API endpoints for model routing.',llmServiceGroupsTitle:'Model Service Groups',llmServiceGroupsDesc:'Route models to providers with dispatch policies.',llmServiceAddProvider:'Add Provider',llmServiceNoProviders:'No providers configured.',llmServiceProviderName:'Name',llmServiceProviderURL:'API URL',llmServiceProviderKey:'API Key',llmServiceProviderProtocol:'Protocol',llmServiceProviderModels:'Models',llmServiceProviderPriority:'Priority',llmServiceProviderConcurrency:'Max Concurrency',llmServiceProviderCapabilities:'Capabilities',llmServiceAddGroup:'Add Service Group',llmServiceNoGroups:'No service groups.',llmServiceGroupName:'Group Name',llmServiceGroupDesc:'Description',llmServiceGroupModels:'Models',llmServiceAuthTitle:'Tenant External Compute Access',llmServiceAuthDesc:'Allow Hub tenants to use their own external compute providers. No service group or usage quota is configured here.',llmServiceAddAuth:'Grant Compute',llmServiceNoAuths:'No tenant compute access records.',llmServiceSave:'Save',llmServiceCancel:'Cancel',sgRouteHint:'Exposed model alias with provider failover',sgRemoveRoute:'Remove',sgExposedModel:'Exposed Model',sgNoProviders:'No providers assigned. Add a provider above.',sgAccessPolicy:'Access Policy',sgPolicyFreeHint:'no grant needed',sgPolicyGrantHint:'needs card/grant',sgRoutes:'Provider Routes',sgAddRoute:'+ Add Route',sgProviderAlreadyAdded:'Provider already added to this route.',sgProviderConfigTitle:'Provider Config',sgCapabilityTags:'Capability Tags',sgExtraTags:'Extra Tags (custom)',sgPriority:'Priority',sgResolutionTier:'Resolution Tier',sgCreditMultiplier:'Credit Multiplier',sgIDNameRequired:'ID and Name are required.',sgRouteNeedsProvider:'Each route needs at least one provider.',sgAvailableProviders:'Available providers',chooseProvider:'Choose Provider'});
+  Object.assign(I18N_ZH, {llmServiceTitle:'LLM \u63a5\u5165',llmServiceDesc:'\u7ba1\u7406 LLM \u670d\u52a1\u5546\u3001\u6a21\u578b\u670d\u52a1\u7ec4\u548c\u79df\u6237\u5916\u90e8\u7b97\u529b\u4f7f\u7528\u6743\u9650\u3002',llmServiceProviders:'\u670d\u52a1\u5546',llmServiceGroups:'\u670d\u52a1\u7ec4',llmServiceAuth:'\u6388\u6743\u7ba1\u7406',llmServiceProvidersTitle:'LLM \u670d\u52a1\u5546\u7ba1\u7406',llmServiceProvidersDesc:'\u540e\u7aef LLM API \u7aef\u70b9\u914d\u7f6e\u3002',llmServiceGroupsTitle:'\u6a21\u578b\u670d\u52a1\u7ec4',llmServiceGroupsDesc:'\u5c06\u6a21\u578b\u8def\u7531\u5230\u670d\u52a1\u5546\uff0c\u914d\u7f6e\u8c03\u5ea6\u7b56\u7565\u3002',llmServiceAddProvider:'\u6dfb\u52a0\u670d\u52a1\u5546',llmServiceNoProviders:'\u672a\u914d\u7f6e\u670d\u52a1\u5546\u3002',llmServiceProviderName:'\u540d\u79f0',llmServiceProviderURL:'API \u5730\u5740',llmServiceProviderKey:'API \u5bc6\u94a5',llmServiceProviderProtocol:'\u534f\u8bae',llmServiceProviderModels:'\u6a21\u578b',llmServiceProviderPriority:'\u4f18\u5148\u7ea7',llmServiceProviderConcurrency:'\u6700\u5927\u5e76\u53d1',llmServiceProviderCapabilities:'\u80fd\u529b\u6807\u7b7e',llmServiceAddGroup:'\u6dfb\u52a0\u670d\u52a1\u7ec4',llmServiceNoGroups:'\u672a\u914d\u7f6e\u670d\u52a1\u7ec4\u3002',llmServiceGroupName:'\u7ec4\u540d\u79f0',llmServiceGroupDesc:'\u63cf\u8ff0',llmServiceGroupModels:'\u6a21\u578b\u914d\u7f6e',llmServiceAuthTitle:'\u79df\u6237\u5916\u90e8\u7b97\u529b\u6388\u6743',llmServiceAuthDesc:'\u4ec5\u914d\u7f6e\u79df\u6237\u662f\u5426\u53ef\u4f7f\u7528\u81ea\u6709\u5916\u90e8\u7b97\u529b\uff0c\u4e0d\u5728\u6b64\u914d\u7f6e\u4f7f\u7528\u989d\u5ea6\u3002',llmServiceAddAuth:'\u6388\u4e88\u7b97\u529b',llmServiceNoAuths:'\u6682\u65e0\u79df\u6237\u7b97\u529b\u6743\u9650\u8bb0\u5f55\u3002',llmServiceSave:'\u4fdd\u5b58',llmServiceCancel:'\u53d6\u6d88',sgRouteHint:'\u66b4\u9732\u6a21\u578b\u522b\u540d\uff0c\u6309\u670d\u52a1\u5546\u4f18\u5148\u7ea7\u5b9e\u73b0\u6545\u969c\u8f6c\u79fb',sgRemoveRoute:'\u5220\u9664',sgExposedModel:'\u66b4\u9732\u6a21\u578b\u540d',sgNoProviders:'\u672a\u5206\u914d\u670d\u52a1\u5546\u3002\u8bf7\u5728\u4e0a\u65b9\u6dfb\u52a0\u3002',sgAccessPolicy:'\u8bbf\u95ee\u7b56\u7565',sgPolicyFreeHint:'\u65e0\u9700\u6388\u6743',sgPolicyGrantHint:'\u9700\u8981\u5361/\u6388\u6743',sgRoutes:'\u670d\u52a1\u5546\u8def\u7531',sgAddRoute:'+ \u6dfb\u52a0\u8def\u7531',sgProviderAlreadyAdded:'\u8be5\u670d\u52a1\u5546\u5df2\u6dfb\u52a0\u3002',sgProviderConfigTitle:'\u670d\u52a1\u5546\u914d\u7f6e',sgCapabilityTags:'\u80fd\u529b\u6807\u7b7e',sgExtraTags:'\u989d\u5916\u6807\u7b7e\uff08\u81ea\u5b9a\u4e49\uff09',sgPriority:'\u4f18\u5148\u7ea7',sgResolutionTier:'\u89e3\u6790\u5c42\u7ea7',sgCreditMultiplier:'\u989d\u5ea6\u500d\u7387',sgIDNameRequired:'ID \u548c\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002',sgRouteNeedsProvider:'\u6bcf\u4e2a\u8def\u7531\u81f3\u5c11\u9700\u8981\u4e00\u4e2a\u670d\u52a1\u5546\u3002',sgAvailableProviders:'\u53ef\u7528\u670d\u52a1\u5546',chooseProvider:'\u9009\u62e9\u670d\u52a1\u5546'});
   Object.assign(I18N_EN, {providerProbeModels:'Probe',providerProbing:'Probing models...',providerProbeEmpty:'No models returned.',providerProbeFailed:'Probe failed',providerCapabilityPreset:'Preset capabilities'});
   Object.assign(I18N_ZH, {providerProbeModels:'\u63a2\u6d4b',providerProbing:'\u6b63\u5728\u63a2\u6d4b\u6a21\u578b...',providerProbeEmpty:'\u672a\u8fd4\u56de\u6a21\u578b\u5217\u8868\u3002',providerProbeFailed:'\u63a2\u6d4b\u5931\u8d25',providerCapabilityPreset:'\u9884\u7f6e\u80fd\u529b'});
   Object.assign(I18N_EN, {llmServiceAgents:'Agents',llmServiceAgentsTitle:'Compute Agents',llmServiceAgentsDesc:'Manage upstream compute resellers for settlement.',llmServiceAddAgent:'Add Agent',llmServiceNoAgents:'No agents configured.'});
@@ -55,12 +55,12 @@ if (typeof I18N_EN !== 'undefined') {
       sgIDNameRequired: 'ID and Name are required.', sgRouteNeedsProvider: 'Each route needs at least one provider.',
       chooseProvider: 'Choose Provider',
       // Authorizations
-      authTitle: 'Tenant Compute Authorizations', authDesc: 'Grant or manage LLM compute credits for Hub tenants.',
-      addAuth: 'Grant Authorization', noAuths: 'No active authorizations.',
-      authDialogTitle: 'Grant Compute Authorization',
-      fieldHubID: 'Hub ID', fieldTenantID: 'Tenant ID', fieldAdminEmail: 'Admin Email',
-      fieldServiceGroup: 'Service Group', fieldCredits: 'Credits', fieldPeriodDays: 'Duration (days)',
-      fieldAllowExternal: 'Allow external providers',
+      authTitle: 'Tenant External Compute Access', authDesc: 'Allow Hub tenants to use their own external compute providers. Usage quotas are not configured here.',
+      addAuth: 'Grant Compute', noAuths: 'No tenant compute access records.',
+      authDialogTitle: 'Grant Compute',
+      fieldHubID: 'Hub ID', fieldTenantID: 'Tenant ID',
+      fieldAllowExternal: 'Allow tenant to use external compute providers',
+      fieldHubRequired: 'Select a Hub', fieldTenantRequired: 'Select a tenant', noHubs: 'No registered Hubs.', defaultTenant: 'Default tenant',
       // Common
       save: 'Save', cancel: 'Cancel', confirm: 'Confirm', delete: 'Delete',
       saved: 'Saved successfully.', deleted: 'Deleted.', error: 'Error',
@@ -95,12 +95,12 @@ if (typeof I18N_EN !== 'undefined') {
       sgResolutionTier: '\u89e3\u6790\u5c42\u7ea7', sgCreditMultiplier: '\u989d\u5ea6\u500d\u7387',
       sgIDNameRequired: 'ID \u548c\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002', sgRouteNeedsProvider: '\u6bcf\u4e2a\u8def\u7531\u81f3\u5c11\u9700\u8981\u4e00\u4e2a\u670d\u52a1\u5546\u3002',
       chooseProvider: '\u9009\u62e9\u670d\u52a1\u5546',
-      authTitle: '\u79df\u6237\u7b97\u529b\u6388\u6743', authDesc: '\u4e3a Hub \u79df\u6237\u6388\u4e88\u6216\u7ba1\u7406 LLM \u7b97\u529b\u989d\u5ea6\u3002',
-      addAuth: '\u6388\u4e88\u6388\u6743', noAuths: '\u6682\u65e0\u6d3b\u8dc3\u6388\u6743\u3002',
-      authDialogTitle: '\u6388\u4e88\u7b97\u529b\u6388\u6743',
-      fieldHubID: 'Hub ID', fieldTenantID: '\u79df\u6237 ID', fieldAdminEmail: '\u7ba1\u7406\u5458\u90ae\u7bb1',
-      fieldServiceGroup: '\u670d\u52a1\u7ec4', fieldCredits: '\u989d\u5ea6', fieldPeriodDays: '\u6709\u6548\u671f\uff08\u5929\uff09',
-      fieldAllowExternal: '\u5141\u8bb8\u63a5\u5165\u7b2c\u4e09\u65b9\u670d\u52a1\u5546',
+      authTitle: '\u79df\u6237\u5916\u90e8\u7b97\u529b\u6388\u6743', authDesc: '\u4ec5\u914d\u7f6e Hub \u79df\u6237\u662f\u5426\u53ef\u4f7f\u7528\u81ea\u6709\u5916\u90e8\u7b97\u529b\uff0c\u4e0d\u5728\u6b64\u914d\u7f6e\u4f7f\u7528\u989d\u5ea6\u3002',
+      addAuth: '\u6388\u4e88\u7b97\u529b', noAuths: '\u6682\u65e0\u79df\u6237\u7b97\u529b\u6743\u9650\u8bb0\u5f55\u3002',
+      authDialogTitle: '\u6388\u4e88\u7b97\u529b',
+      fieldHubID: 'Hub ID', fieldTenantID: '\u79df\u6237 ID',
+      fieldAllowExternal: '\u5141\u8bb8\u79df\u6237\u4f7f\u7528\u5916\u90e8\u7b97\u529b',
+      fieldHubRequired: '\u8bf7\u9009\u62e9 Hub', fieldTenantRequired: '\u8bf7\u9009\u62e9\u79df\u6237', noHubs: '\u6682\u65e0\u5df2\u6ce8\u518c Hub\u3002', defaultTenant: '\u9ed8\u8ba4\u79df\u6237',
       save: '\u4fdd\u5b58', cancel: '\u53d6\u6d88', confirm: '\u786e\u8ba4', delete: '\u5220\u9664',
       saved: '\u4fdd\u5b58\u6210\u529f\u3002', deleted: '\u5df2\u5220\u9664\u3002', error: '\u9519\u8bef',
       status: '\u72b6\u6001', credits: '\u989d\u5ea6', expires: '\u6709\u6548\u671f', active: '\u6d3b\u8dc3',
@@ -132,7 +132,7 @@ if (typeof I18N_EN !== 'undefined') {
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
-  var providers = [], agents = [], serviceGroups = [], authorizations = [];
+  var providers = [], agents = [], serviceGroups = [], authorizations = [], registeredHubs = [];
   var providerDialogID = '';
   var providerCapabilityOptions = ['chat','streaming','json','tools','reasoning','vision','document','code','search','audio','embedding','rerank'];
   var llmInitInFlight = null;
@@ -145,7 +145,7 @@ if (typeof I18N_EN !== 'undefined') {
     llmInitInFlight = (async function() {
     // Re-apply i18n for dynamically registered keys
     if (typeof applyI18n === 'function') applyI18n();
-    await Promise.all([loadProviders(), loadAgents(), loadServiceGroups(), loadAuthorizations()]);
+    await Promise.all([loadProviders(), loadAgents(), loadServiceGroups(), loadAuthorizations(), loadRegisteredHubs()]);
     })();
     try { return await llmInitInFlight; }
     finally { llmInitInFlight = null; }
@@ -525,6 +525,52 @@ if (typeof I18N_EN !== 'undefined') {
   };
 
   // ---------------------------------------------------------------------------
+  // HUB / TENANT OPTIONS
+  // ---------------------------------------------------------------------------
+  async function loadRegisteredHubs() {
+    try {
+      var data = await api('/api/admin/hubs');
+      registeredHubs = Array.isArray(data.hubs) ? data.hubs : (Array.isArray(data) ? data : []);
+    } catch(e) {
+      registeredHubs = [];
+    }
+  }
+
+  function hubID(h) { return String(h && (h.id || h.hub_id) || ''); }
+  function hubLabel(h) {
+    var id = hubID(h);
+    var name = String(h && h.name || id || '-');
+    return name === id ? id : name + ' (' + id + ')';
+  }
+  function tenantID(tn) { return String(tn && tn.tenant_id || ''); }
+  function tenantLabel(tn) {
+    var id = tenantID(tn);
+    var name = String(tn && tn.tenant_name || '') || (id === 'tenant_default' ? t('defaultTenant') : id);
+    return name === id ? id : name + ' (' + id + ')';
+  }
+  function hubTenants(h) {
+    var tenants = Array.isArray(h && h.tenants) ? h.tenants.slice() : [];
+    if (!tenants.some(function(t) { return tenantID(t) === 'tenant_default'; })) {
+      tenants.unshift({ tenant_id: 'tenant_default', tenant_name: t('defaultTenant') });
+    }
+    return tenants;
+  }
+  function selectedAuthHub() {
+    var hubSelect = document.getElementById('llmAuthHub');
+    var id = hubSelect ? hubSelect.value : '';
+    return registeredHubs.find(function(h) { return hubID(h) === id; }) || registeredHubs[0] || null;
+  }
+  window.updateAuthTenantOptions = function() {
+    var tenantSelect = document.getElementById('llmAuthTenant');
+    if (!tenantSelect) return;
+    var hub = selectedAuthHub();
+    var tenants = hubTenants(hub);
+    tenantSelect.innerHTML = tenants.map(function(tn) {
+      return '<option value="' + esc(tenantID(tn)) + '">' + esc(tenantLabel(tn)) + '</option>';
+    }).join('');
+  };
+
+  // ---------------------------------------------------------------------------
   // TENANT AUTHORIZATIONS
   // ---------------------------------------------------------------------------
   async function loadAuthorizations() {
@@ -535,48 +581,52 @@ if (typeof I18N_EN !== 'undefined') {
   function renderAuthorizations() {
     var el = document.getElementById('llmAuthList') || document.getElementById('llmAuthorizationsList');
     if (!el) return;
-    if (!authorizations.length) { el.innerHTML = '<div class="hint">' + esc(t('noAuths')) + '</div>'; return; }
-    el.innerHTML = authorizations.map(function(a) {
+    var externalAuths = authorizations.filter(function(a) {
+      return !!(a && (a.allow_external_providers || a.source === 'external_provider_permission' || a.service_group_id === '__external_compute_permission__'));
+    });
+    if (!externalAuths.length) { el.innerHTML = '<div class="hint">' + esc(t('noAuths')) + '</div>'; return; }
+    el.innerHTML = externalAuths.map(function(a) {
       var statusBadge = a.status === 'active' ? '<span class="badge ok">' + esc(t('active')) + '</span>' : '<span class="badge warn">' + esc(a.status) + '</span>';
-      var remaining = Math.max(0, (a.credits_total||0) - (a.credits_used||0));
-      var extBadge = a.allow_external_providers ? ' <span class="badge info">\u2713 External</span>' : '';
+      var extBadge = a.allow_external_providers ? '<span class="badge ok">' + esc(t('fieldAllowExternal')) + '</span>' : '<span class="badge warn">' + esc(t('status')) + ': -</span>';
       return '<div class="data-row"><div class="data-row-main">'
-        + '<strong>' + esc(a.hub_id) + ' / ' + esc(a.tenant_id) + '</strong> ' + statusBadge + extBadge
-        + '<span class="data-row-meta">' + esc(a.admin_email) + ' \u00b7 ' + esc(a.service_group_id)
-        + ' \u00b7 ' + remaining.toLocaleString() + '/' + (a.credits_total||0).toLocaleString() + ' credits'
-        + ' \u00b7 expires ' + (a.expires_at||'').slice(0,10) + '</span></div></div>';
+        + '<strong>' + esc(a.hub_id) + ' / ' + esc(a.tenant_id) + '</strong> ' + statusBadge + ' ' + extBadge
+        + '</div></div>';
     }).join('');
   }
 
-  window.showAuthDialog = function() {
-    var groupOptions = serviceGroups.map(function(g) { return '<option value="' + esc(g.id) + '">' + esc(g.name||g.id) + '</option>'; }).join('');
-    var html = '<h3>' + esc(t('authDialogTitle')) + '</h3><div class="grid2">'
-      + field('llmAuthHub', t('fieldHubID'), '')
-      + field('llmAuthTenant', t('fieldTenantID'), 'default')
-      + '</div><div class="grid2">'
-      + field('llmAuthEmail', t('fieldAdminEmail'), '')
-      + '<div><label>' + esc(t('fieldServiceGroup')) + '</label><select id="llmAuthGroup">' + groupOptions + '</select></div>'
-      + '</div><div class="grid2">'
-      + field('llmAuthCredits', t('fieldCredits'), '100000', false, 'number')
-      + field('llmAuthDays', t('fieldPeriodDays'), '365', false, 'number')
+  window.showAuthDialog = async function() {
+    if (!registeredHubs.length) await loadRegisteredHubs();
+    var hubOptions = registeredHubs.map(function(h) {
+      return '<option value="' + esc(hubID(h)) + '">' + esc(hubLabel(h)) + '</option>';
+    }).join('');
+    var firstHub = registeredHubs[0] || null;
+    var tenantOptions = hubTenants(firstHub).map(function(tn) {
+      return '<option value="' + esc(tenantID(tn)) + '">' + esc(tenantLabel(tn)) + '</option>';
+    }).join('');
+    var noHubs = !registeredHubs.length;
+    var html = '<h3>' + esc(t('authDialogTitle')) + '</h3>'
+      + (noHubs ? '<div class="hint section-gap-sm">' + esc(t('noHubs')) + '</div>' : '')
+      + '<div class="grid2">'
+      + '<div><label for="llmAuthHub">' + esc(t('fieldHubID')) + '</label><select id="llmAuthHub" onchange="updateAuthTenantOptions()" ' + (noHubs ? 'disabled' : '') + '>' + hubOptions + '</select></div>'
+      + '<div><label for="llmAuthTenant">' + esc(t('fieldTenantID')) + '</label><select id="llmAuthTenant" ' + (noHubs ? 'disabled' : '') + '>' + tenantOptions + '</select></div>'
       + '</div>'
-      + '<div class="inline-check"><input type="checkbox" id="llmAuthExternal"><label for="llmAuthExternal">' + esc(t('fieldAllowExternal')) + '</label></div>'
+      + '<div class="inline-check section-gap-sm"><input type="checkbox" id="llmAuthExternal" checked><label for="llmAuthExternal">' + esc(t('fieldAllowExternal')) + '</label></div>'
       + '<div class="actions section-gap">'
-      + '<button class="btn-primary" onclick="saveAuthorization()">' + esc(t('save')) + '</button>'
+      + '<button class="btn-primary" onclick="saveAuthorization()" ' + (noHubs ? 'disabled' : '') + '>' + esc(t('addAuth')) + '</button>'
       + '<button class="btn-ghost" onclick="closeDialog()">' + esc(t('cancel')) + '</button></div>';
     openDialog(html);
   };
 
   window.saveAuthorization = async function() {
-    var now = new Date().toISOString();
-    var days = num('llmAuthDays') || 365;
-    var expires = new Date(Date.now() + days * 86400000).toISOString();
+    var hubID = val('llmAuthHub');
+    var tenantID = val('llmAuthTenant');
+    if (!hubID) { toast(t('fieldHubRequired'), 'error'); return; }
+    if (!tenantID) { toast(t('fieldTenantRequired'), 'error'); return; }
     var payload = {
-      hub_id: val('llmAuthHub'), tenant_id: val('llmAuthTenant') || 'default',
-      admin_email: val('llmAuthEmail'), service_group_id: val('llmAuthGroup'),
-      credits_total: num('llmAuthCredits'), starts_at: now, expires_at: expires,
+      id: 'auth_external_' + hubID + '_' + tenantID + '_' + Date.now(),
+      hub_id: hubID, tenant_id: tenantID,
       allow_external_providers: document.getElementById('llmAuthExternal').checked,
-      status: 'active', source: 'admin_grant',
+      source: 'external_provider_permission',
     };
     try {
       await api('/api/admin/llm/authorizations', { method: 'POST', body: JSON.stringify(payload) });

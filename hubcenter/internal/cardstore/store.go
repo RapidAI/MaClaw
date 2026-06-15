@@ -124,6 +124,7 @@ type PurchaseOrder struct {
 	AgentName      string  `json:"agent_name,omitempty"`
 	Credits        float64 `json:"credits"`
 	Period         string  `json:"period"`
+	ArchivedAt     string  `json:"archived_at,omitempty"`
 }
 
 // PurchaseOrderRepository persists purchase orders.
@@ -133,17 +134,21 @@ type PurchaseOrderRepository interface {
 	List(ctx context.Context, filter OrderFilter) ([]*PurchaseOrder, int, error)
 	UpdateStatus(ctx context.Context, orderNo, status string, now time.Time) error
 	Update(ctx context.Context, order *PurchaseOrder) error
+	Delete(ctx context.Context, orderNo string) error
+	Archive(ctx context.Context, orderNo string, archivedAt time.Time) error
 }
 
 // OrderFilter for querying orders.
 type OrderFilter struct {
-	HubID          string
-	TenantID       string
-	Email          string
-	ServiceGroupID string
-	Status         string
-	Offset         int
-	Limit          int
+	HubID           string
+	TenantID        string
+	Email           string
+	ServiceGroupID  string
+	Status          string
+	ArchivedOnly    bool
+	IncludeArchived bool
+	Offset          int
+	Limit           int
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +302,11 @@ func (s *Service) enrichCardTypes(ctx context.Context, types []*CardType) {
 
 // CreateOrder creates a purchase order for a card type.
 func (s *Service) CreateOrder(ctx context.Context, cardTypeID, adminEmail, hubID, tenantID, payChannel string) (*PurchaseOrder, error) {
+	cardTypeID = strings.TrimSpace(cardTypeID)
+	adminEmail = strings.TrimSpace(adminEmail)
+	hubID = strings.TrimSpace(hubID)
+	tenantID = strings.TrimSpace(tenantID)
+	payChannel = strings.TrimSpace(payChannel)
 	if adminEmail == "" || hubID == "" || tenantID == "" {
 		return nil, fmt.Errorf("admin_email, hub_id, and tenant_id are required")
 	}
@@ -431,6 +441,62 @@ func (s *Service) ListOrders(ctx context.Context, filter OrderFilter) ([]*Purcha
 	return s.orders.List(ctx, filter)
 }
 
+// ArchiveOrder hides an order from the default admin order queue without changing its payment status.
+func (s *Service) ArchiveOrder(ctx context.Context, orderNo string) error {
+	orderNo = strings.TrimSpace(orderNo)
+	if orderNo == "" {
+		return fmt.Errorf("order_no is required")
+	}
+	order, err := s.orders.GetByOrderNo(ctx, orderNo)
+	if err != nil {
+		return fmt.Errorf("get order: %w", err)
+	}
+	if order == nil {
+		return fmt.Errorf("order %s not found", orderNo)
+	}
+	now := time.Now().UTC()
+	if err := s.orders.Archive(ctx, orderNo, now); err != nil {
+		return fmt.Errorf("archive order: %w", err)
+	}
+	if s.auditLog != nil {
+		s.auditLog(ctx, "cardstore.order.archived", fmt.Sprintf("order=%s hub=%s tenant=%s", orderNo, order.HubID, order.TenantID))
+	}
+	return nil
+}
+
+// DeleteUnprocessedOrder removes an unpaid order owned by the requesting tenant admin.
+func (s *Service) DeleteUnprocessedOrder(ctx context.Context, orderNo, email, hubID, tenantID string) error {
+	orderNo = strings.TrimSpace(orderNo)
+	email = strings.TrimSpace(email)
+	hubID = strings.TrimSpace(hubID)
+	tenantID = strings.TrimSpace(tenantID)
+	if orderNo == "" || email == "" || hubID == "" || tenantID == "" {
+		return fmt.Errorf("order_no, email, hub_id, and tenant_id are required")
+	}
+	order, err := s.orders.GetByOrderNo(ctx, orderNo)
+	if err != nil {
+		return fmt.Errorf("get order: %w", err)
+	}
+	if order == nil {
+		return fmt.Errorf("order %s not found", orderNo)
+	}
+	if !strings.EqualFold(strings.TrimSpace(order.Email), email) || strings.TrimSpace(order.HubID) != hubID || strings.TrimSpace(order.TenantID) != tenantID {
+		return fmt.Errorf("order %s does not match requester", orderNo)
+	}
+	switch order.Status {
+	case corecardstore.StatusPending, corecardstore.StatusPersonalCreated, corecardstore.StatusPersonalOpened:
+	default:
+		return fmt.Errorf("order %s has status %s and cannot be deleted", orderNo, order.Status)
+	}
+	if err := s.orders.Delete(ctx, orderNo); err != nil {
+		return fmt.Errorf("delete order: %w", err)
+	}
+	if s.auditLog != nil {
+		s.auditLog(ctx, "cardstore.order.deleted", fmt.Sprintf("order=%s hub=%s tenant=%s", orderNo, hubID, tenantID))
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Activation (creates/extends TenantAuthorization)
 // ---------------------------------------------------------------------------
@@ -454,6 +520,9 @@ func (s *Service) activateOrder(ctx context.Context, order *PurchaseOrder) (stri
 		CardOrderID:    order.OrderNo,
 		CreatedAt:      now,
 		UpdatedAt:      now,
+	}
+	if order.ServiceGroupID == llmservice.ExternalComputePermissionServiceGroupID {
+		auth.AllowExternalProviders = true
 	}
 
 	if err := s.authRepo.Create(ctx, auth); err != nil {

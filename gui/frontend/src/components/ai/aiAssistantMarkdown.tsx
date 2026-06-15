@@ -837,7 +837,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     color: t.text,
                 }}>
                     {/* Streaming: show thinking indicator on the last assistant message placeholder */}
-                    {isLastAssistant && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && (
+                    {isLastAssistant && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !msg.reasoning && (
                         <span style={{ color: t.textMuted, fontSize: "12px", fontStyle: "italic", opacity: 0.8, animation: "blink 1.2s step-end infinite" }}>
                             {lang === "en" ? "Thinking..." : "\u6b63\u5728\u601d\u8003..."}
                         </span>
@@ -848,9 +848,10 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                         key changes when open-state flips so React remounts and the browser respects the new open value. */}
                     {msg.reasoning && (() => {
                         const shouldOpen = isLastAssistant && isStreaming;
+                        const reasoningLabel = lang === "en" ? "Thinking process..." : "思考过程...";
                         return (
                             <details key={shouldOpen ? "reasoning-open" : "reasoning-closed"} open={shouldOpen || undefined} style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
-                                <summary style={{ cursor: "pointer", opacity: 0.8 }}>Reasoning...</summary>
+                                <summary style={{ cursor: "pointer", opacity: 0.8 }}>{reasoningLabel}</summary>
                                 <div style={{ padding: "4px 8px", color: t.text, opacity: 0.75, maxHeight: "400px", overflow: "auto" }}>
                                     {renderContentWithCodeBlocks(msg.reasoning, t)}
                                 </div>

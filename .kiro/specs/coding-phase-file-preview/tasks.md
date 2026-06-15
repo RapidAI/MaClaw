@@ -129,14 +129,14 @@ This implementation connects the CodingSubAgent's file tracking infrastructure t
     - **Validates: Requirements 3.9**
 
 - [ ] 6. Integrate snapshot capture and diff computation into SubAgentTaskRunner
-  - [~] 6.1 Extend `gui/coding_subagent_orchestrator.go` — add snapshot and diff logic to `runTaskHandle`
+  - [ ] 6.1 Extend `gui/coding_subagent_orchestrator.go` — add snapshot and diff logic to `runTaskHandle`
     - Before `runTaskWithRecover`: create `FileSnapshotStore`, call `CaptureSnapshots` with task's file list
     - After task completion (in existing `artifactsRecorded` block): create `DiffComputer`, call `ComputeFileDiffs` with snapshots + result's `FilesModified`/`FilesCreated`
     - Build `FileChangesPayload` from diffs and call `adapter.EmitFileChanges`
     - Handle task failure/cancellation: emit partial file changes with appropriate task status
     - _Requirements: 1.1, 1.5, 2.1, 2.3_
 
-  - [~] 6.2 Add `workflow:file_activity` emission during tool execution in `codingSubAgentCallbacks`
+  - [ ] 6.2 Add `workflow:file_activity` emission during tool execution in `codingSubAgentCallbacks`
     - In `executeToolWithOutcome` (or equivalent tool execution callback), detect `write_file`/`edit_file` tool calls
     - Extract file path from tool arguments, normalize with `NormalizeFilePathForEvent`
     - Emit `workflow:file_activity` event with path and change type ("added" for write_file new files, "modified" for edit_file)
@@ -149,11 +149,11 @@ This implementation connects the CodingSubAgent's file tracking infrastructure t
     - Test empty file changes event when task produces no changes
     - _Requirements: 1.1, 1.5, 1.6, 4.1_
 
-- [~] 7. Checkpoint - Ensure all backend tests pass
+- [ ] 7. Checkpoint - Ensure all backend tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 8. Implement frontend FileChangePanel component
-  - [~] 8.1 Create `gui/frontend/src/components/ai/FileChangePanel.tsx`
+  - [ ] 8.1 Create `gui/frontend/src/components/ai/FileChangePanel.tsx`
     - Implement `FileChangeState` with `taskGroups`, `pendingFiles`, `isExecuting`, `currentTaskTitle`
     - Render flat file list grouped by change type: added (green `+`), modified (yellow `~`), deleted (red `-`)
     - Display summary header: "N files added, M files modified, K files deleted"
@@ -193,7 +193,7 @@ This implementation connects the CodingSubAgent's file tracking infrastructure t
     - **Validates: Requirements 4.3**
 
 - [ ] 9. Implement frontend DiffViewer component
-  - [~] 9.1 Create `gui/frontend/src/components/ai/DiffViewer.tsx`
+  - [ ] 9.1 Create `gui/frontend/src/components/ai/DiffViewer.tsx`
     - Accept `diff` string, `language` string, and theme props
     - Parse unified diff format line by line
     - Render additions (`+` prefix) with green background
@@ -213,7 +213,7 @@ This implementation connects the CodingSubAgent's file tracking infrastructure t
     - _Requirements: 3.4, 3.6_
 
 - [ ] 10. Extend WorkflowDocPreview with dual-mode display
-  - [~] 10.1 Extend `gui/frontend/src/components/ai/WorkflowDocPreview.tsx` with file-change mode
+  - [ ] 10.1 Extend `gui/frontend/src/components/ai/WorkflowDocPreview.tsx` with file-change mode
     - Add `displayMode` state: "markdown" | "file-changes"
     - Switch to "file-changes" when `activePhaseID === "implementation"`
     - Switch to "markdown" when user clicks previous phase cards (requirements, tech_design, task_breakdown)
@@ -232,18 +232,18 @@ This implementation connects the CodingSubAgent's file tracking infrastructure t
     - Test state clearing on workflow reset
     - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.6_
 
-- [~] 11. Checkpoint - Ensure all frontend tests pass
+- [ ] 11. Checkpoint - Ensure all frontend tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 12. Final integration and wiring
-  - [~] 12.1 Wire WorkflowAdapter to SubAgentTaskRunner for event emission
+  - [ ] 12.1 Wire WorkflowAdapter to SubAgentTaskRunner for event emission
     - Ensure `SubAgentTaskRunner` has access to `GUIWorkflowAdapter` (via `IMMessageHandler` or direct reference)
     - Pass `userID` through the task execution chain for event emission
     - Verify `workflow:file_changes` events are emitted after each task completion
     - Verify `workflow:file_activity` events are emitted during tool execution
     - _Requirements: 1.1, 1.5, 4.1_
 
-  - [~] 12.2 Verify end-to-end flow
+  - [ ] 12.2 Verify end-to-end flow
     - Verify: SubAgent executes task → snapshots captured → diffs computed → event emitted → frontend renders
     - Verify: Multi-task accumulation with overlapping file paths shows latest state
     - Verify: Task failure emits partial changes with failure indicator
@@ -257,7 +257,7 @@ This implementation connects the CodingSubAgent's file tracking infrastructure t
     - Test phase navigation between modes
     - _Requirements: 1.1, 3.8, 5.2, 7.1_
 
-- [~] 13. Final checkpoint - Ensure all tests pass
+- [ ] 13. Final checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

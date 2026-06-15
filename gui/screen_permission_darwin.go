@@ -3,7 +3,7 @@
 package main
 
 /*
-#cgo darwin CFLAGS: -DDARWIN
+#cgo darwin CFLAGS: -DDARWIN -Wno-deprecated-declarations -Wno-unguarded-availability-new
 #cgo darwin LDFLAGS: -framework CoreGraphics -framework CoreFoundation
 
 #include <CoreGraphics/CoreGraphics.h>
@@ -31,17 +31,21 @@ static bool requestScreenCapture(void) {
     return true; // pre-Catalina: always allowed
 }
 
+// CGWindowListCreateImage is marked API_UNAVAILABLE in macOS 15+ SDK headers
+// but the symbol still exists at runtime. Use dlsym to bypass compile-time check.
+typedef CGImageRef (*CGWindowListCreateImageFn)(CGRect, uint32_t, uint32_t, uint32_t);
+
 // probeScreenCapture performs a real 1x1 pixel capture via
-// CGWindowListCreateImage. Returns:
+// CGWindowListCreateImage (loaded dynamically). Returns:
 //   1 = capture succeeded (permission works)
 //   0 = capture failed (permission may be stale, or screen is off/locked)
 static int probeScreenCapture(void) {
+    CGWindowListCreateImageFn fn = (CGWindowListCreateImageFn)dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
+    if (!fn) {
+        return 0;
+    }
     CGRect rect = CGRectMake(0, 0, 1, 1);
-    CGImageRef img = CGWindowListCreateImage(
-        rect,
-        kCGWindowListOptionOnScreenOnly,
-        kCGNullWindowID,
-        kCGWindowImageDefault);
+    CGImageRef img = fn(rect, kCGWindowListOptionOnScreenOnly, kCGNullWindowID, kCGWindowImageDefault);
     if (img == NULL) {
         return 0;
     }

@@ -61,8 +61,14 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 	// On macOS 10.15+, ensure screen recording permission is granted before
 	// spawning child processes. This ties the TCC prompt to our bundle ID
 	// so the user only sees it once, instead of repeatedly.
-	if !EnsureScreenRecordingPermission() {
-		return fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, grant permission to MaClaw, then restart the app")
+	// NOTE: On macOS, for fullscreen native capture, we skip this check and
+	// attempt capture directly — success proves permission. This avoids
+	// CGRequestScreenCaptureAccess triggering a dialog when permission is
+	// already granted but TCC probe has timing issues.
+	if runtime.GOOS != "darwin" || label != "" {
+		if !EnsureScreenRecordingPermission() {
+			return fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, grant permission to MaClaw, then restart the app")
+		}
 	}
 
 	available, reason := remote.DetectDisplayServer()
@@ -79,22 +85,27 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 	// the screenshot pipeline completes, regardless of exit path.
 	defer remote.ReleaseScreenshotMemory()
 
-	// On macOS, try native CGO capture first (avoids screencapture subprocess
-	// which triggers its own TCC dialog on macOS 26+). Only for fullscreen
-	// captures (label == "" means no specific window title).
+	// On macOS, use native capture only for fullscreen (no shell fallback to avoid
+	// screencapture TCC dialog on macOS 26+). Window captures still need shell.
 	var base64Data string
 	if runtime.GOOS == "darwin" && label == "" {
-		m.app.log(fmt.Sprintf("[screenshot] trying native CGO capture for session=%s", sessionID))
-		if b64, err := nativeCaptureScreenshot(); err == nil && b64 != "" && !remote.IsBlankImage(b64) {
-			base64Data = b64
-			m.app.log(fmt.Sprintf("[screenshot] native CGO capture succeeded for session=%s", sessionID))
-		} else {
-			if err != nil {
-				m.app.log(fmt.Sprintf("[screenshot] native CGO capture failed, falling back to shell: %v", err))
-			} else {
-				m.app.log("[screenshot] native CGO capture returned blank image, falling back to shell")
-			}
+		m.app.log(fmt.Sprintf("[screenshot] trying native capture for session=%s", sessionID))
+		b64, err := nativeCaptureScreenshot()
+		if err != nil {
+			m.app.log(fmt.Sprintf("[screenshot] native capture failed: %v", err))
+			return fmt.Errorf("native screenshot failed: %w", err)
 		}
+		if b64 == "" {
+			m.app.log("[screenshot] native capture returned empty string")
+			return fmt.Errorf("native screenshot returned empty data")
+		}
+		isBlank := remote.IsBlankImage(b64)
+		m.app.log(fmt.Sprintf("[screenshot] native capture: b64_len=%d, isBlank=%v", len(b64), isBlank))
+		if isBlank {
+			return fmt.Errorf("screenshot is blank (all black) — the display may be off or locked")
+		}
+		base64Data = b64
+		m.app.log(fmt.Sprintf("[screenshot] native capture succeeded for session=%s", sessionID))
 	}
 
 	// Fallback: shell command approach (all platforms, or when native failed).
@@ -193,11 +204,6 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 // BitBlt+CAPTUREBLT, tscon reconnect, PrintWindow composite) that work even when
 // the session is locked. On other platforms, it uses command-line tools.
 func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
-	// On macOS 10.15+, ensure screen recording permission is granted.
-	if !EnsureScreenRecordingPermission() {
-		return "", fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, grant permission to MaClaw, then restart the app")
-	}
-
 	available, reason := remote.DetectDisplayServer()
 	if !available {
 		return "", fmt.Errorf("screenshot requires a graphical display environment: %s", reason)
@@ -205,17 +211,33 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 
 	defer remote.ReleaseScreenshotMemory()
 
-	// On macOS, try native CGO capture first (avoids screencapture TCC dialog).
+	// On macOS, use native capture directly. If it succeeds, we know permission
+	// is granted — no need to call EnsureScreenRecordingPermission (which triggers
+	// CGRequestScreenCaptureAccess and shows a system dialog even when permission
+	// is already granted due to TCC probe timing issues).
 	if runtime.GOOS == "darwin" {
-		m.app.log("[screenshot-direct] trying native CGO capture")
-		if b64, err := nativeCaptureScreenshot(); err == nil && b64 != "" && !remote.IsBlankImage(b64) {
-			m.app.log("[screenshot-direct] native CGO capture succeeded")
-			return b64, nil
-		} else if err != nil {
-			m.app.log(fmt.Sprintf("[screenshot-direct] native CGO capture failed, falling back to shell: %v", err))
-		} else {
-			m.app.log("[screenshot-direct] native CGO capture returned blank, falling back to shell")
+		m.app.log("[screenshot-direct] trying native capture (SCK → CGWindowListCreateImage)")
+		b64, err := nativeCaptureScreenshot()
+		if err == nil && b64 != "" {
+			isBlank := remote.IsBlankImage(b64)
+			m.app.log(fmt.Sprintf("[screenshot-direct] native capture: b64_len=%d, isBlank=%v", len(b64), isBlank))
+			if !isBlank {
+				m.app.log("[screenshot-direct] native capture succeeded")
+				return b64, nil
+			}
+			return "", fmt.Errorf("screenshot is blank (all black) — the display may be off or locked")
 		}
+		// Native capture failed — check permission and give actionable error.
+		m.app.log(fmt.Sprintf("[screenshot-direct] native capture failed: %v", err))
+		if !HasScreenRecordingPermission() {
+			return "", fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, grant permission to MaClaw, then restart the app")
+		}
+		return "", fmt.Errorf("native screenshot failed: %w", err)
+	}
+
+	// Non-macOS: check permission then use shell command.
+	if !EnsureScreenRecordingPermission() {
+		return "", fmt.Errorf("screen recording permission not granted")
 	}
 
 	// Fallback: shell command approach (multi-monitor: captures all displays).
@@ -276,19 +298,38 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 }
 
 // CaptureScreenshotDirectForDisplay captures a single display by index.
-// It uses BuildSingleMonitorScreenshotCommandSafe which includes BitBlt
-// fallback for environments where CopyFromScreen returns blank images.
+// On macOS, uses native capture (no shell fallback to avoid TCC dialog).
+// On Windows, uses BuildSingleMonitorScreenshotCommandSafe with BitBlt fallback.
 func (m *RemoteSessionManager) CaptureScreenshotDirectForDisplay(displayIndex int) (string, error) {
-	if !EnsureScreenRecordingPermission() {
-		return "", fmt.Errorf("screen recording permission not granted")
-	}
-
 	available, reason := remote.DetectDisplayServer()
 	if !available {
 		return "", fmt.Errorf("screenshot requires a graphical display environment: %s", reason)
 	}
 
 	defer remote.ReleaseScreenshotMemory()
+
+	// On macOS, attempt native capture directly — success proves permission.
+	if runtime.GOOS == "darwin" {
+		m.app.log(fmt.Sprintf("[screenshot-display] trying native capture for display %d", displayIndex))
+		b64, err := nativeCaptureScreenshot()
+		if err == nil && b64 != "" {
+			isBlank := remote.IsBlankImage(b64)
+			if !isBlank {
+				m.app.log(fmt.Sprintf("[screenshot-display] native capture succeeded for display %d", displayIndex))
+				return b64, nil
+			}
+			return "", fmt.Errorf("screenshot of display %d is blank (all black)", displayIndex)
+		}
+		m.app.log(fmt.Sprintf("[screenshot-display] native capture failed: %v", err))
+		if !HasScreenRecordingPermission() {
+			return "", fmt.Errorf("screen recording permission not granted")
+		}
+		return "", fmt.Errorf("native screenshot failed: %w", err)
+	}
+
+	if !EnsureScreenRecordingPermission() {
+		return "", fmt.Errorf("screen recording permission not granted")
+	}
 
 	result, err := remote.BuildSingleMonitorScreenshotCommandSafe(displayIndex)
 	if err != nil {
@@ -319,7 +360,7 @@ func (m *RemoteSessionManager) CaptureScreenshotDirectForDisplay(displayIndex in
 	hideCommandWindow(cmd)
 	coretool.PrepareCommandForTreeKill(cmd)
 
-	m.app.log(fmt.Sprintf("[screenshot-display] capturing display %d", displayIndex))
+	m.app.log(fmt.Sprintf("[screenshot-display] capturing display %d via shell", displayIndex))
 
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("screenshot command failed to start: %w", err)
@@ -342,7 +383,7 @@ func (m *RemoteSessionManager) CaptureScreenshotDirectForDisplay(displayIndex in
 		return "", fmt.Errorf("screenshot of display %d is blank (all black)", displayIndex)
 	}
 
-	m.app.log(fmt.Sprintf("[screenshot-display] successfully captured display %d", displayIndex))
+	m.app.log(fmt.Sprintf("[screenshot-display] successfully captured display %d via shell", displayIndex))
 	return base64Data, nil
 }
 
@@ -366,9 +407,6 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 		return "", fmt.Errorf("screenshot capture is only supported in SDK mode sessions")
 	}
 
-	if !EnsureScreenRecordingPermission() {
-		return "", fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, grant permission to MaClaw, then restart the app")
-	}
 	available, reason := remote.DetectDisplayServer()
 	if !available {
 		return "", fmt.Errorf("screenshot requires a graphical display: %s", reason)
@@ -376,20 +414,31 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 
 	defer remote.ReleaseScreenshotMemory()
 
-	// On macOS, try native CGO capture first (avoids screencapture TCC dialog).
+	// On macOS, attempt native capture directly — success proves permission.
+	// Avoids calling CGRequestScreenCaptureAccess which triggers a dialog.
 	if runtime.GOOS == "darwin" {
-		m.app.log(fmt.Sprintf("[screenshot-b64] trying native CGO capture for session=%s", sessionID))
-		if b64, err := nativeCaptureScreenshot(); err == nil && b64 != "" && !remote.IsBlankImage(b64) {
-			m.app.log(fmt.Sprintf("[screenshot-b64] native CGO capture succeeded for session=%s", sessionID))
-			return b64, nil
-		} else if err != nil {
-			m.app.log(fmt.Sprintf("[screenshot-b64] native CGO capture failed, falling back to shell: %v", err))
-		} else {
-			m.app.log("[screenshot-b64] native CGO capture returned blank, falling back to shell")
+		m.app.log(fmt.Sprintf("[screenshot-b64] trying native capture for session=%s", sessionID))
+		b64, err := nativeCaptureScreenshot()
+		if err == nil && b64 != "" {
+			isBlank := remote.IsBlankImage(b64)
+			m.app.log(fmt.Sprintf("[screenshot-b64] native capture: b64_len=%d, isBlank=%v", len(b64), isBlank))
+			if !isBlank {
+				m.app.log(fmt.Sprintf("[screenshot-b64] native capture succeeded for session=%s", sessionID))
+				return b64, nil
+			}
+			return "", fmt.Errorf("screenshot is blank — display may be locked or off")
 		}
+		m.app.log(fmt.Sprintf("[screenshot-b64] native capture failed: %v", err))
+		if !HasScreenRecordingPermission() {
+			return "", fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, grant permission to MaClaw, then restart the app")
+		}
+		return "", fmt.Errorf("native screenshot failed: %w", err)
 	}
 
-	// Fallback: shell command approach (multi-monitor: captures all displays).
+	// Non-macOS: shell command approach (multi-monitor: captures all displays).
+	if !EnsureScreenRecordingPermission() {
+		return "", fmt.Errorf("screen recording permission not granted")
+	}
 	cmdStr := remote.BuildScreenshotCommandWithFallback().Command
 	if cmdStr == "" {
 		return "", fmt.Errorf("screenshot not supported on %s", runtime.GOOS)

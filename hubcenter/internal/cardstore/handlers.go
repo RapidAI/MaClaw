@@ -101,8 +101,11 @@ func ListOrdersHandler(svc *Service) http.HandlerFunc {
 			Email:          q.Get("email"),
 			ServiceGroupID: q.Get("service_group_id"),
 			Status:         q.Get("status"),
-			Limit:          limit,
-			Offset:         offset,
+			ArchivedOnly:   q.Get("archived") == "1" || strings.EqualFold(q.Get("archived"), "true"),
+			IncludeArchived: strings.EqualFold(q.Get("include_archived"), "1") ||
+				strings.EqualFold(q.Get("include_archived"), "true"),
+			Limit:  limit,
+			Offset: offset,
 		}
 		orders, total, err := svc.ListOrders(r.Context(), filter)
 		if err != nil {
@@ -113,6 +116,40 @@ func ListOrdersHandler(svc *Service) http.HandlerFunc {
 			"orders": orders,
 			"total":  total,
 		})
+	}
+}
+
+// DeleteOrderHandler deletes an unpaid order owned by a Hub tenant admin.
+// DELETE /api/cardstore/orders/:orderNo?email=X&hub_id=Y&tenant_id=Z
+func DeleteOrderHandler(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		orderNo := extractPathParam(r, "orderNo")
+		q := r.URL.Query()
+		email := q.Get("email")
+		hubID := q.Get("hub_id")
+		tenantID := q.Get("tenant_id")
+		if email == "" || hubID == "" || tenantID == "" {
+			var req struct {
+				Email    string `json:"email"`
+				HubID    string `json:"hub_id"`
+				TenantID string `json:"tenant_id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if email == "" {
+				email = req.Email
+			}
+			if hubID == "" {
+				hubID = req.HubID
+			}
+			if tenantID == "" {
+				tenantID = req.TenantID
+			}
+		}
+		if err := svc.DeleteUnprocessedOrder(r.Context(), orderNo, email, hubID, tenantID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	}
 }
 
@@ -205,6 +242,23 @@ func AdminConfirmOrderHandler(svc *Service, getAdminEmail func(*http.Request) st
 // GET /api/admin/cardstore/orders?...
 func AdminListOrdersHandler(svc *Service) http.HandlerFunc {
 	return ListOrdersHandler(svc) // same logic, admin auth handled by middleware
+}
+
+// AdminArchiveOrderHandler archives an order so it leaves the active order queue.
+// POST /api/admin/cardstore/orders/:orderNo/archive
+func AdminArchiveOrderHandler(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		orderNo := extractPathParam(r, "orderNo")
+		if orderNo == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "orderNo is required"})
+			return
+		}
+		if err := svc.ArchiveOrder(r.Context(), orderNo); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "archived"})
+	}
 }
 
 // TemplatesHandler returns available card templates.

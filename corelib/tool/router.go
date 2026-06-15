@@ -1219,14 +1219,33 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		// topic change in the same conversation.
 		suppressedTools["call_mcp_tool"] = true
 	}
+	explicitScreenshotRequest := isExplicitScreenshotRequest(userMessage)
 	browserSessionActive := condKeep["browser"] || r.sessionTools["browser"]
+
+	// When the user explicitly asks for a desktop screenshot and browser was
+	// only activated by UIC misclassification (not by session pin, not by
+	// browserPublishAffordance, not by the message also mentioning browser/web
+	// context), demote browser activation to avoid confusing the LLM with an
+	// irrelevant browser tool alongside the correct screenshot tool.
+	//
+	// Exception: if the message also contains browser-context words (浏览器,
+	// chrome, 网页, 页面, web page, etc.), the screenshot is likely a browser
+	// screenshot request, so browser should remain active.
+	if explicitScreenshotRequest && condKeep["browser"] && !r.sessionTools["browser"] && !browserPublishAffordance && !messageHasBrowserContext(userMessage) {
+		delete(condKeep, "browser")
+		condFilterOut["browser"] = true
+		browserSessionActive = false
+	}
+
 	if browserSessionActive {
 		// Browser tasks must use the stable merged browser surface. Hide generic
 		// desktop screenshot, shell, skill/discovery, MCP, and git fallbacks so the
 		// model cannot drift into screen scraping, taskkill, raw authenticated HTTP
 		// calls, skill reruns, or source-control actions instead of page actions.
 		suppressedTools["bash"] = true
-		suppressedTools["screenshot"] = true
+		if !explicitScreenshotRequest {
+			suppressedTools["screenshot"] = true
+		}
 		suppressedTools["call_mcp_tool"] = true
 		suppressedTools["manage_skill"] = true
 		suppressedTools["discover_tool"] = true
@@ -1236,7 +1255,6 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		suppressedTools["passthrough_task"] = true
 		suppressedTools["list_mcp_tools"] = true
 	}
-	explicitScreenshotRequest := isExplicitScreenshotRequest(userMessage)
 	if !explicitScreenshotRequest {
 		suppressedTools["screenshot"] = true
 	}
@@ -1610,6 +1628,22 @@ func isExplicitGitRequest(userMessage string) bool {
 	for _, marker := range []string{
 		"git", "commit", "push", "pull request", "branch", "repository",
 		"\u4ee3\u7801", "\u4ed3\u5e93", "\u63d0\u4ea4\u4ee3\u7801", "\u63a8\u9001", "\u5206\u652f", "\u5408\u5e76\u8bf7\u6c42",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// messageHasBrowserContext returns true if the message mentions browser/web
+// context words, indicating the user wants a browser-based action (like a
+// webpage screenshot) rather than a desktop screenshot.
+func messageHasBrowserContext(userMessage string) bool {
+	msg := strings.ToLower(strings.TrimSpace(userMessage))
+	for _, marker := range []string{
+		"\u6d4f\u89c8\u5668", "\u7f51\u9875", "\u9875\u9762", "chrome", "firefox", "safari",
+		"playwright", "web page", "webpage", "browser", "\u7f51\u7ad9", "url",
 	} {
 		if strings.Contains(msg, marker) {
 			return true

@@ -434,20 +434,15 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	imAdapter.SetContentAuditor(contentAuditor)
 
 	// --- MaClaw Official LLM Provider module ---
-	hubCenterURL := cfg.Center.BaseURL
+	hubCenterURL := strings.TrimSpace(cfg.Center.BaseURL)
 	hubID := ""
 	hubSecret := ""
 	if regState, err := centerService.Status(context.Background()); err == nil && regState != nil {
 		hubID = regState.HubID
+		hubCenterURL = firstNonEmpty(regState.ActiveBaseURL, regState.BaseURL, hubCenterURL)
 	}
 	// hub_secret is stored in center_registration system setting
-	if raw, err := st.System.Get(context.Background(), "center_registration"); err == nil && raw != "" {
-		var regRec struct {
-			HubSecret string `json:"hub_secret"`
-		}
-		_ = json.Unmarshal([]byte(raw), &regRec)
-		hubSecret = regRec.HubSecret
-	}
+	hubSecret = loadCenterHubSecret(context.Background(), st.System)
 	maclawMod := llmservice.InitMaClawModule(hubCenterURL, hubID, hubSecret, func() []string {
 		tenants, _ := st.Tenants.List(context.Background())
 		ids := make([]string, 0, len(tenants))
@@ -457,6 +452,13 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		return ids
 	})
 	if maclawMod != nil {
+		maclawMod.Client.SetRefreshCredentials(func() (string, string) {
+			hubID := ""
+			if regState, err := centerService.Status(context.Background()); err == nil && regState != nil {
+				hubID = strings.TrimSpace(regState.HubID)
+			}
+			return hubID, loadCenterHubSecret(context.Background(), st.System)
+		})
 		httpapi.SetMaClawModule(maclawMod)
 	}
 	llmservice.EnsureRegistryBuiltins(context.Background(), st.System)
@@ -900,4 +902,27 @@ func loadTenantDingTalkConfig(ctx context.Context, system store.SystemSettingsRe
 		return dingtalk.Config{}
 	}
 	return cfg
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func loadCenterHubSecret(ctx context.Context, system store.SystemSettingsRepository) string {
+	raw, err := system.Get(ctx, "center_registration")
+	if err != nil || raw == "" {
+		return ""
+	}
+	var regRec struct {
+		HubSecret string `json:"hub_secret"`
+	}
+	if json.Unmarshal([]byte(raw), &regRec) != nil {
+		return ""
+	}
+	return strings.TrimSpace(regRec.HubSecret)
 }

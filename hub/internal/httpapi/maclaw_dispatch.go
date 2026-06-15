@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 )
@@ -11,11 +12,23 @@ import (
 // maclawModule is set by the application layer during initialization.
 // When set, the LLM endpoint handler checks if a request should be
 // forwarded via the MaClaw Official provider.
-var maclawModule *llmservice.MaClawModule
+var (
+	maclawModuleMu sync.RWMutex
+	maclawModule   *llmservice.MaClawModule
+)
 
 // SetMaClawModule sets the MaClaw integration module for the HTTP handlers.
 func SetMaClawModule(m *llmservice.MaClawModule) {
+	maclawModuleMu.Lock()
+	defer maclawModuleMu.Unlock()
 	maclawModule = m
+}
+
+// GetMaClawModule returns the current MaClaw integration module.
+func GetMaClawModule() *llmservice.MaClawModule {
+	maclawModuleMu.RLock()
+	defer maclawModuleMu.RUnlock()
+	return maclawModule
 }
 
 // IsMaClawProviderRequest returns true if the resolved provider ID is maclaw_official.
@@ -26,16 +39,25 @@ func IsMaClawProviderRequest(providerID string) bool {
 // ForwardViaMaClaw forwards a request through the MaClaw Official provider (HubCenter proxy).
 // Returns (responseBody, statusCode, error).
 func ForwardViaMaClaw(ctx context.Context, body []byte, tenantID string) ([]byte, int, error) {
-	if maclawModule == nil || maclawModule.Client == nil {
+	module := GetMaClawModule()
+	if module == nil || module.Client == nil {
 		return nil, http.StatusServiceUnavailable, nil
 	}
-	return maclawModule.Client.Forward(ctx, body, tenantID)
+	return module.Client.Forward(ctx, body, tenantID)
 }
 
 // GetMaClawAccessControl returns the access control instance for permission checks.
 func GetMaClawAccessControl() *llmservice.TenantLLMAccessControl {
-	if maclawModule == nil {
+	module := GetMaClawModule()
+	if module == nil {
 		return nil
 	}
-	return maclawModule.AccessCtrl
+	return module.AccessCtrl
+}
+
+func currentMaClawAccessControl(fallback *llmservice.TenantLLMAccessControl) *llmservice.TenantLLMAccessControl {
+	if fallback != nil {
+		return fallback
+	}
+	return GetMaClawAccessControl()
 }

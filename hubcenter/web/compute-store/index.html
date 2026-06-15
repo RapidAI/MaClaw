@@ -219,6 +219,10 @@
         orderNo: '订单号',
         amount: '金额',
         status: '状态',
+        close: '关闭',
+        deleteOrder: '删除',
+        deleteOrderConfirm: '删除这笔未处理订单？',
+        deleteFailed: '删除失败：',
         ordersKicker: 'History',
         ordersTitle: '我的订单',
         refreshOrders: '刷新',
@@ -441,6 +445,10 @@
         orderNo: 'Order No.',
         amount: 'Amount',
         status: 'Status',
+        close: 'Close',
+        deleteOrder: 'Delete',
+        deleteOrderConfirm: 'Delete this unprocessed order?',
+        deleteFailed: 'Delete failed: ',
         ordersKicker: 'History',
         ordersTitle: 'My orders',
         refreshOrders: 'Refresh',
@@ -669,11 +677,12 @@
 
     function updateSelectedSummary() {
       var ct = state.cardTypes.find(function(c){ return c.id === state.selectedCardTypeID; });
+      var hubID = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
       document.getElementById('selectedProductLabel').textContent = ct ? ct.label : tr('notSelected');
       document.getElementById('selectedProductPrice').textContent = ct ? money(ct.price_rmb) : '-';
       var btn = document.getElementById('purchaseBtn');
-      btn.disabled = !ct;
-      btn.textContent = ct ? tr('buyNow') : tr('selectBeforeBuy');
+      btn.disabled = !ct || !hubID;
+      btn.textContent = !hubID ? tr('tenantUnknown') : (ct ? tr('buyNow') : tr('selectBeforeBuy'));
     }
 
     async function submitPurchase() {
@@ -711,23 +720,48 @@
     }
 
     function showOrderResult(order) {
-      var el = document.getElementById('orderResult');
-      var pay = document.getElementById('paymentQR');
-      el.hidden = false;
+      closeOrderDialog();
+      var modal = document.createElement('div');
+      modal.className = 'order-dialog';
+      modal.setAttribute('role', 'presentation');
       if (order.pay_qr_url) {
-        pay.innerHTML = '<img src="' + esc(order.pay_qr_url) + '" alt="Payment QR"><p>' + esc(tr('scanToPay')) + '</p>';
+        var paymentHTML = '<img src="' + esc(order.pay_qr_url) + '" alt="Payment QR"><p>' + esc(tr('scanToPay')) + '</p>';
       } else if (order.pay_url) {
-        pay.innerHTML = '<a class="primary-link" href="' + esc(order.pay_url) + '" target="_blank" rel="noopener">' + esc(tr('goPay')) + '</a>';
+        var paymentHTML = '<a class="primary-link" href="' + esc(order.pay_url) + '" target="_blank" rel="noopener">' + esc(tr('goPay')) + '</a>';
       } else if (order.pay_instruction) {
-        pay.innerHTML = '<pre class="instruction">' + esc(order.pay_instruction) + '</pre>';
+        var paymentHTML = '<pre class="instruction">' + esc(order.pay_instruction) + '</pre>';
       } else {
-        pay.innerHTML = '';
+        var paymentHTML = '';
       }
-      document.getElementById('orderInfo').innerHTML =
-        '<div><dt>' + esc(tr('orderNo')) + '</dt><dd>' + esc(order.order_no || '-') + '</dd></div>'
+      modal.innerHTML = '<div class="order-dialog__panel" role="dialog" aria-modal="true" aria-labelledby="orderDialogTitle">'
+        + '<button type="button" class="order-dialog__close" data-close-order-dialog aria-label="' + esc(tr('close')) + '">&times;</button>'
+        + '<div><p class="kicker">' + esc(tr('orderCreatedKicker')) + '</p><h2 id="orderDialogTitle">' + esc(tr('orderCreated')) + '</h2><p class="lead">' + esc(tr('orderCreatedLead')) + '</p></div>'
+        + '<div class="payment-result">' + paymentHTML + '</div>'
+        + '<dl class="order-info">'
+        + '<div><dt>' + esc(tr('orderNo')) + '</dt><dd>' + esc(order.order_no || '-') + '</dd></div>'
         + '<div><dt>' + esc(tr('amount')) + '</dt><dd>' + esc(money(order.amount)) + '</dd></div>'
-        + '<div><dt>' + esc(tr('status')) + '</dt><dd>' + esc(statusLabel(order.status)) + '</dd></div>';
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        + '<div><dt>' + esc(tr('status')) + '</dt><dd>' + esc(statusLabel(order.status)) + '</dd></div>'
+        + '</dl></div>';
+      document.body.appendChild(modal);
+      modal.querySelectorAll('[data-close-order-dialog]').forEach(function(btn) {
+        btn.addEventListener('click', closeOrderDialog);
+      });
+      modal.addEventListener('click', function(event) {
+        if (event.target === modal) closeOrderDialog();
+      });
+      document.addEventListener('keydown', handleOrderDialogKeydown);
+      var closeBtn = modal.querySelector('[data-close-order-dialog]');
+      if (closeBtn) closeBtn.focus();
+    }
+
+    function handleOrderDialogKeydown(event) {
+      if (event.key === 'Escape') closeOrderDialog();
+    }
+
+    function closeOrderDialog() {
+      var modal = document.querySelector('.order-dialog');
+      if (modal) modal.remove();
+      document.removeEventListener('keydown', handleOrderDialogKeydown);
     }
 
     async function loadOrders() {
@@ -737,7 +771,12 @@
         return;
       }
       try {
-        var resp = await fetch('/api/cardstore/orders?email=' + encodeURIComponent(email) + '&limit=20');
+        var qs = new URLSearchParams({ email: email, limit: '20' });
+        var hubID = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
+        var tenantID = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'default');
+        if (hubID) qs.set('hub_id', hubID);
+        if (tenantID) qs.set('tenant_id', tenantID);
+        var resp = await fetch('/api/cardstore/orders?' + qs.toString());
         if (!resp.ok) throw new Error(resp.statusText);
         var data = await resp.json();
         renderOrders(data.orders || []);
@@ -754,11 +793,38 @@
       }
       el.innerHTML = orders.map(function(o) {
         var statusClass = o.status === 'activated' ? 'activated' : 'pending';
+        var canDelete = isDeletableOrder(o);
+        var deleteBtn = canDelete ? '<button type="button" class="delete-order-btn" data-delete-order="' + esc(o.order_no || '') + '">' + esc(tr('deleteOrder')) + '</button>' : '';
         return '<article class="order-row">'
           + '<div><strong>' + esc(o.product_label || o.product_id || '-') + '</strong><span>' + esc(o.order_no || '-') + ' · ' + esc(new Date(o.created_at || Date.now()).toLocaleDateString()) + '</span></div>'
-          + '<div class="order-row-side"><b>' + esc(money(o.amount)) + '</b><span class="order-status ' + statusClass + '">' + esc(statusLabel(o.status)) + '</span></div>'
+          + '<div class="order-row-side"><b>' + esc(money(o.amount)) + '</b><span class="order-status ' + statusClass + '">' + esc(statusLabel(o.status)) + '</span>' + deleteBtn + '</div>'
           + '</article>';
       }).join('');
+      el.querySelectorAll('[data-delete-order]').forEach(function(btn) {
+        btn.addEventListener('click', function() { deleteOrder(btn.getAttribute('data-delete-order'), btn); });
+      });
+    }
+
+    function isDeletableOrder(order) {
+      return ['pending', 'personal_created', 'personal_opened'].indexOf(String(order && order.status || '')) >= 0;
+    }
+
+    async function deleteOrder(orderNo, button) {
+      if (!orderNo || !confirm(tr('deleteOrderConfirm'))) return;
+      var email = document.getElementById('adminEmail').value.trim();
+      var hubID = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
+      var tenantID = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'default');
+      if (button) button.disabled = true;
+      try {
+        var qs = new URLSearchParams({ email: email, hub_id: hubID, tenant_id: tenantID });
+        var resp = await fetch('/api/cardstore/orders/' + encodeURIComponent(orderNo) + '?' + qs.toString(), { method: 'DELETE' });
+        var body = await resp.json().catch(function(){ return {}; });
+        if (!resp.ok) throw new Error(body.error || body.message || resp.statusText);
+        await loadOrders();
+      } catch (e) {
+        if (button) button.disabled = false;
+        showStoreNotice(tr('deleteFailed') + e.message, 'error');
+      }
     }
 
     function init() {
@@ -787,6 +853,7 @@
       }
       var hub = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
       if (hub) document.getElementById('hubTenantInfo').value = hub + ' / ' + getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'default');
+      else showStoreNotice(tenantRequiredMessage(), 'error');
       applyI18n();
       loadCardTypes();
       if (email) loadOrders();

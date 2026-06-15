@@ -375,6 +375,9 @@ func (s *Service) GetProvider(ctx context.Context, id string) (*llmpool.Provider
 
 // AddServiceGroup adds a new service group.
 func (s *Service) AddServiceGroup(ctx context.Context, group llmpool.ServiceGroup) error {
+	if group.ID == ExternalComputePermissionServiceGroupID {
+		return fmt.Errorf("service group id %s is reserved", group.ID)
+	}
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
 		return err
@@ -397,6 +400,9 @@ func (s *Service) AddServiceGroup(ctx context.Context, group llmpool.ServiceGrou
 
 // UpdateServiceGroup updates an existing service group.
 func (s *Service) UpdateServiceGroup(ctx context.Context, group llmpool.ServiceGroup) error {
+	if group.ID == ExternalComputePermissionServiceGroupID {
+		return fmt.Errorf("service group id %s is reserved", group.ID)
+	}
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
 		return err

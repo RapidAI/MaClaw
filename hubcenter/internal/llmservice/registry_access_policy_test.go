@@ -61,3 +61,26 @@ func TestServiceGroupAccessPolicyDefaultsToFree(t *testing.T) {
 		t.Fatalf("default access policy = %q, want %q", got, AccessPolicyFree)
 	}
 }
+
+func TestServiceGroupReservedExternalComputePermissionID(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(&mockSystemSettings{})
+
+	err := svc.AddServiceGroup(ctx, llmpool.ServiceGroup{
+		ID:      ExternalComputePermissionServiceGroupID,
+		Name:    "reserved",
+		AgentID: DefaultComputeAgentID,
+	})
+	if err == nil {
+		t.Fatalf("AddServiceGroup with reserved id succeeded")
+	}
+
+	err = svc.UpdateServiceGroup(ctx, llmpool.ServiceGroup{
+		ID:      ExternalComputePermissionServiceGroupID,
+		Name:    "reserved",
+		AgentID: DefaultComputeAgentID,
+	})
+	if err == nil {
+		t.Fatalf("UpdateServiceGroup with reserved id succeeded")
+	}
+}

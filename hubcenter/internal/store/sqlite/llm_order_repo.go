@@ -21,13 +21,13 @@ func NewLLMOrderRepo(p *Provider) *llmOrderRepo {
 
 func (r *llmOrderRepo) Create(ctx context.Context, order *hcCardstore.PurchaseOrder) error {
 	_, err := r.write.ExecContext(ctx,
-		`INSERT INTO llm_card_orders (id, order_no, card_type_id, admin_email, hub_id, tenant_id, service_group_id, agent_id, agent_name, credits, period, amount, payment_mode, status, pay_channel, pay_qr_url, pay_url, payment_id, payment_msg, reviewed_by, reviewed_at, paid_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO llm_card_orders (id, order_no, card_type_id, admin_email, hub_id, tenant_id, service_group_id, agent_id, agent_name, credits, period, amount, payment_mode, status, pay_channel, pay_qr_url, pay_url, payment_id, payment_msg, reviewed_by, reviewed_at, paid_at, archived_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		order.OrderNo, order.OrderNo, order.CardTypeID, order.Email, order.HubID, order.TenantID,
 		order.ServiceGroupID, order.AgentID, order.AgentName, order.Credits, order.Period, order.Amount,
 		order.PaymentMode, order.Status, order.PayChannel, order.PayQRURL, order.PayURL,
 		order.PaymentID, order.PaymentMsg, order.ReviewedBy,
-		formatTimeOrEmpty(order.ReviewedAt), formatTimeOrEmpty(order.PaidAt),
+		formatTimeOrEmpty(order.ReviewedAt), formatTimeOrEmpty(order.PaidAt), order.ArchivedAt,
 		order.CreatedAt.Format(time.RFC3339), order.UpdatedAt.Format(time.RFC3339),
 	)
 	return err
@@ -35,7 +35,7 @@ func (r *llmOrderRepo) Create(ctx context.Context, order *hcCardstore.PurchaseOr
 
 func (r *llmOrderRepo) GetByOrderNo(ctx context.Context, orderNo string) (*hcCardstore.PurchaseOrder, error) {
 	row := r.read.QueryRowContext(ctx,
-		`SELECT order_no, card_type_id, admin_email, hub_id, tenant_id, service_group_id, agent_id, agent_name, credits, period, amount, payment_mode, status, pay_channel, pay_qr_url, pay_url, payment_id, payment_msg, reviewed_by, reviewed_at, paid_at, created_at, updated_at FROM llm_card_orders WHERE order_no = ?`, orderNo)
+		`SELECT order_no, card_type_id, admin_email, hub_id, tenant_id, service_group_id, agent_id, agent_name, credits, period, amount, payment_mode, status, pay_channel, pay_qr_url, pay_url, payment_id, payment_msg, reviewed_by, reviewed_at, paid_at, archived_at, created_at, updated_at FROM llm_card_orders WHERE order_no = ?`, orderNo)
 	return scanOrder(row)
 }
 
@@ -62,6 +62,11 @@ func (r *llmOrderRepo) List(ctx context.Context, filter hcCardstore.OrderFilter)
 		where += " AND status = ?"
 		args = append(args, filter.Status)
 	}
+	if filter.ArchivedOnly {
+		where += " AND archived_at <> ''"
+	} else if !filter.IncludeArchived {
+		where += " AND archived_at = ''"
+	}
 
 	// Count
 	var total int
@@ -71,7 +76,7 @@ func (r *llmOrderRepo) List(ctx context.Context, filter hcCardstore.OrderFilter)
 	}
 
 	// Query
-	query := "SELECT order_no, card_type_id, admin_email, hub_id, tenant_id, service_group_id, agent_id, agent_name, credits, period, amount, payment_mode, status, pay_channel, pay_qr_url, pay_url, payment_id, payment_msg, reviewed_by, reviewed_at, paid_at, created_at, updated_at FROM llm_card_orders " + where + " ORDER BY created_at DESC"
+	query := "SELECT order_no, card_type_id, admin_email, hub_id, tenant_id, service_group_id, agent_id, agent_name, credits, period, amount, payment_mode, status, pay_channel, pay_qr_url, pay_url, payment_id, payment_msg, reviewed_by, reviewed_at, paid_at, archived_at, created_at, updated_at FROM llm_card_orders " + where + " ORDER BY created_at DESC"
 	if filter.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", filter.Limit)
 	}
@@ -114,6 +119,18 @@ func (r *llmOrderRepo) Update(ctx context.Context, order *hcCardstore.PurchaseOr
 	return err
 }
 
+func (r *llmOrderRepo) Delete(ctx context.Context, orderNo string) error {
+	_, err := r.write.ExecContext(ctx, `DELETE FROM llm_card_orders WHERE order_no = ?`, orderNo)
+	return err
+}
+
+func (r *llmOrderRepo) Archive(ctx context.Context, orderNo string, archivedAt time.Time) error {
+	_, err := r.write.ExecContext(ctx,
+		`UPDATE llm_card_orders SET archived_at = ?, updated_at = ? WHERE order_no = ?`,
+		archivedAt.Format(time.RFC3339), archivedAt.Format(time.RFC3339), orderNo)
+	return err
+}
+
 // ---------------------------------------------------------------------------
 // scan helpers
 // ---------------------------------------------------------------------------
@@ -126,7 +143,7 @@ func scanOrder(row *sql.Row) (*hcCardstore.PurchaseOrder, error) {
 		&o.ServiceGroupID, &o.AgentID, &o.AgentName, &o.Credits, &o.Period, &o.Order.Amount,
 		&o.Order.PaymentMode, &o.Order.Status, &o.Order.PayChannel, &o.Order.PayQRURL, &o.Order.PayURL,
 		&o.Order.PaymentID, &o.Order.PaymentMsg, &o.Order.ReviewedBy,
-		&reviewedAt, &paidAt, &createdAt, &updatedAt,
+		&reviewedAt, &paidAt, &o.ArchivedAt, &createdAt, &updatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -150,7 +167,7 @@ func scanOrderFromRows(rows *sql.Rows) (*hcCardstore.PurchaseOrder, error) {
 		&o.ServiceGroupID, &o.AgentID, &o.AgentName, &o.Credits, &o.Period, &o.Order.Amount,
 		&o.Order.PaymentMode, &o.Order.Status, &o.Order.PayChannel, &o.Order.PayQRURL, &o.Order.PayURL,
 		&o.Order.PaymentID, &o.Order.PaymentMsg, &o.Order.ReviewedBy,
-		&reviewedAt, &paidAt, &createdAt, &updatedAt,
+		&reviewedAt, &paidAt, &o.ArchivedAt, &createdAt, &updatedAt,
 	); err != nil {
 		return nil, err
 	}

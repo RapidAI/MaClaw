@@ -53,10 +53,10 @@ type MaClawProviderClient struct {
 	Config     MaClawProviderConfig
 	HTTPClient *http.Client
 
-	mu               sync.RWMutex
-	boundURL         string // persisted bound HubCenter LLM URL
-	failureCount     int
-	lastFailureAt    time.Time
+	mu                 sync.RWMutex
+	boundURL           string // persisted bound HubCenter LLM URL
+	failureCount       int
+	lastFailureAt      time.Time
 	refreshCredentials func() (hubID, hubSecret string) // lazy refresh after registration
 }
 
@@ -70,33 +70,54 @@ func NewMaClawProviderClient(cfg MaClawProviderConfig) *MaClawProviderClient {
 	}
 }
 
+// ConfigSnapshot returns a copy of the provider config under the client lock.
+func (c *MaClawProviderClient) ConfigSnapshot() MaClawProviderConfig {
+	if c == nil {
+		return MaClawProviderConfig{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Config
+}
+
+func (c *MaClawProviderClient) ensureCredentials() (hubID, token string) {
+	c.mu.RLock()
+	hubID = c.Config.HubID
+	token = c.Config.MachineToken
+	refresh := c.refreshCredentials
+	c.mu.RUnlock()
+
+	if hubID != "" && token != "" {
+		return hubID, token
+	}
+	if refresh == nil {
+		return hubID, token
+	}
+
+	newID, newToken := refresh()
+	if newID == "" || newToken == "" {
+		return hubID, token
+	}
+
+	c.mu.Lock()
+	c.Config.HubID = newID
+	c.Config.MachineToken = newToken
+	c.mu.Unlock()
+	return newID, newToken
+}
+
 // Forward sends an LLM request to HubCenter and returns the response.
 func (c *MaClawProviderClient) Forward(ctx context.Context, body []byte, tenantID string) ([]byte, int, error) {
 	c.mu.RLock()
 	targetURL := c.boundURL
-	hubID := c.Config.HubID
-	token := c.Config.MachineToken
 	c.mu.RUnlock()
 
 	if targetURL == "" {
 		return nil, 0, fmt.Errorf("maclaw official provider: no HubCenter URL configured")
 	}
+	hubID, token := c.ensureCredentials()
 	if hubID == "" || token == "" {
-		// Lazy refresh: registration may have completed after init
-		if c.refreshCredentials != nil {
-			newID, newToken := c.refreshCredentials()
-			if newID != "" && newToken != "" {
-				c.mu.Lock()
-				c.Config.HubID = newID
-				c.Config.MachineToken = newToken
-				c.mu.Unlock()
-				hubID = newID
-				token = newToken
-			}
-		}
-		if hubID == "" || token == "" {
-			return nil, 0, fmt.Errorf("maclaw official provider: hub not registered to HubCenter yet")
-		}
+		return nil, 0, fmt.Errorf("maclaw official provider: hub not registered to HubCenter yet")
 	}
 
 	endpoint := strings.TrimRight(targetURL, "/") + "/api/llm/v1/chat/completions"
@@ -143,15 +164,23 @@ func (c *MaClawProviderClient) QueryAuthorization(ctx context.Context, tenantID 
 	if targetURL == "" {
 		return nil, fmt.Errorf("no HubCenter URL configured")
 	}
+	hubID, token := c.ensureCredentials()
+	if hubID == "" || token == "" {
+		return nil, fmt.Errorf("hub not registered to HubCenter yet")
+	}
 
-	endpoint := fmt.Sprintf("%s/api/llm/v1/authorization?hub_id=%s&tenant_id=%s",
-		strings.TrimRight(targetURL, "/"), c.Config.HubID, tenantID)
+	q := url.Values{}
+	q.Set("hub_id", hubID)
+	q.Set("tenant_id", tenantID)
+	endpoint := fmt.Sprintf("%s/api/llm/v1/authorization?%s",
+		strings.TrimRight(targetURL, "/"), q.Encode())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Config.MachineToken)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Hub-ID", hubID)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -216,10 +245,10 @@ func (c *MaClawProviderClient) resetFailures() {
 
 // TenantAuthorizationStatus is the response from HubCenter's authorization query.
 type TenantAuthorizationStatus struct {
-	HubID                  string                    `json:"hub_id"`
-	TenantID               string                   `json:"tenant_id"`
-	AllowExternalProviders bool                      `json:"allow_external_providers"`
-	Authorizations         []AuthorizationSummary    `json:"authorizations"`
+	HubID                  string                 `json:"hub_id"`
+	TenantID               string                 `json:"tenant_id"`
+	AllowExternalProviders bool                   `json:"allow_external_providers"`
+	Authorizations         []AuthorizationSummary `json:"authorizations"`
 }
 
 // AuthorizationSummary is a single authorization entry from HubCenter.

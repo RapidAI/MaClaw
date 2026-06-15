@@ -27,10 +27,10 @@ type EntryResolveRequest struct {
 
 // LLMRouteHook is called during router setup to register LLM service routes.
 // Set by the application layer after constructing LLM dependencies.
-var llmRouteHook func(mux *http.ServeMux, adminService *auth.AdminService)
+var llmRouteHook func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service)
 
 // SetLLMRouteHook sets the hook for registering LLM routes.
-func SetLLMRouteHook(hook func(mux *http.ServeMux, adminService *auth.AdminService)) {
+func SetLLMRouteHook(hook func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service)) {
 	llmRouteHook = hook
 }
 
@@ -668,7 +668,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	// if the LLM service module is initialized. We expose the mux via a hook here
 	// so the application layer can register LLM routes after constructing dependencies.
 	if llmRouteHook != nil {
-		llmRouteHook(mux, adminService)
+		llmRouteHook(mux, adminService, hubService)
 	}
 
 	return adminOpaqueHubIDCompat(mux, adminService, hubService)

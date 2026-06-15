@@ -471,6 +471,44 @@ function assertLLMProviderPricingHooks() {
   });
 }
 
+function assertMaClawComputeProviderGate() {
+  const content = read('maclaw-compute-module.js');
+  [
+    'window.canAddExternalProvider',
+    'return false;',
+    'updateExternalProviderEntryVisibility',
+    'llmProviderCreateInlineBtn',
+    'llmProvidersImportBtn',
+    'window.addLLMProvider',
+    'window.triggerLLMProvidersImport',
+    'window.importLLMProvidersJSON',
+    'refreshMaClawOfficialBanner',
+    'AdminTabRegistry.onLanguageChange',
+    'window.gatedAddProvider'
+  ].forEach(function(marker) {
+    if (!content.includes(marker)) {
+      fail('maclaw-compute-module.js is missing compute gate marker: ' + marker);
+    }
+  });
+  if (content.includes('if (!_computeAuthStatus) return true')) {
+    fail('maclaw-compute-module.js must not allow provider creation before compute auth status loads');
+  }
+  if (content.includes('\\ud83d\\ude80') || content.includes('linear-gradient(135deg,#667eea')) {
+    fail('maclaw-compute-module.js MaClaw compute banner should stay restrained and icon-free');
+  }
+  const handler = fs.readFileSync(path.join(root, '..', '..', 'internal', 'httpapi', 'llm_provider_handlers.go'), 'utf8');
+  if (!handler.includes('LLM_EXTERNAL_PROVIDER_NOT_GRANTED') || !handler.includes('llmProviderRegistryAddsProviders')) {
+    fail('llm_provider_handlers.go must enforce compute grants when adding providers');
+  }
+  if (!handler.includes('filterLLMProviderRegistryForRequest') || !handler.includes('GetLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl *llmservice.TenantLLMAccessControl)')) {
+    fail('llm_provider_handlers.go must hide configured providers for tenants without compute grants');
+  }
+  const providerTab = read('llm-provider-tab.js');
+  if (!providerTab.includes('window.addLLMProvider = addLLMProvider')) {
+    fail('llm-provider-tab.js must export addLLMProvider so compute gating can wrap inline add actions');
+  }
+}
+
 function assertHubLlmStatusTextIsIconFree() {
   const content = read('hub-llm-tab.js');
   ['\\u2705', '\\u274c', '\\u26aa', '\\ud83d\\udfe2', '\\ud83d\\udfe1', '\\ud83d\\udd34'].forEach(function(marker) {
@@ -609,6 +647,7 @@ assertScopedRefreshHooks();
 assertLegacyMirrorRemoved();
 assertHubLlmStatusTextIsIconFree();
 assertLLMProviderPricingHooks();
+assertMaClawComputeProviderGate();
 assertSecurityDefaultGroupUsesName();
 assertSecurityTenantSchemaGuards();
 assertSecurityCapabilityComplianceExportHooks();

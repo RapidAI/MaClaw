@@ -35,10 +35,14 @@ func (s *llmDeleteTestSettings) List(_ context.Context) ([]*store.SystemSettingE
 }
 
 type llmDeleteAuthRepo struct {
-	auths []*llmservice.TenantAuthorization
+	auths     []*llmservice.TenantAuthorization
+	createErr error
 }
 
 func (r *llmDeleteAuthRepo) Create(_ context.Context, auth *llmservice.TenantAuthorization) error {
+	if r.createErr != nil {
+		return r.createErr
+	}
 	r.auths = append(r.auths, auth)
 	return nil
 }
@@ -76,7 +80,14 @@ func (r *llmDeleteAuthRepo) ListByServiceGroup(_ context.Context, serviceGroupID
 	return matches, nil
 }
 
-func (r *llmDeleteAuthRepo) Update(_ context.Context, _ *llmservice.TenantAuthorization) error {
+func (r *llmDeleteAuthRepo) Update(_ context.Context, auth *llmservice.TenantAuthorization) error {
+	for i, existing := range r.auths {
+		if existing.ID == auth.ID {
+			r.auths[i] = auth
+			return nil
+		}
+	}
+	r.auths = append(r.auths, auth)
 	return nil
 }
 
@@ -175,6 +186,26 @@ func (r *llmDeleteOrderRepo) Update(_ context.Context, _ *cardstore.PurchaseOrde
 	return nil
 }
 
+func (r *llmDeleteOrderRepo) Delete(_ context.Context, orderNo string) error {
+	filtered := r.orders[:0]
+	for _, order := range r.orders {
+		if order.OrderNo != orderNo {
+			filtered = append(filtered, order)
+		}
+	}
+	r.orders = filtered
+	return nil
+}
+
+func (r *llmDeleteOrderRepo) Archive(_ context.Context, orderNo string, archivedAt time.Time) error {
+	for _, order := range r.orders {
+		if order.OrderNo == orderNo {
+			order.ArchivedAt = archivedAt.Format(time.RFC3339)
+		}
+	}
+	return nil
+}
+
 func TestAdminDeleteLLMServiceGroupRejectsTenantInUse(t *testing.T) {
 	ctx := context.Background()
 	svc := llmservice.NewService(&llmDeleteTestSettings{})
@@ -267,6 +298,35 @@ func TestAdminDeleteLLMServiceGroupDeletesUnusedGroup(t *testing.T) {
 	cardSvc := cardstore.NewService(&llmDeleteCardTypeRepo{}, &llmDeleteOrderRepo{}, &llmDeleteAuthRepo{})
 
 	rr := performDeleteServiceGroup(svc, llmservice.NewAuthorizationChecker(&llmDeleteAuthRepo{}), cardSvc, "unused_group")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	reg, err := svc.LoadRegistry(ctx)
+	if err != nil {
+		t.Fatalf("load registry: %v", err)
+	}
+	if len(reg.ServiceGroups) != 0 {
+		t.Fatalf("service group was not deleted: %#v", reg.ServiceGroups)
+	}
+}
+
+func TestAdminDeleteLLMServiceGroupIgnoresExternalComputePermission(t *testing.T) {
+	ctx := context.Background()
+	svc := newDeleteTestLLMService(t, "unused_group")
+	repo := &llmDeleteAuthRepo{auths: []*llmservice.TenantAuthorization{{
+		ID:                     "auth_external",
+		HubID:                  "hub1",
+		TenantID:               "tenant1",
+		ServiceGroupID:         llmservice.ExternalComputePermissionServiceGroupID,
+		CreditsTotal:           1000000000000,
+		StartsAt:               time.Now().Add(-time.Hour),
+		ExpiresAt:              time.Now().Add(time.Hour),
+		Status:                 "active",
+		AllowExternalProviders: true,
+	}}}
+
+	rr := performDeleteServiceGroup(svc, llmservice.NewAuthorizationChecker(repo), nil, "unused_group")
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())

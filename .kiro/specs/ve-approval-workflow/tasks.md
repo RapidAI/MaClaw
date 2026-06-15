@@ -104,7 +104,7 @@ This implementation builds a complete approval workflow system on the existing V
     - Test timeout behavior
     - _Requirements: 4.2, 4.6, 4.7, 4.8, 4.10_
 
-- [ ] 6. Implement VE approval handler (`gui/ve_approval_handler.go`)
+- [x] 6. Implement VE approval handler (`gui/ve_approval_handler.go`)
   - [x] 6.1 Implement VE approval configuration model
     - Define `VEApprovalConfig` struct with enabled toggle, ACL, rules, queue limits, timeout, daily quota, fallback
     - Define `AccessControlList` with whitelist/blacklist mode, departments, roles, skills, entities
@@ -142,7 +142,7 @@ This implementation builds a complete approval workflow system on the existing V
 - [x] 7. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 8. Implement workflow executor (`hub/internal/workflow/executor.go`)
+- [x] 8. Implement workflow executor (`hub/internal/workflow/executor.go`)
   - [x] 8.1 Implement `StartInstance` for workflow instance creation
     - Create new `WorkflowInstance` bound to current `PublishedVersion`
     - Set instance status to "running"
@@ -196,7 +196,7 @@ This implementation builds a complete approval workflow system on the existing V
     - Test concurrent instance execution
     - _Requirements: 9.1, 9.3, 9.4, 9.5, 9.6, 9.9, 11.1, 11.3_
 
-- [ ] 9. Implement escalation retry mechanism
+- [x] 9. Implement escalation retry mechanism
   - [x] 9.1 Implement human escalation with retry
     - When configured human approver is unavailable, retain request in pending-escalation queue
     - Record unavailability in audit trail
@@ -207,7 +207,7 @@ This implementation builds a complete approval workflow system on the existing V
 - [x] 10. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 11. Implement version management and admin review
+- [x] 11. Implement version management and admin review
   - [x] 11.1 Implement version lifecycle management
     - Auto-increment version number (major.minor.patch) on save
     - Implement status transitions: draft → pending_review → published/rejected
@@ -234,7 +234,7 @@ This implementation builds a complete approval workflow system on the existing V
     - Allow user to withdraw pending_review submission back to draft
     - _Requirements: 12.3_
 
-- [ ] 12. Implement Capability Market integration
+- [x] 12. Implement Capability Market integration
   - [x] 12.1 Register published workflows in Capability Market
     - Register with `capability_type: "approval_workflow"` in existing capability service
     - Include metadata: category ("审批类"), node_count, approval_modes, thumbnail_url
@@ -254,7 +254,7 @@ This implementation builds a complete approval workflow system on the existing V
 - [x] 13. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 14. Implement Hub REST API endpoints
+- [x] 14. Implement Hub REST API endpoints
   - [x] 14.1 Implement workflow CRUD API
     - POST/GET/PUT/DELETE `/api/v1/workflows` for definitions
     - POST/GET `/api/v1/workflows/:id/versions` for version management
@@ -274,18 +274,18 @@ This implementation builds a complete approval workflow system on the existing V
     - POST `/api/v1/admin/reviews/:id/unpublish`
     - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5_
 
-  - [~] 14.4 Implement audit trail query API
+  - [x] 14.4 Implement audit trail query API
     - GET `/api/v1/audit` with filters: instance_id, approver_id, requester_id, time_range, decision
     - Paginate at 100 records per page
     - _Requirements: 10.4, 10.5_
 
-  - [~] 14.5 Implement workflow instance API
+  - [x] 14.5 Implement workflow instance API
     - POST `/api/v1/workflows/:id/trigger` to start new instance
     - GET `/api/v1/instances/:id` for instance status
     - GET `/api/v1/instances/:id/audit` for instance audit trail
     - _Requirements: 9.1, 10.4_
 
-- [ ] 15. Implement VE approval settings in desktop app
+- [x] 15. Implement VE approval settings in desktop app
   - [x] 15.1 Add approval capability configuration to VE settings
     - Add "Approval Capability" section with enable/disable toggle (default: disabled)
     - Display ACL configuration (whitelist/blacklist mode, departments, roles, skills)
@@ -307,7 +307,7 @@ This implementation builds a complete approval workflow system on the existing V
 - [x] 16. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 17. Implement workflow designer frontend (Hub)
+- [x] 17. Implement workflow designer frontend (Hub)
   - [x] 17.1 Implement canvas-based workflow editor
     - Create `/approval_workflow` page accessible from desktop app Settings → Digital Employees tab
     - Implement drag-and-drop canvas for node placement
@@ -344,7 +344,7 @@ This implementation builds a complete approval workflow system on the existing V
     - Display rejection reason for rejected versions
     - _Requirements: 6.2, 12.3, 12.4_
 
-- [ ] 18. Implement desktop app navigation to workflow designer
+- [x] 18. Implement desktop app navigation to workflow designer
   - [x] 18.1 Add "Approval Workflow Design" button to VE settings
     - Add button in Settings → Digital Employees tab
     - Open Hub page at `/approval_workflow` in embedded browser or system browser

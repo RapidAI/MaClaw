@@ -85,60 +85,98 @@ func ProxyHandler(cfg *ProxyConfig) http.HandlerFunc {
 	}
 }
 
+type tenantAuthorizationStatus struct {
+	HubID                  string `json:"hub_id"`
+	TenantID               string `json:"tenant_id"`
+	AllowExternalProviders bool   `json:"allow_external_providers"`
+}
+
+func buildTenantAuthorizationStatus(r *http.Request, checker *AuthorizationChecker, hubID, tenantID string) (*tenantAuthorizationStatus, error) {
+	auths, err := checker.repo.ListByHubTenant(r.Context(), hubID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	current := now()
+	result := &tenantAuthorizationStatus{
+		HubID:    hubID,
+		TenantID: tenantID,
+	}
+	for _, a := range auths {
+		active := a.IsActive(current)
+		if active && a.AllowExternalProviders {
+			result.AllowExternalProviders = true
+		}
+	}
+	return result, nil
+}
+
 // AuthorizationQueryHandler returns an HTTP handler for querying tenant authorization status.
 // GET /api/llm/v1/authorization?hub_id=X&tenant_id=Y
 func AuthorizationQueryHandler(checker *AuthorizationChecker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		hubID := r.URL.Query().Get("hub_id")
-		tenantID := r.URL.Query().Get("tenant_id")
+		hubID := strings.TrimSpace(r.URL.Query().Get("hub_id"))
+		tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 		if hubID == "" || tenantID == "" {
 			writeJSONError(w, http.StatusBadRequest, "hub_id and tenant_id query params are required")
 			return
 		}
 
-		auths, err := checker.repo.ListByHubTenant(r.Context(), hubID, tenantID)
+		result, err := buildTenantAuthorizationStatus(r, checker, hubID, tenantID)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		hasExternal, _ := checker.HasExternalProviderAccess(r.Context(), hubID, tenantID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	}
+}
 
-		type authSummary struct {
-			ServiceGroupID  string  `json:"service_group_id"`
-			CreditsTotal    float64 `json:"credits_total"`
-			CreditsUsed     float64 `json:"credits_used"`
-			CreditsRemaining float64 `json:"credits_remaining"`
-			ExpiresAt       string  `json:"expires_at"`
-			Status          string  `json:"status"`
-			Active          bool    `json:"active"`
+// AuthorizationBatchQueryHandler returns authorization status for multiple tenants.
+// POST /api/llm/v1/authorization/batch
+func AuthorizationBatchQueryHandler(checker *AuthorizationChecker) http.HandlerFunc {
+	type batchRequest struct {
+		TenantIDs []string `json:"tenant_ids"`
+	}
+	type batchResponse struct {
+		Tenants map[string]*tenantAuthorizationStatus `json:"tenants,omitempty"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		hubID := strings.TrimSpace(r.Header.Get("X-Hub-ID"))
+		if hubID == "" {
+			writeJSONError(w, http.StatusBadRequest, "X-Hub-ID header is required")
+			return
 		}
 
-		result := struct {
-			HubID                  string        `json:"hub_id"`
-			TenantID               string        `json:"tenant_id"`
-			AllowExternalProviders bool          `json:"allow_external_providers"`
-			Authorizations         []authSummary `json:"authorizations"`
-		}{
-			HubID:                  hubID,
-			TenantID:               tenantID,
-			AllowExternalProviders: hasExternal,
+		var req batchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
+			return
 		}
 
-		for _, a := range auths {
-			result.Authorizations = append(result.Authorizations, authSummary{
-				ServiceGroupID:   a.ServiceGroupID,
-				CreditsTotal:     a.CreditsTotal,
-				CreditsUsed:      a.CreditsUsed,
-				CreditsRemaining: a.CreditsRemaining(),
-				ExpiresAt:        a.ExpiresAt.Format("2006-01-02T15:04:05Z"),
-				Status:           a.Status,
-				Active:           a.IsActive(now()),
-			})
+		resp := batchResponse{Tenants: map[string]*tenantAuthorizationStatus{}}
+		seen := map[string]struct{}{}
+		for _, rawTenantID := range req.TenantIDs {
+			tenantID := strings.TrimSpace(rawTenantID)
+			if tenantID == "" {
+				continue
+			}
+			if _, ok := seen[tenantID]; ok {
+				continue
+			}
+			seen[tenantID] = struct{}{}
+			status, err := buildTenantAuthorizationStatus(r, checker, hubID, tenantID)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			resp.Tenants[tenantID] = status
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(result)
+		json.NewEncoder(w).Encode(resp)
 	}
 }
 

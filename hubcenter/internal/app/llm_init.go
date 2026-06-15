@@ -17,6 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/httpapi"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
@@ -126,8 +127,8 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 
 	// 6. Register LLM route hook — will be called during NewRouter
 	statsSvc := llmservice.NewStatsService(usageRepo)
-	httpapi.SetLLMRouteHook(func(mux *http.ServeMux, adminService *auth.AdminService) {
-		httpapi.RegisterLLMRoutes(mux, adminService, llmSvc, proxyCfg, authChecker, cardStoreSvc, statsSvc)
+	httpapi.SetLLMRouteHook(func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service) {
+		httpapi.RegisterLLMRoutes(mux, adminService, hubService, llmSvc, proxyCfg, authChecker, cardStoreSvc, statsSvc)
 	})
 
 	log.Printf("[llm-init] LLM service module initialized (node=%s)", nodeID)
