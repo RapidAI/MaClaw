@@ -445,7 +445,7 @@ func extractEmail(field PhaseInputField, context string) *PrefilledValue {
 // - International: +86-xxx / +1-xxx style
 // Uses negative lookbehind/lookahead simulation via non-digit boundaries to avoid
 // matching inside longer digit sequences (e.g. ID card numbers).
-var chinaPhoneRe = regexp.MustCompile(`(?:^|[^\d])(?:(?:\+86|86)[\s\-]?)?(1[3-9]\d{9})(?:[^\d]|$)`)
+var chinaPhoneRe = regexp.MustCompile(`(?:^|[^\d])((?:\+86|86)?[\s\-]?1[3-9]\d{9})(?:[^\d]|$)`)
 var intlPhoneRe = regexp.MustCompile(`\+\d{1,3}[\s\-]?\d[\d\s\-]{6,14}\d`)
 
 func extractPhone(field PhaseInputField, context string) *PrefilledValue {
@@ -488,11 +488,11 @@ func normalizePhone(phone string) string {
 // Ordered most-specific first.
 var datePatterns = []*regexp.Regexp{
 	// "1980年5月15日" / "1980年5月"
-	regexp.MustCompile(`(\d{4})年(\d{1,2})月(?:(\d{1,2})日)?`),
+	regexp.MustCompile(`\d{4}年\d{1,2}月(?:\d{1,2}日)?`),
 	// "2023-05-15" / "2023/05/15" / "2023.05.15"
-	regexp.MustCompile(`(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})`),
-	// "2023-05" / "2023/05"
-	regexp.MustCompile(`(\d{4})[/\-.](\d{1,2})(?:\b|[^\d/\-.])`),
+	regexp.MustCompile(`\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}`),
+	// "2023-05" / "2023/05" (year-month only, no day follows)
+	regexp.MustCompile(`\d{4}[/\-.]\d{1,2}`),
 }
 
 // birthDateRe matches "出生于1985年3月" or "出生1982年6月15日" patterns.

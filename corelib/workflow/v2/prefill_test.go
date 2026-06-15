@@ -393,7 +393,9 @@ func TestPrefillFromContext_ExtractsPhone(t *testing.T) {
 		{"联系方式：+86-13912345678", "+8613912345678"},
 		{"电话 +1-650-555-1234", "+16505551234"},
 		{"没有电话号码", ""},
-		{"订单号12345", ""}, // too short, not a phone
+		{"订单号12345", ""},                       // too short, not a phone
+		{"身份证320106199001153215", ""},           // ID card contains 11-digit sequence but shouldn't match
+		{"编号：20231301000234567", ""},            // 17-digit number, not a phone
 	}
 	for _, tt := range tests {
 		result := PrefillFromContext(schema, tt.msg, nil)
