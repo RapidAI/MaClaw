@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 )
@@ -29,8 +28,8 @@ type tuiWorkflowV2State struct {
 	machine       *v2.StateMachine
 	store         v2.WorkflowStore
 	registry      *v2.TemplateRegistry
-	understanding *workflow.IntentUnderstandingManager // shared with V1, needed for TUI workflow interception
-	filter        *workflow.QuickFilter               // shared with V1, needed for TUI workflow interception
+	understanding *v2.IntentUnderstandingManager // shared with V1, needed for TUI workflow interception
+	filter        *v2.QuickFilter               // shared with V1, needed for TUI workflow interception
 }
 
 // initWorkflowV2TUI creates and wires the V2 workflow engine for the TUI.
@@ -77,15 +76,15 @@ func (app *TUIApp) initWorkflowV2TUI() *tuiWorkflowV2State {
 		app:    app,
 		client: &http.Client{},
 	}
-	// Use the V1 registry for understanding (it expects *workflow.WorkflowRegistry).
-	v1Registry := workflow.NewWorkflowRegistry()
-	understanding := workflow.NewIntentUnderstandingManager(v1Store, llmCaller, v1Registry)
+	// Use the V1 registry for understanding (it expects *v2.WorkflowRegistry).
+	v1Registry := v2.NewWorkflowRegistry()
+	understanding := v2.NewIntentUnderstandingManager(v1Store, llmCaller, v1Registry)
 	understanding.SetLanguage(app.workflowLang())
 
 	// Create QuickFilter for message classification.
 	// Use a V2-backed WorkflowChecker shim so the filter detects V2 active workflows.
 	checker := &tuiV2WorkflowChecker{machine: machine, understanding: understanding}
-	filter := workflow.NewQuickFilter(checker)
+	filter := v2.NewQuickFilter(checker)
 
 	return &tuiWorkflowV2State{
 		router:        router,
@@ -160,11 +159,11 @@ func (app *TUIApp) getWorkflowV2TUI() *tuiWorkflowV2State {
 	return app.workflowV2
 }
 
-// tuiV2WorkflowChecker implements workflow.WorkflowChecker backed by V2 StateMachine.
+// tuiV2WorkflowChecker implements v2.WorkflowChecker backed by V2 StateMachine.
 // This lets QuickFilter detect V2 active workflows for routing decisions.
 type tuiV2WorkflowChecker struct {
 	machine       *v2.StateMachine
-	understanding *workflow.IntentUnderstandingManager
+	understanding *v2.IntentUnderstandingManager
 }
 
 func (c *tuiV2WorkflowChecker) HasActiveWorkflow(userID string) bool {
@@ -183,36 +182,36 @@ func (c *tuiV2WorkflowChecker) HasActiveUnderstanding(userID string) bool {
 
 
 // mapV2ToolPolicyToV1 converts V2 ToolPolicy to V1 ToolFilterPolicy.
-func mapV2ToolPolicyToV1(policy v2.ToolPolicy) workflow.ToolFilterPolicy {
+func mapV2ToolPolicyToV1(policy v2.ToolPolicy) v2.ToolFilterPolicy {
 	switch policy {
 	case v2.ToolPolicyDocOnly:
-		return workflow.ToolFilterDocOnly
+		return v2.ToolFilterDocOnly
 	case v2.ToolPolicyFull:
-		return workflow.ToolFilterFull
+		return v2.ToolFilterFull
 	default:
-		return workflow.ToolFilterNone
+		return v2.ToolFilterNone
 	}
 }
 
 // currentWorkflowToolFilterV2 returns the tool filter policy from V2 state.
-// Falls back to ToolFilterNone if no active workflow.
-func (app *TUIApp) currentWorkflowToolFilterV2() workflow.ToolFilterPolicy {
+// Falls back to ToolFilterNone if no active v2.
+func (app *TUIApp) currentWorkflowToolFilterV2() v2.ToolFilterPolicy {
 	wf := app.getWorkflowV2TUI()
 	if wf == nil {
-		return workflow.ToolFilterNone
+		return v2.ToolFilterNone
 	}
 	state := wf.machine.GetActive("tui-user")
 	if state == nil {
-		return workflow.ToolFilterNone
+		return v2.ToolFilterNone
 	}
 	phase := state.ActivePhase()
 	if phase == nil {
-		return workflow.ToolFilterNone
+		return v2.ToolFilterNone
 	}
 	return mapV2ToolPolicyToV1(phase.ToolPolicy)
 }
 
-// isWorkflowV2Active returns true if there's an active V2 workflow.
+// isWorkflowV2Active returns true if there's an active V2 v2.
 func (app *TUIApp) isWorkflowV2Active() bool {
 	wf := app.getWorkflowV2TUI()
 	if wf == nil {

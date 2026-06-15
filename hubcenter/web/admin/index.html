@@ -201,8 +201,8 @@
               <!-- personal_semimanual fields -->
               <div class="cm-wide-field" id="cmPF_adminEmails"><label data-i18n="computeMarketPaymentAdminEmails"></label><input id="cmPaymentAdminEmails" placeholder="admin@company.com, finance@company.com"></div>
               <div class="cm-wide-field" id="cmPF_instruction"><label data-i18n="computeMarketPaymentInstruction"></label><textarea id="cmPaymentInstruction" rows="2" placeholder="扫码支付后请等待管理员确认，通常 1-24 小时内处理。"></textarea></div>
-              <div id="cmPF_alipayQR"><label><input id="cmPaymentAlipayEnabled" type="checkbox"> <span data-i18n="computeMarketPaymentAlipayQR"></span></label><input id="cmPaymentAlipayPayee" class="cm-pay-input-gap" placeholder="收款人名"><input id="cmPaymentAlipayQR" type="hidden"><input id="cmPaymentAlipayQRFile" class="cm-pay-input-gap" type="file" accept="image/*" onchange="uploadCMPaymentQR('alipay')"><img id="cmPaymentAlipayQRPreview" class="cm-qr-preview" alt="Alipay QR"></div>
-              <div id="cmPF_wechatQR"><label><input id="cmPaymentWechatEnabled" type="checkbox"> <span data-i18n="computeMarketPaymentWechatQR"></span></label><input id="cmPaymentWechatPayee" class="cm-pay-input-gap" placeholder="收款人名"><input id="cmPaymentWechatQR" type="hidden"><input id="cmPaymentWechatQRFile" class="cm-pay-input-gap" type="file" accept="image/*" onchange="uploadCMPaymentQR('wechat')"><img id="cmPaymentWechatQRPreview" class="cm-qr-preview" alt="WeChat QR"></div>
+              <div id="cmPF_alipayQR"><label><input id="cmPaymentAlipayEnabled" type="checkbox"> <span data-i18n="computeMarketPaymentAlipayQR"></span></label><input id="cmPaymentAlipayPayee" class="cm-pay-input-gap" placeholder="收款人姓名"><input id="cmPaymentAlipayQR" type="hidden"><input id="cmPaymentAlipayQRFile" class="cm-pay-input-gap" type="file" accept="image/*" onchange="uploadCMPaymentQR('alipay')"><img id="cmPaymentAlipayQRPreview" class="cm-qr-preview" alt="Alipay QR"></div>
+              <div id="cmPF_wechatQR"><label><input id="cmPaymentWechatEnabled" type="checkbox"> <span data-i18n="computeMarketPaymentWechatQR"></span></label><input id="cmPaymentWechatPayee" class="cm-pay-input-gap" placeholder="收款人姓名"><input id="cmPaymentWechatQR" type="hidden"><input id="cmPaymentWechatQRFile" class="cm-pay-input-gap" type="file" accept="image/*" onchange="uploadCMPaymentQR('wechat')"><img id="cmPaymentWechatQRPreview" class="cm-qr-preview" alt="WeChat QR"></div>
               <div id="cmPF_bankName"><label data-i18n="computeMarketPaymentBankName"></label><input id="cmPaymentBankName" placeholder="中国银行"></div>
               <div id="cmPF_bankAccount"><label data-i18n="computeMarketPaymentBankAccount"></label><input id="cmPaymentBankAccount" placeholder="6228 xxxx xxxx xxxx"></div>
               <div id="cmPF_bankHolder"><label data-i18n="computeMarketPaymentBankHolder"></label><input id="cmPaymentBankHolder" placeholder="张三"></div>
@@ -247,13 +247,13 @@
       <section id="tab-news" class="panel card"><div class="head"><div><h3 data-i18n="newsTitle"></h3><div class="desc" data-i18n="newsDesc"></div></div><div class="actions"><button class="btn-primary" onclick="showNewsEditor()" data-i18n="newsAdd"></button><button class="btn-ghost" onclick="loadNewsList()" data-i18n="reload"></button></div></div><div id="newsEditor" class="item news-editor"><input id="newsEditId" type="hidden"><div class="grid2"><div><label data-i18n="newsFieldTitle"></label><input id="newsEditTitle" placeholder=""></div><div><label data-i18n="newsFieldCategory"></label><select id="newsEditCategory"><option value="notice"></option><option value="update"></option><option value="tip"></option><option value="alert"></option></select></div></div><div class="stack-gap-sm"><label data-i18n="newsFieldContent"></label><textarea id="newsEditContent" class="news-textarea" rows="8" placeholder=""></textarea></div><div class="inline-check stack-gap-xs"><label class="inline-label" data-i18n="newsFieldPinned"></label><input type="checkbox" id="newsEditPinned" class="auto-check"></div><div class="actions section-gap"><button class="btn-primary" onclick="saveNews()" data-i18n="newsSave"></button><button class="btn-ghost" onclick="hideNewsEditor()" data-i18n="newsCancel"></button></div></div><div id="newsList" class="list"><div class="hint" data-i18n="newsEmpty"></div></div><div id="newsPager" class="actions"><button class="btn-ghost" id="newsPrevBtn" type="button" onclick="changeNewsPage(-1)" aria-label="Previous news page">&larr;</button><span id="newsPageInfo" aria-live="polite"></span><button class="btn-ghost" id="newsNextBtn" type="button" onclick="changeNewsPage(1)" aria-label="Next news page">&rarr;</button></div></section>
     </main>
   </div>
-  <script src="/admin/assets/js/admin-core.js?v=tab-autoload-20260614-2" defer></script>
-  <script src="/admin/assets/js/user-management.js" defer></script>
-  <script src="/admin/assets/js/profile-settings.js" defer></script>
-  <script src="/admin/assets/js/gossip-admin.js?v=tab-autoload-20260614-2" defer></script>
-  <script src="/admin/assets/js/skillmarket-admin.js?v=tab-autoload-20260614-2" defer></script>
+  <script src="/admin/assets/js/admin-core.js?v=tab-autoload-20260614-3" defer></script>
+  <script src="/admin/assets/js/user-management.js?v=tab-autoload-20260614-2" defer></script>
+  <script src="/admin/assets/js/profile-settings.js?v=tab-autoload-20260614-2" defer></script>
+  <script src="/admin/assets/js/gossip-admin.js?v=tab-autoload-20260614-3" defer></script>
+  <script src="/admin/assets/js/skillmarket-admin.js?v=tab-autoload-20260614-3" defer></script>
   <script src="/admin/assets/js/ha-news-admin.js?v=tab-autoload-20260614-2" defer></script>
   <script src="/admin/assets/js/llm-service-tab.js?v=tab-autoload-20260614-2" defer></script>
-  <script src="/admin/assets/js/compute-market-tab.js?v=tab-autoload-20260614-2" defer></script>
+  <script src="/admin/assets/js/compute-market-tab.js?v=tab-autoload-20260614-3" defer></script>
 </body>
 </html>

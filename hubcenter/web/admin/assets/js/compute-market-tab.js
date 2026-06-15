@@ -81,10 +81,10 @@ if (typeof I18N_EN !== 'undefined') {
       var tmpl = CARD_TEMPLATES.find(function(t) { return t.id === ct.template; }) || CARD_TEMPLATES[0];
       var art = buildCardTemplateSVG(tmpl, 168, 100);
       var desc = (ct.description || '').trim();
-      var meta = esc((ct.credits || 0).toLocaleString()) + ' ' + tr('computeMarketCardCreditsUnit') + ' · ' + esc(ct.period || '') + ' · ¥' + esc(ct.price_rmb || 0);
+      var meta = esc((ct.credits || 0).toLocaleString()) + ' ' + tr('computeMarketCardCreditsUnit') + ' | ' + esc(ct.period || '') + ' | ' + tr('computeMarketCardPriceUnit') + ' ' + esc(ct.price_rmb || 0);
       var groupName = ct.service_group || ct.service_group_id || '';
       var agentName = ct.agent_name || '';
-      var group = agentName ? '<span class="cm-card-group">' + tr('computeMarketCardAgent') + ': ' + esc(agentName) + (groupName ? ' · ' + tr('computeMarketCardServiceGroup') + ': ' + esc(groupName) : '') + '</span>' : (groupName ? '<span class="cm-card-group">' + tr('computeMarketCardServiceGroup') + ': ' + esc(groupName) + '</span>' : '');
+      var group = agentName ? '<span class="cm-card-group">' + tr('computeMarketCardAgent') + ': ' + esc(agentName) + (groupName ? ' | ' + tr('computeMarketCardServiceGroup') + ': ' + esc(groupName) : '') + '</span>' : (groupName ? '<span class="cm-card-group">' + tr('computeMarketCardServiceGroup') + ': ' + esc(groupName) + '</span>' : '');
       return '<article class="cm-card-tile">'
         + '<div class="cm-card-visual">' + art + '</div>'
         + '<div class="cm-card-body">'
@@ -357,11 +357,27 @@ if (typeof I18N_EN !== 'undefined') {
   // Tab init
   // ---------------------------------------------------------------------------
 
+  function applyComputeMarketPlaceholders() {
+    var zh = (document.documentElement.lang || '').toLowerCase().startsWith('zh');
+    var values = {
+      cmPaymentInstruction: zh ? '扫码支付后请等待管理员确认，通常 1-24 小时内处理。' : 'After scanning to pay, wait for admin confirmation. Processing usually takes 1-24 hours.',
+      cmPaymentAlipayPayee: zh ? '收款人姓名' : 'Payee name',
+      cmPaymentWechatPayee: zh ? '收款人姓名' : 'Payee name',
+      cmPaymentBankName: zh ? '中国银行' : 'Bank of China',
+      cmPaymentBankHolder: zh ? '张三' : 'Account holder'
+    };
+    Object.keys(values).forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) el.placeholder = values[id];
+    });
+  }
+
   async function initComputeMarketTab() {
     if (cmInitInFlight) return cmInitInFlight;
     cmInitInFlight = (async function () {
     // Re-apply i18n for dynamically registered keys
     if (typeof applyI18n === 'function') applyI18n();
+    applyComputeMarketPlaceholders();
     loadComputeCardTypes();
     loadStatsFilters();
     // Ensure payment mode UI is correct on first load

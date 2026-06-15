@@ -22,7 +22,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/task"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 const (
@@ -76,9 +76,9 @@ type coreAgentCallbacks struct {
 	tasks                      *task.Store
 	sshDeps                    sshtool.SSHToolDeps
 	httpClient                 *http.Client
-	toolPolicy                 workflow.ToolFilterPolicy
-	mutationScope              workflow.MutationScope
-	opsApprovedCommands        []workflow.OpsApprovedCommand
+	toolPolicy                 v2.ToolFilterPolicy
+	mutationScope              v2.MutationScope
+	opsApprovedCommands        []v2.OpsApprovedCommand
 	knowledgeStore             KnowledgeStore
 	mcpProvider                MCPToolProvider
 	skillProvider              SkillToolProvider
@@ -133,7 +133,7 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		httpClient:    e.clientFor(llmCfg),
 		toolPolicy:    req.ToolPolicy,
 		mutationScope: req.MutationScope,
-		opsApprovedCommands: append([]workflow.OpsApprovedCommand(nil),
+		opsApprovedCommands: append([]v2.OpsApprovedCommand(nil),
 			req.OpsApprovedCommands...),
 	}
 	userContent := agent.BuildUserContent(req.Message.Content, req.Message.Attachments, llmCfg.Protocol, llmCfg.SupportsVision, nil)
@@ -393,7 +393,7 @@ type coreToolSpec struct {
 
 func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req ExecuteRequest) (*AgentCapabilities, error) {
 	_ = ctx
-	cb := &coreAgentCallbacks{appCfg: req.Config, principal: req.Principal, workspace: req.Instance.Workspace, dataDir: req.DataDir, allowLocalBash: e.AllowLocalBash, localBashTrustedSingleUser: e.LocalBashTrustedSingleUser, localBashTenantID: strings.TrimSpace(e.LocalBashTenantID), localBashUserID: strings.TrimSpace(e.LocalBashUserID), allowDirectSSH: e.AllowDirectSSH, allowSSHFileTransfer: e.AllowSSHFileTransfer, toolPolicy: req.ToolPolicy, mutationScope: req.MutationScope, opsApprovedCommands: append([]workflow.OpsApprovedCommand(nil), req.OpsApprovedCommands...)}
+	cb := &coreAgentCallbacks{appCfg: req.Config, principal: req.Principal, workspace: req.Instance.Workspace, dataDir: req.DataDir, allowLocalBash: e.AllowLocalBash, localBashTrustedSingleUser: e.LocalBashTrustedSingleUser, localBashTenantID: strings.TrimSpace(e.LocalBashTenantID), localBashUserID: strings.TrimSpace(e.LocalBashUserID), allowDirectSSH: e.AllowDirectSSH, allowSSHFileTransfer: e.AllowSSHFileTransfer, toolPolicy: req.ToolPolicy, mutationScope: req.MutationScope, opsApprovedCommands: append([]v2.OpsApprovedCommand(nil), req.OpsApprovedCommands...)}
 	return &AgentCapabilities{
 		Executor:          "core_agent",
 		SupportsSessions:  true,
@@ -410,7 +410,7 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 			"ssh_direct_connect_enabled": boolString(e.AllowDirectSSH && cb.IsToolAllowed("ssh")),
 			"ssh_file_transfer_enabled":  boolString(e.AllowSSHFileTransfer && cb.IsToolAllowed("ssh")),
 			"tool_policy":                string(req.ToolPolicy),
-			"mutation_scope":             string(workflow.PhaseContractFromPolicy(req.ToolPolicy, req.MutationScope).MutationScope),
+			"mutation_scope":             string(v2.PhaseContractFromPolicy(req.ToolPolicy, req.MutationScope).MutationScope),
 		},
 	}, nil
 }
@@ -856,12 +856,12 @@ func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.ExecuteToolStructured(name, argsJSON).Result
 }
 
-func (c *coreAgentCallbacks) phaseContract() workflow.PhaseContract {
-	return workflow.PhaseContractFromPolicy(c.toolPolicy, c.mutationScope)
+func (c *coreAgentCallbacks) phaseContract() v2.PhaseContract {
+	return v2.PhaseContractFromPolicy(c.toolPolicy, c.mutationScope)
 }
 
 func (c *coreAgentCallbacks) IsToolAllowed(name string) bool {
-	return workflow.IsToolAllowedByContract(c.phaseContract(), name)
+	return v2.IsToolAllowedByContract(c.phaseContract(), name)
 }
 
 func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
@@ -869,7 +869,7 @@ func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, str
 	if err != nil {
 		return false, fmt.Sprintf("invalid tool arguments: %v", err)
 	}
-	if err := workflow.ValidateToolCallByContractWithApproval(c.phaseContract(), strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
+	if err := v2.ValidateToolCallByContractWithApproval(c.phaseContract(), strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
 		return false, err.Error()
 	}
 	if ok, reason := clientsecurity.EnforceConfig(c.appCfg, strings.TrimSpace(name), args); !ok {
@@ -894,7 +894,7 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 			Outcome: agent.ToolExecutionOutcomeError,
 		}
 	}
-	if err := workflow.ValidateToolCallByContractWithApproval(c.phaseContract(), strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
+	if err := v2.ValidateToolCallByContractWithApproval(c.phaseContract(), strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
 		return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
 	}
 	if ok, reason := clientsecurity.EnforceConfig(c.appCfg, strings.TrimSpace(name), args); !ok {

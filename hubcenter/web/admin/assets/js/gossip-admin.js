@@ -151,6 +151,19 @@ function showNewsEditor(){document.getElementById('newsEditor').classList.add('i
       try{if(id){await api('/api/admin/news?id='+encodeURIComponent(id),{method:'PUT',body:JSON.stringify(body)})}else{await api('/api/admin/news',{method:'POST',body:JSON.stringify(body)})}hideNewsEditor();showToast(ntr('saved'),'success');loadNewsList(newsPage)}catch(err){showToast(err.message,'error')}}
     async function deleteNews(id){if(!confirm(ntr('deleteConfirm')))return;try{await api('/api/admin/news?id='+encodeURIComponent(id),{method:'DELETE'});showToast(ntr('deleted'),'success');loadNewsList(newsPage)}catch(err){showToast(err.message,'error')}}
 
+    let gossipListInFlight=null,gossipListInFlightKey='';
+    const _finalLoadGossipList=loadGossipList;
+    loadGossipList=function(page){const targetPage=page||gossipPage;const key=targetPage+'|'+(gossipFilter||'');if(gossipListInFlight&&gossipListInFlightKey===key)return gossipListInFlight;gossipListInFlightKey=key;gossipListInFlight=Promise.resolve(_finalLoadGossipList(page));return gossipListInFlight.finally(()=>{gossipListInFlight=null;gossipListInFlightKey=''})};
+    let skillhubListInFlight=null,skillhubListInFlightKey='';
+    const _finalLoadSkillHubList=loadSkillHubList;
+    loadSkillHubList=function(page){const key=String(page||skillhubPage);if(skillhubListInFlight&&skillhubListInFlightKey===key)return skillhubListInFlight;skillhubListInFlightKey=key;skillhubListInFlight=Promise.resolve(_finalLoadSkillHubList(page));return skillhubListInFlight.finally(()=>{skillhubListInFlight=null;skillhubListInFlightKey=''})};
+    let moderationConfigInFlight=null;
+    const _finalLoadModerationConfig=loadModerationConfig;
+    loadModerationConfig=function(){if(moderationConfigInFlight)return moderationConfigInFlight;moderationConfigInFlight=Promise.resolve(_finalLoadModerationConfig());return moderationConfigInFlight.finally(()=>{moderationConfigInFlight=null})};
+    let newsListInFlight=null,newsListInFlightKey='';
+    const _finalLoadNewsList=loadNewsList;
+    loadNewsList=function(page){const key=String(page||newsPage);if(newsListInFlight&&newsListInFlightKey===key)return newsListInFlight;newsListInFlightKey=key;newsListInFlight=Promise.resolve(_finalLoadNewsList(page));return newsListInFlight.finally(()=>{newsListInFlight=null;newsListInFlightKey=''})};
+
     if(token()){
       if(document.getElementById('tab-gossip')?.classList.contains('active')) setTimeout(function(){loadGossipList(gossipPage);loadModerationConfig();},0);
       if(document.getElementById('tab-skillhub')?.classList.contains('active')){window._skillhubAdminLoaded=true;setTimeout(function(){if(typeof reloadCurrentCatalogSubTab==='function')reloadCurrentCatalogSubTab();else loadSkillHubList(skillhubPage);},0);}

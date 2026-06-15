@@ -28,7 +28,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -37,7 +36,7 @@ var tuiQuotedPathPattern = regexp.MustCompile(`"([^"]+)"|'([^']+)'`)
 type tuiPendingWorkflowStart struct {
 	OriginalText string
 	StartReply   string
-	Intent       workflow.StructuredIntent
+	Intent       v2.StructuredIntent
 }
 
 type tuiWorkflowLLMCaller struct {
@@ -63,17 +62,17 @@ func (c *tuiWorkflowLLMCaller) DoSimpleLLMRequest(messages []interface{}, timeou
 	return resp.Content, nil
 }
 
-// TUIWorkflowCallbacks implements workflow.EngineCallbacks for the TUI.
+// TUIWorkflowCallbacks implements v2.EngineCallbacks for the TUI.
 // In TUI mode, events are logged but not emitted to a frontend; the
 // workflow state is communicated through inline text in the chat.
 //
 // registry is the same WorkflowRegistry the engine holds. It lets
 // EmitPhaseUpdate derive dashboard phase metadata through the single
-// source-of-truth deriver (workflow.PhaseMetadata) the GUI adapter uses,
+// source-of-truth deriver (v2.PhaseMetadata) the GUI adapter uses,
 // keeping the TUI in parity rather than maintaining a separate phase list.
 type TUIWorkflowCallbacks struct {
 	app      *TUIApp
-	registry *workflow.WorkflowRegistry
+	registry *v2.WorkflowRegistry
 }
 
 func (c *TUIWorkflowCallbacks) SendTextToUser(userID, text string) error {
@@ -81,17 +80,17 @@ func (c *TUIWorkflowCallbacks) SendTextToUser(userID, text string) error {
 	return nil
 }
 
-func (c *TUIWorkflowCallbacks) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error {
+func (c *TUIWorkflowCallbacks) EmitPhaseUpdate(userID string, state *v2.V1WorkflowState) error {
 	if state == nil {
 		return nil
 	}
 	// Derive dashboard phase metadata through the same single source-of-truth
-	// deriver the GUI adapter uses (workflow.PhaseMetadata), rather than
+	// deriver the GUI adapter uses (v2.PhaseMetadata), rather than
 	// maintaining a separate phase list. TUI is text-only: there is no doc
 	// preview board, so the metadata is logged structurally for parity.
-	var phases []workflow.PhaseMeta
+	var phases []v2.PhaseMeta
 	if c.registry != nil {
-		phases = workflow.PhaseMetadata(c.registry.Match(state.Type))
+		phases = v2.PhaseMetadata(c.registry.Match(state.Type))
 	}
 	log.Printf("[TUI-workflow] phase update: type=%s phase=%s index=%d phases=%s",
 		state.Type, state.CurrentPhase, state.PhaseIndex, formatTUIPhaseMeta(phases))
@@ -101,7 +100,7 @@ func (c *TUIWorkflowCallbacks) EmitPhaseUpdate(userID string, state *workflow.Wo
 // formatTUIPhaseMeta renders derived PhaseMeta as a compact structural log line.
 // It mirrors what the GUI adapter attaches to workflow:phase_update so the TUI
 // stays in parity with the dashboard's phase ordering, labels, and flags.
-func formatTUIPhaseMeta(phases []workflow.PhaseMeta) string {
+func formatTUIPhaseMeta(phases []v2.PhaseMeta) string {
 	if len(phases) == 0 {
 		return "[]"
 	}
@@ -119,7 +118,7 @@ func (c *TUIWorkflowCallbacks) EmitDocUpdate(userID, phaseID, content string) er
 	return nil
 }
 
-func (c *TUIWorkflowCallbacks) EmitGateResult(userID, phaseID string, result *workflow.QualityGateResult) error {
+func (c *TUIWorkflowCallbacks) EmitGateResult(userID, phaseID string, result *v2.QualityGateResult) error {
 	log.Printf("[TUI-workflow] gate result: phase=%s", phaseID)
 	return nil
 }
@@ -131,21 +130,21 @@ func (c *TUIWorkflowCallbacks) GetLang() string {
 	return ""
 }
 
-// tuiWorkflowStore implements workflow.PersistenceStore (in-memory no-op).
+// tuiWorkflowStore implements v2.PersistenceStore (in-memory no-op).
 // TUI sessions are typically short-lived; workflow state doesn't need
 // to survive restarts (the conversation history does, via ConversationMemory).
 type tuiWorkflowStore struct{}
 
-func (s *tuiWorkflowStore) SaveWorkflowState(state *workflow.WorkflowState) error { return nil }
-func (s *tuiWorkflowStore) LoadWorkflowState(userID string) (*workflow.WorkflowState, error) {
+func (s *tuiWorkflowStore) SaveWorkflowState(state *v2.V1WorkflowState) error { return nil }
+func (s *tuiWorkflowStore) LoadWorkflowState(userID string) (*v2.V1WorkflowState, error) {
 	return nil, nil
 }
 func (s *tuiWorkflowStore) DeleteWorkflowState(id string) error                     { return nil }
-func (s *tuiWorkflowStore) ListActiveWorkflows() ([]*workflow.WorkflowState, error) { return nil, nil }
-func (s *tuiWorkflowStore) SaveUnderstandingSession(session *workflow.UnderstandingSession) error {
+func (s *tuiWorkflowStore) ListActiveWorkflows() ([]*v2.V1WorkflowState, error) { return nil, nil }
+func (s *tuiWorkflowStore) SaveUnderstandingSession(session *v2.UnderstandingSession) error {
 	return nil
 }
-func (s *tuiWorkflowStore) LoadUnderstandingSession(userID string) (*workflow.UnderstandingSession, error) {
+func (s *tuiWorkflowStore) LoadUnderstandingSession(userID string) (*v2.UnderstandingSession, error) {
 	return nil, nil
 }
 func (s *tuiWorkflowStore) DeleteUnderstandingSession(userID string) error { return nil }
@@ -167,7 +166,7 @@ func (app *TUIApp) handleWorkflowInterception(text string) string {
 		return pendingResp
 	}
 
-	// V2 Router: check if the message should be routed to an active V2 workflow.
+	// V2 Router: check if the message should be routed to an active V2 v2.
 	// This provides V2 persistence and LLM confirm classification.
 	if result := app.routeWithV2Router(userID, text); result != "" {
 		return result
@@ -182,19 +181,19 @@ func (app *TUIApp) handleWorkflowInterception(text string) string {
 	log.Printf("[TUI-workflow] classify: %v text=%q", classification, truncateTUI(text, 60))
 
 	switch classification {
-	case workflow.FilterActiveWorkflow:
+	case v2.FilterActiveWorkflow:
 		return app.handleActiveWorkflowTUI(text)
 
-	case workflow.FilterActiveUnderstanding:
+	case v2.FilterActiveUnderstanding:
 		return app.handleActiveUnderstandingTUI(text)
 
-	case workflow.FilterNeedsUnderstanding:
+	case v2.FilterNeedsUnderstanding:
 		if shouldBypassTUIWorkflowUnderstanding(text) {
 			return ""
 		}
 		return app.handleNeedsUnderstandingTUI(text)
 
-	case workflow.FilterSimpleDirective:
+	case v2.FilterSimpleDirective:
 		return "" // pass through to normal agent loop
 	}
 
@@ -297,7 +296,7 @@ Classify the user's response into exactly one category. Reply with ONLY the cate
 - "confirm": approve and continue to the next phase.
 - "supplement": provide additions, corrections, questions, or requested changes for the current phase deliverable.
 - "skip": skip the current phase if the workflow template allows it.
-- "cancel": abandon the current workflow.
+- "cancel": abandon the current v2.
 - "switch_task": abandon this workflow and start a clearly different task.
 - "other": unrelated request that should not advance or execute tools while review is pending.`,
 		},
@@ -314,7 +313,7 @@ Classify the user's response into exactly one category. Reply with ONLY the cate
 	return resp.Content, nil
 }
 
-func (app *TUIApp) handleWorkflowResponseTUI(userID string, resp *workflow.WorkflowResponse) string {
+func (app *TUIApp) handleWorkflowResponseTUI(userID string, resp *v2.WorkflowResponse) string {
 	if resp == nil {
 		return ""
 	}
@@ -347,7 +346,7 @@ func (app *TUIApp) handleWorkflowResponseTUI(userID string, resp *workflow.Workf
 	return ""
 }
 
-func (app *TUIApp) applyWorkflowAutoAdvanceTUI(userID string, resp *workflow.WorkflowResponse) string {
+func (app *TUIApp) applyWorkflowAutoAdvanceTUI(userID string, resp *v2.WorkflowResponse) string {
 	if resp == nil {
 		return ""
 	}
@@ -418,7 +417,7 @@ func (app *TUIApp) handleActiveUnderstandingTUI(text string) string {
 	reply, ready, cancelled, intent, err := understanding.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[TUI-workflow] understanding HandleInput error: %v", err)
-		if errors.Is(err, workflow.ErrIntentUnderstandingContractBreach) {
+		if errors.Is(err, v2.ErrIntentUnderstandingContractBreach) {
 			return ""
 		}
 		return i18n.T(i18n.MsgWorkflowUnderstandError, app.workflowLang())
@@ -427,10 +426,10 @@ func (app *TUIApp) handleActiveUnderstandingTUI(text string) string {
 		return i18n.T(i18n.MsgWorkflowCancelled, app.workflowLang())
 	}
 	if ready && intent != nil {
-		if intent.Category == workflow.WorkflowNone || intent.Category == "" {
+		if intent.Category == v2.WorkflowNone || intent.Category == "" {
 			return ""
 		}
-		// V2 path: use machine.Create to start the workflow.
+		// V2 path: use machine.Create to start the v2.
 		state, err := wf.machine.Create(userID, string(intent.Category), tuiWorkflowProjectPath(), intent.Summary)
 		if err != nil {
 			log.Printf("[TUI-workflow] V2 Create error: %v", err)
@@ -463,7 +462,7 @@ func (app *TUIApp) handleNeedsUnderstandingTUI(text string) string {
 		return ""
 	}
 	if result.Ready && result.Intent != nil {
-		if result.Intent.Category == workflow.WorkflowNone || result.Intent.Category == "" {
+		if result.Intent.Category == v2.WorkflowNone || result.Intent.Category == "" {
 			return ""
 		}
 		app.workflowMu.Lock()
@@ -496,7 +495,7 @@ func (app *TUIApp) handlePendingWorkflowStartTUI(userID, text string) string {
 		app.workflowMu.Unlock()
 		return i18n.T(i18n.MsgWorkflowCancelled, app.workflowLang())
 	case isTUIWorkflowStartConfirmCommand(trimmed):
-		// V2 path: use machine.Create to start the workflow.
+		// V2 path: use machine.Create to start the v2.
 		wf := app.getWorkflowV2TUI()
 		if wf == nil {
 			return i18n.Tf(i18n.MsgWorkflowStartError, app.workflowLang(), fmt.Errorf("V2 engine unavailable"))
@@ -585,7 +584,7 @@ func (app *TUIApp) buildWorkflowStartOverviewV2(userID string, state *v2.Workflo
 	return overview
 }
 
-func buildTUIPhaseInputGuidance(schema *workflow.PhaseInputSchema) string {
+func buildTUIPhaseInputGuidance(schema *v2.V1PhaseInputSchema) string {
 	if schema == nil || len(schema.Fields) == 0 {
 		return ""
 	}

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -258,6 +257,6 @@ func (h *IMMessageHandler) recordExperienceLifecycleEvent(event lifecycle.Event)
 	h.app.ensureExperienceLifecycleSink().RecordExperienceEvent(event)
 }
 
-func (h *IMMessageHandler) applyWorkflowAutoAdvanceResponse(userID string, advResp *workflow.WorkflowResponse, platform string) {
+func (h *IMMessageHandler) applyWorkflowAutoAdvanceResponse(userID string, advResp *v2.WorkflowResponse, platform string) {
 	return
 }

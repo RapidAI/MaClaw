@@ -686,6 +686,9 @@ func (a *App) groupDiscussionParticipantIDs(sessionID, localID string) map[strin
 }
 
 func (a *App) groupDiscussionUnmentionedTargetIDs(sessionID string) []string {
+	// Use the renewed session ID if the original was recovered (avoids wasted
+	// Hub calls to closed sessions that would fall back to nil anyway).
+	sessionID = a.resolveRenewedVESession(sessionID)
 	preferredID := a.cachedVEGroupDefaultResponderID(sessionID)
 	client, cfg, err := a.veA2AHubClient()
 	if err != nil {
@@ -966,21 +969,238 @@ func (a *App) sendVEA2AMessage(sessionID string, msg a2a.GroupDiscussionMessage)
 	if strings.TrimSpace(msg.ID) == "" {
 		msg.ID = fmt.Sprintf("ve-msg-%d", time.Now().UnixNano())
 	}
+
+	// Resolve effective session: if the session was previously recovered in this
+	// process lifetime, use the new session ID transparently.
+	effectiveSessionID := a.resolveRenewedVESession(sessionID)
+	if effectiveSessionID != sessionID {
+		log.Printf("[ve] session redirected: requested=%s effective=%s", sessionID, effectiveSessionID)
+	}
+
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
 	started := time.Now()
-	log.Printf("[ve] send discussion message start session=%s from=%s to=%v kind=%s content_chars=%d", sessionID, msg.FromID, msg.ToIDs, msg.Kind, len([]rune(msg.Content)))
+	log.Printf("[ve] send discussion message start session=%s from=%s to=%v kind=%s content_chars=%d", effectiveSessionID, msg.FromID, msg.ToIDs, msg.Kind, len([]rune(msg.Content)))
 	if err := withVEHubRetry(ctx, func(attemptCtx context.Context) error {
-		return client.SendDiscussionMessage(attemptCtx, sessionID, msg)
+		return client.SendDiscussionMessage(attemptCtx, effectiveSessionID, msg)
 	}); err != nil {
-		log.Printf("[ve] send discussion message failed session=%s from=%s to=%v kind=%s duration=%s: %v", sessionID, msg.FromID, msg.ToIDs, msg.Kind, time.Since(started), err)
+		log.Printf("[ve] send discussion message failed session=%s from=%s to=%v kind=%s duration=%s: %v", effectiveSessionID, msg.FromID, msg.ToIDs, msg.Kind, time.Since(started), err)
+
+		// Mechanism: detect "session is closed/archived" and auto-recover by
+		// re-initiating a new session with the same VE, then retry once.
+		if isVESessionClosedError(err) {
+			if newSessionID := a.recoverClosedVESession(effectiveSessionID); newSessionID != "" {
+				log.Printf("[ve] session %s is closed, recovered to new session %s", effectiveSessionID, newSessionID)
+				msg.ID = fmt.Sprintf("ve-msg-%d", time.Now().UnixNano())
+				retryCtx, retryCancel := groupDiscussionContext()
+				defer retryCancel()
+				retryErr := withVEHubRetry(retryCtx, func(attemptCtx context.Context) error {
+					return client.SendDiscussionMessage(attemptCtx, newSessionID, msg)
+				})
+				if retryErr == nil {
+					log.Printf("[ve] send discussion message ok (recovered) session=%s from=%s to=%v kind=%s duration=%s", newSessionID, msg.FromID, msg.ToIDs, msg.Kind, time.Since(started))
+					if shouldRefreshVEA2ADetailAfterSend(msg) {
+						a.cacheVEA2ADetailAsync(client, newSessionID, groupDiscussionAgentID(cfg))
+					}
+					return nil
+				}
+				log.Printf("[ve] send discussion message retry also failed session=%s: %v", newSessionID, retryErr)
+				return fmt.Errorf("send digital employee message (recovered session also failed): %w", retryErr)
+			}
+		}
+
 		return fmt.Errorf("send digital employee message: %w", err)
 	}
-	log.Printf("[ve] send discussion message ok session=%s from=%s to=%v kind=%s duration=%s", sessionID, msg.FromID, msg.ToIDs, msg.Kind, time.Since(started))
+	log.Printf("[ve] send discussion message ok session=%s from=%s to=%v kind=%s duration=%s", effectiveSessionID, msg.FromID, msg.ToIDs, msg.Kind, time.Since(started))
 	if shouldRefreshVEA2ADetailAfterSend(msg) {
-		a.cacheVEA2ADetailAsync(client, sessionID, groupDiscussionAgentID(cfg))
+		a.cacheVEA2ADetailAsync(client, effectiveSessionID, groupDiscussionAgentID(cfg))
 	}
 	return nil
+}
+
+// isVESessionClosedError checks if the error indicates the session is closed or archived.
+func isVESessionClosedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "is closed") || strings.Contains(msg, "is archived") ||
+		strings.Contains(msg, "is cancelled") || strings.Contains(msg, "is completed")
+}
+
+// resolveRenewedVESession returns the new session ID if the given session was
+// previously recovered during this process lifetime. Follows renewal chains
+// transitively (old→new→newest) in case of multiple sequential closures.
+// Also prunes expired entries opportunistically.
+func (a *App) resolveRenewedVESession(sessionID string) string {
+	current := sessionID
+	for i := 0; i < 5; i++ {
+		val, ok := a.veSessionRenewalMap.Load(current)
+		if !ok {
+			break
+		}
+		entry, ok := val.(*veSessionRenewalEntry)
+		if !ok || entry.newSessionID == "" {
+			break
+		}
+		// Prune expired entries — frontend should have updated by now.
+		if !entry.createdAt.IsZero() && time.Since(entry.createdAt) > veSessionRenewalMaxAge {
+			a.veSessionRenewalMap.Delete(current)
+			break
+		}
+		current = entry.newSessionID
+	}
+	return current
+}
+
+// veSessionRenewalEntry stores the recovery result and a done channel for
+// concurrent waiters. The done channel is closed once recovery completes.
+type veSessionRenewalEntry struct {
+	newSessionID string
+	done         chan struct{}
+	createdAt    time.Time
+}
+
+// veSessionRenewalMaxAge is the maximum time a renewal entry is kept in memory.
+// After this, it's pruned and future messages on the old session will re-discover
+// through the normal path (frontend should have updated by then).
+const veSessionRenewalMaxAge = 30 * time.Minute
+
+// recoverClosedVESession invalidates all local caches for the closed session,
+// identifies the remote VE participant, re-initiates a new session, and emits
+// a frontend event so the UI updates the session binding.
+// Thread-safe: uses sync.Map CAS to ensure only one goroutine recovers a given session.
+func (a *App) recoverClosedVESession(closedSessionID string) string {
+	// Guard against concurrent recovery of the same session.
+	entry := &veSessionRenewalEntry{done: make(chan struct{}), createdAt: time.Now()}
+	if existing, loaded := a.veSessionRenewalMap.LoadOrStore(closedSessionID, entry); loaded {
+		// Another goroutine is recovering or already recovered this session.
+		existingEntry, ok := existing.(*veSessionRenewalEntry)
+		if !ok {
+			return ""
+		}
+		// Wait for the other goroutine to finish (with timeout).
+		select {
+		case <-existingEntry.done:
+		case <-time.After(10 * time.Second):
+		}
+		return existingEntry.newSessionID
+	}
+	// This goroutine owns the recovery. Ensure done is always closed.
+	defer close(entry.done)
+
+	// 1. Find the remote VE participant ID from the closed session.
+	veID := a.findRemoteVEParticipantForSession(closedSessionID)
+	if veID == "" {
+		log.Printf("[ve] recoverClosedVESession: cannot find remote VE for session %s", closedSessionID)
+		a.veSessionRenewalMap.Delete(closedSessionID) // allow future retry
+		return ""
+	}
+
+	// 2. Invalidate all local caches for the closed session.
+	a.invalidateVESessionCaches(closedSessionID)
+
+	// 3. Mark session as closed in SQLite history store.
+	a.markGroupDiscussionSessionClosed(closedSessionID)
+
+	// 4. Re-initiate a new session with the same VE.
+	info, err := a.InitiateVEConversation(veID)
+	if err != nil {
+		log.Printf("[ve] recoverClosedVESession: re-initiate failed for VE %s: %v", veID, err)
+		a.veSessionRenewalMap.Delete(closedSessionID)
+		return ""
+	}
+	newSessionID := strings.TrimSpace(info.SessionID)
+	if newSessionID == "" || newSessionID == closedSessionID {
+		log.Printf("[ve] recoverClosedVESession: re-initiate returned same or empty session (new=%s, old=%s)", newSessionID, closedSessionID)
+		a.veSessionRenewalMap.Delete(closedSessionID)
+		return ""
+	}
+
+	// 5. Store the renewal result so concurrent waiters and future messages
+	//    on the old session ID are transparently redirected.
+	entry.newSessionID = newSessionID
+
+	// 6. Emit event to frontend so it updates the tab's session binding.
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "ve:session_renewed", map[string]any{
+			"old_session_id": closedSessionID,
+			"new_session_id": newSessionID,
+			"ve_id":          veID,
+		})
+	}
+
+	log.Printf("[ve] recoverClosedVESession: session renewed %s -> %s (VE: %s)", closedSessionID, newSessionID, veID)
+	return newSessionID
+}
+
+// invalidateVESessionCaches clears all in-memory caches associated with a session.
+func (a *App) invalidateVESessionCaches(sessionID string) {
+	a.veSessionCache.Range(func(key, value any) bool {
+		if cachedSessionID, ok := value.(string); ok && cachedSessionID == sessionID {
+			a.veSessionCache.Delete(key)
+		}
+		return true
+	})
+	a.veDefaultResponder.Delete(sessionID)
+	a.groupSessionReturnVEIDs.Delete(sessionID)
+	a.veDetailRefreshCache.Delete(sessionID)
+	a.veSessionActiveCache.Delete(sessionID)
+}
+
+// findRemoteVEParticipantForSession returns the remote VE participant ID from
+// the given session. It checks the SQLite history store first, then falls back
+// to the in-memory veSessionCache reverse lookup.
+func (a *App) findRemoteVEParticipantForSession(sessionID string) string {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	localID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+
+	// Try SQLite history store.
+	if store, err := a.openGroupDiscussionHistoryStore(); err == nil {
+		defer store.Close()
+		ctx, cancel := groupDiscussionContext()
+		defer cancel()
+		if summaries, err := store.CachedSummaries(ctx, false); err == nil {
+			for _, summary := range summaries {
+				if strings.TrimSpace(summary.ID) != sessionID {
+					continue
+				}
+				for _, pid := range summary.ParticipantIDs {
+					pid = strings.TrimSpace(pid)
+					if pid != "" && !veGroupParticipantIdentityMatches(pid, localID) {
+						return pid
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: reverse lookup veSessionCache (veID → sessionID).
+	var foundVEID string
+	a.veSessionCache.Range(func(key, value any) bool {
+		if cachedSessionID, ok := value.(string); ok && cachedSessionID == sessionID {
+			if veID, ok := key.(string); ok {
+				foundVEID = veID
+				return false
+			}
+		}
+		return true
+	})
+	return foundVEID
+}
+
+// markGroupDiscussionSessionClosed updates the SQLite history store to mark
+// a session as closed, preventing future cache lookups from returning it.
+func (a *App) markGroupDiscussionSessionClosed(sessionID string) {
+	store, err := a.openGroupDiscussionHistoryStore()
+	if err != nil {
+		return
+	}
+	defer store.Close()
+	store.UpdateSessionStatus(sessionID, "closed")
 }
 
 func shouldRefreshVEA2ADetailAfterSend(msg a2a.GroupDiscussionMessage) bool {

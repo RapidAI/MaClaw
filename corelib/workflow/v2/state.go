@@ -32,8 +32,11 @@ const (
 type ToolPolicy string
 
 const (
-	ToolPolicyDocOnly ToolPolicy = "doc_only" // read/search/memory only
-	ToolPolicyFull    ToolPolicy = "full"     // all tools (execution phase)
+	ToolPolicyNone          ToolPolicy = "none"           // no tool restrictions
+	ToolPolicyDocOnly       ToolPolicy = "doc_only"       // read/search/memory only
+	ToolPolicyPlanning      ToolPolicy = "planning"       // repository inspection for reviewable planning phases
+	ToolPolicyFull          ToolPolicy = "full"           // all tools (execution phase)
+	ToolPolicyOpsControlled ToolPolicy = "ops_controlled" // controlled operational execution tools
 )
 
 // Phase represents one stage of a workflow.

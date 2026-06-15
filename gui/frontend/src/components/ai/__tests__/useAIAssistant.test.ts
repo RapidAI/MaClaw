@@ -3823,6 +3823,38 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.agentView).toBeNull();
     });
 
+    it('clearHistory dismisses workflow form agentView that normally survives dismiss', async () => {
+        const { result } = renderAssistantHook();
+        // Simulate a workflow form being opened
+        await act(async () => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                seq: 10,
+                session_key: 'desktop-user',
+                view: { type: 'form', id: 'workflow:form:requirements', title: 'Info', fields: [{ name: 'goal', label: 'Goal' }] },
+            });
+        });
+        expect(result.current.agentView).not.toBeNull();
+        expect(result.current.agentView?.id).toBe('workflow:form:requirements');
+
+        // Clear history — should unconditionally dismiss agentView
+        await act(async () => {
+            await result.current.clearHistory();
+        });
+        expect(result.current.agentView).toBeNull();
+
+        // Stale event arriving after clear should NOT reopen the panel
+        await act(async () => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                seq: 10, // same seq as before clear — stale
+                session_key: 'desktop-user',
+                view: { type: 'form', id: 'workflow:form:requirements', title: 'Info', fields: [{ name: 'goal', label: 'Goal' }] },
+            });
+        });
+        expect(result.current.agentView).toBeNull();
+    });
+
     it('opens a workflow form submit round before backend events arrive', async () => {
         const pending = deferred<{ text: string; error: string; request_id: string; deferred: boolean }>();
         (SubmitAgentView as any).mockImplementationOnce(async (payload: { request_id?: string }) => {

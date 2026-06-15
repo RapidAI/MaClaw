@@ -21,7 +21,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 const maxMessageAttachments = coreim.ThirdPartyMaxAttachments
@@ -2441,29 +2441,29 @@ func validateMessageAttachments(attachments []agent.MessageAttachment) error {
 	return nil
 }
 
-func toolPolicyFromMetadata(messageMetadata, sessionMetadata map[string]string) workflow.ToolFilterPolicy {
+func toolPolicyFromMetadata(messageMetadata, sessionMetadata map[string]string) v2.ToolFilterPolicy {
 	for _, metadata := range []map[string]string{messageMetadata, sessionMetadata} {
-		policy := workflow.ToolFilterPolicy(strings.TrimSpace(metadata["tool_policy"]))
+		policy := v2.ToolFilterPolicy(strings.TrimSpace(metadata["tool_policy"]))
 		switch policy {
-		case workflow.ToolFilterDocOnly, workflow.ToolFilterPlanning, workflow.ToolFilterFull, workflow.ToolFilterOpsControlled:
+		case v2.ToolFilterDocOnly, v2.ToolFilterPlanning, v2.ToolFilterFull, v2.ToolFilterOpsControlled:
 			return policy
 		}
 	}
-	return workflow.ToolFilterNone
+	return v2.ToolFilterNone
 }
 
-func mutationScopeFromMetadata(messageMetadata, sessionMetadata map[string]string) workflow.MutationScope {
+func mutationScopeFromMetadata(messageMetadata, sessionMetadata map[string]string) v2.MutationScope {
 	for _, metadata := range []map[string]string{messageMetadata, sessionMetadata} {
-		scope := workflow.MutationScope(strings.TrimSpace(metadata["mutation_scope"]))
+		scope := v2.MutationScope(strings.TrimSpace(metadata["mutation_scope"]))
 		switch scope {
-		case workflow.MutationScopeNone, workflow.MutationScopeWorkflowDoc, workflow.MutationScopeArtifact, workflow.MutationScopeProject, workflow.MutationScopeOps:
+		case v2.MutationScopeNone, v2.MutationScopeWorkflowDoc, v2.MutationScopeArtifact, v2.MutationScopeProject, v2.MutationScopeOps:
 			return scope
 		}
 	}
-	return workflow.MutationScopeUnknown
+	return v2.MutationScopeUnknown
 }
 
-func opsApprovedCommandsFromMetadata(messageMetadata, sessionMetadata map[string]string) []workflow.OpsApprovedCommand {
+func opsApprovedCommandsFromMetadata(messageMetadata, sessionMetadata map[string]string) []v2.OpsApprovedCommand {
 	policyText := strings.TrimSpace(messageMetadata["ops_approved_commands"])
 	approvalSources := []map[string]string{messageMetadata}
 	if policyText == "" {
@@ -2473,43 +2473,43 @@ func opsApprovedCommandsFromMetadata(messageMetadata, sessionMetadata map[string
 	if policyText == "" {
 		return nil
 	}
-	decision := workflow.ExtractOpsRiskDecision(policyText)
-	if decision == workflow.OpsRiskDecisionApprovalRequired && !opsExecutionApprovalSatisfies(approvalSources, workflow.ExtractOpsApprovalRequirement(policyText)) {
+	decision := v2.ExtractOpsRiskDecision(policyText)
+	if decision == v2.OpsRiskDecisionApprovalRequired && !opsExecutionApprovalSatisfies(approvalSources, v2.ExtractOpsApprovalRequirement(policyText)) {
 		return nil
 	}
-	if decision == workflow.OpsRiskDecisionApprovalRequired && !opsApprovalDigestMatches(approvalSources, policyText) {
+	if decision == v2.OpsRiskDecisionApprovalRequired && !opsApprovalDigestMatches(approvalSources, policyText) {
 		return nil
 	}
-	return workflow.ExtractOpsApprovedCommands(policyText)
+	return v2.ExtractOpsApprovedCommands(policyText)
 }
 
-func opsExecutionApprovalSatisfies(metadataSources []map[string]string, required workflow.OpsApprovalRequirement) bool {
+func opsExecutionApprovalSatisfies(metadataSources []map[string]string, required v2.OpsApprovalRequirement) bool {
 	actual := opsExecutionApprovalLevelFromMetadata(metadataSources)
-	if required == workflow.OpsApprovalRequirementSingle {
-		return actual == workflow.OpsApprovalRequirementSingle || actual == workflow.OpsApprovalRequirementDouble
+	if required == v2.OpsApprovalRequirementSingle {
+		return actual == v2.OpsApprovalRequirementSingle || actual == v2.OpsApprovalRequirementDouble
 	}
-	if required == workflow.OpsApprovalRequirementDouble {
-		return actual == workflow.OpsApprovalRequirementDouble
+	if required == v2.OpsApprovalRequirementDouble {
+		return actual == v2.OpsApprovalRequirementDouble
 	}
 	return false
 }
 
-func opsExecutionApprovalLevelFromMetadata(metadataSources []map[string]string) workflow.OpsApprovalRequirement {
+func opsExecutionApprovalLevelFromMetadata(metadataSources []map[string]string) v2.OpsApprovalRequirement {
 	for _, metadata := range metadataSources {
 		level := strings.ToLower(strings.TrimSpace(metadata["ops_execution_approval_level"]))
 		switch level {
-		case string(workflow.OpsApprovalRequirementSingle):
-			return workflow.OpsApprovalRequirementSingle
-		case string(workflow.OpsApprovalRequirementDouble):
-			return workflow.OpsApprovalRequirementDouble
+		case string(v2.OpsApprovalRequirementSingle):
+			return v2.OpsApprovalRequirementSingle
+		case string(v2.OpsApprovalRequirementDouble):
+			return v2.OpsApprovalRequirementDouble
 		}
 		value := strings.ToLower(strings.TrimSpace(metadata["ops_execution_approved"]))
 		switch value {
 		case "true", "yes", "approved", "1":
-			return workflow.OpsApprovalRequirementSingle
+			return v2.OpsApprovalRequirementSingle
 		}
 	}
-	return workflow.OpsApprovalRequirementUnknown
+	return v2.OpsApprovalRequirementUnknown
 }
 
 func opsApprovalDigestMatches(metadataSources []map[string]string, policyText string) bool {
@@ -2518,7 +2518,7 @@ func opsApprovalDigestMatches(metadataSources []map[string]string, policyText st
 		if expected == "" {
 			continue
 		}
-		if strings.EqualFold(expected, workflow.OpsApprovalDigest(policyText)) {
+		if strings.EqualFold(expected, v2.OpsApprovalDigest(policyText)) {
 			return true
 		}
 	}

@@ -891,6 +891,22 @@ func (s *GroupDiscussionHistoryStore) SetHidden(ctx context.Context, discussionI
 	return err
 }
 
+// UpdateSessionStatus updates the status field of a cached session summary.
+// Used to mark sessions as "closed" when Hub rejects messages for closed sessions.
+func (s *GroupDiscussionHistoryStore) UpdateSessionStatus(discussionID, status string) {
+	if s == nil || s.db == nil {
+		return
+	}
+	discussionID = strings.TrimSpace(discussionID)
+	status = strings.TrimSpace(status)
+	if discussionID == "" || status == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = s.db.ExecContext(ctx, `UPDATE group_discussion_summaries SET status = ? WHERE discussion_id = ?`, status, discussionID)
+}
+
 func relationForHistoryRoleFilter(role string) string {
 	if strings.EqualFold(strings.TrimSpace(role), "initiator") {
 		return "initiated_by_me"

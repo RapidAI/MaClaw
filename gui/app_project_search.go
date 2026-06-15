@@ -14,8 +14,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 var recentTaskForkMu sync.Mutex
@@ -1674,43 +1674,43 @@ func deriveTaskName(rec memory.ProjectRecord) string {
 // workflowTypeLabel returns a short Chinese label for a workflow type.
 func workflowTypeLabel(wfType string) string {
 	switch normalizeWorkflowType(wfType) {
-	case workflow.WorkflowCoding:
+	case v2.WorkflowCoding:
 		return "编码"
-	case workflow.WorkflowProductDesign:
+	case v2.WorkflowProductDesign:
 		return "产品设计"
-	case workflow.WorkflowPresentationDesign:
+	case v2.WorkflowPresentationDesign:
 		return "PPT 设计"
-	case workflow.WorkflowInnovation:
+	case v2.WorkflowInnovation:
 		return "创新"
-	case workflow.WorkflowBusinessPlan:
+	case v2.WorkflowBusinessPlan:
 		return "商业计划"
-	case workflow.WorkflowTesting:
+	case v2.WorkflowTesting:
 		return "测试"
-	case workflow.WorkflowLiteratureReview:
+	case v2.WorkflowLiteratureReview:
 		return "文献综述"
-	case workflow.WorkflowResearchReport:
+	case v2.WorkflowResearchReport:
 		return "研究报告"
-	case workflow.WorkflowExperimentDesign:
+	case v2.WorkflowExperimentDesign:
 		return "实验设计"
-	case workflow.WorkflowGrantProposal:
+	case v2.WorkflowGrantProposal:
 		return "基金申请"
-	case workflow.WorkflowPaperWriting:
+	case v2.WorkflowPaperWriting:
 		return "论文写作"
-	case workflow.WorkflowProjectProposal:
+	case v2.WorkflowProjectProposal:
 		return "项目提案"
-	case workflow.WorkflowEventPlanning:
+	case v2.WorkflowEventPlanning:
 		return "活动策划"
-	case workflow.WorkflowCompetitiveAnalysis:
+	case v2.WorkflowCompetitiveAnalysis:
 		return "竞品分析"
-	case workflow.WorkflowBidResponse:
+	case v2.WorkflowBidResponse:
 		return "招投标"
-	case workflow.WorkflowContractReview:
+	case v2.WorkflowContractReview:
 		return "合同审查"
-	case workflow.WorkflowDueDiligence:
+	case v2.WorkflowDueDiligence:
 		return "尽职调查"
-	case workflow.WorkflowComplianceAudit:
+	case v2.WorkflowComplianceAudit:
 		return "合规审计"
-	case workflow.WorkflowPatentAnalysis:
+	case v2.WorkflowPatentAnalysis:
 		return "专利分析"
 	default:
 		return wfType

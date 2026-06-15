@@ -3,18 +3,18 @@ package main
 import (
 	"strings"
 
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
-func normalizeWorkflowType(value string) workflow.WorkflowType {
+func normalizeWorkflowType(value string) v2.WorkflowType {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return ""
 	}
-	return workflow.WorkflowType(trimmed)
+	return v2.WorkflowType(trimmed)
 }
 
 func isConcreteWorkflowType(value string) bool {
 	wfType := normalizeWorkflowType(value)
-	return wfType != "" && wfType != workflow.WorkflowNone
+	return wfType != "" && wfType != v2.WorkflowNone
 }

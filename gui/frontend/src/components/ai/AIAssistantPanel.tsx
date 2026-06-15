@@ -808,7 +808,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         closeDocPreview();
         closeCodePreview();
         resetWorkflowState();
-        if (agentView) dismissAgentView(agentView.id);
+        if (agentView) dismissAgentView(agentView.id, undefined, { force: true });
     };
     const title = lang === "en" ? "AI Assistant" : "AI \u52a9\u624b";
     const thinkingText = lang === "en" ? "Thinking... (you can type ahead)" : "\u6b63\u5728\u601d\u8003...\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";

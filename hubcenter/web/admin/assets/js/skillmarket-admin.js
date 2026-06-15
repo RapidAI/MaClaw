@@ -6,6 +6,11 @@ const SM_ADMIN_TEXT = {
 };
 const smtr = (key, vars={}) => ((SM_ADMIN_TEXT[currentLang] || SM_ADMIN_TEXT.en)[key] || SM_ADMIN_TEXT.en[key] || key).replace(/\{(\w+)\}/g, (_, n) => vars[n] ?? '');
 const smJsArg = value => JSON.stringify(String(value ?? ''));
+let smReviewInFlight = null;
+let smPurchasesInFlight = null;
+let smPurchasesInFlightKey = '';
+let smTrialConfigInFlight = null;
+let smUploadAuthConfigInFlight = null;
 function smStatusText(value) {
   const key = String(value || '').trim().toLowerCase();
   const map = { active:'active', pending_review:'pendingReview', pending:'pendingReview', trial:'trial', refunded:'refundedStatus', canceled:'canceled', cancelled:'canceled', expired:'expired' };
@@ -35,6 +40,8 @@ function setSmSectionState(section, mode, message) {
 }
 
 async function loadSkillmarketReview() {
+  if (smReviewInFlight) return smReviewInFlight;
+  smReviewInFlight = (async function() {
   const root = document.getElementById('smReviewList');
   const counter = document.getElementById('smReviewCount');
   const refreshBtn = document.getElementById('smRefreshBtn');
@@ -63,6 +70,9 @@ async function loadSkillmarketReview() {
   } finally {
     if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = prevRefreshText || smtr('refresh'); }
   }
+  })();
+  try { return await smReviewInFlight; }
+  finally { smReviewInFlight = null; }
 }
 async function smApprove(id, btnEl) {
   const btn = btnEl instanceof HTMLButtonElement ? btnEl : null;
@@ -84,6 +94,10 @@ async function loadSmPurchases(page) {
   const filterInput = document.getElementById('smPurchaseFilter');
   const filter = filterInput.value.trim();
   if (filter !== smPurchaseFilterState) { smPurchaseFilterState = filter; smPurchasePage = 1; }
+  const requestKey = smPurchasePage + '|' + filter;
+  if (smPurchasesInFlight && smPurchasesInFlightKey === requestKey) return smPurchasesInFlight;
+  smPurchasesInFlightKey = requestKey;
+  smPurchasesInFlight = (async function() {
   const root = document.getElementById('smPurchaseList');
   const counter = document.getElementById('smPurchaseCount');
   const pager = document.getElementById('smPurchasePager');
@@ -135,6 +149,9 @@ async function loadSmPurchases(page) {
     if (searchBtn) { searchBtn.disabled = false; searchBtn.textContent = prevSearchText || smtr('search'); }
     if (filterInput) filterInput.disabled = false;
   }
+  })();
+  try { return await smPurchasesInFlight; }
+  finally { smPurchasesInFlight = null; smPurchasesInFlightKey = ''; }
 }
 function changeSmPurchasePage(delta) { loadSmPurchases(smPurchasePage + delta); }
 async function smRefund(purchaseID, btnEl) {
@@ -152,6 +169,8 @@ async function smRefund(purchaseID, btnEl) {
 }
 
 async function loadSmTrialConfig() {
+  if (smTrialConfigInFlight) return smTrialConfigInFlight;
+  smTrialConfigInFlight = (async function() {
   try {
     const cfg = await api('/api/v1/admin/config/trial');
     if (cfg.trial_duration_days !== undefined) document.getElementById('smTrialDays').value = cfg.trial_duration_days;
@@ -160,6 +179,9 @@ async function loadSmTrialConfig() {
   } catch(err) {
     showToast(smtr('configLoadFailed', {error: err.message}), 'error');
   }
+  })();
+  try { return await smTrialConfigInFlight; }
+  finally { smTrialConfigInFlight = null; }
 }
 
 async function saveSmTrialConfig() {
@@ -183,11 +205,16 @@ async function saveSmTrialConfig() {
 }
 
 async function loadSmUploadAuthConfig() {
+  if (smUploadAuthConfigInFlight) return smUploadAuthConfigInFlight;
+  smUploadAuthConfigInFlight = (async function() {
   try {
     const data = await api('/api/v1/admin/config/upload-auth');
     const sel = document.getElementById('smUploadAuthMode');
     if (sel) sel.value = data.mode || 'both';
   } catch(err) { console.warn('load upload auth config:', err); }
+  })();
+  try { return await smUploadAuthConfigInFlight; }
+  finally { smUploadAuthConfigInFlight = null; }
 }
 
 async function saveSmUploadAuthConfig() {

@@ -201,7 +201,7 @@ type App struct {
 	aiAssistantReadyAt                atomic.Int64
 	aiAssistantFirstChatLogged        atomic.Bool
 	docGenerator                      *swarm.SwarmDocGenerator        // cached PDF doc generator
-	workflowEngine                    *workflow.WorkflowEngine        // V1 engine REMOVED from production; field retained for test compatibility only
+	workflowEngine                    *workflow.WorkflowEngine        // V1 engine retained for compatibility while V2 runs independently.
 	workflowV2                        *workflowV2State                // V2 workflow engine (clean state machine)
 	workflowArtifactSaver             *deferredArtifactSaver          // shared artifact saver for OwnerID injection
 	workflowDisabled                  atomic.Bool                     // true when user disables workflow in settings; checked by getWorkflowEngine()
@@ -252,6 +252,12 @@ type App struct {
 	veDetailRefreshCache     sync.Map // sessionID -> *veDetailRefreshState
 	veDiscoverableCache      sync.Map // hubURL/token/localID -> veDiscoverableCacheEntry
 	veDiscoverableCacheEpoch atomic.Uint64
+
+	// VE session renewal tracking (closed session -> renewed session mapping).
+	veSessionRenewalMap sync.Map // closedSessionID -> *veSessionRenewalEntry
+
+	// Capability market sync: permanently skipped capabilities (with TTL).
+	capabilitySyncPermanentSkips sync.Map // capability ID -> time.Time
 }
 
 func (a *App) ensureExperienceLifecycleSink() lifecycle.EventSink {
@@ -287,7 +293,7 @@ func (a *App) resolveExperienceProviderForAttribution() lifecycle.Provider {
 			providers = append(providers, skill.NewGovernanceDraftProvider(skills, skill.SkillMaintenancePlanOptions{MaxActions: 12}))
 		}
 	}
-	// V1 workflowEngine experience provider removed �?V2 doesn't provide experience context.
+	// V1 workflowEngine experience provider removed - V2 doesn't provide experience context.
 	return lifecycle.NewCompositeProvider(providers...)
 }
 

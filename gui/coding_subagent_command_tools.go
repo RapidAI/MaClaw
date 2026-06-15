@@ -76,8 +76,31 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 		// PowerShell 5.1 doesn't support && (only 7+ does).
 		psCommand := strings.ReplaceAll(command, " && ", " ; ")
 		shellName = "powershell"
+		// Wrap the command to ensure error information is visible when the command fails.
+		//
+		// Problem: LLMs frequently generate commands like:
+		//   dotnet test ... 2>&1 | Select-String "pattern"
+		// When the command fails and its output doesn't match the filter pattern,
+		// both stdout and stderr are empty — Go sees "no stdout/stderr".
+		//
+		// Two-layer error capture:
+		// 1. try/catch catches terminating errors (cmdlet failures with -ErrorAction Stop,
+		//    or explicit throw). Emits the exception directly to stderr via [Console]::Error
+		//    which bypasses PowerShell's formatting/pipeline (Write-Error goes through
+		//    PowerShell's error stream which can itself be swallowed by 2>&1 redirection).
+		// 2. After the command, if $LASTEXITCODE != 0 (external exe like dotnet/node/python
+		//    failed), check if Go's stderr is still empty by examining $Error — dump the
+		//    most recent error record to stderr so the LLM can see what went wrong.
+		//
+		// NOTE: $ErrorActionPreference stays 'Continue' (not 'Stop') because 'Stop' would
+		// terminate on any error record flowing through 2>&1 pipelines, breaking common
+		// patterns like `dotnet build 2>&1 | Select-String "error"`.
+		wrappedPS := fmt.Sprintf(
+			"$Error.Clear(); $ErrorActionPreference='Continue'; try { %s } catch { [Console]::Error.WriteLine(\"PowerShell exception: \" + $_.Exception.Message); exit 1 }; if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { if ($Error.Count -gt 0) { [Console]::Error.WriteLine(\"Last error: \" + $Error[0].ToString()) } else { [Console]::Error.WriteLine(\"Process exited with code $LASTEXITCODE - output was likely consumed by a pipeline filter. Run the command without pipe operators to see the actual error.\") }; exit $LASTEXITCODE }",
+			psCommand,
+		)
 		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command",
-			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + psCommand}
+			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + wrappedPS}
 	} else {
 		shellName = "bash"
 		shellArgs = []string{"-c", command}
@@ -207,6 +230,9 @@ func appendCodingCommandExitStatus(output string, exitCode int) string {
 	status := fmt.Sprintf("command exited with code %d", exitCode)
 	output = strings.TrimRight(output, "\r\n")
 	if output == "" {
+		if runtime.GOOS == "windows" {
+			return fmt.Sprintf("%s (no stdout/stderr captured). This typically happens when pipeline filters (Select-String, Select-Object) consume all output, or when a cmdlet handles errors internally. Try running the base command without pipe filters to see the actual output or error.", status)
+		}
 		return fmt.Sprintf("%s (no stdout/stderr). Re-run the command without output filters or with broader diagnostics to capture the real error.", status)
 	}
 	return output + "\n" + status

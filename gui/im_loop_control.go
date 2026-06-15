@@ -209,6 +209,41 @@ func (h *IMMessageHandler) hasPendingGuideReferenceInjection(userID string) bool
 	return isGuideLaunchReferenceInjection(text)
 }
 
+func (h *IMMessageHandler) pendingGuideLaunchUserText(userID string) string {
+	if h == nil || userID == "" {
+		return ""
+	}
+	pending, ok := h.pendingInjection.Load(userID)
+	if !ok {
+		return ""
+	}
+	text, _ := pending.(string)
+	if !isGuideLaunchReferenceInjection(text) {
+		return ""
+	}
+	return stripInjectionPrefix(text)
+}
+
+func buildGuideSteeredEntryText(guideText, currentText string) string {
+	guideText = strings.TrimSpace(guideText)
+	currentText = strings.TrimSpace(currentText)
+	if guideText == "" {
+		return currentText
+	}
+	if currentText == "" {
+		return guideText
+	}
+	return "[User-fired guide for this turn]\n" + guideText + "\n\n[Current user message]\n" + currentText
+}
+
+func (h *IMMessageHandler) entryTextWithPendingGuideReference(userID, currentText string) string {
+	guideText := h.pendingGuideLaunchUserText(userID)
+	if guideText == "" {
+		return strings.TrimSpace(currentText)
+	}
+	return buildGuideSteeredEntryText(guideText, currentText)
+}
+
 // accumulateInjection appends text to the pending injection for the given
 // user. If no pending injection exists, it creates one. If one already
 // exists (from a prior injection in the same iteration window), the new

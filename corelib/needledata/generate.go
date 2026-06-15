@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 type GenerateOptions struct {
@@ -95,15 +95,15 @@ func intentDecisionName(label intent.IntentLabel) string {
 }
 
 func generateReviewRecords(r *rand.Rand, n int) []TrainingRecord {
-	patterns := map[workflow.ReviewIntent][]string{
-		workflow.ReviewIntentConfirm:    {"looks good, continue", "approved", "no issue, next step", "confirm", "go with this version"},
-		workflow.ReviewIntentSupplement: {"add one more risk paragraph", "make the second point more conservative", "add the budget section", "this conclusion is not clear enough", "include acceptance criteria"},
-		workflow.ReviewIntentSkip:       {"skip this phase", "do not do this step for now", "skip it", "this part is unnecessary", "go directly to the next item"},
-		workflow.ReviewIntentCancel:     {"cancel this workflow", "stop for now", "do not continue", "end the workflow", "abandon this task"},
-		workflow.ReviewIntentSwitchTask: {"switch tasks and check the server", "stop this and write code instead", "move to another request", "start a PPT instead", "I want to do something else"},
-		workflow.ReviewIntentOther:      {"what is the weather today", "who are you", "wait a second", "what does this word mean", "let us just chat"},
+	patterns := map[v2.ReviewIntent][]string{
+		v2.ReviewIntentConfirm:    {"looks good, continue", "approved", "no issue, next step", "confirm", "go with this version"},
+		v2.ReviewIntentSupplement: {"add one more risk paragraph", "make the second point more conservative", "add the budget section", "this conclusion is not clear enough", "include acceptance criteria"},
+		v2.ReviewIntentSkip:       {"skip this phase", "do not do this step for now", "skip it", "this part is unnecessary", "go directly to the next item"},
+		v2.ReviewIntentCancel:     {"cancel this workflow", "stop for now", "do not continue", "end the workflow", "abandon this task"},
+		v2.ReviewIntentSwitchTask: {"switch tasks and check the server", "stop this and write code instead", "move to another request", "start a PPT instead", "I want to do something else"},
+		v2.ReviewIntentOther:      {"what is the weather today", "who are you", "wait a second", "what does this word mean", "let us just chat"},
 	}
-	var keys []workflow.ReviewIntent
+	var keys []v2.ReviewIntent
 	for k := range patterns {
 		keys = append(keys, k)
 	}

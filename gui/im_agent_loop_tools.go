@@ -1,11 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -88,13 +88,13 @@ func (h *IMMessageHandler) workflowToolFilterOwnerAndDecision(userID string, ctx
 	return ownerID, apply
 }
 
-func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID string, ctx *LoopContext) (string, workflow.ToolFilterPolicy, bool) {
+func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID string, ctx *LoopContext) (string, v2.ToolFilterPolicy, bool) {
 	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
 	if policyOwnerID == "" {
 		policyOwnerID = h.workflowPolicyUserID(userID)
 	}
 	if policyOwnerID == "" {
-		return policyOwnerID, workflow.ToolFilterNone, false
+		return policyOwnerID, v2.ToolFilterNone, false
 	}
 	if h.isWorkflowV2Active(policyOwnerID) {
 		wf := h.getWorkflowV2()
@@ -104,7 +104,7 @@ func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID strin
 				if phase != nil {
 					switch phase.ToolPolicy {
 					case v2.ToolPolicyDocOnly:
-						return policyOwnerID, workflow.ToolFilterDocOnly, true
+						return policyOwnerID, v2.ToolFilterDocOnly, true
 					}
 				}
 			}
@@ -113,22 +113,22 @@ func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID strin
 	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
 		if state := wf.machine.GetActive(policyOwnerID); state != nil {
 			if phase := state.ActivePhase(); phase != nil {
-				policy := mapV2ToolPolicyToV1(phase.ToolPolicy)
-				if policy != workflow.ToolFilterNone {
+				policy := v2.ToolFilterPolicy(mapV2ToolPolicyToV1(phase.ToolPolicy))
+				if policy != v2.ToolFilterNone {
 					return policyOwnerID, policy, true
 				}
 				if phase.Status == v2.PhaseWaitingConfirm {
-					return policyOwnerID, workflow.ToolFilterNone, true
+					return policyOwnerID, v2.ToolFilterNone, true
 				}
 			}
 		}
 	}
 	if h != nil && h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.GetActiveWorkflow(policyOwnerID) != nil {
-		if policy := h.app.workflowEngine.GetActivePhaseToolFilter(policyOwnerID); policy != workflow.ToolFilterNone {
+		if policy := v2.ToolFilterPolicy(h.app.workflowEngine.GetActivePhaseToolFilter(policyOwnerID)); policy != v2.ToolFilterNone {
 			return policyOwnerID, policy, true
 		}
 	}
-	return policyOwnerID, workflow.ToolFilterNone, false
+	return policyOwnerID, v2.ToolFilterNone, false
 }
 
 func agentLoopToolNamesForLog(tools []map[string]interface{}) []string {
@@ -144,9 +144,26 @@ func agentLoopToolNamesForLog(tools []map[string]interface{}) []string {
 	return names
 }
 
-func ensureWorkflowRequiredTools(policy workflow.ToolFilterPolicy, routed, allTools []map[string]interface{}) []map[string]interface{} {
-	required := workflow.RequiredToolNamesForPolicy(policy)
+func ensureWorkflowRequiredTools(policy interface{}, routed, allTools []map[string]interface{}) []map[string]interface{} {
+	required := requiredWorkflowToolNamesForPolicy(policy)
 	return ensureWorkflowRequiredToolsForNames(required, routed, allTools)
+}
+
+func requiredWorkflowToolNamesForPolicy(policy interface{}) []string {
+	policyName := fmt.Sprint(policy)
+	if policyName == "" || policyName == "<nil>" {
+		return nil
+	}
+	switch v2.ToolFilterPolicy(policyName) {
+	case v2.ToolFilterDocOnly:
+		return []string{"read_file", "list_directory", "send_file"}
+	case v2.ToolFilterOpsControlled:
+		return []string{"read_file", "list_directory", "send_file", "bash", "ssh"}
+	case v2.ToolFilterFull:
+		return []string{"read_file", "list_directory", "send_file", "write_file", "edit_file", "task"}
+	default:
+		return nil
+	}
 }
 
 func ensureWorkflowRequiredToolsForNames(required []string, routed, allTools []map[string]interface{}) []map[string]interface{} {

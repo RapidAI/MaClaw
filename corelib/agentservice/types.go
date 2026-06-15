@@ -6,7 +6,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 type TenantStatus string
@@ -1000,16 +1000,16 @@ type ExecuteRequest struct {
 	// ToolPolicy optionally constrains tool exposure and execution for this
 	// request. Empty means unrestricted beyond the executor's normal
 	// deployment-level capability checks.
-	ToolPolicy workflow.ToolFilterPolicy
+	ToolPolicy v2.ToolFilterPolicy
 
 	// MutationScope optionally constrains what state this request may mutate.
 	// When empty, legacy policy-only defaults are used.
-	MutationScope workflow.MutationScope
+	MutationScope v2.MutationScope
 
 	// OpsApprovedCommands is the optional command manifest approved by an ops
 	// risk-policy gate. When present in ops_controlled mode, bash/ssh execution
 	// must match this manifest exactly.
-	OpsApprovedCommands []workflow.OpsApprovedCommand
+	OpsApprovedCommands []v2.OpsApprovedCommand
 
 	// OnToken, if set, is called with each streaming text delta during the agent
 	// loop. Used by maclawsrv to send progressive stream_chunk messages via SSE.

@@ -1235,6 +1235,17 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         const unsub1 = EventsOn("ve:stream_chunk", handleStreamChunk);
         const unsub2 = EventsOn("ve:stream_end", handleStreamEnd);
         const unsub3 = EventsOn("ve:disconnected", handleDisconnect);
+        const unsub4 = EventsOn("ve:session_renewed", (data: any) => {
+            const oldId = data?.old_session_id || data?.oldSessionId;
+            const newId = data?.new_session_id || data?.newSessionId;
+            if (!oldId || !newId || !mountedRef.current) return;
+            // Only update if this component is bound to the old session.
+            if (sessionIdRef.current !== oldId) return;
+            sessionIdRef.current = newId;
+            // setState triggers the [onSessionIdChange, state.sessionId] useEffect
+            // which persists the new ID via saveTabState — no direct call needed.
+            setState((prev) => ({ ...prev, sessionId: newId }));
+        });
 
         return () => {
             if (typeof unsub1 === "function") unsub1();
@@ -1243,6 +1254,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             else EventsOff("ve:stream_end");
             if (typeof unsub3 === "function") unsub3();
             else EventsOff("ve:disconnected");
+            if (typeof unsub4 === "function") unsub4();
+            else EventsOff("ve:session_renewed");
         };
     }, [attemptReconnect, hideAwaitingReply, refreshSilenceTimer, releaseResponseGate]);
 

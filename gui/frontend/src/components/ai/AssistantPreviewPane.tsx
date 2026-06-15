@@ -12,7 +12,7 @@ interface AssistantPreviewPaneProps {
     codePreviewState: CodePreviewUIState;
     closeCodePreview: () => void;
     closeDocPreview: () => void;
-    dismissAgentView?: (viewId: string | undefined, data?: Record<string, unknown>) => void | Promise<void>;
+    dismissAgentView?: (viewId: string | undefined, data?: Record<string, unknown>, options?: { force?: boolean }) => void | Promise<void>;
     lang: string;
     selectCodeFile: (filePath: string) => void;
     submitAgentView?: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;

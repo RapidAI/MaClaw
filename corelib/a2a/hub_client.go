@@ -494,16 +494,31 @@ func (c *HubClient) doJSON(ctx context.Context, method, path string, in any, out
 }
 
 func decodeHubError(resp *http.Response) error {
+	// Hub error responses use two formats:
+	// 1. {"message":"...", "error":"string"}  (legacy)
+	// 2. {"message":"...", "error":{"message":"...", "code":"..."}}  (current)
+	// Use json.RawMessage to handle both without type mismatch failures.
 	var payload struct {
-		Error   string `json:"error"`
-		Message string `json:"message"`
+		Message string          `json:"message"`
+		Error   json.RawMessage `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err == nil {
-		if strings.TrimSpace(payload.Message) != "" {
-			return fmt.Errorf("hub returned %d: %s", resp.StatusCode, payload.Message)
+		if msg := strings.TrimSpace(payload.Message); msg != "" {
+			return fmt.Errorf("hub returned %d: %s", resp.StatusCode, msg)
 		}
-		if strings.TrimSpace(payload.Error) != "" {
-			return fmt.Errorf("hub returned %d: %s", resp.StatusCode, payload.Error)
+		if len(payload.Error) > 0 {
+			// Try as string first.
+			var errStr string
+			if json.Unmarshal(payload.Error, &errStr) == nil && strings.TrimSpace(errStr) != "" {
+				return fmt.Errorf("hub returned %d: %s", resp.StatusCode, errStr)
+			}
+			// Try as object with "message" field.
+			var errObj struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(payload.Error, &errObj) == nil && strings.TrimSpace(errObj.Message) != "" {
+				return fmt.Errorf("hub returned %d: %s", resp.StatusCode, errObj.Message)
+			}
 		}
 	}
 	return fmt.Errorf("hub returned %s", resp.Status)

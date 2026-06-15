@@ -45,7 +45,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"github.com/RapidAI/CodeClaw/tui/views"
 	tea "github.com/charmbracelet/bubbletea"
@@ -456,7 +456,7 @@ type TUIApp struct {
 	// Production code MUST NOT use this field. Tests that still reference it
 	// should migrate to V2 (machine.Create / machine.GetActive etc.).
 	// This field will be removed once all test files are migrated.
-	workflowEngine *workflow.WorkflowEngine
+	workflowEngine *v2.WorkflowEngine
 
 	// workflowMu protects pendingPhasePrompt and workflowAgentLoop from
 	// concurrent access between the Bubble Tea main goroutine (which sets
@@ -2556,9 +2556,9 @@ func (app *TUIApp) isWorkflowToolAllowedTUI(name string) bool {
 		return false
 	}
 	if contract, ok := app.currentWorkflowPhaseContractTUI(); ok {
-		return workflow.IsToolAllowedByContract(contract, name)
+		return v2.IsToolAllowedByContract(contract, name)
 	}
-	return workflow.IsToolAllowedByPolicy(app.currentWorkflowToolFilterTUI(), name)
+	return v2.IsToolAllowedByPolicy(app.currentWorkflowToolFilterTUI(), name)
 }
 
 func (app *TUIApp) isWorkflowToolCallAllowedTUI(name, argsJSON string) (bool, string) {
@@ -2574,22 +2574,22 @@ func (app *TUIApp) isWorkflowToolCallAllowedTUI(name, argsJSON string) (bool, st
 			return false, tuiFormat(tuiConfigLang(app.appConfig), "toolArgParseFailed", err.Error())
 		}
 	}
-	var approved []workflow.OpsApprovedCommand
+	var approved []v2.OpsApprovedCommand
 	// Read approved commands from V2 state machine's phase outputs.
 	if wf := app.getWorkflowV2TUI(); wf != nil {
 		if state := wf.machine.GetActive("tui-user"); state != nil {
 			outputs := state.PreviousOutputs(0)
-			approved = workflow.ExtractOpsApprovedCommands(outputs["risk_policy"])
+			approved = v2.ExtractOpsApprovedCommands(outputs["risk_policy"])
 		}
 	}
 	// Build phase contract from V2 active phase ToolPolicy + MutationScope.
 	if contract, ok := app.currentWorkflowPhaseContractTUI(); ok {
-		if err := workflow.ValidateToolCallByContractWithApproval(contract, strings.TrimSpace(name), args, approved); err != nil {
+		if err := v2.ValidateToolCallByContractWithApproval(contract, strings.TrimSpace(name), args, approved); err != nil {
 			return false, err.Error()
 		}
 		return true, ""
 	}
-	if err := workflow.ValidateToolCallByPolicyWithApproval(app.currentWorkflowToolFilterTUI(), strings.TrimSpace(name), args, approved); err != nil {
+	if err := v2.ValidateToolCallByPolicyWithApproval(app.currentWorkflowToolFilterTUI(), strings.TrimSpace(name), args, approved); err != nil {
 		return false, err.Error()
 	}
 	return true, ""
@@ -2610,33 +2610,33 @@ func (app *TUIApp) isWorkflowPhaseExecutionBlockedTUI() bool {
 	return false
 }
 
-func (app *TUIApp) currentWorkflowToolFilterTUI() workflow.ToolFilterPolicy {
+func (app *TUIApp) currentWorkflowToolFilterTUI() v2.ToolFilterPolicy {
 	if app == nil {
-		return workflow.ToolFilterNone
+		return v2.ToolFilterNone
 	}
 	// V2 state machine is the sole source for tool filter policy.
 	return app.currentWorkflowToolFilterV2()
 }
 
-func (app *TUIApp) currentWorkflowPhaseContractTUI() (workflow.PhaseContract, bool) {
+func (app *TUIApp) currentWorkflowPhaseContractTUI() (v2.PhaseContract, bool) {
 	if app == nil {
-		return workflow.PhaseContract{}, false
+		return v2.PhaseContract{}, false
 	}
 	// Build PhaseContract from V2 active phase's ToolPolicy + MutationScope.
 	wf := app.getWorkflowV2TUI()
 	if wf == nil {
-		return workflow.PhaseContract{}, false
+		return v2.PhaseContract{}, false
 	}
 	state := wf.machine.GetActive("tui-user")
 	if state == nil {
-		return workflow.PhaseContract{}, false
+		return v2.PhaseContract{}, false
 	}
 	phase := state.ActivePhase()
 	if phase == nil {
-		return workflow.PhaseContract{}, false
+		return v2.PhaseContract{}, false
 	}
 	policy := mapV2ToolPolicyToV1(phase.ToolPolicy)
-	return workflow.PhaseContractFromPolicy(policy, workflow.MutationScopeNone), true
+	return v2.PhaseContractFromPolicy(policy, v2.MutationScopeNone), true
 }
 
 func (c *tuiCallbacks) OnToken(delta string) {

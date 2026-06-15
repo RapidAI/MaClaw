@@ -113,6 +113,12 @@ func (a *App) capabilityMarketplaceUnsupportedForCurrentHub() bool {
 	}
 	a.hubMarketplaceUnsupported.Store(false)
 	a.capabilitySyncNextAttempt.Store(time.Time{})
+	// Hub URL changed — permanent skip decisions may no longer be valid for the
+	// new hub (different capability configurations). Clear and re-evaluate.
+	a.capabilitySyncPermanentSkips.Range(func(key, _ interface{}) bool {
+		a.capabilitySyncPermanentSkips.Delete(key)
+		return true
+	})
 	return false
 }
 
@@ -488,6 +494,17 @@ func (a *App) syncHubManagedCapabilities(ctx context.Context) CapabilitySyncStat
 			continue
 		}
 		if item.CapabilityType == corelib.CapabilityTypeSkill {
+			// Skip capabilities that have been diagnosed as permanently non-installable.
+			// The skip has a TTL (1 hour) so that if the user manually resolves the
+			// conflict (e.g., uninstalls a conflicting skill), the next sync after
+			// expiry will re-attempt installation.
+			if ts, ok := a.capabilitySyncPermanentSkips.Load(item.ID); ok {
+				if skipTime, isTime := ts.(time.Time); isTime && time.Since(skipTime) < 1*time.Hour {
+					continue
+				}
+				// Skip expired — re-evaluate.
+				a.capabilitySyncPermanentSkips.Delete(item.ID)
+			}
 			installed, err := a.ensureHubSkillInstalled(ctx, *item, dep.CapabilityVersionKey)
 			if err != nil {
 				status.Errors = append(status.Errors, err.Error())
@@ -496,7 +513,13 @@ func (a *App) syncHubManagedCapabilities(ctx context.Context) CapabilitySyncStat
 			if installed {
 				status.ManagedInstalled++
 			} else if !a.isHubSkillCapabilityInstalled(*item) {
-				status.Errors = append(status.Errors, fmt.Sprintf("managed capability %s skill was not installed", item.ID))
+				// ensureHubSkillInstalled returned (false, nil) AND the skill is not
+				// found locally → permanent condition (name conflict / stale deployment).
+				// Don't add to status.Errors (which triggers 5-minute retry). Instead
+				// log once and suppress future attempts for this capability (with TTL).
+				reason := a.diagnoseSkillNotInstalled(*item)
+				a.capabilitySyncPermanentSkips.Store(item.ID, time.Now())
+				log.Printf("[capability-market] managed capability %s permanently skipped: %s", item.ID, reason)
 			}
 			continue
 		}
@@ -867,6 +890,53 @@ func (a *App) isHubSkillCapabilityInstalled(item HubCapabilitySummary) bool {
 	metadata := capabilityMetadataMap(item.MetadataJSON)
 	skillID := firstCapabilityNonEmpty(stringFromMap(metadata, "skill_id"), stringFromMap(metadata, "hub_skill_id"), item.CapabilityID, item.ID)
 	return a.findManagedCapabilitySkill(item.ID, skillID, "") != nil
+}
+
+// diagnoseSkillNotInstalled returns a non-empty reason string when the skill
+// cannot be installed due to a permanent condition (name conflict, missing
+// metadata, etc.) that won't resolve on retry. Returns "" only when the
+// condition is genuinely transient (e.g., network failure during download).
+//
+// Mechanism: ensureHubSkillInstalled returns (false, nil) in exactly three cases:
+//  1. Version already current → caught by isHubSkillCapabilityInstalled (returns true),
+//     so we never reach this function for that case.
+//  2. Name conflict: skillNameAlreadyRegistered(entry.Name) — a different skill
+//     with the same display name exists (permanent).
+//  3. Name conflict: findManagedCapabilitySkill found a match under a different
+//     capability ID (permanent).
+//
+// Since case 1 is excluded before calling this function, reaching here means
+// we're in case 2 or 3. We attempt to identify which one for diagnostic logging.
+// If we can't identify the specific sub-case (e.g., the name conflict requires
+// downloading the skill first to discover the name), we still return a generic
+// permanent reason — because ALL paths that reach here are permanent.
+func (a *App) diagnoseSkillNotInstalled(item HubCapabilitySummary) string {
+	if a == nil || a.skillExecutor == nil {
+		return "skill executor not initialized"
+	}
+	metadata := capabilityMetadataMap(item.MetadataJSON)
+	skillID := firstCapabilityNonEmpty(stringFromMap(metadata, "skill_id"), stringFromMap(metadata, "hub_skill_id"), item.CapabilityID, item.ID)
+	if skillID == "" {
+		return "missing skill_id in capability metadata"
+	}
+	// Check if a skill with matching hubSkillID exists but under a different
+	// capability ID or without a capability ref (manual install).
+	for _, skill := range a.skillExecutor.loadSkills() {
+		if strings.TrimSpace(skill.HubSkillID) != skillID {
+			continue
+		}
+		if skill.Capability == nil {
+			return fmt.Sprintf("name conflict: skill '%s' already registered (hubSkillID=%s) without capability ref — likely a manual install", skill.Name, skillID)
+		}
+		if strings.TrimSpace(skill.Capability.CapabilityID) != strings.TrimSpace(item.ID) {
+			return fmt.Sprintf("name conflict: skill '%s' registered under different capability %s", skill.Name, skill.Capability.CapabilityID)
+		}
+	}
+	// Can't identify the specific sub-case from loaded skills alone (the name
+	// conflict is only discoverable after downloading the skill entry). But we
+	// know this is still permanent — ensureHubSkillInstalled returned (false, nil)
+	// and the skill is NOT found by isHubSkillCapabilityInstalled.
+	return fmt.Sprintf("skill install silently skipped (likely name conflict with an existing skill; hubSkillID=%s)", skillID)
 }
 
 func skillInstallStatus(installed bool) string {

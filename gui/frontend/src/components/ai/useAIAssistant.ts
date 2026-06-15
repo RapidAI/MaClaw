@@ -2524,6 +2524,16 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
     }, []);
 
+    /** Force-reset agentView for the active session — used by session clear and /clear, /new, /reset.
+     *  Advances lifecycle seq to reject in-flight stale events from before the reset. */
+    const forceResetAgentViewForActiveSession = useCallback(() => {
+        const key = activeAgentViewSessionKeyRef.current;
+        agentViewsBySessionRef.current.delete(key);
+        const prevSeq = agentViewLifecycleSeqBySessionRef.current.get(key) || 0;
+        agentViewLifecycleSeqBySessionRef.current.set(key, prevSeq + 1);
+        setAgentView(null);
+    }, []);
+
     useEffect(() => {
         if (options?.activeSessionKey) {
             const normalizedSessionKey = normalizeRuntimeSessionKey(options.activeSessionKey);
@@ -3564,6 +3574,8 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 legacyClearAIAssistantUIState();
                 clearTransientProgress();
                 setMessages([]);
+                // Dismiss any visible agent view (including workflow forms).
+                forceResetAgentViewForActiveSession();
             } else {
                 setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, normalized, preferences));
                 if (canMutateLocalHistory && normalized.clear_ui) {
@@ -3749,6 +3761,8 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                     legacyClearAIAssistantUIState();
                     clearTransientProgress();
                     setMessages([]);
+                    // Dismiss any visible agent view (including workflow forms).
+                    forceResetAgentViewForActiveSession();
                 } else {
                     setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
                     if (canMutateLocalHistory && response.clear_ui) {
@@ -3959,6 +3973,12 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         pendingTasksByRequestRef.current.clear();
         setPendingTaskVersion(version => version + 1);
         setSelectedFiles([]);
+        // Unconditionally dismiss any visible agent view (including workflow forms)
+        // so the right-side panel does not survive a session clear.
+        // Only clear the active session's agentView — other tabs retain theirs.
+        // Advance the lifecycle sequence so any in-flight stale events from
+        // before the clear are rejected by acceptAgentViewSequence.
+        forceResetAgentViewForActiveSession();
         if (persistTimerRef.current) {
             clearTimeout(persistTimerRef.current);
             persistTimerRef.current = null;
@@ -4456,14 +4476,18 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
     }, [activeSessionKeyForEvents, clearTransientProgress, emitPetStateForAssistant, flushStreamTokenBuffer, injectSupplementary, preferences, resetActiveRound, resetStreamTokenBuffer, sendMessage, setRoundState, startResponseTimeout, stopResponseTimeout, uiLang, updateVisibleAgentViewForSession, waitForForegroundIdle]);
 
-    const dismissAgentView = useCallback(async (viewId: string | undefined, data?: Record<string, unknown>) => {
+    const dismissAgentView = useCallback(async (viewId: string | undefined, data?: Record<string, unknown>, options?: { force?: boolean }) => {
+        // force: unconditionally clear frontend UI (even for workflow forms that
+        // normally wait for backend lifecycle confirmation), swallow backend errors,
+        // and skip the legacy sendMessage fallback. Used by session clear / /new / /reset.
         const isWorkflowFormDismiss = typeof viewId === 'string' && viewId.startsWith('workflow:form:');
-        if (!isWorkflowFormDismiss) updateVisibleAgentViewForSession(activeSessionKeyForEvents() || 'desktop-user', null);
+        if (!isWorkflowFormDismiss || options?.force) updateVisibleAgentViewForSession(activeSessionKeyForEvents() || 'desktop-user', null);
         const payload = JSON.stringify({ view_id: viewId || "", data: data || {} });
         try {
             await DismissAgentView({ view_id: viewId || "", data: data || {} });
             return;
         } catch (err: any) {
+            if (options?.force) return; // Session clear — don't surface backend errors.
             if (isWorkflowFormDismiss) {
                 setMessages(prev => [...prev, createErrorMessage(err?.message || String(err), activeSessionKeyForEvents() || 'desktop-user')]);
                 return;

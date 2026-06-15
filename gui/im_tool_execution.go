@@ -20,7 +20,6 @@ import (
 	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -78,7 +77,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	if !skipWorkflowGate && !h.isWorkflowToolAllowedForOwner(policyUserID, tc.Function.Name) {
 		text := workflowPolicyToolRejectedText(tc.Function.Name)
 		result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
-		h.appendToolPolicyTrace(opts.Context, policyUserID, tc.Function.Name, "workflow.tool", text)
+		h.appendToolPolicyTrace(opts.Context, policyUserID, tc.Function.Name, "v2.tool", text)
 		log.Printf("[agent-loop] rejected execution of workflow-blocked tool %q (iter=%d user=%s)", tc.Function.Name, opts.Iteration, opts.UserID)
 	}
 	if result.Text == "" && !skipWorkflowGate {
@@ -86,7 +85,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		if !allowed {
 			text := fmt.Sprintf("[system rejected] %s", reason)
 			result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
-			h.appendToolPolicyTrace(opts.Context, policyUserID, tc.Function.Name, "workflow.call", reason)
+			h.appendToolPolicyTrace(opts.Context, policyUserID, tc.Function.Name, "v2.call", reason)
 			log.Printf("[agent-loop] rejected execution of workflow-blocked tool call %q (iter=%d user=%s reason=%s)", tc.Function.Name, opts.Iteration, opts.UserID, reason)
 		}
 	}
@@ -416,13 +415,13 @@ func (h *IMMessageHandler) isWorkflowToolAllowedForOwner(policyUserID, name stri
 	if !apply {
 		return true
 	}
-	if policy == workflow.ToolFilterNone {
+	if policy == v2.ToolFilterNone {
 		return false
 	}
 	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyUserID) {
 		return isCodingWorkflowImplementationMainLoopToolAllowed(name)
 	}
-	return workflow.IsToolAllowedByPolicy(policy, name)
+	return v2.IsToolAllowedByPolicy(policy, name)
 }
 
 func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name, argsJSON string) (bool, string) {
@@ -441,7 +440,7 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 	if !apply {
 		return true, ""
 	}
-	if policy == workflow.ToolFilterNone {
+	if policy == v2.ToolFilterNone {
 		return false, fmt.Sprintf("%s is not allowed while the current workflow phase is blocked", strings.TrimSpace(name))
 	}
 	var args map[string]interface{}
@@ -463,21 +462,21 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 			return false, reason
 		}
 	}
-	approved := []workflow.OpsApprovedCommand(nil)
-	if policy == workflow.ToolFilterOpsControlled {
+	approved := []v2.OpsApprovedCommand(nil)
+	if policy == v2.ToolFilterOpsControlled {
 		if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
 			if state := wf.machine.GetActive(policyUserID); state != nil {
 				// Check previous phase outputs for risk_policy content
 				for i := 0; i < state.CurrentPhase && i < len(state.Phases); i++ {
 					p := state.Phases[i]
 					if p.ID == "risk_policy" && p.Output != "" {
-						approved = workflow.ExtractOpsApprovedCommands(p.Output)
+						approved = v2.ExtractOpsApprovedCommands(p.Output)
 					}
 				}
 			}
 		}
 	}
-	if err := workflow.ValidateToolCallByPolicyWithApproval(policy, name, args, approved); err != nil {
+	if err := v2.ValidateToolCallByPolicyWithApproval(policy, name, args, approved); err != nil {
 		return false, err.Error()
 	}
 	return true, ""

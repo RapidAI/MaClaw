@@ -1,5 +1,5 @@
-// Package main provides lightweight V2→V1 type mapping helpers for GUI code
-// that still consumes V1 workflow.ToolFilterPolicy and workflow.WorkflowState types.
+// Package main provides lightweight V2->V1 type mapping helpers for GUI code
+// that still consumes V1 workflow.WorkflowState types.
 // These are standalone functions (not methods on a facade struct).
 package main
 
