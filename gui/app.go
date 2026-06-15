@@ -4329,6 +4329,7 @@ func (a *App) LoadConfig() (corelib.AppConfig, error) {
 	defer a.configMu.Unlock()
 	if a.configCacheValid {
 		corelib.SetLogDetailEnabled(a.configCache.LogDetailEnabled)
+		memory.SetMemoryRecallLogEnabled(a.configCache.MemoryRecallLogEnabled)
 		return a.configCache, nil
 	}
 	config, err := a.loadConfigLocked()
@@ -4956,6 +4957,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	a.configCache = config
 	a.configCacheValid = true
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
+	memory.SetMemoryRecallLogEnabled(config.MemoryRecallLogEnabled)
 	return config, nil
 }
 
@@ -5309,6 +5311,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	a.configCache = config
 	a.configCacheValid = true
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
+	memory.SetMemoryRecallLogEnabled(config.MemoryRecallLogEnabled)
 	// Sync workflow enabled/disabled state to the atomic flag so that
 	// getWorkflowEngine() returns nil when workflow is disabled. This is
 	// the single enforcement point -all workflow consumers go through
@@ -6086,6 +6089,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.LogDetailEnabled = v
+		case "memory_recall_log_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.MemoryRecallLogEnabled = v
 		case "working_directory":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -6409,6 +6419,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	}
 
 	corelib.SetLogDetailEnabled(cfg.LogDetailEnabled)
+	memory.SetMemoryRecallLogEnabled(cfg.MemoryRecallLogEnabled)
 	corelib.SetWorkspaceDir(cfg.WorkingDirectory)
 	a.refreshPowerOptimizationStateFromConfig(cfg)
 	a.refreshWorkstationMode(cfg)

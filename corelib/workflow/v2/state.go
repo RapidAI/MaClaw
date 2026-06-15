@@ -1,5 +1,6 @@
-// Package v2 implements the workflow engine v2 — a clean state machine
-// that replaces the 30+ file V1 engine with 5 modules.
+// state.go defines the V2 native workflow state model (WorkflowState, Phase,
+// ToolPolicy). This is the serializable runtime state used by StateMachine
+// and Store. See doc.go for package overview.
 package v2
 
 import (

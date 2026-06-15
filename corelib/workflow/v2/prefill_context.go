@@ -17,12 +17,22 @@ func extractFieldFromContext(field PhaseInputField, context string) *PrefilledVa
 	switch {
 	case field.Type == "select":
 		return extractSelectField(field, context)
+	case field.Type == "boolean":
+		return nil // boolean fields should never be auto-prefilled — user must make explicit choice
 	case isPersonNameField(field.Name):
 		return extractPersonName(field, context)
 	case isInstitutionField(field.Name):
 		return extractInstitution(field, context)
 	case isTitleField(field.Name):
 		return extractAcademicTitle(field, context)
+	case isEmailField(field.Name):
+		return extractEmail(field, context)
+	case isPhoneField(field.Name):
+		return extractPhone(field, context)
+	case isDateField(field.Name, field.Type):
+		return extractDate(field, context)
+	case isNumericField(field.Name, field.Type):
+		return extractNumericByLabel(field, context)
 	default:
 		return extractByLabelAnchor(field, context)
 	}
@@ -42,37 +52,135 @@ func isTitleField(name string) bool {
 	return name == "title"
 }
 
+func isEmailField(name string) bool {
+	return name == "email" || strings.HasSuffix(name, "_email")
+}
+
+func isPhoneField(name string) bool {
+	return name == "phone" || name == "mobile" || name == "tel" ||
+		strings.HasSuffix(name, "_phone") || strings.HasSuffix(name, "_mobile")
+}
+
+func isDateField(name, fieldType string) bool {
+	if fieldType == "date" {
+		return true
+	}
+	return dateFieldNames[name]
+}
+
+// dateFieldNames are known date field names that use type="text" in templates.
+var dateFieldNames = map[string]bool{
+	"birth_date": true, "start_date": true, "end_date": true,
+	"graduation_date": true, "phd_date": true,
+}
+
+func isNumericField(name, fieldType string) bool {
+	if fieldType == "number" {
+		return true
+	}
+	return numericFieldNames[name]
+}
+
+// numericFieldNames are known numeric field names that use type="text" in templates.
+var numericFieldNames = map[string]bool{
+	"h_index": true, "total_citations": true, "total_papers": true,
+	"phd_year": true, "funding_amount": true, "duration": true,
+}
+
 // --- Extractors ---
 
 // extractSelectField checks if any of the field's predefined options appear in context.
+// For short option values (≤2 runes), requires adjacency to the field's label to avoid
+// false positives (e.g. "男" appearing in "男生宿舍" when the field is "性别").
 func extractSelectField(field PhaseInputField, context string) *PrefilledValue {
 	if len(field.Options) == 0 {
 		return nil
 	}
-	for _, opt := range field.Options {
-		if opt.Value != "" && strings.Contains(context, opt.Value) {
-			return &PrefilledValue{
-				Value:        opt.Value,
-				Source:       "context",
-				SourceDetail: "匹配到选项值: " + opt.Value,
-				Confidence:   0.85,
+
+	// First pass: try to find an option value near the field's label (high confidence)
+	if field.Label != "" {
+		for _, anchor := range []string{field.Label + "：", field.Label + ":", field.Label + "是", field.Label + "为"} {
+			idx := strings.Index(context, anchor)
+			if idx < 0 {
+				continue
 			}
+			afterAnchor := context[idx+len(anchor):]
+			afterAnchor = strings.TrimLeftFunc(afterAnchor, unicode.IsSpace)
+			for _, opt := range field.Options {
+				if opt.Value != "" && strings.HasPrefix(afterAnchor, opt.Value) {
+					return &PrefilledValue{
+						Value:        opt.Value,
+						Source:       "context",
+						SourceDetail: "匹配到选项值: " + opt.Value,
+						Confidence:   0.90,
+					}
+				}
+			}
+		}
+	}
+
+	// Second pass: bare substring match — only for options with 3+ runes
+	// (short values like "男"/"女" are too ambiguous without label context)
+	for _, opt := range field.Options {
+		if opt.Value == "" {
+			continue
+		}
+		optRunes := len([]rune(opt.Value))
+		if optRunes < 3 {
+			// For 1-2 rune options, check if they appear in specific patterns:
+			// "我是男" / "为男" / "是男性" — the option value must appear after an identity marker
+			// or be immediately followed by "性" (gender indicator)
+			identityMarkers := []string{"我是" + opt.Value, "性别" + opt.Value, "为" + opt.Value}
+			matched := false
+			for _, marker := range identityMarkers {
+				if strings.Contains(context, marker) {
+					matched = true
+					break
+				}
+			}
+			// Also check "X性" pattern (e.g. "男性" contains option "男")
+			if !matched && strings.Contains(context, opt.Value+"性") {
+				matched = true
+			}
+			if !matched {
+				continue
+			}
+		} else {
+			if !strings.Contains(context, opt.Value) {
+				continue
+			}
+		}
+		return &PrefilledValue{
+			Value:        opt.Value,
+			Source:       "context",
+			SourceDetail: "匹配到选项值: " + opt.Value,
+			Confidence:   0.80,
 		}
 	}
 	return nil
 }
 
-// extractPersonName tries to find a Chinese person name near identity anchors.
-// Chinese names are 2-4 characters, typically preceded by "我是"/"我叫"/"姓名"/"申请人".
+// extractPersonName tries to find a person name from identity anchors.
+// Supports both Chinese names (2-4 CJK chars) and English names (capitalized words).
 var personNameAnchors = regexp.MustCompile(`(?:我(?:是|叫)|姓名[：:]\s*|申请人[：:]\s*|(?:我|本人).*?(?:叫|是))([` + "\u4e00-\u9fff" + `]{2,4})`)
 
 // personNamePossessive matches "我是X的Y" where Y is the person name.
-// Handles: "我是北京大学计算机学院的张伟教授" → "张伟"
-// The name capture is non-greedy ({2,3}?) then followed by a title suffix or delimiter.
 var personNamePossessive = regexp.MustCompile(`(?:我是|我叫)[` + "\u4e00-\u9fff" + `]+的([` + "\u4e00-\u9fff" + `]{2,3}?)(?:教授|研究员|副教授|讲师|博士|老师|同学|[，,。；;、\s]|$)`)
 
+// englishNameAnchors matches common English name patterns with identity markers.
+// Captures "My name is John Smith" / "I'm Jane Doe" / "Name: Alice Johnson"
+// Note: uses a two-step approach — first find the anchor case-insensitively,
+// then extract the capitalized name after it.
+var englishNameAnchorPrefixes = []string{"my name is ", "i'm ", "i am "}
+
+// englishNameCapRe captures 1-3 capitalized words at the start of a string.
+var englishNameCapRe = regexp.MustCompile(`^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})`)
+
+// englishNameLabelAnchors matches "姓名：John Smith" or "Name: John Smith"
+var englishNameLabelRe = regexp.MustCompile(`(?:姓名|名字|[Nn]ame)[：:]\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})`)
+
 func extractPersonName(field PhaseInputField, context string) *PrefilledValue {
-	// First try the possessive pattern ("我是XX的张三") — more specific
+	// First try the possessive pattern ("我是XX的张三") — most specific for Chinese
 	if m := personNamePossessive.FindStringSubmatch(context); m != nil {
 		name := strings.TrimSpace(m[1])
 		if name != "" && !isCommonNonName(name) {
@@ -85,7 +193,7 @@ func extractPersonName(field PhaseInputField, context string) *PrefilledValue {
 		}
 	}
 
-	// Fallback to direct anchors ("我是张三"、"我叫李明")
+	// Try Chinese name direct anchors ("我是张三"、"我叫李明")
 	matches := personNameAnchors.FindAllStringSubmatch(context, -1)
 	for _, m := range matches {
 		name := strings.TrimSpace(m[1])
@@ -98,7 +206,58 @@ func extractPersonName(field PhaseInputField, context string) *PrefilledValue {
 			}
 		}
 	}
+
+	// Try English name with label anchor ("姓名：John Smith" / "Name: Alice")
+	if m := englishNameLabelRe.FindStringSubmatch(context); m != nil {
+		name := strings.TrimSpace(m[1])
+		if name != "" && !isCommonEnglishNonName(name) {
+			return &PrefilledValue{
+				Value:        name,
+				Source:       "context",
+				SourceDetail: "提取自: " + m[0],
+				Confidence:   0.85,
+			}
+		}
+	}
+
+	// Try English name with identity markers ("My name is X" / "I'm X")
+	lowerCtx := strings.ToLower(context)
+	for _, prefix := range englishNameAnchorPrefixes {
+		idx := strings.Index(lowerCtx, prefix)
+		if idx < 0 {
+			continue
+		}
+		// Extract from the ORIGINAL (case-preserved) context after the prefix
+		afterPrefix := context[idx+len(prefix):]
+		afterPrefix = strings.TrimLeftFunc(afterPrefix, unicode.IsSpace)
+		// Capture capitalized words (1-3 words)
+		if m := englishNameCapRe.FindString(afterPrefix); m != "" {
+			name := strings.TrimSpace(m)
+			if name != "" && !isCommonEnglishNonName(name) {
+				return &PrefilledValue{
+					Value:        name,
+					Source:       "context",
+					SourceDetail: "提取自英文自我介绍",
+					Confidence:   0.80,
+				}
+			}
+		}
+	}
+
 	return nil
+}
+
+// isCommonEnglishNonName filters out common English words that look like capitalized names
+// but are actually common nouns/adjectives that appear after "I'm".
+var commonEnglishNonNames = map[string]bool{
+	"sorry": true, "happy": true, "fine": true, "good": true,
+	"here": true, "sure": true, "ready": true, "done": true,
+	"not": true, "also": true, "very": true,
+	"professor": true, "doctor": true, "student": true,
+}
+
+func isCommonEnglishNonName(s string) bool {
+	return commonEnglishNonNames[strings.ToLower(s)]
 }
 
 // isCommonNonName filters out common Chinese words that are not person names
@@ -167,6 +326,8 @@ func extractAcademicTitle(field PhaseInputField, context string) *PrefilledValue
 
 // extractByLabelAnchor is the generic fallback: looks for "Label：Value" or
 // "Label: Value" patterns in the context text.
+// Prefers the LAST occurrence of the anchor — in concatenated context, the most
+// recent (bottom) entries are the most relevant to the current task.
 func extractByLabelAnchor(field PhaseInputField, context string) *PrefilledValue {
 	// Build anchor patterns from the field's Label
 	label := field.Label
@@ -177,7 +338,7 @@ func extractByLabelAnchor(field PhaseInputField, context string) *PrefilledValue
 	// Pattern: "Label：value" or "Label: value" (Chinese/English colon)
 	anchors := []string{label + "：", label + ":", label + "是", label + "为"}
 	for _, anchor := range anchors {
-		idx := strings.Index(context, anchor)
+		idx := strings.LastIndex(context, anchor)
 		if idx < 0 {
 			continue
 		}
@@ -223,5 +384,214 @@ func extractValueAfterAnchor(s string) string {
 	if len([]rune(value)) > 100 {
 		return ""
 	}
+	// Reject values that are clearly not actual data — question words, instruction fragments
+	if isQuestionOrInstructionFragment(value) {
+		return ""
+	}
 	return value
+}
+
+// isQuestionOrInstructionFragment detects values that were extracted from
+// question/instruction context rather than actual data. When the "是"/"为" anchor
+// matches "研究领域是什么" or "研究领域是必填的", the extracted "什么"/"必填的" should be rejected.
+func isQuestionOrInstructionFragment(value string) bool {
+	if value == "" {
+		return false
+	}
+	// Exact matches of common question/instruction words
+	questionWords := []string{
+		"什么", "哪个", "哪些", "几", "多少", "怎么", "怎样", "如何", "为何",
+		"谁", "何时", "何地", "吗", "呢", "吧",
+	}
+	for _, qw := range questionWords {
+		if value == qw || strings.HasPrefix(value, qw) {
+			return true
+		}
+	}
+	// Common instruction fragments
+	instructionPrefixes := []string{
+		"必填", "必需", "可选", "选填", "请填", "请输入", "请提供",
+		"不能为空", "不可为空",
+	}
+	for _, ip := range instructionPrefixes {
+		if strings.HasPrefix(value, ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// --- Email extraction ---
+
+// emailRe matches standard email addresses.
+var emailRe = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
+
+func extractEmail(field PhaseInputField, context string) *PrefilledValue {
+	if m := emailRe.FindString(context); m != "" {
+		return &PrefilledValue{
+			Value:        m,
+			Source:       "context",
+			SourceDetail: "提取到邮箱: " + m,
+			Confidence:   0.85,
+		}
+	}
+	return nil
+}
+
+// --- Phone number extraction ---
+
+// phoneRe matches common phone number formats:
+// - China mainland: 13x/14x/15x/16x/17x/18x/19x followed by 9 digits (11 total)
+// - International: +86-xxx / +1-xxx style
+// Uses negative lookbehind/lookahead simulation via non-digit boundaries to avoid
+// matching inside longer digit sequences (e.g. ID card numbers).
+var chinaPhoneRe = regexp.MustCompile(`(?:^|[^\d])(?:(?:\+86|86)[\s\-]?)?(1[3-9]\d{9})(?:[^\d]|$)`)
+var intlPhoneRe = regexp.MustCompile(`\+\d{1,3}[\s\-]?\d[\d\s\-]{6,14}\d`)
+
+func extractPhone(field PhaseInputField, context string) *PrefilledValue {
+	// Try China mainland phone first (most specific)
+	if m := chinaPhoneRe.FindStringSubmatch(context); m != nil {
+		phone := m[1] // capture group 1 is the 11-digit number
+		return &PrefilledValue{
+			Value:        normalizePhone(phone),
+			Source:       "context",
+			SourceDetail: "提取到手机号: " + phone,
+			Confidence:   0.90,
+		}
+	}
+	// Try international format
+	if m := intlPhoneRe.FindString(context); m != "" {
+		return &PrefilledValue{
+			Value:        normalizePhone(m),
+			Source:       "context",
+			SourceDetail: "提取到电话: " + m,
+			Confidence:   0.80,
+		}
+	}
+	return nil
+}
+
+// normalizePhone removes spaces and dashes from phone numbers for storage.
+func normalizePhone(phone string) string {
+	var sb strings.Builder
+	for _, r := range phone {
+		if r == '+' || (r >= '0' && r <= '9') {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+// --- Date extraction ---
+
+// datePatterns matches common date formats in Chinese and standard formats.
+// Ordered most-specific first.
+var datePatterns = []*regexp.Regexp{
+	// "1980年5月15日" / "1980年5月"
+	regexp.MustCompile(`(\d{4})年(\d{1,2})月(?:(\d{1,2})日)?`),
+	// "2023-05-15" / "2023/05/15" / "2023.05.15"
+	regexp.MustCompile(`(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})`),
+	// "2023-05" / "2023/05"
+	regexp.MustCompile(`(\d{4})[/\-.](\d{1,2})(?:\b|[^\d/\-.])`),
+}
+
+// birthDateRe matches "出生于1985年3月" or "出生1982年6月15日" patterns.
+var birthDateRe = regexp.MustCompile(`出生于?\s*(\d{4}年\d{1,2}月(?:\d{1,2}日)?)`)
+
+func extractDate(field PhaseInputField, context string) *PrefilledValue {
+	label := field.Label
+	if label == "" {
+		label = field.Name
+	}
+
+	// Try to find date near the field's label anchor first
+	anchors := []string{label + "：", label + ":"}
+	// Also try the field Name as anchor (handles "birth_date: 1990-05-20")
+	if field.Name != label {
+		anchors = append(anchors, field.Name+"：", field.Name+":")
+	}
+	// Add verb-based anchors
+	anchors = append(anchors, label+"是", label+"为")
+
+	for _, anchor := range anchors {
+		idx := strings.LastIndex(context, anchor)
+		if idx < 0 {
+			continue
+		}
+		afterAnchor := context[idx+len(anchor):]
+		afterAnchor = strings.TrimLeftFunc(afterAnchor, unicode.IsSpace)
+		// Take a limited window to avoid matching unrelated dates later in text
+		window := afterAnchor
+		if len([]rune(window)) > 30 {
+			window = string([]rune(window)[:30])
+		}
+		if d := findDateInText(window); d != "" {
+			return &PrefilledValue{
+				Value:        d,
+				Source:       "context",
+				SourceDetail: "提取自: " + anchor + d,
+				Confidence:   0.85,
+			}
+		}
+	}
+
+	// For birth_date specifically, also try "出生于XXXX年" pattern
+	if field.Name == "birth_date" {
+		if m := birthDateRe.FindStringSubmatch(context); m != nil {
+			return &PrefilledValue{
+				Value:        m[1],
+				Source:       "context",
+				SourceDetail: "提取自: " + m[0],
+				Confidence:   0.85,
+			}
+		}
+	}
+
+	return nil
+}
+
+// findDateInText finds the first date pattern in the given text.
+func findDateInText(text string) string {
+	for _, re := range datePatterns {
+		if m := re.FindString(text); m != "" {
+			return strings.TrimSpace(m)
+		}
+	}
+	return ""
+}
+
+// --- Numeric field extraction ---
+
+// numericAfterLabelRe matches digits (possibly with decimal) after an anchor.
+var numericAfterLabelRe = regexp.MustCompile(`^(\d+(?:\.\d+)?)`)
+
+// extractNumericByLabel extracts a numeric value using the field's label as anchor.
+// More specific than extractByLabelAnchor — only captures digit sequences,
+// reducing false positives for fields like h_index, total_citations.
+// Uses LastIndex to prefer the most recent occurrence (consistent with extractByLabelAnchor).
+func extractNumericByLabel(field PhaseInputField, context string) *PrefilledValue {
+	label := field.Label
+	if label == "" {
+		return nil
+	}
+
+	// Try "Label：42" or "Label: 42" patterns
+	anchors := []string{label + "：", label + ":", label + "是", label + "为"}
+	for _, anchor := range anchors {
+		idx := strings.LastIndex(context, anchor)
+		if idx < 0 {
+			continue
+		}
+		afterAnchor := context[idx+len(anchor):]
+		afterAnchor = strings.TrimLeftFunc(afterAnchor, unicode.IsSpace)
+		if m := numericAfterLabelRe.FindString(afterAnchor); m != "" {
+			return &PrefilledValue{
+				Value:        m,
+				Source:       "context",
+				SourceDetail: "提取自: " + anchor + m,
+				Confidence:   0.80,
+			}
+		}
+	}
+	return nil
 }

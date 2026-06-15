@@ -1125,6 +1125,12 @@ var allConfigFields = []ConfigFieldDef{
 		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.LogDetailEnabled = v }),
 	},
 	{
+		Key: "memory_recall_log_enabled", Tab: CfgTabAdvanced, Section: "advanced",
+		DescKey: i18n.MsgTUIConfigDescMemoryRecallLog, Options: boolOpts, Default: "false",
+		Get: boolGet(func(c *corelib.AppConfig) bool { return c.MemoryRecallLogEnabled }),
+		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.MemoryRecallLogEnabled = v }),
+	},
+	{
 		Key: "llm_trajectory_logging", Tab: CfgTabAdvanced, Section: "advanced",
 		DescKey: i18n.MsgTUIConfigDescTrajectory, Options: boolOpts, Default: "false",
 		Get: boolGet(func(c *corelib.AppConfig) bool { return c.LLMTrajectoryLogging }),

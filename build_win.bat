@@ -301,9 +301,6 @@ if exist "%OUTPUT_DIR%\maclaw-data-srv.exe" (
     echo [SUCCESS] maclaw-data-srv binary: %OUTPUT_DIR%\maclaw-data-srv.exe
 )
 
-echo   - Creating Windows portable zip...
-powershell -Command "Compress-Archive -Path '%OUTPUT_DIR%\%APP_NAME%.exe','%OUTPUT_DIR%\maclaw-tui.exe','%OUTPUT_DIR%\maclaw-cli.exe','%OUTPUT_DIR%\maclaw-tool.exe','%OUTPUT_DIR%\maclawsrv.exe','%OUTPUT_DIR%\maclaw-data-srv.exe' -DestinationPath '%OUTPUT_DIR%\%APP_NAME%-Windows-Portable.zip' -Force"
-
 goto :success
 
 :go_build

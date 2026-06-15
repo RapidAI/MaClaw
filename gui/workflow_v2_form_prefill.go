@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -41,16 +42,22 @@ func (p *workflowFormRecallProvider) RecallForField(ctx context.Context, query s
 			ownerArgs = append(ownerArgs, p.userID)
 		}
 		entries := p.memStore.RecallDynamic(query, "", p.projectPath, ownerArgs...)
-		for _, e := range entries {
+		for i, e := range entries {
 			if len(results) >= maxResults*2 { // collect more, rank later
 				break
+			}
+			// RecallDynamic returns results pre-sorted by relevance.
+			// Approximate a score from rank position: top result gets 0.95, decays linearly.
+			rankScore := 0.95 - float64(i)*0.08
+			if rankScore < 0.50 {
+				rankScore = 0.50
 			}
 			results = append(results, v2.RecallResult{
 				Content:    e.Content,
 				Category:   string(e.Category),
 				Source:     "memory",
 				SourceID:   e.ID,
-				Score:      0.8, // RecallDynamic doesn't expose scores; use category-based confidence later
+				Score:      rankScore,
 				SourceDesc: memorySourceDesc(e),
 			})
 		}
@@ -158,8 +165,8 @@ func (h *IMMessageHandler) buildRecallProvider(userID string) v2.RecallProvider 
 	// Open knowledge store (may fail if not configured — that's fine, we just skip)
 	if store, err := h.app.openKnowledgeStore(); err == nil && store != nil {
 		ks = store
-		// Note: SQLiteStore implements knowledgeSearcher via its Search method.
-		// The store is opened per-call; connection pooling is handled internally by SQLite.
+	} else if err != nil {
+		log.Printf("[workflow-v2-prefill] knowledge store unavailable (recall will use memory only): %v", err)
 	}
 
 	if memStore == nil && ks == nil {
@@ -250,6 +257,18 @@ func (h *IMMessageHandler) sedimentFormDataToMemory(userID, phaseID string, data
 		switch v := value.(type) {
 		case string:
 			strValue = strings.TrimSpace(v)
+		case float64:
+			// JSON numbers arrive as float64; format without trailing zeros
+			if v == float64(int64(v)) {
+				strValue = fmt.Sprintf("%d", int64(v))
+			} else {
+				strValue = fmt.Sprintf("%g", v)
+			}
+		case int:
+			strValue = fmt.Sprintf("%d", v)
+		case bool:
+			// Skip boolean values — not useful for factual memory
+			continue
 		default:
 			continue
 		}
@@ -267,7 +286,15 @@ func (h *IMMessageHandler) sedimentFormDataToMemory(userID, phaseID string, data
 				}
 			}
 		}
-		sedimentLines = append(sedimentLines, label+"："+strValue)
+		// Use field NAME as the stable key (not the per-template label which varies:
+		// "现工作单位" vs "依托单位" vs "单位" for the same field "institution").
+		// Include both name and label so BM25 recall hits on either.
+		line := fieldName + "：" + strValue
+		if label != fieldName {
+			// e.g. "institution/现工作单位：北京大学" — BM25 hits on both "institution" and "现工作单位"
+			line = fieldName + "/" + label + "：" + strValue
+		}
+		sedimentLines = append(sedimentLines, line)
 	}
 
 	if len(sedimentLines) == 0 {
@@ -290,7 +317,9 @@ func (h *IMMessageHandler) sedimentFormDataToMemory(userID, phaseID string, data
 		OwnerID:  userID,
 	}
 
-	if err := h.memoryStore.Save(entry); err != nil {
+	// Use SaveWithContext to leverage substring dedup (#64) — if the user already
+	// has a memory entry with the same facts, it will be merged rather than duplicated.
+	if err := h.memoryStore.SaveWithContext(entry, "workflow form data: "+phaseID); err != nil {
 		log.Printf("[workflow-v2-prefill] sediment form data failed: %v", err)
 	} else {
 		log.Printf("[workflow-v2-prefill] sedimented %d fields to memory for user=%s phase=%s",

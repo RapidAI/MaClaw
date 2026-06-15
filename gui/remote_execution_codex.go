@@ -307,6 +307,14 @@ func (h *CodexSDKExecutionHandle) waitProcess() {
 		log.Printf("[codex-lifecycle] process exit error: pid=%d, error=%v", h.pid, err)
 	}
 
+	// Wait for reader goroutines to finish before sending diagnostics to
+	// outputCh. The ReaderCoordinator.CloseWhenDone goroutine closes outputCh
+	// after all readers call Done(). Sending to outputCh after that would
+	// panic. By waiting here, we ensure all reader output has been captured.
+	// However there's still a race with CloseWhenDone's close, so we use
+	// codexSafeSend which recovers from send-on-closed-channel.
+	h.readerRC.Wait()
+
 	// If the process exited very quickly (< 5s), it likely failed to start
 	// properly.  Emit a diagnostic summary so the user can see what happened.
 	if elapsed < 5*time.Second {
@@ -315,19 +323,19 @@ func (h *CodexSDKExecutionHandle) waitProcess() {
 			exitCode = *codePtr
 		}
 		diag := fmt.Sprintf("[codex-exit] process exited in %v with code %d", elapsed.Round(time.Millisecond), exitCode)
-		h.outputCh <- []byte(diag + "\n")
+		codexSafeSend(h.outputCh, []byte(diag+"\n"))
 
 		h.mu.Lock()
 		stderrCopy := append([]string{}, h.stderrLines...)
 		h.mu.Unlock()
 		if len(stderrCopy) > 0 {
-			h.outputCh <- []byte("[codex-exit] stderr summary:\n")
+			codexSafeSend(h.outputCh, []byte("[codex-exit] stderr summary:\n"))
 			for _, line := range stderrCopy {
-				h.outputCh <- []byte("  " + line + "\n")
+				codexSafeSend(h.outputCh, []byte("  "+line+"\n"))
 			}
 		}
 		if err != nil {
-			h.outputCh <- []byte(fmt.Sprintf("[codex-exit] error: %v\n", err))
+			codexSafeSend(h.outputCh, []byte(fmt.Sprintf("[codex-exit] error: %v\n", err)))
 		}
 	}
 
@@ -337,4 +345,13 @@ func (h *CodexSDKExecutionHandle) waitProcess() {
 	}
 
 	_ = h.Close()
+}
+
+// codexSafeSend sends data to ch, recovering from a panic if ch is already
+// closed. This is needed because waitProcess races with the
+// ReaderCoordinator.CloseWhenDone goroutine which closes outputCh after all
+// readers finish.
+func codexSafeSend(ch chan []byte, data []byte) {
+	defer func() { recover() }()
+	ch <- data
 }

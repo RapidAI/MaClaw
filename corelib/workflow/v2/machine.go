@@ -226,6 +226,7 @@ func (m *StateMachine) HandleInput(userID, text string) (*HandleResult, error) {
 // SubmitForm stores the user's AG UI form submission for the current phase.
 // After submission, the next HandleInput call will return ActionRunPhase
 // (since FormData is now populated, the InputSchema check passes through).
+// Validates that all required fields have non-empty values.
 func (m *StateMachine) SubmitForm(userID string, formData map[string]interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -244,6 +245,30 @@ func (m *StateMachine) SubmitForm(userID string, formData map[string]interface{}
 	if phase.InputSchema == nil {
 		return fmt.Errorf("phase %s does not have an input schema", phase.ID)
 	}
+
+	// Validate required fields
+	for _, f := range phase.InputSchema.Fields {
+		if !f.Required {
+			continue
+		}
+		val, exists := formData[f.Name]
+		if !exists || val == nil {
+			label := f.Label
+			if label == "" {
+				label = f.Name
+			}
+			return fmt.Errorf("必填字段「%s」未填写", label)
+		}
+		// Check for empty string values
+		if s, ok := val.(string); ok && strings.TrimSpace(s) == "" {
+			label := f.Label
+			if label == "" {
+				label = f.Name
+			}
+			return fmt.Errorf("必填字段「%s」不能为空", label)
+		}
+	}
+
 	phase.FormData = formData
 	state.UpdatedAt = time.Now()
 	return m.store.Save(state)

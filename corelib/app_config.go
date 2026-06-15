@@ -182,6 +182,11 @@ type AppConfig struct {
 	GossipAutoPublish bool `json:"gossip_auto_publish"`
 	// LLM trajectory logging.
 	LLMTrajectoryLogging bool `json:"llm_trajectory_logging,omitempty"`
+	// MemoryRecallLogEnabled enables detailed memory recall logging to a
+	// dedicated file (~/.maclaw/logs/memory_recall.log). Records every recall
+	// operation's query, scores, and returned entries for debugging/improving
+	// the memory system. Default: false (disabled).
+	MemoryRecallLogEnabled bool `json:"memory_recall_log_enabled,omitempty"`
 	// Trial-and-Reflect setting.
 	TrialReflectEnabled bool `json:"trial_reflect_enabled,omitempty"`
 	// LocalNeedleEnabled enables the local Needle micro-router. Default false:

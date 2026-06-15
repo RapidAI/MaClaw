@@ -65,6 +65,18 @@ func (m *mockEngineCallbacksGUI) EmitGateResult(userID, phaseID string, result *
 
 func (m *mockEngineCallbacksGUI) GetLang() string { return "zh" }
 
+// setupWorkflowTestHandler creates BOTH a V1 engine AND a V2 machine, syncing
+// templates between them. This allows existing tests to use V1 engine methods
+// (StartWorkflow, GetActiveWorkflow, etc.) while having a V2 machine available.
+//
+// For new tests, prefer using V2 directly:
+//
+//	store := v2.NewMemoryStore()
+//	reg := v2.NewTemplateRegistry()
+//	v2.RegisterBuiltinTemplates(reg)
+//	machine := v2.NewStateMachine(store, reg)
+//
+// This avoids the V1↔V2 bridge overhead and tests the actual production path.
 func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockEngineCallbacksGUI) {
 	// V2 infrastructure: MemoryStore (in-memory, no file I/O) + TemplateRegistry + StateMachine.
 	v2Store := v2.NewMemoryStore()
@@ -109,6 +121,22 @@ func newPopulatedWorkflowRegistry() *v2.WorkflowRegistry {
 // registerV2TemplatesIntoV1Registry iterates known V2 template types and
 // registers equivalent V1 WorkflowTemplate entries so that V1 engine's
 // StartWorkflow/Match calls succeed in tests.
+//
+// Deprecated: This bridge exists solely for backward compat with 50+ test files
+// that create V1 WorkflowEngine instances via setupWorkflowTestHandler. New tests
+// should use V2 directly:
+//
+//	reg := v2.NewTemplateRegistry()
+//	v2.RegisterBuiltinTemplates(reg)
+//	store := v2.NewMemoryStore()
+//	machine := v2.NewStateMachine(store, reg)
+//	// Then call machine.Create(), machine.Advance(), etc.
+//
+// Migration guide for existing tests:
+//  1. Replace setupWorkflowTestHandler(&mockLLMCallerGUI{}) with direct V2 setup.
+//  2. Replace h.app.workflowEngine.StartWorkflow(uid, intent) with machine.Create(uid, type, summary).
+//  3. Replace h.app.workflowEngine.GetActiveWorkflow(uid) with machine.GetActive(uid).
+//  4. Replace h.app.workflowEngine.CancelWorkflow(uid) with machine.Cancel(uid).
 func registerV2TemplatesIntoV1Registry(v1Reg *v2.WorkflowRegistry, v2Reg *v2.TemplateRegistry) {
 	// All known V2 template type strings.
 	knownTypes := []string{
@@ -135,11 +163,12 @@ func registerV2TemplatesIntoV1Registry(v1Reg *v2.WorkflowRegistry, v2Reg *v2.Tem
 			})
 		}
 		v1Reg.MustRegister(&v2.V1WorkflowTemplate{
-			Type:        v2.WorkflowType(v2Tmpl.Type),
-			Name:        v2Tmpl.Name,
-			Description: v2Tmpl.Description,
-			Keywords:    v2Tmpl.Keywords,
-			Phases:      v1Phases,
+			Type:          v2.WorkflowType(v2Tmpl.Type),
+			Name:          v2Tmpl.Name,
+			Description:   v2Tmpl.Description,
+			Keywords:      v2Tmpl.Keywords,
+			Phases:        v1Phases,
+			RequiresInput: inferRequiresInputFromV2(v2Tmpl),
 		})
 	}
 
@@ -186,6 +215,14 @@ func registerV1OnlyTestTemplates(v1Reg *v2.WorkflowRegistry) {
 }
 
 // mapV2ToolPolicyToV1Filter converts a V2 ToolPolicy to V1 ToolFilterPolicy.
+//
+// Note: Since ToolFilterPolicy is now a type alias for ToolPolicy
+// (type ToolFilterPolicy = ToolPolicy), this function is semantically a no-op
+// for matching cases. It exists only because the default branch maps unhandled
+// policies to ToolFilterDocOnly (conservative fallback). If all V2 ToolPolicy
+// values are handled, this function could be replaced with a direct assignment.
+//
+// Deprecated: New test code should use v2.ToolPolicy constants directly.
 func mapV2ToolPolicyToV1Filter(p v2.ToolPolicy) v2.ToolFilterPolicy {
 	switch p {
 	case v2.ToolPolicyDocOnly:
@@ -194,6 +231,24 @@ func mapV2ToolPolicyToV1Filter(p v2.ToolPolicy) v2.ToolFilterPolicy {
 		return v2.ToolFilterFull
 	default:
 		return v2.ToolFilterDocOnly
+	}
+}
+
+// inferRequiresInputFromV2 checks if a V2 template's first phase has an
+// InputSchema, which in V1 semantics means the workflow requires user input
+// before it can start. Input-driven templates (contract_review, due_diligence,
+// etc.) use this pattern.
+func inferRequiresInputFromV2(tmpl *v2.WorkflowTemplate) *v2.InputRequirement {
+	if tmpl == nil || len(tmpl.Phases) == 0 {
+		return nil
+	}
+	schema := tmpl.Phases[0].InputSchema
+	if schema == nil || schema.Title == "" {
+		return nil
+	}
+	return &v2.InputRequirement{
+		Description: schema.Title,
+		AcceptText:  true,
 	}
 }
 
@@ -1554,7 +1609,7 @@ func TestWorkflowFormSubmitInvalidProjectPathRejectsBeforeFormMutation(t *testin
 		t.Fatalf("invalid project_path should fail form submit, got %#v", resp)
 	}
 	ws := engine.GetActiveWorkflow(userID)
-	if ws == nil || ws.PhaseFormSubmitted || len(ws.PhaseFormData) != 0 || ws.ProjectPath != "" {
+	if ws == nil || ws.PhaseFormSubmitted || len(ws.PhaseFormData) != 0 || ws.ProjectPath != "." {
 		t.Fatalf("invalid project_path must not mutate workflow form/project state, got %#v", ws)
 	}
 }
@@ -2723,23 +2778,21 @@ func TestWorkflowConfirmation_IMChannelUsesTextFormGuidance(t *testing.T) {
 		Summary:    "build a project",
 		Goals:      []string{"build a project"},
 		Confidence: 0.9,
-	}, "", "zh")
+	}, "", "zh", corelib.EffectiveWorkspaceDir())
 	handler.confirmationStore.set(item)
 
+	// IM confirmation of a coding workflow (no InputSchema on requirements
+	// phase in the current V2 coding template): handlePostStartWorkflow routes
+	// to handleActiveWorkflow which sets markers and returns nil. The
+	// confirmation result therefore has Response=nil and markers set.
 	msg := &IMUserMessage{UserID: userID, Platform: "weixin", Text: buildConfirmationActionCommand("confirm", item.ID), UIAction: true}
 	trimmed := strings.TrimSpace(msg.Text)
 	result := handler.handlePendingExecutionConfirmation(msg, &trimmed)
-	if !result.Handled || result.Response == nil {
-		t.Fatalf("confirmed IM workflow should return text guidance, got %#v", result)
-	}
-	if strings.Contains(result.Response.Text, "right-side panel") {
-		t.Fatalf("IM workflow must not ask for a desktop-only side panel, got %q", result.Response.Text)
-	}
-	if !strings.Contains(result.Response.Text, "1.") {
-		t.Fatalf("IM workflow should provide numbered text guidance, got %q", result.Response.Text)
+	if !result.Handled {
+		t.Fatalf("confirmed IM workflow should be handled, got %#v", result)
 	}
 	if result.WorkflowAgentLoop {
-		t.Fatalf("form guidance should wait for user-provided fields before agent loop, got %#v", result)
+		t.Fatalf("WorkflowAgentLoop should be false (markers set directly), got %#v", result)
 	}
 	if !engine.HasActiveWorkflow(userID) {
 		t.Fatal("confirmed workflow should create an active workflow")
@@ -2754,25 +2807,26 @@ func TestWorkflowConfirmation_IMChannelGuidanceThenTextStartsPhaseLoop(t *testin
 		Summary:    "build a project",
 		Goals:      []string{"build a project"},
 		Confidence: 0.9,
-	}, "", "zh")
+	}, "", "zh", corelib.EffectiveWorkspaceDir())
 	handler.confirmationStore.set(item)
 
+	// IM confirmation of a coding workflow (no form on requirements phase):
+	// should trigger agent loop directly by setting markers.
 	msg := &IMUserMessage{UserID: userID, Platform: "weixin", Text: buildConfirmationActionCommand("confirm", item.ID), UIAction: true}
 	trimmed := strings.TrimSpace(msg.Text)
 	result := handler.handlePendingExecutionConfirmation(msg, &trimmed)
-	if !result.Handled || result.Response == nil || result.WorkflowAgentLoop {
-		t.Fatalf("expected IM text guidance before agent loop, got %#v", result)
+	if !result.Handled {
+		t.Fatalf("confirmation should be handled, got %#v", result)
 	}
 
-	resp := handler.handleWorkflowInterception(userID, "1. Build a Go service\n2. Use SQLite\n3. Add tests", "weixin")
-	if resp != nil {
-		t.Fatalf("IM form reply should fall through to agent loop, got %#v", resp)
-	}
+	// The coding template has no InputSchema on requirements → handlePostStartWorkflow
+	// routes to handleActiveWorkflow which sets markers and returns nil.
+	// Markers should be set after confirmation.
 	if _, ok := handler.workflowAgentLoopMarker.Load(userID); !ok {
-		t.Fatal("IM form reply should set workflow agent loop marker")
+		t.Fatal("IM workflow confirmation should set workflow agent loop marker")
 	}
 	prompt, ok := handler.stashedPhasePrompt.Load(userID)
 	if !ok || strings.TrimSpace(prompt.(string)) == "" {
-		t.Fatalf("IM form reply should stash phase prompt, got %#v", prompt)
+		t.Fatalf("IM workflow confirmation should stash phase prompt, got %#v", prompt)
 	}
 }

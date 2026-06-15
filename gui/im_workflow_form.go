@@ -152,9 +152,87 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 		}
 	}
 
+	// Fallback: V1 engine has an active workflow (test path or no V2 machine configured).
+	if a.workflowEngine != nil && a.workflowEngine.HasActiveWorkflow(userID) {
+		return a.handleWorkflowFormV1EngineSubmit(userID, phaseID, data)
+	}
+
 	return &IMAgentResponse{
 		Text:           "当前没有活跃的工作流。",
 		Error:          "no active workflow",
+		ResponseSource: imResponseSourceAgentViewSubmit.String(),
+	}
+}
+
+// handleWorkflowFormV1EngineSubmit handles form submission when V2 machine is
+// not available but V1 engine has an active workflow. It validates project_path,
+// stores form data via engine.SubmitPhaseForm, and returns success or error.
+func (a *App) handleWorkflowFormV1EngineSubmit(userID, phaseID string, data map[string]interface{}) *IMAgentResponse {
+	engine := a.workflowEngine
+	if engine == nil {
+		return &IMAgentResponse{
+			Text:           "当前没有活跃的工作流。",
+			Error:          "no active workflow",
+			ResponseSource: imResponseSourceAgentViewSubmit.String(),
+		}
+	}
+
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil {
+		return &IMAgentResponse{
+			Text:           "当前没有活跃的工作流。",
+			Error:          "no active workflow",
+			ResponseSource: imResponseSourceAgentViewSubmit.String(),
+		}
+	}
+
+	// Phase mismatch guard: if the form has a _workflow_phase field and it
+	// doesn't match the current phase, reject.
+	if submittedPhase := workflowFormStringField(data, workflowFormPhaseField); submittedPhase != "" {
+		if submittedPhase != ws.CurrentPhase {
+			return &IMAgentResponse{
+				Text:  fmt.Sprintf("表单阶段不匹配 (submitted=%s, current=%s)", submittedPhase, ws.CurrentPhase),
+				Error: "phase mismatch: submitted " + submittedPhase + " != current " + ws.CurrentPhase,
+				ResponseSource: imResponseSourceAgentViewSubmit.String(),
+			}
+		}
+	}
+
+	// Validate project_path before mutating state.
+	if pp := workflowFormStringField(data, workflowFormProjectPathField); pp != "" {
+		_, _, err := normalizeWorkflowProjectPath(pp)
+		if err != nil {
+			return &IMAgentResponse{
+				Text:           fmt.Sprintf("项目路径无效: %v", err),
+				Error:          err.Error(),
+				ResponseSource: imResponseSourceAgentViewSubmit.String(),
+			}
+		}
+	}
+
+	// Strip hidden routing fields from form data before storing.
+	cleanData := make(map[string]interface{}, len(data))
+	for k, v := range data {
+		if k == workflowFormUserIDField || k == workflowFormWorkflowIDField || k == workflowFormPhaseField {
+			continue
+		}
+		cleanData[k] = v
+	}
+
+	// Submit form data through the V1 engine.
+	_, err := engine.SubmitPhaseForm(userID, cleanData)
+	if err != nil {
+		return &IMAgentResponse{
+			Text:           "表单提交失败: " + err.Error(),
+			Error:          err.Error(),
+			ResponseSource: imResponseSourceAgentViewSubmit.String(),
+		}
+	}
+
+	log.Printf("[workflow-v1-form] form submitted: user=%s phase=%s fields=%d", userID, phaseID, len(cleanData))
+
+	return &IMAgentResponse{
+		Text:           "✅ 信息已收到！发送「继续」开始生成文档。",
 		ResponseSource: imResponseSourceAgentViewSubmit.String(),
 	}
 }

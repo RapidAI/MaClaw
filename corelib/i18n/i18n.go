@@ -248,6 +248,7 @@ const (
 	MsgTUIConfigDescUIMode                   = "msg.tui_config_desc_ui_mode"
 	MsgTUIConfigDescMemoryCompress           = "msg.tui_config_desc_memory_compress"
 	MsgTUIConfigDescLogDetail                = "msg.tui_config_desc_log_detail"
+	MsgTUIConfigDescMemoryRecallLog          = "msg.tui_config_desc_memory_recall_log"
 	MsgTUIConfigDescTrajectory               = "msg.tui_config_desc_trajectory"
 	MsgTUIConfigDescDebugTools               = "msg.tui_config_desc_debug_tools"
 	MsgTUIConfigDescGossip                   = "msg.tui_config_desc_gossip"
@@ -599,6 +600,7 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescUIMode:                   "界面复杂度：简洁适合日常使用，专业显示更多调试选项",
 		MsgTUIConfigDescMemoryCompress:           "记忆自动压缩",
 		MsgTUIConfigDescLogDetail:                "详细日志",
+		MsgTUIConfigDescMemoryRecallLog:          "记忆召回日志（独立文件 memory_recall.log）",
 		MsgTUIConfigDescTrajectory:               "LLM 轨迹记录",
 		MsgTUIConfigDescDebugTools:               "调试工具调用",
 		MsgTUIConfigDescGossip:                   "启用 Gossip",
@@ -930,6 +932,7 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescUIMode:                   "UI complexity: Lite for daily use, Pro shows more diagnostics",
 		MsgTUIConfigDescMemoryCompress:           "Auto-compress memory",
 		MsgTUIConfigDescLogDetail:                "Detailed logging",
+		MsgTUIConfigDescMemoryRecallLog:          "Memory recall log (separate file memory_recall.log)",
 		MsgTUIConfigDescTrajectory:               "LLM trajectory logging",
 		MsgTUIConfigDescDebugTools:               "Debug tool calls",
 		MsgTUIConfigDescGossip:                   "Enable Gossip",

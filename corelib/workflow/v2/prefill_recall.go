@@ -93,33 +93,22 @@ func PrefillFromRecall(ctx context.Context, schema *PhaseInputSchema, existing m
 }
 
 // buildRecallQuery constructs a search query from a field's metadata.
-// Uses Label + Placeholder keywords for semantic relevance.
+// Includes both field Name and Label to match sedimented entries that may use
+// either the stable field name or a per-template label variant.
 func buildRecallQuery(field PhaseInputField) string {
-	var parts []string
-	if field.Label != "" {
-		parts = append(parts, field.Label)
-	}
-	// Extract key terms from placeholder (remove "如：" prefix and example formatting)
-	if field.Placeholder != "" {
-		ph := field.Placeholder
-		// Strip common Chinese example prefixes
-		for _, prefix := range []string{"如：", "如:", "例如：", "例如:", "比如："} {
-			if len(ph) > len(prefix) && ph[:len(prefix)] == prefix {
-				ph = ph[len(prefix):]
-				break
-			}
-		}
-		// Take first 30 runes max
-		runes := []rune(ph)
-		if len(runes) > 30 {
-			runes = runes[:30]
-		}
-		parts = append(parts, string(runes))
-	}
-	if len(parts) == 0 {
+	if field.Label == "" && field.Name == "" {
 		return ""
 	}
-	return strings.Join(parts, " ")
+	// Primary: use Label (human-readable, matches natural language in memory)
+	if field.Label != "" && field.Label != field.Name {
+		// Include both for cross-template matching:
+		// e.g. query "institution 依托单位" hits sedimented "institution/现工作单位：北京大学"
+		return field.Name + " " + field.Label
+	}
+	if field.Label != "" {
+		return field.Label
+	}
+	return field.Name
 }
 
 // extractValueFromRecallResults tries to find a suitable value for the field
@@ -142,13 +131,41 @@ func extractValueFromRecallResults(field PhaseInputField, results []RecallResult
 		return nil
 	}
 
-	// For text/other fields: use the label-anchor extraction on recall content
+	// For text/other fields: use the label-anchor extraction on recall content.
+	// Also try the field name as anchor since sedimentation uses "fieldName/label：value" format.
 	for _, r := range results {
 		if r.Content == "" {
 			continue
 		}
 		// Try label-based extraction from the recall content
 		pv := extractByLabelAnchor(field, r.Content)
+		if pv == nil && field.Name != "" {
+			// Try field name with "/" separator (sedimented format: "institution/现工作单位：北京大学")
+			nameSlashAnchor := field.Name + "/"
+			if idx := strings.LastIndex(r.Content, nameSlashAnchor); idx >= 0 {
+				// Find the "：" or ":" after the slash-separated label
+				afterSlash := r.Content[idx+len(nameSlashAnchor):]
+				for _, sep := range []string{"：", ":"} {
+					if sepIdx := strings.Index(afterSlash, sep); sepIdx >= 0 {
+						afterValue := afterSlash[sepIdx+len(sep):]
+						if v := extractValueAfterAnchor(afterValue); v != "" {
+							pv = &PrefilledValue{
+								Value:        v,
+								Source:       "context",
+								SourceDetail: "提取自: " + field.Name + "/" + afterSlash[:sepIdx] + sep + v,
+								Confidence:   0.75,
+							}
+							break
+						}
+					}
+				}
+			}
+			// Also try plain field name as anchor (for entries without slash format)
+			if pv == nil && field.Name != field.Label {
+				nameField := PhaseInputField{Name: field.Name, Label: field.Name, Type: field.Type}
+				pv = extractByLabelAnchor(nameField, r.Content)
+			}
+		}
 		if pv != nil {
 			// Override source to reflect recall provenance
 			pv.Source = r.Source
@@ -159,15 +176,35 @@ func extractValueFromRecallResults(field PhaseInputField, results []RecallResult
 	}
 
 	// For short factual fields (name, h_index, etc.): if recall returns a
-	// short entry (≤50 runes) with high score and matching category, use it directly
+	// short entry (≤50 runes) with high score and matching category, use it directly.
+	// But first strip any "Label：" prefix that may exist from sedimentation format
+	// (sedimentFormDataToMemory stores "H指数：42", we want just "42").
 	if isShortFactField(field.Name) {
 		for _, r := range results {
-			runes := []rune(r.Content)
-			if len(runes) > 0 && len(runes) <= 50 && r.Score > 0.5 &&
-				(r.Category == "user_fact" || r.Category == "preference") {
-				// Use the entire content as the value (it's short enough to be a fact)
+			content := r.Content
+			runes := []rune(content)
+			if len(runes) == 0 || len(runes) > 50 {
+				continue
+			}
+			if r.Score <= 0.5 {
+				continue
+			}
+			if r.Category != "user_fact" && r.Category != "preference" {
+				continue
+			}
+			// Strip "Label：" prefix if present (from sedimented composite entries)
+			if field.Label != "" {
+				for _, sep := range []string{"：", ":"} {
+					prefix := field.Label + sep
+					if strings.HasPrefix(content, prefix) {
+						content = strings.TrimSpace(content[len(prefix):])
+						break
+					}
+				}
+			}
+			if content != "" {
 				return &PrefilledValue{
-					Value:        r.Content,
+					Value:        content,
 					Source:       r.Source,
 					SourceDetail: truncateSourceDesc(r.SourceDesc, 80),
 					Confidence:   recallConfidence(r),

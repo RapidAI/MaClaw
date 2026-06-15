@@ -1,4 +1,4 @@
-Unicode true
+﻿Unicode true
 
 ####
 ## Please note: Template replacements don't work in this file. They are provided with default defines like
@@ -39,9 +39,16 @@ Unicode true
 !define AUTOSTART_REG_NAME "${INFO_PROJECTNAME}"
 !endif
 
+# VIProductVersion/VIFileVersion require 4-part X.X.X.X format.
+# wails_tools.nsh always defines INFO_PRODUCTVERSION as 3-part semver (from wails.json).
+# If invoking manually with a 4-part version, pass -DVI_VERSION_4PART=X.X.X.X on the command line.
+!ifndef VI_VERSION_4PART
+!define VI_VERSION_4PART "${INFO_PRODUCTVERSION}.0"
+!endif
+
 # The version information for this two must consist of 4 parts
-VIProductVersion "${INFO_PRODUCTVERSION}"
-VIFileVersion    "${INFO_PRODUCTVERSION}"
+VIProductVersion "${VI_VERSION_4PART}"
+VIFileVersion    "${VI_VERSION_4PART}"
 
 VIAddVersionKey "CompanyName"     "${INFO_COMPANYNAME}"
 VIAddVersionKey "FileDescription" "${INFO_PRODUCTNAME} Installer"
@@ -179,6 +186,9 @@ SectionEnd
 
 Section "uninstall"
     !insertmacro wails.setShellContext
+
+    # Kill app if running to release file locks
+    ExecWait "taskkill /F /IM ${PRODUCT_EXECUTABLE}"
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 

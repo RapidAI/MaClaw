@@ -872,8 +872,10 @@ func (s *Store) Recall(userMessage string) []Entry {
 // Filters out dormant and superseded entries. Respects Scope for project filtering.
 // Performs 1-hop graph expansion on top matches.
 func (s *Store) RecallForProject(userMessage, projectPath string) []Entry {
+	start := time.Now()
 	result := s.recallForProjectCandidates(userMessage, projectPath)
 	s.touchRecallResultsAsync(result)
+	s.logRecallIfEnabled("project", userMessage, "", projectPath, nil, start, result)
 	return result
 }
 
@@ -1895,20 +1897,24 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 // frozen UserFactSummary. Tool recall has no such redundancy, so it should
 // not exclude user_fact.
 func (s *Store) RecallDynamicForTool(query string, category Category, projectPath string, ownerID ...string) []Entry {
+	start := time.Now()
 	results := s.recallDynamicCoreWithOptions(query, category, projectPath, recallFilterOptions{
 		strictProject:         false,
 		excludeWhenNoCategory: toolRecallExcludeCategories,
 	}, ownerID...)
 	s.recordRecallExperienceEvent("dynamic_tool", query, results, lifecycle.EventContext{})
+	s.logRecallIfEnabled("dynamic_tool", query, category, projectPath, ownerID, start, results)
 	return results
 }
 
 func (s *Store) recallDynamicWithEventContext(query string, category Category, projectPath string, eventContext lifecycle.EventContext, ownerID ...string) []Entry {
+	start := time.Now()
 	results := s.recallDynamicCoreWithOptions(query, category, projectPath, recallFilterOptions{
 		strictProject:         false,
 		excludeWhenNoCategory: proactiveRecallExcludeCategories,
 	}, ownerID...)
 	s.recordRecallExperienceEvent("dynamic", query, results, eventContext)
+	s.logRecallIfEnabled("dynamic", query, category, projectPath, ownerID, start, results)
 	return results
 }
 
@@ -2409,14 +2415,17 @@ func (s *Store) RecallDynamicStrict(query string, category Category, projectPath
 }
 
 func (s *Store) recallDynamicStrictWithEventContext(query string, category Category, projectPath string, eventContext lifecycle.EventContext, ownerID ...string) []Entry {
+	start := time.Now()
 	results := s.recallDynamicCore(query, category, projectPath, true, ownerID...)
 	if projectPath == "" {
 		s.recordRecallExperienceEvent("dynamic_strict", query, results, eventContext)
+		s.logRecallIfEnabled("dynamic_strict", query, category, projectPath, ownerID, start, results)
 		return results
 	}
 	projectLower := semanticNormalizeProjectPath(projectPath)
 	if projectLower == "" {
 		s.recordRecallExperienceEvent("dynamic_strict", query, results, eventContext)
+		s.logRecallIfEnabled("dynamic_strict", query, category, projectPath, ownerID, start, results)
 		return results
 	}
 	// If strict filtering (now applied during candidate selection in recallDynamicCore)
@@ -2445,7 +2454,20 @@ func (s *Store) recallDynamicStrictWithEventContext(query string, category Categ
 		}
 	}
 	s.recordRecallExperienceEvent("dynamic_strict", query, results, eventContext)
+	s.logRecallIfEnabled("dynamic_strict", query, category, projectPath, ownerID, start, results)
 	return results
+}
+
+// logRecallIfEnabled is a shared helper that logs recall operations when the
+// memory recall log is enabled. Avoids duplicating the ExpandQuery + LogRecallOperation
+// pattern at every return site.
+func (s *Store) logRecallIfEnabled(op, query string, category Category, projectPath string, ownerID []string, start time.Time, results []Entry) {
+	if !IsMemoryRecallLogEnabled() {
+		return
+	}
+	expanded := ExpandQuery(query)
+	totalEntries := s.ActiveCount()
+	LogRecallOperation(op, query, category, projectPath, firstOwnerID(ownerID...), time.Since(start), results, totalEntries, &expanded)
 }
 
 func (s *Store) recordRecallExperienceEvent(mode string, query string, entries []Entry, eventContext ...lifecycle.EventContext) {

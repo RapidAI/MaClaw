@@ -225,7 +225,12 @@ func (h *IMMessageHandler) routeWorkflowIMMessage(msg IMUserMessage, trimmed str
 		return result
 	}
 	engine := h.app.workflowEngine
-	if wf.machine.GetActive(msg.UserID) != nil {
+	// Check V2 machine first; fall back to V1 engine for compat.
+	hasActiveWorkflow := wf.machine.GetActive(msg.UserID) != nil
+	if !hasActiveWorkflow && engine != nil {
+		hasActiveWorkflow = engine.GetActiveWorkflow(msg.UserID) != nil
+	}
+	if hasActiveWorkflow {
 		if resp, handled := h.submitWorkflowInputIfWaiting(engine, msg.UserID, trimmed, msg.Attachments, msg.Platform); handled {
 			result.Response = resp
 			result.WorkflowAgentLoop = resp == nil
@@ -430,6 +435,10 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowStartError, lang, err)}}
 	}
 	state := mapV2StateToV1(v2State)
+	// Store in V1 engine so that HandleInput/GetActiveWorkflow can find it.
+	if engine := h.app.workflowEngine; engine != nil {
+		engine.StoreActiveState(userID, state)
+	}
 	return pendingExecutionConfirmationResult{
 		Handled:  true,
 		Response: h.handlePostStartWorkflow(h.app.workflowEngine, userID, text, state, pending.WorkflowStartReply, platform),

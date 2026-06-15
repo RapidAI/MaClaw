@@ -73,6 +73,13 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	}
 	policyUserID := h.workflowPolicyOwnerID(opts.UserID, opts.Context)
 	skipWorkflowGate := opts.SkipWorkflowGate
+	// When an active workflow exists, workflow tool policy is always enforced
+	// regardless of the SkipWorkflowGate flag. The gate bypass is only valid
+	// when no workflow is active (e.g. NeedsConfirm gate bypass for non-workflow
+	// messages).
+	if skipWorkflowGate && h.hasActiveWorkflowForPolicy(policyUserID) {
+		skipWorkflowGate = false
+	}
 
 	if !skipWorkflowGate && !h.isWorkflowToolAllowedForOwner(policyUserID, tc.Function.Name) {
 		text := workflowPolicyToolRejectedText(tc.Function.Name)
@@ -397,6 +404,30 @@ func (h *IMMessageHandler) isWorkflowToolAllowed(userID, name string) bool {
 
 func (h *IMMessageHandler) isWorkflowToolCallAllowed(userID, name, argsJSON string) (bool, string) {
 	return h.isWorkflowToolCallAllowedForOwner(h.workflowPolicyUserID(userID), name, argsJSON)
+}
+
+// hasActiveWorkflowForPolicy returns true if the user has an active workflow
+// (either in the V2 StateMachine or the V1 compat engine). Used to override
+// SkipWorkflowGate when a workflow is active — workflow tool policy must always
+// be enforced regardless of the gate bypass flag.
+func (h *IMMessageHandler) hasActiveWorkflowForPolicy(policyUserID string) bool {
+	policyUserID = strings.TrimSpace(policyUserID)
+	if policyUserID == "" {
+		return false
+	}
+	// Check V2 StateMachine
+	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+		if wf.machine.GetActive(policyUserID) != nil {
+			return true
+		}
+	}
+	// Check V1 compat engine
+	if h.app != nil && h.app.workflowEngine != nil {
+		if h.app.workflowEngine.GetActiveWorkflow(policyUserID) != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *IMMessageHandler) isWorkflowToolAllowedForOwner(policyUserID, name string) bool {

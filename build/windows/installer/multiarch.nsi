@@ -153,12 +153,12 @@ Function LaunchAsCurrentUser
 FunctionEnd
 
 Function AddInstallDirToMachinePath
-    nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$i=''$INSTDIR''; $p=[Environment]::GetEnvironmentVariable(''Path'',''Machine''); $parts=@($p -split '';'' | Where-Object { $_ }); if(-not ($parts | Where-Object { $_.TrimEnd([char]92) -ieq $i.TrimEnd([char]92) })) { [Environment]::SetEnvironmentVariable(''Path'', (($parts + $i) -join '';''), ''Machine'') }"'
+    nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$$i=''$INSTDIR''; $$p=[Environment]::GetEnvironmentVariable(''Path'',''Machine''); $$parts=@($$p -split '';'' | Where-Object { $$_ }); if(-not ($$parts | Where-Object { $$_.TrimEnd([char]92) -ieq $$i.TrimEnd([char]92) })) { [Environment]::SetEnvironmentVariable(''Path'', (($$parts + $$i) -join '';''), ''Machine'') }"'
     SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 FunctionEnd
 
 Function un.RemoveInstallDirFromMachinePath
-    nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$i=''$INSTDIR''; $p=[Environment]::GetEnvironmentVariable(''Path'',''Machine''); $parts=@($p -split '';'' | Where-Object { $_ -and ($_.TrimEnd([char]92) -ine $i.TrimEnd([char]92)) }); [Environment]::SetEnvironmentVariable(''Path'', ($parts -join '';''), ''Machine'')"'
+    nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$$i=''$INSTDIR''; $$p=[Environment]::GetEnvironmentVariable(''Path'',''Machine''); $$parts=@($$p -split '';'' | Where-Object { $$_ -and ($$_.TrimEnd([char]92) -ine $$i.TrimEnd([char]92)) }); [Environment]::SetEnvironmentVariable(''Path'', ($$parts -join '';''), ''Machine'')"'
     SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 FunctionEnd
 
@@ -232,6 +232,10 @@ Function .onInit
     # Check if already installed
     ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString"
     StrCmp $R0 "" notInstalled
+    # Preserve user's original install directory if they chose a custom path
+    ReadRegStr $R1 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "InstallLocation"
+    StrCmp $R1 "" +2
+        StrCpy $INSTDIR $R1
     MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AlreadyInstalled)" IDYES uninstall
     Abort
     
@@ -288,6 +292,8 @@ Section
     # Registry keys for Add/Remove programs
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "DisplayName" "${INFO_PRODUCTNAME}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "QuietUninstallString" "$\"$INSTDIR\uninstall.exe$\" /S"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "InstallLocation" "$INSTDIR"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "DisplayIcon" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "Publisher" "${INFO_COMPANYNAME}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "DisplayVersion" "${INFO_PRODUCTVERSION}"
@@ -304,10 +310,14 @@ Section "uninstall"
     ExecWait "taskkill /F /IM ${PRODUCT_EXECUTABLE}"
     ExecWait "taskkill /F /IM maclaw-cli.exe"
 
+    # Remove WebView2 user data directory (Wails stores it in %APPDATA%\<exe_name>)
+    RMDir /r "$APPDATA\${PRODUCT_EXECUTABLE}"
+
     Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
     Delete "$INSTDIR\maclaw-cli.exe"
     Delete "$INSTDIR\uninstall.exe"
-    RMDir "$INSTDIR"
+    # Remove install dir — use /r to handle any leftover files (logs, crash dumps, etc.)
+    RMDir /r "$INSTDIR"
 
     Call un.RemoveInstallDirFromMachinePath
 
@@ -325,15 +335,13 @@ Section "uninstall"
     MessageBox MB_YESNO|MB_ICONQUESTION "$(DeleteUserData)" IDYES deleteUserData IDNO skipUserData
     
     deleteUserData:
-    # Delete user data directories using cmd /c rd for faster deletion
-    # RMDir /r is very slow for large directories like node_modules
-    # Using rd /s /q is much faster on Windows
+    # Delete user data directories
     DetailPrint "Deleting user data directories..."
     nsExec::ExecToLog 'cmd /c rd /s /q "$PROFILE\.cceasy"'
 
     # Preserve .maclaw/data, .maclaw/models, config.json and memories.json while cleaning other .maclaw content
     DetailPrint "Cleaning .maclaw while preserving data, models, config.json and memories.json..."
-    nsExec::ExecToLog 'cmd /c if exist "$PROFILE\.maclaw" (for /d %D in ("$PROFILE\.maclaw\*") do @if /I not "%~nxD"=="data" if /I not "%~nxD"=="models" rd /s /q "%D" & for %F in ("$PROFILE\.maclaw\*") do @if /I not "%~nxF"=="memories.json" if /I not "%~nxF"=="config.json" del /f /q "%F")'
+    nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$$d=Join-Path $$env:USERPROFILE ''.maclaw''; if(Test-Path $$d){Get-ChildItem $$d -Directory | Where-Object{$$_.Name -notin @(''data'',''models'')} | Remove-Item -Recurse -Force; Get-ChildItem $$d -File | Where-Object{$$_.Name -notin @(''memories.json'',''config.json'')} | Remove-Item -Force}"'
 
     skipUserData:
 SectionEnd

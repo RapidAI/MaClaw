@@ -619,6 +619,25 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 		h.app.emitAgentViewLifecycle("dismiss", map[string]interface{}{"view_id": "workflow:form:" + phaseID})
 	}
 
+	// Auto-trigger phase execution immediately after form submission.
+	// No need to require user to type "继续" — the form was the data collection step,
+	// execution should begin automatically once data is available.
+	if state != nil {
+		phase := state.ActivePhase()
+		if phase != nil && phase.FormData != nil {
+			result := h.runWorkflowV2Phase(userID, state, "")
+			if result.Response != nil {
+				return result.Response
+			}
+			// If runWorkflowV2Phase returns a marker for agent loop execution,
+			// we can't directly return it from here (form submission is a synchronous call).
+			// Fall through to the text response that tells user it's running.
+			return &IMAgentResponse{
+				Text: "✅ 信息已收到，正在生成文档...",
+			}
+		}
+	}
+
 	return &IMAgentResponse{
 		Text: "✅ 信息已收到！发送「继续」开始生成文档。",
 	}

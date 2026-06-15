@@ -2,13 +2,56 @@ package v2
 
 // types_compat_engine.go — V1 engine/registry/understanding compat stubs.
 //
-// These types exist solely for backward compatibility with consumers that
-// reference workflow.WorkflowEngine, workflow.WorkflowRegistry, etc.
-// All runtime behavior has been migrated to V2 StateMachine.
-// These are placeholder stubs that satisfy type references and compilation.
+// These types exist solely for backward compatibility with ~50 test files and
+// a handful of production paths that reference workflow.WorkflowEngine,
+// workflow.WorkflowRegistry, and workflow.IntentUnderstandingManager.
+//
+// # Runtime vs Stub
+//
+// All runtime behavior has been migrated to V2 StateMachine (machine.go).
+// The types here satisfy type references and compilation:
+//
+//   - WorkflowEngine: The primary compat type. Production GUI code creates a
+//     WorkflowEngine instance and calls methods like StartWorkflow, HandleInput,
+//     GetActiveWorkflow, GetActivePhaseToolFilter, IsPhaseNeedsConfirm, etc.
+//     These methods are ACTIVELY DELEGATING to real logic (reading from the
+//     engine's workflows map, checking template phases). They are NOT stubs.
+//
+//   - IntentUnderstandingManager: STUB. Start() always returns Rejected=true.
+//     Production code uses the real V2 implementation from corelib/workflow/.
+//     This stub exists only so tests that create a WorkflowEngine compile.
+//
+//   - WorkflowRegistry: ACTIVE. Register/Match/All work correctly (map CRUD).
+//     BM25 scoring methods (BestTemplateScore, MatchesAnyTemplate) are stubbed
+//     because production uses the real V2 TemplateRegistry for routing.
+//
+//   - QuickFilter: ACTIVE. Classify checks HasActiveWorkflow/Understanding.
+//     Production GUI uses this for message routing.
+//
+// # Relationship Between WorkflowEngine and StateMachine
+//
+// WorkflowEngine is a THIN ADAPTER over an in-memory map[string]*V1WorkflowState.
+// It does NOT wrap or delegate to StateMachine. The two exist in parallel:
+//   - GUI production code creates a WorkflowEngine (for V1-shaped consumers).
+//   - The V2 StateMachine is used by Router and Store for durable persistence.
+//   - StoreActiveState() bridges the gap: V2 machine creates state, then stores
+//     it into the V1 engine's map so V1 consumers can access it.
+//
+// # Test-Only vs Production Methods
+//
+// Production code (GUI handlers) calls:
+//   StartWorkflow, StartWorkflowWithOptions, HandleInput, GetActiveWorkflow,
+//   GetActivePhaseToolFilter, IsPhaseNeedsConfirm, HasPhaseOutput, CancelWorkflow,
+//   SavePhaseOutput, GetRegistry, GetUnderstanding, GetFilter, SetCallbacks,
+//   StoreActiveState, SubmitPhaseForm, SkipPhaseForm, SubmitInputPayload
+//
+// Test-only helpers (never called in production):
+//   RestoreFromStore, CleanupExpired, SingleActiveWorkflowUserID,
+//   ActiveWorkflowUserIDForPhase
 
 import (
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -144,7 +187,9 @@ func (m *IntentUnderstandingManager) CancelSession(userID string) {
 // WorkflowRegistry (stub)
 // ---------------------------------------------------------------------------
 
-// WorkflowRegistry holds registered workflow templates (stubbed).
+// WorkflowRegistry holds registered workflow templates (stubbed BM25 methods).
+// The templates map is populated at startup from V2 TemplateRegistry and does
+// not grow at runtime — no memory pressure concern.
 type WorkflowRegistry struct {
 	mu        sync.RWMutex
 	templates map[WorkflowType]*V1WorkflowTemplate
@@ -201,6 +246,13 @@ func (r *WorkflowRegistry) MatchesAnyTemplate(text string) bool                 
 
 // WorkflowEngine is the V1 engine type retained for backward compatibility.
 // All runtime behavior has been migrated to V2 StateMachine.
+//
+// Memory management: The workflows map grows with each StartWorkflow call.
+// CancelWorkflow removes entries, but completed workflows remain (invisible
+// to GetActiveWorkflow which checks Status==Active, but occupying memory).
+// For long-running servers (maclawsrv), call CleanupExpired periodically to
+// remove stale entries. Currently CleanupExpired is a no-op stub — implement
+// it if memory pressure is observed in production.
 type WorkflowEngine struct {
 	mu            sync.RWMutex
 	workflows     map[string]*V1WorkflowState
@@ -272,21 +324,183 @@ func (e *WorkflowEngine) StartWorkflowWithOptions(userID string, intent Structur
 	e.workflows[userID] = state
 	e.mu.Unlock()
 	if e.store != nil {
+		// NOTE: Persistence failure is silently ignored. This is acceptable for
+		// the V1 compat layer because the in-memory map is the authoritative state.
+		// The store (typically V1NullStore in tests) is best-effort persistence.
+		// Production uses V2 StateMachine's store which has proper error handling.
 		_ = e.store.SaveWorkflowState(state)
 	}
 	return state, nil
 }
 func (e *WorkflowEngine) SetProjectPath(userID, projectPath string) error { return nil }
+
+// StoreActiveState stores a pre-built V1WorkflowState into the engine's active
+// workflows map. Used when the workflow is created via V2 machine and needs to
+// be accessible through V1 engine methods (HandleInput, GetActiveWorkflow, etc.).
+func (e *WorkflowEngine) StoreActiveState(userID string, state *V1WorkflowState) {
+	if e == nil || state == nil {
+		return
+	}
+	e.mu.Lock()
+	e.workflows[userID] = state
+	e.mu.Unlock()
+}
+
 func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, error) {
-	return nil, nil
+	if e == nil {
+		return nil, nil
+	}
+	ws := e.GetActiveWorkflow(userID)
+	if ws == nil {
+		return nil, nil
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil {
+		return nil, nil
+	}
+	if ws.PhaseIndex < 0 || ws.PhaseIndex >= len(tmpl.Phases) {
+		return nil, nil
+	}
+	phase := &tmpl.Phases[ws.PhaseIndex]
+
+	// If the phase has a form gate and the form hasn't been submitted/skipped yet,
+	// show the form.
+	if phase.InputSchema != nil && !ws.PhaseFormSubmitted && !ws.PhaseFormSkipped {
+		return &WorkflowResponse{
+			ShowForm:   true,
+			FormSchema: phase.InputSchema,
+			Text:       phase.Name,
+		}, nil
+	}
+
+	// If NeedsConfirm and there's already output, it's a review/confirm scenario.
+	if phase.NeedsConfirm && ws.PhaseOutputs[ws.CurrentPhase] != "" {
+		return &WorkflowResponse{
+			PendingConfirm: true,
+			Text:           ws.PhaseOutputs[ws.CurrentPhase],
+		}, nil
+	}
+
+	// Default: run the agent loop with the phase prompt.
+	prompt := BuildPhaseSystemPrompt(ws, phase, e.registry)
+	if prompt == "" {
+		// Fallback: use phase Prompt field, or phase Name.
+		prompt = phase.Prompt
+		if prompt == "" {
+			prompt = phase.Name
+		}
+	}
+
+	log.Printf("[WorkflowEngine] HandleInput: RunAgentLoop user=%s phase=%s", userID, ws.CurrentPhase)
+	return &WorkflowResponse{
+		PhasePrompt:  prompt,
+		RunAgentLoop: true,
+		DefaultInput: true,
+	}, nil
 }
 func (e *WorkflowEngine) SubmitPhaseForm(userID string, formData map[string]interface{}) (*WorkflowResponse, error) {
-	return nil, nil
+	if e == nil {
+		return nil, errors.New("workflow engine is nil")
+	}
+	e.mu.Lock()
+	ws, ok := e.workflows[userID]
+	if !ok || ws == nil || ws.Status != WorkflowActive {
+		e.mu.Unlock()
+		return nil, errors.New("no active workflow for user")
+	}
+
+	// Normalize project_path in form data and update workflow state.
+	if pp, ok := formData["project_path"]; ok {
+		if ppStr, isStr := pp.(string); isStr {
+			cleaned := strings.TrimSpace(ppStr)
+			if cleaned != "" {
+				ws.ProjectPath = cleaned
+				formData["project_path"] = cleaned
+			}
+		}
+	}
+
+	ws.PhaseFormData = formData
+	ws.PhaseFormSubmitted = true
+	ws.UpdatedAt = time.Now()
+	e.mu.Unlock()
+
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil {
+		return &WorkflowResponse{RunAgentLoop: true}, nil
+	}
+	if ws.PhaseIndex < 0 || ws.PhaseIndex >= len(tmpl.Phases) {
+		return &WorkflowResponse{RunAgentLoop: true}, nil
+	}
+	phase := &tmpl.Phases[ws.PhaseIndex]
+	prompt := phase.Prompt
+	if prompt == "" {
+		prompt = phase.Name
+	}
+
+	return &WorkflowResponse{
+		PhasePrompt:  prompt,
+		RunAgentLoop: true,
+	}, nil
 }
 func (e *WorkflowEngine) SubmitInputPayload(userID string, payload *WorkflowInputPayload) (*WorkflowResponse, error) {
-	return nil, nil
+	if e == nil {
+		return nil, errors.New("workflow engine is nil")
+	}
+	e.mu.Lock()
+	ws, ok := e.workflows[userID]
+	if !ok || ws == nil || ws.Status != WorkflowActive {
+		e.mu.Unlock()
+		return nil, errors.New("no active workflow for user")
+	}
+	ws.InputReceived = true
+	ws.InputPayload = payload
+	ws.UpdatedAt = time.Now()
+	e.mu.Unlock()
+	// Check if the current phase has a form gate (InputSchema).
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl != nil && ws.PhaseIndex >= 0 && ws.PhaseIndex < len(tmpl.Phases) {
+		phase := &tmpl.Phases[ws.PhaseIndex]
+		if phase.InputSchema != nil {
+			return &WorkflowResponse{
+				ShowForm:   true,
+				FormSchema: phase.InputSchema,
+			}, nil
+		}
+	}
+	// No form gate — build phase prompt with input evidence.
+	prompt := ""
+	if tmpl != nil && ws.PhaseIndex >= 0 && ws.PhaseIndex < len(tmpl.Phases) {
+		phase := &tmpl.Phases[ws.PhaseIndex]
+		prompt = phase.Name
+		if payload != nil {
+			if payload.Text != "" {
+				prompt += "\n\nUser input: " + payload.Text
+			}
+			for _, att := range payload.Attachments {
+				prompt += "\n\nAttachment: " + att.FileName
+			}
+		}
+	}
+	return &WorkflowResponse{
+		PhasePrompt:  prompt,
+		RunAgentLoop: true,
+	}, nil
 }
-func (e *WorkflowEngine) SkipPhaseForm(userID string) error                          { return nil }
+func (e *WorkflowEngine) SkipPhaseForm(userID string) error {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ws, ok := e.workflows[userID]
+	if !ok || ws == nil || ws.Status != WorkflowActive {
+		return nil
+	}
+	ws.PhaseFormSkipped = true
+	ws.UpdatedAt = time.Now()
+	return nil
+}
 func (e *WorkflowEngine) AdvancePhase(userID string) (*WorkflowResponse, error)      { return nil, nil }
 func (e *WorkflowEngine) CancelWorkflow(userID string) error {
 	e.mu.Lock()
@@ -324,8 +538,23 @@ func (e *WorkflowEngine) ActiveWorkflowUserIDForPhase(phaseID string) (string, b
 }
 func (e *WorkflowEngine) SingleActiveWorkflowUserID() (string, bool)                  { return "", false }
 func (e *WorkflowEngine) BuildPhasePrompt(userID string) string                       { return "" }
-func (e *WorkflowEngine) GetPhaseToolFilter(userID string) ToolFilterPolicy            { return ToolFilterNone }
-func (e *WorkflowEngine) GetActivePhaseToolFilter(userID string) ToolFilterPolicy      { return ToolFilterNone }
+func (e *WorkflowEngine) GetPhaseToolFilter(userID string) ToolFilterPolicy            { return e.GetActivePhaseToolFilter(userID) }
+func (e *WorkflowEngine) GetActivePhaseToolFilter(userID string) ToolFilterPolicy {
+	ws := e.GetActiveWorkflow(userID)
+	if ws == nil {
+		return ToolFilterNone
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil {
+		return ToolFilterNone
+	}
+	for _, phase := range tmpl.Phases {
+		if phase.ID == ws.CurrentPhase {
+			return phase.ToolPolicy
+		}
+	}
+	return ToolFilterNone
+}
 func (e *WorkflowEngine) GetActivePhaseContract(userID string) (PhaseContract, bool)   { return PhaseContract{}, false }
 func (e *WorkflowEngine) GetPhaseRuntimeGate(userID string) (PhaseRuntimeGate, bool)   { return PhaseRuntimeGate{}, false }
 func (e *WorkflowEngine) IsActivePhaseExecutionOrchestrator(userID string) bool        { return false }
@@ -401,22 +630,6 @@ func ValidateToolCallByContract(_ PhaseContract, _ string, _ map[string]interfac
 func ValidateToolCallByContractWithApproval(_ PhaseContract, _ string, _ map[string]interface{}, _ []OpsApprovedCommand) error {
 	return nil
 }
-
-// DerivePhaseContract returns an empty PhaseContract (stub).
-func DerivePhaseContract(_ *V1WorkflowTemplate, _ V1PhaseTemplate) PhaseContract {
-	return PhaseContract{}
-}
-
-// DeriveWorkflowContracts returns nil (stub).
-func DeriveWorkflowContracts(_ *V1WorkflowTemplate) []PhaseContract { return nil }
-
-// DerivePhaseRuntimeGate returns an empty PhaseRuntimeGate (stub).
-func DerivePhaseRuntimeGate(_ *V1WorkflowTemplate, _ *V1WorkflowState) PhaseRuntimeGate {
-	return PhaseRuntimeGate{}
-}
-
-// ValidateWorkflowTemplateContract returns nil (stub).
-func ValidateWorkflowTemplateContract(_ *V1WorkflowTemplate) []error { return nil }
 
 // ---------------------------------------------------------------------------
 // PhaseMeta / PhaseMetadata
@@ -507,22 +720,13 @@ func IsTemplatePhaseExecutionOrchestrator(_ *V1WorkflowTemplate, _ V1PhaseTempla
 }
 
 // IsExecutionOrchestratorPhase returns false (stub).
+// Deprecated: only retained for interface compat. Callers should use
+// IsTemplatePhaseExecutionOrchestrator instead.
 func IsExecutionOrchestratorPhase(_ V1PhaseTemplate) bool { return false }
-
-// PhaseExpectsDocument returns false (stub).
-func PhaseExpectsDocument(_ V1PhaseTemplate) bool { return false }
 
 // ---------------------------------------------------------------------------
 // Misc functions
 // ---------------------------------------------------------------------------
-
-// GetToolFilterForPhase returns the ToolPolicy from a V1PhaseTemplate.
-func GetToolFilterForPhase(phase *V1PhaseTemplate) ToolFilterPolicy {
-	if phase == nil {
-		return ToolFilterNone
-	}
-	return phase.ToolPolicy
-}
 
 // BuildPhaseSystemPrompt returns empty string (stub).
 func BuildPhaseSystemPrompt(_ *V1WorkflowState, _ *V1PhaseTemplate, _ *WorkflowRegistry) string {
@@ -548,9 +752,6 @@ func RunQualityGate(phase *V1PhaseTemplate, output string) *QualityGateResult {
 		CheckedAt: time.Now(),
 	}
 }
-
-// DefaultMutationScopeForPolicy returns MutationScopeNone (stub).
-func DefaultMutationScopeForPolicy(_ ToolFilterPolicy) MutationScope { return MutationScopeNone }
 
 // NullStore is an alias for V1NullStore for backward compat.
 type NullStore = V1NullStore
