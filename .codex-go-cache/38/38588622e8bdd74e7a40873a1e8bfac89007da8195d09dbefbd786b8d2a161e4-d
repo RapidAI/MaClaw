@@ -1,0 +1,10 @@
+./all_tools.go
+./atomic.go
+./claude.go
+./claude_hook_injector.go
+./claude_onboarding.go
+./codex.go
+./context_injector.go
+./iflow.go
+./kilo.go
+./opencode.go

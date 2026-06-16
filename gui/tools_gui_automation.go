@@ -588,13 +588,30 @@ func emitGUIReplayStatus(statusC chan StatusEvent, loopID, flowName string, elap
 // captureDesktopScreenshot captures the desktop as a base64-encoded PNG.
 // screenIndex < 0 means capture all monitors stitched; >= 0 means a specific monitor.
 func captureDesktopScreenshot(screenIndex int) (string, error) {
-	// On macOS, ensure screen recording permission.
-	if !EnsureScreenRecordingPermission() {
-		return "", fmt.Errorf("screen recording permission not granted")
-	}
 	available, reason := remote.DetectDisplayServer()
 	if !available {
 		return "", fmt.Errorf("no graphical display: %s", reason)
+	}
+
+	// On macOS, use native capture directly — success proves permission.
+	// Avoids CGRequestScreenCaptureAccess / screencapture TCC dialogs.
+	if runtime.GOOS == "darwin" {
+		b64, err := nativeCaptureScreenshot()
+		if err == nil && b64 != "" && !remote.IsBlankImage(b64) {
+			return b64, nil
+		}
+		if !HasScreenRecordingPermission() {
+			return "", fmt.Errorf("screen recording permission not granted")
+		}
+		if err != nil {
+			return "", fmt.Errorf("native screenshot failed: %w", err)
+		}
+		return "", fmt.Errorf("screenshot is blank — display may be off or locked")
+	}
+
+	// Non-macOS: permission check + shell command.
+	if !EnsureScreenRecordingPermission() {
+		return "", fmt.Errorf("screen recording permission not granted")
 	}
 
 	var cmdStr string

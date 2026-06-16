@@ -1,0 +1,4 @@
+./hmm_seg.go
+./prob_emit.go
+./prob_trans.go
+./viterbi.go

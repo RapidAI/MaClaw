@@ -1,0 +1,3 @@
+./client.go
+./fetch.go
+./search.go

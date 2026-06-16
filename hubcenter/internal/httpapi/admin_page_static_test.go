@@ -290,8 +290,9 @@ func TestAdminPageLLMComputeGrantUsesHubTenantSelectors(t *testing.T) {
 		`addAuth: '\u6388\u4e88\u7b97\u529b'`,
 		`id: 'auth_external_' + hubID + '_' + tenantID + '_' + Date.now()`,
 		`a.service_group_id === '__external_compute_permission__'`,
-		`service_group_id:'__external_compute_permission__'`,
 		`source: 'external_provider_permission'`,
+		`computeNotAllowed: '\u672a\u5141\u8bb8'`,
+		`seen[key] = true`,
 	})
 	for _, forbidden := range []string{
 		`field('llmAuthHub'`,
@@ -305,6 +306,7 @@ func TestAdminPageLLMComputeGrantUsesHubTenantSelectors(t *testing.T) {
 		`hubComputeActiveCount`,
 		`tr('hubComputeAccessRecord')`,
 		`fieldServiceGroup') + ' required'`,
+		`esc(t('status')) + ': -`,
 		`Grant Authorization`,
 		`\u6388\u4e88\u6388\u6743`,
 		`\u914d\u7f6e\u6388\u6743`,
@@ -320,6 +322,18 @@ func TestAdminPageLLMComputeGrantUsesHubTenantSelectors(t *testing.T) {
 	}
 	if strings.Contains(match, `/api/admin/llm/service-groups`) {
 		t.Fatalf("node compute grant must not load service groups")
+	}
+	for _, forbidden := range []string{
+		`admin_email`,
+		`service_group_id`,
+		`credits_total`,
+		`starts_at`,
+		`expires_at`,
+		`status:'active'`,
+	} {
+		if strings.Contains(match, forbidden) {
+			t.Fatalf("node compute grant payload must not contain %s", forbidden)
+		}
 	}
 }
 

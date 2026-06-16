@@ -25,6 +25,20 @@
       authStatusLoading: 'Checking Compute Auth',
       unlockHint: 'Ask HubCenter to grant compute access before adding external LLM providers.',
       storeContextMissing: 'Hub Center registration is missing. Register this Hub with HubCenter before purchasing compute.',
+      activeAuthorizations: 'Active Compute',
+      noActiveAuthorizations: 'No active compute authorization.',
+      showInactiveAuthorizations: 'Show expired/invalid',
+      hideInactiveAuthorizations: 'Hide expired/invalid',
+      creditsRemaining: 'Remaining',
+      creditsTotal: 'Total',
+      expiresAt: 'Expires',
+      serviceGroup: 'Service Group',
+      officialComputeGrant: 'MaClaw Compute',
+      externalProviderGrant: 'External Provider Permission',
+      statusActive: 'Active',
+      statusExpired: 'Expired',
+      statusExhausted: 'Exhausted',
+      statusInactive: 'Invalid',
     },
     zh: {
       purchaseCompute: '\u8d2d\u4e70\u7b97\u529b',
@@ -36,6 +50,20 @@
       authStatusLoading: '\u6b63\u5728\u68c0\u67e5\u7b97\u529b\u6388\u6743',
       unlockHint: '\u9700\u8981\u5148\u5728 HubCenter \u6388\u4e88\u79df\u6237\u7b97\u529b\uff0c\u624d\u80fd\u65b0\u5efa\u5916\u90e8 LLM \u670d\u52a1\u5546\u3002',
       storeContextMissing: '\u7f3a\u5c11 HubCenter \u6ce8\u518c\u4fe1\u606f\uff0c\u8bf7\u5148\u5c06\u6b64 Hub \u6ce8\u518c\u5230 HubCenter \u540e\u518d\u8d2d\u4e70\u7b97\u529b\u3002',
+      activeAuthorizations: '\u5df2\u6fc0\u6d3b\u7b97\u529b',
+      noActiveAuthorizations: '\u6682\u65e0\u6709\u6548\u7b97\u529b\u6388\u6743\u3002',
+      showInactiveAuthorizations: '\u663e\u793a\u8fc7\u671f/\u5931\u6548',
+      hideInactiveAuthorizations: '\u9690\u85cf\u8fc7\u671f/\u5931\u6548',
+      creditsRemaining: '\u5269\u4f59',
+      creditsTotal: '\u603b\u989d',
+      expiresAt: '\u5230\u671f',
+      serviceGroup: '\u670d\u52a1\u7ec4',
+      officialComputeGrant: 'MaClaw \u7b97\u529b',
+      externalProviderGrant: '\u5916\u90e8\u670d\u52a1\u5546\u6743\u9650',
+      statusActive: '\u6709\u6548',
+      statusExpired: '\u5df2\u8fc7\u671f',
+      statusExhausted: '\u5df2\u7528\u5b8c',
+      statusInactive: '\u5df2\u5931\u6548',
     }
   };
 
@@ -154,6 +182,7 @@
   // ---------------------------------------------------------------------------
 
   var _computeAuthStatus = null; // cached
+  var _showInactiveComputeAuthorizations = false;
 
   window.checkComputeAuthorization = async function() {
     try {
@@ -208,6 +237,92 @@
     }
   }
 
+  function esc(value) {
+    if (typeof window.escapeHtml === 'function') return window.escapeHtml(value);
+    var m = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(c) { return m[c]; });
+  }
+
+  function computeAuthorizations() {
+    if (!_computeAuthStatus || !Array.isArray(_computeAuthStatus.authorizations)) return [];
+    return _computeAuthStatus.authorizations.slice();
+  }
+
+  function isAuthorizationActive(item) {
+    if (!item) return false;
+    if (typeof item.active === 'boolean') return item.active;
+    var status = String(item.status || '').toLowerCase();
+    if (status === 'expired' || status === 'exhausted' || status === 'inactive' || status === 'invalid') return false;
+    var expiresAt = item.expires_at ? new Date(item.expires_at) : null;
+    if (expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) return false;
+    return Number(item.credits_remaining || 0) > 0;
+  }
+
+  function formatComputeNumber(value) {
+    var n = Number(value || 0);
+    if (!Number.isFinite(n)) return '0';
+    if (Math.abs(n) >= 1000) return Math.round(n).toLocaleString();
+    if (Math.abs(n % 1) > 0.0001) return n.toFixed(2);
+    return String(Math.round(n));
+  }
+
+  function formatComputeDate(value) {
+    if (!value) return '-';
+    var d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value);
+    return d.toLocaleString();
+  }
+
+  function authorizationStatusText(item) {
+    if (isAuthorizationActive(item)) return t('statusActive');
+    var status = String(item && item.status || '').toLowerCase();
+    if (status === 'expired') return t('statusExpired');
+    if (status === 'exhausted') return t('statusExhausted');
+    return t('statusInactive');
+  }
+
+  function authorizationTitle(item) {
+    var serviceGroupID = String(item && item.service_group_id || '').trim();
+    if (serviceGroupID === '__external_compute_permission__') return t('externalProviderGrant');
+    return t('officialComputeGrant');
+  }
+
+  function renderComputeAuthorizationList() {
+    if (!_computeAuthStatus) return '';
+    var all = computeAuthorizations();
+    if (!all.length) {
+      return '<div class="hint" style="margin-top:10px;padding:10px 12px;background:#fbfcfd;border-color:#e7eaf0">' + esc(t('noActiveAuthorizations')) + '</div>';
+    }
+    var visible = all.filter(function(item) {
+      return _showInactiveComputeAuthorizations || isAuthorizationActive(item);
+    });
+    var hiddenCount = all.length - visible.length;
+    var toggle = hiddenCount > 0 || _showInactiveComputeAuthorizations
+      ? '<button type="button" class="btn-ghost" style="height:26px;font-size:11px;padding:0 9px;border-radius:8px" onclick="toggleInactiveComputeAuthorizations()">'
+        + esc(_showInactiveComputeAuthorizations ? t('hideInactiveAuthorizations') : t('showInactiveAuthorizations') + ' (' + hiddenCount + ')') + '</button>'
+      : '';
+    var rows = visible.map(function(item) {
+      var active = isAuthorizationActive(item);
+      var badgeClass = active ? 'ok' : 'warn';
+      var serviceGroupID = String(item.service_group_id || '').trim();
+      var total = formatComputeNumber(item.credits_total);
+      var remaining = formatComputeNumber(typeof item.credits_remaining === 'number' ? item.credits_remaining : Math.max(0, Number(item.credits_total || 0) - Number(item.credits_used || 0)));
+      return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;align-items:center;padding:9px 10px;border:1px solid #e7eaf0;border-radius:10px;background:#fff">'
+        + '<div style="min-width:0"><div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(authorizationTitle(item)) + '</div><div class="item-meta mono" style="font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(serviceGroupID || '-') + '</div></div>'
+        + '<div style="min-width:0"><div class="item-meta" style="font-size:10px">' + esc(t('creditsRemaining')) + ' / ' + esc(t('creditsTotal')) + '</div><div class="mono" style="font-size:12px;font-weight:700;color:var(--text,var(--ink))">' + esc(remaining) + ' / ' + esc(total) + '</div></div>'
+        + '<div style="min-width:0"><div class="item-meta" style="font-size:10px">' + esc(t('expiresAt')) + '</div><div class="item-meta" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(formatComputeDate(item.expires_at)) + '</div></div>'
+        + '<span class="badge ' + badgeClass + '" style="justify-self:end">' + esc(authorizationStatusText(item)) + '</span>'
+        + '</div>';
+    }).join('');
+    if (!rows) {
+      rows = '<div class="hint" style="padding:10px 12px;background:#fbfcfd;border-color:#e7eaf0">' + esc(t('noActiveAuthorizations')) + '</div>';
+    }
+    return '<div style="margin-top:10px;display:grid;gap:8px">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap"><div class="item-meta" style="font-weight:700;color:var(--text,var(--ink))">' + esc(t('activeAuthorizations')) + '</div>' + toggle + '</div>'
+      + rows
+      + '</div>';
+  }
+
   function updateExternalProviderEntryVisibility() {
     var allow = window.canAddExternalProvider();
     ['llmProviderCreateBtn', 'llmProviderCreateInlineBtn', 'llmProvidersImportBtn'].forEach(function(id) {
@@ -231,19 +346,26 @@
       + t('purchaseCompute') + '</button>';
   };
 
+  window.toggleInactiveComputeAuthorizations = function() {
+    _showInactiveComputeAuthorizations = !_showInactiveComputeAuthorizations;
+    refreshMaClawOfficialBanner();
+  };
+
   /**
    * Renders the MaClaw Official provider info banner (for provider list).
    * Returns HTML string.
    */
   window.renderMaClawOfficialBanner = function() {
-    return '<div class="item" style="background:#f8fbff;color:var(--ink);border:1px solid #d9e7f7;border-radius:8px;padding:12px 16px;margin-bottom:8px;box-shadow:none">'
+    return '<div class="item" style="background:#f8fbff;color:var(--text,var(--ink));border:1px solid #d9e7f7;border-radius:8px;padding:12px 16px;margin-bottom:8px;box-shadow:none">'
       + '<div style="display:flex;justify-content:space-between;align-items:center">'
       + '<div><strong>' + t('officialProvider') + '</strong>'
       + ' <span class="badge info" style="font-size:10px">' + t('lockedBadge') + '</span></div>'
       + '<div style="display:flex;align-items:center;gap:8px">'
       + '<span id="maclawComputeAuthBadge" class="badge warn">' + t('authStatusInactive') + '</span>'
       + window.renderMaClawPurchaseButton()
-      + '</div></div></div>';
+      + '</div></div>'
+      + renderComputeAuthorizationList()
+      + '</div>';
   };
 
   // ---------------------------------------------------------------------------

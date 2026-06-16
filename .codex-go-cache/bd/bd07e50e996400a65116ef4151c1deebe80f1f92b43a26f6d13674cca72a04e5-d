@@ -1,0 +1,4 @@
+./acc_other.go
+./raster_fixed.go
+./raster_floating.go
+./vector.go

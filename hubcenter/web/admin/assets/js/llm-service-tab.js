@@ -61,6 +61,7 @@ if (typeof I18N_EN !== 'undefined') {
       fieldHubID: 'Hub ID', fieldTenantID: 'Tenant ID',
       fieldAllowExternal: 'Allow tenant to use external compute providers',
       fieldHubRequired: 'Select a Hub', fieldTenantRequired: 'Select a tenant', noHubs: 'No registered Hubs.', defaultTenant: 'Default tenant',
+      computeAllowed: 'Allowed', computeNotAllowed: 'Not allowed',
       // Common
       save: 'Save', cancel: 'Cancel', confirm: 'Confirm', delete: 'Delete',
       saved: 'Saved successfully.', deleted: 'Deleted.', error: 'Error',
@@ -101,6 +102,7 @@ if (typeof I18N_EN !== 'undefined') {
       fieldHubID: 'Hub ID', fieldTenantID: '\u79df\u6237 ID',
       fieldAllowExternal: '\u5141\u8bb8\u79df\u6237\u4f7f\u7528\u5916\u90e8\u7b97\u529b',
       fieldHubRequired: '\u8bf7\u9009\u62e9 Hub', fieldTenantRequired: '\u8bf7\u9009\u62e9\u79df\u6237', noHubs: '\u6682\u65e0\u5df2\u6ce8\u518c Hub\u3002', defaultTenant: '\u9ed8\u8ba4\u79df\u6237',
+      computeAllowed: '\u5df2\u5141\u8bb8', computeNotAllowed: '\u672a\u5141\u8bb8',
       save: '\u4fdd\u5b58', cancel: '\u53d6\u6d88', confirm: '\u786e\u8ba4', delete: '\u5220\u9664',
       saved: '\u4fdd\u5b58\u6210\u529f\u3002', deleted: '\u5df2\u5220\u9664\u3002', error: '\u9519\u8bef',
       status: '\u72b6\u6001', credits: '\u989d\u5ea6', expires: '\u6709\u6548\u671f', active: '\u6d3b\u8dc3',
@@ -584,10 +586,20 @@ if (typeof I18N_EN !== 'undefined') {
     var externalAuths = authorizations.filter(function(a) {
       return !!(a && (a.allow_external_providers || a.source === 'external_provider_permission' || a.service_group_id === '__external_compute_permission__'));
     });
+    externalAuths.sort(function(a, b) {
+      return Date.parse(b.updated_at || b.created_at || b.expires_at || 0) - Date.parse(a.updated_at || a.created_at || a.expires_at || 0);
+    });
+    var seen = {};
+    externalAuths = externalAuths.filter(function(a) {
+      var key = String(a.hub_id || '') + '/' + String(a.tenant_id || '');
+      if (seen[key]) return false;
+      seen[key] = true;
+      return true;
+    });
     if (!externalAuths.length) { el.innerHTML = '<div class="hint">' + esc(t('noAuths')) + '</div>'; return; }
     el.innerHTML = externalAuths.map(function(a) {
       var statusBadge = a.status === 'active' ? '<span class="badge ok">' + esc(t('active')) + '</span>' : '<span class="badge warn">' + esc(a.status) + '</span>';
-      var extBadge = a.allow_external_providers ? '<span class="badge ok">' + esc(t('fieldAllowExternal')) + '</span>' : '<span class="badge warn">' + esc(t('status')) + ': -</span>';
+      var extBadge = a.allow_external_providers ? '<span class="badge ok">' + esc(t('computeAllowed')) + '</span>' : '<span class="badge warn">' + esc(t('computeNotAllowed')) + '</span>';
       return '<div class="data-row"><div class="data-row-main">'
         + '<strong>' + esc(a.hub_id) + ' / ' + esc(a.tenant_id) + '</strong> ' + statusBadge + ' ' + extBadge
         + '</div></div>';

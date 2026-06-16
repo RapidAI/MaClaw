@@ -1,0 +1,5 @@
+./auth.go
+./proxy.go
+./proxy_handler.go
+./registry.go
+./stats.go

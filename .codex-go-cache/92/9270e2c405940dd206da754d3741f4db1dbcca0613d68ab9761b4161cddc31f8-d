@@ -1,0 +1,10 @@
+./classify.go
+./client.go
+./doc.go
+./filter.go
+./format.go
+./response.go
+./types.go
+./validate.go
+./validation_report.go
+./validator.go

@@ -1,0 +1,6 @@
+./cmap.go
+./data.go
+./gpos.go
+./postscript.go
+./sfnt.go
+./truetype.go

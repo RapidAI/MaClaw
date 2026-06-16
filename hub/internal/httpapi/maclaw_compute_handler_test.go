@@ -97,6 +97,16 @@ func TestMaClawComputeStatusUsesCurrentAccessControlWhenHandlerCapturedNil(t *te
 		HubID:                  "hub_dynamic",
 		TenantID:               "tenant_acme",
 		AllowExternalProviders: true,
+		Authorizations: []llmservice.AuthorizationSummary{{
+			ID:               "auth_active",
+			ServiceGroupID:   "maclaw_official_group",
+			CreditsTotal:     100,
+			CreditsUsed:      25,
+			CreditsRemaining: 75,
+			ExpiresAt:        "2099-01-01T00:00:00Z",
+			Status:           "active",
+			Active:           true,
+		}},
 	})
 	SetMaClawModule(&llmservice.MaClawModule{
 		Client:     client,
@@ -112,11 +122,19 @@ func TestMaClawComputeStatusUsesCurrentAccessControlWhenHandlerCapturedNil(t *te
 
 	var payload struct {
 		AllowExternalProviders bool `json:"allow_external_providers"`
+		Authorizations         []struct {
+			ID               string  `json:"id"`
+			CreditsRemaining float64 `json:"credits_remaining"`
+			Active           bool    `json:"active"`
+		} `json:"authorizations"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if !payload.AllowExternalProviders {
 		t.Fatalf("allow_external_providers = false, want true")
+	}
+	if len(payload.Authorizations) != 1 || payload.Authorizations[0].ID != "auth_active" || payload.Authorizations[0].CreditsRemaining != 75 || !payload.Authorizations[0].Active {
+		t.Fatalf("authorizations = %#v, want active auth summary", payload.Authorizations)
 	}
 }

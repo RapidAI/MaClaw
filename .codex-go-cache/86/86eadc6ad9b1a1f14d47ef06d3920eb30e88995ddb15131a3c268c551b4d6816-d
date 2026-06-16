@@ -1,0 +1,4 @@
+./ha_sync.go
+./remote_import.go
+./store.go
+./types.go

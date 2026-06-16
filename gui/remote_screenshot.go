@@ -216,7 +216,7 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 	// CGRequestScreenCaptureAccess and shows a system dialog even when permission
 	// is already granted due to TCC probe timing issues).
 	if runtime.GOOS == "darwin" {
-		m.app.log("[screenshot-direct] trying native capture (SCK → CGWindowListCreateImage)")
+		m.app.log("[screenshot-direct] trying native capture (CGWindowListCreateImage per-display)")
 		b64, err := nativeCaptureScreenshot()
 		if err == nil && b64 != "" {
 			isBlank := remote.IsBlankImage(b64)

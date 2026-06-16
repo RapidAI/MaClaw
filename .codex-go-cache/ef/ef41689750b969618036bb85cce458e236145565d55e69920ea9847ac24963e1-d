@@ -1,0 +1,6 @@
+./auto_enroll.go
+./device_adapter.go
+./image_convert.go
+./notifier.go
+./plugin.go
+./webhook.go

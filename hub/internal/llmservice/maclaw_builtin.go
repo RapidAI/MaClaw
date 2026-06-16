@@ -253,13 +253,18 @@ type TenantAuthorizationStatus struct {
 
 // AuthorizationSummary is a single authorization entry from HubCenter.
 type AuthorizationSummary struct {
-	ServiceGroupID   string  `json:"service_group_id"`
-	CreditsTotal     float64 `json:"credits_total"`
-	CreditsUsed      float64 `json:"credits_used"`
-	CreditsRemaining float64 `json:"credits_remaining"`
-	ExpiresAt        string  `json:"expires_at"`
-	Status           string  `json:"status"`
-	Active           bool    `json:"active"`
+	ID                     string  `json:"id"`
+	ServiceGroupID         string  `json:"service_group_id"`
+	CreditsTotal           float64 `json:"credits_total"`
+	CreditsUsed            float64 `json:"credits_used"`
+	CreditsRemaining       float64 `json:"credits_remaining"`
+	StartsAt               string  `json:"starts_at"`
+	ExpiresAt              string  `json:"expires_at"`
+	Status                 string  `json:"status"`
+	Active                 bool    `json:"active"`
+	AllowExternalProviders bool    `json:"allow_external_providers"`
+	Source                 string  `json:"source"`
+	CardOrderID            string  `json:"card_order_id,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

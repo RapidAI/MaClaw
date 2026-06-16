@@ -1,0 +1,5 @@
+./buffer.go
+./compress.go
+./consts.go
+./reader.go
+./writer.go
