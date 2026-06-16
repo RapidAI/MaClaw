@@ -264,6 +264,27 @@ func TestHubAdminPageIncludesFailureLogsUI(t *testing.T) {
 	}
 }
 
+func TestMaClawComputeModuleShowsActiveAuthorizationBadge(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "maclaw-compute-module.js"))
+	if err != nil {
+		t.Fatalf("read MaClaw compute module: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		`hasActiveComputeAuthorization()`,
+		`return computeAuthorizations().some(isAuthorizationActive);`,
+		`return !!_computeAuthStatus.allow_external_providers;`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("MaClaw compute module missing %s", want)
+		}
+	}
+	if strings.Contains(content, `} else if (_computeAuthStatus.allow_external_providers) {
+        badge.className = 'badge ok';`) {
+		t.Fatalf("MaClaw compute badge must not depend only on allow_external_providers")
+	}
+}
+
 func TestAdminMarketplaceWorkflowReviewContracts(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "marketplace-tab.js"))
 	if err != nil {

@@ -503,6 +503,7 @@ func TestDiscoverableShowsActiveMaClawSrvRuntimeEmployeeOnline(t *testing.T) {
 }
 
 func TestDiscoverableUsesRuntimePresenceForPhysicalEmployees(t *testing.T) {
+	clearVEDiscoverableCache()
 	settings := &testSystemSettingsRepo{}
 	enableVEDigitalEmployeeAuthorization(t, settings, 3)
 	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)

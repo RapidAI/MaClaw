@@ -997,6 +997,13 @@ export function GetHubMCPHubSecrets(arg1:string):Promise<Array<any>>;
 export function SaveHubMCPHubSecret(arg1:any):Promise<any>;
 export function RequestHubCapabilityInstallIntent(arg1:any):Promise<any>;
 
+// MacLaw App package bindings
+export function SubmitMaclawAppPackage(arg1:string):Promise<any>;
+export function ListMaclawAppPackageSubmissions(arg1:number):Promise<Array<any>>;
+export function GetMaclawAppPackageSubmission(arg1:string):Promise<any>;
+export function WithdrawMaclawAppPackageSubmission(arg1:string):Promise<boolean>;
+export function UpdateMaclawAppPackageSubmissionStatus(arg1:string,arg2:any):Promise<boolean>;
+
 // Digital Employee bindings
 export function ListVirtualEmployees():Promise<Array<any>>;
 

@@ -306,12 +306,12 @@ func TestGetCardStoreConfigReturnsCurrentHubNotifyURL(t *testing.T) {
 
 func TestUpdateCardStoreConfigKeepsDefaultNotifyURLDynamic(t *testing.T) {
 	system := newTestLLMServiceSystemSettings()
-	oldCfg := normalizeCardStoreConfig(cardStoreConfig{AlipayDirect: cardStoreAlipayDirectConfig{PrivateKey: "old-alipay-private"}})
+	oldCfg := normalizeCardStoreConfig(cardStoreConfig{PaymentMode: cardStorePaymentModeFM, AlipayDirect: cardStoreAlipayDirectConfig{PrivateKey: "old-alipay-private"}})
 	oldData, _ := json.Marshal(oldCfg)
 	if err := system.Set(context.Background(), cardStoreConfigKey, string(oldData)); err != nil {
 		t.Fatal(err)
 	}
-	payload := `{"enabled":true,"notify_url":"https://hub.example.com/api/zhifuxpay/notify","products":[]}`
+	payload := `{"enabled":true,"payment_mode":"payment_fm","notify_url":"https://hub.example.com/api/zhifuxpay/notify","products":[]}`
 	req := httptest.NewRequest(http.MethodPut, "/api/admin/card-store/config", strings.NewReader(payload))
 	req.Host = "hub.example.com"
 	req.Header.Set("X-Forwarded-Proto", "https")
@@ -626,7 +626,7 @@ func TestCreateCardStoreOrderStartsPaymentFMOrder(t *testing.T) {
 	}))
 	defer paySrv.Close()
 
-	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentAPIBaseURL: paySrv.URL, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop", NotifyURL: "https://hub.example.com/success"})
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeFM, PaymentAPIBaseURL: paySrv.URL, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop", NotifyURL: "https://hub.example.com/success"})
 	cfg.Products[0].Price = 10.01
 	data, _ := json.Marshal(cfg)
 	if err := system.Set(context.Background(), cardStoreConfigKey, string(data)); err != nil {
@@ -663,7 +663,7 @@ func TestCreateCardStoreOrderReturnsPaymentFMMessage(t *testing.T) {
 	}))
 	defer paySrv.Close()
 	system := newTestLLMServiceSystemSettings()
-	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentAPIBaseURL: paySrv.URL, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop", NotifyURL: "https://hub.example.com/success"})
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeFM, PaymentAPIBaseURL: paySrv.URL, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop", NotifyURL: "https://hub.example.com/success"})
 	cfg.Products[0].Price = 10
 	data, _ := json.Marshal(cfg)
 	_ = system.Set(context.Background(), cardStoreConfigKey, string(data))
@@ -689,7 +689,7 @@ func TestCreateCardStoreOrderAllowsUnregisteredEmailWhenTenantExplicit(t *testin
 	}))
 	defer paySrv.Close()
 
-	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentAPIBaseURL: paySrv.URL, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop"})
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeFM, PaymentAPIBaseURL: paySrv.URL, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop"})
 	cfg.Products[0].Price = 10
 	data, _ := json.Marshal(cfg)
 	tenantSystem := scopedSystemSettingsForTenant("tenant_store", system)
@@ -1843,7 +1843,7 @@ func TestAlipayDirectNotifyDoesNotReviveIssueFailedOrder(t *testing.T) {
 
 func TestCreateCardStoreOrderDoesNotOverwriteFastPaidNotify(t *testing.T) {
 	system := newTestLLMServiceSystemSettings()
-	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop", NotifyURL: "https://hub.example.com/success"})
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeFM, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop", NotifyURL: "https://hub.example.com/success"})
 	cfg.Products[0].Price = 10
 	cfgData, _ := json.Marshal(cfg)
 	_ = system.Set(context.Background(), cardStoreConfigKey, string(cfgData))
@@ -1893,7 +1893,7 @@ func TestCreateCardStoreOrderDoesNotOverwriteFastPaidNotify(t *testing.T) {
 
 func TestCreateCardStoreOrderPaymentFailureDoesNotOverwriteFastPaidNotify(t *testing.T) {
 	system := newTestLLMServiceSystemSettings()
-	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop", NotifyURL: "https://hub.example.com/success"})
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeFM, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop", NotifyURL: "https://hub.example.com/success"})
 	cfg.Products[0].Price = 10
 	cfgData, _ := json.Marshal(cfg)
 	_ = system.Set(context.Background(), cardStoreConfigKey, string(cfgData))

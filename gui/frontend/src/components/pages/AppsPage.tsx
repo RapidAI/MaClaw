@@ -4,7 +4,7 @@ import { CancelNLSkillRun, GetMISDataConfig, GetNLSkillRunStatus, ListSkillAppMa
 import './AppsPage.css';
 
 type AppKind = 'enterprise_app' | 'tool_app' | 'automation_app';
-type StudioTab = 'create' | 'manage' | 'market';
+type StudioTab = 'create' | 'manage' | 'market' | 'publish';
 type AppMoveTarget = -1 | 1 | 'top' | 'bottom';
 
 type AppEntry = {
@@ -17,6 +17,7 @@ type AppEntry = {
     accent: string;
     pinned?: boolean;
     recentUsedAt?: string;
+    version?: number;
     source: 'builtin' | 'skill' | 'datasrv' | 'market' | 'local';
     manifest?: AppManifestBinding;
 };
@@ -125,6 +126,61 @@ type AppLayoutState = {
     recentUsedAtById?: Record<string, string>;
 };
 
+type AppPublishStatus = 'submitted' | 'review_failed' | 'approved' | 'published' | 'deprecated' | 'revoked';
+
+type AppReviewIssue = {
+    path?: string;
+    severity?: string;
+    message: string;
+    suggestion?: string;
+};
+
+type AppInstallResultItem = {
+    key: string;
+    name: string;
+    icon: AppIconName;
+    accent: string;
+    action: 'installed' | 'upgraded' | 'skipped';
+    detail: string;
+};
+
+type AppPublishSubmission = {
+    id: string;
+    appID: string;
+    submittedAt: string;
+    status: AppPublishStatus;
+    channel?: 'local' | 'hub';
+    reviewedAt?: string;
+    publishedAt?: string;
+    reviewer?: string;
+    riskLevel?: string;
+    approvedScopes?: string[];
+    reviewIssues?: AppReviewIssue[];
+    modifiedAt?: string;
+    version?: number;
+    message?: string;
+};
+
+type AppPackageSubmissionSummary = {
+    submissionID: string;
+    submittedAt: string;
+    status: AppPublishStatus | string;
+    channel: 'local' | 'hub' | string;
+    appIDs: string[];
+    appNames: string[];
+    packageSHA: string;
+    packageBytes: number;
+    reviewedAt: string;
+    publishedAt: string;
+    reviewer: string;
+    riskLevel: string;
+    approvedScopes: string[];
+    reviewIssues: AppReviewIssue[];
+    eventCount: number;
+    lastEventAt: string;
+    message: string;
+};
+
 type MISDataConfig = {
     enabled?: boolean;
     endpoint?: string;
@@ -165,6 +221,7 @@ type SkillAppManifestEntry = {
 
 const storageKey = 'maclaw:apps-panel:v1';
 const runHistoryStorageKey = 'maclaw:apps-run-history:v1';
+const publishSubmissionStorageKey = 'maclaw:apps-publish-submissions:v1';
 const maxPinnedApps = 6;
 const maxSkillAppStagingBytes = 25 * 1024 * 1024;
 const allowedOutputModes = ['docx', 'xlsx', 'pdf', 'json', 'txt'];
@@ -191,6 +248,7 @@ const labels = {
         appRunning: '\u8fd0\u884c\u4e2d',
         apps: '\u5e94\u7528',
         appStudio: '\u5e94\u7528\u7a0b\u5e8f\u5de5\u4f5c\u5ba4',
+        appStudioShort: '\u5de5\u4f5c\u5ba4',
         studioSubtitle: '\u521b\u5efa\u3001\u7ba1\u7406\u3001\u4ece\u4f01\u4e1a\u80fd\u529b\u5e02\u573a\u6dfb\u52a0\u5e94\u7528\u3002',
         createTab: '\u521b\u5efa\u5e94\u7528',
         promptDraft: '\u7528\u5bf9\u8bdd\u751f\u6210\u8349\u7a3f',
@@ -198,6 +256,57 @@ const labels = {
         draftPromptPlaceholder: '\u4f8b\uff1a\u505a\u4e00\u4e2a\u5408\u540c\u5f52\u6863\u5e94\u7528\uff0c\u4e0a\u4f20 Word/PDF\uff0c\u8f93\u51fa\u5f52\u6863\u7f16\u53f7\u548c\u5ba1\u6838\u7ed3\u679c',
         manageTab: '\u5e94\u7528\u7ba1\u7406',
         marketTab: '\u4ece\u5e02\u573a\u6dfb\u52a0',
+        publishTab: '\u5ba1\u6838/\u53d1\u5e03',
+        publishSubtitle: '\u68c0\u67e5\u672c\u5730\u5e94\u7528\u662f\u5426\u53ef\u4e0a\u4f20\u5230\u4f01\u4e1a\u80fd\u529b\u5e02\u573a\u3002',
+        publishChecklist: '\u53d1\u5e03\u68c0\u67e5',
+        readyToSubmit: '\u53ef\u63d0\u4ea4',
+        needsWork: '\u9700\u8865\u9f50',
+        submitPackage: '\u63d0\u4ea4\u5305\u9884\u89c8',
+        copySubmitPackage: '\u590d\u5236\u63d0\u4ea4\u5305',
+        noPublishApps: '\u6682\u65e0\u672c\u5730\u5e94\u7528\u53ef\u53d1\u5e03',
+        submitReview: '\u63d0\u4ea4\u5ba1\u6838',
+        submittedReview: '\u5df2\u63d0\u4ea4',
+        pendingReview: '\u7b49\u5f85\u4f01\u4e1a\u5e02\u573a\u5ba1\u6838',
+        localReviewPending: '\u672c\u5730\u5f85\u540c\u6b65',
+        localModifiedReview: '\u672c\u5730\u5df2\u4fee\u6539\uff0c\u9700\u91cd\u65b0\u63d0\u4ea4',
+        localModifiedAt: '\u672c\u5730\u4fee\u6539',
+        submitReviewBusy: '\u63d0\u4ea4\u4e2d',
+        submitReviewLocalFallback: '\u4f01\u4e1a\u5e02\u573a\u6682\u672a\u8fde\u63a5\uff0c\u5df2\u4fdd\u5b58\u4e3a\u672c\u5730\u5f85\u540c\u6b65\u63d0\u4ea4\u3002',
+        localSubmissionQueue: '\u672c\u673a\u63d0\u4ea4\u961f\u5217',
+        noLocalSubmissionQueue: '\u6682\u65e0\u672c\u673a\u5f85\u540c\u6b65\u63d0\u4ea4',
+        localSubmissionQueueError: '\u63d0\u4ea4\u961f\u5217\u8bfb\u53d6\u5931\u8d25',
+        localSubmissionQueueLoading: '\u63d0\u4ea4\u961f\u5217\u8bfb\u53d6\u4e2d',
+        refreshQueue: '\u5237\u65b0',
+        refreshingQueue: '\u5237\u65b0\u4e2d',
+        queueRefreshedAt: '\u6700\u540e\u5237\u65b0',
+        copyQueuePackage: '\u590d\u5236\u961f\u5217\u5305',
+        copyQueueAudit: '\u590d\u5236\u5ba1\u8ba1',
+        viewQueueDetail: '\u67e5\u770b\u8be6\u60c5',
+        hideQueueDetail: '\u6536\u8d77\u8be6\u60c5',
+        queueDetailLoading: '\u8be6\u60c5\u8bfb\u53d6\u4e2d',
+        queueDetailTitle: '\u63d0\u4ea4\u8be6\u60c5',
+        queueDetailPackageApps: '\u5305\u542b\u5e94\u7528',
+        queueDetailEvents: '\u5ba1\u8ba1\u4e8b\u4ef6',
+        copyingQueuePackage: '\u590d\u5236\u4e2d',
+        queuePackageCopied: '\u5df2\u590d\u5236',
+        queueAuditCopied: '\u5ba1\u8ba1\u5df2\u590d\u5236',
+        queuePackageUnavailable: '\u65e0\u6cd5\u8bfb\u53d6\u5b8c\u6574\u5305',
+        reviewIssues: '\u5ba1\u6838\u95ee\u9898',
+        reviewIssuesMore: '\u53e6',
+        reviewIssuesMoreUnit: '\u9879',
+        fixReviewIssue: '\u53bb\u4fee\u590d',
+        appVersion: '\u7248\u672c',
+        reviewer: '\u5ba1\u6838\u4eba',
+        riskLevel: '\u98ce\u9669',
+        approvedScopes: '\u6279\u51c6\u6743\u9650',
+        eventHistory: '\u4e8b\u4ef6',
+        reviewFailed: '\u5ba1\u6838\u9700\u4fee\u6539',
+        reviewApproved: '\u5ba1\u6838\u901a\u8fc7',
+        reviewPublished: '\u5df2\u53d1\u5e03',
+        reviewDeprecated: '\u5df2\u505c\u6b62\u65b0\u88c5',
+        reviewRevoked: '\u5df2\u64a4\u56de',
+        submissionId: '\u63d0\u4ea4\u7f16\u53f7',
+        withdrawSubmission: '\u64a4\u56de\u63d0\u4ea4',
         open: '\u6253\u5f00\u5e94\u7528',
         run: '\u6267\u884c',
         reset: '\u91cd\u7f6e',
@@ -226,6 +335,8 @@ const labels = {
         noRunHistory: '\u6682\u65e0\u8fd0\u884c\u8bb0\u5f55',
         clearHistory: '\u6e05\u7a7a\u5386\u53f2',
         submitted: '\u5df2\u63d0\u4ea4',
+        noOpenAppTitle: '\u9009\u62e9\u5e94\u7528',
+        noOpenAppHint: '\u70b9\u51fb\u5de6\u4fa7\u56fe\u6807\u540e\uff0c\u5e94\u7528\u5c06\u5728\u8fd9\u91cc\u4ee5 tab \u6253\u5f00\u3002',
         noApps: '\u6ca1\u6709\u5339\u914d\u7684\u5e94\u7528',
         noMoreApps: '\u6ca1\u6709\u66f4\u591a\u5e94\u7528',
         pin: '\u7f6e\u9876',
@@ -274,8 +385,13 @@ const labels = {
         installManifest: '\u4ece Manifest \u5b89\u88c5',
         pasteManifest: '\u7c98\u8d34 maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json',
         install: '\u5b89\u88c5',
+        confirmHighRiskInstall: '\u786e\u8ba4\u5b89\u88c5',
+        highRiskInstallWarning: '\u9009\u4e2d\u7684\u5347\u7ea7\u5305\u5305\u542b\u9ad8\u98ce\u9669\u65b0\u6743\u9650\uff0c\u9700\u518d\u6b21\u786e\u8ba4\u3002',
         installPreview: '\u5b89\u88c5\u9884\u89c8',
         willInstall: '\u5c06\u5b89\u88c5',
+        willUpgrade: '\u5c06\u5347\u7ea7',
+        permissionChanges: '\u6743\u9650\u53d8\u5316',
+        highRiskPermission: '\u9ad8\u98ce\u9669',
         willSkip: '\u5c06\u8df3\u8fc7',
         alreadyInstalled: '\u5df2\u5b89\u88c5',
         duplicateApp: '\u91cd\u590d\u5e94\u7528',
@@ -283,7 +399,12 @@ const labels = {
         selectAll: '\u5168\u9009',
         clearSelection: '\u5168\u4e0d\u9009',
         installableCount: '\u53ef\u5b89\u88c5',
+        upgradeableCount: '\u53ef\u5347\u7ea7',
         installedCount: '\u5df2\u5b89\u88c5',
+        upgradedCount: '\u5df2\u5347\u7ea7',
+        upgradedItem: '\u5df2\u5347\u7ea7',
+        skippedItem: '\u5df2\u8df3\u8fc7',
+        installDetails: '\u5b89\u88c5\u660e\u7ec6',
         skippedCount: '\u5df2\u8df3\u8fc7',
         installError: '\u65e0\u6548 Manifest',
         parseError: 'JSON \u89e3\u6790\u5931\u8d25',
@@ -308,6 +429,7 @@ const labels = {
         appRunning: 'Running',
         apps: 'Apps',
         appStudio: 'App Studio',
+        appStudioShort: 'Studio',
         studioSubtitle: 'Create, manage, and add apps from the capability market.',
         createTab: 'Create app',
         promptDraft: 'Generate draft from chat',
@@ -315,6 +437,57 @@ const labels = {
         draftPromptPlaceholder: 'Example: build a contract filing app, upload Word/PDF, output archive number and review result',
         manageTab: 'Manage apps',
         marketTab: 'Add from market',
+        publishTab: 'Review / publish',
+        publishSubtitle: 'Check whether local apps are ready for upload to the enterprise capability market.',
+        publishChecklist: 'Publish checklist',
+        readyToSubmit: 'Ready to submit',
+        needsWork: 'Needs work',
+        submitPackage: 'Submission package preview',
+        copySubmitPackage: 'Copy submission package',
+        noPublishApps: 'No local apps ready for publishing yet',
+        submitReview: 'Submit for review',
+        submittedReview: 'Submitted',
+        pendingReview: 'Waiting for enterprise market review',
+        localReviewPending: 'Local sync pending',
+        localModifiedReview: 'Modified locally, resubmit required',
+        localModifiedAt: 'Local change',
+        submitReviewBusy: 'Submitting',
+        submitReviewLocalFallback: 'Enterprise market is not connected yet; saved as a local pending submission.',
+        localSubmissionQueue: 'Local submission queue',
+        noLocalSubmissionQueue: 'No local pending submissions',
+        localSubmissionQueueError: 'Failed to read submission queue',
+        localSubmissionQueueLoading: 'Reading submission queue',
+        refreshQueue: 'Refresh',
+        refreshingQueue: 'Refreshing',
+        queueRefreshedAt: 'Last refreshed',
+        copyQueuePackage: 'Copy queued package',
+        copyQueueAudit: 'Copy audit',
+        viewQueueDetail: 'View details',
+        hideQueueDetail: 'Hide details',
+        queueDetailLoading: 'Reading details',
+        queueDetailTitle: 'Submission details',
+        queueDetailPackageApps: 'Package apps',
+        queueDetailEvents: 'Audit events',
+        copyingQueuePackage: 'Copying',
+        queuePackageCopied: 'Copied',
+        queueAuditCopied: 'Audit copied',
+        queuePackageUnavailable: 'Full package unavailable',
+        reviewIssues: 'Review issues',
+        reviewIssuesMore: 'plus',
+        reviewIssuesMoreUnit: 'more',
+        fixReviewIssue: 'Fix',
+        appVersion: 'Version',
+        reviewer: 'Reviewer',
+        riskLevel: 'Risk',
+        approvedScopes: 'Approved scopes',
+        eventHistory: 'Events',
+        reviewFailed: 'Changes requested',
+        reviewApproved: 'Approved',
+        reviewPublished: 'Published',
+        reviewDeprecated: 'Deprecated',
+        reviewRevoked: 'Revoked',
+        submissionId: 'Submission ID',
+        withdrawSubmission: 'Withdraw submission',
         open: 'Open app',
         run: 'Run',
         reset: 'Reset',
@@ -343,6 +516,8 @@ const labels = {
         noRunHistory: 'No runs yet',
         clearHistory: 'Clear history',
         submitted: 'Submitted',
+        noOpenAppTitle: 'Choose an app',
+        noOpenAppHint: 'Click an icon on the left to open the app here as a tab.',
         noApps: 'No matching apps',
         noMoreApps: 'No more apps',
         pin: 'Pin',
@@ -391,8 +566,13 @@ const labels = {
         installManifest: 'Install from Manifest',
         pasteManifest: 'Paste maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json',
         install: 'Install',
+        confirmHighRiskInstall: 'Confirm install',
+        highRiskInstallWarning: 'Selected upgrades include high-risk new permissions; confirm once more.',
         installPreview: 'Install preview',
         willInstall: 'Will install',
+        willUpgrade: 'Will upgrade',
+        permissionChanges: 'Permission changes',
+        highRiskPermission: 'High risk',
         willSkip: 'Will skip',
         alreadyInstalled: 'Already installed',
         duplicateApp: 'Duplicate app',
@@ -400,7 +580,12 @@ const labels = {
         selectAll: 'Select all',
         clearSelection: 'Select none',
         installableCount: 'Installable',
+        upgradeableCount: 'Upgradeable',
         installedCount: 'Installed',
+        upgradedCount: 'Upgraded',
+        upgradedItem: 'Upgraded',
+        skippedItem: 'Skipped',
+        installDetails: 'Install details',
         skippedCount: 'Skipped',
         installError: 'Invalid Manifest',
         parseError: 'JSON parse failed',
@@ -560,8 +745,18 @@ function normalizeStoredAppEntry(app: Partial<AppEntry> | undefined, custom = fa
         kind: app.kind === 'enterprise_app' || app.kind === 'automation_app' ? app.kind : 'tool_app',
         icon: normalizeSkillAppIcon(app.icon),
         accent: String(app.accent || defaultAccentForKind(app.kind === 'enterprise_app' || app.kind === 'automation_app' ? app.kind : 'tool_app')),
+        version: normalizeAppVersion(app.version),
         source: migratedSource,
     };
+}
+
+function normalizeAppVersion(value: unknown) {
+    const version = Number(value);
+    return Number.isFinite(version) && version > 0 ? Math.floor(version) : 1;
+}
+
+function nextAppVersion(app: AppEntry) {
+    return normalizeAppVersion(app.version) + 1;
 }
 
 function isEditedInitialApp(app: AppEntry) {
@@ -573,6 +768,7 @@ function isEditedInitialApp(app: AppEntry) {
         base.kind !== app.kind ||
         base.icon !== app.icon ||
         base.accent !== app.accent ||
+        normalizeAppVersion(base.version) !== normalizeAppVersion(app.version) ||
         base.source !== app.source ||
         JSON.stringify(base.manifest || null) !== JSON.stringify(app.manifest || null);
 }
@@ -740,6 +936,7 @@ function skillManifestToApp(entry: SkillAppManifestEntry): AppEntry | null {
         kind: 'tool_app',
         icon: normalizeSkillAppIcon(entry.icon),
         accent: '#7c3f58',
+        version: normalizeAppVersion((entry as any).version),
         source: 'skill',
         manifest: makeSkillManifest(skillID, inputMode, entry.output_modes, entry.fields, !!entry.multiple_files),
     };
@@ -911,6 +1108,327 @@ function clearAppRunHistory(appID: string) {
     }
 }
 
+function readPublishSubmissions(): Record<string, AppPublishSubmission> {
+    if (typeof window === 'undefined') return {};
+    try {
+        const parsed = JSON.parse(window.localStorage.getItem(publishSubmissionStorageKey) || '{}') as Record<string, AppPublishSubmission>;
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function writePublishSubmissions(submissions: Record<string, AppPublishSubmission>) {
+    if (typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(publishSubmissionStorageKey, JSON.stringify(submissions));
+    } catch {
+        // Publish submission state is local UX state; ignore storage failures.
+    }
+}
+
+function clearAppPublishSubmission(appID: string) {
+    if (typeof window === 'undefined' || !appID) return;
+    const submissions = readPublishSubmissions();
+    if (!submissions[appID]) return;
+    delete submissions[appID];
+    writePublishSubmissions(submissions);
+}
+
+function markAppPublishSubmissionModified(appID: string, version?: number) {
+    if (typeof window === 'undefined' || !appID) return;
+    const submissions = readPublishSubmissions();
+    const existing = submissions[appID];
+    if (!existing) return;
+    writePublishSubmissions({
+        ...submissions,
+        [appID]: {
+            ...existing,
+            modifiedAt: new Date().toISOString(),
+            version: version || existing.version,
+        },
+    });
+}
+
+function publishSubmissionStatusLabel(submission: AppPublishSubmission, text: typeof labels.zh) {
+    if (submission.modifiedAt) return text.localModifiedReview;
+    if (submission.status === 'submitted' && submission.channel === 'local') return text.localReviewPending;
+    switch (submission.status) {
+        case 'review_failed':
+            return text.reviewFailed;
+        case 'approved':
+            return text.reviewApproved;
+        case 'published':
+            return text.reviewPublished;
+        case 'deprecated':
+            return text.reviewDeprecated;
+        case 'revoked':
+            return text.reviewRevoked;
+        case 'submitted':
+        default:
+            return text.pendingReview;
+    }
+}
+
+function normalizeFreshPublishSubmission(submission: AppPublishSubmission): AppPublishSubmission {
+    return {
+        id: submission.id,
+        appID: submission.appID,
+        submittedAt: submission.submittedAt,
+        status: submission.status,
+        channel: submission.channel,
+        reviewedAt: submission.reviewedAt,
+        publishedAt: submission.publishedAt,
+        reviewer: submission.reviewer,
+        riskLevel: submission.riskLevel,
+        approvedScopes: submission.approvedScopes,
+        reviewIssues: submission.reviewIssues,
+        message: submission.message,
+        version: submission.version,
+    };
+}
+
+async function submitAppPackageToEnterpriseMarket(app: AppEntry, packageManifest: Record<string, unknown>): Promise<AppPublishSubmission | null> {
+    const bridge = (globalThis as any)?.window?.go?.main?.App?.SubmitMaclawAppPackage;
+    if (typeof bridge !== 'function') return null;
+    const response = await bridge(JSON.stringify(packageManifest));
+    const payload = response && typeof response === 'object' ? response : {};
+    const now = new Date().toISOString();
+    const approvedScopes = parseStringList(payload.approved_scopes || payload.approvedScopes);
+    const reviewIssues = parseReviewIssues(payload.review_issues || payload.reviewIssues);
+    return {
+        id: String(payload.submission_id || payload.submissionID || payload.id || `market-review-${app.id}-${Date.now().toString(36)}`),
+        appID: app.id,
+        submittedAt: String(payload.submitted_at || payload.submittedAt || now),
+        status: normalizePublishStatus(payload.status) || 'submitted',
+        channel: payload.channel === 'local' ? 'local' : 'hub',
+        reviewedAt: payload.reviewed_at || payload.reviewedAt,
+        publishedAt: payload.published_at || payload.publishedAt,
+        reviewer: payload.reviewer,
+        riskLevel: normalizeRiskLevel(payload.risk_level || payload.riskLevel),
+        approvedScopes: approvedScopes.length > 0 ? approvedScopes : undefined,
+        reviewIssues: reviewIssues.length > 0 ? reviewIssues : undefined,
+        version: normalizeAppVersion(payload.version || payload.app_version || payload.appVersion || app.version),
+        message: payload.message,
+    };
+}
+
+function parseStringList(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return Array.from(new Set(value.map((item) => String(item || '').trim()).filter(Boolean)));
+}
+
+function normalizeRiskLevel(value: unknown): string {
+    const risk = String(value || '').trim();
+    return ['low', 'medium', 'high', 'critical'].includes(risk) ? risk : '';
+}
+
+function parseReviewIssues(value: unknown): AppReviewIssue[] {
+    if (!Array.isArray(value)) return [];
+    return value.map((item) => {
+        const issue = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+        return {
+            path: String(issue.path || '').trim() || undefined,
+            severity: String(issue.severity || '').trim() || undefined,
+            message: String(issue.message || '').trim(),
+            suggestion: String(issue.suggestion || '').trim() || undefined,
+        };
+    }).filter((issue) => issue.message);
+}
+
+function reviewIssueSummary(issue: AppReviewIssue) {
+    return [issue.severity, issue.path, issue.message, issue.suggestion]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .join(' · ');
+}
+
+function reviewIssuesSummary(issues: AppReviewIssue[], text: typeof labels.zh) {
+    const visible = issues.slice(0, 3).map(reviewIssueSummary).filter(Boolean);
+    const remaining = issues.length - visible.length;
+    return [
+        ...visible,
+        remaining > 0 ? `${text.reviewIssuesMore} ${remaining} ${text.reviewIssuesMoreUnit}` : '',
+    ].filter(Boolean).join('；');
+}
+
+function packageAppNamesFromRecord(record: Record<string, unknown> | null): string[] {
+    const pkg = record?.package || record?.Package;
+    const apps = pkg && typeof pkg === 'object' && !Array.isArray(pkg) ? (pkg as Record<string, unknown>).apps : [];
+    if (!Array.isArray(apps)) return [];
+    return apps.map((item) => {
+        const wrapper = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+        const app = wrapper.app && typeof wrapper.app === 'object' ? wrapper.app as Record<string, unknown> : {};
+        return String(app.name || app.id || '').trim();
+    }).filter(Boolean);
+}
+
+function eventSummariesFromRecord(record: Record<string, unknown> | null): string[] {
+    const events = record?.events || record?.Events;
+    if (!Array.isArray(events)) return [];
+    return events.slice(0, 3).map((item) => {
+        const event = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+        return [event.at, event.status, event.channel, event.submission_id || event.submissionID]
+            .map((value) => String(value || '').trim())
+            .filter(Boolean)
+            .join(' · ');
+    }).filter(Boolean);
+}
+
+async function listMaclawAppPackageSubmissions(limit = 8): Promise<AppPackageSubmissionSummary[] | null> {
+    const bridge = (globalThis as any)?.window?.go?.main?.App?.ListMaclawAppPackageSubmissions;
+    if (typeof bridge !== 'function') return null;
+    const response = await bridge(limit);
+    if (!Array.isArray(response)) return [];
+    return response.map((item) => ({
+        submissionID: String(item?.submission_id || item?.submissionID || ''),
+        submittedAt: String(item?.submitted_at || item?.submittedAt || ''),
+        status: String(item?.status || ''),
+        channel: String(item?.channel || ''),
+        appIDs: Array.isArray(item?.app_ids)
+            ? item.app_ids.map((value: unknown) => String(value)).filter(Boolean)
+            : Array.isArray(item?.appIDs)
+                ? item.appIDs.map((value: unknown) => String(value)).filter(Boolean)
+                : [],
+        appNames: Array.isArray(item?.app_names)
+            ? item.app_names.map((value: unknown) => String(value)).filter(Boolean)
+            : Array.isArray(item?.appNames)
+                ? item.appNames.map((value: unknown) => String(value)).filter(Boolean)
+                : [],
+        packageSHA: String(item?.package_sha256 || item?.packageSHA || ''),
+        packageBytes: Number(item?.package_bytes || item?.packageBytes || 0) || 0,
+        reviewedAt: String(item?.reviewed_at || item?.reviewedAt || ''),
+        publishedAt: String(item?.published_at || item?.publishedAt || ''),
+        reviewer: String(item?.reviewer || ''),
+        riskLevel: normalizeRiskLevel(item?.risk_level || item?.riskLevel),
+        approvedScopes: parseStringList(item?.approved_scopes || item?.approvedScopes),
+        reviewIssues: parseReviewIssues(item?.review_issues || item?.reviewIssues),
+        eventCount: Number(item?.event_count || item?.eventCount || 0) || 0,
+        lastEventAt: String(item?.last_event_at || item?.lastEventAt || ''),
+        message: String(item?.message || ''),
+    })).filter((item) => item.submissionID);
+}
+
+function hasMaclawAppPackageSubmissionDetailBridge() {
+    return typeof (globalThis as any)?.window?.go?.main?.App?.GetMaclawAppPackageSubmission === 'function';
+}
+
+async function getMaclawAppPackageSubmissionPackage(submissionID: string): Promise<Record<string, unknown> | null> {
+    const response = await getMaclawAppPackageSubmissionRecord(submissionID);
+    if (!response) return null;
+    const pkg = response.package || response.Package;
+    return pkg && typeof pkg === 'object' && !Array.isArray(pkg) ? pkg as Record<string, unknown> : null;
+}
+
+async function getMaclawAppPackageSubmissionRecord(submissionID: string): Promise<Record<string, unknown> | null> {
+    const bridge = (globalThis as any)?.window?.go?.main?.App?.GetMaclawAppPackageSubmission;
+    if (typeof bridge !== 'function' || !submissionID) return null;
+    const response = await bridge(submissionID);
+    if (!response || typeof response !== 'object') return null;
+    return response as Record<string, unknown>;
+}
+
+async function withdrawMaclawAppPackageSubmission(submissionID: string): Promise<boolean | null> {
+    const bridge = (globalThis as any)?.window?.go?.main?.App?.WithdrawMaclawAppPackageSubmission;
+    if (typeof bridge !== 'function' || !submissionID) return null;
+    return !!(await bridge(submissionID));
+}
+
+function normalizePublishStatus(value: unknown): AppPublishStatus | '' {
+    const status = String(value || '').trim();
+    return status === 'submitted' || status === 'review_failed' || status === 'approved' || status === 'published' || status === 'deprecated' || status === 'revoked'
+        ? status
+        : '';
+}
+
+function formatPackageBytes(bytes: number) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function mergePublishSubmissionsFromQueue(current: Record<string, AppPublishSubmission>, summaries: AppPackageSubmissionSummary[], appIds: Set<string>) {
+    let changed = false;
+    const next = { ...current };
+    summaries.forEach((summary) => {
+        const status = normalizePublishStatus(summary.status);
+        if (!status) return;
+        summary.appIDs.forEach((appID) => {
+            if (!appIds.has(appID)) return;
+            const existing = next[appID];
+            const merged: AppPublishSubmission = {
+                id: summary.submissionID,
+                appID,
+                submittedAt: summary.submittedAt || existing?.submittedAt || new Date().toISOString(),
+                status,
+                channel: summary.channel === 'hub' ? 'hub' : 'local',
+                message: summary.message || existing?.message,
+            reviewedAt: summary.reviewedAt || existing?.reviewedAt,
+                publishedAt: summary.publishedAt || existing?.publishedAt,
+                reviewer: summary.reviewer || existing?.reviewer,
+                riskLevel: summary.riskLevel || existing?.riskLevel,
+                approvedScopes: summary.approvedScopes.length > 0 ? summary.approvedScopes : existing?.approvedScopes,
+                reviewIssues: summary.reviewIssues.length > 0 ? summary.reviewIssues : existing?.reviewIssues,
+                modifiedAt: existing?.modifiedAt,
+                version: existing?.version,
+            };
+            if (JSON.stringify(existing || null) !== JSON.stringify(merged)) {
+                next[appID] = merged;
+                changed = true;
+            }
+        });
+    });
+    return changed ? next : current;
+}
+
+function latestAppRunEvidence(app: AppEntry): AppRunHistoryEntry | null {
+    return loadAppRunHistory(app.id).find((item) => item.status === 'done') || null;
+}
+
+function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmission) {
+    const evidence = latestAppRunEvidence(app);
+    const localEvidenceAt = evidence?.at || app.recentUsedAt || '';
+    return {
+        status: submission?.status || (localEvidenceAt ? 'local_tested' : 'draft'),
+        riskLevel: submission?.riskLevel || (app.kind === 'enterprise_app' ? 'medium' : 'low'),
+        requiredScopes: appRequiredScopes(app),
+        testEvidence: {
+            runId: evidence?.runID,
+            artifactPath: evidence?.artifactPath,
+            verifiedAt: localEvidenceAt || undefined,
+        },
+        submission: submission ? {
+            id: submission.id,
+            status: submission.status,
+            channel: submission.channel,
+            submittedAt: submission.submittedAt,
+            reviewedAt: submission.reviewedAt,
+            publishedAt: submission.publishedAt,
+            reviewer: submission.reviewer,
+            riskLevel: submission.riskLevel,
+            approvedScopes: submission.approvedScopes,
+            reviewIssues: submission.reviewIssues,
+            modifiedAt: submission.modifiedAt,
+            version: submission.version || normalizeAppVersion(app.version),
+            message: submission.message,
+        } : undefined,
+    };
+}
+
+function appRequiredScopes(app: AppEntry): string[] {
+    const scopes = app.kind === 'enterprise_app'
+        ? [app.manifest?.datasrv?.preferredAction, app.manifest?.datasrv?.preferredView, app.manifest?.datasrv?.preferredReport, app.manifest?.datasrv?.preferredDashboard]
+        : app.kind === 'tool_app'
+            ? [app.manifest?.skill?.id]
+            : [];
+    return Array.from(new Set(scopes.map((scope) => String(scope || '').trim()).filter(Boolean)));
+}
+
+function highRiskScopes(scopes: string[]) {
+    return scopes.filter((scope) => /finance|payment|admin|audit|approve|delete|write|upsert|commit/i.test(scope));
+}
+
 function formatRunHistoryTime(iso: string) {
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) return iso;
@@ -1072,7 +1590,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
     const [apps, setApps] = useState(() => applyLayoutState(initialApps, readLayoutState()));
     const [query, setQuery] = useState('');
     const [category, setCategory] = useState('all');
-    const [selectedId, setSelectedId] = useState(initialApps[0]?.id ?? '');
+    const [selectedId, setSelectedId] = useState('');
     const [openTabs, setOpenTabs] = useState<string[]>([]);
     const [activeTabId, setActiveTabId] = useState('');
     const [studioOpen, setStudioOpen] = useState(false);
@@ -1138,7 +1656,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
     const pinnedSectionIds = new Set(pinnedApps.map((app) => app.id));
     const visibleListApps = pinnedSectionIds.size > 0 ? filteredApps.filter((app) => !pinnedSectionIds.has(app.id)) : filteredApps;
     const panelFilterSummary = filterSummaryText({ query, category, count: filteredApps.length, lang, allLabel: text.all });
-    const selectedApp = apps.find((app) => app.id === selectedId) ?? filteredApps[0] ?? apps[0];
+    const selectedApp = apps.find((app) => app.id === selectedId);
     const openTabApps = openTabs.map((id) => apps.find((app) => app.id === id)).filter((app): app is AppEntry => !!app);
     const activeApp = apps.find((app) => app.id === activeTabId) ?? openTabApps[0];
     const hiddenApps = initialApps.filter((app) => !apps.some((item) => item.id === app.id));
@@ -1194,6 +1712,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
 
     const updateApp = (appId: string, patch: Partial<AppEntry>) => {
         setApps((current) => current.map((app) => app.id === appId ? { ...app, ...patch } : app));
+        markAppPublishSubmissionModified(appId, patch.version);
     };
 
     const duplicateApp = (appId: string) => {
@@ -1207,6 +1726,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
             id,
             name,
             source: 'local',
+            version: 1,
             pinned: false,
             recentUsedAt: undefined,
             manifest: source.manifest ? {
@@ -1223,6 +1743,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
 
     const removeApp = (appId: string) => {
         clearAppRunHistory(appId);
+        clearAppPublishSubmission(appId);
         setApps((current) => current.filter((app) => app.id !== appId));
         setOpenTabs((current) => {
             const index = current.indexOf(appId);
@@ -1252,11 +1773,34 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
     };
 
     const installMarketApp = (app: AppEntry) => {
+        const existing = apps.find((item) => appInstallIdentityKeys(app.id).some((id) => appInstallIdentityKeys(item.id).includes(id)));
         setApps((current) => {
-            if (current.some((item) => item.id === app.id)) return current;
+            const existingIndex = current.findIndex((item) => appInstallIdentityKeys(app.id).some((id) => appInstallIdentityKeys(item.id).includes(id)));
+            if (existingIndex >= 0) {
+                const existing = current[existingIndex];
+                if (normalizeAppVersion(app.version) <= normalizeAppVersion(existing.version)) return current;
+                const next = [...current];
+                next[existingIndex] = {
+                    ...app,
+                    id: existing.id,
+                    pinned: existing.pinned,
+                    category: existing.category,
+                    icon: existing.icon,
+                    accent: existing.accent,
+                    recentUsedAt: existing.recentUsedAt,
+                };
+                return next;
+            }
             return [...current, appWithAvailablePin(app, current)];
         });
-        setSelectedId(app.id);
+        setSelectedId(existing?.id || app.id);
+    };
+
+    const editAppFromStudio = (appId: string) => {
+        setSelectedId(appId);
+        setStudioOpen(true);
+        setStudioTab('manage');
+        setStudioEditAppId(appId);
     };
 
     const appStatusInfo = (app: AppEntry): { key: 'available' | 'running' | 'loading' | 'disabled' | 'error'; label: string } => {
@@ -1326,8 +1870,9 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                             </button>
                         )}
                     </div>
-                    <button className="apps-studio-button" type="button" title={text.appStudio} onClick={() => setStudioOpen(true)}>
+                    <button className="apps-studio-button" type="button" title={text.appStudio} aria-label={text.appStudio} onClick={() => setStudioOpen(true)}>
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+                        <span>{text.appStudioShort}</span>
                     </button>
                     <div className="apps-filter-row">
                         <span className="apps-filter-label">{text.category}</span>
@@ -1391,6 +1936,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                         onAddDiscoveredApp={addDiscoveredApp}
                         onCreateApp={addDiscoveredApp}
                         onInstallMarketApp={installMarketApp}
+                        onEditApp={editAppFromStudio}
                     />
                 ) : (
                     <AppRuntime
@@ -1423,7 +1969,11 @@ const AppRuntime = ({ tabs, activeApp, selectedApp, lang, onOpen, onActivate, on
     onUse: (appId: string) => void;
 }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
-    if (tabs.length === 0) return <AppPreview app={selectedApp} lang={lang} onOpen={selectedApp ? () => onOpen(selectedApp) : undefined} onUse={onUse} />;
+    if (tabs.length === 0) {
+        return selectedApp
+            ? <AppPreview app={selectedApp} lang={lang} onOpen={() => onOpen(selectedApp)} onUse={onUse} />
+            : <EmptyRuntime text={text} />;
+    }
     const activateTab = (appId: string, shouldFocus = false) => {
         onActivate(appId);
         if (!shouldFocus) return;
@@ -1490,6 +2040,16 @@ const AppRuntime = ({ tabs, activeApp, selectedApp, lang, onOpen, onActivate, on
         </>
     );
 };
+
+const EmptyRuntime = ({ text }: { text: typeof labels.zh }) => (
+    <div className="apps-runtime-empty">
+        <div className="apps-runtime-empty__icon" aria-hidden="true">
+            <Icon name="dashboard" />
+        </div>
+        <h3>{text.noOpenAppTitle}</h3>
+        <p>{text.noOpenAppHint}</p>
+    </div>
+);
 
 const getRuntimeSafeId = (appId: string) => appId.replace(/[^A-Za-z0-9_-]/g, '-');
 const getRuntimeTabId = (appId: string) => `app-tab-${getRuntimeSafeId(appId)}`;
@@ -1953,6 +2513,7 @@ const ManifestSummary = ({ app, lang }: { app: AppEntry; lang?: string }) => {
     const rows = [
         [zh ? '\u79c1\u6709\u6807\u8bc6' : 'Private marker', manifest.privateMarker],
         [zh ? '\u5b89\u88c5\u5355\u5143' : 'Install unit', manifest.installUnit],
+        [zh ? '\u7248\u672c' : 'Version', `v${normalizeAppVersion(app.version)}`],
         [zh ? '\u542f\u52a8\u6a21\u5f0f' : 'Launch mode', manifest.launchMode],
         [zh ? '\u7ed1\u5b9a\u80fd\u529b' : 'Binding', manifest.datasrv?.preferredAction || manifest.skill?.id || manifest.entryKind],
     ];
@@ -1971,7 +2532,7 @@ const ManifestSummary = ({ app, lang }: { app: AppEntry; lang?: string }) => {
     );
 };
 
-function appToManifest(app: AppEntry) {
+function appToManifest(app: AppEntry, submission?: AppPublishSubmission) {
     const manifest = app.manifest;
     return {
         schema: manifest?.schema || 'maclaw.app.v1',
@@ -1980,6 +2541,7 @@ function appToManifest(app: AppEntry) {
         app: {
             id: app.id,
             name: app.name,
+            version: normalizeAppVersion(app.version),
             description: app.description,
             category: app.category,
             kind: app.kind,
@@ -1994,15 +2556,16 @@ function appToManifest(app: AppEntry) {
                 pinned: !!app.pinned,
                 accent: app.accent,
             },
+            governance: appGovernanceForManifest(app, submission),
         },
     };
 }
 
-function appsToPackManifest(apps: AppEntry[]) {
+function appsToPackManifest(apps: AppEntry[], submissions: Record<string, AppPublishSubmission> = {}) {
     return {
         schema: 'maclaw.app.pack.v1',
         privateMarker: 'x_maclaw_apps',
-        apps: apps.map(appToManifest),
+        apps: apps.map((app) => appToManifest(app, submissions[app.id])),
     };
 }
 
@@ -2113,6 +2676,7 @@ function manifestToAppEntry(raw: any): AppEntry | null {
         icon,
         accent: String(app.panel?.accent || (kind === 'enterprise_app' ? '#2f5f98' : kind === 'automation_app' ? '#4b6572' : '#7c3f58')),
         pinned: !!app.panel?.pinned,
+        version: normalizeAppVersion(app.version || raw.version),
         source: 'market',
         manifest: {
             schema: 'maclaw.app.v1',
@@ -2159,14 +2723,28 @@ function manifestToAppEntries(raw: any): { apps: AppEntry[]; error?: string } {
     return { apps: [], error: undefined };
 }
 
-function buildInstallPlan(parsedApps: AppEntry[], installedIds: Set<string>) {
+function buildInstallPlan(parsedApps: AppEntry[], installedApps: AppEntry[]) {
+    const installedByIdentity = new Map<string, AppEntry>();
+    installedApps.forEach((app) => appInstallIdentityKeys(app.id).forEach((id) => installedByIdentity.set(id, app)));
     const seenIds = new Set<string>();
     return parsedApps.map((app, index) => {
         const identities = appInstallIdentityKeys(app.id);
-        const reason = identities.some((id) => installedIds.has(id)) ? 'installed' : identities.some((id) => seenIds.has(id)) ? 'duplicate' : 'install';
+        const installed = identities.map((id) => installedByIdentity.get(id)).find(Boolean);
+        const currentScopes = new Set(installed ? appRequiredScopes(installed) : []);
+        const addedScopes = appRequiredScopes(app).filter((scope) => !currentScopes.has(scope));
+        const reason = installed
+            ? normalizeAppVersion(app.version) > normalizeAppVersion(installed.version) ? 'upgrade' : 'installed'
+            : identities.some((id) => seenIds.has(id)) ? 'duplicate' : 'install';
         identities.forEach((id) => seenIds.add(id));
-        return { app, key: `${app.id}:${index}`, action: reason as 'install' | 'installed' | 'duplicate' };
+        return { app, installed, addedScopes, highRiskScopes: highRiskScopes(addedScopes), key: `${app.id}:${index}`, action: reason as 'install' | 'upgrade' | 'installed' | 'duplicate' };
     });
+}
+
+function installSummaryMessage(installedCount: number, upgradedCount: number, skippedCount: number, text: typeof labels.zh) {
+    const parts = [`${text.installedCount}: ${installedCount}`];
+    if (upgradedCount > 0) parts.push(`${text.upgradedCount}: ${upgradedCount}`);
+    parts.push(`${text.skippedCount}: ${skippedCount}`);
+    return parts.join(' · ');
 }
 
 function appInstallIdentityKeys(appId: string) {
@@ -2178,7 +2756,7 @@ function appInstallIdentityKeys(appId: string) {
     return Array.from(new Set(keys));
 }
 
-const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onAddDiscoveredApp, onCreateApp, onInstallMarketApp }: {
+const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, onEditApp }: {
     apps: AppEntry[];
     hiddenApps: AppEntry[];
     lang?: string;
@@ -2198,12 +2776,14 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
     onAddDiscoveredApp: (app: AppEntry) => void;
     onCreateApp: (app: AppEntry) => void;
     onInstallMarketApp: (app: AppEntry) => void;
+    onEditApp: (appId: string) => void;
 }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const studioTabs: Array<{ id: StudioTab; label: string }> = [
         { id: 'create', label: text.createTab },
         { id: 'manage', label: text.manageTab },
         { id: 'market', label: text.marketTab },
+        { id: 'publish', label: text.publishTab },
     ];
     const activeStudioTabIndex = Math.max(0, studioTabs.findIndex((item) => item.id === tab));
     const activateStudioTab = (nextTab: StudioTab, shouldFocus = false) => {
@@ -2269,6 +2849,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
                         {tab === 'create' && <CreateAppPane lang={lang} onCreateApp={onCreateApp} />}
                         {tab === 'manage' && <ManageAppsPane apps={apps} hiddenApps={hiddenApps} lang={lang} onTogglePin={onTogglePin} onUpdateApp={onUpdateApp} onDuplicateApp={onDuplicateApp} onMoveApp={onMoveApp} onRemoveApp={onRemoveApp} onRestoreApp={onRestoreApp} pendingEditAppId={pendingEditAppId} onPendingEditConsumed={onPendingEditConsumed} />}
                         {tab === 'market' && <MarketPane apps={apps} lang={lang} onInstallApp={onInstallMarketApp} />}
+                        {tab === 'publish' && <PublishPane apps={apps} lang={lang} onFixApp={onEditApp} />}
                     </div>
                 </div>
             </div>
@@ -2432,6 +3013,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             kind,
             icon,
             accent,
+            version: 1,
             source: 'local',
             manifest: kind === 'enterprise_app'
                 ? makeDataSrvManifest('custom', '', '', '', '')
@@ -2612,6 +3194,398 @@ const StudioCard = ({ title, description, selected, onSelect }: { title: string;
     </article>
 );
 
+type PublishCheck = {
+    label: string;
+    ok: boolean;
+    detail: string;
+};
+
+function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
+    const zh = isZh(lang);
+    const manifest = app.manifest;
+    const expectedLaunch = defaultLaunchModeForKind(app.kind);
+    const hasBinding = app.kind === 'enterprise_app'
+        ? !!manifest?.datasrv?.domain
+        : app.kind === 'tool_app'
+            ? !!manifest?.skill?.id
+            : true;
+    const evidence = latestAppRunEvidence(app);
+    const hasTestEvidence = !!evidence || !!app.recentUsedAt;
+    return [
+        {
+            label: zh ? '\u57fa\u672c\u4fe1\u606f' : 'Basic information',
+            ok: !!app.id && !!app.name && !!app.category && !!app.icon,
+            detail: zh ? '\u540d\u79f0\u3001\u5206\u7c7b\u3001\u56fe\u6807\u5b8c\u6574' : 'Name, category, and icon are present',
+        },
+        {
+            label: zh ? 'Manifest \u7ed3\u6784' : 'Manifest structure',
+            ok: !!manifest && manifest.privateMarker === 'x_maclaw_apps' && manifest.entryKind === app.kind && manifest.launchMode === expectedLaunch,
+            detail: zh ? `${app.kind} -> ${expectedLaunch}` : `${app.kind} -> ${expectedLaunch}`,
+        },
+        {
+            label: zh ? '\u7ed1\u5b9a\u80fd\u529b' : 'Capability binding',
+            ok: hasBinding,
+            detail: app.kind === 'enterprise_app'
+                ? (manifest?.datasrv?.domain || (zh ? '\u7f3a\u5c11 DataSrv domain' : 'Missing DataSrv domain'))
+                : app.kind === 'tool_app'
+                    ? (manifest?.skill?.id || (zh ? '\u7f3a\u5c11 Skill id' : 'Missing Skill id'))
+                    : (zh ? '\u81ea\u52a8\u5316\u63a7\u5236\u53f0' : 'Automation console'),
+        },
+        {
+            label: zh ? '\u8fd0\u884c\u8bc1\u636e' : 'Run evidence',
+            ok: hasTestEvidence,
+            detail: hasTestEvidence
+                ? evidence
+                    ? `${evidence.runID} · ${evidence.at}`
+                    : (zh ? '\u5df2\u6709\u6700\u8fd1\u4f7f\u7528\u8bb0\u5f55' : 'Recent use recorded')
+                : (zh ? '\u63d0\u4ea4\u5ba1\u6838\u524d\u5efa\u8bae\u5148\u8bd5\u8fd0\u884c\u4e00\u6b21' : 'Run the app once before review'),
+        },
+    ];
+}
+
+const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string; onFixApp: (appId: string) => void }) => {
+    const text = isZh(lang) ? labels.zh : labels.en;
+    const zh = isZh(lang);
+    const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
+    const [submissions, setSubmissions] = useState<Record<string, AppPublishSubmission>>(() => readPublishSubmissions());
+    const [submittingAppId, setSubmittingAppId] = useState('');
+    const [queueStatus, setQueueStatus] = useState<'loading' | 'ready' | 'unsupported' | 'error'>('loading');
+    const [queueRefreshing, setQueueRefreshing] = useState(false);
+    const [queueRefreshedAt, setQueueRefreshedAt] = useState('');
+    const [queueSummaries, setQueueSummaries] = useState<AppPackageSubmissionSummary[]>([]);
+    const [queuePackageCopyingId, setQueuePackageCopyingId] = useState('');
+    const [queuePackageCopiedId, setQueuePackageCopiedId] = useState('');
+    const [queueAuditCopiedId, setQueueAuditCopiedId] = useState('');
+    const [queuePackageErrorId, setQueuePackageErrorId] = useState('');
+    const [queueDetailOpenId, setQueueDetailOpenId] = useState('');
+    const [queueDetailLoadingId, setQueueDetailLoadingId] = useState('');
+    const [queueDetailRecords, setQueueDetailRecords] = useState<Record<string, Record<string, unknown>>>({});
+    const publishApps = apps.filter((app) => app.source === 'local');
+    const packageText = JSON.stringify(appsToPackManifest(publishApps, submissions), null, 2);
+    const refreshSubmissionQueue = async () => {
+        setQueueRefreshing(true);
+        try {
+            const summaries = await listMaclawAppPackageSubmissions(8);
+            if (summaries === null) {
+                setQueueStatus('unsupported');
+                setQueueSummaries([]);
+                return;
+            }
+            setQueueStatus('ready');
+            setQueueRefreshedAt(new Date().toISOString());
+            setQueueSummaries(summaries);
+            const appIds = new Set(publishApps.map((app) => app.id));
+            setSubmissions((current) => {
+                const next = mergePublishSubmissionsFromQueue(current, summaries, appIds);
+                if (next !== current) writePublishSubmissions(next);
+                return next;
+            });
+        } catch {
+            setQueueStatus('error');
+            setQueueSummaries([]);
+        } finally {
+            setQueueRefreshing(false);
+        }
+    };
+    useEffect(() => {
+        void refreshSubmissionQueue();
+    }, []);
+    const submitApp = async (app: AppEntry) => {
+        const submittedAt = new Date().toISOString();
+        setSubmittingAppId(app.id);
+        let submission: AppPublishSubmission | null = null;
+        try {
+            submission = await submitAppPackageToEnterpriseMarket(app, appsToPackManifest([app]));
+        } catch (error) {
+            submission = {
+                id: `local-review-${app.id}-${Date.now().toString(36)}`,
+                appID: app.id,
+                submittedAt,
+                status: 'submitted',
+                channel: 'local',
+                version: normalizeAppVersion(app.version),
+                message: `${text.submitReviewLocalFallback} ${error instanceof Error ? error.message : String(error || '')}`.trim(),
+            };
+        }
+        if (!submission) {
+            submission = {
+                id: `local-review-${app.id}-${Date.now().toString(36)}`,
+                appID: app.id,
+                submittedAt,
+                status: 'submitted',
+                channel: 'local',
+                version: normalizeAppVersion(app.version),
+                message: text.submitReviewLocalFallback,
+            };
+        }
+        setSubmissions((current) => {
+            const next = { ...current, [app.id]: normalizeFreshPublishSubmission(submission) };
+            writePublishSubmissions(next);
+            return next;
+        });
+        setCopyState('idle');
+        setSubmittingAppId('');
+        void refreshSubmissionQueue();
+    };
+    const withdrawApp = async (appID: string) => {
+        const submissionID = submissions[appID]?.id || '';
+        try {
+            await withdrawMaclawAppPackageSubmission(submissionID);
+        } catch {
+            // Local UI state can still be withdrawn; the durable queue remains visible if backend removal fails.
+        }
+        setSubmissions((current) => {
+            const next = { ...current };
+            delete next[appID];
+            writePublishSubmissions(next);
+            return next;
+        });
+        setCopyState('idle');
+        void refreshSubmissionQueue();
+    };
+    const copyQueuedPackage = async (submissionID: string) => {
+        setQueuePackageCopyingId(submissionID);
+        setQueuePackageCopiedId('');
+        setQueueAuditCopiedId('');
+        setQueuePackageErrorId('');
+        try {
+            const pkg = await getMaclawAppPackageSubmissionPackage(submissionID);
+            if (!pkg) throw new Error(text.queuePackageUnavailable);
+            await copyTextToClipboard(JSON.stringify(pkg, null, 2));
+            setQueuePackageCopiedId(submissionID);
+        } catch {
+            setQueuePackageErrorId(submissionID);
+        } finally {
+            setQueuePackageCopyingId('');
+        }
+    };
+    const copyQueuedAudit = async (submissionID: string) => {
+        setQueuePackageCopyingId(submissionID);
+        setQueuePackageCopiedId('');
+        setQueueAuditCopiedId('');
+        setQueuePackageErrorId('');
+        try {
+            const record = await getMaclawAppPackageSubmissionRecord(submissionID);
+            if (!record) throw new Error(text.queuePackageUnavailable);
+            await copyTextToClipboard(JSON.stringify(record, null, 2));
+            setQueueAuditCopiedId(submissionID);
+        } catch {
+            setQueuePackageErrorId(submissionID);
+        } finally {
+            setQueuePackageCopyingId('');
+        }
+    };
+    const toggleQueuedDetail = async (submissionID: string) => {
+        setQueuePackageErrorId('');
+        if (queueDetailOpenId === submissionID) {
+            setQueueDetailOpenId('');
+            return;
+        }
+        setQueueDetailOpenId(submissionID);
+        if (queueDetailRecords[submissionID]) return;
+        setQueueDetailLoadingId(submissionID);
+        try {
+            const record = await getMaclawAppPackageSubmissionRecord(submissionID);
+            if (!record) throw new Error(text.queuePackageUnavailable);
+            setQueueDetailRecords((current) => ({ ...current, [submissionID]: record }));
+        } catch {
+            setQueuePackageErrorId(submissionID);
+        } finally {
+            setQueueDetailLoadingId('');
+        }
+    };
+    const canCopyQueuedPackage = hasMaclawAppPackageSubmissionDetailBridge();
+    return (
+        <section className="apps-publish">
+            <div className="apps-preview-title-row">
+                <div>
+                    <div className="apps-definition__title">{text.publishChecklist}</div>
+                    <p className="apps-publish__subtitle">{text.publishSubtitle}</p>
+                </div>
+                <button
+                    className="apps-secondary-button"
+                    type="button"
+                    disabled={publishApps.length === 0}
+                    onClick={async () => {
+                        await copyTextToClipboard(packageText);
+                        setCopyState('copied');
+                    }}
+                >
+                    {copyState === 'copied' ? text.copied : text.copySubmitPackage}
+                </button>
+            </div>
+            {publishApps.length === 0 ? (
+                <div className="apps-empty">{text.noPublishApps}</div>
+            ) : (
+                <div className="apps-publish__list">
+                    {publishApps.map((app) => {
+                        const checks = buildPublishChecks(app, lang);
+                        const ready = checks.every((item) => item.ok);
+                        const submission = submissions[app.id];
+                        const submissionStatus = submission ? publishSubmissionStatusLabel(submission, text) : '';
+                        const canResubmit = submission?.status === 'review_failed' || !!submission?.modifiedAt;
+                        const canWithdraw = !!submission && ['submitted', 'review_failed', 'approved'].includes(submission.status);
+                        const isSubmitting = submittingAppId === app.id;
+                        return (
+                            <article className="apps-publish-card" key={app.id} data-ready={ready ? 'true' : 'false'}>
+                                <div className="apps-publish-card__head">
+                                    <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><Icon name={app.icon} /></span>
+                                    <div>
+                                        <strong>{app.name}</strong>
+                                        <span>{app.category} · {appKinds[app.kind][zh ? 'zh' : 'en']}</span>
+                                    </div>
+                                    <em>{submission ? submissionStatus : ready ? text.readyToSubmit : text.needsWork}</em>
+                                </div>
+                                {submission && (
+                                    <div className="apps-publish-submission">
+                                        <strong>{submissionStatus}</strong>
+                                        <span>{text.submissionId}: {submission.id}</span>
+                                        <span>{text.appVersion}: v{submission.version || normalizeAppVersion(app.version)}</span>
+                                        {submission.riskLevel && <span>{text.riskLevel}: {submission.riskLevel}</span>}
+                                        {submission.approvedScopes && submission.approvedScopes.length > 0 && <span>{text.approvedScopes}: {submission.approvedScopes.join(', ')}</span>}
+                                        {submission.modifiedAt && <span>{text.localModifiedAt}: {submission.modifiedAt}</span>}
+                                        {submission.message && <span>{submission.message}</span>}
+                                        {submission.reviewIssues && submission.reviewIssues.length > 0 && (
+                                            <span>{text.reviewIssues}: {reviewIssuesSummary(submission.reviewIssues, text)}</span>
+                                        )}
+                                    </div>
+                                )}
+                                <div className="apps-publish-checks">
+                                    {checks.map((check) => (
+                                        <div className="apps-publish-check" data-ok={check.ok ? 'true' : 'false'} key={check.label}>
+                                            <span aria-hidden="true">{check.ok ? '✓' : '!'}</span>
+                                            <div>
+                                                <strong>{check.label}</strong>
+                                                <small>{check.detail}</small>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="apps-actions">
+                                    <button className="apps-primary-button" type="button" disabled={isSubmitting || !ready || (!!submission && !canResubmit)} onClick={() => void submitApp(app)}>
+                                        {isSubmitting ? text.submitReviewBusy : submission && !canResubmit ? text.submittedReview : text.submitReview}
+                                    </button>
+                                    {canWithdraw && (
+                                        <button className="apps-secondary-button" type="button" onClick={() => void withdrawApp(app.id)}>
+                                            {text.withdrawSubmission}
+                                        </button>
+                                    )}
+                                    {submission?.reviewIssues && submission.reviewIssues.length > 0 && (
+                                        <button className="apps-secondary-button" type="button" onClick={() => onFixApp(app.id)}>
+                                            {text.fixReviewIssue}
+                                        </button>
+                                    )}
+                                </div>
+                            </article>
+                        );
+                    })}
+                </div>
+            )}
+            {queueStatus !== 'unsupported' && (
+                <div className="apps-publish-queue">
+                    <div className="apps-publish-queue__head">
+                        <div>
+                            <div className="apps-definition__title">{text.localSubmissionQueue}</div>
+                            {queueRefreshedAt && <small className="apps-publish-queue__refreshed">{text.queueRefreshedAt}: {queueRefreshedAt}</small>}
+                        </div>
+                        <button className="apps-secondary-button" type="button" disabled={queueRefreshing} onClick={() => void refreshSubmissionQueue()}>
+                            {queueRefreshing ? text.refreshingQueue : text.refreshQueue}
+                        </button>
+                    </div>
+                    {queueStatus === 'loading' ? (
+                        <div className="apps-publish-queue__empty">{text.localSubmissionQueueLoading}</div>
+                    ) : queueStatus === 'error' ? (
+                        <div className="apps-publish-queue__empty">{text.localSubmissionQueueError}</div>
+                    ) : queueSummaries.length === 0 ? (
+                        <div className="apps-publish-queue__empty">{text.noLocalSubmissionQueue}</div>
+                    ) : (
+                        <div className="apps-publish-queue__list">
+                            {queueSummaries.map((item) => {
+                                const detailRecord = queueDetailRecords[item.submissionID] || null;
+                                const detailPackageApps = packageAppNamesFromRecord(detailRecord);
+                                const detailEvents = eventSummariesFromRecord(detailRecord);
+                                const detailOpen = queueDetailOpenId === item.submissionID;
+                                return (
+                                    <div className="apps-publish-queue__row" key={item.submissionID}>
+                                        <div className="apps-publish-queue__body">
+                                            <strong>{item.submissionID}</strong>
+                                            <span>{item.appNames.join(', ') || item.appIDs.join(', ') || '-'} · {item.channel || 'local'} · {item.status || 'submitted'}</span>
+                                            <small>
+                                                {item.submittedAt}
+                                                {item.packageSHA ? ` · sha256:${item.packageSHA.slice(0, 12)}` : ''}
+                                                {item.packageBytes ? ` · ${formatPackageBytes(item.packageBytes)}` : ''}
+                                                {item.eventCount ? ` · ${text.eventHistory}:${item.eventCount}${item.lastEventAt ? ` ${item.lastEventAt}` : ''}` : ''}
+                                                {item.message ? ` · ${item.message}` : ''}
+                                            </small>
+                                            {queuePackageErrorId === item.submissionID && <small>{text.queuePackageUnavailable}</small>}
+                                        </div>
+                                        <div className="apps-publish-queue__tools">
+                                            <button
+                                                className="apps-secondary-button apps-publish-queue__copy"
+                                                type="button"
+                                                disabled={!canCopyQueuedPackage || queueDetailLoadingId === item.submissionID}
+                                                title={canCopyQueuedPackage ? text.viewQueueDetail : text.queuePackageUnavailable}
+                                                onClick={() => void toggleQueuedDetail(item.submissionID)}
+                                            >
+                                                {queueDetailLoadingId === item.submissionID
+                                                    ? text.queueDetailLoading
+                                                    : detailOpen
+                                                        ? text.hideQueueDetail
+                                                        : text.viewQueueDetail}
+                                            </button>
+                                            <button
+                                                className="apps-secondary-button apps-publish-queue__copy"
+                                                type="button"
+                                                disabled={!canCopyQueuedPackage || queuePackageCopyingId === item.submissionID}
+                                                title={canCopyQueuedPackage ? text.copyQueuePackage : text.queuePackageUnavailable}
+                                                onClick={() => void copyQueuedPackage(item.submissionID)}
+                                            >
+                                                {queuePackageCopyingId === item.submissionID
+                                                    ? text.copyingQueuePackage
+                                                    : queuePackageCopiedId === item.submissionID
+                                                        ? text.queuePackageCopied
+                                                        : text.copyQueuePackage}
+                                            </button>
+                                            <button
+                                                className="apps-secondary-button apps-publish-queue__copy"
+                                                type="button"
+                                                disabled={!canCopyQueuedPackage || queuePackageCopyingId === item.submissionID}
+                                                title={canCopyQueuedPackage ? text.copyQueueAudit : text.queuePackageUnavailable}
+                                                onClick={() => void copyQueuedAudit(item.submissionID)}
+                                            >
+                                                {queuePackageCopyingId === item.submissionID
+                                                    ? text.copyingQueuePackage
+                                                    : queueAuditCopiedId === item.submissionID
+                                                        ? text.queueAuditCopied
+                                                        : text.copyQueueAudit}
+                                            </button>
+                                        </div>
+                                        {detailOpen && detailRecord && (
+                                            <div className="apps-publish-queue__detail">
+                                                <strong>{text.queueDetailTitle}</strong>
+                                                <span>{text.submissionId}: {item.submissionID}</span>
+                                                {item.reviewer && <span>{text.reviewer}: {item.reviewer}</span>}
+                                                {item.riskLevel && <span>{text.riskLevel}: {item.riskLevel}</span>}
+                                                {detailPackageApps.length > 0 && <span>{text.queueDetailPackageApps}: {detailPackageApps.join(', ')}</span>}
+                                                {item.reviewIssues.length > 0 && <span>{text.reviewIssues}: {reviewIssuesSummary(item.reviewIssues, text)}</span>}
+                                                {detailEvents.length > 0 && <span>{text.queueDetailEvents}: {detailEvents.join('；')}</span>}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            )}
+            <div className="apps-manage-manifest-wrap">
+                <div className="apps-definition__title">{text.submitPackage}</div>
+                <pre className="apps-manage-manifest">{packageText}</pre>
+            </div>
+        </section>
+    );
+};
+
 const AppAccentPicker = ({ value, lang, onChange }: { value: string; lang?: string; onChange: (value: string) => void }) => (
     <div className="apps-accent-picker" role="group" aria-label={isZh(lang) ? '\u56fe\u6807\u989c\u8272' : 'Icon color'}>
         {appAccentSwatches.map((swatch) => {
@@ -2780,6 +3754,8 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
         if (!pendingEditAppId) return;
         const app = apps.find((item) => item.id === pendingEditAppId);
         if (!app) return;
+        setManageQuery('');
+        setManageCategory('all');
         startEdit(app);
         onPendingEditConsumed();
     }, [pendingEditAppId, apps, onPendingEditConsumed]);
@@ -2809,6 +3785,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
             description: editDraft.description.trim(),
             icon: editDraft.icon,
             accent: editDraft.accent,
+            version: nextAppVersion(app),
             manifest,
         });
         cancelEdit();
@@ -3015,10 +3992,10 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
     const text = isZh(lang) ? labels.zh : labels.en;
     const [manifestText, setManifestText] = useState('');
     const [installState, setInstallState] = useState<'idle' | 'installed' | 'error'>('idle');
-    const [installedCount, setInstalledCount] = useState(0);
-    const [skippedCount, setSkippedCount] = useState(0);
     const [installMessage, setInstallMessage] = useState('');
-    const [selectedInstallKeys, setSelectedInstallKeys] = useState<string[]>([]);
+    const [installResultItems, setInstallResultItems] = useState<AppInstallResultItem[]>([]);
+    const [selectedInstallKeys, setSelectedInstallKeys] = useState<string[] | null>(null);
+    const [confirmHighRiskInstall, setConfirmHighRiskInstall] = useState(false);
     const installPreview = useMemo(() => {
         const value = manifestText.trim();
         if (!value) return { apps: [] as AppEntry[], error: '' };
@@ -3030,13 +4007,14 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
             return { apps: [] as AppEntry[], error: text.parseError };
         }
     }, [manifestText, text.parseError, text.schemaError]);
-    const installPlan = useMemo(() => buildInstallPlan(installPreview.apps, new Set(apps.map((app) => app.id))), [apps, installPreview.apps]);
-    const installableKeys = useMemo(() => installPlan.filter((item) => item.action === 'install').map((item) => item.key), [installPlan]);
+    const installPlan = useMemo(() => buildInstallPlan(installPreview.apps, apps), [apps, installPreview.apps]);
+    const installableKeys = useMemo(() => installPlan.filter((item) => item.action === 'install' || item.action === 'upgrade').map((item) => item.key), [installPlan]);
     useEffect(() => {
         setSelectedInstallKeys(installableKeys);
     }, [installableKeys]);
-    const selectedInstallSet = new Set(selectedInstallKeys);
-    const selectedInstallCount = installPlan.filter((item) => item.action === 'install' && selectedInstallSet.has(item.key)).length;
+    const selectedInstallSet = new Set(selectedInstallKeys ?? installableKeys);
+    const selectedInstallCount = installPlan.filter((item) => (item.action === 'install' || item.action === 'upgrade') && selectedInstallSet.has(item.key)).length;
+    const upgradeableCount = installPlan.filter((item) => item.action === 'upgrade').length;
     const skippedPreviewCount = installPlan.length - selectedInstallCount;
     const hasLiveManifestError = !!manifestText.trim() && !!installPreview.error && installState === 'idle';
     const installManifest = () => {
@@ -3050,19 +4028,53 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
             const parsedResult = manifestToAppEntries(parsed);
             const parsedApps = parsedResult.apps;
             if (parsedApps.length === 0) throw new Error(parsedResult.error || text.schemaError);
-            const plan = buildInstallPlan(parsedApps, new Set(apps.map((app) => app.id)));
-            const selectedKeys = new Set(selectedInstallKeys);
-            const nextApps = plan.filter((item) => item.action === 'install' && selectedKeys.has(item.key)).map((item) => item.app);
+            const plan = buildInstallPlan(parsedApps, apps);
+            const selectableKeys = plan.filter((item) => item.action === 'install' || item.action === 'upgrade').map((item) => item.key);
+            const selectedKeys = new Set(selectedInstallKeys ?? selectableKeys);
+            const selectedHasHighRiskUpgrade = plan.some((item) => item.action === 'upgrade' && selectedKeys.has(item.key) && item.highRiskScopes.length > 0);
+            if (selectedHasHighRiskUpgrade && !confirmHighRiskInstall) {
+                setConfirmHighRiskInstall(true);
+                setInstallState('idle');
+                setInstallMessage(text.highRiskInstallWarning);
+                setInstallResultItems([]);
+                return;
+            }
+            const resultItems = plan.map((item): AppInstallResultItem => {
+                const selected = (item.action === 'install' || item.action === 'upgrade') && selectedKeys.has(item.key);
+                if (selected && item.action === 'install') {
+                    return { key: item.key, name: item.app.name, icon: item.app.icon, accent: item.app.accent, action: 'installed', detail: text.installedCount };
+                }
+                if (selected && item.action === 'upgrade') {
+                    return {
+                        key: item.key,
+                        name: item.app.name,
+                        icon: item.app.icon,
+                        accent: item.app.accent,
+                        action: 'upgraded',
+                        detail: `${text.upgradedItem} v${normalizeAppVersion(item.installed?.version)} -> v${normalizeAppVersion(item.app.version)}`,
+                    };
+                }
+                const reason = item.action === 'installed'
+                    ? text.alreadyInstalled
+                    : item.action === 'duplicate'
+                        ? text.duplicateApp
+                        : text.notSelected;
+                return { key: item.key, name: item.app.name, icon: item.app.icon, accent: item.app.accent, action: 'skipped', detail: reason };
+            });
+            const nextApps = plan.filter((item) => (item.action === 'install' || item.action === 'upgrade') && selectedKeys.has(item.key)).map((item) => item.app);
+            const installedActionCount = plan.filter((item) => item.action === 'install' && selectedKeys.has(item.key)).length;
+            const upgradedActionCount = plan.filter((item) => item.action === 'upgrade' && selectedKeys.has(item.key)).length;
+            const skippedActionCount = plan.length - nextApps.length;
             nextApps.forEach(onInstallApp);
-            setInstalledCount(nextApps.length);
-            setSkippedCount(plan.length - nextApps.length);
-            setInstallMessage(`${text.installedCount}: ${nextApps.length} · ${text.skippedCount}: ${plan.length - nextApps.length}`);
+            setInstallMessage(installSummaryMessage(installedActionCount, upgradedActionCount, skippedActionCount, text));
+            setInstallResultItems(resultItems);
             setInstallState('installed');
+            setConfirmHighRiskInstall(false);
         } catch (error: any) {
-            setInstalledCount(0);
-            setSkippedCount(0);
             setInstallMessage(error?.message || text.installError);
+            setInstallResultItems([]);
             setInstallState('error');
+            setConfirmHighRiskInstall(false);
         }
     };
     return (
@@ -3070,37 +4082,38 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
             <section className="apps-market-install">
                 <div className="apps-preview-title-row">
                     <div className="apps-definition__title">{text.installManifest}</div>
-                    <button className="apps-primary-button" type="button" disabled={!manifestText.trim() || !!installPreview.error || (installPlan.length > 0 && selectedInstallCount === 0)} onClick={installManifest}>{text.install}</button>
+                    <button className="apps-primary-button" type="button" disabled={!manifestText.trim() || !!installPreview.error || (installPlan.length > 0 && selectedInstallCount === 0)} onClick={installManifest}>{confirmHighRiskInstall ? text.confirmHighRiskInstall : text.install}</button>
                 </div>
-                <textarea value={manifestText} onChange={(event) => {
+                <textarea aria-label={text.installManifest} value={manifestText} onChange={(event) => {
                     setManifestText(event.target.value);
                     setInstallState('idle');
-                    setInstalledCount(0);
-                    setSkippedCount(0);
                     setInstallMessage('');
-                    setSelectedInstallKeys([]);
+                    setInstallResultItems([]);
+                    setConfirmHighRiskInstall(false);
+                    setSelectedInstallKeys(null);
                 }} placeholder={text.pasteManifest} />
                 {hasLiveManifestError && (
-                    <div className="apps-result-panel" data-state="error">
+                    <div className="apps-result-panel" data-state="error" role="alert">
                         <span>{`${text.installError}: ${installPreview.error}`}</span>
                     </div>
                 )}
                 {installPlan.length > 0 && (
                     <div className="apps-install-preview">
+                        {confirmHighRiskInstall && <div className="apps-install-preview__warning" role="alert">{text.highRiskInstallWarning}</div>}
                         <div className="apps-preview-title-row">
                             <div className="apps-definition__title">{text.installPreview}</div>
                             <div className="apps-install-preview__tools">
-                                <button className="apps-secondary-button" type="button" disabled={installableKeys.length === 0 || selectedInstallCount === installableKeys.length} onClick={() => setSelectedInstallKeys(installableKeys)}>{text.selectAll}</button>
-                                <button className="apps-secondary-button" type="button" disabled={selectedInstallCount === 0} onClick={() => setSelectedInstallKeys([])}>{text.clearSelection}</button>
-                                <span className="apps-count">{`${text.installableCount} ${installableKeys.length} · ${text.willSkip} ${skippedPreviewCount}`}</span>
+                                <button className="apps-secondary-button" type="button" disabled={installableKeys.length === 0 || selectedInstallCount === installableKeys.length} onClick={() => { setConfirmHighRiskInstall(false); setSelectedInstallKeys(installableKeys); }}>{text.selectAll}</button>
+                                <button className="apps-secondary-button" type="button" disabled={selectedInstallCount === 0} onClick={() => { setConfirmHighRiskInstall(false); setSelectedInstallKeys([]); }}>{text.clearSelection}</button>
+                                <span className="apps-count">{`${text.installableCount} ${installableKeys.length - upgradeableCount} · ${text.upgradeableCount} ${upgradeableCount} · ${text.willSkip} ${skippedPreviewCount}`}</span>
                                 <span className="apps-count">{selectedInstallCount}/{installPlan.length}</span>
                             </div>
                         </div>
                         <div className="apps-install-preview__list">
                             {installPlan.map((item) => {
-                                const checked = item.action === 'install' && selectedInstallSet.has(item.key);
+                                const checked = (item.action === 'install' || item.action === 'upgrade') && selectedInstallSet.has(item.key);
                                 const statusText = checked
-                                    ? text.willInstall
+                                    ? item.action === 'upgrade' ? `${text.willUpgrade} v${normalizeAppVersion(item.installed?.version)} -> v${normalizeAppVersion(item.app.version)}` : text.willInstall
                                     : item.action === 'installed'
                                         ? `${text.willSkip} · ${text.alreadyInstalled}`
                                         : item.action === 'duplicate'
@@ -3113,17 +4126,27 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                                         type="checkbox"
                                         aria-label={checkboxLabel}
                                         checked={checked}
-                                        disabled={item.action !== 'install'}
+                                        disabled={item.action !== 'install' && item.action !== 'upgrade'}
                                         onChange={(event) => {
-                                            setSelectedInstallKeys((current) => event.target.checked
-                                                ? Array.from(new Set([...current, item.key]))
-                                                : current.filter((key) => key !== item.key));
+                                            setSelectedInstallKeys((current) => {
+                                                const nextKeys = current ?? installableKeys;
+                                                return event.target.checked
+                                                    ? Array.from(new Set([...nextKeys, item.key]))
+                                                    : nextKeys.filter((key) => key !== item.key);
+                                            });
+                                            setConfirmHighRiskInstall(false);
                                         }}
                                     />
                                     <span className="apps-app-icon" style={{ '--apps-icon-color': item.app.accent } as CSSProperties}><Icon name={item.app.icon} /></span>
                                     <div>
                                         <strong>{item.app.name}</strong>
                                         <span>{item.app.category} · {appKinds[item.app.kind][isZh(lang) ? 'zh' : 'en']}</span>
+                                        {item.action === 'upgrade' && item.addedScopes.length > 0 && (
+                                            <small>
+                                                {text.permissionChanges}: +{item.addedScopes.join(', ')}
+                                                {item.highRiskScopes.length > 0 ? ` · ${text.highRiskPermission}: ${item.highRiskScopes.join(', ')}` : ''}
+                                            </small>
+                                        )}
                                     </div>
                                     <em>{statusText}</em>
                                 </label>
@@ -3132,8 +4155,20 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                     </div>
                 )}
                 {installState !== 'idle' && (
-                    <div className="apps-result-panel" data-state={installState === 'installed' ? 'done' : 'error'}>
+                    <div className={`apps-result-panel${installState === 'installed' && installResultItems.length > 0 ? ' apps-result-panel--stacked' : ''}`} data-state={installState === 'installed' ? 'done' : 'error'} role={installState === 'installed' ? 'status' : 'alert'} aria-live={installState === 'installed' ? 'polite' : undefined}>
                         <span>{installState === 'installed' ? installMessage : `${text.installError}: ${installMessage}`}</span>
+                        {installState === 'installed' && installResultItems.length > 0 && (
+                            <div className="apps-install-result" role="list" aria-label={text.installDetails}>
+                                {installResultItems.map((item) => (
+                                    <div className="apps-install-result__row" data-action={item.action} role="listitem" key={item.key}>
+                                        <span className="apps-app-icon" style={{ '--apps-icon-color': item.accent } as CSSProperties}><Icon name={item.icon} /></span>
+                                        <strong>{item.name}</strong>
+                                        <em>{item.action === 'upgraded' ? text.upgradedItem : item.action === 'installed' ? text.installedCount : text.skippedItem}</em>
+                                        <small>{item.detail}</small>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
                 )}
             </section>

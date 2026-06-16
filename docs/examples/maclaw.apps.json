@@ -4,16 +4,27 @@
     {
       "id": "document-redaction",
       "name": "Document Redaction",
+      "version": 1,
       "description": "Upload a document and return a redacted copy.",
       "category": "Document",
       "icon": "shield",
       "input_mode": "file",
       "multiple_files": true,
-      "output_modes": ["docx", "pdf"]
+      "output_modes": ["docx", "pdf"],
+      "governance": {
+        "status": "local_tested",
+        "riskLevel": "low",
+        "testEvidence": {
+          "runId": "skill-run-redaction-demo",
+          "artifactHash": "sha256:example",
+          "verifiedAt": "2026-06-16T00:00:00Z"
+        }
+      }
     },
     {
       "id": "spreadsheet-cleanup",
       "name": "Spreadsheet Cleanup",
+      "version": 1,
       "description": "Upload a workbook, normalize data, and export a cleaned workbook.",
       "category": "Data",
       "icon": "sheet",
@@ -33,7 +44,16 @@
           "default": "YYYY-MM-DD",
           "options": ["YYYY-MM-DD", "MM/DD/YYYY", "DD/MM/YYYY"]
         }
-      ]
+      ],
+      "governance": {
+        "status": "local_tested",
+        "riskLevel": "low",
+        "testEvidence": {
+          "runId": "skill-run-sheet-cleanup-demo",
+          "artifactHash": "sha256:example",
+          "verifiedAt": "2026-06-16T00:00:00Z"
+        }
+      }
     }
   ]
 }

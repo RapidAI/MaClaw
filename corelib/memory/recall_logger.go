@@ -90,7 +90,7 @@ func CloseRecallLog() {
 // RecallLogEntry represents a single recall operation logged to file.
 type RecallLogEntry struct {
 	Timestamp      string              `json:"timestamp"`
-	Operation      string              `json:"operation"` // "dynamic", "dynamic_tool", "dynamic_strict", "project"
+	Operation      string              `json:"operation"` // "proactive", "dynamic", "dynamic_tool", "dynamic_strict", "project", "tool:<mode>"
 	Query          string              `json:"query"`
 	Category       string              `json:"category,omitempty"`
 	ProjectPath    string              `json:"project_path,omitempty"`
@@ -209,4 +209,21 @@ func truncateString(s string, maxRunes int) string {
 		return s
 	}
 	return string(runes[:maxRunes]) + "..."
+}
+
+// logProactiveRecallIfEnabled logs the proactive recall operation (system prompt
+// injection) to the dedicated recall log file. This covers the primary recall
+// path used by the GUI desktop panel and TUI — StagedRecallPipeline and
+// RecallProactive both flow through ProactiveContextForPrompt which calls this
+// after assembling the final recalled entries.
+func (s *Store) logProactiveRecallIfEnabled(query string, opts ProactiveRecallOptions, results []Entry, elapsed time.Duration) {
+	if !recallLogEnabled.Load() {
+		return
+	}
+	if s == nil {
+		return
+	}
+	expanded := ExpandQuery(query)
+	totalEntries := s.ActiveCount()
+	LogRecallOperation("proactive", query, "", opts.ProjectPath, opts.OwnerID, elapsed, results, totalEntries, &expanded)
 }

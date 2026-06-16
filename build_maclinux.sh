@@ -334,6 +334,43 @@ cp "${OUTPUT_DIR}/${APP_NAME}_arm64.app/Contents/Info.plist" "${UNIVERSAL_BUNDLE
 cp -R "${OUTPUT_DIR}/${APP_NAME}_arm64.app/Contents/Resources/" "${UNIVERSAL_BUNDLE}/Contents/Resources/"
 touch "${UNIVERSAL_BUNDLE}"
 
+# Code Sign macOS App Bundles
+# Uses "MaClaw Dev" self-signed cert for stable TCC permissions across rebuilds.
+# If cert not found, falls back to ad-hoc signing with stable identifier.
+echo "  - Signing App Bundles..."
+SIGN_IDENTITY=""
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "MaClaw Dev"; then
+    SIGN_IDENTITY="MaClaw Dev"
+    echo "    Using developer certificate: $SIGN_IDENTITY"
+else
+    SIGN_IDENTITY="-"
+    echo "    ⚠️  'MaClaw Dev' cert not found, using ad-hoc signing."
+    echo "    Run scripts/create_dev_cert.sh to create a stable signing cert."
+    echo "    Without it, TCC permissions (screen recording) reset on every build."
+fi
+
+codesign_bundle() {
+    local BUNDLE="$1"
+    if [ -d "$BUNDLE" ]; then
+        xattr -cr "$BUNDLE" 2>/dev/null || true
+        codesign --force --sign "$SIGN_IDENTITY" \
+            --identifier "$IDENTIFIER" \
+            --options runtime \
+            --entitlements build/darwin/entitlements.plist \
+            --deep \
+            "$BUNDLE" 2>/dev/null || \
+        codesign --force --sign "$SIGN_IDENTITY" \
+            --identifier "$IDENTIFIER" \
+            --deep \
+            "$BUNDLE"
+        echo "    Signed: $(basename $BUNDLE)"
+    fi
+}
+
+codesign_bundle "${OUTPUT_DIR}/${APP_NAME}_amd64.app"
+codesign_bundle "${OUTPUT_DIR}/${APP_NAME}_arm64.app"
+codesign_bundle "${UNIVERSAL_BUNDLE}"
+
 # Function to create PKG
 create_pkg() {
     ARCH=$1

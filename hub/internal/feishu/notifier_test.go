@@ -72,6 +72,9 @@ func (r *stubUserRepo) DeleteByTenantEmail(_ context.Context, _ string, _ string
 	return nil
 }
 func (r *stubUserRepo) UpdateSmartRoute(_ context.Context, _ string, _ bool) error { return nil }
+func (r *stubUserRepo) MarkEmailVerified(_ context.Context, _ string, _ string) error {
+	return nil
+}
 
 func TestNewReturnsNotifierWithNilBot(t *testing.T) {
 	n := New("", "", &stubUserRepo{}, nil, nil)

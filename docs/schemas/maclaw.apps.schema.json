@@ -66,6 +66,9 @@
         "fields": {
           "type": "array",
           "items": { "$ref": "#/$defs/field" }
+        },
+        "governance": {
+          "$ref": "#/$defs/governance"
         }
       }
     },
@@ -95,6 +98,29 @@
         "options": {
           "type": "array",
           "items": { "type": "string" }
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["draft", "local_tested", "submitted", "review_failed", "approved", "published", "deprecated", "revoked"]
+        },
+        "riskLevel": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"]
+        },
+        "testEvidence": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "runId": { "type": "string" },
+            "artifactHash": { "type": "string" },
+            "verifiedAt": { "type": "string" }
+          }
         }
       }
     }

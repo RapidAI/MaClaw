@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -161,6 +162,77 @@ func TestUpdateLLMProvidersHandlerAllowsNewProviderWithComputeGrant(t *testing.T
 	UpdateLLMProvidersHandler(system, accessCtrl).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateLLMProvidersHandlerRefreshesStaleComputeGrant(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	client := llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+		HubCenterURL: "https://hubcenter.example.com",
+		HubID:        "hub_default",
+		MachineToken: "secret",
+	})
+	client.HTTPClient = &http.Client{Transport: maclawComputeRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/api/llm/v1/authorization" {
+			t.Fatalf("path = %q, want authorization endpoint", r.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"hub_id":"hub_default","tenant_id":"default","allow_external_providers":true}`)),
+			Request:    r,
+		}, nil
+	})}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(client)
+	accessCtrl.UpdateFromHeartbeat(store.DefaultTenantID, &llmservice.TenantAuthorizationStatus{
+		TenantID:               store.DefaultTenantID,
+		AllowExternalProviders: false,
+	})
+	payload, err := json.Marshal(im.LLMProviderRegistry{
+		Providers: []im.LLMProvider{{ID: "provider-a", Name: "Provider A", APIURL: "https://example.com/v1", Model: "test-model"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers", bytes.NewReader(payload))
+	rr := httptest.NewRecorder()
+	UpdateLLMProvidersHandler(system, accessCtrl).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateLLMProvidersHandlerStillRejectsAfterRefreshDeniesComputeGrant(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	client := llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+		HubCenterURL: "https://hubcenter.example.com",
+		HubID:        "hub_default",
+		MachineToken: "secret",
+	})
+	client.HTTPClient = &http.Client{Transport: maclawComputeRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"hub_id":"hub_default","tenant_id":"default","allow_external_providers":false}`)),
+			Request:    r,
+		}, nil
+	})}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(client)
+	accessCtrl.UpdateFromHeartbeat(store.DefaultTenantID, &llmservice.TenantAuthorizationStatus{
+		TenantID:               store.DefaultTenantID,
+		AllowExternalProviders: false,
+	})
+	payload, err := json.Marshal(im.LLMProviderRegistry{
+		Providers: []im.LLMProvider{{ID: "provider-a", Name: "Provider A", APIURL: "https://example.com/v1", Model: "test-model"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers", bytes.NewReader(payload))
+	rr := httptest.NewRecorder()
+	UpdateLLMProvidersHandler(system, accessCtrl).ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s, want 403", rr.Code, rr.Body.String())
 	}
 }
 

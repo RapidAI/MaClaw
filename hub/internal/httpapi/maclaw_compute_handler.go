@@ -44,6 +44,7 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 			}
 			if status != nil {
 				result["allow_external_providers"] = status.AllowExternalProviders
+				result["authorizations"] = status.Authorizations
 				if status.HubID != "" {
 					hubID = status.HubID
 				}

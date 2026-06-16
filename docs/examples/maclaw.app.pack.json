@@ -9,6 +9,7 @@
       "app": {
         "id": "finance-expense",
         "name": "Expense Review",
+        "version": 1,
         "description": "Create, review, and report expense records through DataSrv.",
         "category": "Finance",
         "kind": "enterprise_app",
@@ -27,6 +28,15 @@
         "panel": {
           "pinned": true,
           "accent": "#2f5f98"
+        },
+        "governance": {
+          "status": "approved",
+          "riskLevel": "medium",
+          "requiredScopes": ["finance.expense_upsert", "finance.expense_review"],
+          "testEvidence": {
+            "dryRunId": "dry-run-expense-demo",
+            "verifiedAt": "2026-06-16T00:00:00Z"
+          }
         }
       }
     },
@@ -37,6 +47,7 @@
       "app": {
         "id": "spreadsheet-cleanup",
         "name": "Spreadsheet Cleanup",
+        "version": 1,
         "description": "Upload a workbook, normalize data, and export a cleaned workbook.",
         "category": "Data",
         "kind": "tool_app",
@@ -70,6 +81,15 @@
         "panel": {
           "pinned": false,
           "accent": "#3f6f4f"
+        },
+        "governance": {
+          "status": "local_tested",
+          "riskLevel": "low",
+          "testEvidence": {
+            "runId": "skill-run-sheet-cleanup-demo",
+            "artifactHash": "sha256:example",
+            "verifiedAt": "2026-06-16T00:00:00Z"
+          }
         }
       }
     }

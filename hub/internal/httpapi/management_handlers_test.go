@@ -506,6 +506,10 @@ func TestCenterConfigAndRegisterHandlers(t *testing.T) {
 			})
 			return
 		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api/hubs/hub_123/heartbeat" {
+			writeJSON(w, http.StatusOK, map[string]any{})
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/api/hubs/register" {
 			http.NotFound(w, r)
 			return

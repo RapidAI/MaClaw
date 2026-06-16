@@ -65,6 +65,9 @@ func (tenantIMRuntimeTestUsers) DeleteByTenantEmail(context.Context, string, str
 	return nil
 }
 func (tenantIMRuntimeTestUsers) UpdateSmartRoute(context.Context, string, bool) error { return nil }
+func (tenantIMRuntimeTestUsers) MarkEmailVerified(context.Context, string, string) error {
+	return nil
+}
 
 type tenantIMRuntimeTestTenants struct{ items []*store.Tenant }
 

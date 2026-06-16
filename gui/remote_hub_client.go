@@ -247,8 +247,124 @@ func (c *RemoteHubClient) syncIMGatewayClaims() {
 	}
 }
 
-// errHubAuthFailed is returned when the hub rejects machine credentials.
+// errHubAuthFailed is returned when the hub explicitly rejects machine credentials
+// (e.g., machine unbound, user deleted, token revoked). Transient server errors
+// during auth MUST NOT return this - use errHubTransientAuthError instead.
 var errHubAuthFailed = fmt.Errorf("hub authentication failed")
+
+// errHubTransientAuthError is returned when the hub returns an error during the
+// auth handshake that is NOT a definitive credential rejection. This includes
+// generic server errors, rate limiting, maintenance messages, etc.
+// The reconnect loop should retry on this error without clearing credentials.
+var errHubTransientAuthError = fmt.Errorf("hub auth response error (transient)")
+
+// isDefinitiveAuthRejection inspects the error payload from a Hub "error" type
+// message and determines whether it's a definitive credential rejection (machine
+// unbound, token invalid, user deleted) vs a transient server error (overloaded,
+// maintenance, rate limited). Only definitive rejections should trigger credential
+// clearing. When in doubt, we assume transient - clearing credentials is irreversible.
+func isDefinitiveAuthRejection(payload json.RawMessage) bool {
+	if len(payload) == 0 {
+		// No payload - cannot confirm it's a real auth rejection. Assume transient.
+		return false
+	}
+	var errInfo struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Reason  string `json:"reason"`
+	}
+	if json.Unmarshal(payload, &errInfo) != nil {
+		return false // can't parse - assume transient
+	}
+
+	// Definitive rejection codes/messages from Hub.
+	code := strings.ToLower(strings.TrimSpace(errInfo.Code))
+	msg := strings.ToLower(strings.TrimSpace(errInfo.Message))
+	reason := strings.ToLower(strings.TrimSpace(errInfo.Reason))
+
+	definitiveKeywords := []string{
+		"auth_failed", "authentication_failed", "invalid_token", "invalid token",
+		"machine_not_found", "unbound", "revoked",
+		"unauthorized", "invalid_credentials", "invalid credentials",
+		"user_deleted", "machine_deleted", "token_expired", "token expired",
+		"credential_rejected", "machine_revoked",
+	}
+
+	for _, kw := range definitiveKeywords {
+		if strings.Contains(code, kw) || strings.Contains(msg, kw) || strings.Contains(reason, kw) {
+			return true
+		}
+	}
+
+	// "not_found" and "forbidden" require tighter matching to avoid false
+	// positives with generic "endpoint not found" / "access forbidden" responses.
+	// Only match when the subject is clearly about the machine or user.
+	machineUserNotFound := []string{
+		"machine not found", "user not found", "device not found",
+		"token not found", "registration not found",
+	}
+	for _, phrase := range machineUserNotFound {
+		if strings.Contains(msg, phrase) || strings.Contains(reason, phrase) {
+			return true
+		}
+	}
+
+	if isGenericRemoteHubRouteError(msg) || isGenericRemoteHubRouteError(reason) {
+		return false
+	}
+
+	// Code-level exact matches for known Hub rejection codes with no route-shaped
+	// error message attached.
+	exactCodes := []string{"not_found", "forbidden"}
+	for _, ec := range exactCodes {
+		if code == ec {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isGenericRemoteHubRouteError(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	// Match patterns that clearly indicate a routing/endpoint issue,
+	// not application-level messages about machine/user entities.
+	routePhrases := []string{
+		"endpoint not found",
+		"route not found",
+		"path not found",
+		"api not found",
+		"no route",
+		"404 not found",
+	}
+	for _, phrase := range routePhrases {
+		if strings.Contains(value, phrase) {
+			return true
+		}
+	}
+	// If the message mentions a URL path (contains /something/) and "not found",
+	// it's likely a routing error, not a credential rejection.
+	if strings.Contains(value, "not found") && strings.Contains(value, "/") {
+		return true
+	}
+	return false
+}
+
+// truncateLogPayload returns a string representation of a JSON payload suitable
+// for logging, truncated to avoid dumping overly large or sensitive content.
+func truncateLogPayload(payload json.RawMessage) string {
+	if len(payload) == 0 {
+		return "(empty)"
+	}
+	s := string(payload)
+	if len(s) > 500 {
+		return s[:500] + "...(truncated)"
+	}
+	return s
+}
 
 func (c *RemoteHubClient) connectLocked() error {
 	start := time.Now()
@@ -315,8 +431,14 @@ func (c *RemoteHubClient) connectLocked() error {
 		_ = c.conn.Close()
 		c.conn = nil
 		c.connected = false
-		c.lastError = "Machine authentication failed"
-		return errHubAuthFailed
+		if isDefinitiveAuthRejection(authResp.Payload) {
+			c.lastError = "Machine authentication failed"
+			log.Printf("[hub-client] connectLocked: definitive auth rejection, payload=%s", truncateLogPayload(authResp.Payload))
+			return errHubAuthFailed
+		}
+		c.lastError = "Hub returned error during auth (possibly transient)"
+		log.Printf("[hub-client] connectLocked: transient auth error, payload=%s", truncateLogPayload(authResp.Payload))
+		return errHubTransientAuthError
 	}
 
 	// Extract viewer_token from auth.ok payload if present.
@@ -405,8 +527,14 @@ func (c *RemoteHubClient) connectAuthOnlyLocked() error {
 		_ = c.conn.Close()
 		c.conn = nil
 		c.connected = false
-		c.lastError = "Machine authentication failed"
-		return errHubAuthFailed
+		if isDefinitiveAuthRejection(authResp.Payload) {
+			c.lastError = "Machine authentication failed"
+			log.Printf("[hub-client] connectAuthOnlyLocked: definitive auth rejection, payload=%s", truncateLogPayload(authResp.Payload))
+			return errHubAuthFailed
+		}
+		c.lastError = "Hub returned error during auth (possibly transient)"
+		log.Printf("[hub-client] connectAuthOnlyLocked: transient auth error, payload=%s", truncateLogPayload(authResp.Payload))
+		return errHubTransientAuthError
 	}
 
 	// Extract viewer_token from auth.ok payload if present.
@@ -1808,8 +1936,28 @@ func (c *RemoteHubClient) reconnectLoop() {
 	defer c.reconnecting.Store(false)
 
 	backoff := 500 * time.Millisecond
+	consecutiveAuthFailures := 0
+	const maxAuthFailuresBeforeClear = 3 // require 3 consecutive definitive rejections before clearing
+
+	// Cap total reconnect duration. After this, stop retrying and let the next
+	// user-initiated action (message send, UI interaction) trigger a fresh connect.
+	// This prevents an idle client from burning CPU/network forever on a down Hub.
+	reconnectStart := time.Now()
+	const maxReconnectDuration = 10 * time.Minute
+
 	for c.allowReconnect.Load() {
 		if c.IsConnected() {
+			return
+		}
+
+		// Give up after maxReconnectDuration. The next user action will trigger
+		// a fresh Connect() attempt. Credentials remain intact.
+		if time.Since(reconnectStart) > maxReconnectDuration {
+			log.Printf("[hub-client] reconnectLoop giving up after %s (credentials preserved, will retry on next action)", time.Since(reconnectStart))
+			c.mu.Lock()
+			c.lastError = "Hub reconnection timed out, will retry on next action"
+			c.mu.Unlock()
+			c.app.emitRemoteStateChanged()
 			return
 		}
 
@@ -1818,22 +1966,55 @@ func (c *RemoteHubClient) reconnectLoop() {
 			return
 		}
 
-		// If the hub rejected our credentials, the admin may have unbound this
-		// machine or deleted the user. Do NOT auto re-enroll — this would silently
-		// recreate a deleted user. Instead clear local state and notify the user
-		// so they can decide to re-register via the onboarding wizard.
+		// Definitive auth rejection: Hub explicitly says credentials are invalid.
+		// Require multiple consecutive rejections to rule out transient server issues
+		// (e.g., Hub returning generic "error" during maintenance/deploy).
+		// NEVER clear credentials on the first failure - this is irreversible.
 		if errors.Is(err, errHubAuthFailed) {
-			log.Printf("[hub-client] auth rejected by hub, clearing local credentials (user may have been unbound by admin)")
-			c.app.clearMachineCredentials()
-			c.app.emitEvent("hub-auth-rejected")
-			return // stop reconnecting — user must manually re-register
+			consecutiveAuthFailures++
+			log.Printf("[hub-client] definitive auth rejection (%d/%d)", consecutiveAuthFailures, maxAuthFailuresBeforeClear)
+			if consecutiveAuthFailures >= maxAuthFailuresBeforeClear {
+				log.Printf("[hub-client] %d consecutive auth rejections - credentials permanently rejected by hub, clearing local credentials", maxAuthFailuresBeforeClear)
+				c.app.clearMachineCredentials()
+				c.app.emitEvent("hub-auth-rejected")
+				return // stop reconnecting - user must manually re-register
+			}
+			// Wait longer before retrying auth to give server time to recover.
+			// Use chunked sleep for early exit responsiveness.
+			for waited := time.Duration(0); waited < 5*time.Second && c.allowReconnect.Load(); waited += 500 * time.Millisecond {
+				time.Sleep(500 * time.Millisecond)
+			}
+			continue
 		}
 
-		time.Sleep(backoff)
-		if backoff < 5*time.Second {
+		// Transient auth error: Hub returned error but NOT a definitive rejection.
+		// Do NOT clear credentials. Just retry with normal backoff.
+		if errors.Is(err, errHubTransientAuthError) {
+			log.Printf("[hub-client] transient auth error during reconnect, will retry (not clearing credentials)")
+			// Reset auth failure counter - transient errors break the streak
+			consecutiveAuthFailures = 0
+		} else {
+			// Network/dial/other errors - also reset auth failure counter
+			consecutiveAuthFailures = 0
+		}
+
+		// Sleep with early-exit check: break the backoff into 500ms chunks so
+		// we can respond quickly when allowReconnect is set to false (e.g.,
+		// user clicks "Clear" / ClearRemoteActivation).
+		remaining := backoff
+		for remaining > 0 && c.allowReconnect.Load() {
+			chunk := 500 * time.Millisecond
+			if chunk > remaining {
+				chunk = remaining
+			}
+			time.Sleep(chunk)
+			remaining -= chunk
+		}
+
+		if backoff < 30*time.Second {
 			backoff *= 2
-			if backoff > 5*time.Second {
-				backoff = 5 * time.Second
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
 			}
 		}
 	}

@@ -58,6 +58,7 @@ temp_fix_app.ps1
 hub/web/admin/.tmp-check.js
 hub/web/admin/_syntax_check.js
 gui.exe
+gui/gui
 *.test.exe
 site/
 

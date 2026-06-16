@@ -2,6 +2,7 @@ package cardstore
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -11,13 +12,17 @@ import (
 )
 
 type cardTypeTestRepo struct {
-	created []*CardType
-	updated []*CardType
-	byID    map[string]*CardType
-	all     []*CardType
+	created   []*CardType
+	updated   []*CardType
+	byID      map[string]*CardType
+	all       []*CardType
+	createErr error
 }
 
 func (r *cardTypeTestRepo) Create(_ context.Context, ct *CardType) error {
+	if r.createErr != nil {
+		return r.createErr
+	}
 	r.created = append(r.created, ct)
 	return nil
 }
@@ -35,7 +40,13 @@ func (r *cardTypeTestRepo) GetByID(_ context.Context, id string) (*CardType, err
 }
 
 func (r *cardTypeTestRepo) ListEnabled(_ context.Context) ([]*CardType, error) {
-	return nil, nil
+	var enabled []*CardType
+	for _, ct := range r.all {
+		if ct != nil && ct.Enabled {
+			enabled = append(enabled, ct)
+		}
+	}
+	return enabled, nil
 }
 
 func (r *cardTypeTestRepo) ListAll(_ context.Context) ([]*CardType, error) {
@@ -276,8 +287,8 @@ func TestEnsureDefaultComputeCardTypesCreatesBuiltinsWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestEnsureDefaultComputeCardTypesKeepsExistingCards(t *testing.T) {
-	repo := &cardTypeTestRepo{all: []*CardType{{ID: "custom", ServiceGroupID: "grant-group"}}}
+func TestEnsureDefaultComputeCardTypesKeepsExistingEnabledCards(t *testing.T) {
+	repo := &cardTypeTestRepo{all: []*CardType{{ID: "custom", ServiceGroupID: "grant-group", Enabled: true}}}
 	svc := NewService(repo, nil, nil)
 
 	if err := svc.EnsureDefaultComputeCardTypes(context.Background(), "grant-group"); err != nil {
@@ -285,6 +296,55 @@ func TestEnsureDefaultComputeCardTypesKeepsExistingCards(t *testing.T) {
 	}
 	if len(repo.created) != 0 {
 		t.Fatalf("created defaults despite existing cards: %#v", repo.created)
+	}
+}
+
+func TestEnsureDefaultComputeCardTypesCreatesBuiltinsWhenOnlyDisabledCardsExist(t *testing.T) {
+	repo := &cardTypeTestRepo{all: []*CardType{{ID: "disabled-custom", ServiceGroupID: "grant-group", Enabled: false}}}
+	svc := NewService(repo, nil, nil)
+
+	if err := svc.EnsureDefaultComputeCardTypes(context.Background(), "grant-group"); err != nil {
+		t.Fatalf("EnsureDefaultComputeCardTypes: %v", err)
+	}
+	if len(repo.created) != 3 {
+		t.Fatalf("created count = %d, want 3", len(repo.created))
+	}
+	for _, ct := range repo.created {
+		if !ct.Enabled {
+			t.Fatalf("default card should be enabled: %#v", ct)
+		}
+	}
+}
+
+func TestEnsureDefaultComputeCardTypesDoesNotSwallowPartialCreateFailure(t *testing.T) {
+	repo := &cardTypeTestRepo{
+		createErr: errors.New("database locked"),
+		byID: map[string]*CardType{
+			"maclaw_compute_month_10000": {ID: "maclaw_compute_month_10000", ServiceGroupID: "grant-group", Enabled: true},
+		},
+	}
+	svc := NewService(repo, nil, nil)
+
+	err := svc.EnsureDefaultComputeCardTypes(context.Background(), "grant-group")
+	if err == nil || !strings.Contains(err.Error(), "database locked") {
+		t.Fatalf("error = %v, want database locked", err)
+	}
+}
+
+func TestEnsureDefaultComputeCardTypesTreatsConcurrentCompleteInsertAsSuccess(t *testing.T) {
+	defaults := DefaultComputeCardTypes("grant-group")
+	byID := map[string]*CardType{}
+	for _, ct := range defaults {
+		byID[ct.ID] = ct
+	}
+	repo := &cardTypeTestRepo{
+		createErr: errors.New("constraint failed"),
+		byID:      byID,
+	}
+	svc := NewService(repo, nil, nil)
+
+	if err := svc.EnsureDefaultComputeCardTypes(context.Background(), "grant-group"); err != nil {
+		t.Fatalf("EnsureDefaultComputeCardTypes: %v", err)
 	}
 }
 

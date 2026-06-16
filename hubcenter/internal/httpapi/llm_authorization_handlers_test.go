@@ -34,7 +34,6 @@ func TestAdminCreateLLMAuthorizationAllowsExternalComputeWithoutServiceGroup(t *
 	repo := &llmDeleteAuthRepo{}
 	checker := llmservice.NewAuthorizationChecker(repo)
 	body := bytes.NewReader([]byte(`{
-		"id":"auth_external_hub1_tenant1",
 		"hub_id":"hub1",
 		"tenant_id":"tenant1",
 		"allow_external_providers":true
@@ -65,6 +64,53 @@ func TestAdminCreateLLMAuthorizationAllowsExternalComputeWithoutServiceGroup(t *
 	ok, err := checker.HasExternalProviderAccess(context.Background(), "hub1", "tenant1")
 	if err != nil || !ok {
 		t.Fatalf("external provider access = %v err=%v", ok, err)
+	}
+}
+
+func TestAdminListLLMAuthorizationsMarksExternalComputeAccess(t *testing.T) {
+	repo := &llmDeleteAuthRepo{auths: []*llmservice.TenantAuthorization{{
+		ID:                     "external_disabled",
+		HubID:                  "hub1",
+		TenantID:               "tenant1",
+		ServiceGroupID:         llmservice.ExternalComputePermissionServiceGroupID,
+		AllowExternalProviders: false,
+		Status:                 "expired",
+		Source:                 "external_provider_permission",
+	}, {
+		ID:             "credit_grant",
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: "group1",
+		CreditsTotal:   100,
+		Status:         "active",
+		Source:         "admin_grant",
+	}}}
+	checker := llmservice.NewAuthorizationChecker(repo)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/authorizations", nil)
+	rr := httptest.NewRecorder()
+
+	adminListLLMAuthorizations(checker).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Authorizations []struct {
+			ID                      string `json:"id"`
+			IsExternalComputeAccess bool   `json:"is_external_compute_access"`
+		} `json:"authorizations"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Authorizations) != 2 {
+		t.Fatalf("authorization count = %d body=%s", len(payload.Authorizations), rr.Body.String())
+	}
+	if !payload.Authorizations[0].IsExternalComputeAccess {
+		t.Fatalf("external compute authorization not marked: %+v", payload.Authorizations[0])
+	}
+	if payload.Authorizations[1].IsExternalComputeAccess {
+		t.Fatalf("credit grant marked as external compute: %+v", payload.Authorizations[1])
 	}
 }
 
@@ -103,15 +149,9 @@ func TestAdminCreateLLMAuthorizationDisablesPreviousExternalComputeGrant(t *test
 	}}}
 	checker := llmservice.NewAuthorizationChecker(repo)
 	body := bytes.NewReader([]byte(`{
-		"id":"new_external",
 		"hub_id":"hub1",
 		"tenant_id":"tenant1",
-		"allow_external_providers":false,
-		"credits_total":1000000000000,
-		"starts_at":"2026-01-01T00:00:00Z",
-		"expires_at":"2099-12-31T23:59:59Z",
-		"status":"active",
-		"source":"external_provider_permission"
+		"allow_external_providers":false
 	}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/authorizations", body)
 	rr := httptest.NewRecorder()
@@ -201,15 +241,9 @@ func TestAdminCreateLLMAuthorizationKeepsPreviousGrantWhenCreateFails(t *testing
 	}
 	checker := llmservice.NewAuthorizationChecker(repo)
 	body := bytes.NewReader([]byte(`{
-		"id":"new_external",
 		"hub_id":"hub1",
 		"tenant_id":"tenant1",
-		"allow_external_providers":false,
-		"credits_total":1000000000000,
-		"starts_at":"2026-01-01T00:00:00Z",
-		"expires_at":"2099-12-31T23:59:59Z",
-		"status":"active",
-		"source":"external_provider_permission"
+		"allow_external_providers":false
 	}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/authorizations", body)
 	rr := httptest.NewRecorder()
@@ -224,6 +258,50 @@ func TestAdminCreateLLMAuthorizationKeepsPreviousGrantWhenCreateFails(t *testing
 	}
 	if repo.auths[0].Status != "active" {
 		t.Fatalf("old external grant status = %q, want active", repo.auths[0].Status)
+	}
+}
+
+func TestAdminCreateLLMAuthorizationUpdatesExistingExternalComputeGrant(t *testing.T) {
+	id := "auth_admin_hub1_tenant1_" + llmservice.ExternalComputePermissionServiceGroupID
+	createdAt := mustParseTime(t, "2026-01-01T00:00:00Z")
+	repo := &llmDeleteAuthRepo{auths: []*llmservice.TenantAuthorization{{
+		ID:                     id,
+		HubID:                  "hub1",
+		TenantID:               "tenant1",
+		ServiceGroupID:         llmservice.ExternalComputePermissionServiceGroupID,
+		AllowExternalProviders: false,
+		CreditsTotal:           1,
+		CreditsUsed:            1,
+		StartsAt:               createdAt,
+		ExpiresAt:              createdAt.Add(time.Hour),
+		Status:                 "expired",
+		Source:                 "external_provider_permission",
+		CreatedAt:              createdAt,
+		UpdatedAt:              createdAt,
+	}}}
+	checker := llmservice.NewAuthorizationChecker(repo)
+	body := bytes.NewReader([]byte(`{
+		"hub_id":" hub1 ",
+		"tenant_id":" tenant1 ",
+		"allow_external_providers":true
+	}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/authorizations", body)
+	rr := httptest.NewRecorder()
+
+	adminCreateLLMAuthorization(checker).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(repo.auths) != 1 {
+		t.Fatalf("auth count = %d, want 1 updated row", len(repo.auths))
+	}
+	got := repo.auths[0]
+	if !got.AllowExternalProviders || got.Status != "active" || got.CreditsRemaining() <= 0 {
+		t.Fatalf("updated auth = %#v, want active external compute grant", got)
+	}
+	if !got.CreatedAt.Equal(createdAt) {
+		t.Fatalf("created_at = %s, want preserved %s", got.CreatedAt, createdAt)
 	}
 }
 
@@ -290,8 +368,73 @@ func TestLLMAuthorizationQueryRequiresHubMachineAuth(t *testing.T) {
 	if err := json.Unmarshal(okResp.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode authorization response: %v", err)
 	}
-	if !payload.AllowExternalProviders {
-		t.Fatalf("allow_external_providers = false, want true")
+	if payload.AllowExternalProviders {
+		t.Fatalf("allow_external_providers = true, want false for disabled external compute grant")
+	}
+}
+
+func TestLLMAuthorizationQueryAllowsActiveExternalComputeGrant(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	ctx := context.Background()
+	secret := "hub-active-secret"
+	now := time.Now().UTC()
+	if err := svc.store.Hubs.Create(ctx, &store.HubInstance{
+		ID:            "hub_active",
+		OwnerEmail:    "owner@example.com",
+		Name:          "Active Hub",
+		BaseURL:       "https://hub.example.com",
+		Status:        "online",
+		HubSecretHash: testHashToken(secret),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+
+	checker := llmservice.NewAuthorizationChecker(&llmDeleteAuthRepo{auths: []*llmservice.TenantAuthorization{{
+		ID:                     "external_active",
+		HubID:                  "hub_active",
+		TenantID:               "tenant_active",
+		ServiceGroupID:         llmservice.ExternalComputePermissionServiceGroupID,
+		CreditsTotal:           1000000000000,
+		StartsAt:               now.Add(-time.Hour),
+		ExpiresAt:              now.Add(time.Hour),
+		Status:                 "active",
+		AllowExternalProviders: true,
+		Source:                 "external_provider_permission",
+	}}})
+	mux := http.NewServeMux()
+	RegisterLLMRoutes(mux, nil, svc.hubs, llmservice.NewService(&llmDeleteTestSettings{}), nil, checker, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm/v1/authorization?hub_id=hub_active&tenant_id=tenant_active", nil)
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("X-Hub-ID", "hub_active")
+	resp := httptest.NewRecorder()
+	mux.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		HubID                  string `json:"hub_id"`
+		TenantID               string `json:"tenant_id"`
+		AllowExternalProviders bool   `json:"allow_external_providers"`
+		Authorizations         []struct {
+			ID               string  `json:"id"`
+			CreditsRemaining float64 `json:"credits_remaining"`
+			Active           bool    `json:"active"`
+		} `json:"authorizations"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode authorization response: %v", err)
+	}
+	if payload.HubID != "hub_active" || payload.TenantID != "tenant_active" || !payload.AllowExternalProviders {
+		t.Fatalf("authorization = %#v, want active external compute grant", payload)
+	}
+	if len(payload.Authorizations) != 1 {
+		t.Fatalf("authorizations len = %d body=%s", len(payload.Authorizations), resp.Body.String())
+	}
+	if got := payload.Authorizations[0]; got.ID != "external_active" || got.CreditsRemaining <= 0 || !got.Active {
+		t.Fatalf("authorization summary = %+v, want active external_active", got)
 	}
 }
 

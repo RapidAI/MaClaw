@@ -449,22 +449,65 @@ func adminListLLMAuthorizations(checker *llmservice.AuthorizationChecker) http.H
 			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSONResp(w, http.StatusOK, map[string]any{"authorizations": auths})
+		views := make([]adminLLMAuthorizationView, 0, len(auths))
+		for _, auth := range auths {
+			if auth == nil {
+				continue
+			}
+			views = append(views, adminLLMAuthorizationView{
+				TenantAuthorization:     auth,
+				IsExternalComputeAccess: isExternalComputeAccessAuthorization(auth),
+			})
+		}
+		writeJSONResp(w, http.StatusOK, map[string]any{"authorizations": views})
 	}
+}
+
+type adminLLMAuthorizationView struct {
+	*llmservice.TenantAuthorization
+	IsExternalComputeAccess bool `json:"is_external_compute_access"`
+}
+
+func isExternalComputeAccessAuthorization(auth *llmservice.TenantAuthorization) bool {
+	if auth == nil {
+		return false
+	}
+	return auth.AllowExternalProviders ||
+		auth.Source == "external_provider_permission" ||
+		auth.ServiceGroupID == llmservice.ExternalComputePermissionServiceGroupID
 }
 
 func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var auth llmservice.TenantAuthorization
-		if err := json.NewDecoder(r.Body).Decode(&auth); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(body, &raw); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		var auth llmservice.TenantAuthorization
+		if err := json.Unmarshal(body, &auth); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		auth.HubID = strings.TrimSpace(auth.HubID)
+		auth.TenantID = strings.TrimSpace(auth.TenantID)
+		auth.AdminEmail = strings.TrimSpace(auth.AdminEmail)
+		auth.ServiceGroupID = strings.TrimSpace(auth.ServiceGroupID)
+		auth.Source = strings.TrimSpace(auth.Source)
 		if auth.HubID == "" || auth.TenantID == "" {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "hub_id and tenant_id are required"})
 			return
 		}
-		isExternalComputeGrant := auth.AllowExternalProviders || auth.Source == "external_provider_permission" || auth.ServiceGroupID == llmservice.ExternalComputePermissionServiceGroupID
+		_, hasAllowExternal := raw["allow_external_providers"]
+		isExternalComputeGrant := auth.AllowExternalProviders ||
+			auth.Source == "external_provider_permission" ||
+			auth.ServiceGroupID == llmservice.ExternalComputePermissionServiceGroupID ||
+			(hasAllowExternal && auth.ServiceGroupID == "" && auth.CreditsTotal == 0 && auth.Source == "")
 		if auth.ServiceGroupID == "" && isExternalComputeGrant {
 			auth.ServiceGroupID = llmservice.ExternalComputePermissionServiceGroupID
 		}
@@ -474,6 +517,9 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 		}
 		if isExternalComputeGrant {
 			auth.Source = "external_provider_permission"
+			if !hasAllowExternal {
+				auth.AllowExternalProviders = true
+			}
 			if auth.Status == "" {
 				auth.Status = "active"
 			}
@@ -516,9 +562,24 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 			auth.CreatedAt = now
 		}
 		auth.UpdatedAt = now
-		if err := checker.CreateAuthorization(r.Context(), &auth); err != nil {
-			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		existingByID, err := checker.GetByID(r.Context(), auth.ID)
+		if err != nil {
+			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
+		}
+		if existingByID != nil {
+			if !existingByID.CreatedAt.IsZero() {
+				auth.CreatedAt = existingByID.CreatedAt
+			}
+			if err := checker.UpdateAuthorization(r.Context(), &auth); err != nil {
+				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+		} else {
+			if err := checker.CreateAuthorization(r.Context(), &auth); err != nil {
+				writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
 		}
 		for _, old := range supersededExternal {
 			old.AllowExternalProviders = false

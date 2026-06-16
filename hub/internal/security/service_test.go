@@ -152,6 +152,10 @@ func (m *mockUserRepo) UpdateSmartRoute(_ context.Context, userID string, enable
 	return nil
 }
 
+func (m *mockUserRepo) MarkEmailVerified(_ context.Context, _, _ string) error {
+	return nil
+}
+
 // --- Test helpers ---
 
 func newTestService(t *testing.T) (*SecurityService, *mockAuditRepo) {

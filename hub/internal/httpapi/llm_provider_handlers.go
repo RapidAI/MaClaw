@@ -188,7 +188,7 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl
 				writeError(w, http.StatusForbidden, "LLM_EXTERNAL_PROVIDER_NOT_GRANTED", "需要获得 MaClaw 官方算力模块授权才能添加自定义 LLM 服务。请联系 MaClaw 官方获取授权。")
 				return
 			}
-			if ok, message := currentAccessCtrl.CanAddExternalProvider(r.Context(), store.NormalizeTenantID(tenantID)); !ok {
+			if ok, message := canAddExternalProviderForMutation(r.Context(), currentAccessCtrl, store.NormalizeTenantID(tenantID)); !ok {
 				writeError(w, http.StatusForbidden, "LLM_EXTERNAL_PROVIDER_NOT_GRANTED", message)
 				return
 			}
@@ -255,6 +255,17 @@ func llmProviderRegistryAddsProviders(oldReg *im.LLMProviderRegistry, req *im.LL
 		}
 	}
 	return false
+}
+
+func canAddExternalProviderForMutation(ctx context.Context, accessCtrl *llmservice.TenantLLMAccessControl, tenantID string) (bool, string) {
+	ok, message := accessCtrl.CanAddExternalProvider(ctx, tenantID)
+	if ok {
+		return true, ""
+	}
+	if status, err := accessCtrl.RefreshAuthorizationStatus(ctx, tenantID); err == nil && status != nil && status.AllowExternalProviders {
+		return true, ""
+	}
+	return false, message
 }
 
 func filterLLMProviderRegistryForRequest(r *http.Request, accessCtrl *llmservice.TenantLLMAccessControl, reg *im.LLMProviderRegistry) *im.LLMProviderRegistry {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ToolOptions carries host-specific context into the shared memory tool logic.
@@ -131,6 +132,7 @@ func (s *Store) RecallByMode(query string, category Category, mode string, proje
 	if s == nil {
 		return result, nil
 	}
+	start := time.Now()
 	switch mode {
 	case "dynamic":
 		result.Entries = s.RecallDynamicForTool(query, category, projectPath, ownerID...)
@@ -165,6 +167,17 @@ func (s *Store) RecallByMode(query string, category Category, mode string, proje
 		if result.LightMemPlan != nil && len(result.LightMemPlan.ResultEntryIDs) > limit {
 			result.LightMemPlan.ResultEntryIDs = result.LightMemPlan.ResultEntryIDs[:limit]
 		}
+	}
+	// Log to recall log file for modes that don't already log internally.
+	// "dynamic" delegates to RecallDynamicForTool which logs as "dynamic_tool".
+	// "auto" without adaptive plan also used RecallDynamicForTool.
+	// All other modes (adaptive, lightmem, hybrid, etc.) need explicit logging.
+	needsLog := mode != "dynamic"
+	if mode == "auto" && result.AdaptivePlan == nil {
+		needsLog = false // auto → RecallDynamicForTool path (already logged)
+	}
+	if needsLog {
+		s.logRecallIfEnabled("tool:"+mode, query, category, projectPath, ownerID, start, result.Entries)
 	}
 	return result, nil
 }
@@ -281,7 +294,11 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 
 		// --- Dispatch: mode=exhaustive → Store.RecallExhaustive ---
 		if mode == "exhaustive" {
+			start := time.Now()
 			exhaustiveResult := store.RecallExhaustive(query, category, projectPath, opts.OwnerID)
+			if exhaustiveResult != nil {
+				store.logRecallIfEnabled("tool:exhaustive", query, category, projectPath, []string{opts.OwnerID}, start, exhaustiveResult.Entries)
+			}
 			return formatExhaustiveResultForTool(store, query, exhaustiveResult, debug)
 		}
 

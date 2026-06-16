@@ -1976,6 +1976,27 @@ export function RequestHubCapabilityInstallIntent(arg1) {
   return window['go']['main']['App']['RequestHubCapabilityInstallIntent'](arg1);
 }
 
+// MacLaw App package bindings
+export function SubmitMaclawAppPackage(arg1) {
+  return window['go']['main']['App']['SubmitMaclawAppPackage'](arg1);
+}
+
+export function ListMaclawAppPackageSubmissions(arg1) {
+  return window['go']['main']['App']['ListMaclawAppPackageSubmissions'](arg1);
+}
+
+export function GetMaclawAppPackageSubmission(arg1) {
+  return window['go']['main']['App']['GetMaclawAppPackageSubmission'](arg1);
+}
+
+export function WithdrawMaclawAppPackageSubmission(arg1) {
+  return window['go']['main']['App']['WithdrawMaclawAppPackageSubmission'](arg1);
+}
+
+export function UpdateMaclawAppPackageSubmissionStatus(arg1, arg2) {
+  return window['go']['main']['App']['UpdateMaclawAppPackageSubmissionStatus'](arg1, arg2);
+}
+
 // Digital Employee bindings
 export function ListVirtualEmployees() {
   return window['go']['main']['App']['ListVirtualEmployees']();

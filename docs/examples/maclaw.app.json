@@ -5,6 +5,7 @@
   "app": {
     "id": "document-redaction",
     "name": "Document Redaction",
+    "version": 1,
     "description": "Upload a document and return a redacted copy.",
     "category": "Document",
     "kind": "tool_app",
@@ -33,6 +34,15 @@
     "panel": {
       "pinned": false,
       "accent": "#28705f"
+    },
+    "governance": {
+      "status": "local_tested",
+      "riskLevel": "low",
+      "testEvidence": {
+        "runId": "skill-run-redaction-demo",
+        "artifactHash": "sha256:example",
+        "verifiedAt": "2026-06-16T00:00:00Z"
+      }
     }
   }
 }

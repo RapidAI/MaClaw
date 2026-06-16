@@ -47,6 +47,7 @@ describe('AppsPage', () => {
         Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
     });
     afterEach(() => {
+        delete (window as any).go;
         vi.unstubAllGlobals();
         cleanup();
     });
@@ -145,6 +146,484 @@ describe('AppsPage', () => {
         const manageTab = screen.getByRole('tab', { name: '应用管理' });
         expect(manageTab.getAttribute('aria-selected')).toBe('true');
         expect(screen.getByRole('tabpanel').getAttribute('id')).toBe(manageTab.getAttribute('aria-controls'));
+
+        fireEvent.keyDown(manageTab, { key: 'End' });
+        const publishTab = screen.getByRole('tab', { name: '审核/发布' });
+        expect(publishTab.getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByText('暂无本地应用可发布')).not.toBeNull();
+    });
+
+    it('shows local apps in the review and publish checklist', () => {
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
+        fireEvent.click(screen.getAllByText('创建应用')[1]);
+        fireEvent.click(screen.getByText('审核/发布'));
+
+        expect(screen.getByText('发布检查')).not.toBeNull();
+        expect(screen.getAllByText('合同归档').length).toBeGreaterThan(0);
+        expect(screen.getByText('需补齐')).not.toBeNull();
+        expect(screen.getByText('Manifest 结构')).not.toBeNull();
+        expect(screen.getByText('绑定能力')).not.toBeNull();
+        expect(screen.getByText('运行证据')).not.toBeNull();
+        expect(screen.getByText('提交包预览')).not.toBeNull();
+        expect(screen.getByText(/maclaw.app.pack.v1/)).not.toBeNull();
+        expect(screen.getByText(/"governance"/)).not.toBeNull();
+        expect(screen.getByText(/"status": "draft"/)).not.toBeNull();
+    });
+
+    it('submits ready local apps into local review state', async () => {
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
+        fireEvent.click(screen.getAllByText('创建应用')[1]);
+        fireEvent.click(screen.getAllByText('合同归档')[0]);
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+
+        expect(screen.getByText('可提交')).not.toBeNull();
+        fireEvent.click(screen.getByText('提交审核'));
+
+        await waitFor(() => expect(screen.getAllByText('本地待同步').length).toBeGreaterThan(0));
+        expect(screen.getAllByText('已提交').length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/local-review-/).length).toBeGreaterThan(0);
+        expect(screen.getByText(/"status": "submitted"/)).not.toBeNull();
+        expect(screen.getByText(/"channel": "local"/)).not.toBeNull();
+        expect(window.localStorage.getItem('maclaw:apps-publish-submissions:v1')).toContain('local-review-');
+
+        fireEvent.click(screen.getByText('撤回提交'));
+        await waitFor(() => expect(screen.getByText('可提交')).not.toBeNull());
+        expect(screen.queryByText('等待企业市场审核')).toBeNull();
+        expect(screen.getByText(/"status": "local_tested"/)).not.toBeNull();
+        expect(window.localStorage.getItem('maclaw:apps-publish-submissions:v1')).not.toContain('local-review-');
+    });
+
+    it('shows returned review status and allows resubmission', async () => {
+        const reviewedApp = {
+            id: 'local-app-review-returned',
+            name: '审核回退应用',
+            description: '用于验证市场审核回写状态',
+            category: '法务',
+            kind: 'tool_app',
+            icon: 'contract',
+            accent: '#7c3f58',
+            pinned: false,
+            source: 'local',
+            recentUsedAt: '2026-06-17T00:00:00.000Z',
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'skill',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'tool_app',
+                launchMode: 'fixed_skill_ui',
+                skill: { id: 'contract-review', inputMode: 'mixed', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [] },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [reviewedApp.id],
+            customApps: [reviewedApp],
+            recentUsedAtById: { [reviewedApp.id]: reviewedApp.recentUsedAt },
+        }));
+        window.localStorage.setItem('maclaw:apps-publish-submissions:v1', JSON.stringify({
+            [reviewedApp.id]: {
+                id: 'local-review-returned',
+                appID: reviewedApp.id,
+                submittedAt: '2026-06-17T00:00:00.000Z',
+                reviewedAt: '2026-06-17T00:10:00.000Z',
+                status: 'review_failed',
+                reviewer: 'market-reviewer',
+                message: '请补充运行证据',
+            },
+        }));
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+
+        expect(screen.getAllByText('审核需修改').length).toBeGreaterThan(0);
+        expect(screen.getByText('请补充运行证据')).not.toBeNull();
+        expect(screen.getByText(/"status": "review_failed"/)).not.toBeNull();
+
+        fireEvent.click(screen.getByText('提交审核'));
+        await waitFor(() => expect(screen.getAllByText('本地待同步').length).toBeGreaterThan(0));
+        expect(screen.getByText(/"status": "submitted"/)).not.toBeNull();
+    });
+
+    it('uses the enterprise market bridge when submitting app packages', async () => {
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({
+            submission_id: 'market-review-123',
+            submitted_at: '2026-06-17T01:00:00.000Z',
+            status: 'submitted',
+            message: 'queued',
+        });
+        (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
+        fireEvent.click(screen.getAllByText('创建应用')[1]);
+        fireEvent.click(screen.getAllByText('合同归档')[0]);
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+        fireEvent.click(screen.getByText('提交审核'));
+
+        await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
+        const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
+        expect(payload.schema).toBe('maclaw.app.pack.v1');
+        expect(payload.apps[0].app.name).toBe('合同归档');
+        expect(screen.getAllByText('等待企业市场审核').length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/market-review-123/).length).toBeGreaterThan(0);
+        expect(screen.getByText(/"channel": "hub"/)).not.toBeNull();
+    });
+
+    it('keeps local channel when the app package bridge queues locally', async () => {
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({
+            submission_id: 'local-review-queued',
+            submitted_at: '2026-06-17T01:05:00.000Z',
+            status: 'submitted',
+            channel: 'local',
+            message: 'queued locally for enterprise market sync',
+        });
+        (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
+        fireEvent.click(screen.getAllByText('创建应用')[1]);
+        fireEvent.click(screen.getAllByText('合同归档')[0]);
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+        fireEvent.click(screen.getByText('提交审核'));
+
+        await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
+        expect(screen.getAllByText('本地待同步').length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/queued locally for enterprise market sync/).length).toBeGreaterThan(0);
+        expect(screen.getByText(/"channel": "local"/)).not.toBeNull();
+    });
+
+    it('withdraws local app package submissions from the durable queue', async () => {
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({
+            submission_id: 'local-review-withdraw',
+            submitted_at: '2026-06-17T01:05:00.000Z',
+            status: 'submitted',
+            channel: 'local',
+            message: 'queued locally for enterprise market sync',
+        });
+        const withdrawMaclawAppPackageSubmission = vi.fn().mockResolvedValue(true);
+        const listMaclawAppPackageSubmissions = vi.fn()
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce([{ submission_id: 'local-review-withdraw', submitted_at: '2026-06-17T01:05:00.000Z', status: 'submitted', channel: 'local', app_ids: ['withdraw-app'], message: 'queued locally for enterprise market sync' }])
+            .mockResolvedValueOnce([]);
+        (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage, WithdrawMaclawAppPackageSubmission: withdrawMaclawAppPackageSubmission, ListMaclawAppPackageSubmissions: listMaclawAppPackageSubmissions } } };
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
+        fireEvent.click(screen.getAllByText('创建应用')[1]);
+        fireEvent.click(screen.getAllByText('合同归档')[0]);
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+        fireEvent.click(screen.getByText('提交审核'));
+
+        await waitFor(() => expect(screen.getAllByText('本地待同步').length).toBeGreaterThan(0));
+        fireEvent.click(screen.getByText('撤回提交'));
+
+        await waitFor(() => expect(withdrawMaclawAppPackageSubmission).toHaveBeenCalledWith('local-review-withdraw'));
+        expect(screen.getByText('可提交')).not.toBeNull();
+        await waitFor(() => expect(screen.getByText('暂无本机待同步提交')).not.toBeNull());
+    });
+
+    it('shows local app package submission queue summaries', async () => {
+        const listMaclawAppPackageSubmissions = vi.fn().mockResolvedValue([{
+            submission_id: 'local-review-existing',
+            submitted_at: '2026-06-17T01:10:00Z',
+            status: 'submitted',
+            channel: 'local',
+            app_ids: ['queued-app'],
+            app_names: ['队列应用'],
+            package_sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+            package_bytes: 1536,
+            event_count: 2,
+            last_event_at: '2026-06-17T01:12:00Z',
+            message: 'queued locally for enterprise market sync',
+        }]);
+        (window as any).go = { main: { App: { ListMaclawAppPackageSubmissions: listMaclawAppPackageSubmissions } } };
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+
+        await waitFor(() => expect(listMaclawAppPackageSubmissions).toHaveBeenCalledWith(8));
+        expect(screen.getByText('本机提交队列')).not.toBeNull();
+        expect(screen.getByText('local-review-existing')).not.toBeNull();
+        expect(screen.getByText(/队列应用/)).not.toBeNull();
+        expect(screen.getByText(/sha256:0123456789ab/)).not.toBeNull();
+        expect(screen.getByText(/1.5 KB/)).not.toBeNull();
+        expect(screen.getByText(/事件:2 2026-06-17T01:12:00Z/)).not.toBeNull();
+        expect(screen.getByText(/queued locally for enterprise market sync/)).not.toBeNull();
+    });
+
+    it('shows a loading state while reading the local submission queue', async () => {
+        let resolveQueue: (value: unknown[]) => void = () => {};
+        const queuePromise = new Promise<unknown[]>((resolve) => {
+            resolveQueue = resolve;
+        });
+        const listMaclawAppPackageSubmissions = vi.fn().mockReturnValue(queuePromise);
+        (window as any).go = { main: { App: { ListMaclawAppPackageSubmissions: listMaclawAppPackageSubmissions } } };
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+
+        expect(screen.getByText('提交队列读取中')).not.toBeNull();
+
+        resolveQueue([]);
+        await waitFor(() => expect(screen.getByText('暂无本机待同步提交')).not.toBeNull());
+    });
+
+    it('refreshes local app package submission queue summaries on demand', async () => {
+        const listMaclawAppPackageSubmissions = vi.fn()
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce([{
+                submission_id: 'local-review-refreshed',
+                submitted_at: '2026-06-17T01:15:00Z',
+                status: 'published',
+                channel: 'hub',
+                app_ids: ['refreshed-app'],
+                app_names: ['刷新应用'],
+                message: 'published by enterprise market',
+            }]);
+        (window as any).go = { main: { App: { ListMaclawAppPackageSubmissions: listMaclawAppPackageSubmissions } } };
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+
+        await waitFor(() => expect(screen.getByText('暂无本机待同步提交')).not.toBeNull());
+        fireEvent.click(screen.getByText('刷新'));
+
+        await waitFor(() => expect(listMaclawAppPackageSubmissions).toHaveBeenCalledTimes(2));
+        expect(screen.getByText('local-review-refreshed')).not.toBeNull();
+        expect(screen.getByText(/最后刷新:/)).not.toBeNull();
+        expect(screen.getByText(/刷新应用/)).not.toBeNull();
+        expect(screen.getByText(/published by enterprise market/)).not.toBeNull();
+    });
+
+    it('copies full queued app package details from the durable queue', async () => {
+        const listMaclawAppPackageSubmissions = vi.fn().mockResolvedValue([{
+            submission_id: 'local-review-detail',
+            submitted_at: '2026-06-17T01:10:00Z',
+            status: 'submitted',
+            channel: 'local',
+            app_ids: ['queued-detail-app'],
+            message: 'queued locally for enterprise market sync',
+        }]);
+        const getMaclawAppPackageSubmission = vi.fn().mockResolvedValue({
+            submission_id: 'local-review-detail',
+            status: 'review_failed',
+            events: [{ at: '2026-06-17T01:10:00Z', status: 'submitted', channel: 'local', submission_id: 'local-review-detail' }],
+            review_issues: [{ path: 'apps[0]', severity: 'error', message: '缺少运行证据' }],
+            package: {
+                schema: 'maclaw.app.pack.v1',
+                privateMarker: 'x_maclaw_apps',
+                apps: [{
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    app: { id: 'queued-detail-app', name: '队列详情应用' },
+                }],
+            },
+        });
+        (window as any).go = { main: { App: { ListMaclawAppPackageSubmissions: listMaclawAppPackageSubmissions, GetMaclawAppPackageSubmission: getMaclawAppPackageSubmission } } };
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+
+        await waitFor(() => expect(screen.getByText('local-review-detail')).not.toBeNull());
+        fireEvent.click(screen.getByText('复制队列包'));
+
+        await waitFor(() => expect(getMaclawAppPackageSubmission).toHaveBeenCalledWith('local-review-detail'));
+        await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1));
+        const copied = JSON.parse((navigator.clipboard.writeText as any).mock.calls[0][0]);
+        expect(copied.schema).toBe('maclaw.app.pack.v1');
+        expect(copied.apps[0].app.id).toBe('queued-detail-app');
+        expect(screen.getByText('已复制')).not.toBeNull();
+
+        fireEvent.click(screen.getByText('复制审计'));
+        await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(2));
+        const audit = JSON.parse((navigator.clipboard.writeText as any).mock.calls[1][0]);
+        expect(audit.submission_id).toBe('local-review-detail');
+        expect(audit.events[0].status).toBe('submitted');
+        expect(audit.review_issues[0].message).toBe('缺少运行证据');
+        expect(audit.package.apps[0].app.id).toBe('queued-detail-app');
+        expect(screen.getByText('审计已复制')).not.toBeNull();
+    });
+
+    it('shows inline queued app package audit details', async () => {
+        const listMaclawAppPackageSubmissions = vi.fn().mockResolvedValue([{
+            submission_id: 'local-review-inline-detail',
+            submitted_at: '2026-06-17T01:18:00Z',
+            status: 'review_failed',
+            channel: 'local',
+            app_ids: ['queued-inline-app'],
+            app_names: ['队列内联应用'],
+            reviewer: 'market-reviewer',
+            risk_level: 'medium',
+            review_issues: [{ path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缺少运行证据' }],
+        }]);
+        const getMaclawAppPackageSubmission = vi.fn().mockResolvedValue({
+            submission_id: 'local-review-inline-detail',
+            status: 'review_failed',
+            events: [
+                { at: '2026-06-17T01:18:00Z', status: 'submitted', channel: 'local', submission_id: 'local-review-inline-detail' },
+                { at: '2026-06-17T01:20:00Z', status: 'review_failed', channel: 'hub', submission_id: 'local-review-inline-detail' },
+            ],
+            package: {
+                schema: 'maclaw.app.pack.v1',
+                privateMarker: 'x_maclaw_apps',
+                apps: [{
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    app: { id: 'queued-inline-app', name: '队列内联应用' },
+                }],
+            },
+        });
+        (window as any).go = { main: { App: { ListMaclawAppPackageSubmissions: listMaclawAppPackageSubmissions, GetMaclawAppPackageSubmission: getMaclawAppPackageSubmission } } };
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+
+        await waitFor(() => expect(screen.getByText('local-review-inline-detail')).not.toBeNull());
+        fireEvent.click(screen.getByText('查看详情'));
+
+        await waitFor(() => expect(getMaclawAppPackageSubmission).toHaveBeenCalledWith('local-review-inline-detail'));
+        expect(screen.getByText('提交详情')).not.toBeNull();
+        expect(screen.getByText(/审核人: market-reviewer/)).not.toBeNull();
+        expect(screen.getByText(/风险: medium/)).not.toBeNull();
+        expect(screen.getByText(/包含应用: 队列内联应用/)).not.toBeNull();
+        expect(screen.getByText(/审核问题: error · apps\[0\]\.app\.governance\.testEvidence · 缺少运行证据/)).not.toBeNull();
+        expect(screen.getByText(/审计事件: 2026-06-17T01:18:00Z · submitted · local/)).not.toBeNull();
+
+        fireEvent.click(screen.getByText('收起详情'));
+        expect(screen.queryByText('提交详情')).toBeNull();
+    });
+
+    it('merges durable queue review status into local publish cards', async () => {
+        const reviewedApp = {
+            id: 'local-app-queue-published',
+            name: '队列回写应用',
+            description: '用于验证队列状态回灌',
+            category: '法务',
+            kind: 'tool_app',
+            icon: 'contract',
+            accent: '#7c3f58',
+            pinned: false,
+            source: 'local',
+            recentUsedAt: '2026-06-17T00:00:00.000Z',
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'skill',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'tool_app',
+                launchMode: 'fixed_skill_ui',
+                skill: { id: 'contract-review', inputMode: 'mixed', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [] },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [reviewedApp.id],
+            customApps: [reviewedApp],
+            recentUsedAtById: { [reviewedApp.id]: reviewedApp.recentUsedAt },
+        }));
+        const listMaclawAppPackageSubmissions = vi.fn().mockResolvedValueOnce([{
+            submission_id: 'market-review-published',
+            submitted_at: '2026-06-17T01:20:00Z',
+            status: 'published',
+            channel: 'hub',
+            app_ids: [reviewedApp.id],
+            reviewed_at: '2026-06-17T01:25:00Z',
+            published_at: '2026-06-17T01:30:00Z',
+            reviewer: 'market-reviewer',
+            risk_level: 'high',
+            approved_scopes: ['finance.expense_submit', 'finance.audit'],
+            review_issues: [
+                { path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缺少运行证据', suggestion: '先运行一次应用' },
+                { path: 'apps[0].app.permissions', severity: 'warning', message: '权限范围偏宽', suggestion: '缩小到财务单据' },
+                { path: 'apps[0].app.support.owner', severity: 'info', message: '建议补充负责人' },
+                { path: 'apps[0].app.runtime', severity: 'info', message: '建议补充回滚说明' },
+            ],
+            message: 'published by enterprise market',
+        }]).mockResolvedValue([]);
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({
+            submission_id: 'market-review-resubmitted',
+            submitted_at: '2026-06-17T02:00:00Z',
+            status: 'submitted',
+            channel: 'hub',
+            message: 'submitted updated app',
+        });
+        (window as any).go = { main: { App: { ListMaclawAppPackageSubmissions: listMaclawAppPackageSubmissions, SubmitMaclawAppPackage: submitMaclawAppPackage } } };
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+
+        await waitFor(() => expect(screen.getAllByText('已发布').length).toBeGreaterThan(0));
+        expect(screen.getAllByText(/market-review-published/).length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/published by enterprise market/).length).toBeGreaterThan(0);
+        expect(screen.getByText(/"status": "published"/)).not.toBeNull();
+        expect(screen.getByText(/"channel": "hub"/)).not.toBeNull();
+        expect(screen.getByText(/"reviewedAt": "2026-06-17T01:25:00Z"/)).not.toBeNull();
+        expect(screen.getByText(/"publishedAt": "2026-06-17T01:30:00Z"/)).not.toBeNull();
+        expect(screen.getByText(/"reviewer": "market-reviewer"/)).not.toBeNull();
+        expect(screen.getAllByText(/风险: high/).length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/批准权限: finance\.expense_submit, finance\.audit/).length).toBeGreaterThan(0);
+        expect(screen.getByText(/"riskLevel": "high"/)).not.toBeNull();
+        expect(screen.getByText(/"approvedScopes"/)).not.toBeNull();
+        expect(screen.getByText(/审核问题: error · apps\[0\]\.app\.governance\.testEvidence · 缺少运行证据 · 先运行一次应用/)).not.toBeNull();
+        expect(screen.getByText(/warning · apps\[0\]\.app\.permissions · 权限范围偏宽 · 缩小到财务单据/)).not.toBeNull();
+        expect(screen.getByText(/info · apps\[0\]\.app\.support\.owner · 建议补充负责人/)).not.toBeNull();
+        expect(screen.getByText(/另 1 项/)).not.toBeNull();
+        expect(screen.getByText(/"reviewIssues"/)).not.toBeNull();
+        expect(screen.getByText(/"suggestion": "先运行一次应用"/)).not.toBeNull();
+        expect(screen.getByText(/"message": "建议补充回滚说明"/)).not.toBeNull();
+
+        fireEvent.click(screen.getByText('去修复'));
+        await waitFor(() => expect(screen.getByRole('tab', { name: '应用管理' }).getAttribute('aria-selected')).toBe('true'));
+        const nameInput = screen.getByDisplayValue('队列回写应用');
+        expect(nameInput).not.toBeNull();
+        fireEvent.change(nameInput, { target: { value: '队列回写应用修正版' } });
+        fireEvent.click(screen.getByText('保存'));
+
+        fireEvent.click(screen.getByText('审核/发布'));
+        await waitFor(() => expect(screen.getAllByText('本地已修改，需重新提交').length).toBeGreaterThan(0));
+        expect(screen.getByText(/本地修改:/)).not.toBeNull();
+        expect(screen.getByText(/"modifiedAt"/)).not.toBeNull();
+        expect(screen.getByText(/"version": 2/)).not.toBeNull();
+        const resubmitButton = screen.getByRole('button', { name: '提交审核' }) as HTMLButtonElement;
+        expect(resubmitButton.disabled).toBe(false);
+
+        fireEvent.click(resubmitButton);
+        await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
+        const submittedPackage = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
+        expect(JSON.stringify(submittedPackage)).not.toContain('modifiedAt');
+        expect(JSON.stringify(submittedPackage)).not.toContain('reviewIssues');
+        expect(submittedPackage.apps[0].app.version).toBe(2);
+        await waitFor(() => expect(screen.queryByText('本地已修改，需重新提交')).toBeNull());
+        expect(screen.getAllByText('等待企业市场审核').length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/版本: v2/).length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/market-review-resubmitted/).length).toBeGreaterThan(0);
     });
 
     it('updates the draft manifest preview while creating an app', () => {
@@ -479,11 +958,14 @@ describe('AppsPage', () => {
         expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(screen.getByRole('tab', { name: '报销申请' }).id);
     });
 
-    it('opens the selected preview from the open button', () => {
+    it('shows an empty runtime area until an app icon is clicked', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByText('打开应用'));
+        expect(screen.getByText('选择应用')).not.toBeNull();
+        expect(screen.getByText('点击左侧图标后，应用将在这里以 tab 打开。')).not.toBeNull();
+        expect(container.querySelector('.apps-runtime-tabs')).toBeNull();
 
+        fireEvent.click(screen.getAllByText('报销申请')[0]);
         expect(container.querySelector('.apps-runtime-tabs')).not.toBeNull();
         expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('报销申请');
     });
@@ -1135,11 +1617,15 @@ describe('AppsPage', () => {
         window.localStorage.setItem('maclaw:apps-run-history:v1', JSON.stringify({
             [manifest.app.id]: [{ appID: manifest.app.id, runID: 'run-copy-old', status: 'done', outputMode: 'pdf', inputSummary: 'old', message: 'old', at: new Date().toISOString() }],
         }));
+        window.localStorage.setItem('maclaw:apps-publish-submissions:v1', JSON.stringify({
+            [manifest.app.id]: { id: 'local-review-copy-old', appID: manifest.app.id, submittedAt: new Date().toISOString(), status: 'submitted' },
+        }));
         fireEvent.click(within(copiedRow).getByTitle('移除'));
 
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('PDF 转 Word 副本'))).toBe(false);
         expect(Array.from(document.querySelectorAll('.apps-manage-row--hidden')).some((row) => row.textContent?.includes('PDF 转 Word 副本'))).toBe(false);
         expect(JSON.parse(window.localStorage.getItem('maclaw:apps-run-history:v1') || '{}')[manifest.app.id]).toBeUndefined();
+        expect(JSON.parse(window.localStorage.getItem('maclaw:apps-publish-submissions:v1') || '{}')[manifest.app.id]).toBeUndefined();
     });
 
     it('edits tool app runtime modes from app studio management', () => {
@@ -1205,6 +1691,7 @@ describe('AppsPage', () => {
         const copied = String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || '');
         expect(copied).toContain('maclaw.app.pack.v1');
         expect(copied).toContain('报销申请');
+        expect(copied).toContain('"governance"');
         expect(screen.getByText('已复制')).not.toBeNull();
     });
 
@@ -1318,6 +1805,60 @@ describe('AppsPage', () => {
         expect(screen.getAllByText('文档摘要').length).toBeGreaterThan(0);
     });
 
+    it('upgrades installed market apps when a higher manifest version is pasted', async () => {
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    installUnit: 'skill',
+                    app: {
+                        id: 'doc-redact',
+                        name: '文档脱敏增强版',
+                        version: 2,
+                        description: 'Updated redaction workflow',
+                        category: '市场分类',
+                        kind: 'tool_app',
+                        icon: 'pdf',
+                        source: 'market',
+                        launchMode: 'fixed_skill_ui',
+                        binding: { skill: { id: 'admin-doc-redact-v2', appDefinitionFile: 'maclaw.apps.json', inputMode: 'mixed', outputModes: ['pdf'] } },
+                        panel: { pinned: false, accent: '#b45309' },
+                    },
+                }),
+            },
+        });
+
+        expect(screen.getByText(/可安装 0 · 可升级 1 · 将跳过 0/)).not.toBeNull();
+        expect(screen.getByText(/将升级 v1 -> v2/)).not.toBeNull();
+        expect(screen.getByText(/权限变化: \+admin-doc-redact-v2 · 高风险: admin-doc-redact-v2/)).not.toBeNull();
+        fireEvent.click(screen.getByText('安装'));
+        await waitFor(() => expect(screen.getByText('选中的升级包包含高风险新权限，需再次确认。')).not.toBeNull());
+        expect(screen.getByText('选中的升级包包含高风险新权限，需再次确认。').closest('[role="alert"]')).not.toBeNull();
+        expect(screen.queryByText('已安装: 0 · 已升级: 1 · 已跳过: 0')).toBeNull();
+        fireEvent.click(screen.getByText('确认安装'));
+        expect(screen.getByText('已安装: 0 · 已升级: 1 · 已跳过: 0')).not.toBeNull();
+        expect(screen.getByRole('status').getAttribute('aria-live')).toBe('polite');
+        const upgradeResult = document.querySelector('.apps-install-result') as HTMLElement;
+        expect(within(upgradeResult).getByText('文档脱敏增强版')).not.toBeNull();
+        expect(within(upgradeResult).getByText('已升级')).not.toBeNull();
+        expect(within(upgradeResult).getByText('已升级 v1 -> v2')).not.toBeNull();
+
+        fireEvent.click(screen.getByText('应用管理'));
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('文档脱敏增强版')) as HTMLElement;
+        expect(row).toBeTruthy();
+        expect(row.textContent).toContain('文档处理');
+        fireEvent.click(within(row).getByTitle('Manifest'));
+        expect(screen.getByText(/"version": 2/)).not.toBeNull();
+        expect(screen.getByText(/"id": "admin-doc-redact-v2"/)).not.toBeNull();
+        expect(screen.getByText(/"icon": "shield"/)).not.toBeNull();
+        expect(screen.getByText(/"accent": "#28705f"/)).not.toBeNull();
+    });
+
     it('previews manifest apps before installing from market', () => {
         render(<AppsPage lang="zh-Hans" />);
 
@@ -1337,7 +1878,7 @@ describe('AppsPage', () => {
 
         expect(screen.getByText('安装预览')).not.toBeNull();
         expect(screen.getByText('1/2')).not.toBeNull();
-        expect(screen.getByText('可安装 1 · 将跳过 1')).not.toBeNull();
+        expect(screen.getByText('可安装 1 · 可升级 0 · 将跳过 1')).not.toBeNull();
         expect(screen.getByText('预览文档')).not.toBeNull();
         expect(screen.getByText('预览文档副本')).not.toBeNull();
         expect(screen.getByText('将安装')).not.toBeNull();
@@ -1367,11 +1908,16 @@ describe('AppsPage', () => {
         const preview = document.querySelector('.apps-install-preview') as HTMLElement;
         fireEvent.click(within(preview).getAllByRole('checkbox')[0]);
         expect(screen.getByText('1/2')).not.toBeNull();
-        expect(screen.getByText('可安装 2 · 将跳过 1')).not.toBeNull();
+        expect(screen.getByText('可安装 2 · 可升级 0 · 将跳过 1')).not.toBeNull();
         expect(screen.getByText('将跳过 · 未选择')).not.toBeNull();
         fireEvent.click(screen.getByText('安装'));
 
         expect(screen.getByText('已安装: 1 · 已跳过: 1')).not.toBeNull();
+        const installResult = document.querySelector('.apps-install-result') as HTMLElement;
+        expect(within(installResult).getByText('可选文档')).not.toBeNull();
+        expect(within(installResult).getByText('已跳过')).not.toBeNull();
+        expect(within(installResult).getByText('未选择')).not.toBeNull();
+        expect(within(installResult).getByText('保留文档')).not.toBeNull();
         fireEvent.click(screen.getByText('关闭'));
         expect(screen.queryByText('可选文档')).toBeNull();
         expect(screen.getAllByText('保留文档').length).toBeGreaterThan(0);
@@ -1395,14 +1941,14 @@ describe('AppsPage', () => {
         });
 
         expect(screen.getByText('2/2')).not.toBeNull();
-        expect(screen.getByText('可安装 2 · 将跳过 0')).not.toBeNull();
+        expect(screen.getByText('可安装 2 · 可升级 0 · 将跳过 0')).not.toBeNull();
         fireEvent.click(screen.getByText('全不选'));
         expect(screen.getByText('0/2')).not.toBeNull();
-        expect(screen.getByText('可安装 2 · 将跳过 2')).not.toBeNull();
+        expect(screen.getByText('可安装 2 · 可升级 0 · 将跳过 2')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
         fireEvent.click(screen.getByText('全选'));
         expect(screen.getByText('2/2')).not.toBeNull();
-        expect(screen.getByText('可安装 2 · 将跳过 0')).not.toBeNull();
+        expect(screen.getByText('可安装 2 · 可升级 0 · 将跳过 0')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(false);
     });
 
@@ -1535,9 +2081,11 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
         fireEvent.click(screen.getByText('从市场添加'));
+        expect(screen.getByLabelText('从 Manifest 安装')).not.toBeNull();
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), { target: { value: '{bad json' } });
 
         expect(screen.getByText('无效 Manifest: JSON 解析失败')).not.toBeNull();
+        expect(screen.getByText('无效 Manifest: JSON 解析失败').closest('[role="alert"]')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), { target: { value: JSON.stringify({ apps: [] }) } });

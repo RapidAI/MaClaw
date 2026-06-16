@@ -2388,7 +2388,7 @@ func TestAdminCapabilityImportIntentImportsFreeHubCenterMCP(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.Action != corelib.CapabilityInstallCreateImportRequest || resp.Capability.CapabilityType != corelib.CapabilityTypeMCP {
+	if resp.Action != corelib.CapabilityInstallExternalDirect || resp.Capability.CapabilityType != corelib.CapabilityTypeMCP {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	if resp.Capability.Source != corelib.CapabilitySourceEnterpriseHub || resp.Capability.RelationToOrigin != "mirrored" {
@@ -2429,7 +2429,7 @@ func TestAdminCapabilityImportIntentImportsFreeHubCenterMCP(t *testing.T) {
 	}
 }
 
-func TestCapabilityInstallIntentRejectsFailedFreeImportRequest(t *testing.T) {
+func TestCapabilityInstallIntentAllowsFreeDirectWithoutHubCenterImport(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)
 	settings := &testSystemSettingsRepo{}
@@ -2438,15 +2438,17 @@ func TestCapabilityInstallIntentRejectsFailedFreeImportRequest(t *testing.T) {
 	req.SetPathValue("id", "missing-mcp")
 	rec := httptest.NewRecorder()
 	CapabilityInstallIntentHandler(svc, settings)(rec, req)
-	if rec.Code != http.StatusBadGateway {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	items, err := svc.ListAcquisitionRequests(context.Background(), "rejected")
-	if err != nil || len(items) != 1 || items[0].RequestKind != "import" {
-		t.Fatalf("items=%+v err=%v", items, err)
+	var resp struct {
+		Action string `json:"action"`
 	}
-	if !strings.Contains(items[0].ApprovalJSON, "import_failed") {
-		t.Fatalf("approval json = %s", items[0].ApprovalJSON)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Action != corelib.CapabilityInstallExternalDirect {
+		t.Fatalf("action = %q, want %q", resp.Action, corelib.CapabilityInstallExternalDirect)
 	}
 }
 func TestCapabilityInstallIntentNormalizesSourceBeforeFreeHubCenterImport(t *testing.T) {
@@ -2486,8 +2488,11 @@ func TestCapabilityInstallIntentNormalizesSourceBeforeFreeHubCenterImport(t *tes
 	if resp.Capability == nil || resp.Capability.ID == "" {
 		t.Fatalf("expected imported capability, got %+v", resp)
 	}
-	items, err := svc.ListAcquisitionRequests(context.Background(), "completed")
-	if err != nil || len(items) != 1 || items[0].Source != corelib.CapabilitySourceHubCenter || items[0].CapabilityType != corelib.CapabilityTypeMCP {
+	if resp.Action != corelib.CapabilityInstallExternalDirect {
+		t.Fatalf("action = %q, want %q", resp.Action, corelib.CapabilityInstallExternalDirect)
+	}
+	items, err := svc.ListAcquisitionRequests(context.Background(), "")
+	if err != nil || len(items) != 0 {
 		t.Fatalf("items=%+v err=%v", items, err)
 	}
 }
@@ -2528,12 +2533,8 @@ func TestCapabilityInstallIntentImportsFreeHubCenterMCP(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.Action != corelib.CapabilityInstallCreateImportRequest || resp.RequestID == "" || resp.Capability.ID == "" {
+	if resp.Action != corelib.CapabilityInstallExternalDirect || resp.RequestID != "" || resp.Capability.ID == "" {
 		t.Fatalf("unexpected response: %+v", resp)
-	}
-	acq, err := svc.GetAcquisitionRequest(context.Background(), resp.RequestID)
-	if err != nil || acq.Status != "completed" || acq.ResultCapabilityID != resp.Capability.ID {
-		t.Fatalf("acquisition=%+v err=%v", acq, err)
 	}
 
 	secondReq := httptest.NewRequest(http.MethodPost, "/api/capabilities/free-mcp/install-intent", bytes.NewReader([]byte(`{"capability_type":"mcp","source":"hubcenter","pricing":"free"}`)))
@@ -2554,7 +2555,7 @@ func TestCapabilityInstallIntentImportsFreeHubCenterMCP(t *testing.T) {
 		t.Fatalf("unexpected second response: %+v", secondResp)
 	}
 	requests, err := svc.ListAcquisitionRequests(context.Background(), "")
-	if err != nil || len(requests) != 1 {
+	if err != nil || len(requests) != 0 {
 		t.Fatalf("requests=%+v err=%v", requests, err)
 	}
 }
@@ -2689,6 +2690,16 @@ func TestCapabilityInstallIntentReusesOpenImportRequest(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)
 	settings := &testSystemSettingsRepo{}
+	enterpriseOnlyInstall := true
+	policy := corelib.DefaultCapabilityMarketPolicy()
+	policy.EnterpriseOnlyInstall = &enterpriseOnlyInstall
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatalf("marshal policy: %v", err)
+	}
+	if err := settings.Set(context.Background(), capabilityMarketPolicySettingKey, string(raw)); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
 
 	body := []byte(`{"capability_type":"skill","source":"github","pricing":"free","user_reason":"please import"}`)
 	firstReq := httptest.NewRequest(http.MethodPost, "/api/capabilities/owner%2Frepo%2Fskill/install-intent", bytes.NewReader(body))

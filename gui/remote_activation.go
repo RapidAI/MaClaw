@@ -172,7 +172,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 
 	// Persist credentials atomically via PatchConfig to eliminate the TOCTOU
 	// race between LoadConfig and SaveConfig. Only enrollment-specific fields
-	// are patched — other fields (LLM settings, UI preferences, etc.) that
+	// are patched - other fields (LLM settings, UI preferences, etc.) that
 	// may have been modified concurrently are untouched.
 	persistStart := time.Now()
 	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
@@ -271,7 +271,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		hubClient := a.ensureHubClient()
 		log.Printf("[onboarding] ActivateRemote ensure_remote_infra=%s hub_client_ready=%t", time.Since(infraStart), hubClient != nil)
 		if hubClient != nil {
-			// Hub client created — notify frontend to transition from "degraded" to "ready".
+			// Hub client created - notify frontend to transition from "degraded" to "ready".
 			// Note: markAIAssistantReady() was already called at startup, no need to call again
 			// (calling it again would reset first-chat telemetry timestamp).
 			a.emitEvent("ai-assistant-init-progress", "ready")
@@ -356,14 +356,16 @@ func (a *App) VerifyRemoteActivation() bool {
 
 	probe, err := a.ProbeRemoteHub(hubURL, email)
 	if err != nil {
-		// Network error — don't clear, assume valid
+		// Network error - don't clear, assume valid
 		return true
 	}
 
 	if normalizeRemoteProbeStatusKind(probe.Status).ShouldClearActivation() {
-		// Server no longer recognizes this user — clear machine credentials
-		// but preserve email and hub URL for easier re-registration.
-		fmt.Printf("[verify-activation] server reports status=%s for %s, clearing local machine credentials\n", probe.Status, email)
+		// Server explicitly reports this user as not_found or blocked.
+		// Log the full probe response for post-mortem diagnosis. This is an
+		// irreversible action - if it ever happens spuriously, the log entry
+		// will help identify the root cause.
+		log.Printf("[verify-activation] server reports status=%q for %s - clearing local machine credentials (probe response: %+v)", probe.Status, email, probe)
 		a.clearMachineCredentials()
 		return false
 	}
@@ -485,7 +487,7 @@ func generateClientID() string {
 
 // acquireSkillMarketTokenAfterEnroll calls the HubCenter machine-login endpoint
 // to obtain a SkillMarket session token using the Hub enrollment credentials.
-// Runs in background — failure is non-fatal (user can still upload via email fallback).
+// Runs in background - failure is non-fatal (user can still upload via email fallback).
 func (a *App) acquireSkillMarketTokenAfterEnroll(email, machineID, viewerToken string) {
 	if email == "" || viewerToken == "" {
 		return

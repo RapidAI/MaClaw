@@ -330,7 +330,7 @@ func normalizeCardStorePaymentMode(mode string) string {
 	case cardStorePaymentModeAlipay:
 		return cardStorePaymentModeAlipay
 	case cardStorePaymentModeFM:
-		return cardStorePaymentModeManual // DEPRECATED: payment_fm → fallback to manual
+		return cardStorePaymentModeFM
 	default:
 		return cardStorePaymentModeManual
 	}

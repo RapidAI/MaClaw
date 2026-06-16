@@ -214,6 +214,7 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 	var recalled []Entry
 	if strings.TrimSpace(query) != "" {
 		opts.Recall.EventContext = opts.EventContext
+		recallStart := time.Now()
 
 		// --- Adaptive Budget: compute topic density and expand budget if > 0.15 ---
 		budgetResult := s.computeAdaptiveBudget(query, opts)
@@ -257,6 +258,10 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 				s.recordCandidateExperienceEvent(lifecycle.EventExperienceInjected, "proactive_prompt:staged:"+string(decision.Mode), decision.Query, candidates, EstimateTextTokens(recallSection), opts.EventContext)
 			}
 		}
+
+		// Log proactive recall to the dedicated recall log file so the
+		// "记忆召回记录" toggle in settings produces observable output.
+		s.logProactiveRecallIfEnabled(query, opts.Recall, recalled, time.Since(recallStart))
 	}
 
 	if opts.IncludeDerivedFacts {

@@ -39,6 +39,7 @@ func (r tenantEmailTestUsers) ListByTenant(_ context.Context, tenantID string) (
 func (r tenantEmailTestUsers) DeleteByEmail(context.Context, string) error               { return nil }
 func (r tenantEmailTestUsers) DeleteByTenantEmail(context.Context, string, string) error { return nil }
 func (r tenantEmailTestUsers) UpdateSmartRoute(context.Context, string, bool) error      { return nil }
+func (r tenantEmailTestUsers) MarkEmailVerified(context.Context, string, string) error   { return nil }
 
 func TestResolveUniqueTenantByEmail(t *testing.T) {
 	repo := tenantEmailTestUsers{users: []*store.User{

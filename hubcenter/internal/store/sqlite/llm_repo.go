@@ -269,9 +269,18 @@ func (r *llmAuthRepo) ListAll(ctx context.Context) ([]*llmservice.TenantAuthoriz
 
 func (r *llmAuthRepo) Update(ctx context.Context, auth *llmservice.TenantAuthorization) error {
 	_, err := r.write.ExecContext(ctx,
-		`UPDATE llm_tenant_authorizations SET credits_total=?, credits_used=?, status=?, allow_external_providers=?, bound_node_id=?, bound_at=?, updated_at=? WHERE id=?`,
-		auth.CreditsTotal, auth.CreditsUsed, auth.Status, boolToInt(auth.AllowExternalProviders),
-		auth.BoundNodeID, formatTimeOrEmpty(auth.BoundAt), time.Now().UTC().Format(time.RFC3339), auth.ID,
+		`UPDATE llm_tenant_authorizations SET
+			hub_id=?, tenant_id=?, admin_email=?, service_group_id=?,
+			credits_total=?, credits_used=?, starts_at=?, expires_at=?,
+			allow_external_providers=?, source=?, card_order_id=?,
+			bound_node_id=?, bound_at=?, status=?, updated_at=?
+		 WHERE id=?`,
+		auth.HubID, auth.TenantID, auth.AdminEmail, auth.ServiceGroupID,
+		auth.CreditsTotal, auth.CreditsUsed,
+		auth.StartsAt.Format(time.RFC3339), auth.ExpiresAt.Format(time.RFC3339),
+		boolToInt(auth.AllowExternalProviders), auth.Source, auth.CardOrderID,
+		auth.BoundNodeID, formatTimeOrEmpty(auth.BoundAt), auth.Status,
+		time.Now().UTC().Format(time.RFC3339), auth.ID,
 	)
 	return err
 }

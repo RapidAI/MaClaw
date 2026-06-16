@@ -584,7 +584,7 @@ if (typeof I18N_EN !== 'undefined') {
     var el = document.getElementById('llmAuthList') || document.getElementById('llmAuthorizationsList');
     if (!el) return;
     var externalAuths = authorizations.filter(function(a) {
-      return !!(a && (a.allow_external_providers || a.source === 'external_provider_permission' || a.service_group_id === '__external_compute_permission__'));
+      return !!(a && a.is_external_compute_access);
     });
     externalAuths.sort(function(a, b) {
       return Date.parse(b.updated_at || b.created_at || b.expires_at || 0) - Date.parse(a.updated_at || a.created_at || a.expires_at || 0);
@@ -598,10 +598,9 @@ if (typeof I18N_EN !== 'undefined') {
     });
     if (!externalAuths.length) { el.innerHTML = '<div class="hint">' + esc(t('noAuths')) + '</div>'; return; }
     el.innerHTML = externalAuths.map(function(a) {
-      var statusBadge = a.status === 'active' ? '<span class="badge ok">' + esc(t('active')) + '</span>' : '<span class="badge warn">' + esc(a.status) + '</span>';
       var extBadge = a.allow_external_providers ? '<span class="badge ok">' + esc(t('computeAllowed')) + '</span>' : '<span class="badge warn">' + esc(t('computeNotAllowed')) + '</span>';
       return '<div class="data-row"><div class="data-row-main">'
-        + '<strong>' + esc(a.hub_id) + ' / ' + esc(a.tenant_id) + '</strong> ' + statusBadge + ' ' + extBadge
+        + '<strong>' + esc(a.hub_id) + ' / ' + esc(a.tenant_id) + '</strong> ' + extBadge
         + '</div></div>';
     }).join('');
   }
@@ -635,10 +634,8 @@ if (typeof I18N_EN !== 'undefined') {
     if (!hubID) { toast(t('fieldHubRequired'), 'error'); return; }
     if (!tenantID) { toast(t('fieldTenantRequired'), 'error'); return; }
     var payload = {
-      id: 'auth_external_' + hubID + '_' + tenantID + '_' + Date.now(),
       hub_id: hubID, tenant_id: tenantID,
       allow_external_providers: document.getElementById('llmAuthExternal').checked,
-      source: 'external_provider_permission',
     };
     try {
       await api('/api/admin/llm/authorizations', { method: 'POST', body: JSON.stringify(payload) });

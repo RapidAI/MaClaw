@@ -86,9 +86,25 @@ func ProxyHandler(cfg *ProxyConfig) http.HandlerFunc {
 }
 
 type tenantAuthorizationStatus struct {
-	HubID                  string `json:"hub_id"`
-	TenantID               string `json:"tenant_id"`
-	AllowExternalProviders bool   `json:"allow_external_providers"`
+	HubID                  string                       `json:"hub_id"`
+	TenantID               string                       `json:"tenant_id"`
+	AllowExternalProviders bool                         `json:"allow_external_providers"`
+	Authorizations         []tenantAuthorizationSummary `json:"authorizations,omitempty"`
+}
+
+type tenantAuthorizationSummary struct {
+	ID                     string  `json:"id"`
+	ServiceGroupID         string  `json:"service_group_id"`
+	CreditsTotal           float64 `json:"credits_total"`
+	CreditsUsed            float64 `json:"credits_used"`
+	CreditsRemaining       float64 `json:"credits_remaining"`
+	StartsAt               string  `json:"starts_at"`
+	ExpiresAt              string  `json:"expires_at"`
+	Status                 string  `json:"status"`
+	Active                 bool    `json:"active"`
+	AllowExternalProviders bool    `json:"allow_external_providers"`
+	Source                 string  `json:"source"`
+	CardOrderID            string  `json:"card_order_id,omitempty"`
 }
 
 func buildTenantAuthorizationStatus(r *http.Request, checker *AuthorizationChecker, hubID, tenantID string) (*tenantAuthorizationStatus, error) {
@@ -104,7 +120,23 @@ func buildTenantAuthorizationStatus(r *http.Request, checker *AuthorizationCheck
 	}
 	for _, a := range auths {
 		active := a.IsActive(current)
-		if active && (isExternalProviderGrant(a) || a.ServiceGroupID == ExternalComputePermissionServiceGroupID) {
+		if active {
+			result.Authorizations = append(result.Authorizations, tenantAuthorizationSummary{
+				ID:                     a.ID,
+				ServiceGroupID:         a.ServiceGroupID,
+				CreditsTotal:           a.CreditsTotal,
+				CreditsUsed:            a.CreditsUsed,
+				CreditsRemaining:       a.CreditsRemaining(),
+				StartsAt:               a.StartsAt.Format(time.RFC3339),
+				ExpiresAt:              a.ExpiresAt.Format(time.RFC3339),
+				Status:                 a.Status,
+				Active:                 true,
+				AllowExternalProviders: a.AllowExternalProviders,
+				Source:                 a.Source,
+				CardOrderID:            a.CardOrderID,
+			})
+		}
+		if active && isExternalProviderGrant(a) {
 			result.AllowExternalProviders = true
 		}
 	}

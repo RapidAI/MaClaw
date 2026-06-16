@@ -5,6 +5,85 @@
   "type": "object",
   "additionalProperties": true,
   "required": ["schema", "privateMarker", "installUnit", "app"],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "app": {
+            "properties": {
+              "kind": { "const": "tool_app" }
+            }
+          }
+        },
+        "required": ["installUnit", "app"]
+      },
+      "then": {
+        "properties": {
+          "installUnit": { "const": "skill" },
+          "app": {
+            "required": ["binding"],
+            "properties": {
+              "launchMode": { "const": "fixed_skill_ui" },
+              "binding": {
+                "required": ["skill"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "app": {
+            "properties": {
+              "kind": { "const": "enterprise_app" }
+            }
+          }
+        },
+        "required": ["app"]
+      },
+      "then": {
+        "properties": {
+          "app": {
+            "required": ["binding"],
+            "properties": {
+              "launchMode": { "const": "agent_dynamic_ui" },
+              "binding": {
+                "required": ["datasrv"]
+              }
+            }
+          }
+        },
+        "not": {
+          "properties": {
+            "installUnit": { "const": "skill" }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "app": {
+            "properties": {
+              "kind": { "const": "automation_app" }
+            }
+          }
+        },
+        "required": ["app"]
+      },
+      "then": {
+        "properties": {
+          "app": {
+            "properties": {
+              "launchMode": { "const": "automation_console" }
+            }
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "schema": {
       "type": "string",
@@ -38,6 +117,11 @@
           "minLength": 1,
           "maxLength": 80
         },
+        "version": {
+          "description": "Monotonic app definition version used for review, publish, and upgrade decisions.",
+          "type": "integer",
+          "minimum": 1
+        },
         "description": {
           "type": "string",
           "maxLength": 500
@@ -56,7 +140,7 @@
         },
         "source": {
           "type": "string",
-          "enum": ["builtin", "skill", "datasrv", "market"]
+          "enum": ["builtin", "skill", "datasrv", "market", "local"]
         },
         "launchMode": {
           "type": "string",
@@ -76,6 +160,9 @@
         },
         "panel": {
           "$ref": "#/$defs/panel"
+        },
+        "governance": {
+          "$ref": "#/$defs/governance"
         }
       }
     },
@@ -176,6 +263,59 @@
         "accent": {
           "type": "string",
           "pattern": "^#[0-9a-fA-F]{6}$"
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["draft", "local_tested", "submitted", "review_failed", "approved", "published", "deprecated", "revoked"]
+        },
+        "reviewRequired": {
+          "type": "boolean"
+        },
+        "riskLevel": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"]
+        },
+        "requiredScopes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "testEvidence": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "runId": { "type": "string" },
+            "dryRunId": { "type": "string" },
+            "artifactHash": { "type": "string" },
+            "verifiedAt": { "type": "string" }
+          }
+        },
+        "submission": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "id": { "type": "string" },
+            "version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "status": {
+              "type": "string",
+              "enum": ["submitted", "review_failed", "approved", "published", "deprecated", "revoked"]
+            },
+            "channel": {
+              "type": "string",
+              "enum": ["local", "hub"]
+            },
+            "submittedAt": { "type": "string" },
+            "modifiedAt": { "type": "string" }
+          }
         }
       }
     }

@@ -257,14 +257,14 @@ func (s *Service) CreateCardType(ctx context.Context, ct *CardType) error {
 	return s.cardTypes.Create(ctx, ct)
 }
 
-// EnsureDefaultComputeCardTypes creates default purchasable cards only when no
-// card products exist yet. Existing admin-configured products are never changed.
+// EnsureDefaultComputeCardTypes creates default purchasable cards when no
+// enabled products exist yet. Existing admin-configured products are never changed.
 func (s *Service) EnsureDefaultComputeCardTypes(ctx context.Context, serviceGroupID string) error {
 	serviceGroupID = strings.TrimSpace(serviceGroupID)
 	if serviceGroupID == "" {
 		return fmt.Errorf("service_group_id is required")
 	}
-	existing, err := s.ListAllCardTypes(ctx)
+	existing, err := s.ListEnabledCardTypes(ctx)
 	if err != nil {
 		return err
 	}

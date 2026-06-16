@@ -85,6 +85,51 @@ type AgentView =
   | { type: "result_browser"; title: string; results: ResultItem[] };
 ```
 
+### 4.1.1 AppView
+
+Agent View 适合一次任务中的表单、审批、进度和结果。应用面板中的复杂企业应用需要更稳定的软件界面：同一 tab 内可能包含列表、表单、详情、审批、报表和 Agent 辅助栏。因此在 Agent View 之上增加 `AppView` 约定。
+
+AppView 仍然不执行模型生成的 HTML/JSX。它只是把多个受控 Agent View 组件组织成一个有导航、有状态、有动作栏的应用工作区。
+
+```ts
+type AppView = {
+  schema: "maclaw.appview.v1";
+  appId: string;
+  sessionId: string;
+  title: string;
+  layout: "workspace" | "record" | "report" | "tool";
+  viewRevision: number;
+  regions: {
+    header?: AppHeader;
+    nav?: AppNavItem[];
+    main: AgentView | AgentView[];
+    side?: AgentView | AgentView[];
+    footer?: AppActionBar;
+  };
+  actions?: AppAction[];
+  audit?: AppAuditRef;
+};
+```
+
+推荐用途：
+
+- 企业应用：DataSrv BusinessAction / BusinessView / Report / Dashboard。
+- 复杂审批：表单、dry-run、影响说明、确认、结果留在同一 tab。
+- 复杂工具：文件上传、参数、进度、产物预览、历史记录组合在同一界面。
+
+生命周期：
+
+```text
+open -> hydrate -> draft_changed -> validate -> dry_run -> approval_required -> commit -> result -> archive
+```
+
+兼容策略：
+
+- 简单任务继续使用 `agent-view:lifecycle`。
+- AppView 可以作为 `type=app_view` 通过现有事件通道传递。
+- 提交时必须带 `appId`、`sessionId`、`schemaVersion`、`viewRevision`；后端拒绝过期 revision。
+- `main/side/footer` 内部仍使用现有 `form`、`table_editor`、`approval`、`progress`、`result_browser`、`artifact` 等受控组件。
+
 ### 4.2 Skill Adapter
 
 Skill Adapter 描述标准 skill 如何被结构化调用。标准 skill 不修改，adapter 可由平台自动推断、用户确认、项目覆盖。

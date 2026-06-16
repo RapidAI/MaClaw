@@ -127,6 +127,11 @@ func (c *AuthorizationChecker) ListAll(ctx context.Context) ([]*TenantAuthorizat
 	return c.repo.ListAll(ctx)
 }
 
+// GetByID returns a single tenant authorization by ID.
+func (c *AuthorizationChecker) GetByID(ctx context.Context, id string) (*TenantAuthorization, error) {
+	return c.repo.GetByID(ctx, id)
+}
+
 // ListByHubTenant returns tenant authorizations for a Hub tenant.
 func (c *AuthorizationChecker) ListByHubTenant(ctx context.Context, hubID, tenantID string) ([]*TenantAuthorization, error) {
 	return c.repo.ListByHubTenant(ctx, hubID, tenantID)
