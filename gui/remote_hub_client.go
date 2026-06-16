@@ -330,7 +330,7 @@ func isGenericRemoteHubRouteError(value string) bool {
 	if value == "" {
 		return false
 	}
-	// Match patterns that clearly indicate a routing/endpoint issue,
+	// Match patterns that clearly indicate a routing/endpoint/HTTP-level issue,
 	// not application-level messages about machine/user entities.
 	routePhrases := []string{
 		"endpoint not found",
@@ -345,9 +345,11 @@ func isGenericRemoteHubRouteError(value string) bool {
 			return true
 		}
 	}
-	// If the message mentions a URL path (contains /something/) and "not found",
-	// it's likely a routing error, not a credential rejection.
-	if strings.Contains(value, "not found") && strings.Contains(value, "/") {
+	// Heuristic: message contains both "not found" and a URL-path-like segment
+	// (e.g., "/api/v3/hello not found", "route /ws/auth not found").
+	// This indicates the Hub/proxy couldn't route the request, not that the
+	// machine entity doesn't exist.
+	if strings.Contains(value, "not found") && (strings.Contains(value, "/api") || strings.Contains(value, "/ws") || strings.Contains(value, "/v1") || strings.Contains(value, "/v2") || strings.Contains(value, "/v3")) {
 		return true
 	}
 	return false

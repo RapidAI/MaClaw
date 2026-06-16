@@ -11,7 +11,7 @@ func TestIsDefinitiveAuthRejection(t *testing.T) {
 		payload  interface{}
 		expected bool
 	}{
-		// Definitive rejections — should return true
+		// Definitive rejections - should return true
 		{
 			name:     "code auth_failed",
 			payload:  map[string]string{"code": "auth_failed", "message": "machine token is invalid"},
@@ -68,7 +68,7 @@ func TestIsDefinitiveAuthRejection(t *testing.T) {
 			expected: true,
 		},
 
-		// Transient / non-rejection — should return false
+		// Transient / non-rejection - should return false
 		{
 			name:     "empty payload",
 			payload:  nil,
@@ -124,7 +124,7 @@ func TestIsDefinitiveAuthRejection(t *testing.T) {
 			payload:  map[string]string{"code": "forbidden", "message": "api not found for /api/v3/auth"},
 			expected: false,
 		},
-		// Route error guard — machine-specific messages should NOT be blocked
+		// Route error guard - machine-specific messages should NOT be blocked
 		{
 			name:     "code not_found with machine-specific message",
 			payload:  map[string]string{"code": "not_found", "message": "machine m_123abc not registered in cluster"},
