@@ -1,0 +1,39 @@
+{
+  "x_maclaw_apps": "v1",
+  "apps": [
+    {
+      "id": "document-redaction",
+      "name": "Document Redaction",
+      "description": "Upload a document and return a redacted copy.",
+      "category": "Document",
+      "icon": "shield",
+      "input_mode": "file",
+      "multiple_files": true,
+      "output_modes": ["docx", "pdf"]
+    },
+    {
+      "id": "spreadsheet-cleanup",
+      "name": "Spreadsheet Cleanup",
+      "description": "Upload a workbook, normalize data, and export a cleaned workbook.",
+      "category": "Data",
+      "icon": "sheet",
+      "input_mode": "mixed",
+      "output_modes": ["xlsx"],
+      "fields": [
+        {
+          "name": "dedupe",
+          "label": "Remove duplicates",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "date_format",
+          "label": "Date format",
+          "type": "select",
+          "default": "YYYY-MM-DD",
+          "options": ["YYYY-MM-DD", "MM/DD/YYYY", "DD/MM/YYYY"]
+        }
+      ]
+    }
+  ]
+}

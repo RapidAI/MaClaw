@@ -664,6 +664,26 @@ export function ListNLSkills() {
   return window['go']['main']['App']['ListNLSkills']();
 }
 
+export function ListSkillAppManifests() {
+  return window['go']['main']['App']['ListSkillAppManifests']();
+}
+
+export function StageSkillAppInputFile(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['StageSkillAppInputFile'](arg1, arg2, arg3, arg4);
+}
+
+export function RunNLSkillAsync(arg1, arg2) {
+  return window['go']['main']['App']['RunNLSkillAsync'](arg1, arg2);
+}
+
+export function GetNLSkillRunStatus(arg1) {
+  return window['go']['main']['App']['GetNLSkillRunStatus'](arg1);
+}
+
+export function CancelNLSkillRun(arg1) {
+  return window['go']['main']['App']['CancelNLSkillRun'](arg1);
+}
+
 export function DiagnoseSkillFiles() {
   return window['go']['main']['App']['DiagnoseSkillFiles']();
 }

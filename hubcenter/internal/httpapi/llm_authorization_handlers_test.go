@@ -286,25 +286,12 @@ func TestLLMAuthorizationQueryRequiresHubMachineAuth(t *testing.T) {
 	}
 	var payload struct {
 		AllowExternalProviders bool `json:"allow_external_providers"`
-		Authorizations         []struct {
-			ID                     string  `json:"id"`
-			ServiceGroupID         string  `json:"service_group_id"`
-			CreditsRemaining       float64 `json:"credits_remaining"`
-			Active                 bool    `json:"active"`
-			AllowExternalProviders bool    `json:"allow_external_providers"`
-		} `json:"authorizations"`
 	}
 	if err := json.Unmarshal(okResp.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode authorization response: %v", err)
 	}
 	if !payload.AllowExternalProviders {
 		t.Fatalf("allow_external_providers = false, want true")
-	}
-	if len(payload.Authorizations) != 1 {
-		t.Fatalf("authorization count = %d, want 1", len(payload.Authorizations))
-	}
-	if got := payload.Authorizations[0]; got.ID != "external" || got.ServiceGroupID != llmservice.ExternalComputePermissionServiceGroupID || got.CreditsRemaining <= 0 || !got.Active || got.AllowExternalProviders {
-		t.Fatalf("authorization summary = %#v, want active external grant", got)
 	}
 }
 

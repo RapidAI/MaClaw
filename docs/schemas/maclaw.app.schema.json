@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maclaw.local/schemas/maclaw.app.schema.json",
+  "title": "MaClaw app manifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "privateMarker", "installUnit", "app"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "maclaw.app.v1"
+    },
+    "privateMarker": {
+      "description": "Private MaClaw marker for app-panel install manifests.",
+      "type": "string",
+      "const": "x_maclaw_apps"
+    },
+    "installUnit": {
+      "type": "string",
+      "enum": ["enterprise_app_pack", "skill", "mcp", "builtin"]
+    },
+    "app": {
+      "$ref": "#/$defs/app"
+    }
+  },
+  "$defs": {
+    "app": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "name", "kind", "launchMode"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["enterprise_app", "tool_app", "automation_app"]
+        },
+        "icon": {
+          "type": "string",
+          "enum": ["receipt", "wallet", "invoice", "warehouse", "inventory", "customer", "users", "contract", "pdf", "shield", "sheet", "chart", "dashboard", "database", "eraser", "truck", "calendar", "web", "sync", "bot"]
+        },
+        "source": {
+          "type": "string",
+          "enum": ["builtin", "skill", "datasrv", "market"]
+        },
+        "launchMode": {
+          "type": "string",
+          "enum": ["agent_dynamic_ui", "fixed_skill_ui", "automation_console"]
+        },
+        "binding": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "datasrv": {
+              "$ref": "#/$defs/datasrvBinding"
+            },
+            "skill": {
+              "$ref": "#/$defs/skillBinding"
+            }
+          }
+        },
+        "panel": {
+          "$ref": "#/$defs/panel"
+        }
+      }
+    },
+    "datasrvBinding": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["domain"],
+      "properties": {
+        "domain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "preferredAction": {
+          "type": "string"
+        },
+        "preferredView": {
+          "type": "string"
+        },
+        "preferredReport": {
+          "type": "string"
+        },
+        "preferredDashboard": {
+          "type": "string"
+        }
+      }
+    },
+    "skillBinding": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "appDefinitionFile", "inputMode"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "appDefinitionFile": {
+          "type": "string",
+          "const": "maclaw.apps.json"
+        },
+        "inputMode": {
+          "type": "string",
+          "enum": ["file", "form", "mixed"]
+        },
+        "multipleFiles": {
+          "type": "boolean",
+          "default": false
+        },
+        "outputModes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["docx", "xlsx", "pdf", "json", "txt"]
+          },
+          "uniqueItems": true
+        },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/field" }
+        }
+      }
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["text", "select", "boolean"],
+          "default": "text"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "default": {
+          "type": ["string", "boolean"]
+        },
+        "options": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "panel": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "pinned": {
+          "type": "boolean"
+        },
+        "accent": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        }
+      }
+    }
+  }
+}

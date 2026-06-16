@@ -125,7 +125,7 @@ func TestToolBashEmptyRuntimeOwnerFailsClosed(t *testing.T) {
 		"command":                        "pwd",
 		registeredToolPolicyOwnerIDField: "",
 	}, nil)
-	if got == "" || !contains(got, "runtime owner is missing") {
+	if got == "" || !containsText(got, "runtime owner is missing") {
 		t.Fatalf("bash with empty runtime owner should fail closed, got %q", got)
 	}
 }
@@ -222,7 +222,7 @@ func TestFileToolsUseRuntimeOwnerProjectForRelativePaths(t *testing.T) {
 	}
 
 	result := h.toolWriteFile(args)
-	if !contains(result, filepath.Join(projectDir, "notes.txt")) {
+	if !containsText(result, filepath.Join(projectDir, "notes.txt")) {
 		t.Fatalf("toolWriteFile result = %q, want project path", result)
 	}
 	data, err := os.ReadFile(filepath.Join(projectDir, "notes.txt"))

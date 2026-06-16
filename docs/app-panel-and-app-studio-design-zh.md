@@ -64,6 +64,8 @@ MaClaw 需要在 GUI 中间面板新增一个 `应用` 面板，用图标化方�
 - 权限与安全规则
 - 排序和置顶配置
 
+来源第一版拆成 `DataSrv`、`Skill`、`市场`、`本地`、`内置`。应用程序工作室创建的应用和从已有应用复制出的变体都标记为 `本地`；复制变体仍保留原 DataSrv / Skill 绑定，只改变面板入口定义。
+
 ### 企业应用
 
 企业应用面向 OA、ERP、财务、进销存、CRM、HR、审批、报表、台账等企业内部系统场景。
@@ -129,15 +131,16 @@ MaClaw 需要在 GUI 中间面板新增一个 `应用` 面板，用图标化方�
 
 ```text
 应用
-[搜索应用...] [+]
+[搜索应用... (x)] [+]
 [全部应用 v]
 ```
 
 说明：
 
-- 搜索框用于搜索应用名、描述、标签、来源能力、业务流程关键词。
+- 搜索框用于搜索应用名、描述、分类、类型、来源、来源能力、业务流程关键词、DataSrv 绑定能力、Skill id、输入模式、输出格式和结构化字段。
+- 搜索框有输入时显示清空按钮；按 `Esc` 也清空搜索。搜索状态下标题显示 `搜索结果`，不单独展示常用应用区。顶部提供 `重置筛选`，可一次清空搜索和分类。
 - `+` 按钮进入应用程序工作室。
-- 分类使用下拉列表，节省空间。
+- 分类使用下拉列表，节省空间；选项显示数量，例如 `文档处理 (3)`、`最近使用 (2)`。有搜索词时，分类数量按当前搜索结果重算，0 匹配分类置灰禁用；如果当前分类被搜索条件过滤到 0，自动回到 `全部应用`，避免空列表困住用户。筛选控件下方显示轻量摘要，例如 `搜索“脱敏” · 1 个匹配`、`文档处理 · 2 个应用`，让用户知道当前列表是被什么条件收窄的。
 - 应用列表用图标网格，每行 3 个。
 
 ### 分类下拉
@@ -203,6 +206,9 @@ MaClaw 需要在 GUI 中间面板新增一个 `应用` 面板，用图标化方�
 - 图标容器：40 x 40 px
 - 名称最多 2 行，超出省略
 - 单元格尺寸固定，hover / loading / badge 不应造成布局跳动
+- 左上角状态点表达运行/依赖状态，右上角 pin 点表达常用固定；两个点都不能改变单元格尺寸。
+- 图标按钮支持键盘访问：`Tab` 进入网格后，方向键按 3 列布局移动焦点，`Home` / `End` 跳到首尾。
+- 图标按钮必须有明确 `aria-label`，包含应用名称、应用类型、来源和当前状态；状态变化时同步更新。
 
 Tooltip 显示：
 
@@ -211,6 +217,8 @@ Tooltip 显示：
 - 来源：企业应用包 / 技能包 / 本地创建
 - 状态：可用 / 需配置 / 停用 / 运行中
 - 最近使用时间
+
+当前第一版 tooltip 已包含应用名、描述、类型/来源、状态和最近使用时间。状态已经接入基础运行态：打开右侧 tab 后显示 `运行中`；DataSrv 应用按能力发现状态显示 `读取中`、`未启用`、`不可用` 或 `可用`。同样状态会通过图标左上角小圆点可视化。后续接入权限和依赖配置后可继续细分。
 
 ### 置顶应用
 
@@ -221,9 +229,12 @@ Tooltip 显示：
 - 最多 6 个置顶应用。
 - 每排 3 个，共 2 排。
 - 置顶应用使用 `pin_order` 排序。
-- 超过 6 个时提示用户先取消一个置顶。
+- 超过 6 个时提示用户先取消一个置顶；应用管理页在满 6 个时禁用其他应用的 `置顶` 按钮，并用 tooltip 说明原因。
+- 从市场安装、DataSrv/Skill 发现添加、恢复隐藏应用时，如果新应用声明 `pinned=true` 但当前常用已满 6 个，前端自动降级为不置顶，保持两排上限不被 manifest 绕过。
 - 搜索状态下不显示单独置顶区，只显示搜索结果。
-- 分类筛选状态下，置顶区只显示匹配当前筛选的置顶应用。
+- 分类筛选状态下，置顶区只显示匹配当前筛选的置顶应用；已经出现在置顶区的应用不在下方主网格重复显示。
+- 置顶区存在时，下方主网格标题使用 `其他应用`，表示已排除上方常用应用。
+- `最近使用` 是时间排序视图，不显示单独置顶区，避免打散最近使用顺序。
 
 示例：
 
@@ -246,11 +257,22 @@ Tooltip 显示：
       "enabled": true,
       "pinned": true,
       "pin_order": 20,
-      "sort_order": 80
+      "sort_order": 80,
+      "recent_used_at": "1718520000000-000001"
     }
   }
 }
 ```
+
+当前 GUI 实现使用 `maclaw:apps-panel:v1` localStorage 保存面板布局：
+
+- `orderedIds`：应用显示顺序。
+- `pinnedIds`：常用应用，最多 6 个。
+- `hiddenIds`：被隐藏的内置应用。
+- `editedApps` / `customApps`：本地编辑和本地创建应用。
+- `recentUsedAtById`：最近使用时间戳。点击打开应用、在运行页执行应用都会刷新；分类下拉选择 `最近使用` 时只显示有时间戳的应用，并按时间倒序排列。
+
+读取旧版本缓存时要做轻量迁移：`customApps` 中 `id` 以 `local-app-` 开头但来源仍是旧值 `market` 的应用，统一迁移为 `local`；缺失或未知来源的自定义应用也按 `local` 处理，避免旧缓存导致应用管理和 tooltip 崩溃。
 
 ## 应用程序工作室
 
@@ -268,12 +290,26 @@ Tooltip 显示：
 [从市场添加]
 ```
 
+工作室 tab 使用标准 tab 语义：
+
+- 外层 `role="tablist"`。
+- 三个入口按钮使用 `role="tab"`，通过 `aria-selected` 表达当前页。
+- 内容区使用 `role="tabpanel"`，通过 `aria-labelledby` 绑定当前 tab。
+- 支持 `ArrowLeft` / `ArrowRight` / `Home` / `End` 键盘切换。
+
 也可以在首页提供自然语言输入：
 
 ```text
 描述你想要的应用...
 例如：做一个合同审查应用，上传合同后输出风险报告和修订版 Word
 ```
+
+创建页下方的三张类型卡片不是纯说明区，而是快捷 preset：
+
+- `应用程序`：切到 `enterprise_app`，默认分类 `OA`，默认图标 `sheet`，Manifest 使用 `agent_dynamic_ui`。
+- `工具应用`：切到 `tool_app`，默认分类 `文档处理`，默认图标 `shield`，默认文件上传和 `docx/pdf` 输出，Manifest 使用 `fixed_skill_ui`。
+- `自动化应用`：切到 `automation_app`，默认分类 `自动化`，默认图标 `sync`，Manifest 使用 `automation_console`。
+- 直接修改类型下拉只改变类型和默认颜色，不覆盖用户已经填写的分类、图标、输入输出；点击卡片才应用完整 preset。
 
 ### 创建企业应用
 
@@ -603,6 +639,15 @@ x_maclaw_apps
 maclaw.apps.json
 ```
 
+当前实现约定：
+
+- Skill 扩展文件：`docs/schemas/maclaw.apps.schema.json`
+- 单应用安装 Manifest：`docs/schemas/maclaw.app.schema.json`
+- 应用包安装 Manifest：`docs/schemas/maclaw.app.pack.schema.json`
+- 示例文件：`docs/examples/maclaw.apps.json`、`docs/examples/maclaw.app.json`、`docs/examples/maclaw.app.pack.json`
+- Skill 扩展使用字段 `x_maclaw_apps: "v1"`。
+- 单应用/应用包安装 Manifest 使用字段 `privateMarker: "x_maclaw_apps"`。
+
 理由：
 
 - 不破坏现有 Skill manifest。
@@ -623,9 +668,9 @@ document-suite/
 安装 Skill 后：
 
 1. 读取 `maclaw.apps.json`
-2. 校验 `schema == maclaw.apps/v1`
+2. 校验 `x_maclaw_apps == "v1"`
 3. 校验 app source 指向当前 skill
-4. 校验图标 key、类型、输入字段
+4. 校验图标 key、类型、输入字段、输出格式
 5. 写入本地应用注册表
 6. 应用面板显示图标
 
@@ -682,6 +727,43 @@ document-suite/
   "icon": "receipt"
 }
 ```
+
+当前 GUI 第一版实现的可选图标：
+
+- `receipt`：报销/费用
+- `wallet`：付款/财务
+- `invoice`：发票/票据
+- `warehouse`：仓储/入库
+- `inventory`：库存/盘点
+- `customer`：客户/建档
+- `users`：人员/组织
+- `contract`：合同/法务
+- `pdf`：PDF/转换
+- `shield`：审查/脱敏
+- `sheet`：表格/数据
+- `chart`：报表/分析
+- `dashboard`：看板/指标
+- `database`：数据库/处理
+- `eraser`：清洗/脱敏
+- `truck`：物流/配送
+- `calendar`：日程/考勤
+- `web`：网页/采集
+- `sync`：同步/自动化
+- `bot`：Agent/自动化
+
+应用程序工作室中的图标选择器显示图标 SVG，并在 tooltip / aria-label 中显示“语义名称 + icon key”，例如 `合同/法务 (contract)`，方便用户选择，也方便 manifest 调试。
+
+图标颜色使用固定企业色板，不开放任意颜色输入。创建应用和编辑应用都可设置 `panel.accent`，应用面板、运行 tab、市场安装预览都按该颜色渲染图标。当前色板：
+
+- `#2f5f98`：蓝色
+- `#657a42`：绿色
+- `#7c3f58`：紫红
+- `#b45309`：琥珀
+- `#28705f`：青绿
+- `#4b6572`：灰蓝
+- `#8a5a44`：棕色
+- `#5b5ea6`：靛蓝
+- `#6b7280`：中性灰
 
 前端维护注册表：
 
@@ -756,6 +838,14 @@ const APP_ICON_REGISTRY = {
 ## 右侧 Tab 运行界面
 
 点击应用图标后在右侧创建应用 tab。
+
+Tab 交互规则：
+
+- tablist 使用 `role="tablist"`，每个应用 tab 使用 `role="tab"`。
+- 当前 tab 设置 `aria-selected="true"`，右侧内容区使用 `role="tabpanel"`，并通过 `aria-labelledby` 指回当前 tab。
+- 关闭按钮是独立按钮，不嵌套在 tab 按钮内，避免键盘和读屏焦点混乱。
+- `ArrowLeft` / `ArrowRight` 在已打开应用间切换，`Home` / `End` 跳到首尾 tab。
+- 点击已打开应用图标时激活已有 tab，不重复打开。
 
 Tab 标题：
 
@@ -1061,9 +1151,14 @@ app:session_output_ready
 - 3 列图标网格。
 - tooltip。
 - pin 前两排，最多 6 个。
+- `最近使用` 分类筛选：打开应用或执行应用后写入最近使用时间，重启后仍可恢复。
 - 本地应用注册表。
 - 应用程序工作室打开右侧 tab。
 - 应用管理：显示/隐藏、置顶、排序、改图标、改分类。
+- 应用管理：支持搜索和分类筛选，方便应用较多时定位；筛选同时作用于已安装列表和已隐藏列表，只影响可见项，不改变真实排序。筛选状态下显示当前条件摘要和匹配数量，并禁用上移/下移/移到顶部/移到底部，提示用户清空筛选后再排序，提供 `重置筛选` 按钮一次清空搜索和分类。
+- 应用管理：排序操作支持 `上移`、`下移`、`移到顶部`、`移到底部`，用于快速安排应用面板图标显示位置。
+- 应用管理：支持 `复制应用`，从已有应用克隆出一个本地副本，名称追加 `副本`，来源标为 `本地`，默认不置顶，保留原 DataSrv / Skill 绑定，方便基于相似能力创建变体。连续复制同一应用时自动编号为 `副本 2`、`副本 3`，避免同名混淆。复制后自动打开副本编辑表单，用户可立即改名、改分类、改图标和颜色。
+- 应用管理：内置应用使用 `隐藏`，进入 `已隐藏应用` 列表并可恢复；用户创建、复制或市场安装的本地应用使用 `移除`，从面板删除，不进入内置恢复列表。移除/隐藏应用时同步清理该应用在 `maclaw:apps-run-history:v1` 中的本地运行历史，避免后续重装同 id 时看到旧记录。
 
 可用本地 mock app 验证 UI。
 
@@ -1077,6 +1172,56 @@ app:session_output_ready
 - 点击打开工具应用 tab。
 - 支持文件上传、参数表单、运行 skill、展示进度与输出。
 - 支持应用工作室创建 Skill App。
+- 应用工作室的创建页和管理页都支持编辑 `tool_app` 结构化字段：
+  - 字段属性：`name`、`label`、`type(text/select/boolean)`、`required`、`default`、`options`。
+  - `inputMode=form/mixed` 时显示字段编辑器；`file` 模式只显示文件输入。
+  - `multiple_files=true` 时文件输入允许一次选择多个文件；默认仍是单文件。
+  - 保存应用时必须保留并导出 `binding.skill.fields`。
+- 工具应用运行 tab 按 manifest 渲染字段表单：
+  - `text/select` 的 `required=true` 必须填值后才能执行。
+  - `boolean` 始终有明确 true/false 值，不阻塞执行。
+  - 文件输入模式下没有文件时给出内联校验提示。
+- 工具应用执行桥接现有 Skill Runner：
+  - 点击执行时调用 `RunNLSkillAsync(skillID, runArgs)`。
+  - `runArgs` 包含 `_maclaw_app`、`app_id`、`app_name`、`input_mode`、`output_mode`、`params`、`fields`、`file`、`files`、`file_name`、`prompt`。
+  - 文件输入先调用 `StageSkillAppInputFile(fileName, mimeType, lastModified, contentBase64)` 写入 MaClaw 临时目录，再启动 skill。
+  - `StageSkillAppInputFile` 返回 `file` 交接对象：`name`、`size`、`type`、`last_modified`、`staged_path`、`transfer=staged_file`。
+  - 启动 skill 时同时提供扁平路径别名：`file_path`、`input_file_path`、`local_file_path`、`uploaded_file_path`，方便 skill.yaml 使用 `{{file_path}}` 直接读取首个文件。
+  - 多文件运行额外提供 `files` 和 `file_paths`；旧 skill 仍可用首个文件的 `file/file_path`。
+  - 当前 staging 上限为 25MB；超过上限前端阻止执行并提示用户。后续大文件应改为流式 artifact/file store。
+  - Skill Runner 在 run 进入终态后清理 `~/.maclaw/temp/app-inputs` 下对应 staged 输入文件；越界路径拒绝删除，并写入 run warning。
+  - 如果 skill run 未能启动（例如找不到 skill、策略拒绝、precheck 失败），`RunNLSkillAsync` 会 best-effort 清理本次 staged 输入文件。
+  - 如果 `RunNLSkillAsync` 返回空 run id，也按启动失败处理：运行页显示失败，写入本地运行历史，不进入无法轮询和无法取消的 running 状态。
+  - 每次 stage 新输入文件前会清扫 24 小时前残留的 `app-inputs/input-*` 目录，用于覆盖崩溃或异常退出后的残留。
+  - 小文本文件可附带 `file_text` 作为轻量预览；正式大文件/二进制文件应继续走 artifact/file store 管线。
+  - 返回 run id 后进入 `running` 状态，并轮询 `GetNLSkillRunStatus(runID)`。
+  - `success/completed/done` 映射为完成，`failed/error/timeout` 映射为失败，`cancelled/canceled` 映射为取消。
+  - 运行中显示当前 step、session progress 或 run id；完成后显示输出摘要。
+  - 运行页必须展示执行证据区：最多显示最近 6 个 `steps`，展示 step 名称、状态、耗时和短输出/错误。
+  - 如 `SkillRunStatus.summary.artifact_path`、`artifact_status`、`expected_artifact` 或 `needs_artifact_verification` 存在，运行页展示产物状态；有真实路径时显示路径，并提供 `打开` 与 `定位` 操作，分别调用 `OpenFileOrShowInFolder(path)` 与 `ShowItemInFolder(path)`。后续可替换为 artifact 链接。
+  - 运行中允许调用 `CancelNLSkillRun(runID)` 取消。
+  - 每个应用保留最近 8 条本地运行历史，存储 key 为 `maclaw:apps-run-history:v1`。
+  - 历史项记录 run id、终态、输出格式、输入摘要、消息摘要、产物路径和时间，展示在运行页结果区下方；有产物路径时同样提供 `打开` 与 `定位`。
+  - 用户可在单个应用运行页清空该应用历史，不影响其他应用。
+- `maclaw.apps.json`、`maclaw.app.v1`、`maclaw.app.pack.v1` 三种格式都支持同一套字段定义。
+- 市场安装页必须在安装前做轻量结构校验：
+  - `maclaw.app.v1` 必须包含 `schema=maclaw.app.v1`、`privateMarker=x_maclaw_apps`、`app.id`、`app.name`。
+  - `maclaw.app.pack.v1` 必须包含 `privateMarker=x_maclaw_apps` 和非空 `apps`，并逐个校验包内 `maclaw.app.v1`。
+  - `maclaw.apps.json` 必须包含 `x_maclaw_apps=v1` 和非空 `apps`，每个 app 至少有合法 `id` 和 `name`。
+  - 应用名称可以是中文；manifest `app.id` / `apps[].id` 必须保持 ASCII 标识符，匹配 `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`。本地创建中文应用时用 `local-app-<time>-app` 兜底，避免导出后无法安装。
+  - `app.kind` 与 `launchMode` 必须匹配：`enterprise_app -> agent_dynamic_ui`，`tool_app -> fixed_skill_ui`，`automation_app -> automation_console`。显式写错时阻止安装。
+  - `enterprise_app` 必须带 `binding.datasrv.domain`，代表 DataSrv/MIS 动态界面能力；`tool_app` 必须带 `binding.skill.id`，且 `installUnit` 必须是 `skill`。这样企业动态应用和 Skill UI 化应用在市场包里不会混用。
+  - Skill App 的 `output_modes` / `binding.skill.outputModes` 只能使用 `docx`、`xlsx`、`pdf`、`json`、`txt`；字段类型只能是 `text`、`select`、`boolean`。非法值必须阻止安装并显示具体路径，不能静默降级。
+  - 错误提示要指向具体路径，例如 `maclaw.app.pack.v1 apps[0] privateMarker must be x_maclaw_apps`。
+  - 安装预览做重复识别时，`foo` 与 `market-foo` 视为同一个安装身份。这样市场包不能绕过前缀再安装一份已内置或已安装的同名应用。
+  - 安装预览工具条同时显示 `已选/总数`、`可安装 N` 和 `将跳过 N`，让用户在全选、全不选、重复包场景下直接知道实际安装结果。
+  - 安装预览中不可安装项必须显示跳过原因，例如 `已安装`、`重复应用`、`未选择`；行 hover 和 checkbox aria-label 也要包含相同原因，方便键盘和读屏用户理解。
+- 后端扫描 `maclaw.apps.json` 时要先规范化字段：
+  - 空 `name` 字段丢弃。
+  - 未知 `type` 降级为 `text`。
+  - `select.options` 去空、去重，且默认值自动并入候选项。
+  - `boolean.default` 统一为布尔值，忽略 `options`。
+  - 空 `label` 自动使用 `name`，保证运行界面总有可见标签。
 
 优先样例：
 

@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,6 +67,45 @@ type NLSkillDefinition struct {
 	SuccessRate         float64                     `json:"success_rate"` // computed: SuccessCount / UsageCount
 	LastUsedAt          *time.Time                  `json:"last_used_at,omitempty"`
 	LastError           string                      `json:"last_error,omitempty"`
+}
+
+// SkillAppManifestEntry is the Wails-facing app extension declared by maclaw.apps.json.
+type SkillAppManifestEntry struct {
+	ID            string                  `json:"id"`
+	SkillID       string                  `json:"skill_id"`
+	Name          string                  `json:"name"`
+	Description   string                  `json:"description,omitempty"`
+	Category      string                  `json:"category,omitempty"`
+	Icon          string                  `json:"icon,omitempty"`
+	InputMode     string                  `json:"input_mode,omitempty"`
+	MultipleFiles bool                    `json:"multiple_files,omitempty"`
+	OutputModes   []string                `json:"output_modes,omitempty"`
+	Fields        []SkillAppManifestField `json:"fields,omitempty"`
+}
+
+// SkillAppManifestField describes one fixed form control exposed by a tool app.
+type SkillAppManifestField struct {
+	Name     string        `json:"name"`
+	Label    string        `json:"label,omitempty"`
+	Type     string        `json:"type,omitempty"`
+	Required bool          `json:"required,omitempty"`
+	Default  interface{}   `json:"default,omitempty"`
+	Options  []interface{} `json:"options,omitempty"`
+}
+
+// SkillAppInputFileRef is a staged file reference passed from the app panel to a skill run.
+type SkillAppInputFileRef struct {
+	Name         string `json:"name"`
+	Size         int64  `json:"size"`
+	Type         string `json:"type,omitempty"`
+	LastModified int64  `json:"last_modified,omitempty"`
+	StagedPath   string `json:"staged_path"`
+	Transfer     string `json:"transfer"`
+}
+
+type skillAppManifestFile struct {
+	PrivateMarker string                  `json:"x_maclaw_apps"`
+	Apps          []SkillAppManifestEntry `json:"apps"`
 }
 
 // SkillExecutor manages and executes locally-defined NL Skills.
@@ -1909,6 +1949,368 @@ func (a *App) ListNLSkills() []NLSkillDefinition {
 	return a.skillExecutor.List()
 }
 
+const maxSkillAppInputFileBytes = 25 * 1024 * 1024
+const staleSkillAppInputFileAge = 24 * time.Hour
+
+// StageSkillAppInputFile stores an uploaded app input file in MaClaw temp storage.
+func (a *App) StageSkillAppInputFile(fileName, mimeType string, lastModified int64, contentBase64 string) (*SkillAppInputFileRef, error) {
+	name := sanitizeSkillAppInputFileName(fileName)
+	if name == "" {
+		return nil, fmt.Errorf("file name is required")
+	}
+	if strings.TrimSpace(contentBase64) == "" {
+		return nil, fmt.Errorf("file content is required")
+	}
+	data, err := base64.StdEncoding.DecodeString(contentBase64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid file content encoding: %w", err)
+	}
+	if len(data) > maxSkillAppInputFileBytes {
+		return nil, fmt.Errorf("file is too large for app staging: %d bytes > %d bytes", len(data), maxSkillAppInputFileBytes)
+	}
+	root := filepath.Join(a.GetTempDir(), "app-inputs")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, fmt.Errorf("create app input staging root: %w", err)
+	}
+	if _, err := a.cleanupStaleSkillAppInputDirs(staleSkillAppInputFileAge); err != nil {
+		log.Printf("[skill-app] cleanup stale staged input dirs failed: %v", err)
+	}
+	dir, err := os.MkdirTemp(root, "input-*")
+	if err != nil {
+		return nil, fmt.Errorf("create app input staging dir: %w", err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return nil, fmt.Errorf("write app input file: %w", err)
+	}
+	return &SkillAppInputFileRef{
+		Name:         name,
+		Size:         int64(len(data)),
+		Type:         strings.TrimSpace(mimeType),
+		LastModified: lastModified,
+		StagedPath:   path,
+		Transfer:     "staged_file",
+	}, nil
+}
+
+func (a *App) cleanupStaleSkillAppInputDirs(maxAge time.Duration) (int, error) {
+	if maxAge <= 0 {
+		return 0, nil
+	}
+	root := filepath.Join(a.GetTempDir(), "app-inputs")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	var failures []string
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "input-") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("stat staged input dir %s: %v", entry.Name(), err))
+			continue
+		}
+		if !info.ModTime().Before(cutoff) {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			failures = append(failures, fmt.Sprintf("remove stale staged input dir %s: %v", path, err))
+			continue
+		}
+		removed++
+	}
+	if len(failures) > 0 {
+		return removed, fmt.Errorf("%s", strings.Join(failures, "; "))
+	}
+	return removed, nil
+}
+
+func (a *App) cleanupStagedSkillAppInputFilesFromRunArgs(runArgs map[string]interface{}) error {
+	paths := stagedAppInputPathsFromRunArgs(runArgs)
+	if len(paths) == 0 {
+		return nil
+	}
+	root := filepath.Clean(filepath.Join(a.GetTempDir(), "app-inputs"))
+	var failures []string
+	for _, path := range paths {
+		cleanPath := filepath.Clean(strings.TrimSpace(path))
+		if cleanPath == "" || cleanPath == "." {
+			continue
+		}
+		rel, err := filepath.Rel(root, cleanPath)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || (filepath.IsAbs(rel) && strings.HasPrefix(rel, "..")) {
+			failures = append(failures, fmt.Sprintf("refused to cleanup staged app input outside temp dir: %s", cleanPath))
+			continue
+		}
+		if err := os.Remove(cleanPath); err != nil && !os.IsNotExist(err) {
+			failures = append(failures, fmt.Sprintf("cleanup staged app input %s: %v", cleanPath, err))
+			continue
+		}
+		parent := filepath.Dir(cleanPath)
+		if parent != root {
+			_ = os.Remove(parent)
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("%s", strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+func stagedAppInputPathsFromRunArgs(runArgs map[string]interface{}) []string {
+	if len(runArgs) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(value interface{}) {
+		path := ""
+		if m, ok := value.(map[string]interface{}); ok {
+			path, _ = m["staged_path"].(string)
+		}
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		if _, exists := seen[path]; exists {
+			return
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
+	add(runArgs["file"])
+	if files, ok := runArgs["files"].([]interface{}); ok {
+		for _, item := range files {
+			add(item)
+		}
+	}
+	if files, ok := runArgs["files"].([]map[string]interface{}); ok {
+		for _, item := range files {
+			add(item)
+		}
+	}
+	return out
+}
+
+func withSkillAppInputFileAliases(runArgs map[string]interface{}) map[string]interface{} {
+	if len(runArgs) == 0 {
+		return runArgs
+	}
+	file, ok := runArgs["file"].(map[string]interface{})
+	if !ok {
+		return runArgs
+	}
+	stagedPath, _ := file["staged_path"].(string)
+	stagedPath = strings.TrimSpace(stagedPath)
+	if stagedPath == "" {
+		return runArgs
+	}
+	out := make(map[string]interface{}, len(runArgs)+5)
+	for key, value := range runArgs {
+		out[key] = value
+	}
+	addStringAlias := func(key, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, exists := out[key]; !exists {
+			out[key] = value
+		}
+	}
+	addStringAlias("file_path", stagedPath)
+	addStringAlias("input_file_path", stagedPath)
+	addStringAlias("local_file_path", stagedPath)
+	addStringAlias("uploaded_file_path", stagedPath)
+	if _, exists := out["file_paths"]; !exists {
+		if paths := stagedAppInputPathsFromRunArgs(out); len(paths) > 0 {
+			out["file_paths"] = paths
+		}
+	}
+	if name, _ := file["name"].(string); strings.TrimSpace(name) != "" {
+		addStringAlias("file_name", name)
+	}
+	return out
+}
+
+func sanitizeSkillAppInputFileName(name string) string {
+	name = strings.TrimSpace(filepath.Base(name))
+	if name == "." || name == string(filepath.Separator) {
+		return ""
+	}
+	name = strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', 0:
+			return '-'
+		default:
+			return r
+		}
+	}, name)
+	return strings.TrimSpace(name)
+}
+
+// ListSkillAppManifests returns tool-app declarations from installed skills.
+func (a *App) ListSkillAppManifests() []SkillAppManifestEntry {
+	a.ensureRemoteInfra()
+	if a.skillExecutor == nil {
+		return nil
+	}
+	out := []SkillAppManifestEntry{}
+	seen := map[string]struct{}{}
+	for _, item := range a.skillExecutor.loadSkills() {
+		skillDir := strings.TrimSpace(item.SkillDir)
+		if skillDir == "" {
+			continue
+		}
+		manifestPath := filepath.Join(skillDir, "maclaw.apps.json")
+		data, err := os.ReadFile(manifestPath)
+		if err != nil {
+			continue
+		}
+		var manifest skillAppManifestFile
+		if err := json.Unmarshal(data, &manifest); err != nil || strings.TrimSpace(manifest.PrivateMarker) != "v1" {
+			continue
+		}
+		for _, app := range manifest.Apps {
+			app.ID = strings.TrimSpace(app.ID)
+			app.Name = strings.TrimSpace(app.Name)
+			if app.ID == "" || app.Name == "" {
+				continue
+			}
+			if app.SkillID == "" {
+				app.SkillID = item.Name
+			}
+			app.SkillID = strings.TrimSpace(app.SkillID)
+			if app.Category == "" {
+				app.Category = "Skill"
+			}
+			app.Icon = normalizeSkillAppIconName(app.Icon)
+			app.InputMode = normalizeSkillAppInputMode(app.InputMode)
+			app.OutputModes = normalizeSkillAppOutputModes(app.OutputModes)
+			app.Fields = normalizeSkillAppFields(app.Fields)
+			key := app.SkillID + ":" + app.ID
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, app)
+		}
+	}
+	return out
+}
+
+func normalizeSkillAppIconName(icon string) string {
+	switch strings.TrimSpace(strings.ToLower(icon)) {
+	case "receipt", "warehouse", "inventory", "customer", "contract", "pdf", "shield", "sheet", "web", "sync":
+		return strings.TrimSpace(strings.ToLower(icon))
+	default:
+		return "contract"
+	}
+}
+
+func normalizeSkillAppInputMode(inputMode string) string {
+	switch strings.TrimSpace(strings.ToLower(inputMode)) {
+	case "form", "mixed":
+		return strings.TrimSpace(strings.ToLower(inputMode))
+	default:
+		return "file"
+	}
+}
+
+func normalizeSkillAppOutputModes(outputModes []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(outputModes))
+	for _, mode := range outputModes {
+		mode = strings.TrimSpace(strings.ToLower(mode))
+		switch mode {
+		case "docx", "xlsx", "pdf", "json", "txt":
+			if _, ok := seen[mode]; ok {
+				continue
+			}
+			seen[mode] = struct{}{}
+			out = append(out, mode)
+		}
+	}
+	return out
+}
+
+func normalizeSkillAppFields(fields []SkillAppManifestField) []SkillAppManifestField {
+	out := make([]SkillAppManifestField, 0, len(fields))
+	for _, field := range fields {
+		field.Name = strings.TrimSpace(field.Name)
+		if field.Name == "" {
+			continue
+		}
+		field.Label = strings.TrimSpace(field.Label)
+		if field.Label == "" {
+			field.Label = field.Name
+		}
+		switch strings.TrimSpace(strings.ToLower(field.Type)) {
+		case "select":
+			field.Type = "select"
+		case "boolean":
+			field.Type = "boolean"
+		default:
+			field.Type = "text"
+		}
+		if field.Type == "boolean" {
+			field.Default = normalizeSkillAppBoolDefault(field.Default)
+			field.Options = nil
+		} else {
+			field.Default = strings.TrimSpace(fmt.Sprint(field.Default))
+			if field.Default == "<nil>" {
+				field.Default = ""
+			}
+			field.Options = normalizeSkillAppFieldOptions(field.Options, field.Type, fmt.Sprint(field.Default))
+		}
+		out = append(out, field)
+	}
+	return out
+}
+
+func normalizeSkillAppBoolDefault(value interface{}) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
+		return false
+	}
+}
+
+func normalizeSkillAppFieldOptions(options []interface{}, fieldType string, defaultValue string) []interface{} {
+	if fieldType != "select" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]interface{}, 0, len(options)+1)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	add(defaultValue)
+	for _, option := range options {
+		add(fmt.Sprint(option))
+	}
+	return out
+}
+
 // DiagnoseSkillFiles scans ~/.maclaw/data/skills/ and reports load status for each
 // subdirectory, including the reason if a skill failed to load (Wails binding).
 func (a *App) DiagnoseSkillFiles() []SkillDiagEntry {
@@ -2782,11 +3184,22 @@ func (a *App) CleanupStaleNLSkills() []string {
 
 // RunNLSkillAsync starts a skill run asynchronously for Wails.
 func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) (string, error) {
+	runArgs = withSkillAppInputFileAliases(runArgs)
 	a.ensureSkillRunner()
 	if a.skillRunner == nil {
+		if err := a.cleanupStagedSkillAppInputFilesFromRunArgs(runArgs); err != nil {
+			log.Printf("[skill-app] cleanup staged input after runner init failure: %v", err)
+		}
 		return "", fmt.Errorf("skill runner not initialized")
 	}
-	return a.skillRunner.StartRunForOwner(a.skillRunPolicyOwnerID(runArgs), skillName, runArgs)
+	runID, err := a.skillRunner.StartRunForOwner(a.skillRunPolicyOwnerID(runArgs), skillName, runArgs)
+	if err != nil {
+		if cleanupErr := a.cleanupStagedSkillAppInputFilesFromRunArgs(runArgs); cleanupErr != nil {
+			log.Printf("[skill-app] cleanup staged input after start failure: %v", cleanupErr)
+		}
+		return "", err
+	}
+	return runID, nil
 }
 
 // GetNLSkillRunStatus returns the status of an async skill run for Wails.

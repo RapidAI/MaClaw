@@ -33,10 +33,17 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 
 		currentAccessCtrl := currentMaClawAccessControl(accessCtrl)
 		if currentAccessCtrl != nil {
-			status := currentAccessCtrl.GetAuthorizationStatus(r.Context(), tenantID)
+			var status *llmservice.TenantAuthorizationStatus
+			if shouldRefreshMaClawComputeStatus(r) {
+				if refreshed, err := currentAccessCtrl.RefreshAuthorizationStatus(r.Context(), tenantID); err == nil {
+					status = refreshed
+				}
+			}
+			if status == nil {
+				status = currentAccessCtrl.GetAuthorizationStatus(r.Context(), tenantID)
+			}
 			if status != nil {
 				result["allow_external_providers"] = status.AllowExternalProviders
-				result["authorizations"] = status.Authorizations
 				if status.HubID != "" {
 					hubID = status.HubID
 				}
@@ -94,4 +101,13 @@ func tenantIDFromRequest(r *http.Request) string {
 		return store.NormalizeTenantID(tid)
 	}
 	return ""
+}
+
+func shouldRefreshMaClawComputeStatus(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("refresh"))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }

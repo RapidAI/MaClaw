@@ -418,10 +418,10 @@ func TestTrialReflectObserveIteration_BuildsReflectionNote(t *testing.T) {
 	if observation.Outcome != trialReflectOutcomeFailed {
 		t.Fatalf("expected failed outcome, got %q", observation.Outcome.String())
 	}
-	if !contains(observation.Text, "bash=failed") {
+	if !containsText(observation.Text, "bash=failed") {
 		t.Fatalf("expected failed observation, got %q", observation.Text)
 	}
-	if !contains(state.pendingNote, "[Trial reflection]") || !contains(state.pendingNote, "do not repeat the same failed attempt") {
+	if !containsText(state.pendingNote, "[Trial reflection]") || !containsText(state.pendingNote, "do not repeat the same failed attempt") {
 		t.Fatalf("expected reflection note, got %q", state.pendingNote)
 	}
 	if len(observation.RepeatedFailures) != 1 || observation.RepeatedFailures[0] != "bash" {
@@ -448,7 +448,7 @@ func TestTrialReflectObserveIteration_ClearsFailureAfterSuccess(t *testing.T) {
 	if observation.Outcome != trialReflectOutcomeSucceeded {
 		t.Fatalf("expected succeeded outcome, got %q", observation.Outcome.String())
 	}
-	if !contains(observation.Text, "bash=succeeded") {
+	if !containsText(observation.Text, "bash=succeeded") {
 		t.Fatalf("expected succeeded observation, got %q", observation.Text)
 	}
 	if len(observation.RepeatedFailures) != 0 {
@@ -474,7 +474,7 @@ func TestTrialReflectObserveIteration_ListSkillsEmptyRegistryIsSucceeded(t *test
 	if observation.Outcome != trialReflectOutcomeSucceeded {
 		t.Fatalf("expected succeeded outcome, got %q", observation.Outcome.String())
 	}
-	if !contains(observation.Text, "list_skills=succeeded") {
+	if !containsText(observation.Text, "list_skills=succeeded") {
 		t.Fatalf("expected succeeded observation, got %q", observation.Text)
 	}
 	if len(observation.RepeatedFailures) != 0 {
@@ -985,75 +985,75 @@ func TestParseToolPayloadResult(t *testing.T) {
 
 func TestBuildRemoteSkillSearchPrompt(t *testing.T) {
 	prompt := buildRemoteSkillSearchPrompt()
-	if !contains(prompt, "Search/install a reusable Skill first") {
+	if !containsText(prompt, "Search/install a reusable Skill first") {
 		t.Fatalf("expected reusable Skill guidance, got %q", prompt)
 	}
-	if !contains(prompt, "Only switch to craft_tool or bash") {
+	if !containsText(prompt, "Only switch to craft_tool or bash") {
 		t.Fatalf("expected craft_tool restriction, got %q", prompt)
 	}
 }
 
 func TestBuildNoToolActionPrompt(t *testing.T) {
 	prompt := buildNoToolActionPrompt(true, "hf_daily_papers_report", "")
-	if !contains(prompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
+	if !containsText(prompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
 		t.Fatalf("expected preferred skill action guidance, got %q", prompt)
 	}
-	if !contains(prompt, `get_skill_run(run_id=...)`) {
+	if !containsText(prompt, `get_skill_run(run_id=...)`) {
 		t.Fatalf("expected get_skill_run guidance, got %q", prompt)
 	}
 
 	runningPrompt := buildNoToolActionPrompt(true, "hf_daily_papers_report", "run-456")
-	if !contains(runningPrompt, `get_skill_run(run_id="run-456")`) {
+	if !containsText(runningPrompt, `get_skill_run(run_id="run-456")`) {
 		t.Fatalf("expected concrete run_id guidance, got %q", runningPrompt)
 	}
-	if contains(runningPrompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
+	if containsText(runningPrompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
 		t.Fatalf("expected running prompt to avoid restarting skill, got %q", runningPrompt)
 	}
 
 	fallbackPrompt := buildNoToolActionPrompt(false, "", "")
-	if !contains(fallbackPrompt, "Choose the best real tool and start executing") {
+	if !containsText(fallbackPrompt, "Choose the best real tool and start executing") {
 		t.Fatalf("expected generic action guidance, got %q", fallbackPrompt)
 	}
 }
 
 func TestBuildNoToolStallRecoverPrompt(t *testing.T) {
 	prompt := buildNoToolStallRecoverPrompt(2, true, "hf_daily_papers_report", "")
-	if !contains(prompt, "No real tool was called for 2 consecutive rounds") {
+	if !containsText(prompt, "No real tool was called for 2 consecutive rounds") {
 		t.Fatalf("expected stall count, got %q", prompt)
 	}
-	if !contains(prompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
+	if !containsText(prompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
 		t.Fatalf("expected preferred skill guidance, got %q", prompt)
 	}
 	runningPrompt := buildNoToolStallRecoverPrompt(2, true, "hf_daily_papers_report", "run-456")
-	if !contains(runningPrompt, `get_skill_run(run_id="run-456")`) {
+	if !containsText(runningPrompt, `get_skill_run(run_id="run-456")`) {
 		t.Fatalf("expected concrete run_id guidance, got %q", runningPrompt)
 	}
-	if contains(runningPrompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
+	if containsText(runningPrompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
 		t.Fatalf("expected running prompt to avoid restarting skill, got %q", runningPrompt)
 	}
 
 	fallbackPrompt := buildNoToolStallRecoverPrompt(3, false, "", "")
-	if !contains(fallbackPrompt, "No real tool was called for 3 consecutive rounds") {
+	if !containsText(fallbackPrompt, "No real tool was called for 3 consecutive rounds") {
 		t.Fatalf("expected fallback stall count, got %q", fallbackPrompt)
 	}
-	if !contains(fallbackPrompt, "Choose the best real tool now") {
+	if !containsText(fallbackPrompt, "Choose the best real tool now") {
 		t.Fatalf("expected generic execution guidance, got %q", fallbackPrompt)
 	}
 }
 
 func TestBuildSkillRecoverPrompt_PrefersConcreteRunID(t *testing.T) {
 	prompt := buildSkillRecoverPrompt("hf_daily_papers_report", "run-123")
-	if !contains(prompt, `get_skill_run(run_id="run-123")`) {
+	if !containsText(prompt, `get_skill_run(run_id="run-123")`) {
 		t.Fatalf("expected concrete run_id guidance, got %q", prompt)
 	}
 }
 
 func TestBuildDeliverableRecoverPrompt_PrefersConcreteRunID(t *testing.T) {
 	prompt := buildDeliverableRecoverPrompt("hf_daily_papers_report", true, "run-789")
-	if !contains(prompt, `get_skill_run(run_id="run-789")`) {
+	if !containsText(prompt, `get_skill_run(run_id="run-789")`) {
 		t.Fatalf("expected concrete run_id guidance, got %q", prompt)
 	}
-	if contains(prompt, `run_skill(name="hf_daily_papers_report")`) {
+	if containsText(prompt, `run_skill(name="hf_daily_papers_report")`) {
 		t.Fatalf("expected deliverable prompt to avoid restarting skill, got %q", prompt)
 	}
 }
@@ -1378,7 +1378,7 @@ func TestBuildToolDefinitions_WebFetchHasContinuationParams(t *testing.T) {
 		}
 		fn, _ := tool["function"].(map[string]interface{})
 		desc, _ := fn["description"].(string)
-		if !contains(desc, "has_more=true") || !contains(desc, "offset=next_offset") {
+		if !containsText(desc, "has_more=true") || !containsText(desc, "offset=next_offset") {
 			t.Fatalf("unexpected web_fetch description: %s", desc)
 		}
 		params, _ := fn["parameters"].(map[string]interface{})
@@ -1890,19 +1890,19 @@ func TestToolWebFetchIncludesContinuationMetadata(t *testing.T) {
 		"offset":    2,
 		"max_chars": 4,
 	})
-	if !contains(result, "标题: Long Page") {
+	if !containsText(result, "标题: Long Page") {
 		t.Fatalf("missing title in result: %s", result)
 	}
-	if !contains(result, "已读取: 2-6 / 10 字符") {
+	if !containsText(result, "已读取: 2-6 / 10 字符") {
 		t.Fatalf("missing window range: %s", result)
 	}
-	if !contains(result, "truncated: true | has_more: true | next_offset: 6") {
+	if !containsText(result, "truncated: true | has_more: true | next_offset: 6") {
 		t.Fatalf("missing continuation metadata: %s", result)
 	}
-	if !contains(result, "CDEF") {
+	if !containsText(result, "CDEF") {
 		t.Fatalf("missing windowed content: %s", result)
 	}
-	if !contains(result, "继续读取时请传入 offset=6") {
+	if !containsText(result, "继续读取时请传入 offset=6") {
 		t.Fatalf("missing continuation hint: %s", result)
 	}
 }
@@ -1914,7 +1914,7 @@ func TestTruncateToolResultForWebFetchPreservesIntegritySignal(t *testing.T) {
 	if len(got) > webFetchMaxToolResult {
 		t.Fatalf("len(got) = %d", len(got))
 	}
-	if !contains(got, "--- 完整性信号 ---") || !contains(got, "next_offset: 123") {
+	if !containsText(got, "--- 完整性信号 ---") || !containsText(got, "next_offset: 123") {
 		t.Fatalf("missing integrity metadata after truncation: %s", got)
 	}
 }
@@ -1973,7 +1973,7 @@ func TestToolCreateSession_SSHIntentBlocked(t *testing.T) {
 	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "ssh to 10.0.0.8 and inspect nginx logs"}
 	handler.unifiedClassifier = testIntentClassifier("ssh")
 	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
-	if !contains(result, "SSH/server operation") || !contains(result, "Use the ssh tool") {
+	if !containsText(result, "SSH/server operation") || !containsText(result, "Use the ssh tool") {
 		t.Fatalf("expected ssh redirect hint, got: %s", result)
 	}
 }
@@ -1983,7 +1983,7 @@ func TestToolCreateSession_NonCodingIntentBlocked(t *testing.T) {
 	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "translate this paper"}
 	handler.unifiedClassifier = testIntentClassifier("non_coding")
 	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
-	if !contains(result, "not a coding task") || !contains(result, "read_file / write_file / edit_file") {
+	if !containsText(result, "not a coding task") || !containsText(result, "read_file / write_file / edit_file") {
 		t.Fatalf("expected non-coding guard hint, got: %s", result)
 	}
 }
@@ -1992,7 +1992,7 @@ func TestToolCreateSession_AmbiguousIntentBlocked(t *testing.T) {
 	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "help me handle the production issue"}
 	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
-	if !contains(result, "ambiguous") || !contains(result, "Do not create a coding session yet") {
+	if !containsText(result, "ambiguous") || !containsText(result, "Do not create a coding session yet") {
 		t.Fatalf("expected ambiguous guard hint, got: %s", result)
 	}
 }
@@ -2000,7 +2000,7 @@ func TestToolCreateSession_AmbiguousIntentBlocked(t *testing.T) {
 func TestToolCreateSessionDisabled(t *testing.T) {
 	handler := &IMMessageHandler{app: &App{}, lastUserText: "fix code"}
 	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
-	if !contains(result, "create_session is disabled") || !contains(result, "CodingSubAgent") {
+	if !containsText(result, "create_session is disabled") || !containsText(result, "CodingSubAgent") {
 		t.Fatalf("expected disabled CodingSubAgent guidance, got: %s", result)
 	}
 }
@@ -2028,7 +2028,7 @@ func TestExternalCodingSessionFollowupToolsDisabled(t *testing.T) {
 		"launch_template":  func() string { return handler.toolLaunchTemplate(map[string]interface{}{"template_name": "t1"}) },
 	} {
 		result := call()
-		if !contains(result, name+" is disabled") || !contains(result, "CodingSubAgent") {
+		if !containsText(result, name+" is disabled") || !containsText(result, "CodingSubAgent") {
 			t.Fatalf("%s should be disabled with CodingSubAgent guidance, got: %s", name, result)
 		}
 	}
@@ -2041,7 +2041,7 @@ func TestExecuteToolDetailedRejectsExternalCodingSessionTools(t *testing.T) {
 		if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected {
 			t.Fatalf("%s outcome = %s/%s, want failed/policy_rejected", name, result.Outcome, result.FailureKind)
 		}
-		if !contains(result.Text, name+" is disabled") {
+		if !containsText(result.Text, name+" is disabled") {
 			t.Fatalf("%s should return disabled text, got %q", name, result.Text)
 		}
 	}
@@ -2083,7 +2083,7 @@ func TestToolCreateTemplate(t *testing.T) {
 		"name": "my-template",
 		"tool": "codex",
 	})
-	if result == "" || !contains(result, "创建模板失败") {
+	if result == "" || !containsText(result, "创建模板失败") {
 		t.Errorf("expected duplicate error, got: %s", result)
 	}
 }
@@ -2123,7 +2123,7 @@ func TestToolListTemplates(t *testing.T) {
 	// Add a template and list again.
 	_ = mgr.Create(remote.SessionTemplate{Name: "dev", Tool: "claude", ProjectPath: "/tmp/dev", YoloMode: true})
 	result = handler.toolListTemplates()
-	if !contains(result, "dev") || !contains(result, "claude") || !contains(result, "[Yolo]") {
+	if !containsText(result, "dev") || !containsText(result, "claude") || !containsText(result, "[Yolo]") {
 		t.Errorf("expected template details in list, got: %s", result)
 	}
 }
@@ -2154,7 +2154,7 @@ func TestToolLaunchTemplate_NotFound(t *testing.T) {
 	result := handler.toolLaunchTemplate(map[string]interface{}{
 		"template_name": "nonexistent",
 	})
-	if !contains(result, "获取模板失败") {
+	if !containsText(result, "获取模板失败") {
 		t.Errorf("expected not found error, got: %s", result)
 	}
 }
@@ -2204,20 +2204,20 @@ func TestExecuteTool_TemplateToolsRouting(t *testing.T) {
 
 	// create_template via executeTool
 	result := handler.executeTool("create_template", `{"name":"t1","tool":"claude"}`, nil)
-	if !contains(result, "模板已创建") {
+	if !containsText(result, "模板已创建") {
 		t.Errorf("create_template via executeTool failed: %s", result)
 	}
 
 	// list_templates via executeTool
 	result = handler.executeTool("list_templates", "", nil)
-	if !contains(result, "t1") {
+	if !containsText(result, "t1") {
 		t.Errorf("list_templates via executeTool failed: %s", result)
 	}
 
 	// launch_template via executeTool (will fail at session creation, but routing works)
 	result = handler.executeTool("launch_template", `{"template_name":"t1"}`, nil)
 	// Should get past template lookup (routing works) — will fail at session creation
-	if contains(result, "未知工具") || contains(result, "模板管理器未初始化") {
+	if containsText(result, "未知工具") || containsText(result, "模板管理器未初始化") {
 		t.Errorf("launch_template routing failed: %s", result)
 	}
 }
@@ -2233,7 +2233,7 @@ func TestExecuteTool_GeneratePDF_IsRegistered(t *testing.T) {
 	registerBuiltinTools(handler.registry, handler)
 
 	result := handler.executeTool("generate_pdf", `{"content":"# 标题\n\n正文","title":"通用标题"}`, nil)
-	if contains(result, "未知工具") {
+	if containsText(result, "未知工具") {
 		t.Fatalf("generate_pdf should be registered as a builtin tool, got: %s", result)
 	}
 	// The tool is now registered; it may fail due to missing fonts in CI,
@@ -2258,10 +2258,10 @@ func TestExecuteTool_ScreenshotBlockedForUserSuppliedImagePath(t *testing.T) {
 	registerBuiltinTools(handler.registry, handler)
 
 	result := handler.executeTool("screenshot", "", nil)
-	if !contains(result, "不要调用 screenshot") {
+	if !containsText(result, "不要调用 screenshot") {
 		t.Fatalf("expected screenshot guard via executeTool, got: %s", result)
 	}
-	if contains(result, "缺少 session_id") {
+	if containsText(result, "缺少 session_id") {
 		t.Fatalf("expected guard to trigger before screenshot execution flow, got: %s", result)
 	}
 }
@@ -2423,20 +2423,6 @@ func TestBuildToolDefinitions_IncludesMISData(t *testing.T) {
 	t.Fatal("mis_data tool not found in buildToolDefinitions")
 }
 
-// contains is a test helper that checks if s contains substr.
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
-}
-
-func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
 // ---------------------------------------------------------------------------
 // Tests for Task 5: create_session provider parameter
 // ---------------------------------------------------------------------------
@@ -2482,7 +2468,7 @@ func TestToolCreateSession_NoProviderBehaviorUnchanged(t *testing.T) {
 		t.Errorf("should not report missing tool when tool is provided, got: %s", result)
 	}
 	// Error should be about session creation, not about provider resolution.
-	if contains(result, "至少一个有效的服务商") || contains(result, "未配置 API Key") || contains(result, "不存在") {
+	if containsText(result, "至少一个有效的服务商") || containsText(result, "未配置 API Key") || containsText(result, "不存在") {
 		t.Errorf("should not fail at provider resolution when provider is omitted, got: %s", result)
 	}
 }
@@ -2500,7 +2486,7 @@ func TestToolCreateSession_WithProviderPassedThrough(t *testing.T) {
 		"provider": "NonExistentProvider",
 	})
 	// ProviderResolver should catch the invalid provider before session creation.
-	if !contains(result, "不存在") {
+	if !containsText(result, "不存在") {
 		t.Errorf("expected provider not found error, got: %s", result)
 	}
 }
@@ -2525,13 +2511,13 @@ func TestToolCreateSession_ProviderDescriptionInToolDef(t *testing.T) {
 		if name == "create_session" {
 			fn, _ := tool["function"].(map[string]interface{})
 			desc, _ := fn["description"].(string)
-			if !contains(desc, "provider") {
+			if !containsText(desc, "provider") {
 				t.Errorf("create_session description should mention provider, got: %s", desc)
 			}
-			if !contains(desc, "resume_session_id") && !contains(desc, "恢复") {
+			if !containsText(desc, "resume_session_id") && !containsText(desc, "恢复") {
 				t.Errorf("create_session description should mention resume support, got: %s", desc)
 			}
-			if !contains(desc, "ssh") {
+			if !containsText(desc, "ssh") {
 				t.Errorf("create_session description should redirect ssh/server tasks, got: %s", desc)
 			}
 			return
@@ -2550,10 +2536,10 @@ func TestBuildToolDefinitions_CreateSessionDescriptionMentionsSSH(t *testing.T) 
 		}
 		fn, _ := tool["function"].(map[string]interface{})
 		desc, _ := fn["description"].(string)
-		if !contains(desc, "SSH") && !contains(desc, "ssh") {
+		if !containsText(desc, "SSH") && !containsText(desc, "ssh") {
 			t.Fatalf("expected create_session description to mention ssh redirect, got: %s", desc)
 		}
-		if !contains(desc, "resume_session_id") && !contains(desc, "恢复") {
+		if !containsText(desc, "resume_session_id") && !containsText(desc, "恢复") {
 			t.Fatalf("expected create_session description to mention resume support, got: %s", desc)
 		}
 		return
@@ -2609,7 +2595,7 @@ func TestBuildToolDefinitions_IncludesSSH(t *testing.T) {
 		}
 		fn, _ := tool["function"].(map[string]interface{})
 		desc, _ := fn["description"].(string)
-		if !contains(desc, "服务器") || !contains(desc, "exec_background") {
+		if !containsText(desc, "服务器") || !containsText(desc, "exec_background") {
 			t.Fatalf("unexpected ssh description: %s", desc)
 		}
 		params, _ := fn["parameters"].(map[string]interface{})
@@ -2638,7 +2624,7 @@ func TestExecuteTool_ListProvidersRouting(t *testing.T) {
 	result := handler.executeTool("list_providers", `{"tool":"claude"}`, nil)
 	// With a minimal App (no config file), it should attempt to load config
 	// and either return a config error or tool-related result, not "未知工具".
-	if contains(result, "未知工具") {
+	if containsText(result, "未知工具") {
 		t.Errorf("list_providers should be routed, got: %s", result)
 	}
 }
@@ -2681,7 +2667,7 @@ func TestToolListProviders_UnsupportedTool(t *testing.T) {
 
 	handler := &IMMessageHandler{app: app}
 	result := handler.toolListProviders(map[string]interface{}{"tool": "nonexistent_tool"})
-	if !contains(result, "不支持的工具") {
+	if !containsText(result, "不支持的工具") {
 		t.Errorf("expected unsupported tool error, got: %s", result)
 	}
 }
@@ -2719,17 +2705,17 @@ func TestToolListProviders_NoValidProviders(t *testing.T) {
 	// LoadConfig will add "Original" back, so Original will be valid.
 	// The test verifies the handler works correctly with the loaded config.
 	// Since Original is always added, we verify it appears in the output.
-	if contains(result, "没有可用的服务商") {
+	if containsText(result, "没有可用的服务商") {
 		// If somehow no valid providers (shouldn't happen with ensureOriginal),
 		// that's also acceptable behavior.
 		return
 	}
 	// Original should be present (added by LoadConfig).
-	if !contains(result, "Original") {
+	if !containsText(result, "Original") {
 		t.Errorf("expected Original in result (added by LoadConfig), got: %s", result)
 	}
 	// EmptyProvider should NOT be present (no API key, not Original).
-	if contains(result, "EmptyProvider") {
+	if containsText(result, "EmptyProvider") {
 		t.Errorf("should not contain EmptyProvider (invalid provider), got: %s", result)
 	}
 }
@@ -2762,23 +2748,23 @@ func TestToolListProviders_WithValidProviders(t *testing.T) {
 	result := handler.toolListProviders(map[string]interface{}{"tool": "claude"})
 
 	// Should contain header.
-	if !contains(result, "工具 claude 的可用服务商") {
+	if !containsText(result, "工具 claude 的可用服务商") {
 		t.Errorf("expected header in result, got: %s", result)
 	}
 	// Should contain Original (valid because name is "Original").
-	if !contains(result, "Original") {
+	if !containsText(result, "Original") {
 		t.Errorf("expected Original in result, got: %s", result)
 	}
 	// Should contain DeepSeek (valid because has API key).
-	if !contains(result, "DeepSeek") {
+	if !containsText(result, "DeepSeek") {
 		t.Errorf("expected DeepSeek in result, got: %s", result)
 	}
 	// Should NOT contain EmptyKey (invalid: not Original and no API key).
-	if contains(result, "EmptyKey") {
+	if containsText(result, "EmptyKey") {
 		t.Errorf("should not contain EmptyKey (invalid provider), got: %s", result)
 	}
 	// Original should be marked as default.
-	if !contains(result, "[当前默认]") {
+	if !containsText(result, "[当前默认]") {
 		t.Errorf("expected [当前默认] marker for Original, got: %s", result)
 	}
 }
@@ -2809,14 +2795,14 @@ func TestToolListProviders_ModelIdTruncation(t *testing.T) {
 	result := handler.toolListProviders(map[string]interface{}{"tool": "claude"})
 
 	// The full model ID should NOT appear.
-	if contains(result, "this-is-a-very-long-model-id-that-exceeds-twenty-chars") {
+	if containsText(result, "this-is-a-very-long-model-id-that-exceeds-twenty-chars") {
 		t.Errorf("long model_id should be truncated, got: %s", result)
 	}
 	// The truncated version should appear.
-	if !contains(result, "this-is-a-very-long-") {
+	if !containsText(result, "this-is-a-very-long-") {
 		t.Errorf("expected truncated model_id prefix, got: %s", result)
 	}
-	if !contains(result, "...") {
+	if !containsText(result, "...") {
 		t.Errorf("expected '...' after truncated model_id, got: %s", result)
 	}
 }
@@ -2858,11 +2844,11 @@ func TestToolCreateSession_NoProviderUsesDefault(t *testing.T) {
 		"tool": "claude",
 	})
 	// Should NOT contain provider resolution errors.
-	if contains(result, "无法创建会话") && contains(result, "服务商") {
+	if containsText(result, "无法创建会话") && containsText(result, "服务商") {
 		t.Errorf("should not fail at provider resolution, got: %s", result)
 	}
 	// Should fail at session creation (remote disabled), not at provider resolution.
-	if contains(result, "加载配置失败") || contains(result, "获取工具配置失败") {
+	if containsText(result, "加载配置失败") || containsText(result, "获取工具配置失败") {
 		t.Errorf("should not fail at config loading, got: %s", result)
 	}
 }
@@ -2904,7 +2890,7 @@ func TestToolCreateSession_DefaultUnavailableFallbackHint(t *testing.T) {
 	})
 	// Provider resolution should succeed (fallback), so the error
 	// should be about session creation, NOT about provider resolution.
-	if contains(result, "无法创建会话") {
+	if containsText(result, "无法创建会话") {
 		t.Errorf("provider resolution should succeed via fallback, got: %s", result)
 	}
 
@@ -2959,11 +2945,11 @@ func TestToolCreateSession_UserSpecifiedProviderUsed(t *testing.T) {
 		"provider": "DeepSeek",
 	})
 	// Should NOT contain fallback hint.
-	if contains(result, "服务商已降级") {
+	if containsText(result, "服务商已降级") {
 		t.Errorf("should not have fallback hint when provider is explicitly specified, got: %s", result)
 	}
 	// Should NOT fail at provider resolution.
-	if contains(result, "不存在") || contains(result, "未配置 API Key") {
+	if containsText(result, "不存在") || containsText(result, "未配置 API Key") {
 		t.Errorf("should not fail at provider resolution for valid provider, got: %s", result)
 	}
 }
@@ -3016,7 +3002,7 @@ func TestToolCreateSession_ProjectIDResolvesSuccessfully(t *testing.T) {
 	// Should resolve project_id to /tmp/my-project.
 	// Session creation will fail (remote mode disabled), but project resolution
 	// should succeed — the error should NOT be about project_id not found.
-	if contains(result, "未找到") {
+	if containsText(result, "未找到") {
 		t.Errorf("project_id should resolve successfully, got: %s", result)
 	}
 }
@@ -3049,10 +3035,10 @@ func TestToolCreateSession_ProjectIDNotFound(t *testing.T) {
 		"project_id": "nonexistent-id",
 	})
 	// Should return error with available project list.
-	if !contains(result, "未找到") {
+	if !containsText(result, "未找到") {
 		t.Errorf("expected not found error, got: %s", result)
 	}
-	if !contains(result, "proj-1") || !contains(result, "proj-2") {
+	if !containsText(result, "proj-1") || !containsText(result, "proj-2") {
 		t.Errorf("expected available project IDs in error, got: %s", result)
 	}
 }
@@ -3092,14 +3078,14 @@ func TestToolCreateSession_ProjectIDPriorityOverProjectPath(t *testing.T) {
 		"project_path": "/tmp/should-be-ignored",
 	})
 	// project_id should take priority — should NOT report project_id not found.
-	if contains(result, "未找到") {
+	if containsText(result, "未找到") {
 		t.Errorf("project_id should resolve successfully, got: %s", result)
 	}
 	// The final output should reference the project_id path (/tmp/my-project),
 	// not the project_path (/tmp/should-be-ignored).
 	// Session creation will fail (remote mode disabled), but the error should
 	// NOT contain the ignored project_path.
-	if contains(result, "/tmp/should-be-ignored") {
+	if containsText(result, "/tmp/should-be-ignored") {
 		t.Errorf("project_path should be overridden by project_id, got: %s", result)
 	}
 }
@@ -3133,10 +3119,10 @@ func TestToolProjectManage_List(t *testing.T) {
 	result := handler.toolProjectManage(map[string]interface{}{"action": "list"})
 
 	// Should contain both projects.
-	if !contains(result, "proj-1") || !contains(result, "MyProject") || !contains(result, "/path/to/project") {
+	if !containsText(result, "proj-1") || !containsText(result, "MyProject") || !containsText(result, "/path/to/project") {
 		t.Errorf("expected proj-1 details in result, got: %s", result)
 	}
-	if !contains(result, "proj-2") || !contains(result, "OtherProject") || !contains(result, "/path/to/other") {
+	if !containsText(result, "proj-2") || !containsText(result, "OtherProject") || !containsText(result, "/path/to/other") {
 		t.Errorf("expected proj-2 details in result, got: %s", result)
 	}
 }
@@ -3225,11 +3211,11 @@ func TestExecuteTool_ProjectManageRouting(t *testing.T) {
 
 	result := handler.executeTool("project_manage", `{"action":"list"}`, nil)
 	// Should NOT return "未知工具".
-	if contains(result, "未知工具") {
+	if containsText(result, "未知工具") {
 		t.Errorf("project_manage should be routed, got: %s", result)
 	}
 	// With no projects, should return hint.
-	if !contains(result, "当前没有已配置的项目") {
+	if !containsText(result, "当前没有已配置的项目") {
 		t.Errorf("expected no projects hint, got: %s", result)
 	}
 }

@@ -211,13 +211,13 @@ func TestWriteAutoResumeHintPrefersResumeSessionID(t *testing.T) {
 		ResumeCount:     1,
 	}, "编程工具因 token 耗尽正常退出，但任务可能未完成。")
 	out := b.String()
-	if !contains(out, "resume_session_id") {
+	if !containsText(out, "resume_session_id") {
 		t.Fatalf("expected resume_session_id hint, got: %s", out)
 	}
-	if !contains(out, "thread-789") {
+	if !containsText(out, "thread-789") {
 		t.Fatalf("expected ResumeSessionID in hint, got: %s", out)
 	}
-	if contains(out, "claude-session-123") {
+	if containsText(out, "claude-session-123") {
 		t.Fatalf("expected ClaudeSessionID fallback to be skipped when ResumeSessionID exists, got: %s", out)
 	}
 }
@@ -239,12 +239,12 @@ func TestWriteAutoResumeHintUsesConfiguredChineseLanguage(t *testing.T) {
 	}, "编程工具已正常退出，任务可能未完成。")
 	out := b.String()
 	for _, leaked := range []string{"Legacy resume context available", "Original task:", "Last progress:", "Completed files:", "for audit only"} {
-		if contains(out, leaked) {
+		if containsText(out, leaked) {
 			t.Fatalf("auto resume hint leaked English %q: %s", leaked, out)
 		}
 	}
 	for _, want := range []string{"已有旧外部会话续接上下文", "原始任务：修复任务接续", "最近进度：已定位续接提示", "已完成文件：gui/im_tools_session_resume_hint.go", "旧 resume_session_id 仅用于审计：thread-789"} {
-		if !contains(out, want) {
+		if !containsText(out, want) {
 			t.Fatalf("auto resume hint missing %q: %s", want, out)
 		}
 	}

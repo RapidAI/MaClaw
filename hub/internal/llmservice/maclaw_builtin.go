@@ -245,26 +245,9 @@ func (c *MaClawProviderClient) resetFailures() {
 
 // TenantAuthorizationStatus is the response from HubCenter's authorization query.
 type TenantAuthorizationStatus struct {
-	HubID                  string                 `json:"hub_id"`
-	TenantID               string                 `json:"tenant_id"`
-	AllowExternalProviders bool                   `json:"allow_external_providers"`
-	Authorizations         []AuthorizationSummary `json:"authorizations"`
-}
-
-// AuthorizationSummary is a single authorization entry from HubCenter.
-type AuthorizationSummary struct {
-	ID                     string  `json:"id"`
-	ServiceGroupID         string  `json:"service_group_id"`
-	CreditsTotal           float64 `json:"credits_total"`
-	CreditsUsed            float64 `json:"credits_used"`
-	CreditsRemaining       float64 `json:"credits_remaining"`
-	StartsAt               string  `json:"starts_at"`
-	ExpiresAt              string  `json:"expires_at"`
-	Status                 string  `json:"status"`
-	Active                 bool    `json:"active"`
-	AllowExternalProviders bool    `json:"allow_external_providers"`
-	Source                 string  `json:"source"`
-	CardOrderID            string  `json:"card_order_id,omitempty"`
+	HubID                  string `json:"hub_id"`
+	TenantID               string `json:"tenant_id"`
+	AllowExternalProviders bool   `json:"allow_external_providers"`
 }
 
 // ---------------------------------------------------------------------------

@@ -29,10 +29,10 @@ func TestResolveCreateSessionPrecheckResultBlocksMissingTool(t *testing.T) {
 	if got.Error == "" {
 		t.Fatal("expected missing tool to block session creation")
 	}
-	if !contains(got.Error, "install claude") {
+	if !containsText(got.Error, "install claude") {
 		t.Fatalf("expected tool hint in error, got %q", got.Error)
 	}
-	if !contains(got.Error, "claude") {
+	if !containsText(got.Error, "claude") {
 		t.Fatalf("expected tool name in error, got %q", got.Error)
 	}
 }

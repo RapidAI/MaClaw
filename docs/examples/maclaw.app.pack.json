@@ -1,0 +1,77 @@
+{
+  "schema": "maclaw.app.pack.v1",
+  "privateMarker": "x_maclaw_apps",
+  "apps": [
+    {
+      "schema": "maclaw.app.v1",
+      "privateMarker": "x_maclaw_apps",
+      "installUnit": "enterprise_app_pack",
+      "app": {
+        "id": "finance-expense",
+        "name": "Expense Review",
+        "description": "Create, review, and report expense records through DataSrv.",
+        "category": "Finance",
+        "kind": "enterprise_app",
+        "icon": "receipt",
+        "source": "market",
+        "launchMode": "agent_dynamic_ui",
+        "binding": {
+          "datasrv": {
+            "domain": "finance",
+            "preferredAction": "finance.expense_upsert",
+            "preferredView": "finance.expense_review",
+            "preferredReport": "finance.expense_by_status",
+            "preferredDashboard": "finance.overview"
+          }
+        },
+        "panel": {
+          "pinned": true,
+          "accent": "#2f5f98"
+        }
+      }
+    },
+    {
+      "schema": "maclaw.app.v1",
+      "privateMarker": "x_maclaw_apps",
+      "installUnit": "skill",
+      "app": {
+        "id": "spreadsheet-cleanup",
+        "name": "Spreadsheet Cleanup",
+        "description": "Upload a workbook, normalize data, and export a cleaned workbook.",
+        "category": "Data",
+        "kind": "tool_app",
+        "icon": "sheet",
+        "source": "market",
+        "launchMode": "fixed_skill_ui",
+        "binding": {
+          "skill": {
+            "id": "sheet-tools",
+            "appDefinitionFile": "maclaw.apps.json",
+            "inputMode": "mixed",
+            "multipleFiles": false,
+            "outputModes": ["xlsx"],
+            "fields": [
+              {
+                "name": "dedupe",
+                "label": "Remove duplicates",
+                "type": "boolean",
+                "default": true
+              },
+              {
+                "name": "date_format",
+                "label": "Date format",
+                "type": "select",
+                "default": "YYYY-MM-DD",
+                "options": ["YYYY-MM-DD", "MM/DD/YYYY", "DD/MM/YYYY"]
+              }
+            ]
+          }
+        },
+        "panel": {
+          "pinned": false,
+          "accent": "#3f6f4f"
+        }
+      }
+    }
+  ]
+}

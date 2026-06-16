@@ -26,6 +26,7 @@ type SidebarNavRailProps = {
 
 const zhHans = {
     aiAssistant: 'AI \u52a9\u624b',
+    apps: '\u5e94\u7528',
     system: '\u7cfb\u7edf',
     monitor: '\u76d1\u63a7',
     settings: '\u8bbe\u7f6e',
@@ -33,6 +34,7 @@ const zhHans = {
 
 const zhHant = {
     aiAssistant: 'AI \u52a9\u624b',
+    apps: '\u61c9\u7528',
     system: '\u7cfb\u7d71',
     monitor: '\u76e3\u63a7',
     settings: '\u8a2d\u5b9a',
@@ -48,6 +50,15 @@ const icon = {
     about: '\u2139\uFE0F',
     system: '\u2699\uFE0F',
 };
+
+const AppsRailIcon = () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="4" y="4" width="6" height="6" rx="1.4" />
+        <rect x="14" y="4" width="6" height="6" rx="1.4" />
+        <rect x="4" y="14" width="6" height="6" rx="1.4" />
+        <path d="M17 14v6M14 17h6" />
+    </svg>
+);
 
 export const SidebarNavRail = ({
     navTab,
@@ -72,6 +83,7 @@ export const SidebarNavRail = ({
     const [systemMenuOpen, setSystemMenuOpen] = useState(false);
 
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
+    const appsLabel = lang === 'zh-Hans' ? zhHans.apps : lang === 'zh-Hant' ? zhHant.apps : 'Apps';
     const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';
     const isTigerClaw = brandInfo?.id === 'qianxin';
 
@@ -143,6 +155,17 @@ export const SidebarNavRail = ({
 
             {/* Textured horizontal divider */}
             <div style={{ width: '70%', height: '2px', margin: '4px 0 6px 0', borderRadius: '1px', background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent 100%)', opacity: 0.5 }} />
+
+            {/* Apps Button */}
+            <div
+                className={'sidebar-item left-nav-item ' + (navTab === 'apps' ? 'active' : '')}
+                onClick={() => switchTool('apps')}
+                style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'apps' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
+                title={appsLabel}
+            >
+                <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'apps' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}><AppsRailIcon /></span>
+                <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{appsLabel}</span>
+            </div>
 
             {/* Favorite Employee Buttons */}
             <FavoriteEmployeeButtons

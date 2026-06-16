@@ -52,8 +52,8 @@ func RegisterLLMRoutes(
 
 	// --- Admin: LLM Service Groups ---
 	mux.HandleFunc("GET /api/admin/llm/service-groups", RequireAdmin(adminService, adminListLLMServiceGroups(llmSvc)))
-	mux.HandleFunc("POST /api/admin/llm/service-groups", RequireAdmin(adminService, adminAddLLMServiceGroup(llmSvc)))
-	mux.HandleFunc("PUT /api/admin/llm/service-groups/{id}", RequireAdmin(adminService, adminUpdateLLMServiceGroup(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/service-groups", RequireAdmin(adminService, adminAddLLMServiceGroup(llmSvc, cardStoreSvc)))
+	mux.HandleFunc("PUT /api/admin/llm/service-groups/{id}", RequireAdmin(adminService, adminUpdateLLMServiceGroup(llmSvc, cardStoreSvc)))
 	mux.HandleFunc("DELETE /api/admin/llm/service-groups/{id}", RequireAdmin(adminService, adminDeleteLLMServiceGroup(llmSvc, authChecker, cardStoreSvc)))
 
 	// --- Admin: Tenant Authorizations ---

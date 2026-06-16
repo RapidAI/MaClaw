@@ -89,6 +89,7 @@ const TutorialPage = lazy(() => import('./components/pages/TutorialPage').then((
 const ApiStorePage = lazy(() => import('./components/pages/ApiStorePage').then((module) => ({ default: module.ApiStorePage })));
 const ProjectManagerPage = lazy(() => import('./components/pages/ProjectManagerPage').then((module) => ({ default: module.ProjectManagerPage })));
 const RemoteSessionsPage = lazy(() => import('./components/pages/RemoteSessionsPage').then((module) => ({ default: module.RemoteSessionsPage })));
+const AppsPage = lazy(() => import('./components/pages/AppsPage').then((module) => ({ default: module.AppsPage })));
 const SkillsPage = lazy(() => import('./components/pages/SkillsPage').then((module) => ({ default: module.SkillsPage })));
 const MCPPage = lazy(() => import('./components/pages/MCPPage').then((module) => ({ default: module.MCPPage })));
 const GossipPage = lazy(() => import('./components/pages/GossipPage').then((module) => ({ default: module.GossipPage })));
@@ -3229,6 +3230,10 @@ ${instruction}`;
                             selectedProjectForLaunch={selectedProjectForLaunch}
                             setSelectedProjectForLaunch={setSelectedProjectForLaunch}
                         />
+                    )}
+
+                    {navTab === 'apps' && (
+                        <AppsPage lang={lang} />
                     )}
 
                     {navTab === 'skills' && (

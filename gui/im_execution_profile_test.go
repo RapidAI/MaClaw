@@ -598,7 +598,7 @@ func TestBuildLightIMSystemPromptStaysSmall(t *testing.T) {
 		t.Fatalf("light prompt len = %d, want <= 1200", len(prompt))
 	}
 	for _, blocked := range []string{"Group Discussion", "CodingSubAgent", "compress_context"} {
-		if contains(prompt, blocked) {
+		if containsText(prompt, blocked) {
 			t.Fatalf("light prompt should not contain full-agent section %q: %s", blocked, prompt)
 		}
 	}
@@ -622,12 +622,12 @@ func TestBuildIMEntrySystemPromptWorkflowLoopOverridesLightProfile(t *testing.T)
 	}, nil, ctx, true, "", "", "")
 
 	for _, bad := range []string{"low-complexity lookup task", "Do not inspect local files"} {
-		if contains(prompt, bad) {
+		if containsText(prompt, bad) {
 			t.Fatalf("workflow agent loop must not use light prompt fragment %q:\n%s", bad, prompt)
 		}
 	}
 	for _, want := range []string{"Coding Implementation Handoff Contract", "CodingSubAgent", "delegate_task(agent=\"coding_workflow\""} {
-		if !contains(prompt, want) {
+		if !containsText(prompt, want) {
 			t.Fatalf("workflow prompt missing %q:\n%s", want, prompt)
 		}
 	}
@@ -677,7 +677,7 @@ func TestTryDirectExecutionProfileRunsToolAndSavesHistory(t *testing.T) {
 	if resp.ResponseSource != "direct_execution" || resp.RequestID != "req-direct" {
 		t.Fatalf("resp = %+v, want direct source and request id", resp)
 	}
-	if !contains(resp.Text, "2026-06-05 12:34:56") {
+	if !containsText(resp.Text, "2026-06-05 12:34:56") {
 		t.Fatalf("resp text = %q, want tool output", resp.Text)
 	}
 	history := h.memory.Load(userID)

@@ -36,6 +36,57 @@ func TestSkillDocHelpersAcceptMixedCaseSkillMarkdown(t *testing.T) {
 	}
 }
 
+func TestSkillRunnerFinalizeCleansStagedAppInputFile(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	ref, err := app.StageSkillAppInputFile("demo.txt", "text/plain", 0, "ZGVtbw==")
+	if err != nil {
+		t.Fatalf("StageSkillAppInputFile() error = %v", err)
+	}
+	if _, err := os.Stat(ref.StagedPath); err != nil {
+		t.Fatalf("expected staged file before finalize: %v", err)
+	}
+	runner := NewSkillRunner(&SkillExecutor{app: app})
+	run := &skillRun{
+		status: SkillRunStatus{RunID: "run-cleanup", Status: skillRunStatusRunning},
+		runArgs: map[string]interface{}{
+			"file": map[string]interface{}{"staged_path": ref.StagedPath},
+		},
+	}
+
+	runner.finalizeRunOutcome(run, skillRunStatusSuccess, time.Now())
+
+	if _, err := os.Stat(ref.StagedPath); !os.IsNotExist(err) {
+		t.Fatalf("expected staged file removed, stat err=%v", err)
+	}
+	if len(run.status.Warnings) != 0 {
+		t.Fatalf("unexpected cleanup warnings: %#v", run.status.Warnings)
+	}
+}
+
+func TestSkillRunnerFinalizeRefusesCleanupOutsideAppTemp(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	outside := filepath.Join(t.TempDir(), "keep.txt")
+	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("WriteFile outside: %v", err)
+	}
+	runner := NewSkillRunner(&SkillExecutor{app: app})
+	run := &skillRun{
+		status: SkillRunStatus{RunID: "run-refuse", Status: skillRunStatusRunning},
+		runArgs: map[string]interface{}{
+			"file": map[string]interface{}{"staged_path": outside},
+		},
+	}
+
+	runner.finalizeRunOutcome(run, skillRunStatusFailed, time.Now())
+
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside file should remain: %v", err)
+	}
+	if len(run.status.Warnings) == 0 || !strings.Contains(run.status.Warnings[0], "outside temp dir") {
+		t.Fatalf("expected outside-temp warning, got %#v", run.status.Warnings)
+	}
+}
+
 func TestSkillRunnerStartRunDoesNotInheritWorkflowPolicy(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

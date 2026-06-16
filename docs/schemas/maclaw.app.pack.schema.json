@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maclaw.local/schemas/maclaw.app.pack.schema.json",
+  "title": "MaClaw app pack manifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "privateMarker", "apps"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "maclaw.app.pack.v1"
+    },
+    "privateMarker": {
+      "description": "Private MaClaw marker for app-panel pack manifests.",
+      "type": "string",
+      "const": "x_maclaw_apps"
+    },
+    "apps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "maclaw.app.schema.json"
+      }
+    }
+  }
+}

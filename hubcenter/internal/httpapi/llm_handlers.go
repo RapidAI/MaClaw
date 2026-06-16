@@ -319,7 +319,7 @@ func adminListLLMServiceGroups(svc *llmservice.Service) http.HandlerFunc {
 	}
 }
 
-func adminAddLLMServiceGroup(svc *llmservice.Service) http.HandlerFunc {
+func adminAddLLMServiceGroup(svc *llmservice.Service, cardStoreSvc *cardstore.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var group llmpool.ServiceGroup
 		if err := json.NewDecoder(r.Body).Decode(&group); err != nil {
@@ -334,11 +334,15 @@ func adminAddLLMServiceGroup(svc *llmservice.Service) http.HandlerFunc {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		if err := ensureDefaultComputeCardTypesForGrantGroup(r.Context(), svc, cardStoreSvc); err != nil {
+			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
 
-func adminUpdateLLMServiceGroup(svc *llmservice.Service) http.HandlerFunc {
+func adminUpdateLLMServiceGroup(svc *llmservice.Service, cardStoreSvc *cardstore.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if id == "" {
@@ -355,8 +359,28 @@ func adminUpdateLLMServiceGroup(svc *llmservice.Service) http.HandlerFunc {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		if err := ensureDefaultComputeCardTypesForGrantGroup(r.Context(), svc, cardStoreSvc); err != nil {
+			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
+}
+
+func ensureDefaultComputeCardTypesForGrantGroup(ctx context.Context, svc *llmservice.Service, cardStoreSvc *cardstore.Service) error {
+	if svc == nil || cardStoreSvc == nil {
+		return nil
+	}
+	reg, err := svc.LoadRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	for _, group := range reg.ServiceGroups {
+		if group.ID != "" && group.AccessPolicy == llmservice.AccessPolicyGrantRequired {
+			return cardStoreSvc.EnsureDefaultComputeCardTypes(ctx, group.ID)
+		}
+	}
+	return nil
 }
 
 func adminDeleteLLMServiceGroup(svc *llmservice.Service, checker *llmservice.AuthorizationChecker, cardStoreSvc *cardstore.Service) http.HandlerFunc {

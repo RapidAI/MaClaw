@@ -41,6 +41,47 @@ var BuiltinCardTemplates = []CardTemplate{
 // DefaultCreditOptions are the quick-select credit amounts in the admin UI.
 var DefaultCreditOptions = []float64{10000, 100000, 1000000}
 
+// DefaultComputeCardTypes returns the built-in on-shelf cards used when a
+// HubCenter has no card products yet.
+func DefaultComputeCardTypes(serviceGroupID string) []*CardType {
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	return []*CardType{
+		{
+			ID:             "maclaw_compute_month_10000",
+			ServiceGroupID: serviceGroupID,
+			Label:          "MaClaw 官方月卡",
+			Description:    "适合轻量研发与日常问答的官方算力额度。",
+			Credits:        10000,
+			Period:         "month",
+			PriceRMB:       99,
+			Template:       "enterprise_monthly_blue",
+			Enabled:        true,
+		},
+		{
+			ID:             "maclaw_compute_quarter_100000",
+			ServiceGroupID: serviceGroupID,
+			Label:          "MaClaw 官方季度卡",
+			Description:    "适合团队持续使用的季度算力额度。",
+			Credits:        100000,
+			Period:         "quarter",
+			PriceRMB:       799,
+			Template:       "enterprise_quarter_emerald",
+			Enabled:        true,
+		},
+		{
+			ID:             "maclaw_compute_year_1000000",
+			ServiceGroupID: serviceGroupID,
+			Label:          "MaClaw 官方年度卡",
+			Description:    "适合高频业务与自动化流程的年度算力池。",
+			Credits:        1000000,
+			Period:         "year",
+			PriceRMB:       5999,
+			Template:       "enterprise_annual_slate",
+			Enabled:        true,
+		},
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Card Type (dynamic, admin-created)
 // ---------------------------------------------------------------------------
@@ -214,6 +255,41 @@ func (s *Service) CreateCardType(ctx context.Context, ct *CardType) error {
 	ct.CreatedAt = now
 	ct.UpdatedAt = now
 	return s.cardTypes.Create(ctx, ct)
+}
+
+// EnsureDefaultComputeCardTypes creates default purchasable cards only when no
+// card products exist yet. Existing admin-configured products are never changed.
+func (s *Service) EnsureDefaultComputeCardTypes(ctx context.Context, serviceGroupID string) error {
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	if serviceGroupID == "" {
+		return fmt.Errorf("service_group_id is required")
+	}
+	existing, err := s.ListAllCardTypes(ctx)
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return nil
+	}
+	for _, ct := range DefaultComputeCardTypes(serviceGroupID) {
+		if err := s.CreateCardType(ctx, ct); err != nil {
+			if s.defaultComputeCardTypesExist(ctx, serviceGroupID) {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) defaultComputeCardTypesExist(ctx context.Context, serviceGroupID string) bool {
+	for _, ct := range DefaultComputeCardTypes(serviceGroupID) {
+		existing, err := s.cardTypes.GetByID(ctx, ct.ID)
+		if err != nil || existing == nil || !existing.Enabled || existing.ServiceGroupID != serviceGroupID {
+			return false
+		}
+	}
+	return true
 }
 
 // UpdateCardType updates an existing card type.

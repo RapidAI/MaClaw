@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
@@ -34,6 +35,7 @@ const (
 	EntityGossipSnapshot      = "gossip_snapshot"
 	EntitySkillHubSnapshot    = "skillhub_snapshot"
 	EntitySkillMarketSnapshot = "skillmarket_snapshot"
+	EntityLLMCardType         = "llm_card_type"
 
 	OpUpsert = "upsert"
 	OpDelete = "delete"
@@ -79,6 +81,7 @@ type Service struct {
 	gossip                   store.GossipRepository
 	skillStore               *skill.SkillStore
 	skillMarket              *skillmarket.Store
+	cardTypes                cardstore.CardTypeRepository
 	heartbeatSync            store.HAHeartbeatSyncStateRepository
 	heartbeatSyncMinInterval time.Duration
 
@@ -216,6 +219,13 @@ func (s *Service) AttachSkillMarket(sm *skillmarket.Store) {
 		return
 	}
 	s.skillMarket = sm
+}
+
+func (s *Service) AttachCardTypes(repo cardstore.CardTypeRepository) {
+	if s == nil {
+		return
+	}
+	s.cardTypes = repo
 }
 
 func (s *Service) SetRouteSnapshotRefresher(refresher interface{ Rebuild(context.Context) error }) {
@@ -513,6 +523,7 @@ func adminSyncCategorySpecs() []adminSyncCategorySpec {
 		{Key: "gossip", Label: "Gossip Wall", EntityTypes: map[string]struct{}{EntityGossipSnapshot: {}}},
 		{Key: "skillhub", Label: "Skill Library", EntityTypes: map[string]struct{}{EntitySkillHubSnapshot: {}}},
 		{Key: "skillmarket", Label: "Skill Market", EntityTypes: map[string]struct{}{EntitySkillMarketSnapshot: {}}},
+		{Key: "compute_market", Label: "Compute Market", EntityTypes: map[string]struct{}{EntityLLMCardType: {}}},
 		{Key: "news", Label: "News", EntityTypes: map[string]struct{}{EntityNewsArticle: {}}},
 	}
 }
@@ -1377,7 +1388,7 @@ func validateRemoteOp(op *store.HASyncOp) error {
 
 func isSupportedEntityType(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityLLMCardType:
 		return true
 	default:
 		return false
@@ -1389,7 +1400,7 @@ func isSupportedEntityOpType(entityType, opType string) bool {
 		return true
 	}
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType:
 		return opType == OpDelete
 	default:
 		return false
@@ -1478,7 +1489,7 @@ func remoteOpPayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "ip", payload.IP, nil
-	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink:
+	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType:
 		var payload struct {
 			ID string `json:"id"`
 		}
@@ -1517,7 +1528,7 @@ func remoteOpDeletePayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "ip", payload.IP, nil
-	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink:
+	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType:
 		var payload struct {
 			ID string `json:"id"`
 		}
@@ -1579,6 +1590,8 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applySkillHubSnapshotOp(ctx, op)
 	case EntitySkillMarketSnapshot:
 		return s.applySkillMarketSnapshotOp(ctx, op)
+	case EntityLLMCardType:
+		return s.applyLLMCardTypeOp(ctx, op)
 	default:
 		return fmt.Errorf("unsupported entity type: %s", op.EntityType)
 	}
@@ -1860,6 +1873,37 @@ func (s *Service) applySkillMarketSnapshotOp(ctx context.Context, op *store.HASy
 	return s.skillMarket.LoadSnapshot(ctx, &snap)
 }
 
+func (s *Service) applyLLMCardTypeOp(ctx context.Context, op *store.HASyncOp) error {
+	if s.cardTypes == nil {
+		return nil
+	}
+	switch op.OpType {
+	case OpUpsert:
+		var item cardstore.CardType
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &item); err != nil {
+			return err
+		}
+		existing, err := s.cardTypes.GetByID(ctx, item.ID)
+		if err != nil {
+			return err
+		}
+		if existing == nil {
+			return s.cardTypes.Create(ctx, &item)
+		}
+		return s.cardTypes.Update(ctx, &item)
+	case OpDelete:
+		var payload struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return err
+		}
+		return s.cardTypes.Delete(ctx, payload.ID)
+	default:
+		return fmt.Errorf("unsupported llm card type op: %s", op.OpType)
+	}
+}
+
 func (s *Service) markApplied(ctx context.Context, op *store.HASyncOp) error {
 	return s.ops.MarkApplied(ctx, &store.HAAppliedOp{OpID: op.OpID, SourceNodeID: op.SourceNodeID, EntityType: op.EntityType, EntityID: op.EntityID, AppliedAt: time.Now().UTC()})
 }
@@ -1910,6 +1954,23 @@ func (s *Service) AppendNewsArticle(ctx context.Context, item *store.NewsArticle
 func (s *Service) DeleteNewsArticle(ctx context.Context, id string) {
 	if err := s.AppendDelete(ctx, EntityNewsArticle, id, map[string]string{"id": id}, time.Now().UTC()); err != nil {
 		log.Printf("[hubcenter][ha] delete news: %v", err)
+	}
+}
+
+func (s *Service) AppendLLMCardType(ctx context.Context, item *cardstore.CardType) {
+	if item == nil {
+		return
+	}
+	if err := s.AppendUpsert(ctx, EntityLLMCardType, item.ID, item, item.UpdatedAt); err != nil {
+		log.Printf("[hubcenter][ha] append llm card type: %v", err)
+		s.recordFailure(ctx, "ha_sync", "append_llm_card_type_failed", err.Error(), item.ID, nil)
+	}
+}
+
+func (s *Service) DeleteLLMCardType(ctx context.Context, id string) {
+	if err := s.AppendDelete(ctx, EntityLLMCardType, id, map[string]string{"id": id}, time.Now().UTC()); err != nil {
+		log.Printf("[hubcenter][ha] delete llm card type: %v", err)
+		s.recordFailure(ctx, "ha_sync", "delete_llm_card_type_failed", err.Error(), id, nil)
 	}
 }
 

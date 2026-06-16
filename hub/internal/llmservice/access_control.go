@@ -45,6 +45,21 @@ func (ac *TenantLLMAccessControl) GetAuthorizationStatus(ctx context.Context, te
 	return ac.getStatus(ctx, tenantID)
 }
 
+// RefreshAuthorizationStatus bypasses the short-lived cache and asks HubCenter
+// for the latest tenant authorization status. If the refresh fails, callers can
+// still use GetAuthorizationStatus to fall back to the cached value.
+func (ac *TenantLLMAccessControl) RefreshAuthorizationStatus(ctx context.Context, tenantID string) (*TenantAuthorizationStatus, error) {
+	if ac == nil || ac.client == nil {
+		return nil, nil
+	}
+	status, err := ac.client.QueryAuthorization(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	ac.UpdateFromHeartbeat(tenantID, status)
+	return status, nil
+}
+
 // InvalidateCache clears the cached status for a tenant (e.g., after heartbeat sync).
 func (ac *TenantLLMAccessControl) InvalidateCache(tenantID string) {
 	ac.mu.Lock()

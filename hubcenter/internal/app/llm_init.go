@@ -35,7 +35,7 @@ type LLMModule struct {
 
 // InitLLMModule initializes the LLM service module and registers routes.
 // Call this after the SQLite provider and system settings are available.
-func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsRepository, nodeID string, entrySvc *entry.Service) *LLMModule {
+func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsRepository, nodeID string, entrySvc *entry.Service, haSvc *ha.Service) *LLMModule {
 	// 1. Ensure database tables
 	if err := sqlite.EnsureLLMTables(provider.Write); err != nil {
 		log.Printf("[llm-init] failed to create LLM tables: %v", err)
@@ -45,7 +45,12 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	// 2. Create repositories
 	authRepo := sqlite.NewLLMAuthRepo(provider)
 	usageRepo := sqlite.NewLLMUsageRepo(provider)
-	cardTypeRepo := sqlite.NewLLMCardTypeRepo(provider)
+	baseCardTypeRepo := sqlite.NewLLMCardTypeRepo(provider)
+	cardTypeRepo := cardstore.CardTypeRepository(baseCardTypeRepo)
+	if haSvc != nil {
+		haSvc.AttachCardTypes(baseCardTypeRepo)
+		cardTypeRepo = &haCardTypeRepo{inner: baseCardTypeRepo, sync: haSvc}
+	}
 	bindingRepo := sqlite.NewLLMBindingRepo(provider)
 
 	// 3. Create services
@@ -111,6 +116,9 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 			return fmt.Errorf("email %s is not routed to hub=%s tenant=%s", email, hubID, tenantID)
 		})
 	}
+	if err := ensureDefaultComputeCardTypes(context.Background(), cardStoreSvc, llmSvc); err != nil {
+		log.Printf("[llm-init] failed to seed default compute card types: %v", err)
+	}
 
 	// Load payment config from system settings (admin configures via API)
 	if raw, err := system.Get(context.Background(), "llm_cardstore_payment_config"); err == nil && raw != "" {
@@ -152,6 +160,34 @@ func effectiveCardStorePaymentConfig(mode string, personal corecardstore.Persona
 	default:
 		return personal, alipay
 	}
+}
+
+func ensureDefaultComputeCardTypes(ctx context.Context, cardStoreSvc *cardstore.Service, llmSvc *llmservice.Service) error {
+	if cardStoreSvc == nil || llmSvc == nil {
+		return nil
+	}
+	serviceGroupID, ok := defaultComputeCardServiceGroupID(ctx, llmSvc)
+	if !ok {
+		log.Printf("[llm-init] skip default compute card types: no grant-required LLM service group configured")
+		return nil
+	}
+	if err := cardStoreSvc.EnsureDefaultComputeCardTypes(ctx, serviceGroupID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func defaultComputeCardServiceGroupID(ctx context.Context, llmSvc *llmservice.Service) (string, bool) {
+	reg, err := llmSvc.LoadRegistry(ctx)
+	if err != nil || reg == nil {
+		return "", false
+	}
+	for _, group := range reg.ServiceGroups {
+		if group.ID != "" && group.AccessPolicy == llmservice.AccessPolicyGrantRequired {
+			return group.ID, true
+		}
+	}
+	return "", false
 }
 
 func normalizeCardStoreTenantID(tenantID string) string {

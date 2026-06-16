@@ -14,6 +14,7 @@ type cardTypeTestRepo struct {
 	created []*CardType
 	updated []*CardType
 	byID    map[string]*CardType
+	all     []*CardType
 }
 
 func (r *cardTypeTestRepo) Create(_ context.Context, ct *CardType) error {
@@ -38,7 +39,7 @@ func (r *cardTypeTestRepo) ListEnabled(_ context.Context) ([]*CardType, error) {
 }
 
 func (r *cardTypeTestRepo) ListAll(_ context.Context) ([]*CardType, error) {
-	return nil, nil
+	return r.all, nil
 }
 
 func (r *cardTypeTestRepo) Delete(_ context.Context, _ string) error {
@@ -255,6 +256,35 @@ func TestCreateCardTypeRejectsInvalidCard(t *testing.T) {
 	}
 	if len(repo.created) != 0 {
 		t.Fatalf("invalid card was persisted: %#v", repo.created)
+	}
+}
+
+func TestEnsureDefaultComputeCardTypesCreatesBuiltinsWhenEmpty(t *testing.T) {
+	repo := &cardTypeTestRepo{}
+	svc := NewService(repo, nil, nil)
+
+	if err := svc.EnsureDefaultComputeCardTypes(context.Background(), "grant-group"); err != nil {
+		t.Fatalf("EnsureDefaultComputeCardTypes: %v", err)
+	}
+	if len(repo.created) != 3 {
+		t.Fatalf("created count = %d, want 3", len(repo.created))
+	}
+	for _, ct := range repo.created {
+		if ct.ServiceGroupID != "grant-group" || !ct.Enabled || ct.Credits <= 0 || ct.PriceRMB <= 0 {
+			t.Fatalf("invalid default card type: %+v", ct)
+		}
+	}
+}
+
+func TestEnsureDefaultComputeCardTypesKeepsExistingCards(t *testing.T) {
+	repo := &cardTypeTestRepo{all: []*CardType{{ID: "custom", ServiceGroupID: "grant-group"}}}
+	svc := NewService(repo, nil, nil)
+
+	if err := svc.EnsureDefaultComputeCardTypes(context.Background(), "grant-group"); err != nil {
+		t.Fatalf("EnsureDefaultComputeCardTypes: %v", err)
+	}
+	if len(repo.created) != 0 {
+		t.Fatalf("created defaults despite existing cards: %#v", repo.created)
 	}
 }
 

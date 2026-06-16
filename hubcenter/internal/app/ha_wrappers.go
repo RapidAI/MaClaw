@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
@@ -39,6 +40,58 @@ func (r *haSystemSettings) Get(ctx context.Context, key string) (string, error) 
 
 func (r *haSystemSettings) List(ctx context.Context) ([]*store.SystemSettingEntry, error) {
 	return r.inner.List(ctx)
+}
+
+type haCardTypeRepo struct {
+	inner cardstore.CardTypeRepository
+	sync  haCardTypeRecorder
+}
+
+type haCardTypeRecorder interface {
+	AppendLLMCardType(ctx context.Context, item *cardstore.CardType)
+	DeleteLLMCardType(ctx context.Context, id string)
+}
+
+func (r *haCardTypeRepo) Create(ctx context.Context, ct *cardstore.CardType) error {
+	if err := r.inner.Create(ctx, ct); err != nil {
+		return err
+	}
+	if r.sync != nil {
+		r.sync.AppendLLMCardType(ctx, ct)
+	}
+	return nil
+}
+
+func (r *haCardTypeRepo) Update(ctx context.Context, ct *cardstore.CardType) error {
+	if err := r.inner.Update(ctx, ct); err != nil {
+		return err
+	}
+	if r.sync != nil {
+		r.sync.AppendLLMCardType(ctx, ct)
+	}
+	return nil
+}
+
+func (r *haCardTypeRepo) GetByID(ctx context.Context, id string) (*cardstore.CardType, error) {
+	return r.inner.GetByID(ctx, id)
+}
+
+func (r *haCardTypeRepo) ListEnabled(ctx context.Context) ([]*cardstore.CardType, error) {
+	return r.inner.ListEnabled(ctx)
+}
+
+func (r *haCardTypeRepo) ListAll(ctx context.Context) ([]*cardstore.CardType, error) {
+	return r.inner.ListAll(ctx)
+}
+
+func (r *haCardTypeRepo) Delete(ctx context.Context, id string) error {
+	if err := r.inner.Delete(ctx, id); err != nil {
+		return err
+	}
+	if r.sync != nil {
+		r.sync.DeleteLLMCardType(ctx, id)
+	}
+	return nil
 }
 
 type haGossipRepo struct {

@@ -400,6 +400,7 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 		},
 		cancel:        cancel,
 		templateVars:  templateVars,
+		runArgs:       cloneSkillRunArgs(runArgs),
 		selectedSteps: selectedSteps,
 		extraEnv:      extraEnv,
 	}
@@ -1242,6 +1243,14 @@ func (r *SkillRunner) finalizeRunOutcome(run *skillRun, status skillRunLifecycle
 	run.status.EndedAt = time.Now().Format(time.RFC3339)
 	run.status.DurationMs = time.Since(execStart).Milliseconds()
 	r.mu.Unlock()
+	if run == nil || r == nil || r.executor == nil || r.executor.app == nil {
+		return
+	}
+	if err := r.executor.app.cleanupStagedSkillAppInputFilesFromRunArgs(run.runArgs); err != nil {
+		r.mu.Lock()
+		run.status.Warnings = append(run.status.Warnings, err.Error())
+		r.mu.Unlock()
+	}
 }
 
 // failRunPendingSkipped marks all still-pending steps as skipped, records

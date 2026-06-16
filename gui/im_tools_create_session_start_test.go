@@ -51,16 +51,16 @@ func TestBuildCreateSessionStartRequest(t *testing.T) {
 func TestRenderCreateSessionStartError(t *testing.T) {
 	got := renderCreateSessionStartError(errors.New("boom"), "claude", "/repo")
 
-	if !contains(got, "boom") {
+	if !containsText(got, "boom") {
 		t.Fatalf("expected original error, got %q", got)
 	}
-	if !contains(got, "claude") {
+	if !containsText(got, "claude") {
 		t.Fatalf("expected tool name, got %q", got)
 	}
-	if !contains(got, "/repo") {
+	if !containsText(got, "/repo") {
 		t.Fatalf("expected project path, got %q", got)
 	}
-	if !contains(got, "list_providers") {
+	if !containsText(got, "list_providers") {
 		t.Fatalf("expected provider guidance, got %q", got)
 	}
 }

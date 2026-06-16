@@ -91,12 +91,13 @@
 
   async function loadComputeStatus() {
     var path = '/api/admin/llm/maclaw-compute-status';
+    var params = new URLSearchParams();
+    params.set('refresh', '1');
     var tenantID = currentComputeTenantID();
     if (tenantID) {
-      var params = new URLSearchParams();
       params.set('tenant_id', tenantID);
-      path += '?' + params.toString();
     }
+    path += '?' + params.toString();
     if (typeof window.api === 'function') {
       return await window.api(path);
     }

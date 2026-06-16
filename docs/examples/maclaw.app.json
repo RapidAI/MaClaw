@@ -1,0 +1,38 @@
+{
+  "schema": "maclaw.app.v1",
+  "privateMarker": "x_maclaw_apps",
+  "installUnit": "skill",
+  "app": {
+    "id": "document-redaction",
+    "name": "Document Redaction",
+    "description": "Upload a document and return a redacted copy.",
+    "category": "Document",
+    "kind": "tool_app",
+    "icon": "shield",
+    "source": "market",
+    "launchMode": "fixed_skill_ui",
+    "binding": {
+      "skill": {
+        "id": "doc-tools",
+        "appDefinitionFile": "maclaw.apps.json",
+        "inputMode": "file",
+        "multipleFiles": true,
+        "outputModes": ["docx", "pdf"],
+        "fields": [
+          {
+            "name": "redaction_scope",
+            "label": "Redaction scope",
+            "type": "select",
+            "required": true,
+            "default": "PII",
+            "options": ["PII", "Financial", "Custom"]
+          }
+        ]
+      }
+    },
+    "panel": {
+      "pinned": false,
+      "accent": "#28705f"
+    }
+  }
+}

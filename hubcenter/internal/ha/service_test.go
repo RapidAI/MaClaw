@@ -995,8 +995,8 @@ func TestGetAdminStatusIncludesSyncCategoryDetails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAdminStatus() error = %v", err)
 	}
-	if len(status.Sync.Details) != 6 {
-		t.Fatalf("sync details len = %d, want 6", len(status.Sync.Details))
+	if len(status.Sync.Details) != 7 {
+		t.Fatalf("sync details len = %d, want 7", len(status.Sync.Details))
 	}
 	if status.Sync.PushDebounceSeconds != 180 {
 		t.Fatalf("push debounce seconds = %d, want 180", status.Sync.PushDebounceSeconds)
@@ -1018,6 +1018,10 @@ func TestGetAdminStatusIncludesSyncCategoryDetails(t *testing.T) {
 	gossip := find("gossip")
 	if gossip == nil || gossip.Status != "error" || gossip.PendingOps != 0 || gossip.PendingPeers != 0 {
 		t.Fatalf("gossip detail = %#v", gossip)
+	}
+	computeMarket := find("compute_market")
+	if computeMarket == nil || computeMarket.Status != "idle" || computeMarket.PendingOps != 0 || computeMarket.PendingPeers != 0 {
+		t.Fatalf("compute_market detail = %#v", computeMarket)
 	}
 	skillhub := find("skillhub")
 	if skillhub == nil || skillhub.Status != "error" || skillhub.PendingOps != 0 {

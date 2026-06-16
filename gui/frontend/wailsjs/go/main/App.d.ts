@@ -332,6 +332,16 @@ export function WindowHide():Promise<void>;
 // NL Skill management bindings
 export function ListNLSkills():Promise<Array<any>>;
 
+export function ListSkillAppManifests():Promise<Array<any>>;
+
+export function StageSkillAppInputFile(arg1:string,arg2:string,arg3:number,arg4:string):Promise<any>;
+
+export function RunNLSkillAsync(arg1:string,arg2:any):Promise<string>;
+
+export function GetNLSkillRunStatus(arg1:string):Promise<any>;
+
+export function CancelNLSkillRun(arg1:string):Promise<void>;
+
 export function DiagnoseSkillFiles():Promise<Array<any>>;
 
 export function ListExternalSkillDirs():Promise<Array<string>>;
