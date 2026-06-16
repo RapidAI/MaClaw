@@ -352,7 +352,24 @@ fi
 codesign_bundle() {
     local BUNDLE="$1"
     if [ -d "$BUNDLE" ]; then
+        # codesign rejects bundles with FinderInfo/resource-fork metadata.
+        # xattr -cr can leave FinderInfo behind on some file-provider backed
+        # volumes, so clear the known offenders explicitly before signing.
+        if command -v dot_clean >/dev/null 2>&1; then
+            dot_clean -m "$BUNDLE" 2>/dev/null || true
+        fi
         xattr -cr "$BUNDLE" 2>/dev/null || true
+        while IFS= read -r -d '' item; do
+            xattr -d com.apple.FinderInfo "$item" 2>/dev/null || true
+            xattr -d com.apple.ResourceFork "$item" 2>/dev/null || true
+            xattr -d com.apple.provenance "$item" 2>/dev/null || true
+            xattr -d 'com.apple.fileprovider.fpfs#P' "$item" 2>/dev/null || true
+        done < <(find "$BUNDLE" -print0)
+        local CLEAN_BUNDLE="${BUNDLE}.clean"
+        rm -rf "$CLEAN_BUNDLE"
+        ditto --noextattr --norsrc "$BUNDLE" "$CLEAN_BUNDLE"
+        rm -rf "$BUNDLE"
+        mv "$CLEAN_BUNDLE" "$BUNDLE"
         codesign --force --sign "$SIGN_IDENTITY" \
             --identifier "$IDENTIFIER" \
             --options runtime \
@@ -591,4 +608,3 @@ create_datasrv_pkg universal
 
 echo "Build Complete!"
 echo "App Bundles and Packages are in $OUTPUT_DIR"
-

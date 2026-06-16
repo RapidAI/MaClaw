@@ -324,6 +324,11 @@ const labels = {
         skillRunCancelled: 'Skill \u5df2\u53d6\u6d88',
         runSteps: '\u6267\u884c\u6b65\u9aa4',
         runArtifacts: '\u8f93\u51fa\u4ea7\u7269',
+        runtimeInput: '\u8f93\u5165',
+        runtimeStatus: '\u6267\u884c\u72b6\u6001',
+        runtimeOutput: '\u8f93\u51fa',
+        outputText: '\u6587\u672c\u7ed3\u679c',
+        noOutputYet: '\u6267\u884c\u5b8c\u6210\u540e\uff0c\u8fd9\u91cc\u663e\u793a\u8f93\u51fa\u6587\u4ef6\u6216\u6587\u672c\u7ed3\u679c\u3002',
         artifactPending: '\u7b49\u5f85\u4ea7\u7269',
         artifactReady: '\u4ea7\u7269\u5df2\u751f\u6210',
         openArtifact: '\u6253\u5f00',
@@ -505,6 +510,11 @@ const labels = {
         skillRunCancelled: 'Skill cancelled',
         runSteps: 'Run steps',
         runArtifacts: 'Output artifacts',
+        runtimeInput: 'Input',
+        runtimeStatus: 'Run status',
+        runtimeOutput: 'Output',
+        outputText: 'Text result',
+        noOutputYet: 'Output files or text results appear here after execution.',
         artifactPending: 'Waiting for artifact',
         artifactReady: 'Artifact generated',
         openArtifact: 'Open',
@@ -2288,112 +2298,117 @@ const AppPreview = ({ app, lang, onOpen, onUse }: { app?: AppEntry; lang?: strin
                             </div>
                         </div>
                     </div>
-                    <ManifestSummary app={app} lang={lang} />
                     <div className="apps-preview__mock">
-                        {isTool ? (
-                            <>
-                                {showFileInput && (
-                                    <label className="apps-drop-zone">
-                                        <input
-                                            type="file"
-                                            multiple={allowMultipleFiles}
-                                            onChange={(event) => {
-                                                const files = Array.from(event.currentTarget.files || []);
-                                                const file = files[0] || null;
-                                                setSelectedFiles(allowMultipleFiles ? files : files.slice(0, 1));
-                                                setSelectedFile(file);
-                                                setFileName(allowMultipleFiles && files.length > 1 ? files.map((item) => item.name).join(', ') : file?.name || '');
-                                                markDirty();
-                                            }}
-                                        />
-                                        <span>{fileName ? `${text.selectedFile}: ${fileName}` : text.upload}</span>
-                                        <strong>{text.chooseFile}</strong>
-                                    </label>
-                                )}
-                                {showParamInput && (
-                                    skillFields.length > 0 ? (
-                                        <div className="apps-tool-fields">
-                                            {skillFields.map((field) => {
-                                                const value = fieldValues[field.name] ?? field.default ?? (field.type === 'boolean' ? false : '');
-                                                return (
-                                                    <div className="apps-form-row" key={field.name}>
-                                                        <label>{field.label || field.name}</label>
-                                                        {field.type === 'boolean' ? (
-                                                            <label className="apps-checkbox-field">
-                                                                <input type="checkbox" checked={!!value} onChange={(event) => {
-                                                                    setFieldValues((current) => ({ ...current, [field.name]: event.target.checked }));
+                        <section className="apps-runtime-section">
+                            <div className="apps-runtime-section__title">{text.runtimeInput}</div>
+                            {isTool ? (
+                                <>
+                                    {showFileInput && (
+                                        <label className="apps-drop-zone">
+                                            <input
+                                                type="file"
+                                                multiple={allowMultipleFiles}
+                                                onChange={(event) => {
+                                                    const files = Array.from(event.currentTarget.files || []);
+                                                    const file = files[0] || null;
+                                                    setSelectedFiles(allowMultipleFiles ? files : files.slice(0, 1));
+                                                    setSelectedFile(file);
+                                                    setFileName(allowMultipleFiles && files.length > 1 ? files.map((item) => item.name).join(', ') : file?.name || '');
+                                                    markDirty();
+                                                }}
+                                            />
+                                            <span>{fileName ? `${text.selectedFile}: ${fileName}` : text.upload}</span>
+                                            <strong>{text.chooseFile}</strong>
+                                        </label>
+                                    )}
+                                    {showParamInput && (
+                                        skillFields.length > 0 ? (
+                                            <div className="apps-tool-fields">
+                                                {skillFields.map((field) => {
+                                                    const value = fieldValues[field.name] ?? field.default ?? (field.type === 'boolean' ? false : '');
+                                                    return (
+                                                        <div className="apps-form-row" key={field.name}>
+                                                            <label>{field.label || field.name}</label>
+                                                            {field.type === 'boolean' ? (
+                                                                <label className="apps-checkbox-field">
+                                                                    <input type="checkbox" checked={!!value} onChange={(event) => {
+                                                                        setFieldValues((current) => ({ ...current, [field.name]: event.target.checked }));
+                                                                        markDirty();
+                                                                    }} />
+                                                                    <span>{isZh(lang) ? '\u542f\u7528' : 'Enabled'}</span>
+                                                                </label>
+                                                            ) : field.type === 'select' ? (
+                                                                <select aria-label={field.label || field.name} value={String(value)} onChange={(event) => {
+                                                                    setFieldValues((current) => ({ ...current, [field.name]: event.target.value }));
+                                                                    markDirty();
+                                                                }}>
+                                                                    {(field.options || []).map((option) => <option key={option} value={option}>{option}</option>)}
+                                                                </select>
+                                                            ) : (
+                                                                <input aria-label={field.label || field.name} value={String(value)} required={field.required} onChange={(event) => {
+                                                                    setFieldValues((current) => ({ ...current, [field.name]: event.target.value }));
                                                                     markDirty();
                                                                 }} />
-                                                                <span>{isZh(lang) ? '\u542f\u7528' : 'Enabled'}</span>
-                                                            </label>
-                                                        ) : field.type === 'select' ? (
-                                                            <select aria-label={field.label || field.name} value={String(value)} onChange={(event) => {
-                                                                setFieldValues((current) => ({ ...current, [field.name]: event.target.value }));
-                                                                markDirty();
-                                                            }}>
-                                                                {(field.options || []).map((option) => <option key={option} value={option}>{option}</option>)}
-                                                            </select>
-                                                        ) : (
-                                                            <input aria-label={field.label || field.name} value={String(value)} required={field.required} onChange={(event) => {
-                                                                setFieldValues((current) => ({ ...current, [field.name]: event.target.value }));
-                                                                markDirty();
-                                                            }} />
-                                                        )}
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    ) : (
-                                        <div className="apps-form-row">
-                                            <label>{isZh(lang) ? '\u53c2\u6570' : 'Parameters'}</label>
-                                            <textarea value={toolParams} onChange={(event) => {
-                                                setToolParams(event.target.value);
-                                                markDirty();
-                                            }} placeholder={isZh(lang) ? '\u8f93\u5165\u5904\u7406\u8981\u6c42\u6216\u8868\u5355\u53c2\u6570\u3002' : 'Enter processing instructions or form parameters.'} />
-                                        </div>
-                                    )
-                                )}
-                                <div className="apps-form-row">
-                                    <label>{text.output}</label>
-                                    <select value={outputMode} onChange={(event) => {
-                                        setOutputMode(event.target.value);
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        ) : (
+                                            <div className="apps-form-row">
+                                                <label>{isZh(lang) ? '\u53c2\u6570' : 'Parameters'}</label>
+                                                <textarea value={toolParams} onChange={(event) => {
+                                                    setToolParams(event.target.value);
+                                                    markDirty();
+                                                }} placeholder={isZh(lang) ? '\u8f93\u5165\u5904\u7406\u8981\u6c42\u6216\u8868\u5355\u53c2\u6570\u3002' : 'Enter processing instructions or form parameters.'} />
+                                            </div>
+                                        )
+                                    )}
+                                    <div className="apps-form-row">
+                                        <label>{text.output}</label>
+                                        <select value={outputMode} onChange={(event) => {
+                                            setOutputMode(event.target.value);
+                                            markDirty();
+                                        }}>
+                                            {outputModes.map((mode) => <option key={mode} value={mode}>{outputModeLabel(mode)}</option>)}
+                                        </select>
+                                    </div>
+                                </>
+                            ) : isAutomation ? (
+                                <>
+                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u8fd0\u884c\u6a21\u5f0f' : 'Mode'}</label><select defaultValue="manual"><option value="manual">{isZh(lang) ? '\u624b\u52a8\u6267\u884c' : 'Manual run'}</option><option value="schedule">{isZh(lang) ? '\u5b9a\u65f6\u6267\u884c' : 'Scheduled'}</option><option value="monitor">{isZh(lang) ? '\u6301\u7eed\u76d1\u63a7' : 'Continuous monitor'}</option></select></div>
+                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u72b6\u6001' : 'Status'}</label><input readOnly value={runState === 'done' ? (isZh(lang) ? '\u8fd0\u884c\u4e2d' : 'Running') : text.readyOutput} /></div>
+                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u5907\u6ce8' : 'Note'}</label><textarea defaultValue={isZh(lang) ? '\u7531 Agent \u7ef4\u62a4\u957f\u8fd0\u884c\u4efb\u52a1\uff0c\u5e76\u5728\u5e94\u7528 tab \u4e2d\u56de\u62a5\u7ed3\u679c\u3002' : 'Agent maintains the long-running task and reports results in the app tab.'} /></div>
+                                </>
+                            ) : (
+                                <>
+                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u4e1a\u52a1\u5bf9\u8c61' : 'Entity'}</label><input value={businessEntity} onChange={(event) => {
+                                        setBusinessEntity(event.target.value);
                                         markDirty();
-                                    }}>
-                                        {outputModes.map((mode) => <option key={mode} value={mode}>{outputModeLabel(mode)}</option>)}
-                                    </select>
-                                </div>
-                            </>
-                        ) : isAutomation ? (
-                            <>
-                                <div className="apps-form-row"><label>{isZh(lang) ? '\u8fd0\u884c\u6a21\u5f0f' : 'Mode'}</label><select defaultValue="manual"><option value="manual">{isZh(lang) ? '\u624b\u52a8\u6267\u884c' : 'Manual run'}</option><option value="schedule">{isZh(lang) ? '\u5b9a\u65f6\u6267\u884c' : 'Scheduled'}</option><option value="monitor">{isZh(lang) ? '\u6301\u7eed\u76d1\u63a7' : 'Continuous monitor'}</option></select></div>
-                                <div className="apps-form-row"><label>{isZh(lang) ? '\u72b6\u6001' : 'Status'}</label><input readOnly value={runState === 'done' ? (isZh(lang) ? '\u8fd0\u884c\u4e2d' : 'Running') : text.readyOutput} /></div>
-                                <div className="apps-form-row"><label>{isZh(lang) ? '\u5907\u6ce8' : 'Note'}</label><textarea defaultValue={isZh(lang) ? '\u7531 Agent \u7ef4\u62a4\u957f\u8fd0\u884c\u4efb\u52a1\uff0c\u5e76\u5728\u5e94\u7528 tab \u4e2d\u56de\u62a5\u7ed3\u679c\u3002' : 'Agent maintains the long-running task and reports results in the app tab.'} /></div>
-                            </>
-                        ) : (
-                            <>
-                                <div className="apps-form-row"><label>{isZh(lang) ? '\u4e1a\u52a1\u5bf9\u8c61' : 'Entity'}</label><input value={businessEntity} onChange={(event) => {
-                                    setBusinessEntity(event.target.value);
-                                    markDirty();
-                                }} /></div>
-                                <div className="apps-form-row"><label>{isZh(lang) ? '\u64cd\u4f5c' : 'Action'}</label><select value={businessAction} onChange={(event) => {
-                                    setBusinessAction(event.target.value);
-                                    markDirty();
-                                }}><option value="create">{isZh(lang) ? '\u65b0\u5efa\u8bb0\u5f55' : 'Create record'}</option><option value="query">{isZh(lang) ? '\u67e5\u8be2\u6570\u636e' : 'Query data'}</option><option value="report">{isZh(lang) ? '\u751f\u6210\u62a5\u8868' : 'Generate report'}</option></select></div>
-                                <div className="apps-form-row"><label>{isZh(lang) ? '\u5907\u6ce8' : 'Note'}</label><textarea value={businessNote} onChange={(event) => {
-                                    setBusinessNote(event.target.value);
-                                    markDirty();
-                                }} placeholder={isZh(lang) ? '\u8f93\u5165\u4e1a\u52a1\u610f\u56fe\uff0cAgent \u751f\u6210\u52a8\u6001\u754c\u9762\u5e76\u901a\u8fc7 DataSrv \u6267\u884c\u3002' : 'Enter business intent. Agent renders a dynamic UI and executes through DataSrv.'} /></div>
-                                <div className="apps-capability-strip">
-                                    <span>{app.manifest?.datasrv?.domain || 'DataSrv'}</span>
-                                    <span>{app.manifest?.datasrv?.preferredAction || businessAction}</span>
-                                    <span>{app.manifest?.datasrv?.preferredView || app.manifest?.datasrv?.preferredReport || app.manifest?.datasrv?.preferredDashboard || '-'}</span>
-                                </div>
-                            </>
-                        )}
-                        <div className="apps-result-panel" data-state={runState}>
-                            <span>{runState === 'done' ? resultText : runState === 'running' ? skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID) : runState === 'error' ? validationMessage : runState === 'cancelled' ? text.skillRunCancelled : text.readyOutput}</span>
-                        </div>
-                        {isTool && <SkillRunEvidence status={skillRunStatus} runState={runState} text={text} />}
+                                    }} /></div>
+                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u64cd\u4f5c' : 'Action'}</label><select value={businessAction} onChange={(event) => {
+                                        setBusinessAction(event.target.value);
+                                        markDirty();
+                                    }}><option value="create">{isZh(lang) ? '\u65b0\u5efa\u8bb0\u5f55' : 'Create record'}</option><option value="query">{isZh(lang) ? '\u67e5\u8be2\u6570\u636e' : 'Query data'}</option><option value="report">{isZh(lang) ? '\u751f\u6210\u62a5\u8868' : 'Generate report'}</option></select></div>
+                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u5907\u6ce8' : 'Note'}</label><textarea value={businessNote} onChange={(event) => {
+                                        setBusinessNote(event.target.value);
+                                        markDirty();
+                                    }} placeholder={isZh(lang) ? '\u8f93\u5165\u4e1a\u52a1\u610f\u56fe\uff0cAgent \u751f\u6210\u52a8\u6001\u754c\u9762\u5e76\u901a\u8fc7 DataSrv \u6267\u884c\u3002' : 'Enter business intent. Agent renders a dynamic UI and executes through DataSrv.'} /></div>
+                                    <div className="apps-capability-strip">
+                                        <span>{app.manifest?.datasrv?.domain || 'DataSrv'}</span>
+                                        <span>{app.manifest?.datasrv?.preferredAction || businessAction}</span>
+                                        <span>{app.manifest?.datasrv?.preferredView || app.manifest?.datasrv?.preferredReport || app.manifest?.datasrv?.preferredDashboard || '-'}</span>
+                                    </div>
+                                </>
+                            )}
+                        </section>
+                        <section className="apps-runtime-section">
+                            <div className="apps-runtime-section__title">{text.runtimeStatus}</div>
+                            <div className="apps-result-panel" data-state={runState}>
+                                <span>{runState === 'done' ? resultText : runState === 'running' ? skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID) : runState === 'error' ? validationMessage : runState === 'cancelled' ? text.skillRunCancelled : text.readyOutput}</span>
+                            </div>
+                            {isTool && <SkillRunEvidence status={skillRunStatus} runState={runState} text={text} />}
+                        </section>
                         <div className="apps-actions">
                             <button className="apps-secondary-button" type="button" onClick={() => {
                                 setFileName('');
@@ -2414,6 +2429,7 @@ const AppPreview = ({ app, lang, onOpen, onUse }: { app?: AppEntry; lang?: strin
                             {runState === 'running' && runID && <button className="apps-secondary-button" type="button" onClick={cancelRun}>{text.cancelRun}</button>}
                             <button className="apps-primary-button" type="button" disabled={runState === 'running'} onClick={runApp}>{text.run}</button>
                         </div>
+                        <AppRunOutput status={skillRunStatus} runState={runState} resultText={resultText} isTool={isTool} text={text} />
                         {isTool && (
                             <section className="apps-run-history">
                                 <div className="apps-preview-title-row">
@@ -2461,10 +2477,7 @@ const AppPreview = ({ app, lang, onOpen, onUse }: { app?: AppEntry; lang?: strin
 
 const SkillRunEvidence = ({ status, runState, text }: { status: SkillRunStatusView | null; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; text: typeof labels.zh }) => {
     const steps = (status?.steps || []).slice(0, 6);
-    const artifactPath = String(status?.summary?.artifact_path || '').trim();
-    const artifactStatus = String(status?.summary?.artifact_status || '').trim();
-    const artifactLabel = artifactStatusLabel(status, text);
-    if (runState === 'idle' && steps.length === 0 && !artifactLabel) {
+    if (runState === 'idle' && steps.length === 0) {
         return <div className="apps-run-evidence apps-run-evidence--empty">{text.noRunEvidence}</div>;
     }
     return (
@@ -2488,46 +2501,36 @@ const SkillRunEvidence = ({ status, runState, text }: { status: SkillRunStatusVi
             ) : (
                 <div className="apps-run-evidence__muted">{runState === 'running' ? text.skillRunRunning : text.noRunEvidence}</div>
             )}
-            {(artifactLabel || artifactPath) && (
-                <div className="apps-run-artifact">
-                    <span>{text.runArtifacts}</span>
-                    <strong>{artifactLabel || artifactStatus || text.artifactPending}</strong>
-                    {artifactPath && <code>{artifactPath}</code>}
-                    {artifactStatus && !artifactPath && <code>{artifactStatus}</code>}
-                    {artifactPath && (
-                        <div className="apps-run-artifact__actions">
-                            <button className="apps-link-button" type="button" onClick={() => void OpenFileOrShowInFolder(artifactPath)}>{text.openArtifact}</button>
-                            <button className="apps-link-button" type="button" onClick={() => void ShowItemInFolder(artifactPath)}>{text.revealArtifact}</button>
-                        </div>
-                    )}
-                </div>
-            )}
         </section>
     );
 };
 
-const ManifestSummary = ({ app, lang }: { app: AppEntry; lang?: string }) => {
-    const manifest = app.manifest;
-    if (!manifest) return null;
-    const zh = isZh(lang);
-    const rows = [
-        [zh ? '\u79c1\u6709\u6807\u8bc6' : 'Private marker', manifest.privateMarker],
-        [zh ? '\u5b89\u88c5\u5355\u5143' : 'Install unit', manifest.installUnit],
-        [zh ? '\u7248\u672c' : 'Version', `v${normalizeAppVersion(app.version)}`],
-        [zh ? '\u542f\u52a8\u6a21\u5f0f' : 'Launch mode', manifest.launchMode],
-        [zh ? '\u7ed1\u5b9a\u80fd\u529b' : 'Binding', manifest.datasrv?.preferredAction || manifest.skill?.id || manifest.entryKind],
-    ];
+const AppRunOutput = ({ status, runState, resultText, isTool, text }: { status: SkillRunStatusView | null; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; resultText: string; isTool: boolean; text: typeof labels.zh }) => {
+    const artifactPath = String(status?.summary?.artifact_path || '').trim();
+    const artifactStatus = String(status?.summary?.artifact_status || '').trim();
+    const artifactLabel = artifactStatusLabel(status, text);
+    const showTextOutput = runState === 'done' && (!isTool || !artifactPath);
     return (
-        <section className="apps-definition">
-            <div className="apps-definition__title">{zh ? '\u5e94\u7528\u5b9a\u4e49' : 'App definition'}</div>
-            <div className="apps-definition__grid">
-                {rows.map(([label, value]) => (
-                    <div className="apps-definition__item" key={label}>
-                        <span>{label}</span>
-                        <strong>{value}</strong>
+        <section className="apps-runtime-section apps-runtime-output">
+            <div className="apps-runtime-section__title">{text.runtimeOutput}</div>
+            {artifactPath ? (
+                <div className="apps-run-artifact">
+                    <span>{text.runArtifacts}</span>
+                    <strong>{artifactLabel || artifactStatus || text.artifactReady}</strong>
+                    <code>{artifactPath}</code>
+                    <div className="apps-run-artifact__actions">
+                        <button className="apps-link-button" type="button" onClick={() => void OpenFileOrShowInFolder(artifactPath)}>{text.openArtifact}</button>
+                        <button className="apps-link-button" type="button" onClick={() => void ShowItemInFolder(artifactPath)}>{text.revealArtifact}</button>
                     </div>
-                ))}
-            </div>
+                </div>
+            ) : showTextOutput ? (
+                <div className="apps-output-text">
+                    <span>{text.outputText}</span>
+                    <pre>{resultText}</pre>
+                </div>
+            ) : (
+                <div className="apps-output-empty">{artifactStatus || artifactLabel || text.noOutputYet}</div>
+            )}
         </section>
     );
 };

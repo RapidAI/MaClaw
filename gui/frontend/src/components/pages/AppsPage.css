@@ -516,11 +516,28 @@
 
 .apps-preview__mock {
     display: grid;
-    gap: 10px;
+    gap: 12px;
     padding: 12px;
     border: 1px solid var(--theme-border);
     border-radius: var(--radius-lg);
     background: var(--theme-surface);
+}
+
+.apps-runtime-section {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+}
+
+.apps-runtime-section + .apps-runtime-section {
+    padding-top: 12px;
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.apps-runtime-section__title {
+    color: var(--theme-text-primary);
+    font-size: 0.78rem;
+    font-weight: 800;
 }
 
 .apps-form-row {
@@ -791,10 +808,12 @@
 .apps-run-artifact {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 4px 8px;
+    gap: 5px 8px;
     align-items: center;
-    padding-top: 8px;
-    border-top: 1px solid var(--theme-border-subtle);
+    padding: 9px 10px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface-muted);
 }
 
 .apps-run-artifact span {
@@ -829,6 +848,46 @@
 .apps-run-artifact__actions {
     grid-column: 3;
     grid-row: 2;
+}
+
+.apps-output-text {
+    display: grid;
+    gap: 7px;
+    padding: 9px 10px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface-muted);
+}
+
+.apps-output-text span {
+    color: var(--theme-text-secondary);
+    font-size: 0.72rem;
+    font-weight: 800;
+}
+
+.apps-output-text pre {
+    max-height: 180px;
+    margin: 0;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--theme-text-primary);
+    font: inherit;
+    font-size: 0.8rem;
+    line-height: 1.45;
+}
+
+.apps-output-empty {
+    min-height: 42px;
+    display: flex;
+    align-items: center;
+    padding: 9px 10px;
+    border: 1px dashed var(--theme-border);
+    border-radius: var(--radius-md);
+    color: var(--theme-text-secondary);
+    background: var(--theme-surface-muted);
+    font-size: 0.78rem;
+    font-weight: 700;
 }
 
 .apps-capability-strip {
