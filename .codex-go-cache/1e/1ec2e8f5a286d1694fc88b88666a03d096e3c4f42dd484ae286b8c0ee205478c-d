@@ -1,6 +1,0 @@
-./attribution.go
-./composite_provider.go
-./event_sink.go
-./lifecycle.go
-./provider.go
-./retriever.go

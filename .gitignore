@@ -184,3 +184,4 @@ build/maclaw-gui-compat-test.exe
 
 # Temp working files
 .tmp/
+.codex-go-cache/

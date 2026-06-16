@@ -1,7 +1,0 @@
-./access_control.go
-./auth_sync.go
-./card_crypto.go
-./maclaw_builtin.go
-./maclaw_init.go
-./registry.go
-./service.go

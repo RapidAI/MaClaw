@@ -1,6 +1,0 @@
-./callback.go
-./codegen.go
-./codegen_status_kind.go
-./oauth.go
-./token.go
-./usage.go

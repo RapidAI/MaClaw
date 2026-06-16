@@ -1,6 +1,0 @@
-./fdct.go
-./huffman.go
-./idct.go
-./reader.go
-./scan.go
-./writer.go
