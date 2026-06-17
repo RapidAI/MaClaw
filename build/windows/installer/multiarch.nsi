@@ -153,13 +153,140 @@ Function LaunchAsCurrentUser
 FunctionEnd
 
 Function AddInstallDirToMachinePath
-    nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$$i=''$INSTDIR''; $$p=[Environment]::GetEnvironmentVariable(''Path'',''Machine''); $$parts=@($$p -split '';'' | Where-Object { $$_ }); if(-not ($$parts | Where-Object { $$_.TrimEnd([char]92) -ieq $$i.TrimEnd([char]92) })) { [Environment]::SetEnvironmentVariable(''Path'', (($$parts + $$i) -join '';''), ''Machine'') }"'
+    # Read current system PATH, append $INSTDIR if not already present.
+    # Uses semicolon-delimited entry matching (case-insensitive) to avoid
+    # substring false-positives (e.g. "TigerClaw" vs "TigerClawOld").
+    ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
+    # Pre-compute normalized INSTDIR (without trailing backslash)
+    Push $INSTDIR
+    Call TrimBackslash
+    Pop $7
+    StrCmp $0 "" _AddPath_empty
+    # Iterate PATH entries separated by ';', compare case-insensitively
+    StrCpy $1 $0
+    _AddPath_check_loop:
+        # Find next ';'
+        StrCpy $3 0
+        StrLen $4 $1
+        _AddPath_find_semi:
+            IntCmp $3 $4 _AddPath_found_end _AddPath_found_end
+            StrCpy $5 $1 1 $3
+            StrCmp $5 ";" _AddPath_found_semi
+            IntOp $3 $3 + 1
+            Goto _AddPath_find_semi
+        _AddPath_found_semi:
+            StrCpy $2 $1 $3       ; $2 = current entry
+            IntOp $3 $3 + 1
+            StrCpy $1 $1 "" $3    ; $1 = remainder after ';'
+            Goto _AddPath_compare
+        _AddPath_found_end:
+            StrCpy $2 $1          ; $2 = last entry (no trailing ;)
+            StrCpy $1 ""          ; no remainder
+        _AddPath_compare:
+        # Skip empty entries (from consecutive semicolons)
+        StrCmp $2 "" _AddPath_next_entry
+        # Case-insensitive compare (StrCmp is case-insensitive in NSIS)
+        Push $2
+        Call TrimBackslash
+        Pop $6
+        StrCmp $6 $7 _AddPath_already_exists _AddPath_next_entry
+        _AddPath_next_entry:
+        StrCmp $1 "" _AddPath_not_found
+        Goto _AddPath_check_loop
+    _AddPath_not_found:
+    # Not found — append
+    WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$0;$INSTDIR"
+    Goto _AddPath_done
+    _AddPath_empty:
+    WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$INSTDIR"
+    Goto _AddPath_done
+    _AddPath_already_exists:
+    _AddPath_done:
     SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 FunctionEnd
 
+; TrimBackslash — remove trailing '\' from string on stack
+Function TrimBackslash
+    Exch $R0
+    Push $R1
+    StrLen $R1 $R0
+    IntCmp $R1 0 _TrimBS_done _TrimBS_done
+    IntOp $R1 $R1 - 1
+    StrCpy $R1 $R0 1 $R1
+    StrCmp $R1 "\" 0 _TrimBS_done
+        StrLen $R1 $R0
+        IntOp $R1 $R1 - 1
+        StrCpy $R0 $R0 $R1
+    _TrimBS_done:
+    Pop $R1
+    Exch $R0
+FunctionEnd
+
 Function un.RemoveInstallDirFromMachinePath
-    nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$$i=''$INSTDIR''; $$p=[Environment]::GetEnvironmentVariable(''Path'',''Machine''); $$parts=@($$p -split '';'' | Where-Object { $$_ -and ($$_.TrimEnd([char]92) -ine $$i.TrimEnd([char]92)) }); [Environment]::SetEnvironmentVariable(''Path'', ($$parts -join '';''), ''Machine'')"'
+    # Read current system PATH, rebuild without $INSTDIR entry.
+    # Iterates entries separated by ';', compares case-insensitively with trailing '\' normalization.
+    ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
+    StrCmp $0 "" _RemPath_done
+    # Normalize $INSTDIR for comparison
+    Push $INSTDIR
+    Call un.TrimBackslash
+    Pop $7              ; $7 = normalized INSTDIR
+    StrCpy $1 $0       ; $1 = remaining input
+    StrCpy $8 ""       ; $8 = rebuilt PATH (output)
+    _RemPath_loop:
+        StrCmp $1 "" _RemPath_write
+        # Find next ';'
+        StrCpy $3 0
+        StrLen $4 $1
+        _RemPath_find_semi:
+            IntCmp $3 $4 _RemPath_last_entry _RemPath_last_entry
+            StrCpy $5 $1 1 $3
+            StrCmp $5 ";" _RemPath_got_semi
+            IntOp $3 $3 + 1
+            Goto _RemPath_find_semi
+        _RemPath_got_semi:
+            StrCpy $2 $1 $3       ; $2 = current entry
+            IntOp $3 $3 + 1
+            StrCpy $1 $1 "" $3    ; $1 = remainder
+            Goto _RemPath_test
+        _RemPath_last_entry:
+            StrCpy $2 $1
+            StrCpy $1 ""
+        _RemPath_test:
+        # Skip empty entries (from consecutive semicolons)
+        StrCmp $2 "" _RemPath_loop
+        # Compare entry (trimmed) against normalized INSTDIR
+        Push $2
+        Call un.TrimBackslash
+        Pop $6
+        StrCmp $6 $7 _RemPath_loop  ; match → skip this entry
+        # No match → keep entry
+        StrCmp $8 "" 0 +3
+            StrCpy $8 $2
+            Goto _RemPath_loop
+        StrCpy $8 "$8;$2"
+        Goto _RemPath_loop
+    _RemPath_write:
+    WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$8"
+    _RemPath_done:
     SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+FunctionEnd
+
+; un.TrimBackslash — remove trailing '\' from string on stack (uninstaller copy)
+Function un.TrimBackslash
+    Exch $R0
+    Push $R1
+    StrLen $R1 $R0
+    IntCmp $R1 0 _unTrimBS_done _unTrimBS_done
+    IntOp $R1 $R1 - 1
+    StrCpy $R1 $R0 1 $R1
+    StrCmp $R1 "\" 0 _unTrimBS_done
+        StrLen $R1 $R0
+        IntOp $R1 $R1 - 1
+        StrCpy $R0 $R0 $R1
+    _unTrimBS_done:
+    Pop $R1
+    Exch $R0
 FunctionEnd
 
 Function .onInit

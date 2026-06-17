@@ -16,7 +16,9 @@ if (typeof I18N_EN !== 'undefined') {
   let cmInitInFlight = null;
   let cmOrdersArchived = false;
 
-  function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  var CONFIRMABLE_STATUSES = ['pending', 'personal_created', 'personal_opened'];
+
+  function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
   function adminToken() {
     return (typeof window.token === 'function' ? window.token() : '') || localStorage.getItem('maclawHubCenterAdminToken') || sessionStorage.getItem('maclawHubCenterAdminToken') || '';
@@ -42,7 +44,7 @@ if (typeof I18N_EN !== 'undefined') {
   // Sub-tab switching
   // ---------------------------------------------------------------------------
 
-  function switchComputeMarketSubTab(tab) {
+  function switchComputeMarketSubTab(tab, preloadedOrders) {
     cmCurrentSubTab = tab;
     ['cards', 'orders', 'stats', 'payment'].forEach(function (t) {
       var view = document.getElementById('cmSubView' + t.charAt(0).toUpperCase() + t.slice(1));
@@ -50,7 +52,10 @@ if (typeof I18N_EN !== 'undefined') {
       if (view) view.classList.toggle('hidden-view', t !== tab);
       if (btn) { btn.className = t === tab ? 'btn-secondary' : 'btn-ghost'; btn.setAttribute('aria-pressed', t === tab ? 'true' : 'false'); }
     });
-    if (tab === 'orders') loadComputeOrders();
+    if (tab === 'orders') {
+      if (preloadedOrders) { renderComputeOrders(preloadedOrders); }
+      else { loadComputeOrders(); }
+    }
     if (tab === 'payment' && window.loadCMPaymentConfig) loadCMPaymentConfig();
   }
 
@@ -273,15 +278,29 @@ if (typeof I18N_EN !== 'undefined') {
     const container = document.getElementById('cmOrdersList');
     if (!container) return;
     updateComputeOrdersArchiveUI();
+    // Update pending badge only when rendering the active list (not archived)
+    if (!cmOrdersArchived) {
+      var pendingCount = (orders || []).filter(function (o) {
+        return CONFIRMABLE_STATUSES.indexOf(o.status) >= 0;
+      }).length;
+      updatePendingBadge(pendingCount);
+    }
     if (!orders.length) { container.innerHTML = '<div class="hint">' + tr('computeMarketNoOrders') + '</div>'; return; }
     container.innerHTML = orders.map(function (o) {
-      var statusClass = o.status === 'activated' ? 'ok' : (o.status === 'pending' || o.status === 'personal_created' ? 'warn' : '');
-      var confirmBtn = (!cmOrdersArchived && (o.status === 'pending' || o.status === 'personal_created' || o.status === 'personal_opened')) ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + esc(o.order_no) + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
+      var statusClass = o.status === 'activated' ? 'ok' : (CONFIRMABLE_STATUSES.indexOf(o.status) >= 0 ? 'warn' : '');
+      var confirmBtn = (!cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + esc(o.order_no) + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
       var archiveBtn = !cmOrdersArchived ? '<button class="btn-ghost compact-btn" onclick="archiveComputeOrder(\'' + esc(o.order_no) + '\')">' + tr('computeMarketArchiveOrder') + '</button>' : '';
       var agent = o.agent_name ? ' · ' + tr('computeMarketCardAgent') + ': ' + esc(o.agent_name) : '';
       var archivedMeta = cmOrdersArchived && o.archived_at ? ' · ' + tr('computeMarketArchivedAt') + ': ' + esc(new Date(o.archived_at).toLocaleString()) : '';
       return '<div class="data-row"><div class="data-row-main"><strong>' + esc(o.order_no) + '</strong> <span class="badge ' + statusClass + '">' + esc(o.status) + '</span><span class="data-row-meta">' + esc(o.email || '') + ' · ¥' + (o.amount || 0) + ' · ' + esc(o.product_label || o.product_id || '') + agent + archivedMeta + '</span></div><div class="data-row-actions">' + confirmBtn + archiveBtn + '</div></div>';
     }).join('');
+  }
+
+  function updatePendingBadge(count) {
+    var badge = document.getElementById('cmOrdersPendingBadge');
+    if (!badge) return;
+    if (count > 0) { badge.textContent = String(count); badge.classList.remove('hidden-view'); }
+    else { badge.classList.add('hidden-view'); }
   }
 
   async function toggleComputeArchivedOrders() {
@@ -292,7 +311,7 @@ if (typeof I18N_EN !== 'undefined') {
   async function confirmComputeOrder(orderNo) {
     if (!confirm(tr('computeMarketConfirmOrderPrompt'))) return;
     try {
-      await api('/api/admin/cardstore/orders/' + orderNo + '/confirm', { method: 'POST' });
+      await api('/api/admin/cardstore/orders/' + encodeURIComponent(orderNo) + '/confirm', { method: 'POST' });
       loadComputeOrders();
       if (window.showToast) showToast(tr('computeMarketOrderConfirmed'), 'success');
     } catch (e) { if (window.showToast) showToast(e.message, 'error'); }
@@ -416,6 +435,18 @@ if (typeof I18N_EN !== 'undefined') {
       var el1 = document.getElementById('cmProviderCount'); if (el1) el1.textContent = String((pd.providers || []).length);
       var el2 = document.getElementById('cmGroupCount'); if (el2) el2.textContent = String((gd.service_groups || []).length);
       var el3 = document.getElementById('cmAuthCount'); if (el3) el3.textContent = String((ad.authorizations || []).length);
+    } catch (e) { /* best-effort */ }
+    // Pre-check for pending orders and auto-switch to Orders tab if any exist
+    try {
+      const od = await api('/api/admin/cardstore/orders?limit=50');
+      var allOrders = od.orders || [];
+      var pendingCount = allOrders.filter(function (o) {
+        return CONFIRMABLE_STATUSES.indexOf(o.status) >= 0;
+      }).length;
+      updatePendingBadge(pendingCount);
+      if (pendingCount > 0) {
+        switchComputeMarketSubTab('orders', allOrders);
+      }
     } catch (e) { /* best-effort */ }
     })();
     try { return await cmInitInFlight; }

@@ -287,6 +287,8 @@ func TestAdminCreateLLMAuthorizationKeepsPreviousGrantWhenCreateFails(t *testing
 		}},
 	}
 	checker := llmservice.NewAuthorizationChecker(repo)
+	// Sending allow_external_providers:false is now a revocation request.
+	// It should expire the old grant and return 200 (revoked), regardless of createErr.
 	body := bytes.NewReader([]byte(`{
 		"hub_id":"hub1",
 		"tenant_id":"tenant1",
@@ -297,14 +299,14 @@ func TestAdminCreateLLMAuthorizationKeepsPreviousGrantWhenCreateFails(t *testing
 
 	adminCreateLLMAuthorization(checker).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d body=%s, want 400", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200 (revocation)", rr.Code, rr.Body.String())
 	}
-	if !repo.auths[0].AllowExternalProviders {
-		t.Fatalf("old external grant was disabled after create failure")
+	if repo.auths[0].AllowExternalProviders {
+		t.Fatalf("old external grant should have AllowExternalProviders=false after revocation")
 	}
-	if repo.auths[0].Status != "active" {
-		t.Fatalf("old external grant status = %q, want active", repo.auths[0].Status)
+	if repo.auths[0].Status != "expired" {
+		t.Fatalf("old external grant status = %q, want expired", repo.auths[0].Status)
 	}
 }
 

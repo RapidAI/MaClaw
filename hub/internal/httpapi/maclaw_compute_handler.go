@@ -53,7 +53,11 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 		if centerSvc != nil {
 			if status, err := centerSvc.Status(r.Context()); err == nil && status != nil {
 				if heartbeatStatus := llmComputeStatusFromCenterAuthorizationPayload(status, tenantID); heartbeatStatus != nil {
-					if currentAccessCtrl != nil {
+					// Only update the access control cache from heartbeat data when
+					// we did NOT already get a fresher result from a direct refresh.
+					// Otherwise the stale heartbeat snapshot would overwrite the
+					// just-fetched authoritative response.
+					if currentAccessCtrl != nil && !refreshedAuthorization {
 						currentAccessCtrl.UpdateFromHeartbeat(tenantID, heartbeatStatus)
 					}
 					if !refreshedAuthorization {
@@ -125,7 +129,16 @@ func llmComputeStatusFromCenterAuthorizationPayload(status *center.RegistrationS
 			return auth
 		}
 	}
-	return &llmservice.TenantAuthorizationStatus{TenantID: tenantID}
+	// Tenant not present in heartbeat payload. The heartbeat only includes
+	// tenants with active authorization, so absence means no authorization.
+	// Return an explicit "no access" status so the cache is updated correctly
+	// after a revocation. This is safe because we only reach here when the
+	// heartbeat llm_compute payload exists (confirming HubCenter connectivity)
+	// but omits this specific tenant.
+	return &llmservice.TenantAuthorizationStatus{
+		TenantID:               tenantID,
+		AllowExternalProviders: false,
+	}
 }
 
 func llmComputeAuthorizationTenantKeys(tenantID string) []string {

@@ -508,6 +508,33 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 			auth.Source == "external_provider_permission" ||
 			auth.ServiceGroupID == llmservice.ExternalComputePermissionServiceGroupID ||
 			(hasAllowExternal && auth.ServiceGroupID == "" && auth.CreditsTotal == 0 && auth.Source == "")
+
+		// Revocation path: allow_external_providers explicitly set to false means
+		// "revoke external compute access". Expire all existing grants for this
+		// hub+tenant and return without creating a new record.
+		isRevocation := hasAllowExternal && !auth.AllowExternalProviders && isExternalComputeGrant
+		if isRevocation {
+			existing, err := checker.ListByHubTenantAliases(r.Context(), auth.HubID, auth.TenantID)
+			if err != nil {
+				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			for _, old := range existing {
+				if !isExternalComputeAccessAuthorization(old) {
+					continue
+				}
+				old.AllowExternalProviders = false
+				old.Status = "expired"
+				old.UpdatedAt = time.Now().UTC()
+				if err := checker.UpdateAuthorization(r.Context(), old); err != nil {
+					writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+			}
+			writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok", "action": "revoked"})
+			return
+		}
+
 		if auth.ServiceGroupID == "" && isExternalComputeGrant {
 			auth.ServiceGroupID = llmservice.ExternalComputePermissionServiceGroupID
 		}
@@ -517,9 +544,10 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 		}
 		if isExternalComputeGrant {
 			auth.Source = "external_provider_permission"
-			if !hasAllowExternal {
-				auth.AllowExternalProviders = true
-			}
+			// External compute grants always allow external providers.
+			// To revoke, the admin should expire or delete the authorization,
+			// not create a record with AllowExternalProviders=false.
+			auth.AllowExternalProviders = true
 			if auth.Status == "" {
 				auth.Status = "active"
 			}
@@ -551,7 +579,7 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 				if old == nil || old.ID == auth.ID {
 					continue
 				}
-				if !old.AllowExternalProviders && old.Source != "external_provider_permission" && old.ServiceGroupID != llmservice.ExternalComputePermissionServiceGroupID {
+				if !isExternalComputeAccessAuthorization(old) {
 					continue
 				}
 				supersededExternal = append(supersededExternal, old)
@@ -584,6 +612,7 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 		for _, old := range supersededExternal {
 			old.AllowExternalProviders = false
 			old.Status = "expired"
+			old.UpdatedAt = time.Now().UTC()
 			if err := checker.UpdateAuthorization(r.Context(), old); err != nil {
 				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return

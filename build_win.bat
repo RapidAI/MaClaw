@@ -107,8 +107,8 @@ taskkill /F /IM maclaw-data-srv.exe 2>nul
 %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "Get-ChildItem $env:TEMP -Filter 'go-build*' -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-2) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
 set "GOOS=windows"
 set "GOARCH=amd64"
-set "CGO_ENABLED=1"
-set "CC=gcc"
+set "CGO_ENABLED=0"
+set "CC="
 "%GOVERSIONINFO_PATH%" -64 -icon "%~dp0build\windows\icon.ico" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_amd64.syso" "%~dp0build\windows\versioninfo.json.tmp"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate amd64 resources.
