@@ -674,12 +674,27 @@ func adminSavePaymentConfig(llmSvc *llmservice.Service, cardStoreSvc *cardstore.
 func effectiveCardStorePaymentConfig(mode string, personal corecardstore.PersonalPaymentConfig, alipay corecardstore.AlipayDirectConfig) (corecardstore.PersonalPaymentConfig, corecardstore.AlipayDirectConfig) {
 	switch mode {
 	case corecardstore.PaymentModeSemiManual:
-		return personal, corecardstore.AlipayDirectConfig{}
-	case corecardstore.PaymentModeAlipay:
+		if cardstoreHasEnabledPaymentChannel(personal) {
+			return personal, corecardstore.AlipayDirectConfig{}
+		}
 		return corecardstore.PersonalPaymentConfig{}, alipay
+	case corecardstore.PaymentModeAlipay:
+		if strings.TrimSpace(alipay.AppID) != "" {
+			return corecardstore.PersonalPaymentConfig{}, alipay
+		}
+		return personal, corecardstore.AlipayDirectConfig{}
 	default:
 		return personal, alipay
 	}
+}
+
+func cardstoreHasEnabledPaymentChannel(cfg corecardstore.PersonalPaymentConfig) bool {
+	for _, ch := range cfg.Channels {
+		if ch.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func writeJSONResp(w http.ResponseWriter, code int, v any) {

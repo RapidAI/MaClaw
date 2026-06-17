@@ -375,6 +375,27 @@ func TestCreateOrderTrimsHubTenantAndEmail(t *testing.T) {
 	}
 }
 
+func TestCreateOrderUsesConfiguredManualChannelWhenPayChannelEmpty(t *testing.T) {
+	cardRepo := &cardTypeTestRepo{byID: map[string]*CardType{
+		"ct1": {ID: "ct1", ServiceGroupID: "group-1", Label: "Plan", Credits: 100, Period: "month", PriceRMB: 10, Template: "enterprise_monthly_blue", Enabled: true},
+	}}
+	orderRepo := &orderTestRepo{}
+	svc := NewService(cardRepo, orderRepo, &authTestRepo{})
+	svc.SetPaymentConfig(corecardstore.PersonalPaymentConfig{
+		Channels: []corecardstore.PersonalPaymentChannel{{
+			ID: "wechat", Label: "WeChat", Enabled: true, ImageURL: "https://pay.example/qr.png",
+		}},
+	}, corecardstore.AlipayDirectConfig{})
+
+	order, err := svc.CreateOrder(context.Background(), "ct1", "owner@example.com", "hub-1", "tenant-a", "")
+	if err != nil {
+		t.Fatalf("CreateOrder: %v", err)
+	}
+	if order.PaymentMode != corecardstore.PaymentModeSemiManual || order.PayChannel != "wechat" || order.PayQRURL == "" {
+		t.Fatalf("payment fields = mode %q channel %q qr %q", order.PaymentMode, order.PayChannel, order.PayQRURL)
+	}
+}
+
 func TestDeleteUnprocessedOrderRemovesOwnedPendingOrder(t *testing.T) {
 	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
 		"HC-PENDING": {
