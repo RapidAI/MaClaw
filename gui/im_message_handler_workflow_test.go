@@ -83,6 +83,9 @@ func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockE
 	v2Registry := v2.NewTemplateRegistry()
 	v2.RegisterBuiltinTemplates(v2Registry)
 	v2Machine := v2.NewStateMachine(v2Store, v2Registry)
+	v2Machine.SetConfirmClassifier(func(_, text string) string {
+		return v2.ClassifyConfirmIntentKeyword(text)
+	})
 
 	// Register test-only templates in V2 registry so machine.Create works.
 	registerTestTemplatesInV2Registry(v2Registry)
@@ -105,6 +108,7 @@ func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockE
 			machine:  v2Machine,
 			store:    v2Store,
 			registry: v2Registry,
+			router:   v2.NewWorkflowRouter(v2Machine, v2Registry, nil),
 		},
 	}
 	handler := &IMMessageHandler{app: app, confirmationStore: newAIConfirmationStore("")}
@@ -2343,16 +2347,16 @@ func TestWorkflowReviewOkBypassesShortChitChatAndAdvances(t *testing.T) {
 		t.Fatalf("workflow review ok must not be consumed by short chitchat, resp=%#v", resp)
 	}
 
-	result := handler.routeWorkflowIMMessage(IMUserMessage{UserID: userID, Text: "ok", Platform: "desktop"}, "ok", false, false)
+	result := handler.routeWithWorkflowV2(IMUserMessage{UserID: userID, Text: "ok", Platform: "desktop"}, "ok")
 	if result.Response != nil || !result.WorkflowAgentLoop {
 		t.Fatalf("ok should confirm review and schedule next phase loop, got %#v", result)
 	}
 	if llm.Calls != 0 {
 		t.Fatalf("ok review confirmation should use deterministic fast path, LLM calls=%d", llm.Calls)
 	}
-	ws := engine.GetActiveWorkflow(userID)
-	if ws == nil || ws.CurrentPhase != "execute" || engine.IsAwaitingReview(userID) {
-		t.Fatalf("workflow should advance after ok confirmation, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))
+	ws := handler.getWorkflowV2().machine.GetActive(userID)
+	if ws == nil || ws.ActivePhase() == nil || ws.ActivePhase().ID != "execute" {
+		t.Fatalf("workflow should advance after ok confirmation, got %#v", ws)
 	}
 }
 

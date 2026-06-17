@@ -2,6 +2,7 @@ package llmservice
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
@@ -93,11 +94,45 @@ func (ac *TenantLLMAccessControl) UpdateFromHeartbeat(tenantID string, status *T
 		return
 	}
 	ac.mu.Lock()
-	ac.cache[tenantID] = &cachedAuthStatus{
+	entry := &cachedAuthStatus{
 		status:    status,
 		fetchedAt: time.Now(),
 	}
+	for _, key := range authorizationCacheTenantKeys(tenantID, status.TenantID) {
+		ac.cache[key] = entry
+	}
 	ac.mu.Unlock()
+}
+
+func authorizationCacheTenantKeys(ids ...string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		add(id)
+		switch {
+		case id == "tenant_default":
+			add("default")
+		case id == "default":
+			add("tenant_default")
+		case strings.HasPrefix(id, "tenant_"):
+			add(strings.TrimPrefix(id, "tenant_"))
+		case id != "":
+			add("tenant_" + id)
+		}
+	}
+	return out
 }
 
 func (ac *TenantLLMAccessControl) getStatus(ctx context.Context, tenantID string) *TenantAuthorizationStatus {

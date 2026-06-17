@@ -64,3 +64,17 @@ func TestQueryAuthorizationRefreshesCredentialsWhenMissing(t *testing.T) {
 		t.Fatalf("status.AllowExternalProviders = %v, want true", status)
 	}
 }
+
+func TestTenantLLMAccessControlCachesAuthorizationTenantAliases(t *testing.T) {
+	ac := NewTenantLLMAccessControl(nil)
+	ac.UpdateFromHeartbeat("tenant_acme", &TenantAuthorizationStatus{
+		HubID:                  "hub1",
+		TenantID:               "tenant_acme",
+		AllowExternalProviders: true,
+	})
+
+	status := ac.GetAuthorizationStatus(context.Background(), "acme")
+	if status == nil || !status.AllowExternalProviders {
+		t.Fatalf("alias status = %#v, want allowed", status)
+	}
+}

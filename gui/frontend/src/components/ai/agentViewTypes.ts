@@ -24,7 +24,7 @@ export interface AgentViewOption {
 export interface AgentViewTableColumn {
     name: string;
     label?: string;
-    type?: "text" | "number" | "select" | "boolean" | "date" | "directory";
+    type?: "text" | "number" | "select" | "boolean" | "date" | "directory" | "file";
     required?: boolean;
     readOnly?: boolean;
     sensitive?: boolean;

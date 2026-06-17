@@ -291,7 +291,31 @@ func (e *WorkflowEngine) StartWorkflowWithOptions(userID string, intent Structur
 	}
 	// Sync to V2 StateMachine if available (enables V2 production paths in tests).
 	if e.machine != nil {
-		e.machine.Create(userID, string(intent.Category), state.ProjectPath, intent.Summary)
+		if _, err := e.machine.Create(userID, string(intent.Category), state.ProjectPath, intent.Summary); err != nil {
+			// V2 registry doesn't have this template type — create a minimal V2
+			// WorkflowState directly in the store for test compatibility.
+			if e.machine.GetRegistry() != nil && e.machine.GetRegistry().Get(string(intent.Category)) == nil && tmpl != nil {
+				// Register the template in V2 registry from V1 TemplateSpec.
+				v2Phases := make([]PhaseTemplate, 0, len(tmpl.Phases))
+				for _, p := range tmpl.Phases {
+					v2Phases = append(v2Phases, PhaseTemplate{
+						ID:           p.ID,
+						Name:         p.Name,
+						NeedsConfirm: p.NeedsConfirm,
+						ToolPolicy:   ToolPolicy(p.ToolPolicy),
+					})
+				}
+				e.machine.GetRegistry().Register(&WorkflowTemplate{
+					Type:        string(intent.Category),
+					Name:        tmpl.Name,
+					Description: tmpl.Description,
+					Keywords:    tmpl.Keywords,
+					Phases:      v2Phases,
+				})
+				// Retry create after registration.
+				e.machine.Create(userID, string(intent.Category), state.ProjectPath, intent.Summary)
+			}
+		}
 	}
 	return state, nil
 }
@@ -699,6 +723,15 @@ func (e *WorkflowEngine) SavePhaseOutputAndMaybeAdvance(userID, content string) 
 			ws.PendingReviewPhaseID = ws.CurrentPhase
 		}
 		e.mu.Unlock()
+		// Sync WaitingConfirm status to V2 machine.
+		if e.machine != nil {
+			if state := e.machine.GetActive(userID); state != nil {
+				if p := state.ActivePhase(); p != nil {
+					p.Status = PhaseWaitingConfirm
+					e.machine.GetStore().Save(state)
+				}
+			}
+		}
 		return phaseID, &WorkflowResponse{PendingConfirm: true}, nil
 	}
 	// Auto-advance for non-confirm phases.

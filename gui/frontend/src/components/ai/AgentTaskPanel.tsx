@@ -896,7 +896,7 @@ function renderField(
             renderFileControl(value, (next) => setValue(field.name, next), field.readOnly, { ...commonInputStyle, ...readOnlyInputStyle }, field, controlId, `${s.browse}: ${label}`)
         );
     } else {
-        const inputType = field.sensitive || isSensitiveFormat(field.format) ? "password" : field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "datetime" ? "datetime-local" : field.format === "email" ? "email" : field.format === "url" || field.format === "uri" ? "url" : field.type === "file" ? "text" : "text";
+        const inputType = field.sensitive || isSensitiveFormat(field.format) ? "password" : field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "datetime" ? "datetime-local" : field.format === "email" ? "email" : field.format === "url" || field.format === "uri" ? "url" : "text";
         control = (
             <input
                 id={controlId}
