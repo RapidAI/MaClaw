@@ -1945,6 +1945,21 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 }
 
 // emitAIAssistantResponse pushes the final agent loop response to the frontend
+// emitStreamingToken sends a streaming token event to the frontend for a given
+// requestID and sessionKey. Used to push immediate text content into an active
+// streaming round (e.g. form submission echo before the async agent loop starts).
+func (a *App) emitStreamingToken(requestID, sessionKey, text string) {
+	if a == nil || a.ctx == nil || requestID == "" || text == "" {
+		return
+	}
+	payload, err := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: text, SessionKey: sessionKey})
+	if err != nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, "ai-assistant-token", string(payload))
+}
+
+// emitAIAssistantResponse emits the final response for an async agent loop
 // via the "ai-assistant-response" Wails event. This is the async counterpart
 // to the old synchronous return from SendAIAssistantMessage.
 func (a *App) emitAIAssistantResponse(requestID string, resp *IMAgentResponse) (ok bool) {

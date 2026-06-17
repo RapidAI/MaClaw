@@ -661,7 +661,11 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 
 	// Dismiss the AG UI form panel after successful submission.
 	if h.app != nil {
-		h.app.emitAgentViewLifecycle("dismiss", map[string]interface{}{"view_id": "workflow:form:" + phaseID})
+		h.app.emitAgentViewLifecycle("dismiss", map[string]interface{}{
+			"view_id":            "workflow:form:" + phaseID,
+			"workflow_phase":     phaseID,
+			"workflow_user_id":   userID,
+		})
 	}
 
 	// Build echo text summarizing what the user submitted.
@@ -673,6 +677,13 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 	if state != nil {
 		phase := state.ActivePhase()
 		if phase != nil && phase.FormData != nil {
+			// Emit echo as an immediate streaming token so the frontend shows it
+			// while the async agent loop starts. In deferred mode, response.Text
+			// is not rendered by the frontend — only streaming events are.
+			if h.app != nil && h.app.ctx != nil && requestID != "" && echoText != "" {
+				h.app.emitStreamingToken(requestID, userID, echoText+"\n\n")
+			}
+
 			// Form submission is a synchronous Wails binding call — we cannot run
 			// the agent loop inline. Dispatch an async message through the normal
 			// message path so that the workflow routing kicks in (ActionRunPhase),
@@ -685,6 +696,12 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 					log.Printf("[workflow-v2] form auto-continue: dispatching agent loop for user=%s requestID=%s", userID, requestID)
 					if _, err := h.app.continueAIAssistantWorkflowMessage(userID, "继续", requestID); err != nil {
 						log.Printf("[workflow-v2] form auto-continue failed: user=%s err=%v", userID, err)
+						// Emit a final response to resolve the frontend's deferred round.
+						// Without this, the round stays in "requesting" state with spinner forever.
+						h.app.emitAIAssistantResponse(requestID, &IMAgentResponse{
+							Text:       echoText + "\n\n⚠️ 自动执行失败，请发送「继续」手动触发。",
+							SessionKey: userID,
+						})
 					}
 				}()
 			}

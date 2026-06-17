@@ -82,11 +82,11 @@ type newsRepo struct {
 
 const hubInstanceSelectColumns = `id, installation_id, hub_origin, default_signup_scope, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
 	       accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, registration_policy_json, hub_secret_hash,
-	       invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, last_seen_at, created_at, updated_at`
+	       invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, allow_external_providers, last_seen_at, created_at, updated_at`
 
 const hubInstanceSelectColumnsH = `h.id, h.installation_id, h.hub_origin, h.default_signup_scope, h.owner_email, h.name, h.description, h.base_url, h.host, h.port, h.visibility,
 	       h.enrollment_mode, h.corporate_email_domain, h.accept_public_signup, h.status, h.is_disabled, h.disabled_reason,
-	       h.capabilities_json, h.registration_policy_json, h.hub_secret_hash, h.invitation_code_required, h.digital_employee_quota, h.digital_employee_authorization_enabled, h.digital_employee_authorization_expires_at, h.last_seen_at, h.created_at, h.updated_at`
+	       h.capabilities_json, h.registration_policy_json, h.hub_secret_hash, h.invitation_code_required, h.digital_employee_quota, h.digital_employee_authorization_enabled, h.digital_employee_authorization_expires_at, h.allow_external_providers, h.last_seen_at, h.created_at, h.updated_at`
 
 func NewStore(p *Provider) *store.Store {
 	return &store.Store{
@@ -124,6 +124,7 @@ func scanHubInstance(scanner interface{ Scan(dest ...any) error }) (*store.HubIn
 	var acceptPublicSignup int
 	var digitalEmployeeAuthEnabled int
 	var digitalEmployeeAuthExpiresAt sql.NullString
+	var allowExternalProviders int
 	var lastSeen sql.NullString
 	var createdAt string
 	var updatedAt string
@@ -152,6 +153,7 @@ func scanHubInstance(scanner interface{ Scan(dest ...any) error }) (*store.HubIn
 		&item.DigitalEmployeeQuota,
 		&digitalEmployeeAuthEnabled,
 		&digitalEmployeeAuthExpiresAt,
+		&allowExternalProviders,
 		&lastSeen,
 		&createdAt,
 		&updatedAt,
@@ -162,6 +164,7 @@ func scanHubInstance(scanner interface{ Scan(dest ...any) error }) (*store.HubIn
 	item.AcceptPublicSignup = acceptPublicSignup == 1
 	item.InvitationCodeRequired = invitationCodeRequired == 1
 	item.DigitalEmployeeAuthorizationEnabled = digitalEmployeeAuthEnabled == 1
+	item.AllowExternalProviders = allowExternalProviders == 1
 	if digitalEmployeeAuthExpiresAt.Valid && strings.TrimSpace(digitalEmployeeAuthExpiresAt.String) != "" {
 		if ts, err := time.Parse(time.RFC3339, digitalEmployeeAuthExpiresAt.String); err == nil {
 			item.DigitalEmployeeAuthorizationExpiresAt = &ts
@@ -366,8 +369,8 @@ func (r *hubRepo) Create(ctx context.Context, hub *store.HubInstance) error {
 		INSERT INTO hub_instances (
 			id, installation_id, hub_origin, default_signup_scope, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
 			accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, registration_policy_json, hub_secret_hash,
-			invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, last_seen_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, allow_external_providers, last_seen_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		hub.ID,
 		hub.InstallationID,
@@ -393,6 +396,7 @@ func (r *hubRepo) Create(ctx context.Context, hub *store.HubInstance) error {
 		hub.DigitalEmployeeQuota,
 		boolToInt(hub.DigitalEmployeeAuthorizationEnabled),
 		timePtrString(hub.DigitalEmployeeAuthorizationExpiresAt),
+		boolToInt(hub.AllowExternalProviders),
 		timePtrString(hub.LastSeenAt),
 		hub.CreatedAt.Format(time.RFC3339),
 		hub.UpdatedAt.Format(time.RFC3339),

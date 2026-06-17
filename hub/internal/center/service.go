@@ -75,6 +75,7 @@ type RegistrationState struct {
 	LastRegisteredAt              int64                                            `json:"last_registered_at,omitempty"`
 	DigitalEmployeeAuthorization  *corelib.DigitalEmployeeAuthorization            `json:"digital_employee_authorization,omitempty"`
 	DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations,omitempty"`
+	AllowExternalProviders        bool                                             `json:"allow_external_providers"`
 	Authorizations                map[string]json.RawMessage                       `json:"authorizations,omitempty"`
 }
 
@@ -90,6 +91,7 @@ type registrationRecord struct {
 	LastRegisteredAt              int64                                            `json:"last_registered_at,omitempty"`
 	DigitalEmployeeAuthorization  *corelib.DigitalEmployeeAuthorization            `json:"digital_employee_authorization,omitempty"`
 	DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations,omitempty"`
+	AllowExternalProviders        bool                                             `json:"allow_external_providers"`
 	Authorizations                map[string]json.RawMessage                       `json:"authorizations,omitempty"`
 }
 
@@ -305,6 +307,7 @@ func (s *Service) Status(ctx context.Context) (*RegistrationState, error) {
 		LastRegisteredAt:              record.LastRegisteredAt,
 		DigitalEmployeeAuthorization:  registrationDigitalEmployeeAuthorizationForStatus(record),
 		DigitalEmployeeAuthorizations: registrationDigitalEmployeeAuthorizationsForStatus(record),
+		AllowExternalProviders:        record.AllowExternalProviders,
 		Authorizations:                cloneAuthorizationPayloads(record.Authorizations),
 	}, nil
 }
@@ -1638,9 +1641,13 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 			var okResp struct {
 				DigitalEmployeeAuthorization  *corelib.DigitalEmployeeAuthorization            `json:"digital_employee_authorization"`
 				DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations"`
+				AllowExternalProviders        *bool                                            `json:"allow_external_providers"`
 				Authorizations                map[string]json.RawMessage                       `json:"authorizations"`
 			}
 			_ = json.Unmarshal(body, &okResp)
+			if okResp.AllowExternalProviders != nil {
+				record.AllowExternalProviders = *okResp.AllowExternalProviders
+			}
 			if okResp.DigitalEmployeeAuthorization != nil {
 				auth := corelib.NormalizeDigitalEmployeeAuthorization(*okResp.DigitalEmployeeAuthorization, time.Now().UTC())
 				if shouldAcceptAuthorizationUpdate(record.DigitalEmployeeAuthorization, &auth) {
@@ -1652,6 +1659,23 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 			}
 			mergeTenantDigitalEmployeeAuthorizations(&record, okResp.DigitalEmployeeAuthorizations)
 			mergeAuthorizationPayloads(&record, okResp.Authorizations)
+
+			// Diagnostic: log what authorizations were received from HubCenter heartbeat
+			{
+				deAuthReceived := okResp.DigitalEmployeeAuthorization != nil
+				deAuthMapCount := len(okResp.DigitalEmployeeAuthorizations)
+				var authKeys []string
+				for k := range okResp.Authorizations {
+					authKeys = append(authKeys, k)
+				}
+				// Log raw body snippet for debugging sync issues
+				bodySnippet := string(body)
+				if len(bodySnippet) > 800 {
+					bodySnippet = bodySnippet[:800] + "..."
+				}
+				log.Printf("[center] heartbeat OK from %s: de_auth=%v de_auth_map_tenants=%d authorization_keys=%v body_snippet=%s",
+					baseURL, deAuthReceived, deAuthMapCount, authKeys, bodySnippet)
+			}
 			record.Registered = true
 			record.PendingConfirmation = false
 			record.Disabled = false

@@ -1240,6 +1240,7 @@ func PatentApplicationTemplate() *WorkflowTemplate {
 						{Name: "applicant", Label: "申请人（单位/个人）", Type: "text", Required: true, Placeholder: "如：XX科技有限公司"},
 						{Name: "inventors", Label: "发明人", Type: "text", Required: true, Placeholder: "如：张三、李四（逗号分隔）"},
 						{Name: "tech_field", Label: "技术领域", Type: "text", Required: true, Placeholder: "如：人工智能、新能源电池、机械加工"},
+						{Name: "output_dir", Label: "文档输出目录", Type: "directory", Placeholder: "选择文档输出目录（留空则保存到交底书同目录）"},
 					},
 					Variants: []PhaseInputVariant{
 						{

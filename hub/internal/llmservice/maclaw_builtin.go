@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -193,10 +194,17 @@ func (c *MaClawProviderClient) QueryAuthorization(ctx context.Context, tenantID 
 		return nil, fmt.Errorf("authorization query failed (HTTP %d): %s", resp.StatusCode, string(body))
 	}
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read authorization response: %w", err)
+	}
+
 	var result TenantAuthorizationStatus
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("parse authorization response: %w", err)
 	}
+	log.Printf("[maclaw-provider] QueryAuthorization OK: hub=%s tenant=%s allow_external=%v auths=%d",
+		hubID, tenantID, result.AllowExternalProviders, len(result.Authorizations))
 	return &result, nil
 }
 

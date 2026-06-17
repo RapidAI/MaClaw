@@ -481,21 +481,31 @@ RevealArtifact(artifactID string) error
 - App Studio 可以从现有非 App Skill 中选择目标 Skill，保存 `maclaw.app.json`，并上传该 Skill 到 SkillMarket；上传前会要求当前 App 定义版本已有一次成功测试记录，然后自动保存最新 App 定义。
 - App 面板内的成功运行会回写到 Skill 内的 `maclaw.app.json` governance 测试证据；证据只保存 `runId/verifiedAt/definitionHash/artifactPresent/artifactName`，不把本机完整产物路径写入可发布文件。
 - SkillMarket 打包会保留 `maclaw.app.json`，并在 `skill_package_manifest.json` 写入 `product_kind/is_maclaw_app/maclaw_app_count/maclaw_app_entry`、`maclaw_app_definition_sha256`、`maclaw_app_test_evidence`、`artifact_contract_required/output_modes/presentation`、`declared_permissions/declared_required_env/declared_requires_gui`，以及 `maclaw_app_id/name/description/category/icon/input_mode/output_modes` 预览元数据。
-- HubCenter 验包、发布、搜索索引、搜索结果和推荐结果会保留 App Skill 身份和 `maclaw_app_test_evidence`；能力市场搜索卡片、推荐卡片和后台审核队列会展示 App 预览名、分类、图标、输出类型，并可查看输入模式、产物呈现、测试运行、描述文件哈希等 App manifest 预览信息。
+- HubCenter 验包、发布、搜索索引、搜索结果和推荐结果会保留 App Skill 身份和 `maclaw_app_test_evidence`；能力市场搜索卡片、推荐卡片、公开详情弹窗和后台审核队列会展示 App 预览名、分类、图标、输出类型，并可查看输入模式、产物呈现、权限、测试运行、描述文件哈希等 App manifest 预览信息。
+- 公开 SkillMarket 详情页和后台审核队列会从包内 `maclaw.app.json` 生成 `maclaw_app_manifest_preview`，展示净化后的 manifest JSON；会剔除 path/secret/token/password 等敏感键，避免把本地路径或凭据暴露到市场页面。
 - 后台审核队列会额外展示 `permissions/required_env/requires_gui/security_labels`、产物契约和测试证据，审核人员可在批准前确认 App Skill 的运行权限与产物承诺。
 - 后台审核页使用 `/api/v1/admin/skillmarket/review`，可返回 `pending_review/trial` 两类待处理能力，避免公开搜索接口过滤掉待审核 App Skill。
 - 从 SkillMarket 安装 App Skill 后，本地 Skill 目录会保留 `maclaw.app.json`，应用面板可再次发现。
 - 当前运行结果区已能展示 `artifact_path`，并提供打开文件、显示所在目录等基础操作。
-- Skill 运行状态已开始输出统一 UI 结果协议：`artifacts[]` 描述文件产物，`outputs[]/summary.output_blocks[]` 描述可渲染结果块；App 面板优先读取该协议，旧版 `summary.artifact_path` 继续兼容。
-- App 面板产物操作已收口到 `OpenSkillRunArtifact(runID, artifactID)` / `RevealSkillRunArtifact(runID, artifactID)`，前端不再必须依赖裸路径执行打开/定位，后续可平滑替换为 artifact registry、权限校验或远端下载。
+- Skill 运行状态已开始输出统一 UI 结果协议：`artifacts[]` 描述文件产物，`outputs[]/summary.output_blocks[]` 描述可渲染结果块；每个 artifact 会带 `artifact://skill-run/<runID>/<artifactID>` URI，App 面板优先读取该协议，旧版 `summary.artifact_path` 继续兼容。
+- App 面板结果区已同时渲染 `output_blocks` 和 `artifacts`：文本、错误、JSON 摘要等内容块显示在结果区，文件产物独立显示打开/定位/下载操作，避免“有文件就看不到文本摘要”。
+- App 面板产物操作已收口到 `OpenSkillRunArtifact(runID, artifactID)` / `RevealSkillRunArtifact(runID, artifactID)`，前端不再必须依赖裸路径执行打开/定位；本地路径、权限校验和远端缓存都由 artifact registry 承接。
+- 本地 artifact registry 已落地为 `skill_artifacts.db`，记录 `uri/run_id/owner_id/skill/artifact_id/name/path/mime_type/size/remote_url/checksum/download_state/status/presentation`；App 查询运行状态时登记产物，打开/定位时优先从 registry 解析 URI，并校验本地路径仍存在。
+- Artifact registry 已提供 `GetSkillRunArtifact/ListSkillRunArtifacts` 和 owner 版本查询接口；公开返回值只暴露 URI、名称、类型、大小、状态、可用性等 UI 元数据，不把本地 path 作为界面主协议。
+- `SkillRunArtifact` 已扩展 `remote_url/checksum/download_state`，本地产物默认 `downloaded`，远端未下载产物可登记为 `remote` 并保留校验信息。
+- Artifact registry 已提供 `UpdateSkillRunArtifactCache` 和 owner 版本回写接口；`DownloadSkillRunArtifact` / `DownloadSkillRunArtifactForOwner` 会按 `remote_url` 下载到受控缓存目录，限制大小，校验 `sha256`，通过 owner 校验后把记录标记为 `downloaded`。
+- 远端 artifact 下载会拒绝非 HTTP(S)、缺失 host、userinfo、私有/本机/link-local 地址和不安全 redirect；测试环境允许本机 `httptest`，生产环境不允许用 artifact 下载器访问内网资源。
+- App 面板识别 `download_state=remote` 的 URI-only 产物，展示“下载并打开”；打开/定位远端产物时后端也会自动下载并缓存，再用统一 artifact URI 打开。
+- Artifact registry 支持 owner 校验；桌面旧路径保持空 owner 兼容，远端或项目域可使用 `OpenSkillRunArtifactForOwner(ownerID, runID, artifactID)` / `RevealSkillRunArtifactForOwner(...)` 强制按 `owner_id` 访问。
+- App 启动后会后台维护 artifact registry：延迟清理一次，之后每日清理 30 天前记录和本地文件已缺失记录。
 
 仍未完成或仅部分完成：
 
 - 动态 AG UI 渲染器、拖拽布局设计器和完整属性面板仍是后续阶段。
 - `SkillRunResult/OutputBlock/Artifact` 统一结果协议已接入 Skill 运行状态和 App 面板；下一步还需扩展到更多后端执行入口与市场详情页。
-- artifact registry 还未替代所有真实路径透传；当前已先把打开/定位动作收口到 `runID + artifactID`，路径仍作为展示和兼容字段保留。
+- artifact registry 已具备本地持久映射、公开元数据查询、owner 校验、远端下载缓存、缺失文件清理和按更新时间过期清理；后续还需补更细的 project scope 策略，以及让所有非 Skill 产物也接入同一 registry。
 - 上传前已有基础权限声明随包进入 SkillMarket，并已进入后台审核队列；更细的权限升级策略、风险分级文案和二次确认仍需补齐。测试证据已从前端本地成功运行记录推进到 Skill 包内 governance 证据、`skill_package_manifest.json` 摘要、HubCenter 发布元数据、市场搜索/推荐结果和后台审核队列。
-- 市场详情页的完整 App manifest 原文级预览仍需补齐；当前先在市场卡片和后台审核队列提供摘要级预览。
+- 市场详情页已具备 App manifest 摘要级预览和净化后的 JSON 预览；如需审计级完整原文，可后续在管理员详情页加入受权限控制的原包查看。
 
 ## 实施阶段
 

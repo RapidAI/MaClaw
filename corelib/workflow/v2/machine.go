@@ -270,8 +270,53 @@ func (m *StateMachine) SubmitForm(userID string, formData map[string]interface{}
 	}
 
 	phase.FormData = formData
+
+	// Propagate path fields to state.ProjectPath so later phases see it in
+	// their prompt header ("项目路径"). Priority: project_path > output_dir.
+	if pp := formDataString(formData, "project_path"); pp != "" {
+		state.ProjectPath = pp
+	} else if od := formDataString(formData, "output_dir"); od != "" {
+		state.ProjectPath = od
+	}
+
 	state.UpdatedAt = time.Now()
 	return m.store.Save(state)
+}
+
+// formDataString extracts a trimmed string value from form data, or "".
+func formDataString(data map[string]interface{}, key string) string {
+	v, ok := data[key]
+	if !ok || v == nil {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+// resolveOutputDirFromState scans all phases' FormData for an output_dir or
+// project_path field, returning the first non-empty value found.
+// This ensures later phases can find the user's specified output directory
+// even if state.ProjectPath was set to a useless default at creation time.
+func resolveOutputDirFromState(state *WorkflowState) string {
+	if state == nil {
+		return ""
+	}
+	for i := range state.Phases {
+		fd := state.Phases[i].FormData
+		if fd == nil {
+			continue
+		}
+		if pp := formDataString(fd, "project_path"); pp != "" {
+			return pp
+		}
+		if od := formDataString(fd, "output_dir"); od != "" {
+			return od
+		}
+	}
+	return ""
 }
 
 // RecordOutput saves the phase output and transitions to waiting_confirm.

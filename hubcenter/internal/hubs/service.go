@@ -2450,6 +2450,18 @@ func (s *Service) HubDigitalEmployeeAuthorizations(ctx context.Context, hubID st
 	return out, nil
 }
 
+// HubAllowExternalProviders returns whether the hub has been granted permission
+// to add third-party LLM providers. This is stored directly on the hub record
+// (same mechanism as digital employee authorization) and does not depend on the
+// LLM module being initialized.
+func (s *Service) HubAllowExternalProviders(ctx context.Context, hubID string) bool {
+	hub, err := s.hubs.GetByID(ctx, strings.TrimSpace(hubID))
+	if err != nil || hub == nil {
+		return false
+	}
+	return hub.AllowExternalProviders
+}
+
 func (s *Service) UpdateDigitalEmployeeAuthorization(ctx context.Context, hubID string, req DigitalEmployeeAuthorizationUpdate) (*corelib.DigitalEmployeeAuthorization, error) {
 	hubID = strings.TrimSpace(hubID)
 	if strings.TrimSpace(req.TenantID) == "" {

@@ -131,7 +131,13 @@ func BuildTenantAuthorizationStatus(ctx context.Context, checker *AuthorizationC
 		if !active && isExternalComputePermissionRecord(a) && isTimeWindowActive(a, current) {
 			active = true
 		}
-		if active {
+		if active && isExternalProviderGrant(a) {
+			result.AllowExternalProviders = true
+		}
+		if active && !isExternalComputePermissionRecord(a) {
+			// Only include credit-based authorizations in the list.
+			// Pure permission grants (external_provider_permission) are not
+			// credit quotas and should not appear as "充值记录" to the user.
 			result.Authorizations = append(result.Authorizations, TenantAuthorizationSummary{
 				ID:                     a.ID,
 				HubID:                  a.HubID,
@@ -148,9 +154,6 @@ func BuildTenantAuthorizationStatus(ctx context.Context, checker *AuthorizationC
 				Source:                 a.Source,
 				CardOrderID:            a.CardOrderID,
 			})
-		}
-		if active && isExternalProviderGrant(a) {
-			result.AllowExternalProviders = true
 		}
 	}
 	return result, nil

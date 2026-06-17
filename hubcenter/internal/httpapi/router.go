@@ -178,6 +178,9 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 		if auth := auths[""]; auth != nil {
 			resp["digital_employee_authorization"] = auth
 		}
+		// Allow external providers — top-level field, same mechanism as DE auth.
+		// Does NOT depend on LLM module being initialized.
+		resp["allow_external_providers"] = service.HubAllowExternalProviders(r.Context(), hubID)
 		if len(auths) > 0 {
 			tenantAuths := map[string]*corelib.DigitalEmployeeAuthorization{}
 			for tenantID, auth := range auths {

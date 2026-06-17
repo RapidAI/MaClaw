@@ -61,8 +61,9 @@ func TestAdminCreateLLMAuthorizationAllowsExternalComputeWithoutServiceGroup(t *
 	if repo.auths[0].ServiceGroupID != llmservice.ExternalComputePermissionServiceGroupID {
 		t.Fatalf("service_group_id = %q", repo.auths[0].ServiceGroupID)
 	}
-	if repo.auths[0].CreditsTotal <= 0 {
-		t.Fatalf("credits_total = %v, want compatibility default", repo.auths[0].CreditsTotal)
+	// Pure permission grant — no virtual credits needed.
+	if repo.auths[0].CreditsTotal != 0 {
+		t.Fatalf("credits_total = %v, want 0 (pure permission grant)", repo.auths[0].CreditsTotal)
 	}
 	if repo.auths[0].StartsAt.IsZero() || repo.auths[0].ExpiresAt.IsZero() {
 		t.Fatalf("starts/expires should be defaulted: %#v", repo.auths[0])
@@ -346,7 +347,7 @@ func TestAdminCreateLLMAuthorizationUpdatesExistingExternalComputeGrant(t *testi
 		t.Fatalf("auth count = %d, want 1 updated row", len(repo.auths))
 	}
 	got := repo.auths[0]
-	if !got.AllowExternalProviders || got.Status != "active" || got.CreditsRemaining() <= 0 {
+	if !got.AllowExternalProviders || got.Status != "active" {
 		t.Fatalf("updated auth = %#v, want active external compute grant", got)
 	}
 	if !got.CreatedAt.Equal(createdAt) {
@@ -445,7 +446,7 @@ func TestLLMAuthorizationQueryAllowsActiveExternalComputeGrant(t *testing.T) {
 		HubID:                  "hub_active",
 		TenantID:               "tenant_active",
 		ServiceGroupID:         llmservice.ExternalComputePermissionServiceGroupID,
-		CreditsTotal:           1000000000000,
+		CreditsTotal:           0,
 		StartsAt:               now.Add(-time.Hour),
 		ExpiresAt:              now.Add(time.Hour),
 		Status:                 "active",
@@ -479,11 +480,10 @@ func TestLLMAuthorizationQueryAllowsActiveExternalComputeGrant(t *testing.T) {
 	if payload.HubID != "hub_active" || payload.TenantID != "tenant_active" || !payload.AllowExternalProviders {
 		t.Fatalf("authorization = %#v, want active external compute grant", payload)
 	}
-	if len(payload.Authorizations) != 1 {
-		t.Fatalf("authorizations len = %d body=%s", len(payload.Authorizations), resp.Body.String())
-	}
-	if got := payload.Authorizations[0]; got.ID != "external_active" || got.CreditsRemaining <= 0 || !got.Active {
-		t.Fatalf("authorization summary = %+v, want active external_active", got)
+	// Pure permission records (external_provider_permission) should NOT appear
+	// in the authorizations list — they are not credit-based quotas.
+	if len(payload.Authorizations) != 0 {
+		t.Fatalf("authorizations len = %d body=%s, want 0 (permission-only grant)", len(payload.Authorizations), resp.Body.String())
 	}
 }
 
@@ -510,7 +510,7 @@ func TestLLMAuthorizationQueryMatchesTenantIDAlias(t *testing.T) {
 		HubID:                  "hub_alias",
 		TenantID:               "acme",
 		ServiceGroupID:         llmservice.ExternalComputePermissionServiceGroupID,
-		CreditsTotal:           1000000000000,
+		CreditsTotal:           0,
 		StartsAt:               now.Add(-time.Hour),
 		ExpiresAt:              now.Add(time.Hour),
 		Status:                 "active",
@@ -538,8 +538,8 @@ func TestLLMAuthorizationQueryMatchesTenantIDAlias(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode authorization response: %v", err)
 	}
-	if payload.TenantID != "tenant_acme" || !payload.AllowExternalProviders || len(payload.Authorizations) != 1 || payload.Authorizations[0].ID != "external_alias" {
-		t.Fatalf("authorization alias response = %#v, want request tenant with active alias grant", payload)
+	if payload.TenantID != "tenant_acme" || !payload.AllowExternalProviders || len(payload.Authorizations) != 0 {
+		t.Fatalf("authorization alias response = %#v, want request tenant with active alias grant (no credit authorizations)", payload)
 	}
 }
 
@@ -566,7 +566,7 @@ func TestLLMAuthorizationQueryMatchesDefaultTenantStorageAlias(t *testing.T) {
 		HubID:                  "hub_default_alias",
 		TenantID:               "",
 		ServiceGroupID:         llmservice.ExternalComputePermissionServiceGroupID,
-		CreditsTotal:           1000000000000,
+		CreditsTotal:           0,
 		StartsAt:               now.Add(-time.Hour),
 		ExpiresAt:              now.Add(time.Hour),
 		Status:                 "active",
@@ -596,8 +596,8 @@ func TestLLMAuthorizationQueryMatchesDefaultTenantStorageAlias(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode authorization response: %v", err)
 	}
-	if payload.TenantID != "tenant_default" || !payload.AllowExternalProviders || len(payload.Authorizations) != 1 || payload.Authorizations[0].ID != "external_default_alias" {
-		t.Fatalf("default tenant alias response = %#v, want active default alias grant", payload)
+	if payload.TenantID != "tenant_default" || !payload.AllowExternalProviders || len(payload.Authorizations) != 0 {
+		t.Fatalf("default tenant alias response = %#v, want active default alias grant (no credit authorizations)", payload)
 	}
 	if !containsString(payload.LookupTenantIDs, "") {
 		t.Fatalf("lookup_tenant_ids = %#v, want default storage alias", payload.LookupTenantIDs)
@@ -660,8 +660,12 @@ func TestHubHeartbeatIncludesGenericLLMComputeAuthorizationPayload(t *testing.T)
 		t.Fatalf("decode heartbeat response: %v", err)
 	}
 	compute := payload.Authorizations["llm_compute"].Tenants["tenant_acme"]
-	if !compute.AllowExternalProviders || len(compute.Authorizations) != 1 || compute.Authorizations[0].ID != "external_heartbeat" {
-		t.Fatalf("llm compute heartbeat authorization = %#v body=%s", compute, resp.Body.String())
+	if !compute.AllowExternalProviders {
+		t.Fatalf("llm compute heartbeat authorization = %#v body=%s, want allow_external_providers=true", compute, resp.Body.String())
+	}
+	// Pure permission grants don't appear in the authorizations list
+	if len(compute.Authorizations) != 0 {
+		t.Fatalf("llm compute heartbeat authorizations len = %d, want 0 (permission-only)", len(compute.Authorizations))
 	}
 }
 

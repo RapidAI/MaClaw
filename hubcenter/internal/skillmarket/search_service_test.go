@@ -2,6 +2,7 @@ package skillmarket
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -245,6 +246,8 @@ func TestSearch_ReturnsMaclawAppProductMetadata(t *testing.T) {
 		RequiredEnv:                  []string{"INVOICE_API_KEY"},
 		RequiresGUI:                  true,
 		SecurityLabels:               []string{"network", "file-output"},
+	}, Files: map[string]string{
+		"maclaw.app.json": base64.StdEncoding.EncodeToString([]byte(`{"schema":"maclaw.app.v1","privateMarker":"x_maclaw_apps","id":"invoice-review","layout":{"type":"form","localPath":"C:/secret/invoice.pdf"},"actions":[{"id":"run","type":"runSkill","secretToken":"hidden"}],"output":{"modes":["pdf"],"presentation":"preview_or_file"}}`)),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +283,25 @@ func TestSearch_ReturnsMaclawAppProductMetadata(t *testing.T) {
 	}
 	if strings.Join(results[0].Permissions, ",") != "gui,env:INVOICE_API_KEY,tool:browser" || strings.Join(results[0].RequiredEnv, ",") != "INVOICE_API_KEY" || !results[0].RequiresGUI || strings.Join(results[0].SecurityLabels, ",") != "network,file-output" {
 		t.Fatalf("missing review governance fields: %#v", results[0])
+	}
+	preview := results[0].MaclawAppManifestPreview
+	if preview["schema"] != "maclaw.app.v1" || preview["id"] != "invoice-review" {
+		t.Fatalf("missing manifest preview identity: %#v", preview)
+	}
+	layout, _ := preview["layout"].(map[string]any)
+	if layout == nil || layout["type"] != "form" {
+		t.Fatalf("missing sanitized layout preview: %#v", preview)
+	}
+	if _, ok := layout["localPath"]; ok {
+		t.Fatalf("manifest preview leaked path: %#v", preview)
+	}
+	actions, _ := preview["actions"].([]any)
+	if len(actions) != 1 {
+		t.Fatalf("missing actions preview: %#v", preview)
+	}
+	action, _ := actions[0].(map[string]any)
+	if _, ok := action["secretToken"]; ok {
+		t.Fatalf("manifest preview leaked secret: %#v", preview)
 	}
 }
 

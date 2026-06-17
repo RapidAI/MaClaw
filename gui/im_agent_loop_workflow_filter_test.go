@@ -31,14 +31,14 @@ func TestPrepareAgentLoopToolsWorkflowAgentLoopStillAppliesWorkflowFilter(t *tes
 
 	plainSkip := handler.prepareAgentLoopTools(userID, "build a project", &LoopContext{SkipNeedsConfirmGate: true}, agentLoopPhase{})
 	plainNames := toolNameSetForWorkflowFilterTest(plainSkip.Tools)
-	if plainNames["task"] || plainNames["bash"] || !plainNames["read_file"] {
-		t.Fatalf("active workflow should keep phase policy even with plain SkipNeedsConfirmGate, got %#v", plainNames)
+	if plainNames["task"] || !plainNames["read_file"] || !plainNames["bash"] {
+		t.Fatalf("active workflow doc-only phase should allow bash (for document parsing) but block task, got %#v", plainNames)
 	}
 
 	workflowLoop := handler.prepareAgentLoopTools(userID, "build a project", &LoopContext{SkipNeedsConfirmGate: true, WorkflowAgentLoop: true}, agentLoopPhase{})
 	workflowNames := toolNameSetForWorkflowFilterTest(workflowLoop.Tools)
-	if workflowNames["task"] || workflowNames["bash"] || workflowNames["write_file"] || workflowNames["edit_file"] || !workflowNames["read_file"] {
-		t.Fatalf("doc-only workflow phase should expose only planning-safe tools despite SkipNeedsConfirmGate, got %#v", workflowNames)
+	if workflowNames["task"] || workflowNames["write_file"] || workflowNames["edit_file"] || !workflowNames["read_file"] || !workflowNames["bash"] {
+		t.Fatalf("doc-only workflow phase should allow bash but block write_file/edit_file/task, got %#v", workflowNames)
 	}
 	if workflowLoop.WorkflowDecision != workflowToolFilterDecision(workflow.ToolFilterDocOnly) {
 		t.Fatalf("workflow decision = %q, want %q", workflowLoop.WorkflowDecision, workflow.ToolFilterDocOnly)
@@ -726,8 +726,8 @@ func TestPrepareAgentLoopToolsUsesRuntimePolicyOwner(t *testing.T) {
 
 	toolSet = handler.prepareAgentLoopTools(weixinID, "write code", ctx, agentLoopPhase{})
 	names = toolNameSetForWorkflowFilterTest(toolSet.Tools)
-	if names["write_file"] || names["bash"] || !names["read_file"] {
-		t.Fatalf("runtime owner workflow must drive weixin tool list, got %#v", names)
+	if names["write_file"] || !names["bash"] || !names["read_file"] {
+		t.Fatalf("runtime owner workflow must drive weixin tool list (bash allowed for doc parsing), got %#v", names)
 	}
 	if toolSet.WorkflowDecision != workflowToolFilterDecision(workflow.ToolFilterDocOnly) {
 		t.Fatalf("workflow decision = %q, want %q", toolSet.WorkflowDecision, workflow.ToolFilterDocOnly)
@@ -886,8 +886,8 @@ func TestPrepareAgentLoopToolsAwaitingReviewUsesActivePhaseFilter(t *testing.T) 
 
 	toolSet := handler.prepareAgentLoopTools(userID, "continue", &LoopContext{SkipNeedsConfirmGate: true}, agentLoopPhase{})
 	names := toolNameSetForWorkflowFilterTest(toolSet.Tools)
-	if names["task"] || names["browser"] || names["bash"] || !names["read_file"] {
-		t.Fatalf("awaiting-review workflow filter must use planning-safe active phase policy, got %#v", names)
+	if names["task"] || names["browser"] || !names["bash"] || !names["read_file"] {
+		t.Fatalf("awaiting-review workflow filter must allow bash (doc parsing) but block task/browser, got %#v", names)
 	}
 	if toolSet.WorkflowDecision != workflowToolFilterDecision(workflow.ToolFilterDocOnly) {
 		t.Fatalf("workflow decision = %q, want %q", toolSet.WorkflowDecision, workflow.ToolFilterDocOnly)

@@ -325,9 +325,9 @@ func TestRecordFailure_NotCalledOnSkip(t *testing.T) {
 	r := NewAdaptiveRetry(nil)
 
 	for attempt := 0; attempt < 4; attempt++ {
-		decision := r.Decide("llm_request", FailureTransient, attempt)
+		decision := r.Decide("llm_request", FailureNetwork, attempt)
 		if decision.Action == RetryActionRetry {
-			r.RecordFailure("llm_request", FailureTransient, decision)
+			r.RecordFailure("llm_request", FailureNetwork, decision)
 		}
 	}
 

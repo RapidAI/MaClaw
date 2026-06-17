@@ -627,12 +627,52 @@ export function OpenFileOrShowInFolder(arg1) {
   return window['go']['main']['App']['OpenFileOrShowInFolder'](arg1);
 }
 
+export function GetSkillRunArtifact(arg1, arg2) {
+  return window['go']['main']['App']['GetSkillRunArtifact'](arg1, arg2);
+}
+
+export function GetSkillRunArtifactForOwner(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetSkillRunArtifactForOwner'](arg1, arg2, arg3);
+}
+
+export function ListSkillRunArtifacts(arg1, arg2) {
+  return window['go']['main']['App']['ListSkillRunArtifacts'](arg1, arg2);
+}
+
+export function ListSkillRunArtifactsForOwner(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ListSkillRunArtifactsForOwner'](arg1, arg2, arg3);
+}
+
+export function UpdateSkillRunArtifactCache(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['UpdateSkillRunArtifactCache'](arg1, arg2, arg3, arg4);
+}
+
+export function UpdateSkillRunArtifactCacheForOwner(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UpdateSkillRunArtifactCacheForOwner'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function DownloadSkillRunArtifact(arg1, arg2) {
+  return window['go']['main']['App']['DownloadSkillRunArtifact'](arg1, arg2);
+}
+
+export function DownloadSkillRunArtifactForOwner(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DownloadSkillRunArtifactForOwner'](arg1, arg2, arg3);
+}
+
 export function OpenSkillRunArtifact(arg1, arg2) {
   return window['go']['main']['App']['OpenSkillRunArtifact'](arg1, arg2);
 }
 
+export function OpenSkillRunArtifactForOwner(arg1, arg2, arg3) {
+  return window['go']['main']['App']['OpenSkillRunArtifactForOwner'](arg1, arg2, arg3);
+}
+
 export function RevealSkillRunArtifact(arg1, arg2) {
   return window['go']['main']['App']['RevealSkillRunArtifact'](arg1, arg2);
+}
+
+export function RevealSkillRunArtifactForOwner(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RevealSkillRunArtifactForOwner'](arg1, arg2, arg3);
 }
 
 export function ShowItemInFolder(arg1) {

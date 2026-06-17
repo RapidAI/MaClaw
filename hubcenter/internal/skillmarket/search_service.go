@@ -3,6 +3,8 @@ package skillmarket
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -28,6 +30,7 @@ type SearchResult struct {
 	CreatedAt                    string                       `json:"created_at,omitempty"`
 	ProductKind                  string                       `json:"product_kind,omitempty"`
 	IsMaclawApp                  bool                         `json:"is_maclaw_app,omitempty"`
+	MaclawAppEntry               string                       `json:"maclaw_app_entry,omitempty"`
 	MaclawAppID                  string                       `json:"maclaw_app_id,omitempty"`
 	MaclawAppName                string                       `json:"maclaw_app_name,omitempty"`
 	MaclawAppDescription         string                       `json:"maclaw_app_description,omitempty"`
@@ -44,6 +47,7 @@ type SearchResult struct {
 	RequiredEnv                  []string                     `json:"required_env,omitempty"`
 	RequiresGUI                  bool                         `json:"requires_gui,omitempty"`
 	SecurityLabels               []string                     `json:"security_labels,omitempty"`
+	MaclawAppManifestPreview     map[string]any               `json:"maclaw_app_manifest_preview,omitempty"`
 }
 
 // SearchService 提供 FTS5 全文搜索。
@@ -393,6 +397,7 @@ func (s *SearchService) enrichSearchResultWithSkillMeta(r *SearchResult) {
 		r.ProductKind = meta.ProductKind
 	}
 	r.IsMaclawApp = r.IsMaclawApp || meta.IsMaclawApp || strings.EqualFold(strings.TrimSpace(r.ProductKind), "maclaw_app_skill")
+	r.MaclawAppEntry = meta.MaclawAppEntry
 	r.MaclawAppID = meta.MaclawAppID
 	r.MaclawAppName = meta.MaclawAppName
 	r.MaclawAppDescription = meta.MaclawAppDescription
@@ -409,6 +414,75 @@ func (s *SearchService) enrichSearchResultWithSkillMeta(r *SearchResult) {
 	r.RequiredEnv = append([]string(nil), meta.RequiredEnv...)
 	r.RequiresGUI = meta.RequiresGUI
 	r.SecurityLabels = append([]string(nil), meta.SecurityLabels...)
+	r.MaclawAppManifestPreview = s.maclawAppManifestPreview(r.ID, r.MaclawAppEntry)
+}
+
+func (s *SearchService) maclawAppManifestPreview(skillID, entry string) map[string]any {
+	if s == nil || s.skillStore == nil || strings.TrimSpace(skillID) == "" {
+		return nil
+	}
+	full, err := s.skillStore.Get(skillID)
+	if err != nil || full == nil || len(full.Files) == 0 {
+		return nil
+	}
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		entry = "maclaw.app.json"
+	}
+	encoded := full.Files[entry]
+	if encoded == "" {
+		encoded = full.Files["maclaw.app.json"]
+	}
+	if encoded == "" {
+		return nil
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(data) == 0 || len(data) > 256*1024 {
+		return nil
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
+		return nil
+	}
+	return sanitizeMaclawAppManifestPreview(raw).(map[string]any)
+}
+
+func sanitizeMaclawAppManifestPreview(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			if isMaclawAppManifestPreviewSensitiveKey(key) {
+				continue
+			}
+			out[key] = sanitizeMaclawAppManifestPreview(item)
+		}
+		return out
+	case []any:
+		if len(v) > 80 {
+			v = v[:80]
+		}
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			out = append(out, sanitizeMaclawAppManifestPreview(item))
+		}
+		return out
+	case string:
+		if len(v) > 2048 {
+			return v[:2048] + "..."
+		}
+		return v
+	default:
+		return v
+	}
+}
+
+func isMaclawAppManifestPreviewSensitiveKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	if k == "" {
+		return false
+	}
+	return strings.Contains(k, "path") || strings.Contains(k, "secret") || strings.Contains(k, "token") || strings.Contains(k, "password")
 }
 
 func cloneHubMaclawAppTestEvidence(e *skill.MaclawAppTestEvidence) *skill.MaclawAppTestEvidence {

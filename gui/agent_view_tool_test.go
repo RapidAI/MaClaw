@@ -613,10 +613,10 @@ func TestHandleRegisteredToolApprovalSubmitHonorsWorkflowPolicyBeforeApprovingSe
 	h.registry = NewToolRegistry()
 	called := false
 	if err := h.registry.Register(RegisteredTool{
-		Name: "bash",
+		Name: "write_file",
 		Handler: func(args map[string]interface{}) string {
 			called = true
-			return "ran"
+			return "wrote"
 		},
 	}); err != nil {
 		t.Fatalf("register tool: %v", err)
@@ -630,10 +630,11 @@ func TestHandleRegisteredToolApprovalSubmitHonorsWorkflowPolicyBeforeApprovingSe
 	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
 		t.Fatalf("SkipPhaseForm failed: %v", err)
 	}
-	approval := storeRegisteredToolPendingApproval("bash", map[string]interface{}{
-		"command":    "echo hi",
+	approval := storeRegisteredToolPendingApproval("write_file", map[string]interface{}{
+		"path":       "out.txt",
+		"content":    "hello",
 		"session_id": "sess-1",
-	}, "sess-1", userID, firewall.analyzer.Assess("bash", map[string]interface{}{"command": "echo hi"}, &SecurityCallContext{SessionID: "sess-1"}))
+	}, "sess-1", userID, firewall.analyzer.Assess("write_file", map[string]interface{}{"path": "out.txt", "content": "hello"}, &SecurityCallContext{SessionID: "sess-1"}))
 
 	resp := h.handleRegisteredToolApprovalAgentViewSubmit(map[string]interface{}{
 		"approved": true,
@@ -647,7 +648,7 @@ func TestHandleRegisteredToolApprovalSubmitHonorsWorkflowPolicyBeforeApprovingSe
 	if resp == nil || !strings.Contains(resp.Text, "not allowed by the current workflow tool policy") {
 		t.Fatalf("expected workflow policy rejection, got %#v", resp)
 	}
-	if firewall.isSessionApproved("sess-1", "bash") {
+	if firewall.isSessionApproved("sess-1", "write_file") {
 		t.Fatal("workflow-blocked approval must not approve future session calls")
 	}
 	if _, ok := getRegisteredToolPendingApproval(approval.ID); ok {

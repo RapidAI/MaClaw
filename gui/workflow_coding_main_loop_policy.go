@@ -27,13 +27,24 @@ func (h *IMMessageHandler) shouldConstrainCodingWorkflowImplementationMainLoop(p
 	if h != nil && h.isWorkflowV2Active(policyUserID) {
 		if wf := h.getWorkflowV2(); wf != nil {
 			if state := wf.machine.GetActive(policyUserID); state != nil && state.IsExecutionPhase() {
+				// Only constrain the CODING workflow's implementation phase.
+				// Other workflows with ToolPolicyFull (e.g. pa_disclosure_parsing
+				// in patent_application) need full tool access for document parsing.
+				if state.Type != string(v2.WorkflowCoding) {
+					return false
+				}
 				return true
 			}
 		}
 	}
 	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
 		if state := wf.machine.GetActive(policyUserID); state != nil {
-			return state.Status == v2.StatusActive && state.IsExecutionPhase()
+			if state.Status == v2.StatusActive && state.IsExecutionPhase() {
+				if state.Type != string(v2.WorkflowCoding) {
+					return false
+				}
+				return true
+			}
 		}
 	}
 	if state, _ := h.activeWorkflowPhaseFromEngine(policyUserID); state != nil {

@@ -12,6 +12,7 @@ const getNLSkillRunStatusMock = vi.hoisted(() => vi.fn());
 const cancelNLSkillRunMock = vi.hoisted(() => vi.fn());
 const stageSkillAppInputFileMock = vi.hoisted(() => vi.fn());
 const openFileOrShowInFolderMock = vi.hoisted(() => vi.fn());
+const downloadSkillRunArtifactMock = vi.hoisted(() => vi.fn());
 const openSkillRunArtifactMock = vi.hoisted(() => vi.fn());
 const revealSkillRunArtifactMock = vi.hoisted(() => vi.fn());
 const showItemInFolderMock = vi.hoisted(() => vi.fn());
@@ -22,6 +23,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetNLSkillRunStatus: (...args: unknown[]) => getNLSkillRunStatusMock(...args),
     ListNLSkills: (...args: unknown[]) => listNLSkillsMock(...args),
     ListSkillAppManifests: (...args: unknown[]) => listSkillAppManifestsMock(...args),
+    DownloadSkillRunArtifact: (...args: unknown[]) => downloadSkillRunArtifactMock(...args),
     OpenFileOrShowInFolder: (...args: unknown[]) => openFileOrShowInFolderMock(...args),
     OpenSkillRunArtifact: (...args: unknown[]) => openSkillRunArtifactMock(...args),
     RecordMaclawAppRunEvidenceForSkill: (...args: unknown[]) => recordMaclawAppRunEvidenceForSkillMock(...args),
@@ -35,7 +37,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
 
 import { AppsPage } from '../AppsPage';
 
-const marketManifestPlaceholder = '粘贴 maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json';
+const marketManifestPlaceholder = '粘贴应用包 JSON（maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json）';
 const runHistoryStorageKey = 'maclaw:apps-run-history:v1';
 
 function stableStringify(value: any): string {
@@ -107,6 +109,7 @@ describe('AppsPage', () => {
         getNLSkillRunStatusMock.mockReset().mockResolvedValue({ run_id: 'run-test-1', status: 'success', summary: { last_output_snippet: 'done' } });
         cancelNLSkillRunMock.mockReset().mockResolvedValue(undefined);
         openFileOrShowInFolderMock.mockReset().mockResolvedValue(undefined);
+        downloadSkillRunArtifactMock.mockReset().mockResolvedValue({ available: true });
         openSkillRunArtifactMock.mockReset().mockResolvedValue(undefined);
         revealSkillRunArtifactMock.mockReset().mockResolvedValue(undefined);
         showItemInFolderMock.mockReset().mockResolvedValue(undefined);
@@ -175,10 +178,9 @@ describe('AppsPage', () => {
 
         const fullRedactTile = screen.getAllByText('文档脱敏')[0].closest('.apps-app-tile') as HTMLButtonElement;
         fireEvent.contextMenu(fullRedactTile, { clientX: 90, clientY: 180 });
-        const disabledPinAction = screen.getByRole('menuitem', { name: '设为常用' }) as HTMLButtonElement;
-        expect(disabledPinAction.disabled).toBe(true);
-        expect(disabledPinAction.title).toBe('常用应用已满 6 个，请先取消一个');
-        fireEvent.click(document.body);
+        const firstPinAction = screen.getByRole('menuitem', { name: '设为常用' }) as HTMLButtonElement;
+        expect(firstPinAction.disabled).toBe(false);
+        fireEvent.click(firstPinAction);
 
         const expenseTile = screen.getAllByText('报销申请')[0].closest('.apps-app-tile') as HTMLButtonElement;
         fireEvent.contextMenu(expenseTile, { clientX: 120, clientY: 140 });
@@ -188,14 +190,14 @@ describe('AppsPage', () => {
         let sections = document.querySelectorAll('.apps-section');
         expect(within(sections[0] as HTMLElement).queryByText('报销申请')).toBeNull();
 
-        const redactTile = screen.getAllByText('文档脱敏')[0].closest('.apps-app-tile') as HTMLButtonElement;
-        fireEvent.keyDown(redactTile, { key: 'F10', shiftKey: true });
+        const sheetTile = screen.getAllByText('表格分析')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        fireEvent.keyDown(sheetTile, { key: 'F10', shiftKey: true });
         const pinAction = screen.getByRole('menuitem', { name: '设为常用' });
         expect((pinAction as HTMLButtonElement).disabled).toBe(false);
         fireEvent.click(pinAction);
 
         sections = document.querySelectorAll('.apps-section');
-        expect(within(sections[0] as HTMLElement).getByText('文档脱敏')).not.toBeNull();
+        expect(within(sections[0] as HTMLElement).getByText('表格分析')).not.toBeNull();
 
         const syncTile = screen.getAllByText('数据同步')[0].closest('.apps-app-tile') as HTMLButtonElement;
         fireEvent.contextMenu(syncTile, { clientX: 9999, clientY: 9999 });
@@ -1484,6 +1486,12 @@ describe('AppsPage', () => {
                 { index: 1, name: '生成文档', action: 'write', status: 'success', output: 'created', duration_ms: 34 },
             ],
             summary: { last_output_snippet: 'done', artifact_path: '/tmp/out.docx', artifact_status: 'ready' },
+            artifacts: [{ id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' }],
+            outputs: [
+                { id: 'artifact-1', kind: 'artifact', title: '文件产物块', artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' } },
+                { id: 'file-1', kind: 'file', title: '文件输出块', artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' } },
+                { id: 'summary-1', kind: 'text', title: '摘要', text: '生成完成摘要', status: 'success' },
+            ],
         });
         render(<AppsPage lang="zh-Hans" />);
 
@@ -1510,15 +1518,61 @@ describe('AppsPage', () => {
         expect(screen.getByText('读取文件')).not.toBeNull();
         expect(screen.getAllByText('生成文档').length).toBeGreaterThan(0);
         expect(screen.getByText('产物已生成')).not.toBeNull();
-        expect(screen.getAllByText('/tmp/out.docx').length).toBeGreaterThan(1);
+        expect(screen.queryByText('文件产物块')).toBeNull();
+        expect(screen.queryByText('文件输出块')).toBeNull();
+        expect(screen.getByText('摘要')).not.toBeNull();
+        expect(screen.getByText('生成完成摘要')).not.toBeNull();
+        expect(screen.getAllByText('artifact://skill-run/run-test-1/artifact-1').length).toBeGreaterThan(0);
         fireEvent.click(screen.getAllByText('打开')[0]);
         fireEvent.click(screen.getAllByText('定位')[0]);
-        expect(openSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', '');
-        expect(revealSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', '');
+        expect(openSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', 'artifact-1');
+        expect(revealSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', 'artifact-1');
         expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
         expect(showItemInFolderMock).not.toHaveBeenCalled();
 
         expect(screen.getByText('运行历史')).not.toBeNull();
+    });
+
+    it('downloads remote-only artifact before opening it', async () => {
+        getNLSkillRunStatusMock.mockResolvedValue({
+            run_id: 'run-test-1',
+            status: 'success',
+            expected_artifact: true,
+            summary: { last_output_snippet: 'done', artifact_status: 'ready' },
+            artifacts: [{
+                id: 'remote-1',
+                uri: 'artifact://skill-run/run-test-1/remote-1',
+                name: 'remote.pdf',
+                remote_url: 'https://hub.example/artifacts/remote.pdf',
+                download_state: 'remote',
+                status: 'ready',
+            }],
+        });
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    x_maclaw_apps: 'v1',
+                    apps: [
+                        { id: 'remote-tool', skill_id: 'remote-tools', name: '远端产物工具', description: 'Remote', category: '工具', icon: 'sheet', input_mode: 'form', output_modes: ['pdf'] },
+                    ],
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('安装'));
+        fireEvent.click(screen.getByText('关闭'));
+        fireEvent.click(screen.getAllByText('远端产物工具')[0]);
+        fireEvent.change(screen.getByPlaceholderText('输入处理要求或表单参数。'), { target: { value: '生成 PDF' } });
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(screen.getAllByText('下载并打开').length).toBeGreaterThan(0));
+        fireEvent.click(screen.getAllByText('下载并打开')[0]);
+        await waitFor(() => expect(downloadSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', 'remote-1'));
+        expect(openSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', 'remote-1');
+        expect(recordMaclawAppRunEvidenceForSkillMock).toHaveBeenCalledWith('remote-tools', expect.any(String), expect.any(String), 'run-test-1', 'remote.pdf', expect.any(String));
     });
 
     it('keeps tool app run history capped at eight entries', async () => {
@@ -1887,6 +1941,27 @@ describe('AppsPage', () => {
         expect(screen.getByText('已复制')).not.toBeNull();
     });
 
+    it('shows market apps as a list and adds one to the panel', () => {
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('从市场添加'));
+
+        expect(screen.getByText('应用市场')).not.toBeNull();
+        expect(screen.getByText('合同归档')).not.toBeNull();
+        expect(screen.getByText('可添加 4 · 可升级 0')).not.toBeNull();
+        const importPackage = screen.getByText('导入应用包').closest('details') as HTMLDetailsElement;
+        expect(importPackage.open).toBe(false);
+
+        const row = screen.getByText('合同归档').closest('.apps-market-row') as HTMLElement;
+        fireEvent.click(within(row).getByRole('button', { name: '添加: 合同归档' }));
+
+        expect((within(row).getByRole('button', { name: '已安装: 合同归档' }) as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('可添加 3 · 可升级 0')).not.toBeNull();
+        fireEvent.click(screen.getByText('应用管理'));
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('合同归档'))).toBe(true);
+    });
+
     it('installs an app from a pasted market manifest', () => {
         render(<AppsPage lang="zh-Hans" />);
 
@@ -1922,6 +1997,12 @@ describe('AppsPage', () => {
     it('does not exceed the pinned app limit when installing pinned market apps', () => {
         render(<AppsPage lang="zh-Hans" />);
 
+        for (const name of ['文档脱敏', '表格分析']) {
+            const tile = screen.getAllByText(name)[0].closest('.apps-app-tile') as HTMLButtonElement;
+            fireEvent.contextMenu(tile, { clientX: 90, clientY: 180 });
+            fireEvent.click(screen.getByRole('menuitem', { name: '设为常用' }));
+        }
+
         fireEvent.click(screen.getByTitle('应用程序工作室'));
         fireEvent.click(screen.getByText('从市场添加'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
@@ -1947,9 +2028,9 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('安装'));
         fireEvent.click(screen.getByText('应用管理'));
 
-        expect(screen.getByText('6/6')).not.toBeNull();
+        expect(screen.getByText('8/8')).not.toBeNull();
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('市场置顶文档')) as HTMLElement;
-        expect(within(row).getByTitle('常用应用已满 6 个，请先取消一个')).not.toBeNull();
+        expect(within(row).getByTitle('常用应用已满 8 个，请先取消一个')).not.toBeNull();
         fireEvent.click(within(row).getByTitle('Manifest'));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         expect(manifest.app.panel.pinned).toBe(false);
@@ -2297,16 +2378,16 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
         fireEvent.click(screen.getByText('从市场添加'));
-        expect(screen.getByLabelText('从 Manifest 安装')).not.toBeNull();
+        expect(screen.getByLabelText('安装应用包')).not.toBeNull();
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), { target: { value: '{bad json' } });
 
-        expect(screen.getByText('无效 Manifest: JSON 解析失败')).not.toBeNull();
-        expect(screen.getByText('无效 Manifest: JSON 解析失败').closest('[role="alert"]')).not.toBeNull();
+        expect(screen.getByText('应用包无效: JSON 解析失败')).not.toBeNull();
+        expect(screen.getByText('应用包无效: JSON 解析失败').closest('[role="alert"]')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), { target: { value: JSON.stringify({ apps: [] }) } });
 
-        expect(screen.getByText('无效 Manifest: 缺少 maclaw.app.v1、maclaw.app.pack.v1 或 x_maclaw_apps')).not.toBeNull();
+        expect(screen.getByText('应用包无效: 未识别应用包格式')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
@@ -2319,7 +2400,7 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('无效 Manifest: maclaw.app.v1 privateMarker must be x_maclaw_apps')).not.toBeNull();
+        expect(screen.getByText('应用包无效: maclaw.app.v1 privateMarker must be x_maclaw_apps')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
@@ -2332,7 +2413,7 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('无效 Manifest: maclaw.app.v1 app.id is invalid')).not.toBeNull();
+        expect(screen.getByText('应用包无效: maclaw.app.v1 app.id is invalid')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
@@ -2345,7 +2426,7 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('无效 Manifest: maclaw.app.v1 app.launchMode must be agent_dynamic_ui for enterprise_app')).not.toBeNull();
+        expect(screen.getByText('应用包无效: maclaw.app.v1 app.launchMode must be agent_dynamic_ui for enterprise_app')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
@@ -2358,7 +2439,7 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('无效 Manifest: maclaw.app.v1 app.launchMode must be automation_console for automation_app')).not.toBeNull();
+        expect(screen.getByText('应用包无效: maclaw.app.v1 app.launchMode must be automation_console for automation_app')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
@@ -2372,7 +2453,7 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('无效 Manifest: maclaw.app.v1 binding.datasrv is required for enterprise_app')).not.toBeNull();
+        expect(screen.getByText('应用包无效: maclaw.app.v1 binding.datasrv is required for enterprise_app')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
@@ -2386,7 +2467,7 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('无效 Manifest: maclaw.app.v1 binding.skill is required for tool_app')).not.toBeNull();
+        expect(screen.getByText('应用包无效: maclaw.app.v1 binding.skill is required for tool_app')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
@@ -2406,7 +2487,7 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('无效 Manifest: maclaw.app.v1 installUnit must be skill for tool_app')).not.toBeNull();
+        expect(screen.getByText('应用包无效: maclaw.app.v1 installUnit must be skill for tool_app')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
@@ -2423,7 +2504,7 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('无效 Manifest: maclaw.app.v1 binding.skill.outputModes[0] is invalid')).not.toBeNull();
+        expect(screen.getByText('应用包无效: maclaw.app.v1 binding.skill.outputModes[0] is invalid')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
@@ -2444,7 +2525,7 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('无效 Manifest: maclaw.apps.json apps[0].fields[0].type is invalid')).not.toBeNull();
+        expect(screen.getByText('应用包无效: maclaw.apps.json apps[0].fields[0].type is invalid')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
     });
 
@@ -2463,7 +2544,7 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('无效 Manifest: maclaw.app.pack.v1 apps[0] privateMarker must be x_maclaw_apps')).not.toBeNull();
+        expect(screen.getByText('应用包无效: maclaw.app.pack.v1 apps[0] privateMarker must be x_maclaw_apps')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
     });
 
@@ -2537,11 +2618,14 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByTitle('应用程序工作室'));
         fireEvent.click(screen.getByText('应用管理'));
 
-        const pinButton = within(document.querySelectorAll('.apps-manage-row')[6] as HTMLElement).getByTitle('常用应用已满 6 个，请先取消一个') as HTMLButtonElement;
+        fireEvent.click(within(document.querySelectorAll('.apps-manage-row')[6] as HTMLElement).getByTitle('置顶'));
+        fireEvent.click(within(document.querySelectorAll('.apps-manage-row')[7] as HTMLElement).getByTitle('置顶'));
+
+        const pinButton = within(document.querySelectorAll('.apps-manage-row')[8] as HTMLElement).getByTitle('常用应用已满 8 个，请先取消一个') as HTMLButtonElement;
         expect(pinButton.disabled).toBe(true);
         fireEvent.click(pinButton);
 
-        expect(screen.getByText('6/6')).not.toBeNull();
+        expect(screen.getByText('8/8')).not.toBeNull();
     });
 
     it('turns DataSrv capabilities into addable app candidates', async () => {

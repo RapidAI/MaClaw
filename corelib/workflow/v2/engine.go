@@ -396,15 +396,14 @@ func (e *WorkflowEngine) SubmitPhaseForm(userID string, formData map[string]inte
 		return nil, errors.New("no active workflow for user")
 	}
 
-	// Normalize project_path in form data and update workflow state.
-	if pp, ok := formData["project_path"]; ok {
-		if ppStr, isStr := pp.(string); isStr {
-			cleaned := strings.TrimSpace(ppStr)
-			if cleaned != "" {
-				ws.ProjectPath = cleaned
-				formData["project_path"] = cleaned
-			}
-		}
+	// Normalize project_path / output_dir → update workflow ProjectPath.
+	// Priority: project_path > output_dir. This ensures later phases see the
+	// output directory in their prompt header ("项目路径").
+	if pp := formDataString(formData, "project_path"); pp != "" {
+		ws.ProjectPath = pp
+		formData["project_path"] = pp
+	} else if od := formDataString(formData, "output_dir"); od != "" {
+		ws.ProjectPath = od
 	}
 
 	ws.PhaseFormData = formData

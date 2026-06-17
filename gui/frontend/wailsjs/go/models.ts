@@ -1,5 +1,48 @@
 export namespace main {
 
+	export class SkillArtifactRegistryEntry {
+	    uri: string;
+	    run_id: string;
+	    owner_id?: string;
+	    skill?: string;
+	    artifact_id: string;
+	    name?: string;
+	    mime_type?: string;
+	    size_bytes?: number;
+	    remote_url?: string;
+	    checksum?: string;
+	    download_state?: string;
+	    status?: string;
+	    presentation?: string;
+	    available: boolean;
+	    created_at?: string;
+	    updated_at?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new SkillArtifactRegistryEntry(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.uri = source["uri"];
+	        this.run_id = source["run_id"];
+	        this.owner_id = source["owner_id"];
+	        this.skill = source["skill"];
+	        this.artifact_id = source["artifact_id"];
+	        this.name = source["name"];
+	        this.mime_type = source["mime_type"];
+	        this.size_bytes = source["size_bytes"];
+	        this.remote_url = source["remote_url"];
+	        this.checksum = source["checksum"];
+	        this.download_state = source["download_state"];
+	        this.status = source["status"];
+	        this.presentation = source["presentation"];
+	        this.available = source["available"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	    }
+	}
+
 	export class VEApprovalCapabilityStatus {
 	    ve_id: string;
 	    has_capability: boolean;

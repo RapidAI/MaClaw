@@ -65,14 +65,17 @@ type SkillRunSummary struct {
 
 // SkillRunArtifact is the normalized file output contract exposed to UI.
 type SkillRunArtifact struct {
-	ID           string              `json:"id"`
-	URI          string              `json:"uri,omitempty"`
-	Name         string              `json:"name,omitempty"`
-	Path         string              `json:"path,omitempty"`
-	MimeType     string              `json:"mime_type,omitempty"`
-	SizeBytes    int64               `json:"size_bytes,omitempty"`
-	Status       skillArtifactStatus `json:"status,omitempty"`
-	Presentation string              `json:"presentation,omitempty"`
+	ID            string              `json:"id"`
+	URI           string              `json:"uri,omitempty"`
+	Name          string              `json:"name,omitempty"`
+	Path          string              `json:"path,omitempty"`
+	MimeType      string              `json:"mime_type,omitempty"`
+	SizeBytes     int64               `json:"size_bytes,omitempty"`
+	RemoteURL     string              `json:"remote_url,omitempty"`
+	Checksum      string              `json:"checksum,omitempty"`
+	DownloadState string              `json:"download_state,omitempty"`
+	Status        skillArtifactStatus `json:"status,omitempty"`
+	Presentation  string              `json:"presentation,omitempty"`
 }
 
 // SkillRunOutputBlock is the normalized UI-facing output model for skill runs.
@@ -917,12 +920,13 @@ func buildSkillRunArtifact(runID, id, artifactPath string, status skillArtifactS
 		id = "artifact-1"
 	}
 	artifact := SkillRunArtifact{
-		ID:           id,
-		URI:          skillRunArtifactURI(runID, id),
-		Name:         filepath.Base(artifactPath),
-		Path:         artifactPath,
-		Status:       status,
-		Presentation: skillRunArtifactPresentation(artifactPath),
+		ID:            id,
+		URI:           skillRunArtifactURI(runID, id),
+		Name:          filepath.Base(artifactPath),
+		Path:          artifactPath,
+		DownloadState: "downloaded",
+		Status:        status,
+		Presentation:  skillRunArtifactPresentation(artifactPath),
 	}
 	if ext := strings.ToLower(filepath.Ext(artifactPath)); ext != "" {
 		artifact.MimeType = mime.TypeByExtension(ext)

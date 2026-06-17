@@ -921,6 +921,7 @@ func ensureDigitalEmployeeAuthorizationColumns(db *sql.DB) error {
 		"digital_employee_quota":                    "ALTER TABLE hub_instances ADD COLUMN digital_employee_quota INTEGER NOT NULL DEFAULT 0",
 		"digital_employee_authorization_enabled":    "ALTER TABLE hub_instances ADD COLUMN digital_employee_authorization_enabled INTEGER NOT NULL DEFAULT 0",
 		"digital_employee_authorization_expires_at": "ALTER TABLE hub_instances ADD COLUMN digital_employee_authorization_expires_at TEXT",
+		"allow_external_providers":                  "ALTER TABLE hub_instances ADD COLUMN allow_external_providers INTEGER NOT NULL DEFAULT 0",
 	}
 	for name, stmt := range columns {
 		ok, err := hubInstanceColumnExists(db, name)

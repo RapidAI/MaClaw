@@ -313,9 +313,29 @@ export function ShouldCheckEnvironment():Promise<boolean>;
 
 export function OpenFileOrShowInFolder(arg1:string):Promise<void>;
 
+export function GetSkillRunArtifact(arg1:string,arg2:string):Promise<main.SkillArtifactRegistryEntry>;
+
+export function GetSkillRunArtifactForOwner(arg1:string,arg2:string,arg3:string):Promise<main.SkillArtifactRegistryEntry>;
+
+export function ListSkillRunArtifacts(arg1:string,arg2:number):Promise<Array<main.SkillArtifactRegistryEntry>>;
+
+export function ListSkillRunArtifactsForOwner(arg1:string,arg2:string,arg3:number):Promise<Array<main.SkillArtifactRegistryEntry>>;
+
+export function UpdateSkillRunArtifactCache(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.SkillArtifactRegistryEntry>;
+
+export function UpdateSkillRunArtifactCacheForOwner(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.SkillArtifactRegistryEntry>;
+
+export function DownloadSkillRunArtifact(arg1:string,arg2:string):Promise<main.SkillArtifactRegistryEntry>;
+
+export function DownloadSkillRunArtifactForOwner(arg1:string,arg2:string,arg3:string):Promise<main.SkillArtifactRegistryEntry>;
+
 export function OpenSkillRunArtifact(arg1:string,arg2:string):Promise<void>;
 
+export function OpenSkillRunArtifactForOwner(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function RevealSkillRunArtifact(arg1:string,arg2:string):Promise<void>;
+
+export function RevealSkillRunArtifactForOwner(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function ShowItemInFolder(arg1:string):Promise<void>;
 

@@ -551,9 +551,8 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 			if auth.Status == "" {
 				auth.Status = "active"
 			}
-			if auth.CreditsTotal <= 0 {
-				auth.CreditsTotal = 1000000000000
-			}
+			// Pure permission grant — no credits needed.
+			// CreditsTotal stays at 0 (or whatever the admin explicitly set).
 			now := time.Now().UTC()
 			if auth.StartsAt.IsZero() {
 				auth.StartsAt = now

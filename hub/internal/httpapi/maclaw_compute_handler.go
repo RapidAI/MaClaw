@@ -67,11 +67,13 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 
 		if centerSvc != nil {
 			if status, err := centerSvc.Status(r.Context()); err == nil && status != nil {
+				// Use top-level AllowExternalProviders from heartbeat as the
+				// primary source — same mechanism as digital_employee_authorization.
+				// This does NOT depend on LLM module being initialized.
+				if status.AllowExternalProviders {
+					result["allow_external_providers"] = true
+				}
 				if heartbeatStatus := llmComputeStatusFromCenterAuthorizationPayload(status, tenantID); heartbeatStatus != nil {
-					// Only update the access control cache from heartbeat data when
-					// we did NOT already get a fresher result from a direct refresh.
-					// Otherwise the stale heartbeat snapshot would overwrite the
-					// just-fetched authoritative response.
 					if currentAccessCtrl != nil && !refreshedAuthorization {
 						currentAccessCtrl.UpdateFromHeartbeat(tenantID, heartbeatStatus)
 					}
@@ -91,7 +93,11 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 			}
 		}
 		if authStatus != nil {
-			result["allow_external_providers"] = authStatus.AllowExternalProviders
+			// authStatus may have its own AllowExternalProviders from LLM module.
+			// Use OR logic: allow if either top-level heartbeat OR LLM module says yes.
+			if authStatus.AllowExternalProviders {
+				result["allow_external_providers"] = true
+			}
 			result["authorizations"] = authStatus.Authorizations
 			result["authorization_tenant_id"] = strings.TrimSpace(authStatus.TenantID)
 			result["authorization_lookup_tenant_ids"] = authStatus.LookupTenantIDs
@@ -144,16 +150,11 @@ func llmComputeStatusFromCenterAuthorizationPayload(status *center.RegistrationS
 			return auth
 		}
 	}
-	// Tenant not present in heartbeat payload. The heartbeat only includes
-	// tenants with active authorization, so absence means no authorization.
-	// Return an explicit "no access" status so the cache is updated correctly
-	// after a revocation. This is safe because we only reach here when the
-	// heartbeat llm_compute payload exists (confirming HubCenter connectivity)
-	// but omits this specific tenant.
-	return &llmservice.TenantAuthorizationStatus{
-		TenantID:               tenantID,
-		AllowExternalProviders: false,
-	}
+	// Tenant not present in heartbeat payload — no credits for this tenant.
+	// Return nil so the handler preserves cached AllowExternalProviders.
+	// When ?refresh=1 triggers a direct QueryAuthorization call, HubCenter
+	// will return the authoritative AllowExternalProviders value.
+	return nil
 }
 
 func llmComputeAuthorizationTenantKeys(tenantID string) []string {

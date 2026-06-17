@@ -3743,7 +3743,11 @@ func (a *App) GetNLSkillRunStatus(runID string) (*SkillRunStatus, error) {
 	if a.skillRunner == nil {
 		return nil, fmt.Errorf("skill runner not initialized")
 	}
-	return a.skillRunner.GetRunStatus(runID)
+	status, err := a.skillRunner.GetRunStatus(runID)
+	if err == nil {
+		a.registerSkillRunArtifacts(status)
+	}
+	return status, err
 }
 
 // CancelNLSkillRun cancels an async skill run for Wails.

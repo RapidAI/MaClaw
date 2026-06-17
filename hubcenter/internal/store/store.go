@@ -75,6 +75,7 @@ type HubInstance struct {
 	DigitalEmployeeQuota                  int        `json:"digital_employee_quota"`
 	DigitalEmployeeAuthorizationEnabled   bool       `json:"digital_employee_authorization_enabled"`
 	DigitalEmployeeAuthorizationExpiresAt *time.Time `json:"digital_employee_authorization_expires_at,omitempty"`
+	AllowExternalProviders                bool       `json:"allow_external_providers"`
 	LastSeenAt                            *time.Time `json:"last_seen_at"`
 	CreatedAt                             time.Time  `json:"created_at"`
 	UpdatedAt                             time.Time  `json:"updated_at"`

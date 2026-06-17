@@ -1941,6 +1941,7 @@ func (a *App) startup(ctx context.Context) {
 		go a.initSteeringStore()
 		// Initialize TTS manager if assets are already present.
 		go a.initTTSManager()
+		a.startSkillArtifactRegistryMaintenance(ctx)
 
 		// Initialize project tab session persistence and clean up stale sessions (>30 days).
 		a.projectTabSessionPersist = NewProjectTabSessionPersistForBaseDir(a.getMaclawBaseDir())
@@ -7747,24 +7748,50 @@ func (a *App) OpenFileOrShowInFolder(path string) error {
 }
 
 func (a *App) OpenSkillRunArtifact(runID string, artifactID string) error {
-	return a.openSkillRunArtifactByID(runID, artifactID, false)
+	return a.openSkillRunArtifactByID("", runID, artifactID, false)
 }
 
 func (a *App) RevealSkillRunArtifact(runID string, artifactID string) error {
-	return a.openSkillRunArtifactByID(runID, artifactID, true)
+	return a.openSkillRunArtifactByID("", runID, artifactID, true)
 }
 
-func (a *App) openSkillRunArtifactByID(runID string, artifactID string, reveal bool) error {
-	if a == nil || a.skillRunner == nil {
-		return fmt.Errorf("skill runner not initialized")
+func (a *App) OpenSkillRunArtifactForOwner(ownerID string, runID string, artifactID string) error {
+	return a.openSkillRunArtifactByID(ownerID, runID, artifactID, false)
+}
+
+func (a *App) RevealSkillRunArtifactForOwner(ownerID string, runID string, artifactID string) error {
+	return a.openSkillRunArtifactByID(ownerID, runID, artifactID, true)
+}
+
+func (a *App) openSkillRunArtifactByID(ownerID string, runID string, artifactID string, reveal bool) error {
+	if a == nil {
+		return fmt.Errorf("app is nil")
 	}
-	status, err := a.skillRunner.GetRunStatus(strings.TrimSpace(runID))
+	ownerID = strings.TrimSpace(ownerID)
+	runID = strings.TrimSpace(runID)
+	artifactID = strings.TrimSpace(artifactID)
+	path, err := a.lookupSkillArtifactPathForOwner(ownerID, runID, artifactID)
 	if err != nil {
-		return err
+		if entry, downloadErr := a.DownloadSkillRunArtifactForOwner(ownerID, runID, artifactID); downloadErr == nil && entry != nil && entry.Available {
+			path, err = a.lookupSkillArtifactPathForOwner(ownerID, runID, artifactID)
+		}
 	}
-	path, err := resolveSkillRunArtifactPath(status, artifactID)
 	if err != nil {
-		return err
+		if a.skillRunner == nil {
+			return err
+		}
+		status, statusErr := a.skillRunner.GetRunStatus(runID)
+		if statusErr != nil {
+			return statusErr
+		}
+		path, err = resolveSkillRunArtifactPath(status, artifactID)
+		if err != nil {
+			return err
+		}
+		if ownerID != "" && strings.TrimSpace(status.OwnerID) != "" && ownerID != strings.TrimSpace(status.OwnerID) {
+			return fmt.Errorf("artifact owner mismatch")
+		}
+		a.registerSkillRunArtifacts(status)
 	}
 	if reveal {
 		return a.ShowItemInFolder(path)

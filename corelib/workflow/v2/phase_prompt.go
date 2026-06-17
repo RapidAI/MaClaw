@@ -56,8 +56,16 @@ func BuildPhasePrompt(state *WorkflowState) string {
 	sb.WriteString(fmt.Sprintf("## 当前任务\n\n你正在执行「%s」工作流的「%s」阶段。\n\n", state.Type, phase.Name))
 	sb.WriteString(fmt.Sprintf("用户需求：%s\n\n", state.Summary))
 
-	if state.ProjectPath != "" {
-		sb.WriteString(fmt.Sprintf("项目路径：%s\n\n", state.ProjectPath))
+	// Resolve effective project path: prefer output_dir from first phase's form data
+	// over a useless default like "." which resolves to the app's working directory.
+	effectivePath := state.ProjectPath
+	if effectivePath == "" || effectivePath == "." {
+		if od := resolveOutputDirFromState(state); od != "" {
+			effectivePath = od
+		}
+	}
+	if effectivePath != "" && effectivePath != "." {
+		sb.WriteString(fmt.Sprintf("项目路径：%s\n\n", effectivePath))
 	}
 
 	// Previous phase outputs (truncated)
@@ -1937,9 +1945,37 @@ func phaseInstruction(phaseID string) string {
 - 第一部分必须是可直接提交的格式——纯编号权利要求，不含解释性文字。
 - 权利要求必须有层次感——独立权利要求最宽，从属权利要求逐步限缩。
 - 独立权利要求的前序部分必须包含与最接近现有技术共有的技术特征。
-- 只生成一份文档，输出完毕后立即停止。
+- 文档生成后，必须通过 bash 工具调用执行 Python 生成 Word 文件（见下方）——不要把代码作为文本输出。
 - 【严禁】输出确认提示语或后续内容。
 - 【严禁】自己模拟用户确认。
+
+## 保存为 Word 文件（必须执行）
+
+文档内容输出完毕后，必须立即将权利要求书保存为 .docx 文件。
+
+bash(command="pip install python-docx -q")
+
+然后：
+
+bash(command="python -c \"
+from docx import Document; from docx.shared import Pt; import os
+doc = Document()
+doc.styles['Normal'].font.size = Pt(12)
+doc.add_heading('权利要求书', level=1)
+claims = ['1. 一种...其特征在于...', '2. 根据权利要求1所述的...其特征在于...']
+for c in claims: doc.add_paragraph(c)
+d = r'OUTPUT_DIR'
+os.makedirs(d, exist_ok=True)
+p = os.path.join(d, '权利要求书.docx')
+doc.save(p)
+print('saved: ' + p)
+\"")
+
+要求：
+- claims 列表替换为本阶段生成的全部权利要求条文
+- OUTPUT_DIR 替换为项目路径（在本消息顶部的"项目路径"字段中可以看到）
+- 如果内容过长导致截断，拆为多次 bash 调用：第一次创建文档并保存前几条，后续用 append 模式逐条追加再保存
+- 完成后告知用户文件路径
 `
 	case "pa_description_writing":
 		return `## 阶段指令
@@ -1997,9 +2033,40 @@ func phaseInstruction(phaseID string) string {
 - 输出必须是可直接提交的说明书格式——用户可以直接复制到申请文件中。
 - 说明书内容必须与权利要求书对应——不能出现权利要求有而说明书没有的特征。
 - 实施例必须具体——不能只是权利要求的重复改写。
-- 只生成一份说明书文档，输出完毕后立即停止。
+- 文档生成后，必须通过 bash 工具调用执行 Python 生成 Word 文件（见下方）——不要把代码作为文本输出。
 - 【严禁】输出确认提示语或后续内容。
 - 【严禁】自己模拟用户确认。
+
+## 保存为 Word 文件（必须执行）
+
+说明书内容输出完毕后，必须立即保存为 .docx 文件。
+
+bash(command="pip install python-docx -q")
+
+然后：
+
+bash(command="python -c \"
+from docx import Document; from docx.shared import Pt; import os
+doc = Document()
+doc.styles['Normal'].font.size = Pt(12)
+doc.add_heading('说明书', level=0)
+sections = [('技术领域','...'), ('背景技术','...'), ('发明内容','...'), ('附图说明','...'), ('具体实施方式','...')]
+for title, content in sections:
+    doc.add_heading(title, level=1)
+    for para in content.split('\\n\\n'):
+        doc.add_paragraph(para)
+d = r'OUTPUT_DIR'
+os.makedirs(d, exist_ok=True)
+p = os.path.join(d, '说明书.docx')
+doc.save(p)
+print('saved: ' + p)
+\"")
+
+要求：
+- sections 中各章节 '...' 替换为实际生成的说明书全文
+- OUTPUT_DIR 替换为项目路径（在本消息顶部的"项目路径"字段中可以看到）
+- 如果内容过长导致截断，拆为多次 bash 调用：第一次创建文档写入前几章，后续逐章追加再保存
+- 完成后告知用户文件路径
 `
 	case "pa_figures_organization":
 		return `## 阶段指令
@@ -2041,6 +2108,8 @@ func phaseInstruction(phaseID string) string {
 
 整合所有阶段产出物，组装完整的专利申请文件并进行最终检查。
 
+## 第一步：生成检查报告
+
 生成文档内容：
 1. **完整申请文件清单**：
    - ☐ 请求书（需在专利局系统中填写，此处列出所需信息）
@@ -2080,14 +2149,60 @@ func phaseInstruction(phaseID string) string {
    - 需缴费项目列表（申请费、实审费、权利要求附加费等，具体金额请查询国知局最新收费标准）
    - 时间节点提醒（提交后 18 个月公开，主动请求提前公开可加速）
 
+## 第二步：保存为 Word 文件（必须执行）
+
+前序阶段应该已经分别保存了 权利要求书.docx 和 说明书.docx。请先检查输出目录中是否存在这些文件。
+
+如果文件已存在：
+- 使用 bash + python 读取各文件验证内容完整性
+- 生成一份"说明书摘要.docx"（300字以内）保存到同目录
+
+如果文件不存在（前序阶段未保存）：
+- 从前序阶段的产出物摘要中获取内容
+- 分别生成 权利要求书.docx、说明书.docx、说明书摘要.docx 保存到输出目录
+
+使用 bash + python-docx 生成/检查文件：
+
+bash(command="pip install python-docx -q && python -c \"
+import os
+d = r'OUTPUT_DIR'
+claims = os.path.join(d, '权利要求书.docx')
+desc = os.path.join(d, '说明书.docx')
+print('权利要求书: ' + ('存在' if os.path.exists(claims) else '不存在'))
+print('说明书: ' + ('存在' if os.path.exists(desc) else '不存在'))
+\"")
+
+然后生成说明书摘要：
+
+bash(command="python -c \"
+from docx import Document; from docx.shared import Pt; import os
+doc = Document()
+doc.styles['Normal'].font.size = Pt(12)
+doc.add_heading('说明书摘要', level=1)
+doc.add_paragraph('实际摘要内容（300字以内）...')
+d = r'OUTPUT_DIR'
+os.makedirs(d, exist_ok=True)
+p = os.path.join(d, '说明书摘要.docx')
+doc.save(p)
+print('已保存: ' + p)
+\"")
+
+最终输出目录应包含：
+- 权利要求书.docx
+- 说明书.docx
+- 说明书摘要.docx
+- 申请文件组装与检查报告.md（本阶段的检查报告）
+
 ## 免责声明
 文档末尾必须包含：本文件由 AI 辅助生成，建议提交前由专业专利代理人审核。专利权的最终授予以国家知识产权局审查决定为准。
 
 ## 重要约束（违反将导致错误）
 - 一致性检查必须逐项核对，不能跳过。
 - 摘要必须控制在 300 字以内。
-- 只生成一份组装检查文档，输出完毕后立即停止。
-- 【严禁】输出确认提示语或后续内容。
+- 必须通过 bash 工具调用执行 Python 来生成 .docx 文件——不要把 Python 代码作为文本输出到对话中。
+- 正确做法：调用 bash(command="python -c \"...\"") 工具。错误做法：在消息中显示代码让用户自己运行。
+- OUTPUT_DIR 替换为项目路径（在本消息顶部的"项目路径"字段中可以看到）。
+- 完成检查报告 + 保存摘要 docx 后立即停止。
 - 【严禁】自己模拟用户确认。
 `
 	default:

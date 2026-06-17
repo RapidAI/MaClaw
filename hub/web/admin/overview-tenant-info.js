@@ -22,19 +22,19 @@
       statusDisabled: 'Disabled',
       statusExpired: 'Expired',
       statusNotSubscribed: 'Not Subscribed',
-      deQuota: 'Quota: {quota} seats',
+      deQuota: 'Authorized seats: {quota}',
       deExpires: 'Expires: {date}',
       deUsed: 'Used: {used} / {quota}',
       deReasonDisabled: 'Authorization disabled',
       deReasonQuotaZero: 'No seats allocated',
       deReasonExpired: 'Authorization expired',
       deReasonNotSubscribed: 'Not subscribed',
-      computeCredits: 'Credits: {remaining} / {total} remaining',
-      computeExpires: 'Expires: {date}',
+      computeCredits: 'Credits: {remaining} / {total}',
+      computeExpires: 'Valid until {date}',
       computeCards: '{count} active authorization(s)',
       computeAllowExternal: 'External LLM providers allowed',
       computeNoExternal: 'External LLM providers restricted',
-      notAvailable: 'Not available',
+      notAvailable: 'Not available (verify Hub Center sync)',
       noDomains: 'None configured'
     },
     zh: {
@@ -51,19 +51,19 @@
       statusDisabled: '\u5df2\u7981\u7528',
       statusExpired: '\u5df2\u8fc7\u671f',
       statusNotSubscribed: '\u672a\u8ba2\u9605',
-      deQuota: '\u914d\u989d\uff1a{quota} \u5e2d',
-      deExpires: '\u6709\u6548\u671f\u81f3\uff1a{date}',
+      deQuota: '\u6388\u6743\u6570\uff1a{quota}',
+      deExpires: '\u5230\u671f\u65f6\u95f4\uff1a{date}',
       deUsed: '\u5df2\u4f7f\u7528\uff1a{used} / {quota}',
       deReasonDisabled: '\u6388\u6743\u5df2\u7981\u7528',
       deReasonQuotaZero: '\u672a\u5206\u914d\u5e2d\u4f4d',
       deReasonExpired: '\u6388\u6743\u5df2\u8fc7\u671f',
       deReasonNotSubscribed: '\u672a\u8ba2\u9605',
-      computeCredits: '\u7b97\u529b\uff1a\u5269\u4f59 {remaining} / \u603b\u8ba1 {total}',
-      computeExpires: '\u6709\u6548\u671f\u81f3\uff1a{date}',
+      computeCredits: '\u7b97\u529b\u4f59\u989d\uff1a{remaining} / {total}',
+      computeExpires: '\u6709\u6548\u671f\u81f3 {date}',
       computeCards: '{count} \u4e2a\u6709\u6548\u6388\u6743',
-      computeAllowExternal: '\u5141\u8bb8\u6dfb\u52a0\u7b2c\u4e09\u65b9 LLM \u670d\u52a1',
-      computeNoExternal: '\u4ec5\u9650 MaClaw \u5b98\u65b9\u7b97\u529b',
-      notAvailable: '\u6682\u65e0\u6570\u636e',
+      computeAllowExternal: '\u2705 \u5141\u8bb8\u6dfb\u52a0\u7b2c\u4e09\u65b9 LLM \u670d\u52a1',
+      computeNoExternal: '\u26d4 \u4ec5\u9650 MaClaw \u5b98\u65b9\u7b97\u529b',
+      notAvailable: '\u6682\u65e0\u6570\u636e\uff08\u8bf7\u786e\u8ba4\u8282\u70b9\u4e2d\u5fc3\u5df2\u540c\u6b65\u6388\u6743\uff09',
       noDomains: '\u672a\u914d\u7f6e'
     }
   };
@@ -89,6 +89,11 @@
     return d.toLocaleDateString();
   }
 
+  function formatNumber(n) {
+    if (n === undefined || n === null) return '0';
+    return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
   function isTenantAdminScope() {
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
     return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
@@ -96,7 +101,7 @@
 
   // Resolves which tenant ID to display on the overview.
   // Tenant admins: their own tenant.
-  // Global admins: the currently selected tenant context (from tenant chip), or 'default'.
+  // Global admins: the currently selected tenant context, or from profile, or 'tenant_default'.
   function resolveOverviewTenantID() {
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
     if (!profile) return '';
@@ -106,7 +111,8 @@
       var filtered = global.getActiveTenantFilter();
       if (filtered) return filtered;
     }
-    return 'default';
+    // Use profile's tenant_id if available, otherwise the canonical default
+    return profile.tenant_id || 'tenant_default';
   }
 
   // Renders the tenant info panel on the overview tab.
@@ -121,6 +127,7 @@
     }
 
     panel.classList.remove('hidden');
+    var tenantID = resolveOverviewTenantID();
 
     // Labels (re-set on every render to support language switching)
     var titleEl = byID('overviewTenantInfoTitle');
@@ -160,9 +167,30 @@
     }
 
     // Digital Employee Authorization
+    // Sources (priority order):
+    // 1. centerData.digital_employee_authorization (single, filtered by backend for this tenant)
+    // 2. centerData.digital_employee_authorizations[tenantID] (map, available for global admins)
+    // 3. tenant.digital_employee_authorization (from tenant detail API with enrichment)
     var deStatus = byID('overviewDEAuthStatus');
     var deDetail = byID('overviewDEAuthDetail');
-    var deAuth = (centerData && centerData.digital_employee_authorization) || (tenant.digital_employee_authorization) || null;
+    var deAuth = null;
+    if (centerData) {
+      deAuth = centerData.digital_employee_authorization || null;
+      if (!deAuth && centerData.digital_employee_authorizations) {
+        // Try multiple key variants: the backend normalizes tenant IDs but
+        // HubCenter might use different formats in the plural map.
+        var mapKeys = [tenantID];
+        if (tenantID === 'tenant_default') mapKeys.push('default');
+        else if (tenantID === 'default') mapKeys.push('tenant_default');
+        else mapKeys.push('tenant_' + tenantID, tenantID.replace(/^tenant_/, ''));
+        for (var ki = 0; ki < mapKeys.length && !deAuth; ki++) {
+          deAuth = centerData.digital_employee_authorizations[mapKeys[ki]] || null;
+        }
+      }
+    }
+    if (!deAuth && tenant.digital_employee_authorization) {
+      deAuth = tenant.digital_employee_authorization;
+    }
     if (deStatus && deDetail) {
       if (!deAuth) {
         deStatus.innerHTML = '<span style="color:var(--muted)">' + esc(ott('notAvailable')) + '</span>';
@@ -170,8 +198,8 @@
       } else if (deAuth.active) {
         deStatus.innerHTML = '<span style="color:#27ae60;font-weight:500">\u25cf ' + esc(ott('statusActive')) + '</span>';
         var details = [];
-        if (deAuth.quota) details.push(ott('deQuota', { quota: deAuth.quota }));
-        if (deAuth.used !== undefined && deAuth.quota) details.push(ott('deUsed', { used: deAuth.used || 0, quota: deAuth.quota }));
+        if (deAuth.quota) details.push(ott('deQuota', { quota: formatNumber(deAuth.quota) }));
+        if (deAuth.used !== undefined && deAuth.quota) details.push(ott('deUsed', { used: formatNumber(deAuth.used || 0), quota: formatNumber(deAuth.quota) }));
         if (deAuth.expires_at) details.push(ott('deExpires', { date: formatDate(deAuth.expires_at) }));
         deDetail.textContent = details.join(' | ');
       } else {
@@ -194,18 +222,32 @@
         computeStatus.innerHTML = '<span style="color:#27ae60;font-weight:500">\u25cf ' + esc(ott('statusActive')) + '</span>';
         var cDetails = [];
         if (compute.total_credits !== undefined) {
-          cDetails.push(ott('computeCredits', { remaining: Math.round(compute.remaining_credits || 0), total: Math.round(compute.total_credits || 0) }));
+          cDetails.push(ott('computeCredits', { remaining: formatNumber(compute.remaining_credits), total: formatNumber(compute.total_credits) }));
         }
         if (compute.authorization_count) cDetails.push(ott('computeCards', { count: compute.authorization_count }));
         if (compute.expires_at) cDetails.push(ott('computeExpires', { date: formatDate(compute.expires_at) }));
-        if (compute.allow_external) cDetails.push(ott('computeAllowExternal'));
-        else cDetails.push(ott('computeNoExternal'));
-        computeDetail.textContent = cDetails.join(' | ');
+        var extLine = compute.allow_external ? ott('computeAllowExternal') : ott('computeNoExternal');
+        if (cDetails.length > 0) {
+          computeDetail.textContent = cDetails.join(' | ') + '\n' + extLine;
+        } else {
+          computeDetail.textContent = extLine;
+        }
       } else {
-        computeStatus.innerHTML = '<span style="color:#e74c3c;font-weight:500">\u25cf ' + esc(ott('statusInactive')) + '</span>';
+        // No active credits but the authorization status itself may still be valid
+        // (e.g. allow_external is set even without credit purchases)
+        var computeStatusText = ott('statusInactive');
+        var computeStatusColor = '#e74c3c';
+        if (compute.allow_external) {
+          computeStatusText = ott('statusActive');
+          computeStatusColor = '#27ae60';
+        }
+        computeStatus.innerHTML = '<span style="color:' + computeStatusColor + ';font-weight:500">\u25cf ' + esc(computeStatusText) + '</span>';
         var fallbackDetail = '';
         if (compute.allow_external !== undefined) {
           fallbackDetail = compute.allow_external ? ott('computeAllowExternal') : ott('computeNoExternal');
+        }
+        if (compute.error) {
+          fallbackDetail = (fallbackDetail ? fallbackDetail + '\n' : '') + '\u26a0\ufe0f ' + esc(compute.error);
         }
         computeDetail.textContent = fallbackDetail;
       }
@@ -232,14 +274,20 @@
 
     var tenantAdmin = isTenantAdminScope();
 
-    // Fetch all three sources in parallel
-    var computeURL = '/api/admin/llm/maclaw-compute-status';
-    if (!tenantAdmin && tenantID !== 'default') {
-      computeURL += '?tenant_id=' + encodeURIComponent(tenantID);
+    // Fetch tenant detail and compute status in parallel.
+    // Use ?refresh=1 for compute status to trigger a direct QueryAuthorization
+    // call to HubCenter, ensuring we get the latest AllowExternalProviders
+    // value rather than relying on heartbeat-cached data which may be stale
+    // or never populated (if HubCenter heartbeat response omits authorization fields).
+    var isDefaultTenant = (tenantID === 'tenant_default' || tenantID === 'default');
+    var computeURL = '/api/admin/llm/maclaw-compute-status?refresh=1';
+    if (!tenantAdmin && !isDefaultTenant) {
+      computeURL += '&tenant_id=' + encodeURIComponent(tenantID);
     }
+
     var results = await Promise.allSettled([
       global.api('/api/admin/tenants/' + encodeURIComponent(tenantID)),
-      global.api('/api/admin/center/status' + (!tenantAdmin ? '?tenant_id=' + encodeURIComponent(tenantID) : '')),
+      global.api('/api/admin/center/status'),
       global.api(computeURL)
     ]);
 
@@ -260,7 +308,11 @@
         allow_external: !!computeRaw.allow_external_providers
       };
     } else if (computeRaw) {
-      computeData = { active: false, allow_external: !!computeRaw.allow_external_providers };
+      computeData = {
+        active: false,
+        allow_external: !!computeRaw.allow_external_providers,
+        error: computeRaw.authorization_error || ''
+      };
     }
 
     renderOverviewTenantInfo(tenantData, centerData, computeData);

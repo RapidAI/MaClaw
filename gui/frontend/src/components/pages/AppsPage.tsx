@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, GetMISDataConfig, GetNLSkillRunStatus, ListNLSkills, ListSkillAppManifests, OpenFileOrShowInFolder, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, DownloadSkillRunArtifact, GetMISDataConfig, GetNLSkillRunStatus, ListNLSkills, ListSkillAppManifests, OpenFileOrShowInFolder, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import './AppsPage.css';
 
 type AppKind = 'enterprise_app' | 'tool_app' | 'automation_app';
@@ -98,6 +98,9 @@ type SkillRunArtifactView = {
     path?: string;
     mime_type?: string;
     size_bytes?: number;
+    remote_url?: string;
+    checksum?: string;
+    download_state?: string;
     status?: string;
     presentation?: string;
 };
@@ -143,6 +146,7 @@ type AppRunHistoryEntry = {
     artifactURI?: string;
     artifactName?: string;
     artifactPath?: string;
+    artifactDownloadState?: string;
     at: string;
 };
 
@@ -259,7 +263,7 @@ type SkillSummary = {
 const storageKey = 'maclaw:apps-panel:v1';
 const runHistoryStorageKey = 'maclaw:apps-run-history:v1';
 const publishSubmissionStorageKey = 'maclaw:apps-publish-submissions:v1';
-const maxPinnedApps = 6;
+const maxPinnedApps = 8;
 const maxSkillAppStagingBytes = 25 * 1024 * 1024;
 const allowedOutputModes = ['docx', 'xlsx', 'pdf', 'json', 'txt'];
 const allowedSkillFieldTypes = ['text', 'select', 'boolean'];
@@ -363,6 +367,7 @@ const labels = {
         runtimeStatus: '\u6267\u884c\u72b6\u6001',
         runtimeOutput: '\u8f93\u51fa',
         outputText: '\u6587\u672c\u7ed3\u679c',
+        outputContent: '\u8f93\u51fa\u5185\u5bb9',
         noOutputYet: '\u6267\u884c\u5b8c\u6210\u540e\uff0c\u8fd9\u91cc\u663e\u793a\u8f93\u51fa\u6587\u4ef6\u6216\u6587\u672c\u7ed3\u679c\u3002',
         runCompleted: '\u6267\u884c\u5b8c\u6210',
         setAsPinned: '\u8bbe\u4e3a\u5e38\u7528',
@@ -370,6 +375,7 @@ const labels = {
         artifactPending: '\u7b49\u5f85\u4ea7\u7269',
         artifactReady: '\u4ea7\u7269\u5df2\u751f\u6210',
         openArtifact: '\u6253\u5f00',
+        downloadArtifact: '\u4e0b\u8f7d\u5e76\u6253\u5f00',
         revealArtifact: '\u5b9a\u4f4d',
         noRunEvidence: '\u6267\u884c\u540e\u663e\u793a\u6b65\u9aa4\u548c\u4ea7\u7269\u72b6\u6001',
         fileTooLarge: '\u6587\u4ef6\u8d85\u8fc7 25MB\uff0c\u6682\u4e0d\u652f\u6301\u6b64\u65b9\u5f0f\u4e0a\u4f20',
@@ -384,7 +390,7 @@ const labels = {
         noMoreApps: '\u6ca1\u6709\u66f4\u591a\u5e94\u7528',
         pin: '\u7f6e\u9876',
         unpin: '\u53d6\u6d88',
-        pinLimitReached: '\u5e38\u7528\u5e94\u7528\u5df2\u6ee1 6 \u4e2a\uff0c\u8bf7\u5148\u53d6\u6d88\u4e00\u4e2a',
+        pinLimitReached: '\u5e38\u7528\u5e94\u7528\u5df2\u6ee1 8 \u4e2a\uff0c\u8bf7\u5148\u53d6\u6d88\u4e00\u4e2a',
         edit: '\u7f16\u8f91',
         duplicate: '\u590d\u5236\u5e94\u7528',
         duplicateSuffix: '\u526f\u672c',
@@ -425,8 +431,15 @@ const labels = {
         options: '\u9009\u9879',
         appColor: '\u56fe\u6807\u989c\u8272',
         validationMissing: '\u8bf7\u8865\u5145\u5fc5\u586b\u8f93\u5165',
-        installManifest: '\u4ece Manifest \u5b89\u88c5',
-        pasteManifest: '\u7c98\u8d34 maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json',
+        installManifest: '\u5b89\u88c5\u5e94\u7528\u5305',
+        marketApps: '\u5e94\u7528\u5e02\u573a',
+        marketAdvancedImport: '\u5bfc\u5165\u5e94\u7528\u5305',
+        marketAdvancedImportHint: '\u7c98\u8d34\u5df2\u5ba1\u6838\u7684\u5e94\u7528\u5305 JSON\uff0c\u9002\u5408\u7ba1\u7406\u5458\u6216\u79c1\u6709\u5e94\u7528\u3002',
+        marketSource: '\u6765\u6e90',
+        marketAddableCount: '\u53ef\u6dfb\u52a0',
+        marketUpgradeableCount: '\u53ef\u5347\u7ea7',
+        marketAdd: '\u6dfb\u52a0',
+        pasteManifest: '\u7c98\u8d34\u5e94\u7528\u5305 JSON\uff08maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json\uff09',
         install: '\u5b89\u88c5',
         confirmHighRiskInstall: '\u786e\u8ba4\u5b89\u88c5',
         highRiskInstallWarning: '\u9009\u4e2d\u7684\u5347\u7ea7\u5305\u5305\u542b\u9ad8\u98ce\u9669\u65b0\u6743\u9650\uff0c\u9700\u518d\u6b21\u786e\u8ba4\u3002',
@@ -449,9 +462,9 @@ const labels = {
         skippedItem: '\u5df2\u8df3\u8fc7',
         installDetails: '\u5b89\u88c5\u660e\u7ec6',
         skippedCount: '\u5df2\u8df3\u8fc7',
-        installError: '\u65e0\u6548 Manifest',
+        installError: '\u5e94\u7528\u5305\u65e0\u6548',
         parseError: 'JSON \u89e3\u6790\u5931\u8d25',
-        schemaError: '\u7f3a\u5c11 maclaw.app.v1\u3001maclaw.app.pack.v1 \u6216 x_maclaw_apps',
+        schemaError: '\u672a\u8bc6\u522b\u5e94\u7528\u5305\u683c\u5f0f',
         close: '\u5173\u95ed',
     },
     en: {
@@ -550,6 +563,7 @@ const labels = {
         runtimeStatus: 'Run status',
         runtimeOutput: 'Output',
         outputText: 'Text result',
+        outputContent: 'Output content',
         noOutputYet: 'Output files or text results appear here after execution.',
         runCompleted: 'Run completed',
         setAsPinned: 'Pin to favorites',
@@ -557,6 +571,7 @@ const labels = {
         artifactPending: 'Waiting for artifact',
         artifactReady: 'Artifact generated',
         openArtifact: 'Open',
+        downloadArtifact: 'Download and open',
         revealArtifact: 'Reveal',
         noRunEvidence: 'Steps and artifact status appear after execution',
         fileTooLarge: 'File is larger than 25MB and cannot be uploaded this way yet',
@@ -571,7 +586,7 @@ const labels = {
         noMoreApps: 'No more apps',
         pin: 'Pin',
         unpin: 'Unpin',
-        pinLimitReached: 'Pinned apps are full. Unpin one first.',
+        pinLimitReached: 'Pinned apps are full at 8. Unpin one first.',
         edit: 'Edit',
         duplicate: 'Duplicate app',
         duplicateSuffix: 'Copy',
@@ -612,8 +627,15 @@ const labels = {
         options: 'Options',
         appColor: 'Icon color',
         validationMissing: 'Complete required input',
-        installManifest: 'Install from Manifest',
-        pasteManifest: 'Paste maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json',
+        installManifest: 'Install app package',
+        marketApps: 'App market',
+        marketAdvancedImport: 'Import app package',
+        marketAdvancedImportHint: 'Paste reviewed app package JSON for admin installs or private apps.',
+        marketSource: 'Source',
+        marketAddableCount: 'Addable',
+        marketUpgradeableCount: 'Upgradable',
+        marketAdd: 'Add',
+        pasteManifest: 'Paste app package JSON (maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json)',
         install: 'Install',
         confirmHighRiskInstall: 'Confirm install',
         highRiskInstallWarning: 'Selected upgrades include high-risk new permissions; confirm once more.',
@@ -636,9 +658,9 @@ const labels = {
         skippedItem: 'Skipped',
         installDetails: 'Install details',
         skippedCount: 'Skipped',
-        installError: 'Invalid Manifest',
+        installError: 'Invalid app package',
         parseError: 'JSON parse failed',
-        schemaError: 'Missing maclaw.app.v1, maclaw.app.pack.v1, or x_maclaw_apps',
+        schemaError: 'Unrecognized app package format',
         close: 'Close',
     },
 };
@@ -668,6 +690,13 @@ const initialApps: AppEntry[] = [
     { id: 'sheet-analysis', name: '\u8868\u683c\u5206\u6790', description: '\u4e0a\u4f20 Excel\uff0c\u751f\u6210\u5206\u6790\u7ed3\u8bba\u3001\u56fe\u8868\u548c\u6e05\u6d17\u540e\u8868\u683c\u3002', category: '\u6570\u636e\u5206\u6790', kind: 'tool_app', icon: 'sheet', accent: '#3f6f4f', source: 'skill', manifest: makeSkillManifest('sheet-analysis', 'file', ['xlsx', 'pdf']) },
     { id: 'web-collect', name: '\u7f51\u9875\u91c7\u96c6', description: '\u56fa\u5b9a\u7f51\u7ad9\u7684\u5468\u671f\u91c7\u96c6\u548c\u7ed3\u679c\u6821\u9a8c\u3002', category: '\u6570\u636e\u91c7\u96c6', kind: 'automation_app', icon: 'web', accent: '#5b5ea6', source: 'market', manifest: makeAutomationManifest() },
     { id: 'data-sync', name: '\u6570\u636e\u540c\u6b65', description: '\u5728 DataSrv \u3001\u6587\u4ef6\u548c\u4e1a\u52a1\u7cfb\u7edf\u95f4\u8fd0\u884c\u53ef\u76d1\u63a7\u540c\u6b65\u3002', category: '\u6570\u636e\u96c6\u6210', kind: 'automation_app', icon: 'sync', accent: '#4b6572', source: 'market', manifest: makeAutomationManifest() },
+];
+
+const marketCatalogApps: AppEntry[] = [
+    { id: 'market-contract-archive', name: '\u5408\u540c\u5f52\u6863', description: '\u4e0a\u4f20\u5408\u540c\u548c\u9644\u4ef6\uff0c\u751f\u6210\u5f52\u6863\u7f16\u53f7\u3001\u5ba1\u6838\u72b6\u6001\u548c\u8bc1\u636e\u6458\u8981\u3002', category: '\u6cd5\u52a1', kind: 'tool_app', icon: 'contract', accent: '#7c3f58', source: 'market', manifest: makeSkillManifest('contract-archive', 'mixed', ['docx', 'pdf', 'json']) },
+    { id: 'market-invoice-check', name: '\u53d1\u7968\u6838\u9a8c', description: '\u6838\u5bf9\u53d1\u7968\u3001\u91d1\u989d\u3001\u62ac\u5934\u548c\u8d39\u7528\u79d1\u76ee\uff0c\u8f93\u51fa\u5f02\u5e38\u6e05\u5355\u3002', category: '\u8d22\u52a1', kind: 'tool_app', icon: 'invoice', accent: '#2f5f98', source: 'market', manifest: makeSkillManifest('invoice-check', 'file', ['xlsx', 'pdf']) },
+    { id: 'market-meeting-minutes', name: '\u4f1a\u8bae\u7eaa\u8981', description: '\u6574\u7406\u4f1a\u8bae\u8bb0\u5f55\u6216\u5f55\u97f3\u8f6c\u5199\uff0c\u751f\u6210\u51b3\u8bae\u3001\u5f85\u529e\u548c\u8d23\u4efb\u4eba\u3002', category: 'OA', kind: 'tool_app', icon: 'calendar', accent: '#4b6572', source: 'market', manifest: makeSkillManifest('meeting-minutes', 'mixed', ['docx', 'txt']) },
+    { id: 'market-sales-followup', name: '\u5ba2\u6237\u8ddf\u8fdb', description: '\u6839\u636e\u5ba2\u6237\u6c9f\u901a\u8bb0\u5f55\u751f\u6210\u8ddf\u8fdb\u8ba1\u5212\uff0c\u540c\u6b65\u5ba2\u6237\u72b6\u6001\u548c\u4e0b\u4e00\u6b65\u52a8\u4f5c\u3002', category: 'CRM', kind: 'enterprise_app', icon: 'customer', accent: '#8a5a44', source: 'market', manifest: makeDataSrvManifest('sales', 'sales.followup_upsert', 'sales.customer_directory', 'sales.followup_by_status', 'sales.overview') },
 ];
 
 const builtInAppIds = new Set(initialApps.map((app) => app.id));
@@ -1108,10 +1137,13 @@ function skillRunOutputSuffix(status?: SkillRunStatusView | null) {
 }
 
 function skillRunPrimaryArtifact(status?: SkillRunStatusView | null): SkillRunArtifactView | null {
-    const fromTop = Array.isArray(status?.artifacts) ? status?.artifacts?.find((item) => String(item?.path || '').trim()) : undefined;
+    const hasArtifactRef = (item?: SkillRunArtifactView) => !!String(item?.path || item?.uri || item?.id || item?.remote_url || '').trim();
+    const fromTop = Array.isArray(status?.artifacts) ? status?.artifacts?.find(hasArtifactRef) : undefined;
     if (fromTop) return fromTop;
-    const fromSummary = Array.isArray(status?.summary?.artifacts) ? status?.summary?.artifacts?.find((item) => String(item?.path || '').trim()) : undefined;
+    const fromSummary = Array.isArray(status?.summary?.artifacts) ? status?.summary?.artifacts?.find(hasArtifactRef) : undefined;
     if (fromSummary) return fromSummary;
+    const fromOutput = skillRunOutputBlocks(status).map((block) => block.artifact).find(hasArtifactRef);
+    if (fromOutput) return fromOutput;
     const artifactPath = String(status?.summary?.artifact_path || '').trim();
     if (!artifactPath) return null;
     return { path: artifactPath, status: status?.summary?.artifact_status };
@@ -1119,6 +1151,18 @@ function skillRunPrimaryArtifact(status?: SkillRunStatusView | null): SkillRunAr
 
 function skillRunPrimaryArtifactPath(status?: SkillRunStatusView | null) {
     return String(skillRunPrimaryArtifact(status)?.path || '').trim();
+}
+
+function skillRunOutputBlocks(status?: SkillRunStatusView | null): SkillRunOutputBlockView[] {
+    const seen = new Set<string>();
+    const blocks: SkillRunOutputBlockView[] = [];
+    for (const block of [...(status?.outputs || []), ...(status?.summary?.output_blocks || [])]) {
+        const key = String(block?.id || `${block?.kind || ''}:${block?.title || ''}:${block?.text || ''}:${block?.artifact_id || ''}`).trim();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        blocks.push(block);
+    }
+    return blocks;
 }
 
 function skillRunProgressMessage(status: SkillRunStatusView | null, fallback: string, runID: string) {
@@ -1133,6 +1177,29 @@ function compactStepLabel(step: SkillRunStepView) {
 
 function compactStepDetail(step: SkillRunStepView) {
     return String(step.error || step.output || '').trim().slice(0, 120);
+}
+
+function skillRunOutputBlockText(block: SkillRunOutputBlockView) {
+    return String(block.text || '').trim();
+}
+
+async function openSkillRunArtifactFromUI(runID: string, artifactRef: string, artifactPath: string, remoteOnly: boolean) {
+    if (runID && artifactRef) {
+        if (remoteOnly) {
+            await DownloadSkillRunArtifact(runID, artifactRef);
+        }
+        await OpenSkillRunArtifact(runID, artifactRef);
+        return;
+    }
+    await OpenFileOrShowInFolder(artifactPath);
+}
+
+async function revealSkillRunArtifactFromUI(runID: string, artifactRef: string, artifactPath: string) {
+    if (runID && artifactRef) {
+        await RevealSkillRunArtifact(runID, artifactRef);
+        return;
+    }
+    await ShowItemInFolder(artifactPath);
 }
 
 function artifactStatusLabel(status: SkillRunStatusView | null, text: typeof labels.zh) {
@@ -1464,8 +1531,8 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
         testEvidence: {
             runId: evidence?.runID,
             definitionHash: evidence?.definitionHash,
-            artifactPresent: !!evidence?.artifactPath,
-            artifactName: evidence?.artifactPath ? evidence.artifactPath.split(/[\\/]/).pop() : undefined,
+            artifactPresent: !!(evidence?.artifactURI || evidence?.artifactName || evidence?.artifactPath),
+            artifactName: evidence?.artifactName || (evidence?.artifactPath ? evidence.artifactPath.split(/[\\/]/).pop() : undefined),
             verifiedAt: localEvidenceAt || undefined,
         },
         submission: submission ? {
@@ -1761,7 +1828,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
     const hasSearchQuery = normalizedQuery.length > 0;
     const panelFilterActive = hasSearchQuery || category !== 'all';
     const showPinnedSection = !hasSearchQuery && category !== 'recent';
-    const pinnedApps = showPinnedSection ? filteredApps.filter((app) => app.pinned).slice(0, 6) : [];
+    const pinnedApps = showPinnedSection ? filteredApps.filter((app) => app.pinned).slice(0, maxPinnedApps) : [];
     const pinnedSectionIds = new Set(pinnedApps.map((app) => app.id));
     const visibleListApps = pinnedSectionIds.size > 0 ? filteredApps.filter((app) => !pinnedSectionIds.has(app.id)) : filteredApps;
     const panelFilterSummary = filterSummaryText({ query, category, count: filteredApps.length, lang, allLabel: text.all });
@@ -2025,7 +2092,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                         <section className="apps-section">
                             <div className="apps-section__title-row">
                                 <h3 className="apps-section__title">{text.pinned}</h3>
-                                <span className="apps-count">{pinnedApps.length}/6</span>
+                                <span className="apps-count">{pinnedApps.length}/{maxPinnedApps}</span>
                             </div>
                             <div className="apps-grid">{pinnedApps.map(renderTile)}</div>
                         </section>
@@ -2256,6 +2323,7 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                     const artifactID = String(artifact?.id || '').trim();
                     const artifactURI = String(artifact?.uri || '').trim();
                     const artifactName = String(artifact?.name || artifactPath.split(/[\\/]/).pop() || '').trim();
+                    const artifactDownloadState = String(artifact?.download_state || '').trim();
                     const definitionHash = app ? appDefinitionFingerprint(app) : undefined;
                     const verifiedAt = new Date().toISOString();
                     setValidationMessage('');
@@ -2271,9 +2339,10 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                         artifactURI,
                         artifactName,
                         artifactPath,
+                        artifactDownloadState,
                     });
                     if (app?.source === 'skill' && app.manifest?.skill?.id) {
-                        void RecordMaclawAppRunEvidenceForSkill(app.manifest.skill.id, app.id, definitionHash || '', runID, artifactPath, verifiedAt).catch(() => undefined);
+                        void RecordMaclawAppRunEvidenceForSkill(app.manifest.skill.id, app.id, definitionHash || '', runID, artifactPath || artifactName || artifactURI, verifiedAt).catch(() => undefined);
                     }
                 } else if (lifecycle === 'error') {
                     const message = skillRunErrorMessage(status) || text.skillRunFailed;
@@ -2582,17 +2651,17 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                                                 <div>
                                                     <strong>{item.inputSummary || item.runID}</strong>
                                                     <span>{formatRunHistoryTime(item.at)} · {item.outputMode.toUpperCase()} · {item.runID}</span>
-                                                    {item.artifactPath && <code>{item.artifactPath}</code>}
+                                                    {(item.artifactURI || item.artifactPath) && <code>{item.artifactURI || item.artifactPath}</code>}
                                                 </div>
-                                                <div className="apps-run-history__side">
-                                                    <em>{item.message || item.status}</em>
-                                                    {item.artifactPath && (
-                                                        <div className="apps-run-history__actions">
-                                                            <button className="apps-link-button" type="button" onClick={() => void OpenFileOrShowInFolder(item.artifactPath || '')}>{text.openArtifact}</button>
-                                                            <button className="apps-link-button" type="button" onClick={() => void ShowItemInFolder(item.artifactPath || '')}>{text.revealArtifact}</button>
-                                                        </div>
-                                                    )}
-                                                </div>
+                                            <div className="apps-run-history__side">
+                                                <em>{item.message || item.status}</em>
+                                                {(item.artifactURI || item.artifactPath) && (
+                                                    <div className="apps-run-history__actions">
+                                                            <button className="apps-link-button" type="button" onClick={() => void openSkillRunArtifactFromUI(item.runID, item.artifactID || item.artifactURI || '', item.artifactPath || '', item.artifactDownloadState === 'remote')}>{item.artifactDownloadState === 'remote' ? text.downloadArtifact : text.openArtifact}</button>
+                                                            <button className="apps-link-button" type="button" onClick={() => void revealSkillRunArtifactFromUI(item.runID, item.artifactID || item.artifactURI || '', item.artifactPath || '')}>{text.revealArtifact}</button>
+                                                    </div>
+                                                )}
+                                            </div>
                                             </div>
                                         ))}
                                     </div>
@@ -2645,30 +2714,59 @@ const AppRunOutput = ({ status, runState, resultText, isTool, text }: { status: 
     const artifactStatus = String(artifact?.status || status?.summary?.artifact_status || '').trim();
     const artifactLabel = artifactStatusLabel(status, text);
     const artifactName = String(artifact?.name || artifactPath.split(/[\\/]/).pop() || '').trim();
-    const artifactMeta = [artifactName, artifact?.mime_type, artifact?.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' · ');
-    const showTextOutput = runState === 'done' && (!isTool || !artifactPath);
+    const artifactDownloadState = String(artifact?.download_state || '').trim().toLowerCase();
+    const artifactRemoteOnly = artifactDownloadState === 'remote' && !artifactPath;
+    const artifactMeta = [artifactName, artifact?.mime_type, artifact?.size_bytes ? `${artifact.size_bytes} bytes` : '', artifactRemoteOnly ? 'remote' : ''].filter(Boolean).join(' · ');
+    const artifactRef = artifactID || artifactURI;
+    const hasArtifact = !!(artifactRef || artifactPath);
+    const outputBlocks = skillRunOutputBlocks(status).filter((block) => skillRunOutputBlockText(block));
+    const showTextOutput = runState === 'done' && (!isTool || (!hasArtifact && outputBlocks.length === 0));
     return (
         <section className="apps-runtime-section apps-runtime-output">
             <div className="apps-runtime-section__title">{text.runtimeOutput}</div>
-            {artifactPath ? (
+            {outputBlocks.length > 0 && (
+                <div className="apps-output-blocks">
+                    {outputBlocks.map((block, index) => {
+                        const blockKind = String(block.kind || 'text').trim().toLowerCase();
+                        const blockText = skillRunOutputBlockText(block);
+                        const blockTitle = String(block.title || (blockKind === 'error' ? 'Error' : text.outputContent)).trim();
+                        const blockArtifact = block.artifact;
+                        const blockArtifactRef = String(block.artifact_id || blockArtifact?.id || blockArtifact?.uri || '').trim();
+                        const blockArtifactPath = String(blockArtifact?.path || '').trim();
+                        const blockRemoteOnly = String(blockArtifact?.download_state || '').trim().toLowerCase() === 'remote' && !blockArtifactPath;
+                        return (
+                            <div className="apps-output-block" data-kind={blockKind} key={block.id || `${blockKind}-${index}`}>
+                                <span>{blockTitle}</span>
+                                {blockText && <pre>{blockText}</pre>}
+                                {blockArtifactRef && (
+                                    <div className="apps-output-block__actions">
+                                        <button className="apps-link-button" type="button" onClick={() => void openSkillRunArtifactFromUI(runID, blockArtifactRef, blockArtifactPath, blockRemoteOnly)}>{blockRemoteOnly ? text.downloadArtifact : text.openArtifact}</button>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+            {hasArtifact ? (
                 <div className="apps-run-artifact">
                     <span>{text.runArtifacts}</span>
                     <strong>{artifactLabel || artifactStatus || text.artifactReady}</strong>
                     {artifactMeta && <span>{artifactMeta}</span>}
-                    <code>{artifactURI || artifactPath}</code>
+                    <code>{artifactURI || artifactName || artifactPath}</code>
                     <div className="apps-run-artifact__actions">
-                        <button className="apps-link-button" type="button" onClick={() => void (runID ? OpenSkillRunArtifact(runID, artifactID) : OpenFileOrShowInFolder(artifactPath))}>{text.openArtifact}</button>
-                        <button className="apps-link-button" type="button" onClick={() => void (runID ? RevealSkillRunArtifact(runID, artifactID) : ShowItemInFolder(artifactPath))}>{text.revealArtifact}</button>
+                        <button className="apps-link-button" type="button" disabled={!artifactRef && !artifactPath} onClick={() => void openSkillRunArtifactFromUI(runID, artifactRef, artifactPath, artifactRemoteOnly)}>{artifactRemoteOnly ? text.downloadArtifact : text.openArtifact}</button>
+                        <button className="apps-link-button" type="button" disabled={!artifactRef && !artifactPath} onClick={() => void revealSkillRunArtifactFromUI(runID, artifactRef, artifactPath)}>{text.revealArtifact}</button>
                     </div>
                 </div>
-            ) : showTextOutput ? (
+            ) : outputBlocks.length === 0 && showTextOutput ? (
                 <div className="apps-output-text">
                     <span>{text.outputText}</span>
                     <pre>{resultText}</pre>
                 </div>
-            ) : (
+            ) : outputBlocks.length === 0 ? (
                 <div className="apps-output-empty">{artifactStatus || artifactLabel || text.noOutputYet}</div>
-            )}
+            ) : null}
         </section>
     );
 };
@@ -2980,11 +3078,14 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
     return (
         <>
             <div className="apps-detail__header">
-                <div>
+                <div className="apps-detail__heading">
                     <h2 className="apps-detail__title">{text.appStudio}</h2>
                     <p className="apps-detail__subtitle">{text.studioSubtitle}</p>
                 </div>
-                <button className="apps-secondary-button" type="button" onClick={onClose}>{isZh(lang) ? '\u5173\u95ed' : 'Close'}</button>
+                <div className="apps-detail__actions">
+                    <DataSrvDiscoverySummary discovery={datasrvDiscovery} lang={lang} />
+                    <button className="apps-secondary-button" type="button" onClick={onClose}>{isZh(lang) ? '\u5173\u95ed' : 'Close'}</button>
+                </div>
             </div>
             <div className="apps-detail__body elegant-scrollbar">
                 <div className="apps-preview">
@@ -3030,6 +3131,42 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
 const getStudioTabId = (tab: StudioTab) => `apps-studio-tab-${tab}`;
 const getStudioPanelId = (tab: StudioTab) => `apps-studio-panel-${tab}`;
 
+const dataSrvDiscoveryStatusLabel = (discovery: DataSrvDiscovery, text: typeof labels.zh) => discovery.status === 'ready' ? text.datasrvReady :
+    discovery.status === 'loading' ? text.datasrvLoading :
+        discovery.status === 'disabled' ? text.datasrvDisabled :
+            discovery.status === 'error' ? text.datasrvError : '-';
+
+const DataSrvDiscoverySummary = ({ discovery, lang }: { discovery: DataSrvDiscovery; lang?: string }) => {
+    const text = isZh(lang) ? labels.zh : labels.en;
+    const zh = isZh(lang);
+    const statusLabel = dataSrvDiscoveryStatusLabel(discovery, text);
+    const metrics = [
+        { label: zh ? '\u57df' : 'Domains', value: discovery.domains },
+        { label: zh ? '\u52a8\u4f5c' : 'Actions', value: discovery.actions },
+        { label: zh ? '\u89c6\u56fe' : 'Views', value: discovery.views },
+        { label: zh ? '\u62a5\u8868' : 'Reports', value: discovery.reports },
+        { label: zh ? '\u770b\u677f' : 'Dashboards', value: discovery.dashboards },
+    ];
+    const endpoint = discovery.endpoint || 'http://127.0.0.1:18180';
+    const meta = discovery.error ? `${endpoint} · ${discovery.error}` : endpoint;
+    return (
+        <div className="apps-datasrv-summary" data-status={discovery.status} aria-label={text.datasrvDiscovery}>
+            <div className="apps-datasrv-summary__main">
+                <span className="apps-datasrv-summary__title">{text.datasrvDiscovery}</span>
+                <span className="apps-datasrv-summary__status">{statusLabel}</span>
+            </div>
+            <div className="apps-datasrv-summary__metrics" aria-label={zh ? '\u80fd\u529b\u7edf\u8ba1' : 'Capability counts'}>
+                {metrics.map((metric) => (
+                    <span key={metric.label}><strong>{metric.value}</strong>{metric.label}</span>
+                ))}
+            </div>
+            <div className="apps-datasrv-summary__meta" title={meta}>
+                {meta}
+            </div>
+        </div>
+    );
+};
+
 const SkillDiscoveryPanel = ({ discovery, apps, lang, onAddApp }: { discovery: SkillAppDiscovery; apps: AppEntry[]; lang?: string; onAddApp: (app: AppEntry) => void }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const installedIds = new Set(apps.map((app) => app.id));
@@ -3069,56 +3206,31 @@ const SkillDiscoveryPanel = ({ discovery, apps, lang, onAddApp }: { discovery: S
 
 const DataSrvDiscoveryPanel = ({ discovery, apps, lang, onAddApp }: { discovery: DataSrvDiscovery; apps: AppEntry[]; lang?: string; onAddApp: (app: AppEntry) => void }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
-    const statusLabel = discovery.status === 'ready' ? text.datasrvReady :
-        discovery.status === 'loading' ? text.datasrvLoading :
-            discovery.status === 'disabled' ? text.datasrvDisabled :
-                discovery.status === 'error' ? text.datasrvError : '-';
     const installedIds = new Set(apps.map((app) => app.id));
+    if (discovery.candidates.length === 0) return null;
     return (
         <section className="apps-discovery" data-status={discovery.status}>
-            <div>
-                <div className="apps-discovery__title">{text.datasrvDiscovery}</div>
-                <div className="apps-discovery__meta">{discovery.endpoint || 'http://127.0.0.1:18180'}</div>
-                {discovery.error && <div className="apps-discovery__error">{discovery.error}</div>}
-            </div>
-            <div className="apps-discovery__status">{statusLabel}</div>
-            <div className="apps-discovery__metrics">
-                <DiscoveryMetric label={isZh(lang) ? '\u57df' : 'Domains'} value={discovery.domains} />
-                <DiscoveryMetric label={isZh(lang) ? '\u52a8\u4f5c' : 'Actions'} value={discovery.actions} />
-                <DiscoveryMetric label={isZh(lang) ? '\u89c6\u56fe' : 'Views'} value={discovery.views} />
-                <DiscoveryMetric label={isZh(lang) ? '\u62a5\u8868' : 'Reports'} value={discovery.reports} />
-                <DiscoveryMetric label={isZh(lang) ? '\u770b\u677f' : 'Dashboards'} value={discovery.dashboards} />
-            </div>
-            {discovery.candidates.length > 0 && (
-                <div className="apps-discovery__candidates">
-                    <div className="apps-discovery__candidate-title">{text.discoveredApps}</div>
-                    {discovery.candidates.map((candidate) => {
-                        const installed = installedIds.has(candidate.id);
-                        return (
-                            <div className="apps-discovery__candidate" key={candidate.id}>
-                                <span className="apps-app-icon" style={{ '--apps-icon-color': candidate.accent } as CSSProperties}><Icon name={candidate.icon} /></span>
-                                <div>
-                                    <strong>{candidate.name}</strong>
-                                    <span>{candidate.manifest?.datasrv?.preferredAction || candidate.category}</span>
-                                </div>
-                                <button className="apps-secondary-button" type="button" disabled={installed} onClick={() => onAddApp(candidate)}>
-                                    {installed ? text.added : text.addToPanel}
-                                </button>
+            <div className="apps-discovery__candidates">
+                <div className="apps-discovery__candidate-title">{text.discoveredApps}</div>
+                {discovery.candidates.map((candidate) => {
+                    const installed = installedIds.has(candidate.id);
+                    return (
+                        <div className="apps-discovery__candidate" key={candidate.id}>
+                            <span className="apps-app-icon" style={{ '--apps-icon-color': candidate.accent } as CSSProperties}><Icon name={candidate.icon} /></span>
+                            <div>
+                                <strong>{candidate.name}</strong>
+                                <span>{candidate.manifest?.datasrv?.preferredAction || candidate.category}</span>
                             </div>
-                        );
-                    })}
-                </div>
-            )}
+                            <button className="apps-secondary-button" type="button" disabled={installed} onClick={() => onAddApp(candidate)}>
+                                {installed ? text.added : text.addToPanel}
+                            </button>
+                        </div>
+                    );
+                })}
+            </div>
         </section>
     );
 };
-
-const DiscoveryMetric = ({ label, value }: { label: string; value: number }) => (
-    <div className="apps-discovery__metric">
-        <strong>{value}</strong>
-        <span>{label}</span>
-    </div>
-);
 
 const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
@@ -4318,6 +4430,18 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
     const upgradeableCount = installPlan.filter((item) => item.action === 'upgrade').length;
     const skippedPreviewCount = installPlan.length - selectedInstallCount;
     const hasLiveManifestError = !!manifestText.trim() && !!installPreview.error && installState === 'idle';
+    const marketRows = useMemo(() => {
+        const plan = buildInstallPlan(marketCatalogApps, apps);
+        return marketCatalogApps.map((app) => {
+            const item = plan.find((entry) => entry.app.id === app.id);
+            const installed = item?.action === 'installed' || item?.action === 'duplicate';
+            const upgrade = item?.action === 'upgrade';
+            const actionText = installed ? text.alreadyInstalled : upgrade ? text.willUpgrade : text.marketAdd;
+            return { app, installed, upgrade, actionText };
+        });
+    }, [apps, text.alreadyInstalled, text.marketAdd, text.willUpgrade]);
+    const addableMarketCount = marketRows.filter((item) => !item.installed && !item.upgrade).length;
+    const upgradeableMarketCount = marketRows.filter((item) => item.upgrade).length;
     const installManifest = () => {
         try {
             let parsed: any;
@@ -4380,104 +4504,130 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
     };
     return (
         <>
-            <section className="apps-market-install">
+            <section className="apps-market-list" aria-label={text.marketApps}>
                 <div className="apps-preview-title-row">
-                    <div className="apps-definition__title">{text.installManifest}</div>
-                    <button className="apps-primary-button" type="button" disabled={!manifestText.trim() || !!installPreview.error || (installPlan.length > 0 && selectedInstallCount === 0)} onClick={installManifest}>{confirmHighRiskInstall ? text.confirmHighRiskInstall : text.install}</button>
+                    <div>
+                        <div className="apps-definition__title">{text.marketApps}</div>
+                        <div className="apps-market-list__meta">{text.marketAddableCount} {addableMarketCount} · {text.marketUpgradeableCount} {upgradeableMarketCount}</div>
+                    </div>
                 </div>
-                <textarea aria-label={text.installManifest} value={manifestText} onChange={(event) => {
-                    setManifestText(event.target.value);
-                    setInstallState('idle');
-                    setInstallMessage('');
-                    setInstallResultItems([]);
-                    setConfirmHighRiskInstall(false);
-                    setSelectedInstallKeys(null);
-                }} placeholder={text.pasteManifest} />
-                {hasLiveManifestError && (
-                    <div className="apps-result-panel" data-state="error" role="alert">
-                        <span>{`${text.installError}: ${installPreview.error}`}</span>
-                    </div>
-                )}
-                {installPlan.length > 0 && (
-                    <div className="apps-install-preview">
-                        {confirmHighRiskInstall && <div className="apps-install-preview__warning" role="alert">{text.highRiskInstallWarning}</div>}
-                        <div className="apps-preview-title-row">
-                            <div className="apps-definition__title">{text.installPreview}</div>
-                            <div className="apps-install-preview__tools">
-                                <button className="apps-secondary-button" type="button" disabled={installableKeys.length === 0 || selectedInstallCount === installableKeys.length} onClick={() => { setConfirmHighRiskInstall(false); setSelectedInstallKeys(installableKeys); }}>{text.selectAll}</button>
-                                <button className="apps-secondary-button" type="button" disabled={selectedInstallCount === 0} onClick={() => { setConfirmHighRiskInstall(false); setSelectedInstallKeys([]); }}>{text.clearSelection}</button>
-                                <span className="apps-count">{`${text.installableCount} ${installableKeys.length - upgradeableCount} · ${text.upgradeableCount} ${upgradeableCount} · ${text.willSkip} ${skippedPreviewCount}`}</span>
-                                <span className="apps-count">{selectedInstallCount}/{installPlan.length}</span>
+                <div className="apps-market-list__items">
+                    {marketRows.map(({ app, installed, upgrade, actionText }) => (
+                        <div className="apps-market-row" key={app.id} data-state={installed ? 'installed' : upgrade ? 'upgrade' : 'available'}>
+                            <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><Icon name={app.icon} /></span>
+                            <div className="apps-market-row__main">
+                                <strong>{app.name}</strong>
+                                <span>{app.description}</span>
+                                <small>{app.category} · {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
                             </div>
+                            <button className={installed ? 'apps-secondary-button' : 'apps-primary-button'} type="button" disabled={installed} title={`${actionText}: ${app.name}`} aria-label={`${actionText}: ${app.name}`} onClick={() => onInstallApp(app)}>
+                                {actionText}
+                            </button>
                         </div>
-                        <div className="apps-install-preview__list">
-                            {installPlan.map((item) => {
-                                const checked = (item.action === 'install' || item.action === 'upgrade') && selectedInstallSet.has(item.key);
-                                const statusText = checked
-                                    ? item.action === 'upgrade' ? `${text.willUpgrade} v${normalizeAppVersion(item.installed?.version)} -> v${normalizeAppVersion(item.app.version)}` : text.willInstall
-                                    : item.action === 'installed'
-                                        ? `${text.willSkip} · ${text.alreadyInstalled}`
-                                        : item.action === 'duplicate'
-                                            ? `${text.willSkip} · ${text.duplicateApp}`
-                                            : `${text.willSkip} · ${text.notSelected}`;
-                                const checkboxLabel = `${item.app.name} · ${statusText}`;
-                                return (
-                                <label className="apps-install-preview__row" key={item.key} data-action={checked ? 'install' : 'skip'} title={statusText}>
-                                    <input
-                                        type="checkbox"
-                                        aria-label={checkboxLabel}
-                                        checked={checked}
-                                        disabled={item.action !== 'install' && item.action !== 'upgrade'}
-                                        onChange={(event) => {
-                                            setSelectedInstallKeys((current) => {
-                                                const nextKeys = current ?? installableKeys;
-                                                return event.target.checked
-                                                    ? Array.from(new Set([...nextKeys, item.key]))
-                                                    : nextKeys.filter((key) => key !== item.key);
-                                            });
-                                            setConfirmHighRiskInstall(false);
-                                        }}
-                                    />
-                                    <span className="apps-app-icon" style={{ '--apps-icon-color': item.app.accent } as CSSProperties}><Icon name={item.app.icon} /></span>
-                                    <div>
-                                        <strong>{item.app.name}</strong>
-                                        <span>{item.app.category} · {appKinds[item.app.kind][isZh(lang) ? 'zh' : 'en']}</span>
-                                        {item.action === 'upgrade' && item.addedScopes.length > 0 && (
-                                            <small>
-                                                {text.permissionChanges}: +{item.addedScopes.join(', ')}
-                                                {item.highRiskScopes.length > 0 ? ` · ${text.highRiskPermission}: ${item.highRiskScopes.join(', ')}` : ''}
-                                            </small>
-                                        )}
-                                    </div>
-                                    <em>{statusText}</em>
-                                </label>
-                            );})}
-                        </div>
-                    </div>
-                )}
-                {installState !== 'idle' && (
-                    <div className={`apps-result-panel${installState === 'installed' && installResultItems.length > 0 ? ' apps-result-panel--stacked' : ''}`} data-state={installState === 'installed' ? 'done' : 'error'} role={installState === 'installed' ? 'status' : 'alert'} aria-live={installState === 'installed' ? 'polite' : undefined}>
-                        <span>{installState === 'installed' ? installMessage : `${text.installError}: ${installMessage}`}</span>
-                        {installState === 'installed' && installResultItems.length > 0 && (
-                            <div className="apps-install-result" role="list" aria-label={text.installDetails}>
-                                {installResultItems.map((item) => (
-                                    <div className="apps-install-result__row" data-action={item.action} role="listitem" key={item.key}>
-                                        <span className="apps-app-icon" style={{ '--apps-icon-color': item.accent } as CSSProperties}><Icon name={item.icon} /></span>
-                                        <strong>{item.name}</strong>
-                                        <em>{item.action === 'upgraded' ? text.upgradedItem : item.action === 'installed' ? text.installedCount : text.skippedItem}</em>
-                                        <small>{item.detail}</small>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                )}
+                    ))}
+                </div>
             </section>
-            <div className="apps-studio-grid">
-                <StudioCard title={isZh(lang) ? '\u4f01\u4e1a\u5e94\u7528\u5305' : 'App pack'} description={isZh(lang) ? '\u5e02\u573a\u5b89\u88c5\u5355\u5143\u3002\u5b89\u88c5\u540e\u6309 manifest \u628a\u56fe\u6807\u52a0\u5165\u5e94\u7528\u9762\u677f\u3002' : 'Market install unit; adds manifest-defined icons to the app panel.'} />
-                <StudioCard title="Skill + maclaw.apps.json" description={isZh(lang) ? 'Skill \u4ecd\u5c5e\u4e8e Skill\uff0c\u4f46\u53ef\u901a\u8fc7\u79c1\u6709\u6269\u5c55\u6807\u8bc6\u66b4\u9732\u5de5\u5177\u5e94\u7528\u3002' : 'Skill stays a skill, with private extension metadata exposing tool apps.'} />
-                <StudioCard title="DataSrv Capability" description={isZh(lang) ? '\u7ed3\u6784\u5316\u80fd\u529b\u4e0d\u7b49\u4e8e\u5e94\u7528\uff0c\u4f46\u53ef\u88ab\u5e94\u7528 manifest \u7ec4\u88c5\u6210\u53ef\u89c1\u5165\u53e3\u3002' : 'Structured capability is not itself an app; app manifests compose it into visible entries.'} />
-            </div>
+            <details className="apps-market-install">
+                <summary>
+                    <span>
+                        <span className="apps-definition__title">{text.marketAdvancedImport}</span>
+                        <span className="apps-market-list__meta">{text.marketAdvancedImportHint}</span>
+                    </span>
+                </summary>
+                <div className="apps-market-install__body">
+                    <div className="apps-preview-title-row">
+                        <div className="apps-definition__title">{text.installManifest}</div>
+                        <button className="apps-primary-button" type="button" disabled={!manifestText.trim() || !!installPreview.error || (installPlan.length > 0 && selectedInstallCount === 0)} onClick={installManifest}>{confirmHighRiskInstall ? text.confirmHighRiskInstall : text.install}</button>
+                    </div>
+                    <textarea aria-label={text.installManifest} value={manifestText} onChange={(event) => {
+                        setManifestText(event.target.value);
+                        setInstallState('idle');
+                        setInstallMessage('');
+                        setInstallResultItems([]);
+                        setConfirmHighRiskInstall(false);
+                        setSelectedInstallKeys(null);
+                    }} placeholder={text.pasteManifest} />
+                    {hasLiveManifestError && (
+                        <div className="apps-result-panel" data-state="error" role="alert">
+                            <span>{`${text.installError}: ${installPreview.error}`}</span>
+                        </div>
+                    )}
+                    {installPlan.length > 0 && (
+                        <div className="apps-install-preview">
+                            {confirmHighRiskInstall && <div className="apps-install-preview__warning" role="alert">{text.highRiskInstallWarning}</div>}
+                            <div className="apps-preview-title-row">
+                                <div className="apps-definition__title">{text.installPreview}</div>
+                                <div className="apps-install-preview__tools">
+                                    <button className="apps-secondary-button" type="button" disabled={installableKeys.length === 0 || selectedInstallCount === installableKeys.length} onClick={() => { setConfirmHighRiskInstall(false); setSelectedInstallKeys(installableKeys); }}>{text.selectAll}</button>
+                                    <button className="apps-secondary-button" type="button" disabled={selectedInstallCount === 0} onClick={() => { setConfirmHighRiskInstall(false); setSelectedInstallKeys([]); }}>{text.clearSelection}</button>
+                                    <span className="apps-count">{`${text.installableCount} ${installableKeys.length - upgradeableCount} · ${text.upgradeableCount} ${upgradeableCount} · ${text.willSkip} ${skippedPreviewCount}`}</span>
+                                    <span className="apps-count">{selectedInstallCount}/{installPlan.length}</span>
+                                </div>
+                            </div>
+                            <div className="apps-install-preview__list">
+                                {installPlan.map((item) => {
+                                    const checked = (item.action === 'install' || item.action === 'upgrade') && selectedInstallSet.has(item.key);
+                                    const statusText = checked
+                                        ? item.action === 'upgrade' ? `${text.willUpgrade} v${normalizeAppVersion(item.installed?.version)} -> v${normalizeAppVersion(item.app.version)}` : text.willInstall
+                                        : item.action === 'installed'
+                                            ? `${text.willSkip} · ${text.alreadyInstalled}`
+                                            : item.action === 'duplicate'
+                                                ? `${text.willSkip} · ${text.duplicateApp}`
+                                                : `${text.willSkip} · ${text.notSelected}`;
+                                    const checkboxLabel = `${item.app.name} · ${statusText}`;
+                                    return (
+                                    <label className="apps-install-preview__row" key={item.key} data-action={checked ? 'install' : 'skip'} title={statusText}>
+                                        <input
+                                            type="checkbox"
+                                            aria-label={checkboxLabel}
+                                            checked={checked}
+                                            disabled={item.action !== 'install' && item.action !== 'upgrade'}
+                                            onChange={(event) => {
+                                                setSelectedInstallKeys((current) => {
+                                                    const nextKeys = current ?? installableKeys;
+                                                    return event.target.checked
+                                                        ? Array.from(new Set([...nextKeys, item.key]))
+                                                        : nextKeys.filter((key) => key !== item.key);
+                                                });
+                                                setConfirmHighRiskInstall(false);
+                                            }}
+                                        />
+                                        <span className="apps-app-icon" style={{ '--apps-icon-color': item.app.accent } as CSSProperties}><Icon name={item.app.icon} /></span>
+                                        <div>
+                                            <strong>{item.app.name}</strong>
+                                            <span>{item.app.category} · {appKinds[item.app.kind][isZh(lang) ? 'zh' : 'en']}</span>
+                                            {item.action === 'upgrade' && item.addedScopes.length > 0 && (
+                                                <small>
+                                                    {text.permissionChanges}: +{item.addedScopes.join(', ')}
+                                                    {item.highRiskScopes.length > 0 ? ` · ${text.highRiskPermission}: ${item.highRiskScopes.join(', ')}` : ''}
+                                                </small>
+                                            )}
+                                        </div>
+                                        <em>{statusText}</em>
+                                    </label>
+                                );})}
+                            </div>
+                        </div>
+                    )}
+                    {installState !== 'idle' && (
+                        <div className={`apps-result-panel${installState === 'installed' && installResultItems.length > 0 ? ' apps-result-panel--stacked' : ''}`} data-state={installState === 'installed' ? 'done' : 'error'} role={installState === 'installed' ? 'status' : 'alert'} aria-live={installState === 'installed' ? 'polite' : undefined}>
+                            <span>{installState === 'installed' ? installMessage : `${text.installError}: ${installMessage}`}</span>
+                            {installState === 'installed' && installResultItems.length > 0 && (
+                                <div className="apps-install-result" role="list" aria-label={text.installDetails}>
+                                    {installResultItems.map((item) => (
+                                        <div className="apps-install-result__row" data-action={item.action} role="listitem" key={item.key}>
+                                            <span className="apps-app-icon" style={{ '--apps-icon-color': item.accent } as CSSProperties}><Icon name={item.icon} /></span>
+                                            <strong>{item.name}</strong>
+                                            <em>{item.action === 'upgraded' ? text.upgradedItem : item.action === 'installed' ? text.installedCount : text.skippedItem}</em>
+                                            <small>{item.detail}</small>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </details>
         </>
     );
 };
