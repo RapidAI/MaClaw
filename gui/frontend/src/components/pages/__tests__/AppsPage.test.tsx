@@ -56,7 +56,11 @@ describe('AppsPage', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
         expect(screen.getByPlaceholderText('搜索应用')).not.toBeNull();
-        expect(screen.getByTitle('应用程序工作室')).not.toBeNull();
+        const studioEntry = screen.getByTitle('应用程序工作室');
+        expect(studioEntry).not.toBeNull();
+        expect(studioEntry.textContent).toBe('');
+        expect(container.querySelector('.apps-studio-button__icon svg:not(.apps-studio-button__plus)')).not.toBeNull();
+        expect(container.querySelector('.apps-studio-button__plus')).not.toBeNull();
         expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('文档处理 (2)')).not.toBeNull();
         expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('全部应用 (10)')).not.toBeNull();
         expect(screen.getAllByText('常用应用').length).toBeGreaterThan(0);
@@ -997,11 +1001,14 @@ describe('AppsPage', () => {
 
         expect(screen.getByText('选择应用')).not.toBeNull();
         expect(screen.getByText('点击左侧应用图标，以打开应用。')).not.toBeNull();
+        expect(screen.queryByRole('button', { name: '打开应用' })).toBeNull();
         expect(container.querySelector('.apps-runtime-tabs')).toBeNull();
 
         fireEvent.click(screen.getAllByText('报销申请')[0]);
         expect(container.querySelector('.apps-runtime-tabs')).not.toBeNull();
         expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('报销申请');
+        expect(container.querySelector('.apps-preview__summary')).toBeNull();
+        expect(screen.queryByRole('button', { name: '打开应用' })).toBeNull();
     });
 
     it('closes runtime tabs and activates the remaining app', () => {

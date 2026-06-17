@@ -183,20 +183,26 @@ func nativeCaptureScreenshot() (string, error) {
 
 // captureViaScreencapture runs /usr/sbin/screencapture and returns base64 PNG.
 // screencapture is Apple-signed and has full TCC screen recording privilege
-// independent of the calling app's TCC status.
+// independent of the calling app's TCC status. It correctly handles rotated
+// and multi-monitor setups.
 func captureViaScreencapture() (string, error) {
-	tmpFile := fmt.Sprintf("/tmp/maclaw_sc_%d.png", time.Now().UnixNano())
-	defer os.Remove(tmpFile)
+	tmpFile, err := os.CreateTemp("", "maclaw_sc_*.png")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close() // screencapture will overwrite
+	defer os.Remove(tmpPath)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "/usr/sbin/screencapture", "-x", tmpFile)
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("screencapture failed: %w", err)
+	cmd := exec.CommandContext(ctx, "/usr/sbin/screencapture", "-x", tmpPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("screencapture failed: %w (output=%s)", err, string(output))
 	}
 
-	data, err := os.ReadFile(tmpFile)
+	data, err := os.ReadFile(tmpPath)
 	if err != nil {
 		return "", fmt.Errorf("read screenshot file: %w", err)
 	}
@@ -204,5 +210,6 @@ func captureViaScreencapture() (string, error) {
 		return "", fmt.Errorf("screencapture produced empty file")
 	}
 
+	log.Printf("[screenshot-native] screencapture succeeded: fileSize=%d", len(data))
 	return base64.StdEncoding.EncodeToString(data), nil
 }

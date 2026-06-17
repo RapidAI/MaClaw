@@ -578,6 +578,64 @@ function renderField(
         </div>
     );
 
+    const renderFileControl = (
+        currentValue: unknown,
+        onNext: (next: string) => void,
+        readOnly: boolean | undefined,
+        inputStyle: React.CSSProperties,
+        constraints: Pick<AgentViewField, "minLength" | "maxLength" | "pattern" | "placeholder"> = {},
+        inputId?: string,
+        browseLabel = s.browse,
+        inputLabel?: string,
+    ) => (
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8 }}>
+            <input
+                id={inputId}
+                aria-label={inputId ? undefined : inputLabel}
+                type="text"
+                value={formatValue(currentValue)}
+                minLength={constraints.minLength}
+                maxLength={constraints.maxLength}
+                pattern={constraints.pattern}
+                readOnly={readOnly}
+                placeholder={constraints.placeholder}
+                onChange={(event) => {
+                    if (!readOnly) onNext(event.target.value);
+                }}
+                style={inputStyle}
+            />
+            <button
+                type="button"
+                disabled={readOnly}
+                aria-label={browseLabel}
+                title={browseLabel}
+                onClick={async () => {
+                    if (readOnly) return;
+                    try {
+                        const { SelectAIAssistantFile } = await getWailsAppModule();
+                        const file = await SelectAIAssistantFile();
+                        if (file) onNext(file);
+                    } catch (error) {
+                        console.warn("File picker failed", error);
+                    }
+                }}
+                style={{
+                    border: `1px solid ${theme.btnBorder}`,
+                    background: "transparent",
+                    color: theme.btnColor,
+                    borderRadius: 8,
+                    padding: "0 12px",
+                    minHeight: 36,
+                    cursor: readOnly ? "not-allowed" : "pointer",
+                    opacity: readOnly ? 0.6 : 1,
+                    fontSize: 12,
+                }}
+            >
+                {s.browse}
+            </button>
+        </div>
+    );
+
     let control: React.ReactNode;
     if (field.type === "textarea") {
         control = (
@@ -630,6 +688,16 @@ function renderField(
                                 </select>
                             ) : column.type === "directory" ? (
                                 renderDirectoryControl(
+                                    nestedValue,
+                                    (next) => updateObjectField(column, next),
+                                    field.readOnly || column.readOnly,
+                                    { ...commonInputStyle, ...(field.readOnly || column.readOnly ? { opacity: 0.65, cursor: "not-allowed" } : {}) },
+                                    column,
+                                    nestedControlId,
+                                    `${s.browse}: ${column.label || column.name}`,
+                                )
+                            ) : column.type === "file" ? (
+                                renderFileControl(
                                     nestedValue,
                                     (next) => updateObjectField(column, next),
                                     field.readOnly || column.readOnly,
@@ -708,6 +776,8 @@ function renderField(
                                                     </select>
                                                 ) : column.type === "directory" ? (
                                                     renderDirectoryControl(cellValue, (next) => updateCell(rowIndex, column, next), cellReadOnly, cellStyle, column, undefined, `${s.browse}: ${column.label || column.name}`, `${column.label || column.name} ${rowIndex + 1}`)
+                                                ) : column.type === "file" ? (
+                                                    renderFileControl(cellValue, (next) => updateCell(rowIndex, column, next), cellReadOnly, cellStyle, column, undefined, `${s.browse}: ${column.label || column.name}`, `${column.label || column.name} ${rowIndex + 1}`)
                                                 ) : (
                                                     <input
                                                         type={column.sensitive || isSensitiveFormat(column.format) ? "password" : column.type === "number" ? "number" : column.type === "date" ? "date" : "text"}
@@ -820,6 +890,10 @@ function renderField(
     } else if (field.type === "directory") {
         control = (
             renderDirectoryControl(value, (next) => setValue(field.name, next), field.readOnly, { ...commonInputStyle, ...readOnlyInputStyle }, field, controlId, `${s.browse}: ${label}`)
+        );
+    } else if (field.type === "file") {
+        control = (
+            renderFileControl(value, (next) => setValue(field.name, next), field.readOnly, { ...commonInputStyle, ...readOnlyInputStyle }, field, controlId, `${s.browse}: ${label}`)
         );
     } else {
         const inputType = field.sensitive || isSensitiveFormat(field.format) ? "password" : field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "datetime" ? "datetime-local" : field.format === "email" ? "email" : field.format === "url" || field.format === "uri" ? "url" : field.type === "file" ? "text" : "text";

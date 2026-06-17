@@ -1246,7 +1246,7 @@ func PatentApplicationTemplate() *WorkflowTemplate {
 							ID:    "file_mode",
 							Label: "交底书文件",
 							Fields: []PhaseInputField{
-								{Name: "disclosure_path", Label: "交底书文件路径", Type: "text", Required: true, Placeholder: "输入文件路径，如：D:\\专利\\交底书.docx"},
+								{Name: "disclosure_path", Label: "交底书文件路径", Type: "file", Required: true, Placeholder: "选择交底书文件（Word/PDF）"},
 							},
 						},
 						{

@@ -429,9 +429,9 @@ func (s *Service) CreateOrder(ctx context.Context, cardTypeID, adminEmail, hubID
 		Period:         ct.Period,
 	}
 
-	// Apply payment mode
-	if payChannel != "" {
-		// Semi-manual with specific channel
+	// Apply payment mode. If no channel was selected, prefer any configured
+	// semi-manual channel before falling back to Alipay direct.
+	if payChannel != "" || hasEnabledPaymentChannel(s.payment) {
 		if err := corecardstore.CreateSemiManualOrder(&order.Order, &s.payment, payChannel); err != nil {
 			return nil, fmt.Errorf("create semi-manual order: %w", err)
 		}
@@ -448,6 +448,15 @@ func (s *Service) CreateOrder(ctx context.Context, cardTypeID, adminEmail, hubID
 		return nil, fmt.Errorf("save order: %w", err)
 	}
 	return order, nil
+}
+
+func hasEnabledPaymentChannel(cfg corecardstore.PersonalPaymentConfig) bool {
+	for _, ch := range cfg.Channels {
+		if ch.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 // ConfirmOrder manually confirms payment and activates the order.
