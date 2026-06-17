@@ -2391,6 +2391,7 @@ func TestSummarizeSkillRunBuildsOutputProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := &SkillRunStatus{
+		RunID:          "run-uri-1",
 		Status:         "success",
 		ExpectedOutput: artifact,
 		Steps: []StepResult{{
@@ -2402,7 +2403,7 @@ func TestSummarizeSkillRunBuildsOutputProtocol(t *testing.T) {
 
 	summarizeSkillRun(status)
 
-	if len(status.Artifacts) != 1 || status.Artifacts[0].Path != artifact || status.Artifacts[0].Name != "report.pdf" || status.Artifacts[0].Status != skillArtifactStatusVerified || status.Artifacts[0].Presentation != "preview_or_file" {
+	if len(status.Artifacts) != 1 || status.Artifacts[0].Path != artifact || status.Artifacts[0].Name != "report.pdf" || status.Artifacts[0].Status != skillArtifactStatusVerified || status.Artifacts[0].Presentation != "preview_or_file" || status.Artifacts[0].URI != "artifact://skill-run/run-uri-1/artifact-1" {
 		t.Fatalf("artifact protocol = %#v", status.Artifacts)
 	}
 	if len(status.Outputs) != 2 || status.Outputs[0].Kind != "artifact" || status.Outputs[0].Artifact == nil || status.Outputs[1].Kind != "text" || status.Outputs[1].Text != "done" {
@@ -2424,6 +2425,10 @@ func TestResolveSkillRunArtifactPathUsesArtifactIDAndFallback(t *testing.T) {
 	got, err := resolveSkillRunArtifactPath(status, "a2")
 	if err != nil || got != "two.pdf" {
 		t.Fatalf("resolve by id = %q, %v", got, err)
+	}
+	got, err = resolveSkillRunArtifactPath(status, "artifact://skill-run/run-x/a1")
+	if err != nil || got != "one.pdf" {
+		t.Fatalf("resolve by uri = %q, %v", got, err)
 	}
 	got, err = resolveSkillRunArtifactPath(&SkillRunStatus{Summary: SkillRunSummary{ArtifactPath: "legacy.pdf"}}, "")
 	if err != nil || got != "legacy.pdf" {

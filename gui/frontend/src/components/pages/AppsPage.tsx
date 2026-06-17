@@ -93,6 +93,7 @@ type SkillRunStatusView = {
 
 type SkillRunArtifactView = {
     id?: string;
+    uri?: string;
     name?: string;
     path?: string;
     mime_type?: string;
@@ -138,6 +139,9 @@ type AppRunHistoryEntry = {
     outputMode: string;
     inputSummary: string;
     message: string;
+    artifactID?: string;
+    artifactURI?: string;
+    artifactName?: string;
     artifactPath?: string;
     at: string;
 };
@@ -2247,7 +2251,11 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                 setSkillRunStatus(status || null);
                 const lifecycle = normalizeSkillRunLifecycle(status?.status);
                 if (lifecycle === 'done') {
-                    const artifactPath = skillRunPrimaryArtifactPath(status);
+                    const artifact = skillRunPrimaryArtifact(status);
+                    const artifactPath = String(artifact?.path || '').trim();
+                    const artifactID = String(artifact?.id || '').trim();
+                    const artifactURI = String(artifact?.uri || '').trim();
+                    const artifactName = String(artifact?.name || artifactPath.split(/[\\/]/).pop() || '').trim();
                     const definitionHash = app ? appDefinitionFingerprint(app) : undefined;
                     const verifiedAt = new Date().toISOString();
                     setValidationMessage('');
@@ -2259,6 +2267,9 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                         outputMode: currentRunContext.outputMode,
                         inputSummary: currentRunContext.inputSummary,
                         message: skillRunOutputSuffix(status).replace(/^ · /, '') || text.skillRunCompleted,
+                        artifactID,
+                        artifactURI,
+                        artifactName,
                         artifactPath,
                     });
                     if (app?.source === 'skill' && app.manifest?.skill?.id) {
@@ -2629,6 +2640,7 @@ const AppRunOutput = ({ status, runState, resultText, isTool, text }: { status: 
     const artifact = skillRunPrimaryArtifact(status);
     const artifactPath = String(artifact?.path || '').trim();
     const artifactID = String(artifact?.id || '').trim();
+    const artifactURI = String(artifact?.uri || '').trim();
     const runID = String(status?.run_id || '').trim();
     const artifactStatus = String(artifact?.status || status?.summary?.artifact_status || '').trim();
     const artifactLabel = artifactStatusLabel(status, text);
@@ -2643,7 +2655,7 @@ const AppRunOutput = ({ status, runState, resultText, isTool, text }: { status: 
                     <span>{text.runArtifacts}</span>
                     <strong>{artifactLabel || artifactStatus || text.artifactReady}</strong>
                     {artifactMeta && <span>{artifactMeta}</span>}
-                    <code>{artifactPath}</code>
+                    <code>{artifactURI || artifactPath}</code>
                     <div className="apps-run-artifact__actions">
                         <button className="apps-link-button" type="button" onClick={() => void (runID ? OpenSkillRunArtifact(runID, artifactID) : OpenFileOrShowInFolder(artifactPath))}>{text.openArtifact}</button>
                         <button className="apps-link-button" type="button" onClick={() => void (runID ? RevealSkillRunArtifact(runID, artifactID) : ShowItemInFolder(artifactPath))}>{text.revealArtifact}</button>

@@ -9,6 +9,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,6 +66,7 @@ type SkillRunSummary struct {
 // SkillRunArtifact is the normalized file output contract exposed to UI.
 type SkillRunArtifact struct {
 	ID           string              `json:"id"`
+	URI          string              `json:"uri,omitempty"`
 	Name         string              `json:"name,omitempty"`
 	Path         string              `json:"path,omitempty"`
 	MimeType     string              `json:"mime_type,omitempty"`
@@ -860,7 +862,7 @@ func populateSkillRunOutputProtocol(status *SkillRunStatus) {
 	artifacts := make([]SkillRunArtifact, 0, 1)
 	blocks := make([]SkillRunOutputBlock, 0, 2)
 	if artifactPath := strings.TrimSpace(status.Summary.ArtifactPath); artifactPath != "" {
-		artifact := buildSkillRunArtifact("artifact-1", artifactPath, status.Summary.ArtifactStatus)
+		artifact := buildSkillRunArtifact(status.RunID, "artifact-1", artifactPath, status.Summary.ArtifactStatus)
 		artifacts = append(artifacts, artifact)
 		blocks = append(blocks, SkillRunOutputBlock{
 			ID:         "artifact-1",
@@ -883,11 +885,11 @@ func populateSkillRunOutputProtocol(status *SkillRunStatus) {
 	status.Summary.OutputBlocks = blocks
 }
 
-func resolveSkillRunArtifactPath(status *SkillRunStatus, artifactID string) (string, error) {
+func resolveSkillRunArtifactPath(status *SkillRunStatus, artifactRef string) (string, error) {
 	if status == nil {
 		return "", fmt.Errorf("skill run status is nil")
 	}
-	artifactID = strings.TrimSpace(artifactID)
+	artifactID := skillRunArtifactIDFromRef(artifactRef)
 	artifacts := status.Artifacts
 	if len(artifacts) == 0 {
 		artifacts = status.Summary.Artifacts
@@ -908,17 +910,19 @@ func resolveSkillRunArtifactPath(status *SkillRunStatus, artifactID string) (str
 	return "", fmt.Errorf("artifact %q not found", artifactID)
 }
 
-func buildSkillRunArtifact(id, artifactPath string, status skillArtifactStatus) SkillRunArtifact {
+func buildSkillRunArtifact(runID, id, artifactPath string, status skillArtifactStatus) SkillRunArtifact {
 	artifactPath = strings.TrimSpace(artifactPath)
+	id = strings.TrimSpace(id)
+	if id == "" {
+		id = "artifact-1"
+	}
 	artifact := SkillRunArtifact{
-		ID:           strings.TrimSpace(id),
+		ID:           id,
+		URI:          skillRunArtifactURI(runID, id),
 		Name:         filepath.Base(artifactPath),
 		Path:         artifactPath,
 		Status:       status,
 		Presentation: skillRunArtifactPresentation(artifactPath),
-	}
-	if artifact.ID == "" {
-		artifact.ID = "artifact-1"
 	}
 	if ext := strings.ToLower(filepath.Ext(artifactPath)); ext != "" {
 		artifact.MimeType = mime.TypeByExtension(ext)
@@ -930,6 +934,32 @@ func buildSkillRunArtifact(id, artifactPath string, status skillArtifactStatus) 
 		}
 	}
 	return artifact
+}
+
+func skillRunArtifactURI(runID, artifactID string) string {
+	runID = strings.TrimSpace(runID)
+	artifactID = strings.TrimSpace(artifactID)
+	if runID == "" || artifactID == "" {
+		return ""
+	}
+	return "artifact://skill-run/" + url.PathEscape(runID) + "/" + url.PathEscape(artifactID)
+}
+
+func skillRunArtifactIDFromRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(ref), "artifact://") {
+		parsed, err := url.Parse(ref)
+		if err == nil && parsed.Scheme == "artifact" && parsed.Host == "skill-run" {
+			parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+			if len(parts) >= 2 {
+				return strings.TrimSpace(parts[len(parts)-1])
+			}
+		}
+	}
+	return ref
 }
 
 func skillRunArtifactPresentation(path string) string {
